@@ -22,9 +22,38 @@ All settings as well as custom groups are stored in your QSettings, in the regis
 
 ## Building
 
-Requirements: QT6 via vcpkg or another installation, reconfigure build.ps1 script if needed, any C++ compiler.
+### Windows
 
-To build run the build.ps1 script. See [developer guide](docs/DEV.md) for detailed build and development instructions.
+Requirements: Qt6 via vcpkg, C++ compiler.
+
+Run the build script:
+```powershell
+.\tools\build.ps1
+```
+
+See [developer guide](docs/DEV.md) for detailed instructions.
+
+### Linux (Arch)
+
+Requirements: Qt6, zlib (available from pacman), CMake 3.24+, C++20 compiler.
+
+Install dependencies:
+```bash
+sudo pacman -S qt6-base qt6-tools qt6-svg zlib cmake gcc ninja
+```
+
+Configure and build:
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+Run:
+```bash
+./build/ForzaLiveryStudio
+```
+
+See [developer guide](docs/DEV.md) for detailed build and development instructions.
 
 ## Status
 
