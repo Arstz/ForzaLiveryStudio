@@ -26,6 +26,7 @@ class QDragMoveEvent;
 class QDropEvent;
 class QUrl;
 class QWidget;
+class QToolButton;
 
 namespace gui {
 

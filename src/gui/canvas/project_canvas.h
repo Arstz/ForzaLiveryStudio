@@ -170,8 +170,8 @@ private:
     void cancelDrag();
     QString transformHandleAt(const QPointF &point, const SelectionBox &box) const;
     bool rotateZoneAt(const QPointF &point, const SelectionBox &box) const;
-    Qt::CursorShape cursorForScaleHandle(const QString &handle, const SelectionBox &box = {}) const;
-    QCursor cursorForTransformHandle(const QString &handle, const SelectionBox &box = {}) const;
+    Qt::CursorShape cursorForScaleHandle(const QString &handle, const SelectionBox *box = nullptr) const;
+    QCursor cursorForTransformHandle(const QString &handle, const SelectionBox *box = nullptr) const;
     Qt::CursorShape cursorForPoint(const QPointF &point);
     void updateCursorForPoint(const QPointF &point);
     QCursor rotateCursor() const;
