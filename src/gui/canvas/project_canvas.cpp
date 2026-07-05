@@ -361,7 +361,9 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(0);
     setFormat(format);
-    setMinimumSize(640, 480);
+    // Keep this modest so the whole window fits low-resolution / high-DPI-scaled
+    // displays (e.g. 1080p at 150% has only ~688 logical px of usable height).
+    setMinimumSize(320, 240);
     setAutoFillBackground(false);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
@@ -2034,8 +2036,18 @@ void ProjectCanvas::paintGL()
     painter.fillRect(rect(), canvasColor_);
     drawGuideLayers(painter);
 
+    // The GL viewport and scene FBO live in physical device pixels: a QOpenGLWidget's
+    // default framebuffer is size() * devicePixelRatio(), so rendering with the logical
+    // size would confine the scene to a sub-region and misalign it against the QPainter
+    // background/guides/overlay (which Qt draws at full resolution). Scale the camera by
+    // the ratio too so world coords still map to the right physical pixels.
+    const qreal dpr = devicePixelRatioF();
+    const QSize deviceSize(std::lround(width() * dpr), std::lround(height() * dpr));
+    QTransform deviceCamera = worldToScreen_;
+    deviceCamera *= QTransform::fromScale(dpr, dpr);
+
     painter.beginNativePainting();
-    renderer_.render(*project_, geometry_, worldToScreen_, size(), flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false);
+    renderer_.render(*project_, geometry_, deviceCamera, deviceSize, flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false);
     painter.endNativePainting();
 
     if (!sectionCacheKey.isEmpty()) {

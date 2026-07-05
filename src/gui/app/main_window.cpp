@@ -44,6 +44,7 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
+#include <QScrollArea>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -260,13 +261,22 @@ void MainWindow::setupTreeView()
 }
 
 QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objectName,
-                                      const QString &iconName, Qt::DockWidgetArea area, QWidget *content)
+                                      const QString &iconName, Qt::DockWidgetArea area, QWidget *content,
+                                      bool scrollable)
 {
     auto *dock = new QDockWidget(title, this);
     dock->setObjectName(objectName);
     setDockTitleIcon(dock, iconName);
     installDockAreaCollapseButton(dock, area);
-    dock->setWidget(content);
+    if (scrollable) {
+        auto *scroll = new QScrollArea(dock);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(content);
+        dock->setWidget(scroll);
+    } else {
+        dock->setWidget(content);
+    }
     addDockWidget(area, dock);
     dockWidgets_.push_back(dock);
     return dock;
@@ -299,7 +309,7 @@ void MainWindow::setupDocks()
     headerMetadata_ = new HeaderMetadataWidget(this);
     headerMetadata_->setApplyCallback([this]() { applyHeaderMetadata(); });
     headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
-                                       QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_);
+                                       QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_, true);
     tabifyDockWidget(detailsDock, headerMetadataDock_);
     detailsDock->raise();
 
@@ -311,7 +321,7 @@ void MainWindow::setupDocks()
     });
     applyBehaviorSettings(loadBehaviorSettings(), false);
     auto *propertiesDock = addPanelDock(QStringLiteral("Properties"), QStringLiteral("PropertiesDock"),
-                                        QStringLiteral("WidgetProperties.xpm"), Qt::LeftDockWidgetArea, properties_);
+                                        QStringLiteral("WidgetProperties.xpm"), Qt::LeftDockWidgetArea, properties_, true);
 
     shapesBrowser_ = new ShapesBrowserWidget(this);
     shapesBrowser_->setShapeSelectedCallback([this](int shapeId) { insertShape(shapeId); });

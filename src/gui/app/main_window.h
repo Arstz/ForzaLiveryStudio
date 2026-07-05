@@ -149,8 +149,12 @@ private:
     void setupCanvas();
     void setupTreeView();
     void setupDocks();
+    // scrollable=true wraps content in a resizable QScrollArea so the panel's fixed
+    // content height (e.g. the property form) doesn't force a tall window minimum that
+    // can't fit low-resolution or high-DPI-scaled displays.
     QDockWidget *addPanelDock(const QString &title, const QString &objectName,
-                              const QString &iconName, Qt::DockWidgetArea area, QWidget *content);
+                              const QString &iconName, Qt::DockWidgetArea area, QWidget *content,
+                              bool scrollable = false);
     void connectEditorStateSignals();
     void setupFileMenu();
     void setupEditMenu();
