@@ -1,0 +1,250 @@
+cmake_minimum_required(VERSION 3.24)
+
+project(ForzaLiveryStudio LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+find_package(ZLIB REQUIRED)
+qt_standard_project_setup()
+
+add_library(fh6_core STATIC
+    src/core/binary_io.cpp
+    src/core/binary_io.h
+    src/core/cgroup_codec.cpp
+    src/core/cgroup_codec.h
+    src/core/core_types.h
+    src/core/fh6_core.cpp
+    src/core/fh6_core.h
+    src/core/header_codec.cpp
+    src/core/header_codec.h
+    src/core/flat_payload.cpp
+    src/core/flat_payload.h
+    src/core/nested_payload.cpp
+    src/core/nested_payload.h
+    src/core/livery_codec.cpp
+    src/core/livery_codec.h
+    src/core/matrix_math.cpp
+    src/core/matrix_math.h
+    src/core/project_codec.cpp
+    src/core/project_codec.h
+    src/core/shape_registry.cpp
+    src/core/shape_registry.h
+    src/core/vinyl_decoder.cpp
+    src/core/vinyl_decoder.h
+    src/core/vinyl_flattener.cpp
+    src/core/vinyl_flattener.h
+)
+
+target_link_libraries(fh6_core
+    PUBLIC
+        Qt6::Core
+        ZLIB::ZLIB
+)
+
+target_include_directories(fh6_core PUBLIC src/core)
+
+# Console harness: diff a decoded C_livery against the in-game per-section
+# C_group exports (the ground truth for group decoding). Core-only, no GUI deps.
+add_executable(fh6_livery_compare
+    tools/livery_compare/main.cpp
+)
+target_link_libraries(fh6_livery_compare PRIVATE fh6_core Qt6::Core)
+
+set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)
+
+qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET}
+    src/main.cpp
+    src/gui/app/dock_chrome.cpp
+    src/gui/app/dock_chrome.h
+    src/gui/app/gui_assets.cpp
+    src/gui/app/gui_assets.h
+    src/gui/app/gui_constants.h
+    src/gui/app/main_window.cpp
+    src/gui/app/main_window.h
+    src/gui/app/perf_utils.h
+    src/gui/app/settings_dialog.cpp
+    src/gui/app/settings_dialog.h
+    src/gui/app/theme_manager.cpp
+    src/gui/app/theme_manager.h
+    src/gui/state/editor_state.cpp
+    src/gui/state/editor_state.h
+    src/gui/state/editor_state_clipboard.cpp
+    src/gui/state/editor_state_grouping.cpp
+    src/gui/state/editor_state_internal.h
+    src/gui/state/editor_state_selection.cpp
+    src/gui/state/editor_state_snapshot.cpp
+    src/gui/state/editor_state_util.cpp
+    src/gui/state/layer_tree_model.cpp
+    src/gui/state/layer_tree_model.h
+    src/gui/state/scene_entry.h
+    src/gui/canvas/canvas_tools.cpp
+    src/gui/canvas/canvas_tools.h
+    src/gui/canvas/drag_cursors.cpp
+    src/gui/canvas/drag_cursors.h
+    src/gui/canvas/native_shape_renderer.cpp
+    src/gui/canvas/native_shape_renderer.h
+    src/gui/canvas/project_canvas.cpp
+    src/gui/canvas/project_canvas.h
+    src/gui/widgets/clipboard_buffer_widget.cpp
+    src/gui/widgets/clipboard_buffer_widget.h
+    src/gui/widgets/font_glyphs.cpp
+    src/gui/widgets/font_glyphs.h
+    src/gui/widgets/header_metadata_widget.cpp
+    src/gui/widgets/header_metadata_widget.h
+    src/gui/widgets/image_io.cpp
+    src/gui/widgets/image_io.h
+    src/gui/widgets/import_locations.cpp
+    src/gui/widgets/import_locations.h
+    src/gui/widgets/layer_state_delegate.cpp
+    src/gui/widgets/layer_state_delegate.h
+    src/gui/widgets/layer_tree_view.cpp
+    src/gui/widgets/layer_tree_view.h
+    src/gui/widgets/livery_section_bar.cpp
+    src/gui/widgets/livery_section_bar.h
+    src/gui/widgets/property_panel.cpp
+    src/gui/widgets/property_panel.h
+    src/gui/widgets/shape_geometry_store.cpp
+    src/gui/widgets/shape_geometry_store.h
+    src/gui/widgets/shape_name_store.cpp
+    src/gui/widgets/shape_name_store.h
+    src/gui/widgets/shapes_browser_widget.cpp
+    src/gui/widgets/shapes_browser_widget.h
+)
+
+target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
+    src
+    src/gui/app
+    src/gui/state
+    src/gui/canvas
+    src/gui/widgets
+)
+
+target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
+    PRIVATE
+        fh6_core
+        Qt6::Gui
+        Qt6::Widgets
+        Qt6::OpenGL
+        Qt6::OpenGLWidgets
+)
+
+set(FH6_GUI_ASSETS
+    Cursor.xpm
+    MenuCopy.xpm
+    MenuCut.xpm
+    MenuDelete.xpm
+    MenuExit.xpm
+    MenuExportFlat.xpm
+    MenuFoldAllGroups.xpm
+    MenuGroup.xpm
+    MenuOpenCGroup.xpm
+    MenuOpenFolder.xpm
+    MenuPaste.xpm
+    MenuRevert.xpm
+    MenuUngroupFlat.xpm
+    PropertyColor.xpm
+    PropertyDebug.xpm
+    PropertyInvisible.xpm
+    PropertyLocked.xpm
+    PropertyMask.xpm
+    PropertyName.xpm
+    PropertyShapeID.xpm
+    PropertyUnlocked.xpm
+    PropertyVisible.xpm
+    PropertyXY.xpm
+    ShapeBrowserFavOff.xpm
+    ShapeBrowserFavOn.xpm
+    ShapeBrowserSearch.xpm
+    ToolbarMarquee.xpm
+    ToolbarMove.xpm
+    ToolbarRotate.xpm
+    ToolbarScale.xpm
+    ToolbarSelect.xpm
+    ToolbarSkew.xpm
+    ToolRotateE.xpm
+    ToolRotateN.xpm
+    ToolRotateNE.xpm
+    ToolRotateNW.xpm
+    ToolRotateS.xpm
+    ToolRotateSE.xpm
+    ToolRotateSW.xpm
+    ToolRotateW.xpm
+    ToolScaleNESW.xpm
+    ToolScaleNWSE.xpm
+    ToolScaleX.xpm
+    ToolScaleY.xpm
+    ToolTransformSkew.xpm
+    WidgetBuffer.xpm
+    WidgetLayers.xpm
+    WidgetProject.xpm
+    WidgetProperties.xpm
+    WidgetShapesBrowser.xpm
+)
+
+set(FH6_GUI_ASSET_SOURCES)
+foreach(asset_name IN LISTS FH6_GUI_ASSETS)
+    list(APPEND FH6_GUI_ASSET_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/${asset_name}")
+endforeach()
+
+add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        ${FH6_GUI_ASSET_SOURCES}
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_geometry.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_geometry.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_names.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_names.json"
+    COMMENT "Deploying used GUI XPM assets"
+)
+
+if(WIN32)
+    target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32)
+    add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${Qt6_DIR}/../../Qt6/plugins/platforms/qwindows.dll"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms/qwindows.dll"
+        COMMENT "Deploying Qt platform plugin for ${FORZA_LIVERY_STUDIO_TARGET}"
+    )
+    add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats/qico.dll"
+        COMMENT "Removing redundant Qt ICO imageformat plugin"
+    )
+    set(QT_WEBP_PLUGIN "${Qt6_DIR}/../../Qt6/plugins/imageformats/qwebp.dll")
+    if(NOT EXISTS "${QT_WEBP_PLUGIN}")
+        message(FATAL_ERROR "Qt WebP imageformat plugin was not found. Install qtimageformats with the webp feature, e.g. vcpkg install qtimageformats[webp]:x64-windows")
+    endif()
+    add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${QT_WEBP_PLUGIN}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats/qwebp.dll"
+        COMMENT "Deploying Qt WEBP imageformat plugin"
+    )
+    set(QT_WEBP_RUNTIME_DLLS)
+    foreach(webp_dll IN ITEMS libwebp.dll libwebpdecoder.dll libwebpdemux.dll libwebpmux.dll libsharpyuv.dll)
+        if(EXISTS "${Qt6_DIR}/../../bin/${webp_dll}")
+            list(APPEND QT_WEBP_RUNTIME_DLLS "${Qt6_DIR}/../../bin/${webp_dll}")
+        endif()
+    endforeach()
+    if(QT_WEBP_RUNTIME_DLLS)
+        add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                ${QT_WEBP_RUNTIME_DLLS}
+                "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>"
+            COMMENT "Deploying Qt WEBP runtime dependencies"
+        )
+    endif()
+endif()

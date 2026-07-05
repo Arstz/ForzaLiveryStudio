@@ -1,0 +1,4202 @@
+{
+  "101": {
+    "name": "Square"
+  },
+  "102": {
+    "name": "Circle"
+  },
+  "103": {
+    "name": "Triangle"
+  },
+  "104": {
+    "name": "Right triangle"
+  },
+  "105": {
+    "name": "Hexagon"
+  },
+  "106": {
+    "name": "Octagon"
+  },
+  "107": {
+    "name": "Cut square"
+  },
+  "108": {
+    "name": "Five point star"
+  },
+  "109": {
+    "name": "Half circle"
+  },
+  "110": {
+    "name": "Shield"
+  },
+  "111": {
+    "name": "Square frame"
+  },
+  "112": {
+    "name": "Circle frame"
+  },
+  "113": {
+    "name": "Triangle frame"
+  },
+  "114": {
+    "name": "Right triangle frame"
+  },
+  "115": {
+    "name": "Hexagon frame"
+  },
+  "116": {
+    "name": "Octagon frame"
+  },
+  "117": {
+    "name": "Cut square frame"
+  },
+  "118": {
+    "name": "Star frame"
+  },
+  "119": {
+    "name": "Half circle frame"
+  },
+  "120": {
+    "name": "Stack"
+  },
+  "121": {
+    "name": "Pentagon star"
+  },
+  "122": {
+    "name": "Rounded square"
+  },
+  "123": {
+    "name": "Ten point star"
+  },
+  "124": {
+    "name": "Bean"
+  },
+  "125": {
+    "name": "Up arrow"
+  },
+  "126": {
+    "name": "Fan"
+  },
+  "127": {
+    "name": "Fang"
+  },
+  "128": {
+    "name": "Teardrop"
+  },
+  "129": {
+    "name": "Half crescent"
+  },
+  "130": {
+    "name": "Quarter circle"
+  },
+  "131": {
+    "name": "Bracket"
+  },
+  "132": {
+    "name": "Crescent"
+  },
+  "133": {
+    "name": "Triangle tip"
+  },
+  "134": {
+    "name": "Arrow tip"
+  },
+  "135": {
+    "name": "Pentagon"
+  },
+  "136": {
+    "name": "Arc"
+  },
+  "137": {
+    "name": "Diagonal slash"
+  },
+  "138": {
+    "name": "Curved triangle"
+  },
+  "139": {
+    "name": "Garlic"
+  },
+  "140": {
+    "name": "Pentagon frame"
+  },
+  "201": {
+    "name": "Trail circles"
+  },
+  "202": {
+    "name": "Trail squares"
+  },
+  "203": {
+    "name": "Trail mixed"
+  },
+  "204": {
+    "name": "Gradient crescent"
+  },
+  "205": {
+    "name": "Gradient smoke"
+  },
+  "206": {
+    "name": "Diagonal tires"
+  },
+  "207": {
+    "name": "Gradient flag 1"
+  },
+  "208": {
+    "name": "Gradient flag 2"
+  },
+  "209": {
+    "name": "Gradient flag 3"
+  },
+  "210": {
+    "name": "Gradient flag 4"
+  },
+  "211": {
+    "name": "Gradient square 1 OUT"
+  },
+  "212": {
+    "name": "Gradient square NE"
+  },
+  "213": {
+    "name": "Gradient square NS"
+  },
+  "214": {
+    "name": "Gradient square 2 OUT"
+  },
+  "215": {
+    "name": "Gradient diamond"
+  },
+  "216": {
+    "name": "Gradient square SW"
+  },
+  "217": {
+    "name": "Gradient square vertical"
+  },
+  "218": {
+    "name": "Gradient stripes 1"
+  },
+  "219": {
+    "name": "Gradient stripes 2"
+  },
+  "220": {
+    "name": "Gradient stripes 3"
+  },
+  "221": {
+    "name": "Gradient triangle EW"
+  },
+  "222": {
+    "name": "Gradient triangle WE"
+  },
+  "223": {
+    "name": "Gradient right arrow 1"
+  },
+  "224": {
+    "name": "Gradient right arrow 2"
+  },
+  "225": {
+    "name": "Gradient lines horizontal"
+  },
+  "226": {
+    "name": "Gradient circle 1 OUT"
+  },
+  "227": {
+    "name": "Gradient circle NS"
+  },
+  "228": {
+    "name": "Gradient circle 2 OUT"
+  },
+  "229": {
+    "name": "Gradient circle IN"
+  },
+  "230": {
+    "name": "Gradient bullet"
+  },
+  "231": {
+    "name": "Gradient sixteen point star"
+  },
+  "232": {
+    "name": "Gradient twelve point star"
+  },
+  "233": {
+    "name": "Gradient five point star OUT"
+  },
+  "234": {
+    "name": "Gradient five point star IN"
+  },
+  "235": {
+    "name": "Gradient lightning bolt 1"
+  },
+  "236": {
+    "name": "Gradient lightning bolt 2"
+  },
+  "237": {
+    "name": "Gradient flame 1"
+  },
+  "238": {
+    "name": "Gradient flame 2"
+  },
+  "239": {
+    "name": "Gradient flame 3"
+  },
+  "240": {
+    "name": "Gradient flame 4"
+  },
+  "301": {
+    "name": "Split horizontal line"
+  },
+  "302": {
+    "name": "Vertical split square"
+  },
+  "303": {
+    "name": "Horizontal split square"
+  },
+  "304": {
+    "name": "Vertical diagonal split rectangle"
+  },
+  "305": {
+    "name": "Horizontal split triangle"
+  },
+  "306": {
+    "name": "Split bracket"
+  },
+  "307": {
+    "name": "Split curved bracket"
+  },
+  "308": {
+    "name": "Chair"
+  },
+  "309": {
+    "name": "Hexagonal pattern 1"
+  },
+  "310": {
+    "name": "Hexagonal pattern 2"
+  },
+  "311": {
+    "name": "Fading horizontal bar"
+  },
+  "312": {
+    "name": "Horizontal bar stars"
+  },
+  "313": {
+    "name": "Vertical bar circles"
+  },
+  "314": {
+    "name": "Vertical bar squares"
+  },
+  "315": {
+    "name": "Checkerboard horizontal bar"
+  },
+  "316": {
+    "name": "Grid pattern"
+  },
+  "317": {
+    "name": "Horizontal bar diagonal stripes"
+  },
+  "318": {
+    "name": "Metal pattern"
+  },
+  "319": {
+    "name": "Horizontal stacked circles"
+  },
+  "320": {
+    "name": "Barbed wire"
+  },
+  "321": {
+    "name": "Horizontal halftone bar"
+  },
+  "322": {
+    "name": "Curved wave 1"
+  },
+  "323": {
+    "name": "Curved wave 2"
+  },
+  "324": {
+    "name": "Curved wave 3"
+  },
+  "325": {
+    "name": "Curved wave 4"
+  },
+  "326": {
+    "name": "Curved wave 5"
+  },
+  "327": {
+    "name": "Curved scroll"
+  },
+  "328": {
+    "name": "Diagonal stripes"
+  },
+  "329": {
+    "name": "Wave pattern"
+  },
+  "330": {
+    "name": "Vertical stripes"
+  },
+  "331": {
+    "name": "Radiating spokes"
+  },
+  "332": {
+    "name": "Vertical burned curtains"
+  },
+  "333": {
+    "name": "Spine"
+  },
+  "334": {
+    "name": "Wavy vertical stripes"
+  },
+  "335": {
+    "name": "Diamond stack"
+  },
+  "336": {
+    "name": "Xylophone"
+  },
+  "337": {
+    "name": "Curved step"
+  },
+  "338": {
+    "name": "Square trail"
+  },
+  "339": {
+    "name": "Curved line"
+  },
+  "340": {
+    "name": "Dot trail"
+  },
+  "401": {
+    "name": "Tear 1"
+  },
+  "402": {
+    "name": "Tear 2"
+  },
+  "403": {
+    "name": "Tear 3"
+  },
+  "404": {
+    "name": "Tear 4"
+  },
+  "405": {
+    "name": "Tear 5"
+  },
+  "406": {
+    "name": "Tear 6"
+  },
+  "407": {
+    "name": "Tear 7"
+  },
+  "408": {
+    "name": "Tear 8"
+  },
+  "409": {
+    "name": "Tear 9"
+  },
+  "410": {
+    "name": "Claws Drawing"
+  },
+  "411": {
+    "name": "Partial Tear 1"
+  },
+  "412": {
+    "name": "Partial Tear 2"
+  },
+  "413": {
+    "name": "Partial Tear 3"
+  },
+  "414": {
+    "name": "Partial Tear 4"
+  },
+  "415": {
+    "name": "Partial Tear 5"
+  },
+  "416": {
+    "name": "Vertical Partial Tear 1"
+  },
+  "417": {
+    "name": "Vertical Partial Tear 2"
+  },
+  "418": {
+    "name": "Digital Tear"
+  },
+  "419": {
+    "name": "Curved Burst"
+  },
+  "420": {
+    "name": "Grass Pattern"
+  },
+  "421": {
+    "name": "Dragon Back"
+  },
+  "422": {
+    "name": "Tear 10"
+  },
+  "423": {
+    "name": "Tear 11"
+  },
+  "424": {
+    "name": "Tear 12"
+  },
+  "425": {
+    "name": "Tear 13"
+  },
+  "426": {
+    "name": "Tear 14"
+  },
+  "427": {
+    "name": "Tear 15"
+  },
+  "428": {
+    "name": "Tear 16"
+  },
+  "429": {
+    "name": "Tear 17"
+  },
+  "430": {
+    "name": "Tear 18"
+  },
+  "431": {
+    "name": "Tear 19"
+  },
+  "432": {
+    "name": "Tear 20"
+  },
+  "433": {
+    "name": "Abstract Tear 1"
+  },
+  "434": {
+    "name": "Abstract Tear 2"
+  },
+  "435": {
+    "name": "Abstract Tear 3"
+  },
+  "436": {
+    "name": "Tear 21"
+  },
+  "437": {
+    "name": "Tear 22"
+  },
+  "438": {
+    "name": "Abstract Tear 4"
+  },
+  "439": {
+    "name": "Brush Stroke"
+  },
+  "440": {
+    "name": "Abstract Tear 5"
+  },
+  "501": {
+    "name": "Checkered flag 1"
+  },
+  "502": {
+    "name": "Checkered flag 2"
+  },
+  "503": {
+    "name": "Checkered flag 3"
+  },
+  "504": {
+    "name": "Checkered flag 4"
+  },
+  "505": {
+    "name": "Checkerboard 1"
+  },
+  "506": {
+    "name": "Checkered flag 5"
+  },
+  "507": {
+    "name": "Checkered flag 6"
+  },
+  "508": {
+    "name": "Checkered flag 7"
+  },
+  "509": {
+    "name": "Checkered flag 8"
+  },
+  "510": {
+    "name": "Checkered flag 9"
+  },
+  "511": {
+    "name": "Stripe 1"
+  },
+  "512": {
+    "name": "Stripe 2"
+  },
+  "513": {
+    "name": "Stripe 3"
+  },
+  "514": {
+    "name": "Stripe 4"
+  },
+  "515": {
+    "name": "White flag"
+  },
+  "516": {
+    "name": "Checkered flag 10"
+  },
+  "517": {
+    "name": "Checkered flag 11"
+  },
+  "518": {
+    "name": "Checkerboard Pattern 2"
+  },
+  "519": {
+    "name": "Checkerboard Pattern 3"
+  },
+  "520": {
+    "name": "Checkerboard Pattern 4"
+  },
+  "521": {
+    "name": "Tire track 1"
+  },
+  "522": {
+    "name": "Tire track 2"
+  },
+  "523": {
+    "name": "Tire track 3"
+  },
+  "524": {
+    "name": "Tire track 4"
+  },
+  "525": {
+    "name": "Tire track 5"
+  },
+  "526": {
+    "name": "Tire track 6"
+  },
+  "527": {
+    "name": "Tire track 7"
+  },
+  "528": {
+    "name": "Tire track 8"
+  },
+  "529": {
+    "name": "Tire track 9"
+  },
+  "530": {
+    "name": "Tire track 10"
+  },
+  "531": {
+    "name": "Race track 1"
+  },
+  "532": {
+    "name": "Race track 2"
+  },
+  "533": {
+    "name": "Race track Turn"
+  },
+  "534": {
+    "name": "Race track 3"
+  },
+  "535": {
+    "name": "Driver logo 1"
+  },
+  "536": {
+    "name": "Driver logo 2"
+  },
+  "537": {
+    "name": "Driver logo 3"
+  },
+  "538": {
+    "name": "Fuel can"
+  },
+  "539": {
+    "name": "Steering wheel"
+  },
+  "540": {
+    "name": "Gear shift"
+  },
+  "601": {
+    "name": "Horizontal Flame 1"
+  },
+  "602": {
+    "name": "Horizontal Flame 2"
+  },
+  "603": {
+    "name": "Horizontal Flame 3"
+  },
+  "604": {
+    "name": "Horizontal Flame 4"
+  },
+  "605": {
+    "name": "Horizontal Flame 5"
+  },
+  "606": {
+    "name": "Horizontal Flame 6"
+  },
+  "607": {
+    "name": "Vertical Flame 1"
+  },
+  "608": {
+    "name": "Vertical Flame 2"
+  },
+  "609": {
+    "name": "Vertical Flame 3"
+  },
+  "610": {
+    "name": "Vertical Flame 4"
+  },
+  "611": {
+    "name": "Horizontal Flame 7"
+  },
+  "612": {
+    "name": "Horizontal Flame 8"
+  },
+  "613": {
+    "name": "Horizontal Flame 9"
+  },
+  "614": {
+    "name": "Horizontal Flame 10"
+  },
+  "615": {
+    "name": "Horizontal Flame 11"
+  },
+  "616": {
+    "name": "Horizontal Flame 12"
+  },
+  "617": {
+    "name": "Abstract Flame 1"
+  },
+  "618": {
+    "name": "Abstract Flame 2"
+  },
+  "619": {
+    "name": "Abstract Flame 3"
+  },
+  "620": {
+    "name": "Abstract Flame 4"
+  },
+  "621": {
+    "name": "Abstract Flame 5"
+  },
+  "622": {
+    "name": "Abstract Flame 6"
+  },
+  "623": {
+    "name": "Flame Trail"
+  },
+  "624": {
+    "name": "Abstract Flame 7"
+  },
+  "625": {
+    "name": "Abstract Flame 8"
+  },
+  "626": {
+    "name": "Abstract Flame 9"
+  },
+  "627": {
+    "name": "Abstract Flame 10"
+  },
+  "628": {
+    "name": "Abstract Flame 11"
+  },
+  "629": {
+    "name": "Abstract Flame 12"
+  },
+  "630": {
+    "name": "Abstract Flame 13"
+  },
+  "631": {
+    "name": "Smooth Flame"
+  },
+  "632": {
+    "name": "Abstract Flame 14"
+  },
+  "633": {
+    "name": "Abstract Flame 15"
+  },
+  "634": {
+    "name": "Abstract Flame 16"
+  },
+  "635": {
+    "name": "Horizontal Flame 13"
+  },
+  "636": {
+    "name": "Horizontal Flame 14"
+  },
+  "637": {
+    "name": "Horizontal Flame 15"
+  },
+  "638": {
+    "name": "Vertical Flame 5"
+  },
+  "639": {
+    "name": "Flame With Face"
+  },
+  "640": {
+    "name": "Vertical Flame 6"
+  },
+  "701": {
+    "name": "Paint Splat 1"
+  },
+  "702": {
+    "name": "Paint Splat 2"
+  },
+  "703": {
+    "name": "Paint Splat 3"
+  },
+  "704": {
+    "name": "Paint Splat 4"
+  },
+  "705": {
+    "name": "Paint Splat 5"
+  },
+  "706": {
+    "name": "Paint Splat 6"
+  },
+  "707": {
+    "name": "Paint Splat 7"
+  },
+  "708": {
+    "name": "Paint Splat 8"
+  },
+  "709": {
+    "name": "Paint Splat 9"
+  },
+  "710": {
+    "name": "Paint Splat 10"
+  },
+  "711": {
+    "name": "Brush Splat 1"
+  },
+  "712": {
+    "name": "Brush Splat 2"
+  },
+  "713": {
+    "name": "Brush Splat 3"
+  },
+  "714": {
+    "name": "Brush Splat 4"
+  },
+  "715": {
+    "name": "Brush Splat 5"
+  },
+  "716": {
+    "name": "Brush Splat 6"
+  },
+  "717": {
+    "name": "Brush Splat 7"
+  },
+  "718": {
+    "name": "Brush Splat 8"
+  },
+  "719": {
+    "name": "Paint Splat 11"
+  },
+  "720": {
+    "name": "Paint Splat 12"
+  },
+  "721": {
+    "name": "Paint Splat 13"
+  },
+  "722": {
+    "name": "Paint Splat 14"
+  },
+  "723": {
+    "name": "Brush Splat 9"
+  },
+  "724": {
+    "name": "Brush Splat 10"
+  },
+  "725": {
+    "name": "Brush Splat 11"
+  },
+  "726": {
+    "name": "Brush Splat 12"
+  },
+  "727": {
+    "name": "Brush Splat 13"
+  },
+  "728": {
+    "name": "Paint Splat 15"
+  },
+  "729": {
+    "name": "Paint Splat 16"
+  },
+  "730": {
+    "name": "Paint Splat 17"
+  },
+  "731": {
+    "name": "Paint Splat 18"
+  },
+  "732": {
+    "name": "Paint Splat 19"
+  },
+  "733": {
+    "name": "Paint Splat 20"
+  },
+  "734": {
+    "name": "Paint Splat 21"
+  },
+  "735": {
+    "name": "Paint Splat 22"
+  },
+  "736": {
+    "name": "Paint Splat 23"
+  },
+  "737": {
+    "name": "Paint Splat 16"
+  },
+  "738": {
+    "name": "Paint Splat 17"
+  },
+  "739": {
+    "name": "Airbrush Splat 1"
+  },
+  "740": {
+    "name": "Airbrush Splat 2"
+  },
+  "801": {
+    "name": "Interlacing pattern"
+  },
+  "802": {
+    "name": "Curved Tribal Pattern 1"
+  },
+  "803": {
+    "name": "Curved Tribal Pattern 2"
+  },
+  "804": {
+    "name": "Curved Tribal Pattern 3"
+  },
+  "805": {
+    "name": "Tribal Wave Pattern"
+  },
+  "806": {
+    "name": "Curved Tribal Wave Pattern"
+  },
+  "807": {
+    "name": "Symetric Tribal Pattern"
+  },
+  "808": {
+    "name": "Rising Sun Pattern"
+  },
+  "809": {
+    "name": "Flying Eagle Pattern"
+  },
+  "810": {
+    "name": "Curved Tribal Pattern 4"
+  },
+  "811": {
+    "name": "Curved Tribal Pattern 5"
+  },
+  "812": {
+    "name": "Curved Tribal Pattern 6"
+  },
+  "813": {
+    "name": "Curved Tribal Pattern 7"
+  },
+  "814": {
+    "name": "Crab Claw Patterb"
+  },
+  "815": {
+    "name": "Abstract Tribal Pattern 1"
+  },
+  "816": {
+    "name": "Curved Tribal Pattern 8"
+  },
+  "817": {
+    "name": "Curved Tribal Pattern 9"
+  },
+  "818": {
+    "name": "Curved Tribal Pattern 10"
+  },
+  "819": {
+    "name": "Curved Tribal Pattern 11"
+  },
+  "820": {
+    "name": "Curved Tribal Pattern 12"
+  },
+  "821": {
+    "name": "Curved Tribal Pattern 13"
+  },
+  "822": {
+    "name": "Curved Tribal Pattern 14"
+  },
+  "823": {
+    "name": "Curved Tribal Pattern 15"
+  },
+  "824": {
+    "name": "Curved Tribal Pattern 16"
+  },
+  "825": {
+    "name": "Curved Tribal Pattern 17"
+  },
+  "826": {
+    "name": "Curved Tribal Pattern 18"
+  },
+  "827": {
+    "name": "Tribal Swan Pattern"
+  },
+  "828": {
+    "name": "Abstract Tribal Pattern 2"
+  },
+  "829": {
+    "name": "Abstract Tribal Pattern 3"
+  },
+  "830": {
+    "name": "Curved Tribal Pattern 19"
+  },
+  "831": {
+    "name": "Curved Tribal Pattern 20"
+  },
+  "832": {
+    "name": "Abstract Tribal Pattern 4"
+  },
+  "833": {
+    "name": "Forza logo"
+  },
+  "834": {
+    "name": "Abstract Tribal Feather"
+  },
+  "835": {
+    "name": "Abstract Tribal Pattern 5"
+  },
+  "836": {
+    "name": "Curved Tribal Pattern 21"
+  },
+  "837": {
+    "name": "Abstract Tribal Pattern 6"
+  },
+  "838": {
+    "name": "Serrated Tribal Blade"
+  },
+  "839": {
+    "name": "Curved Tribal Pattern 22"
+  },
+  "840": {
+    "name": "Curved Tribal Pattern 23"
+  },
+  "901": {
+    "name": "Lightning bolt 1"
+  },
+  "902": {
+    "name": "Lightning bolt 2"
+  },
+  "903": {
+    "name": "Lightning bolt 3"
+  },
+  "904": {
+    "name": "Abstract lightning bolt"
+  },
+  "905": {
+    "name": "Spiral lightning"
+  },
+  "906": {
+    "name": "Lightning bolt 4"
+  },
+  "907": {
+    "name": "Lightning bolt 5"
+  },
+  "908": {
+    "name": "Lightning 1"
+  },
+  "909": {
+    "name": "Lightning 2"
+  },
+  "910": {
+    "name": "Lightning 3"
+  },
+  "911": {
+    "name": "Flower four petals"
+  },
+  "912": {
+    "name": "Flower six petals"
+  },
+  "913": {
+    "name": "Flower eight petals"
+  },
+  "914": {
+    "name": "Clover leaf"
+  },
+  "915": {
+    "name": "Flower five petals"
+  },
+  "916": {
+    "name": "Fern"
+  },
+  "917": {
+    "name": "Leaf"
+  },
+  "918": {
+    "name": "Pine tree"
+  },
+  "919": {
+    "name": "Palm tree"
+  },
+  "920": {
+    "name": "Great tree"
+  },
+  "921": {
+    "name": "Sun 1"
+  },
+  "922": {
+    "name": "Sun 2"
+  },
+  "923": {
+    "name": "Sun 3"
+  },
+  "924": {
+    "name": "Waves 1"
+  },
+  "925": {
+    "name": "Waves 2"
+  },
+  "926": {
+    "name": "Waves 3"
+  },
+  "927": {
+    "name": "Waves 4"
+  },
+  "928": {
+    "name": "Waves 5"
+  },
+  "929": {
+    "name": "Waves 6"
+  },
+  "930": {
+    "name": "Waves 7"
+  },
+  "931": {
+    "name": "Snowflake 1"
+  },
+  "932": {
+    "name": "Snowflake 2"
+  },
+  "933": {
+    "name": "Snowflake 3"
+  },
+  "934": {
+    "name": "Snowflake 4"
+  },
+  "935": {
+    "name": "Snowflake 5"
+  },
+  "936": {
+    "name": "Hurricane"
+  },
+  "937": {
+    "name": "Wind 1"
+  },
+  "938": {
+    "name": "Wind 2"
+  },
+  "939": {
+    "name": "Wind 3"
+  },
+  "940": {
+    "name": "Earth globe"
+  },
+  "1301": {
+    "name": "Magneto uppercase A"
+  },
+  "1302": {
+    "name": "Magneto uppercase B"
+  },
+  "1303": {
+    "name": "Magneto uppercase C"
+  },
+  "1304": {
+    "name": "Magneto uppercase D"
+  },
+  "1305": {
+    "name": "Magneto uppercase E"
+  },
+  "1306": {
+    "name": "Magneto uppercase F"
+  },
+  "1307": {
+    "name": "Magneto uppercase G"
+  },
+  "1308": {
+    "name": "Magneto uppercase H"
+  },
+  "1309": {
+    "name": "Magneto uppercase I"
+  },
+  "1310": {
+    "name": "Magneto uppercase J"
+  },
+  "1311": {
+    "name": "Magneto uppercase K"
+  },
+  "1312": {
+    "name": "Magneto uppercase L"
+  },
+  "1313": {
+    "name": "Magneto uppercase M"
+  },
+  "1314": {
+    "name": "Magneto uppercase N"
+  },
+  "1315": {
+    "name": "Magneto uppercase O"
+  },
+  "1316": {
+    "name": "Magneto uppercase P"
+  },
+  "1317": {
+    "name": "Magneto uppercase Q"
+  },
+  "1318": {
+    "name": "Magneto uppercase R"
+  },
+  "1319": {
+    "name": "Magneto uppercase S"
+  },
+  "1320": {
+    "name": "Magneto uppercase T"
+  },
+  "1321": {
+    "name": "Magneto uppercase U"
+  },
+  "1322": {
+    "name": "Magneto uppercase V"
+  },
+  "1323": {
+    "name": "Magneto uppercase W"
+  },
+  "1324": {
+    "name": "Magneto uppercase X"
+  },
+  "1325": {
+    "name": "Magneto uppercase Y"
+  },
+  "1326": {
+    "name": "Magneto uppercase Z"
+  },
+  "1327": {
+    "name": "Magneto 1"
+  },
+  "1328": {
+    "name": "Magneto 2"
+  },
+  "1329": {
+    "name": "Magneto 3"
+  },
+  "1330": {
+    "name": "Magneto 4"
+  },
+  "1331": {
+    "name": "Magneto 5"
+  },
+  "1332": {
+    "name": "Magneto 6"
+  },
+  "1333": {
+    "name": "Magneto 7"
+  },
+  "1334": {
+    "name": "Magneto 8"
+  },
+  "1335": {
+    "name": "Magneto 9"
+  },
+  "1336": {
+    "name": "Magneto 0"
+  },
+  "1337": {
+    "name": "Magneto !"
+  },
+  "1338": {
+    "name": "Magneto ?"
+  },
+  "1339": {
+    "name": "Magneto @"
+  },
+  "1340": {
+    "name": "Magneto &"
+  },
+  "1401": {
+    "name": "Magneto lowercase a"
+  },
+  "1402": {
+    "name": "Magneto lowercase b"
+  },
+  "1403": {
+    "name": "Magneto lowercase c"
+  },
+  "1404": {
+    "name": "Magneto lowercase d"
+  },
+  "1405": {
+    "name": "Magneto lowercase e"
+  },
+  "1406": {
+    "name": "Magneto lowercase f"
+  },
+  "1407": {
+    "name": "Magneto lowercase g"
+  },
+  "1408": {
+    "name": "Magneto lowercase h"
+  },
+  "1409": {
+    "name": "Magneto lowercase i"
+  },
+  "1410": {
+    "name": "Magneto lowercase j"
+  },
+  "1411": {
+    "name": "Magneto lowercase k"
+  },
+  "1412": {
+    "name": "Magneto lowercase l"
+  },
+  "1413": {
+    "name": "Magneto lowercase m"
+  },
+  "1414": {
+    "name": "Magneto lowercase n"
+  },
+  "1415": {
+    "name": "Magneto lowercase o"
+  },
+  "1416": {
+    "name": "Magneto lowercase p"
+  },
+  "1417": {
+    "name": "Magneto lowercase q"
+  },
+  "1418": {
+    "name": "Magneto lowercase r"
+  },
+  "1419": {
+    "name": "Magneto lowercase s"
+  },
+  "1420": {
+    "name": "Magneto lowercase t"
+  },
+  "1421": {
+    "name": "Magneto lowercase u"
+  },
+  "1422": {
+    "name": "Magneto lowercase v"
+  },
+  "1423": {
+    "name": "Magneto lowercase w"
+  },
+  "1424": {
+    "name": "Magneto lowercase x"
+  },
+  "1425": {
+    "name": "Magneto lowercase y"
+  },
+  "1426": {
+    "name": "Magneto lowercase z"
+  },
+  "1427": {
+    "name": "Magneto dollar"
+  },
+  "1428": {
+    "name": "Magneto pound"
+  },
+  "1429": {
+    "name": "Magneto yen"
+  },
+  "1430": {
+    "name": "Magneto euro"
+  },
+  "1431": {
+    "name": "Magneto ("
+  },
+  "1432": {
+    "name": "Magneto )"
+  },
+  "1433": {
+    "name": "Magneto cent"
+  },
+  "1434": {
+    "name": "Magneto asterisk"
+  },
+  "1435": {
+    "name": "Magneto hash"
+  },
+  "1436": {
+    "name": "Magneto plus"
+  },
+  "1437": {
+    "name": "Magneto percent"
+  },
+  "1438": {
+    "name": "Magneto semicolon"
+  },
+  "1439": {
+    "name": "Magneto colon"
+  },
+  "1440": {
+    "name": "Magneto comma"
+  },
+  "1501": {
+    "name": "Freestyle uppercase A"
+  },
+  "1502": {
+    "name": "Freestyle uppercase B"
+  },
+  "1503": {
+    "name": "Freestyle uppercase C"
+  },
+  "1504": {
+    "name": "Freestyle uppercase D"
+  },
+  "1505": {
+    "name": "Freestyle uppercase E"
+  },
+  "1506": {
+    "name": "Freestyle uppercase F"
+  },
+  "1507": {
+    "name": "Freestyle uppercase G"
+  },
+  "1508": {
+    "name": "Freestyle uppercase H"
+  },
+  "1509": {
+    "name": "Freestyle uppercase I"
+  },
+  "1510": {
+    "name": "Freestyle uppercase J"
+  },
+  "1511": {
+    "name": "Freestyle uppercase K"
+  },
+  "1512": {
+    "name": "Freestyle uppercase L"
+  },
+  "1513": {
+    "name": "Freestyle uppercase M"
+  },
+  "1514": {
+    "name": "Freestyle uppercase N"
+  },
+  "1515": {
+    "name": "Freestyle uppercase O"
+  },
+  "1516": {
+    "name": "Freestyle uppercase P"
+  },
+  "1517": {
+    "name": "Freestyle uppercase Q"
+  },
+  "1518": {
+    "name": "Freestyle uppercase R"
+  },
+  "1519": {
+    "name": "Freestyle uppercase S"
+  },
+  "1520": {
+    "name": "Freestyle uppercase T"
+  },
+  "1521": {
+    "name": "Freestyle uppercase U"
+  },
+  "1522": {
+    "name": "Freestyle uppercase V"
+  },
+  "1523": {
+    "name": "Freestyle uppercase W"
+  },
+  "1524": {
+    "name": "Freestyle uppercase X"
+  },
+  "1525": {
+    "name": "Freestyle uppercase Y"
+  },
+  "1526": {
+    "name": "Freestyle uppercase Z"
+  },
+  "1527": {
+    "name": "Freestyle 1"
+  },
+  "1528": {
+    "name": "Freestyle 2"
+  },
+  "1529": {
+    "name": "Freestyle 3"
+  },
+  "1530": {
+    "name": "Freestyle 4"
+  },
+  "1531": {
+    "name": "Freestyle 5"
+  },
+  "1532": {
+    "name": "Freestyle 6"
+  },
+  "1533": {
+    "name": "Freestyle 7"
+  },
+  "1534": {
+    "name": "Freestyle 8"
+  },
+  "1535": {
+    "name": "Freestyle 9"
+  },
+  "1536": {
+    "name": "Freestyle 0"
+  },
+  "1537": {
+    "name": "Freestyle !"
+  },
+  "1538": {
+    "name": "Freestyle ?"
+  },
+  "1539": {
+    "name": "Freestyle @"
+  },
+  "1540": {
+    "name": "Freestyle &"
+  },
+  "1601": {
+    "name": "Freestyle lowercase a"
+  },
+  "1602": {
+    "name": "Freestyle lowercase b"
+  },
+  "1603": {
+    "name": "Freestyle lowercase c"
+  },
+  "1604": {
+    "name": "Freestyle lowercase d"
+  },
+  "1605": {
+    "name": "Freestyle lowercase e"
+  },
+  "1606": {
+    "name": "Freestyle lowercase f"
+  },
+  "1607": {
+    "name": "Freestyle lowercase g"
+  },
+  "1608": {
+    "name": "Freestyle lowercase h"
+  },
+  "1609": {
+    "name": "Freestyle lowercase i"
+  },
+  "1610": {
+    "name": "Freestyle lowercase j"
+  },
+  "1611": {
+    "name": "Freestyle lowercase k"
+  },
+  "1612": {
+    "name": "Freestyle lowercase l"
+  },
+  "1613": {
+    "name": "Freestyle lowercase m"
+  },
+  "1614": {
+    "name": "Freestyle lowercase n"
+  },
+  "1615": {
+    "name": "Freestyle lowercase o"
+  },
+  "1616": {
+    "name": "Freestyle lowercase p"
+  },
+  "1617": {
+    "name": "Freestyle lowercase q"
+  },
+  "1618": {
+    "name": "Freestyle lowercase r"
+  },
+  "1619": {
+    "name": "Freestyle lowercase s"
+  },
+  "1620": {
+    "name": "Freestyle lowercase t"
+  },
+  "1621": {
+    "name": "Freestyle lowercase u"
+  },
+  "1622": {
+    "name": "Freestyle lowercase v"
+  },
+  "1623": {
+    "name": "Freestyle lowercase w"
+  },
+  "1624": {
+    "name": "Freestyle lowercase x"
+  },
+  "1625": {
+    "name": "Freestyle lowercase y"
+  },
+  "1626": {
+    "name": "Freestyle lowercase z"
+  },
+  "1627": {
+    "name": "Freestyle dollar"
+  },
+  "1628": {
+    "name": "Freestyle pound"
+  },
+  "1629": {
+    "name": "Freestyle yen"
+  },
+  "1630": {
+    "name": "Freestyle euro"
+  },
+  "1631": {
+    "name": "Freestyle ("
+  },
+  "1632": {
+    "name": "Freestyle )"
+  },
+  "1633": {
+    "name": "Freestyle cent"
+  },
+  "1634": {
+    "name": "Freestyle asterisk"
+  },
+  "1635": {
+    "name": "Freestyle hash"
+  },
+  "1636": {
+    "name": "Freestyle plus"
+  },
+  "1637": {
+    "name": "Freestyle percent"
+  },
+  "1638": {
+    "name": "Freestyle semicolon"
+  },
+  "1639": {
+    "name": "Freestyle colon"
+  },
+  "1640": {
+    "name": "Freestyle comma"
+  },
+  "1701": {
+    "name": "Pristina uppercase A"
+  },
+  "1702": {
+    "name": "Pristina uppercase B"
+  },
+  "1703": {
+    "name": "Pristina uppercase C"
+  },
+  "1704": {
+    "name": "Pristina uppercase D"
+  },
+  "1705": {
+    "name": "Pristina uppercase E"
+  },
+  "1706": {
+    "name": "Pristina uppercase F"
+  },
+  "1707": {
+    "name": "Pristina uppercase G"
+  },
+  "1708": {
+    "name": "Pristina uppercase H"
+  },
+  "1709": {
+    "name": "Pristina uppercase I"
+  },
+  "1710": {
+    "name": "Pristina uppercase J"
+  },
+  "1711": {
+    "name": "Pristina uppercase K"
+  },
+  "1712": {
+    "name": "Pristina uppercase L"
+  },
+  "1713": {
+    "name": "Pristina uppercase M"
+  },
+  "1714": {
+    "name": "Pristina uppercase N"
+  },
+  "1715": {
+    "name": "Pristina uppercase O"
+  },
+  "1716": {
+    "name": "Pristina uppercase P"
+  },
+  "1717": {
+    "name": "Pristina uppercase Q"
+  },
+  "1718": {
+    "name": "Pristina uppercase R"
+  },
+  "1719": {
+    "name": "Pristina uppercase S"
+  },
+  "1720": {
+    "name": "Pristina uppercase T"
+  },
+  "1721": {
+    "name": "Pristina uppercase U"
+  },
+  "1722": {
+    "name": "Pristina uppercase V"
+  },
+  "1723": {
+    "name": "Pristina uppercase W"
+  },
+  "1724": {
+    "name": "Pristina uppercase X"
+  },
+  "1725": {
+    "name": "Pristina uppercase Y"
+  },
+  "1726": {
+    "name": "Pristina uppercase Z"
+  },
+  "1727": {
+    "name": "Pristina 1"
+  },
+  "1728": {
+    "name": "Pristina 2"
+  },
+  "1729": {
+    "name": "Pristina 3"
+  },
+  "1730": {
+    "name": "Pristina 4"
+  },
+  "1731": {
+    "name": "Pristina 5"
+  },
+  "1732": {
+    "name": "Pristina 6"
+  },
+  "1733": {
+    "name": "Pristina 7"
+  },
+  "1734": {
+    "name": "Pristina 8"
+  },
+  "1735": {
+    "name": "Pristina 9"
+  },
+  "1736": {
+    "name": "Pristina 0"
+  },
+  "1737": {
+    "name": "Pristina !"
+  },
+  "1738": {
+    "name": "Pristina ?"
+  },
+  "1739": {
+    "name": "Pristina @"
+  },
+  "1740": {
+    "name": "Pristina &"
+  },
+  "1801": {
+    "name": "Pristina lowercase a"
+  },
+  "1802": {
+    "name": "Pristina lowercase b"
+  },
+  "1803": {
+    "name": "Pristina lowercase c"
+  },
+  "1804": {
+    "name": "Pristina lowercase d"
+  },
+  "1805": {
+    "name": "Pristina lowercase e"
+  },
+  "1806": {
+    "name": "Pristina lowercase f"
+  },
+  "1807": {
+    "name": "Pristina lowercase g"
+  },
+  "1808": {
+    "name": "Pristina lowercase h"
+  },
+  "1809": {
+    "name": "Pristina lowercase i"
+  },
+  "1810": {
+    "name": "Pristina lowercase j"
+  },
+  "1811": {
+    "name": "Pristina lowercase k"
+  },
+  "1812": {
+    "name": "Pristina lowercase l"
+  },
+  "1813": {
+    "name": "Pristina lowercase m"
+  },
+  "1814": {
+    "name": "Pristina lowercase n"
+  },
+  "1815": {
+    "name": "Pristina lowercase o"
+  },
+  "1816": {
+    "name": "Pristina lowercase p"
+  },
+  "1817": {
+    "name": "Pristina lowercase q"
+  },
+  "1818": {
+    "name": "Pristina lowercase r"
+  },
+  "1819": {
+    "name": "Pristina lowercase s"
+  },
+  "1820": {
+    "name": "Pristina lowercase t"
+  },
+  "1821": {
+    "name": "Pristina lowercase u"
+  },
+  "1822": {
+    "name": "Pristina lowercase v"
+  },
+  "1823": {
+    "name": "Pristina lowercase w"
+  },
+  "1824": {
+    "name": "Pristina lowercase x"
+  },
+  "1825": {
+    "name": "Pristina lowercase y"
+  },
+  "1826": {
+    "name": "Pristina lowercase z"
+  },
+  "1827": {
+    "name": "Pristina dollar"
+  },
+  "1828": {
+    "name": "Pristina pound"
+  },
+  "1829": {
+    "name": "Pristina yen"
+  },
+  "1830": {
+    "name": "Pristina euro"
+  },
+  "1831": {
+    "name": "Pristina ("
+  },
+  "1832": {
+    "name": "Pristina )"
+  },
+  "1833": {
+    "name": "Pristina cent"
+  },
+  "1834": {
+    "name": "Pristina asterisk"
+  },
+  "1835": {
+    "name": "Pristina hash"
+  },
+  "1836": {
+    "name": "Pristina plus"
+  },
+  "1837": {
+    "name": "Pristina percent"
+  },
+  "1838": {
+    "name": "Pristina semicolon"
+  },
+  "1839": {
+    "name": "Pristina colon"
+  },
+  "1840": {
+    "name": "Pristina comma"
+  },
+  "1901": {
+    "name": "Arial uppercase A"
+  },
+  "1902": {
+    "name": "Arial uppercase B"
+  },
+  "1903": {
+    "name": "Arial uppercase C"
+  },
+  "1904": {
+    "name": "Arial uppercase D"
+  },
+  "1905": {
+    "name": "Arial uppercase E"
+  },
+  "1906": {
+    "name": "Arial uppercase F"
+  },
+  "1907": {
+    "name": "Arial uppercase G"
+  },
+  "1908": {
+    "name": "Arial uppercase H"
+  },
+  "1909": {
+    "name": "Arial uppercase I"
+  },
+  "1910": {
+    "name": "Arial uppercase J"
+  },
+  "1911": {
+    "name": "Arial uppercase K"
+  },
+  "1912": {
+    "name": "Arial uppercase L"
+  },
+  "1913": {
+    "name": "Arial uppercase M"
+  },
+  "1914": {
+    "name": "Arial uppercase N"
+  },
+  "1915": {
+    "name": "Arial uppercase O"
+  },
+  "1916": {
+    "name": "Arial uppercase P"
+  },
+  "1917": {
+    "name": "Arial uppercase Q"
+  },
+  "1918": {
+    "name": "Arial uppercase R"
+  },
+  "1919": {
+    "name": "Arial uppercase S"
+  },
+  "1920": {
+    "name": "Arial uppercase T"
+  },
+  "1921": {
+    "name": "Arial uppercase U"
+  },
+  "1922": {
+    "name": "Arial uppercase V"
+  },
+  "1923": {
+    "name": "Arial uppercase W"
+  },
+  "1924": {
+    "name": "Arial uppercase X"
+  },
+  "1925": {
+    "name": "Arial uppercase Y"
+  },
+  "1926": {
+    "name": "Arial uppercase Z"
+  },
+  "1927": {
+    "name": "Arial 1"
+  },
+  "1928": {
+    "name": "Arial 2"
+  },
+  "1929": {
+    "name": "Arial 3"
+  },
+  "1930": {
+    "name": "Arial 4"
+  },
+  "1931": {
+    "name": "Arial 5"
+  },
+  "1932": {
+    "name": "Arial 6"
+  },
+  "1933": {
+    "name": "Arial 7"
+  },
+  "1934": {
+    "name": "Arial 8"
+  },
+  "1935": {
+    "name": "Arial 9"
+  },
+  "1936": {
+    "name": "Arial 0"
+  },
+  "1937": {
+    "name": "Arial !"
+  },
+  "1938": {
+    "name": "Arial ?"
+  },
+  "1939": {
+    "name": "Arial @"
+  },
+  "1940": {
+    "name": "Arial &"
+  },
+  "2001": {
+    "name": "Arial lowercase a"
+  },
+  "2002": {
+    "name": "Arial lowercase b"
+  },
+  "2003": {
+    "name": "Arial lowercase c"
+  },
+  "2004": {
+    "name": "Arial lowercase d"
+  },
+  "2005": {
+    "name": "Arial lowercase e"
+  },
+  "2006": {
+    "name": "Arial lowercase f"
+  },
+  "2007": {
+    "name": "Arial lowercase g"
+  },
+  "2008": {
+    "name": "Arial lowercase h"
+  },
+  "2009": {
+    "name": "Arial lowercase i"
+  },
+  "2010": {
+    "name": "Arial lowercase j"
+  },
+  "2011": {
+    "name": "Arial lowercase k"
+  },
+  "2012": {
+    "name": "Arial lowercase l"
+  },
+  "2013": {
+    "name": "Arial lowercase m"
+  },
+  "2014": {
+    "name": "Arial lowercase n"
+  },
+  "2015": {
+    "name": "Arial lowercase o"
+  },
+  "2016": {
+    "name": "Arial lowercase p"
+  },
+  "2017": {
+    "name": "Arial lowercase q"
+  },
+  "2018": {
+    "name": "Arial lowercase r"
+  },
+  "2019": {
+    "name": "Arial lowercase s"
+  },
+  "2020": {
+    "name": "Arial lowercase t"
+  },
+  "2021": {
+    "name": "Arial lowercase u"
+  },
+  "2022": {
+    "name": "Arial lowercase v"
+  },
+  "2023": {
+    "name": "Arial lowercase w"
+  },
+  "2024": {
+    "name": "Arial lowercase x"
+  },
+  "2025": {
+    "name": "Arial lowercase y"
+  },
+  "2026": {
+    "name": "Arial lowercase z"
+  },
+  "2027": {
+    "name": "Arial dollar"
+  },
+  "2028": {
+    "name": "Arial pound"
+  },
+  "2029": {
+    "name": "Arial yen"
+  },
+  "2030": {
+    "name": "Arial euro"
+  },
+  "2031": {
+    "name": "Arial ("
+  },
+  "2032": {
+    "name": "Arial )"
+  },
+  "2033": {
+    "name": "Arial cent"
+  },
+  "2034": {
+    "name": "Arial asterisk"
+  },
+  "2035": {
+    "name": "Arial hash"
+  },
+  "2036": {
+    "name": "Arial plus"
+  },
+  "2037": {
+    "name": "Arial percent"
+  },
+  "2038": {
+    "name": "Arial semicolon"
+  },
+  "2039": {
+    "name": "Arial colon"
+  },
+  "2040": {
+    "name": "Arial comma"
+  },
+  "2101": {
+    "name": "Vertical line 1"
+  },
+  "2102": {
+    "name": "Speedometer"
+  },
+  "2103": {
+    "name": "Rang"
+  },
+  "2104": {
+    "name": "Rounded triangle"
+  },
+  "2105": {
+    "name": "Pallete"
+  },
+  "2106": {
+    "name": "Soft star"
+  },
+  "2107": {
+    "name": "Wave"
+  },
+  "2108": {
+    "name": "Water drop"
+  },
+  "2109": {
+    "name": "Swoosh"
+  },
+  "2110": {
+    "name": "Rectangle"
+  },
+  "2111": {
+    "name": "Grid"
+  },
+  "2112": {
+    "name": "Hair"
+  },
+  "2113": {
+    "name": "Worm"
+  },
+  "2114": {
+    "name": "Soft triangle"
+  },
+  "2115": {
+    "name": "Radiar burst"
+  },
+  "2116": {
+    "name": "Soft star frame"
+  },
+  "2117": {
+    "name": "Lemon"
+  },
+  "2118": {
+    "name": "Hook"
+  },
+  "2119": {
+    "name": "Gradient worm"
+  },
+  "2120": {
+    "name": "Rectangle frame"
+  },
+  "2121": {
+    "name": "Diagonal Wedge"
+  },
+  "2122": {
+    "name": "Stopwatch"
+  },
+  "2123": {
+    "name": "Tooth"
+  },
+  "2124": {
+    "name": "Soft triangle frame"
+  },
+  "2125": {
+    "name": "Spiral burst"
+  },
+  "2126": {
+    "name": "Curved rectangle"
+  },
+  "2127": {
+    "name": "Egg"
+  },
+  "2128": {
+    "name": "Curved line"
+  },
+  "2129": {
+    "name": "Paint splash"
+  },
+  "2130": {
+    "name": "Chipping paint"
+  },
+  "2131": {
+    "name": "Sharp arc"
+  },
+  "2132": {
+    "name": "Oval frame"
+  },
+  "2133": {
+    "name": "Pill"
+  },
+  "2134": {
+    "name": "Hourglass"
+  },
+  "2135": {
+    "name": "Tounge"
+  },
+  "2136": {
+    "name": "Stretched rectangle"
+  },
+  "2137": {
+    "name": "Falling bars"
+  },
+  "2138": {
+    "name": "Deko"
+  },
+  "2139": {
+    "name": "Petals"
+  },
+  "2140": {
+    "name": "Brush stroke"
+  },
+  "2201": {
+    "name": "Gradient circle 3 OUT"
+  },
+  "2202": {
+    "name": "Gradient half circle 1 OUT"
+  },
+  "2203": {
+    "name": "Gradient quarter circle 1 OUT"
+  },
+  "2204": {
+    "name": "Gradient vertical stripe 1 EW"
+  },
+  "2205": {
+    "name": "Vertical line 2"
+  },
+  "2206": {
+    "name": "Flattened quater circle 1"
+  },
+  "2207": {
+    "name": "Curved crescent 1"
+  },
+  "2208": {
+    "name": "Angled flower"
+  },
+  "2209": {
+    "name": "Angled spiral"
+  },
+  "2210": {
+    "name": "Gradient circle 2 OUT"
+  },
+  "2211": {
+    "name": "Gradient half circle 2 OUT"
+  },
+  "2212": {
+    "name": "Gradient quarter circle 2 OUT"
+  },
+  "2213": {
+    "name": "Gradient vertical stripe 2 EW"
+  },
+  "2214": {
+    "name": "Flattened quater circle 2"
+  },
+  "2215": {
+    "name": "Curved crescent 2"
+  },
+  "2216": {
+    "name": "Bit burst"
+  },
+  "2217": {
+    "name": "Liquid mark 1"
+  },
+  "2218": {
+    "name": "Gradient circle 1 IN"
+  },
+  "2219": {
+    "name": "Gradient half circle 1 IN"
+  },
+  "2220": {
+    "name": "Gradient quarter circle 1 IN"
+  },
+  "2221": {
+    "name": "Gradient vertical stripe 1 IN"
+  },
+  "2222": {
+    "name": "Flattened quater circle 3"
+  },
+  "2223": {
+    "name": "Reverse Half Circle Gradient IN"
+  },
+  "2224": {
+    "name": "Liquid Mark 2"
+  },
+  "2225": {
+    "name": "Liquid Mark 3"
+  },
+  "2226": {
+    "name": "Circle Gradient IN 2"
+  },
+  "2227": {
+    "name": "Half Circle Gradient IN 2"
+  },
+  "2228": {
+    "name": "Quarter Circle Gradient IN 2"
+  },
+  "2229": {
+    "name": "Vertical Stripe Gradient IN 2"
+  },
+  "2230": {
+    "name": "Quarter Circle"
+  },
+  "2231": {
+    "name": "Wide Half Circle Gradient IN"
+  },
+  "2232": {
+    "name": "Uroborus"
+  },
+  "2233": {
+    "name": "Radial Burst"
+  },
+  "2234": {
+    "name": "Curved Hook"
+  },
+  "2235": {
+    "name": "Scrollwork Pattern 1"
+  },
+  "2236": {
+    "name": "Scrollwork Pattern 2"
+  },
+  "2237": {
+    "name": "Scrollwork Pattern 3"
+  },
+  "2238": {
+    "name": "Scrollwork Pattern 4"
+  },
+  "2239": {
+    "name": "Scrollwork Pattern 5"
+  },
+  "2240": {
+    "name": "Scrollwork Pattern 6"
+  },
+  "2301": {
+    "name": "Curved Swirl"
+  },
+  "2302": {
+    "name": "Swooping Wave 1"
+  },
+  "2303": {
+    "name": "Abstract Hook"
+  },
+  "2304": {
+    "name": "Clustered Loops"
+  },
+  "2305": {
+    "name": "Broken Bottle"
+  },
+  "2306": {
+    "name": "Abstract Pattern 1"
+  },
+  "2307": {
+    "name": "Details Pattern"
+  },
+  "2308": {
+    "name": "Abstract Pattern 2"
+  },
+  "2309": {
+    "name": "Abstract Pattern 3"
+  },
+  "2310": {
+    "name": "Abstract Pattern 4"
+  },
+  "2311": {
+    "name": "Curved Sweep 1"
+  },
+  "2312": {
+    "name": "Swooping Wave 2"
+  },
+  "2313": {
+    "name": "Abstract Hook 2"
+  },
+  "2314": {
+    "name": "Futuristic Pattern"
+  },
+  "2315": {
+    "name": "Handdrawn Squares"
+  },
+  "2316": {
+    "name": "Abstract Pattern 5"
+  },
+  "2317": {
+    "name": "Abstract Pattern 6"
+  },
+  "2318": {
+    "name": "Abstract Pattern 7"
+  },
+  "2319": {
+    "name": "Abstract Pattern 8"
+  },
+  "2320": {
+    "name": "Abstract Pattern 9"
+  },
+  "2321": {
+    "name": "Curved Sweep 2"
+  },
+  "2322": {
+    "name": "Abstract Branch"
+  },
+  "2323": {
+    "name": "Seven Hook"
+  },
+  "2324": {
+    "name": "Artistic Pattern"
+  },
+  "2325": {
+    "name": "Interlocking Puzzle Pattern"
+  },
+  "2326": {
+    "name": "Abstract Pattern 10"
+  },
+  "2327": {
+    "name": "Abstract Pattern 11"
+  },
+  "2328": {
+    "name": "Abstract Pattern 12"
+  },
+  "2329": {
+    "name": "Abstract Pattern 13"
+  },
+  "2330": {
+    "name": "Abstract Pattern 14"
+  },
+  "2331": {
+    "name": "Swooping Wave 3"
+  },
+  "2332": {
+    "name": "Abstract Hook 3"
+  },
+  "2333": {
+    "name": "Abstract Frame"
+  },
+  "2334": {
+    "name": "Squares Pattern"
+  },
+  "2335": {
+    "name": "Abstract Pattern 15"
+  },
+  "2336": {
+    "name": "Abstract Pattern 16"
+  },
+  "2337": {
+    "name": "Abstract Pattern 17"
+  },
+  "2338": {
+    "name": "Abstract Pattern Circle"
+  },
+  "2339": {
+    "name": "Abstract Pattern 18"
+  },
+  "2340": {
+    "name": "Blob Cluster"
+  },
+  "2401": {
+    "name": "Gradient Curved Swirl"
+  },
+  "2402": {
+    "name": "Gradient Swooping Wave 1"
+  },
+  "2403": {
+    "name": "Gradient Abstract Shape 1"
+  },
+  "2404": {
+    "name": "Gradient Radial Circle 1"
+  },
+  "2405": {
+    "name": "Gradient Radial Circle 2"
+  },
+  "2406": {
+    "name": "Gradient Pattern 1"
+  },
+  "2407": {
+    "name": "Gradient Details Pattern"
+  },
+  "2408": {
+    "name": "Gradient Abstract Pattern 2"
+  },
+  "2409": {
+    "name": "Gradient Abstract Pattern 3"
+  },
+  "2410": {
+    "name": "Blured Circle"
+  },
+  "2411": {
+    "name": "Gradient Curved Sweep 1"
+  },
+  "2412": {
+    "name": "Gradient Swooping Wave 2"
+  },
+  "2413": {
+    "name": "Gradient Triangle Shape"
+  },
+  "2414": {
+    "name": "Gradient Radial Circle 3"
+  },
+  "2415": {
+    "name": "Squares With Opacity"
+  },
+  "2416": {
+    "name": "Gradient Pattern 2"
+  },
+  "2417": {
+    "name": "Gradient Abstract Pattern 6"
+  },
+  "2418": {
+    "name": "Gradient Abstract Pattern 7"
+  },
+  "2419": {
+    "name": "Gradient Abstract Pattern 8"
+  },
+  "2420": {
+    "name": "Blured Solid Circle"
+  },
+  "2421": {
+    "name": "Gradient Curved Sweep 2"
+  },
+  "2422": {
+    "name": "Gradient Abstract Branch"
+  },
+  "2423": {
+    "name": "Gradient Seven Hook"
+  },
+  "2424": {
+    "name": "Gradient Radial Circle 4"
+  },
+  "2425": {
+    "name": "Gradient Pattern 3"
+  },
+  "2426": {
+    "name": "Gradient Abstract Pattern 10"
+  },
+  "2427": {
+    "name": "Gradient Abstract Pattern 11"
+  },
+  "2428": {
+    "name": "Gradient Abstract Pattern 12"
+  },
+  "2429": {
+    "name": "Gradient Square Radial"
+  },
+  "2430": {
+    "name": "Gradient Abstract Shape"
+  },
+  "2431": {
+    "name": "Gradient Swooping Wave 3"
+  },
+  "2432": {
+    "name": "Gradient Ellipse"
+  },
+  "2433": {
+    "name": "Gradient Trapezoid"
+  },
+  "2434": {
+    "name": "Gradient Radial Circle 5"
+  },
+  "2435": {
+    "name": "Gradient Pattern 4"
+  },
+  "2436": {
+    "name": "Gradient Abstract Pattern 16"
+  },
+  "2437": {
+    "name": "Gradient Abstract Pattern 17"
+  },
+  "2438": {
+    "name": "Gradient Abstract Pattern Circle"
+  },
+  "2439": {
+    "name": "Gradient Curved S"
+  },
+  "2440": {
+    "name": "Gradient Vertical Stripes"
+  },
+  "2501": {
+    "name": "EnglishMT uppercase A"
+  },
+  "2502": {
+    "name": "EnglishMT uppercase B"
+  },
+  "2503": {
+    "name": "EnglishMT uppercase C"
+  },
+  "2504": {
+    "name": "EnglishMT uppercase D"
+  },
+  "2505": {
+    "name": "EnglishMT uppercase E"
+  },
+  "2506": {
+    "name": "EnglishMT uppercase F"
+  },
+  "2507": {
+    "name": "EnglishMT uppercase G"
+  },
+  "2508": {
+    "name": "EnglishMT uppercase H"
+  },
+  "2509": {
+    "name": "EnglishMT uppercase I"
+  },
+  "2510": {
+    "name": "EnglishMT uppercase J"
+  },
+  "2511": {
+    "name": "EnglishMT uppercase K"
+  },
+  "2512": {
+    "name": "EnglishMT uppercase L"
+  },
+  "2513": {
+    "name": "EnglishMT uppercase M"
+  },
+  "2514": {
+    "name": "EnglishMT uppercase N"
+  },
+  "2515": {
+    "name": "EnglishMT uppercase O"
+  },
+  "2516": {
+    "name": "EnglishMT uppercase P"
+  },
+  "2517": {
+    "name": "EnglishMT uppercase Q"
+  },
+  "2518": {
+    "name": "EnglishMT uppercase R"
+  },
+  "2519": {
+    "name": "EnglishMT uppercase S"
+  },
+  "2520": {
+    "name": "EnglishMT uppercase T"
+  },
+  "2521": {
+    "name": "EnglishMT uppercase U"
+  },
+  "2522": {
+    "name": "EnglishMT uppercase V"
+  },
+  "2523": {
+    "name": "EnglishMT uppercase W"
+  },
+  "2524": {
+    "name": "EnglishMT uppercase X"
+  },
+  "2525": {
+    "name": "EnglishMT uppercase Y"
+  },
+  "2526": {
+    "name": "EnglishMT uppercase Z"
+  },
+  "2527": {
+    "name": "EnglishMT 1"
+  },
+  "2528": {
+    "name": "EnglishMT 2"
+  },
+  "2529": {
+    "name": "EnglishMT 3"
+  },
+  "2530": {
+    "name": "EnglishMT 4"
+  },
+  "2531": {
+    "name": "EnglishMT 5"
+  },
+  "2532": {
+    "name": "EnglishMT 6"
+  },
+  "2533": {
+    "name": "EnglishMT 7"
+  },
+  "2534": {
+    "name": "EnglishMT 8"
+  },
+  "2535": {
+    "name": "EnglishMT 9"
+  },
+  "2536": {
+    "name": "EnglishMT 0"
+  },
+  "2537": {
+    "name": "EnglishMT !"
+  },
+  "2538": {
+    "name": "EnglishMT ?"
+  },
+  "2539": {
+    "name": "EnglishMT @"
+  },
+  "2540": {
+    "name": "EnglishMT &"
+  },
+  "2601": {
+    "name": "EnglishMT lowercase a"
+  },
+  "2602": {
+    "name": "EnglishMT lowercase b"
+  },
+  "2603": {
+    "name": "EnglishMT lowercase c"
+  },
+  "2604": {
+    "name": "EnglishMT lowercase d"
+  },
+  "2605": {
+    "name": "EnglishMT lowercase e"
+  },
+  "2606": {
+    "name": "EnglishMT lowercase f"
+  },
+  "2607": {
+    "name": "EnglishMT lowercase g"
+  },
+  "2608": {
+    "name": "EnglishMT lowercase h"
+  },
+  "2609": {
+    "name": "EnglishMT lowercase i"
+  },
+  "2610": {
+    "name": "EnglishMT lowercase j"
+  },
+  "2611": {
+    "name": "EnglishMT lowercase k"
+  },
+  "2612": {
+    "name": "EnglishMT lowercase l"
+  },
+  "2613": {
+    "name": "EnglishMT lowercase m"
+  },
+  "2614": {
+    "name": "EnglishMT lowercase n"
+  },
+  "2615": {
+    "name": "EnglishMT lowercase o"
+  },
+  "2616": {
+    "name": "EnglishMT lowercase p"
+  },
+  "2617": {
+    "name": "EnglishMT lowercase q"
+  },
+  "2618": {
+    "name": "EnglishMT lowercase r"
+  },
+  "2619": {
+    "name": "EnglishMT lowercase s"
+  },
+  "2620": {
+    "name": "EnglishMT lowercase t"
+  },
+  "2621": {
+    "name": "EnglishMT lowercase u"
+  },
+  "2622": {
+    "name": "EnglishMT lowercase v"
+  },
+  "2623": {
+    "name": "EnglishMT lowercase w"
+  },
+  "2624": {
+    "name": "EnglishMT lowercase x"
+  },
+  "2625": {
+    "name": "EnglishMT lowercase y"
+  },
+  "2626": {
+    "name": "EnglishMT lowercase z"
+  },
+  "2627": {
+    "name": "EnglishMT dollar"
+  },
+  "2628": {
+    "name": "EnglishMT pound"
+  },
+  "2629": {
+    "name": "EnglishMT yen"
+  },
+  "2630": {
+    "name": "EnglishMT euro"
+  },
+  "2631": {
+    "name": "EnglishMT ("
+  },
+  "2632": {
+    "name": "EnglishMT )"
+  },
+  "2633": {
+    "name": "EnglishMT cent"
+  },
+  "2634": {
+    "name": "EnglishMT asterisk"
+  },
+  "2635": {
+    "name": "EnglishMT hash"
+  },
+  "2636": {
+    "name": "EnglishMT plus"
+  },
+  "2637": {
+    "name": "EnglishMT percent"
+  },
+  "2638": {
+    "name": "EnglishMT semicolon"
+  },
+  "2639": {
+    "name": "EnglishMT colon"
+  },
+  "2640": {
+    "name": "EnglishMT comma"
+  },
+  "2701": {
+    "name": "BrushMT uppercase A"
+  },
+  "2702": {
+    "name": "BrushMT uppercase B"
+  },
+  "2703": {
+    "name": "BrushMT uppercase C"
+  },
+  "2704": {
+    "name": "BrushMT uppercase D"
+  },
+  "2705": {
+    "name": "BrushMT uppercase E"
+  },
+  "2706": {
+    "name": "BrushMT uppercase F"
+  },
+  "2707": {
+    "name": "BrushMT uppercase G"
+  },
+  "2708": {
+    "name": "BrushMT uppercase H"
+  },
+  "2709": {
+    "name": "BrushMT uppercase I"
+  },
+  "2710": {
+    "name": "BrushMT uppercase J"
+  },
+  "2711": {
+    "name": "BrushMT uppercase K"
+  },
+  "2712": {
+    "name": "BrushMT uppercase L"
+  },
+  "2713": {
+    "name": "BrushMT uppercase M"
+  },
+  "2714": {
+    "name": "BrushMT uppercase N"
+  },
+  "2715": {
+    "name": "BrushMT uppercase O"
+  },
+  "2716": {
+    "name": "BrushMT uppercase P"
+  },
+  "2717": {
+    "name": "BrushMT uppercase Q"
+  },
+  "2718": {
+    "name": "BrushMT uppercase R"
+  },
+  "2719": {
+    "name": "BrushMT uppercase S"
+  },
+  "2720": {
+    "name": "BrushMT uppercase T"
+  },
+  "2721": {
+    "name": "BrushMT uppercase U"
+  },
+  "2722": {
+    "name": "BrushMT uppercase V"
+  },
+  "2723": {
+    "name": "BrushMT uppercase W"
+  },
+  "2724": {
+    "name": "BrushMT uppercase X"
+  },
+  "2725": {
+    "name": "BrushMT uppercase Y"
+  },
+  "2726": {
+    "name": "BrushMT uppercase Z"
+  },
+  "2727": {
+    "name": "BrushMT 1"
+  },
+  "2728": {
+    "name": "BrushMT 2"
+  },
+  "2729": {
+    "name": "BrushMT 3"
+  },
+  "2730": {
+    "name": "BrushMT 4"
+  },
+  "2731": {
+    "name": "BrushMT 5"
+  },
+  "2732": {
+    "name": "BrushMT 6"
+  },
+  "2733": {
+    "name": "BrushMT 7"
+  },
+  "2734": {
+    "name": "BrushMT 8"
+  },
+  "2735": {
+    "name": "BrushMT 9"
+  },
+  "2736": {
+    "name": "BrushMT 0"
+  },
+  "2737": {
+    "name": "BrushMT !"
+  },
+  "2738": {
+    "name": "BrushMT ?"
+  },
+  "2739": {
+    "name": "BrushMT @"
+  },
+  "2740": {
+    "name": "BrushMT &"
+  },
+  "2801": {
+    "name": "BrushMT lowercase a"
+  },
+  "2802": {
+    "name": "BrushMT lowercase b"
+  },
+  "2803": {
+    "name": "BrushMT lowercase c"
+  },
+  "2804": {
+    "name": "BrushMT lowercase d"
+  },
+  "2805": {
+    "name": "BrushMT lowercase e"
+  },
+  "2806": {
+    "name": "BrushMT lowercase f"
+  },
+  "2807": {
+    "name": "BrushMT lowercase g"
+  },
+  "2808": {
+    "name": "BrushMT lowercase h"
+  },
+  "2809": {
+    "name": "BrushMT lowercase i"
+  },
+  "2810": {
+    "name": "BrushMT lowercase j"
+  },
+  "2811": {
+    "name": "BrushMT lowercase k"
+  },
+  "2812": {
+    "name": "BrushMT lowercase l"
+  },
+  "2813": {
+    "name": "BrushMT lowercase m"
+  },
+  "2814": {
+    "name": "BrushMT lowercase n"
+  },
+  "2815": {
+    "name": "BrushMT lowercase o"
+  },
+  "2816": {
+    "name": "BrushMT lowercase p"
+  },
+  "2817": {
+    "name": "BrushMT lowercase q"
+  },
+  "2818": {
+    "name": "BrushMT lowercase r"
+  },
+  "2819": {
+    "name": "BrushMT lowercase s"
+  },
+  "2820": {
+    "name": "BrushMT lowercase t"
+  },
+  "2821": {
+    "name": "BrushMT lowercase u"
+  },
+  "2822": {
+    "name": "BrushMT lowercase v"
+  },
+  "2823": {
+    "name": "BrushMT lowercase w"
+  },
+  "2824": {
+    "name": "BrushMT lowercase x"
+  },
+  "2825": {
+    "name": "BrushMT lowercase y"
+  },
+  "2826": {
+    "name": "BrushMT lowercase z"
+  },
+  "2827": {
+    "name": "BrushMT dollar"
+  },
+  "2828": {
+    "name": "BrushMT pound"
+  },
+  "2829": {
+    "name": "BrushMT yen"
+  },
+  "2830": {
+    "name": "BrushMT euro"
+  },
+  "2831": {
+    "name": "BrushMT ("
+  },
+  "2832": {
+    "name": "BrushMT )"
+  },
+  "2833": {
+    "name": "BrushMT cent"
+  },
+  "2834": {
+    "name": "BrushMT asterisk"
+  },
+  "2835": {
+    "name": "BrushMT hash"
+  },
+  "2836": {
+    "name": "BrushMT plus"
+  },
+  "2837": {
+    "name": "BrushMT percent"
+  },
+  "2838": {
+    "name": "BrushMT semicolon"
+  },
+  "2839": {
+    "name": "BrushMT colon"
+  },
+  "2840": {
+    "name": "BrushMT comma"
+  },
+  "2901": {
+    "name": "Impact uppercase A"
+  },
+  "2902": {
+    "name": "Impact uppercase B"
+  },
+  "2903": {
+    "name": "Impact uppercase C"
+  },
+  "2904": {
+    "name": "Impact uppercase D"
+  },
+  "2905": {
+    "name": "Impact uppercase E"
+  },
+  "2906": {
+    "name": "Impact uppercase F"
+  },
+  "2907": {
+    "name": "Impact uppercase G"
+  },
+  "2908": {
+    "name": "Impact uppercase H"
+  },
+  "2909": {
+    "name": "Impact uppercase I"
+  },
+  "2910": {
+    "name": "Impact uppercase J"
+  },
+  "2911": {
+    "name": "Impact uppercase K"
+  },
+  "2912": {
+    "name": "Impact uppercase L"
+  },
+  "2913": {
+    "name": "Impact uppercase M"
+  },
+  "2914": {
+    "name": "Impact uppercase N"
+  },
+  "2915": {
+    "name": "Impact uppercase O"
+  },
+  "2916": {
+    "name": "Impact uppercase P"
+  },
+  "2917": {
+    "name": "Impact uppercase Q"
+  },
+  "2918": {
+    "name": "Impact uppercase R"
+  },
+  "2919": {
+    "name": "Impact uppercase S"
+  },
+  "2920": {
+    "name": "Impact uppercase T"
+  },
+  "2921": {
+    "name": "Impact uppercase U"
+  },
+  "2922": {
+    "name": "Impact uppercase V"
+  },
+  "2923": {
+    "name": "Impact uppercase W"
+  },
+  "2924": {
+    "name": "Impact uppercase X"
+  },
+  "2925": {
+    "name": "Impact uppercase Y"
+  },
+  "2926": {
+    "name": "Impact uppercase Z"
+  },
+  "2927": {
+    "name": "Impact 1"
+  },
+  "2928": {
+    "name": "Impact 2"
+  },
+  "2929": {
+    "name": "Impact 3"
+  },
+  "2930": {
+    "name": "Impact 4"
+  },
+  "2931": {
+    "name": "Impact 5"
+  },
+  "2932": {
+    "name": "Impact 6"
+  },
+  "2933": {
+    "name": "Impact 7"
+  },
+  "2934": {
+    "name": "Impact 8"
+  },
+  "2935": {
+    "name": "Impact 9"
+  },
+  "2936": {
+    "name": "Impact 0"
+  },
+  "2937": {
+    "name": "Impact !"
+  },
+  "2938": {
+    "name": "Impact ?"
+  },
+  "2939": {
+    "name": "Impact @"
+  },
+  "2940": {
+    "name": "Impact &"
+  },
+  "3001": {
+    "name": "Impact lowercase a"
+  },
+  "3002": {
+    "name": "Impact lowercase b"
+  },
+  "3003": {
+    "name": "Impact lowercase c"
+  },
+  "3004": {
+    "name": "Impact lowercase d"
+  },
+  "3005": {
+    "name": "Impact lowercase e"
+  },
+  "3006": {
+    "name": "Impact lowercase f"
+  },
+  "3007": {
+    "name": "Impact lowercase g"
+  },
+  "3008": {
+    "name": "Impact lowercase h"
+  },
+  "3009": {
+    "name": "Impact lowercase i"
+  },
+  "3010": {
+    "name": "Impact lowercase j"
+  },
+  "3011": {
+    "name": "Impact lowercase k"
+  },
+  "3012": {
+    "name": "Impact lowercase l"
+  },
+  "3013": {
+    "name": "Impact lowercase m"
+  },
+  "3014": {
+    "name": "Impact lowercase n"
+  },
+  "3015": {
+    "name": "Impact lowercase o"
+  },
+  "3016": {
+    "name": "Impact lowercase p"
+  },
+  "3017": {
+    "name": "Impact lowercase q"
+  },
+  "3018": {
+    "name": "Impact lowercase r"
+  },
+  "3019": {
+    "name": "Impact lowercase s"
+  },
+  "3020": {
+    "name": "Impact lowercase t"
+  },
+  "3021": {
+    "name": "Impact lowercase u"
+  },
+  "3022": {
+    "name": "Impact lowercase v"
+  },
+  "3023": {
+    "name": "Impact lowercase w"
+  },
+  "3024": {
+    "name": "Impact lowercase x"
+  },
+  "3025": {
+    "name": "Impact lowercase y"
+  },
+  "3026": {
+    "name": "Impact lowercase z"
+  },
+  "3027": {
+    "name": "Impact dollar"
+  },
+  "3028": {
+    "name": "Impact pound"
+  },
+  "3029": {
+    "name": "Impact yen"
+  },
+  "3030": {
+    "name": "Impact euro"
+  },
+  "3031": {
+    "name": "Impact ("
+  },
+  "3032": {
+    "name": "Impact )"
+  },
+  "3033": {
+    "name": "Impact cent"
+  },
+  "3034": {
+    "name": "Impact asterisk"
+  },
+  "3035": {
+    "name": "Impact hash"
+  },
+  "3036": {
+    "name": "Impact plus"
+  },
+  "3037": {
+    "name": "Impact percent"
+  },
+  "3038": {
+    "name": "Impact semicolon"
+  },
+  "3039": {
+    "name": "Impact colon"
+  },
+  "3040": {
+    "name": "Impact comma"
+  },
+  "3101": {
+    "name": "Playbill uppercase A"
+  },
+  "3102": {
+    "name": "Playbill uppercase B"
+  },
+  "3103": {
+    "name": "Playbill uppercase C"
+  },
+  "3104": {
+    "name": "Playbill uppercase D"
+  },
+  "3105": {
+    "name": "Playbill uppercase E"
+  },
+  "3106": {
+    "name": "Playbill uppercase F"
+  },
+  "3107": {
+    "name": "Playbill uppercase G"
+  },
+  "3108": {
+    "name": "Playbill uppercase H"
+  },
+  "3109": {
+    "name": "Playbill uppercase I"
+  },
+  "3110": {
+    "name": "Playbill uppercase J"
+  },
+  "3111": {
+    "name": "Playbill uppercase K"
+  },
+  "3112": {
+    "name": "Playbill uppercase L"
+  },
+  "3113": {
+    "name": "Playbill uppercase M"
+  },
+  "3114": {
+    "name": "Playbill uppercase N"
+  },
+  "3115": {
+    "name": "Playbill uppercase O"
+  },
+  "3116": {
+    "name": "Playbill uppercase P"
+  },
+  "3117": {
+    "name": "Playbill uppercase Q"
+  },
+  "3118": {
+    "name": "Playbill uppercase R"
+  },
+  "3119": {
+    "name": "Playbill uppercase S"
+  },
+  "3120": {
+    "name": "Playbill uppercase T"
+  },
+  "3121": {
+    "name": "Playbill uppercase U"
+  },
+  "3122": {
+    "name": "Playbill uppercase V"
+  },
+  "3123": {
+    "name": "Playbill uppercase W"
+  },
+  "3124": {
+    "name": "Playbill uppercase X"
+  },
+  "3125": {
+    "name": "Playbill uppercase Y"
+  },
+  "3126": {
+    "name": "Playbill uppercase Z"
+  },
+  "3127": {
+    "name": "Playbill 1"
+  },
+  "3128": {
+    "name": "Playbill 2"
+  },
+  "3129": {
+    "name": "Playbill 3"
+  },
+  "3130": {
+    "name": "Playbill 4"
+  },
+  "3131": {
+    "name": "Playbill 5"
+  },
+  "3132": {
+    "name": "Playbill 6"
+  },
+  "3133": {
+    "name": "Playbill 7"
+  },
+  "3134": {
+    "name": "Playbill 8"
+  },
+  "3135": {
+    "name": "Playbill 9"
+  },
+  "3136": {
+    "name": "Playbill 0"
+  },
+  "3137": {
+    "name": "Playbill !"
+  },
+  "3138": {
+    "name": "Playbill ?"
+  },
+  "3139": {
+    "name": "Playbill @"
+  },
+  "3140": {
+    "name": "Playbill &"
+  },
+  "3201": {
+    "name": "Playbill lowercase a"
+  },
+  "3202": {
+    "name": "Playbill lowercase b"
+  },
+  "3203": {
+    "name": "Playbill lowercase c"
+  },
+  "3204": {
+    "name": "Playbill lowercase d"
+  },
+  "3205": {
+    "name": "Playbill lowercase e"
+  },
+  "3206": {
+    "name": "Playbill lowercase f"
+  },
+  "3207": {
+    "name": "Playbill lowercase g"
+  },
+  "3208": {
+    "name": "Playbill lowercase h"
+  },
+  "3209": {
+    "name": "Playbill lowercase i"
+  },
+  "3210": {
+    "name": "Playbill lowercase j"
+  },
+  "3211": {
+    "name": "Playbill lowercase k"
+  },
+  "3212": {
+    "name": "Playbill lowercase l"
+  },
+  "3213": {
+    "name": "Playbill lowercase m"
+  },
+  "3214": {
+    "name": "Playbill lowercase n"
+  },
+  "3215": {
+    "name": "Playbill lowercase o"
+  },
+  "3216": {
+    "name": "Playbill lowercase p"
+  },
+  "3217": {
+    "name": "Playbill lowercase q"
+  },
+  "3218": {
+    "name": "Playbill lowercase r"
+  },
+  "3219": {
+    "name": "Playbill lowercase s"
+  },
+  "3220": {
+    "name": "Playbill lowercase t"
+  },
+  "3221": {
+    "name": "Playbill lowercase u"
+  },
+  "3222": {
+    "name": "Playbill lowercase v"
+  },
+  "3223": {
+    "name": "Playbill lowercase w"
+  },
+  "3224": {
+    "name": "Playbill lowercase x"
+  },
+  "3225": {
+    "name": "Playbill lowercase y"
+  },
+  "3226": {
+    "name": "Playbill lowercase z"
+  },
+  "3227": {
+    "name": "Playbill dollar"
+  },
+  "3228": {
+    "name": "Playbill pound"
+  },
+  "3229": {
+    "name": "Playbill yen"
+  },
+  "3230": {
+    "name": "Playbill euro"
+  },
+  "3231": {
+    "name": "Playbill ("
+  },
+  "3232": {
+    "name": "Playbill )"
+  },
+  "3233": {
+    "name": "Playbill cent"
+  },
+  "3234": {
+    "name": "Playbill asterisk"
+  },
+  "3235": {
+    "name": "Playbill hash"
+  },
+  "3236": {
+    "name": "Playbill plus"
+  },
+  "3237": {
+    "name": "Playbill percent"
+  },
+  "3238": {
+    "name": "Playbill semicolon"
+  },
+  "3239": {
+    "name": "Playbill colon"
+  },
+  "3240": {
+    "name": "Playbill comma"
+  },
+  "3301": {
+    "name": "TimesNewRoman uppercase A"
+  },
+  "3302": {
+    "name": "TimesNewRoman uppercase B"
+  },
+  "3303": {
+    "name": "TimesNewRoman uppercase C"
+  },
+  "3304": {
+    "name": "TimesNewRoman uppercase D"
+  },
+  "3305": {
+    "name": "TimesNewRoman uppercase E"
+  },
+  "3306": {
+    "name": "TimesNewRoman uppercase F"
+  },
+  "3307": {
+    "name": "TimesNewRoman uppercase G"
+  },
+  "3308": {
+    "name": "TimesNewRoman uppercase H"
+  },
+  "3309": {
+    "name": "TimesNewRoman uppercase I"
+  },
+  "3310": {
+    "name": "TimesNewRoman uppercase J"
+  },
+  "3311": {
+    "name": "TimesNewRoman uppercase K"
+  },
+  "3312": {
+    "name": "TimesNewRoman uppercase L"
+  },
+  "3313": {
+    "name": "TimesNewRoman uppercase M"
+  },
+  "3314": {
+    "name": "TimesNewRoman uppercase N"
+  },
+  "3315": {
+    "name": "TimesNewRoman uppercase O"
+  },
+  "3316": {
+    "name": "TimesNewRoman uppercase P"
+  },
+  "3317": {
+    "name": "TimesNewRoman uppercase Q"
+  },
+  "3318": {
+    "name": "TimesNewRoman uppercase R"
+  },
+  "3319": {
+    "name": "TimesNewRoman uppercase S"
+  },
+  "3320": {
+    "name": "TimesNewRoman uppercase T"
+  },
+  "3321": {
+    "name": "TimesNewRoman uppercase U"
+  },
+  "3322": {
+    "name": "TimesNewRoman uppercase V"
+  },
+  "3323": {
+    "name": "TimesNewRoman uppercase W"
+  },
+  "3324": {
+    "name": "TimesNewRoman uppercase X"
+  },
+  "3325": {
+    "name": "TimesNewRoman uppercase Y"
+  },
+  "3326": {
+    "name": "TimesNewRoman uppercase Z"
+  },
+  "3327": {
+    "name": "TimesNewRoman 1"
+  },
+  "3328": {
+    "name": "TimesNewRoman 2"
+  },
+  "3329": {
+    "name": "TimesNewRoman 3"
+  },
+  "3330": {
+    "name": "TimesNewRoman 4"
+  },
+  "3331": {
+    "name": "TimesNewRoman 5"
+  },
+  "3332": {
+    "name": "TimesNewRoman 6"
+  },
+  "3333": {
+    "name": "TimesNewRoman 7"
+  },
+  "3334": {
+    "name": "TimesNewRoman 8"
+  },
+  "3335": {
+    "name": "TimesNewRoman 9"
+  },
+  "3336": {
+    "name": "TimesNewRoman 0"
+  },
+  "3337": {
+    "name": "TimesNewRoman !"
+  },
+  "3338": {
+    "name": "TimesNewRoman ?"
+  },
+  "3339": {
+    "name": "TimesNewRoman @"
+  },
+  "3340": {
+    "name": "TimesNewRoman &"
+  },
+  "3401": {
+    "name": "TimesNewRoman lowercase a"
+  },
+  "3402": {
+    "name": "TimesNewRoman lowercase b"
+  },
+  "3403": {
+    "name": "TimesNewRoman lowercase c"
+  },
+  "3404": {
+    "name": "TimesNewRoman lowercase d"
+  },
+  "3405": {
+    "name": "TimesNewRoman lowercase e"
+  },
+  "3406": {
+    "name": "TimesNewRoman lowercase f"
+  },
+  "3407": {
+    "name": "TimesNewRoman lowercase g"
+  },
+  "3408": {
+    "name": "TimesNewRoman lowercase h"
+  },
+  "3409": {
+    "name": "TimesNewRoman lowercase i"
+  },
+  "3410": {
+    "name": "TimesNewRoman lowercase j"
+  },
+  "3411": {
+    "name": "TimesNewRoman lowercase k"
+  },
+  "3412": {
+    "name": "TimesNewRoman lowercase l"
+  },
+  "3413": {
+    "name": "TimesNewRoman lowercase m"
+  },
+  "3414": {
+    "name": "TimesNewRoman lowercase n"
+  },
+  "3415": {
+    "name": "TimesNewRoman lowercase o"
+  },
+  "3416": {
+    "name": "TimesNewRoman lowercase p"
+  },
+  "3417": {
+    "name": "TimesNewRoman lowercase q"
+  },
+  "3418": {
+    "name": "TimesNewRoman lowercase r"
+  },
+  "3419": {
+    "name": "TimesNewRoman lowercase s"
+  },
+  "3420": {
+    "name": "TimesNewRoman lowercase t"
+  },
+  "3421": {
+    "name": "TimesNewRoman lowercase u"
+  },
+  "3422": {
+    "name": "TimesNewRoman lowercase v"
+  },
+  "3423": {
+    "name": "TimesNewRoman lowercase w"
+  },
+  "3424": {
+    "name": "TimesNewRoman lowercase x"
+  },
+  "3425": {
+    "name": "TimesNewRoman lowercase y"
+  },
+  "3426": {
+    "name": "TimesNewRoman lowercase z"
+  },
+  "3427": {
+    "name": "TimesNewRoman dollar"
+  },
+  "3428": {
+    "name": "TimesNewRoman pound"
+  },
+  "3429": {
+    "name": "TimesNewRoman yen"
+  },
+  "3430": {
+    "name": "TimesNewRoman euro"
+  },
+  "3431": {
+    "name": "TimesNewRoman ("
+  },
+  "3432": {
+    "name": "TimesNewRoman )"
+  },
+  "3433": {
+    "name": "TimesNewRoman cent"
+  },
+  "3434": {
+    "name": "TimesNewRoman asterisk"
+  },
+  "3435": {
+    "name": "TimesNewRoman hash"
+  },
+  "3436": {
+    "name": "TimesNewRoman plus"
+  },
+  "3437": {
+    "name": "TimesNewRoman percent"
+  },
+  "3438": {
+    "name": "TimesNewRoman semicolon"
+  },
+  "3439": {
+    "name": "TimesNewRoman colon"
+  },
+  "3440": {
+    "name": "TimesNewRoman comma"
+  },
+  "3501": {
+    "name": "Elephant uppercase A"
+  },
+  "3502": {
+    "name": "Elephant uppercase B"
+  },
+  "3503": {
+    "name": "Elephant uppercase C"
+  },
+  "3504": {
+    "name": "Elephant uppercase D"
+  },
+  "3505": {
+    "name": "Elephant uppercase E"
+  },
+  "3506": {
+    "name": "Elephant uppercase F"
+  },
+  "3507": {
+    "name": "Elephant uppercase G"
+  },
+  "3508": {
+    "name": "Elephant uppercase H"
+  },
+  "3509": {
+    "name": "Elephant uppercase I"
+  },
+  "3510": {
+    "name": "Elephant uppercase J"
+  },
+  "3511": {
+    "name": "Elephant uppercase K"
+  },
+  "3512": {
+    "name": "Elephant uppercase L"
+  },
+  "3513": {
+    "name": "Elephant uppercase M"
+  },
+  "3514": {
+    "name": "Elephant uppercase N"
+  },
+  "3515": {
+    "name": "Elephant uppercase O"
+  },
+  "3516": {
+    "name": "Elephant uppercase P"
+  },
+  "3517": {
+    "name": "Elephant uppercase Q"
+  },
+  "3518": {
+    "name": "Elephant uppercase R"
+  },
+  "3519": {
+    "name": "Elephant uppercase S"
+  },
+  "3520": {
+    "name": "Elephant uppercase T"
+  },
+  "3521": {
+    "name": "Elephant uppercase U"
+  },
+  "3522": {
+    "name": "Elephant uppercase V"
+  },
+  "3523": {
+    "name": "Elephant uppercase W"
+  },
+  "3524": {
+    "name": "Elephant uppercase X"
+  },
+  "3525": {
+    "name": "Elephant uppercase Y"
+  },
+  "3526": {
+    "name": "Elephant uppercase Z"
+  },
+  "3527": {
+    "name": "Elephant 1"
+  },
+  "3528": {
+    "name": "Elephant 2"
+  },
+  "3529": {
+    "name": "Elephant 3"
+  },
+  "3530": {
+    "name": "Elephant 4"
+  },
+  "3531": {
+    "name": "Elephant 5"
+  },
+  "3532": {
+    "name": "Elephant 6"
+  },
+  "3533": {
+    "name": "Elephant 7"
+  },
+  "3534": {
+    "name": "Elephant 8"
+  },
+  "3535": {
+    "name": "Elephant 9"
+  },
+  "3536": {
+    "name": "Elephant 0"
+  },
+  "3537": {
+    "name": "Elephant !"
+  },
+  "3538": {
+    "name": "Elephant ?"
+  },
+  "3539": {
+    "name": "Elephant @"
+  },
+  "3540": {
+    "name": "Elephant &"
+  },
+  "3601": {
+    "name": "Elephant lowercase a"
+  },
+  "3602": {
+    "name": "Elephant lowercase b"
+  },
+  "3603": {
+    "name": "Elephant lowercase c"
+  },
+  "3604": {
+    "name": "Elephant lowercase d"
+  },
+  "3605": {
+    "name": "Elephant lowercase e"
+  },
+  "3606": {
+    "name": "Elephant lowercase f"
+  },
+  "3607": {
+    "name": "Elephant lowercase g"
+  },
+  "3608": {
+    "name": "Elephant lowercase h"
+  },
+  "3609": {
+    "name": "Elephant lowercase i"
+  },
+  "3610": {
+    "name": "Elephant lowercase j"
+  },
+  "3611": {
+    "name": "Elephant lowercase k"
+  },
+  "3612": {
+    "name": "Elephant lowercase l"
+  },
+  "3613": {
+    "name": "Elephant lowercase m"
+  },
+  "3614": {
+    "name": "Elephant lowercase n"
+  },
+  "3615": {
+    "name": "Elephant lowercase o"
+  },
+  "3616": {
+    "name": "Elephant lowercase p"
+  },
+  "3617": {
+    "name": "Elephant lowercase q"
+  },
+  "3618": {
+    "name": "Elephant lowercase r"
+  },
+  "3619": {
+    "name": "Elephant lowercase s"
+  },
+  "3620": {
+    "name": "Elephant lowercase t"
+  },
+  "3621": {
+    "name": "Elephant lowercase u"
+  },
+  "3622": {
+    "name": "Elephant lowercase v"
+  },
+  "3623": {
+    "name": "Elephant lowercase w"
+  },
+  "3624": {
+    "name": "Elephant lowercase x"
+  },
+  "3625": {
+    "name": "Elephant lowercase y"
+  },
+  "3626": {
+    "name": "Elephant lowercase z"
+  },
+  "3627": {
+    "name": "Elephant dollar"
+  },
+  "3628": {
+    "name": "Elephant pound"
+  },
+  "3629": {
+    "name": "Elephant yen"
+  },
+  "3630": {
+    "name": "Elephant euro"
+  },
+  "3631": {
+    "name": "Elephant ("
+  },
+  "3632": {
+    "name": "Elephant )"
+  },
+  "3633": {
+    "name": "Elephant cent"
+  },
+  "3634": {
+    "name": "Elephant asterisk"
+  },
+  "3635": {
+    "name": "Elephant hash"
+  },
+  "3636": {
+    "name": "Elephant plus"
+  },
+  "3637": {
+    "name": "Elephant percent"
+  },
+  "3638": {
+    "name": "Elephant semicolon"
+  },
+  "3639": {
+    "name": "Elephant colon"
+  },
+  "3640": {
+    "name": "Elephant comma"
+  },
+  "3701": {
+    "name": "CenturyGothic uppercase A"
+  },
+  "3702": {
+    "name": "CenturyGothic uppercase B"
+  },
+  "3703": {
+    "name": "CenturyGothic uppercase C"
+  },
+  "3704": {
+    "name": "CenturyGothic uppercase D"
+  },
+  "3705": {
+    "name": "CenturyGothic uppercase E"
+  },
+  "3706": {
+    "name": "CenturyGothic uppercase F"
+  },
+  "3707": {
+    "name": "CenturyGothic uppercase G"
+  },
+  "3708": {
+    "name": "CenturyGothic uppercase H"
+  },
+  "3709": {
+    "name": "CenturyGothic uppercase I"
+  },
+  "3710": {
+    "name": "CenturyGothic uppercase J"
+  },
+  "3711": {
+    "name": "CenturyGothic uppercase K"
+  },
+  "3712": {
+    "name": "CenturyGothic uppercase L"
+  },
+  "3713": {
+    "name": "CenturyGothic uppercase M"
+  },
+  "3714": {
+    "name": "CenturyGothic uppercase N"
+  },
+  "3715": {
+    "name": "CenturyGothic uppercase O"
+  },
+  "3716": {
+    "name": "CenturyGothic uppercase P"
+  },
+  "3717": {
+    "name": "CenturyGothic uppercase Q"
+  },
+  "3718": {
+    "name": "CenturyGothic uppercase R"
+  },
+  "3719": {
+    "name": "CenturyGothic uppercase S"
+  },
+  "3720": {
+    "name": "CenturyGothic uppercase T"
+  },
+  "3721": {
+    "name": "CenturyGothic uppercase U"
+  },
+  "3722": {
+    "name": "CenturyGothic uppercase V"
+  },
+  "3723": {
+    "name": "CenturyGothic uppercase W"
+  },
+  "3724": {
+    "name": "CenturyGothic uppercase X"
+  },
+  "3725": {
+    "name": "CenturyGothic uppercase Y"
+  },
+  "3726": {
+    "name": "CenturyGothic uppercase Z"
+  },
+  "3727": {
+    "name": "CenturyGothic 1"
+  },
+  "3728": {
+    "name": "CenturyGothic 2"
+  },
+  "3729": {
+    "name": "CenturyGothic 3"
+  },
+  "3730": {
+    "name": "CenturyGothic 4"
+  },
+  "3731": {
+    "name": "CenturyGothic 5"
+  },
+  "3732": {
+    "name": "CenturyGothic 6"
+  },
+  "3733": {
+    "name": "CenturyGothic 7"
+  },
+  "3734": {
+    "name": "CenturyGothic 8"
+  },
+  "3735": {
+    "name": "CenturyGothic 9"
+  },
+  "3736": {
+    "name": "CenturyGothic 0"
+  },
+  "3737": {
+    "name": "CenturyGothic !"
+  },
+  "3738": {
+    "name": "CenturyGothic ?"
+  },
+  "3739": {
+    "name": "CenturyGothic @"
+  },
+  "3740": {
+    "name": "CenturyGothic &"
+  },
+  "3801": {
+    "name": "CenturyGothic lowercase a"
+  },
+  "3802": {
+    "name": "CenturyGothic lowercase b"
+  },
+  "3803": {
+    "name": "CenturyGothic lowercase c"
+  },
+  "3804": {
+    "name": "CenturyGothic lowercase d"
+  },
+  "3805": {
+    "name": "CenturyGothic lowercase e"
+  },
+  "3806": {
+    "name": "CenturyGothic lowercase f"
+  },
+  "3807": {
+    "name": "CenturyGothic lowercase g"
+  },
+  "3808": {
+    "name": "CenturyGothic lowercase h"
+  },
+  "3809": {
+    "name": "CenturyGothic lowercase i"
+  },
+  "3810": {
+    "name": "CenturyGothic lowercase j"
+  },
+  "3811": {
+    "name": "CenturyGothic lowercase k"
+  },
+  "3812": {
+    "name": "CenturyGothic lowercase l"
+  },
+  "3813": {
+    "name": "CenturyGothic lowercase m"
+  },
+  "3814": {
+    "name": "CenturyGothic lowercase n"
+  },
+  "3815": {
+    "name": "CenturyGothic lowercase o"
+  },
+  "3816": {
+    "name": "CenturyGothic lowercase p"
+  },
+  "3817": {
+    "name": "CenturyGothic lowercase q"
+  },
+  "3818": {
+    "name": "CenturyGothic lowercase r"
+  },
+  "3819": {
+    "name": "CenturyGothic lowercase s"
+  },
+  "3820": {
+    "name": "CenturyGothic lowercase t"
+  },
+  "3821": {
+    "name": "CenturyGothic lowercase u"
+  },
+  "3822": {
+    "name": "CenturyGothic lowercase v"
+  },
+  "3823": {
+    "name": "CenturyGothic lowercase w"
+  },
+  "3824": {
+    "name": "CenturyGothic lowercase x"
+  },
+  "3825": {
+    "name": "CenturyGothic lowercase y"
+  },
+  "3826": {
+    "name": "CenturyGothic lowercase z"
+  },
+  "3827": {
+    "name": "CenturyGothic dollar"
+  },
+  "3828": {
+    "name": "CenturyGothic pound"
+  },
+  "3829": {
+    "name": "CenturyGothic yen"
+  },
+  "3830": {
+    "name": "CenturyGothic euro"
+  },
+  "3831": {
+    "name": "CenturyGothic ("
+  },
+  "3832": {
+    "name": "CenturyGothic )"
+  },
+  "3833": {
+    "name": "CenturyGothic cent"
+  },
+  "3834": {
+    "name": "CenturyGothic asterisk"
+  },
+  "3835": {
+    "name": "CenturyGothic hash"
+  },
+  "3836": {
+    "name": "CenturyGothic plus"
+  },
+  "3837": {
+    "name": "CenturyGothic percent"
+  },
+  "3838": {
+    "name": "CenturyGothic semicolon"
+  },
+  "3839": {
+    "name": "CenturyGothic colon"
+  },
+  "3840": {
+    "name": "CenturyGothic comma"
+  }
+}
