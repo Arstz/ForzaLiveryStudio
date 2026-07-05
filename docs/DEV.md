@@ -69,9 +69,17 @@ and target `x64-windows`. Build output is written to `build\Release`.
 
 **Prerequisites:**
 
-Install build dependencies from pacman:
+Install build dependencies:
+
 ```bash
-sudo pacman -S base-devel cmake ninja qt6-base qt6-tools qt6-svg zlib
+# Arch (SteamOS)
+sudo pacman -S qt6-base qt6-tools qt6-svg zlib cmake gcc ninja
+
+# Ubuntu/Debian
+sudo apt install qt6-base-dev qt6-tools-dev qt6-svg-dev zlib1g-dev cmake g++ ninja-build
+
+# Fedora
+sudo dnf install qt6-qtbase-devel qt6-qttools-devel qt6-qtsvg-devel zlib-devel cmake gcc-c++ ninja-build
 ```
 
 **Configure:**
