@@ -46,7 +46,13 @@ target_link_libraries(fh6_core
 
 target_include_directories(fh6_core PUBLIC src/core)
 
+option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper" OFF)
+
+target_compile_definitions(fh6_core
+    PUBLIC
+        FH6_PRIVACY_POLICY=$<BOOL:${FH6_PRIVACY_POLICY}>
+)
 
 if(FH6_BUILD_LIVERY_COMPARE)
     # Console harness: diff a decoded C_livery against the in-game per-section

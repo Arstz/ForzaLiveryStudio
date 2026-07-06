@@ -72,6 +72,12 @@ game's own encoding.
 
 The scripts use `VCPKG_ROOT`, defaulting to `C:\vcpkg` or `C:\vcpkg\vcpkg`,
 and target `x64-windows`. Build output is written to `build\Release`.
+Public builds enable `FH6_PRIVACY_POLICY` by default, which blocks importing
+locked game content. Private development builds can opt out at configure time:
+
+```powershell
+cmake -S . -B build -DFH6_PRIVACY_POLICY=OFF
+```
 
 ### Linux (Arch)
 
@@ -97,6 +103,12 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
 CMake will automatically detect Qt6 and ZLIB from system packages.
+Public builds enable `FH6_PRIVACY_POLICY` by default, which blocks importing
+locked game content. Private development builds can opt out with:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DFH6_PRIVACY_POLICY=OFF
+```
 
 **Build:**
 
@@ -204,3 +216,10 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `projectToJson()` / `projectFromJson()`
 - `encodeProjectDocument()` / `decodeProjectDocument()` (`.3so` gzip container)
 - `parseHeader()` / `buildHeader()` / `defaultDraftHeader()`
+
+## Privacy Policy Build Flag
+
+`FH6_PRIVACY_POLICY` defaults to `ON` for public builds. When enabled, imports
+reject locked payloads only: `C_group` byte `0x1D == 0x21` and `C_livery`
+little-endian `u32` at offset `0x08 == 1`. Published header metadata is not used as a
+denial signal because legitimate users may edit their own published items.

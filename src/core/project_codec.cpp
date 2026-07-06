@@ -29,6 +29,10 @@
 
 #include <zlib.h>
 
+#ifndef FH6_PRIVACY_POLICY
+#define FH6_PRIVACY_POLICY 1
+#endif
+
 namespace fh6 {
 namespace {
 
@@ -188,6 +192,28 @@ QByteArray readOptionalFile(const QString &path)
         return {};
     }
     return file.readAll();
+}
+
+void enforcePrivacyPolicyForCGroup(const QByteArray &payload)
+{
+#if FH6_PRIVACY_POLICY
+    if (payload.size() > 0x1d && static_cast<quint8>(payload.at(0x1d)) == 0x21) {
+        throw std::runtime_error("privacy policy blocks importing locked C_group");
+    }
+#else
+    Q_UNUSED(payload);
+#endif
+}
+
+void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery)
+{
+#if FH6_PRIVACY_POLICY
+    if (livery.raw.size() >= 12 && detail::readLeU32(livery.raw, 8) == 1) {
+        throw std::runtime_error("privacy policy blocks importing locked C_livery");
+    }
+#else
+    Q_UNUSED(livery);
+#endif
 }
 
 Project newImportProject(const QString &folderOrFile, const QByteArray &payload)
@@ -433,6 +459,7 @@ LayerGroup layerGroupFromJson(const QJsonObject &object)
 Project importCGroupFlat(const QString &folderOrFile)
 {
     const QByteArray payload = readCGroupPayload(folderOrFile);
+    enforcePrivacyPolicyForCGroup(payload);
     const LayerData layerData = getLayerData(payload);
     const VinylGroup root = buildTree(layerData.data, payload);
     const QVector<FlattenedLayer> flat = flattenGroup(root);
@@ -464,6 +491,7 @@ Project importCGroupFlat(const QString &folderOrFile)
 Project importCGroupNested(const QString &folderOrFile)
 {
     const QByteArray payload = readCGroupPayload(folderOrFile);
+    enforcePrivacyPolicyForCGroup(payload);
     const LayerData layerData = getLayerData(payload);
     const VinylGroup root = buildTree(layerData.data, payload);
     Project project = newImportProject(folderOrFile, payload);
@@ -564,6 +592,7 @@ Project importCGroupNested(const QString &folderOrFile)
 Project importCLivery(const QString &folderOrFile)
 {
     const LiveryPayload livery = readLiveryPayload(folderOrFile);
+    enforcePrivacyPolicyForCLivery(livery);
     const QVector<LiverySection> sections =
         buildLiverySections(livery.body, livery.sectionCounts);
 
