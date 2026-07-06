@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "clipboard_buffer_widget.h"
+#include "color_palette_widget.h"
 #include "dock_chrome.h"
 #include "fh6_core.h"
 #include "gui_assets.h"
@@ -97,6 +98,7 @@
 #include <algorithm>
 #include <exception>
 #include <functional>
+#include <optional>
 #include <utility>
 
 #ifdef Q_OS_WIN
@@ -319,9 +321,49 @@ void MainWindow::setupDocks()
     properties_->setSpriteSizeFn([this](int id) {
         return canvas_ != nullptr ? canvas_->shapeSize(id) : QSizeF(0.0, 0.0);
     });
+    properties_->setGuideColorSampleFn([this]() -> std::optional<QColor> {
+        if (canvas_ == nullptr) {
+            return std::nullopt;
+        }
+        return canvas_->guideColorAtScreenPoint(canvas_->mapFromGlobal(QCursor::pos()));
+    });
     applyBehaviorSettings(loadBehaviorSettings(), false);
     auto *propertiesDock = addPanelDock(QStringLiteral("Properties"), QStringLiteral("PropertiesDock"),
                                         QStringLiteral("WidgetProperties.xpm"), Qt::LeftDockWidgetArea, properties_, true);
+
+    colorPalette_ = new ColorPaletteWidget(this);
+    colorPalette_->setCurrentColorProvider([this]() -> std::optional<ColorPaletteWidget::Color> {
+        return properties_ != nullptr ? properties_->currentSelectionColor() : std::nullopt;
+    });
+    colorPalette_->setApplyColorCallback([this](const ColorPaletteWidget::Color &color) {
+        if (properties_ != nullptr) {
+            properties_->applyColorToSelection(color);
+        }
+    });
+    colorPalette_->setEditCallbacks([this]() {
+        if (state_ != nullptr && state_->hasProject()) {
+            state_->beginProjectEdit();
+        }
+    }, [this]() {
+        if (state_ != nullptr && state_->hasProject()) {
+            state_->commitProjectEdit();
+        }
+    });
+    canvas_->setPipetteColorPickedCallback([this](const QColor &color) {
+        if (properties_ != nullptr) {
+            properties_->applyColorToSelection({static_cast<quint8>(color.blue()),
+                                                static_cast<quint8>(color.green()),
+                                                static_cast<quint8>(color.red()),
+                                                static_cast<quint8>(color.alpha())});
+        }
+        if (colorPalette_ != nullptr && colorPalette_->addColor(color)) {
+            statusBar()->showMessage(QStringLiteral("Added picked color to swatches"), 1500);
+        } else {
+            statusBar()->showMessage(QStringLiteral("Picked color already in swatches"), 1500);
+        }
+    });
+    auto *paletteDock = addPanelDock(QStringLiteral("Swatches"), QStringLiteral("SwatchesDock"),
+                                     QStringLiteral("PropertyColor.xpm"), Qt::LeftDockWidgetArea, colorPalette_);
 
     shapesBrowser_ = new ShapesBrowserWidget(this);
     shapesBrowser_->setShapeSelectedCallback([this](int shapeId) { insertShape(shapeId); });
@@ -329,7 +371,8 @@ void MainWindow::setupDocks()
     shapesBrowser_->setAddCurrentSelectionCallback([this]() { saveCurrentSelectionAsCustomGroup(); });
     auto *shapesDock = addPanelDock(QStringLiteral("Shapes"), QStringLiteral("ShapesDock"),
                                     QStringLiteral("WidgetShapesBrowser.xpm"), Qt::LeftDockWidgetArea, shapesBrowser_);
-    splitDockWidget(propertiesDock, shapesDock, Qt::Vertical);
+    splitDockWidget(propertiesDock, paletteDock, Qt::Vertical);
+    splitDockWidget(paletteDock, shapesDock, Qt::Vertical);
 }
 
 void MainWindow::connectEditorStateSignals()
@@ -358,6 +401,7 @@ void MainWindow::connectEditorStateSignals()
         autoExpandedTreeIndexes_.clear();
         autoExpandedGroupIds_.clear();
         canvas_->setProject(project());
+        updateColorPaletteWidget();
         updateClipboardWidget();
         updateStatus();
         refreshHeaderMetadataWidget();
@@ -437,6 +481,9 @@ void MainWindow::setupEditMenu()
     editMenu->addSeparator();
     addEditEntry(QStringLiteral("Stamp (Duplicate in Place)"), QStringLiteral("stamp"), QStringLiteral("Stamp"),
                  QKeySequence(Qt::Key_Y), QStringLiteral("MenuPaste.xpm"), &MainWindow::stampSelection);
+    editMenu->addSeparator();
+    addEditEntry(QStringLiteral("Center View on Selection"), QStringLiteral("center_view_on_selection"), QStringLiteral("Center View on Selection"),
+                 QKeySequence(Qt::Key_F1), QStringLiteral("ToolbarSelect.xpm"), &MainWindow::centerViewOnSelection);
 }
 
 void MainWindow::setupOptionsMenu()
@@ -459,6 +506,15 @@ void MainWindow::setupOptionsMenu()
     addBehaviorOption(QStringLiteral("Move Tool Auto-Select"), &BehaviorSettings::moveToolAutoSelect);
     QAction *flashOption = addBehaviorOption(QStringLiteral("Flash Selected Layers"), &BehaviorSettings::selectionFlashEnabled);
     registerShortcutAction(flashOption, QStringLiteral("toggle_selection_flash"), QStringLiteral("Flash Selected Layers"), QKeySequence(QStringLiteral("\\")), QString(), false, Qt::ApplicationShortcut);
+    QAction *guideOnTopOption = addBehaviorOption(QStringLiteral("Guide Layers On Top"), &BehaviorSettings::guideLayersOnTop);
+    registerShortcutAction(guideOnTopOption, QStringLiteral("toggle_guide_layers_on_top"), QStringLiteral("Guide Layers On Top"),
+                           QKeySequence(Qt::Key_QuoteLeft), QString(), false, Qt::ApplicationShortcut);
+    addBehaviorOption(QStringLiteral("Show Visibility Borders"), &BehaviorSettings::visibilityBordersEnabled);
+    QAction *guideVisibleOption = optionsMenu->addAction(QStringLiteral("Toggle Guide Layer Visibility"));
+    registerShortcutAction(guideVisibleOption, QStringLiteral("toggle_guide_layer_visibility"), QStringLiteral("Toggle Guide Layer Visibility"),
+                           QKeySequence(Qt::Key_Tab), QString(), false, Qt::ApplicationShortcut);
+    addAction(guideVisibleOption);
+    connect(guideVisibleOption, &QAction::triggered, this, &MainWindow::toggleGuideLayerVisibility);
     QAction *transformRelativeOption = optionsMenu->addAction(QStringLiteral("Transform Relative Mode"));
     transformRelativeOption->setCheckable(true);
     const TransformModeSettings initialTransformSettings = loadTransformModeSettings();
@@ -495,6 +551,7 @@ void MainWindow::setupToolbar()
     toolGroup->addAction(addTool(QStringLiteral("Marquee"), QStringLiteral("marquee"), QKeySequence(Qt::Key_F), QStringLiteral("ToolbarMarquee.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Transform"), QStringLiteral("transform"), QKeySequence(Qt::Key_T), QStringLiteral("ToolbarScale.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
+    toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QKeySequence(Qt::Key_I), QStringLiteral("PropertyColor.xpm")));
     selectTool->setChecked(true);
     toolBar->addSeparator();
     QAction *placeTextAction = toolBar->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Place Text"));
@@ -606,6 +663,9 @@ void MainWindow::applyTheme(UiTheme theme, bool save)
     if (sectionBar_ != nullptr) {
         sectionBar_->refreshTheme();
     }
+    if (colorPalette_ != nullptr) {
+        colorPalette_->refreshTheme();
+    }
     for (QDockWidget *dock : findChildren<QDockWidget *>()) {
         refreshDockTitleIcon(dock);
     }
@@ -637,6 +697,11 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (canvas_ != nullptr) {
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
+        canvas_->setGuideLayersOnTop(settings.guideLayersOnTop);
+        canvas_->setVisibilityBordersEnabled(settings.visibilityBordersEnabled);
+        canvas_->setPositionLimitBorderEnabled(settings.positionLimitBorderEnabled);
+        canvas_->setVisibilityBorderResolution(settings.visibilityBorderResolution);
+        canvas_->setNudgeSteps(settings.nudgeStep, settings.nudgeShiftStep);
     }
     if (save) {
         saveBehaviorSettings(settings);
@@ -654,7 +719,7 @@ void MainWindow::refreshShortcutActionText(QAction *action, const QString &id, c
 void MainWindow::showSettingsDialog()
 {
     const UiTheme originalTheme = theme_;
-    SettingsDialog dialog(theme_, loadCanvasColorSettings(), shortcutSettingsItems(), this);
+    SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadBehaviorSettings(), shortcutSettingsItems(), this);
     dialog.setThemeChangedCallback([this](UiTheme theme) {
         applyTheme(theme, false);
     });
@@ -663,6 +728,7 @@ void MainWindow::showSettingsDialog()
         return;
     }
     applyShortcutSettings(dialog.shortcutItems());
+    applyBehaviorSettings(dialog.selectedBehaviorSettings());
     saveCanvasColorSettings(dialog.selectedCanvasSettings());
     applyTheme(dialog.selectedTheme());
 }
@@ -841,7 +907,7 @@ bool MainWindow::event(QEvent *event)
 {
     if (event != nullptr && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
-        if ((keyEvent->key() == Qt::Key_Tab || keyEvent->key() == Qt::Key_Backtab) && canvas_ != nullptr) {
+        if (keyEvent->key() == Qt::Key_Backtab && canvas_ != nullptr) {
             if (event->type() == QEvent::ShortcutOverride) {
                 event->accept();
                 return true;
@@ -1342,6 +1408,45 @@ void MainWindow::stampSelection()
     // Selection is intentionally left on the originals (the stamp leaves them unchanged).
     state_->noteProjectStructureChanged();
     statusBar()->showMessage(QStringLiteral("Stamped selection"), 1500);
+}
+
+void MainWindow::sampleGuideColorToSelection()
+{
+    if (properties_ == nullptr || !properties_->sampleGuideColorToSelection()) {
+        statusBar()->showMessage(QStringLiteral("No guide color under cursor or no colorable selection"), 2500);
+        return;
+    }
+    statusBar()->showMessage(QStringLiteral("Picked guide color"), 1500);
+}
+
+void MainWindow::toggleGuideLayerVisibility()
+{
+    if (!state_->hasProject() || state_->project_.guideLayers.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("No guide layers"), 1500);
+        return;
+    }
+
+    const QSet<QString> selectedGuideIds = state_->selectedGuideLayerIds();
+    const bool useSelection = !selectedGuideIds.isEmpty();
+    bool anyVisible = false;
+    for (const fh6::GuideLayer &guide : state_->project_.guideLayers) {
+        if ((!useSelection || selectedGuideIds.contains(guide.id)) && guide.visible) {
+            anyVisible = true;
+            break;
+        }
+    }
+    const bool nextVisible = !anyVisible;
+
+    state_->beginProjectEdit();
+    state_->project_.guideLayers.data();
+    for (fh6::GuideLayer &guide : state_->project_.guideLayers) {
+        if (!useSelection || selectedGuideIds.contains(guide.id)) {
+            guide.visible = nextVisible;
+        }
+    }
+    state_->commitProjectEdit();
+    state_->noteProjectGeometryChanged(true);
+    statusBar()->showMessage(nextVisible ? QStringLiteral("Guide layers visible") : QStringLiteral("Guide layers hidden"), 1500);
 }
 
 void MainWindow::insertShape(int shapeId)
@@ -1860,6 +1965,15 @@ void MainWindow::redo()
     canvas_->resetRelativeSelectionFrame();
 }
 
+void MainWindow::centerViewOnSelection()
+{
+    if (canvas_ == nullptr || !canvas_->centerViewOnSelection()) {
+        statusBar()->showMessage(QStringLiteral("No selection to center"), 1500);
+        return;
+    }
+    statusBar()->showMessage(QStringLiteral("Centered view on selection"), 1500);
+}
+
 void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
 {
     ScopedPerf perf(refreshPreviews ? "noteProjectGeometryChanged(previews)" : "noteProjectGeometryChanged");
@@ -1876,8 +1990,9 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
         // full tree rebuild (e.g. selecting another row).
         treeModel_->refreshStateRoles(&state_->project_);
         treeModel_->refreshPreviews(&state_->project_);
-        refreshSelectionProperties();
     }
+    updateColorPaletteWidget();
+    refreshSelectionProperties();
     updateStatus();
 }
 
@@ -2274,6 +2389,7 @@ void MainWindow::setProject(fh6::Project project)
         }
         treeModel_->setProject(&state_->project_);
     }
+    updateColorPaletteWidget();
     updateClipboardWidget();
     updateStatus();
 }
@@ -2428,6 +2544,17 @@ void MainWindow::updateClipboardWidget()
         return;
     }
     clipboardWidget_->setClipboard(state_->clipboard());
+}
+
+void MainWindow::updateColorPaletteWidget()
+{
+    if (colorPalette_ == nullptr || state_ == nullptr || !state_->hasProject()) {
+        if (colorPalette_ != nullptr) {
+            colorPalette_->setSwatches(nullptr);
+        }
+        return;
+    }
+    colorPalette_->setSwatches(&state_->project_.colorSwatches);
 }
 
 void MainWindow::updateLastSelectedShapeDefaults()

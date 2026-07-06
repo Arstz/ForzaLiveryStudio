@@ -13,9 +13,13 @@ exports flat game-compatible folders.
   wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still load.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
-- Edit layers with Select, Move, Marquee, Transform, and Rotate canvas tools.
-- Use Move tool auto-select from the Options menu to select clicked layer groups
-  and clear selection on empty canvas clicks.
+- Edit layers with Select, Move, Marquee, Transform, Rotate, and Pipette canvas
+  tools.
+- Use Move tool auto-select from the Options menu to select clicked layer groups.
+  When auto-select is off, clicking outside the selected bounds preserves the
+  current selection unless no selection exists.
+- Nudge selected layers/guides precisely in Move or Transform with arrow keys;
+  normal and Shift step sizes are configurable in Settings.
 - Edit layer properties: name, shape ID, position, scale, rotation, skew,
   opacity, color, visibility, mask, and lock state.
 - Edit a group or multi-shape selection's position, scale, rotation, and skew as
@@ -23,7 +27,10 @@ exports flat game-compatible folders.
   rather than each shape in place.
 - Drag numeric property labels vertically for live value changes.
 - Use editor-only raster guide layers for references; guide layers are saved in
-  the project container and ignored by game export.
+  the project container and ignored by game export. Guide layers can render above
+  or below shapes, can be toggled from the keyboard, and can be sampled by the
+  Pipette/color picker ignoring guide opacity.
+- Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,
   and stamp.
@@ -38,7 +45,8 @@ exports flat game-compatible folders.
   writes a rebuilt `C_group`, copied sidecars, preview thumbnail, and
   draft/imported header handling. Nested (grouped) export preserves group
   structure, nesting, and masks.
-- Configure UI theme, canvas colors, layout, keybinds, and behavior options.
+- Configure UI theme, canvas colors, layout, keybinds, behavior options, guide
+  visibility borders, and nudge step sizes.
   Fresh settings default to the Dark theme with theme-default canvas colors.
 - Collapse dock areas from the dock title-bar collapse buttons.
 - Toggle selected-layer flash with `\` or from the Options menu.
@@ -163,18 +171,21 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `src/gui/canvas/` (`project_canvas.*`, `canvas_tools.*`,
   `native_shape_renderer.*`, `drag_cursors.*`)
   - OpenGL canvas, pan/zoom, hit testing, guide layer rendering, selection
-    overlays, and cursor handling; per-tool interaction strategies
-    (select/move/marquee/transform/rotate) as `CanvasTool` subclasses; OpenGL
-    shape rendering; and layer drag cursors.
+    overlays, color sampling, visibility borders, keyboard nudging, and cursor
+    handling; per-tool interaction strategies
+    (select/move/marquee/transform/rotate/pipette) as `CanvasTool` subclasses;
+    OpenGL shape rendering; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
-  `layer_state_delegate.*`, `shapes_browser_widget.*`, `shape_geometry_store.*`,
-  `shape_name_store.*`, `font_glyphs.*`, `clipboard_buffer_widget.*`,
+  `layer_state_delegate.*`, `color_palette_widget.*`, `shapes_browser_widget.*`,
+  `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,
+  `clipboard_buffer_widget.*`,
   `header_metadata_widget.*`, `livery_section_bar.*`, `image_io.*`,
   `import_locations.*`)
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with
-    sibling-only drag/drop reordering, row badges, and thumbnails; the shape
-    browser with theme-aware previews, categories, favorites, and insertion;
+    sibling-only drag/drop reordering, row badges, and thumbnails; the
+    project-specific swatches panel; the shape browser with theme-aware previews,
+    categories, favorites, and insertion;
     vector geometry loading and human-readable shape names
     (`assets/vector/shape_names.json`, reparsed each launch); the shared font
     glyph-block table (`font_glyphs.*`) mapping characters to font-letter shape

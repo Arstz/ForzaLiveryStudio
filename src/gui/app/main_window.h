@@ -31,6 +31,7 @@ class QToolButton;
 namespace gui {
 
 class ClipboardBufferWidget;
+class ColorPaletteWidget;
 class EditorState;
 class HeaderMetadataWidget;
 class LiverySectionBar;
@@ -52,6 +53,8 @@ public:
     void cutSelection();
     void pasteClipboard();
     void stampSelection();
+    void sampleGuideColorToSelection();
+    void toggleGuideLayerVisibility();
     void insertShape(int shapeId);
     void placeTextDialog();
     void saveCurrentSelectionAsCustomGroup();
@@ -64,6 +67,7 @@ public:
     void redo();
     void noteProjectGeometryChanged(bool refreshPreviews = false);
     void noteProjectStructureChanged();
+    void centerViewOnSelection();
     void setToolName(const QString &name);
 
 private:
@@ -114,6 +118,7 @@ private:
     void setProject(fh6::Project project);
     void updateStatus();
     void updateClipboardWidget();
+    void updateColorPaletteWidget();
     void updateLastSelectedShapeDefaults();
     void updateSelectionFromTree();
     void syncTreeSelectionFromIds();
@@ -166,6 +171,7 @@ private:
     EditorState *state_ = nullptr;
     ProjectCanvas *canvas_ = nullptr;
     ClipboardBufferWidget *clipboardWidget_ = nullptr;
+    ColorPaletteWidget *colorPalette_ = nullptr;
     ShapesBrowserWidget *shapesBrowser_ = nullptr;
     QTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;  // C_livery section tabs (hidden otherwise)

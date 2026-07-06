@@ -34,6 +34,7 @@ recommended working pipelines. For build/developer notes see
 | Fold All Groups | `Ctrl+Shift+E` |
 | Delete Selected | `Del` |
 | Stamp (duplicate in place) | `Y` |
+| Center View on Selection | `F1` |
 
 ### Tools
 
@@ -44,12 +45,15 @@ recommended working pipelines. For build/developer notes see
 | Marquee | `F` | Rubber-band select multiple layers. |
 | Transform | `T` | Scale/skew the selection via bounding-box handles. |
 | Rotate | `R` | Rotate the selection about its centre. |
+| Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
 
 ### Options & Window
 
 | Action | Shortcut |
 | --- | --- |
 | Toggle Flash Selected Layers | `\` |
+| Toggle Guide Layers On Top | `` ` `` |
+| Toggle Guide Layer Visibility | `Tab` |
 | Settings… | `Ctrl+K` |
 
 ## Tools & Behaviours
@@ -57,16 +61,24 @@ recommended working pipelines. For build/developer notes see
 - **Select (`S`)** — primary editing tool. Click a shape or group to select it,
   drag to move. Works together with the layer tree selection.
 - **Move (`V`)** — dedicated move tool. Enable **Options → Move Tool
-  Auto-Select** to select the layer group you click and to clear the selection
-  when clicking empty canvas.
+  Auto-Select** to select the layer group you click. When auto-select is off,
+  clicking outside the current selection preserves it unless nothing is selected.
+  Use arrow keys for precise movement: normal nudges use the Settings value
+  (`0.1` by default), and `Shift`+arrow uses the larger Settings value (`1.0` by
+  default).
 - **Marquee (`F`)** — drag a rectangle to select every layer it touches.
 - **Transform (`T`)** — drag edge/corner handles to scale, side handles to skew.
   For a group or multi-shape selection the values transform the selection's
   bounding box about its centre (each child keeps its relative position) rather
-  than editing each shape in place.
+  than editing each shape in place. Arrow-key nudging works here too.
 - **Rotate (`R`)** — rotate the selection about its centre. Enable **Options →
   Transform Relative Mode** if you want the transform/rotate handles to follow
   the selected shape or group rotation.
+- **Pipette (`I`)** — click the canvas to sample the visible color under the
+  cursor. It samples regular layers and guide layers according to their visual
+  stacking, applies the picked color to the current selection, and adds it to the
+  project swatches. Guide colors are sampled from original guide pixels, ignoring
+  guide opacity.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,
@@ -88,7 +100,14 @@ recommended working pipelines. For build/developer notes see
 - **Guide layers** — import a raster image as an editor-only reference layer
   (**File → Import Guide Layer…**, toolbar **Add Guide Layer**, or drag an image
   from Explorer). Guide layers are stored inside the project file and ignored by
-  game export.
+  game export. **Guide Layers On Top** is enabled by default and can be toggled
+  with `` ` ``. `Tab` toggles guide-layer visibility.
+- **Visibility borders** — Settings can show viewport/placement reference
+  borders on the canvas and choose the reference resolution. **Position Limit
+  Border** is off by default.
+- **Swatches** — saved colors are project-specific. Click a swatch to apply it
+  to the current selection, click `+` to save the current selection color, and
+  middle-click or right-click a swatch to remove it.
 - **Drag & drop** — drop a project (`.3so`/`.json`), a `C_group`/`C_livery`
   file/folder, or an image file from Explorer straight onto the window.
 - **Flash Selected Layers (`\`)** — briefly flash the current selection on the
@@ -102,7 +121,8 @@ recommended working pipelines. For build/developer notes see
   copy/cut/paste, duplicate, and stamp from here or the Edit menu.
 - **Properties** — edit name, shape ID, position, scale, rotation, skew,
   opacity, colour, visibility, mask, and lock for the current selection.
-  Enable **Options → Show Property Debug** for extra diagnostics.
+  The color picker samples original guide pixels under the cursor, ignoring
+  guide opacity. Enable **Options → Show Property Debug** for extra diagnostics.
 - **Shapes** — browse and insert vector shapes.
   - Shapes are labelled `Name (ID)` (e.g. `Square (101)`); names come from
     `assets/vector/shape_names.json` and are reparsed on each launch.
@@ -112,6 +132,8 @@ recommended working pipelines. For build/developer notes see
   - Star a shape to add it to **Favourites**. Use **Add current selection** to
     save the current selection as a reusable **Custom** group.
 - **Buffer** — shows the current clipboard contents.
+- **Swatches** — project-specific color palette for applying, saving, and
+  removing colors.
 - **Header** — edit header metadata written into exported projects.
 
 ## Recommended Pipelines

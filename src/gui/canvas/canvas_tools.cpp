@@ -5,6 +5,8 @@
 
 #include <QMouseEvent>
 
+#include <optional>
+
 namespace gui {
 
 bool CanvasTool::handlePress(QMouseEvent *event)
@@ -243,6 +245,32 @@ bool RotateTool::hoverCursor(const QPointF &point, QCursor *cursor) const
     }
     *cursor = c.rotateCursor();
     return true;
+}
+
+// --- Pipette ---------------------------------------------------------------
+
+QString PipetteTool::name() const
+{
+    return QStringLiteral("pipette");
+}
+
+bool PipetteTool::handlePress(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton) {
+        return false;
+    }
+    const std::optional<QColor> color = canvas_.colorAtScreenPoint(event->position());
+    if (color.has_value() && canvas_.pipetteColorPickedCallback_ != nullptr) {
+        canvas_.pipetteColorPickedCallback_(color.value());
+    }
+    event->accept();
+    return true;
+}
+
+Qt::CursorShape PipetteTool::idleCursorShape(const QPointF &point) const
+{
+    Q_UNUSED(point);
+    return Qt::CrossCursor;
 }
 
 } // namespace gui

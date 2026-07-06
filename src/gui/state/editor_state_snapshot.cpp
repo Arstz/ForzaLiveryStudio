@@ -157,6 +157,7 @@ void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot)
     project_.guideLayers = snapshot.guideLayers;
     project_.groups = snapshot.groups;
     project_.rootChildIds = snapshot.rootChildIds;
+    project_.colorSwatches = snapshot.colorSwatches;
     invalidateProjectIndexCache();
 }
 
@@ -168,13 +169,14 @@ ProjectEditSnapshot EditorState::captureSnapshot() const
     // detach automatically; callers that edit through cached raw pointers (the
     // property panel) must detach the project first so they cannot rewrite this
     // shared "before" snapshot. See PropertyPanel::detachSelectionForEdit().
-    return {project_.layers, project_.guideLayers, project_.groups, project_.rootChildIds};
+    return {project_.layers, project_.guideLayers, project_.groups, project_.rootChildIds, project_.colorSwatches};
 }
 
 bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const
 {
     ScopedPerf perf("EditorState::snapshotsEqual");
     if (a.rootChildIds != b.rootChildIds
+        || a.colorSwatches != b.colorSwatches
         || a.layers.size() != b.layers.size()
         || a.guideLayers.size() != b.guideLayers.size()
         || a.groups.size() != b.groups.size()) {

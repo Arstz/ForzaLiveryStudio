@@ -14,7 +14,7 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and i
 
 ## Usage
 
-Download the latest release, launch `ForzaLiveryStudio.exe`. Read [manual](docs/MANUAL.md) for keyboard shortcuts and tools guide.
+Download the latest [release](https://github.com/Arstz/ForzaLiveryStudio/releases/latest), launch `ForzaLiveryStudio.exe`. Read [manual](docs/MANUAL.md) for keyboard shortcuts and tools guide. 
 
 Configure all the windows as you need them and press `Window -> Save Layout`. If you want to rename the default shapes, go to `assets/vector/shape_names.json`.
 
@@ -90,7 +90,7 @@ The import/export for groups is fully supported, core functionality in place. Th
 
 - [Fr4g3z](https://github.com/Fr4g3z) - cool guy, helped a lot, complained a lot, format reversing.
 - Mixbob - lazy bastard, tested ingame, usage feedback.
-- [Zloysvin](https://github.com/Zloysvin) - shape renamer.
+- [Zloysvin](https://github.com/Zloysvin) - PR Manager / shape renamer.
 - [Pengyss](https://github.com/Pengyss) - non-uniform group tranform algorithm.
 - Eaterrius - big money man, provided tokens.
 - All the people's liveries/groups I used to decode the format.
