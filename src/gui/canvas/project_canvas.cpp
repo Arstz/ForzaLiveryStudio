@@ -1748,15 +1748,15 @@ bool ProjectCanvas::rotateZoneAt(const QPointF &point, const SelectionBox &box) 
     return false;
 }
 
-Qt::CursorShape ProjectCanvas::cursorForScaleHandle(const QString &handle, const SelectionBox &box) const
+Qt::CursorShape ProjectCanvas::cursorForScaleHandle(const QString &handle, const SelectionBox *box) const
 {
     HandleCursorSpec resolvedSpec{Qt::ArrowCursor, "ToolbarScale.xpm"};
-    if (box.valid) {
+    if (box != nullptr && box->valid) {
         QPointF handleLocal;
         QPointF anchorLocal;
-        if (handleAnchorLocalPoints(handle, box.localRect, &handleLocal, &anchorLocal)) {
-            const QPointF handleWorld = box.localToWorld.map(handleLocal);
-            const QPointF anchorWorld = box.localToWorld.map(anchorLocal);
+        if (handleAnchorLocalPoints(handle, box->localRect, &handleLocal, &anchorLocal)) {
+            const QPointF handleWorld = box->localToWorld.map(handleLocal);
+            const QPointF anchorWorld = box->localToWorld.map(anchorLocal);
             resolvedSpec = scaleCursorSpecForScreenDelta(worldToScreen_.map(anchorWorld) - worldToScreen_.map(handleWorld));
             return resolvedSpec.shape;
         }
@@ -1765,15 +1765,15 @@ Qt::CursorShape ProjectCanvas::cursorForScaleHandle(const QString &handle, const
     return spec != handleCursorSpecs().constEnd() ? spec->shape : Qt::ArrowCursor;
 }
 
-QCursor ProjectCanvas::cursorForTransformHandle(const QString &handle, const SelectionBox &box) const
+QCursor ProjectCanvas::cursorForTransformHandle(const QString &handle, const SelectionBox *box) const
 {
     HandleCursorSpec resolvedSpec{Qt::ArrowCursor, "ToolbarScale.xpm"};
-    if (box.valid) {
+    if (box != nullptr && box->valid) {
         QPointF handleLocal;
         QPointF anchorLocal;
-        if (handleAnchorLocalPoints(handle, box.localRect, &handleLocal, &anchorLocal)) {
-            const QPointF handleWorld = box.localToWorld.map(handleLocal);
-            const QPointF anchorWorld = box.localToWorld.map(anchorLocal);
+        if (handleAnchorLocalPoints(handle, box->localRect, &handleLocal, &anchorLocal)) {
+            const QPointF handleWorld = box->localToWorld.map(handleLocal);
+            const QPointF anchorWorld = box->localToWorld.map(anchorLocal);
             resolvedSpec = scaleCursorSpecForScreenDelta(worldToScreen_.map(anchorWorld) - worldToScreen_.map(handleWorld));
             return assetCursor(QLatin1String(resolvedSpec.icon));
         }
@@ -1794,7 +1794,7 @@ Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point)
         return Qt::CrossCursor;
     case DragMode::Scale:
     case DragMode::Skew:
-        return cursorForScaleHandle(activeHandle_, dragStartBox_);
+        return cursorForScaleHandle(activeHandle_, &dragStartBox_);
     case DragMode::Rotate:
         return Qt::ArrowCursor;
     case DragMode::None:
@@ -1823,7 +1823,7 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point)
         return;
     }
     if (dragMode_ == DragMode::Scale || dragMode_ == DragMode::Skew) {
-        setCursor(cursorForTransformHandle(activeHandle_, dragStartBox_));
+        setCursor(cursorForTransformHandle(activeHandle_, &dragStartBox_));
         return;
     }
     if (activeTool_ != nullptr) {

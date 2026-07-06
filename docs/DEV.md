@@ -63,6 +63,8 @@ game's own encoding.
 
 ## Build
 
+### Windows
+
 ```powershell
 .\tools\configure.ps1
 .\tools\build.ps1
@@ -71,17 +73,64 @@ game's own encoding.
 The scripts use `VCPKG_ROOT`, defaulting to `C:\vcpkg` or `C:\vcpkg\vcpkg`,
 and target `x64-windows`. Build output is written to `build\Release`.
 
-Runtime assets live in `assets` (repo root). The build copies that folder next
+### Linux (Arch)
+
+**Prerequisites:**
+
+Install build dependencies:
+
+```bash
+# Arch (SteamOS)
+sudo pacman -S qt6-base qt6-tools qt6-svg zlib cmake gcc ninja
+
+# Ubuntu/Debian
+sudo apt install qt6-base-dev qt6-tools-dev qt6-svg-dev zlib1g-dev cmake g++ ninja-build
+
+# Fedora
+sudo dnf install qt6-qtbase-devel qt6-qttools-devel qt6-qtsvg-devel zlib-devel cmake gcc-c++ ninja-build
+```
+
+**Configure:**
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+```
+
+CMake will automatically detect Qt6 and ZLIB from system packages.
+
+**Build:**
+
+```bash
+cmake --build build
+```
+
+Build output is written to `build/ForzaLiveryStudio`.
+
+### Runtime Assets
+
+Runtime assets live in `assets/` (repo root). The build copies that folder next
 to the editor executable, including `assets/vector/shape_geometry.json` and
 `assets/vector/shape_names.json`.
 
 ## Run
 
+### Windows
+
 ```powershell
 .\tools\run.ps1
 ```
 
-Or run the generated editor executable from `build\Release`.
+Or run the generated editor executable from `build\Release\ForzaLiveryStudio.exe`.
+
+### Linux
+
+```bash
+./build/ForzaLiveryStudio
+```
+
+## Cross-Platform Notes
+
+The codebase is designed to build on both Windows (via vcpkg) and Linux (via system packages). Platform-specific code (Windows COM for image decoding, Windows libraries) is guarded with `#ifdef Q_OS_WIN` and is automatically skipped on Linux. Qt provides portable abstractions for all GUI and system operations.
 
 ## Repository Layout
 
@@ -90,7 +139,8 @@ Or run the generated editor executable from `build\Release`.
 - `assets/`  Eruntime XPM icons and `vector/` shape data, copied next to the
   executable at build time.
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
-  `gen_xpm.ps1`, `gen_xpm.py`).
+  `gen_xpm.ps1`, `gen_xpm.py`). Note: these are Windows-only; on Linux, use
+  CMake directly.
 - `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and format notes
   (`CGROUP.md`, `HEADER.md`).
 

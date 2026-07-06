@@ -187,7 +187,7 @@ bool TransformTool::hoverCursor(const QPointF &point, QCursor *cursor) const
     const ProjectCanvas::SelectionBox box = c.currentSelectionBox();
     const QString handle = c.transformHandleAt(point, box);
     if (!handle.isEmpty()) {
-        *cursor = c.cursorForTransformHandle(handle, box);
+        *cursor = c.cursorForTransformHandle(handle, &box);
         return true;
     }
     if (c.rotateZoneAt(point, box)) {
@@ -206,7 +206,7 @@ Qt::CursorShape TransformTool::idleCursorShape(const QPointF &point) const
         const ProjectCanvas::SelectionBox box = c.currentSelectionBox();
         const QString handle = c.transformHandleAt(point, box);
         if (!handle.isEmpty()) {
-            return c.cursorForScaleHandle(handle, box);
+            return c.cursorForScaleHandle(handle, &box);
         }
         if (c.rotateZoneAt(point, box)) {
             return Qt::ArrowCursor;
