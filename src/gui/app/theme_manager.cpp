@@ -96,6 +96,19 @@ BehaviorSettings loadBehaviorSettings()
     result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), false).toBool();
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), false).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), true).toBool();
+    result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), true).toBool();
+    result.visibilityBordersEnabled = settings.value(QStringLiteral("ui/behavior/visibilityBordersEnabled"), true).toBool();
+    result.positionLimitBorderEnabled = settings.value(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), false).toBool();
+    const QSize resolution = settings.value(QStringLiteral("ui/behavior/visibilityBorderResolution"), QSize(1920, 1080)).toSize();
+    result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
+    result.nudgeStep = settings.value(QStringLiteral("ui/behavior/nudgeStep"), 0.1).toDouble();
+    result.nudgeShiftStep = settings.value(QStringLiteral("ui/behavior/nudgeShiftStep"), 1.0).toDouble();
+    if (result.nudgeStep <= 0.0) {
+        result.nudgeStep = 0.1;
+    }
+    if (result.nudgeShiftStep <= 0.0) {
+        result.nudgeShiftStep = 1.0;
+    }
     return result;
 }
 
@@ -107,6 +120,12 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
+    qsettings.setValue(QStringLiteral("ui/behavior/guideLayersOnTop"), settings.guideLayersOnTop);
+    qsettings.setValue(QStringLiteral("ui/behavior/visibilityBordersEnabled"), settings.visibilityBordersEnabled);
+    qsettings.setValue(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), settings.positionLimitBorderEnabled);
+    qsettings.setValue(QStringLiteral("ui/behavior/visibilityBorderResolution"), settings.visibilityBorderResolution);
+    qsettings.setValue(QStringLiteral("ui/behavior/nudgeStep"), settings.nudgeStep);
+    qsettings.setValue(QStringLiteral("ui/behavior/nudgeShiftStep"), settings.nudgeShiftStep);
 }
 
 QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings)

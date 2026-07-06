@@ -13,10 +13,12 @@
 #include <QPoint>
 #include <QPolygonF>
 #include <QSet>
+#include <QSize>
 #include <QStringList>
 #include <QTimer>
 #include <QTransform>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -52,6 +54,7 @@ public:
     void invalidateSceneCache();
     void resetRelativeSelectionFrame();
     void refitView();
+    bool centerViewOnSelection();
     QPointF viewCenterWorld();
     void setCanvasColor(const QColor &color);
     QColor canvasColor() const;
@@ -60,6 +63,15 @@ public:
     bool moveToolAutoSelect() const;
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
+    void setGuideLayersOnTop(bool enabled);
+    bool guideLayersOnTop() const;
+    void setVisibilityBordersEnabled(bool enabled);
+    void setPositionLimitBorderEnabled(bool enabled);
+    void setVisibilityBorderResolution(const QSize &resolution);
+    void setNudgeSteps(double normalStep, double shiftStep);
+    std::optional<QColor> guideColorAtScreenPoint(const QPointF &point) const;
+    std::optional<QColor> colorAtScreenPoint(const QPointF &point) const;
+    void setPipetteColorPickedCallback(std::function<void(const QColor &)> callback);
 
 protected:
     void initializeGL() override;
@@ -71,7 +83,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void leaveEvent(QEvent *event) override;
-    // Return false so Tab is delivered to keyPressEvent (flip) instead of moving focus.
+    // Return false so Backtab is delivered to keyPressEvent (selection flip) instead of moving focus.
     bool focusNextPrevChild(bool next) override;
 
 private:
@@ -83,6 +95,7 @@ private:
     friend class MarqueeTool;
     friend class TransformTool;
     friend class RotateTool;
+    friend class PipetteTool;
 
     enum class DragMode {
         None,
@@ -132,6 +145,7 @@ private:
     QPolygonF guideScreenPolygon(const fh6::GuideLayer &guide) const;
     QVector<HitEntry> hitEntries();
     QVector<QString> layersAtScreenPoint(const QPointF &point);
+    std::optional<QColor> layerColorAtScreenPoint(const QPointF &point) const;
     QString selectTargetAtScreenPoint(const QPointF &point, Qt::KeyboardModifiers modifiers);
     QRectF selectedScreenBounds() const;
     QRectF selectedWorldBounds() const;
@@ -152,6 +166,7 @@ private:
     // rotate drag about the given world-space pivot.
     void beginRotateDrag(const QPointF &boxCenterWorld);
     void applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
+    bool nudgeSelection(const QPointF &delta);
     void applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
     void applySkewDrag(const QPointF &screenPoint);
     // Applies a linear-transform gesture (scale/skew) to every dragged item by composing it
@@ -176,6 +191,7 @@ private:
     void updateCursorForPoint(const QPointF &point);
     QCursor rotateCursor() const;
     QCursor rotateCursorForPoint(const QPointF &point, const SelectionBox &box) const;
+    void drawVisibilityBorders(QPainter &painter);
     void drawOverlay(QPainter &painter);
     bool selectionIsGroupLike() const;
     void updateSelectionFlashState();
@@ -225,6 +241,13 @@ private:
     bool transformRelativeMode_ = false;
     bool moveToolAutoSelect_ = false;
     bool selectionFlashEnabled_ = true;
+    bool guideLayersOnTop_ = true;
+    bool visibilityBordersEnabled_ = true;
+    bool positionLimitBorderEnabled_ = false;
+    QSize visibilityBorderResolution_ = QSize(1920, 1080);
+    double nudgeStep_ = 0.1;
+    double nudgeShiftStep_ = 1.0;
+    std::function<void(const QColor &)> pipetteColorPickedCallback_;
     // Frame angle for a Relative-mode multi-selection box. It is NOT stored directly (that
     // would go stale on undo/redo); instead it is derived live as
     // (primary selected item's current rotation - frameReferenceRotation_). The reference is

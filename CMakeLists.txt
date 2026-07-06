@@ -46,16 +46,20 @@ target_link_libraries(fh6_core
 
 target_include_directories(fh6_core PUBLIC src/core)
 
-# Console harness: diff a decoded C_livery against the in-game per-section
-# C_group exports (the ground truth for group decoding). Core-only, no GUI deps.
-add_executable(fh6_livery_compare
-    tools/livery_compare/main.cpp
-)
-target_link_libraries(fh6_livery_compare PRIVATE fh6_core Qt6::Core)
+option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper" OFF)
+
+if(FH6_BUILD_LIVERY_COMPARE)
+    # Console harness: diff a decoded C_livery against the in-game per-section
+    # C_group exports (the ground truth for group decoding). Core-only, no GUI deps.
+    add_executable(fh6_livery_compare
+        tools/livery_compare/main.cpp
+    )
+    target_link_libraries(fh6_livery_compare PRIVATE fh6_core Qt6::Core)
+endif()
 
 set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)
 
-qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET}
+qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/main.cpp
     src/gui/app/dock_chrome.cpp
     src/gui/app/dock_chrome.h
@@ -90,6 +94,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET}
     src/gui/canvas/project_canvas.h
     src/gui/widgets/clipboard_buffer_widget.cpp
     src/gui/widgets/clipboard_buffer_widget.h
+    src/gui/widgets/color_palette_widget.cpp
+    src/gui/widgets/color_palette_widget.h
     src/gui/widgets/font_glyphs.cpp
     src/gui/widgets/font_glyphs.h
     src/gui/widgets/header_metadata_widget.cpp
@@ -207,6 +213,14 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_names.json"
     COMMENT "Deploying used GUI XPM assets"
 )
+
+if(NOT FH6_BUILD_LIVERY_COMPARE)
+    add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_livery_compare.exe"
+        COMMENT "Removing disabled livery compare helper from release output"
+    )
+endif()
 
 if(WIN32)
     target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32)

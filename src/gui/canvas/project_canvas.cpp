@@ -57,6 +57,12 @@ constexpr double SelectionFrameHaloWidth = 3.0;
 constexpr double SelectionFrameLineWidth = 1.0;
 constexpr double HandleBorderWidth = 2.0;
 constexpr int MarqueeFillAlpha = 32;
+const QColor VisibilityViewportColor(70, 170, 230, 190);
+const QColor VisibilityLooseColor(255, 210, 80, 160);
+constexpr double VisibilityBorderHaloWidth = 3.0;
+constexpr double VisibilityBorderLineWidth = 1.0;
+constexpr double PositionLimitHalfWidth1080p = 1024.0;
+constexpr double PositionLimitHalfHeight1080p = 604.0;
 
 // Cursor hint bubble styling.
 const QColor CursorHintBorderColor(0, 0, 0, 180);
@@ -379,6 +385,7 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     tools_.push_back(std::make_unique<MarqueeTool>(*this));
     tools_.push_back(std::make_unique<TransformTool>(*this));
     tools_.push_back(std::make_unique<RotateTool>(*this));
+    tools_.push_back(std::make_unique<PipetteTool>(*this));
     activeTool_ = tools_.front().get();
 }
 
@@ -528,11 +535,82 @@ bool ProjectCanvas::selectionFlashEnabled() const
     return selectionFlashEnabled_;
 }
 
+void ProjectCanvas::setGuideLayersOnTop(bool enabled)
+{
+    if (guideLayersOnTop_ == enabled) {
+        return;
+    }
+    guideLayersOnTop_ = enabled;
+    sectionCanvasCache_.clear();
+    update();
+}
+
+bool ProjectCanvas::guideLayersOnTop() const
+{
+    return guideLayersOnTop_;
+}
+
+void ProjectCanvas::setVisibilityBordersEnabled(bool enabled)
+{
+    if (visibilityBordersEnabled_ == enabled) {
+        return;
+    }
+    visibilityBordersEnabled_ = enabled;
+    update();
+}
+
+void ProjectCanvas::setPositionLimitBorderEnabled(bool enabled)
+{
+    if (positionLimitBorderEnabled_ == enabled) {
+        return;
+    }
+    positionLimitBorderEnabled_ = enabled;
+    update();
+}
+
+void ProjectCanvas::setVisibilityBorderResolution(const QSize &resolution)
+{
+    const QSize validResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
+    if (visibilityBorderResolution_ == validResolution) {
+        return;
+    }
+    visibilityBorderResolution_ = validResolution;
+    update();
+}
+
+void ProjectCanvas::setNudgeSteps(double normalStep, double shiftStep)
+{
+    nudgeStep_ = normalStep > 0.0 ? normalStep : 0.1;
+    nudgeShiftStep_ = shiftStep > 0.0 ? shiftStep : 1.0;
+}
+
+void ProjectCanvas::setPipetteColorPickedCallback(std::function<void(const QColor &)> callback)
+{
+    pipetteColorPickedCallback_ = std::move(callback);
+}
+
 void ProjectCanvas::refitView()
 {
     viewBounds_ = projectBounds();
     currentBounds_ = viewBounds_;
     updateViewTransform();
+}
+
+bool ProjectCanvas::centerViewOnSelection()
+{
+    if (project_ == nullptr || state_ == nullptr) {
+        return false;
+    }
+    updateViewTransform();
+    const QRectF bounds = cachedSelectionWorldBounds();
+    if (!bounds.isValid() || bounds.isEmpty()) {
+        return false;
+    }
+    const QPointF selectionScreenCenter = worldToScreen(bounds.center());
+    pan_ += QPointF(width() * 0.5, height() * 0.5) - selectionScreenCenter;
+    invalidateSceneCache();
+    update();
+    return true;
 }
 
 QPointF ProjectCanvas::viewCenterWorld()
@@ -652,6 +730,81 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
         }
     }
     return {};
+}
+
+std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &point) const
+{
+    if (project_ == nullptr) {
+        return std::nullopt;
+    }
+    const_cast<ProjectCanvas *>(this)->updateViewTransform();
+    for (int index = project_->guideLayers.size() - 1; index >= 0; --index) {
+        const fh6::GuideLayer &guide = project_->guideLayers[index];
+        if (!guide.visible) {
+            continue;
+        }
+        const QPolygonF polygon = guideScreenPolygon(guide);
+        if (!polygon.boundingRect().contains(point) || !pointInPolygon(point, polygon)) {
+            continue;
+        }
+        const QImage image = guideImage(guide).convertToFormat(QImage::Format_ARGB32);
+        if (image.isNull()) {
+            continue;
+        }
+        const QTransform localToScreen = entryTransform(guide) * worldToScreen_;
+        bool invertible = false;
+        const QTransform screenToLocal = localToScreen.inverted(&invertible);
+        if (!invertible) {
+            continue;
+        }
+        const QPointF local = screenToLocal.map(point);
+        const int x = static_cast<int>(std::floor(local.x() + guide.width * 0.5));
+        const int y = static_cast<int>(std::floor(local.y() + guide.height * 0.5));
+        if (x < 0 || y < 0 || x >= image.width() || y >= image.height()) {
+            continue;
+        }
+        const QColor color = QColor::fromRgba(image.pixel(x, y));
+        if (color.alpha() == 0) {
+            continue;
+        }
+        return color;
+    }
+    return std::nullopt;
+}
+
+std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &point) const
+{
+    if (project_ == nullptr) {
+        return std::nullopt;
+    }
+    for (const HitEntry &entry : const_cast<ProjectCanvas *>(this)->hitEntries()) {
+        if (!entry.screenBounds.contains(point) || !pointInPolygon(point, entry.screenPolygon)) {
+            continue;
+        }
+        for (const fh6::ShapeLayer &layer : project_->layers) {
+            if (layer.id == entry.layerId) {
+                return QColor(layer.color[ColorByteRed],
+                              layer.color[ColorByteGreen],
+                              layer.color[ColorByteBlue],
+                              layer.color[ColorByteAlpha]);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<QColor> ProjectCanvas::colorAtScreenPoint(const QPointF &point) const
+{
+    if (guideLayersOnTop_) {
+        if (const std::optional<QColor> guide = guideColorAtScreenPoint(point)) {
+            return guide;
+        }
+        return layerColorAtScreenPoint(point);
+    }
+    if (const std::optional<QColor> layer = layerColorAtScreenPoint(point)) {
+        return layer;
+    }
+    return guideColorAtScreenPoint(point);
 }
 
 QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point)
@@ -1083,6 +1236,44 @@ void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifi
                                 QStringLiteral("Y: %1").arg(formatHintNumber(delta.y()))});
     invalidateSceneCache();
     update();
+}
+
+bool ProjectCanvas::nudgeSelection(const QPointF &delta)
+{
+    if (state_ == nullptr || project_ == nullptr || delta.isNull()) {
+        return false;
+    }
+    QVector<fh6::ShapeLayer *> layers = selectedLayers();
+    QVector<fh6::GuideLayer *> guides = selectedGuideLayers();
+    if (layers.isEmpty() && guides.isEmpty()) {
+        return false;
+    }
+
+    state_->beginTransformCommand();
+    project_->layers.data();
+    project_->guideLayers.data();
+    layers = selectedLayers();
+    guides = selectedGuideLayers();
+    if (layers.isEmpty() && guides.isEmpty()) {
+        state_->cancelTransformCommand();
+        return false;
+    }
+
+    for (fh6::ShapeLayer *layer : layers) {
+        layer->x += delta.x();
+        layer->y += delta.y();
+    }
+    for (fh6::GuideLayer *guide : guides) {
+        guide->x += delta.x();
+        guide->y += delta.y();
+    }
+
+    state_->commitTransformCommand();
+    state_->noteProjectGeometryChanged();
+    invalidateSceneCache();
+    invalidateSelectionCache();
+    update();
+    return true;
 }
 
 void ProjectCanvas::captureScaleReference()
@@ -1678,11 +1869,50 @@ QCursor ProjectCanvas::rotateCursorForPoint(const QPointF &point, const Selectio
     return suffix.isEmpty() ? rotateCursor() : assetCursor(QStringLiteral("ToolRotate%1.xpm").arg(suffix));
 }
 
+void ProjectCanvas::drawVisibilityBorders(QPainter &painter)
+{
+    if (project_ == nullptr || (!visibilityBordersEnabled_ && !positionLimitBorderEnabled_)) {
+        return;
+    }
+
+    const auto drawWorldRect = [this, &painter](const QRectF &worldRect, const QColor &color, Qt::PenStyle style) {
+        const QPolygonF polygon({
+            worldToScreen(worldRect.topLeft()),
+            worldToScreen(worldRect.topRight()),
+            worldToScreen(worldRect.bottomRight()),
+            worldToScreen(worldRect.bottomLeft()),
+        });
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(OverlayHaloColor, VisibilityBorderHaloWidth, style));
+        painter.drawPolygon(polygon);
+        painter.setPen(QPen(color, VisibilityBorderLineWidth, style));
+        painter.drawPolygon(polygon);
+    };
+
+    const QRectF viewportRect(-visibilityBorderResolution_.width() * 0.5,
+                              -visibilityBorderResolution_.height() * 0.5,
+                              visibilityBorderResolution_.width(),
+                              visibilityBorderResolution_.height());
+    if (visibilityBordersEnabled_) {
+        drawWorldRect(viewportRect, VisibilityViewportColor, Qt::SolidLine);
+    }
+    if (positionLimitBorderEnabled_) {
+        const double scale = static_cast<double>(visibilityBorderResolution_.height()) / 1080.0;
+        const QRectF positionLimitRect(-PositionLimitHalfWidth1080p * scale,
+                                       -PositionLimitHalfHeight1080p * scale,
+                                       PositionLimitHalfWidth1080p * 2.0 * scale,
+                                       PositionLimitHalfHeight1080p * 2.0 * scale);
+        drawWorldRect(positionLimitRect, VisibilityLooseColor, Qt::DashLine);
+    }
+}
+
 void ProjectCanvas::drawOverlay(QPainter &painter)
 {
     painter.save();
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
+
+    drawVisibilityBorders(painter);
 
     if (!hoverPolygon_.isEmpty()) {
         painter.setBrush(Qt::NoBrush);
@@ -1937,7 +2167,7 @@ QString ProjectCanvas::sectionCanvasCacheKey() const
     if (project_ == nullptr || state_ == nullptr || !project_->isLivery || state_->activeSectionId_.isEmpty() || size().isEmpty()) {
         return {};
     }
-    return QStringLiteral("%1|%2x%3|%4|%5,%6,%7,%8,%9,%10|%11")
+    return QStringLiteral("%1|%2x%3|%4|%5,%6,%7,%8,%9,%10|%11|%12")
         .arg(state_->activeSectionId_)
         .arg(width())
         .arg(height())
@@ -1948,7 +2178,8 @@ QString ProjectCanvas::sectionCanvasCacheKey() const
         .arg(QString::number(worldToScreen_.m22(), 'g', 17))
         .arg(QString::number(worldToScreen_.dx(), 'g', 17))
         .arg(QString::number(worldToScreen_.dy(), 'g', 17))
-        .arg(canvasColor_.rgba());
+        .arg(canvasColor_.rgba())
+        .arg(guideLayersOnTop_ ? 1 : 0);
 }
 
 void ProjectCanvas::storeSectionCanvasCache(const QString &key)
@@ -2031,10 +2262,12 @@ void ProjectCanvas::paintGL()
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // Paint the background and guide layers first so guides sit *behind* the shapes,
-    // then composite the shapes over them (clearBackground=false keeps this content).
+    // Paint guides either below or above the vinyl layers. This is a view option only;
+    // project guide order and export data stay unchanged.
     painter.fillRect(rect(), canvasColor_);
-    drawGuideLayers(painter);
+    if (!guideLayersOnTop_) {
+        drawGuideLayers(painter);
+    }
 
     // The GL viewport and scene FBO live in physical device pixels: a QOpenGLWidget's
     // default framebuffer is size() * devicePixelRatio(), so rendering with the logical
@@ -2049,6 +2282,10 @@ void ProjectCanvas::paintGL()
     painter.beginNativePainting();
     renderer_.render(*project_, geometry_, deviceCamera, deviceSize, flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false);
     painter.endNativePainting();
+
+    if (guideLayersOnTop_) {
+        drawGuideLayers(painter);
+    }
 
     if (!sectionCacheKey.isEmpty()) {
         painter.end();
@@ -2141,6 +2378,14 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
             event->accept();
             return;
         }
+    }
+
+    if (tool_ == QStringLiteral("move")
+        && !moveToolAutoSelect_
+        && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())
+        && !selectedScreenBounds().contains(event->position())) {
+        event->accept();
+        return;
     }
 
     if (picksUnderCursor
@@ -2337,19 +2582,44 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) {
+    if (event->key() == Qt::Key_Backtab) {
         if (!event->isAutoRepeat()) {
             cycleFlipSelection();
         }
         event->accept();
         return;
     }
+    const bool nudgeTool = tool_ == QStringLiteral("move") || tool_ == QStringLiteral("transform");
+    if (nudgeTool && dragMode_ == DragMode::None) {
+        QPointF delta;
+        const double step = (event->modifiers() & Qt::ShiftModifier) ? nudgeShiftStep_ : nudgeStep_;
+        switch (event->key()) {
+        case Qt::Key_Left:
+            delta = QPointF(-step, 0.0);
+            break;
+        case Qt::Key_Right:
+            delta = QPointF(step, 0.0);
+            break;
+        case Qt::Key_Up:
+            delta = QPointF(0.0, step);
+            break;
+        case Qt::Key_Down:
+            delta = QPointF(0.0, -step);
+            break;
+        default:
+            break;
+        }
+        if (!delta.isNull() && nudgeSelection(delta)) {
+            event->accept();
+            return;
+        }
+    }
     QOpenGLWidget::keyPressEvent(event);
 }
 
 bool ProjectCanvas::focusNextPrevChild(bool next)
 {
-    // Keep Tab/Backtab on the canvas so keyPressEvent can use them to flip the selection.
+    // Keep Backtab on the canvas so keyPressEvent can use it to flip the selection.
     Q_UNUSED(next);
     return false;
 }

@@ -17,6 +17,7 @@ struct ProjectEditSnapshot {
     QVector<fh6::GuideLayer> guideLayers;
     QVector<fh6::LayerGroup> groups;
     QVector<QString> rootChildIds;
+    QVector<std::array<quint8, 4>> colorSwatches;
 };
 
 struct ProjectSelectionSnapshot {

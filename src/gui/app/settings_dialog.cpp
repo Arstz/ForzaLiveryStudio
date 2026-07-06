@@ -3,6 +3,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QHash>
@@ -25,11 +26,13 @@ constexpr int ShortcutEditRole = Qt::UserRole + 10;
 
 SettingsDialog::SettingsDialog(UiTheme theme,
                                const CanvasColorSettings &canvasSettings,
+                               const BehaviorSettings &behaviorSettings,
                                const QVector<ShortcutSettingsItem> &shortcuts,
                                QWidget *parent)
     : QDialog(parent)
     , initialTheme_(theme)
     , canvasSettings_(canvasSettings)
+    , behaviorSettings_(behaviorSettings)
     , shortcuts_(shortcuts)
 {
     setWindowTitle(QStringLiteral("Settings"));
@@ -74,6 +77,36 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     darkCanvasMode_->setCurrentIndex(canvasSettings_.darkMode == CanvasColorMode::Custom ? 1 : 0);
     lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
     updateCanvasColorControls();
+
+    visibilityBordersCheck_ = new QCheckBox(general);
+    visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
+    generalLayout->addRow(QStringLiteral("Show visibility borders"), visibilityBordersCheck_);
+
+    positionLimitBorderCheck_ = new QCheckBox(general);
+    positionLimitBorderCheck_->setChecked(behaviorSettings_.positionLimitBorderEnabled);
+    generalLayout->addRow(QStringLiteral("Position Limit Border"), positionLimitBorderCheck_);
+
+    visibilityBorderResolution_ = new QComboBox(general);
+    const QVector<QSize> visibilityResolutions = {QSize(1920, 1080), QSize(2560, 1440), QSize(3840, 2160)};
+    for (const QSize &resolution : visibilityResolutions) {
+        visibilityBorderResolution_->addItem(QStringLiteral("%1x%2").arg(resolution.width()).arg(resolution.height()), resolution);
+    }
+    const int resolutionIndex = visibilityBorderResolution_->findData(behaviorSettings_.visibilityBorderResolution);
+    visibilityBorderResolution_->setCurrentIndex(resolutionIndex >= 0 ? resolutionIndex : 0);
+    generalLayout->addRow(QStringLiteral("Border resolution"), visibilityBorderResolution_);
+
+    auto makeNudgeSpinBox = [general](double value) {
+        auto *spin = new QDoubleSpinBox(general);
+        spin->setDecimals(3);
+        spin->setRange(0.001, 1000.0);
+        spin->setSingleStep(0.1);
+        spin->setValue(value);
+        return spin;
+    };
+    nudgeStep_ = makeNudgeSpinBox(behaviorSettings_.nudgeStep);
+    generalLayout->addRow(QStringLiteral("Arrow nudge step"), nudgeStep_);
+    nudgeShiftStep_ = makeNudgeSpinBox(behaviorSettings_.nudgeShiftStep);
+    generalLayout->addRow(QStringLiteral("Shift arrow nudge step"), nudgeShiftStep_);
 
     tabs->addTab(general, QStringLiteral("General"));
 
@@ -134,6 +167,24 @@ CanvasColorSettings SettingsDialog::selectedCanvasSettings() const
     }
     if (!result.lightCustom.isValid()) {
         result.lightCustom = defaultCanvasColor(UiTheme::Light);
+    }
+    return result;
+}
+
+BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
+{
+    BehaviorSettings result = behaviorSettings_;
+    result.visibilityBordersEnabled = visibilityBordersCheck_ != nullptr && visibilityBordersCheck_->isChecked();
+    result.positionLimitBorderEnabled = positionLimitBorderCheck_ != nullptr && positionLimitBorderCheck_->isChecked();
+    if (visibilityBorderResolution_ != nullptr) {
+        const QSize resolution = visibilityBorderResolution_->currentData().toSize();
+        result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
+    }
+    if (nudgeStep_ != nullptr) {
+        result.nudgeStep = nudgeStep_->value();
+    }
+    if (nudgeShiftStep_ != nullptr) {
+        result.nudgeShiftStep = nudgeShiftStep_->value();
     }
     return result;
 }
