@@ -478,6 +478,11 @@ void PropertyPanel::setSpriteSizeFn(std::function<QSizeF(int)> fn)
     spriteSizeFn_ = std::move(fn);
 }
 
+void PropertyPanel::setGuideColorSampleFn(std::function<std::optional<QColor>()> fn)
+{
+    guideColorSampleFn_ = std::move(fn);
+}
+
 std::array<int, 3> PropertyPanel::flagCheckStates() const
 {
     return {static_cast<int>(visible_->checkState()),
@@ -1416,6 +1421,49 @@ QVector<std::array<quint8, 4>> PropertyPanel::selectionColors() const
     return colors;
 }
 
+std::optional<std::array<quint8, 4>> PropertyPanel::currentSelectionColor() const
+{
+    const QVector<std::array<quint8, 4>> colors = selectionColors();
+    if (colors.isEmpty()) {
+        return std::nullopt;
+    }
+    return colors.front();
+}
+
+void PropertyPanel::applyColorToSelection(const std::array<quint8, 4> &color)
+{
+    if (selectionColors().isEmpty()) {
+        return;
+    }
+    state_->beginProjectEdit();
+    detachSelectionForEdit();
+    for (fh6::ShapeLayer *layer : layers_) {
+        layer->color = color;
+    }
+    for (fh6::LayerGroup *group : groups_) {
+        state_->setGroupDescendantColor(group->id, color);
+    }
+    state_->commitProjectEdit();
+    state_->noteProjectGeometryChanged(true);
+    updateColorButton();
+}
+
+bool PropertyPanel::sampleGuideColorToSelection()
+{
+    if (guideColorSampleFn_ == nullptr) {
+        return false;
+    }
+    const std::optional<QColor> sampled = guideColorSampleFn_();
+    if (!sampled.has_value() || !sampled->isValid()) {
+        return false;
+    }
+    applyColorToSelection({static_cast<quint8>(sampled->blue()),
+                           static_cast<quint8>(sampled->green()),
+                           static_cast<quint8>(sampled->red()),
+                           static_cast<quint8>(sampled->alpha())});
+    return true;
+}
+
 void PropertyPanel::pickColor()
 {
     const QVector<std::array<quint8, 4>> colors = selectionColors();
@@ -1465,15 +1513,26 @@ void PropertyPanel::pickColor()
     dialog.setWindowTitle(QStringLiteral("Layer Color"));
     dialog.setCurrentColor(QColor(current[2], current[1], current[0], current[3]));
 
-    connect(&dialog, &QColorDialog::currentColorChanged, this, [this](const QColor &picked) {
+    connect(&dialog, &QColorDialog::currentColorChanged, this, [this, &dialog](const QColor &picked) {
         if (!picked.isValid()) {
             return;
         }
+        QColor effective = picked;
+        if (guideColorSampleFn_ != nullptr) {
+            const std::optional<QColor> sampledGuideColor = guideColorSampleFn_();
+            if (sampledGuideColor.has_value() && sampledGuideColor->isValid()) {
+                effective = sampledGuideColor.value();
+                if (effective != picked) {
+                    const QSignalBlocker blocker(&dialog);
+                    dialog.setCurrentColor(effective);
+                }
+            }
+        }
         const std::array<quint8, 4> color = {
-            static_cast<quint8>(picked.blue()),
-            static_cast<quint8>(picked.green()),
-            static_cast<quint8>(picked.red()),
-            static_cast<quint8>(picked.alpha()),
+            static_cast<quint8>(effective.blue()),
+            static_cast<quint8>(effective.green()),
+            static_cast<quint8>(effective.red()),
+            static_cast<quint8>(effective.alpha()),
         };
         for (fh6::ShapeLayer *layer : layers_) {
             layer->color = color;

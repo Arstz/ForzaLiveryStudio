@@ -102,4 +102,12 @@ public:
     bool hoverCursor(const QPointF &point, QCursor *cursor) const override;
 };
 
+class PipetteTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
 } // namespace gui

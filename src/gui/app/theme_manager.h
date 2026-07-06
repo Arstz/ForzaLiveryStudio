@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QPalette>
+#include <QSize>
 #include <QString>
 
 class QApplication;
@@ -35,6 +36,12 @@ struct BehaviorSettings {
     bool showPropertyDebug = false;
     bool moveToolAutoSelect = false;
     bool selectionFlashEnabled = true;
+    bool guideLayersOnTop = true;
+    bool visibilityBordersEnabled = true;
+    bool positionLimitBorderEnabled = false;
+    QSize visibilityBorderResolution = QSize(1920, 1080);
+    double nudgeStep = 0.1;
+    double nudgeShiftStep = 1.0;
 };
 
 QString themeSettingsValue(UiTheme theme);

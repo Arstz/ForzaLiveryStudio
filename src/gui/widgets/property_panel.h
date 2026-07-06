@@ -3,6 +3,7 @@
 #include "core_types.h"
 #include "scene_entry.h"
 
+#include <QColor>
 #include <QHash>
 #include <QPoint>
 #include <QPointF>
@@ -13,6 +14,7 @@
 
 #include <array>
 #include <functional>
+#include <optional>
 
 class QCheckBox;
 class QDoubleSpinBox;
@@ -38,6 +40,10 @@ public:
     // pivot about the selection's true visual bounding box. Optional: without it
     // the pivot falls back to the bounding box of item positions.
     void setSpriteSizeFn(std::function<QSizeF(int)> fn);
+    void setGuideColorSampleFn(std::function<std::optional<QColor>()> fn);
+    std::optional<std::array<quint8, 4>> currentSelectionColor() const;
+    void applyColorToSelection(const std::array<quint8, 4> &color);
+    bool sampleGuideColorToSelection();
 
     std::array<int, 3> flagCheckStates() const;
 
@@ -76,6 +82,7 @@ private:
 
     EditorState *state_ = nullptr;
     std::function<QSizeF(int)> spriteSizeFn_;
+    std::function<std::optional<QColor>()> guideColorSampleFn_;
     QVector<fh6::ShapeLayer *> layers_;
     QVector<fh6::GuideLayer *> guides_;
     QVector<fh6::LayerGroup *> groups_;

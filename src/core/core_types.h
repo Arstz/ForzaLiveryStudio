@@ -84,6 +84,7 @@ struct Project {
     QVector<GuideLayer> guideLayers;
     QVector<LayerGroup> groups;
     QVector<QString> rootChildIds;
+    QVector<std::array<quint8, 4>> colorSwatches;
     bool isLivery = false;  // imported from a C_livery: rootChildIds are the 11 sections
 };
 

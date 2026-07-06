@@ -46,6 +46,33 @@ QString toBase64(const QByteArray &bytes)
     return QString::fromLatin1(bytes.toBase64());
 }
 
+std::array<quint8, 4> colorSwatchFromJson(const QJsonValue &value)
+{
+    const QString text = value.toString();
+    if (!text.startsWith(QLatin1Char('#')) || (text.size() != 9 && text.size() != 7)) {
+        return {255, 255, 255, 255};
+    }
+    bool ok = false;
+    const uint valueRgb = text.mid(1).toUInt(&ok, 16);
+    if (!ok) {
+        return {255, 255, 255, 255};
+    }
+    const quint8 alpha = text.size() == 9 ? static_cast<quint8>((valueRgb >> 24) & 0xff) : 255;
+    const quint8 red = static_cast<quint8>((valueRgb >> 16) & 0xff);
+    const quint8 green = static_cast<quint8>((valueRgb >> 8) & 0xff);
+    const quint8 blue = static_cast<quint8>(valueRgb & 0xff);
+    return {blue, green, red, alpha};
+}
+
+QString colorSwatchToJson(const std::array<quint8, 4> &color)
+{
+    return QStringLiteral("#%1%2%3%4")
+        .arg(color[3], 2, 16, QLatin1Char('0'))
+        .arg(color[2], 2, 16, QLatin1Char('0'))
+        .arg(color[1], 2, 16, QLatin1Char('0'))
+        .arg(color[0], 2, 16, QLatin1Char('0'));
+}
+
 QString toHexString(const QByteArray &bytes)
 {
     return QString::fromLatin1(bytes.toHex());
@@ -700,6 +727,11 @@ Project projectFromJson(const QJsonObject &object)
     for (const QJsonValue &value : rootChildIds) {
         project.rootChildIds.push_back(value.toString());
     }
+    const QJsonArray colorSwatches = object.value(QStringLiteral("color_swatches")).toArray();
+    project.colorSwatches.reserve(colorSwatches.size());
+    for (const QJsonValue &value : colorSwatches) {
+        project.colorSwatches.push_back(colorSwatchFromJson(value));
+    }
     return project;
 }
 
@@ -829,6 +861,12 @@ QJsonObject projectToJson(const Project &project)
         rootChildIds.append(childId);
     }
     object.insert(QStringLiteral("root_child_ids"), rootChildIds);
+
+    QJsonArray colorSwatches;
+    for (const std::array<quint8, 4> &color : project.colorSwatches) {
+        colorSwatches.append(colorSwatchToJson(color));
+    }
+    object.insert(QStringLiteral("color_swatches"), colorSwatches);
     return object;
 }
 
