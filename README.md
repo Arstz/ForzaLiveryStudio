@@ -7,14 +7,16 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and i
 - Import/export to Forza proprietary binary format.
 - Save/load project to json files.
 - Full transformations for shapes and groups.
+- Align and distribute tools for the current selection.
 - Custom groups, reusable in multiple projects.
 - Add raster image overlay as guide layer.
 - Direct shape parity with the game engine.
+- 3D car preview with live livery projection; auto-loads the matching car model.
 - Blazingly fast perfomance thanks to C++.
 
 ## Usage
 
-Download the latest [release](https://github.com/Arstz/ForzaLiveryStudio/releases/latest), launch `ForzaLiveryStudio.exe`. Read [manual](docs/MANUAL.md) for keyboard shortcuts and tools guide. 
+Download the latest [release](https://github.com/Arstz/ForzaLiveryStudio/releases/latest), launch `ForzaLiveryStudio.exe`. Read [manual](docs/MANUAL.md) for keyboard shortcuts and tools guide.
 
 Configure all the windows as you need them and press `Window -> Save Layout`. If you want to rename the default shapes, go to `assets/vector/shape_names.json`.
 
@@ -68,7 +70,7 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 ## Status
 
-The import/export for groups is fully supported, core functionality in place. The liveries can be only imported. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. The application targets Forza games generally; compatibility may still vary by title because not every game/version has been verified.
+The import/export for groups is fully supported, core functionality in place. Liveries can be imported and previewed in 3D on a car model, but livery **export is not available yet** — the encoder is written and in-game confirmed for the container, but full artwork synthesis is still in progress, so the Export action refuses liveries for now. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. The application targets Forza games generally; compatibility may still vary by title because not every game/version has been verified.
 
 ## Documentation
 
@@ -85,6 +87,7 @@ The import/export for groups is fully supported, core functionality in place. Th
 - When `[FeatureName]`? - Tomorrow.
 - Can I get banned for this? - No.
 - I want `[FeatureName]`, where to request? - Create an issue in this repo.
+- Why not Rust? -  https://youtu.be/8ue3PXu3W8Q
 
 ## Credits
 

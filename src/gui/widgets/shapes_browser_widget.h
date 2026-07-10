@@ -4,11 +4,9 @@
 #include "shape_geometry_store.h"
 #include "shape_name_store.h"
 
-#include <QColor>
-#include <QHash>
-#include <QJsonObject>
-#include <QSet>
-#include <QWidget>
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
 
 #include <functional>
 
@@ -93,11 +91,35 @@ private:
     std::function<void(const QString &)> deleteCallback_;
 };
 
+class LogoTile final : public QWidget {
+public:
+    LogoTile(quint32 rasterId, const QSize &size, QWidget *parent = nullptr);
+
+    void refreshTheme();
+    void setPressedCallback(std::function<void(quint32)> callback);
+
+protected:
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+
+private:
+    void drawPreview(QPainter &painter, const QRect &rect);
+
+    quint32 rasterId_ = 0;
+    QSize size_;
+    mutable QHash<QSize, QImage> previewCache_;
+    bool hovered_ = false;
+    std::function<void(quint32)> pressedCallback_;
+};
+
 class ShapesBrowserWidget final : public QWidget {
 public:
     explicit ShapesBrowserWidget(QWidget *parent = nullptr);
 
     void setShapeSelectedCallback(std::function<void(int)> callback);
+    void setLogoSelectedCallback(std::function<void(quint32, int, int)> callback);
     void setCustomGroupSelectedCallback(std::function<void(const CustomShapeGroup &)> callback);
     void setAddCurrentSelectionCallback(std::function<void()> callback);
     void addCustomGroup(const QString &name, const ProjectClipboard &clipboard);
@@ -111,6 +133,7 @@ private:
     void refreshGrid();
     void showGridMessage(const QString &text);
     ShapeTile *tileForShape(int shapeId);
+    LogoTile *tileForLogo(quint32 rasterId);
     CustomGroupTile *tileForCustomGroup(const CustomShapeGroup &group);
     void setFavourite(int shapeId, bool enabled);
     void deleteCustomGroup(const QString &id);
@@ -126,10 +149,12 @@ private:
     ShapeNameStore names_;
     bool geometryLoaded_ = false;
     QHash<QString, QVector<int>> categories_;
+    QHash<quint32, QSize> logos_;
     QStringList categoryOrder_;
     QSet<int> favourites_;
     QVector<CustomShapeGroup> customGroups_;
     QHash<int, ShapeTile *> tiles_;
+    QHash<quint32, LogoTile *> logoTiles_;
     QHash<QString, CustomGroupTile *> customTiles_;
     QString currentCategory_;
     QLineEdit *search_ = nullptr;
@@ -140,6 +165,7 @@ private:
     QGridLayout *grid_ = nullptr;
     QLabel *searchHint_ = nullptr;
     std::function<void(int)> shapeSelectedCallback_;
+    std::function<void(quint32, int, int)> logoSelectedCallback_;
     std::function<void(const CustomShapeGroup &)> customGroupSelectedCallback_;
     std::function<void()> addCurrentSelectionCallback_;
 };

@@ -1,11 +1,7 @@
 #pragma once
 
-#include <QHash>
-#include <QPointF>
-#include <QRectF>
-#include <QSizeF>
-#include <QString>
-#include <QVector>
+#include <QtCore>
+#include <QtGui>
 
 namespace gui {
 

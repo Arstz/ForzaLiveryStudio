@@ -7,10 +7,8 @@
 #include "settings_dialog.h"
 #include "theme_manager.h"
 
-#include <QMainWindow>
-#include <QPersistentModelIndex>
-#include <QSet>
-#include <QVector>
+#include <QtCore>
+#include <QtWidgets>
 
 #include <array>
 
@@ -30,6 +28,7 @@ class QToolButton;
 
 namespace gui {
 
+class CarPreviewWidget;
 class ClipboardBufferWidget;
 class ColorPaletteWidget;
 class EditorState;
@@ -46,6 +45,7 @@ public:
     bool loadLivery(const QString &path, QString *error = nullptr);
     bool importAny(const QString &path, QString *error = nullptr);
     bool newProject(QString *error = nullptr);
+    bool newProject(bool livery, QString *error, int carId = 0);
     bool saveProjectJson(const QString &path, QString *error = nullptr);
     bool loadProjectJson(const QString &path, QString *error = nullptr);
     void deleteSelectedLayers();
@@ -56,6 +56,7 @@ public:
     void sampleGuideColorToSelection();
     void toggleGuideLayerVisibility();
     void insertShape(int shapeId);
+    void insertLogo(quint32 rasterId, int width, int height);
     void placeTextDialog();
     void saveCurrentSelectionAsCustomGroup();
     void insertCustomGroup(const QString &name, const ProjectClipboard &clipboard);
@@ -68,6 +69,8 @@ public:
     void noteProjectGeometryChanged(bool refreshPreviews = false);
     void noteProjectStructureChanged();
     void centerViewOnSelection();
+    void alignSelection(ProjectCanvas::AlignEdge edge);
+    void distributeSelection(ProjectCanvas::DistributeAxis axis);
     void setToolName(const QString &name);
 
 private:
@@ -85,11 +88,17 @@ private:
     void setActiveSection(const QString &sectionGroupId);
     void prebakeLiverySectionCaches();
     QString activeLiverySectionId() const;
+    int activeLiverySectionSlot() const;
     void applyLiverySectionVisibility(const QString &sectionGroupId);
+    void updateCarUnwrapOverlay();
     void exportDialog();
-    bool exportFolderImpl(const QString &folder, bool nested, QString *error);
+    bool exportFolderImpl(const QString &folder, QString *error);
+    void setTargetCarDialog();
+    void setProjectNameDialog();
+    void setCreatorNameDialog();
     void newProjectDialog();
     void saveProjectJsonDialog();
+    void autosaveProject();
     void loadProjectJsonDialog();
     void openRecentProjectJson(const QString &path);
     void rememberRecentProjectJson(const QString &path);
@@ -104,6 +113,7 @@ private:
     void applyTheme(UiTheme theme, bool save = true);
     void refreshThemedIcons();
     void applyBehaviorSettings(const BehaviorSettings &settings, bool save = true);
+    void configureAutosaveTimer(const BehaviorSettings &settings);
     QAction *registerShortcutAction(QAction *action,
                                     const QString &id,
                                     const QString &label,
@@ -126,8 +136,9 @@ private:
     QVector<QString> selectedEntryIds() const;
     fh6::Project *project();
     // Tree-aware selection helpers: resolve the tree's entry selection against state_.
-    QVector<fh6::LayerGroup *> selectedGroups();
+    QVector<fh6::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
+    void refreshPropertyBoxFieldsFromCanvas();
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
     enum class ExternalDropKind {
@@ -148,6 +159,9 @@ private:
     // stays correct after layout restore or when the dock is re-anchored.
     void updateDockCollapseButton(QDockWidget *dock, Qt::DockWidgetArea area);
     void syncDockCollapseButtons();
+    // Shows the collapse button on only the first docked dock per area and hides it on
+    // floating (detached) docks, so the button is never duplicated across an area.
+    void updateDockCollapseButtonVisibility();
     QVector<QDockWidget *> dockWidgetsInArea(Qt::DockWidgetArea area) const;
 
     // Constructor helpers: each builds one slice of the UI so the constructor reads
@@ -164,18 +178,32 @@ private:
     void connectEditorStateSignals();
     void setupFileMenu();
     void setupEditMenu();
+    void setupProjectMenu();
     void setupOptionsMenu();
     void setupToolbar();
     void setupWindowMenu();
+    void importCarModel();
+    // Auto-loads the car model that matches a livery project's target car id from the
+    // user's configured car-models folder; prompts (once per session) to pick that
+    // folder when it is unset. No-op for non-liveries or when a model is already loaded.
+    void maybeAutoLoadCarForProject();
+    // Resolves a car model file for the given model name inside the given folder
+    // (matching <name>.carbin/.zip/.modelbin or a same-named subfolder). Empty if none.
+    QString findCarModelPath(const QString &folder, const QString &modelName) const;
 
     EditorState *state_ = nullptr;
     ProjectCanvas *canvas_ = nullptr;
     ClipboardBufferWidget *clipboardWidget_ = nullptr;
     ColorPaletteWidget *colorPalette_ = nullptr;
     ShapesBrowserWidget *shapesBrowser_ = nullptr;
+    CarPreviewWidget *carPreview_ = nullptr;
+    QDockWidget *carPreviewDock_ = nullptr;
+    QAction *carUnwrapAction_ = nullptr;
+    QAction *flipSelectionAction_ = nullptr;
     QTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;  // C_livery section tabs (hidden otherwise)
     QLabel *details_ = nullptr;
+    QTimer *autosaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;
     PropertyPanel *properties_ = nullptr;
@@ -192,6 +220,9 @@ private:
     QVector<QPersistentModelIndex> autoExpandedTreeIndexes_;
     QStringList autoExpandedGroupIds_;
     bool dockResizeCursorOverrideActive_ = false;
+    // Set once we have asked the user to configure the car-models folder, so the
+    // prompt does not reappear on every subsequent livery load in this session.
+    bool promptedForCarModelsFolder_ = false;
     struct DockAreaCollapseState {
         Qt::DockWidgetArea area = Qt::NoDockWidgetArea;
         bool collapsed = false;

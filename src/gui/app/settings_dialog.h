@@ -13,7 +13,9 @@ class QComboBox;
 class QDoubleSpinBox;
 class QKeySequenceEdit;
 class QLabel;
+class QLineEdit;
 class QPushButton;
+class QSpinBox;
 class QTableWidget;
 
 namespace gui {
@@ -62,6 +64,11 @@ private:
     QComboBox *visibilityBorderResolution_ = nullptr;
     QDoubleSpinBox *nudgeStep_ = nullptr;
     QDoubleSpinBox *nudgeShiftStep_ = nullptr;
+    QSpinBox *liveryTextureScale_ = nullptr;
+    QSpinBox *autosaveIntervalMinutes_ = nullptr;
+    QLineEdit *carModelsFolder_ = nullptr;
+    QCheckBox *discardModelOnLiveryOpen_ = nullptr;
+    QCheckBox *valueEditingWheelCheck_ = nullptr;
     QTableWidget *shortcutTable_ = nullptr;
     QLabel *validationLabel_ = nullptr;
 };

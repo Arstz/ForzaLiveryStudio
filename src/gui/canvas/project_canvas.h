@@ -1,22 +1,13 @@
 #pragma once
 
 #include "core_types.h"
+#include "layer.h"
 #include "native_shape_renderer.h"
 #include "shape_geometry_store.h"
 
-#include <QColor>
-#include <QElapsedTimer>
-#include <QCursor>
-#include <QHash>
-#include <QImage>
-#include <QOpenGLWidget>
-#include <QPoint>
-#include <QPolygonF>
-#include <QSet>
-#include <QSize>
-#include <QStringList>
-#include <QTimer>
-#include <QTransform>
+#include <QtCore>
+#include <QtGui>
+#include <QtOpenGLWidgets>
 
 #include <functional>
 #include <memory>
@@ -73,6 +64,31 @@ public:
     std::optional<QColor> colorAtScreenPoint(const QPointF &point) const;
     void setPipetteColorPickedCallback(std::function<void(const QColor &)> callback);
 
+    // Car UV-unwrap overlay: a canvas-space image (livery-canvas coords, canvasX in
+    // [-1024,1024], canvasY in [-512,512], texel (0,0) maps to canvas
+    // (-1024,-512)) showing where the imported car's rendered body panels land,
+    // so vinyls can be aligned to the body. A null image clears it.
+    void setCarUnwrapOverlay(const QImage &overlay);
+    void setCarUnwrapVisible(bool visible);
+    bool carUnwrapVisible() const;
+    bool hasCarUnwrap() const;
+    void cycleFlipSelection();
+
+    // Align / distribute the current selection by evaluating each top-level unit's
+    // world-space bounding box (a whole group counts as one unit; loose leaves count
+    // individually). Align snaps every unit to a shared edge/centre; distribute evens
+    // the spacing of unit centres along one axis. Both return false when the selection
+    // has too few units to act on. Note world +Y is up, so Top = larger Y.
+    enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom, Center };
+    enum class DistributeAxis { Horizontal, Vertical };
+    bool alignSelection(AlignEdge edge);
+    bool distributeSelection(DistributeAxis axis);
+
+    bool currentTransformBox(QPointF *center,
+                             double *width,
+                             double *height,
+                             QTransform *boxFrame) const;
+
 protected:
     void initializeGL() override;
     void paintGL() override;
@@ -83,7 +99,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void leaveEvent(QEvent *event) override;
-    // Return false so Backtab is delivered to keyPressEvent (selection flip) instead of moving focus.
+    // Return false so Tab/Backtab is delivered to keyPressEvent (selection flip) instead of moving focus.
     bool focusNextPrevChild(bool next) override;
 
 private:
@@ -141,8 +157,22 @@ private:
     QPointF worldToScreen(const QPointF &point) const;
     QPointF screenToWorld(const QPointF &point) const;
     QPolygonF screenQuad(const QTransform &entryToWorld, const QRectF &localRect) const;
-    QPolygonF layerScreenPolygon(const fh6::ShapeLayer &layer) const;
-    QPolygonF guideScreenPolygon(const fh6::GuideLayer &guide) const;
+    // Derived scene tree the read paths walk. Uses EditorState's cached tree when a
+    // state is attached; otherwise a canvas-local tree rebuilt from project_ on scene
+    // cache invalidation.
+    const fh6::scene::Group *sceneTree() const;
+    // True when the given section owns the active livery section (or section filtering
+    // does not apply): centralises the repeated `isLivery && activeSectionId` gate.
+    bool isSectionActive(const QString &sectionGroupId) const;
+    // Walk the scene's shape/guide leaves from whichever backend is active (EditorState's
+    // cached render entries, or the canvas-local tree), yielding each leaf with its world
+    // transform (and owning section for guides / draw order for shapes). `reverse` visits
+    // topmost-first for hit testing; the visitor returns false to stop early. No visibility
+    // or selection filtering is applied — callers add their own predicate.
+    void forEachSceneShape(const std::function<bool(const fh6::scene::Shape &, const QTransform &, int)> &visit,
+                           bool reverse) const;
+    void forEachSceneGuide(const std::function<bool(const fh6::scene::GuideLayer &, const QTransform &, const QString &)> &visit,
+                           bool reverse) const;
     QVector<HitEntry> hitEntries();
     QVector<QString> layersAtScreenPoint(const QPointF &point);
     std::optional<QColor> layerColorAtScreenPoint(const QPointF &point) const;
@@ -153,10 +183,18 @@ private:
     SelectionBox currentSelectionBox() const;
     QTransform boxToScreen(const SelectionBox &box) const;
     bool boxContainsScreenPoint(const SelectionBox &box, const QPointF &screenPoint) const;
-    void cycleFlipSelection();
-    QVector<fh6::ShapeLayer *> selectedLayers() const;
-    QVector<fh6::GuideLayer *> selectedGuideLayers() const;
+    QVector<fh6::scene::Shape *> selectedLayers() const;
+    QVector<fh6::scene::GuideLayer *> selectedGuideLayers() const;
     void captureDragStarts();
+    // Resolve the whole-groups being dragged (top-most fully selected, minus locked ones):
+    // their ids, drag-start frames, and the descendant leaf/guide ids they cover (so loose
+    // items nested under them are excluded and each transform is applied once). Shared by
+    // captureDragStarts() and nudgeSelection().
+    void collectDragGroups(QVector<QString> &groupIds,
+                           QHash<QString, QTransform> &startFrames,
+                           QSet<QString> &groupedLayerIds,
+                           QSet<QString> &groupedGuideIds) const;
+    QVector<QString> dragTransformTargetIds() const;
     void captureScaleReference();
     // Chooses the drag mode (and captures rotate/scale references) for the active
     // tool once a selection and its drag-start box exist. Leaves dragMode_ as None
@@ -167,6 +205,13 @@ private:
     void beginRotateDrag(const QPointF &boxCenterWorld);
     void applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
     bool nudgeSelection(const QPointF &delta);
+    // Shared machinery for alignSelection()/distributeSelection(): partitions the
+    // selection into movable units, hands their world bounds to computeDeltas (in unit
+    // order), and applies the returned per-unit world translations as one command. When
+    // descendSoleGroup is set and the selection resolves to a single group, its direct
+    // children become the units instead (so a lone group can distribute its members).
+    bool applyAlignDistribute(const std::function<QVector<QPointF>(const QVector<QRectF> &)> &computeDeltas,
+                              bool descendSoleGroup = false);
     void applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
     void applySkewDrag(const QPointF &screenPoint);
     // Applies a linear-transform gesture (scale/skew) to every dragged item by composing it
@@ -174,21 +219,35 @@ private:
     // fields. preMultiply picks the side: true -> transform * start (Relative single-item scale),
     // false -> start * transform (world/box-frame scale and group skew). Shared by both gestures.
     void applyDragTransform(const QTransform &transform, bool preMultiply);
+    // Compose a world-space transform onto every dragged shape/guide (decomposing back to
+    // per-item fields) and accumulate it into each dragged group's frame. Shared by the move
+    // and rotate gestures.
+    void applyWorldTransformToDragItems(const QTransform &worldTransform);
+    QString transformSelectionSignature() const;
+    QSizeF transformBoxVisualExtents(const SelectionBox &box) const;
+    void captureScaleHintReference();
     void applyRotateDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
     void clearCursorHint();
     void setCursorHint(const QPointF &point, const QStringList &lines);
     void drawCursorHint(QPainter &painter);
     // True while a drag that mutates entry transforms is active (not Pan/Marquee).
     bool isTransformDrag() const;
+    void requestLiveSceneUpdate();
     void resetDragState();
     void finishDrag();
     void cancelDrag();
     QString transformHandleAt(const QPointF &point, const SelectionBox &box) const;
     bool rotateZoneAt(const QPointF &point, const SelectionBox &box) const;
+    // Resolve the native cursor shape and themed cursor-art file for a scale/skew handle,
+    // orienting to the box's (possibly rotated) frame when one is supplied. Backs both
+    // cursorForScaleHandle() and cursorForTransformHandle().
+    void resolveHandleCursor(const QString &handle, const SelectionBox *box,
+                             Qt::CursorShape *shape, QString *iconFile) const;
     Qt::CursorShape cursorForScaleHandle(const QString &handle, const SelectionBox *box = nullptr) const;
     QCursor cursorForTransformHandle(const QString &handle, const SelectionBox *box = nullptr) const;
     Qt::CursorShape cursorForPoint(const QPointF &point);
     void updateCursorForPoint(const QPointF &point);
+    QCursor pipetteCursor() const;
     QCursor rotateCursor() const;
     QCursor rotateCursorForPoint(const QPointF &point, const SelectionBox &box) const;
     void drawVisibilityBorders(QPainter &painter);
@@ -207,7 +266,7 @@ private:
     bool movedPastClickThreshold(const QPointF &point) const;
     QString guideAtScreenPoint(const QPointF &point);
     void drawGuideLayers(QPainter &painter);
-    QImage guideImage(const fh6::GuideLayer &guide) const;
+    QImage guideImage(const fh6::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;
     void storeSectionCanvasCache(const QString &key);
 
@@ -273,6 +332,11 @@ private:
     // Selection centre in world space; used as the scale anchor when Alt is held so the
     // selection scales about its centre (the centre stays fixed) instead of the opposite handle.
     QPointF scaleCenterWorld_;
+    QString scaleHintSelectionSignature_;
+    QSizeF scaleHintBaseExtents_;
+    bool scaleHintBaseValid_ = false;
+    double scaleHintStartScaleX_ = 1.0;
+    double scaleHintStartScaleY_ = 1.0;
     QRectF marqueeRect_;
     QPointF cursorHintPoint_;
     QStringList cursorHintLines_;
@@ -280,6 +344,7 @@ private:
     // True when the in-progress drag began with an Alt-duplicate, so finishing the drag
     // refreshes the layer tree to show the newly inserted clones.
     bool dragDuplicated_ = false;
+    bool dragUsesProjectEdit_ = false;
     QString hoverLayerId_;
     QPolygonF hoverPolygon_;
     QVector<HitEntry> hitCache_;
@@ -293,10 +358,18 @@ private:
     QHash<QString, EntryStart> dragGuideStarts_;
     // Selected (unlocked) layers resolved once at drag start so per-move handlers
     // don't rebuild the entry/lock maps and rescan the project every mouse event.
-    QVector<fh6::ShapeLayer *> dragLayers_;
-    QVector<fh6::GuideLayer *> dragGuides_;
+    QVector<fh6::scene::Shape *> dragLayers_;
+    QVector<fh6::scene::GuideLayer *> dragGuides_;
+    // Whole groups (top-most fully-selected) transformed as units during a drag,
+    // with descendant leaves/guides filtered out so the group frame receives the
+    // transform exactly once.
+    QVector<QString> dragGroupIds_;
+    QHash<QString, QTransform> dragGroupStartFrames_;
     mutable QHash<QString, QImage> guideImageCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
+    // Car UV-unwrap overlay (canvas space) and its visibility toggle.
+    QImage carUnwrapOverlay_;
+    bool carUnwrapVisible_ = false;
     // Cached world-space union of the selection's bounds; mapped through the view transform to
     // produce the screen-space selection box without rescanning layers on every repaint.
     mutable std::optional<QRectF> selectionWorldBoundsCache_;

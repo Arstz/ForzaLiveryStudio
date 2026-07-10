@@ -14,6 +14,7 @@ namespace fh6 {
 namespace {
 using detail::readLeFloat;
 using detail::readLeU16;
+using detail::readLeU32;
 
 constexpr double Pi = 3.14159265358979323846;
 
@@ -174,6 +175,15 @@ VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false
     return shape;
 }
 
+VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos)
+{
+    VinylShape logo = decodeShapeAt(data, absPos);
+    logo.isLogo = true;
+    logo.logoId = logo.shapeId;
+    logo.rasterId = static_cast<quint32>(logo.logoId & 0x7fff);
+    return logo;
+}
+
 std::optional<Transform> readTransformPayload(const QByteArray &data, int pos, int end)
 {
     if (pos + 16 > end) {
@@ -258,6 +268,30 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
 std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos, int end,
                                                 bool allowCountOne, bool livery);
 
+bool isLiveryLogoAt(const QByteArray &data, int pos, int end)
+{
+    if (pos < 0 || pos + 32 > end || pos + 32 > data.size()) {
+        return false;
+    }
+    if (!bytesAt(data, pos, {0x00, 0x02})) {
+        return false;
+    }
+    const quint16 logoId = readLeU16(data, pos + 2);
+    if (logoId < 0x8000) {
+        return false;
+    }
+    return readLeU32(data, pos + 4) == 0
+        && readLeU32(data, pos + 8) == 0
+        && readLeU32(data, pos + 12) == 0
+        && readLeU32(data, pos + 16) == 0x3f800000
+        && readLeU32(data, pos + 20) == 0x3f800000
+        && readLeU32(data, pos + 24) == 0
+        && static_cast<quint8>(data[pos + 28]) == 0xff
+        && static_cast<quint8>(data[pos + 29]) == 0xff
+        && static_cast<quint8>(data[pos + 30]) == 0xff
+        && static_cast<quint8>(data[pos + 31]) == 0xff;
+}
+
 // Structural recognition of a C_livery SEPARATE transform followed by a child.
 // The 00-family livery marker is a bare `00` (unrecognisable by bytes alone -- see
 // CLIVERY.md), so a 00/01-led transform can only be confirmed STRUCTURALLY: a
@@ -286,6 +320,7 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
     }
     const int child = pos + size;
     return isValidShapeAt(data, child, end)
+        || isLiveryLogoAt(data, child, end)
         || validCountedGroupAt(data, child, end, true)
         || validMarkerlessGroupAt(data, child, end, true, true);
 }
@@ -353,11 +388,13 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
     }
     if (!foundTransform) {
         const bool childHere = isValidShapeAt(data, extra, end)
+            || (livery && isLiveryLogoAt(data, extra, end))
             || validCountedGroupAt(data, extra, end, livery)
             || (livery && liveryTransformThenChildAt(data, extra, end));
         if (!childHere) {
             if (extra + 1 < end
                 && (isValidShapeAt(data, extra + 1, end)
+                    || (livery && isLiveryLogoAt(data, extra + 1, end))
                     || validCountedGroupAt(data, extra + 1, end, livery)
                     || (livery && liveryTransformThenChildAt(data, extra + 1, end)))) {
                 info.flags |= static_cast<quint8>(data[extra]) & ~0x40;
@@ -446,6 +483,7 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
                && static_cast<quint8>(data[extra]) == 0x01
                && !isValidShapeAt(data, extra, end)
                && (isValidShapeAt(data, extra + 1, end)
+                   || isLiveryLogoAt(data, extra + 1, end)
                    || validCountedGroupAt(data, extra + 1, end, true)
                    || validMarkerlessGroupAt(data, extra + 1, end, true, true))) {
         // A livery group header can be followed by an extra `01` per-shape flag
@@ -933,6 +971,11 @@ struct WalkState {
     bool pendingMask = false;
 };
 
+int decodedLiveryDecals(const VinylGroupPtr &sectionNode)
+{
+    return countShapes(sectionNode);
+}
+
 // Build a markerless count-N group from `info` at `pos`, append it to the stack
 // top, push it, and update pending state. This is the markerless branch of
 // walkStep, factored out so the C_livery section walker can start a "bare"
@@ -1028,6 +1071,16 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
         addChild(*stack.back(), node);
         stack.push_back(node);
         return pos + info.size;
+    }
+
+    if (liveryDialect && isLiveryLogoAt(layerData, pos, end)) {
+        addShape(*stack.back(), decodeLiveryLogoAt(layerData, pos));
+        s.pendingTransform.reset();
+        s.pendingTransformMarker.clear();
+        s.pendingTransformPrefix.clear();
+        s.pendingFlags = 0;
+        s.pendingMask = false;
+        return pos + 32;
     }
 
     if (isValidShapeAt(layerData, pos, end)) {
@@ -1219,7 +1272,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
         WalkState state;
         state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
         int guard = 0;
-        while (countShapes(sectionNode) < target && pos < end && guard < end + 16) {
+        while (decodedLiveryDecals(sectionNode) < target && pos < end && guard < end + 16) {
             ++guard;
             closeCompleteStack(state.stack);
             if (state.stack.size() < 2) {

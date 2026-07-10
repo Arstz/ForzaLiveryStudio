@@ -12,80 +12,33 @@
 #include <optional>
 #include <variant>
 
+namespace fh6::scene {
+class Group;
+}
+
 namespace fh6 {
 
-constexpr int FlatExportLayerLimit = 3000;
-
-struct ShapeLayer {
-    QString id;
-    QString name = QStringLiteral("Shape");
-    quint16 shapeId = 0;
-    double x = 0.0;
-    double y = 0.0;
-    double scaleX = 1.0;
-    double scaleY = 1.0;
-    double rotation = 0.0;
-    double skew = 0.0;
-    std::array<quint8, 4> color = {255, 255, 255, 255};
-    bool visible = true;
-    bool locked = false;
-    bool mask = false;
-    int sourceShape = 0;
-    int absOffset = 0;
-    QByteArray marker;
-    int flags = 0;
-};
-
-struct GuideLayer {
-    QString id;
-    QString name = QStringLiteral("Guide");
-    QString sourcePath;
-    QByteArray imageBytes;
-    QByteArray pixelBytes;
-    QString imageFormat;
-    int width = 0;
-    int height = 0;
-    double x = 0.0;
-    double y = 0.0;
-    double scaleX = 1.0;
-    double scaleY = 1.0;
-    double rotation = 0.0;
-    double opacity = 0.5;
-    bool visible = true;
-    bool locked = false;
-};
-
-struct LayerGroup {
-    QString id;
-    QString name = QStringLiteral("Group");
-    QVector<QString> childIds;
-    bool locked = false;
-    int sourceAbsPos = 0;
-    QByteArray pendingTransformMarker;
-    QByteArray inlineTransformMarker;
-    QByteArray effectiveTransformMarker;
-    QByteArray headerControlBytes;
-    int flags = 0;
-    QString sourceParentId;
-    QString sourcePreviousSiblingId;
-    int sourcePreviousGroupDepth = 0;
-    QVector<QString> sourceChildIds;
-    bool isLiverySection = false;  // top-level C_livery panel section group
-    int liverySectionSlot = -1;    // 0..10 storage-order slot when isLiverySection
-};
-
 struct Project {
+    Project();
+    ~Project();
+    Project(const Project &other);
+    Project &operator=(const Project &other);
+    Project(Project &&other) noexcept;
+    Project &operator=(Project &&other) noexcept;
+
     QString name = QStringLiteral("Untitled");
     QString sourceFolder;
     QByteArray sourceDecPrefix;
     QByteArray sourceHeader;
     std::optional<HeaderMetadata> headerMetadata; // drives export when sourceHeader is empty (new projects)
-    QVector<ShapeLayer> layers;
-    QVector<GuideLayer> guideLayers;
-    QVector<LayerGroup> groups;
-    QVector<QString> rootChildIds;
+    std::unique_ptr<scene::Group> root;            // authoritative runtime scene tree
     QVector<std::array<quint8, 4>> colorSwatches;
-    bool isLivery = false;  // imported from a C_livery: rootChildIds are the 11 sections
+    bool isLivery = false;  // imported from a C_livery: root children are the 11 sections
+    int carId = 0;          // target car id (C_livery vlrc 0x10); 0 = unset. See livery-car-id-encoding.
+    // Decompressed original C_livery payload captured on import. The livery encoder
+    // rebuilds the export container from this (applying carId); empty for a livery
+    // authored from scratch (artwork-synthesis path not yet implemented).
+    QByteArray liverySource;
 };
 
 struct LayerData {
@@ -103,6 +56,9 @@ struct Matrix3 {
 
 struct VinylShape {
     quint16 shapeId = 0;
+    bool isLogo = false;
+    quint16 logoId = 0;
+    quint32 rasterId = 0;
     double rotation = 0.0;
     double posX = 0.0;
     double posY = 0.0;
@@ -149,6 +105,11 @@ struct VinylGroup {
 
 struct FlattenedLayer {
     quint16 shapeId = 0;
+    bool raster = false;
+    quint32 rasterId = 0;
+    int rasterWidth = 256;
+    int rasterHeight = 256;
+    quint16 sourceLogoId = 0;
     double rotation = 0.0;
     double posX = 0.0;
     double posY = 0.0;

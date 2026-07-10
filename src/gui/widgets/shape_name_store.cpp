@@ -1,10 +1,6 @@
 #include "shape_name_store.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QJsonDocument>
-#include <QJsonObject>
+#include <QtCore>
 
 namespace gui {
 namespace {

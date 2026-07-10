@@ -1,13 +1,17 @@
 #include "flat_payload.h"
 
 #include "binary_io.h"
+#include "layer.h"
 #include "matrix_math.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace fh6 {
 namespace {
+
+constexpr int kMaxDirectChildren = 0xff * 8;
 
 QByteArray defaultPrefix()
 {
@@ -24,12 +28,60 @@ QByteArray defaultPrefix()
     return QByteArray(bytes, 29);
 }
 
+struct ExportShape {
+    quint16 shapeId = 0;
+    double rotation = 0.0;
+    double x = 0.0;
+    double y = 0.0;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+    double skew = 0.0;
+    std::array<quint8, 4> color = {255, 255, 255, 255};
+    bool mask = false;
+};
+
+ExportShape exportShapeFromScene(const scene::Shape &shape)
+{
+    const scene::Transform2D world = decomposeTransform2D(shape.worldMatrix());
+    ExportShape out;
+    out.shapeId = shape.shapeId;
+    out.rotation = world.rotation;
+    out.x = world.x;
+    out.y = world.y;
+    out.scaleX = world.scaleX;
+    out.scaleY = world.scaleY;
+    out.skew = world.skew;
+    out.color = shape.color;
+    out.color[3] = static_cast<quint8>(std::clamp<int>(std::lround(shape.opacity * 255.0), 0, 255));
+    out.mask = shape.mask;
+    return out;
+}
+
+void collectVisibleShapes(const scene::Layer &node, QVector<ExportShape> &out)
+{
+    if (node.kind() == scene::LayerKind::Group) {
+        const auto &group = static_cast<const scene::Group &>(node);
+        if (!group.visible) {
+            return;
+        }
+        for (const auto &child : group.children) {
+            collectVisibleShapes(*child, out);
+        }
+        return;
+    }
+    if (node.kind() == scene::LayerKind::Shape && node.visible) {
+        out.push_back(exportShapeFromScene(static_cast<const scene::Shape &>(node)));
+    }
+}
+
 } // namespace
 
 using detail::appendLeFloat;
 using detail::appendLeU16;
 
-QByteArray packShape(const ShapeLayer &layer, bool maskRecord)
+namespace {
+
+QByteArray packShape(const ExportShape &layer, bool maskRecord)
 {
     QByteArray out;
     out.reserve(32);
@@ -53,23 +105,26 @@ QByteArray packShape(const ShapeLayer &layer, bool maskRecord)
     return out;
 }
 
+} // namespace
+
 QByteArray buildFlatPayload(const Project &project)
 {
-    QVector<const ShapeLayer *> visibleLayers;
-    visibleLayers.reserve(project.layers.size());
-    for (const ShapeLayer &layer : project.layers) {
-        if (layer.visible) {
-            visibleLayers.push_back(&layer);
+    QVector<ExportShape> visibleLayers;
+    if (project.root) {
+        visibleLayers.reserve(static_cast<int>(project.root->children.size()));
+        for (const auto &child : project.root->children) {
+            collectVisibleShapes(*child, visibleLayers);
         }
     }
 
     const int count = visibleLayers.size();
-    if (count > FlatExportLayerLimit) {
-        throw std::runtime_error("too many visible layers for flat export");
-    }
-
     const int childBlocks = (count + 7) / 8;
-    const int encodedChildBlocks = std::min(childBlocks, 0xff);
+    if (count <= 0) {
+        throw std::runtime_error("project has no visible layers to export");
+    }
+    if (count > kMaxDirectChildren) {
+        throw std::runtime_error("flat export has too many visible layers for the child bitmap");
+    }
     QByteArray prefix = project.sourceDecPrefix.isEmpty() ? defaultPrefix() : project.sourceDecPrefix;
     prefix = prefix.left(0x1d);
     if (prefix.size() < 0x1d) {
@@ -86,15 +141,15 @@ QByteArray buildFlatPayload(const Project &project)
     QByteArray payload = prefix;
     payload.append('\x20');
     appendLeU16(payload, static_cast<quint16>(count));
-    payload.append(static_cast<char>(encodedChildBlocks));
-    payload.append(QByteArray(encodedChildBlocks + 2, '\x00'));
+    payload.append(static_cast<char>(childBlocks));
+    payload.append(QByteArray(childBlocks + 2, '\x00'));
     bool prevWasMask = false;
-    for (const ShapeLayer *layer : visibleLayers) {
+    for (const ExportShape &layer : visibleLayers) {
         // 01 02 is a trailing flag: the game masks the shape that precedes an
         // 01 02 record, so a record is flagged when the previous visible layer
         // is a mask.
-        payload.append(packShape(*layer, prevWasMask));
-        prevWasMask = layer->mask;
+        payload.append(packShape(layer, prevWasMask));
+        prevWasMask = layer.mask;
     }
     payload.append('\x00');
     payload.append('\x01');

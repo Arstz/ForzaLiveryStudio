@@ -1,5 +1,7 @@
 #include "matrix_math.h"
 
+#include "layer.h"
+
 #include <cmath>
 
 namespace fh6 {
@@ -72,39 +74,66 @@ Matrix3 shapeMatrix(const FlattenedLayer &layer)
     return result;
 }
 
-ShapeLayer decomposeLayerMatrix(const Matrix3 &matrix)
+Matrix3 invertAffine(const Matrix3 &matrix)
 {
-    ShapeLayer layer;
-    layer.x = matrix.m[0][2];
-    layer.y = matrix.m[1][2];
+    const double a = matrix.m[0][0];
+    const double b = matrix.m[0][1];
+    const double c = matrix.m[1][0];
+    const double d = matrix.m[1][1];
+    const double e = matrix.m[0][2];
+    const double f = matrix.m[1][2];
+    const double det = a * d - b * c;
+    if (std::abs(det) < 1e-12) {
+        return Matrix3{};
+    }
+    const double invDet = 1.0 / det;
+    Matrix3 out;
+    out.m[0][0] = d * invDet;
+    out.m[0][1] = -b * invDet;
+    out.m[1][0] = -c * invDet;
+    out.m[1][1] = a * invDet;
+    // translation: -inv(linear) * [e, f]
+    out.m[0][2] = -(out.m[0][0] * e + out.m[0][1] * f);
+    out.m[1][2] = -(out.m[1][0] * e + out.m[1][1] * f);
+    out.m[2][0] = 0.0;
+    out.m[2][1] = 0.0;
+    out.m[2][2] = 1.0;
+    return out;
+}
+
+scene::Transform2D decomposeTransform2D(const Matrix3 &matrix)
+{
+    scene::Transform2D transform;
+    transform.x = matrix.m[0][2];
+    transform.y = matrix.m[1][2];
     const double a = matrix.m[0][0];
     const double b = matrix.m[0][1];
     const double c = matrix.m[1][0];
     const double d = matrix.m[1][1];
     const double sxMagnitude = std::hypot(a, c);
     if (sxMagnitude < 1e-8) {
-        layer.scaleX = 0.0;
-        layer.scaleY = std::hypot(b, d);
-        layer.skew = 0.0;
-        layer.rotation = 0.0;
-        return layer;
+        transform.scaleX = 0.0;
+        transform.scaleY = std::hypot(b, d);
+        transform.skew = 0.0;
+        transform.rotation = 0.0;
+        return transform;
     }
     double rot = 0.0;
     if (a * d - b * c < 0.0) {
-        layer.scaleX = -sxMagnitude;
+        transform.scaleX = -sxMagnitude;
         rot = std::atan2(-c, -a);
     } else {
-        layer.scaleX = sxMagnitude;
+        transform.scaleX = sxMagnitude;
         rot = std::atan2(c, a);
     }
     const double cosR = std::cos(rot);
     const double sinR = std::sin(rot);
     const double m01 = cosR * b + sinR * d;
     const double m11 = -sinR * b + cosR * d;
-    layer.scaleY = m11;
-    layer.skew = std::abs(m11) > 1e-8 ? m01 / m11 : 0.0;
-    layer.rotation = normalizeRotation(rot * 180.0 / Pi);
-    return layer;
+    transform.scaleY = m11;
+    transform.skew = std::abs(m11) > 1e-8 ? m01 / m11 : 0.0;
+    transform.rotation = normalizeRotation(rot * 180.0 / Pi);
+    return transform;
 }
 
 } // namespace fh6

@@ -9,8 +9,8 @@ namespace gui {
 // Pi for angle math; replaces literal 3.14159265358979323846 occurrences.
 inline constexpr double kPi = std::numbers::pi;
 
-// fh6::ShapeLayer::color stores its bytes in BGRA order (matching the game
-// payload). These indices name that layout — do not reorder them.
+// fh6::scene::Shape::color stores its bytes in BGRA order (matching the game
+// payload). These indices name that layout  Edo not reorder them.
 inline constexpr int ColorByteBlue = 0;
 inline constexpr int ColorByteGreen = 1;
 inline constexpr int ColorByteRed = 2;

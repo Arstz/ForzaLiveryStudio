@@ -1,8 +1,10 @@
 #pragma once
 
 #include "core_types.h"
+#include "layer.h"
 #include "shape_geometry_store.h"
 
+#include <QTransform>
 #include <QWidget>
 
 class QPainter;
@@ -21,8 +23,8 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    QRectF layerBounds(const fh6::ShapeLayer &layer) const;
-    void paintLayer(QPainter &painter, const fh6::ShapeLayer &layer) const;
+    QRectF layerBounds(const fh6::scene::Shape &layer, const QTransform &parentWorld) const;
+    void paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &parentWorld) const;
 
     const ProjectClipboard *clipboard_ = nullptr;
     ShapeGeometryStore geometry_;

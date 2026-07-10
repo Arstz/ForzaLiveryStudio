@@ -46,13 +46,23 @@ length. Other 4-letter ASCII runs found by a naive scan are float data, not tags
 
 ```text
 0x00 4 bytes  tag "vlrc"
-0x04 u32      version = 2
-0x08 u32      0
-0x0c u32      0
-0x10 u32      livery share id (decimal; matches folder name)
-0x14 u32      small flag/category (0..4; meaning unknown)
-0x18 u16      0
+0x04 u32      version = 2  (constant across all 46 samples)
+0x08 u32      source flag. 0 for a locally-authored livery; 1 on a subset of
+              downloaded/shared liveries (all with a foreign, non-null creator id).
+              For a from-scratch save: 0.
+0x0c u32      0  (constant)
+0x10 u32      car id — which car the livery is for (decimal). Matches the u32 in
+              the car's .carbin (before its name) and the tests/liveries/Livery_<id>
+              folder numbers (e.g. 1294 = gmc_syclone_92). This is how the game knows
+              which car to apply the livery to; see assets/cars/car_ids.json.
+0x14 u32      category/type field. Small enum-or-bitmask, observed {0,1,2,4,6}
+              (looks like bits 0x01|0x02|0x04). 0 in every hand-authored sample
+              (Empty / One* / FrontBack / TwoFront), so 0 is safe for from-scratch.
+0x18 u16      0  (constant)
 ```
+
+Every field here except the car id is either a fixed constant or safely 0 for a
+newly-authored livery. Deduced from all 46 `tests/liveries` samples.
 
 ## gyvl — Embedded C_group Header
 
@@ -123,22 +133,58 @@ extent/bounds field — per-panel bounds are not stored in the file). A populate
 slot is a run of one or more top-level groups whose decal count sums to that
 section's stats value, followed by an 18-byte scaffold remnant.
 
+## yrvl info record (first yrvl, @0x1a)
+
+The livery-level record between `vlrc` and `gyvl`. Fully parsed:
+
+```text
+0x00 4 bytes  tag "yrvl"
+0x04 u32      size = 19 (constant)
+0x08 8 bytes  creator id (author GUID). Always ends in the constant suffix
+              ...0900. A locally-authored / anonymous livery uses the null author
+              0000000000000900 — a value the game itself writes (seen in several
+              samples), so it is the correct choice for from-scratch.
+0x10 u32      flag = 1  (0 in two shared-livery outliers; use 1 for from-scratch)
+0x14 u8       0
+0x15 u32      gyvl body length — MUST equal the byte length of the following gyvl
+              chunk body (gyvl tag start .. next yrvl). This is the one computed
+              field: write it after emitting gyvl.
+```
+
 ## Trailing yrvl Chunks
 
 ### yrvl stats (52 B) — per-section decal counts
 
-`u32` counters starting right after the 4-byte `yrvl` tag (no size field). The
-first 11 values are the decal counts per section, in storage order; all zero for
-an empty livery. These counts drive the section walk (a section is consumed until
-its decals reach its count).
+`u32` counters starting right after the 4-byte `yrvl` tag (no size field), 12 in
+all. The first 11 are the decal counts per section, in storage order (confirmed
+one-by-one from the `One<Panel>` samples, each of which sets exactly one slot to
+1); all zero for an empty livery. These counts drive the section walk (a section
+is consumed until its decals reach its count). The 12th u32 is a small counter,
+0 in every hand-authored and most captured samples (only two outliers show 1 / 6);
+write 0.
 
 ### yrvl descriptor table (variable)
 
-A constant panel registry (does not grow per decal). Records carry an `00 02`
-sub-marker, a length, an 8-byte GUID referencing the gyvl tree, a payload, and
-RGBA. Record stride and field meanings are not confirmed.
+A panel/graphic registry. For any livery whose artwork uses only the game's
+built-in shapes it is a **592-byte global constant** — byte-identical across every
+`One*`, `Empty`, `FrontBack`, `TwoFront` sample AND across different cars
+(car 1294 vs 383). Its layout: an `00 02` header, 8 fixed block/material GUIDs
+(32-byte records), 11 fixed panel GUIDs (`…ffffffff 00000000 <panel-guid>`), then
+a tail `0b 00 00 00` (=11) followed by the 11 panel GUIDs concatenated. All of
+these GUIDs are global constants (not car- or livery-specific).
+
+The table grows only when the artwork references **custom uploaded graphics**
+(shared logos/decals, which carry their own share GUIDs) — the extra size is
+dominated by 27-byte-per-reference records (most sample deltas are exact multiples
+of 27; a few other record kinds exist). Built-in-shape liveries add nothing, which
+is why the whole `One*` set keeps the 592-byte constant even with a decal placed.
+So: **a from-scratch livery using only built-in shapes can emit the 592-byte
+constant verbatim.** The per-custom-graphic record layout is the one remaining
+open item, needed only for uploaded-logo support.
 
 ### yrvl terminator (8 B)
+
+Constant across all samples:
 
 ```text
 "yrvl" 00 00 00 00

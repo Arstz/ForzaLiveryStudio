@@ -1,10 +1,8 @@
 #pragma once
 
-#include <QModelIndex>
-#include <QPoint>
-#include <QRect>
-#include <QString>
-#include <QTreeView>
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
 
 class QDragEnterEvent;
 class QDragMoveEvent;

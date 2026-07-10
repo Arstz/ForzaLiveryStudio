@@ -1,33 +1,40 @@
-// Selection state and queries split out of editor_state.cpp: selected
-// layer/guide id sets, pointer resolution over the project arrays, group
-// selection, click-selection semantics, and ancestor-aware selection
-// normalization.
-
 #include "editor_state.h"
-
-#include "editor_state_internal.h"
 
 namespace gui {
 
-QVector<fh6::ShapeLayer *> EditorState::selectedLayers()
+QVector<fh6::scene::Shape *> EditorState::selectedLayers()
 {
+    QVector<fh6::scene::Shape *> result;
     if (!hasProject_) {
-        return {};
+        return result;
     }
-    return detail::selectedItems(project_.layers, selectedLayerIds_);
+    const ProjectIndexCache &cache = projectIndexCache();
+    for (const QString &id : selectedLayerIds_) {
+        if (fh6::scene::Shape *shape = cache.layers.value(id, nullptr)) {
+            result.push_back(shape);
+        }
+    }
+    return result;
 }
 
-QVector<fh6::GuideLayer *> EditorState::selectedGuideLayers()
+QVector<fh6::scene::GuideLayer *> EditorState::selectedGuideLayers()
 {
+    QVector<fh6::scene::GuideLayer *> result;
     if (!hasProject_) {
-        return {};
+        return result;
     }
-    return detail::selectedItems(project_.guideLayers, selectedGuideLayerIds_);
+    const ProjectIndexCache &cache = projectIndexCache();
+    for (const QString &id : selectedGuideLayerIds_) {
+        if (fh6::scene::GuideLayer *guide = cache.guides.value(id, nullptr)) {
+            result.push_back(guide);
+        }
+    }
+    return result;
 }
 
-QVector<fh6::LayerGroup *> EditorState::selectedGroups(const QVector<QString> &entryIds)
+QVector<fh6::scene::Group *> EditorState::selectedGroups(const QVector<QString> &entryIds)
 {
-    QVector<fh6::LayerGroup *> result;
+    QVector<fh6::scene::Group *> result;
     if (!hasProject_) {
         return result;
     }
@@ -38,9 +45,8 @@ QVector<fh6::LayerGroup *> EditorState::selectedGroups(const QVector<QString> &e
         if (seen.contains(entryId)) {
             continue;
         }
-        const auto groupIt = cache.groupIndexById.constFind(entryId);
-        if (groupIt != cache.groupIndexById.constEnd()) {
-            result.push_back(&project_.groups[groupIt.value()]);
+        if (fh6::scene::Group *group = cache.groups.value(entryId, nullptr)) {
+            result.push_back(group);
             seen.insert(entryId);
         }
     }
@@ -71,11 +77,40 @@ void EditorState::setSelectionIds(const QSet<QString> &layerIds, const QSet<QStr
 {
     const QSet<QString> existingLayers = existingLayerIds(layerIds);
     const QSet<QString> existingGuides = existingGuideLayerIds(guideLayerIds);
-    if (existingLayers == selectedLayerIds_ && existingGuides == selectedGuideLayerIds_) {
+    if (existingLayers == selectedLayerIds_ && existingGuides == selectedGuideLayerIds_
+        && selectedEntryIds_.isEmpty()) {
         return;
     }
     selectedLayerIds_ = existingLayers;
     selectedGuideLayerIds_ = existingGuides;
+    selectedEntryIds_.clear();
+    Q_EMIT selectionChanged();
+}
+
+void EditorState::setSelectionFromEntries(const QSet<QString> &layerIds,
+                                          const QSet<QString> &guideLayerIds,
+                                          const QVector<QString> &entryIds)
+{
+    const QSet<QString> existingLayers = existingLayerIds(layerIds);
+    const QSet<QString> existingGuides = existingGuideLayerIds(guideLayerIds);
+    QVector<QString> existingEntries;
+    existingEntries.reserve(entryIds.size());
+    QSet<QString> seen;
+    const ProjectIndexCache &cache = projectIndexCache();
+    for (const QString &id : entryIds) {
+        if (!id.isEmpty() && !seen.contains(id) && cache.nodes.contains(id)) {
+            existingEntries.push_back(id);
+            seen.insert(id);
+        }
+    }
+    existingEntries = normalizeEntrySelection(existingEntries);
+    if (existingLayers == selectedLayerIds_ && existingGuides == selectedGuideLayerIds_
+        && existingEntries == selectedEntryIds_) {
+        return;
+    }
+    selectedLayerIds_ = existingLayers;
+    selectedGuideLayerIds_ = existingGuides;
+    selectedEntryIds_ = existingEntries;
     Q_EMIT selectionChanged();
 }
 

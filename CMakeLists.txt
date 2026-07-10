@@ -15,27 +15,47 @@ add_library(fh6_core STATIC
     src/core/binary_io.h
     src/core/cgroup_codec.cpp
     src/core/cgroup_codec.h
+    src/core/core_types.cpp
     src/core/core_types.h
     src/core/fh6_core.cpp
     src/core/fh6_core.h
     src/core/header_codec.cpp
     src/core/header_codec.h
+    src/core/layer.cpp
+    src/core/layer.h
+    src/core/visual_container.h
     src/core/flat_payload.cpp
     src/core/flat_payload.h
     src/core/nested_payload.cpp
     src/core/nested_payload.h
     src/core/livery_codec.cpp
     src/core/livery_codec.h
+    src/core/livery_masks.cpp
+    src/core/livery_masks.h
+    src/core/car_scene.cpp
+    src/core/car_scene.h
     src/core/matrix_math.cpp
     src/core/matrix_math.h
+    src/core/model_bundle.cpp
+    src/core/model_bundle.h
+    src/core/model_geometry.cpp
+    src/core/model_geometry.h
     src/core/project_codec.cpp
     src/core/project_codec.h
+    src/core/raster_decals.cpp
+    src/core/raster_decals.h
+    src/core/scene_codec.cpp
+    src/core/scene_codec.h
     src/core/shape_registry.cpp
     src/core/shape_registry.h
+    src/core/swatchbin.cpp
+    src/core/swatchbin.h
     src/core/vinyl_decoder.cpp
     src/core/vinyl_decoder.h
     src/core/vinyl_flattener.cpp
     src/core/vinyl_flattener.h
+    src/core/zip_extract.cpp
+    src/core/zip_extract.h
 )
 
 target_link_libraries(fh6_core
@@ -44,17 +64,22 @@ target_link_libraries(fh6_core
         ZLIB::ZLIB
 )
 
+if(WIN32)
+    target_link_libraries(fh6_core PUBLIC d3d11 d3dcompiler)
+endif()
+
 target_include_directories(fh6_core PUBLIC src/core)
 
 option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
-option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper" OFF)
+option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
+option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 
 target_compile_definitions(fh6_core
     PUBLIC
         FH6_PRIVACY_POLICY=$<BOOL:${FH6_PRIVACY_POLICY}>
 )
 
-if(FH6_BUILD_LIVERY_COMPARE)
+if(FH6_BUILD_HELPER_TOOLS AND FH6_BUILD_LIVERY_COMPARE)
     # Console harness: diff a decoded C_livery against the in-game per-section
     # C_group exports (the ground truth for group decoding). Core-only, no GUI deps.
     add_executable(fh6_livery_compare
@@ -63,10 +88,27 @@ if(FH6_BUILD_LIVERY_COMPARE)
     target_link_libraries(fh6_livery_compare PRIVATE fh6_core Qt6::Core)
 endif()
 
+if(FH6_BUILD_HELPER_TOOLS)
+    # Console harness: decode a .modelbin and print mesh/vertex/index counts and bounds
+    # to sanity-check the geometry decoder against ForzaTechStudio. Core-only, no GUI.
+    add_executable(fh6_model_dump
+        tools/model_dump/main.cpp
+    )
+    target_link_libraries(fh6_model_dump PRIVATE fh6_core Qt6::Core)
+
+    # Console harness: decode built-in decal swatchbins into one indexed RGBA pack.
+    add_executable(fh6_pack_decals
+        tools/pack_decals/main.cpp
+    )
+    target_link_libraries(fh6_pack_decals PRIVATE fh6_core Qt6::Core)
+endif()
+
 set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)
 
 qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/main.cpp
+    src/gui/app/car_registry.cpp
+    src/gui/app/car_registry.h
     src/gui/app/dock_chrome.cpp
     src/gui/app/dock_chrome.h
     src/gui/app/gui_assets.cpp
@@ -74,6 +116,11 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/app/gui_constants.h
     src/gui/app/main_window.cpp
     src/gui/app/main_window.h
+    src/gui/app/main_window_internal.h
+    src/gui/app/main_window_edit.cpp
+    src/gui/app/main_window_io.cpp
+    src/gui/app/main_window_project.cpp
+    src/gui/app/main_window_ui.cpp
     src/gui/app/perf_utils.h
     src/gui/app/settings_dialog.cpp
     src/gui/app/settings_dialog.h
@@ -83,21 +130,29 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/state/editor_state.h
     src/gui/state/editor_state_clipboard.cpp
     src/gui/state/editor_state_grouping.cpp
-    src/gui/state/editor_state_internal.h
     src/gui/state/editor_state_selection.cpp
     src/gui/state/editor_state_snapshot.cpp
-    src/gui/state/editor_state_util.cpp
     src/gui/state/layer_tree_model.cpp
     src/gui/state/layer_tree_model.h
-    src/gui/state/scene_entry.h
+    src/gui/state/scene_view.h
     src/gui/canvas/canvas_tools.cpp
     src/gui/canvas/canvas_tools.h
+    src/gui/canvas/car_model_renderer.cpp
+    src/gui/canvas/car_model_renderer.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
     src/gui/canvas/native_shape_renderer.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas.h
+    src/gui/canvas/project_canvas_internal.h
+    src/gui/canvas/project_canvas_hit.cpp
+    src/gui/canvas/project_canvas_drag.cpp
+    src/gui/canvas/project_canvas_cursor.cpp
+    src/gui/canvas/project_canvas_paint.cpp
+    src/gui/canvas/project_canvas_events.cpp
+    src/gui/widgets/car_preview_widget.cpp
+    src/gui/widgets/car_preview_widget.h
     src/gui/widgets/clipboard_buffer_widget.cpp
     src/gui/widgets/clipboard_buffer_widget.h
     src/gui/widgets/color_palette_widget.cpp
@@ -145,6 +200,7 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
 
 set(FH6_GUI_ASSETS
     Cursor.xpm
+    CursorPipette.xpm
     MenuCopy.xpm
     MenuCut.xpm
     MenuDelete.xpm
@@ -152,6 +208,8 @@ set(FH6_GUI_ASSETS
     MenuExportFlat.xpm
     MenuFoldAllGroups.xpm
     MenuGroup.xpm
+    ImportCar.xpm
+    ImportGuide.xpm
     MenuOpenCGroup.xpm
     MenuOpenFolder.xpm
     MenuPaste.xpm
@@ -176,6 +234,7 @@ set(FH6_GUI_ASSETS
     ToolbarScale.xpm
     ToolbarSelect.xpm
     ToolbarSkew.xpm
+    ToolPipette.xpm
     ToolRotateE.xpm
     ToolRotateN.xpm
     ToolRotateNE.xpm
@@ -212,15 +271,33 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_geometry.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_geometry.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_geometry.json.gz"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_geometry.json.gz"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_names.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_names.json"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/decal_textures.bin"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/decal_textures.bin"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/car_ids.json"
     COMMENT "Deploying used GUI XPM assets"
 )
 
-if(NOT FH6_BUILD_LIVERY_COMPARE)
+if(NOT FH6_BUILD_HELPER_TOOLS)
+    add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_livery_compare.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_model_dump.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_pack_decals.exe"
+        COMMENT "Removing disabled helper tools from release output"
+    )
+elseif(NOT FH6_BUILD_LIVERY_COMPARE)
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E rm -f
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_livery_compare.exe"

@@ -26,6 +26,9 @@ void flattenInto(const VinylGroup &node, const Matrix3 &parentMat, bool parentMa
             const VinylShape &shape = std::get<VinylShape>(item.value);
             FlattenedLayer layer;
             layer.shapeId = shape.shapeId;
+            layer.raster = shape.isLogo;
+            layer.rasterId = shape.rasterId;
+            layer.sourceLogoId = shape.logoId;
             layer.rotation = shape.rotation;
             layer.posX = shape.posX;
             layer.posY = shape.posY;

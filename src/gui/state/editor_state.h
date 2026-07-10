@@ -1,28 +1,30 @@
 #pragma once
 
 #include "core_types.h"
+#include "layer.h"
+#include "scene_view.h"
 
-#include <QHash>
-#include <QObject>
-#include <QPersistentModelIndex>
-#include <QSet>
-#include <QVector>
+#include <QtCore>
+#include <QtGui>
 
+#include <memory>
 #include <optional>
 
 namespace gui {
 
 struct ProjectEditSnapshot {
-    QVector<fh6::ShapeLayer> layers;
-    QVector<fh6::GuideLayer> guideLayers;
-    QVector<fh6::LayerGroup> groups;
-    QVector<QString> rootChildIds;
-    QVector<std::array<quint8, 4>> colorSwatches;
+    fh6::Project project;
 };
 
 struct ProjectSelectionSnapshot {
     QSet<QString> layerIds;
     QSet<QString> guideLayerIds;
+    QVector<QString> entryIds;
+};
+
+enum class ProjectEditCommandKind {
+    Snapshot,
+    Transform,
 };
 
 enum class ProjectEditRefresh {
@@ -31,19 +33,31 @@ enum class ProjectEditRefresh {
     Structure,
 };
 
+struct ProjectTransformEdit {
+    QString nodeId;
+    fh6::scene::Transform2D before;
+    fh6::scene::Transform2D after;
+};
+
 struct ProjectEditCommand {
+    ProjectEditCommandKind kind = ProjectEditCommandKind::Snapshot;
     ProjectEditSnapshot before;
     ProjectEditSnapshot after;
+    QVector<ProjectTransformEdit> transforms;
     ProjectSelectionSnapshot undoSelection;
     ProjectSelectionSnapshot redoSelection;
     ProjectEditRefresh refresh = ProjectEditRefresh::Structure;
 };
 
 struct ProjectClipboard {
+    ProjectClipboard() = default;
+    ProjectClipboard(const ProjectClipboard &other);
+    ProjectClipboard &operator=(const ProjectClipboard &other);
+    ProjectClipboard(ProjectClipboard &&other) noexcept = default;
+    ProjectClipboard &operator=(ProjectClipboard &&other) noexcept = default;
+
     QVector<QString> rootIds;
-    QVector<fh6::ShapeLayer> layers;
-    QVector<fh6::GuideLayer> guideLayers;
-    QVector<fh6::LayerGroup> groups;
+    std::vector<std::unique_ptr<fh6::scene::Layer>> nodes;
 };
 
 class EditorState final : public QObject {
@@ -60,9 +74,9 @@ public:
     bool isModified() const;
     void setModified(bool modified);
 
-    QVector<fh6::ShapeLayer *> selectedLayers();
-    QVector<fh6::GuideLayer *> selectedGuideLayers();
-    QVector<fh6::LayerGroup *> selectedGroups(const QVector<QString> &entryIds);
+    QVector<fh6::scene::Shape *> selectedLayers();
+    QVector<fh6::scene::GuideLayer *> selectedGuideLayers();
+    QVector<fh6::scene::Group *> selectedGroups(const QVector<QString> &entryIds);
     bool isLayerLocked(const QString &layerId) const;
     QSet<QString> lockedLayerIds() const;
     QVector<QString> leafLayerIdsForEntry(const QString &entryId) const;
@@ -80,11 +94,35 @@ public:
     void setGroupDescendantColor(const QString &groupId, const std::array<quint8, 4> &color);
     void setGroupDescendantOpacity(const QString &groupId, double opacity);
 
+    // Group coordinate frame in the scene tree.
+    QTransform groupLocalFrame(const QString &groupId) const;
+    // World transform of a group's parent chain (composition of ancestor frames).
+    QTransform groupParentWorld(const QString &groupId) const;
+    // Accumulate a world-space transform into each group's own frame (the same
+    // worldT already baked into the descendant leaves). Used for numeric edits.
+    void transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT);
+    // Set each group's frame to its drag-start frame with worldT applied. Used for
+    // drag gestures that transform from a fixed start each tick.
+    void setGroupFramesFromStart(const QHash<QString, QTransform> &startLocalFrames,
+                                 const QTransform &worldT);
+    // Top-most groups whose entire descendant-leaf set is currently selected (a
+    // group is excluded if its parent group is also fully selected). These are the
+    // groups a canvas box drag transforms as whole units, so their frames accumulate.
+    QVector<QString> fullySelectedTopGroupIds() const;
+
+    // Authoritative scene tree for rendering, bounds, hit-test, and editing.
+    // Returns nullptr when there is no project.
+    const fh6::scene::Group *sceneRoot() const;
+    fh6::scene::Layer *sceneNode(const QString &id) const;
+
     QSet<QString> selectedLayerIds() const;
     void setSelectedLayerIds(const QSet<QString> &ids);
     QSet<QString> selectedGuideLayerIds() const;
     void setSelectedGuideLayerIds(const QSet<QString> &ids);
     void setSelectionIds(const QSet<QString> &layerIds, const QSet<QString> &guideLayerIds);
+    void setSelectionFromEntries(const QSet<QString> &layerIds,
+                                 const QSet<QString> &guideLayerIds,
+                                 const QVector<QString> &entryIds);
     void clearSelection();
     void selectLayerAtPoint(const QString &layerId, Qt::KeyboardModifiers modifiers);
 
@@ -92,12 +130,16 @@ public:
     void commitProjectEdit();
     void cancelProjectEdit();
     void beginTransformCommand();
+    void beginTransformCommand(const QVector<QString> &targetIds);
     void commitTransformCommand();
     void cancelTransformCommand();
     void undo();
     void redo();
 
-    void noteProjectGeometryChanged(bool refreshPreviews = false);
+    // changedNodeIds names the nodes the edit touched, letting the car preview
+    // re-rasterize only their livery section(s). Empty means "unknown" -> full rebuild.
+    void noteProjectGeometryChanged(bool refreshPreviews = false, const QVector<QString> &changedNodeIds = {});
+    void noteTransformLiveChanged(const QVector<QString> &targetIds);
     // Lightweight live-edit signal: repaint the canvas only, skipping the tree preview/state
     // refresh and property-panel rebuild. Used for high-frequency previews (e.g. dragging the
     // colour picker) where the full geometry refresh is too costly per tick.
@@ -106,8 +148,11 @@ public:
     void noteClipboardChanged();
     void setActiveSectionId(const QString &sectionGroupId);
     void setToolName(const QString &name);
+    const QVector<SceneRenderEntry> &renderEntries() const;
+    QSet<QString> sectionIdsForNodes(const QVector<QString> &nodeIds) const;
 
     QVector<QString> normalizeEntrySelection(const QVector<QString> &entryIds) const;
+    QVector<QString> selectedTransformTargetIds() const;
     bool copyEntriesToClipboard(const QVector<QString> &entries);
     void removeEntries(const QVector<QString> &entryIds);
     void insertClipboardAboveSelection(const ProjectClipboard &clipboard,
@@ -118,7 +163,7 @@ public:
     bool duplicateEntriesInPlace(const QVector<QString> &entryIds,
                                  QSet<QString> *newLayerSelection = nullptr,
                                  QSet<QString> *newGuideLayerSelection = nullptr);
-    void insertLayerAboveSelection(const fh6::ShapeLayer &layer, const QVector<QString> &selectedEntries);
+    void insertLayerAboveSelection(std::unique_ptr<fh6::scene::Shape> layer, const QVector<QString> &selectedEntries);
     void groupEntries(const QVector<QString> &entryIds);
     void ungroupEntries(const QVector<QString> &entryIds, bool flatten);
     bool reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow);
@@ -130,8 +175,8 @@ public:
     QSet<QString> existingGuideLayerIds(const QSet<QString> &ids) const;
     QString parentGroupForEntry(const QString &entryId) const;
     QString topmostGroupForEntry(const QString &entryId) const;
-    QVector<QString> *childListForParent(const QString &parentGroupId);
-    const QVector<QString> *childListForParent(const QString &parentGroupId) const;
+    fh6::scene::Group *groupForId(const QString &groupId);
+    const fh6::scene::Group *groupForId(const QString &groupId) const;
     QString uniqueLayerId() const;
     QString uniqueGuideLayerId() const;
     QString uniqueGroupId() const;
@@ -147,6 +192,7 @@ public:
     QString activeSectionId_;
     QSet<QString> selectedLayerIds_;
     QSet<QString> selectedGuideLayerIds_;
+    QVector<QString> selectedEntryIds_;
     bool modified_ = false;
     QVector<ProjectEditCommand> undoStack_;
     QVector<ProjectEditCommand> redoStack_;
@@ -155,7 +201,8 @@ public:
 
 Q_SIGNALS:
     void projectReset();
-    void projectGeometryChanged(bool refreshPreviews);
+    void projectGeometryChanged(bool refreshPreviews, const QVector<QString> &changedNodeIds);
+    void transformLiveChanged(const QVector<QString> &targetIds);
     void canvasRepaintRequested();
     void projectStructureChanged();
     void selectionChanged();
@@ -167,9 +214,11 @@ Q_SIGNALS:
 
 private:
     struct ProjectIndexCache {
-        QHash<QString, int> layerIndexById;
-        QHash<QString, int> guideIndexById;
-        QHash<QString, int> groupIndexById;
+        QHash<QString, fh6::scene::Shape *> layers;
+        QHash<QString, fh6::scene::GuideLayer *> guides;
+        QHash<QString, fh6::scene::Group *> groups;
+        QHash<QString, fh6::scene::Layer *> nodes;
+        QHash<QString, fh6::scene::Group *> parentGroupByChild;
         QHash<QString, QString> parentByChild;
         QHash<QString, int> orderByChild;
         mutable QHash<QString, QVector<QString>> leafIdsByEntry;
@@ -178,6 +227,11 @@ private:
 
     void invalidateProjectIndexCache() const;
     const ProjectIndexCache &projectIndexCache() const;
+    void ensureSceneTree() const;
+    void invalidateSceneTree() const;
+    void invalidateRenderCache() const;
+    void ensureRenderCache() const;
+    void updateRenderCacheTransforms(const QVector<QString> &targetIds) const;
     QVector<QString> leafLayerIdsForEntryCached(const QString &entryId, const ProjectIndexCache &cache) const;
     bool entryHasLockedLayerCached(const QString &entryId, const ProjectIndexCache &cache) const;
 
@@ -185,9 +239,15 @@ private:
     ProjectEditSnapshot captureSnapshot() const;
     bool snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const;
     ProjectEditRefresh classifySnapshotRefresh(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const;
+    void applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter);
     void refreshAfterHistoryCommand(ProjectEditRefresh refresh);
 
     mutable std::optional<ProjectIndexCache> indexCache_;
+
+    mutable QHash<QString, fh6::scene::Layer *> sceneNodeById_;
+    mutable bool renderCacheDirty_ = true;
+    mutable QVector<SceneRenderEntry> renderEntries_;
+    mutable QHash<QString, int> renderEntryByNodeId_;
 };
 
 } // namespace gui

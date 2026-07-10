@@ -1,33 +1,19 @@
 #include "nested_payload.h"
 
 #include "binary_io.h"
+#include "layer.h"
 #include "matrix_math.h"
 
-#include <QHash>
 #include <QPointF>
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <stdexcept>
-
-// Faithful port of the py-prototype build_grouped_payload / _pack_nested_group
-// (commit e50f993, "Fixed nested group exporting error"), which produces nested
-// C_group payloads the in-game editor accepts. Key rules:
-//  * Each group carries a TRANSLATION-only transform to its bbox-center origin;
-//    its shapes are packed RELATIVE to that origin, keeping child
-//    scale/rotation/skew clean.
-//  * Both the root and every non-root group header carry a child-type bitmap:
-//    0x00 0x00 0x00 (fixed) + one bit per direct child (1 = group, 0 = shape).
-//  * A group's FIRST child, when it is a shape, is written as a bare 31-byte
-//    record (0x02 ...); later shapes use the 2-byte 0x00/0x01 0x02 marker.
-//  * Transform markers depend on sibling position: 0x03 for the first entry,
-//    0x00 0x03 after a shape sibling, and 0x00 (0x01 * depth) 0x03 after a group
-//    sibling. A shape following a group is preceded by 0x00 (0x01 * (depth-1)).
-//  * The payload ends with 0x00 (0x01 * (terminal_depth + 1)).
 
 namespace fh6 {
 namespace {
+
+constexpr int kMaxDirectChildren = 0xff * 8;
 
 using detail::appendLeFloat;
 using detail::appendLeU16;
@@ -49,34 +35,74 @@ QByteArray defaultPrefix()
 
 struct GroupEntry {
     enum Kind { Group, Layer, Virtual } kind = Layer;
-    QString id;                   // Group/Layer id
-    QVector<GroupEntry> children; // Virtual children (unused by current model)
+    const scene::Group *group = nullptr;
+    const scene::Shape *shape = nullptr;
+    QVector<GroupEntry> children;
+
+    QString id() const
+    {
+        if (group != nullptr) {
+            return group->id;
+        }
+        if (shape != nullptr) {
+            return shape->id;
+        }
+        return {};
+    }
 };
 
 struct ExportContext {
     const Project &project;
-    QHash<QString, const ShapeLayer *> layersById;
-    QHash<QString, const LayerGroup *> groupsById;
-    QHash<QString, int> layerOrder; // id -> index in project.layers
     SpriteSizeFn spriteSize;
 };
+
+struct ExportShape {
+    const scene::Shape *node = nullptr;
+    quint16 shapeId = 0;
+    double rotation = 0.0;
+    double x = 0.0;
+    double y = 0.0;
+    double scaleX = 1.0;
+    double scaleY = 1.0;
+    double skew = 0.0;
+    std::array<quint8, 4> color = {255, 255, 255, 255};
+    bool mask = false;
+};
+
+ExportShape exportShape(const scene::Shape &shape)
+{
+    const scene::Transform2D world = decomposeTransform2D(shape.worldMatrix());
+    ExportShape out;
+    out.node = &shape;
+    out.shapeId = shape.shapeId;
+    out.rotation = world.rotation;
+    out.x = world.x;
+    out.y = world.y;
+    out.scaleX = world.scaleX;
+    out.scaleY = world.scaleY;
+    out.skew = world.skew;
+    out.color = shape.color;
+    out.color[3] = static_cast<quint8>(std::clamp<int>(std::lround(shape.opacity * 255.0), 0, 255));
+    out.mask = shape.mask;
+    return out;
+}
 
 int checkChildCount(int count, const char *label)
 {
     if (count <= 0) {
         throw std::runtime_error(std::string(label) + " has no children");
     }
-    if (count > 0xffff) {
-        throw std::runtime_error(std::string(label) + " has too many direct children");
+    if (count > kMaxDirectChildren) {
+        throw std::runtime_error(std::string(label) + " has too many direct children for the child bitmap");
     }
-    const int childBlocks = (count + 7) / 8;
-    if (childBlocks > 0xff) {
+    const int blocks = (count + 7) / 8;
+    if (blocks > 0xff) {
         throw std::runtime_error(std::string(label) + " needs too many child blocks");
     }
-    return childBlocks;
+    return blocks;
 }
 
-QByteArray packShapeRelative(const ShapeLayer &layer, double offsetX, double offsetY,
+QByteArray packShapeRelative(const ExportShape &shape, double offsetX, double offsetY,
                              quint8 firstMarker, bool bare)
 {
     QByteArray out;
@@ -87,17 +113,17 @@ QByteArray packShapeRelative(const ShapeLayer &layer, double offsetX, double off
         out.append(static_cast<char>(firstMarker));
         out.append('\x02');
     }
-    appendLeU16(out, layer.shapeId);
-    appendLeFloat(out, static_cast<float>(normalizeRotation(layer.rotation)));
-    appendLeFloat(out, static_cast<float>(layer.x - offsetX));
-    appendLeFloat(out, static_cast<float>(layer.y - offsetY));
-    appendLeFloat(out, static_cast<float>(layer.scaleX));
-    appendLeFloat(out, static_cast<float>(layer.scaleY));
-    appendLeFloat(out, static_cast<float>(layer.skew));
-    out.append(static_cast<char>(layer.color[0]));
-    out.append(static_cast<char>(layer.color[1]));
-    out.append(static_cast<char>(layer.color[2]));
-    out.append(static_cast<char>(layer.color[3]));
+    appendLeU16(out, shape.shapeId);
+    appendLeFloat(out, static_cast<float>(normalizeRotation(shape.rotation)));
+    appendLeFloat(out, static_cast<float>(shape.x - offsetX));
+    appendLeFloat(out, static_cast<float>(shape.y - offsetY));
+    appendLeFloat(out, static_cast<float>(shape.scaleX));
+    appendLeFloat(out, static_cast<float>(shape.scaleY));
+    appendLeFloat(out, static_cast<float>(shape.skew));
+    out.append(static_cast<char>(shape.color[0]));
+    out.append(static_cast<char>(shape.color[1]));
+    out.append(static_cast<char>(shape.color[2]));
+    out.append(static_cast<char>(shape.color[3]));
     return out;
 }
 
@@ -113,8 +139,8 @@ QByteArray packTranslationTransform(double x, double y, const QByteArray &marker
 
 QByteArray childBitmap(const QVector<GroupEntry> &items, const char *label)
 {
-    const int childBlocks = checkChildCount(items.size(), label);
-    QByteArray bitmap(childBlocks, '\x00');
+    const int blocks = checkChildCount(items.size(), label);
+    QByteArray bitmap(blocks, '\x00');
     for (int i = 0; i < items.size(); ++i) {
         if (items[i].kind == GroupEntry::Group || items[i].kind == GroupEntry::Virtual) {
             bitmap[i / 8] = static_cast<char>(static_cast<quint8>(bitmap[i / 8]) | (1 << (i % 8)));
@@ -123,8 +149,6 @@ QByteArray childBitmap(const QVector<GroupEntry> &items, const char *label)
     return bitmap;
 }
 
-// marker (0x20 normal / 0x60 mask) + u16 count + u8 child_blocks +
-// 0x00 0x00 0x00 + child bitmap.
 QByteArray packGroupHeader(int count, const QByteArray &bitmap, quint8 marker, const char *label)
 {
     checkChildCount(count, label);
@@ -137,7 +161,6 @@ QByteArray packGroupHeader(int count, const QByteArray &bitmap, quint8 marker, c
     return out;
 }
 
-// 0x00 + (0x01 * max(1, previousGroupDepth)) + 0x03
 QByteArray siblingGroupTransformMarker(int previousGroupDepth)
 {
     QByteArray out;
@@ -159,99 +182,76 @@ QPointF spriteHalfExtents(const ExportContext &ctx, quint16 shapeId)
     return QPointF(64.0 * w / side, 64.0 * h / side);
 }
 
-QVector<QPointF> layerCorners(const ExportContext &ctx, const ShapeLayer &layer)
+QVector<QPointF> shapeCorners(const ExportContext &ctx, const scene::Shape &shape)
 {
-    const QPointF he = spriteHalfExtents(ctx, layer.shapeId);
-    const double hw = he.x();
-    const double hh = he.y();
+    const ExportShape s = exportShape(shape);
+    const QPointF he = spriteHalfExtents(ctx, s.shapeId);
     FlattenedLayer fl;
-    fl.rotation = layer.rotation;
-    fl.posX = layer.x;
-    fl.posY = layer.y;
-    fl.scaleX = layer.scaleX;
-    fl.scaleY = layer.scaleY;
-    fl.skew = layer.skew;
+    fl.rotation = s.rotation;
+    fl.posX = s.x;
+    fl.posY = s.y;
+    fl.scaleX = s.scaleX;
+    fl.scaleY = s.scaleY;
+    fl.skew = s.skew;
     const Matrix3 m = shapeMatrix(fl);
     QVector<QPointF> corners;
-    const double pts[4][2] = {{-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}};
+    const double pts[4][2] = {{-he.x(), -he.y()}, {he.x(), -he.y()}, {he.x(), he.y()}, {-he.x(), he.y()}};
     for (const auto &p : pts) {
-        const double x = m.m[0][0] * p[0] + m.m[0][1] * p[1] + m.m[0][2];
-        const double y = m.m[1][0] * p[0] + m.m[1][1] * p[1] + m.m[1][2];
-        corners.push_back(QPointF(x, y));
+        corners.push_back(QPointF(m.m[0][0] * p[0] + m.m[0][1] * p[1] + m.m[0][2],
+                                  m.m[1][0] * p[0] + m.m[1][1] * p[1] + m.m[1][2]));
     }
     return corners;
 }
 
-QVector<QString> groupLeafIds(const ExportContext &ctx, const QString &groupId)
+void collectShapeLeaves(const scene::Layer &node, QVector<const scene::Shape *> &out)
 {
-    const LayerGroup *group = ctx.groupsById.value(groupId, nullptr);
-    if (!group) {
-        return {};
-    }
-    QVector<QString> leaves;
-    std::function<void(const QString &)> visit = [&](const QString &id) {
-        if (ctx.groupsById.contains(id)) {
-            for (const QString &childId : ctx.groupsById.value(id)->childIds) {
-                visit(childId);
-            }
-        } else if (ctx.layersById.contains(id)) {
-            leaves.push_back(id);
+    if (node.kind() == scene::LayerKind::Group) {
+        for (const auto &child : static_cast<const scene::Group &>(node).children) {
+            collectShapeLeaves(*child, out);
         }
-    };
-    for (const QString &childId : group->childIds) {
-        visit(childId);
+    } else if (node.kind() == scene::LayerKind::Shape) {
+        out.push_back(static_cast<const scene::Shape *>(&node));
     }
-    QVector<QString> unique;
-    QHash<QString, bool> seen;
-    for (const QString &id : leaves) {
-        if (!seen.contains(id)) {
-            seen.insert(id, true);
-            unique.push_back(id);
-        }
-    }
-    std::sort(unique.begin(), unique.end(), [&](const QString &a, const QString &b) {
-        return ctx.layerOrder.value(a, -1) < ctx.layerOrder.value(b, -1);
-    });
-    return unique;
 }
 
-void entryLayers(const ExportContext &ctx, const GroupEntry &entry, QVector<const ShapeLayer *> &out)
+void entryShapes(const GroupEntry &entry, QVector<const scene::Shape *> &out)
 {
     switch (entry.kind) {
     case GroupEntry::Layer:
-        if (const ShapeLayer *l = ctx.layersById.value(entry.id, nullptr)) {
-            out.push_back(l);
+        if (entry.shape != nullptr) {
+            out.push_back(entry.shape);
         }
         break;
     case GroupEntry::Group:
-        for (const QString &id : groupLeafIds(ctx, entry.id)) {
-            if (const ShapeLayer *l = ctx.layersById.value(id, nullptr)) {
-                out.push_back(l);
-            }
+        if (entry.group != nullptr) {
+            collectShapeLeaves(*entry.group, out);
         }
         break;
     case GroupEntry::Virtual:
         for (const GroupEntry &child : entry.children) {
-            entryLayers(ctx, child, out);
+            entryShapes(child, out);
         }
         break;
     }
 }
 
-QPointF layersOrigin(const ExportContext &ctx, const QVector<const ShapeLayer *> &leaves)
+QPointF shapesOrigin(const ExportContext &ctx, const QVector<const scene::Shape *> &leaves)
 {
     if (leaves.isEmpty()) {
         return QPointF(0.0, 0.0);
     }
     QVector<QPointF> points;
-    for (const ShapeLayer *l : leaves) {
-        points.append(layerCorners(ctx, *l));
+    for (const scene::Shape *shape : leaves) {
+        points.append(shapeCorners(ctx, *shape));
     }
     if (points.isEmpty()) {
-        return QPointF(leaves.front()->x, leaves.front()->y);
+        const ExportShape first = exportShape(*leaves.front());
+        return QPointF(first.x, first.y);
     }
-    double minX = points.front().x(), maxX = minX;
-    double minY = points.front().y(), maxY = minY;
+    double minX = points.front().x();
+    double maxX = minX;
+    double minY = points.front().y();
+    double maxY = minY;
     for (const QPointF &p : points) {
         minX = std::min(minX, p.x());
         maxX = std::max(maxX, p.x());
@@ -263,43 +263,38 @@ QPointF layersOrigin(const ExportContext &ctx, const QVector<const ShapeLayer *>
 
 QPointF entryOrigin(const ExportContext &ctx, const GroupEntry &entry)
 {
-    QVector<const ShapeLayer *> leaves;
-    entryLayers(ctx, entry, leaves);
-    return layersOrigin(ctx, leaves);
+    QVector<const scene::Shape *> leaves;
+    entryShapes(entry, leaves);
+    return shapesOrigin(ctx, leaves);
 }
 
-// A group is encoded as a mask group (0x60) when every one of its leaf layers is
-// masked. The game masks all descendants of a 0x60 group, so this reproduces a
-// whole-group mask (e.g. an imported 0x60 group whose children all carry the
-// inherited mask flag).
-bool entryAllMasked(const ExportContext &ctx, const GroupEntry &entry)
+bool entryAllMasked(const GroupEntry &entry)
 {
-    QVector<const ShapeLayer *> leaves;
-    entryLayers(ctx, entry, leaves);
+    QVector<const scene::Shape *> leaves;
+    entryShapes(entry, leaves);
     if (leaves.isEmpty()) {
         return false;
     }
-    for (const ShapeLayer *l : leaves) {
-        if (!l->mask) {
+    for (const scene::Shape *shape : leaves) {
+        if (!shape->mask) {
             return false;
         }
     }
     return true;
 }
 
-QVector<GroupEntry> groupEntryChildren(const ExportContext &ctx, const GroupEntry &entry)
+QVector<GroupEntry> directChildren(const GroupEntry &entry)
 {
     if (entry.kind == GroupEntry::Group) {
-        const LayerGroup *group = ctx.groupsById.value(entry.id, nullptr);
-        if (!group) {
+        if (entry.group == nullptr) {
             throw std::runtime_error("missing group in nested export");
         }
         QVector<GroupEntry> entries;
-        for (const QString &childId : group->childIds) {
-            if (ctx.groupsById.contains(childId)) {
-                entries.push_back({GroupEntry::Group, childId, {}});
-            } else if (ctx.layersById.contains(childId)) {
-                entries.push_back({GroupEntry::Layer, childId, {}});
+        for (const auto &child : entry.group->children) {
+            if (child->kind() == scene::LayerKind::Group) {
+                entries.push_back({GroupEntry::Group, static_cast<const scene::Group *>(child.get()), nullptr, {}});
+            } else if (child->kind() == scene::LayerKind::Shape) {
+                entries.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(child.get()), {}});
             }
         }
         return entries;
@@ -310,44 +305,33 @@ QVector<GroupEntry> groupEntryChildren(const ExportContext &ctx, const GroupEntr
     throw std::runtime_error("layer entries cannot have children");
 }
 
-// Depth of the last-child chain (matches _group_entry_terminal_depth).
-int terminalDepth(const ExportContext &ctx, const GroupEntry &entry)
+int terminalDepth(const GroupEntry &entry)
 {
-    const QVector<GroupEntry> children = groupEntryChildren(ctx, entry);
+    const QVector<GroupEntry> children = directChildren(entry);
     if (children.isEmpty()
         || (children.back().kind != GroupEntry::Group && children.back().kind != GroupEntry::Virtual)) {
         return 1;
     }
-    return 1 + terminalDepth(ctx, children.back());
+    return 1 + terminalDepth(children.back());
 }
 
-// The trailing mask flag also spans group boundaries: a group's transform marker
-// leads with 0x00, and that slot masks the immediately preceding shape when set
-// to 0x01. So flip a marker's leading 0x00 to 0x01 when the previous emitted
-// shape was a mask.
-QByteArray maybeFlipMaskFlag(QByteArray marker, bool prevShapeMask)
+QByteArray maybeFlipMaskFlag(QByteArray marker, bool previousShapeMask)
 {
-    if (prevShapeMask && !marker.isEmpty() && static_cast<quint8>(marker[0]) == 0x00) {
+    if (previousShapeMask && !marker.isEmpty() && static_cast<quint8>(marker[0]) == 0x00) {
         marker[0] = '\x01';
     }
     return marker;
 }
 
-// `prevShapeMask` threads the "previous emitted shape was a mask" state across the
-// whole recursive emission so the trailing 0x01 flag reaches the following record
-// (shape or group transform), including the last shape of a mask group.
 QByteArray packNestedGroup(const ExportContext &ctx, const GroupEntry &entry,
                            QPointF parentOffset, const QByteArray &transformMarker,
-                           bool parentMask, bool &prevShapeMask)
+                           bool parentMask, bool &previousShapeMask)
 {
-    const QVector<GroupEntry> children = groupEntryChildren(ctx, entry);
+    const QVector<GroupEntry> children = directChildren(entry);
     if (children.size() < 2) {
         throw std::runtime_error("nested group has fewer than two children");
     }
-    // A group is a mask group (0x60) whenever all its leaves are masked. The game
-    // marks EVERY such group, including mask groups nested inside mask groups, so
-    // we do not gate on the parent's mask state.
-    const bool isMaskGroup = entryAllMasked(ctx, entry);
+    const bool isMaskGroup = entryAllMasked(entry);
     const bool childMask = parentMask || isMaskGroup;
     const QPointF origin = entryOrigin(ctx, entry);
     QByteArray out = packTranslationTransform(origin.x() - parentOffset.x(),
@@ -368,70 +352,58 @@ QByteArray packNestedGroup(const ExportContext &ctx, const GroupEntry &entry,
             } else {
                 marker = QByteArray("\x03", 1);
             }
-            marker = maybeFlipMaskFlag(marker, prevShapeMask);
-            prevShapeMask = false;  // consumed by this group's transform marker
-            out.append(packNestedGroup(ctx, child, origin, marker, childMask, prevShapeMask));
+            marker = maybeFlipMaskFlag(marker, previousShapeMask);
+            previousShapeMask = false;
+            out.append(packNestedGroup(ctx, child, origin, marker, childMask, previousShapeMask));
             previousWasGroup = true;
-            previousGroupDepth = terminalDepth(ctx, child);
+            previousGroupDepth = terminalDepth(child);
         } else {
-            const ShapeLayer *layer = ctx.layersById.value(child.id, nullptr);
-            if (!layer) {
+            if (child.shape == nullptr) {
                 continue;
             }
-            if (!layer->visible) {
+            if (!child.shape->visible) {
                 throw std::runtime_error("grouped export cannot encode a hidden child inside a visible group");
             }
             if (previousWasGroup) {
                 out.append('\x00');
                 out.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
             }
-            // 0x01 02 trailing mask flag: a record leads with 0x01 when the
-            // previous shape is a mask (this record masks it).
-            const quint8 lead = (previousWasGroup || prevShapeMask) ? 0x01 : 0x00;
-            out.append(packShapeRelative(*layer, origin.x(), origin.y(),
-                                         lead, previousSiblingId.isEmpty()));
+            const ExportShape packed = exportShape(*child.shape);
+            const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
+            out.append(packShapeRelative(packed, origin.x(), origin.y(), lead, previousSiblingId.isEmpty()));
             previousWasGroup = false;
             previousGroupDepth = 0;
-            prevShapeMask = layer->mask;
+            previousShapeMask = packed.mask;
         }
-        previousSiblingId = child.id;
+        previousSiblingId = child.id();
     }
     return out;
 }
 
-QVector<GroupEntry> rootItems(const ExportContext &ctx)
+QVector<GroupEntry> rootItems(const Project &project)
 {
-    QHash<QString, QString> parentOf;
-    for (const LayerGroup &group : ctx.project.groups) {
-        for (const QString &childId : group.childIds) {
-            parentOf.insert(childId, group.id);
-        }
-    }
     QVector<GroupEntry> items;
-    QHash<QString, bool> emitted;
-    for (const ShapeLayer &layer : ctx.project.layers) {
-        QString topId = layer.id;
-        while (parentOf.contains(topId)) {
-            topId = parentOf.value(topId);
-        }
-        if (emitted.contains(topId)) {
+    if (!project.root) {
+        return items;
+    }
+    for (const auto &child : project.root->children) {
+        if (!child->visible) {
             continue;
         }
-        emitted.insert(topId, true);
-        if (topId == layer.id) {
-            items.push_back({GroupEntry::Layer, layer.id, {}});
-        } else {
-            items.push_back({GroupEntry::Group, topId, {}});
+        if (child->kind() == scene::LayerKind::Group) {
+            items.push_back({GroupEntry::Group, static_cast<const scene::Group *>(child.get()), nullptr, {}});
+        } else if (child->kind() == scene::LayerKind::Shape) {
+            items.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(child.get()), {}});
         }
     }
     return items;
 }
 
-QByteArray rootCloseBytes(const ExportContext &ctx, const QVector<GroupEntry> &items)
+QByteArray rootCloseBytes(const QVector<GroupEntry> &items)
 {
     int terminal = 0;
     if (!items.isEmpty() && items.back().kind == GroupEntry::Group) {
-        terminal = terminalDepth(ctx, items.back());
+        terminal = terminalDepth(items.back());
     }
     QByteArray out;
     out.append('\x00');
@@ -443,42 +415,21 @@ QByteArray rootCloseBytes(const ExportContext &ctx, const QVector<GroupEntry> &i
 
 QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &spriteSize)
 {
-    ExportContext ctx{project, {}, {}, {}, spriteSize};
-    for (int i = 0; i < project.layers.size(); ++i) {
-        ctx.layersById.insert(project.layers[i].id, &project.layers[i]);
-        ctx.layerOrder.insert(project.layers[i].id, i);
-    }
-    for (const LayerGroup &group : project.groups) {
-        ctx.groupsById.insert(group.id, &group);
-    }
-
-    QVector<GroupEntry> items;
-    for (const GroupEntry &item : rootItems(ctx)) {
-        if (item.kind == GroupEntry::Group) {
-            items.push_back(item);
-        } else if (const ShapeLayer *l = ctx.layersById.value(item.id, nullptr); l && l->visible) {
-            items.push_back(item);
-        }
-    }
+    ExportContext ctx{project, spriteSize};
+    QVector<GroupEntry> items = rootItems(project);
+    items.erase(std::remove_if(items.begin(), items.end(), [](const GroupEntry &entry) {
+                    return entry.kind == GroupEntry::Layer && (entry.shape == nullptr || !entry.shape->visible);
+                }),
+                items.end());
     if (items.isEmpty()) {
         throw std::runtime_error("project has no visible layers to export");
     }
 
-    // Recenter the whole decal on the origin. Group origins cancel out in
-    // reconstruction (a group's translation origin plus its shapes' relative
-    // offsets always rebuild the original absolute position), so a nested payload
-    // is geometrically identical to the flat one. But the game auto-centers a flat
-    // single-group decal by its bounding box while placing a nested one at its raw
-    // coordinates - so an off-origin project lands in a corner (top-right quadrant)
-    // when exported nested. Subtracting the overall bbox center from every root
-    // entry pins the group content at the origin, matching the flat export's
-    // centered placement. (Already-centered projects have center ~= 0, so this is a
-    // no-op for them.)
-    QVector<const ShapeLayer *> allLeaves;
+    QVector<const scene::Shape *> allLeaves;
     for (const GroupEntry &item : items) {
-        entryLayers(ctx, item, allLeaves);
+        entryShapes(item, allLeaves);
     }
-    const QPointF center = layersOrigin(ctx, allLeaves);
+    const QPointF center = shapesOrigin(ctx, allLeaves);
 
     QByteArray prefix = project.sourceDecPrefix.isEmpty() ? defaultPrefix() : project.sourceDecPrefix;
     prefix = prefix.left(0x1d);
@@ -502,7 +453,7 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
 
     bool previousWasGroup = false;
     int previousGroupDepth = 0;
-    bool prevShapeMask = false;
+    bool previousShapeMask = false;
     QString previousSiblingId;
     for (const GroupEntry &item : items) {
         if (item.kind == GroupEntry::Group) {
@@ -514,36 +465,29 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
             } else {
                 marker = QByteArray("\x03", 1);
             }
-            marker = maybeFlipMaskFlag(marker, prevShapeMask);
-            prevShapeMask = false;  // consumed by this group's transform marker
-            payload.append(packNestedGroup(ctx, item, center, marker,
-                                           /*parentMask=*/false, prevShapeMask));
+            marker = maybeFlipMaskFlag(marker, previousShapeMask);
+            previousShapeMask = false;
+            payload.append(packNestedGroup(ctx, item, center, marker, false, previousShapeMask));
             previousWasGroup = true;
-            previousGroupDepth = terminalDepth(ctx, item);
+            previousGroupDepth = terminalDepth(item);
         } else {
-            const ShapeLayer *layer = ctx.layersById.value(item.id, nullptr);
-            if (!layer) {
+            if (item.shape == nullptr) {
                 continue;
             }
             if (previousWasGroup) {
                 payload.append('\x00');
                 payload.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
             }
-            // The root's first child shape is bare (0x02), just like a group's
-            // first shape: its leading byte overlaps the root child-type bitmap.
-            // Otherwise lead with 0x01 (mask) when the previous root shape masks.
-            const quint8 lead = (previousWasGroup || prevShapeMask) ? 0x01 : 0x00;
-            payload.append(packShapeRelative(*layer, center.x(), center.y(), lead,
-                                             previousSiblingId.isEmpty()));
+            const ExportShape packed = exportShape(*item.shape);
+            const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
+            payload.append(packShapeRelative(packed, center.x(), center.y(), lead, previousSiblingId.isEmpty()));
             previousWasGroup = false;
             previousGroupDepth = 0;
-            prevShapeMask = layer->mask;
+            previousShapeMask = packed.mask;
         }
-        previousSiblingId = item.id;
+        previousSiblingId = item.id();
     }
-    // If the final emitted shape is a mask, the closing bytes' leading 0x00 slot
-    // masks it (same trailing-flag mechanism as a following group marker).
-    payload.append(maybeFlipMaskFlag(rootCloseBytes(ctx, items), prevShapeMask));
+    payload.append(maybeFlipMaskFlag(rootCloseBytes(items), previousShapeMask));
     return payload;
 }
 

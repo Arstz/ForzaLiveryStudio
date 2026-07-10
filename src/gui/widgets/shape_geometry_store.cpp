@@ -1,11 +1,6 @@
 #include "shape_geometry_store.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
+#include <zlib.h>
 
 #include <algorithm>
 #include <limits>
@@ -18,8 +13,11 @@ QStringList candidateAssetPaths()
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     return {
+        QDir(appDir).filePath(QStringLiteral("assets/vector/shape_geometry.json.gz")),
         QDir(appDir).filePath(QStringLiteral("assets/vector/shape_geometry.json")),
+        QDir(cwd).filePath(QStringLiteral("assets/vector/shape_geometry.json.gz")),
         QDir(cwd).filePath(QStringLiteral("assets/vector/shape_geometry.json")),
+        QDir(cwd).filePath(QStringLiteral("cpp-port/assets/vector/shape_geometry.json.gz")),
         QDir(cwd).filePath(QStringLiteral("cpp-port/assets/vector/shape_geometry.json")),
     };
 }
@@ -34,6 +32,42 @@ double vertexAlpha(const QJsonArray &vertices, int index)
 {
     const QJsonArray vertex = vertices.at(index).toArray();
     return std::clamp(vertex.at(2).toDouble(1.0), 0.0, 1.0);
+}
+
+bool inflateGzip(const QByteArray &compressed, QByteArray *out, QString *error)
+{
+    z_stream stream = {};
+    stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.constData()));
+    stream.avail_in = static_cast<uInt>(compressed.size());
+    if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) {
+        if (error != nullptr) {
+            *error = QStringLiteral("could not initialize gzip decompressor");
+        }
+        return false;
+    }
+
+    QByteArray decompressed;
+    char buffer[64 * 1024];
+    int ret = Z_OK;
+    while (ret == Z_OK) {
+        stream.next_out = reinterpret_cast<Bytef *>(buffer);
+        stream.avail_out = sizeof(buffer);
+        ret = inflate(&stream, Z_NO_FLUSH);
+        const qsizetype produced = static_cast<qsizetype>(sizeof(buffer) - stream.avail_out);
+        if (produced > 0) {
+            decompressed.append(buffer, produced);
+        }
+    }
+    inflateEnd(&stream);
+
+    if (ret != Z_STREAM_END) {
+        if (error != nullptr) {
+            *error = QStringLiteral("invalid compressed geometry asset");
+        }
+        return false;
+    }
+    *out = std::move(decompressed);
+    return true;
 }
 
 } // namespace
@@ -61,8 +95,17 @@ bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error)
         return false;
     }
 
+    QByteArray bytes = file.readAll();
+    if (path.endsWith(QStringLiteral(".gz"), Qt::CaseInsensitive)) {
+        QByteArray decompressed;
+        if (!inflateGzip(bytes, &decompressed, error)) {
+            return false;
+        }
+        bytes = std::move(decompressed);
+    }
+
     QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         if (error != nullptr) {
             *error = QStringLiteral("invalid geometry asset: %1").arg(parseError.errorString());

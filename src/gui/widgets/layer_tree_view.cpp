@@ -3,21 +3,6 @@
 #include "drag_cursors.h"
 #include "layer_tree_model.h"
 
-#include <QDrag>
-#include <QDragEnterEvent>
-#include <QDragLeaveEvent>
-#include <QDragMoveEvent>
-#include <QDropEvent>
-#include <QItemSelectionModel>
-#include <QMimeData>
-#include <QMouseEvent>
-#include <QPainter>
-#include <QPaintEvent>
-#include <QPalette>
-#include <QPen>
-#include <QPixmap>
-#include <QSet>
-
 #include <algorithm>
 
 namespace gui {

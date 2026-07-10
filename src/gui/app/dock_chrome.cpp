@@ -2,19 +2,9 @@
 
 #include "gui_assets.h"
 
-#include <QApplication>
-#include <QCursor>
-#include <QDockWidget>
-#include <QEvent>
-#include <QHBoxLayout>
-#include <QIcon>
-#include <QLabel>
-#include <QObject>
-#include <QSplitter>
-#include <QStyle>
-#include <QToolButton>
-#include <QVariant>
-#include <QWidget>
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
 
 namespace gui {
 namespace {

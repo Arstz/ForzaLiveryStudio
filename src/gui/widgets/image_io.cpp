@@ -1,11 +1,7 @@
 #include "image_io.h"
 
-#include <QBuffer>
-#include <QFileInfo>
-#include <QImageReader>
-#include <QImageWriter>
-#include <QLatin1Char>
-#include <QStringList>
+#include <QtCore>
+#include <QtGui>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -167,8 +163,12 @@ QImage readGuideImage(const QString &path, QByteArray *format, QString *error)
     reader.setAutoTransform(true);
     QImage image = reader.read();
     if (!image.isNull()) {
+        const QByteArray decodedFormat = reader.format();
+        if (decodedFormat.compare(QByteArrayLiteral("webp"), Qt::CaseInsensitive) == 0) {
+            image = image.mirrored(false, true);
+        }
         if (format != nullptr) {
-            *format = reader.format();
+            *format = decodedFormat;
         }
         return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }

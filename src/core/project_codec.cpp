@@ -6,21 +6,12 @@
 #include "header_codec.h"
 #include "livery_codec.h"
 #include "matrix_math.h"
-#include "nested_payload.h"
+#include "scene_codec.h"
 #include "shape_registry.h"
 #include "vinyl_decoder.h"
 #include "vinyl_flattener.h"
 
-#include <QDir>
-#include <QDirIterator>
-#include <QFile>
-#include <QFileInfo>
-#include <QHash>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QJsonValue>
+#include <QtCore>
 
 #include <cmath>
 #include <functional>
@@ -75,11 +66,6 @@ QString colorSwatchToJson(const std::array<quint8, 4> &color)
         .arg(color[2], 2, 16, QLatin1Char('0'))
         .arg(color[1], 2, 16, QLatin1Char('0'))
         .arg(color[0], 2, 16, QLatin1Char('0'));
-}
-
-QString toHexString(const QByteArray &bytes)
-{
-    return QString::fromLatin1(bytes.toHex());
 }
 
 bool looksGzipped(const QByteArray &bytes)
@@ -264,21 +250,20 @@ Matrix3 shapeMatrixForShape(const VinylShape &shape)
     return shapeMatrix(layer);
 }
 
-int importedGroupTerminalDepth(const Project &project, const QHash<QString, int> &groupIndexes, const QString &groupId)
+int importedGroupTerminalDepth(const QHash<QString, const scene::Group *> &groupsById, const QString &groupId)
 {
-    const auto it = groupIndexes.find(groupId);
-    if (it == groupIndexes.end()) {
+    const scene::Group *group = groupsById.value(groupId, nullptr);
+    if (group == nullptr) {
         return 0;
     }
-    const LayerGroup &group = project.groups[*it];
-    if (group.childIds.isEmpty()) {
+    if (group->children.empty()) {
         return 1;
     }
-    const QString lastChildId = group.childIds.back();
-    if (!groupIndexes.contains(lastChildId)) {
+    const scene::Layer *last = group->children.back().get();
+    if (last->kind() != scene::LayerKind::Group) {
         return 1;
     }
-    return 1 + importedGroupTerminalDepth(project, groupIndexes, lastChildId);
+    return 1 + importedGroupTerminalDepth(groupsById, last->id);
 }
 
 QByteArray effectiveDebugMarker(const VinylGroup &node)
@@ -368,18 +353,81 @@ void copyDirectoryContentsExceptCGroup(const QString &sourceFolder, const QStrin
 
 } // namespace
 
-ShapeLayer shapeLayerFromJson(const QJsonObject &object)
+namespace {
+
+struct LegacyShapeRecord {
+    QString id;
+    QString name = QStringLiteral("Shape");
+    quint16 vectorId = 0;
+    bool logo = false;
+    quint32 logoId = 0;
+    int width = 256;
+    int height = 256;
+    scene::Transform2D transform;
+    std::array<quint8, 4> color = {255, 255, 255, 255};
+    bool visible = true;
+    bool locked = false;
+    bool mask = false;
+    int sourceShape = 0;
+    int absOffset = 0;
+    QByteArray marker;
+    int flags = 0;
+    quint16 sourceLogoId = 0;
+    bool hasSourceTransform = false;
+    scene::Transform2D sourceTransform;
+};
+
+struct LegacyGuideRecord {
+    QString id;
+    QString name = QStringLiteral("Guide");
+    QString sourcePath;
+    QByteArray imageBytes;
+    QByteArray pixelBytes;
+    QString imageFormat;
+    int width = 0;
+    int height = 0;
+    scene::Transform2D transform;
+    double opacity = 0.5;
+    bool visible = true;
+    bool locked = false;
+};
+
+struct LegacyGroupRecord {
+    QString id;
+    QString name = QStringLiteral("Group");
+    QVector<QString> children;
+    bool locked = false;
+    scene::Transform2D transform;
+    int sourceAbsPos = 0;
+    QByteArray pendingTransformMarker;
+    QByteArray inlineTransformMarker;
+    QByteArray effectiveTransformMarker;
+    QByteArray headerControlBytes;
+    int flags = 0;
+    QString sourceParentId;
+    QString sourcePreviousSiblingId;
+    int sourcePreviousGroupDepth = 0;
+    QVector<QString> sourceChildren;
+    bool isLiverySection = false;
+    int liverySectionSlot = -1;
+};
+
+LegacyShapeRecord legacyShapeFromJson(const QJsonObject &object)
 {
-    ShapeLayer layer;
+    LegacyShapeRecord layer;
     layer.id = object.value(QStringLiteral("id")).toString();
     layer.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Shape"));
-    layer.shapeId = static_cast<quint16>(object.value(QStringLiteral("shape_id")).toInt());
-    layer.x = object.value(QStringLiteral("x")).toDouble(0.0);
-    layer.y = object.value(QStringLiteral("y")).toDouble(0.0);
-    layer.scaleX = object.value(QStringLiteral("scale_x")).toDouble(1.0);
-    layer.scaleY = object.value(QStringLiteral("scale_y")).toDouble(1.0);
-    layer.rotation = normalizeRotation(object.value(QStringLiteral("rotation")).toDouble(0.0));
-    layer.skew = object.value(QStringLiteral("skew")).toDouble(0.0);
+    layer.vectorId = static_cast<quint16>(object.value(QStringLiteral("shape_id")).toInt());
+    layer.logo = object.value(QStringLiteral("raster")).toBool(false);
+    layer.logoId = static_cast<quint32>(object.value(QStringLiteral("raster_id")).toInteger(0));
+    layer.width = object.value(QStringLiteral("raster_width")).toInt(256);
+    layer.height = object.value(QStringLiteral("raster_height")).toInt(256);
+    layer.transform.x = object.value(QStringLiteral("x")).toDouble(0.0);
+    layer.transform.y = object.value(QStringLiteral("y")).toDouble(0.0);
+    layer.transform.scaleX = object.value(QStringLiteral("scale_x")).toDouble(1.0);
+    layer.transform.scaleY = object.value(QStringLiteral("scale_y")).toDouble(1.0);
+    layer.transform.rotation = normalizeRotation(object.value(QStringLiteral("rotation")).toDouble(0.0));
+    layer.transform.skew = object.value(QStringLiteral("skew")).toDouble(0.0);
     layer.visible = object.value(QStringLiteral("visible")).toBool(true);
     layer.locked = object.value(QStringLiteral("locked")).toBool(false);
     layer.mask = object.value(QStringLiteral("mask")).toBool(false);
@@ -388,6 +436,18 @@ ShapeLayer shapeLayerFromJson(const QJsonObject &object)
     layer.absOffset = debug.value(QStringLiteral("abs_offset")).toInt(0);
     layer.marker = QByteArray::fromHex(debug.value(QStringLiteral("marker")).toString().toLatin1());
     layer.flags = debug.value(QStringLiteral("flags")).toInt(0);
+    layer.sourceLogoId = static_cast<quint16>(debug.value(QStringLiteral("source_logo_id")).toInt(0));
+    layer.hasSourceTransform = debug.value(QStringLiteral("has_source_transform")).toBool(false);
+    if (layer.hasSourceTransform) {
+        layer.sourceTransform = scene::Transform2D{
+            debug.value(QStringLiteral("source_x")).toDouble(layer.transform.x),
+            debug.value(QStringLiteral("source_y")).toDouble(layer.transform.y),
+            debug.value(QStringLiteral("source_scale_x")).toDouble(layer.transform.scaleX),
+            debug.value(QStringLiteral("source_scale_y")).toDouble(layer.transform.scaleY),
+            normalizeRotation(debug.value(QStringLiteral("source_rotation")).toDouble(layer.transform.rotation)),
+            debug.value(QStringLiteral("source_skew")).toDouble(layer.transform.skew),
+        };
+    }
 
     const QJsonArray color = object.value(QStringLiteral("color")).toArray();
     if (color.size() == 4) {
@@ -401,9 +461,9 @@ ShapeLayer shapeLayerFromJson(const QJsonObject &object)
     return layer;
 }
 
-GuideLayer guideLayerFromJson(const QJsonObject &object)
+LegacyGuideRecord legacyGuideFromJson(const QJsonObject &object)
 {
-    GuideLayer guide;
+    LegacyGuideRecord guide;
     guide.id = object.value(QStringLiteral("id")).toString();
     guide.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Guide"));
     guide.sourcePath = object.value(QStringLiteral("source_path")).toString();
@@ -412,28 +472,28 @@ GuideLayer guideLayerFromJson(const QJsonObject &object)
     guide.imageFormat = object.value(QStringLiteral("image_format")).toString();
     guide.width = object.value(QStringLiteral("width")).toInt(0);
     guide.height = object.value(QStringLiteral("height")).toInt(0);
-    guide.x = object.value(QStringLiteral("x")).toDouble(0.0);
-    guide.y = object.value(QStringLiteral("y")).toDouble(0.0);
-    guide.scaleX = object.value(QStringLiteral("scale_x")).toDouble(1.0);
-    guide.scaleY = object.value(QStringLiteral("scale_y")).toDouble(1.0);
-    guide.rotation = normalizeRotation(object.value(QStringLiteral("rotation")).toDouble(0.0));
+    guide.transform.x = object.value(QStringLiteral("x")).toDouble(0.0);
+    guide.transform.y = object.value(QStringLiteral("y")).toDouble(0.0);
+    guide.transform.scaleX = object.value(QStringLiteral("scale_x")).toDouble(1.0);
+    guide.transform.scaleY = object.value(QStringLiteral("scale_y")).toDouble(1.0);
+    guide.transform.rotation = normalizeRotation(object.value(QStringLiteral("rotation")).toDouble(0.0));
     guide.opacity = object.value(QStringLiteral("opacity")).toDouble(0.5);
     guide.visible = object.value(QStringLiteral("visible")).toBool(true);
     guide.locked = object.value(QStringLiteral("locked")).toBool(false);
     return guide;
 }
 
-LayerGroup layerGroupFromJson(const QJsonObject &object)
+LegacyGroupRecord legacyGroupFromJson(const QJsonObject &object)
 {
-    LayerGroup group;
+    LegacyGroupRecord group;
     group.id = object.value(QStringLiteral("id")).toString();
     group.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Group"));
     group.locked = object.value(QStringLiteral("locked")).toBool(false);
 
-    const QJsonArray childIds = object.value(QStringLiteral("child_ids")).toArray();
-    group.childIds.reserve(childIds.size());
-    for (const QJsonValue &value : childIds) {
-        group.childIds.push_back(value.toString());
+    const QJsonArray children = object.value(QStringLiteral("child_ids")).toArray();
+    group.children.reserve(children.size());
+    for (const QJsonValue &value : children) {
+        group.children.push_back(value.toString());
     }
 
     const QJsonObject debug = object.value(QStringLiteral("debug")).toObject();
@@ -448,13 +508,147 @@ LayerGroup layerGroupFromJson(const QJsonObject &object)
     group.sourcePreviousGroupDepth = debug.value(QStringLiteral("source_previous_group_depth")).toInt(0);
     group.isLiverySection = debug.value(QStringLiteral("is_livery_section")).toBool(false);
     group.liverySectionSlot = debug.value(QStringLiteral("livery_section_slot")).toInt(-1);
-    const QJsonArray sourceChildIds = debug.value(QStringLiteral("source_child_ids")).toArray();
-    group.sourceChildIds.reserve(sourceChildIds.size());
-    for (const QJsonValue &value : sourceChildIds) {
-        group.sourceChildIds.push_back(value.toString());
+    const QJsonArray sourceChildren = debug.value(QStringLiteral("source_child_ids")).toArray();
+    group.sourceChildren.reserve(sourceChildren.size());
+    for (const QJsonValue &value : sourceChildren) {
+        group.sourceChildren.push_back(value.toString());
     }
     return group;
 }
+
+std::unique_ptr<scene::Shape> makeSceneShape(const LegacyShapeRecord &src)
+{
+    auto shape = std::make_unique<scene::Shape>();
+    shape->id = src.id;
+    shape->name = src.name;
+    shape->transform = src.transform;
+    shape->opacity = static_cast<double>(src.color[3]) / 255.0;
+    shape->color = src.color;
+    shape->visible = src.visible;
+    shape->locked = src.locked;
+    shape->mask = src.mask;
+    if (src.logo) {
+        shape->setRasterShape(src.logoId, src.width, src.height);
+    } else {
+        shape->setVectorShape(src.vectorId);
+    }
+    shape->sourceShape = src.sourceShape;
+    shape->absOffset = src.absOffset;
+    shape->marker = src.marker;
+    shape->flags = src.flags;
+    shape->sourceLogoId = src.sourceLogoId;
+    shape->hasSourceTransform = src.hasSourceTransform;
+    shape->sourceTransform = src.sourceTransform;
+    return shape;
+}
+
+std::unique_ptr<scene::GuideLayer> makeSceneGuide(const LegacyGuideRecord &src)
+{
+    auto guide = std::make_unique<scene::GuideLayer>();
+    guide->id = src.id;
+    guide->name = src.name;
+    guide->transform = src.transform;
+    guide->opacity = src.opacity;
+    guide->visible = src.visible;
+    guide->locked = src.locked;
+    guide->sourcePath = src.sourcePath;
+    auto image = std::make_unique<scene::RasterContainer>();
+    image->width = src.width;
+    image->height = src.height;
+    image->pixels = src.pixelBytes;
+    image->encoded = src.imageBytes;
+    image->format = src.imageFormat;
+    guide->image = std::move(image);
+    return guide;
+}
+
+void copyGroupRecord(const LegacyGroupRecord &src, scene::Group &dst)
+{
+    dst.id = src.id;
+    dst.name = src.name;
+    dst.locked = src.locked;
+    dst.transform = src.transform;
+    dst.sourceAbsPos = src.sourceAbsPos;
+    dst.pendingTransformMarker = src.pendingTransformMarker;
+    dst.inlineTransformMarker = src.inlineTransformMarker;
+    dst.effectiveTransformMarker = src.effectiveTransformMarker;
+    dst.headerControlBytes = src.headerControlBytes;
+    dst.flags = src.flags;
+    dst.sourceParentId = src.sourceParentId;
+    dst.sourcePreviousSiblingId = src.sourcePreviousSiblingId;
+    dst.sourcePreviousGroupDepth = src.sourcePreviousGroupDepth;
+    dst.sourceChildren = src.sourceChildren;
+    dst.isLiverySection = src.isLiverySection;
+    dst.liverySectionSlot = src.liverySectionSlot;
+}
+
+std::unique_ptr<scene::Group> buildSceneFromLegacyRecords(const QVector<LegacyShapeRecord> &shapes,
+                                                          const QVector<LegacyGuideRecord> &guides,
+                                                          const QVector<LegacyGroupRecord> &groups,
+                                                          const QVector<QString> &roots)
+{
+    QHash<QString, const LegacyShapeRecord *> shapeById;
+    QHash<QString, const LegacyGuideRecord *> guideById;
+    QHash<QString, const LegacyGroupRecord *> groupById;
+    QSet<QString> consumedShapes;
+    QSet<QString> consumedGuides;
+    for (const LegacyShapeRecord &shape : shapes) {
+        shapeById.insert(shape.id, &shape);
+    }
+    for (const LegacyGuideRecord &guide : guides) {
+        guideById.insert(guide.id, &guide);
+    }
+    for (const LegacyGroupRecord &group : groups) {
+        groupById.insert(group.id, &group);
+    }
+
+    auto root = std::make_unique<scene::Group>();
+    root->id = QStringLiteral("__root__");
+    root->name = QStringLiteral("Project");
+
+    std::function<std::unique_ptr<scene::Layer>(const QString &)> buildNode =
+        [&](const QString &id) -> std::unique_ptr<scene::Layer> {
+            if (const LegacyGroupRecord *group = groupById.value(id, nullptr)) {
+                auto out = std::make_unique<scene::Group>();
+                copyGroupRecord(*group, *out);
+                for (const QString &entry : group->children) {
+                    if (auto child = buildNode(entry)) {
+                        out->append(std::move(child));
+                    }
+                }
+                return out;
+            }
+            if (const LegacyShapeRecord *shape = shapeById.value(id, nullptr)) {
+                consumedShapes.insert(id);
+                return makeSceneShape(*shape);
+            }
+            if (const LegacyGuideRecord *guide = guideById.value(id, nullptr)) {
+                consumedGuides.insert(id);
+                return makeSceneGuide(*guide);
+            }
+            return nullptr;
+        };
+
+    for (const QString &id : roots) {
+        if (auto child = buildNode(id)) {
+            root->append(std::move(child));
+        }
+    }
+    for (const LegacyShapeRecord &shape : shapes) {
+        if (!consumedShapes.contains(shape.id)) {
+            root->append(makeSceneShape(shape));
+        }
+    }
+    for (const LegacyGuideRecord &guide : guides) {
+        if (!consumedGuides.contains(guide.id)) {
+            root->append(makeSceneGuide(guide));
+        }
+    }
+    return root;
+}
+
+} // namespace
+
 
 Project importCGroupFlat(const QString &folderOrFile)
 {
@@ -465,15 +659,25 @@ Project importCGroupFlat(const QString &folderOrFile)
     const QVector<FlattenedLayer> flat = flattenGroup(root);
 
     Project project = newImportProject(folderOrFile, payload);
-    project.layers.reserve(flat.size());
+    scene::ensureProjectSceneRoot(project);
     int index = 1;
     for (const FlattenedLayer &flatLayer : flat) {
         const Matrix3 effective = detail::multiply(flatLayer.groupMatrix, shapeMatrix(flatLayer));
-        ShapeLayer layer = decomposeLayerMatrix(effective);
-        layer.shapeId = flatLayer.shapeId;
+        LegacyShapeRecord layer;
+        layer.id = layerIdForIndex(index);
+        layer.transform = decomposeTransform2D(effective);
+        layer.hasSourceTransform = true;
+        layer.sourceTransform = layer.transform;
+        layer.vectorId = flatLayer.shapeId;
+        layer.logo = flatLayer.raster;
+        layer.logoId = flatLayer.rasterId;
+        layer.width = flatLayer.rasterWidth;
+        layer.height = flatLayer.rasterHeight;
         layer.name = QStringLiteral("%1 %2")
             .arg(index, 4, 10, QLatin1Char('0'))
-            .arg(detail::shapeName(flatLayer.shapeId));
+            .arg(flatLayer.raster
+                     ? QStringLiteral("Decal %1").arg(flatLayer.rasterId)
+                     : detail::shapeName(flatLayer.shapeId));
         layer.color = flatLayer.color;
         layer.mask = flatLayer.isMask;
         layer.visible = true;
@@ -482,7 +686,8 @@ Project importCGroupFlat(const QString &folderOrFile)
         layer.absOffset = flatLayer.absPos + layerData.start;
         layer.marker = flatLayer.marker;
         layer.flags = flatLayer.flags;
-        project.layers.push_back(layer);
+        layer.sourceLogoId = flatLayer.sourceLogoId;
+        project.root->append(makeSceneShape(layer));
         ++index;
     }
     return project;
@@ -495,21 +700,31 @@ Project importCGroupNested(const QString &folderOrFile)
     const LayerData layerData = getLayerData(payload);
     const VinylGroup root = buildTree(layerData.data, payload);
     Project project = newImportProject(folderOrFile, payload);
+    scene::ensureProjectSceneRoot(project);
 
     int shapeIndex = 0;
     int groupIndex = 0;
-    QHash<QString, int> groupIndexes;
+    QHash<QString, const scene::Group *> groupsById;
 
-    std::function<QString(const VinylShape &, const Matrix3 &, bool)> importShape =
-        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> QString {
+    std::function<std::unique_ptr<scene::Shape>(const VinylShape &, const Matrix3 &, bool)> importShape =
+        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Shape> {
             ++shapeIndex;
             const Matrix3 effective = detail::multiply(parentMatrix, shapeMatrixForShape(shape));
-            ShapeLayer layer = decomposeLayerMatrix(effective);
+            LegacyShapeRecord layer;
+            layer.transform = decomposeTransform2D(effective);
+            layer.hasSourceTransform = true;
+            layer.sourceTransform = layer.transform;
             layer.id = layerIdForIndex(shapeIndex);
             layer.name = QStringLiteral("%1 %2")
                 .arg(shapeIndex, 4, 10, QLatin1Char('0'))
-                .arg(detail::shapeName(shape.shapeId));
-            layer.shapeId = shape.shapeId;
+                .arg(shape.isLogo
+                         ? QStringLiteral("Decal %1").arg(shape.rasterId)
+                         : detail::shapeName(shape.shapeId));
+            layer.vectorId = shape.shapeId;
+            layer.logo = shape.isLogo;
+            layer.logoId = shape.rasterId;
+            layer.width = 256;
+            layer.height = 256;
             layer.color = shape.color;
             layer.mask = parentMask || shape.isMask;
             if (hasColorData(shape.color)) {
@@ -521,70 +736,64 @@ Project importCGroupNested(const QString &folderOrFile)
             layer.absOffset = shape.absPos + layerData.start;
             layer.marker = shape.marker;
             layer.flags = shape.flags;
-            project.layers.push_back(layer);
-            return layer.id;
+            layer.sourceLogoId = shape.logoId;
+            return makeSceneShape(layer);
         };
 
-    std::function<QString(const VinylGroup &, const Matrix3 &, bool, const QString &, const QString &)> importGroup =
+    std::function<std::unique_ptr<scene::Group>(const VinylGroup &, const Matrix3 &, bool, const QString &, const QString &)> importGroup =
         [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask,
-            const QString &sourceParentId, const QString &sourcePreviousSiblingId) -> QString {
+            const QString &sourceParentId, const QString &sourcePreviousSiblingId) -> std::unique_ptr<scene::Group> {
             ++groupIndex;
-            const QString groupId = groupIdForIndex(groupIndex);
             const Matrix3 groupMatrix = detail::multiply(parentMatrix, nodeMatrix(node));
             const bool inheritedMask = parentMask || node.isMask;
 
-            LayerGroup group;
-            group.id = groupId;
-            group.name = QStringLiteral("Group %1").arg(groupIndex);
-            group.sourceAbsPos = node.absPos + layerData.start;
-            group.pendingTransformMarker = node.pendingTransformMarker;
-            group.inlineTransformMarker = node.inlineTransformMarker;
-            group.effectiveTransformMarker = effectiveDebugMarker(node);
-            group.headerControlBytes = node.headerControlBytes;
-            group.flags = node.flags;
-            group.sourceParentId = sourceParentId;
-            group.sourcePreviousSiblingId = sourcePreviousSiblingId;
-            group.sourcePreviousGroupDepth = importedGroupTerminalDepth(project, groupIndexes, sourcePreviousSiblingId);
-
-            project.groups.push_back(group);
-            const int projectGroupIndex = project.groups.size() - 1;
-            groupIndexes.insert(groupId, projectGroupIndex);
+            auto group = std::make_unique<scene::Group>();
+            group->id = groupIdForIndex(groupIndex);
+            group->name = QStringLiteral("Group %1").arg(groupIndex);
+            group->sourceAbsPos = node.absPos + layerData.start;
+            group->pendingTransformMarker = node.pendingTransformMarker;
+            group->inlineTransformMarker = node.inlineTransformMarker;
+            group->effectiveTransformMarker = effectiveDebugMarker(node);
+            group->headerControlBytes = node.headerControlBytes;
+            group->flags = node.flags;
+            group->sourceParentId = sourceParentId;
+            group->sourcePreviousSiblingId = sourcePreviousSiblingId;
+            group->sourcePreviousGroupDepth = importedGroupTerminalDepth(groupsById, sourcePreviousSiblingId);
+            groupsById.insert(group->id, group.get());
 
             for (const VinylItem &item : node.items) {
-                const QString previousSiblingId = project.groups[projectGroupIndex].childIds.isEmpty()
+                const QString previousSiblingId = group->children.empty()
                     ? QString()
-                    : project.groups[projectGroupIndex].childIds.back();
-                QString childId;
+                    : group->children.back()->id;
                 if (item.isShape()) {
-                    childId = importShape(std::get<VinylShape>(item.value), groupMatrix, inheritedMask);
+                    group->append(importShape(std::get<VinylShape>(item.value), groupMatrix, inheritedMask));
                 } else {
-                    childId = importGroup(*std::get<VinylGroupPtr>(item.value),
-                                          groupMatrix,
-                                          inheritedMask,
-                                          groupId,
-                                          previousSiblingId);
+                    group->append(importGroup(*std::get<VinylGroupPtr>(item.value),
+                                              groupMatrix,
+                                              inheritedMask,
+                                              group->id,
+                                              previousSiblingId));
                 }
-                project.groups[projectGroupIndex].childIds.push_back(childId);
             }
-            project.groups[projectGroupIndex].sourceChildIds = project.groups[projectGroupIndex].childIds;
-            return groupId;
+            for (const auto &child : group->children) {
+                group->sourceChildren.push_back(child->id);
+            }
+            return group;
         };
 
     const Matrix3 rootMatrix = nodeMatrix(root);
     const bool rootMask = root.isMask;
     for (const VinylItem &item : root.items) {
-        const QString previousSiblingId = project.rootChildIds.isEmpty() ? QString() : project.rootChildIds.back();
-        QString childId;
+        const QString previousSiblingId = project.root->children.empty() ? QString() : project.root->children.back()->id;
         if (item.isShape()) {
-            childId = importShape(std::get<VinylShape>(item.value), rootMatrix, rootMask);
+            project.root->append(importShape(std::get<VinylShape>(item.value), rootMatrix, rootMask));
         } else {
-            childId = importGroup(*std::get<VinylGroupPtr>(item.value),
-                                  rootMatrix,
-                                  rootMask,
-                                  QStringLiteral("__root__"),
-                                  previousSiblingId);
+            project.root->append(importGroup(*std::get<VinylGroupPtr>(item.value),
+                                             rootMatrix,
+                                             rootMask,
+                                             QStringLiteral("__root__"),
+                                             previousSiblingId));
         }
-        project.rootChildIds.push_back(childId);
     }
     return project;
 }
@@ -606,20 +815,35 @@ Project importCLivery(const QString &folderOrFile)
         project.sourceFolder = info.absoluteDir().absolutePath();
     }
     project.isLivery = true;
+    project.carId = livery.carId;
+    // Keep the decompressed payload and header sidecar so the livery encoder can
+    // rebuild a game-ready container on export (applying the current carId).
+    project.liverySource = livery.raw;
+    project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
+    scene::ensureProjectSceneRoot(project);
 
     int shapeIndex = 0;
     int groupIndex = 0;
 
-    std::function<QString(const VinylShape &, const Matrix3 &, bool)> importShape =
-        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> QString {
+    std::function<std::unique_ptr<scene::Shape>(const VinylShape &, const Matrix3 &, bool)> importShape =
+        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Shape> {
             ++shapeIndex;
             const Matrix3 effective = detail::multiply(parentMatrix, shapeMatrixForShape(shape));
-            ShapeLayer layer = decomposeLayerMatrix(effective);
+            LegacyShapeRecord layer;
+            layer.transform = decomposeTransform2D(effective);
+            layer.hasSourceTransform = true;
+            layer.sourceTransform = layer.transform;
             layer.id = layerIdForIndex(shapeIndex);
             layer.name = QStringLiteral("%1 %2")
                 .arg(shapeIndex, 4, 10, QLatin1Char('0'))
-                .arg(detail::shapeName(shape.shapeId));
-            layer.shapeId = shape.shapeId;
+                .arg(shape.isLogo
+                         ? QStringLiteral("Decal %1").arg(shape.rasterId)
+                         : detail::shapeName(shape.shapeId));
+            layer.vectorId = shape.shapeId;
+            layer.logo = shape.isLogo;
+            layer.logoId = shape.rasterId;
+            layer.width = 256;
+            layer.height = 256;
             layer.color = shape.color;
             layer.mask = parentMask || shape.isMask;
             if (hasColorData(shape.color)) {
@@ -631,68 +855,76 @@ Project importCLivery(const QString &folderOrFile)
             layer.absOffset = shape.absPos;
             layer.marker = shape.marker;
             layer.flags = shape.flags;
-            project.layers.push_back(layer);
-            return layer.id;
+            layer.sourceLogoId = shape.logoId;
+            return makeSceneShape(layer);
         };
 
-    std::function<QString(const VinylGroup &, const Matrix3 &, bool)> importGroup =
-        [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask) -> QString {
+    std::function<std::unique_ptr<scene::Group>(const VinylGroup &, const Matrix3 &, bool)> importGroup =
+        [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Group> {
             ++groupIndex;
-            const QString groupId = groupIdForIndex(groupIndex);
             const Matrix3 groupMatrix = detail::multiply(parentMatrix, nodeMatrix(node));
             const bool inheritedMask = parentMask || node.isMask;
 
-            LayerGroup group;
-            group.id = groupId;
-            group.name = QStringLiteral("Group %1").arg(groupIndex);
-            group.sourceAbsPos = node.absPos;
-            group.flags = node.flags;
-            project.groups.push_back(group);
-            const int idx = project.groups.size() - 1;
+            auto group = std::make_unique<scene::Group>();
+            group->id = groupIdForIndex(groupIndex);
+            group->name = QStringLiteral("Group %1").arg(groupIndex);
+            group->sourceAbsPos = node.absPos;
+            group->pendingTransformMarker = node.pendingTransformMarker;
+            group->inlineTransformMarker = node.inlineTransformMarker;
+            group->effectiveTransformMarker = effectiveDebugMarker(node);
+            group->headerControlBytes = node.headerControlBytes;
+            group->flags = node.flags;
 
             for (const VinylItem &item : node.items) {
-                QString childId;
                 if (item.isShape()) {
-                    childId = importShape(std::get<VinylShape>(item.value), groupMatrix, inheritedMask);
+                    group->append(importShape(std::get<VinylShape>(item.value), groupMatrix, inheritedMask));
                 } else {
-                    childId = importGroup(*std::get<VinylGroupPtr>(item.value), groupMatrix, inheritedMask);
+                    group->append(importGroup(*std::get<VinylGroupPtr>(item.value), groupMatrix, inheritedMask));
                 }
-                project.groups[idx].childIds.push_back(childId);
             }
-            project.groups[idx].sourceChildIds = project.groups[idx].childIds;
-            return groupId;
+            for (const auto &child : group->children) {
+                group->sourceChildren.push_back(child->id);
+            }
+            return group;
         };
 
     for (const LiverySection &section : sections) {
         // Every slot becomes a top-level section folder, even when empty.
         ++groupIndex;
-        const QString sectionId = groupIdForIndex(groupIndex);
-        LayerGroup sectionGroup;
-        sectionGroup.id = sectionId;
-        sectionGroup.name = section.name;
-        sectionGroup.isLiverySection = true;
-        sectionGroup.liverySectionSlot = section.slot;
-        sectionGroup.sourceAbsPos = section.absPos;
-        project.groups.push_back(sectionGroup);
-        const int sectionIdx = project.groups.size() - 1;
+        auto sectionGroup = std::make_unique<scene::Group>();
+        sectionGroup->id = groupIdForIndex(groupIndex);
+        sectionGroup->name = section.name;
+        sectionGroup->isLiverySection = true;
+        sectionGroup->liverySectionSlot = section.slot;
+        sectionGroup->sourceAbsPos = section.absPos;
 
         if (section.populated) {
-            const Matrix3 sectionMatrix = nodeMatrix(section.subtree);
-            const bool sectionMask = section.subtree.isMask;
-            for (const VinylItem &item : section.subtree.items) {
-                QString childId;
-                if (item.isShape()) {
-                    childId = importShape(std::get<VinylShape>(item.value), sectionMatrix, sectionMask);
-                } else {
-                    childId = importGroup(*std::get<VinylGroupPtr>(item.value), sectionMatrix, sectionMask);
+            Matrix3 sectionMatrix = nodeMatrix(section.subtree);
+            bool sectionMask = section.subtree.isMask;
+            const VinylGroup *sectionRoot = &section.subtree;
+            while (sectionRoot->items.size() == 1 && !sectionRoot->items.front().isShape()) {
+                const auto topGroup = std::get<VinylGroupPtr>(sectionRoot->items.front().value);
+                if (!topGroup) {
+                    break;
                 }
-                project.groups[sectionIdx].childIds.push_back(childId);
+                sectionMatrix = detail::multiply(sectionMatrix, nodeMatrix(*topGroup));
+                sectionMask = sectionMask || topGroup->isMask;
+                sectionRoot = topGroup.get();
             }
-            project.groups[sectionIdx].sourceChildIds = project.groups[sectionIdx].childIds;
+            const QVector<VinylItem> *sectionItems = &sectionRoot->items;
+            for (const VinylItem &item : *sectionItems) {
+                if (item.isShape()) {
+                    sectionGroup->append(importShape(std::get<VinylShape>(item.value), sectionMatrix, sectionMask));
+                } else {
+                    sectionGroup->append(importGroup(*std::get<VinylGroupPtr>(item.value), sectionMatrix, sectionMask));
+                }
+            }
+            for (const auto &child : sectionGroup->children) {
+                sectionGroup->sourceChildren.push_back(child->id);
+            }
         }
-        project.rootChildIds.push_back(sectionId);
+        project.root->append(std::move(sectionGroup));
     }
-
     return project;
 }
 
@@ -711,6 +943,7 @@ Project projectFromJson(const QJsonObject &object)
     project.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Untitled"));
     project.sourceFolder = object.value(QStringLiteral("source_folder")).toString();
     project.isLivery = object.value(QStringLiteral("is_livery")).toBool(false);
+    project.carId = object.value(QStringLiteral("car_id")).toInt(0);
     const QString prefix = object.value(QStringLiteral("source_dec_prefix")).toString();
     if (!prefix.isEmpty()) {
         project.sourceDecPrefix = QByteArray::fromBase64(prefix.toLatin1());
@@ -719,138 +952,79 @@ Project projectFromJson(const QJsonObject &object)
     if (!header.isEmpty()) {
         project.sourceHeader = QByteArray::fromBase64(header.toLatin1());
     }
+    const QString liverySource = object.value(QStringLiteral("livery_source")).toString();
+    if (!liverySource.isEmpty()) {
+        project.liverySource = QByteArray::fromBase64(liverySource.toLatin1());
+    }
     if (object.value(QStringLiteral("header_metadata")).isObject()) {
         // New projects keep structured metadata here; export builds the header from
         // it when sourceHeader is empty (see exportFlatProjectFolder).
         project.headerMetadata = headerMetadataFromJson(object.value(QStringLiteral("header_metadata")).toObject());
     }
 
+    if (object.value(QStringLiteral("root")).isObject()) {
+        project.root = scene::sceneTreeFromJson(object.value(QStringLiteral("root")).toObject());
+        std::function<void(const scene::Layer &)> scan = [&](const scene::Layer &node) {
+            if (node.kind() != scene::LayerKind::Group) {
+                return;
+            }
+            const auto &group = static_cast<const scene::Group &>(node);
+            project.isLivery = project.isLivery || group.isLiverySection;
+            for (const auto &child : group.children) {
+                scan(*child);
+            }
+        };
+        scan(*project.root);
+        const QJsonArray colorSwatches = object.value(QStringLiteral("color_swatches")).toArray();
+        project.colorSwatches.reserve(colorSwatches.size());
+        for (const QJsonValue &value : colorSwatches) {
+            project.colorSwatches.push_back(colorSwatchFromJson(value));
+        }
+        return project;
+    }
+
     const QJsonArray layers = object.value(QStringLiteral("layers")).toArray();
-    project.layers.reserve(layers.size());
+    QVector<LegacyShapeRecord> shapeRecords;
+    shapeRecords.reserve(layers.size());
     for (const QJsonValue &value : layers) {
         if (!value.isObject()) {
             throw std::runtime_error("project layer entry is not an object");
         }
-        project.layers.push_back(shapeLayerFromJson(value.toObject()));
+        shapeRecords.push_back(legacyShapeFromJson(value.toObject()));
     }
     const QJsonArray guideLayers = object.value(QStringLiteral("guide_layers")).toArray();
-    project.guideLayers.reserve(guideLayers.size());
+    QVector<LegacyGuideRecord> guideRecords;
+    guideRecords.reserve(guideLayers.size());
     for (const QJsonValue &value : guideLayers) {
         if (!value.isObject()) {
             throw std::runtime_error("project guide layer entry is not an object");
         }
-        project.guideLayers.push_back(guideLayerFromJson(value.toObject()));
+        guideRecords.push_back(legacyGuideFromJson(value.toObject()));
     }
     const QJsonArray groups = object.value(QStringLiteral("groups")).toArray();
-    project.groups.reserve(groups.size());
+    QVector<LegacyGroupRecord> groupRecords;
+    groupRecords.reserve(groups.size());
     for (const QJsonValue &value : groups) {
         if (!value.isObject()) {
             throw std::runtime_error("project group entry is not an object");
         }
-        project.groups.push_back(layerGroupFromJson(value.toObject()));
-        project.isLivery = project.isLivery || project.groups.back().isLiverySection;
+        groupRecords.push_back(legacyGroupFromJson(value.toObject()));
+        project.isLivery = project.isLivery || groupRecords.back().isLiverySection;
     }
 
-    const QJsonArray rootChildIds = object.value(QStringLiteral("root_child_ids")).toArray();
-    project.rootChildIds.reserve(rootChildIds.size());
-    for (const QJsonValue &value : rootChildIds) {
-        project.rootChildIds.push_back(value.toString());
+    const QJsonArray rootEntriesJson = object.value(QStringLiteral("root_child_ids")).toArray();
+    QVector<QString> rootEntries;
+    rootEntries.reserve(rootEntriesJson.size());
+    for (const QJsonValue &value : rootEntriesJson) {
+        rootEntries.push_back(value.toString());
     }
     const QJsonArray colorSwatches = object.value(QStringLiteral("color_swatches")).toArray();
     project.colorSwatches.reserve(colorSwatches.size());
     for (const QJsonValue &value : colorSwatches) {
         project.colorSwatches.push_back(colorSwatchFromJson(value));
     }
+    project.root = buildSceneFromLegacyRecords(shapeRecords, guideRecords, groupRecords, rootEntries);
     return project;
-}
-
-QJsonObject shapeLayerToJson(const ShapeLayer &layer)
-{
-    QJsonObject object;
-    object.insert(QStringLiteral("id"), layer.id);
-    object.insert(QStringLiteral("name"), layer.name);
-    object.insert(QStringLiteral("shape_id"), static_cast<int>(layer.shapeId));
-    object.insert(QStringLiteral("x"), layer.x);
-    object.insert(QStringLiteral("y"), layer.y);
-    object.insert(QStringLiteral("scale_x"), layer.scaleX);
-    object.insert(QStringLiteral("scale_y"), layer.scaleY);
-    object.insert(QStringLiteral("rotation"), normalizeRotation(layer.rotation));
-    object.insert(QStringLiteral("skew"), layer.skew);
-    object.insert(QStringLiteral("visible"), layer.visible);
-    object.insert(QStringLiteral("locked"), layer.locked);
-    object.insert(QStringLiteral("mask"), layer.mask);
-
-    QJsonArray color;
-    for (int i = 0; i < 4; ++i) {
-        color.append(static_cast<int>(layer.color[i]));
-    }
-    object.insert(QStringLiteral("color"), color);
-
-    QJsonObject debug;
-    debug.insert(QStringLiteral("source_shape"), layer.sourceShape);
-    debug.insert(QStringLiteral("abs_offset"), layer.absOffset);
-    debug.insert(QStringLiteral("marker"), toHexString(layer.marker));
-    debug.insert(QStringLiteral("flags"), layer.flags);
-    object.insert(QStringLiteral("debug"), debug);
-    return object;
-}
-
-QJsonObject guideLayerToJson(const GuideLayer &guide)
-{
-    QJsonObject object;
-    object.insert(QStringLiteral("id"), guide.id);
-    object.insert(QStringLiteral("name"), guide.name);
-    object.insert(QStringLiteral("source_path"), guide.sourcePath);
-    // image_bytes holds a compressed (WEBP/PNG) copy; the raw decoded pixel buffer is no
-    // longer serialized (it bloated the JSON and is reconstructable from image_bytes).
-    // pixel_bytes is still read back in guideLayerFromJson for legacy projects.
-    object.insert(QStringLiteral("image_bytes"), toBase64(guide.imageBytes));
-    object.insert(QStringLiteral("image_format"), guide.imageFormat);
-    object.insert(QStringLiteral("width"), guide.width);
-    object.insert(QStringLiteral("height"), guide.height);
-    object.insert(QStringLiteral("x"), guide.x);
-    object.insert(QStringLiteral("y"), guide.y);
-    object.insert(QStringLiteral("scale_x"), guide.scaleX);
-    object.insert(QStringLiteral("scale_y"), guide.scaleY);
-    object.insert(QStringLiteral("rotation"), normalizeRotation(guide.rotation));
-    object.insert(QStringLiteral("opacity"), guide.opacity);
-    object.insert(QStringLiteral("visible"), guide.visible);
-    object.insert(QStringLiteral("locked"), guide.locked);
-    return object;
-}
-
-QJsonObject layerGroupToJson(const LayerGroup &group)
-{
-    QJsonObject object;
-    object.insert(QStringLiteral("id"), group.id);
-    object.insert(QStringLiteral("name"), group.name);
-    object.insert(QStringLiteral("locked"), group.locked);
-
-    QJsonArray childIds;
-    for (const QString &childId : group.childIds) {
-        childIds.append(childId);
-    }
-    object.insert(QStringLiteral("child_ids"), childIds);
-
-    QJsonObject debug;
-    debug.insert(QStringLiteral("source_abs_pos"), group.sourceAbsPos);
-    debug.insert(QStringLiteral("pending_transform_marker"), toHexString(group.pendingTransformMarker));
-    debug.insert(QStringLiteral("inline_transform_marker"), toHexString(group.inlineTransformMarker));
-    debug.insert(QStringLiteral("effective_transform_marker"), toHexString(group.effectiveTransformMarker));
-    debug.insert(QStringLiteral("header_control_bytes"), toHexString(group.headerControlBytes));
-    debug.insert(QStringLiteral("flags"), group.flags);
-    debug.insert(QStringLiteral("source_parent_id"), group.sourceParentId);
-    debug.insert(QStringLiteral("source_previous_sibling_id"), group.sourcePreviousSiblingId);
-    debug.insert(QStringLiteral("source_previous_group_depth"), group.sourcePreviousGroupDepth);
-    debug.insert(QStringLiteral("is_livery_section"), group.isLiverySection);
-    debug.insert(QStringLiteral("livery_section_slot"), group.liverySectionSlot);
-    QJsonArray sourceChildIds;
-    for (const QString &childId : group.sourceChildIds) {
-        sourceChildIds.append(childId);
-    }
-    debug.insert(QStringLiteral("source_child_ids"), sourceChildIds);
-    object.insert(QStringLiteral("debug"), debug);
-    return object;
 }
 
 QJsonObject projectToJson(const Project &project)
@@ -861,35 +1035,24 @@ QJsonObject projectToJson(const Project &project)
     object.insert(QStringLiteral("name"), project.name);
     object.insert(QStringLiteral("source_folder"), project.sourceFolder);
     object.insert(QStringLiteral("is_livery"), project.isLivery);
+    if (project.carId != 0) {
+        object.insert(QStringLiteral("car_id"), project.carId);
+    }
     object.insert(QStringLiteral("source_dec_prefix"), toBase64(project.sourceDecPrefix));
     object.insert(QStringLiteral("source_header"), toBase64(project.sourceHeader));
+    if (!project.liverySource.isEmpty()) {
+        object.insert(QStringLiteral("livery_source"), toBase64(project.liverySource));
+    }
     if (project.headerMetadata) {
         object.insert(QStringLiteral("header_metadata"), headerMetadataToJson(*project.headerMetadata));
     }
 
-    QJsonArray layers;
-    for (const ShapeLayer &layer : project.layers) {
-        layers.append(shapeLayerToJson(layer));
+    if (project.root) {
+        object.insert(QStringLiteral("root"), scene::sceneTreeToJson(*project.root));
+    } else {
+        const scene::Group emptyRoot;
+        object.insert(QStringLiteral("root"), scene::sceneTreeToJson(emptyRoot));
     }
-    object.insert(QStringLiteral("layers"), layers);
-
-    QJsonArray guideLayers;
-    for (const GuideLayer &guide : project.guideLayers) {
-        guideLayers.append(guideLayerToJson(guide));
-    }
-    object.insert(QStringLiteral("guide_layers"), guideLayers);
-
-    QJsonArray groups;
-    for (const LayerGroup &group : project.groups) {
-        groups.append(layerGroupToJson(group));
-    }
-    object.insert(QStringLiteral("groups"), groups);
-
-    QJsonArray rootChildIds;
-    for (const QString &childId : project.rootChildIds) {
-        rootChildIds.append(childId);
-    }
-    object.insert(QStringLiteral("root_child_ids"), rootChildIds);
 
     QJsonArray colorSwatches;
     for (const std::array<quint8, 4> &color : project.colorSwatches) {
@@ -962,15 +1125,166 @@ void writeExportFolder(const Project &project, const QString &outputFolder,
 
 } // namespace
 
-void exportFlatProjectFolder(const Project &project, const QString &outputFolder, const QString &name)
-{
-    writeExportFolder(project, outputFolder, name, buildFlatPayload(project));
-}
-
 void exportNestedProjectFolder(const Project &project, const QString &outputFolder,
                                const QString &name, const SpriteSizeFn &spriteSize)
 {
     writeExportFolder(project, outputFolder, name, buildNestedPayload(project, spriteSize));
+}
+
+namespace {
+
+void writeLeU32InPlace(QByteArray &bytes, int offset, quint32 value)
+{
+    bytes[offset] = static_cast<char>(value & 0xff);
+    bytes[offset + 1] = static_cast<char>((value >> 8) & 0xff);
+    bytes[offset + 2] = static_cast<char>((value >> 16) & 0xff);
+    bytes[offset + 3] = static_cast<char>((value >> 24) & 0xff);
+}
+
+void writeRawFile(const QString &path, const QByteArray &bytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        throw std::runtime_error(("could not write file: " + path).toStdString());
+    }
+    if (file.write(bytes) != bytes.size()) {
+        throw std::runtime_error(("short write while writing " + path).toStdString());
+    }
+}
+
+void countVisibleLiveryShapes(const scene::Layer &node, int &count)
+{
+    if (!node.visible) {
+        return;
+    }
+    if (node.kind() == scene::LayerKind::Shape) {
+        ++count;
+        return;
+    }
+    if (node.kind() == scene::LayerKind::Group) {
+        for (const auto &child : static_cast<const scene::Group &>(node).children) {
+            countVisibleLiveryShapes(*child, count);
+        }
+    }
+}
+
+std::array<int, 11> computeLiverySectionCounts(const Project &project)
+{
+    std::array<int, 11> counts{};
+    if (!project.root) {
+        return counts;
+    }
+    for (const auto &child : project.root->children) {
+        if (child->kind() != scene::LayerKind::Group || !child->visible) {
+            continue;
+        }
+        const auto &group = static_cast<const scene::Group &>(*child);
+        if (!group.isLiverySection || group.liverySectionSlot < 0 || group.liverySectionSlot >= 11) {
+            continue;
+        }
+        int sectionCount = 0;
+        for (const auto &sectionChild : group.children) {
+            countVisibleLiveryShapes(*sectionChild, sectionCount);
+        }
+        counts[static_cast<size_t>(group.liverySectionSlot)] = sectionCount;
+    }
+    return counts;
+}
+
+} // namespace
+
+QByteArray encodeCLiveryPayload(const Project &project)
+{
+    if (!project.isLivery) {
+        throw std::runtime_error("not a livery project");
+    }
+    if (project.liverySource.isEmpty()) {
+        throw std::runtime_error(
+            "this livery has no captured source to re-encode; re-import the C_livery "
+            "(authoring livery artwork from scratch is not yet supported)");
+    }
+    const LiveryPayload source = [&project]() {
+        LiveryPayload payload;
+        payload.raw = project.liverySource;
+        const int gyvl = payload.raw.indexOf(QByteArray("gyvl", 4));
+        if (gyvl < 0) {
+            throw std::runtime_error("livery source is missing its gyvl artwork chunk");
+        }
+        payload.gyvlOffset = gyvl;
+        const int bodyStart = gyvl + 0x15;
+        int bodyEnd = payload.raw.indexOf(QByteArray("yrvl", 4), gyvl);
+        if (bodyEnd < 0 || bodyEnd < bodyStart) {
+            throw std::runtime_error("livery source is missing its post-gyvl stats chunk");
+        }
+        payload.body = payload.raw.mid(bodyStart, bodyEnd - bodyStart);
+        return payload;
+    }();
+
+    const QByteArray gyvl = buildLiveryGyvl(project);
+    const int oldGyvlEnd = source.gyvlOffset + 0x15 + source.body.size();
+    if (oldGyvlEnd > project.liverySource.size()) {
+        throw std::runtime_error("livery source gyvl chunk is truncated");
+    }
+
+    QByteArray payload = project.liverySource.left(source.gyvlOffset);
+    payload.append(gyvl);
+    payload.append(project.liverySource.mid(oldGyvlEnd));
+
+    const int vlrc = payload.indexOf(QByteArray("vlrc", 4));
+    if (vlrc < 0 || vlrc + 0x14 > payload.size()) {
+        throw std::runtime_error("livery source is missing its vlrc root header");
+    }
+    // Write the target car id into the vlrc root header (rel 0x10).
+    writeLeU32InPlace(payload, vlrc + 0x10, static_cast<quint32>(project.carId));
+
+    if (source.gyvlOffset < 4) {
+        throw std::runtime_error("livery source is missing its gyvl length field");
+    }
+    writeLeU32InPlace(payload, source.gyvlOffset - 4, static_cast<quint32>(gyvl.size()));
+
+    const int statsTag = source.gyvlOffset + gyvl.size();
+    if (statsTag + 52 > payload.size() || payload.mid(statsTag, 4) != QByteArray("yrvl", 4)) {
+        throw std::runtime_error("re-encoded livery is missing its post-gyvl stats chunk");
+    }
+    const std::array<int, 11> counts = computeLiverySectionCounts(project);
+    for (int i = 0; i < 11; ++i) {
+        writeLeU32InPlace(payload, statsTag + 4 + i * 4, static_cast<quint32>(counts[static_cast<size_t>(i)]));
+    }
+    return payload;
+}
+
+void exportCLivery(const Project &project, const QString &outputFolder)
+{
+    if (outputFolder.isEmpty()) {
+        throw std::runtime_error("export output folder is empty");
+    }
+    const QByteArray payload = encodeCLiveryPayload(project);
+
+    if (!QDir().mkpath(outputFolder)) {
+        throw std::runtime_error(("could not create export folder: " + outputFolder).toStdString());
+    }
+    QDir outputDir(outputFolder);
+
+    // C_livery uses the same 8-byte-header + zlib container as C_group.
+    writeCGroupFile(outputDir.filePath(QStringLiteral("C_livery")), payload);
+
+    // header sidecar: carry the original bytes, patching the car id (u32 at len-20,
+    // right before the trailing 16-byte GUID) so it stays consistent with vlrc 0x10.
+    QByteArray header = project.sourceHeader;
+    if (!header.isEmpty()) {
+        if (header.size() >= 20) {
+            writeLeU32InPlace(header, header.size() - 20, static_cast<quint32>(project.carId));
+        }
+        writeRawFile(outputDir.filePath(QStringLiteral("header")), header);
+    }
+
+    // thumbnail: the game reads bigThumb.webp; carry the source thumbnail over.
+    if (!project.sourceFolder.isEmpty()) {
+        const QString thumb = QDir(project.sourceFolder).filePath(QStringLiteral("bigThumb.webp"));
+        if (QFile::exists(thumb)) {
+            copyFileReplacing(thumb, outputDir.filePath(QStringLiteral("bigThumb.webp")));
+        }
+    }
 }
 
 } // namespace fh6

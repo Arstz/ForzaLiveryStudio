@@ -4,20 +4,17 @@
 #include "editor_state.h"
 #include "shape_geometry_store.h"
 
-#include <QHash>
-#include <QIcon>
-#include <QImage>
-#include <QStandardItemModel>
-#include <QString>
+#include <QtCore>
+#include <QtGui>
 
 namespace gui {
 
 // O(1) id -> entry lookup built once per refresh so tree rebuilds and preview
 // regeneration stay linear instead of degrading to O(N^2) linear scans.
 struct ProjectLookup {
-    QHash<QString, const fh6::ShapeLayer *> layers;
-    QHash<QString, const fh6::GuideLayer *> guides;
-    QHash<QString, const fh6::LayerGroup *> groups;
+    QHash<QString, const fh6::scene::Shape *> layers;
+    QHash<QString, const fh6::scene::GuideLayer *> guides;
+    QHash<QString, const fh6::scene::Group *> groups;
 };
 
 QImage renderProjectPreviewImage(const fh6::Project &project, const QSize &size);
@@ -57,6 +54,7 @@ public:
 private:
     QStandardItem *itemForId(const ProjectLookup &lookup, const QString &id, bool ancestorLocked = false) const;
     QIcon previewIconForId(const ProjectLookup &lookup, const QString &id) const;
+    QIcon previewIconForNode(const fh6::scene::Layer &node) const;
     void cacheDisplayedSectionRows();
     void refreshStateRolesForParent(const ProjectLookup &lookup, const QModelIndex &parent, bool ancestorLocked);
     void refreshPreviewsForParent(const ProjectLookup &lookup, const QModelIndex &parent);
@@ -74,6 +72,7 @@ private:
     // re-rasterizing - the dominant cost on duplicate/stamp/paste. Live recolor only re-renders
     // the entries whose signature actually changed.
     mutable QHash<quint64, QIcon> previewCache_;
+    mutable QHash<QString, quint64> previewSignatureCache_;
 };
 
 } // namespace gui

@@ -107,6 +107,7 @@ public:
     using CanvasTool::CanvasTool;
     QString name() const override;
     bool handlePress(QMouseEvent *event) override;
+    bool hoverCursor(const QPointF &point, QCursor *cursor) const override;
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 

@@ -2,14 +2,8 @@
 
 #include "theme_manager.h"
 
-#include <QCoreApplication>
-#include <QDir>
-#include <QFileInfo>
-#include <QHash>
-#include <QPainter>
-#include <QPixmap>
-#include <QStringList>
-#include <QTransform>
+#include <QtCore>
+#include <QtGui>
 
 namespace gui {
 namespace {

@@ -1,21 +1,10 @@
 #include "settings_dialog.h"
 
-#include <QCheckBox>
-#include <QComboBox>
-#include <QDialogButtonBox>
-#include <QDoubleSpinBox>
-#include <QFormLayout>
-#include <QHeaderView>
-#include <QHash>
-#include <QKeySequenceEdit>
-#include <QLabel>
-#include <QPushButton>
-#include <QAbstractItemView>
-#include <QColorDialog>
-#include <QHBoxLayout>
-#include <QTabWidget>
-#include <QTableWidget>
-#include <QVBoxLayout>
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
+
+#include <algorithm>
 
 namespace gui {
 namespace {
@@ -108,6 +97,50 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     nudgeShiftStep_ = makeNudgeSpinBox(behaviorSettings_.nudgeShiftStep);
     generalLayout->addRow(QStringLiteral("Shift arrow nudge step"), nudgeShiftStep_);
 
+    liveryTextureScale_ = new QSpinBox(general);
+    liveryTextureScale_->setRange(1, 8);
+    liveryTextureScale_->setSingleStep(1);
+    liveryTextureScale_->setValue(std::clamp(behaviorSettings_.liveryTextureScale, 1, 8));
+    generalLayout->addRow(QStringLiteral("3D livery texture scale"), liveryTextureScale_);
+
+    autosaveIntervalMinutes_ = new QSpinBox(general);
+    autosaveIntervalMinutes_->setRange(0, 1440);
+    autosaveIntervalMinutes_->setSingleStep(1);
+    autosaveIntervalMinutes_->setSuffix(QStringLiteral(" min"));
+    autosaveIntervalMinutes_->setSpecialValueText(QStringLiteral("Disabled"));
+    autosaveIntervalMinutes_->setValue(std::clamp(behaviorSettings_.autosaveIntervalMinutes, 0, 1440));
+    generalLayout->addRow(QStringLiteral("Autosave interval"), autosaveIntervalMinutes_);
+
+    valueEditingWheelCheck_ = new QCheckBox(general);
+    valueEditingWheelCheck_->setChecked(behaviorSettings_.valueEditingWheelEnabled);
+    generalLayout->addRow(QStringLiteral("Edit values with mouse wheel"), valueEditingWheelCheck_);
+
+    {
+        auto *row = new QWidget(general);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+        carModelsFolder_ = new QLineEdit(row);
+        carModelsFolder_->setText(behaviorSettings_.carModelsFolder);
+        carModelsFolder_->setPlaceholderText(QStringLiteral("Folder of extracted car models"));
+        carModelsFolder_->setClearButtonEnabled(true);
+        auto *browse = new QPushButton(QStringLiteral("Browse…"), row);
+        QObject::connect(browse, &QPushButton::clicked, this, [this]() {
+            const QString start = carModelsFolder_->text().isEmpty() ? QString() : carModelsFolder_->text();
+            const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Car Models Folder"), start);
+            if (!picked.isEmpty()) {
+                carModelsFolder_->setText(picked);
+            }
+        });
+        rowLayout->addWidget(carModelsFolder_, 1);
+        rowLayout->addWidget(browse);
+        generalLayout->addRow(QStringLiteral("Car models folder"), row);
+    }
+
+    discardModelOnLiveryOpen_ = new QCheckBox(general);
+    discardModelOnLiveryOpen_->setChecked(behaviorSettings_.discardModelOnLiveryOpen);
+    generalLayout->addRow(QStringLiteral("Discard current model on livery open"), discardModelOnLiveryOpen_);
+
     tabs->addTab(general, QStringLiteral("General"));
 
     auto *keybinds = new QWidget(tabs);
@@ -185,6 +218,19 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
     }
     if (nudgeShiftStep_ != nullptr) {
         result.nudgeShiftStep = nudgeShiftStep_->value();
+    }
+    if (liveryTextureScale_ != nullptr) {
+        result.liveryTextureScale = liveryTextureScale_->value();
+    }
+    if (autosaveIntervalMinutes_ != nullptr) {
+        result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
+    }
+    result.valueEditingWheelEnabled = valueEditingWheelCheck_ != nullptr && valueEditingWheelCheck_->isChecked();
+    if (carModelsFolder_ != nullptr) {
+        result.carModelsFolder = carModelsFolder_->text().trimmed();
+    }
+    if (discardModelOnLiveryOpen_ != nullptr) {
+        result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
     }
     return result;
 }

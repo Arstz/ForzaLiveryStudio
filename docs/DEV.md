@@ -10,7 +10,9 @@ exports flat game-compatible folders.
   context-aware **Import…** action that detects group vs livery and loads it as
   an editable project or a read-only multi-section viewer.
 - Open/save editor projects as a `.3so` container: the editor project JSON
-  wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still load.
+  wrapped in a gzip stream. The document is the unified scene tree (v2: a recursive
+  `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON
+  (`.json`) projects still load and are upgraded to v2 on save.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, and Pipette canvas
@@ -24,7 +26,13 @@ exports flat game-compatible folders.
   opacity, color, visibility, mask, and lock state.
 - Edit a group or multi-shape selection's position, scale, rotation, and skew as
   a unit: the values transform the selection's bounding box (about its centre)
-  rather than each shape in place.
+  rather than each shape in place. A group also carries its own transform frame in
+  the scene tree — transforming a whole group (on the canvas or via the property
+  panel) accumulates the group's frame while its descendant leaves stay baked, so
+  the group owns its transform and rendering composes it down the tree.
+- Livery logos are first-class raster layers (a `Shape` with a `RasterContainer`),
+  rendered uniformly with vector shapes on the canvas, in the 3D car preview, and in
+  the layer-tree / clipboard / shapes-browser thumbnails.
 - Drag numeric property labels vertically for live value changes.
 - Use editor-only raster guide layers for references; guide layers are saved in
   the project container and ignored by game export. Guide layers can render above
@@ -40,26 +48,78 @@ exports flat game-compatible folders.
   the view centre and grouped into a new group named after the text. A Monospace
   flag (persisted in QSettings) instead advances every glyph by a fixed cell — the
   font's average glyph width, computed separately for upper- and lower-case.
-- Edit header metadata for exported projects.
-- Export through one **Export…** action whose dialog offers Flat or Nested. Flat
-  writes a rebuilt `C_group`, copied sidecars, preview thumbnail, and
-  draft/imported header handling. Nested (grouped) export preserves group
-  structure, nesting, and masks.
+- Edit header metadata for exported projects, or edit individual project fields
+  directly from the **Project** menu: **Target Car…** (the car a livery is for),
+  **Project Name…**, and **Creator Name…** (the last also persists as the default
+  creator for new projects).
+- Align and distribute the current selection from the **Edit** menu. **Align**
+  (Top/Bottom/Left/Right/Centre) snaps each selected top-level unit — a whole group
+  counts as one unit, loose leaves individually — to a shared edge (Centre aligns on
+  the Y axis). **Distribute** (Vertical/Horizontal) evens the spacing of unit centres
+  along one axis; a lone selected group distributes its own direct children. Both
+  evaluate world-space shape geometry.
+- Export through one **Export…** action that writes a grouped (nested) `C_group`
+  folder — preserving group structure, nesting, and masks — plus copied sidecars, a
+  preview thumbnail, and draft/imported header handling. **Livery export is currently
+  disabled**: opening the Export action on a livery shows an error popup. The livery
+  encoder (`exportCLivery`) is retained but not invoked, pending full artwork
+  synthesis (see `docs/LIVERY_ENCODER.md`).
+- Preview a car in 3D with the current vinyl applied: **Import Car Model…**
+  decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
+  assembled with their per-part transforms), or a zipped car folder (`.zip`) and
+  shows it in the **3D Preview** dock.
+  The vinyl scene is rasterized into a configurable paint-canvas texture (4x by default)
+  and applied to the car's
+  body paint by **runtime planar projection**: each body fragment's world position is
+  projected onto each livery side's paint canvas (per the car's `LiveryMasks/Masks.xml`
+  axes + region), the side's `*.swatchbin` coverage mask clips that projection, and the
+  paint canvas is sampled there over a flat base paint colour. Which side owns a
+  fragment is decided in the shader by:
+  - a per-mesh **allowed-sides mask** keyed on the part's model name (e.g. hood → Top,
+    trunk → Back+Top, doors → Left/Right, bumpers → their cap + sides), so the livery
+    crops at panel seams instead of bleeding across them, and interior/optics parts
+    take none;
+  - a **facing-angle gate** (`dot(side facing, normal) ≥ ~cos 80°`) that lets a side
+    reach into curved nooks; and
+  - **highest facing wins** among the surviving sides — the fragment goes to whichever
+    side it faces most directly — with a bias giving Left/Right priority over Top on
+    parts that take both (body/fenders), so the side↔Top border lands on the shoulder.
+
+  Only the highest LOD of each part is uploaded (names ending `_LOD1`.. are dropped) to
+  avoid body overdraw. The swatch masks are uploaded to the GPU as a 2x upsampled
+  texture array. Imported `C_livery` section geometry is not rewritten for the preview;
+  any orientation correction is done only in the car shader's paint-sampling path,
+  leaving mask sampling in the original swatch orientation. Forza bakes no livery UV
+  into the mesh (channel 4 is empty; no other channel maps to the swatch atlas either),
+  so the projection is computed live. The preview updates live as layers are edited.
+  A "reference only" note is pinned in the preview's corner since the runtime projection
+  approximates the game's own paint pipeline.
+  When a livery project is opened, the matching car model is auto-loaded from a
+  user-configured **car models folder** (matched by the livery's target car id → the
+  car registry's model code, searched recursively). If the folder is unset the app
+  prompts once to pick it; it can also be set in Settings. A **Discard current model on
+  livery open** option (on by default) controls whether opening a livery replaces the
+  currently loaded model or keeps it.
 - Configure UI theme, canvas colors, layout, keybinds, behavior options, guide
-  visibility borders, and nudge step sizes.
+  visibility borders, nudge step sizes, the car models folder, and the discard-model
+  option. Every menu-bar action can be bound to a hotkey in the keybind settings, even
+  those with no default shortcut.
   Fresh settings default to the Dark theme with theme-default canvas colors.
-- Collapse dock areas from the dock title-bar collapse buttons.
+- Collapse dock areas from the dock title-bar collapse buttons. The button appears on
+  only one dock per area (never duplicated across split docks) and is hidden on
+  floating docks.
 - Toggle selected-layer flash with `\` or from the Options menu.
 - Switch Transform Relative mode from the Options menu when transform handles
   should follow the selected shape or group rotation.
 
-Flat export is the stable game export path. Nested export (the Nested option in
-the **Export…** dialog) preserves group semantics: each group is
-written with a translation-only origin transform and shapes packed relative to
-it, mask groups are emitted as `60` records with per-shape trailing mask flags,
-and nested groups carry their own child-type bitmaps. It is validated in-game for
-sibling groups, multi-level nesting, and masks, but is not byte-identical to the
-game's own encoding.
+Grouped (nested) export is the single canonical game export path (the legacy flat
+export was removed). It preserves group semantics: each group is written with a
+translation-only origin transform and shapes packed relative to it, mask groups are
+emitted as `60` records with per-shape trailing mask flags, and nested groups carry
+their own child-type bitmaps. It is validated in-game for sibling groups, multi-level
+nesting, and masks, but is not byte-identical to the game's own encoding. Livery
+(`C_livery`) export is wired through `exportCLivery` but is currently gated off in the
+UI (error popup) until artwork synthesis is complete.
 
 ## Build
 
@@ -151,8 +211,10 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `assets/`  Eruntime XPM icons and `vector/` shape data, copied next to the
   executable at build time.
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
-  `gen_xpm.ps1`, `gen_xpm.py`). Note: these are Windows-only; on Linux, use
-  CMake directly.
+  `gen_xpm.ps1`, `gen_xpm.py`) plus optional dev-only console harnesses
+  (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind
+  `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
+  scripts are Windows-only; on Linux, use CMake directly.
 - `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and format notes
   (`CGROUP.md`, `HEADER.md`).
 
@@ -163,6 +225,37 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `src/core/`
   - Binary codecs, vinyl tree decoding, livery decoding, project JSON, flat and
     nested payload export, matrix math, header parse/build, and shape registry.
+  - `layer.*` / `visual_container.h`: the unified scene-object hierarchy in
+    namespace `fh6::scene` — `Layer` (id, `Transform2D`, opacity, visibility/lock,
+    parent) subclassed by `Shape` / `GuideLayer` / `Group`. A group carries its own
+    transform and owns its children (`std::vector<unique_ptr<Layer>>`), so transforms
+    compose down the tree (`worldMatrix()`); leaf visuals are stored separately as a
+    `VisualContainer` — `VectorContainer` (shape id) or `RasterContainer` (a logo
+    decal's pixels/id, or a guide's inline image). `clone()` deep-copies for undo.
+  - `scene_codec.*`: recursive `kind`-discriminated tree JSON for the canonical
+    `Project::root` scene. Imports/load populate `Project::root`, save serializes it
+    directly, rendering/editor state walk it directly, and export derives payload records
+    from visible scene leaves.
+  - `raster_decals.*`: the indexed decal-pixel pack, plus `sharedRasterDecals()` — a
+    process-wide lazily-loaded pack shared by every surface that draws logos (GL
+    canvas, layer-tree/clipboard/browser thumbnails).
+  - `model_bundle.*` / `model_geometry.*`: read-only decoder for ForzaTech "Grub"
+    bundles (`.modelbin`) — blob/metadata parsing plus per-mesh geometry dequant
+    (positions/normals/UVs/indices, bone transforms) ported from ForzaTechStudio's
+    ModelImporter. No proprietary DLL: geometry buffers are raw in the bundle.
+  - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
+    list, resolves each referenced `.modelbin` next to the carbin, and bakes each
+    part's transform (× its own skeleton bone) into a single merged `CarModel`.
+    Stock parts only; upgrades are skipped.
+  - `zip_extract.*`: minimal ZIP extractor for car model archives. The 3D preview
+    extracts `.zip` car folders to a temporary directory, then reuses the normal
+    `.carbin` and sibling-asset loading path.
+  - `swatchbin.*`: decoder for `.swatchbin` livery-mask textures (a Grub bundle
+    wrapping a TXCB texture blob). Decodes PC-format (linear) BC4/R8 masks to a
+    single-channel `SwatchMask`; Xbox/Durango tiled textures are unsupported.
+  - `livery_masks.*`: parses a car's `LiveryMasks/` folder — `Masks.xml` per-side
+    planar-projection parameters plus the body-side coverage swatchbins — into a
+    `LiveryMaskSet` used by the 3D preview's livery projection.
 - `src/gui/app/` (`main_window.*`, `dock_chrome.*`, `settings_dialog.*`,
   `theme_manager.*`, `gui_assets.*`, `gui_constants.h`, `perf_utils.h`)
   - Main editor shell, menus/toolbars/docks, import/export actions, drag/drop,
@@ -172,27 +265,52 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     cross-cutting UI constants.
 - `src/gui/state/` (`editor_state.*`, `editor_state_selection.cpp`,
   `editor_state_clipboard.cpp`, `editor_state_grouping.cpp`,
-  `editor_state_snapshot.cpp`, `editor_state_internal.h`,
-  `editor_state_util.cpp`, `layer_tree_model.*`, `scene_entry.h`)
+  `editor_state_snapshot.cpp`, `layer_tree_model.*`, `scene_view.h`)
   - Project ownership, index cache, lock/visibility/mask propagation, and
     shared Qt signals in the core file; selection, clipboard/duplicate/insert,
     group/ungroup/reorder, and undo/redo snapshots in the per-concern units;
-    helpers shared between units in `gui::detail`; the layer/group/guide tree
-    model; and the `EntryRef` Shape/Guide unification with shared
-    transform/local-rect helpers and the bounds accumulator.
-- `src/gui/canvas/` (`project_canvas.*`, `canvas_tools.*`,
-  `native_shape_renderer.*`, `drag_cursors.*`)
+    the layer/group/guide tree model; and shared scene transform/local-rect
+    helpers plus the bounds accumulator.
+- `src/gui/canvas/` (`project_canvas.*` plus its per-concern implementation units
+  `project_canvas_hit.cpp` / `project_canvas_drag.cpp` / `project_canvas_cursor.cpp` /
+  `project_canvas_paint.cpp` / `project_canvas_events.cpp` and the shared
+  `project_canvas_internal.h`; `canvas_tools.*`, `native_shape_renderer.*`,
+  `car_model_renderer.*`, `drag_cursors.*`)
   - OpenGL canvas, pan/zoom, hit testing, guide layer rendering, selection
     overlays, color sampling, visibility borders, keyboard nudging, and cursor
-    handling; per-tool interaction strategies
+    handling. `ProjectCanvas` is one class declared in `project_canvas.h` but split
+    across translation units by concern (lifecycle/view in `project_canvas.cpp`;
+    hit-testing/selection-box in `_hit`; drag gestures in `_drag`; cursor resolution
+    in `_cursor`; painting/overlay/flash/guides in `_paint`; input events in
+    `_events`), mirroring the `editor_state_*` layout; the anonymous-namespace helpers
+    shared between those units live in `project_canvas_internal.h`. Read paths walk the
+    scene through the shared `forEachSceneShape`/`forEachSceneGuide` iterators, which
+    hide the EditorState-render-entries vs. canvas-local-tree backends. Per-tool
+    interaction strategies
     (select/move/marquee/transform/rotate/pipette) as `CanvasTool` subclasses;
-    OpenGL shape rendering; and layer drag cursors.
+    OpenGL shape rendering (`native_shape_renderer`, which walks the `scene::Group`
+    tree with a matrix stack — composing each group's frame into its descendants and
+    dispatching vector vs raster off the visual container — and also exposes
+    `renderSceneToTexture` for the 3D preview); the perspective/depth car mesh
+    renderer (`car_model_renderer`) whose fragment shader applies the livery to
+    body paint by runtime planar projection — projecting each fragment's world
+    position onto the per-side paint canvases (swatchbin coverage packed into a 2x
+    upsampled texture array), gated by a per-mesh name-keyed allowed-sides mask and
+    a facing-angle threshold, then picking the side the fragment faces most directly
+    (Left/Right biased over Top on the body/fenders), keeping mask sampling in swatch
+    orientation and applying the imported-livery Y correction only to the paint
+    texture sample; it uploads only each part's highest LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
   `layer_state_delegate.*`, `color_palette_widget.*`, `shapes_browser_widget.*`,
   `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,
-  `clipboard_buffer_widget.*`,
+  `clipboard_buffer_widget.*`, `car_preview_widget.*`,
   `header_metadata_widget.*`, `livery_section_bar.*`, `image_io.*`,
   `import_locations.*`)
+  - `car_preview_widget`: the dockable 3D car preview `QOpenGLWidget` — orbit
+    camera, its own scene/car renderers, and a configurable livery paint texture regenerated
+    from `EditorState` change signals. Imported `C_livery` sections are rendered
+    into their Masks.xml clip rectangles without mutating decoded section/group
+    transforms; projection-orientation fixes live in `car_model_renderer`'s shader.
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with
     sibling-only drag/drop reordering, row badges, and thumbnails; the
@@ -213,7 +331,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `importCLivery()` / `readLiveryPayload()` / `buildLiverySections()`
 - `buildFlatPayload()` / `buildNestedPayload()`
 - `exportFlatProjectFolder()` / `exportNestedProjectFolder()`
-- `projectToJson()` / `projectFromJson()`
+- `projectToJson()` / `projectFromJson()` (v2 scene-tree JSON; v1 flat loader kept)
+- `Project::root` (`scene::Group`, canonical runtime scene tree)
+- `scene::sceneTreeToJson()` / `scene::sceneTreeFromJson()`
 - `encodeProjectDocument()` / `decodeProjectDocument()` (`.3so` gzip container)
 - `parseHeader()` / `buildHeader()` / `defaultDraftHeader()`
 

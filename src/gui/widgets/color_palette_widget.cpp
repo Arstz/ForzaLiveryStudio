@@ -2,12 +2,8 @@
 
 #include "gui_constants.h"
 
-#include <QColor>
-#include <QAction>
-#include <QGridLayout>
-#include <QMenu>
-#include <QMouseEvent>
-#include <QPushButton>
+#include <QtGui>
+#include <QtWidgets>
 
 #include <algorithm>
 

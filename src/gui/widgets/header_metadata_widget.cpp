@@ -1,14 +1,7 @@
 #include "header_metadata_widget.h"
 
-#include <QCheckBox>
-#include <QDate>
-#include <QFormLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QPlainTextEdit>
-#include <QPushButton>
-#include <QSpinBox>
-#include <QVBoxLayout>
+#include <QtCore>
+#include <QtWidgets>
 
 #include <utility>
 

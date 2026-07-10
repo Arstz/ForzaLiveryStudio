@@ -22,7 +22,8 @@ Push-Location $repoRoot
 try {
     cmake -S . -B build `
         -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-        -DVCPKG_TARGET_TRIPLET=x64-windows
+        -DVCPKG_TARGET_TRIPLET=x64-windows `
+        -DFH6_BUILD_HELPER_TOOLS=OFF
 } finally {
     Pop-Location
 }

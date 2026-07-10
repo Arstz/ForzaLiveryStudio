@@ -1,56 +1,147 @@
-// Undo/redo machinery split out of editor_state.cpp: edit/transform command
-// lifecycle, the undo/redo stacks, snapshot capture/apply, snapshot equality,
-// and refresh classification for history commands.
-
 #include "editor_state.h"
 
-#include "editor_state_internal.h"
 #include "perf_utils.h"
 
-#include <array>
+#include <utility>
 
 namespace gui {
-
-using namespace detail;
-
 namespace {
 
-bool colorsEqual(const std::array<quint8, 4> &a, const std::array<quint8, 4> &b)
+bool visualEqual(const fh6::scene::Shape &a, const fh6::scene::Shape &b)
 {
-    return a == b;
+    if (a.isRaster() != b.isRaster()) {
+        return false;
+    }
+    if (a.isRaster()) {
+        return a.rasterId == b.rasterId
+            && a.rasterWidth == b.rasterWidth
+            && a.rasterHeight == b.rasterHeight;
+    }
+    return a.shapeId == b.shapeId;
 }
 
-bool layersEqual(const fh6::ShapeLayer &a, const fh6::ShapeLayer &b)
+bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transform2D &b)
 {
-    return commonEntryFieldsEqual(a, b)
-        && a.shapeId == b.shapeId
-        && a.skew == b.skew
-        && colorsEqual(a.color, b.color)
-        && a.mask == b.mask
-        && a.sourceShape == b.sourceShape
-        && a.absOffset == b.absOffset
-        && a.marker == b.marker
-        && a.flags == b.flags;
+    return a.x == b.x
+        && a.y == b.y
+        && a.scaleX == b.scaleX
+        && a.scaleY == b.scaleY
+        && a.rotation == b.rotation
+        && a.skew == b.skew;
 }
 
-bool groupsEqual(const fh6::LayerGroup &a, const fh6::LayerGroup &b)
+bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
 {
-    return a.id == b.id
-        && a.name == b.name
-        && a.childIds == b.childIds
-        && a.locked == b.locked
-        && a.sourceAbsPos == b.sourceAbsPos
-        && a.pendingTransformMarker == b.pendingTransformMarker
-        && a.inlineTransformMarker == b.inlineTransformMarker
-        && a.effectiveTransformMarker == b.effectiveTransformMarker
-        && a.headerControlBytes == b.headerControlBytes
-        && a.flags == b.flags
-        && a.sourceParentId == b.sourceParentId
-        && a.sourcePreviousSiblingId == b.sourcePreviousSiblingId
-        && a.sourcePreviousGroupDepth == b.sourcePreviousGroupDepth
-        && a.sourceChildIds == b.sourceChildIds
-        && a.isLiverySection == b.isLiverySection
-        && a.liverySectionSlot == b.liverySectionSlot;
+    if (a.kind() != b.kind()
+        || a.id != b.id
+        || a.name != b.name
+        || !transformEqual(a.transform, b.transform)
+        || a.opacity != b.opacity
+        || a.visible != b.visible
+        || a.locked != b.locked) {
+        return false;
+    }
+    switch (a.kind()) {
+    case fh6::scene::LayerKind::Shape: {
+        const auto &sa = static_cast<const fh6::scene::Shape &>(a);
+        const auto &sb = static_cast<const fh6::scene::Shape &>(b);
+        return visualEqual(sa, sb)
+            && sa.color == sb.color
+            && sa.mask == sb.mask
+            && sa.sourceShape == sb.sourceShape
+            && sa.absOffset == sb.absOffset
+            && sa.marker == sb.marker
+            && sa.flags == sb.flags
+            && sa.sourceLogoId == sb.sourceLogoId;
+    }
+    case fh6::scene::LayerKind::Guide: {
+        const auto &ga = static_cast<const fh6::scene::GuideLayer &>(a);
+        const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
+        if (ga.sourcePath != gb.sourcePath || static_cast<bool>(ga.image) != static_cast<bool>(gb.image)) {
+            return false;
+        }
+        if (!ga.image) {
+            return true;
+        }
+        return ga.image->width == gb.image->width
+            && ga.image->height == gb.image->height
+            && ga.image->pixels == gb.image->pixels
+            && ga.image->encoded == gb.image->encoded
+            && ga.image->format == gb.image->format;
+    }
+    case fh6::scene::LayerKind::Group: {
+        const auto &ga = static_cast<const fh6::scene::Group &>(a);
+        const auto &gb = static_cast<const fh6::scene::Group &>(b);
+        if (ga.isLiverySection != gb.isLiverySection
+            || ga.liverySectionSlot != gb.liverySectionSlot
+            || ga.sourceAbsPos != gb.sourceAbsPos
+            || ga.pendingTransformMarker != gb.pendingTransformMarker
+            || ga.inlineTransformMarker != gb.inlineTransformMarker
+            || ga.effectiveTransformMarker != gb.effectiveTransformMarker
+            || ga.headerControlBytes != gb.headerControlBytes
+            || ga.flags != gb.flags
+            || ga.sourceParentId != gb.sourceParentId
+            || ga.sourcePreviousSiblingId != gb.sourcePreviousSiblingId
+            || ga.sourcePreviousGroupDepth != gb.sourcePreviousGroupDepth
+            || ga.sourceChildren != gb.sourceChildren
+            || ga.children.size() != gb.children.size()) {
+            return false;
+        }
+        for (int i = 0; i < static_cast<int>(ga.children.size()); ++i) {
+            if (!nodeEqual(*ga.children[i], *gb.children[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    }
+    return false;
+}
+
+bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
+{
+    if (a.kind() != b.kind() || a.id != b.id || a.name != b.name || a.visible != b.visible || a.locked != b.locked) {
+        return false;
+    }
+    if (a.kind() == fh6::scene::LayerKind::Group) {
+        const auto &ga = static_cast<const fh6::scene::Group &>(a);
+        const auto &gb = static_cast<const fh6::scene::Group &>(b);
+        if (ga.children.size() != gb.children.size()
+            || ga.isLiverySection != gb.isLiverySection
+            || ga.liverySectionSlot != gb.liverySectionSlot) {
+            return false;
+        }
+        for (int i = 0; i < static_cast<int>(ga.children.size()); ++i) {
+            if (!structureEqual(*ga.children[i], *gb.children[i])) {
+                return false;
+            }
+        }
+    }
+    if (a.kind() == fh6::scene::LayerKind::Shape) {
+        const auto &sa = static_cast<const fh6::scene::Shape &>(a);
+        const auto &sb = static_cast<const fh6::scene::Shape &>(b);
+        return visualEqual(sa, sb) && sa.mask == sb.mask;
+    }
+    return true;
+}
+
+bool colorOnlyPreviewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
+{
+    if (a.kind() == fh6::scene::LayerKind::Shape) {
+        const auto &sa = static_cast<const fh6::scene::Shape &>(a);
+        const auto &sb = static_cast<const fh6::scene::Shape &>(b);
+        return sa.color != sb.color || sa.shapeId != sb.shapeId || sa.rasterId != sb.rasterId;
+    }
+    if (a.kind() == fh6::scene::LayerKind::Group) {
+        const auto &ga = static_cast<const fh6::scene::Group &>(a);
+        const auto &gb = static_cast<const fh6::scene::Group &>(b);
+        for (int i = 0; i < static_cast<int>(ga.children.size()); ++i) {
+            if (colorOnlyPreviewChange(*ga.children[i], *gb.children[i])) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -62,9 +153,10 @@ void EditorState::beginProjectEdit()
         return;
     }
     ProjectEditCommand command;
+    command.kind = ProjectEditCommandKind::Snapshot;
     command.before = captureSnapshot();
-    command.undoSelection = {selectedLayerIds_, selectedGuideLayerIds_};
-    command.redoSelection = {selectedLayerIds_, selectedGuideLayerIds_};
+    command.undoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    command.redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
     pendingEdit_ = command;
 }
 
@@ -74,8 +166,12 @@ void EditorState::commitProjectEdit()
     if (!pendingEdit_.has_value()) {
         return;
     }
+    if (pendingEdit_->kind != ProjectEditCommandKind::Snapshot) {
+        commitTransformCommand();
+        return;
+    }
     pendingEdit_->after = captureSnapshot();
-    pendingEdit_->redoSelection = {selectedLayerIds_, selectedGuideLayerIds_};
+    pendingEdit_->redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
     if (!snapshotsEqual(pendingEdit_->before, pendingEdit_->after)) {
         pendingEdit_->refresh = classifySnapshotRefresh(pendingEdit_->before, pendingEdit_->after);
         undoStack_.push_back(*pendingEdit_);
@@ -91,26 +187,98 @@ void EditorState::cancelProjectEdit()
     if (!pendingEdit_.has_value()) {
         return;
     }
+    if (pendingEdit_->kind != ProjectEditCommandKind::Snapshot) {
+        cancelTransformCommand();
+        return;
+    }
     applySnapshot(pendingEdit_->before);
     const ProjectSelectionSnapshot undoSelection = pendingEdit_->undoSelection;
     pendingEdit_.reset();
-    setSelectionIds(undoSelection.layerIds, undoSelection.guideLayerIds);
+    setSelectionFromEntries(undoSelection.layerIds, undoSelection.guideLayerIds, undoSelection.entryIds);
     noteProjectStructureChanged();
 }
 
 void EditorState::beginTransformCommand()
 {
-    beginProjectEdit();
+    beginTransformCommand(selectedTransformTargetIds());
+}
+
+void EditorState::beginTransformCommand(const QVector<QString> &targetIds)
+{
+    if (!hasProject_) {
+        pendingEdit_.reset();
+        return;
+    }
+    ProjectEditCommand command;
+    command.kind = ProjectEditCommandKind::Transform;
+    command.refresh = ProjectEditRefresh::GeometryOnly;
+    command.undoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    command.redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    QSet<QString> seen;
+    command.transforms.reserve(targetIds.size());
+    for (const QString &id : targetIds) {
+        if (id.isEmpty() || seen.contains(id)) {
+            continue;
+        }
+        fh6::scene::Layer *node = sceneNode(id);
+        if (node == nullptr) {
+            continue;
+        }
+        command.transforms.push_back({id, node->transform, node->transform});
+        seen.insert(id);
+    }
+    pendingEdit_ = command;
 }
 
 void EditorState::commitTransformCommand()
 {
-    commitProjectEdit();
+    ScopedPerf perf("EditorState::commitTransformCommand");
+    if (!pendingEdit_.has_value()) {
+        return;
+    }
+    if (pendingEdit_->kind != ProjectEditCommandKind::Transform) {
+        commitProjectEdit();
+        return;
+    }
+    QVector<ProjectTransformEdit> changed;
+    changed.reserve(pendingEdit_->transforms.size());
+    for (ProjectTransformEdit edit : pendingEdit_->transforms) {
+        fh6::scene::Layer *node = sceneNode(edit.nodeId);
+        if (node == nullptr) {
+            pendingEdit_.reset();
+            noteProjectStructureChanged();
+            return;
+        }
+        edit.after = node->transform;
+        if (!transformEqual(edit.before, edit.after)) {
+            changed.push_back(edit);
+        }
+    }
+    pendingEdit_->transforms = std::move(changed);
+    pendingEdit_->redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    if (!pendingEdit_->transforms.isEmpty()) {
+        undoStack_.push_back(*pendingEdit_);
+        redoStack_.clear();
+        setModified(true);
+        Q_EMIT historyChanged();
+    }
+    pendingEdit_.reset();
 }
 
 void EditorState::cancelTransformCommand()
 {
-    cancelProjectEdit();
+    if (!pendingEdit_.has_value()) {
+        return;
+    }
+    if (pendingEdit_->kind != ProjectEditCommandKind::Transform) {
+        cancelProjectEdit();
+        return;
+    }
+    const ProjectSelectionSnapshot undoSelection = pendingEdit_->undoSelection;
+    applyTransformEdits(pendingEdit_->transforms, false);
+    pendingEdit_.reset();
+    setSelectionFromEntries(undoSelection.layerIds, undoSelection.guideLayerIds, undoSelection.entryIds);
+    noteProjectGeometryChanged(false);
 }
 
 void EditorState::undo()
@@ -118,17 +286,25 @@ void EditorState::undo()
     if (undoStack_.isEmpty()) {
         return;
     }
+    const QSet<QString> previousLayerIds = selectedLayerIds_;
+    const QSet<QString> previousGuideIds = selectedGuideLayerIds_;
+    const QVector<QString> previousEntryIds = selectedEntryIds_;
     const ProjectEditCommand command = undoStack_.takeLast();
-    applySnapshot(command.before);
+    if (command.kind == ProjectEditCommandKind::Transform) {
+        applyTransformEdits(command.transforms, false);
+    } else {
+        applySnapshot(command.before);
+    }
     redoStack_.push_back(command);
     setModified(true);
-    if (command.refresh == ProjectEditRefresh::Structure) {
-        selectedLayerIds_ = existingLayerIds(command.undoSelection.layerIds);
-        selectedGuideLayerIds_ = existingGuideLayerIds(command.undoSelection.guideLayerIds);
-    } else {
-        setSelectionIds(command.undoSelection.layerIds, command.undoSelection.guideLayerIds);
-    }
+    selectedLayerIds_ = existingLayerIds(command.undoSelection.layerIds);
+    selectedGuideLayerIds_ = existingGuideLayerIds(command.undoSelection.guideLayerIds);
+    selectedEntryIds_ = normalizeEntrySelection(command.undoSelection.entryIds);
     refreshAfterHistoryCommand(command.refresh);
+    if (selectedLayerIds_ != previousLayerIds || selectedGuideLayerIds_ != previousGuideIds
+        || selectedEntryIds_ != previousEntryIds) {
+        Q_EMIT selectionChanged();
+    }
     Q_EMIT historyChanged();
 }
 
@@ -137,134 +313,73 @@ void EditorState::redo()
     if (redoStack_.isEmpty()) {
         return;
     }
+    const QSet<QString> previousLayerIds = selectedLayerIds_;
+    const QSet<QString> previousGuideIds = selectedGuideLayerIds_;
+    const QVector<QString> previousEntryIds = selectedEntryIds_;
     const ProjectEditCommand command = redoStack_.takeLast();
-    applySnapshot(command.after);
+    if (command.kind == ProjectEditCommandKind::Transform) {
+        applyTransformEdits(command.transforms, true);
+    } else {
+        applySnapshot(command.after);
+    }
     undoStack_.push_back(command);
     setModified(true);
-    if (command.refresh == ProjectEditRefresh::Structure) {
-        selectedLayerIds_ = existingLayerIds(command.redoSelection.layerIds);
-        selectedGuideLayerIds_ = existingGuideLayerIds(command.redoSelection.guideLayerIds);
-    } else {
-        setSelectionIds(command.redoSelection.layerIds, command.redoSelection.guideLayerIds);
-    }
+    selectedLayerIds_ = existingLayerIds(command.redoSelection.layerIds);
+    selectedGuideLayerIds_ = existingGuideLayerIds(command.redoSelection.guideLayerIds);
+    selectedEntryIds_ = normalizeEntrySelection(command.redoSelection.entryIds);
     refreshAfterHistoryCommand(command.refresh);
+    if (selectedLayerIds_ != previousLayerIds || selectedGuideLayerIds_ != previousGuideIds
+        || selectedEntryIds_ != previousEntryIds) {
+        Q_EMIT selectionChanged();
+    }
     Q_EMIT historyChanged();
 }
 
 void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot)
 {
-    project_.layers = snapshot.layers;
-    project_.guideLayers = snapshot.guideLayers;
-    project_.groups = snapshot.groups;
-    project_.rootChildIds = snapshot.rootChildIds;
-    project_.colorSwatches = snapshot.colorSwatches;
+    project_ = snapshot.project;
     invalidateProjectIndexCache();
 }
 
 ProjectEditSnapshot EditorState::captureSnapshot() const
 {
     ScopedPerf perf("EditorState::captureSnapshot");
-    // Cheap copy-on-write copy: snapshots stay shared with project_ until the
-    // next edit mutates a container. Mutations made through QVector iteration
-    // detach automatically; callers that edit through cached raw pointers (the
-    // property panel) must detach the project first so they cannot rewrite this
-    // shared "before" snapshot. See PropertyPanel::detachSelectionForEdit().
-    return {project_.layers, project_.guideLayers, project_.groups, project_.rootChildIds, project_.colorSwatches};
+    return {project_};
 }
 
 bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const
 {
     ScopedPerf perf("EditorState::snapshotsEqual");
-    if (a.rootChildIds != b.rootChildIds
-        || a.colorSwatches != b.colorSwatches
-        || a.layers.size() != b.layers.size()
-        || a.guideLayers.size() != b.guideLayers.size()
-        || a.groups.size() != b.groups.size()) {
+    if (a.project.colorSwatches != b.project.colorSwatches
+        || static_cast<bool>(a.project.root) != static_cast<bool>(b.project.root)) {
         return false;
     }
-    for (int i = 0; i < a.layers.size(); ++i) {
-        if (!layersEqual(a.layers[i], b.layers[i])) {
-            return false;
-        }
+    if (!a.project.root) {
+        return true;
     }
-    for (int i = 0; i < a.guideLayers.size(); ++i) {
-        if (!guideLayersEqual(a.guideLayers[i], b.guideLayers[i])) {
-            return false;
-        }
-    }
-    for (int i = 0; i < a.groups.size(); ++i) {
-        if (!groupsEqual(a.groups[i], b.groups[i])) {
-            return false;
-        }
-    }
-    return true;
+    return nodeEqual(*a.project.root, *b.project.root);
 }
 
 ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const
 {
     ScopedPerf perf("EditorState::classifySnapshotRefresh");
-    if (a.rootChildIds != b.rootChildIds
-        || a.groups.size() != b.groups.size()
-        || a.layers.size() != b.layers.size()
-        || a.guideLayers.size() != b.guideLayers.size()) {
+    if (!a.project.root || !b.project.root || !structureEqual(*a.project.root, *b.project.root)) {
         return ProjectEditRefresh::Structure;
     }
-    for (int i = 0; i < a.guideLayers.size(); ++i) {
-        const fh6::GuideLayer &before = a.guideLayers[i];
-        const fh6::GuideLayer &after = b.guideLayers[i];
-        if (before.id != after.id
-            || before.name != after.name
-            || before.sourcePath != after.sourcePath
-            || before.imageBytes != after.imageBytes
-            || before.pixelBytes != after.pixelBytes
-            || before.imageFormat != after.imageFormat
-            || before.width != after.width
-            || before.height != after.height
-            || before.visible != after.visible
-            || before.locked != after.locked) {
-            return ProjectEditRefresh::Structure;
-        }
-    }
-    for (int i = 0; i < a.groups.size(); ++i) {
-        if (!groupsEqual(a.groups[i], b.groups[i])) {
-            return ProjectEditRefresh::Structure;
-        }
-    }
-    for (int i = 0; i < a.layers.size(); ++i) {
-        const fh6::ShapeLayer &before = a.layers[i];
-        const fh6::ShapeLayer &after = b.layers[i];
-        if (before.id != after.id
-            || before.name != after.name
-            || before.visible != after.visible
-            || before.locked != after.locked
-            || before.mask != after.mask
-            || before.sourceShape != after.sourceShape
-            || before.absOffset != after.absOffset
-            || before.marker != after.marker
-            || before.flags != after.flags) {
-            return ProjectEditRefresh::Structure;
-        }
-    }
-    for (int i = 0; i < a.layers.size(); ++i) {
-        const fh6::ShapeLayer &before = a.layers[i];
-        const fh6::ShapeLayer &after = b.layers[i];
-        if (before.shapeId != after.shapeId || !colorsEqual(before.color, after.color)) {
-            return ProjectEditRefresh::Previews;
-        }
-    }
-    for (int i = 0; i < a.guideLayers.size(); ++i) {
-        const fh6::GuideLayer &before = a.guideLayers[i];
-        const fh6::GuideLayer &after = b.guideLayers[i];
-        if (before.x != after.x
-            || before.y != after.y
-            || before.scaleX != after.scaleX
-            || before.scaleY != after.scaleY
-            || before.rotation != after.rotation
-            || before.opacity != after.opacity) {
-            return ProjectEditRefresh::GeometryOnly;
-        }
+    if (colorOnlyPreviewChange(*a.project.root, *b.project.root)) {
+        return ProjectEditRefresh::Previews;
     }
     return ProjectEditRefresh::GeometryOnly;
+}
+
+void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter)
+{
+    for (const ProjectTransformEdit &edit : edits) {
+        if (fh6::scene::Layer *node = sceneNode(edit.nodeId)) {
+            node->transform = useAfter ? edit.after : edit.before;
+        }
+    }
+    invalidateSceneTree();
 }
 
 void EditorState::refreshAfterHistoryCommand(ProjectEditRefresh refresh)

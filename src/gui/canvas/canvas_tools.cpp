@@ -267,10 +267,20 @@ bool PipetteTool::handlePress(QMouseEvent *event)
     return true;
 }
 
+bool PipetteTool::hoverCursor(const QPointF &point, QCursor *cursor) const
+{
+    Q_UNUSED(point);
+    if (cursor == nullptr) {
+        return false;
+    }
+    *cursor = canvas_.pipetteCursor();
+    return true;
+}
+
 Qt::CursorShape PipetteTool::idleCursorShape(const QPointF &point) const
 {
     Q_UNUSED(point);
-    return Qt::CrossCursor;
+    return Qt::ArrowCursor;
 }
 
 } // namespace gui

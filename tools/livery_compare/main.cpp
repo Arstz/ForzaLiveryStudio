@@ -1,4 +1,4 @@
-// livery_compare — ground-truth diff harness for the C_livery decoder.
+// livery_compare  Eground-truth diff harness for the C_livery decoder.
 //
 // Decodes a full C_livery (importCLivery) and, per section, diffs its composed
 // leaf shapes against the in-game per-section C_group exports decoded with the
@@ -20,6 +20,9 @@
 #include "vinyl_decoder.h"
 #include "livery_codec.h"
 #include "cgroup_codec.h"
+#include "layer.h"
+#include "matrix_math.h"
+#include "project_codec.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -52,77 +55,72 @@ const SectionMap kSections[] = {
     {"leftWindow", 9}, {"rightWindow", 10},
 };
 
-// Collect the leaf shapes (composed ShapeLayers) under a group subtree in
-// depth-first child order, matching importGroup's traversal.
-void collectLeaves(const Project &project,
-                   const QHash<QString, int> &shapeById,
-                   const QHash<QString, int> &groupById,
-                   const QString &groupId,
-                   QVector<const ShapeLayer *> &out)
+struct ShapeView {
+    const scene::Shape *shape = nullptr;
+    scene::Transform2D world;
+};
+
+void collectLeaves(const scene::Layer &node, QVector<ShapeView> &out)
 {
-    auto git = groupById.constFind(groupId);
-    if (git == groupById.constEnd()) {
+    if (node.kind() == scene::LayerKind::Shape) {
+        const auto &shape = static_cast<const scene::Shape &>(node);
+        if (!shape.raster) {
+            out.push_back({&shape, decomposeTransform2D(shape.worldMatrix())});
+        }
         return;
     }
-    const LayerGroup &group = project.groups[*git];
-    for (const QString &childId : group.childIds) {
-        auto sit = shapeById.constFind(childId);
-        if (sit != shapeById.constEnd()) {
-            out.push_back(&project.layers[*sit]);
-        } else {
-            collectLeaves(project, shapeById, groupById, childId, out);
+    if (node.kind() == scene::LayerKind::Group) {
+        for (const auto &child : static_cast<const scene::Group &>(node).children) {
+            collectLeaves(*child, out);
         }
     }
 }
 
-QVector<const ShapeLayer *> sectionLeaves(const Project &livery, int slot)
+QVector<ShapeView> sectionLeaves(const Project &livery, int slot)
 {
-    QHash<QString, int> shapeById;
-    for (int i = 0; i < livery.layers.size(); ++i) {
-        shapeById.insert(livery.layers[i].id, i);
+    QVector<ShapeView> out;
+    if (!livery.root) {
+        return out;
     }
-    QHash<QString, int> groupById;
-    for (int i = 0; i < livery.groups.size(); ++i) {
-        groupById.insert(livery.groups[i].id, i);
-    }
-    QString sectionId;
-    for (const LayerGroup &g : livery.groups) {
-        if (g.isLiverySection && g.liverySectionSlot == slot) {
-            sectionId = g.id;
-            break;
+    for (const auto &child : livery.root->children) {
+        if (child->kind() == scene::LayerKind::Group) {
+            const auto &group = static_cast<const scene::Group &>(*child);
+            if (group.isLiverySection && group.liverySectionSlot == slot) {
+                collectLeaves(group, out);
+                break;
+            }
         }
     }
-    QVector<const ShapeLayer *> out;
-    if (!sectionId.isEmpty()) {
-        collectLeaves(livery, shapeById, groupById, sectionId, out);
+    return out;
+}
+
+QVector<ShapeView> truthLeaves(const Project &truth)
+{
+    QVector<ShapeView> out;
+    if (!truth.root) {
+        return out;
+    }
+    for (const auto &child : truth.root->children) {
+        collectLeaves(*child, out);
     }
     return out;
 }
 
-QVector<const ShapeLayer *> truthLeaves(const Project &truth)
+bool shapesMatch(const ShapeView &a, const ShapeView &b)
 {
-    QVector<const ShapeLayer *> out;
-    out.reserve(truth.layers.size());
-    for (const ShapeLayer &l : truth.layers) {
-        out.push_back(&l);
-    }
-    return out;
-}
-
-bool shapesMatch(const ShapeLayer &a, const ShapeLayer &b)
-{
+    if (a.shape == nullptr || b.shape == nullptr) return false;
     const double posTol = 0.5;   // composed px
     const double scaleTol = 0.01; // relative-ish
     const double rotTol = 0.5;    // degrees
-    if (a.shapeId != b.shapeId) return false;
-    if (std::abs(a.x - b.x) > posTol) return false;
-    if (std::abs(a.y - b.y) > posTol) return false;
-    if (std::abs(std::abs(a.scaleX) - std::abs(b.scaleX)) > scaleTol + 0.001 * std::abs(b.scaleX)) return false;
-    if (std::abs(std::abs(a.scaleY) - std::abs(b.scaleY)) > scaleTol + 0.001 * std::abs(b.scaleY)) return false;
-    double dr = std::fmod(std::abs(a.rotation - b.rotation), 360.0);
+    if (a.shape->shapeId != b.shape->shapeId) return false;
+    if (std::abs(a.world.x - b.world.x) > posTol) return false;
+    if (std::abs(a.world.y - b.world.y) > posTol) return false;
+    if (std::abs(std::abs(a.world.scaleX) - std::abs(b.world.scaleX)) > scaleTol + 0.001 * std::abs(b.world.scaleX)) return false;
+    if (std::abs(std::abs(a.world.scaleY) - std::abs(b.world.scaleY)) > scaleTol + 0.001 * std::abs(b.world.scaleY)) return false;
+    double dr = std::fmod(std::abs(a.world.rotation - b.world.rotation), 360.0);
     if (dr > 180.0) dr = 360.0 - dr;
     if (dr > rotTol) return false;
-    if (a.color != b.color) return false;
+    if (a.shape->color != b.shape->color) return false;
     return true;
 }
 
@@ -134,60 +132,114 @@ QString colStr(const std::array<quint8, 4> &c)
 // Dump a project's group tree rooted at the given group id (or the whole root
 // when groupId is empty), depth-limited, showing local group transforms and
 // child composition. Used to compare livery-section structure vs. ground truth.
-void dumpTree(const Project &project,
-              const QHash<QString, int> &shapeById,
-              const QHash<QString, int> &groupById,
-              const QString &groupId, int depth, int maxDepth, int maxChildren)
+void dumpTree(const scene::Layer &node, int depth, int maxDepth, int maxChildren)
 {
     QString ind(depth * 2, QLatin1Char(' '));
-    auto git = groupById.constFind(groupId);
-    if (git == groupById.constEnd()) {
+    if (node.kind() == scene::LayerKind::Shape) {
+        const auto &s = static_cast<const scene::Shape &>(node);
+        const scene::Transform2D world = decomposeTransform2D(s.worldMatrix());
+        std::printf("%sshape id=%u x=%.2f y=%.2f sx=%.3f sy=%.3f rot=%.1f\n",
+                    ind.toLatin1().constData(), s.shapeId, world.x, world.y,
+                    world.scaleX, world.scaleY, world.rotation);
         return;
     }
-    const LayerGroup &g = project.groups[*git];
+    if (node.kind() != scene::LayerKind::Group) return;
+    const auto &g = static_cast<const scene::Group &>(node);
     std::printf("%sGROUP %s '%s' flags=%d children=%d ptm=%s inl=%s\n",
                 ind.toLatin1().constData(), g.id.toLatin1().constData(),
                 g.name.toLatin1().constData(), g.flags,
-                static_cast<int>(g.childIds.size()),
+                static_cast<int>(g.children.size()),
                 g.pendingTransformMarker.toHex().constData(),
                 g.inlineTransformMarker.toHex().constData());
-    if (depth >= maxDepth) {
-        return;
-    }
+    if (depth >= maxDepth) return;
     int shown = 0;
-    for (const QString &childId : g.childIds) {
+    for (const auto &child : g.children) {
         if (shown++ >= maxChildren) {
             std::printf("%s  ... (%d more)\n", ind.toLatin1().constData(),
-                        static_cast<int>(g.childIds.size()) - maxChildren);
+                        static_cast<int>(g.children.size()) - maxChildren);
             break;
         }
-        auto sit = shapeById.constFind(childId);
-        if (sit != shapeById.constEnd()) {
-            const ShapeLayer &s = project.layers[*sit];
-            std::printf("%s  shape id=%u x=%.2f y=%.2f sx=%.3f sy=%.3f rot=%.1f\n",
-                        ind.toLatin1().constData(), s.shapeId, s.x, s.y,
-                        s.scaleX, s.scaleY, s.rotation);
-        } else {
-            dumpTree(project, shapeById, groupById, childId, depth + 1, maxDepth, maxChildren);
-        }
+        dumpTree(*child, depth + 1, maxDepth, maxChildren);
     }
 }
 
-void buildMaps(const Project &p, QHash<QString, int> &shapeById, QHash<QString, int> &groupById)
+int sceneShapeCount(const Project &p)
 {
-    for (int i = 0; i < p.layers.size(); ++i) shapeById.insert(p.layers[i].id, i);
-    for (int i = 0; i < p.groups.size(); ++i) groupById.insert(p.groups[i].id, i);
+    return truthLeaves(p).size();
 }
 
-void printShape(const char *tag, const ShapeLayer *s)
+bool nudgeFirstBuiltInShape(scene::Layer &node)
 {
-    if (!s) {
+    if (node.kind() == scene::LayerKind::Shape) {
+        auto &shape = static_cast<scene::Shape &>(node);
+        if (!shape.raster && shape.shapeId != 256) {
+            shape.x += 10.0;
+            return true;
+        }
+        return false;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return false;
+    }
+    for (const auto &child : static_cast<scene::Group &>(node).children) {
+        if (nudgeFirstBuiltInShape(*child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool layerHasBuiltInShape(const scene::Layer &node)
+{
+    if (node.kind() == scene::LayerKind::Shape) {
+        const auto &shape = static_cast<const scene::Shape &>(node);
+        return !shape.raster && shape.shapeId != 256;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return false;
+    }
+    for (const auto &child : static_cast<const scene::Group &>(node).children) {
+        if (layerHasBuiltInShape(*child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool rotateFirstArtworkGroup(scene::Layer &node)
+{
+    if (node.kind() != scene::LayerKind::Group) {
+        return false;
+    }
+
+    auto &group = static_cast<scene::Group &>(node);
+    if (!group.isLiverySection && layerHasBuiltInShape(group)) {
+        group.rotation += 10.0;
+        return true;
+    }
+    for (const auto &child : group.children) {
+        if (rotateFirstArtworkGroup(*child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int rootEntryCount(const Project &p)
+{
+    return p.root ? static_cast<int>(p.root->children.size()) : 0;
+}
+
+void printShape(const char *tag, const ShapeView *s)
+{
+    if (!s || s->shape == nullptr) {
         std::printf("      %s (none)\n", tag);
         return;
     }
     std::printf("      %s @%d id=%u x=%.2f y=%.2f sx=%.3f sy=%.3f rot=%.1f col=%s\n",
-                tag, s->absOffset, s->shapeId, s->x, s->y, s->scaleX, s->scaleY, s->rotation,
-                colStr(s->color).toLatin1().constData());
+                tag, s->shape->absOffset, s->shape->shapeId, s->world.x, s->world.y,
+                s->world.scaleX, s->world.scaleY, s->world.rotation,
+                colStr(s->shape->color).toLatin1().constData());
 }
 
 // Recursively dump a decoder VinylGroup tree with local transforms, absolute
@@ -260,6 +312,81 @@ int main(int argc, char *argv[])
     bool treeMode = args.removeAll(QStringLiteral("--tree")) > 0;
     bool rawMode = args.removeAll(QStringLiteral("--raw")) > 0;
     bool markersMode = args.removeAll(QStringLiteral("--markers")) > 0;
+    bool roundtripMode = args.removeAll(QStringLiteral("--roundtrip")) > 0;
+    bool exportReencodedMode = args.removeAll(QStringLiteral("--export-reencoded")) > 0;
+    bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
+    bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+
+    if (exportReencodedMode) {
+        if (args.size() < 3) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --export-reencoded <liveryFolder> <outputFolder>\n");
+            return 2;
+        }
+        const QString folder = args[1];
+        const QString outputFolder = args[2];
+        Project project;
+        try {
+            project = importCLivery(folder);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "import failed: %s\n", e.what());
+            return 1;
+        }
+        if (nudgeFirstShape && (!project.root || !nudgeFirstBuiltInShape(*project.root))) {
+            std::fprintf(stderr, "no built-in shape found to nudge\n");
+            return 1;
+        }
+        if (rotateFirstGroup && (!project.root || !rotateFirstArtworkGroup(*project.root))) {
+            std::fprintf(stderr, "no artwork group found to rotate\n");
+            return 1;
+        }
+
+        try {
+            exportCLivery(project, outputFolder);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "write failed: %s\n", e.what());
+            return 1;
+        }
+        std::printf("WROTE %s carId=%d\n",
+                    outputFolder.toLatin1().constData(),
+                    project.carId);
+        return 0;
+    }
+
+    if (roundtripMode) {
+        // M1 check: re-encode the gyvl chunk from the imported scene and compare it
+        // byte-for-byte to the original. Only needs the livery folder.
+        if (args.size() < 2) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --roundtrip <liveryFolder>\n");
+            return 2;
+        }
+        const QString folder = args[1];
+        const LiveryPayload lp = readLiveryPayload(folder);
+        const QByteArray origChunk = lp.raw.mid(lp.gyvlOffset, 0x15 + lp.body.size());
+        Project project;
+        try {
+            project = importCLivery(folder);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "import failed: %s\n", e.what());
+            return 1;
+        }
+        const QByteArray re = buildLiveryGyvl(project);
+        if (re == origChunk) {
+            std::printf("PASS  %-28s gyvl %d bytes\n",
+                        QFileInfo(folder).fileName().toLatin1().constData(),
+                        static_cast<int>(origChunk.size()));
+            return 0;
+        }
+        const int m = std::min(re.size(), origChunk.size());
+        int diff = m;
+        for (int i = 0; i < m; ++i) {
+            if (re[i] != origChunk[i]) { diff = i; break; }
+        }
+        std::printf("FAIL  %-28s orig=%d re=%d first-diff@%d\n",
+                    QFileInfo(folder).fileName().toLatin1().constData(),
+                    static_cast<int>(origChunk.size()), static_cast<int>(re.size()), diff);
+        return 1;
+    }
+
     if (args.size() < 3) {
         std::fprintf(stderr,
             "usage: fh6_livery_compare <liveryFolder> <sectionsFolder> [section] [--verbose]\n");
@@ -339,38 +466,36 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    std::printf("Livery %s: %d leaf shapes, %d sections\n",
+    std::printf("Livery %s: %d leaf shapes, %d sections, carId=%d\n",
                 livery.name.toLatin1().constData(),
-                static_cast<int>(livery.layers.size()),
-                static_cast<int>(livery.rootChildIds.size()));
+                sceneShapeCount(livery),
+                rootEntryCount(livery),
+                livery.carId);
 
     if (treeMode) {
-        QHash<QString, int> lShape, lGroup;
-        buildMaps(livery, lShape, lGroup);
         for (const SectionMap &sm : kSections) {
             if (!onlySection.isEmpty() && QString::fromLatin1(sm.folder).compare(onlySection, Qt::CaseInsensitive) != 0) continue;
-            QString sectionId;
-            for (const LayerGroup &g : livery.groups) {
-                if (g.isLiverySection && g.liverySectionSlot == sm.slot) { sectionId = g.id; break; }
-            }
             std::printf("\n===== %s: LIVERY tree =====\n", sm.folder);
-            dumpTree(livery, lShape, lGroup, sectionId, 0, verbose ? 6 : 3, verbose ? 40 : 12);
+            if (livery.root) {
+                for (const auto &child : livery.root->children) {
+                    if (child->kind() == scene::LayerKind::Group) {
+                        const auto &section = static_cast<const scene::Group &>(*child);
+                        if (section.isLiverySection && section.liverySectionSlot == sm.slot) {
+                            dumpTree(section, 0, verbose ? 6 : 3, verbose ? 40 : 12);
+                            break;
+                        }
+                    }
+                }
+            }
 
             const QString truthDir = QDir(sectionsFolder).filePath(QString::fromLatin1(sm.folder));
             if (QFileInfo(QDir(truthDir).filePath(QStringLiteral("C_group"))).exists()) {
                 Project truth = importCGroupNested(truthDir);
-                QHash<QString, int> tShape, tGroup;
-                buildMaps(truth, tShape, tGroup);
                 std::printf("----- %s: TRUTH tree (root children=%d) -----\n",
-                            sm.folder, static_cast<int>(truth.rootChildIds.size()));
-                for (const QString &rid : truth.rootChildIds) {
-                    auto sit = tShape.constFind(rid);
-                    if (sit != tShape.constEnd()) {
-                        const ShapeLayer &s = truth.layers[*sit];
-                        std::printf("  shape id=%u x=%.2f y=%.2f sx=%.3f sy=%.3f rot=%.1f\n",
-                                    s.shapeId, s.x, s.y, s.scaleX, s.scaleY, s.rotation);
-                    } else {
-                        dumpTree(truth, tShape, tGroup, rid, 1, verbose ? 6 : 3, verbose ? 40 : 12);
+                            sm.folder, rootEntryCount(truth));
+                if (truth.root) {
+                    for (const auto &child : truth.root->children) {
+                        dumpTree(*child, 1, verbose ? 6 : 3, verbose ? 40 : 12);
                     }
                 }
             }
@@ -394,13 +519,13 @@ int main(int argc, char *argv[])
             std::printf("  [%s] ground-truth decode failed: %s\n", sm.folder, e.what());
             continue;
         }
-        const QVector<const ShapeLayer *> got = sectionLeaves(livery, sm.slot);
-        const QVector<const ShapeLayer *> want = truthLeaves(truth);
+        const QVector<ShapeView> got = sectionLeaves(livery, sm.slot);
+        const QVector<ShapeView> want = truthLeaves(truth);
         const int n = std::min(got.size(), want.size());
         int matched = 0;
         int firstMismatch = -1;
         for (int i = 0; i < n; ++i) {
-            if (shapesMatch(*got[i], *want[i])) {
+            if (shapesMatch(got[i], want[i])) {
                 ++matched;
             } else if (firstMismatch < 0) {
                 firstMismatch = i;
@@ -417,10 +542,10 @@ int main(int argc, char *argv[])
         const int dumpCount = verbose ? 8 : 3;
         int dumped = 0;
         for (int i = 0; i < n && dumped < dumpCount; ++i) {
-            if (!shapesMatch(*got[i], *want[i])) {
+            if (!shapesMatch(got[i], want[i])) {
                 std::printf("    mismatch @%d:\n", i);
-                printShape("livery", got[i]);
-                printShape("truth ", want[i]);
+                printShape("livery", &got[i]);
+                printShape("truth ", &want[i]);
                 ++dumped;
             }
         }

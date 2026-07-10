@@ -39,9 +39,18 @@ struct BehaviorSettings {
     bool guideLayersOnTop = true;
     bool visibilityBordersEnabled = true;
     bool positionLimitBorderEnabled = false;
+    bool valueEditingWheelEnabled = true;
     QSize visibilityBorderResolution = QSize(1920, 1080);
     double nudgeStep = 0.1;
     double nudgeShiftStep = 1.0;
+    int liveryTextureScale = 4;
+    int autosaveIntervalMinutes = 5; // 0 disables autosave
+    // Folder of the user's extracted car models; used to auto-load the matching car
+    // model for a livery project by its target car id. Empty = not configured.
+    QString carModelsFolder;
+    // When opening a livery, discard the currently loaded car model (so the livery's
+    // own matching car can take over) instead of keeping it. On by default.
+    bool discardModelOnLiveryOpen = true;
 };
 
 QString themeSettingsValue(UiTheme theme);

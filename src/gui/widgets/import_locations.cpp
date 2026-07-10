@@ -1,11 +1,7 @@
 #include "import_locations.h"
 
-#include <QDir>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QFileInfoList>
-#include <QSettings>
-#include <QWidget>
+#include <QtCore>
+#include <QtWidgets>
 
 namespace gui {
 

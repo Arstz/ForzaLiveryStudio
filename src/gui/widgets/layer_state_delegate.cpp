@@ -3,17 +3,9 @@
 #include "editor_state.h"
 #include "layer_tree_model.h"
 
-#include <QApplication>
-#include <QCoreApplication>
-#include <QDir>
-#include <QEvent>
-#include <QFileInfo>
-#include <QMouseEvent>
-#include <QPainter>
-#include <QPalette>
-#include <QStandardItemModel>
-#include <QStyle>
-#include <QStyleOptionViewItem>
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
 
 #include <algorithm>
 #include <cmath>
@@ -252,7 +244,7 @@ void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge)
             state_->setLayerVisible(entryId, nextVisible);
         }
         state_->commitProjectEdit();
-        state_->noteProjectGeometryChanged(true);
+        state_->noteProjectGeometryChanged(true, {entryId});
         return;
     }
     if (badge == Badge::Mask) {
@@ -266,7 +258,7 @@ void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge)
             state_->setLayerMask(entryId, nextMask);
         }
         state_->commitProjectEdit();
-        state_->noteProjectGeometryChanged(true);
+        state_->noteProjectGeometryChanged(true, {entryId});
         return;
     }
 

@@ -16,9 +16,12 @@ recommended working pipelines. For build/developer notes see
 | New Project | `Ctrl+N` |
 | Open Project (`.3so`) | `Ctrl+O` |
 | Save Project (`.3so`) | `Ctrl+S` |
-| Import (C_group / C_livery) / Import Guide Layer | *(menu only)* |
-| Export (Flat / Nested) | *(menu only)* |
+| Import (C_group / C_livery) / Import Guide Layer / Import Car Model | *(menu only)* |
+| Export (grouped C_group) | *(menu only)* |
 | Exit | *(menu only)* |
+
+> Every menu-bar action is rebindable in Settings, including the *(menu only)*
+> ones that ship without a default shortcut.
 
 ### Edit
 
@@ -34,7 +37,20 @@ recommended working pipelines. For build/developer notes see
 | Fold All Groups | `Ctrl+Shift+E` |
 | Delete Selected | `Del` |
 | Stamp (duplicate in place) | `Y` |
+| Flip Selection | `Tab` |
 | Center View on Selection | `F1` |
+| Align Top / Bottom | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` |
+| Align Left / Right | `Ctrl+Shift+Left` / `Ctrl+Shift+Right` |
+| Align Centre (vertical) | `Ctrl+Shift+C` |
+| Distribute Vertical / Horizontal | `Ctrl+Shift+V` / `Ctrl+Shift+H` |
+
+### Project
+
+| Action | Shortcut |
+| --- | --- |
+| Target Car… | *(menu only)* |
+| Project Name… | *(menu only)* |
+| Creator Name… | *(menu only)* |
 
 ### Tools
 
@@ -53,7 +69,7 @@ recommended working pipelines. For build/developer notes see
 | --- | --- |
 | Toggle Flash Selected Layers | `\` |
 | Toggle Guide Layers On Top | `` ` `` |
-| Toggle Guide Layer Visibility | `Tab` |
+| Toggle Guide Layer Visibility | *(unbound)* |
 | Settings… | `Ctrl+K` |
 
 ## Tools & Behaviours
@@ -70,7 +86,8 @@ recommended working pipelines. For build/developer notes see
 - **Transform (`T`)** — drag edge/corner handles to scale, side handles to skew.
   For a group or multi-shape selection the values transform the selection's
   bounding box about its centre (each child keeps its relative position) rather
-  than editing each shape in place. Arrow-key nudging works here too.
+  than editing each shape in place. `Tab` flips the current selection through the
+  scale-sign states. Arrow-key nudging works here too.
 - **Rotate (`R`)** — rotate the selection about its centre. Enable **Options →
   Transform Relative Mode** if you want the transform/rotate handles to follow
   the selected shape or group rotation.
@@ -90,18 +107,36 @@ recommended working pipelines. For build/developer notes see
   other character is skipped (reported afterwards).
 - **Numeric property drag** — in the Properties dock, drag a numeric field's
   label left/right (or up/down) to scrub its value live.
+- **Align / Distribute** (**Edit → Align** / **Edit → Distribute**) — arrange the
+  current selection by its shape geometry. Each selected top-level unit — a whole
+  group counts as one, loose shapes/guides count individually — is snapped to a
+  shared edge (**Top/Bottom/Left/Right**) or its **Centre** (vertical). **Distribute
+  Vertical/Horizontal** evens the spacing of unit centres; selecting a single group
+  distributes that group's own direct children. Align needs ≥2 units, distribute ≥3.
+- **Project menu** — edit one project field at a time: **Target Car…** (the car a
+  livery targets), **Project Name…**, and **Creator Name…** (also saved as the
+  default creator for new projects).
 - **Import** (**File → Import…**) — one context-aware importer. Pick a `C_group`
   or `C_livery` file (or drop a file/folder in); the editor detects which it is
   and loads it as an editable group project or a read-only livery viewer.
-- **Export** (**File → Export…**) — one exporter. A dialog asks for the format
-  (**Flat** or **Nested**) and then a destination folder.
+- **Import Car Model** (**File → Import Car Model…**) — load a `.modelbin`,
+  `.carbin`, or zipped car folder into the **3D Preview** dock, which shows the
+  current vinyl projected onto the car's paint (reference only; the in-game render
+  may differ). Opening a livery auto-loads its matching car from the **car models
+  folder** set in Settings (prompted once if unset); **Discard current model on
+  livery open** (Settings, on by default) controls whether that replaces the
+  currently loaded model.
+- **Export** (**File → Export…**) — writes a grouped, game-compatible `C_group`
+  folder (structure, nesting, and masks preserved) to a destination folder.
+  **Livery export is not available yet** and shows an error popup.
 - **Project files** — projects save to a `.3so` container: the editor project
   JSON wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still open.
 - **Guide layers** — import a raster image as an editor-only reference layer
   (**File → Import Guide Layer…**, toolbar **Add Guide Layer**, or drag an image
   from Explorer). Guide layers are stored inside the project file and ignored by
   game export. **Guide Layers On Top** is enabled by default and can be toggled
-  with `` ` ``. `Tab` toggles guide-layer visibility.
+  with `` ` ``. Guide-layer visibility can be toggled from **Options** and
+  rebound in Settings.
 - **Visibility borders** — Settings can show viewport/placement reference
   borders on the canvas and choose the reference resolution. **Position Limit
   Border** is off by default.
@@ -134,7 +169,12 @@ recommended working pipelines. For build/developer notes see
 - **Buffer** — shows the current clipboard contents.
 - **Swatches** — project-specific color palette for applying, saving, and
   removing colors.
+- **Project** — summary of the open project (name, creator, source, layer/group
+  counts, and the target car for liveries). Edit these via the **Project** menu.
 - **Header** — edit header metadata written into exported projects.
+- **3D Preview** — an orbit-camera view of an imported car with the current vinyl
+  projected onto its paint. Drag to orbit, middle-drag to pan, wheel to zoom. This
+  is a reference approximation, not the exact in-game render.
 
 ## Recommended Pipelines
 
@@ -144,7 +184,7 @@ recommended working pipelines. For build/developer notes see
    group as an editable project.
 2. Edit with the canvas tools and the Layers / Properties docks.
 3. **File → Save Project…** (`Ctrl+S`) to keep an editable `.3so` copy.
-4. **File → Export…**, choose **Flat**, to write a game-compatible folder.
+4. **File → Export…** to write a game-compatible `C_group` folder.
 
 ### Build a new design from shapes
 
@@ -162,10 +202,11 @@ recommended working pipelines. For build/developer notes see
 3. Hide or delete the guide layer before finishing (it is safely ignored by
    export regardless).
 
-### Flat vs. Nested export
+### Export notes
 
-- **Flat** is the stable, game-proven export path — use it by default.
-- **Nested** preserves group structure, nesting, and masks. It is validated
-  in-game for sibling groups, multi-level nesting, and masks, but is not
-  byte-identical to the game's own encoding. Prefer it when group semantics must
-  survive the round-trip.
+- **Groups** export as a single grouped `C_group` folder that preserves group
+  structure, nesting, and masks. It is validated in-game for sibling groups,
+  multi-level nesting, and masks, but is not byte-identical to the game's own
+  encoding.
+- **Liveries** cannot be exported yet — the Export action shows an error popup for
+  livery projects. You can still import, edit, and preview liveries in 3D.

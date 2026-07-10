@@ -4,28 +4,10 @@
 #include "gui_assets.h"
 #include "gui_constants.h"
 #include "perf_utils.h"
-
-#include <QCheckBox>
-#include <QColorDialog>
-#include <QApplication>
-#include <QCursor>
-#include <QDoubleSpinBox>
-#include <QFormLayout>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QMouseEvent>
-#include <QPainter>
-#include <QPixmap>
-#include <QPushButton>
-#include <QSignalBlocker>
-#include <QSpinBox>
-#include <QStyle>
-#include <QStyleOptionButton>
+#include "scene_view.h"
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 
 namespace gui {
 namespace {
@@ -51,6 +33,11 @@ bool isTransformProperty(const QString &property)
     return property == QStringLiteral("x") || property == QStringLiteral("y")
         || property == QStringLiteral("scaleX") || property == QStringLiteral("scaleY")
         || property == QStringLiteral("rotation") || property == QStringLiteral("skew");
+}
+
+bool isColorableShape(const fh6::scene::Shape *layer)
+{
+    return layer != nullptr && !layer->raster;
 }
 
 // Property-label row layout.
@@ -113,6 +100,19 @@ double normalizeRotation(double value)
     }
     return out;
 }
+
+class RotationSpinBox final : public QDoubleSpinBox {
+public:
+    using QDoubleSpinBox::QDoubleSpinBox;
+
+    void stepBy(int steps) override
+    {
+        if (steps == 0) {
+            return;
+        }
+        setValue(normalizeRotation(value() + static_cast<double>(steps) * singleStep()));
+    }
+};
 
 // World-space transform about a pivot (translate, scale, rotate, or shear), used to
 // drive a whole selection as one unit from its bounding-box centre. Same conventions
@@ -198,7 +198,7 @@ AffineDecomposition decomposeAffine(const QTransform &result, double fallbackSke
 }
 
 // Apply a resulting local->world matrix to a shape by decomposing it back into fields.
-void applyDecomposedTransform(fh6::ShapeLayer *layer, const QTransform &result)
+void applyDecomposedTransform(fh6::scene::Shape *layer, const QTransform &result)
 {
     const AffineDecomposition dec = decomposeAffine(result, layer->skew);
     if (!dec.ok) {
@@ -211,6 +211,41 @@ void applyDecomposedTransform(fh6::ShapeLayer *layer, const QTransform &result)
     layer->scaleY = dec.scaleY;
     layer->skew = dec.skew;
 }
+
+struct TransformAverage {
+    int count = 0;
+    double scaleX = 0.0;
+    double scaleY = 0.0;
+    double rotationSin = 0.0;
+    double rotationCos = 0.0;
+    double skew = 0.0;
+
+    void add(const AffineDecomposition &dec)
+    {
+        if (!dec.ok) {
+            return;
+        }
+        const double radians = dec.rotation * kPi / 180.0;
+        ++count;
+        scaleX += dec.scaleX;
+        scaleY += dec.scaleY;
+        rotationSin += std::sin(radians);
+        rotationCos += std::cos(radians);
+        skew += dec.skew;
+    }
+
+    double averageScaleX() const { return count > 0 ? scaleX / count : 1.0; }
+    double averageScaleY() const { return count > 0 ? scaleY / count : 1.0; }
+    double averageSkew() const { return count > 0 ? skew / count : 0.0; }
+
+    double averageRotation() const
+    {
+        if (count == 0 || (std::abs(rotationSin) < 1e-9 && std::abs(rotationCos) < 1e-9)) {
+            return 0.0;
+        }
+        return normalizeRotation(std::atan2(rotationSin, rotationCos) * 180.0 / kPi);
+    }
+};
 
 QString colorStyle(const std::array<quint8, 4> &color)
 {
@@ -328,15 +363,157 @@ double opacityFromAlpha(quint8 alpha)
     return static_cast<double>(alpha) / 255.0;
 }
 
-template <typename T>
-QVector<EntryRef> entryRefs(const QVector<T *> &items)
+// Local->world transform of a flat shape (translate->rotate->shear->scale), matching
+// the canonical composition order. The property panel edits flat leaves directly.
+QTransform flatEntryTransform(const fh6::scene::Shape &layer)
 {
-    QVector<EntryRef> entries;
-    entries.reserve(items.size());
-    for (T *item : items) {
-        entries.push_back(EntryRef(item));
+    QTransform transform;
+    transform.translate(layer.x, layer.y);
+    transform.rotate(layer.rotation);
+    transform.shear(layer.skew, 0.0);
+    transform.scale(layer.scaleX, layer.scaleY);
+    return transform;
+}
+
+QTransform parentWorldTransform(const fh6::scene::Layer &node)
+{
+    const fh6::scene::Layer *parent = node.parent();
+    return parent != nullptr ? sceneWorldTransform(*parent) : QTransform();
+}
+
+QTransform localResultForWorldTransform(const fh6::scene::Layer &node,
+                                        const QTransform &startLocal,
+                                        const QTransform &worldTransform)
+{
+    const QTransform parentWorld = parentWorldTransform(node);
+    bool invertible = false;
+    const QTransform parentWorldInverse = parentWorld.inverted(&invertible);
+    if (!invertible) {
+        return startLocal;
     }
-    return entries;
+    return startLocal * parentWorld * worldTransform * parentWorldInverse;
+}
+
+QSet<QString> coveredLayerIdsForGroups(EditorState *state, const QVector<fh6::scene::Group *> &groups)
+{
+    QSet<QString> ids;
+    if (state == nullptr) {
+        return ids;
+    }
+    for (const fh6::scene::Group *group : groups) {
+        if (group == nullptr) {
+            continue;
+        }
+        for (const QString &id : state->leafLayerIdsForEntry(group->id)) {
+            ids.insert(id);
+        }
+    }
+    return ids;
+}
+
+QString boxProxySignature(EditorState *state,
+                          const QVector<fh6::scene::Shape *> &layers,
+                          const QVector<fh6::scene::Group *> &groups,
+                          QSet<QString> *groupedLayerIdsOut = nullptr)
+{
+    const QSet<QString> groupedLayerIds = coveredLayerIdsForGroups(state, groups);
+    if (groupedLayerIdsOut != nullptr) {
+        *groupedLayerIdsOut = groupedLayerIds;
+    }
+    QStringList parts;
+    for (const fh6::scene::Group *group : groups) {
+        if (group != nullptr) {
+            parts.push_back(QStringLiteral("g:%1").arg(group->id));
+        }
+    }
+    for (const fh6::scene::Shape *layer : layers) {
+        if (layer != nullptr && !groupedLayerIds.contains(layer->id)) {
+            parts.push_back(QStringLiteral("l:%1").arg(layer->id));
+        }
+    }
+    parts.sort();
+    return parts.join(QLatin1Char('|'));
+}
+
+QRectF shapeVisualLocalRect(const fh6::scene::Shape &layer,
+                            const std::function<QSizeF(int)> &spriteSizeFn,
+                            const std::function<QRectF(int)> &shapeVisualBoundsFn)
+{
+    if (layer.raster) {
+        return sceneLocalRect(QSizeF(layer.rasterWidth, layer.rasterHeight));
+    }
+    if (shapeVisualBoundsFn) {
+        const QRectF bounds = shapeVisualBoundsFn(layer.shapeId);
+        if (bounds.isValid() && !bounds.isEmpty()) {
+            return bounds;
+        }
+    }
+    const QSizeF size = spriteSizeFn ? spriteSizeFn(layer.shapeId) : QSizeF(0.0, 0.0);
+    return sceneLocalRect(size);
+}
+
+QRectF selectionWorldBounds(const QVector<fh6::scene::Shape *> &layers,
+                            const std::function<QSizeF(int)> &spriteSizeFn,
+                            const std::function<QRectF(int)> &shapeVisualBoundsFn)
+{
+    BoundsAccumulator acc;
+    for (const fh6::scene::Shape *layer : layers) {
+        if (layer == nullptr) {
+            continue;
+        }
+        acc.add(sceneWorldTransform(*layer), shapeVisualLocalRect(*layer, spriteSizeFn, shapeVisualBoundsFn));
+    }
+    return acc.hasBounds() ? acc.bounds() : QRectF();
+}
+
+TransformAverage boxTargetAverage(const QVector<fh6::scene::Shape *> &layers,
+                                  const QVector<fh6::scene::Group *> &groups,
+                                  const QSet<QString> &groupedLayerIds)
+{
+    TransformAverage average;
+    for (const fh6::scene::Group *group : groups) {
+        if (group != nullptr) {
+            average.add(decomposeAffine(sceneWorldTransform(*group), group->skew));
+        }
+    }
+    for (const fh6::scene::Shape *layer : layers) {
+        if (layer != nullptr && !groupedLayerIds.contains(layer->id)) {
+            average.add(decomposeAffine(sceneWorldTransform(*layer), layer->skew));
+        }
+    }
+    return average;
+}
+
+QVector<QString> transformTargetIdsForSelection(EditorState *state,
+                                                const QVector<fh6::scene::Shape *> &layers,
+                                                const QVector<fh6::scene::GuideLayer *> &guides,
+                                                const QVector<fh6::scene::Group *> &groups)
+{
+    QVector<QString> ids;
+    QSet<QString> seen;
+    const auto add = [&](const QString &id) {
+        if (!id.isEmpty() && !seen.contains(id)) {
+            ids.push_back(id);
+            seen.insert(id);
+        }
+    };
+    const QSet<QString> groupedLayerIds = coveredLayerIdsForGroups(state, groups);
+    for (const fh6::scene::Group *group : groups) {
+        if (group != nullptr) {
+            add(group->id);
+        }
+    }
+    for (const fh6::scene::Shape *layer : layers) {
+        if (layer != nullptr && !groupedLayerIds.contains(layer->id)) {
+            add(layer->id);
+        }
+    }
+    for (const fh6::scene::GuideLayer *guide : guides) {
+        if (guide != nullptr) {
+            add(guide->id);
+        }
+    }
+    return ids;
 }
 
 quint8 alphaFromOpacity(double opacity)
@@ -393,7 +570,12 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     y_ = floatBox(-PositionSpinRange, PositionSpinRange);
     scaleX_ = floatBox(-ScaleSkewSpinRange, ScaleSkewSpinRange);
     scaleY_ = floatBox(-ScaleSkewSpinRange, ScaleSkewSpinRange);
-    rotation_ = floatBox(0.0, RotationSpinMax);
+    rotation_ = new RotationSpinBox(this);
+    rotation_->setRange(0.0, RotationSpinMax);
+    rotation_->setDecimals(FloatSpinDecimals);
+    rotation_->setSingleStep(FloatSpinStep);
+    rotation_->setKeyboardTracking(false);
+    rotation_->setWrapping(true);
     skew_ = floatBox(-ScaleSkewSpinRange, ScaleSkewSpinRange);
     visible_ = new FlagCheckBox(this);
     locked_ = new FlagCheckBox(this);
@@ -422,6 +604,9 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
 
     for (auto it = widgetProperties_.begin(); it != widgetProperties_.end(); ++it) {
         QWidget *widget = it.key();
+        if (qobject_cast<QAbstractSpinBox *>(widget) != nullptr) {
+            widget->installEventFilter(this);
+        }
         if (auto *box = qobject_cast<QDoubleSpinBox *>(widget)) {
             connect(box, &QDoubleSpinBox::valueChanged, this, [this, box]() { applyChanged(box); });
         } else if (auto *box = qobject_cast<QSpinBox *>(widget)) {
@@ -478,9 +663,50 @@ void PropertyPanel::setSpriteSizeFn(std::function<QSizeF(int)> fn)
     spriteSizeFn_ = std::move(fn);
 }
 
+void PropertyPanel::setShapeVisualBoundsFn(std::function<QRectF(int)> fn)
+{
+    shapeVisualBoundsFn_ = std::move(fn);
+}
+
 void PropertyPanel::setGuideColorSampleFn(std::function<std::optional<QColor>()> fn)
 {
     guideColorSampleFn_ = std::move(fn);
+}
+
+void PropertyPanel::setValueEditingWheelEnabled(bool enabled)
+{
+    valueEditingWheelEnabled_ = enabled;
+}
+
+bool PropertyPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (!valueEditingWheelEnabled_ && event != nullptr && event->type() == QEvent::Wheel
+        && qobject_cast<QAbstractSpinBox *>(watched) != nullptr) {
+        auto *wheel = static_cast<QWheelEvent *>(event);
+        QScrollArea *scrollArea = nullptr;
+        for (QWidget *parent = qobject_cast<QWidget *>(watched); parent != nullptr; parent = parent->parentWidget()) {
+            scrollArea = qobject_cast<QScrollArea *>(parent);
+            if (scrollArea != nullptr) {
+                break;
+            }
+        }
+        if (scrollArea != nullptr && scrollArea->viewport() != nullptr) {
+            QWheelEvent forwarded(QPointF(scrollArea->viewport()->mapFromGlobal(wheel->globalPosition().toPoint())),
+                                  wheel->globalPosition(),
+                                  wheel->pixelDelta(),
+                                  wheel->angleDelta(),
+                                  wheel->buttons(),
+                                  wheel->modifiers(),
+                                  wheel->phase(),
+                                  wheel->inverted(),
+                                  wheel->source(),
+                                  wheel->pointingDevice());
+            QCoreApplication::sendEvent(scrollArea->viewport(), &forwarded);
+        }
+        event->ignore();
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 std::array<int, 3> PropertyPanel::flagCheckStates() const
@@ -500,15 +726,18 @@ QDoubleSpinBox *PropertyPanel::floatBox(double low, double high)
     return box;
 }
 
-void PropertyPanel::setLayers(const QVector<fh6::ShapeLayer *> &layers)
+void PropertyPanel::setLayers(const QVector<fh6::scene::Shape *> &layers)
 {
     setSelection(layers, {}, {});
 }
 
-void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
-                                 const QVector<fh6::GuideLayer *> &guides,
-                                 const QVector<fh6::LayerGroup *> &groups)
+void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
+                                 const QVector<fh6::scene::GuideLayer *> &guides,
+                                 const QVector<fh6::scene::Group *> &groups)
 {
+    if (applyingChange_ || valueLabelDragging_) {
+        return;
+    }
     ScopedPerf perf("PropertyPanel::setSelection");
     loading_ = true;
     layers_ = layers;
@@ -516,6 +745,10 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
     groups_ = groups;
     baselines_.clear();
     setEnabled(!layers_.isEmpty() || !guides_.isEmpty() || !groups_.isEmpty());
+    if (!isBoxSelection()) {
+        boxProxyBaseValid_ = false;
+        boxProxySignature_.clear();
+    }
     if (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty()) {
         debug_->setText(QString());
         loading_ = false;
@@ -529,9 +762,9 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
             widget->setEnabled(true);
         }
         if (guides_.size() == 1) {
-            setSingleEntry(EntryRef(guides_.front()));
+            setSingleGuide(guides_.front());
         } else {
-            setMultipleEntries(entryRefs(guides_));
+            setMultipleGuides(guides_);
         }
         loading_ = false;
         return;
@@ -565,19 +798,10 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
         visible_->setEnabled(true);
         locked_->setEnabled(true);
         mask_->setEnabled(true);
-        // Build an id -> layer map once so the tri-state checks below are O(leaves) instead of
-        // O(leaves * layers) per group, which matters when selecting large groups.
-        QHash<QString, const fh6::ShapeLayer *> layerById;
-        if (const fh6::Project *project = state_->project()) {
-            layerById.reserve(project->layers.size());
-            for (const fh6::ShapeLayer &layer : project->layers) {
-                layerById.insert(layer.id, &layer);
-            }
-        }
         // A group reflects its descendants as a tri-state: all leaves on -> Checked,
         // all off -> Unchecked, mixed -> PartiallyChecked (square). The square then
         // surfaces mixed flags within a single group, not just across several groups.
-        auto leafTriState = [this, &layerById](const fh6::LayerGroup &group, auto layerPred) {
+        auto leafTriState = [this](const fh6::scene::Group &group, auto layerPred) {
             const QVector<QString> ids = state_->leafLayerIdsForEntry(group.id);
             if (ids.isEmpty()) {
                 return Qt::Unchecked;
@@ -585,11 +809,11 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
             bool anyTrue = false;
             bool anyFalse = false;
             for (const QString &id : ids) {
-                const auto it = layerById.constFind(id);
-                if (it == layerById.constEnd()) {
+                const auto *layer = dynamic_cast<const fh6::scene::Shape *>(state_->sceneNode(id));
+                if (layer == nullptr) {
                     continue;
                 }
-                if (layerPred(*it.value())) {
+                if (layerPred(*layer)) {
                     anyTrue = true;
                 } else {
                     anyFalse = true;
@@ -602,7 +826,7 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
         };
         auto setGroupCheck = [this](QCheckBox *box, auto getter) {
             Qt::CheckState combined = getter(*groups_.front());
-            for (fh6::LayerGroup *group : groups_) {
+            for (fh6::scene::Group *group : groups_) {
                 if (getter(*group) != combined) {
                     combined = Qt::PartiallyChecked;
                     break;
@@ -611,17 +835,17 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
             box->setTristate(combined == Qt::PartiallyChecked);
             box->setCheckState(combined);
         };
-        setGroupCheck(visible_, [&](const fh6::LayerGroup &group) {
-            return leafTriState(group, [](const fh6::ShapeLayer &layer) { return layer.visible; });
+        setGroupCheck(visible_, [&](const fh6::scene::Group &group) {
+            return leafTriState(group, [](const fh6::scene::Shape &layer) { return layer.visible; });
         });
-        setGroupCheck(mask_, [&](const fh6::LayerGroup &group) {
-            return leafTriState(group, [](const fh6::ShapeLayer &layer) { return layer.mask; });
+        setGroupCheck(mask_, [&](const fh6::scene::Group &group) {
+            return leafTriState(group, [](const fh6::scene::Shape &layer) { return layer.mask; });
         });
-        setGroupCheck(locked_, [&](const fh6::LayerGroup &group) {
-            return leafTriState(group, [this](const fh6::ShapeLayer &layer) { return state_->isLayerLocked(layer.id); });
+        setGroupCheck(locked_, [&](const fh6::scene::Group &group) {
+            return leafTriState(group, [this](const fh6::scene::Shape &layer) { return state_->isLayerLocked(layer.id); });
         });
         const QString firstName = groups_.front()->name;
-        const bool sameName = std::all_of(groups_.begin(), groups_.end(), [&](const fh6::LayerGroup *group) {
+        const bool sameName = std::all_of(groups_.begin(), groups_.end(), [&](const fh6::scene::Group *group) {
             return group->name == firstName;
         });
         name_->setText(sameName ? firstName : QString());
@@ -642,28 +866,154 @@ void PropertyPanel::setSelection(const QVector<fh6::ShapeLayer *> &layers,
         }
         updateColorButton();
         if (canTransform) {
-            setBoxProxyFields();
+            setBoxProxyFields(false);
         }
         debug_->setText(QStringLiteral("%1 group%2 selected").arg(groups_.size()).arg(groups_.size() == 1 ? QString() : QStringLiteral("s")));
     } else if (layers_.size() == 1) {
         for (QWidget *widget : layerPropertyWidgets(name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_, visible_, locked_, mask_, colorButton_)) {
             widget->setEnabled(true);
         }
-        setSingleEntry(EntryRef(layers_.front()));
+        setSingleLayer(layers_.front());
     } else {
         for (QWidget *widget : layerPropertyWidgets(name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_, visible_, locked_, mask_, colorButton_)) {
             widget->setEnabled(true);
         }
-        setMultipleEntries(entryRefs(layers_));
-        // Multiple loose shapes transform as one unit about their shared bounding box,
-        // so the position/scale/rotation/skew fields show a neutral box proxy instead
-        // of per-shape averages.
-        setBoxProxyFields();
+        setMultipleLayers(layers_);
+        setBoxProxyFields(false);
     }
     loading_ = false;
 }
 
-void PropertyPanel::setSingleEntry(const EntryRef &entry)
+void PropertyPanel::refreshTransformFields()
+{
+    if (loading_ || applyingChange_ || valueLabelDragging_
+        || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
+        return;
+    }
+    loading_ = true;
+    if (!guides_.isEmpty() && layers_.isEmpty() && groups_.isEmpty()) {
+        if (guides_.size() == 1) {
+            const fh6::scene::GuideLayer *guide = guides_.front();
+            const QSignalBlocker bx(x_);
+            const QSignalBlocker by(y_);
+            const QSignalBlocker bsx(scaleX_);
+            const QSignalBlocker bsy(scaleY_);
+            const QSignalBlocker br(rotation_);
+            x_->setValue(guide->x);
+            y_->setValue(guide->y);
+            scaleX_->setValue(guide->scaleX);
+            scaleY_->setValue(guide->scaleY);
+            rotation_->setValue(guide->rotation);
+        } else {
+            setMultipleGuides(guides_);
+        }
+    } else if (layers_.size() == 1 && groups_.isEmpty()) {
+        const fh6::scene::Shape *layer = layers_.front();
+        const QSignalBlocker bx(x_);
+        const QSignalBlocker by(y_);
+        const QSignalBlocker bsx(scaleX_);
+        const QSignalBlocker bsy(scaleY_);
+        const QSignalBlocker br(rotation_);
+        const QSignalBlocker bk(skew_);
+        x_->setValue(layer->x);
+        y_->setValue(layer->y);
+        scaleX_->setValue(layer->scaleX);
+        scaleY_->setValue(layer->scaleY);
+        rotation_->setValue(layer->rotation);
+        skew_->setValue(layer->skew);
+    } else if (isBoxSelection()) {
+        setBoxProxyFields(false);
+    }
+    loading_ = false;
+}
+
+void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
+                                                  double width,
+                                                  double height,
+                                                  const QTransform &boxFrame,
+                                                  bool valid)
+{
+    if (loading_ || applyingChange_ || valueLabelDragging_ || !isBoxSelection()) {
+        return;
+    }
+    if (!valid || width <= 1e-9 || height <= 1e-9) {
+        return;
+    }
+
+    QSet<QString> groupedLayerIds;
+    const QString signature = boxProxySignature(state_, layers_, groups_, &groupedLayerIds);
+    int looseLayerCount = 0;
+    for (const fh6::scene::Shape *layer : layers_) {
+        if (layer != nullptr && !groupedLayerIds.contains(layer->id)) {
+            ++looseLayerCount;
+        }
+    }
+    const int targetCount = groups_.size() + looseLayerCount;
+
+    const AffineDecomposition frame = decomposeAffine(boxFrame, 0.0);
+    if (!frame.ok) {
+        return;
+    }
+
+    double scaleXValue = 1.0;
+    double scaleYValue = 1.0;
+    double rotationValue = 0.0;
+    double skewValue = 0.0;
+    if (targetCount == 1 && groups_.size() == 1 && looseLayerCount == 0 && groups_.front() != nullptr) {
+        scaleXValue = frame.scaleX;
+        scaleYValue = frame.scaleY;
+        rotationValue = frame.rotation;
+        skewValue = frame.skew;
+        boxProxyBaseValid_ = false;
+        boxProxySignature_.clear();
+    } else {
+        const bool resetProxy = !boxProxyBaseValid_
+            || boxProxySignature_ != signature
+            || boxProxyBaseWidth_ <= 1e-9
+            || boxProxyBaseHeight_ <= 1e-9;
+        if (resetProxy) {
+            boxProxySignature_ = signature;
+            boxProxyBaseWidth_ = width;
+            boxProxyBaseHeight_ = height;
+            boxProxyBaseScaleX_ = frame.scaleX;
+            boxProxyBaseScaleY_ = frame.scaleY;
+            boxProxyBaseRotation_ = frame.rotation;
+            boxProxyBaseSkew_ = frame.skew;
+            boxProxyBaseValid_ = true;
+        } else {
+            const double baseWorldWidth = boxProxyBaseScaleX_ * boxProxyBaseWidth_;
+            const double baseWorldHeight = boxProxyBaseScaleY_ * boxProxyBaseHeight_;
+            if (std::abs(baseWorldWidth) > 1e-9) {
+                scaleXValue = (frame.scaleX * width) / baseWorldWidth;
+            }
+            if (std::abs(baseWorldHeight) > 1e-9) {
+                scaleYValue = (frame.scaleY * height) / baseWorldHeight;
+            }
+            rotationValue = normalizeRotation(frame.rotation - boxProxyBaseRotation_);
+            skewValue = frame.skew - boxProxyBaseSkew_;
+        }
+    }
+
+    const QSignalBlocker bx(x_);
+    const QSignalBlocker by(y_);
+    const QSignalBlocker bsx(scaleX_);
+    const QSignalBlocker bsy(scaleY_);
+    const QSignalBlocker br(rotation_);
+    const QSignalBlocker bk(skew_);
+    const auto setProxy = [this](QDoubleSpinBox *box, double value) {
+        box->setValue(value);
+        box->setStyleSheet(QString());
+        baselines_.insert(box, value);
+    };
+    setProxy(x_, center.x());
+    setProxy(y_, center.y());
+    setProxy(scaleX_, scaleXValue);
+    setProxy(scaleY_, scaleYValue);
+    setProxy(rotation_, normalizeRotation(rotationValue));
+    setProxy(skew_, skewValue);
+}
+
+void PropertyPanel::setSingleLayer(const fh6::scene::Shape *layer)
 {
     const QSignalBlocker b1(name_);
     const QSignalBlocker b2(shapeId_);
@@ -678,43 +1028,69 @@ void PropertyPanel::setSingleEntry(const EntryRef &entry)
     const QSignalBlocker b11(mask_);
     const QSignalBlocker b12(opacity_);
 
-    name_->setText(entry.name());
-    x_->setValue(entry.x());
-    y_->setValue(entry.y());
-    scaleX_->setValue(entry.scaleX());
-    scaleY_->setValue(entry.scaleY());
-    rotation_->setValue(entry.rotation());
-    opacity_->setValue(entry.opacity());
+    name_->setText(layer->name);
+    x_->setValue(layer->x);
+    y_->setValue(layer->y);
+    scaleX_->setValue(layer->scaleX);
+    scaleY_->setValue(layer->scaleY);
+    rotation_->setValue(layer->rotation);
+    opacity_->setValue(opacityFromAlpha(layer->color[ColorByteAlpha]));
     visible_->setTristate(false);
     locked_->setTristate(false);
     mask_->setTristate(false);
-    visible_->setChecked(entry.visible());
+    visible_->setChecked(layer->visible);
     clearMixedStyles();
-    if (const fh6::ShapeLayer *layer = entry.layer()) {
-        shapeId_->setValue(layer->shapeId);
-        skew_->setValue(layer->skew);
-        locked_->setChecked(state_->isLayerLocked(layer->id));
-        mask_->setChecked(layer->mask);
-        updateColorButton();
-        debug_->setText(QStringLiteral("source_shape: %1\nabs_offset: %2\nmarker: %3\nflags: %4")
-                            .arg(layer->sourceShape)
-                            .arg(layer->absOffset)
-                            .arg(QString::fromLatin1(layer->marker.toHex()))
-                            .arg(layer->flags));
-    } else {
-        const fh6::GuideLayer *guide = entry.guide();
-        locked_->setChecked(guide->locked);
-        mask_->setChecked(false);
-        colorButton_->setText(QStringLiteral("N/A"));
-        colorButton_->setStyleSheet(QString());
-        debug_->setText(QStringLiteral("%1 x %2\nformat: %3")
-                            .arg(guide->width)
-                            .arg(guide->height)
-                            .arg(guide->imageFormat));
-    }
+    shapeId_->setValue(layer->shapeId);
+    skew_->setValue(layer->skew);
+    locked_->setChecked(state_->isLayerLocked(layer->id));
+    mask_->setChecked(layer->mask);
+    updateColorButton();
+    debug_->setText(QStringLiteral("source_shape: %1\nabs_offset: %2\nmarker: %3\nflags: %4")
+                        .arg(layer->sourceShape)
+                        .arg(layer->absOffset)
+                        .arg(QString::fromLatin1(layer->marker.toHex()))
+                        .arg(layer->flags));
 }
 
-void PropertyPanel::setMultipleEntries(const QVector<EntryRef> &entries)
+void PropertyPanel::setSingleGuide(const fh6::scene::GuideLayer *guide)
+{
+    const QSignalBlocker b1(name_);
+    const QSignalBlocker b3(x_);
+    const QSignalBlocker b4(y_);
+    const QSignalBlocker b5(scaleX_);
+    const QSignalBlocker b6(scaleY_);
+    const QSignalBlocker b7(rotation_);
+    const QSignalBlocker b9(visible_);
+    const QSignalBlocker b10(locked_);
+    const QSignalBlocker b11(mask_);
+    const QSignalBlocker b12(opacity_);
+
+    name_->setText(guide->name);
+    x_->setValue(guide->x);
+    y_->setValue(guide->y);
+    scaleX_->setValue(guide->scaleX);
+    scaleY_->setValue(guide->scaleY);
+    rotation_->setValue(guide->rotation);
+    opacity_->setValue(guide->opacity);
+    visible_->setTristate(false);
+    locked_->setTristate(false);
+    mask_->setTristate(false);
+    visible_->setChecked(guide->visible);
+    clearMixedStyles();
+    locked_->setChecked(guide->locked);
+    mask_->setChecked(false);
+    colorButton_->setText(QStringLiteral("N/A"));
+    colorButton_->setStyleSheet(QString());
+    const int width = guide->image ? guide->image->width : 0;
+    const int height = guide->image ? guide->image->height : 0;
+    const QString format = guide->image ? guide->image->format : QString();
+    debug_->setText(QStringLiteral("%1 x %2\nformat: %3")
+                        .arg(width)
+                        .arg(height)
+                        .arg(format));
+}
+
+void PropertyPanel::setMultipleLayers(const QVector<fh6::scene::Shape *> &layers)
 {
     const QSignalBlocker b1(name_);
     const QSignalBlocker b2(shapeId_);
@@ -729,26 +1105,26 @@ void PropertyPanel::setMultipleEntries(const QVector<EntryRef> &entries)
     const QSignalBlocker b11(mask_);
     const QSignalBlocker b12(opacity_);
 
-    auto setDouble = [this, &entries](QDoubleSpinBox *box, auto getter) {
+    auto setDouble = [this, &layers](QDoubleSpinBox *box, auto getter) {
         double sum = 0.0;
-        double minValue = getter(entries.front());
+        double minValue = getter(*layers.front());
         double maxValue = minValue;
-        for (const EntryRef &entry : entries) {
-            const double value = getter(entry);
+        for (const fh6::scene::Shape *layer : layers) {
+            const double value = getter(*layer);
             sum += value;
             minValue = std::min(minValue, value);
             maxValue = std::max(maxValue, value);
         }
-        const double average = sum / entries.size();
+        const double average = sum / layers.size();
         baselines_.insert(box, average);
         box->setValue(average);
         box->setStyleSheet(minValue == maxValue ? QString() : mixedValueStyle());
     };
-    auto setCheck = [&entries](QCheckBox *box, auto getter) {
-        bool first = getter(entries.front());
+    auto setCheck = [&layers](QCheckBox *box, auto getter) {
+        bool first = getter(*layers.front());
         bool mixed = false;
-        for (const EntryRef &entry : entries) {
-            if (getter(entry) != first) {
+        for (const fh6::scene::Shape *layer : layers) {
+            if (getter(*layer) != first) {
                 mixed = true;
                 break;
             }
@@ -757,69 +1133,108 @@ void PropertyPanel::setMultipleEntries(const QVector<EntryRef> &entries)
         box->setCheckState(mixed ? Qt::PartiallyChecked : (first ? Qt::Checked : Qt::Unchecked));
     };
 
-    setDouble(x_, [](const EntryRef &entry) { return entry.x(); });
-    setDouble(y_, [](const EntryRef &entry) { return entry.y(); });
-    setDouble(scaleX_, [](const EntryRef &entry) { return entry.scaleX(); });
-    setDouble(scaleY_, [](const EntryRef &entry) { return entry.scaleY(); });
-    setDouble(rotation_, [](const EntryRef &entry) { return entry.rotation(); });
-    const bool shapeEntries = entries.front().isLayer();
-    if (shapeEntries) {
-        setDouble(skew_, [](const EntryRef &entry) { return entry.skew(); });
-    }
-    setDouble(opacity_, [](const EntryRef &entry) { return entry.opacity(); });
-    setCheck(visible_, [](const EntryRef &entry) { return entry.visible(); });
-    setCheck(locked_, [this](const EntryRef &entry) {
-        return entry.isLayer() ? state_->isLayerLocked(entry.id()) : entry.locked();
+    setDouble(x_, [](const fh6::scene::Shape &l) { return l.x; });
+    setDouble(y_, [](const fh6::scene::Shape &l) { return l.y; });
+    setDouble(scaleX_, [](const fh6::scene::Shape &l) { return l.scaleX; });
+    setDouble(scaleY_, [](const fh6::scene::Shape &l) { return l.scaleY; });
+    setDouble(rotation_, [](const fh6::scene::Shape &l) { return l.rotation; });
+    setDouble(skew_, [](const fh6::scene::Shape &l) { return l.skew; });
+    setDouble(opacity_, [](const fh6::scene::Shape &l) { return opacityFromAlpha(l.color[ColorByteAlpha]); });
+    setCheck(visible_, [](const fh6::scene::Shape &l) { return l.visible; });
+    setCheck(locked_, [this](const fh6::scene::Shape &l) { return state_->isLayerLocked(l.id); });
+    setCheck(mask_, [](const fh6::scene::Shape &l) { return l.mask; });
+
+    const QString firstName = layers.front()->name;
+    const bool sameName = std::all_of(layers.begin(), layers.end(), [&](const fh6::scene::Shape *l) {
+        return l->name == firstName;
     });
+    name_->setText(sameName ? firstName : QString());
+    name_->setStyleSheet(sameName ? QString() : mixedValueStyle());
 
-    if (shapeEntries) {
-        setCheck(mask_, [](const EntryRef &entry) { return entry.layer()->mask; });
+    const quint16 firstShapeId = layers.front()->shapeId;
+    const bool sameShapeId = std::all_of(layers.begin(), layers.end(), [&](const fh6::scene::Shape *l) {
+        return l->shapeId == firstShapeId;
+    });
+    shapeId_->setValue(firstShapeId);
+    shapeId_->setStyleSheet(sameShapeId ? QString() : mixedValueStyle());
 
-        const QString firstName = entries.front().name();
-        const bool sameName = std::all_of(entries.begin(), entries.end(), [&](const EntryRef &entry) {
-            return entry.name() == firstName;
-        });
-        name_->setText(sameName ? firstName : QString());
-        name_->setStyleSheet(sameName ? QString() : mixedValueStyle());
+    updateColorButton();
+    debug_->setText(QStringLiteral("%1 layers selected").arg(layers.size()));
+}
 
-        const quint16 firstShapeId = entries.front().layer()->shapeId;
-        const bool sameShapeId = std::all_of(entries.begin(), entries.end(), [&](const EntryRef &entry) {
-            return entry.layer()->shapeId == firstShapeId;
-        });
-        shapeId_->setValue(firstShapeId);
-        shapeId_->setStyleSheet(sameShapeId ? QString() : mixedValueStyle());
+void PropertyPanel::setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &guides)
+{
+    const QSignalBlocker b1(name_);
+    const QSignalBlocker b3(x_);
+    const QSignalBlocker b4(y_);
+    const QSignalBlocker b5(scaleX_);
+    const QSignalBlocker b6(scaleY_);
+    const QSignalBlocker b7(rotation_);
+    const QSignalBlocker b9(visible_);
+    const QSignalBlocker b10(locked_);
+    const QSignalBlocker b11(mask_);
+    const QSignalBlocker b12(opacity_);
 
-        updateColorButton();
-        debug_->setText(QStringLiteral("%1 layers selected").arg(entries.size()));
-    } else {
-        // Multi-guide selections keep their historical quirks: the name reads as
-        // mixed even when every guide shares one, and there is no mask/colour.
-        mask_->setTristate(false);
-        mask_->setChecked(false);
-        name_->setText(QString());
-        name_->setStyleSheet(mixedValueStyle());
-        colorButton_->setText(QStringLiteral("N/A"));
-        colorButton_->setStyleSheet(QString());
-        debug_->setText(QStringLiteral("%1 guide layers selected").arg(entries.size()));
-    }
+    auto setDouble = [this, &guides](QDoubleSpinBox *box, auto getter) {
+        double sum = 0.0;
+        double minValue = getter(*guides.front());
+        double maxValue = minValue;
+        for (const fh6::scene::GuideLayer *guide : guides) {
+            const double value = getter(*guide);
+            sum += value;
+            minValue = std::min(minValue, value);
+            maxValue = std::max(maxValue, value);
+        }
+        const double average = sum / guides.size();
+        baselines_.insert(box, average);
+        box->setValue(average);
+        box->setStyleSheet(minValue == maxValue ? QString() : mixedValueStyle());
+    };
+    auto setCheck = [&guides](QCheckBox *box, auto getter) {
+        bool first = getter(*guides.front());
+        bool mixed = false;
+        for (const fh6::scene::GuideLayer *guide : guides) {
+            if (getter(*guide) != first) {
+                mixed = true;
+                break;
+            }
+        }
+        box->setTristate(mixed);
+        box->setCheckState(mixed ? Qt::PartiallyChecked : (first ? Qt::Checked : Qt::Unchecked));
+    };
+
+    setDouble(x_, [](const fh6::scene::GuideLayer &g) { return g.x; });
+    setDouble(y_, [](const fh6::scene::GuideLayer &g) { return g.y; });
+    setDouble(scaleX_, [](const fh6::scene::GuideLayer &g) { return g.scaleX; });
+    setDouble(scaleY_, [](const fh6::scene::GuideLayer &g) { return g.scaleY; });
+    setDouble(rotation_, [](const fh6::scene::GuideLayer &g) { return g.rotation; });
+    setDouble(opacity_, [](const fh6::scene::GuideLayer &g) { return g.opacity; });
+    setCheck(visible_, [](const fh6::scene::GuideLayer &g) { return g.visible; });
+    setCheck(locked_, [](const fh6::scene::GuideLayer &g) { return g.locked; });
+
+    // Multi-guide selections keep their historical quirks: the name reads as mixed
+    // even when every guide shares one, and there is no mask/colour.
+    mask_->setTristate(false);
+    mask_->setChecked(false);
+    name_->setText(QString());
+    name_->setStyleSheet(mixedValueStyle());
+    colorButton_->setText(QStringLiteral("N/A"));
+    colorButton_->setStyleSheet(QString());
+    debug_->setText(QStringLiteral("%1 guide layers selected").arg(guides.size()));
 }
 
 bool PropertyPanel::isBoxSelection() const
 {
-    return guides_.isEmpty() && !layers_.isEmpty() && (!groups_.isEmpty() || layers_.size() > 1);
+    return guides_.isEmpty() && (!groups_.isEmpty() || layers_.size() > 1);
 }
 
 QPointF PropertyPanel::selectionBoxCenter() const
 {
-    BoundsAccumulator acc;
-    for (const fh6::ShapeLayer *layer : layers_) {
-        const QSizeF size = spriteSizeFn_ ? spriteSizeFn_(layer->shapeId) : QSizeF(0.0, 0.0);
-        acc.add(entryTransform(*layer), entryLocalRect(size));
-    }
-    return acc.hasBounds() ? acc.bounds().center() : QPointF(0.0, 0.0);
+    const QRectF bounds = selectionWorldBounds(layers_, spriteSizeFn_, shapeVisualBoundsFn_);
+    return bounds.isValid() ? bounds.center() : QPointF(0.0, 0.0);
 }
 
-void PropertyPanel::setBoxProxyFields()
+void PropertyPanel::setBoxProxyFields(bool neutralTransformValues)
 {
     const QPointF center = selectionBoxCenter();
     const QSignalBlocker bx(x_);
@@ -828,9 +1243,56 @@ void PropertyPanel::setBoxProxyFields()
     const QSignalBlocker bsy(scaleY_);
     const QSignalBlocker br(rotation_);
     const QSignalBlocker bk(skew_);
-    // Neutral proxy: position tracks the box centre; scale is 1x, rotation/skew 0.
-    // Each edit is applied about the box and the fields reset to this baseline, so a
-    // value is always "transform the selection by" rather than a per-shape absolute.
+    double scaleXValue = 1.0;
+    double scaleYValue = 1.0;
+    double rotationValue = 0.0;
+    double skewValue = 0.0;
+    if (!neutralTransformValues) {
+        QSet<QString> groupedLayerIds;
+        const QString signature = boxProxySignature(state_, layers_, groups_, &groupedLayerIds);
+        int looseLayerCount = 0;
+        for (const fh6::scene::Shape *layer : layers_) {
+            if (layer != nullptr && !groupedLayerIds.contains(layer->id)) {
+                ++looseLayerCount;
+            }
+        }
+        const int targetCount = groups_.size() + looseLayerCount;
+        if (targetCount == 1 && groups_.size() == 1 && looseLayerCount == 0 && groups_.front() != nullptr) {
+            const AffineDecomposition dec = decomposeAffine(sceneWorldTransform(*groups_.front()), groups_.front()->skew);
+            if (dec.ok) {
+                scaleXValue = dec.scaleX;
+                scaleYValue = dec.scaleY;
+                rotationValue = dec.rotation;
+                skewValue = dec.skew;
+            }
+            boxProxyBaseValid_ = false;
+            boxProxySignature_.clear();
+        } else {
+            const QRectF bounds = selectionWorldBounds(layers_, spriteSizeFn_, shapeVisualBoundsFn_);
+            const TransformAverage average = boxTargetAverage(layers_, groups_, groupedLayerIds);
+            const bool resetProxy = !boxProxyBaseValid_
+                || boxProxySignature_ != signature
+                || !boxProxyBaseBounds_.isValid()
+                || boxProxyBaseBounds_.width() <= 1e-9
+                || boxProxyBaseBounds_.height() <= 1e-9;
+            if (resetProxy) {
+                boxProxySignature_ = signature;
+                boxProxyBaseBounds_ = bounds;
+                boxProxyBaseRotation_ = average.averageRotation();
+                boxProxyBaseSkew_ = average.averageSkew();
+                boxProxyBaseValid_ = bounds.isValid() && average.count > 0;
+            } else if (bounds.isValid() && average.count > 0) {
+                scaleXValue = bounds.width() / boxProxyBaseBounds_.width();
+                scaleYValue = bounds.height() / boxProxyBaseBounds_.height();
+                rotationValue = normalizeRotation(average.averageRotation() - boxProxyBaseRotation_);
+                skewValue = average.averageSkew() - boxProxyBaseSkew_;
+            }
+        }
+    }
+
+    // Position tracks the visual box centre. A single selected group reads its real
+    // frame; mixed top-level selections read a virtual BB transform captured at
+    // selection time and updated from the current bounds/target-frame deltas.
     const auto setProxy = [this](QDoubleSpinBox *box, double value) {
         box->setValue(value);
         box->setStyleSheet(QString());
@@ -838,10 +1300,10 @@ void PropertyPanel::setBoxProxyFields()
     };
     setProxy(x_, center.x());
     setProxy(y_, center.y());
-    setProxy(scaleX_, 1.0);
-    setProxy(scaleY_, 1.0);
-    setProxy(rotation_, 0.0);
-    setProxy(skew_, 0.0);
+    setProxy(scaleX_, scaleXValue);
+    setProxy(scaleY_, scaleYValue);
+    setProxy(rotation_, normalizeRotation(rotationValue));
+    setProxy(skew_, skewValue);
 }
 
 void PropertyPanel::applyBoxTransform(const QString &property, double fromValue, double toValue)
@@ -850,8 +1312,23 @@ void PropertyPanel::applyBoxTransform(const QString &property, double fromValue,
     if (transform.isIdentity()) {
         return;
     }
-    for (fh6::ShapeLayer *layer : layers_) {
-        applyDecomposedTransform(layer, entryTransform(*layer) * transform);
+    const QSet<QString> groupedLayerIds = coveredLayerIdsForGroups(state_, groups_);
+    for (fh6::scene::Shape *layer : layers_) {
+        if (groupedLayerIds.contains(layer->id)) {
+            continue;
+        }
+        applyDecomposedTransform(layer, localResultForWorldTransform(*layer, flatEntryTransform(*layer), transform));
+    }
+    // Accumulate the same world transform into each selected group's own frame.
+    // Descendant leaves covered by those groups are skipped above, so a selected
+    // group moves as one scene node instead of double-transforming its children.
+    if (state_ != nullptr && !groups_.isEmpty()) {
+        QVector<QString> groupIds;
+        groupIds.reserve(groups_.size());
+        for (const fh6::scene::Group *group : groups_) {
+            groupIds.push_back(group->id);
+        }
+        state_->transformGroupFrames(groupIds, transform);
     }
 }
 
@@ -874,7 +1351,7 @@ void PropertyPanel::applyChanged(QWidget *sender)
         return;
     }
     if (!guides_.isEmpty() && (sender != locked_)) {
-        for (const fh6::GuideLayer *guide : guides_) {
+        for (const fh6::scene::GuideLayer *guide : guides_) {
             if (guide->locked) {
                 setSelection(layers_, guides_, groups_);
                 return;
@@ -883,42 +1360,49 @@ void PropertyPanel::applyChanged(QWidget *sender)
     }
     if (groups_.isEmpty() && guides_.isEmpty() && sender != locked_) {
         const QSet<QString> lockedIds = state_->lockedLayerIds();
-        for (const fh6::ShapeLayer *layer : layers_) {
+        for (const fh6::scene::Shape *layer : layers_) {
             if (lockedIds.contains(layer->id)) {
                 setSelection(layers_, guides_, groups_);
                 return;
             }
         }
     }
-    state_->beginProjectEdit();
-    // The branches below write through the cached layers_/guides_/groups_ raw
-    // pointers. beginProjectEdit() snapshots the project via copy-on-write, so
-    // detach first and re-resolve those pointers; otherwise the writes mutate
-    // the shared undo "before" snapshot and the edit cannot be undone.
-    detachSelectionForEdit();
+    QSet<QString> refreshLayerIds;
+    QSet<QString> refreshGuideIds;
+    QVector<QString> refreshGroupIds;
+    refreshLayerIds.reserve(layers_.size());
+    refreshGuideIds.reserve(guides_.size());
+    refreshGroupIds.reserve(groups_.size());
+    for (const fh6::scene::Shape *layer : layers_) {
+        refreshLayerIds.insert(layer->id);
+    }
+    for (const fh6::scene::GuideLayer *guide : guides_) {
+        refreshGuideIds.insert(guide->id);
+    }
+    for (const fh6::scene::Group *group : groups_) {
+        refreshGroupIds.push_back(group->id);
+    }
+    applyingChange_ = true;
+    const bool transformOnly = isTransformProperty(property);
+    if (transformOnly) {
+        state_->beginTransformCommand(transformTargetIdsForSelection(state_, layers_, guides_, groups_));
+    } else {
+        state_->beginProjectEdit();
+        detachSelectionForEdit();
+    }
     if (!guides_.isEmpty() && layers_.isEmpty() && groups_.isEmpty()) {
-        const QSet<QString> selectedGuideIds = state_->selectedGuideLayerIds();
-        if (fh6::Project *project = state_->project()) {
-            project->guideLayers.data();
-            guides_.clear();
-            for (fh6::GuideLayer &guide : project->guideLayers) {
-                if (selectedGuideIds.contains(guide.id)) {
-                    guides_.push_back(&guide);
-                }
-            }
-        }
         if (sender == locked_ && locked_->checkState() != Qt::PartiallyChecked) {
             const bool value = locked_->checkState() == Qt::Checked;
-            for (fh6::GuideLayer *guide : guides_) {
+            for (fh6::scene::GuideLayer *guide : guides_) {
                 guide->locked = value;
             }
         } else if (sender == visible_ && visible_->checkState() != Qt::PartiallyChecked) {
             const bool value = visible_->checkState() == Qt::Checked;
-            for (fh6::GuideLayer *guide : guides_) {
+            for (fh6::scene::GuideLayer *guide : guides_) {
                 guide->visible = value;
             }
         } else if (guides_.size() == 1) {
-            fh6::GuideLayer *guide = guides_.front();
+            fh6::scene::GuideLayer *guide = guides_.front();
             guide->name = name_->text();
             guide->x = x_->value();
             guide->y = y_->value();
@@ -930,7 +1414,7 @@ void PropertyPanel::applyChanged(QWidget *sender)
             const double old = baselines_.value(box, box->value());
             const double delta = box->value() - old;
             baselines_.insert(box, box->value());
-            for (fh6::GuideLayer *guide : guides_) {
+            for (fh6::scene::GuideLayer *guide : guides_) {
                 if (property == QStringLiteral("x")) {
                     guide->x += delta;
                 } else if (property == QStringLiteral("y")) {
@@ -946,32 +1430,32 @@ void PropertyPanel::applyChanged(QWidget *sender)
                 }
             }
         } else if (auto *line = qobject_cast<QLineEdit *>(sender)) {
-            for (fh6::GuideLayer *guide : guides_) {
+            for (fh6::scene::GuideLayer *guide : guides_) {
                 guide->name = line->text();
             }
         }
     } else if (!groups_.isEmpty()) {
         if (sender == name_) {
-            for (fh6::LayerGroup *group : groups_) {
+            for (fh6::scene::Group *group : groups_) {
                 group->name = name_->text();
             }
         } else if (sender == opacity_) {
-            for (fh6::LayerGroup *group : groups_) {
+            for (fh6::scene::Group *group : groups_) {
                 state_->setGroupDescendantOpacity(group->id, opacity_->value());
             }
         } else if (sender == locked_ && locked_->checkState() != Qt::PartiallyChecked) {
             const bool value = locked_->checkState() == Qt::Checked;
-            for (fh6::LayerGroup *group : groups_) {
+            for (fh6::scene::Group *group : groups_) {
                 state_->setGroupAndDescendantLocked(group->id, value);
             }
         } else if (sender == visible_ && visible_->checkState() != Qt::PartiallyChecked) {
             const bool value = visible_->checkState() == Qt::Checked;
-            for (fh6::LayerGroup *group : groups_) {
+            for (fh6::scene::Group *group : groups_) {
                 state_->setGroupDescendantVisible(group->id, value);
             }
         } else if (sender == mask_ && mask_->checkState() != Qt::PartiallyChecked) {
             const bool value = mask_->checkState() == Qt::Checked;
-            for (fh6::LayerGroup *group : groups_) {
+            for (fh6::scene::Group *group : groups_) {
                 state_->setGroupDescendantMask(group->id, value);
             }
         } else if (auto *box = qobject_cast<QDoubleSpinBox *>(sender); box != nullptr && isTransformProperty(property)) {
@@ -979,7 +1463,7 @@ void PropertyPanel::applyChanged(QWidget *sender)
         }
     } else if (sender == locked_ && locked_->checkState() != Qt::PartiallyChecked) {
         const bool value = locked_->checkState() == Qt::Checked;
-        for (fh6::ShapeLayer *layer : layers_) {
+        for (fh6::scene::Shape *layer : layers_) {
             state_->setLayerLockScope(layer->id, value);
         }
     } else if (layers_.size() == 1) {
@@ -987,18 +1471,26 @@ void PropertyPanel::applyChanged(QWidget *sender)
     } else {
         applyMulti(sender, property);
     }
-    state_->commitProjectEdit();
+    if (transformOnly) {
+        state_->commitTransformCommand();
+    } else {
+        state_->commitProjectEdit();
+    }
+    const QVector<QString> changedIds = transformTargetIdsForSelection(state_, layers_, guides_, groups_);
     if (property == QStringLiteral("visible") || property == QStringLiteral("mask") || property == QStringLiteral("shapeId")
         || (property == QStringLiteral("opacity") && guides_.isEmpty())) {
-        state_->noteProjectGeometryChanged(true);
+        state_->noteProjectGeometryChanged(true, changedIds);
     } else if (property == QStringLiteral("x") || property == QStringLiteral("y") || property == QStringLiteral("scaleX")
                || property == QStringLiteral("scaleY") || property == QStringLiteral("rotation") || property == QStringLiteral("skew")
                || property == QStringLiteral("opacity")) {
-        state_->noteProjectGeometryChanged(false);
+        state_->noteProjectGeometryChanged(false, changedIds);
     } else {
         state_->noteProjectStructureChanged();
     }
-    setSelection(layers_, guides_, groups_);
+    applyingChange_ = false;
+    QMetaObject::invokeMethod(this, [this, refreshLayerIds, refreshGuideIds, refreshGroupIds]() {
+        setSelectionByIds(refreshLayerIds, refreshGuideIds, refreshGroupIds);
+    }, Qt::QueuedConnection);
 }
 
 bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox *box, const QPoint &globalPos)
@@ -1015,7 +1507,7 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
         return false;
     }
     if (!guides_.isEmpty()) {
-        for (const fh6::GuideLayer *guide : guides_) {
+        for (const fh6::scene::GuideLayer *guide : guides_) {
             if (guide->locked) {
                 return false;
             }
@@ -1023,7 +1515,7 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
     }
     if (groups_.isEmpty() && guides_.isEmpty()) {
         const QSet<QString> lockedIds = state_->lockedLayerIds();
-        for (const fh6::ShapeLayer *layer : layers_) {
+        for (const fh6::scene::Shape *layer : layers_) {
             if (lockedIds.contains(layer->id)) {
                 return false;
             }
@@ -1038,7 +1530,7 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
     valueLabelLayerIds_ = state_->selectedLayerIds();
     valueLabelGuideIds_ = state_->selectedGuideLayerIds();
     valueLabelGroupIds_.clear();
-    for (const fh6::LayerGroup *group : groups_) {
+    for (const fh6::scene::Group *group : groups_) {
         if (group != nullptr) {
             valueLabelGroupIds_.push_back(group->id);
         }
@@ -1047,35 +1539,18 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
     valueLabelGuideStartValues_.clear();
     valueLabelGroupStartValues_.clear();
 
-    state_->beginProjectEdit();
+    valueLabelUsesTransformCommand_ = isTransformProperty(property);
+    if (valueLabelUsesTransformCommand_) {
+        state_->beginTransformCommand(transformTargetIdsForSelection(state_, layers_, guides_, groups_));
+    } else {
+        state_->beginProjectEdit();
+    }
     if (fh6::Project *project = state_->project()) {
-        project->layers.data();
-        project->guideLayers.data();
-        project->groups.data();
-        layers_.clear();
-        guides_.clear();
-        groups_.clear();
-        for (fh6::ShapeLayer &layer : project->layers) {
-            if (valueLabelLayerIds_.contains(layer.id)) {
-                layers_.push_back(&layer);
-            }
-        }
-        for (fh6::GuideLayer &guide : project->guideLayers) {
-            if (valueLabelGuideIds_.contains(guide.id)) {
-                guides_.push_back(&guide);
-            }
-        }
-        for (const QString &groupId : valueLabelGroupIds_) {
-            for (fh6::LayerGroup &group : project->groups) {
-                if (group.id == groupId) {
-                    groups_.push_back(&group);
-                    break;
-                }
-            }
-        }
+        Q_UNUSED(project);
+        setSelectionByIds(valueLabelLayerIds_, valueLabelGuideIds_, valueLabelGroupIds_);
     }
 
-    const auto layerValue = [&](const fh6::ShapeLayer &layer) {
+    const auto layerValue = [&](const fh6::scene::Shape &layer) {
         if (property == QStringLiteral("x")) return layer.x;
         if (property == QStringLiteral("y")) return layer.y;
         if (property == QStringLiteral("scaleX")) return layer.scaleX;
@@ -1084,7 +1559,7 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
         if (property == QStringLiteral("skew")) return layer.skew;
         return opacityFromAlpha(layer.color[ColorByteAlpha]);
     };
-    const auto guideValue = [&](const fh6::GuideLayer &guide) {
+    const auto guideValue = [&](const fh6::scene::GuideLayer &guide) {
         if (property == QStringLiteral("x")) return guide.x;
         if (property == QStringLiteral("y")) return guide.y;
         if (property == QStringLiteral("scaleX")) return guide.scaleX;
@@ -1092,10 +1567,10 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
         if (property == QStringLiteral("rotation")) return guide.rotation;
         return guide.opacity;
     };
-    for (const fh6::ShapeLayer *layer : layers_) {
+    for (const fh6::scene::Shape *layer : layers_) {
         valueLabelLayerStartValues_.insert(layer->id, layerValue(*layer));
     }
-    for (const fh6::GuideLayer *guide : guides_) {
+    for (const fh6::scene::GuideLayer *guide : guides_) {
         valueLabelGuideStartValues_.insert(guide->id, guideValue(*guide));
     }
     for (const QString &groupId : valueLabelGroupIds_) {
@@ -1107,16 +1582,26 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
     // group handles. box->value() (captured above) is the neutral proxy baseline.
     valueLabelBoxDrag_ = isBoxSelection() && isTransformProperty(property);
     valueLabelLayerStartTransforms_.clear();
+    valueLabelGroupStartFrames_.clear();
     if (valueLabelBoxDrag_) {
         valueLabelBoxCenter_ = selectionBoxCenter();
-        for (const fh6::ShapeLayer *layer : layers_) {
-            valueLabelLayerStartTransforms_.insert(layer->id, entryTransform(*layer));
+        const QSet<QString> groupedLayerIds = coveredLayerIdsForGroups(state_, groups_);
+        for (const fh6::scene::Shape *layer : layers_) {
+            if (groupedLayerIds.contains(layer->id)) {
+                continue;
+            }
+            valueLabelLayerStartTransforms_.insert(layer->id, flatEntryTransform(*layer));
+        }
+        if (state_ != nullptr) {
+            for (const fh6::scene::Group *group : groups_) {
+                valueLabelGroupStartFrames_.insert(group->id, state_->groupLocalFrame(group->id));
+            }
         }
     }
 
     QPixmap pixmap(assetPath(QStringLiteral("ToolScaleY.xpm")));
     if (!pixmap.isNull()) {
-        pixmap = pixmap.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pixmap = pixmap.scaled(21, 21, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         QApplication::setOverrideCursor(QCursor(pixmap, pixmap.width() / 2, pixmap.height() / 2));
     } else {
         QApplication::setOverrideCursor(QCursor(Qt::SizeVerCursor));
@@ -1159,22 +1644,28 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
     if (valueLabelBoxDrag_) {
         const double proxy = adjusted(valueLabelBoxStartValue_);
         const QTransform transform = boxAffine(valueLabelProperty_, valueLabelBoxStartValue_, proxy, valueLabelBoxCenter_);
-        for (fh6::ShapeLayer *layer : layers_) {
-            const QTransform start = valueLabelLayerStartTransforms_.value(layer->id, entryTransform(*layer));
-            applyDecomposedTransform(layer, start * transform);
+        for (fh6::scene::Shape *layer : layers_) {
+            if (!valueLabelLayerStartTransforms_.contains(layer->id)) {
+                continue;
+            }
+            const QTransform start = valueLabelLayerStartTransforms_.value(layer->id, flatEntryTransform(*layer));
+            applyDecomposedTransform(layer, localResultForWorldTransform(*layer, start, transform));
+        }
+        if (!valueLabelGroupStartFrames_.isEmpty()) {
+            state_->setGroupFramesFromStart(valueLabelGroupStartFrames_, transform);
         }
         {
             const QSignalBlocker blocker(valueLabelBox_);
             valueLabelBox_->setValue(proxy);
         }
-        state_->noteCanvasRepaint();
+        state_->noteTransformLiveChanged(transformTargetIdsForSelection(state_, layers_, guides_, groups_));
         if (globalPos.x() != valueLabelStartGlobal_.x()) {
             QCursor::setPos(valueLabelStartGlobal_.x(), globalPos.y());
         }
         return;
     }
 
-    for (fh6::ShapeLayer *layer : layers_) {
+    for (fh6::scene::Shape *layer : layers_) {
         const double value = adjusted(valueLabelLayerStartValues_.value(layer->id, 0.0));
         if (valueLabelProperty_ == QStringLiteral("x")) {
             layer->x = value;
@@ -1192,7 +1683,7 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
             layer->color[ColorByteAlpha] = alphaFromOpacity(value);
         }
     }
-    for (fh6::GuideLayer *guide : guides_) {
+    for (fh6::scene::GuideLayer *guide : guides_) {
         const double value = adjusted(valueLabelGuideStartValues_.value(guide->id, 0.0));
         if (valueLabelProperty_ == QStringLiteral("x")) {
             guide->x = value;
@@ -1208,7 +1699,7 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
             guide->opacity = value;
         }
     }
-    for (fh6::LayerGroup *group : groups_) {
+    for (fh6::scene::Group *group : groups_) {
         const double value = adjusted(valueLabelGroupStartValues_.value(group->id, valueLabelBox_->value()));
         state_->setGroupDescendantOpacity(group->id, value);
     }
@@ -1220,7 +1711,11 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
     if (valueLabelProperty_ == QStringLiteral("opacity")) {
         updateColorButton();
     }
-    state_->noteCanvasRepaint();
+    if (isTransformProperty(valueLabelProperty_)) {
+        state_->noteTransformLiveChanged(transformTargetIdsForSelection(state_, layers_, guides_, groups_));
+    } else {
+        state_->noteCanvasRepaint();
+    }
 
     if (globalPos.x() != valueLabelStartGlobal_.x()) {
         QCursor::setPos(valueLabelStartGlobal_.x(), globalPos.y());
@@ -1245,34 +1740,38 @@ void PropertyPanel::endValueLabelDrag(bool commit)
     valueLabelLayerStartTransforms_.clear();
 
     if (commit) {
-        state_->commitProjectEdit();
+        if (valueLabelUsesTransformCommand_) {
+            state_->commitTransformCommand();
+        } else {
+            state_->commitProjectEdit();
+        }
         const bool refreshPreviews = property == QStringLiteral("opacity") && guides_.isEmpty();
-        state_->noteProjectGeometryChanged(refreshPreviews);
+        state_->noteProjectGeometryChanged(refreshPreviews, transformTargetIdsForSelection(state_, layers_, guides_, groups_));
     } else {
-        state_->cancelProjectEdit();
+        if (valueLabelUsesTransformCommand_) {
+            state_->cancelTransformCommand();
+        } else {
+            state_->cancelProjectEdit();
+        }
     }
+    valueLabelUsesTransformCommand_ = false;
 
-    QVector<fh6::ShapeLayer *> layers;
-    QVector<fh6::GuideLayer *> guides;
-    QVector<fh6::LayerGroup *> groups;
-    if (fh6::Project *project = state_->project()) {
-        for (fh6::ShapeLayer &layer : project->layers) {
-            if (valueLabelLayerIds_.contains(layer.id)) {
-                layers.push_back(&layer);
-            }
+    QVector<fh6::scene::Shape *> layers;
+    QVector<fh6::scene::GuideLayer *> guides;
+    QVector<fh6::scene::Group *> groups;
+    for (const QString &id : valueLabelLayerIds_) {
+        if (auto *layer = dynamic_cast<fh6::scene::Shape *>(state_->sceneNode(id))) {
+            layers.push_back(layer);
         }
-        for (fh6::GuideLayer &guide : project->guideLayers) {
-            if (valueLabelGuideIds_.contains(guide.id)) {
-                guides.push_back(&guide);
-            }
+    }
+    for (const QString &id : valueLabelGuideIds_) {
+        if (auto *guide = dynamic_cast<fh6::scene::GuideLayer *>(state_->sceneNode(id))) {
+            guides.push_back(guide);
         }
-        for (const QString &groupId : valueLabelGroupIds_) {
-            for (fh6::LayerGroup &group : project->groups) {
-                if (group.id == groupId) {
-                    groups.push_back(&group);
-                    break;
-                }
-            }
+    }
+    for (const QString &groupId : valueLabelGroupIds_) {
+        if (fh6::scene::Group *group = state_->groupForId(groupId)) {
+            groups.push_back(group);
         }
     }
     setSelection(layers, guides, groups);
@@ -1294,46 +1793,47 @@ void PropertyPanel::detachSelectionForEdit()
     layerIds.reserve(layers_.size());
     guideIds.reserve(guides_.size());
     groupIds.reserve(groups_.size());
-    for (const fh6::ShapeLayer *layer : layers_) {
+    for (const fh6::scene::Shape *layer : layers_) {
         layerIds.insert(layer->id);
     }
-    for (const fh6::GuideLayer *guide : guides_) {
+    for (const fh6::scene::GuideLayer *guide : guides_) {
         guideIds.insert(guide->id);
     }
-    for (const fh6::LayerGroup *group : groups_) {
+    for (const fh6::scene::Group *group : groups_) {
         groupIds.push_back(group->id);
     }
-    // Force the copy-on-write detach so later in-place writes hit a buffer the
-    // undo snapshot does not share.
-    project->layers.data();
-    project->guideLayers.data();
-    project->groups.data();
-    layers_.clear();
-    guides_.clear();
-    groups_.clear();
-    for (fh6::ShapeLayer &layer : project->layers) {
-        if (layerIds.contains(layer.id)) {
-            layers_.push_back(&layer);
+    Q_UNUSED(project);
+    setSelectionByIds(layerIds, guideIds, groupIds);
+}
+
+void PropertyPanel::setSelectionByIds(const QSet<QString> &layerIds,
+                                      const QSet<QString> &guideIds,
+                                      const QVector<QString> &groupIds)
+{
+    QVector<fh6::scene::Shape *> layers;
+    QVector<fh6::scene::GuideLayer *> guides;
+    QVector<fh6::scene::Group *> groups;
+    for (const QString &id : layerIds) {
+        if (auto *layer = dynamic_cast<fh6::scene::Shape *>(state_->sceneNode(id))) {
+            layers.push_back(layer);
         }
     }
-    for (fh6::GuideLayer &guide : project->guideLayers) {
-        if (guideIds.contains(guide.id)) {
-            guides_.push_back(&guide);
+    for (const QString &id : guideIds) {
+        if (auto *guide = dynamic_cast<fh6::scene::GuideLayer *>(state_->sceneNode(id))) {
+            guides.push_back(guide);
         }
     }
     for (const QString &groupId : groupIds) {
-        for (fh6::LayerGroup &group : project->groups) {
-            if (group.id == groupId) {
-                groups_.push_back(&group);
-                break;
-            }
+        if (fh6::scene::Group *group = state_->groupForId(groupId)) {
+            groups.push_back(group);
         }
     }
+    setSelection(layers, guides, groups);
 }
 
 void PropertyPanel::applySingle()
 {
-    fh6::ShapeLayer *layer = layers_.front();
+    fh6::scene::Shape *layer = layers_.front();
     layer->name = name_->text();
     layer->shapeId = static_cast<quint16>(shapeId_->value());
     layer->x = x_->value();
@@ -1360,17 +1860,17 @@ void PropertyPanel::applyMulti(QWidget *sender, const QString &property)
         const double old = baselines_.value(box, box->value());
         const double delta = box->value() - old;
         baselines_.insert(box, box->value());
-        for (fh6::ShapeLayer *layer : layers_) {
+        for (fh6::scene::Shape *layer : layers_) {
             if (property == QStringLiteral("opacity")) {
                 layer->color[ColorByteAlpha] = alphaFromOpacity(std::clamp(opacityFromAlpha(layer->color[ColorByteAlpha]) + delta, 0.0, 1.0));
             }
         }
     } else if (auto *box = qobject_cast<QSpinBox *>(sender)) {
-        for (fh6::ShapeLayer *layer : layers_) {
+        for (fh6::scene::Shape *layer : layers_) {
             layer->shapeId = static_cast<quint16>(box->value());
         }
     } else if (auto *line = qobject_cast<QLineEdit *>(sender)) {
-        for (fh6::ShapeLayer *layer : layers_) {
+        for (fh6::scene::Shape *layer : layers_) {
             layer->name = line->text();
         }
     } else if (auto *check = qobject_cast<QCheckBox *>(sender)) {
@@ -1378,7 +1878,7 @@ void PropertyPanel::applyMulti(QWidget *sender, const QString &property)
             return;
         }
         const bool value = check->checkState() == Qt::Checked;
-        for (fh6::ShapeLayer *layer : layers_) {
+        for (fh6::scene::Shape *layer : layers_) {
             if (property == QStringLiteral("visible")) {
                 layer->visible = value;
             } else if (property == QStringLiteral("locked")) {
@@ -1394,26 +1894,38 @@ QVector<std::array<quint8, 4>> PropertyPanel::selectionColors() const
 {
     ScopedPerf perf("PropertyPanel::selectionColors");
     QVector<std::array<quint8, 4>> colors;
-    for (const fh6::ShapeLayer *layer : layers_) {
+    for (const fh6::scene::Shape *layer : layers_) {
         colors.push_back(layer->color);
     }
     if (!groups_.isEmpty()) {
-        const fh6::Project *project = state_->project();
-        if (project != nullptr) {
-            // One id -> layer map, then O(leaves) lookups per group instead of a full layer
-            // scan for every leaf.
-            QHash<QString, const fh6::ShapeLayer *> layerById;
-            layerById.reserve(project->layers.size());
-            for (const fh6::ShapeLayer &layer : project->layers) {
-                layerById.insert(layer.id, &layer);
+        for (const fh6::scene::Group *group : groups_) {
+            const QVector<QString> ids = state_->leafLayerIdsForEntry(group->id);
+            for (const QString &id : ids) {
+                const auto *layer = dynamic_cast<const fh6::scene::Shape *>(state_->sceneNode(id));
+                if (layer != nullptr) {
+                    colors.push_back(layer->color);
+                }
             }
-            for (const fh6::LayerGroup *group : groups_) {
-                const QVector<QString> ids = state_->leafLayerIdsForEntry(group->id);
-                for (const QString &id : ids) {
-                    const auto it = layerById.constFind(id);
-                    if (it != layerById.constEnd()) {
-                        colors.push_back(it.value()->color);
-                    }
+        }
+    }
+    return colors;
+}
+
+QVector<std::array<quint8, 4>> PropertyPanel::colorableSelectionColors() const
+{
+    QVector<std::array<quint8, 4>> colors;
+    for (const fh6::scene::Shape *layer : layers_) {
+        if (isColorableShape(layer)) {
+            colors.push_back(layer->color);
+        }
+    }
+    if (!groups_.isEmpty()) {
+        for (const fh6::scene::Group *group : groups_) {
+            const QVector<QString> ids = state_->leafLayerIdsForEntry(group->id);
+            for (const QString &id : ids) {
+                const auto *layer = dynamic_cast<const fh6::scene::Shape *>(state_->sceneNode(id));
+                if (isColorableShape(layer)) {
+                    colors.push_back(layer->color);
                 }
             }
         }
@@ -1423,7 +1935,7 @@ QVector<std::array<quint8, 4>> PropertyPanel::selectionColors() const
 
 std::optional<std::array<quint8, 4>> PropertyPanel::currentSelectionColor() const
 {
-    const QVector<std::array<quint8, 4>> colors = selectionColors();
+    const QVector<std::array<quint8, 4>> colors = colorableSelectionColors();
     if (colors.isEmpty()) {
         return std::nullopt;
     }
@@ -1432,19 +1944,21 @@ std::optional<std::array<quint8, 4>> PropertyPanel::currentSelectionColor() cons
 
 void PropertyPanel::applyColorToSelection(const std::array<quint8, 4> &color)
 {
-    if (selectionColors().isEmpty()) {
+    if (colorableSelectionColors().isEmpty()) {
         return;
     }
     state_->beginProjectEdit();
     detachSelectionForEdit();
-    for (fh6::ShapeLayer *layer : layers_) {
-        layer->color = color;
+    for (fh6::scene::Shape *layer : layers_) {
+        if (isColorableShape(layer)) {
+            layer->color = color;
+        }
     }
-    for (fh6::LayerGroup *group : groups_) {
+    for (fh6::scene::Group *group : groups_) {
         state_->setGroupDescendantColor(group->id, color);
     }
     state_->commitProjectEdit();
-    state_->noteProjectGeometryChanged(true);
+    state_->noteProjectGeometryChanged(true, transformTargetIdsForSelection(state_, layers_, guides_, groups_));
     updateColorButton();
 }
 
@@ -1466,7 +1980,7 @@ bool PropertyPanel::sampleGuideColorToSelection()
 
 void PropertyPanel::pickColor()
 {
-    const QVector<std::array<quint8, 4>> colors = selectionColors();
+    const QVector<std::array<quint8, 4>> colors = colorableSelectionColors();
     if (colors.isEmpty()) {
         return;
     }
@@ -1474,7 +1988,7 @@ void PropertyPanel::pickColor()
     const QSet<QString> selectedLayerIds = state_->selectedLayerIds();
     QVector<QString> selectedGroupIds;
     selectedGroupIds.reserve(groups_.size());
-    for (const fh6::LayerGroup *group : groups_) {
+    for (const fh6::scene::Group *group : groups_) {
         if (group != nullptr) {
             selectedGroupIds.push_back(group->id);
         }
@@ -1485,59 +1999,29 @@ void PropertyPanel::pickColor()
     // OK. The whole interaction is wrapped in one project edit so undo captures a single
     // before/after step; cancelling restores the original colours.
     state_->beginProjectEdit();
-    // beginProjectEdit() snapshots the Qt containers via copy-on-write. Detach and then
-    // re-resolve our cached raw pointers before live writes, otherwise the preview writes can
-    // mutate the undo "before" snapshot and Cancel cannot restore the original colours.
-    if (fh6::Project *project = state_->project()) {
-        project->layers.data();
-        project->groups.data();
-        layers_.clear();
-        groups_.clear();
-        for (fh6::ShapeLayer &layer : project->layers) {
-            if (selectedLayerIds.contains(layer.id)) {
-                layers_.push_back(&layer);
-            }
-        }
-        for (const QString &groupId : selectedGroupIds) {
-            for (fh6::LayerGroup &group : project->groups) {
-                if (group.id == groupId) {
-                    groups_.push_back(&group);
-                    break;
-                }
-            }
-        }
-    }
+    setSelectionByIds(selectedLayerIds, {}, selectedGroupIds);
 
     QColorDialog dialog(this);
     dialog.setOption(QColorDialog::ShowAlphaChannel, true);
     dialog.setWindowTitle(QStringLiteral("Layer Color"));
     dialog.setCurrentColor(QColor(current[2], current[1], current[0], current[3]));
 
-    connect(&dialog, &QColorDialog::currentColorChanged, this, [this, &dialog](const QColor &picked) {
+    connect(&dialog, &QColorDialog::currentColorChanged, this, [this](const QColor &picked) {
         if (!picked.isValid()) {
             return;
         }
-        QColor effective = picked;
-        if (guideColorSampleFn_ != nullptr) {
-            const std::optional<QColor> sampledGuideColor = guideColorSampleFn_();
-            if (sampledGuideColor.has_value() && sampledGuideColor->isValid()) {
-                effective = sampledGuideColor.value();
-                if (effective != picked) {
-                    const QSignalBlocker blocker(&dialog);
-                    dialog.setCurrentColor(effective);
-                }
+        const std::array<quint8, 4> color = {
+            static_cast<quint8>(picked.blue()),
+            static_cast<quint8>(picked.green()),
+            static_cast<quint8>(picked.red()),
+            static_cast<quint8>(picked.alpha()),
+        };
+        for (fh6::scene::Shape *layer : layers_) {
+            if (isColorableShape(layer)) {
+                layer->color = color;
             }
         }
-        const std::array<quint8, 4> color = {
-            static_cast<quint8>(effective.blue()),
-            static_cast<quint8>(effective.green()),
-            static_cast<quint8>(effective.red()),
-            static_cast<quint8>(effective.alpha()),
-        };
-        for (fh6::ShapeLayer *layer : layers_) {
-            layer->color = color;
-        }
-        for (fh6::LayerGroup *group : groups_) {
+        for (fh6::scene::Group *group : groups_) {
             state_->setGroupDescendantColor(group->id, color);
         }
         // Live drag: repaint only the canvas and set the swatch directly. Regenerating tree
@@ -1550,7 +2034,7 @@ void PropertyPanel::pickColor()
 
     if (dialog.exec() == QDialog::Accepted) {
         state_->commitProjectEdit();
-        state_->noteProjectGeometryChanged(true);
+        state_->noteProjectGeometryChanged(true, transformTargetIdsForSelection(state_, layers_, guides_, groups_));
         updateColorButton();
     } else {
         // Restores the captured "before" colours and refreshes the tree/property UI;
@@ -1561,12 +2045,14 @@ void PropertyPanel::pickColor()
 
 void PropertyPanel::updateColorButton()
 {
-    const QVector<std::array<quint8, 4>> colors = selectionColors();
+    const QVector<std::array<quint8, 4>> colors = colorableSelectionColors();
     if (colors.isEmpty()) {
-        colorButton_->setText(QStringLiteral("Color"));
+        colorButton_->setEnabled(false);
+        colorButton_->setText(QStringLiteral("N/A"));
         colorButton_->setStyleSheet(QString());
         return;
     }
+    colorButton_->setEnabled(true);
     const std::array<quint8, 4> color = colors.front();
     const bool mixed = std::any_of(colors.begin(), colors.end(), [&](const std::array<quint8, 4> &other) {
         return other != color;
