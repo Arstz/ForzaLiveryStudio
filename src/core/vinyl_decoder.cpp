@@ -204,7 +204,8 @@ std::optional<Transform> readTransformPayload(const QByteArray &data, int pos, i
     transform.sx = readLeFloat(data, pos + 8);
     transform.rot = readLeFloat(data, pos + 12);
     transform.sy = transform.sx;
-    if (std::abs(transform.sx) >= 0.0001 && std::abs(transform.sx) <= 200.0
+    if (std::abs(transform.px) < 50000.0 && std::abs(transform.py) < 50000.0
+        && std::abs(transform.sx) >= 0.0001 && std::abs(transform.sx) <= 200.0
         && std::abs(transform.rot) <= 10000.0) {
         return transform;
     }
@@ -311,21 +312,86 @@ bool isLiveryLogoAt(const QByteArray &data, int pos, int end)
         && std::abs(sy) > 1e-6 && std::abs(sy) < 200.0;
 }
 
+int expectedChildBlocks(int count)
+{
+    return (count + 7) / 8;
+}
+
+bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks)
+{
+    if (count <= 0) {
+        return false;
+    }
+    const int expected = expectedChildBlocks(count);
+    const bool matches = expected <= 0xff
+        ? storedBlocks == expected
+        : storedBlocks == (expected & 0xff);
+    if (!matches) {
+        return false;
+    }
+    if (effectiveBlocks != nullptr) {
+        *effectiveBlocks = expected;
+    }
+    return true;
+}
+
+QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos, int end)
+{
+    QVector<int> sizes;
+    if (pos >= end || pos >= data.size()) {
+        return sizes;
+    }
+    if (static_cast<quint8>(data[pos]) == 0x00) {
+        int cursor = pos + 1;
+        while (cursor < end && static_cast<quint8>(data[cursor]) == 0x01) {
+            ++cursor;
+        }
+        for (int size = cursor - pos; size >= 2; --size) {
+            sizes.push_back(size);
+        }
+    }
+    sizes.push_back(1);
+    return sizes;
+}
+
+bool wrappedChildBlockCountPlausible(int count, int pos, int baseSize, int end)
+{
+    constexpr int kMinChildRecordSize = 7;  // smallest counted/markerless group header
+    if (pos + baseSize > end) {
+        return false;
+    }
+    return count <= (end - (pos + baseSize)) / kMinChildRecordSize;
+}
+
+bool sparseWrappedChildBitmapPlausible(const QByteArray &data, int bitmapStart, int childBlocks)
+{
+    if (bitmapStart < 0 || bitmapStart + childBlocks > data.size()) {
+        return false;
+    }
+    int nonzero = 0;
+    for (int i = 0; i < childBlocks; ++i) {
+        if (static_cast<quint8>(data[bitmapStart + i]) != 0) {
+            ++nonzero;
+        }
+    }
+    return nonzero <= std::max(8, childBlocks / 16);
+}
+
 // Lead byte of a C_livery SEPARATE/inline transform. The standalone C_group writes
 // a separate group transform as `<control/bitmap byte> <body> 03` and the livery
-// collapses the whole marker so only the leading control byte survives in front of
-// the 16-float payload. That control byte is ARBITRARY -- surveyed across the
-// production samples it takes values 00, 01, 03, 07, 0f, 10, 19, 1e, 1f, 33, 3c,
-// 43, 71, c3, f6, ff, ... -- so the lead CANNOT be recognised by value (the old
-// 0x00/0x01-only, then 0x00/odd, models both dropped real transforms: e.g. the
-// even lead 0x3c on Livery_1379 Right's first group). A separate transform is
-// therefore recognised purely STRUCTURALLY by its callers: a valid 16-float
-// payload (+ optional 30/70 sy suffix) IMMEDIATELY FOLLOWED BY A GROUP. This
-// predicate contributes only the one byte-level guard that structure cannot: a
-// lead whose NEXT byte begins a shape is a per-shape flag sitting in front of a
-// `01 02`/`00 02` shape, never a transform. (0x00 is exempt -- a genuine 00-family
-// transform can precede a group whose header bytes never look like a shape, and
-// the callers' following-group requirement already covers it.)
+// usually collapses the marker to a single leading control byte in front of the
+// 16-float payload. That control byte is ARBITRARY -- surveyed across the production
+// samples it takes values 00, 01, 03, 07, 0f, 10, 19, 1e, 1f, 33, 3c, 43, 71, c3,
+// f6, ff, ... -- so the lead CANNOT be recognised by value (the old 0x00/0x01-only,
+// then 0x00/odd, models both dropped real transforms: e.g. the even lead 0x3c on
+// Livery_1379 Right's first group). A separate transform is therefore recognised
+// purely STRUCTURALLY by its callers: a valid 16-float payload (+ optional 30/70 sy
+// suffix) IMMEDIATELY FOLLOWED BY A GROUP. This predicate contributes only the one
+// byte-level guard that structure cannot: a lead whose NEXT byte begins a shape is
+// a per-shape flag sitting in front of a `01 02`/`00 02` shape, never a transform.
+// (0x00 is exempt -- a genuine 00-family transform can precede a group whose header
+// bytes never look like a shape, and the callers' following-group requirement
+// already covers it.)
 bool isLiveryTransformLead(const QByteArray &data, int pos, int end)
 {
     if (pos >= end || pos >= data.size()) {
@@ -339,14 +405,15 @@ bool isLiveryTransformLead(const QByteArray &data, int pos, int end)
 }
 
 // Structural recognition of a C_livery SEPARATE transform followed by a child.
-// A livery separate transform is a single arbitrary lead byte + a valid 16-float
-// payload (+ optional 30/70 sy suffix) + a child. An arbitrary lead is only
-// unambiguous in front of a real GROUP (the first-group-in-section case and the
-// mirrored-mask container both put a group there); a following bare SHAPE/logo is
-// accepted only for the historical 0x00/0x01 leads, which is where that form was
-// first observed (a mask container whose first child sits behind a `00`/`01`
-// transform). The group validators use this to accept a child sitting behind such
-// a transform, which marker-based detection cannot see.
+// Most livery separate transforms use a single arbitrary lead byte + a valid
+// 16-float payload (+ optional 30/70 sy suffix) + a child; the 00-family can also
+// retain `00 01` before the payload. An arbitrary lead is only unambiguous in front
+// of a real GROUP (the first-group-in-section case and the mirrored-mask container
+// both put a group there); a following bare SHAPE/logo is accepted only for the
+// historical 0x00/0x01 leads, which is where that form was first observed (a mask
+// container whose first child sits behind a `00`/`01` transform). The group validators
+// use this to accept a child sitting behind such a transform, which marker-based
+// detection cannot see.
 bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
 {
     if (pos >= end) {
@@ -355,24 +422,38 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
     if (!isLiveryTransformLead(data, pos, end)) {
         return false;
     }
-    if (!readTransformPayload(data, pos + 1, end)) {
-        return false;
-    }
-    int size = 1 + 16;
-    if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-        const double sy = readLeFloat(data, pos + size + 1);
-        if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-            size += 5;
+    for (int markerSize : liverySeparateTransformMarkerSizes(data, pos, end)) {
+        if (!readTransformPayload(data, pos + markerSize, end)) {
+            continue;
+        }
+        int size = markerSize + 16;
+        if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
+            const double sy = readLeFloat(data, pos + size + 1);
+            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
+                size += 5;
+            }
+        }
+        const int child = pos + size;
+        if (validCountedGroupAt(data, child, end, true)
+            || validMarkerlessGroupAt(data, child, end, true, true)) {
+            return true;
+        }
+        const quint8 lead = static_cast<quint8>(data[pos]);
+        if ((lead == 0x00 || lead == 0x01)
+            && (isValidShapeAt(data, child, end) || isLiveryLogoAt(data, child, end))) {
+            return true;
         }
     }
-    const int child = pos + size;
-    if (validCountedGroupAt(data, child, end, true)
-        || validMarkerlessGroupAt(data, child, end, true, true)) {
-        return true;
-    }
-    const quint8 lead = static_cast<quint8>(data[pos]);
-    return (lead == 0x00 || lead == 0x01)
-        && (isValidShapeAt(data, child, end) || isLiveryLogoAt(data, child, end));
+    return false;
+}
+
+bool childTokenAt(const QByteArray &data, int pos, int end, bool livery)
+{
+    return isValidShapeAt(data, pos, end)
+        || (livery && isLiveryLogoAt(data, pos, end))
+        || validCountedGroupAt(data, pos, end, livery)
+        || (livery && validMarkerlessGroupAt(data, pos, end, true, true))
+        || (livery && liveryTransformThenChildAt(data, pos, end));
 }
 
 // `allowCountOne` is set by the C_livery section walker: a section's top-level
@@ -386,13 +467,19 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
         return std::nullopt;
     }
     const int count = readLeU16(data, pos);
-    const int childBlocks = static_cast<quint8>(data[pos + 2]);
+    const int storedChildBlocks = static_cast<quint8>(data[pos + 2]);
     const int minCount = allowCountOne ? 1 : 2;
-    if (count < minCount || childBlocks <= 0 || childBlocks != (count + 7) / 8) {
+    int childBlocks = 0;
+    if (count < minCount || !childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
         return std::nullopt;
     }
     const int baseSize = 3 + childBlocks + 2;
     if (pos + baseSize > end) {
+        return std::nullopt;
+    }
+    if (childBlocks != storedChildBlocks
+        && (!wrappedChildBlockCountPlausible(count, pos, baseSize, end)
+            || !sparseWrappedChildBitmapPlausible(data, pos + 3, childBlocks))) {
         return std::nullopt;
     }
     GroupInfo info;
@@ -467,12 +554,18 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
         return std::nullopt;
     }
     const int count = readLeU16(data, pos + 1);
-    const int childBlocks = static_cast<quint8>(data[pos + 3]);
-    if (count <= 0 || childBlocks <= 0 || childBlocks != (count + 7) / 8) {
+    const int storedChildBlocks = static_cast<quint8>(data[pos + 3]);
+    int childBlocks = 0;
+    if (!childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
         return std::nullopt;
     }
     const int baseSize = 4 + childBlocks + 2;
     if (pos + baseSize > end) {
+        return std::nullopt;
+    }
+    if (childBlocks != storedChildBlocks
+        && (!wrappedChildBlockCountPlausible(count, pos, baseSize, end)
+            || !sparseWrappedChildBitmapPlausible(data, pos + 4, childBlocks))) {
         return std::nullopt;
     }
     GroupInfo info;
@@ -516,6 +609,13 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
         }
         foundTransform = true;
         break;
+    }
+    if (!foundTransform && childBlocks != storedChildBlocks) {
+        const bool childHere = childTokenAt(data, extra, end, livery)
+            || (extra + 1 < end && childTokenAt(data, extra + 1, end, livery));
+        if (!childHere) {
+            return std::nullopt;
+        }
     }
     if (!foundTransform && extra < end && (static_cast<quint8>(data[extra]) == 0x02
             || static_cast<quint8>(data[extra]) == 0x03
@@ -602,13 +702,13 @@ std::optional<TransformRecord> readTransformRecord(const QByteArray &data, int p
     return std::nullopt;
 }
 
-// C_livery embedded-gyvl dialect: a SEPARATE group transform is a single control
-// byte followed by the 16-byte transform payload. The standalone C_group writes
-// the same transform as `<control> <body> 03` + payload; the livery collapses the
-// whole marker to just its FIRST (control) byte, so the standard multi-byte markers
-// never match. That control byte is ARBITRARY (00, 01, 03, 07, 0f, 3c, 71, c3, ...
-// -- see isLiveryTransformLead), so this reader does NOT test the lead value: it
-// requires a valid 16-float payload AND a following GROUP (shapes, logos and
+// C_livery embedded-gyvl dialect: a SEPARATE group transform is usually a single
+// control byte followed by the 16-byte transform payload. The standalone C_group
+// writes the same transform as `<control> <body> 03` + payload; the livery usually
+// collapses the marker to its first control byte, but the 00-family can retain a
+// `00 01` prefix. The control byte is ARBITRARY (00, 01, 03, 07, 0f, 3c, 71, c3,
+// ... -- see isLiveryTransformLead), so this reader does NOT test the lead value:
+// it requires a valid 16-float payload AND a following GROUP (shapes, logos and
 // counted/markerless groups at `pos` are all matched earlier in walkStep, so by the
 // time this runs, an arbitrary lead + valid floats + a group is unambiguously a
 // separate transform). The successive 0x00/0x01-only and 0x00/odd-only rules each
@@ -623,37 +723,39 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
     if (!isLiveryTransformLead(data, pos, end)) {
         return std::nullopt;
     }
-    auto transform = readTransformPayload(data, pos + 1, end);
-    if (!transform) {
-        return std::nullopt;
-    }
-    int size = 1 + 16;
-    if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-        const double sy = readLeFloat(data, pos + size + 1);
-        if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-            transform->sy = sy;
-            transform->hasSy = true;
-            size += 5;
+    for (int markerSize : liverySeparateTransformMarkerSizes(data, pos, end)) {
+        auto transform = readTransformPayload(data, pos + markerSize, end);
+        if (!transform) {
+            continue;
+        }
+        int size = markerSize + 16;
+        if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
+            const double sy = readLeFloat(data, pos + size + 1);
+            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
+                transform->sy = sy;
+                transform->hasSy = true;
+                size += 5;
+            }
+        }
+        // The group usually starts immediately after the payload, but a single
+        // flag/control byte can sit between them -- e.g. Livery_2357 Left encodes a
+        // count-11 group as `00 <payload> 00 0b 00 02 ...` (a `00` before the markerless
+        // count) where the mirror-image Right side uses a counted `20 0b ...` with no gap.
+        // Accept the group at `next` OR one flag byte later; the intervening byte (if
+        // any) is left for walkStep to consume as a flag while the pending transform it
+        // set here carries through to the group.
+        const int next = pos + size;
+        const bool groupFollows =
+            validCountedGroupAt(data, next, end, true)
+            || validMarkerlessGroupAt(data, next, end, true, true)
+            || (next + 1 < end && !isValidShapeAt(data, next, end)
+                && (validCountedGroupAt(data, next + 1, end, true)
+                    || validMarkerlessGroupAt(data, next + 1, end, true, true)));
+        if (groupFollows) {
+            return TransformRecord{size, *transform, data.mid(pos, markerSize)};
         }
     }
-    // The group usually starts immediately after the payload, but a single
-    // flag/control byte can sit between them -- e.g. Livery_2357 Left encodes a
-    // count-11 group as `00 <payload> 00 0b 00 02 ...` (a `00` before the markerless
-    // count) where the mirror-image Right side uses a counted `20 0b ...` with no gap.
-    // Accept the group at `next` OR one flag byte later; the intervening byte (if
-    // any) is left for walkStep to consume as a flag while the pending transform it
-    // set here carries through to the group.
-    const int next = pos + size;
-    const bool groupFollows =
-        validCountedGroupAt(data, next, end, true)
-        || validMarkerlessGroupAt(data, next, end, true, true)
-        || (next + 1 < end && !isValidShapeAt(data, next, end)
-            && (validCountedGroupAt(data, next + 1, end, true)
-                || validMarkerlessGroupAt(data, next + 1, end, true, true)));
-    if (!groupFollows) {
-        return std::nullopt;
-    }
-    return TransformRecord{size, *transform, data.mid(pos, 1)};
+    return std::nullopt;
 }
 
 void applyGroupRecord(VinylGroup &node, const GroupInfo &info, const QString &source,
@@ -681,14 +783,15 @@ void applyRootHeader(const QByteArray &dec, VinylGroup &root)
         setNodeTransform(root, *transform);
     }
     if (dec.size() > 0x20) {
-        const int headerGroupEnd = std::min(static_cast<int>(dec.size()), 0x1d + 4 + static_cast<int>(static_cast<quint8>(dec[0x20])) + 2);
+        const int childBlocks = static_cast<quint8>(dec[0x20]);
+        const int headerGroupEnd = std::min(static_cast<int>(dec.size()), 0x1d + 4 + childBlocks + 2);
         auto groupInfo = validCountedGroupAt(dec, 0x1d, headerGroupEnd);
         if (groupInfo) {
             applyGroupRecord(root, *groupInfo, QStringLiteral("root"));
             root.headerMarker = dec.mid(0x1d, 1);
-            root.headerControlBytes = dec.mid(0x21, 0x24 + static_cast<quint8>(dec[0x20]) - 0x21);
+            root.headerControlBytes = dec.mid(0x21, 0x24 + childBlocks - 0x21);
             const int bitmapStart = 0x1d + 7;
-            const int bitmapEnd = bitmapStart + static_cast<quint8>(dec[0x20]);
+            const int bitmapEnd = bitmapStart + childBlocks;
             if (bitmapEnd <= dec.size()) {
                 root.childTypeBitmap = dec.mid(bitmapStart, bitmapEnd - bitmapStart);
             }
@@ -1037,6 +1140,51 @@ int decodedLiveryDecals(const VinylGroupPtr &sectionNode)
     return countShapes(sectionNode);
 }
 
+bool isIdentityNodeTransform(const VinylGroup &node)
+{
+    constexpr double kEpsilon = 1e-6;
+    return std::abs(node.px) < kEpsilon
+        && std::abs(node.py) < kEpsilon
+        && std::abs(node.sx - 1.0) < kEpsilon
+        && std::abs(node.sy - 1.0) < kEpsilon
+        && std::abs(node.rot) < kEpsilon;
+}
+
+void extendLiverySectionSpanContainer(const VinylGroupPtr &sectionNode, int target)
+{
+    if (!sectionNode || target < 1024 || sectionNode->items.size() <= 1
+        || sectionNode->items.front().isShape()) {
+        return;
+    }
+
+    auto first = std::get<VinylGroupPtr>(sectionNode->items.front().value);
+    if (!first || first->absPos != sectionNode->absPos
+        || !first->pendingTransformMarker.isEmpty()
+        || !first->inlineTransformMarker.isEmpty()
+        || !first->effectiveTransformMarker.isEmpty()
+        || !first->expectedChildren
+        || *first->expectedChildren < 16
+        || !isIdentityNodeTransform(*first)) {
+        return;
+    }
+
+    const int sectionLeaves = countShapes(sectionNode);
+    const int firstLeaves = countShapes(first);
+    if (sectionLeaves < target || firstLeaves <= 0 || firstLeaves * 2 >= target) {
+        return;
+    }
+
+    while (sectionNode->items.size() > 1) {
+        VinylItem item = sectionNode->items[1];
+        sectionNode->items.removeAt(1);
+        first->items.push_back(item);
+    }
+    first->expectedChildren = first->totalChildren();
+    if (!first->source.contains(QStringLiteral("livery_section_span"))) {
+        first->source += QStringLiteral("+livery_section_span");
+    }
+}
+
 // Build a markerless count-N group from `info` at `pos`, append it to the stack
 // top, push it, and update pending state. This is the markerless branch of
 // walkStep, factored out so the C_livery section walker can start a "bare"
@@ -1378,6 +1526,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
             pos = next;
         }
         closeCompleteStack(state.stack);
+        extendLiverySectionSpanContainer(sectionNode, target);
 
         section.subtree = *sectionNode;
         // Clamp back to the reserved boundary before skipping the remnant, so a

@@ -907,6 +907,9 @@ Project importCLivery(const QString &folderOrFile)
                 if (!topGroup) {
                     break;
                 }
+                if (topGroup->source.contains(QStringLiteral("livery_section_span"))) {
+                    break;
+                }
                 sectionMatrix = detail::multiply(sectionMatrix, nodeMatrix(*topGroup));
                 sectionMask = sectionMask || topGroup->isMask;
                 sectionRoot = topGroup.get();
