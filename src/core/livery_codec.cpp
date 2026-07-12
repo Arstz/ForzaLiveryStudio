@@ -155,6 +155,7 @@ const std::array<float, 11> kSlotRotation = {
 // last slot's remnant is truncated to a single byte). Verified byte-exact.
 constexpr int kLiveryBodyTruncate = 17;
 constexpr int kLiverySectionCount = 11;
+constexpr int kLiveryEmptySlotBytes = 23;  // constant scaffold size of an empty slot
 constexpr int kMaxDirectChildren = 0xff * 8;
 
 struct LiveryEntry {
@@ -333,7 +334,12 @@ bool matchesSourceShape(const scene::Shape &shape, const SourceShapeView &source
         : (source.color[3] == 0
            || matrixClose(shape.worldMatrix(), source.worldMatrix)
            || transformClose(world, source.world));
-    return shape.shapeId == source.shapeId
+    // A raster (logo) shape is identified by its rasterId, not its vector shapeId:
+    // the imported scene zeroes shapeId for rasters, while the source view keeps the
+    // raw logo id (e.g. 0/42773 for the same 0xa715 decal). Compare shapeId only for
+    // vector shapes; rasterId already anchors raster identity.
+    const bool idMatches = shape.raster ? true : shape.shapeId == source.shapeId;
+    return idMatches
         && shape.raster == source.raster
         && shape.rasterId == source.rasterId
         && shape.color == source.color
@@ -832,7 +838,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
 
 } // namespace
 
-QByteArray buildLiveryGyvl(const Project &project)
+QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectionCount> *outSectionCounts)
 {
     // Gather each section slot's group and flattened shapes (in tree order). The
     // flat list is only for source-byte preservation; changed slots use the group.
@@ -854,22 +860,58 @@ QByteArray buildLiveryGyvl(const Project &project)
 
     const std::optional<SourceLivery> source = sourceLivery(project);
     const SourceLivery *sourcePtr = source ? &*source : nullptr;
+    // Per-slot count of decals actually emitted into the body. This MUST feed the
+    // trailing yrvl "stats" chunk verbatim: if the declared count disagrees with
+    // the decals physically present in the gyvl, the game reads the section as one
+    // opaque locked group instead of individual shapes.
+    std::array<int, kLiverySectionCount> counts{};
     QByteArray body;
     for (int slot = 0; slot < kLiverySectionCount; ++slot) {
         const QVector<const scene::Shape *> &shapes = slotShapes[slot];
         const LiverySection *section = sourceSection(sourcePtr, slot);
+        const int sourceDecals = (sourcePtr && slot < sourcePtr->payload.sectionCounts.size())
+                                     ? sourcePtr->payload.sectionCounts[slot]
+                                     : static_cast<int>(shapes.size());
+
+        // An unchanged slot is preserved byte-for-byte. We deliberately do NOT try to
+        // rebuild a slot whose decode falls short of its source decal count (a grammar
+        // deficit, e.g. Livery_1069 Top decoding 304 of 400): our section re-encoder is
+        // not yet game-valid for production sections -- a rebuilt gyvl round-trips
+        // through our own decoder but the game rejects it (won't load). So we keep the
+        // exact source bytes and report the SOURCE decal count, which reproduces the
+        // original slot faithfully and keeps gyvl and stats consistent.
         if (sectionMatchesSource(shapes, section)) {
-            body.append(sourceSlotBytes(sourcePtr, slot));
+            const QByteArray preserved = sourceSlotBytes(sourcePtr, slot);
+            // Every one of the 11 slots must be emitted. An empty slot is a constant
+            // 23-byte scaffold; if the preserved bytes are missing (e.g. a source whose
+            // section boundary landed at the body end), synthesize the scaffold so the
+            // trailing empty slots are never dropped -- a dropped slot shifts every
+            // following slot and corrupts the file.
+            if (shapes.isEmpty() && preserved.size() < kLiveryEmptySlotBytes) {
+                body.append(sourceEmptySlot(sourcePtr, slot));
+                counts[static_cast<size_t>(slot)] = 0;
+            } else {
+                body.append(preserved);
+                counts[static_cast<size_t>(slot)] = sourceDecals;
+            }
             continue;
         }
+
+        // A genuinely edited slot is rebuilt from its decoded shapes. Custom-logo
+        // (raster) decals cannot be synthesized yet.
         for (const scene::Shape *shape : shapes) {
             if (shape != nullptr && shape->raster) {
                 throw std::runtime_error("changed custom logo decals cannot be synthesized yet");
             }
         }
         appendStructuralSection(body, slotGroups[slot], sourcePtr, slot);
+        counts[static_cast<size_t>(slot)] = static_cast<int>(shapes.size());
     }
     body = body.left(std::max<qsizetype>(0, body.size() - kLiveryBodyTruncate));
+
+    if (outSectionCounts != nullptr) {
+        *outSectionCounts = counts;
+    }
 
     QByteArray chunk(reinterpret_cast<const char *>(kGyvlHeader), 0x15);
     chunk.append(body);

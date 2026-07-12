@@ -2,6 +2,8 @@
 
 #include "core_types.h"
 
+#include <array>
+
 #include <QByteArray>
 #include <QString>
 #include <QVector>
@@ -34,6 +36,13 @@ LiveryPayload readLiveryPayload(const QString &folderOrFile);
 // and car-specific scaffold bytes. Changed built-in-shape sections fall back to a
 // synthesized flat section stream; changed custom-logo sections are still
 // unsupported pending descriptor-table research. See docs/LIVERY_ENCODER.md.
-QByteArray buildLiveryGyvl(const Project &project);
+// When outSectionCounts is non-null it receives the per-slot decal count actually
+// emitted into the gyvl body, in storage order (Front, Back, Top, Left, Right,
+// Spoiler, FrontWindshield, BackWindshield, TopWindow, LeftWindow, RightWindow).
+// These MUST be written verbatim into the trailing yrvl "stats" chunk: a declared
+// count that disagrees with the decals physically present makes the game read the
+// section as one opaque locked group instead of individual shapes.
+QByteArray buildLiveryGyvl(const Project &project,
+                           std::array<int, 11> *outSectionCounts = nullptr);
 
 } // namespace fh6

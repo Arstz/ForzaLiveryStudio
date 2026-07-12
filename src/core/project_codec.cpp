@@ -1152,45 +1152,6 @@ void writeRawFile(const QString &path, const QByteArray &bytes)
     }
 }
 
-void countVisibleLiveryShapes(const scene::Layer &node, int &count)
-{
-    if (!node.visible) {
-        return;
-    }
-    if (node.kind() == scene::LayerKind::Shape) {
-        ++count;
-        return;
-    }
-    if (node.kind() == scene::LayerKind::Group) {
-        for (const auto &child : static_cast<const scene::Group &>(node).children) {
-            countVisibleLiveryShapes(*child, count);
-        }
-    }
-}
-
-std::array<int, 11> computeLiverySectionCounts(const Project &project)
-{
-    std::array<int, 11> counts{};
-    if (!project.root) {
-        return counts;
-    }
-    for (const auto &child : project.root->children) {
-        if (child->kind() != scene::LayerKind::Group || !child->visible) {
-            continue;
-        }
-        const auto &group = static_cast<const scene::Group &>(*child);
-        if (!group.isLiverySection || group.liverySectionSlot < 0 || group.liverySectionSlot >= 11) {
-            continue;
-        }
-        int sectionCount = 0;
-        for (const auto &sectionChild : group.children) {
-            countVisibleLiveryShapes(*sectionChild, sectionCount);
-        }
-        counts[static_cast<size_t>(group.liverySectionSlot)] = sectionCount;
-    }
-    return counts;
-}
-
 } // namespace
 
 QByteArray encodeCLiveryPayload(const Project &project)
@@ -1220,7 +1181,8 @@ QByteArray encodeCLiveryPayload(const Project &project)
         return payload;
     }();
 
-    const QByteArray gyvl = buildLiveryGyvl(project);
+    std::array<int, 11> counts{};
+    const QByteArray gyvl = buildLiveryGyvl(project, &counts);
     const int oldGyvlEnd = source.gyvlOffset + 0x15 + source.body.size();
     if (oldGyvlEnd > project.liverySource.size()) {
         throw std::runtime_error("livery source gyvl chunk is truncated");
@@ -1246,7 +1208,6 @@ QByteArray encodeCLiveryPayload(const Project &project)
     if (statsTag + 52 > payload.size() || payload.mid(statsTag, 4) != QByteArray("yrvl", 4)) {
         throw std::runtime_error("re-encoded livery is missing its post-gyvl stats chunk");
     }
-    const std::array<int, 11> counts = computeLiverySectionCounts(project);
     for (int i = 0; i < 11; ++i) {
         writeLeU32InPlace(payload, statsTag + 4 + i * 4, static_cast<quint32>(counts[static_cast<size_t>(i)]));
     }

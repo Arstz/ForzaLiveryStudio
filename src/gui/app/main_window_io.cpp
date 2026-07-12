@@ -514,18 +514,10 @@ void MainWindow::exportDialog()
         return;
     }
 
-    // Livery export is disabled for now: the container/retarget encoder is confirmed
-    // in-game but full artwork synthesis is still pending, so exporting would produce
-    // an incomplete C_livery. The encoder (exportCLivery) is kept intact for when the
-    // remaining work lands; we just refuse to invoke it here. (See docs/LIVERY_ENCODER.md.)
-    if (state_->project_.isLivery) {
-        QMessageBox::warning(this, QStringLiteral("Livery export unavailable"),
-                             QStringLiteral("Exporting liveries is not available yet.\n\n"
-                                            "The livery encoder is still under development and does not yet "
-                                            "synthesize the full artwork payload, so a livery cannot be exported "
-                                            "to a game-ready C_livery at this time."));
-        return;
-    }
+    // Livery export is enabled for in-game testing. The C_livery encoder
+    // (exportCLivery) rebuilds the container and byte-preserves unchanged section
+    // slots; changed built-in-shape sections are re-synthesized. Changed custom
+    // (uploaded) logo decals are not yet synthesizable and raise an export error.
 
     // Export is the grouped (nested) path only: it preserves group structure and is
     // the single canonical export. (The legacy flat export option was removed.)

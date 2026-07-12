@@ -369,7 +369,14 @@ int main(int argc, char *argv[])
             std::fprintf(stderr, "import failed: %s\n", e.what());
             return 1;
         }
-        const QByteArray re = buildLiveryGyvl(project);
+        QByteArray re;
+        try {
+            re = buildLiveryGyvl(project);
+        } catch (const std::exception &e) {
+            std::printf("THROW %-28s buildLiveryGyvl: %s\n",
+                        QFileInfo(folder).fileName().toLatin1().constData(), e.what());
+            return 1;
+        }
         if (re == origChunk) {
             std::printf("PASS  %-28s gyvl %d bytes\n",
                         QFileInfo(folder).fileName().toLatin1().constData(),

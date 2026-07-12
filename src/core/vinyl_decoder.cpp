@@ -96,7 +96,16 @@ Transform nodeTransform(const VinylGroup &node)
 
 void normalizeChildTransformSy(VinylGroup &node)
 {
-    if (node.pendingTransformMarker == QByteArray("\x01\x03", 2)
+    // Standalone marker `01 03` marks a group whose signed-Y suffix sign is
+    // spurious and must be positive. In the livery dialect that same marker takes
+    // two forms: a SEPARATE lead-01 transform collapses to the bare `01`
+    // (readLiveryTransform), and an INLINE first-child transform keeps two bytes
+    // with the 03 terminator swapped to 01 -> `01 01`. Recognise both livery forms
+    // as well as the standalone one, else a livery masked-content child keeps a
+    // stray sy=-1 that the standalone truth normalises away.
+    if ((node.pendingTransformMarker == QByteArray("\x01\x03", 2)
+         || node.pendingTransformMarker == QByteArray("\x01\x01", 2)
+         || node.pendingTransformMarker == QByteArray("\x01", 1))
         && (node.source == QStringLiteral("markerless_count_stack")
             || node.source == QStringLiteral("implicit_transform_pair"))) {
         node.sy = std::abs(node.sy);
@@ -273,39 +282,77 @@ bool isLiveryLogoAt(const QByteArray &data, int pos, int end)
     if (pos < 0 || pos + 32 > end || pos + 32 > data.size()) {
         return false;
     }
-    if (!bytesAt(data, pos, {0x00, 0x02})) {
+    if (!bytesAt(data, pos, {0x00, 0x02}) && !bytesAt(data, pos, {0x01, 0x02})) {
         return false;
     }
     const quint16 logoId = readLeU16(data, pos + 2);
     if (logoId < 0x8000) {
         return false;
     }
-    return readLeU32(data, pos + 4) == 0
-        && readLeU32(data, pos + 8) == 0
-        && readLeU32(data, pos + 12) == 0
-        && readLeU32(data, pos + 16) == 0x3f800000
-        && readLeU32(data, pos + 20) == 0x3f800000
-        && readLeU32(data, pos + 24) == 0
-        && static_cast<quint8>(data[pos + 28]) == 0xff
-        && static_cast<quint8>(data[pos + 29]) == 0xff
-        && static_cast<quint8>(data[pos + 30]) == 0xff
-        && static_cast<quint8>(data[pos + 31]) == 0xff;
+    // A placed custom logo carries an ARBITRARY transform -- scale, rotation,
+    // position and tint -- exactly like a vector shape. The former gate demanded an
+    // identity transform (rot/px/py=0, sx=sy=1, skew=0) and opaque-white color, so it
+    // matched ONLY a logo dropped at the origin unscaled and untinted; every real
+    // placed logo (e.g. Livery_2357 Left @body100712: id 0xa715 rot=359 scale=0.22,
+    // the "layer 130" logo) was rejected, and since its high id also fails
+    // isValidShapeAt's `id < 0x2000` range the 32-byte record was consumed one byte
+    // at a time -- desyncing the walk so the section's first group swallowed the rest
+    // of the slot. Recognise a logo by its id alone, validating the transform the
+    // same way isValidShapeAt does (finite position, non-zero sane scale) so a
+    // `00 02 <high bytes>` that is really transform-payload bytes is still filtered.
+    const double rot = readLeFloat(data, pos + 4);
+    const double px = readLeFloat(data, pos + 8);
+    const double py = readLeFloat(data, pos + 12);
+    const double sx = readLeFloat(data, pos + 16);
+    const double sy = readLeFloat(data, pos + 20);
+    return std::abs(rot) <= 10000.0
+        && std::abs(px) < 50000.0 && std::abs(py) < 50000.0
+        && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
+        && std::abs(sy) > 1e-6 && std::abs(sy) < 200.0;
+}
+
+// Lead byte of a C_livery SEPARATE/inline transform. The standalone C_group writes
+// a separate group transform as `<control/bitmap byte> <body> 03` and the livery
+// collapses the whole marker so only the leading control byte survives in front of
+// the 16-float payload. That control byte is ARBITRARY -- surveyed across the
+// production samples it takes values 00, 01, 03, 07, 0f, 10, 19, 1e, 1f, 33, 3c,
+// 43, 71, c3, f6, ff, ... -- so the lead CANNOT be recognised by value (the old
+// 0x00/0x01-only, then 0x00/odd, models both dropped real transforms: e.g. the
+// even lead 0x3c on Livery_1379 Right's first group). A separate transform is
+// therefore recognised purely STRUCTURALLY by its callers: a valid 16-float
+// payload (+ optional 30/70 sy suffix) IMMEDIATELY FOLLOWED BY A GROUP. This
+// predicate contributes only the one byte-level guard that structure cannot: a
+// lead whose NEXT byte begins a shape is a per-shape flag sitting in front of a
+// `01 02`/`00 02` shape, never a transform. (0x00 is exempt -- a genuine 00-family
+// transform can precede a group whose header bytes never look like a shape, and
+// the callers' following-group requirement already covers it.)
+bool isLiveryTransformLead(const QByteArray &data, int pos, int end)
+{
+    if (pos >= end || pos >= data.size()) {
+        return false;
+    }
+    const quint8 lead = static_cast<quint8>(data[pos]);
+    if (lead != 0x00 && isValidShapeAt(data, pos + 1, end)) {
+        return false;
+    }
+    return true;
 }
 
 // Structural recognition of a C_livery SEPARATE transform followed by a child.
-// The 00-family livery marker is a bare `00` (unrecognisable by bytes alone -- see
-// CLIVERY.md), so a 00/01-led transform can only be confirmed STRUCTURALLY: a
-// valid 16-float payload (+ optional 30/70 sy suffix) followed by a group or
-// shape. The group validators use this to accept a child that sits behind such a
-// transform -- e.g. a mirrored mask container whose first child is a mask group
-// preceded by a `00` transform -- which marker-based detection cannot see.
+// A livery separate transform is a single arbitrary lead byte + a valid 16-float
+// payload (+ optional 30/70 sy suffix) + a child. An arbitrary lead is only
+// unambiguous in front of a real GROUP (the first-group-in-section case and the
+// mirrored-mask container both put a group there); a following bare SHAPE/logo is
+// accepted only for the historical 0x00/0x01 leads, which is where that form was
+// first observed (a mask container whose first child sits behind a `00`/`01`
+// transform). The group validators use this to accept a child sitting behind such
+// a transform, which marker-based detection cannot see.
 bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
 {
     if (pos >= end) {
         return false;
     }
-    const quint8 lead = static_cast<quint8>(data[pos]);
-    if (lead != 0x00 && lead != 0x01) {
+    if (!isLiveryTransformLead(data, pos, end)) {
         return false;
     }
     if (!readTransformPayload(data, pos + 1, end)) {
@@ -319,10 +366,13 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
         }
     }
     const int child = pos + size;
-    return isValidShapeAt(data, child, end)
-        || isLiveryLogoAt(data, child, end)
-        || validCountedGroupAt(data, child, end, true)
-        || validMarkerlessGroupAt(data, child, end, true, true);
+    if (validCountedGroupAt(data, child, end, true)
+        || validMarkerlessGroupAt(data, child, end, true, true)) {
+        return true;
+    }
+    const quint8 lead = static_cast<quint8>(data[pos]);
+    return (lead == 0x00 || lead == 0x01)
+        && (isValidShapeAt(data, child, end) || isLiveryLogoAt(data, child, end));
 }
 
 // `allowCountOne` is set by the C_livery section walker: a section's top-level
@@ -554,24 +604,23 @@ std::optional<TransformRecord> readTransformRecord(const QByteArray &data, int p
 
 // C_livery embedded-gyvl dialect: a SEPARATE group transform is a single control
 // byte followed by the 16-byte transform payload. The standalone C_group writes
-// the same transform as `<lead> [01..] 03` + payload; the livery collapses the
-// whole marker to just its FIRST byte (dropping the trailing 01/03 run), so the
-// standard multi-byte markers never match. Confirmed first bytes:
-//   standalone `00 [01..] 03` -> livery `00`   (00-family, e.g. 00 01 01 03 -> 00)
-//   standalone `01 03`        -> livery `01`
-// so the lead is 0x00 or 0x01. It must NOT be a multi-bit flag byte such as 0x0f
-// or 0xff: those are per-shape flag bytes (walkStep step 6) that legitimately sit
-// in front of a `01 02` shape, and reading `0f 01`+16 as a transform desyncs the
-// stream. A valid 16-float payload AND a following group are also required (shapes
-// and counted groups are matched earlier in walkStep, so by the time this runs a
-// `00`/`01` lead + valid floats + a group is unambiguously a separate transform).
+// the same transform as `<control> <body> 03` + payload; the livery collapses the
+// whole marker to just its FIRST (control) byte, so the standard multi-byte markers
+// never match. That control byte is ARBITRARY (00, 01, 03, 07, 0f, 3c, 71, c3, ...
+// -- see isLiveryTransformLead), so this reader does NOT test the lead value: it
+// requires a valid 16-float payload AND a following GROUP (shapes, logos and
+// counted/markerless groups at `pos` are all matched earlier in walkStep, so by the
+// time this runs, an arbitrary lead + valid floats + a group is unambiguously a
+// separate transform). The successive 0x00/0x01-only and 0x00/odd-only rules each
+// dropped the transform of a section's first top-level group whenever its lead fell
+// outside their set (0x07 on Livery_0423 Top, the even 0x3c on Livery_1379 Right),
+// leaving that group at identity.
 std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int pos, int end)
 {
     if (pos >= end) {
         return std::nullopt;
     }
-    const quint8 lead = static_cast<quint8>(data[pos]);
-    if (lead != 0x00 && lead != 0x01) {
+    if (!isLiveryTransformLead(data, pos, end)) {
         return std::nullopt;
     }
     auto transform = readTransformPayload(data, pos + 1, end);
@@ -1117,14 +1166,13 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
         return pos + ((bytesAt(layerData, pos, {0x00, 0x02}) || bytesAt(layerData, pos, {0x01, 0x02})) ? 32 : 31);
     }
 
-    auto transformInfo = readTransformRecord(layerData, pos, end);
-    if (transformInfo) {
-        s.pendingTransform = transformInfo->transform;
-        s.pendingTransformMarker = s.pendingTransformPrefix + transformInfo->marker;
-        s.pendingTransformPrefix.clear();
-        return pos + transformInfo->size;
-    }
-
+    // In the livery dialect a SEPARATE transform is a 1-byte `00`/`01` marker
+    // whose payload floats may themselves start with a 0x03 byte. The standalone
+    // readTransformRecord would greedily match that as a `<lead> 03` marker and
+    // read the payload one byte late (garbage). readLiveryTransform is the
+    // dialect-correct reader (strict: 00/01 lead + valid payload + a following
+    // group), so give it first crack; readTransformRecord stays as a fallback for
+    // anything it cannot claim.
     if (liveryDialect) {
         if (auto liveryTransform = readLiveryTransform(layerData, pos, end)) {
             s.pendingTransform = liveryTransform->transform;
@@ -1132,6 +1180,14 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
             s.pendingTransformPrefix.clear();
             return pos + liveryTransform->size;
         }
+    }
+
+    auto transformInfo = readTransformRecord(layerData, pos, end);
+    if (transformInfo) {
+        s.pendingTransform = transformInfo->transform;
+        s.pendingTransformMarker = s.pendingTransformPrefix + transformInfo->marker;
+        s.pendingTransformPrefix.clear();
+        return pos + transformInfo->size;
     }
 
     const quint8 byte = static_cast<quint8>(layerData[pos]);
@@ -1269,10 +1325,28 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
         // transform), so bootstrap those explicitly via the SAME markerless logic
         // (inline transform + flag bytes included); everything else (transform-led
         // groups, counted groups, shapes) flows through walkStep.
+        // A section whose decals cannot reach its stats target (an end-of-body
+        // grammar deficit) must NOT run to the body end and swallow the following
+        // slots' bytes -- doing so drops the trailing empty-slot scaffolds, which
+        // an exporter that byte-preserves those slots would then omit. Reserve what
+        // the remaining slots provably need -- every later empty slot is a constant
+        // 23-byte scaffold, every later populated slot at least 32 bytes per decal
+        // -- plus this section's own trailing remnant, and cap the walk there.
+        // Since the reservation is a LOWER bound on the real later bytes, walkLimit
+        // is always >= this section's true content end, so the cap never truncates
+        // a section that DOES reach its count (it stops at or before the cap); it
+        // only bounds the deficit case.
+        int reservedTail = kLiveryRemnantSize;
+        for (int later = slot + 1; later < kLiverySectionCount; ++later) {
+            const int laterTarget = later < sectionCounts.size() ? sectionCounts[later] : 0;
+            reservedTail += laterTarget <= 0 ? kLiveryEmptySlotSize : laterTarget * 32;
+        }
+        const int walkLimit = std::max(pos, end - reservedTail);
+
         WalkState state;
         state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
         int guard = 0;
-        while (decodedLiveryDecals(sectionNode) < target && pos < end && guard < end + 16) {
+        while (decodedLiveryDecals(sectionNode) < target && pos < walkLimit && guard < end + 16) {
             ++guard;
             closeCompleteStack(state.stack);
             if (state.stack.size() < 2) {
@@ -1294,6 +1368,11 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
         closeCompleteStack(state.stack);
 
         section.subtree = *sectionNode;
+        // Clamp back to the reserved boundary before skipping the remnant, so a
+        // deficit walk that overshot by a partial record still lands the next slot
+        // on its scaffold. (No-op when the section reached its count: pos is then
+        // at its content end, which is <= walkLimit.)
+        pos = std::min(pos, walkLimit);
         pos = std::min(end, pos + kLiveryRemnantSize);
         sections.push_back(section);
     }

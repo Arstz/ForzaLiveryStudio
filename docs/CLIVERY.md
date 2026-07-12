@@ -95,7 +95,8 @@ odd-family  <odd> 03       ->   <odd> 01      (terminating 03 becomes 01)
 ```
 
 `<odd>` is any odd lead byte (01, 03, 05, 07, 0b, 0d, 0f, 1b, 1d, 1f, 33, 3d, 3f,
-7f, ff, ...). The livery marker set is the closed grammar `{ 00, <odd> 01, 01 }`.
+7f, ff, ...). The **inline** (in-group-header) marker set is the closed grammar
+`{ 00, <odd> 01, 01 }`; a **separate** transform is not so constrained — see below.
 The 16-float payload (px, py, sx, rot) is unchanged, as is the optional signed-Y
 suffix — except its marker byte:
 
@@ -106,11 +107,21 @@ suffix — except its marker byte:
 
 Recognize both suffixes with `(byte & ~0x40) == 0x30`.
 
-The bare `00` marker is too common to match by its byte alone. A `00`-family
-transform must be recognized **structurally**: a `00`/`01` lead + a valid 16-float
-payload (+ optional 30/70 suffix) followed by a group or shape. It is therefore
-always a separate (pending) transform applied to the following group/shape; the
-distinctive odd-family markers may appear inline (in a group header) or separate.
+A **separate** (pending) transform — one that stands before a group rather than
+inside its header — collapses to just a single **lead byte** + the 16-float
+payload; the trailing `01`/`03` run of the inline form is dropped. The lead is the
+standalone marker's leading control/bitmap byte and is therefore **arbitrary** —
+surveyed across the production samples it takes values `00 01 03 07 0f 10 19 1e 1f
+33 3c 43 71 c3 f6 ff …`, spanning even bytes too. **It cannot be matched by value.**
+A separate transform must be recognized purely **structurally**: a lead byte + a
+valid 16-float payload (+ optional 30/70 suffix) **immediately followed by a
+group**. Requiring the following group is what makes an arbitrary lead unambiguous
+against a per-shape flag byte in front of a `01 02` shape (the one extra byte-level
+guard: reject a lead whose *next* byte begins a shape). Any lead-value allow-list —
+`{00,01}`, then `{00, odd}` — silently drops the transform of any group whose lead
+falls outside it (`07` on Livery_0423 Top, the even `3c` on Livery_1379 Right),
+leaving that group at identity. See the first-group-in-section case below and
+`isLiveryTransformLead` in the decoder.
 
 Everything else — counted groups, markerless groups, inline first-child
 transforms, masks, flattening — follows the `C_group` rules unchanged.
@@ -132,6 +143,44 @@ transform scaffold (orientation only: rotation in {0, 90, -90, 180}, scale 1.0; 
 extent/bounds field — per-panel bounds are not stored in the file). A populated
 slot is a run of one or more top-level groups whose decal count sums to that
 section's stats value, followed by an 18-byte scaffold remnant.
+
+A populated slot's **first** top-level group is wrapped in a markerless group whose
+header is `<count> 00 <child_blocks> 00 … 00` (count = the wrapper's direct
+children; `child_blocks` = ceil(count/8) bitmap bytes, all `00`; two control bytes
+`00`), and that first child group is preceded by a **separate transform** carrying
+the section's placement (position, scale and one of the {0, 90, -90, 180}
+orientations, e.g. `rot=270`). That transform's lead byte is arbitrary (see above):
+`07` on Livery_0423 Top (`px=99 py=-3 sx=0.23 rot=270`, the 72-shape group), the
+even `3c` on Livery_1379 Right (`px=-51.5 py=-20.6 sx=0.32 rot=358`, the 996-shape
+group) — any lead-value allow-list dropped these, decoding the group at identity.
+Subsequent top-level groups in the slot use their own separate transforms the same
+way (an ordinary bare `00` when the placement is simple).
+
+### Custom logo / decal records
+
+A placed custom graphic (shared logo/decal) is stored inside the section stream as
+an ordinary 32-byte shape record (`00 02`/`01 02` + payload) whose **shape id is
+≥ 0x8000** — the high bit marks it as a raster decal rather than a built-in vector
+shape (built-in ids are < 0x2000; the raster id is `id & 0x7fff`, indexing the
+`yrvl` descriptor table). Its transform is **arbitrary**, exactly like a vector
+shape: position, scale, rotation, skew and color are all whatever the author placed
+it at. Do NOT assume an identity transform or a white color — a decoder that only
+recognises an identity-placed opaque-white logo (the old rule) fails to consume a
+real placed logo's 32-byte record, then the high id also fails the built-in
+`id < 0x2000` shape check, so the record is walked one byte at a time and the whole
+slot desyncs (Livery_2357 Left: the "layer ~130" logo `id 0xa715 scale 0.22
+rot 359` broke the walk, so the first group swallowed the rest of the slot).
+Recognise a logo by `id ≥ 0x8000` with a sane (shape-valid) transform.
+
+**All 11 slots are always emitted, in order** — the body never stops after the last
+populated slot. The empty scaffolds that follow it are part of the record and act
+as the section delimiters. A decoder must therefore **bound each populated slot's
+walk** so it cannot run past its own decals + 18-byte remnant into the following
+slots: reserve the remaining slots' footprint (23 B for each still-empty slot)
+against the body end. Without that bound, a populated slot whose decodable decals
+fall short of its stats count keeps walking to the end of the body and swallows the
+trailing empty scaffolds; an exporter that byte-preserves those slots would then
+omit them, shifting every following slot and corrupting the section container.
 
 ## yrvl info record (first yrvl, @0x1a)
 

@@ -60,10 +60,11 @@ exports flat game-compatible folders.
   evaluate world-space shape geometry.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
-  preview thumbnail, and draft/imported header handling. **Livery export is currently
-  disabled**: opening the Export action on a livery shows an error popup. The livery
-  encoder (`exportCLivery`) is retained but not invoked, pending full artwork
-  synthesis (see `docs/LIVERY_ENCODER.md`).
+  preview thumbnail, and draft/imported header handling. **Livery export is enabled
+  for in-game testing**: exporting a livery invokes `exportCLivery`, which rebuilds
+  the `C_livery` container, byte-preserves unchanged section slots, and
+  re-synthesizes changed built-in-shape sections. Changed custom (uploaded) logo
+  decals are not yet synthesizable and raise an export error.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
@@ -118,8 +119,10 @@ translation-only origin transform and shapes packed relative to it, mask groups 
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
 their own child-type bitmaps. It is validated in-game for sibling groups, multi-level
 nesting, and masks, but is not byte-identical to the game's own encoding. Livery
-(`C_livery`) export is wired through `exportCLivery` but is currently gated off in the
-UI (error popup) until artwork synthesis is complete.
+(`C_livery`) export is wired through `exportCLivery` and enabled in the UI for
+in-game testing: unchanged section slots are byte-preserved and changed
+built-in-shape sections are re-synthesized (changed custom logo decals still raise
+an error).
 
 ## Build
 

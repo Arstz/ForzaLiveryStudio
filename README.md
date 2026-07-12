@@ -96,5 +96,5 @@ The import/export for groups is fully supported, core functionality in place. Li
 - [Zloysvin](https://github.com/Zloysvin) - PR Manager / shape renamer.
 - [Pengyss](https://github.com/Pengyss) - non-uniform group tranform algorithm.
 - Eaterrius - big money man, provided tokens.
-- [Doliman100](https://github.com/Doliman100)—- Reverse engineering Forza file formats and documentation.
+- [Doliman100](https://github.com/Doliman100) - Reverse engineering Forza file formats and documentation.
 - All the people's liveries/groups I used to decode the format.
