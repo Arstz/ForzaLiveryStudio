@@ -163,6 +163,83 @@ void dumpTree(const scene::Layer &node, int depth, int maxDepth, int maxChildren
     }
 }
 
+void collectVisualLeafIds(const scene::Layer &node, QStringList &out)
+{
+    if (node.kind() == scene::LayerKind::Shape) {
+        out.push_back(node.id);
+        return;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return;
+    }
+    const auto &group = static_cast<const scene::Group &>(node);
+    for (int i = static_cast<int>(group.children.size()) - 1; i >= 0; --i) {
+        collectVisualLeafIds(*group.children[i], out);
+    }
+}
+
+void collectSourceLeafIds(const scene::Layer &node, QStringList &out)
+{
+    if (node.kind() == scene::LayerKind::Shape) {
+        out.push_back(node.id);
+        return;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return;
+    }
+    const auto &group = static_cast<const scene::Group &>(node);
+    for (const auto &child : group.children) {
+        collectSourceLeafIds(*child, out);
+    }
+}
+
+QPair<int, int> leafRange(const QStringList &leaves, const QHash<QString, int> &positions)
+{
+    int minPos = 0;
+    int maxPos = 0;
+    for (const QString &leafId : leaves) {
+        const int pos = positions.value(leafId, 0);
+        if (pos <= 0) {
+            continue;
+        }
+        minPos = minPos == 0 ? pos : std::min(minPos, pos);
+        maxPos = std::max(maxPos, pos);
+    }
+    return {minPos, maxPos};
+}
+
+void dumpGroupRanges(const scene::Layer &node,
+                     const QHash<QString, int> &visualPositions,
+                     const QHash<QString, int> &sourcePositions,
+                     int depth)
+{
+    if (node.kind() != scene::LayerKind::Group) {
+        return;
+    }
+    const auto &group = static_cast<const scene::Group &>(node);
+    QStringList visualLeaves;
+    collectVisualLeafIds(node, visualLeaves);
+    QStringList sourceLeaves;
+    collectSourceLeafIds(node, sourceLeaves);
+    const auto visualRange = leafRange(visualLeaves, visualPositions);
+    const auto sourceRange = leafRange(sourceLeaves, sourcePositions);
+    QString ind(depth * 2, QLatin1Char(' '));
+    std::printf("%sGROUP %s '%s' visual=%d-%d source=%d-%d leaves=%d children=%d srcAbs=%d flags=%d ptm=%s inl=%s\n",
+                ind.toLatin1().constData(),
+                group.id.toLatin1().constData(),
+                group.name.toLatin1().constData(),
+                visualRange.first, visualRange.second,
+                sourceRange.first, sourceRange.second,
+                static_cast<int>(visualLeaves.size()),
+                static_cast<int>(group.children.size()),
+                group.sourceAbsPos, group.flags,
+                group.pendingTransformMarker.toHex().constData(),
+                group.inlineTransformMarker.toHex().constData());
+    for (const auto &child : group.children) {
+        dumpGroupRanges(*child, visualPositions, sourcePositions, depth + 1);
+    }
+}
+
 int sceneShapeCount(const Project &p)
 {
     return truthLeaves(p).size();
@@ -312,8 +389,10 @@ int main(int argc, char *argv[])
     bool treeMode = args.removeAll(QStringLiteral("--tree")) > 0;
     bool rawMode = args.removeAll(QStringLiteral("--raw")) > 0;
     bool markersMode = args.removeAll(QStringLiteral("--markers")) > 0;
+    bool rangesMode = args.removeAll(QStringLiteral("--ranges")) > 0;
     bool roundtripMode = args.removeAll(QStringLiteral("--roundtrip")) > 0;
     bool exportReencodedMode = args.removeAll(QStringLiteral("--export-reencoded")) > 0;
+    bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
 
@@ -449,7 +528,8 @@ int main(int argc, char *argv[])
             for (const LiverySection &sec : sections) {
                 if (sec.slot == sm.slot) {
                     std::printf("section absPos=%d populated=%d\n", sec.absPos, sec.populated);
-                    dumpRaw(sec.subtree, 0, verbose ? 40 : 4, verbose ? 500 : 14);
+                    dumpRaw(sec.subtree, 0, allMode ? 100000 : (verbose ? 40 : 4),
+                            allMode ? 100000 : (verbose ? 500 : 14));
                     break;
                 }
             }
@@ -459,7 +539,8 @@ int main(int argc, char *argv[])
                 const LayerData ld = getLayerData(payload);
                 const VinylGroup root = buildTree(ld.data, payload);
                 std::printf("----- %s: TRUTH root tree (layerStart=%d) -----\n", sm.folder, ld.start);
-                dumpRaw(root, 0, verbose ? 40 : 4, verbose ? 500 : 14);
+                dumpRaw(root, 0, allMode ? 100000 : (verbose ? 40 : 4),
+                        allMode ? 100000 : (verbose ? 500 : 14));
             }
         }
         return 0;
@@ -479,6 +560,40 @@ int main(int argc, char *argv[])
                 rootEntryCount(livery),
                 livery.carId);
 
+    if (rangesMode) {
+        for (const SectionMap &sm : kSections) {
+            if (!onlySection.isEmpty() && QString::fromLatin1(sm.folder).compare(onlySection, Qt::CaseInsensitive) != 0) continue;
+            if (!livery.root) {
+                continue;
+            }
+            for (const auto &child : livery.root->children) {
+                if (child->kind() != scene::LayerKind::Group) {
+                    continue;
+                }
+                const auto &section = static_cast<const scene::Group &>(*child);
+                if (!section.isLiverySection || section.liverySectionSlot != sm.slot) {
+                    continue;
+                }
+                QStringList order;
+                collectVisualLeafIds(section, order);
+                QHash<QString, int> visualPositions;
+                for (int i = 0; i < order.size(); ++i) {
+                    visualPositions.insert(order[i], i + 1);
+                }
+                QStringList sourceOrder;
+                collectSourceLeafIds(section, sourceOrder);
+                QHash<QString, int> sourcePositions;
+                for (int i = 0; i < sourceOrder.size(); ++i) {
+                    sourcePositions.insert(sourceOrder[i], i + 1);
+                }
+                std::printf("\n===== %s: LIVERY ranges =====\n", sm.folder);
+                dumpGroupRanges(section, visualPositions, sourcePositions, 0);
+                break;
+            }
+        }
+        return 0;
+    }
+
     if (treeMode) {
         for (const SectionMap &sm : kSections) {
             if (!onlySection.isEmpty() && QString::fromLatin1(sm.folder).compare(onlySection, Qt::CaseInsensitive) != 0) continue;
@@ -488,7 +603,8 @@ int main(int argc, char *argv[])
                     if (child->kind() == scene::LayerKind::Group) {
                         const auto &section = static_cast<const scene::Group &>(*child);
                         if (section.isLiverySection && section.liverySectionSlot == sm.slot) {
-                            dumpTree(section, 0, verbose ? 6 : 3, verbose ? 40 : 12);
+                            dumpTree(section, 0, allMode ? 100000 : (verbose ? 6 : 3),
+                                     allMode ? 100000 : (verbose ? 40 : 12));
                             break;
                         }
                     }
@@ -502,7 +618,8 @@ int main(int argc, char *argv[])
                             sm.folder, rootEntryCount(truth));
                 if (truth.root) {
                     for (const auto &child : truth.root->children) {
-                        dumpTree(*child, 1, verbose ? 6 : 3, verbose ? 40 : 12);
+                        dumpTree(*child, 1, allMode ? 100000 : (verbose ? 6 : 3),
+                                 allMode ? 100000 : (verbose ? 40 : 12));
                     }
                 }
             }

@@ -113,6 +113,12 @@ Counted group record:
 ceil(child_count / 8)
 ```
 
+In embedded livery `gyvl` payloads, records whose bitmap is longer than one
+byte can store only the low byte of that value in the `child_blocks` field. The
+decoder expands this to the full `ceil(child_count / 8)` length only when the
+surrounding bytes are structurally plausible and the recovered bitmap is sparse
+enough to distinguish it from shape payload bytes.
+
 `20` opens a normal group. `60` opens a mask group.
 
 Groups and shapes consume one child slot of the current group. Transform and
@@ -138,6 +144,11 @@ for the first child.
 Markerless groups can also carry a single extra control byte before their first
 child.
 
+The same wrapped-bitmap rule used for counted groups applies to markerless
+groups in embedded livery payloads. Because the markerless form is ambiguous
+inside shape data, wrapped markerless groups are accepted only with the sparse
+bitmap and following-child guards.
+
 ## Inline First-Child Transforms
 
 Some group records carry a transform after their control bytes. If the next
@@ -156,6 +167,30 @@ odd_byte 03
 ```
 
 This rule applies to both counted and markerless groups.
+
+## Embedded Livery Section Walk
+
+`C_livery` embeds a version-0 `gyvl` stream whose body is split into the fixed
+section slots by the trailing `yrvl` stats counts. Its transform dialect differs
+from standalone `C_group`: a separate group transform is usually a single lead
+byte plus the 16-byte transform payload, and the `00` family can retain a
+`00 01` prefix before that payload.
+
+Large section-start identity containers can be followed by more transform-led
+records that still belong to the same decoded section container. When a large
+section reaches its stats count and the first at-section-start identity group
+captured only a minority of the section leaves, the decoder marks that group as
+`livery_section_span` and moves the remaining section-top records under it. The
+importer preserves that marked wrapper instead of flattening it into the section
+folder.
+
+Some embedded livery sections contain a second-level span with a tiny
+`ff`/`3f` markerless group at the start of a much longer sibling run. After the
+section-span wrapper is recovered, the decoder can mark that child as
+`livery_nested_span` and absorb following siblings until the next structurally
+plausible sibling run begins. Current boundary guards require the anchor to be
+small, the parent run to be large, and the stop point to be either a counted
+group or a markerless group followed by a loose run of direct shapes.
 
 ## Shapes
 

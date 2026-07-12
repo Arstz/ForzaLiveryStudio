@@ -103,9 +103,22 @@ void normalizeChildTransformSy(VinylGroup &node)
     // with the 03 terminator swapped to 01 -> `01 01`. Recognise both livery forms
     // as well as the standalone one, else a livery masked-content child keeps a
     // stray sy=-1 that the standalone truth normalises away.
-    if ((node.pendingTransformMarker == QByteArray("\x01\x03", 2)
-         || node.pendingTransformMarker == QByteArray("\x01\x01", 2)
-         || node.pendingTransformMarker == QByteArray("\x01", 1))
+    //
+    // The bare `01` is ambiguous, though: a standalone SEPARATE `03` transform
+    // (whose signed-Y sign is REAL, not spurious) also collapses to a livery `01`.
+    // The two are told apart by the inline first-child marker -- the `03` case
+    // carries one (its group has an inline transform, `inl=01 01`), the spurious
+    // `01 03` case does not. So a bare `01` with a NON-EMPTY inline marker is the
+    // real-sign `03` form and must keep its negative sy (Livery_3629 Top's first
+    // row group @body13449, sx=0.647 sy=-0.647: a genuine vertical flip the truth
+    // preserves; normalising it mirrored 158 shapes to the wrong side).
+    const QByteArray &ptm = node.pendingTransformMarker;
+    const bool bareOneRealSign =
+        ptm == QByteArray("\x01", 1) && !node.inlineTransformMarker.isEmpty();
+    if ((ptm == QByteArray("\x01\x03", 2)
+         || ptm == QByteArray("\x01\x01", 2)
+         || ptm == QByteArray("\x01", 1))
+        && !bareOneRealSign
         && (node.source == QStringLiteral("markerless_count_stack")
             || node.source == QStringLiteral("implicit_transform_pair"))) {
         node.sy = std::abs(node.sy);
@@ -133,8 +146,10 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
         const double px = readLeFloat(data, pos + 8);
         const double py = readLeFloat(data, pos + 12);
         const double sx = readLeFloat(data, pos + 16);
+        const double sy = readLeFloat(data, pos + 20);
         return std::abs(px) < 50000.0 && std::abs(py) < 50000.0
-            && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0;
+            && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
+            && std::abs(sy) < 5000.0;
     }
     if (static_cast<quint8>(data[pos]) == 0x02) {
         if (pos + 31 > end) {
@@ -147,8 +162,17 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
         const double px = readLeFloat(data, pos + 7);
         const double py = readLeFloat(data, pos + 11);
         const double sx = readLeFloat(data, pos + 15);
+        // Also bound scale_y. A bare `02` can be a per-shape flag byte sitting in
+        // front of a real `00 02`/`01 02` shape whose id low byte + `02` spell a
+        // plausible `<sid> 02` here (Livery_3761 Right: a `02` flag before an
+        // `01 02` id=101 shape). The impostor's px/py/sx can read as sane, but its
+        // scale_y lands on wild bytes (sy ~ 2.7e23), so validating sy rejects it and
+        // lets the walker consume the `02` as a flag and decode the real shape at
+        // pos+1. Real shapes stay well under this bound (observed max |sy| ~ 358).
+        const double sy = readLeFloat(data, pos + 19);
         return std::abs(px) < 50000.0 && std::abs(py) < 50000.0
-            && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0;
+            && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
+            && std::abs(sy) < 5000.0;
     }
     return false;
 }
@@ -1185,6 +1209,101 @@ void extendLiverySectionSpanContainer(const VinylGroupPtr &sectionNode, int targ
     }
 }
 
+bool isLiveryNestedSpanAnchor(const VinylGroupPtr &group)
+{
+    return group
+        && group->flags == 0xff
+        && group->pendingTransformMarker == QByteArray("\x3f", 1)
+        && group->expectedChildren
+        && *group->expectedChildren <= 8
+        && countShapes(group) <= 8;
+}
+
+bool isCountStackGroup(const VinylItem &item)
+{
+    return !item.isShape()
+        && std::get<VinylGroupPtr>(item.value)->source == QStringLiteral("count_stack");
+}
+
+bool isPlainMarkerlessLiveryGroup(const VinylItem &item)
+{
+    if (item.isShape()) {
+        return false;
+    }
+    const auto group = std::get<VinylGroupPtr>(item.value);
+    return group
+        && group->source == QStringLiteral("markerless_count_stack")
+        && group->flags == 0
+        && group->pendingTransformMarker == QByteArray("\x00", 1)
+        && group->inlineTransformMarker.isEmpty()
+        && group->expectedChildren
+        && *group->expectedChildren <= 8;
+}
+
+bool startsLooseSiblingRun(const VinylGroupPtr &parent, int index)
+{
+    if (!parent || index + 1 >= parent->items.size()
+        || !isPlainMarkerlessLiveryGroup(parent->items[index])) {
+        return false;
+    }
+
+    int looseShapes = 0;
+    for (int i = index + 1; i < parent->items.size() && parent->items[i].isShape(); ++i) {
+        ++looseShapes;
+    }
+    return looseShapes >= 3;
+}
+
+void extendLiveryNestedSpanContainers(const VinylGroupPtr &parent)
+{
+    if (!parent) {
+        return;
+    }
+
+    for (int i = 0; i < parent->items.size(); ++i) {
+        if (!parent->items[i].isShape()) {
+            extendLiveryNestedSpanContainers(std::get<VinylGroupPtr>(parent->items[i].value));
+        }
+    }
+
+    if (parent->items.size() < 3) {
+        return;
+    }
+
+    const int parentLeaves = countShapes(parent);
+    if (parentLeaves < 1024) {
+        return;
+    }
+
+    for (int i = 0; i < parent->items.size() - 1; ++i) {
+        if (parent->items[i].isShape()) {
+            continue;
+        }
+        auto anchor = std::get<VinylGroupPtr>(parent->items[i].value);
+        if (!isLiveryNestedSpanAnchor(anchor)) {
+            continue;
+        }
+
+        while (i + 1 < parent->items.size()) {
+            const int anchorLeaves = countShapes(anchor);
+            if (anchorLeaves * 3 >= parentLeaves * 2) {
+                const int nextIndex = i + 1;
+                if (isCountStackGroup(parent->items[nextIndex])
+                    || startsLooseSiblingRun(parent, nextIndex)) {
+                    break;
+                }
+            }
+            VinylItem item = parent->items[i + 1];
+            parent->items.removeAt(i + 1);
+            anchor->items.push_back(item);
+        }
+        anchor->expectedChildren = anchor->totalChildren();
+        if (!anchor->source.contains(QStringLiteral("livery_nested_span"))) {
+            anchor->source += QStringLiteral("+livery_nested_span");
+        }
+    }
+}
+
 // Build a markerless count-N group from `info` at `pos`, append it to the stack
 // top, push it, and update pending state. This is the markerless branch of
 // walkStep, factored out so the C_livery section walker can start a "bare"
@@ -1342,7 +1461,18 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
         }
     }
 
-    auto transformInfo = readTransformRecord(layerData, pos, end);
+    // The greedy standalone reader must not fire once a livery separate transform is
+    // already pending: `readLiveryTransform` accepts a group that sits one flag byte
+    // after its payload (see its `next+1` case), returning only the payload size so
+    // walkStep consumes that flag while the pending transform carries through. But a
+    // markerless group's own count byte can spell a false `<x> 03` marker at that flag
+    // position (Livery_3629 Top: a `00` flag before a count-3 group `03 00 01 ...` -- the
+    // `03` is the count, not a transform terminator), so readTransformRecord would
+    // greedily read 16 garbage payload bytes and OVERWRITE the real pending transform
+    // (yielding sx=sy=179, a shape composed hundreds of times too wide). With a transform
+    // pending, this byte is a flag to consume; leave it to the flag handler below.
+    auto transformInfo = s.pendingTransform ? std::optional<TransformRecord>{}
+                                            : readTransformRecord(layerData, pos, end);
     if (transformInfo) {
         s.pendingTransform = transformInfo->transform;
         s.pendingTransformMarker = s.pendingTransformPrefix + transformInfo->marker;
@@ -1527,6 +1657,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
         }
         closeCompleteStack(state.stack);
         extendLiverySectionSpanContainer(sectionNode, target);
+        extendLiveryNestedSpanContainers(sectionNode);
 
         section.subtree = *sectionNode;
         // Clamp back to the reserved boundary before skipping the remnant, so a

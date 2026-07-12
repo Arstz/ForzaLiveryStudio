@@ -135,6 +135,39 @@ flush against the payload drops the transform *and* the whole group (the group's
 shapes then decode as loose siblings, so a section that is a copy of another decodes
 with a different tree).
 
+That intervening flag byte has a second trap: the **greedy standalone transform
+reader must be disabled while a separate transform is already pending**. A markerless
+group's own little-endian count can spell a false `<x> 03` transform marker at the
+flag position — Livery_3629 Top has a `00` flag before a count-3 group (`03 00 01
+…`), and the `03` there is the count high nibble region, not a transform terminator.
+If the greedy reader runs at that byte it reads 16 misaligned payload bytes (yielding
+`sx=sy≈179`) and **overwrites the real pending transform**, so the group's shapes
+render hundreds of times too wide. With a transform pending, that byte is a flag to
+consume, not a new transform to read.
+
+The same flag-byte trap exists for **shapes**. A shape record is `00 02`/`01 02`
+(32 B) or a bare `02` (31 B); a single per-shape flag byte can also precede a shape
+(e.g. a `02` before an `01 02` shape). The bare-`02` shape detector can then mistake
+that flag byte for a shape whose id and `px/py/sx` happen to read as plausible — but
+its `scale_y` lands on unrelated bytes and reads as an astronomically large value
+(≈1e23). Validate the **full** transform of a candidate shape, `scale_y` included
+(real shapes stay well under a few hundred), so the impostor is rejected and the flag
+byte falls through to be consumed, letting the real shape at the next byte decode.
+Both traps are the same lesson: the game emits lone flag bytes before records, and
+every greedy matcher must sanity-check enough of the record to let a flag fall
+through rather than swallow it.
+
+The 03→01 collapse makes the bare livery `01` marker **ambiguous**: it is the
+collapse of *both* a standalone `01 03` separate transform (whose signed-Y suffix
+sign is spurious and must be forced positive, matching the standalone decoder) and
+a standalone bare `03` separate transform (whose negative signed-Y is **real** — a
+genuine vertical flip). Tell them apart by the group's inline first-child marker:
+the `03` form carries one (`inl = 01 01`), the spurious `01 03` form does not. So a
+bare-`01` group keeps its negative `sy` when it has a non-empty inline marker, and
+only normalises `sy` to positive when the inline marker is empty. (Livery_3629 Top's
+first row group has `sx=0.647 sy=-0.647`; normalising it mirrored all 158 shapes of
+that row to the wrong side.)
+
 Everything else — counted groups, markerless groups, inline first-child
 transforms, masks, flattening — follows the `C_group` rules unchanged.
 

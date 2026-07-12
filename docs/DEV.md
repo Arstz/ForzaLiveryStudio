@@ -228,6 +228,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `src/core/`
   - Binary codecs, vinyl tree decoding, livery decoding, project JSON, flat and
     nested payload export, matrix math, header parse/build, and shape registry.
+    The livery decoder handles the embedded `gyvl` transform dialect, wrapped
+    child-bitmap byte fields, section-span wrapper recovery, and second-level
+    livery span recovery before converting the decoded tree into scene layers.
   - `layer.*` / `visual_container.h`: the unified scene-object hierarchy in
     namespace `fh6::scene` — `Layer` (id, `Transform2D`, opacity, visibility/lock,
     parent) subclassed by `Shape` / `GuideLayer` / `Group`. A group carries its own
