@@ -636,9 +636,21 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
             size += 5;
         }
     }
+    // The group usually starts immediately after the payload, but a single
+    // flag/control byte can sit between them -- e.g. Livery_2357 Left encodes a
+    // count-11 group as `00 <payload> 00 0b 00 02 ...` (a `00` before the markerless
+    // count) where the mirror-image Right side uses a counted `20 0b ...` with no gap.
+    // Accept the group at `next` OR one flag byte later; the intervening byte (if
+    // any) is left for walkStep to consume as a flag while the pending transform it
+    // set here carries through to the group.
     const int next = pos + size;
-    if (!validCountedGroupAt(data, next, end, true)
-        && !validMarkerlessGroupAt(data, next, end, true, true)) {
+    const bool groupFollows =
+        validCountedGroupAt(data, next, end, true)
+        || validMarkerlessGroupAt(data, next, end, true, true)
+        || (next + 1 < end && !isValidShapeAt(data, next, end)
+            && (validCountedGroupAt(data, next + 1, end, true)
+                || validMarkerlessGroupAt(data, next + 1, end, true, true)));
+    if (!groupFollows) {
         return std::nullopt;
     }
     return TransformRecord{size, *transform, data.mid(pos, 1)};

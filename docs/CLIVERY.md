@@ -123,6 +123,18 @@ falls outside it (`07` on Livery_0423 Top, the even `3c` on Livery_1379 Right),
 leaving that group at identity. See the first-group-in-section case below and
 `isLiveryTransformLead` in the decoder.
 
+A separate transform's group need not sit **immediately** after the payload — a
+single flag/control byte can intervene: `<lead> <payload> <flag> <group>`. Two
+mirror-image copies of the same artwork can even encode the same group differently
+— Livery_2357 stores a count-11 group on the Right side as a counted `00 <payload>
+20 0b …` (no gap) and on the mirrored Left side as a markerless `00 <payload> 00 0b
+00 02 …` (a `00` flag before the markerless count). A separate-transform reader
+must accept the group at `next` **or** one flag byte later, then let the walker
+consume that flag while the pending transform carries through; requiring the group
+flush against the payload drops the transform *and* the whole group (the group's
+shapes then decode as loose siblings, so a section that is a copy of another decodes
+with a different tree).
+
 Everything else — counted groups, markerless groups, inline first-child
 transforms, masks, flattening — follows the `C_group` rules unchanged.
 
