@@ -4,6 +4,7 @@
 
 #include "import_locations.h"
 #include "font_glyphs.h"
+#include "import_locations.h"
 
 #include <QtCore>
 #include <QtGui>

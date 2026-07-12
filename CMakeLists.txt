@@ -19,6 +19,8 @@ add_library(fh6_core STATIC
     src/core/core_types.h
     src/core/fh6_core.cpp
     src/core/fh6_core.h
+    src/core/fm_codec.cpp
+    src/core/fm_codec.h
     src/core/header_codec.cpp
     src/core/header_codec.h
     src/core/layer.cpp
@@ -101,6 +103,12 @@ if(FH6_BUILD_HELPER_TOOLS)
         tools/pack_decals/main.cpp
     )
     target_link_libraries(fh6_pack_decals PRIVATE fh6_core Qt6::Core)
+
+    # Diagnostic: test FM2023 import with a given folder.
+    add_executable(fh6_fm_diag
+        tools/fm_diag/main.cpp
+    )
+    target_link_libraries(fh6_fm_diag PRIVATE fh6_core Qt6::Core)
 endif()
 
 set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)

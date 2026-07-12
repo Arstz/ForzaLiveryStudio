@@ -1152,23 +1152,17 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
 // Livery section walker
 // ---------------------------------------------------------------------------
 
-// The 11 fixed C_livery section slots, in storage order, with the constant
-// scaffold orientation each empty slot encodes (see LiveryResearch/SECTIONS.md).
-struct LiverySlotDef {
-    const char *name;
-    double rotationDeg;
-};
-const LiverySlotDef kLiverySlots[11] = {
+constexpr int kLiveryEmptySlotSize = 23;  // constant transform scaffold per empty slot
+constexpr int kLiveryRemnantSize = 18;    // trailing scaffold after a populated slot
+
+} // namespace
+
+const LiverySlotDef kFH6LiverySlots[11] = {
     {"Front", 0.0},   {"Back", 0.0},   {"Top", 0.0},
     {"Left", 180.0},  {"Right", 90.0}, {"Spoiler", -90.0},
     {"FrontWindshield", 90.0}, {"BackWindshield", 0.0}, {"TopWindow", 0.0},
     {"LeftWindow", 180.0}, {"RightWindow", 0.0},
 };
-constexpr int kLiverySectionCount = 11;
-constexpr int kLiveryEmptySlotSize = 23;  // constant transform scaffold per empty slot
-constexpr int kLiveryRemnantSize = 18;    // trailing scaffold after a populated slot
-
-} // namespace
 
 LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const
 {
@@ -1222,53 +1216,43 @@ VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteA
 QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body,
                                                              const QVector<int> &sectionCounts) const
 {
+    return buildLiverySections(body, sectionCounts, kFH6LiverySlots, kFH6SectionCount);
+}
+
+QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body,
+                                                             const QVector<int> &sectionCounts,
+                                                             const LiverySlotDef *slotDefs,
+                                                             int slotCount) const
+{
     QVector<LiverySection> sections;
-    sections.reserve(kLiverySectionCount);
+    sections.reserve(slotCount);
 
     int pos = 0;
     const int end = body.size();
-    for (int slot = 0; slot < kLiverySectionCount; ++slot) {
+    for (int slot = 0; slot < slotCount; ++slot) {
         LiverySection section;
         section.slot = slot;
-        section.name = QString::fromLatin1(kLiverySlots[slot].name);
-        section.rotationDeg = kLiverySlots[slot].rotationDeg;
+        section.name = QString::fromLatin1(slotDefs[slot].name);
+        section.rotationDeg = slotDefs[slot].rotationDeg;
         section.absPos = pos;
 
         const int target = slot < sectionCounts.size() ? sectionCounts[slot] : 0;
         if (target <= 0) {
-            // Empty section: a constant transform scaffold, no decals.
             section.populated = false;
             pos = std::min(end, pos + kLiveryEmptySlotSize);
             sections.push_back(section);
             continue;
         }
 
-        // Populated section: one or more top-level markerless count-N groups whose
-        // decals sum to `target` (the ground-truth count from the yrvl stats
-        // chunk). Each top-level group lacks a preceding transform, so its header
-        // is read explicitly; its (possibly nested) children are consumed with the
-        // shared grammar walker. After the section's decals are accounted for, a
-        // constant trailing scaffold remnant separates it from the next slot.
         section.populated = true;
         auto sectionNode = std::make_shared<VinylGroup>();
         sectionNode->nodeType = QStringLiteral("group");
         sectionNode->source = QStringLiteral("livery_section");
         sectionNode->absPos = pos;
-        // No scaffold rotation is applied: shapes keep the transforms encoded by
-        // their group hierarchy, so a section decodes identically to a standalone
-        // C_group of the same bytes. (section.rotationDeg is recorded for
-        // reference only.)
 
-        auto holder = std::make_shared<VinylGroup>();  // sentinel base for the stack
+        auto holder = std::make_shared<VinylGroup>();
         addChild(*holder, sectionNode);
 
-        // Drive the shared grammar over the whole section until its decals reach
-        // the ground-truth target. A section's first top-level group (and any that
-        // follow without a preceding transform) is a "bare" markerless count-N
-        // group that walkStep cannot start on its own (it needs a pending
-        // transform), so bootstrap those explicitly via the SAME markerless logic
-        // (inline transform + flag bytes included); everything else (transform-led
-        // groups, counted groups, shapes) flows through walkStep.
         WalkState state;
         state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
         int guard = 0;
@@ -1276,7 +1260,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
             ++guard;
             closeCompleteStack(state.stack);
             if (state.stack.size() < 2) {
-                break;  // sectionNode unexpectedly popped
+                break;
             }
             const bool atSectionTop = state.stack.back() == sectionNode;
             if (atSectionTop && !state.pendingTransform) {
@@ -1287,7 +1271,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
             }
             const int next = walkStep(body, pos, end, state, /*liveryDialect=*/true);
             if (next <= pos) {
-                break;  // no progress; avoid an infinite loop
+                break;
             }
             pos = next;
         }

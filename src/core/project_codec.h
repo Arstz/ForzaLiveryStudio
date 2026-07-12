@@ -29,6 +29,10 @@ Project importCLivery(const QString &folderOrFile);
 void exportNestedProjectFolder(const Project &project, const QString &outputFolder,
                                const QString &name = {}, const SpriteSizeFn &spriteSize = {});
 
+// Import an FM2023 (Forza Motorsport 2023+) asset. Detects livery vs raw group
+// variants and routes accordingly. Returns an editable project.
+Project importFM2023Asset(const QString &folderOrFile);
+
 // Livery export. encodeCLiveryPayload rebuilds the decompressed C_livery container
 // from the payload captured on import (project.liverySource), replacing the gyvl
 // artwork with buildLiveryGyvl(project), recomputing the 11 section decal counts,
