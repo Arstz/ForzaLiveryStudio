@@ -27,18 +27,14 @@ QString resolveCGroupPath(const QString &folderOrFile)
 using detail::appendLeU32;
 using detail::readLeU32;
 
-QByteArray inflateContainer(const QByteArray &wrapped)
+QByteArray inflateFirstContainer(const QByteArray &wrapped)
 {
     if (wrapped.size() < 8) {
         throw std::runtime_error("container is shorter than wrapper header");
     }
-
     const quint32 compressedSize = readLeU32(wrapped, 0);
     const quint32 decompressedSize = readLeU32(wrapped, 4);
-    const QByteArray compressed = wrapped.mid(8);
-    if (compressedSize != static_cast<quint32>(compressed.size())) {
-        throw std::runtime_error("container compressed-size header does not match file size");
-    }
+    const QByteArray compressed = wrapped.mid(8, compressedSize);
 
     QByteArray output;
     output.resize(static_cast<int>(decompressedSize));
@@ -52,6 +48,18 @@ QByteArray inflateContainer(const QByteArray &wrapped)
         throw std::runtime_error("zlib decompression failed for container");
     }
     return output;
+}
+
+QByteArray inflateContainer(const QByteArray &wrapped)
+{
+    if (wrapped.size() < 8) {
+        throw std::runtime_error("container is shorter than wrapper header");
+    }
+    const quint32 compressedSize = readLeU32(wrapped, 0);
+    if (compressedSize != static_cast<quint32>(wrapped.size()) - 8) {
+        throw std::runtime_error("container compressed-size header does not match file size");
+    }
+    return inflateFirstContainer(wrapped);
 }
 
 QByteArray readCGroupPayload(const QString &folderOrFile)

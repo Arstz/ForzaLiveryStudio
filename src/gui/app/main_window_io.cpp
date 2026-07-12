@@ -4,6 +4,7 @@
 
 #include "car_registry.h"
 #include "fh6_core.h"
+#include "fm_codec.h"
 #include "header_metadata_widget.h"
 #include "image_io.h"
 #include "layer.h"
@@ -504,6 +505,50 @@ void MainWindow::importGuideLayerDialog()
     QString error;
     if (!importGuideLayer(path, &error)) {
         QMessageBox::critical(this, QStringLiteral("Guide layer import failed"), error);
+    }
+}
+
+void MainWindow::importFM2023Dialog()
+{
+    if (!confirmDiscardUnsavedChanges()) {
+        return;
+    }
+    const QString path = QFileDialog::getExistingDirectory(
+        this,
+        QStringLiteral("Select FM2023 Asset Folder (header + data)"),
+        importDialogStartDirectory(this, QStringLiteral("motorsportFolder")));
+    if (path.isEmpty()) {
+        return;
+    }
+
+    if (!QFileInfo(QDir(path).filePath(QStringLiteral("header"))).isFile()
+        || !QFileInfo(QDir(path).filePath(QStringLiteral("data"))).isFile()) {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("Import Motorsport Asset"),
+            QStringLiteral("Selected folder does not contain header and data files."));
+        return;
+    }
+
+    rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
+    QString error;
+    if (!importFM2023Folder(path, &error)) {
+        QMessageBox::critical(this, QStringLiteral("Import failed"), error);
+    }
+}
+
+bool MainWindow::importFM2023Folder(const QString &path, QString *error)
+{
+    try {
+        if (!confirmDiscardUnsavedChanges()) {
+            return false;
+        }
+        fh6::Project project = fh6::importFM2023Asset(path);
+        setProject(std::move(project));
+        return true;
+    } catch (const std::exception &e) {
+        if (error) *error = QString::fromStdString(e.what());
+        return false;
     }
 }
 
