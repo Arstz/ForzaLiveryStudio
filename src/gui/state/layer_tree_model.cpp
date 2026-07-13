@@ -613,9 +613,6 @@ bool LayerTreeModel::dropMimeData(const QMimeData *data, Qt::DropAction action, 
 
 void LayerTreeModel::refreshStateRoles(const fh6::Project *project)
 {
-    // In-place walk of the existing item tree: update the mutable visibility/mask/lock
-    // roles and row styling without a full model reset. Draw-order positions only change
-    // on structure edits (which route through setProject), so PositionTextRole is left as-is.
     if (project == nullptr || !project->root) {
         return;
     }
@@ -625,9 +622,6 @@ void LayerTreeModel::refreshStateRoles(const fh6::Project *project)
 
 void LayerTreeModel::refreshPreviews(const fh6::Project *project)
 {
-    // In-place thumbnail refresh. previewCache_ (keyed by appearance signature) is kept so
-    // unchanged entries reuse their pixmap; only the per-refresh signature memo is dropped
-    // since colour/geometry just changed.
     if (project == nullptr || !project->root) {
         return;
     }
@@ -704,8 +698,6 @@ void LayerTreeModel::refreshStateRolesForParent(const ProjectLookup &lookup, con
         const bool isGroup = node->kind() == fh6::scene::LayerKind::Group;
         const bool isGuide = node->kind() == fh6::scene::LayerKind::Guide;
         const bool effectiveLocked = ancestorLocked || node->locked;
-        // Mirror the mutable roles set by itemForId() so an in-place refresh yields the
-        // same rows a full rebuild would.
         entry->setText(node->name);
         entry->setData(isGroup, IsGroupRole);
         entry->setData(isGuide, IsGuideRole);
@@ -716,7 +708,6 @@ void LayerTreeModel::refreshStateRolesForParent(const ProjectLookup &lookup, con
         if (!node->visible || effectiveLocked) {
             entry->setForeground(QBrush(QColor(isGroup ? 150 : 130, isGroup ? 150 : 130, isGroup ? 150 : 130)));
         } else {
-            // Clear back to the palette text colour when a row is no longer dimmed.
             entry->setData(QVariant(), Qt::ForegroundRole);
         }
         refreshStateRolesForParent(lookup, index, effectiveLocked);

@@ -13,7 +13,6 @@ constexpr double Pi = 3.14159265358979323846;
 
 Matrix3 Transform2D::matrix() const
 {
-    // translate -> rotate -> shear(skew,0) -> scale (matches shapeMatrix()).
     const double radians = rotation * Pi / 180.0;
     const double c = std::cos(radians);
     const double s = std::sin(radians);
@@ -32,7 +31,6 @@ void Layer::copyBaseTo(Layer &dst) const
     dst.opacity = opacity;
     dst.visible = visible;
     dst.locked = locked;
-    // parent_ intentionally left null; set on insertion into a Group.
 }
 
 Matrix3 Layer::worldMatrix() const

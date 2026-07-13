@@ -40,7 +40,6 @@ Qt::CursorShape CanvasTool::idleCursorShape(const QPointF &point) const
     return Qt::ArrowCursor;
 }
 
-// --- Select ---------------------------------------------------------------
 
 QString SelectTool::name() const
 {
@@ -49,7 +48,6 @@ QString SelectTool::name() const
 
 bool SelectTool::handlePress(QMouseEvent *event)
 {
-    // Selection is resolved on release so a press can still turn into a pan.
     event->accept();
     return true;
 }
@@ -93,7 +91,6 @@ bool SelectTool::handleRelease(QMouseEvent *event)
     return true;
 }
 
-// --- Move -----------------------------------------------------------------
 
 QString MoveTool::name() const
 {
@@ -113,7 +110,6 @@ Qt::CursorShape MoveTool::idleCursorShape(const QPointF &point) const
     return Qt::SizeAllCursor;
 }
 
-// --- Marquee ----------------------------------------------------------------
 
 QString MarqueeTool::name() const
 {
@@ -153,7 +149,6 @@ Qt::CursorShape MarqueeTool::idleCursorShape(const QPointF &point) const
     return Qt::CrossCursor;
 }
 
-// --- Transform --------------------------------------------------------------
 
 QString TransformTool::name() const
 {
@@ -218,7 +213,6 @@ Qt::CursorShape TransformTool::idleCursorShape(const QPointF &point) const
     return Qt::ArrowCursor;
 }
 
-// --- Rotate -----------------------------------------------------------------
 
 QString RotateTool::name() const
 {
@@ -247,7 +241,6 @@ bool RotateTool::hoverCursor(const QPointF &point, QCursor *cursor) const
     return true;
 }
 
-// --- Pipette ---------------------------------------------------------------
 
 QString PipetteTool::name() const
 {

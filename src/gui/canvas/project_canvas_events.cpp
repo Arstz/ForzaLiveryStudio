@@ -4,9 +4,6 @@
 
 namespace gui {
 
-// Shared helpers (flatEntry*, EffectiveSelection, collectGuideIds, handle axes,
-// handle-box geometry constants, buildTransformTargetIds, normalizeRotation) live in
-// project_canvas_internal.h so every ProjectCanvas translation unit reuses one definition.
 using namespace pc_detail;
 
 
@@ -87,8 +84,6 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    // Rotate joins move/transform in picking the layer under the cursor: it rotates from
-    // anywhere on the canvas like the move tool, with no anchor handle to grab.
     const bool picksUnderCursor = activeTool_ != nullptr && activeTool_->picksUnderCursor();
 
     auto selectMoveAutoTarget = [this, event]() -> bool {
@@ -144,9 +139,6 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         }
     }
 
-    // (Move-tool auto-select cannot reach this branch: with an empty selection the
-    // auto-select block above already ran  Ea null selection bounds contains nothing  E
-    // and either selected a target or returned.)
     if (state_->selectedLayerIds().isEmpty() && state_->selectedGuideLayerIds().isEmpty()
         && picksUnderCursor) {
         const QString target = selectTargetAtScreenPoint(event->position(), {});
@@ -167,8 +159,6 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    // Capture the full selection box once (after any selection mutations above), so the drag
-    // references follow the box's local frame.
     dragStartBox_ = currentSelectionBox();
     const QPointF boxCenterWorld = dragStartBox_.valid
         ? dragStartBox_.localToWorld.map(dragStartBox_.localRect.center())
@@ -176,10 +166,6 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
     beginToolDrag(event->position(), boxCenterWorld);
 
     if (dragMode_ != DragMode::None) {
-        // Alt while beginning a plain move (Move tool, or dragging the body in Transform)
-        // duplicates the selection in place and drags the clones, leaving the originals
-        // untouched. The duplication and the move share one undo step (the "before"
-        // snapshot above predates the clones), so undo removes the clones too.
         dragDuplicated_ = false;
         dragUsesProjectEdit_ = (event->modifiers() & Qt::AltModifier)
             && (dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove);
@@ -262,9 +248,6 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
-    // Marquee consumes its release before the shared view-transform refresh;
-    // Select resolves click-selection when no drag is active. Both guard on
-    // dragMode_, so a pan release still falls through to the pan block below.
     if (activeTool_ != nullptr && activeTool_->handleRelease(event)) {
         return;
     }
@@ -288,10 +271,6 @@ void ProjectCanvas::wheelEvent(QWheelEvent *event)
 {
     updateViewTransform();
     const QPointF anchorWorld = screenToWorld(event->position());
-    // Zoom on whichever axis carries the wheel notch. Holding Alt makes some platforms
-    // deliver the notch as a horizontal delta (angleDelta().x()), leaving y() == 0; reading
-    // y() alone would then always take the zoom-out branch, so Alt appeared to force zoom-out.
-    // Falling back to x() makes Alt a no-op for zooming, as intended.
     const QPoint wheelDelta = event->angleDelta();
     const int notch = wheelDelta.y() != 0 ? wheelDelta.y() : wheelDelta.x();
     if (notch == 0) {
@@ -365,7 +344,6 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
 
 bool ProjectCanvas::focusNextPrevChild(bool next)
 {
-    // Keep Tab/Backtab on the canvas so keyPressEvent can use it to flip the selection.
     Q_UNUSED(next);
     return false;
 }

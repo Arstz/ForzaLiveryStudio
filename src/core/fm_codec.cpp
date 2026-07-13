@@ -113,17 +113,12 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
         throw std::runtime_error("FM2023 livery gyvl body is truncated");
     payload.gyvlBody = raw.mid(bodyStart, bodyEnd - bodyStart);
 
-    // Try reading section counts from Container 3 (multi-container format).
-    // If the file is single-container, fall back to the yrvl stats within
-    // Container 1 (same position as FH6 — right after gyvl).
     const quint32 container1CompSize = readLeU32(fileData, 0);
     const int container1Total = 8 + static_cast<int>(container1CompSize);
 
     payload.sectionCounts.reserve(7);
 
-    // Check if there are additional containers beyond Container 1
     if (container1Total + 8 + 8 <= fileData.size()) {
-        // Multi-container format: skip Container 2, decompress Container 3
         const int c2Start = container1Total;
         const quint32 compSize2 = readLeU32(fileData, c2Start);
         const int c3Start = c2Start + 8 + static_cast<int>(compSize2);
@@ -145,8 +140,6 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
         }
     }
 
-    // Fallback: read 7 section counts from Container 1's yrvl stats (FH6-style).
-    // The yrvl stats chunk follows right after the gyvl body at bodyEnd.
     {
         const int statsTag = bodyEnd;
         if (statsTag >= 0 && raw.mid(statsTag, 4) == QByteArray("yrvl", 4)) {

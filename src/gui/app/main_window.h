@@ -137,7 +137,6 @@ private:
     void revealTreeIndex(const QModelIndex &index);
     QVector<QString> selectedEntryIds() const;
     fh6::Project *project();
-    // Tree-aware selection helpers: resolve the tree's entry selection against state_.
     QVector<fh6::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
@@ -157,23 +156,14 @@ private:
     void clearDockResizeCursorOverride();
     void installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidgetArea fallbackArea);
     void toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *anchorDock = nullptr, QToolButton *anchorButton = nullptr);
-    // Repoints a collapse button's arrow at the dock's current area so the glyph
-    // stays correct after layout restore or when the dock is re-anchored.
     void updateDockCollapseButton(QDockWidget *dock, Qt::DockWidgetArea area);
     void syncDockCollapseButtons();
-    // Shows the collapse button on only the first docked dock per area and hides it on
-    // floating (detached) docks, so the button is never duplicated across an area.
     void updateDockCollapseButtonVisibility();
     QVector<QDockWidget *> dockWidgetsInArea(Qt::DockWidgetArea area) const;
 
-    // Constructor helpers: each builds one slice of the UI so the constructor reads
-    // as an orchestration sequence. addPanelDock() factors the repeated dock setup.
     void setupCanvas();
     void setupTreeView();
     void setupDocks();
-    // scrollable=true wraps content in a resizable QScrollArea so the panel's fixed
-    // content height (e.g. the property form) doesn't force a tall window minimum that
-    // can't fit low-resolution or high-DPI-scaled displays.
     QDockWidget *addPanelDock(const QString &title, const QString &objectName,
                               const QString &iconName, Qt::DockWidgetArea area, QWidget *content,
                               bool scrollable = false);
@@ -185,12 +175,7 @@ private:
     void setupToolbar();
     void setupWindowMenu();
     void importCarModel();
-    // Auto-loads the car model that matches a livery project's target car id from the
-    // user's configured car-models folder; prompts (once per session) to pick that
-    // folder when it is unset. No-op for non-liveries or when a model is already loaded.
     void maybeAutoLoadCarForProject();
-    // Resolves a car model file for the given model name inside the given folder
-    // (matching <name>.carbin/.zip/.modelbin or a same-named subfolder). Empty if none.
     QString findCarModelPath(const QString &folder, const QString &modelName) const;
 
     EditorState *state_ = nullptr;
@@ -203,7 +188,7 @@ private:
     QAction *carUnwrapAction_ = nullptr;
     QAction *flipSelectionAction_ = nullptr;
     QTreeView *tree_ = nullptr;
-    LiverySectionBar *sectionBar_ = nullptr;  // C_livery section tabs (hidden otherwise)
+    LiverySectionBar *sectionBar_ = nullptr;
     QLabel *details_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
@@ -212,18 +197,14 @@ private:
     LayerTreeModel *treeModel_ = nullptr;
     QMenu *recentProjectMenu_ = nullptr;
     QString creatorName_;
-    QString projectJsonPath_;  // path of the associated project file (Save overwrites it directly)
+    QString projectJsonPath_;
     QByteArray defaultLayoutState_;
     bool syncingSelection_ = false;
-    // Set while the tree drives a selection change so the ensuing tree resync does not scroll
-    // (snap) the list back to the row the user just clicked. Canvas-driven selections still reveal.
     bool suppressTreeReveal_ = false;
     bool loadingProperties_ = false;
     QVector<QPersistentModelIndex> autoExpandedTreeIndexes_;
     QStringList autoExpandedGroupIds_;
     bool dockResizeCursorOverrideActive_ = false;
-    // Set once we have asked the user to configure the car-models folder, so the
-    // prompt does not reappear on every subsequent livery load in this session.
     bool promptedForCarModelsFolder_ = false;
     struct DockAreaCollapseState {
         Qt::DockWidgetArea area = Qt::NoDockWidgetArea;
@@ -242,7 +223,6 @@ private:
         Qt::DockWidgetArea fallbackArea = Qt::NoDockWidgetArea;
     };
     QVector<DockCollapseButton> dockCollapseButtons_;
-    // Panel docks in Window-menu order; populated by addPanelDock().
     QVector<QDockWidget *> dockWidgets_;
 
     struct ShortcutAction {

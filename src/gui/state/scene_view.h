@@ -1,10 +1,5 @@
 #pragma once
 
-// GUI-side view helpers over the unified fh6::scene tree: Matrix3<->QTransform
-// conversion, a node's absolute (world) transform, intrinsic node size, centred
-// local rects, a world-axis AABB accumulator, and leaf traversal over Project::root.
-// Depth-first shape-leaf order is the editor draw order.
-
 #include "layer.h"
 #include "shape_geometry_store.h"
 
@@ -33,21 +28,16 @@ inline QTransform toQTransform(const fh6::Matrix3 &m)
     return QTransform(m.m[0][0], m.m[1][0], m.m[0][1], m.m[1][1], m.m[0][2], m.m[1][2]);
 }
 
-// A node's absolute (world) transform: ancestor group frames composed with its local
-// transform. Same field order as the old entryTransform (translate->rotate->shear->scale).
 inline QTransform sceneWorldTransform(const fh6::scene::Layer &node)
 {
     return toQTransform(node.worldMatrix());
 }
 
-// A node's own local transform (parent frame excluded).
 inline QTransform sceneLocalTransform(const fh6::scene::Layer &node)
 {
     return toQTransform(node.transform.matrix());
 }
 
-// Intrinsic local size: raster shapes/guides use their pixel size, vector shapes the
-// geometry-store size for their shapeId.
 inline QSizeF sceneNodeSize(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry)
 {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
@@ -64,8 +54,6 @@ inline QSizeF sceneNodeSize(const fh6::scene::Layer &node, const ShapeGeometrySt
     return QSizeF();
 }
 
-// Item-local rectangle centred on the origin (shapes and guides both draw centred on
-// their position).
 inline QRectF sceneLocalRect(const QSizeF &size)
 {
     return QRectF(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
@@ -76,7 +64,6 @@ inline QRectF sceneLocalRect(const fh6::scene::Layer &node, const ShapeGeometryS
     return sceneLocalRect(sceneNodeSize(node, geometry));
 }
 
-// World-axis AABB accumulator shared by the project/selection bounds loops.
 class BoundsAccumulator {
 public:
     void add(const QTransform &transform, const QRectF &localRect)
@@ -94,8 +81,6 @@ private:
     bool hasBounds_ = false;
 };
 
-// Shape leaves of the tree in depth-first (== flat layer) order. Guides and groups
-// are skipped; a group's children are visited in order.
 inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Group &root)
 {
     QVector<const fh6::scene::Shape *> leaves;
@@ -118,7 +103,6 @@ inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Gro
     return leaves;
 }
 
-// Guide leaves of the tree in depth-first order.
 inline QVector<const fh6::scene::GuideLayer *> sceneGuideLeaves(const fh6::scene::Group &root)
 {
     QVector<const fh6::scene::GuideLayer *> leaves;

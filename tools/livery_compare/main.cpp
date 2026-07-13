@@ -1,21 +1,3 @@
-// livery_compare  Eground-truth diff harness for the C_livery decoder.
-//
-// Decodes a full C_livery (importCLivery) and, per section, diffs its composed
-// leaf shapes against the in-game per-section C_group exports decoded with the
-// conventional nested decoder (importCGroupNested), which is the ground truth
-// for group decoding. Prints per-section match statistics and the first few
-// mismatches so the transform-composition gaps (open item D) can be measured.
-//
-// Usage:
-//   fh6_livery_compare <liveryFolder> <sectionsFolder> [section] [--verbose]
-//
-//   <liveryFolder>   folder containing a C_livery (e.g. LiveryResearch/liveryFull)
-//   <sectionsFolder> folder of per-section exports (e.g. LiveryResearch/sections)
-//                    with subfolders front/back/top/left/right/spoiler each
-//                    holding a C_group.
-//   [section]        optional: limit to one section name.
-//   --verbose        dump more mismatches / the section group tree.
-
 #include "fh6_core.h"
 #include "vinyl_decoder.h"
 #include "livery_codec.h"
@@ -40,19 +22,16 @@ using namespace fh6;
 
 namespace {
 
-// The 6 exportable sections and their storage-order slot indices.
 struct SectionMap {
-    const char *folder;  // subfolder name under <sectionsFolder>
-    int slot;            // buildLiverySections storage-order slot
+    const char *folder;
+    int slot;
 };
-// Covers the folder-naming of both ground-truth sets (sections/ and sections1/).
-// Folders whose C_group is absent are skipped, so extra entries are harmless.
 const SectionMap kSections[] = {
     {"front", 0}, {"back", 1}, {"top", 2},
     {"left", 3}, {"right", 4}, {"spoiler", 5},
-    {"frontWindow", 6},   // FrontWindshield
-    {"backWindow", 7},    // BackWindshield
-    {"topWindow", 8},     // TopWindow
+    {"frontWindow", 6},
+    {"backWindow", 7},
+    {"topWindow", 8},
     {"leftWindow", 9}, {"rightWindow", 10},
 };
 
@@ -110,9 +89,9 @@ QVector<ShapeView> truthLeaves(const Project &truth)
 bool shapesMatch(const ShapeView &a, const ShapeView &b)
 {
     if (a.shape == nullptr || b.shape == nullptr) return false;
-    const double posTol = 0.5;   // composed px
-    const double scaleTol = 0.01; // relative-ish
-    const double rotTol = 0.5;    // degrees
+    const double posTol = 0.5;
+    const double scaleTol = 0.01;
+    const double rotTol = 0.5;
     if (a.shape->shapeId != b.shape->shapeId) return false;
     if (std::abs(a.world.x - b.world.x) > posTol) return false;
     if (std::abs(a.world.y - b.world.y) > posTol) return false;
@@ -130,9 +109,6 @@ QString colStr(const std::array<quint8, 4> &c)
     return QStringLiteral("%1,%2,%3,%4").arg(c[0]).arg(c[1]).arg(c[2]).arg(c[3]);
 }
 
-// Dump a project's group tree rooted at the given group id (or the whole root
-// when groupId is empty), depth-limited, showing local group transforms and
-// child composition. Used to compare livery-section structure vs. ground truth.
 void dumpTree(const scene::Layer &node, int depth, int maxDepth, int maxChildren)
 {
     QString ind(depth * 2, QLatin1Char(' '));
@@ -320,9 +296,6 @@ void printShape(const char *tag, const ShapeView *s)
                 colStr(s->shape->color).toLatin1().constData());
 }
 
-// Recursively dump a decoder VinylGroup tree with local transforms, absolute
-// byte offsets and marker bytes -- the definitive view of where the livery and
-// ground-truth group structures diverge.
 void dumpRaw(const VinylGroup &node, int depth, int maxDepth, int maxChildren)
 {
     QString ind(depth * 2, QLatin1Char(' '));
@@ -359,10 +332,6 @@ void dumpRaw(const VinylGroup &node, int depth, int maxDepth, int maxChildren)
     }
 }
 
-// Collect, in pre-order, every group that carries a real transform (non-identity
-// or a marker), skipping synthetic/identity wrappers. On a section that decodes
-// 100%, the livery and truth lists correspond 1:1, so zipping them reveals the
-// exact livery<->standalone marker mapping.
 void collectTransformGroups(const VinylGroup &node, QVector<const VinylGroup *> &out)
 {
     for (const VinylItem &item : node.items) {
@@ -433,8 +402,6 @@ int main(int argc, char *argv[])
     }
 
     if (roundtripMode) {
-        // M1 check: re-encode the gyvl chunk from the imported scene and compare it
-        // byte-for-byte to the original. Only needs the livery folder.
         if (args.size() < 2) {
             std::fprintf(stderr, "usage: fh6_livery_compare --roundtrip <liveryFolder>\n");
             return 2;

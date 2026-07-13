@@ -85,10 +85,7 @@ QByteArray packShape(const ExportShape &layer, bool maskRecord)
 {
     QByteArray out;
     out.reserve(32);
-    // A flat record leads with 01 02 to flag a mask, 00 02 otherwise. The
-    // marker is a *trailing* flag: the game masks the shape that PRECEDES an
-    // 01 02 record, so the leading byte for this record is decided by the
-    // caller (buildFlatPayload) from the previous layer's mask state.
+    // Mask markers apply to the preceding shape.
     out.append(maskRecord ? '\x01' : '\x00');
     out.append('\x02');
     appendLeU16(out, layer.shapeId);
@@ -145,9 +142,6 @@ QByteArray buildFlatPayload(const Project &project)
     payload.append(QByteArray(childBlocks + 2, '\x00'));
     bool prevWasMask = false;
     for (const ExportShape &layer : visibleLayers) {
-        // 01 02 is a trailing flag: the game masks the shape that precedes an
-        // 01 02 record, so a record is flagged when the previous visible layer
-        // is a mask.
         payload.append(packShape(layer, prevWasMask));
         prevWasMask = layer.mask;
     }

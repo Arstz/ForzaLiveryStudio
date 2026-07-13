@@ -76,8 +76,7 @@ exports flat game-compatible folders.
   axes + region), the side's `*.swatchbin` coverage mask clips that projection, and the
   paint canvas is sampled there over a flat base paint colour. Which side owns a
   fragment is decided in the shader by:
-  - a per-mesh **allowed-sides mask** keyed on the part's model name (e.g. hood → Top,
-    trunk → Back+Top, doors → Left/Right, bumpers → their cap + sides), so the livery
+  - a per-mesh **allowed-sides mask** keyed on the part's model name, so the livery
     crops at panel seams instead of bleeding across them, and interior/optics parts
     take none;
   - a **facing-angle gate** (`dot(side facing, normal) ≥ ~cos 80°`) that lets a side

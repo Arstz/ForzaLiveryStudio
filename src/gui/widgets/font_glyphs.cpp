@@ -6,9 +6,6 @@ namespace gui {
 namespace fontglyphs {
 namespace {
 
-// Each font occupies two contiguous 40-shape blocks. `upper` is the first id of
-// the A-Z... block, `lower` the first id of the a-z... block. The listed order
-// is the order fonts are shown to the user.
 struct FontBlocks {
     const char *name;
     int upper;
@@ -31,8 +28,6 @@ constexpr FontBlocks kFonts[] = {
 
 constexpr int kBlockSize = 40;
 
-// Offset of a character within the Upper block, or -1 if it is not one of the
-// Upper-block characters (A-Z, 1-9, 0, !, ?, @, &).
 int upperOffset(QChar ch)
 {
     const ushort u = ch.unicode();
@@ -58,9 +53,6 @@ int upperOffset(QChar ch)
     }
 }
 
-// Offset of a character within the Lower block, or -1 if it is not one of the
-// Lower-block characters (a-z, $, pound, yen, euro, (, ), cent, *, #, +, %,
-// ;, :, ,).
 int lowerOffset(QChar ch)
 {
     const ushort u = ch.unicode();

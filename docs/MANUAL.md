@@ -159,7 +159,7 @@ recommended working pipelines. For build/developer notes see
   The color picker samples original guide pixels under the cursor, ignoring
   guide opacity. Enable **Options → Show Property Debug** for extra diagnostics.
 - **Shapes** — browse and insert vector shapes.
-  - Shapes are labelled `Name (ID)` (e.g. `Square (101)`); names come from
+  - Shapes are labelled `Name (ID)`; names come from
     `assets/vector/shape_names.json` and are reparsed on each launch.
   - The search box matches by **ID** or **name** and activates at **3
     characters**; shorter input shows a hint. Search spans every category (and

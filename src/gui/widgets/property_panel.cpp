@@ -12,15 +12,13 @@
 namespace gui {
 namespace {
 
-// Spin-box configuration (previously inlined magic numbers).
-constexpr double PositionSpinRange = 100000.0;   // ±range for x/y
-constexpr double ScaleSkewSpinRange = 10000.0;   // ±range for scale/skew
-constexpr double RotationSpinMax = 359.99999;    // keeps the box inside [0, 360)
+constexpr double PositionSpinRange = 100000.0;
+constexpr double ScaleSkewSpinRange = 10000.0;
+constexpr double RotationSpinMax = 359.99999;
 constexpr double OpacitySpinStep = 0.05;
 constexpr double FloatSpinStep = 0.1;
 constexpr int FloatSpinDecimals = 5;
 
-// Vertical label-drag speed in value units per pixel of mouse travel.
 constexpr double LabelDragStepDefault = 1.0;
 constexpr double LabelDragStepScale = 0.1;
 constexpr double LabelDragStepSkew = 0.1;
@@ -40,12 +38,9 @@ bool isColorableShape(const fh6::scene::Shape *layer)
     return layer != nullptr && !layer->raster;
 }
 
-// Property-label row layout.
 constexpr int PropertyIconExtent = 14;
 constexpr int PropertyLabelSpacing = 5;
 
-// Grey applied to a field whose selected items hold differing values, and to
-// the colour button when the selection has mixed colours.
 QString mixedValueStyle()
 {
     return QStringLiteral("color: #888;");
@@ -56,12 +51,6 @@ QString mixedColorButtonStyle()
     return QStringLiteral("background-color: #888;");
 }
 
-// QCheckBox whose indeterminate (PartiallyChecked) state is drawn as an
-// unmistakable filled square. Some platform styles render the native
-// "partial" indicator as a near-empty or check-like box on a dark UI, which
-// made mixed visible/locked/mask flags read as plain on/off. Overlaying our
-// own square keeps the native check and empty glyphs for the on/off states
-// while guaranteeing a clear "mixed" indicator.
 class FlagCheckBox final : public QCheckBox {
 public:
     using QCheckBox::QCheckBox;
@@ -114,9 +103,6 @@ public:
     }
 };
 
-// World-space transform about a pivot (translate, scale, rotate, or shear), used to
-// drive a whole selection as one unit from its bounding-box centre. Same conventions
-// as the canvas group-transform math so numeric edits match the on-canvas handles.
 QTransform aboutPivot(const QPointF &pivot, const QTransform &inner)
 {
     QTransform out;
@@ -127,8 +113,6 @@ QTransform aboutPivot(const QPointF &pivot, const QTransform &inner)
     return back * out;
 }
 
-// Build the world affine for a single transform-field change from `from` to `to`,
-// applied about `pivot`. Scale is multiplicative; rotation/skew/translation additive.
 QTransform boxAffine(const QString &property, double from, double to, const QPointF &pivot)
 {
     if (property == QStringLiteral("x")) {
@@ -162,9 +146,6 @@ QTransform boxAffine(const QString &property, double from, double to, const QPoi
     return QTransform();
 }
 
-// Decompose a shape's resulting local->world matrix back into translate/rotate/shear/
-// scale fields (same order as entryTransform + the canvas decomposition). `ok` is false
-// when the X axis collapsed; `skew` then falls back to `fallbackSkew`.
 struct AffineDecomposition {
     bool ok = false;
     double x = 0.0;
@@ -197,7 +178,6 @@ AffineDecomposition decomposeAffine(const QTransform &result, double fallbackSke
     return out;
 }
 
-// Apply a resulting local->world matrix to a shape by decomposing it back into fields.
 void applyDecomposedTransform(fh6::scene::Shape *layer, const QTransform &result)
 {
     const AffineDecomposition dec = decomposeAffine(result, layer->skew);
@@ -363,8 +343,6 @@ double opacityFromAlpha(quint8 alpha)
     return static_cast<double>(alpha) / 255.0;
 }
 
-// Local->world transform of a flat shape (translate->rotate->shear->scale), matching
-// the canonical composition order. The property panel edits flat leaves directly.
 QTransform flatEntryTransform(const fh6::scene::Shape &layer)
 {
     QTransform transform;
@@ -780,7 +758,6 @@ void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
     if (!groups_.isEmpty()) {
         name_->setEnabled(true);
         shapeId_->setEnabled(false);
-        // Transform fields drive the whole group as one unit about its bounding box.
         const bool canTransform = !layers_.isEmpty();
         x_->setEnabled(canTransform);
         y_->setEnabled(canTransform);
@@ -798,9 +775,6 @@ void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
         visible_->setEnabled(true);
         locked_->setEnabled(true);
         mask_->setEnabled(true);
-        // A group reflects its descendants as a tri-state: all leaves on -> Checked,
-        // all off -> Unchecked, mixed -> PartiallyChecked (square). The square then
-        // surfaces mixed flags within a single group, not just across several groups.
         auto leafTriState = [this](const fh6::scene::Group &group, auto layerPred) {
             const QVector<QString> ids = state_->leafLayerIdsForEntry(group.id);
             if (ids.isEmpty()) {
@@ -1212,8 +1186,6 @@ void PropertyPanel::setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &g
     setCheck(visible_, [](const fh6::scene::GuideLayer &g) { return g.visible; });
     setCheck(locked_, [](const fh6::scene::GuideLayer &g) { return g.locked; });
 
-    // Multi-guide selections keep their historical quirks: the name reads as mixed
-    // even when every guide shares one, and there is no mask/colour.
     mask_->setTristate(false);
     mask_->setChecked(false);
     name_->setText(QString());
@@ -1290,9 +1262,6 @@ void PropertyPanel::setBoxProxyFields(bool neutralTransformValues)
         }
     }
 
-    // Position tracks the visual box centre. A single selected group reads its real
-    // frame; mixed top-level selections read a virtual BB transform captured at
-    // selection time and updated from the current bounds/target-frame deltas.
     const auto setProxy = [this](QDoubleSpinBox *box, double value) {
         box->setValue(value);
         box->setStyleSheet(QString());
@@ -1319,9 +1288,6 @@ void PropertyPanel::applyBoxTransform(const QString &property, double fromValue,
         }
         applyDecomposedTransform(layer, localResultForWorldTransform(*layer, flatEntryTransform(*layer), transform));
     }
-    // Accumulate the same world transform into each selected group's own frame.
-    // Descendant leaves covered by those groups are skipped above, so a selected
-    // group moves as one scene node instead of double-transforming its children.
     if (state_ != nullptr && !groups_.isEmpty()) {
         QVector<QString> groupIds;
         groupIds.reserve(groups_.size());
@@ -1499,7 +1465,6 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
         || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
         return false;
     }
-    // Groups expose opacity plus the box-frame transform fields; nothing else.
     if (!groups_.isEmpty() && property != QStringLiteral("opacity") && !isTransformProperty(property)) {
         return false;
     }
@@ -1577,9 +1542,6 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
         valueLabelGroupStartValues_.insert(groupId, box->value());
     }
 
-    // Box-frame drag: capture the pivot and each shape's start matrix so the whole
-    // selection transforms as a unit from a fixed reference, exactly like the canvas
-    // group handles. box->value() (captured above) is the neutral proxy baseline.
     valueLabelBoxDrag_ = isBoxSelection() && isTransformProperty(property);
     valueLabelLayerStartTransforms_.clear();
     valueLabelGroupStartFrames_.clear();
@@ -1639,8 +1601,6 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
         return clampBox(value);
     };
 
-    // Box-frame drag: transform every shape about the captured pivot from its start
-    // matrix, so a group / multi-selection moves as a unit instead of each shape in place.
     if (valueLabelBoxDrag_) {
         const double proxy = adjusted(valueLabelBoxStartValue_);
         const QTransform transform = boxAffine(valueLabelProperty_, valueLabelBoxStartValue_, proxy, valueLabelBoxCenter_);
@@ -1786,7 +1746,6 @@ void PropertyPanel::detachSelectionForEdit()
     if (project == nullptr) {
         return;
     }
-    // Read the selection ids before detaching invalidates the cached pointers.
     QSet<QString> layerIds;
     QSet<QString> guideIds;
     QVector<QString> groupIds;
@@ -1851,12 +1810,10 @@ void PropertyPanel::applySingle()
 void PropertyPanel::applyMulti(QWidget *sender, const QString &property)
 {
     if (auto *box = qobject_cast<QDoubleSpinBox *>(sender)) {
-        // Multiple shapes transform as one unit about their shared bounding box.
         if (isTransformProperty(property)) {
             applyBoxTransform(property, baselines_.value(box, box->value()), box->value());
             return;
         }
-        // Opacity has no spatial box frame; apply the delta to each shape.
         const double old = baselines_.value(box, box->value());
         const double delta = box->value() - old;
         baselines_.insert(box, box->value());
@@ -1994,10 +1951,6 @@ void PropertyPanel::pickColor()
         }
     }
 
-    // Open the picker non-modally-driven (live): every colour change is applied to the
-    // selection immediately so the canvas updates as the user drags, instead of only on
-    // OK. The whole interaction is wrapped in one project edit so undo captures a single
-    // before/after step; cancelling restores the original colours.
     state_->beginProjectEdit();
     setSelectionByIds(selectedLayerIds, {}, selectedGroupIds);
 
@@ -2024,9 +1977,6 @@ void PropertyPanel::pickColor()
         for (fh6::scene::Group *group : groups_) {
             state_->setGroupDescendantColor(group->id, color);
         }
-        // Live drag: repaint only the canvas and set the swatch directly. Regenerating tree
-        // thumbnails and rebuilding the property panel every tick is far too costly, so that
-        // is deferred to accept below.
         state_->noteCanvasRepaint();
         colorButton_->setText(QStringLiteral("Color"));
         colorButton_->setStyleSheet(colorStyle(color));
@@ -2037,8 +1987,6 @@ void PropertyPanel::pickColor()
         state_->noteProjectGeometryChanged(true, transformTargetIdsForSelection(state_, layers_, guides_, groups_));
         updateColorButton();
     } else {
-        // Restores the captured "before" colours and refreshes the tree/property UI;
-        // do not touch the cached layer pointers afterwards as they are reseated by that refresh.
         state_->cancelProjectEdit();
     }
 }

@@ -13,32 +13,24 @@ struct LiverySlotDef {
     double rotationDeg;
 };
 
-// FH6: 11 slots
 extern const LiverySlotDef kFH6LiverySlots[11];
 inline constexpr int kFH6SectionCount = 11;
 
-// One of the 11 fixed C_livery panel sections, decoded from the embedded gyvl
-// body (see LiveryResearch/SECTIONS.md). `subtree` holds the section's decoded
-// group tree (empty for an unpopulated slot).
 struct LiverySection {
-    int slot = 0;            // 0..10, storage order
-    QString name;            // "Front" ... "RightWindow"
-    double rotationDeg = 0;  // scaffold panel orientation {0, 90, -90, 180}
+    int slot = 0;
+    QString name;
+    double rotationDeg = 0;
     bool populated = false;
     VinylGroup subtree;
-    int absPos = 0;          // offset of the slot within the gyvl body
+    int absPos = 0;
 };
 
 class VinylTreeDecoder {
 public:
     LayerData getLayerData(const QByteArray &payload) const;
     VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload = {}) const;
-    // Walk the embedded gyvl body (starting at gyvl-rel 0x15) into its fixed
-    // section slots. `sectionCounts` holds the ground-truth per-section decal
-    // counts (from the yrvl stats chunk) that drive each section's extent.
     QVector<LiverySection> buildLiverySections(const QByteArray &body,
                                                const QVector<int> &sectionCounts) const;
-    // Parameterized walk: pass the slot table and count.
     QVector<LiverySection> buildLiverySections(const QByteArray &body,
                                                const QVector<int> &sectionCounts,
                                                const LiverySlotDef *slotDefs,

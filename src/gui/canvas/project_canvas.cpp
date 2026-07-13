@@ -4,15 +4,10 @@
 
 namespace gui {
 
-// Shared helpers (flatEntry*, EffectiveSelection, collectGuideIds, handle axes,
-// handle-box geometry constants, buildTransformTargetIds, normalizeRotation) live in
-// project_canvas_internal.h so every ProjectCanvas translation unit reuses one definition.
 using namespace pc_detail;
 
 namespace {
 
-// Fallback view extent when there is no project or nothing visible to fit:
-// the default 256-unit vinyl canvas centred on the origin.
 const QRectF DefaultProjectBounds(-128.0, -128.0, 256.0, 256.0);
 
 } // namespace
@@ -26,8 +21,6 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(0);
     setFormat(format);
-    // Keep this modest so the whole window fits low-resolution / high-DPI-scaled
-    // displays (e.g. 1080p at 150% has only ~688 logical px of usable height).
     setMinimumSize(320, 240);
     setAutoFillBackground(false);
     setMouseTracking(true);
@@ -144,8 +137,6 @@ const fh6::scene::Group *ProjectCanvas::sceneTree() const
 
 bool ProjectCanvas::isSectionActive(const QString &sectionGroupId) const
 {
-    // Section filtering only applies to an imported multi-section livery viewed through an
-    // EditorState with a chosen active section; everywhere else every leaf is "active".
     if (state_ == nullptr || project_ == nullptr || !project_->isLivery || state_->activeSectionId_.isEmpty()) {
         return true;
     }
@@ -242,8 +233,6 @@ void ProjectCanvas::setTransformRelativeMode(bool relative)
         return;
     }
     transformRelativeMode_ = relative;
-    // Force the multi-selection frame reference to be recaptured so the box starts axis-aligned
-    // for the current selection when Relative mode is switched on.
     frameLayerSignature_.clear();
     frameGuideSignature_.clear();
     invalidateSelectionCache();

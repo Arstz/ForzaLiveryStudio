@@ -34,9 +34,6 @@ struct TextureSurface {
     QByteArray pixels;
 };
 
-// TextureEncoding values (ForzaTools.Bundles PCTextureContentHeader). Only the
-// single-channel encodings the masks use are decoded; the rest are recognised so
-// we can produce a clear error.
 enum class Encoding : int {
     Bc1 = 0, Bc2 = 1, Bc3 = 2, UnsignedBc4 = 3, SignedBc4 = 4,
     UnsignedBc5 = 5, SignedBc5 = 6, UnsignedBc6H = 7, SignedBc6H = 8,
@@ -426,12 +423,6 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
             return std::nullopt;
         }
 
-        // PCTextureContentHeader layout (see ForzaTools PCTextureContentHeader.Read):
-        //   0x00 u32 metaFixup, 0x04 u32 blobFixup, 0x08 GUID[16],
-        //   0x18 u32 width, 0x1C u32 height, 0x20 u32 depth,
-        //   0x24 u16 packed(numSlices:14|platform:2), 0x26 u8 numMips, 0x27 u8 flags,
-        //   0x28 i32 transcoding, 0x2C i32 encColorProfile, 0x30 i32 targetColorProfile,
-        //   0x34 i32 domain, 0x38 u32 slicesOffset (TXCH-relative).
         const int width = static_cast<int>(readLeU32(bytes, txchData + 0x18));
         const int height = static_cast<int>(readLeU32(bytes, txchData + 0x1C));
         const quint16 packed = readLeU16(bytes, txchData + 0x24);
@@ -448,9 +439,6 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
             return std::nullopt;
         }
 
-        // The slice's encoding (i32) lives at TXCH-relative slicesOffset. When a
-        // transcoding other than None/BcBlockRle is set the effective format is
-        // (transcoding - 2); the masks use plain BC4 with transcoding None.
         const int sliceEnc = static_cast<int>(readLeU32(bytes, txchData + static_cast<int>(slicesOffset)));
         int formatEncoded = sliceEnc;
         if (transcoding > 1) {

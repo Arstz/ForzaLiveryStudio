@@ -27,7 +27,7 @@ struct CanvasColorSettings {
 };
 
 struct TransformModeSettings {
-    bool relativeMode = false; // false = Absolute (world-axis box), true = Relative (box follows shape)
+    bool relativeMode = false;
 };
 
 struct BehaviorSettings {
@@ -44,12 +44,8 @@ struct BehaviorSettings {
     double nudgeStep = 0.1;
     double nudgeShiftStep = 1.0;
     int liveryTextureScale = 4;
-    int autosaveIntervalMinutes = 5; // 0 disables autosave
-    // Folder of the user's extracted car models; used to auto-load the matching car
-    // model for a livery project by its target car id. Empty = not configured.
+    int autosaveIntervalMinutes = 5;
     QString carModelsFolder;
-    // When opening a livery, discard the currently loaded car model (so the livery's
-    // own matching car can take over) instead of keeping it. On by default.
     bool discardModelOnLiveryOpen = true;
 };
 

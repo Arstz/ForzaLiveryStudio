@@ -32,39 +32,29 @@ void main()
 }
 )";
 
-// Body paint applies the livery by runtime planar projection. For each livery
-// side the fragment's world position is projected onto the paint canvas via the
-// side's Masks.xml axes/region; the side's coverage swatchbin clips that
-// projection. The owning side is picked in three steps: the per-mesh allowed_sides
-// mask limits which sides the part may take, a facing-angle gate discards sides the
-// surface is turned away from, and among the survivors the side the fragment faces
-// most directly wins (Left/Right biased over Top on parts that take both). The
-// side_* uniform arrays are sized to the full C_livery side count: body paint
-// slots followed by the glass/window slots.
 constexpr char kFragmentShader[] = R"(#version 330 core
 in vec3 v_normal;
 in vec3 v_world;
 
-uniform sampler2D livery_tex;          // rasterized vinyl paint canvas
-uniform sampler2DArray side_masks;     // per-side coverage swatchbins
+uniform sampler2D livery_tex;
+uniform sampler2DArray side_masks;
 uniform vec3 base_paint;
-uniform int has_livery;                // 1 when this mesh receives the livery
-uniform int side_count;                // sides projected (0 = flat paint)
-uniform vec4 side_axis[11];            // (xAxisIdx, yAxisIdx, xSignScale, ySignScale)
-uniform vec2 side_emin[11];            // min projected (ax, ay) over the panel
-uniform vec2 side_emax[11];            // max projected (ax, ay) over the panel
-uniform vec4 side_region[11];          // (left, right, top, bottom) canvas units
-uniform vec3 side_facing[11];          // outward panel normal
-uniform float side_swap[11];           // 1 when the region is rotated 90 degrees
-uniform float livery_scale;            // global fine-tune multiplier (1.0 = exact)
-uniform int debug_mode;                // 0 normal, 1 projected-UV, 2 side id
-uniform int allowed_sides;             // per-mesh bitmask of sides this part may use
-uniform float facing_min;              // min dot(side facing, normal) to keep a side
-uniform float material_alpha;           // 1 for opaque, <1 for translucent glass
+uniform int has_livery;
+uniform int side_count;
+uniform vec4 side_axis[11];
+uniform vec2 side_emin[11];
+uniform vec2 side_emax[11];
+uniform vec4 side_region[11];
+uniform vec3 side_facing[11];
+uniform float side_swap[11];
+uniform float livery_scale;
+uniform int debug_mode;
+uniform int allowed_sides;
+uniform float facing_min;
+uniform float material_alpha;
 
 out vec4 out_color;
 
-// Distinct debug colour per side index (body slots, then window slots).
 vec3 sideColor(int s)
 {
     if (s == 0) return vec3(1.0, 0.2, 0.2); // Front  red
@@ -85,7 +75,6 @@ float axisComponent(vec3 v, float axis)
     return axis < 0.5 ? v.x : (axis < 1.5 ? v.y : v.z);
 }
 
-// Paint canvas (canvasX in [-1024,1024], canvasY in [-512,512]) to texture UV.
 vec2 canvasToUv(vec2 c)
 {
     return vec2((c.x + 1024.0) / 2048.0, (512.0 - c.y) / 1024.0);
@@ -96,31 +85,18 @@ void main()
     vec3 albedo = base_paint;
     if (has_livery == 1 && side_count > 0) {
         vec3 n = normalize(v_normal);
-        // Every side competes by facing: a fragment goes to whichever side it faces
-        // most directly (highest dot product). The swatch coverage still bounds each
-        // side to its authored region, so a side reaches only as far as its mask.
-        // Parts that also take Top (the body/fenders) give Left/Right a slight bias
-        // so the side wins the side<->Top border instead of Top creeping down onto
-        // it; front/back caps have no Top so they are unaffected.
         float bestScore = 0.0;
         float bestCoverage = 0.0;
         vec2 bestUv = vec2(0.0);
         int bestSide = -1;
         for (int s = 0; s < side_count; ++s) {
-            // Each body part is limited to the sides the game paints it from
-            // (e.g. the trunk never takes Left/Right), so the livery crops at panel
-            // seams instead of bleeding across them via side projection.
             if ((allowed_sides & (1 << s)) == 0) {
                 continue;
             }
-            // facing = cos(angle between the fragment normal and this side's target
-            // facing). A loose threshold lets a side reach into curved nooks; the
-            // per-side selection below stops that reach from bleeding onto the caps.
             float facing = dot(side_facing[s], n);
             if (s < 6 && facing < facing_min) {
                 continue;
             }
-            // Project world pos onto the mask's two signed axes.
             vec4 ax = side_axis[s];
             vec2 av = vec2(axisComponent(v_world, ax.x) * ax.z,
                            axisComponent(v_world, ax.y) * ax.w);
@@ -130,10 +106,10 @@ void main()
             }
             vec2 nrm = (av - side_emin[s]) / range;
             if (side_swap[s] > 0.5) {
-                nrm = vec2(nrm.y, 1.0 - nrm.x); // 90-degree region rotation
+                nrm = vec2(nrm.y, 1.0 - nrm.x);
             }
             nrm = 0.5 + (nrm - 0.5) * livery_scale;
-            vec4 reg = side_region[s]; // left, right, top, bottom
+            vec4 reg = side_region[s];
             vec2 maskCanvas = vec2(mix(reg.x, reg.y, nrm.x), mix(reg.z, reg.w, nrm.y));
             vec2 maskUv = canvasToUv(maskCanvas);
             if (maskUv.x < 0.0 || maskUv.x > 1.0 || maskUv.y < 0.0 || maskUv.y > 1.0) {
@@ -141,18 +117,13 @@ void main()
             }
             float coverage = texture(side_masks, vec3(maskUv, float(s))).r;
             if (coverage <= 0.5) {
-                continue; // only surfaces the swatch authored for this side
+                continue;
             }
-            // Imported livery sections are decoded in editor canvas orientation. Most
-            // model sides need a Y correction, but Back/Left/WindowLeft are authored
-            // mirrored on X instead.
             vec2 paintNrm = (s == 1 || s == 3 || s == 9) ? vec2(1.0 - nrm.x, nrm.y)
                                                           : vec2(nrm.x, 1.0 - nrm.y);
             vec2 paintCanvas = vec2(mix(reg.x, reg.y, paintNrm.x), mix(reg.z, reg.w, paintNrm.y));
             vec2 paintUv = canvasToUv(paintCanvas);
             float score = s >= 6 ? 1.0 : facing;
-            // Bias Left/Right up only on parts that also take Top (allowed bit 2),
-            // i.e. the body/fenders side<->Top border.
             if ((allowed_sides & 4) != 0 && (s == 3 || s == 4)) {
                 score += 2.5;
             }
@@ -164,8 +135,6 @@ void main()
             }
         }
         if (debug_mode == 1 && bestSide >= 0) {
-            // Show the projected paint-canvas UV as red/green: a smooth gradient
-            // across a panel means the projection scale is sane.
             out_color = vec4(bestUv, 0.0, 1.0);
             return;
         }
@@ -174,7 +143,6 @@ void main()
             return;
         }
         if (bestCoverage > 0.5) {
-            // Premultiplied paint over transparent black: base*(1-a) + rgb.
             vec4 paint = texture(livery_tex, bestUv);
             albedo = base_paint * (1.0 - paint.a) + paint.rgb;
         }
@@ -190,9 +158,6 @@ void main()
 
 constexpr int kMaskTextureScale = 2;
 
-// The body livery decal only belongs on paint materials. The main body panel uses
-// "carPaint" (and variants like "carPaint_secondary"); brake calipers use
-// "caliper_paint"/"carpaint_texture" and must be excluded.
 bool isBodyPaintMaterial(const QString &material)
 {
     const QString name = material.toLower();
@@ -352,10 +317,7 @@ void CarModelRenderer::setFacingMin(float cosThreshold)
 
 namespace {
 
-// Outward panel normal per livery side. Forza car space (confirmed against
-// Locators.xml + the decoded geometry): +X right, +Y up, FRONT of the car at +Z,
-// rear at -Z. Top and Spoiler both face up; the spoiler is picked out by mesh
-// name while measuring extents. Window slots use the matching exterior direction.
+// Model space uses +X right, +Y up, and +Z front.
 const QVector3D kFacing[fh6::kLiverySideCount] = {
     QVector3D(0.0f, 0.0f, 1.0f),  // Front (+Z)
     QVector3D(0.0f, 0.0f, -1.0f), // Back  (-Z)
@@ -375,25 +337,19 @@ float axisOf(const fh6::ModelVec3 &v, int axis)
     return axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
 }
 
-// --- Highest-LOD selection -------------------------------------------------
-// Forza parts ship several baked LODs: mesh names end in "_LODS0" for the source
-// LOD and "_LOD1".."_LODn" for reductions. The assembled car keeps them all, so a
-// static preview that draws every mesh gets ~6x body overdraw (paint z-fighting)
-// and a livery extent measurement polluted by the reduced copies. Rank a name's
-// LOD suffix (higher = more detailed) and, per base part, keep only the top rank.
 constexpr int kStandaloneLodRank = 500;
 
 int lodRank(const QString &name)
 {
     const int idx = name.lastIndexOf(QStringLiteral("_LOD"));
     if (idx < 0) {
-        return kStandaloneLodRank; // no LOD suffix: a standalone mesh, always kept
+        return kStandaloneLodRank;
     }
     const QString suffix = name.mid(idx + 4);
     if (suffix.startsWith(QLatin1Char('S')) || suffix.startsWith(QLatin1Char('s'))) {
         bool ok = false;
         const int n = suffix.mid(1).toInt(&ok);
-        return 1000 - (ok ? n : 0); // "_LODS"/"_LODS0" is the source (best) LOD
+        return 1000 - (ok ? n : 0);
     }
     bool ok = false;
     const int n = suffix.toInt(&ok);
@@ -406,9 +362,6 @@ QString lodBase(const QString &name)
     return idx < 0 ? name : name.left(idx);
 }
 
-// Per mesh (by model.meshes index), true when it is the most detailed LOD present
-// for its base part. Parts that exist only as a numbered LOD keep that LOD, so no
-// part is ever dropped entirely.
 std::vector<char> highestLodFlags(const fh6::CarModel &model)
 {
     QHash<QString, int> best;
@@ -427,10 +380,6 @@ std::vector<char> highestLodFlags(const fh6::CarModel &model)
     return keep;
 }
 
-// A carPaint mesh belongs to the rear wing/spoiler side (slot 5). Match the real
-// "wing_a"/"spoiler" body panel but NOT the side mirrors ("wingMirror*"), which are
-// also carPaint and would otherwise stretch the spoiler's projected extent across
-// the whole car (front mirrors + rear wing) and wreck its livery mapping.
 bool isSpoilerMesh(const QString &name)
 {
     if (name.contains(QStringLiteral("mirror"), Qt::CaseInsensitive)) {
@@ -440,7 +389,6 @@ bool isSpoilerMesh(const QString &name)
         || name.contains(QStringLiteral("wing"), Qt::CaseInsensitive);
 }
 
-// Per-side bits, indexed to match kFacing / the shader's side index.
 enum SideBit {
     kSideFront = 1 << 0,
     kSideBack = 1 << 1,
@@ -469,45 +417,31 @@ int singleSideIndex(int mask)
     return side;
 }
 
-// Which livery sides a body part may take, keyed on its model/mesh name (the
-// finest part identity in the model files; the carbin's CCarParts type only
-// distinguishes hood/bumpers/skirts/wing and lumps everything else as CarBody).
-// Limiting the candidate sides per part is what makes the livery crop at panel
-// seams (trunk/hood) rather than bleed via side projection. Unknown names on
-// other cars fall back to all sides, i.e. the previous geometric behaviour.
 int allowedSidesForPart(const QString &rawName)
 {
     const QString n = rawName.toLower();
     const auto has = [&](const char *s) { return n.contains(QLatin1String(s)); };
 
-    // Rear light panel: the painted housing takes Back and wraps to the sides. The
-    // actual lenses are a separate non-paint material and are excluded by
-    // isBodyPaintMaterial anyway, so this only paints the panel, not the lights.
-    // Checked before the "light" exclusion below.
     if (has("taillight")) return kSideBack | kSideLeft | kSideRight;
-    // Interior/trim/optics: no exterior livery. Checked first so "wingMirror",
-    // "hoodLiner", "trunkBay", "engineBay_label", "headlight" etc. never reach the
-    // panel rules below.
     if (has("mirror") || has("liner") || has("jamb") || has("hinge")
         || has("handle") || has("bay") || has("label") || has("light")
         || has("glass") || has("wiper") || has("engine")) {
         return 0;
     }
-    // Exterior panels.
-    if (has("wing")) return kSideSpoiler;                 // rear wing / spoiler
-    if (has("hood")) return kSideTop;                     // hood: top only
-    if (has("trunk")) return kSideBack | kSideTop;        // trunk lid
-    if (has("bumperf")) return kSideFront | kSideLeft | kSideRight; // wraps to sides
-    if (has("bumperr")) return kSideBack | kSideLeft | kSideRight;  // wraps to sides
+    if (has("wing")) return kSideSpoiler;
+    if (has("hood")) return kSideTop;
+    if (has("trunk")) return kSideBack | kSideTop;
+    if (has("bumperf")) return kSideFront | kSideLeft | kSideRight;
+    if (has("bumperr")) return kSideBack | kSideLeft | kSideRight;
     if (has("skirt") || has("sill")) return kSideLeft | kSideRight;
     if (has("door")) {
-        if (n.contains(QLatin1String("doorl"))) return kSideLeft;  // e.g. doorLF
-        if (n.contains(QLatin1String("doorr"))) return kSideRight; // e.g. doorRF
+        if (n.contains(QLatin1String("doorl"))) return kSideLeft;
+        if (n.contains(QLatin1String("doorr"))) return kSideRight;
         return kSideLeft | kSideRight;
     }
     if (has("fender")) return kSideLeft | kSideRight | kSideTop;
     if (has("body")) return kSideLeft | kSideRight | kSideTop | kSideBack;
-    return kAllBodySides; // unknown part: geometric fallback
+    return kAllBodySides;
 }
 
 int allowedWindowSidesForPart(const QString &rawName)
@@ -579,8 +513,6 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
         return;
     }
 
-    // Use the first loaded side's mask dimensions as the source size; every
-    // livery swatchbin is 2048x1024.
     int sourceW = 0, sourceH = 0;
     for (int s = 0; s < kLiverySideCount; ++s) {
         const fh6::SwatchMask &m = masks.sides[s].mask;
@@ -591,14 +523,11 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
         }
     }
     if (sourceW == 0 || sourceH == 0) {
-        return; // no coverage masks
+        return;
     }
     const int texW = sourceW * kMaskTextureScale;
     const int texH = sourceH * kMaskTextureScale;
 
-    // Measure each panel's real extent along its Masks.xml signed axes. Body paint
-    // uses the existing facing/name rules; window glass is assigned by mesh name.
-    // This makes each region fit its panel/window, not the whole car.
     const auto sgn = [](const fh6::LiverySide &L, int which) {
         return which == 0 ? L.xSign * L.xScale : L.ySign * L.yScale;
     };
@@ -607,7 +536,6 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
         axlo[s] = aylo[s] = std::numeric_limits<float>::max();
         axhi[s] = ayhi[s] = std::numeric_limits<float>::lowest();
     }
-    // Measure the extent from the highest LOD only, so reduced LODs don't skew it.
     const std::vector<char> keepLod = highestLodFlags(model);
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         const fh6::CarMesh &mesh = model.meshes[mi];
@@ -632,8 +560,8 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
             } else if (i < mesh.normals.size()) {
                 fh6::ModelVec3 wn = mesh.boneTransform.transformVector(mesh.normals[i]);
                 const QVector3D nv = QVector3D(wn.x, wn.y, wn.z).normalized();
-                float best = 0.3f; // require a clear facing
-                for (int s = 0; s < 5; ++s) { // exclude Spoiler from normal match
+                float best = 0.3f;
+                for (int s = 0; s < 5; ++s) {
                     if ((allowed & (1 << s)) == 0) {
                         continue;
                     }
@@ -697,18 +625,14 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
                                    static_cast<float>(side.yAxis),
                                    sgn(side, 0), sgn(side, 1)));
 
-        // Fall back to a unit range if a side had no assigned geometry.
         const bool have = axhi[s] > axlo[s] && ayhi[s] > aylo[s];
         sideEMin_.append(have ? QVector2D(axlo[s], aylo[s]) : QVector2D(-1.0f, -1.0f));
         sideEMax_.append(have ? QVector2D(axhi[s], ayhi[s]) : QVector2D(1.0f, 1.0f));
 
-        // Canvas region (left, right, top, bottom): ax maps left->right, ay maps
-        // top->bottom (validated offline against the swatchbin coverage).
+        // Region axes map horizontal left-to-right and vertical top-to-bottom.
         sideRegion_.append(QVector4D(side.left, side.right, side.top, side.bottom));
 
         sideFacing_.append(kFacing[s]);
-        // A +/-90 authored rotation becomes an axis swap; 0/180 are handled by the
-        // axis signs alone.
         sideSwap_.append(std::abs(std::abs(side.rotationDeg) - 90.0f) < 1.0f ? 1.0f : 0.0f);
     }
     fns->glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
@@ -722,17 +646,12 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
     }
     clearModel();
 
-    // Draw only the most detailed LOD of each part; the assembled car carries every
-    // baked LOD, and rendering them all overdraws the body and z-fights the paint.
     const std::vector<char> keepLod = highestLodFlags(model);
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         const fh6::CarMesh &mesh = model.meshes[mi];
         if (!keepLod[mi] || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
-        // The car ships exterior and interior window shells at near-identical
-        // positions. Keep the exterior shell for the preview; drawing both causes
-        // angle-dependent depth fighting across the glass.
         if (isInteriorWindowShell(mesh.name)) {
             continue;
         }
@@ -744,9 +663,6 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
             uv = &mesh.uvChannels[mesh.liveryUvChannel];
         }
 
-        // Interleave position(3) / normal(3) / UV padding(2). The livery colour
-        // is sampled by runtime projection; the UV attribute is retained only to
-        // keep the vertex layout stable.
         std::vector<float> interleaved;
         interleaved.reserve(mesh.positions.size() * 8);
         for (size_t i = 0; i < mesh.positions.size(); ++i) {
@@ -777,8 +693,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
         buffers->translucent = windowGlass;
         buffers->alpha = windowGlass ? 0.42f : 1.0f;
 
-        // Bone world matrix is stored in .NET row-vector layout; transpose it into
-        // QMatrix4x4's column-vector (M*v) convention.
+        // Bone matrices cross from row-vector to column-vector convention.
         const auto &m = mesh.boneTransform.m;
         buffers->model = QMatrix4x4(m[0], m[4], m[8], m[12],
                                     m[1], m[5], m[9], m[13],
@@ -837,7 +752,6 @@ void CarModelRenderer::render(
 
     functions->glEnable(GL_DEPTH_TEST);
     functions->glDepthFunc(GL_LEQUAL);
-    // Forza body meshes are authored two-sided; skip culling to avoid holes.
     functions->glDisable(GL_CULL_FACE);
 
     program_.bind();
@@ -846,7 +760,6 @@ void CarModelRenderer::render(
                              static_cast<float>(basePaint.greenF()),
                              static_cast<float>(basePaint.blueF()));
 
-    // The livery needs both the paint canvas and the per-side coverage masks.
     const bool hasLivery = liveryTexture != 0 && sideMaskArray_ != 0 && sideCount_ > 0;
     if (hasLivery) {
         functions->glActiveTexture(GL_TEXTURE0);

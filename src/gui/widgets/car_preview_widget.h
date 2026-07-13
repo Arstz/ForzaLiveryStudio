@@ -1,11 +1,5 @@
 #pragma once
 
-// Dockable 3D preview of a car model with the current vinyl scene applied to its
-// paint surface. Self-contained in its own GL context: it owns a NativeShapeRenderer
-// (+ ShapeGeometryStore) to rasterize the vinyl scene into a texture, and a
-// CarModelRenderer to draw the model by runtime projection through the car's
-// livery masks. The livery texture is only re-rendered when the project changes.
-
 #include "car_model_renderer.h"
 #include "core_types.h"
 #include "livery_masks.h"
@@ -36,16 +30,10 @@ public:
     explicit CarPreviewWidget(QWidget *parent = nullptr);
     ~CarPreviewWidget() override;
 
-    // Loads and displays a car model. Returns false (and sets *error) on failure.
     bool loadCar(const QString &path, QString *error = nullptr);
     bool hasModel() const;
-    // Drops the currently loaded car model (and its livery masks), leaving an empty
-    // preview. Safe to call with no model loaded.
     void clearModel();
 
-    // Builds a canvas-space RGBA overlay of the rendered livery coverage masks
-    // (each side tinted) for the 2D editor to draw as a UV-unwrap guide.
-    // Returns a null image when no livery masks are available.
     QImage unwrapOverlay(int liverySectionSlot = -1) const;
 
     void setProject(fh6::Project *project);
@@ -57,12 +45,9 @@ public:
     void setLiveryTextureScale(int scale);
 
 public Q_SLOTS:
-    // Marks the livery texture stale so it is re-rasterized on the next paint.
     void markLiveryDirty();
     void markLiveryDirtyImmediate();
     void markLiverySectionsDirty(const QVector<QString> &nodeIds);
-    // Geometry-change notification carrying the edited nodes: scopes the livery
-    // re-raster to their section(s) when known, else falls back to a full rebuild.
     void onProjectGeometryChanged(bool refreshPreviews, const QVector<QString> &changedNodeIds);
 
 protected:
@@ -98,7 +83,6 @@ private:
     bool modelUploadPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
 
-    // Per-side livery masks discovered next to the loaded car (LiveryMasks/).
     fh6::LiveryMaskSet liveryMasks_;
     QString liveryMasksDir_;
     bool liveryMasksPending_ = false;
@@ -112,10 +96,8 @@ private:
 
     QColor basePaint_ = QColor(180, 182, 190);
 
-    // Non-interactive "reference only" disclaimer pinned to the top-left corner.
     QLabel *referenceNote_ = nullptr;
 
-    // Orbit camera state.
     QVector3D target_;
     float modelRadius_ = 1.0f;
     float yaw_ = 0.6f;

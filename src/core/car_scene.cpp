@@ -19,8 +19,6 @@ using fh6::detail::readLeU32;
 
 namespace {
 
-// Sequential little-endian reader that throws on any out-of-range access, so a
-// misaligned parse fails cleanly instead of looping or reading garbage.
 struct Cursor {
     const QByteArray &bytes;
     int pos = 0;
@@ -65,17 +63,13 @@ struct Cursor {
 
 enum class Series { Horizon, Motorsport };
 
-// One resolved part instance ready to be baked into the merged model.
 struct PartInstance {
-    QString path;          // raw game:\ path from the carbin
-    ModelMat4 transform;   // CarRenderModel.Transform
+    QString path;
+    ModelMat4 transform;
     QString boneName;
     qint16 boneId = -1;
 };
 
-// Reads a CarRenderModel record, capturing only the fields the preview needs and
-// consuming the rest to stay byte-aligned. Mirrors CarRenderModel.Read for the
-// scene series/version in play (Horizon car files here are model version 21).
 PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
 {
     const quint16 version = c.u16();
@@ -197,7 +191,6 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
     return part;
 }
 
-// Reads a Part (a list of CarRenderModels + optional bounds) into `out`.
 void readPart(Cursor &c, Series series, quint16 sceneVersion, std::vector<PartInstance> &out)
 {
     const quint16 version = c.u16();
@@ -211,8 +204,6 @@ void readPart(Cursor &c, Series series, quint16 sceneVersion, std::vector<PartIn
     }
 }
 
-// Reads the scene and collects the stock (non-upgrade) part instances plus the
-// stock models of upgradable parts.
 std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName, QString &skeletonPath)
 {
     Cursor c(bytes);
@@ -299,9 +290,6 @@ std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName,
     return parts;
 }
 
-// Resolves a game:\media\cars\<media>\... path to a file next to the carbin by
-// taking the tail after the media folder. Windows filesystem is case-insensitive,
-// so the lower-case stored path opens the mixed-case files on disk.
 QString resolvePath(const QString &gamePath, const QString &carbinDir, const QString &mediaName)
 {
     QString normalized = gamePath;
@@ -355,7 +343,7 @@ CarModel loadCarBin(const QString &path, QString *error)
     }
 
     const QString carbinDir = QFileInfo(path).absolutePath();
-    (void)skeletonPath; // the scene skeleton drives animation, not static placement
+    (void)skeletonPath;
 
     CarModel car;
     car.sourcePath = path;
@@ -384,9 +372,6 @@ CarModel loadCarBin(const QString &path, QString *error)
             continue;
         }
 
-        // The carbin bone is resolved against the part's OWN skeleton (usually
-        // absent → identity), matching ForzaTechStudio. The scene skeleton is not
-        // used for static placement.
         ModelMat4 instance = part.transform;
         const std::vector<SkeletonBone> partSkeleton = loadSkeletonBones(bundle);
         if (const SkeletonBone *bone = findBone(partSkeleton, part.boneName, part.boneId)) {
@@ -394,8 +379,6 @@ CarModel loadCarBin(const QString &path, QString *error)
         }
 
         for (CarMesh &mesh : model.meshes) {
-            // Compose the mesh's own bone transform with the part's instance
-            // transform (row-vector order: local * meshBone * instance).
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             for (const ModelVec3 &p : mesh.positions) {
                 const ModelVec3 w = mesh.boneTransform.transformPoint(p);

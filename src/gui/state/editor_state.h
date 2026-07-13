@@ -94,24 +94,13 @@ public:
     void setGroupDescendantColor(const QString &groupId, const std::array<quint8, 4> &color);
     void setGroupDescendantOpacity(const QString &groupId, double opacity);
 
-    // Group coordinate frame in the scene tree.
     QTransform groupLocalFrame(const QString &groupId) const;
-    // World transform of a group's parent chain (composition of ancestor frames).
     QTransform groupParentWorld(const QString &groupId) const;
-    // Accumulate a world-space transform into each group's own frame (the same
-    // worldT already baked into the descendant leaves). Used for numeric edits.
     void transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT);
-    // Set each group's frame to its drag-start frame with worldT applied. Used for
-    // drag gestures that transform from a fixed start each tick.
     void setGroupFramesFromStart(const QHash<QString, QTransform> &startLocalFrames,
                                  const QTransform &worldT);
-    // Top-most groups whose entire descendant-leaf set is currently selected (a
-    // group is excluded if its parent group is also fully selected). These are the
-    // groups a canvas box drag transforms as whole units, so their frames accumulate.
     QVector<QString> fullySelectedTopGroupIds() const;
 
-    // Authoritative scene tree for rendering, bounds, hit-test, and editing.
-    // Returns nullptr when there is no project.
     const fh6::scene::Group *sceneRoot() const;
     fh6::scene::Layer *sceneNode(const QString &id) const;
 
@@ -136,13 +125,8 @@ public:
     void undo();
     void redo();
 
-    // changedNodeIds names the nodes the edit touched, letting the car preview
-    // re-rasterize only their livery section(s). Empty means "unknown" -> full rebuild.
     void noteProjectGeometryChanged(bool refreshPreviews = false, const QVector<QString> &changedNodeIds = {});
     void noteTransformLiveChanged(const QVector<QString> &targetIds);
-    // Lightweight live-edit signal: repaint the canvas only, skipping the tree preview/state
-    // refresh and property-panel rebuild. Used for high-frequency previews (e.g. dragging the
-    // colour picker) where the full geometry refresh is too costly per tick.
     void noteCanvasRepaint();
     void noteProjectStructureChanged();
     void noteClipboardChanged();

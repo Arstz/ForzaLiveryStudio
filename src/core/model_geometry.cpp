@@ -19,8 +19,6 @@ using fh6::detail::readLeU32;
 
 namespace {
 
-// Raw little-endian readers over a char* cursor. Callers only dispatch when the
-// element is known to fit in the buffer.
 quint16 readLeU16Raw(const char *p, int offset)
 {
     return qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(p + offset));
@@ -37,8 +35,6 @@ float readLeFloatRaw(const char *p, int offset)
     return value;
 }
 
-// Sequential little-endian reader over a blob payload. Out-of-range reads return 0
-// and park the cursor at the end, so a truncated blob degrades gracefully.
 struct Cursor {
     const QByteArray &bytes;
     int pos = 0;
@@ -54,7 +50,6 @@ struct Cursor {
     float f32() { float v = has(4) ? readLeFloat(bytes, pos) : 0.0f; pos += 4; return v; }
     void skip(int n) { pos += n; }
 
-    // Int32-length-prefixed Latin-1 string (Syroot StringCoding.Int32CharCount).
     QString stringInt32()
     {
         const int n = i32();
@@ -112,10 +107,9 @@ struct MeshInfo {
 
 struct BufferData {
     quint16 stride = 0;
-    QByteArray raw; // vertex/index bytes after the buffer header
+    QByteArray raw;
 };
 
-// DXGI format byte sizes for the formats the layout uses (ModelImporter.GetFormatSize).
 int formatSize(int fmt)
 {
     switch (fmt) {
@@ -160,8 +154,6 @@ float halfToFloat(quint16 h)
     return sign == 0 ? f : -f;
 }
 
-// Reads a position element. Returns the dequantized (scale/translate-applied) point
-// and the trailing W (used to reconstruct SNORM normals). Ports ReadPositionFull.
 struct PositionSample {
     ModelVec3 pos;
     float w = 0.0f;
@@ -244,7 +236,7 @@ VertexLayout decodeLayout(const BundleBlobRecord &blob)
         e.inputSlot = c.i16();
         c.i16(); // inputSlotClass
         e.format = c.i32();
-        c.i32(); // alignedByteOffset (unused: offsets are recomputed per slot)
+        c.i32(); // alignedByteOffset
         c.i32(); // instanceDataStepRate
         layout.elements.push_back(e);
     }
@@ -343,7 +335,7 @@ MeshInfo decodeMesh(const BundleBlobRecord &blob)
         c.u32(); // source mesh index
     }
     if (blob.isAtLeastVersion(1, 5)) {
-        c.skip(0x10 * 5); // TexCoordTransforms (applied at render time; skipped here)
+        c.skip(0x10 * 5); // TexCoordTransforms
     }
     if (blob.isAtLeastVersion(1, 8)) {
         for (int i = 0; i < 4; ++i) {
@@ -376,8 +368,6 @@ BufferData decodeBuffer(const BundleBlobRecord &blob)
     return out;
 }
 
-// Reads a skeleton blob's bones and accumulates each local matrix up its parent
-// chain into a world matrix. Bone names are preserved for carbin bone lookup.
 std::vector<SkeletonBone> decodeSkeletonBones(const BundleBlobRecord &blob)
 {
     Cursor c(blob.data);
@@ -482,14 +472,11 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
         return model;
     }
 
-    // Index buffer: the reference reader uses the first one for all meshes.
     const BufferData indexBuffer = decodeBuffer(*indexBlobs.front());
 
-    // Vertex buffers keyed both by their identifier metadata and their blob-table
-    // position, matching the two-way resolution in ModelImporter.ReadBuffer.
     std::vector<BufferData> vertexBuffers;
-    std::unordered_map<quint32, int> bufferById;   // Id metadata -> vertexBuffers index
-    std::unordered_map<int, int> bufferByBlobIndex; // bundle blob index -> vertexBuffers index
+    std::unordered_map<quint32, int> bufferById;
+    std::unordered_map<int, int> bufferByBlobIndex;
     vertexBuffers.reserve(vertexBlobs.size());
     for (int blobIdx = 0; blobIdx < static_cast<int>(bundle.blobs.size()); ++blobIdx) {
         const BundleBlobRecord &blob = bundle.blobs[blobIdx];
@@ -504,7 +491,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
         }
     }
 
-    // Vertex layouts by identifier metadata for the primary resolution path.
     std::vector<VertexLayout> layouts;
     std::unordered_map<quint32, int> layoutById;
     layouts.reserve(layoutBlobs.size());
@@ -521,8 +507,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
         boneWorld = decodeSkeletonBones(*skeletonBlobs.front());
     }
 
-    // Material names by identifier, so meshes can report the material they bind
-    // (used to gate the livery decal to body paint surfaces).
     std::unordered_map<quint32, QString> materialNames;
     for (const BundleBlobRecord &blob : bundle.blobs) {
         if (blob.id.has_value() && !blob.name.isEmpty()) {
@@ -550,13 +534,10 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
     for (int mi = 0; mi < static_cast<int>(meshBlobs.size()); ++mi) {
         const MeshInfo info = decodeMesh(*meshBlobs[mi]);
 
-        // Skip shadow-caster meshes (flat black proxies with no material); they add
-        // z-fighting artifacts and never carry a livery.
         if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0) {
             continue;
         }
 
-        // Resolve layout: Id first, then array index, then first.
         const VertexLayout *layout = nullptr;
         if (auto it = layoutById.find(static_cast<quint32>(info.vertexLayoutIndex)); it != layoutById.end()) {
             layout = &layouts[it->second];
@@ -615,8 +596,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
 
         std::vector<float> posW(vertexCount, 0.0f);
 
-        // Compute the per-slot byte offset of each element (offsets accumulate in
-        // layout order within each input slot; AlignedByteOffset is ignored).
         std::unordered_map<int, int> slotOffset;
         struct Elem {
             const VertexElement *desc;
@@ -630,8 +609,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
             off += formatSize(e.format);
         }
 
-        // Reads one attribute for every vertex in [minIndex, maxIndex] from the
-        // buffer bound to the element's input slot. Ports ModelImporter.ReadBuffer.
         auto readAttribute = [&](const Elem &elem, auto &&perVertex) {
             const VertexElement &e = *elem.desc;
             const VbUsage *usage = nullptr;
@@ -664,7 +641,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
             }
         };
 
-        // Pass 1: positions (also captures W for SNORM normal reconstruction).
         for (const Elem &elem : elements) {
             if (layout->semanticFor(*elem.desc) != QStringLiteral("POSITION")) {
                 continue;
@@ -676,7 +652,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
             });
         }
 
-        // Pass 2: normals and UV channels.
         int maxChannel = -1;
         for (const Elem &elem : elements) {
             const QString semantic = layout->semanticFor(*elem.desc);
@@ -703,8 +678,6 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
             }
         }
 
-        // Livery/paint decals are authored on UV channel 4 in the reference tooling;
-        // fall back to channel 0 when the model has no dedicated paint channel.
         out.liveryUvChannel = (out.uvChannels.size() > 4 && !out.uvChannels[4].empty()) ? 4 : 0;
 
         for (const ModelVec3 &p : out.positions) {

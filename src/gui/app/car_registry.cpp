@@ -72,10 +72,6 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error)
         if (!ok) {
             continue;
         }
-        // Entries are {"model": "<code>", "name": "<friendly>"}; the friendly name
-        // is what the picker and details view show, the model code is how the car's
-        // files/folders are named on disk. A bare-string value is also accepted for
-        // forward/backward compatibility.
         QString name;
         QString model;
         if (it.value().isObject()) {
@@ -181,7 +177,6 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId)
             QListWidgetItem *item = list->item(row);
             item->setHidden(!needle.isEmpty() && !item->text().contains(needle, Qt::CaseInsensitive));
         }
-        // Keep a visible row selected so Ok stays actionable.
         QListWidgetItem *current = list->currentItem();
         if (current == nullptr || current->isHidden()) {
             for (int row = 0; row < list->count(); ++row) {

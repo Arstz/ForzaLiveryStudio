@@ -7,12 +7,9 @@
 namespace fh6 {
 namespace {
 
-// Slot -> (Masks.xml tag, swatchbin file stem). The window sections map to the
-// "Glass_*" masks; slot 5 (Spoiler) maps to "Wing". Slot 8 (TopWindow /
-// Glass_Top) is valid="false" on real cars and ships no swatchbin.
 struct SideDef {
     const char *maskTag;
-    const char *swatchStem; // file is <stem>.swatchbin, or nullptr if none
+    const char *swatchStem;
 };
 constexpr SideDef kSideDefs[kLiverySideCount] = {
     {"Front", "front"},
@@ -28,7 +25,6 @@ constexpr SideDef kSideDefs[kLiverySideCount] = {
     {"Glass_Right", "glass_Right"},
 };
 
-// Parses an axis token like "-x" / "+y" / "z" into an index (0=x,1=y,2=z) and sign.
 void parseAxis(const QString &token, int &axis, float &sign)
 {
     sign = 1.0f;
@@ -103,7 +99,6 @@ LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error)
     }
     set.loaded = true;
 
-    // Load each side's coverage swatchbin (missing ones are tolerated).
     for (int i = 0; i < kLiverySideCount; ++i) {
         if (kSideDefs[i].swatchStem == nullptr) {
             continue;

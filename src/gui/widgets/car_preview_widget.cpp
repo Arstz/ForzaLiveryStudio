@@ -15,10 +15,6 @@
 namespace gui {
 namespace {
 
-// The vinyl paint canvas is rasterized at the livery canvas resolution: canvasX
-// in [-1024, 1024], canvasY in [-512, 512] (see fh6::kLiveryCanvas*). A 2048x1024
-// texture matches that 2:1 space 1:1; the runtime scale is user-configurable so
-// projection sampling can trade memory for detail once clipped by UV masks.
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
 constexpr int kProjectedSectionToMaskSlot[fh6::kLiverySideCount] = {
@@ -138,9 +134,6 @@ QVector<ProjectedLiverySection> buildProjectedLiverySections(const fh6::Project 
         ProjectedLiverySection projected;
         projected.project.name = QStringLiteral("%1/%2").arg(project.name, section->name);
         projected.clipRect = liverySideClipRect(side, texSize);
-        // Imported C_livery sections are authored around their own panel origin.
-        // For the car texture, place each panel origin on the matching Masks.xml
-        // paint-canvas origin while keeping decoded section/group geometry intact.
         collectProjectedShapes(*section, QTransform(), side.xOrigin, side.yOrigin, *projected.project.root);
         if (projected.project.root->children.empty()) {
             continue;
@@ -203,8 +196,6 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
 
-    // Non-interactive disclaimer pinned to the top-left corner: the runtime planar
-    // projection is an approximation of the game's own paint pipeline.
     referenceNote_ = new QLabel(QStringLiteral("Only for reference, ingame render may differ"), this);
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
     referenceNote_->setStyleSheet(QStringLiteral(
@@ -262,8 +253,6 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
     extractedCarDir_ = std::move(extracted);
     modelUploadPending_ = true;
 
-    // A car ships its per-side livery masks in a sibling LiveryMasks/ folder.
-    // Decode them on the CPU now; they are uploaded to GL on the next paint.
     liveryMasks_ = {};
     const QDir carDir = QFileInfo(loadPath).absoluteDir();
     const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
@@ -314,7 +303,6 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
     if (!liveryMasks_.valid()) {
         return {};
     }
-    // Per-side tint (matches the 3D debug side colours).
     static const QColor kSideColors[fh6::kLiverySideCount] = {
         QColor(230, 60, 60),   // Front
         QColor(60, 200, 60),   // Back
@@ -329,7 +317,6 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
         QColor(255, 140, 255), // RightWindow
     };
 
-    // Find the mask dimensions (every swatchbin is the same size).
     int w = 0, h = 0;
     for (const fh6::LiverySide &side : liveryMasks_.sides) {
         if (side.mask.valid()) {
@@ -375,9 +362,6 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
         const double sy = static_cast<double>(h) / (2.0 * fh6::kLiveryCanvasHalfHeight);
         const int x0 = std::clamp(static_cast<int>(std::floor((left + fh6::kLiveryCanvasHalfWidth) * sx)), 0, w);
         const int x1 = std::clamp(static_cast<int>(std::ceil((right + fh6::kLiveryCanvasHalfWidth) * sx)), 0, w);
-        // `y` here is a swatch texel row, which is Y-flipped vs canvas: texel_y =
-        // halfHeight - canvasY (see livery_masks.h). So the covered texel rows for a
-        // canvasY span [top, bottom] are [(half - bottom), (half - top)] * sy.
         const int y0 = std::clamp(static_cast<int>(std::floor((fh6::kLiveryCanvasHalfHeight - bottom) * sy)), 0, h);
         const int y1 = std::clamp(static_cast<int>(std::ceil((fh6::kLiveryCanvasHalfHeight - top) * sy)), 0, h);
         if (x1 <= x0 || y1 <= y0) {
@@ -487,9 +471,6 @@ void CarPreviewWidget::markLiveryDirty()
 
 void CarPreviewWidget::markLiveryDirtyImmediate()
 {
-    // Full rebuild on the next paint (Qt coalesces repeated update() calls into one paintGL,
-    // so the livery texture is rebuilt at most once per painted frame). No car -> nothing to
-    // show, so skip the work.
     if (!hasModel()) {
         return;
     }
@@ -498,9 +479,6 @@ void CarPreviewWidget::markLiveryDirtyImmediate()
 
 void CarPreviewWidget::onProjectGeometryChanged(bool, const QVector<QString> &changedNodeIds)
 {
-    // Known edit targets -> scope the re-raster to their section(s) (markLiverySectionsDirty
-    // itself falls back to a full rebuild if none resolve to a livery section). No target
-    // ids -> the edit's scope is unknown, so rebuild everything.
     if (changedNodeIds.isEmpty()) {
         markLiveryDirty();
         return;
@@ -533,8 +511,6 @@ void CarPreviewWidget::initializeGL()
         shapeRenderer_.uploadGeometry(geometry_);
     }
     carRenderer_.initialize();
-    // A fresh GL context means the persistent livery framebuffer is empty; force the
-    // next paint to do a full rebuild before any incremental (section-scoped) redraw.
     liveryTexture_ = 0;
     liveLiveryFullDirty_ = true;
     liveryDirty_ = true;
@@ -562,19 +538,15 @@ void CarPreviewWidget::paintGL()
         liveryMasksPending_ = false;
     }
 
-    // Rasterize the vinyl scene into the shape renderer's own FBO. This leaves
-    // framebuffer 0 bound and the viewport set to the livery texture size.
     GLuint liveryTexture = 0;
     if (project_ != nullptr && geometryLoaded_ && shapeRenderer_.isInitialized()) {
         if (liveryDirty_ || liveryTexture_ == 0) {
             const QSize texSize = liveryTextureSize();
             const bool projectImportedLivery = project_->isLivery && liveryMasks_.valid();
-            // Full rebuild wipes and redraws every section; otherwise only the sections in
-            // dirtySectionIds_ are re-projected and re-rasterized over the persistent texture.
             const bool fullRebuild = liveLiveryFullDirty_ || liveryTexture_ == 0
                 || projectedSectionCache_.isEmpty() || dirtySectionIds_.isEmpty();
             QVector<ProjectedLiverySection> projectedSections;
-            QVector<int> dirtyIndices;  // indices into projectedSections re-rasterized this frame
+            QVector<int> dirtyIndices;
             if (projectImportedLivery && project_->root) {
                 QSet<QString> liveSectionIds;
                 for (const auto &rootChild : project_->root->children) {
@@ -623,12 +595,6 @@ void CarPreviewWidget::paintGL()
                 };
                 GLuint tex = 0;
                 if (!fullRebuild && liveryTexture_ != 0 && !dirtyIndices.isEmpty()) {
-                    // Redraw only the connected cluster of sections whose atlas rects overlap the
-                    // edited one(s). A section's clear could erase a neighbour that shares pixels,
-                    // so grow the set until it is closed under rect intersection; the rest of the
-                    // texture is preserved. (Livery side rects are bounding boxes, so overlap is
-                    // common even when the sampled content is distinct - hence a cluster, not just
-                    // the dirty sections.)
                     const int n = projectedSections.size();
                     QVector<bool> inCluster(n, false);
                     QVector<int> stack;
@@ -649,7 +615,7 @@ void CarPreviewWidget::paintGL()
                         }
                     }
                     int nonEmptyCount = 0;
-                    QVector<ProjectedLiverySection> cluster;  // original order preserved
+                    QVector<ProjectedLiverySection> cluster;
                     for (int i = 0; i < n; ++i) {
                         if (projectedSections[i].clipRect.isEmpty()) {
                             continue;
@@ -659,8 +625,6 @@ void CarPreviewWidget::paintGL()
                             cluster.push_back(projectedSections[i]);
                         }
                     }
-                    // Only worth it if the cluster spares some sections; a whole-atlas cluster
-                    // falls through to a single full-texture clear + redraw below.
                     if (!cluster.isEmpty() && cluster.size() < nonEmptyCount) {
                         QVector<fh6::Project> clusterProjects;
                         QVector<QRect> clusterClips;
@@ -671,7 +635,6 @@ void CarPreviewWidget::paintGL()
                     }
                 }
                 if (tex == 0) {
-                    // Full rebuild (also the fallback when the cluster spans the whole atlas).
                     QVector<fh6::Project> sectionProjects;
                     QVector<QRect> clipRects;
                     collect(projectedSections, sectionProjects, clipRects);
@@ -690,7 +653,6 @@ void CarPreviewWidget::paintGL()
         liveryTexture = liveryTexture_;
     }
 
-    // Restore the widget's framebuffer + viewport before drawing the car.
     const qreal dpr = devicePixelRatioF();
     const int pw = std::max(1, static_cast<int>(std::lround(width() * dpr)));
     const int ph = std::max(1, static_cast<int>(std::lround(height() * dpr)));
@@ -734,12 +696,7 @@ QSize CarPreviewWidget::liveryTextureSize() const
 
 QTransform CarPreviewWidget::liveryWorldToScreen() const
 {
-    // Map livery canvas coords (canvasX in [-1024,1024], canvasY in [-512,512]) to
-    // texture pixels so a texel's UV equals the shader's canvasToUv():
-    //   u = (cx + 1024)/2048,  v = (512 - cy)/1024.
-    // NativeShapeRenderer's screen y is top-left, then OpenGL stores the FBO with
-    // bottom-left texture coordinates. py = 512 + cy therefore lands on the row
-    // sampled by v, without a vertical flip.
+    // Canvas and OpenGL texture coordinates use opposite vertical origins.
     const QSize texSize = liveryTextureSize();
     const double sx = static_cast<double>(texSize.width()) / (2.0 * fh6::kLiveryCanvasHalfWidth);
     const double sy = static_cast<double>(texSize.height()) / (2.0 * fh6::kLiveryCanvasHalfHeight);
@@ -794,10 +751,8 @@ void CarPreviewWidget::wheelEvent(QWheelEvent *event)
 
 void CarPreviewWidget::keyPressEvent(QKeyEvent *event)
 {
-    // 'P' cycles the livery debug view.
     switch (event->key()) {
     case Qt::Key_P:
-        // Cycle debug: 0 normal -> 1 projected UV -> 2 side id -> 0.
         carRenderer_.setDebugMode((carRenderer_.debugMode() + 1) % 3);
         break;
     default:

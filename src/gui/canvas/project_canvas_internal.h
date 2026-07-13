@@ -1,11 +1,5 @@
 #pragma once
 
-// Shared implementation helpers for the ProjectCanvas translation units
-// (project_canvas.cpp and its per-concern siblings project_canvas_hit/drag/
-// cursor/paint/events.cpp). These are the anonymous-namespace helpers that were
-// duplicated across those concerns; keeping them here lets each unit reuse one
-// definition. Unit-local helpers stay in their own file's anonymous namespace.
-
 #include "layer.h"
 #include "matrix_math.h"
 #include "scene_view.h"
@@ -26,33 +20,19 @@
 namespace gui {
 namespace pc_detail {
 
-// Reuse the canonical [0,360) wrap from core rather than shadowing it.
 using fh6::normalizeRotation;
 
-// --- Selection-box handle geometry ---------------------------------------
-constexpr double HandleHalf = 6.0;            // drawn handle marker half-size
-// Scale lives in a band that straddles each edge: it reaches ScaleGrabInside into the box
-// (so the visible edge itself grabs Scale) and ScaleGrabOutside past it, while the interior
-// beyond the band stays Move. Biased outward so the box interior reads as Move almost
-// everywhere. Where two edge bands meet (the corners) Scale becomes two-axis.
+constexpr double HandleHalf = 6.0;
 constexpr double ScaleGrabInside = 12.0;
 constexpr double ScaleGrabOutside = 12.0;
-// Rotate is the outer-anchor affordance: it lives strictly outside the box, in the diagonal
-// region past each corner, out to this reach. Scale is resolved first, so along the sides the
-// scale band wins and Rotate only claims the area past the corner anchors.
 constexpr double RotateCornerReach = 131.0;
 constexpr double SkewHandleOffset = 30.0;
 constexpr double ClickDragThreshold = 5.0;
 
-// Selection-flash timing (shared: the canvas ctor seeds the frame interval; the paint unit
-// drives the period/duration envelope).
 constexpr qint64 SelectionFlashDurationMs = 750;
 constexpr qint64 SelectionFlashPeriodMs = 3750;
 constexpr int SelectionFlashFrameMs = 33;
 
-// --- Scene-leaf local transforms and rects --------------------------------
-// World-space readers use sceneWorldTransform() so group frames are included; these are the
-// leaf's own local frame and intrinsic (centred) rect.
 inline QTransform flatEntryTransform(const fh6::scene::Shape &layer)
 {
     QTransform transform;
@@ -96,7 +76,6 @@ inline QRectF flatEntryRect(const fh6::scene::GuideLayer &guide)
     return sceneLocalRect(size);
 }
 
-// --- Selection partitioning ----------------------------------------------
 struct EffectiveSelection {
     QVector<QString> groupIds;
     QSet<QString> groupedLayerIds;
@@ -124,8 +103,6 @@ inline void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out)
     }
 }
 
-// Unique, order-preserving id list for a transform command: whole groups first, then loose
-// shapes, then loose guides.
 inline QVector<QString> buildTransformTargetIds(const QVector<QString> &groupIds,
                                                 const QVector<fh6::scene::Shape *> &layers,
                                                 const QVector<fh6::scene::GuideLayer *> &guides)
@@ -151,8 +128,6 @@ inline QVector<QString> buildTransformTargetIds(const QVector<QString> &groupIds
     return ids;
 }
 
-// --- Scale/skew handle axes ----------------------------------------------
-// Which box axes a named scale handle drives ("top_left" -> left + top, ...).
 struct HandleAxes {
     bool left = false;
     bool right = false;
@@ -166,8 +141,6 @@ inline HandleAxes handleAxes(const QString &handle)
             handle.contains(QStringLiteral("top")), handle.contains(QStringLiteral("bottom"))};
 }
 
-// Grabbed handle point and its opposite anchor, in the box's local rect coords. Returns false
-// for the skew handle or a non-directional handle, or when handle and anchor coincide.
 inline bool handleAnchorLocalPoints(const QString &handle, const QRectF &rect, QPointF *handlePoint, QPointF *anchorPoint)
 {
     const HandleAxes axes = handleAxes(handle);

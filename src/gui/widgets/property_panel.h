@@ -36,9 +36,6 @@ public:
                                        const QTransform &boxFrame,
                                        bool valid);
     void setDebugVisible(bool visible);
-    // Sprite size lookup (shape id -> local size) so multi/group transforms can
-    // pivot about the selection's true visual bounding box. Optional: without it
-    // the pivot falls back to the bounding box of item positions.
     void setSpriteSizeFn(std::function<QSizeF(int)> fn);
     void setShapeVisualBoundsFn(std::function<QRectF(int)> fn);
     void setGuideColorSampleFn(std::function<std::optional<QColor>()> fn);
@@ -53,17 +50,12 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-    // Detach the project's containers and re-resolve the cached selection
-    // pointers so edits made through them cannot rewrite a copy-on-write undo
-    // snapshot. Must be called after EditorState::beginProjectEdit().
     void detachSelectionForEdit();
     void setSelectionByIds(const QSet<QString> &layerIds,
                            const QSet<QString> &guideIds,
                            const QVector<QString> &groupIds);
 
     QDoubleSpinBox *floatBox(double low, double high);
-    // Shape and guide selections have separate single/multi refresh paths (guides
-    // lack the shape-only fields: shapeId/skew/mask/color).
     void setSingleLayer(const fh6::scene::Shape *layer);
     void setSingleGuide(const fh6::scene::GuideLayer *guide);
     void setMultipleLayers(const QVector<fh6::scene::Shape *> &layers);
@@ -75,16 +67,9 @@ private:
     void endValueLabelDrag(bool commit);
     void applySingle();
     void applyMulti(QWidget *sender, const QString &property);
-    // True when the transform fields drive the whole selection as one unit (a group,
-    // or 2+ loose shapes) rather than a single shape. Guides are never box selections.
     bool isBoxSelection() const;
-    // Enable + reset the transform fields to their neutral box-proxy baseline
-    // (x/y = box centre, scale = 1, rotation/skew = 0) for a box selection.
     void setBoxProxyFields(bool neutralTransformValues = true);
-    // Visual bounding-box centre of the current shape selection, in world units.
     QPointF selectionBoxCenter() const;
-    // Apply a box-frame transform for property `property` changing from `fromValue`
-    // to `toValue` (about the selection centre) to every selected shape.
     void applyBoxTransform(const QString &property, double fromValue, double toValue);
     void pickColor();
     void updateColorButton();
@@ -118,15 +103,10 @@ private:
     QHash<QString, double> valueLabelLayerStartValues_;
     QHash<QString, double> valueLabelGuideStartValues_;
     QHash<QString, double> valueLabelGroupStartValues_;
-    // Box-transform label drag: each shape's local->world transform captured at
-    // press, plus the pivot, so the whole selection transforms as a unit from a
-    // fixed reference (mirrors the canvas group-drag math).
     bool valueLabelBoxDrag_ = false;
     bool valueLabelUsesTransformCommand_ = false;
     QPointF valueLabelBoxCenter_;
     QHash<QString, QTransform> valueLabelLayerStartTransforms_;
-    // Each selected group's own frame captured at drag start, so a box drag moves
-    // the group frame from a fixed reference (mirrors the leaf start transforms).
     QHash<QString, QTransform> valueLabelGroupStartFrames_;
     QSet<QString> valueLabelLayerIds_;
     QSet<QString> valueLabelGuideIds_;

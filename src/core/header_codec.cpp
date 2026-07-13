@@ -35,9 +35,6 @@ void appendUtf16(QByteArray &out, const QString &text)
 
 QByteArray defaultTrailing(quint32 typeValue)
 {
-    // The 24-byte draft trailing observed in fixtures: u32 0, u32 typeValue copy,
-    // then 16 zero bytes. Keeping the copy equal to typeValue preserves the
-    // type/trailing correlation seen in the originals.
     QByteArray trailing;
     detail::appendLeU32(trailing, 0);
     detail::appendLeU32(trailing, typeValue);
@@ -96,7 +93,6 @@ HeaderMetadata parseHeader(const QByteArray &bytes)
     meta.creatorName = readUtf16(bytes, offset, creatorLen);
     offset += static_cast<int>(creatorLen) * 2;
 
-    // 28 bytes of zero padding then the sec3 header at a deterministic offset.
     const int sec3Offset = offset + PaddingBeforeSec3;
     if (!detail::bytesAt(bytes, sec3Offset, {0x01, 0x02})) {
         throw std::runtime_error("header sec3 marker not found at expected offset");
@@ -179,14 +175,14 @@ HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorNam
     const QDate today = QDate::currentDate();
     meta.year = static_cast<quint16>(today.year());
     meta.month = static_cast<quint8>(today.month());
-    meta.day = 0; // fixtures store day == 0
+    meta.day = 0;
     meta.fieldBlock = QByteArray(FieldBlockSize, '\0');
-    meta.fieldBlock[12] = 2; // only reliably-constant byte in the block
+    meta.fieldBlock[12] = 2;
     meta.creatorTag = QByteArray(CreatorTagSize, '\0');
     meta.creatorName = creatorName;
     meta.typeValue = 0;
     meta.guid = QUuid::createUuid().toRfc4122();
-    meta.trailing.clear(); // buildHeader synthesizes the 24-byte default
+    meta.trailing.clear();
     meta.parsedOk = true;
     return meta;
 }

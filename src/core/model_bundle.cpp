@@ -18,10 +18,6 @@ namespace {
 constexpr int BlobInfoSize = 0x18;     // per-blob header record size
 constexpr int MetadataInfoSize = 0x08; // per-metadata header record size
 
-// Reads the metadata records for one blob and folds the ones geometry cares about
-// (Id / Name / BBox) into the record. Each metadata header lives at
-// metadataOffset + i*8: tag(4), flags(2) [size<<4 | version], relOffset(2), with
-// the payload at (recordBase + relOffset) for `size` bytes.
 void readBlobMetadata(const QByteArray &bytes, quint32 metadataOffset, quint32 metadataCount,
                       BundleBlobRecord &blob)
 {
@@ -89,7 +85,6 @@ ModelBundle parseModelBundle(const QByteArray &bytes)
     bundle.versionMajor = static_cast<quint8>(bytes[4]);
     bundle.versionMinor = static_cast<quint8>(bytes[5]);
 
-    // File header layout is version-gated (Bundle.cs:66-78).
     int pos = 6;
     quint32 blobCount = 0;
     if (bundle.versionMajor > 1 || (bundle.versionMajor == 1 && bundle.versionMinor >= 1)) {
@@ -100,7 +95,7 @@ ModelBundle parseModelBundle(const QByteArray &bytes)
         pos += 4;
     } else {
         blobCount = readLeU16(bytes, pos);
-        pos += 2 + 8;                        // u16 count then skip 8 bytes
+        pos += 2 + 8;                        // u16 count + 8 bytes
     }
 
     const int blobHeadersStart = pos;
@@ -131,7 +126,6 @@ ModelBundle parseModelBundle(const QByteArray &bytes)
             }
             bundle.blobs.push_back(std::move(blob));
         } catch (const std::exception &) {
-            // Skip a malformed blob but keep the rest of the table.
         }
     }
 

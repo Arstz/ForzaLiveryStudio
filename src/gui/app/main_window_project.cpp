@@ -23,14 +23,14 @@ using namespace mw_detail;
 void MainWindow::setProject(fh6::Project project)
 {
     state_->setProject(std::move(project));
-    projectJsonPath_.clear();  // imports/new projects have no associated .json yet
+    projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
     autoExpandedGroupIds_.clear();
     if (canvas_ != nullptr) {
         canvas_->setProject(&state_->project_);
     }
     if (state_->project_.isLivery) {
-        rebuildSectionBar();  // selects the first populated section (tree + canvas)
+        rebuildSectionBar();
         prebakeLiverySectionCaches();
     } else {
         if (sectionBar_ != nullptr) {
@@ -52,25 +52,23 @@ void MainWindow::maybeAutoLoadCarForProject()
     }
     const fh6::Project &project = state_->project_;
     if (!project.isLivery) {
-        return;  // group projects keep whatever model is loaded
+        return;
     }
 
     BehaviorSettings settings = loadBehaviorSettings();
     if (carPreview_->hasModel()) {
-        // Keep the current model unless the user wants it discarded on livery open.
         if (!settings.discardModelOnLiveryOpen) {
             return;
         }
         carPreview_->clearModel();
     }
     if (project.carId == 0) {
-        return;  // nothing to auto-load (model already discarded above if requested)
+        return;
     }
-    // The friendly name is for messages; the model code is how files are named on disk.
     const QString modelName = sharedCarRegistry().name(project.carId);
     const QString modelCode = sharedCarRegistry().modelCode(project.carId);
     if (modelCode.isEmpty()) {
-        return;  // unknown car id -> nothing to match against
+        return;
     }
 
     QString folder = settings.carModelsFolder;
@@ -124,7 +122,6 @@ QString MainWindow::findCarModelPath(const QString &folder, const QString &model
     }
     const QStringList exts = {QStringLiteral("carbin"), QStringLiteral("zip"), QStringLiteral("modelbin")};
 
-    // 1) Direct <modelName>.<ext> next to the folder root.
     for (const QString &ext : exts) {
         const QString candidate = dir.filePath(QStringLiteral("%1.%2").arg(modelName, ext));
         if (QFileInfo(candidate).isFile()) {
@@ -132,7 +129,6 @@ QString MainWindow::findCarModelPath(const QString &folder, const QString &model
         }
     }
 
-    // Returns the first .carbin (then .zip) inside a directory, or empty.
     const auto modelInDir = [](const QString &dirPath) -> QString {
         QDir sub(dirPath);
         for (const QString &pattern : {QStringLiteral("*.carbin"), QStringLiteral("*.zip")}) {
@@ -144,8 +140,6 @@ QString MainWindow::findCarModelPath(const QString &folder, const QString &model
         return QString();
     };
 
-    // 2) Case-insensitive match at the root: a <modelName>.<ext> file or a same-named
-    //    subfolder holding a car model.
     const QFileInfoList entries = dir.entryInfoList(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
     for (const QFileInfo &info : entries) {
         if (info.isFile()) {
@@ -161,9 +155,6 @@ QString MainWindow::findCarModelPath(const QString &folder, const QString &model
         }
     }
 
-    // 3) Bounded recursive fallback: some libraries nest cars under manufacturer or
-    //    variant subfolders. Look for a directory named after the model code holding a
-    //    car model, or a <modelName>.carbin/.zip anywhere under the folder.
     QDirIterator it(folder, QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         const QString entryPath = it.next();
@@ -201,20 +192,12 @@ void MainWindow::setActiveSection(const QString &sectionGroupId)
 {
     state_->setActiveSectionId(sectionGroupId);
 
-    // Draw only this section on the canvas by toggling layer visibility (a view
-    // operation; livery view is read-only so this does not disturb edits). Do
-    // this before rebuilding the tree because thumbnail generation skips hidden
-    // leaves and group badges read descendant visibility.
     applyLiverySectionVisibility(sectionGroupId);
 
-    // Show only this section's contents in the tree.
     treeModel_->setProjectSection(&state_->project_, sectionGroupId);
 
     state_->selectedLayerIds_.clear();
     if (canvas_ != nullptr) {
-        // Refit to the now-visible section (projectBounds() ignores hidden
-        // layers) without replacing the project pointer, so per-section canvas
-        // render caches survive tab switches.
         canvas_->refitView();
         canvas_->invalidateSelectionCache();
         canvas_->update();
@@ -323,8 +306,6 @@ void MainWindow::updateStatus()
         return;
     }
 
-    // Prefer the project's own header creator; fall back to the app-wide default creator
-    // (which the Project > Creator Name dialog also edits) when the project has no header.
     QString creator = state_->project_.headerMetadata ? state_->project_.headerMetadata->creatorName : QString();
     if (creator.isEmpty()) {
         creator = creatorName_;
@@ -415,8 +396,6 @@ void MainWindow::updateSelectionFromTree()
             guideIds.insert(id);
         }
     }
-    // The selection change below re-enters syncTreeSelectionFromIds() synchronously; suppress
-    // its reveal so a click in the layers list doesn't scroll the list back to that row.
     suppressTreeReveal_ = true;
     state_->setSelectionFromEntries(ids, guideIds, entryIds);
     suppressTreeReveal_ = false;
@@ -437,13 +416,6 @@ void MainWindow::syncTreeSelectionFromIds()
     QModelIndex firstSelected;
     QModelIndex firstExactLeaf;
     QModelIndex firstFullGroup;
-    // A row is "covered" when all of its leaves are selected: a group when its whole
-    // leaf set is a subset of the selection, a leaf when it is itself selected, a guide
-    // when its guide id is selected. Selection is stored only as flat leaf ids, so this
-    // is how we recover which group rows to highlight. Computed bottom-up and memoized by
-    // entry id (a group is covered iff every child is covered) so we never re-walk a group's
-    // whole leaf list once per child - that was O(rows x groupLeaves) and dominated the cost
-    // of selecting large groups.
     QHash<QString, bool> coveredById;
     std::function<bool(const QModelIndex &)> coveredFor = [&](const QModelIndex &index) -> bool {
         if (!index.isValid()) {
@@ -473,16 +445,13 @@ void MainWindow::syncTreeSelectionFromIds()
     };
     std::function<void(const QModelIndex &)> visit = [&](const QModelIndex &parent) {
         const int rows = treeModel_->rowCount(parent);
-        const bool parentCovered = coveredFor(parent);  // false at the root; O(1) once memoized
+        const bool parentCovered = coveredFor(parent);
         for (int row = 0; row < rows; ++row) {
             const QModelIndex index = treeModel_->index(row, 0, parent);
             visit(index);
             if (!index.isValid()) {
                 continue;
             }
-            // Select the topmost covered row: if an ancestor group is also fully covered
-            // it already represents this row, so selecting several groups highlights the
-            // group rows rather than expanding to (and selecting) their individual leaves.
             const bool selected = coveredFor(index) && !parentCovered;
             if (selected) {
                 tree_->selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
@@ -691,7 +660,6 @@ void MainWindow::setCreatorNameDialog()
     if (trimmed == current) {
         return;
     }
-    // Persist as the default creator for future new projects, and stamp the open project.
     creatorName_ = trimmed;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
     if (state_->project_.headerMetadata) {

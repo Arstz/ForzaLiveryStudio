@@ -70,7 +70,6 @@ QString colorSwatchToJson(const std::array<quint8, 4> &color)
 
 bool looksGzipped(const QByteArray &bytes)
 {
-    // Gzip streams start with the magic bytes 0x1f 0x8b; bare JSON never does.
     return bytes.size() >= 2 && static_cast<quint8>(bytes[0]) == 0x1f
         && static_cast<quint8>(bytes[1]) == 0x8b;
 }
@@ -78,7 +77,7 @@ bool looksGzipped(const QByteArray &bytes)
 QByteArray gzipCompress(const QByteArray &data)
 {
     z_stream stream{};
-    // windowBits 15 + 16 selects the gzip wrapper (rather than raw zlib).
+    // zlib window bits with gzip framing.
     if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
                      Z_DEFAULT_STRATEGY) != Z_OK) {
         throw std::runtime_error("failed to initialize gzip compressor");
@@ -106,7 +105,7 @@ QByteArray gzipCompress(const QByteArray &data)
 QByteArray gzipDecompress(const QByteArray &data)
 {
     z_stream stream{};
-    // windowBits 15 + 32 auto-detects a gzip or zlib header.
+    // zlib window bits with automatic gzip/zlib detection.
     if (inflateInit2(&stream, 15 + 32) != Z_OK) {
         throw std::runtime_error("failed to initialize gzip decompressor");
     }
@@ -816,8 +815,6 @@ Project importCLivery(const QString &folderOrFile)
     }
     project.isLivery = true;
     project.carId = livery.carId;
-    // Keep the decompressed payload and header sidecar so the livery encoder can
-    // rebuild a game-ready container on export (applying the current carId).
     project.liverySource = livery.raw;
     project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
     scene::ensureProjectSceneRoot(project);
@@ -889,7 +886,6 @@ Project importCLivery(const QString &folderOrFile)
         };
 
     for (const LiverySection &section : sections) {
-        // Every slot becomes a top-level section folder, even when empty.
         ++groupIndex;
         auto sectionGroup = std::make_unique<scene::Group>();
         sectionGroup->id = groupIdForIndex(groupIndex);
@@ -960,8 +956,6 @@ Project projectFromJson(const QJsonObject &object)
         project.liverySource = QByteArray::fromBase64(liverySource.toLatin1());
     }
     if (object.value(QStringLiteral("header_metadata")).isObject()) {
-        // New projects keep structured metadata here; export builds the header from
-        // it when sourceHeader is empty (see exportFlatProjectFolder).
         project.headerMetadata = headerMetadataFromJson(object.value(QStringLiteral("header_metadata")).toObject());
     }
 
@@ -1087,9 +1081,6 @@ Project decodeProjectDocument(const QByteArray &fileBytes)
 
 namespace {
 
-// Shared export scaffolding for flat and nested folders: create the folder, copy
-// sidecars, write the given C_group payload, and emit the header (byte-exact
-// rename of an imported header, or synthesized from headerMetadata).
 void writeExportFolder(const Project &project, const QString &outputFolder,
                        const QString &name, const QByteArray &payload)
 {
@@ -1109,9 +1100,9 @@ void writeExportFolder(const Project &project, const QString &outputFolder,
     const QString outputName = name.isEmpty() ? QFileInfo(outputFolder).fileName() : name;
     QByteArray headerBytes;
     if (!project.sourceHeader.isEmpty()) {
-        headerBytes = renameHeader(project.sourceHeader, outputName); // imported: byte-exact + rename
+        headerBytes = renameHeader(project.sourceHeader, outputName);
     } else if (project.headerMetadata) {
-        HeaderMetadata meta = *project.headerMetadata; // new vinyl: synthesize from metadata
+        HeaderMetadata meta = *project.headerMetadata;
         meta.name = outputName;
         headerBytes = buildHeader(meta);
     }
@@ -1199,7 +1190,6 @@ QByteArray encodeCLiveryPayload(const Project &project)
     if (vlrc < 0 || vlrc + 0x14 > payload.size()) {
         throw std::runtime_error("livery source is missing its vlrc root header");
     }
-    // Write the target car id into the vlrc root header (rel 0x10).
     writeLeU32InPlace(payload, vlrc + 0x10, static_cast<quint32>(project.carId));
 
     if (source.gyvlOffset < 4) {
@@ -1229,11 +1219,8 @@ void exportCLivery(const Project &project, const QString &outputFolder)
     }
     QDir outputDir(outputFolder);
 
-    // C_livery uses the same 8-byte-header + zlib container as C_group.
     writeCGroupFile(outputDir.filePath(QStringLiteral("C_livery")), payload);
 
-    // header sidecar: carry the original bytes, patching the car id (u32 at len-20,
-    // right before the trailing 16-byte GUID) so it stays consistent with vlrc 0x10.
     QByteArray header = project.sourceHeader;
     if (!header.isEmpty()) {
         if (header.size() >= 20) {
@@ -1242,7 +1229,6 @@ void exportCLivery(const Project &project, const QString &outputFolder)
         writeRawFile(outputDir.filePath(QStringLiteral("header")), header);
     }
 
-    // thumbnail: the game reads bigThumb.webp; carry the source thumbnail over.
     if (!project.sourceFolder.isEmpty()) {
         const QString thumb = QDir(project.sourceFolder).filePath(QStringLiteral("bigThumb.webp"));
         if (QFile::exists(thumb)) {

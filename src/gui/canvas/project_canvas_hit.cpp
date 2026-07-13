@@ -4,9 +4,6 @@
 
 namespace gui {
 
-// Shared helpers (flatEntry*, EffectiveSelection, collectGuideIds, handle axes,
-// handle-box geometry constants, buildTransformTargetIds, normalizeRotation) live in
-// project_canvas_internal.h so every ProjectCanvas translation unit reuses one definition.
 using namespace pc_detail;
 
 
@@ -17,8 +14,6 @@ QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries()
     }
     updateViewTransform();
     hitCache_.clear();
-    // Topmost-first so the cache lists candidates in front-to-back pick order. Invisible
-    // leaves (e.g. an inactive C_livery section) are skipped => not pickable.
     forEachSceneShape([&](const fh6::scene::Shape &shape, const QTransform &world, int drawOrder) {
         if (shape.visible) {
             const QPolygonF polygon = screenQuad(world, sceneLocalRect(shape, geometry_));
@@ -44,7 +39,7 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
         const QPolygonF polygon = screenQuad(world, sceneLocalRect(guide, geometry_));
         if (polygon.boundingRect().contains(point) && pointInPolygon(point, polygon)) {
             hit = guide.id;
-            return false;  // topmost hit wins
+            return false;
         }
         return true;
     }, /*reverse=*/true);
@@ -85,7 +80,7 @@ std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &poin
         }
         const QColor color = QColor::fromRgba(image.pixel(x, y));
         if (color.alpha() == 0) {
-            return true;  // transparent here => keep looking at guides below
+            return true;
         }
         result = color;
         return false;
@@ -177,11 +172,6 @@ QString ProjectCanvas::selectTargetAtScreenPoint(const QPointF &point, Qt::Keybo
 
 const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const
 {
-    // Cache the world-axis union of the selection's bounds (invalidated on any
-    // selection/geometry change) so the selection-flash repaints don't rescan every layer each
-    // frame. Computed inline from the selection id sets - NOT via selectedLayers(), which calls
-    // lockedLayerIds() (a full buildEntryMaps) and would drop the box entirely if any selected
-    // layer were locked; this path runs every paint/drag frame.
     if (!selectionWorldBoundsCache_.has_value()) {
         BoundsAccumulator acc;
         if (project_ != nullptr && state_ != nullptr) {
@@ -214,8 +204,6 @@ QRectF ProjectCanvas::selectedScreenBounds() const
     if (project_ == nullptr || state_ == nullptr) {
         return {};
     }
-    // The world-AABB box and the view have no rotation, so the screen bounds are just the world
-    // bounds mapped through the current view transform.
     const QRectF worldBounds = cachedSelectionWorldBounds();
     if (!worldBounds.isValid()) {
         return {};
@@ -254,15 +242,12 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
         return box;
     }
 
-    // Detect a selection change so the Relative multi-selection box's reference rotation can be
-    // recaptured (lazy, so it never resets mid-drag where the selection is stable).
     const bool signatureChanged = selLayers != frameLayerSignature_ || selGuides != frameGuideSignature_;
     if (signatureChanged) {
         frameLayerSignature_ = selLayers;
         frameGuideSignature_ = selGuides;
     }
 
-    // Absolute mode (default): identity frame over the world-axis AABB - reduces to legacy.
     if (!transformRelativeMode_) {
         const QRectF worldBounds = cachedSelectionWorldBounds();
         if (!worldBounds.isValid()) {
@@ -274,8 +259,6 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
         return box;
     }
 
-    // Relative mode, single item: the box is the shape's own transformed rect (parallelogram,
-    // skew included), so scaling is a pure per-axis scale of the shape's local axes.
     if (count == 1) {
         if (!effective.groupIds.isEmpty()) {
             const QString id = effective.groupIds.front();
@@ -322,14 +305,10 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
         return box;
     }
 
-    // Relative mode, multi-selection/group: oriented bounding box at the derived frame angle.
     const QRectF worldBounds = cachedSelectionWorldBounds();
     if (!worldBounds.isValid()) {
         return box;
     }
-    // The frame angle follows the primary selected item's rotation since selection time. Read it
-    // live from layer data so undo/redo restore the box orientation along with the shapes. The
-    // primary is the first selected item in project order, for deterministic, stable choice.
     double primaryRotation = 0.0;
     bool hasPrimary = false;
     if (project_->root) {
@@ -361,15 +340,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
         frameReferenceRotation_ = primaryRotation;
     }
     double frameAngle = normalizeRotation(primaryRotation - frameReferenceRotation_);
-    // A non-uniform group scale (or shear) applies a world affine to every child, and
-    // decomposeScaleResult() re-extracts each child's rotation from the result - which drifts for
-    // any child rotated relative to the box axes, the primary included. Deriving the frame angle
-    // from the primary's live rotation would then spin the whole box while a scale/skew handle is
-    // dragged (and leave it tilted afterwards): an artifact carried over from the image_transformer
-    // port, not an intended rotation. While such a drag is active, pin the frame to the angle
-    // captured at press (held in dragStartBox_) and rebase the reference so the pinned angle also
-    // survives the release. The extent below still recomputes live, so the box keeps tightly
-    // bounding the shapes as they scale; only its orientation is held steady.
+    // Affine decomposition changes child rotations, so active drags pin the box orientation.
     if ((dragMode_ == DragMode::Scale || dragMode_ == DragMode::Skew) && dragStartBox_.valid) {
         frameAngle = normalizeRotation(std::atan2(dragStartBox_.localToWorld.m12(),
                                                   dragStartBox_.localToWorld.m11())
@@ -530,9 +501,6 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     if (!invertible) {
         return {};
     }
-    // Work in the box's local frame: the box is its axis-aligned localRect there, so the legacy
-    // band logic applies verbatim once the screen-pixel reach constants are converted to local
-    // units using the per-axis screen length of each local unit vector (handles rotation/skew).
     const QPointF local = toLocal.map(point);
     const QPointF originScreen = toScreen.map(box.localRect.center());
     const double lenX = QLineF(originScreen, toScreen.map(box.localRect.center() + QPointF(1.0, 0.0))).length();
@@ -547,7 +515,6 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     const double handleHalfX = HandleHalf / lenX;
     const double handleHalfY = HandleHalf / lenY;
 
-    // Skew handle sits just above the top edge, for single shapes and groups alike.
     {
         const QPointF skew(box.localRect.center().x(), box.localRect.top() - SkewHandleOffset / lenY);
         if (std::abs(local.x() - skew.x()) <= handleHalfX && std::abs(local.y() - skew.y()) <= handleHalfY) {
@@ -555,9 +522,6 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
         }
     }
 
-    // Scale band straddling each edge: it reaches ScaleGrabInside into the box and
-    // ScaleGrabOutside past it. The interior beyond the band is left to Move; the area past a
-    // corner is left to Rotate (rotateZoneAt). Where two edge bands meet, Scale is two-axis.
     const double left = box.localRect.left();
     const double right = box.localRect.right();
     const double top = box.localRect.top();
@@ -566,12 +530,9 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     const bool nearRight = local.x() >= right - insideX && local.x() <= right + outsideX;
     const bool nearTop = local.y() >= top - outsideY && local.y() <= top + insideY;
     const bool nearBottom = local.y() >= bottom - insideY && local.y() <= bottom + outsideY;
-    // Single-axis scale only counts when the orthogonal coordinate lies within the box's
-    // span, so it never bleeds into the diagonal corner-proximity (rotate) regions.
     const bool spanX = local.x() >= left && local.x() <= right;
     const bool spanY = local.y() >= top && local.y() <= bottom;
 
-    // Corners (two-axis) take priority over the sides.
     if (nearLeft && nearTop) {
         return QStringLiteral("top_left");
     }
@@ -584,7 +545,6 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     if (nearRight && nearBottom) {
         return QStringLiteral("bottom_right");
     }
-    // Sides (single-axis).
     if (nearLeft && spanY) {
         return QStringLiteral("left");
     }
@@ -602,11 +562,6 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
 
 bool ProjectCanvas::rotateZoneAt(const QPointF &point, const SelectionBox &box) const
 {
-    // Rotate is the outer-anchor affordance: strictly outside the box, in the diagonal region
-    // past a corner. Move owns the interior and Scale owns the edges and corner anchors
-    // (resolved by transformHandleAt before this is consulted), so anything reaching here near
-    // an edge is already past the scale band  Ewe only claim past the corner. Reach stays in
-    // screen pixels; the inside/outward tests run in the box's (possibly rotated) local frame.
     if (!box.valid) {
         return false;
     }
@@ -643,8 +598,6 @@ bool ProjectCanvas::selectionIsGroupLike() const
     if (state_ == nullptr) {
         return false;
     }
-    // Counting the selection id sets is O(1) and avoids resolving every selected pointer each
-    // paint (this runs inside drawOverlay, including during the selection-flash repaints).
     return state_->selectedLayerIds().size() + state_->selectedGuideLayerIds().size() > 1;
 }
 

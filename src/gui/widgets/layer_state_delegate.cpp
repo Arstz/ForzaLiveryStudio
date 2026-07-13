@@ -43,9 +43,6 @@ QPixmap badgePixmap(const QString &fileName)
     return pixmap.scaled(BadgeSize, BadgeSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 }
 
-// The badge assets are monochrome (#000000 on transparent) so they are invisible
-// when blitted straight onto the dark layer tree. Recolor them by keeping the
-// glyph's alpha and replacing the RGB with a palette-driven foreground color.
 QPixmap tinted(const QPixmap &source, const QColor &color)
 {
     if (source.isNull()) {
@@ -107,15 +104,12 @@ LayerStateDelegate::LayerStateDelegate(EditorState *state, QObject *parent)
 void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
     const bool isGuide = index.data(LayerTreeModel::IsGuideRole).toBool();
-    // Tint the whole guide-layer row so it reads as a guide at a glance; text/icon keep
-    // the normal layer colors. Selection highlight takes precedence when active.
     if (isGuide && !(option.state & QStyle::State_Selected)) {
         painter->fillRect(option.rect, QColor(0x9c, 0x85, 0x5a));
     }
     QStyleOptionViewItem itemOption(option);
     const int badgeCount = isGuide ? 2 : 3;
     const int badgesBlock = BadgeRightMargin + BadgeSize * badgeCount + BadgeGap * (badgeCount - 1);
-    // Reserve room for the draw-order position label ("#3" / "#3-7") between the text and badges.
     const QString positionText = index.data(LayerTreeModel::PositionTextRole).toString();
     const int positionWidth = positionText.isEmpty()
         ? 0
@@ -141,8 +135,6 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
         painter->setOpacity(opacity);
         painter->drawPixmap(topLeft, colored);
     };
-    // Visible/Locked use dedicated on/off glyphs; Mask has a single glyph so its
-    // off state is shown dimmed (low brightness) per the original spec.
     drawBadge(Badge::Visible, visible ? visible_ : invisible_, 1.0);
     if (!isGuide) {
         drawBadge(Badge::Mask, maskOn_, mask ? 1.0 : 0.35);
@@ -150,8 +142,6 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     drawBadge(Badge::Locked, locked ? locked_ : unlocked_, 1.0);
     painter->restore();
 
-    // Draw the position label in the reserved slot between the row text and the badges, dimmed
-    // so it reads as secondary metadata.
     if (!positionText.isEmpty()) {
         const int right = option.rect.right() - badgesBlock - PositionGap;
         const QRect positionRect(right - positionWidth, option.rect.top(), positionWidth, option.rect.height());

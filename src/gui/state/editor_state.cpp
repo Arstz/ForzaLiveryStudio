@@ -201,11 +201,6 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
         return;
     }
     ensureSceneTree();
-    // Recompute the cached world transforms of each changed node and its descendants with a
-    // single top-down walk that carries the parent world down (same composition order as
-    // ensureRenderCache). This computes each shared ancestor once instead of once per leaf, so a
-    // group drag is O(subtree) rather than O(selected_leaves x depth) of full worldMatrix() calls
-    // plus an O(total) scan.
     std::function<void(const fh6::scene::Layer &, const QTransform &)> apply =
         [&](const fh6::scene::Layer &node, const QTransform &parentWorld) {
             const QTransform world = stateToQTransform(node.transform.matrix()) * parentWorld;
@@ -224,7 +219,6 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
         if (node == nullptr) {
             continue;
         }
-        // Parent chain is walked once per changed node, not once per descendant leaf.
         const QTransform parentWorld =
             node->parent() != nullptr ? stateToQTransform(node->parent()->worldMatrix()) : QTransform();
         apply(*node, parentWorld);

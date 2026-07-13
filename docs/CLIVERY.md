@@ -46,23 +46,20 @@ length. Other 4-letter ASCII runs found by a naive scan are float data, not tags
 
 ```text
 0x00 4 bytes  tag "vlrc"
-0x04 u32      version = 2  (constant across all 46 samples)
+0x04 u32      version = 2
 0x08 u32      source flag. 0 for a locally-authored livery; 1 on a subset of
               downloaded/shared liveries (all with a foreign, non-null creator id).
               For a from-scratch save: 0.
 0x0c u32      0  (constant)
 0x10 u32      car id — which car the livery is for (decimal). Matches the u32 in
-              the car's .carbin (before its name) and the tests/liveries/Livery_<id>
-              folder numbers (e.g. 1294 = gmc_syclone_92). This is how the game knows
-              which car to apply the livery to; see assets/cars/car_ids.json.
+              the car's .carbin and assets/cars/car_ids.json.
 0x14 u32      category/type field. Small enum-or-bitmask, observed {0,1,2,4,6}
-              (looks like bits 0x01|0x02|0x04). 0 in every hand-authored sample
-              (Empty / One* / FrontBack / TwoFront), so 0 is safe for from-scratch.
+              (looks like bits 0x01|0x02|0x04). Use 0 for from-scratch output.
 0x18 u16      0  (constant)
 ```
 
 Every field here except the car id is either a fixed constant or safely 0 for a
-newly-authored livery. Deduced from all 46 `tests/liveries` samples.
+newly-authored livery.
 
 ## gyvl — Embedded C_group Header
 
@@ -110,31 +107,19 @@ Recognize both suffixes with `(byte & ~0x40) == 0x30`.
 A **separate** (pending) transform — one that stands before a group rather than
 inside its header — collapses to just a single **lead byte** + the 16-float
 payload; the trailing `01`/`03` run of the inline form is dropped. The lead is the
-standalone marker's leading control/bitmap byte and is therefore **arbitrary** —
-surveyed across the production samples it takes values `00 01 03 07 0f 10 19 1e 1f
-33 3c 43 71 c3 f6 ff …`, spanning even bytes too. **It cannot be matched by value.**
+standalone marker's leading control/bitmap byte and is therefore **arbitrary**,
+including both odd and even values. **It cannot be matched by value.**
 A separate transform must be recognized purely **structurally**: a lead byte + a
 valid 16-float payload (+ optional 30/70 suffix) followed by a group through one
 of the bounded successor forms below. Requiring the following group is what makes
 an arbitrary lead unambiguous against a per-shape flag byte in front of a `01 02`
 shape. The one extra byte-level guard is to reject a lead whose *next* byte begins
-a shape. Any lead-value allow-list — `{00,01}`, then `{00, odd}` — silently drops
-the transform of any group whose lead falls outside it (`07` on Livery_0423 Top,
-the even `3c` on Livery_1379 Right),
-leaving that group at identity. See the first-group-in-section case below and
-`isLiveryTransformLead` in the decoder.
+a shape. See `isLiveryTransformLead` in the decoder.
 
 A separate transform's group need not sit **immediately** after the payload — a
-single flag/control byte can intervene: `<lead> <payload> <flag> <group>`. Two
-mirror-image copies of the same artwork can even encode the same group differently
-— Livery_2357 stores a count-11 group on the Right side as a counted `00 <payload>
-20 0b …` (no gap) and on the mirrored Left side as a markerless `00 <payload> 00 0b
-00 02 …` (a `00` flag before the markerless count). A separate-transform reader
-must accept the group at `next` **or** one flag byte later, then let the walker
-consume that flag while the pending transform carries through; requiring the group
-flush against the payload drops the transform *and* the whole group (the group's
-shapes then decode as loose siblings, so a section that is a copy of another decodes
-with a different tree).
+single flag/control byte can intervene: `<lead> <payload> <flag> <group>`. A
+separate-transform reader accepts the group at `next` or one flag byte later, then
+lets the walker consume the flag while carrying the pending transform forward.
 
 There is an ambiguity between that one-byte-gap form and a flag immediately before
 another separate transform. A sequence `<flag> <lead> <payload> <group>` can also
@@ -152,39 +137,23 @@ the group:
 <lead> <payload> [30/70 + scale_y] 21 ?? ?? ?? ?? ?? ?? 09 00 <group>
 ```
 
-The middle six bytes vary. The complete trailer is opaque framing and must be
-consumed atomically; walking it as flags can cause a byte inside the preceding
-transform to be accepted as a new lead, replacing the real transform with
-misaligned floats. Livery_4038 Right repeats this form before its top-level groups:
-recognizing the frame recovers transforms such as `px=-80 py=-70.5 sx=0.08` and
-prevents the final group from acquiring a false negative scale.
+The middle six bytes vary. The complete trailer is opaque framing and is consumed
+atomically so its bytes cannot be reinterpreted as transform leads.
 
 The confirmed group-successor offsets are therefore 0 bytes, one flag byte, or
 the exact 9-byte frame. Scanning an arbitrary distance for a group is unsafe
 because transform payload and shape bytes frequently contain plausible
 markerless counts.
 
-That intervening flag byte has a second trap: the **greedy standalone transform
-reader must be disabled while a separate transform is already pending**. A markerless
-group's own little-endian count can spell a false `<x> 03` transform marker at the
-flag position — Livery_3629 Top has a `00` flag before a count-3 group (`03 00 01
-…`), and the `03` there is the count high nibble region, not a transform terminator.
-If the greedy reader runs at that byte it reads 16 misaligned payload bytes (yielding
-`sx=sy≈179`) and **overwrites the real pending transform**, so the group's shapes
-render hundreds of times too wide. With a transform pending, that byte is a flag to
-consume, not a new transform to read.
+While a separate transform is pending, an intervening flag remains part of that
+successor form. Reading a second standalone transform at the flag position can
+reinterpret group-count bytes as a transform marker and replace the aligned
+pending payload.
 
-The same flag-byte trap exists for **shapes**. A shape record is `00 02`/`01 02`
-(32 B) or a bare `02` (31 B); a single per-shape flag byte can also precede a shape
-(e.g. a `02` before an `01 02` shape). The bare-`02` shape detector can then mistake
-that flag byte for a shape whose id and `px/py/sx` happen to read as plausible — but
-its `scale_y` lands on unrelated bytes and reads as an astronomically large value
-(≈1e23). Validate the **full** transform of a candidate shape, `scale_y` included
-(real shapes stay well under a few hundred), so the impostor is rejected and the flag
-byte falls through to be consumed, letting the real shape at the next byte decode.
-Both traps are the same lesson: the game emits lone flag bytes before records, and
-every greedy matcher must sanity-check enough of the record to let a flag fall
-through rather than swallow it.
+The same ambiguity exists for **shapes**. A shape record is `00 02`/`01 02`
+(32 B) or a bare `02` (31 B), and a single per-shape flag byte can precede it.
+Validate the **full** transform of a candidate shape, including `scale_y`, before
+accepting a bare record.
 
 The 03→01 collapse makes the bare livery `01` marker **ambiguous**: it is the
 collapse of *both* a standalone `01 03` separate transform (whose signed-Y suffix
@@ -193,9 +162,7 @@ a standalone bare `03` separate transform (whose negative signed-Y is **real** �
 genuine vertical flip). Tell them apart by the group's inline first-child marker:
 the `03` form carries one (`inl = 01 01`), the spurious `01 03` form does not. So a
 bare-`01` group keeps its negative `sy` when it has a non-empty inline marker, and
-only normalises `sy` to positive when the inline marker is empty. (Livery_3629 Top's
-first row group has `sx=0.647 sy=-0.647`; normalising it mirrored all 158 shapes of
-that row to the wrong side.)
+normalises `sy` to positive when the inline marker is empty.
 
 Everything else — counted groups, markerless groups, inline first-child
 transforms, masks, flattening — follows the `C_group` rules unchanged.
@@ -222,11 +189,8 @@ A populated slot's **first** top-level group is wrapped in a markerless group wh
 header is `<count> 00 <child_blocks> 00 … 00` (count = the wrapper's direct
 children; `child_blocks` = ceil(count/8) bitmap bytes, all `00`; two control bytes
 `00`), and that first child group is preceded by a **separate transform** carrying
-the section's placement (position, scale and one of the {0, 90, -90, 180}
-orientations, e.g. `rot=270`). That transform's lead byte is arbitrary (see above):
-`07` on Livery_0423 Top (`px=99 py=-3 sx=0.23 rot=270`, the 72-shape group), the
-even `3c` on Livery_1379 Right (`px=-51.5 py=-20.6 sx=0.32 rot=358`, the 996-shape
-group) — any lead-value allow-list dropped these, decoding the group at identity.
+the section's placement (position, scale and orientation). That transform's lead
+byte is arbitrary (see above).
 Subsequent top-level groups in the slot use their own separate transforms the same
 way (an ordinary bare `00` when the placement is simple).
 
@@ -259,14 +223,8 @@ an ordinary 32-byte shape record (`00 02`/`01 02` + payload) whose **shape id ha
 the high bit set**. This marks it as a raster decal rather than an ID from the
 built-in vector registry; the raster id is `id & 0x7fff`, indexing the `yrvl`
 descriptor table. Its transform is **arbitrary**, exactly like a vector
-shape: position, scale, rotation, skew and color are all whatever the author placed
-it at. Do NOT assume an identity transform or a white color — a decoder that only
-recognises an identity-placed opaque-white logo (the old rule) fails to consume a
-real placed logo's 32-byte record, then the high id also fails the built-in
-registry check, so the record is walked one byte at a time and the whole
-slot desyncs (Livery_2357 Left: the "layer ~130" logo `id 0xa715 scale 0.22
-rot 359` broke the walk, so the first group swallowed the rest of the slot).
-Recognise a logo by `id ≥ 0x8000` with a sane (shape-valid) transform.
+shape: position, scale, rotation, skew and color are all encoded in the record.
+Recognise a logo by `id ≥ 0x8000` with a sane shape transform.
 
 One logo is one physical gyvl record, but the corresponding section's `yrvl` count
 can retain the number of vector decals from which that uploaded logo was created.
@@ -303,10 +261,8 @@ The livery-level record between `vlrc` and `gyvl`. Fully parsed:
 0x00 4 bytes  tag "yrvl"
 0x04 u32      size = 19 (constant)
 0x08 8 bytes  creator id (author GUID). Always ends in the constant suffix
-              ...0900. A locally-authored / anonymous livery uses the null author
-              0000000000000900 — a value the game itself writes (seen in several
-              samples), so it is the correct choice for from-scratch.
-0x10 u32      flag = 1  (0 in two shared-livery outliers; use 1 for from-scratch)
+              ...0900. Use the null author 0000000000000900 for from-scratch output.
+0x10 u32      flag. Use 1 for from-scratch output.
 0x14 u8       0
 0x15 u32      gyvl body length — MUST equal the byte length of the following gyvl
               chunk body (gyvl tag start .. next yrvl). This is the one computed
@@ -318,35 +274,27 @@ The livery-level record between `vlrc` and `gyvl`. Fully parsed:
 ### yrvl stats (52 B) — per-section decal counts
 
 `u32` counters starting right after the 4-byte `yrvl` tag (no size field), 12 in
-all. The first 11 are the decal counts per section, in storage order (confirmed
-one-by-one from the `One<Panel>` samples, each of which sets exactly one slot to
-1); all zero for an empty livery. These counts drive the section walk (a section
-is consumed until its decals reach its count). The 12th u32 is a small counter,
-0 in every hand-authored and most captured samples (only two outliers show 1 / 6);
-write 0.
+all. The first 11 are the decal counts per section in storage order. These counts
+drive the section walk. The 12th u32 is a small counter; write 0.
 
 ### yrvl descriptor table (variable)
 
-A panel/graphic registry. For any livery whose artwork uses only the game's
-built-in shapes it is a **592-byte global constant** — byte-identical across every
-`One*`, `Empty`, `FrontBack`, `TwoFront` sample AND across different cars
-(car 1294 vs 383). Its layout: an `00 02` header, 8 fixed block/material GUIDs
+A panel/graphic registry. For artwork using built-in shapes it is a **592-byte
+global constant**. Its layout: an `00 02` header, 8 fixed block/material GUIDs
 (32-byte records), 11 fixed panel GUIDs (`…ffffffff 00000000 <panel-guid>`), then
 a tail `0b 00 00 00` (=11) followed by the 11 panel GUIDs concatenated. All of
 these GUIDs are global constants (not car- or livery-specific).
 
 The table grows only when the artwork references **custom uploaded graphics**
 (shared logos/decals, which carry their own share GUIDs) — the extra size is
-dominated by 27-byte-per-reference records (most sample deltas are exact multiples
-of 27; a few other record kinds exist). Built-in-shape liveries add nothing, which
-is why the whole `One*` set keeps the 592-byte constant even with a decal placed.
-So: **a from-scratch livery using only built-in shapes can emit the 592-byte
+dominated by 27-byte-per-reference records, with other record kinds also present.
+**A from-scratch livery using only built-in shapes can emit the 592-byte
 constant verbatim.** The per-custom-graphic record layout is the one remaining
 open item, needed only for uploaded-logo support.
 
 ### yrvl terminator (8 B)
 
-Constant across all samples:
+Constant terminator:
 
 ```text
 "yrvl" 00 00 00 00

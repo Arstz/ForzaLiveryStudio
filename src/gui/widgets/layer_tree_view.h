@@ -13,9 +13,6 @@ class QPaintEvent;
 
 namespace gui {
 
-// QTreeView for the layer hierarchy: sibling-only internal drag/drop reordering
-// with a custom drop-indicator line and drag cursors. All external drops (URLs)
-// are refused so the main window can handle file drops instead.
 class LayerTreeView final : public QTreeView {
 public:
     using QTreeView::QTreeView;

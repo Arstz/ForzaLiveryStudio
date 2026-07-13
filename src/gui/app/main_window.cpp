@@ -32,12 +32,8 @@ MainWindow::MainWindow(QWidget *parent)
     setupToolbar();
     setupWindowMenu();
 
-    // Capture the freshly built layout so Reset Layout can return to it, then
-    // restore any previously saved layout (mirrors the Python _restore_layout).
     defaultLayoutState_ = saveState();
     restoreLayout();
-    // restoreLayout() may drop docks into different areas than their install-time
-    // fallback, so re-point every collapse arrow at its dock's actual area.
     syncDockCollapseButtons();
 
     updateStatus();

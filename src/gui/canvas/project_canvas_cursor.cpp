@@ -4,9 +4,6 @@
 
 namespace gui {
 
-// Shared helpers (flatEntry*, EffectiveSelection, collectGuideIds, handle axes,
-// handle-box geometry constants, buildTransformTargetIds, normalizeRotation) live in
-// project_canvas_internal.h so every ProjectCanvas translation unit reuses one definition.
 using namespace pc_detail;
 
 namespace {
@@ -27,13 +24,8 @@ QString assetPath(const QString &fileName)
     return candidates.front();
 }
 
-// Standard logical cursor size. Cursor art is authored at 2x; keep it smaller
-// than the source art so transform cursors do not obscure the handles.
 constexpr int LogicalCursorSize = 21;
 
-// Device pixel ratio of the primary screen (>= 1). The cursor pixmap is rendered
-// at this many physical pixels per logical pixel and tagged with it, so it stays
-// LogicalCursorSize *logical* pixels on every display.
 double cursorScaleFactor()
 {
     double scale = 1.0;
@@ -45,8 +37,6 @@ double cursorScaleFactor()
 
 QCursor assetCursor(const QString &fileName)
 {
-    // Cursors are requested on every mouse-move; cache them so we never hit the
-    // filesystem (stat + pixmap decode) on the interactive hot path.
     static QHash<QString, QCursor> cache;
     const auto cached = cache.constFind(fileName);
     if (cached != cache.constEnd()) {
@@ -61,11 +51,6 @@ QCursor assetCursor(const QString &fileName)
         return cursor;
     }
 
-    // Render the art at LogicalCursorSize logical pixels, tagging the pixmap with the
-    // screen dpr so it stays that logical size (and crisp) on hi-dpi displays. The tool
-    // cursors carry their own padding inside the art, but the arrow (Cursor.xpm) is drawn
-    // edge-to-edge, so it would otherwise render about twice as large as a normal pointer;
-    // halve its target to bring it back to the standard small size.
     const double scale = cursorScaleFactor();
     const double logical = LogicalCursorSize * (fileName == QStringLiteral("Cursor.xpm") ? 0.5 : 1.0);
     const int target = std::max(1, qRound(logical * scale));
@@ -74,10 +59,6 @@ QCursor assetCursor(const QString &fileName)
     }
     pixmap.setDevicePixelRatio(scale);
 
-    // The default arrow points with its top-left tip, so its hot spot stays at the
-    // corner. Every transform-tool cursor (scale, skew, rotate) acts around the
-    // selection, so its hot spot is centred  Ekeeping the active point consistent as
-    // the cursor swaps between tools.
     if (fileName == QStringLiteral("Cursor.xpm")) {
         cursor = QCursor(pixmap, 0, 0);
     } else {
@@ -87,8 +68,6 @@ QCursor assetCursor(const QString &fileName)
     return cursor;
 }
 
-// Single source for the per-handle cursor: the native shape (used while a scale/skew
-// drag is active) and the themed cursor art (used when hovering the transform box).
 struct HandleCursorSpec {
     Qt::CursorShape shape;
     const char *icon;
@@ -207,8 +186,6 @@ void ProjectCanvas::resolveHandleCursor(const QString &handle, const SelectionBo
             *iconFile = icon;
         }
     };
-    // With a (possibly rotated) box, orient the cursor to the on-screen anchor->handle
-    // direction so scale and negative-scale stay visually consistent.
     if (box != nullptr && box->valid) {
         QPointF handleLocal;
         QPointF anchorLocal;
@@ -315,8 +292,6 @@ QCursor ProjectCanvas::rotateCursorForPoint(const QPointF &point, const Selectio
     if (!box.valid) {
         return rotateCursor();
     }
-    // Classify the hovered rotate side/corner in local box space, then choose the cursor from
-    // the transformed opposing-anchor vector. This keeps rotation and negative scale in sync.
     bool invertible = false;
     const QTransform toScreen = boxToScreen(box);
     const QTransform toLocal = toScreen.inverted(&invertible);

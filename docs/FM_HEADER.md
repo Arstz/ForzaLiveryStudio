@@ -92,15 +92,6 @@ Offset  Size  Field            Notes
 +0x0C   N*2   creator_name     UTF-16LE string
 ```
 
-Observed example:
-- creator_tag1: `f0 41 be 02`
-- creator_tag2: `00 00`
-- sep: `09 00`
-- creator_len: 7
-- creator_name: "Turn 10"
-
----
-
 ## Section 4: Trailing Data (Draft)
 
 After the creator name, the draft format contains:

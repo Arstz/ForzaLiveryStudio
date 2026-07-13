@@ -6,9 +6,6 @@
 
 namespace gui {
 
-// Opt-in timing for hot paths. Set the FORZA_PERF_LOG environment variable and run
-// from a console to see how long each scope takes (helps locate selection/transform
-// stalls). Zero cost when the variable is unset.
 class ScopedPerf {
 public:
     explicit ScopedPerf(const char *name)

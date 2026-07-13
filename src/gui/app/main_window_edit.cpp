@@ -146,11 +146,9 @@ void MainWindow::stampSelection()
     const bool stamped = state_->duplicateEntriesInPlace(entries);
     state_->commitProjectEdit();
     if (!stamped) {
-        // duplicateEntriesInPlace blocks on locked subtrees; the no-op commit recorded nothing.
         statusBar()->showMessage(QStringLiteral("Selection contains locked layers"), 3000);
         return;
     }
-    // Selection is intentionally left on the originals (the stamp leaves them unchanged).
     state_->noteProjectStructureChanged();
     statusBar()->showMessage(QStringLiteral("Stamped selection"), 1500);
 }
@@ -327,7 +325,6 @@ void MainWindow::placeTextDialog()
         return;
     }
 
-    // Centre the whole line on the current view centre.
     const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
     const double startX = center.x() - line.width * 0.5;
 
@@ -341,8 +338,6 @@ void MainWindow::placeTextDialog()
         layer->setVectorShape(static_cast<quint16>(glyph.shapeId));
         layer->x = startX + glyph.originX;
         layer->y = center.y();
-        // Append at the root end (empty selection) so the glyphs land as
-        // consecutive siblings, which groupEntries() requires.
         const QString id = layer->id;
         state_->insertLayerAboveSelection(std::move(layer), {});
         newIds.push_back(id);
@@ -482,8 +477,6 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error)
         return false;
     }
 
-    // Embed a compressed (WEBP) copy rather than the raw source file: it keeps the
-    // project JSON small and is guaranteed to be Qt-decodable on reload.
     QString embedFormat;
     QProgressDialog progress(QStringLiteral("Converting guide image for project storage..."),
                              QString(),
@@ -575,15 +568,12 @@ void MainWindow::groupOrUngroupSelection()
         return;
     }
 
-    // Guides live outside the group tree (they render behind every shape), so grouping them -
-    // with or without regular layers - is not supported.
     for (const QString &entryId : entries) {
         if (state_->entryIsGuide(entryId)) {
             statusBar()->showMessage(QStringLiteral("Guide layers cannot be grouped"), 3000);
             return;
         }
     }
-    // A group needs at least two members; grouping a single element just adds a redundant level.
     if (entries.size() < 2) {
         statusBar()->showMessage(QStringLiteral("Select at least two layers to group"), 3000);
         return;
@@ -695,10 +685,6 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
     }
     if (refreshPreviews) {
         ScopedPerf perfPrev("  refreshPreviews");
-        // Both refreshes are in-place walks of the existing item tree (no model reset):
-        // refreshStateRoles() updates the visibility/mask/lock badges and row styling,
-        // refreshPreviews() updates the thumbnails. Kept as two passes (cheap) rather than
-        // a full setProject() rebuild, which cost ~40x more on large liveries.
         treeModel_->refreshStateRoles(&state_->project_);
         treeModel_->refreshPreviews(&state_->project_);
     }

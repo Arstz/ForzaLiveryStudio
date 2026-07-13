@@ -1,13 +1,3 @@
-// model_dump — decode a .modelbin and print a geometry summary.
-//
-// A ground-truth check for the modelbin geometry decoder: prints per-mesh vertex
-// and index counts, the livery UV channel, and the model's world-space bounding
-// box so the numbers can be compared against ForzaTechStudio's 3D viewer for the
-// same file.
-//
-// Usage:
-//   fh6_model_dump <file.modelbin|file.carbin|file.zip> [--verbose]
-
 #include "car_scene.h"
 #include "livery_masks.h"
 #include "model_geometry.h"
@@ -196,9 +186,6 @@ static int maskHits(const QString &carbinPath)
     return 0;
 }
 
-// Compares, per body side, the projected geometry extent (using the Masks.xml
-// axes) against the actual swatchbin coverage extent, to derive the true
-// world->canvas mapping.
 static int fitLivery(const QString &carbinPath)
 {
     QString error;
@@ -222,7 +209,6 @@ static int fitLivery(const QString &carbinPath)
 
     for (int s = 0; s < 6; ++s) {
         const LiverySide &L = masks.sides[s];
-        // Geometry extent along the mask's signed axes.
         float axlo = 1e9f, axhi = -1e9f, aylo = 1e9f, ayhi = -1e9f;
         long long count = 0;
         for (const CarMesh &mesh : model.meshes) {
@@ -248,7 +234,6 @@ static int fitLivery(const QString &carbinPath)
                 ++count;
             }
         }
-        // Swatchbin coverage extent in canvas coords (canvasX=x-1024, canvasY=512-y).
         int txlo = 1 << 30, txhi = -(1 << 30), tylo = 1 << 30, tyhi = -(1 << 30);
         const SwatchMask &m = L.mask;
         if (m.valid()) {
@@ -265,11 +250,10 @@ static int fitLivery(const QString &carbinPath)
                     L.rotationDeg, count);
         if (count > 0 && m.valid() && txhi >= txlo) {
             const float cxlo = txlo - 1024.0f, cxhi = txhi - 1024.0f;
-            const float cylo = 512.0f - tyhi, cyhi = 512.0f - tylo; // note y flip
+            const float cylo = 512.0f - tyhi, cyhi = 512.0f - tylo;
             std::printf("   geom  ax:[%.3f,%.3f] ay:[%.3f,%.3f]\n", axlo, axhi, aylo, ayhi);
             std::printf("   cover cx:[%.1f,%.1f] cy:[%.1f,%.1f]  region L/R/T/B=%.0f/%.0f/%.0f/%.0f\n",
                         cxlo, cxhi, cylo, cyhi, L.left, L.right, L.top, L.bottom);
-            // Implied linear map canvasX = ox + sx*ax  (matching extents, canvasX rises with ax).
             const float sx = (cxhi - cxlo) / (axhi - axlo);
             const float ox = cxlo - sx * axlo;
             const float sy = (cyhi - cylo) / (ayhi - aylo);
@@ -294,7 +278,6 @@ static int dumpSwatchbin(const QString &path)
         const double total = static_cast<double>(mask.width) * mask.height;
         std::printf("%s\n  mask %dx%d, %.1f%% covered\n", qPrintable(path), mask.width, mask.height,
                     100.0 * static_cast<double>(covered) / total);
-        // ASCII coverage preview (downsampled to 64x24).
         constexpr int cols = 64, rows = 24;
         for (int r = 0; r < rows; ++r) {
             std::string line;
@@ -354,10 +337,6 @@ static int dumpSwatchbin(const QString &path)
     return 0;
 }
 
-// For each paint-mesh UV channel, report its bounds, how many texels fall inside
-// the [0,1] atlas, and the Pearson correlation of u and v against each world axis.
-// A live planar projection shows |corr| ~ 1 against one axis; a real baked unwrap
-// (atlas islands) shows low correlation on every axis.
 static int dumpUv(const QString &carbinPath)
 {
     QString error;
@@ -371,7 +350,6 @@ static int dumpUv(const QString &carbinPath)
         if (!isPaintMaterial(mesh.materialName) || mesh.positions.empty()) {
             continue;
         }
-        // Only the highest-detail LOD (skip "_LOD<n>" reductions) to reduce noise.
         const int lodIdx = mesh.name.lastIndexOf(QStringLiteral("_LOD"));
         if (lodIdx >= 0) {
             const QString suf = mesh.name.mid(lodIdx + 4);
@@ -401,7 +379,6 @@ static int dumpUv(const QString &carbinPath)
             const double uMean = uSum / n, vMean = vSum / n;
             const double uStd = std::sqrt(std::max(0.0, uu / n - uMean * uMean));
             const double vStd = std::sqrt(std::max(0.0, vv / n - vMean * vMean));
-            // Correlate against world axes.
             double corrU[3] = {0, 0, 0}, corrV[3] = {0, 0, 0};
             double axSum[3] = {0, 0, 0}, axSq[3] = {0, 0, 0}, coU[3] = {0, 0, 0}, coV[3] = {0, 0, 0};
             for (size_t i = 0; i < ch.size(); ++i) {
@@ -483,7 +460,6 @@ int main(int argc, char *argv[])
                     ++uvChannels;
                 }
             }
-            // World-space centroid + average normal (via the mesh bone transform).
             double cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
             for (size_t v = 0; v < mesh.positions.size(); ++v) {
                 const ModelVec3 wp = mesh.boneTransform.transformPoint(mesh.positions[v]);

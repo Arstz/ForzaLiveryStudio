@@ -42,11 +42,6 @@ private:
     bool loaded_ = false;
 };
 
-// Process-wide, lazily-loaded decal pack shared by every surface that needs decal
-// pixels (GL canvas, layer-tree thumbnails, clipboard preview, shapes browser).
-// Loaded from assets/raster/decal_textures.bin next to the executable (or the
-// current dir); subsequent calls return the same instance. Never throws; if the
-// pack is missing, isLoaded() stays false and decal() returns an invalid decal.
 const RasterDecalPack &sharedRasterDecals();
 
 } // namespace fh6

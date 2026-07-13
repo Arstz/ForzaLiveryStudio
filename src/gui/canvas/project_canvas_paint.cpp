@@ -4,18 +4,13 @@
 
 namespace gui {
 
-// Shared helpers (flatEntry*, EffectiveSelection, collectGuideIds, handle axes,
-// handle-box geometry constants, buildTransformTargetIds, normalizeRotation) live in
-// project_canvas_internal.h so every ProjectCanvas translation unit reuses one definition.
 using namespace pc_detail;
 
 namespace {
 
-// Overlay styling. These were inlined literals in drawOverlay()/drawCursorHint();
-// naming them keeps the paint routines declarative and the values in one place.
-const QColor SelectionAccentColor(255, 200, 50);   // hover halo + marquee accent
-const QColor OverlayHaloColor(0, 0, 0);            // dark halo drawn behind bright strokes
-const QColor SelectionFrameColor(255, 255, 255);   // selection box outline + handle fill
+const QColor SelectionAccentColor(255, 200, 50);
+const QColor OverlayHaloColor(0, 0, 0);
+const QColor SelectionFrameColor(255, 255, 255);
 constexpr double HoverHaloWidth = 4.0;
 constexpr double HoverAccentWidth = 2.0;
 constexpr double SelectionFrameHaloWidth = 3.0;
@@ -29,15 +24,14 @@ constexpr double VisibilityBorderLineWidth = 1.0;
 constexpr double PositionLimitHalfWidth1080p = 1024.0;
 constexpr double PositionLimitHalfHeight1080p = 604.0;
 
-// Cursor hint bubble styling.
 const QColor CursorHintBorderColor(0, 0, 0, 180);
 const QColor CursorHintFillColor(20, 20, 22, 210);
 const QColor CursorHintTextColor(245, 246, 248);
 constexpr double CursorHintCornerRadius = 4.0;
 constexpr int CursorHintPaddingX = 8;
 constexpr int CursorHintPaddingY = 6;
-constexpr double CursorHintCursorOffset = 18.0;   // gap from cursor to bubble
-constexpr double CursorHintScreenMargin = 4.0;    // keep bubble inside the viewport
+constexpr double CursorHintCursorOffset = 18.0;
+constexpr double CursorHintScreenMargin = 4.0;
 
 const QColor EmptyCanvasTextColor(190, 194, 201);
 
@@ -149,10 +143,6 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    // Car UV-unwrap overlay, drawn first (under the selection UI) in canvas space.
-    // Pixel (i,j) maps to world (i - 1024, j - 512); the overlay is built with the
-    // livery-texture Y convention (row = halfHeight + worldY) so it aligns with where
-    // decals paint.
     if (carUnwrapVisible_ && !carUnwrapOverlay_.isNull()) {
         const QTransform imageToWorld(1.0, 0.0, 0.0, 1.0, -1024.0, -512.0);
         painter.save();
@@ -199,8 +189,6 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
                 toScreen.map(QPointF(lr.center().x(), lr.bottom())),
             };
             {
-                // Skew handle sits SkewHandleOffset screen pixels outward from the top edge,
-                // perpendicular to it (matching transformHandleAt's local-frame offset).
                 const QPointF topCenter = toScreen.map(QPointF(lr.center().x(), lr.top()));
                 const QPointF inward = toScreen.map(QPointF(lr.center().x(), lr.top() + 1.0));
                 QPointF up = topCenter - inward;
@@ -437,18 +425,11 @@ void ProjectCanvas::paintGL()
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // Paint guides either below or above the vinyl layers. This is a view option only;
-    // project guide order and export data stay unchanged.
     painter.fillRect(rect(), canvasColor_);
     if (!guideLayersOnTop_) {
         drawGuideLayers(painter);
     }
 
-    // The GL viewport and scene FBO live in physical device pixels: a QOpenGLWidget's
-    // default framebuffer is size() * devicePixelRatio(), so rendering with the logical
-    // size would confine the scene to a sub-region and misalign it against the QPainter
-    // background/guides/overlay (which Qt draws at full resolution). Scale the camera by
-    // the ratio too so world coords still map to the right physical pixels.
     const qreal dpr = devicePixelRatioF();
     const QSize deviceSize(std::lround(width() * dpr), std::lround(height() * dpr));
     QTransform deviceCamera = worldToScreen_;

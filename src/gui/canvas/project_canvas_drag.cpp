@@ -4,9 +4,6 @@
 
 namespace gui {
 
-// Shared helpers (flatEntry*, EffectiveSelection, collectGuideIds, handle axes,
-// handle-box geometry constants, buildTransformTargetIds, normalizeRotation) live in
-// project_canvas_internal.h so every ProjectCanvas translation unit reuses one definition.
 using namespace pc_detail;
 
 namespace {
@@ -70,8 +67,6 @@ QString formatHintNumber(double value, int decimals = 2)
     return QString::number(value, 'f', decimals);
 }
 
-// Decomposed affine result shared by the Shape/Guide scale-drag loops. ok is false
-// when the X axis collapsed (degenerate); skew falls back to fallbackSkew then.
 struct ScaleDecomposition {
     bool ok = false;
     double x = 0.0;
@@ -104,8 +99,6 @@ ScaleDecomposition decomposeScaleResult(const QTransform &result, double fallbac
     return out;
 }
 
-// Write a decomposed affine back to a scene leaf's editor fields. Guides carry no skew, so
-// only Shape leaves receive it.
 template <typename Item>
 void assignDecomposition(Item *item, const ScaleDecomposition &dec)
 {
@@ -122,10 +115,6 @@ void assignDecomposition(Item *item, const ScaleDecomposition &dec)
 } // namespace
 
 
-// Tab flips the selection, cycling through the four scale-sign states in the order
-// (+x +y) -> (+x -y) -> (-x -y) -> (-x +y) -> (+x +y). Each press mirrors the whole
-// selection about its combined centre, so a multi-shape group mirrors as a unit
-// (and a single shape flips in place).
 void ProjectCanvas::cycleFlipSelection()
 {
     if (state_ == nullptr || project_ == nullptr) {
@@ -137,16 +126,6 @@ void ProjectCanvas::cycleFlipSelection()
         return;
     }
 
-    // Derive the current state from a representative item, then advance one step.
-    // flipV mirrors x positions and is represented by negative scaleY after
-    // the rotation complement; flipH mirrors y positions and is represented by
-    // negative scaleX. This matches decomposing a world-axis reflection back
-    // into the editor's rotate-then-shear-then-scale layer fields.
-    // Toggling either axis also complements the rotation and negates the skew:
-    // with the rotate-then-scale convention chosen here, the rotation complement
-    // alone does not absorb the shear, so the shear sign must be flipped too or
-    // skewed shapes reflect incorrectly. (In a group the per-flip skew error
-    // cancels every other press, so the offset only shows up on odd presses.)
     const double repScaleX = layers.isEmpty() ? guides.front()->scaleX : layers.front()->scaleX;
     const double repScaleY = layers.isEmpty() ? guides.front()->scaleY : layers.front()->scaleY;
     const int currentState = (repScaleY < 0 ? 1 : 0) + (repScaleX < 0 ? 2 : 0);
@@ -228,9 +207,6 @@ void ProjectCanvas::captureDragStarts()
 {
     dragStarts_.clear();
     dragGuideStarts_.clear();
-    // Capture the frames of whole groups being transformed so a box drag carries the
-    // group's own transform in the scene tree. Descendant leaves/guides covered by
-    // those group roots are excluded below so the transform is applied exactly once.
     dragGroupIds_.clear();
     dragGroupStartFrames_.clear();
     QSet<QString> groupedLayerIds;
@@ -340,8 +316,6 @@ bool ProjectCanvas::nudgeSelection(const QPointF &delta)
         return false;
     }
 
-    // Same group/loose partition as a drag: whole groups move via their frame, loose leaves
-    // (excluding those nested under a moved group) decompose the world move per item.
     QVector<QString> groupIds;
     QHash<QString, QTransform> groupStartFrames;
     QSet<QString> groupedLayerIds;
@@ -395,8 +369,6 @@ bool ProjectCanvas::nudgeSelection(const QPointF &delta)
 
 namespace {
 
-// A movable align/distribute unit: a whole group (moved via its frame) or a loose
-// shape/guide leaf (moved by decomposing a world translation into its local fields).
 struct MoveUnit {
     QString groupId;
     fh6::scene::Shape *layer = nullptr;
@@ -415,9 +387,6 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
         return false;
     }
 
-    // Units are moved either via a group's frame (whole group) or by decomposing a world
-    // translation into a loose leaf's local fields. The add* helpers keep the parallel
-    // partition lists (used for the transform command) in step with units/bounds.
     QVector<QString> groupIds;
     QVector<fh6::scene::Shape *> looseLayers;
     QVector<fh6::scene::GuideLayer *> looseGuides;
@@ -455,8 +424,6 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
         bounds.push_back(sceneWorldTransform(*guide).mapRect(flatEntryRect(*guide)));
     };
 
-    // Same group/loose partition as a drag: a fully-selected group is one unit, loose
-    // leaves not covered by a moved group are their own units.
     QVector<QString> selGroupIds;
     QHash<QString, QTransform> groupStartFrames;
     QSet<QString> groupedLayerIds;
@@ -476,8 +443,6 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
         }
     }
 
-    // A lone selected group operates on its direct children instead (e.g. distribute the
-    // members of a group without ungrouping it first).
     if (descendSoleGroup && units.size() == 1 && !units.front().groupId.isEmpty()) {
         fh6::scene::Layer *node = state_->sceneNode(units.front().groupId);
         if (node != nullptr && node->kind() == fh6::scene::LayerKind::Group) {
@@ -585,7 +550,6 @@ bool ProjectCanvas::alignSelection(AlignEdge edge)
                 break;
             case AlignEdge::VCenter:
             case AlignEdge::Center:
-                // "Centre" aligns on the Y axis only (a vertical centre).
                 dy = whole.center().y() - b.center().y();
                 break;
             }
@@ -600,13 +564,10 @@ bool ProjectCanvas::distributeSelection(DistributeAxis axis)
     return applyAlignDistribute([axis](const QVector<QRectF> &bounds) {
         const int n = bounds.size();
         QVector<QPointF> deltas(n, QPointF(0.0, 0.0));
-        // Distributing spacing needs at least three units (the two extremes stay put).
         if (n < 3) {
             return deltas;
         }
         const bool horizontal = axis == DistributeAxis::Horizontal;
-        // Order units by centre along the axis; evenly interpolate the interior centres
-        // between the two extreme units' centres.
         QVector<int> order(n);
         for (int i = 0; i < n; ++i) {
             order[i] = i;
@@ -637,10 +598,6 @@ void ProjectCanvas::captureScaleReference()
     const QRectF &lr = dragStartBox_.localRect;
     captureScaleHintReference();
 
-    // The grabbed handle (named side/corner) and the anchor (opposite side/corner) are resolved
-    // once in the box's local frame, then mapped to world via the drag-start frame so they
-    // survive any pan/zoom during the drag. In Absolute mode localToWorld is identity, so the
-    // local coords equal world coords and this matches the legacy behaviour.
     QPointF handleLocal = lr.center();
     QPointF anchorLocal = lr.center();
     handleAnchorLocalPoints(activeHandle_, lr, &handleLocal, &anchorLocal);
@@ -663,9 +620,6 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
 
     const HandleAxes axes = handleAxes(activeHandle_);
 
-    // Everything is computed in the drag-start box's local frame so scaling runs along the
-    // box's own axes. In Absolute mode the frame is the identity, so local == world and this
-    // reduces exactly to the legacy world-axis behaviour.
     const QTransform &M = dragStartBox_.localToWorld;
     bool invertible = false;
     const QTransform Minv = M.inverted(&invertible);
@@ -673,14 +627,8 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
         return;
     }
 
-    // Alt anchors the scale at the box centre so it grows/shrinks in place (centre fixed)
-    // rather than pinning the opposite side/corner. Resolved per-move so Alt can be toggled
-    // mid-drag.
     const QPointF anchorLocal = (modifiers & Qt::AltModifier) ? scaleCenterLocal_ : scaleAnchorLocal_;
 
-    // Track the grabbed handle, not the raw press point: preserving the initial grab offset
-    // (in local coords) keeps the handle exactly under the cursor with no error accumulating
-    // over distance, and holds under pan/zoom mid-drag.
     const QPointF pressLocal = Minv.map(dragStartWorld_);
     const QPointF grabOffsetLocal = pressLocal - scaleHandleLocal_;
     const QPointF cursorLocal = Minv.map(screenToWorld(screenPoint));
@@ -697,16 +645,8 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
     double sx = (axes.left || axes.right) ? axisScale(currentLocal.x(), scaleHandleLocal_.x(), anchorLocal.x()) : 1.0;
     double sy = (axes.top || axes.bottom) ? axisScale(currentLocal.y(), scaleHandleLocal_.y(), anchorLocal.y()) : 1.0;
 
-    // Groups and single shapes scale the same way: edge handles drive one axis, corners track
-    // the cursor on both axes freely, and Shift locks the aspect ratio. For a multi-selection
-    // the non-uniform factors run in the group's oriented frame (worldScale below), so each
-    // child keeps its relative position and its form round-trips through the per-shape skew
-    // field - the same math the image_transformer app applies to a whole image.
     const bool uniform = modifiers & Qt::ShiftModifier;
     if (uniform) {
-        // Project the cursor onto the anchor->handle diagonal for a single continuous
-        // factor. Picking the dominant axis instead snaps when the axes cross (e.g. while
-        // scaling down past 1x); projection is smooth and rotation-independent.
         const QPointF anchorToHandle = scaleHandleLocal_ - anchorLocal;
         const QPointF anchorToCurrent = currentLocal - anchorLocal;
         const double denom = anchorToHandle.x() * anchorToHandle.x() + anchorToHandle.y() * anchorToHandle.y();
@@ -717,18 +657,11 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
         sy = s;
     }
 
-    // Build the scale about the anchor in the box's local frame.
     QTransform localScale;
     localScale.translate(anchorLocal.x(), anchorLocal.y());
     localScale.scale(sx, sy);
     localScale.translate(-anchorLocal.x(), -anchorLocal.y());
 
-    // Relative single-item mode applies the scale on the shape's pre-image side
-    // (result = localScale * start), which only changes scaleX/scaleY and the position while
-    // preserving rotation/skew - the pure scale the Relative mode exists for. All other cases
-    // (Absolute, or Relative multi) scale about the anchor in the box frame on the world side
-    // (result = start * (Minv * localScale * M)); for Absolute that frame is the identity, so
-    // this is byte-for-byte the legacy path.
     const bool relativeSingle = transformRelativeMode_
         && dragGroupStartFrames_.isEmpty()
         && (dragLayers_.size() + dragGuides_.size() == 1);
@@ -764,9 +697,6 @@ void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMult
     for (fh6::scene::GuideLayer *guide : dragGuides_) {
         apply(guide, dragGuideStarts_.value(guide->id));
     }
-    // The box gestures (scale/skew) pass a world-space transform with preMultiply=false;
-    // accumulate the same transform into each dragged group's own frame. The relative
-    // single-item path (preMultiply=true) never has group selections.
     if (!preMultiply && !dragGroupStartFrames_.isEmpty()) {
         state_->setGroupFramesFromStart(dragGroupStartFrames_, transform);
     }
@@ -776,10 +706,6 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint)
 {
     updateCursorForPoint(screenPoint);
 
-    // Multi-selection: shear the whole group as a unit in the drag-start box's local frame, so
-    // every child keeps its relative position and its induced shear/rotation round-trips through
-    // the per-shape fields - the same box-frame treatment the group scale gesture uses. A lone
-    // shape keeps the direct width-normalised skew below.
     if (dragLayers_.size() + dragGuides_.size() > 1 || !dragGroupStartFrames_.isEmpty()) {
         if (!dragStartBox_.valid || dragStartBox_.localRect.isEmpty()) {
             return;
@@ -795,10 +721,7 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint)
         const double pressLocalX = Minv.map(dragStartWorld_).x();
         const double cursorLocalX = Minv.map(screenToWorld(screenPoint)).x();
         const double deltaLocalX = cursorLocalX - pressLocalX;
-        // The skew handle sits at the top edge. Shearing about the box centre by
-        // k = deltaLocalX / halfHeight makes the top edge track the cursor's horizontal motion
-        // in the same rotational sense as a single shape's skew (Qt shear maps x' = x + k*(y-cy),
-        // and the top is -halfHeight from the centre).
+        // Qt shear uses x' = x + k(y - cy).
         const double halfHeight = lr.height() * 0.5;
         const double k = halfHeight > 1e-6 ? deltaLocalX / halfHeight : 0.0;
         QTransform localSkew;
@@ -812,8 +735,6 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint)
     }
 
     const QPointF current = screenToWorld(screenPoint);
-    // dragStartWorld_ is the world point captured at press; using it (instead of
-    // re-mapping the stale start screen point) keeps skew stable across pan/zoom.
     const double delta = current.x() - dragStartWorld_.x();
     for (fh6::scene::Shape *layer : dragLayers_) {
         const EntryStart startState = dragStarts_.value(layer->id);
@@ -898,8 +819,6 @@ void ProjectCanvas::finishDrag()
         } else {
             state_->commitTransformCommand();
         }
-        // An Alt-duplicate added layers/groups, so rebuild the tree to show the clones;
-        // a plain transform only needs a geometry refresh.
         if (dragDuplicated_) {
             state_->noteProjectStructureChanged();
         } else {

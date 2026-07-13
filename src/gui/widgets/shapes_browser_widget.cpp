@@ -24,9 +24,6 @@ const QSize PreviewSize(86, 86);
 
 QSettings settings()
 {
-    // Use the application-wide scope (ForzaTools/ForzaLiveryStudio) set in main();
-    // favourites and custom groups then live alongside the rest of the settings.
-    // Legacy entries from the old dedicated scope are migrated in main().
     return QSettings();
 }
 
@@ -38,10 +35,6 @@ QString displayCategoryName(QString name)
     return name.replace(QLatin1Char('_'), QLatin1Char(' ')).trimmed();
 }
 
-// Merge each font's Upper/Lower letter blocks (40 shapes each) into a single
-// browser section. The block table lives in fontglyphs so the browser and the
-// Text place tool stay in sync. Returns an empty string for non-letter shapes so
-// the caller falls back to the registry category.
 QString fontSectionForShape(int shapeId)
 {
     return fontglyphs::sectionForShape(shapeId);
@@ -397,7 +390,6 @@ void ShapeTile::setFavourite(bool enabled)
 
 void ShapeTile::refreshTheme()
 {
-    // Preview ink is theme-dependent; drop the cached image so it re-rasterizes.
     previewCache_.clear();
     updateFavouriteIcon();
     update();
@@ -493,8 +485,6 @@ void ShapeTile::drawPreview(QPainter &painter, const QRect &rect)
     if (geometry_ == nullptr) {
         return;
     }
-    // Dark ink on the light theme keeps shapes visible against the pale preview
-    // background; the dark theme keeps the original near-white ink.
     const QColor ink = isDarkTheme(currentUiTheme()) ? QColor(245, 245, 245) : QColor(24, 26, 30);
     const QImage preview = renderShapePreviewImage(*geometry_, shapeId_, rect.size(), ink);
     if (preview.isNull()) {
@@ -1209,13 +1199,10 @@ void ShapesBrowserWidget::refreshGrid()
         }
         delete item;
     }
-    // Tiles pack top-left; showGridMessage() overrides this so the hint can center.
     grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
 
     const QString query = search_->text().trimmed().toLower();
 
-    // Searching only kicks in at this length; a shorter (but non-empty) query shows
-    // a hint in place of the grid instead of flooding it with loose matches.
     constexpr int MinSearchLength = 3;
     if (!query.isEmpty() && query.size() < MinSearchLength) {
         showGridMessage(QStringLiteral("Type at least %1 characters to search").arg(MinSearchLength));
@@ -1223,8 +1210,6 @@ void ShapesBrowserWidget::refreshGrid()
     }
     const bool searching = query.size() >= MinSearchLength;
 
-    // Custom groups only show when the Custom category is active and there is no
-    // active query; a query overrides the category and searches globally.
     if (!searching && currentCategory_ == QString::fromLatin1(CustomCategory)) {
         const int columns = std::max(1, scroll_->viewport()->width() / (TileSize.width() + 10));
         for (int column = 0; column <= columns; ++column) {
@@ -1259,7 +1244,6 @@ void ShapesBrowserWidget::refreshGrid()
         return;
     }
 
-    // While searching, custom groups matching the query are shown alongside shapes.
     QVector<CustomShapeGroup> matchedCustom;
     if (searching) {
         for (const CustomShapeGroup &group : customGroups_) {
@@ -1288,8 +1272,6 @@ void ShapesBrowserWidget::refreshGrid()
         std::sort(matchedLogos.begin(), matchedLogos.end());
     }
 
-    // A search spans every shape regardless of category; otherwise show the
-    // selected category's shapes.
     QVector<int> searchIds = searching ? geometry_.shapeIds() : categoryShapeIds(currentCategory_);
     if (searching) {
         std::sort(searchIds.begin(), searchIds.end());
@@ -1349,7 +1331,6 @@ void ShapesBrowserWidget::showGridMessage(const QString &text)
         searchHint_->setWordWrap(true);
         searchHint_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
-    // Muted, theme-aware text: blend the theme's text and base colours.
     const QPalette pal = paletteForTheme(currentUiTheme());
     const QColor textColor = pal.color(QPalette::Text);
     const QColor baseColor = pal.color(QPalette::Base);
@@ -1358,10 +1339,6 @@ void ShapesBrowserWidget::showGridMessage(const QString &text)
                        (textColor.blue() + baseColor.blue()) / 2);
     searchHint_->setStyleSheet(QStringLiteral("QLabel { color: %1; font-size: 13px; }").arg(muted.name()));
     searchHint_->setText(text);
-    // Let the layout fill gridHost_ so the hint centres instead of hugging the
-    // top-left corner used by the tile grid. Clear any stretch factors left over
-    // from a previous tile render, otherwise the hint's column/row shares space
-    // with stale stretched cells and stays pinned to the corner.
     for (int column = 0; column < grid_->columnCount(); ++column) {
         grid_->setColumnStretch(column, 0);
     }
@@ -1509,8 +1486,6 @@ QString ShapesBrowserWidget::categoryNameForShape(int shapeId, const ShapeGeomet
 
 QString ShapesBrowserWidget::nameForShape(int shapeId, const ShapeGeometry &geometry) const
 {
-    // Prefer the vision-generated name; it is reparsed from shape_names.json on
-    // every launch so renames there take effect without rebuilding.
     const QString visionName = names_.name(shapeId);
     if (!visionName.isEmpty()) {
         return visionName;

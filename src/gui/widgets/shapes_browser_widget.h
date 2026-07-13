@@ -20,8 +20,6 @@ class QToolButton;
 
 namespace gui {
 
-// Ink the preview is rasterized in. Defaults to the light ink used on the dark
-// theme; the browser passes a dark ink on the light theme so shapes stay visible.
 QImage renderShapePreviewImage(const ShapeGeometryStore &geometry,
                                int shapeId,
                                const QSize &size,

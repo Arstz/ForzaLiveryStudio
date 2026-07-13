@@ -190,16 +190,12 @@ QImage readGuideImage(const QString &path, QByteArray *format, QString *error)
     return {};
 }
 
-// Encode a decoded guide image to compressed bytes for embedding in the project JSON.
-// Prefers WEBP (already deployed for thumbnails); falls back to PNG when the WEBP writer
-// is unavailable or fails (e.g. dimensions beyond the WEBP 16383px limit). Writes the
-// chosen format ("webp"/"png") to *formatOut. Returns empty on total failure.
 QByteArray encodeGuideImage(const QImage &image, QString *formatOut)
 {
     if (image.isNull()) {
         return {};
     }
-    // Encode from an unpremultiplied ARGB32 buffer so the writers round-trip alpha cleanly.
+    // Writers receive unpremultiplied ARGB32.
     const QImage source = image.convertToFormat(QImage::Format_ARGB32);
 
     const auto encode = [&source](const char *format, int quality) -> QByteArray {
@@ -219,8 +215,6 @@ QByteArray encodeGuideImage(const QImage &image, QString *formatOut)
     };
 
     if (QImageWriter::supportedImageFormats().contains(QByteArrayLiteral("webp"))) {
-        // quality 100 is lossless/near-lossless in Qt's WEBP plugin; ample for a 50%
-        // opacity reference overlay.
         const QByteArray webp = encode("webp", 100);
         if (!webp.isEmpty()) {
             if (formatOut != nullptr) {

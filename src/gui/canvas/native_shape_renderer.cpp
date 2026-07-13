@@ -129,9 +129,6 @@ QTransform layerTransform(const fh6::scene::Shape &layer)
     return transform;
 }
 
-// A scene node's local (parent-relative) transform, same field order as
-// layerTransform(). A leaf's world transform is sceneLocalTransform(leaf) composed
-// with its ancestor group frames.
 QTransform rendererSceneLocalTransform(const fh6::scene::Layer &node)
 {
     QTransform transform;
@@ -674,8 +671,6 @@ bool NativeShapeRenderer::drawProjectLayers(
     const QTransform &worldToScreen,
     const QSize &size)
 {
-    // Walk the project's authoritative scene tree with a matrix stack. Guides are
-    // drawn by the QPainter path, so only Shape leaves draw here.
     if (!project.root) {
         return false;
     }
@@ -741,7 +736,7 @@ bool NativeShapeRenderer::drawProjectLayers(
                 return;
             }
             if (node.kind() != fh6::scene::LayerKind::Shape) {
-                return; // guides are drawn separately by the QPainter path
+                return;
             }
             const auto &shape = static_cast<const fh6::scene::Shape &>(node);
             if (!shape.visible) {
@@ -953,15 +948,10 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
     if (!preserveExisting) {
-        // Full rebuild: wipe the whole texture, then draw every fragment.
         functions->glDisable(GL_SCISSOR_TEST);
         functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         functions->glClear(GL_COLOR_BUFFER_BIT);
     } else {
-        // Incremental: clear every passed fragment's region up front, then draw them all in
-        // order below. Clearing all-then-drawing-all (rather than clear+draw per fragment)
-        // keeps overlapping fragments blending in the same order a full rebuild would, while
-        // pixels outside these rects stay intact from the previous composite.
         functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         for (int i = 0; i < projects.size(); ++i) {
             const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
@@ -992,8 +982,6 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
                                  bounded.width(),
                                  bounded.height());
         } else if (preserveExisting) {
-            // An unclipped fragment can't be scoped without wiping the whole texture; skip it
-            // (the caller only passes clipped livery sections in this mode).
             continue;
         } else {
             functions->glDisable(GL_SCISSOR_TEST);
@@ -1003,8 +991,6 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
 
     functions->glDisable(GL_SCISSOR_TEST);
     sceneFbo_->release();
-    // In preserve mode the framebuffer was updated in place (a section may legitimately
-    // clear to empty), so the texture is valid regardless of whether any triangles drew.
     return (preserveExisting || drew) ? sceneFbo_->texture() : 0;
 }
 

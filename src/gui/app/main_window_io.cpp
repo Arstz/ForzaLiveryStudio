@@ -110,7 +110,6 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
         return ExternalDropKind::Unsupported;
     }
 
-    // Editor project documents: gzip container (.3so) and legacy bare JSON (.json).
     if (info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
         || info.suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0) {
         return ExternalDropKind::ProjectJson;
@@ -248,10 +247,8 @@ bool MainWindow::confirmDiscardUnsavedChanges()
     }
     if (clicked == saveJsonBtn) {
         saveProjectJsonDialog();
-        // A cancelled or failed save leaves the project modified; abort the close.
         return !state_->isModified();
     }
-    // Cancel or the dialog being dismissed: stay open.
     Q_UNUSED(cancelBtn);
     return false;
 }
@@ -303,8 +300,6 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
     try {
         fh6::Project exportProject = state_->project_;
         if (exportProject.isLivery) {
-            // Liveries export as a C_livery folder (container rebuilt from the imported
-            // source, with the current target car id), not as a C_group.
             const QString targetFolder =
                 projectExportFolder(folder, exportProject.name, true);
             fh6::exportCLivery(exportProject, targetFolder);
@@ -323,10 +318,6 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
             } catch (const std::exception &) {
                 meta = fh6::defaultDraftHeader(exportProject.name, creatorName_);
             }
-            // A published imported header only decodes name + description; its draft-only
-            // fields (creator, date, guid, type, ...) are never parsed. Flipping the flag
-            // alone would export a blank stub, so rebuild a clean draft instead - the export
-            // is always unpublished for projects imported from a C_group file.
             if (meta.published) {
                 fh6::HeaderMetadata draft = fh6::defaultDraftHeader(exportProject.name, creatorName_);
                 draft.name = meta.name;
@@ -341,8 +332,6 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
         exportProject.headerMetadata = meta;
 
         const QString targetFolder = projectExportFolder(folder, exportProject.name, exportProject.isLivery);
-        // Grouped (nested) export is the single canonical export path. It needs each
-        // shape's sprite size to place group origins.
         ShapeGeometryStore geometry;
         geometry.loadDefault();
         const fh6::SpriteSizeFn spriteSize = [&geometry](quint16 id) {
@@ -390,12 +379,10 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error)
     }
 
     try {
-        // Projects always save to the `.3so` container. A legacy `.json` target is
-        // migrated: write the `.3so` sibling and delete the old `.json` on success.
         const bool wasLegacyJson =
             QFileInfo(path).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
         const QString targetPath = wasLegacyJson
-            ? path.chopped(4) + QStringLiteral("3so")  // ".json" -> ".3so"
+            ? path.chopped(4) + QStringLiteral("3so")
             : path;
 
         const QByteArray bytes = fh6::encodeProjectDocument(state_->project_);
@@ -408,7 +395,7 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error)
         }
         file.close();
         if (wasLegacyJson) {
-            QFile::remove(path);  // targetPath is the .3so sibling, always distinct
+            QFile::remove(path);
         }
         projectJsonPath_ = targetPath;
         rememberRecentProjectJson(targetPath);
@@ -431,7 +418,7 @@ bool MainWindow::loadProjectJson(const QString &path, QString *error)
             throw std::runtime_error(("could not open project file: " + path).toStdString());
         }
         setProject(fh6::decodeProjectDocument(file.readAll()));
-        projectJsonPath_ = path;  // set after setProject (which clears it)
+        projectJsonPath_ = path;
         rememberRecentProjectJson(path);
         statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 5000);
         return true;
@@ -448,8 +435,6 @@ bool MainWindow::importAny(const QString &path, QString *error)
     const QFileInfo info(path);
     bool isLivery = false;
     if (info.isDir()) {
-        // A folder is a livery source when it holds a C_livery file, otherwise treat
-        // it as a C_group folder (importCGroupNested resolves the C_group inside).
         isLivery = QFileInfo(QDir(path).filePath(QStringLiteral("C_livery"))).isFile();
     } else {
         isLivery = info.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
@@ -559,13 +544,6 @@ void MainWindow::exportDialog()
         return;
     }
 
-    // Livery export is enabled for in-game testing. The C_livery encoder
-    // (exportCLivery) rebuilds the container and byte-preserves unchanged section
-    // slots; changed built-in-shape sections are re-synthesized. Changed custom
-    // (uploaded) logo decals are not yet synthesizable and raise an export error.
-
-    // Export is the grouped (nested) path only: it preserves group structure and is
-    // the single canonical export. (The legacy flat export option was removed.)
     const QString folder = QFileDialog::getExistingDirectory(this,
                                                             QStringLiteral("Export Folder"),
                                                             importDialogStartDirectoryWithFallbacks(
@@ -607,10 +585,8 @@ void MainWindow::newProjectDialog()
     const bool livery = box.clickedButton() == liveryButton;
     int carId = 0;
     if (livery) {
-        // A livery must name its target car (written to the C_livery vlrc header
-        // on export); the picker is the only place a fresh project gets it.
         if (!chooseCarModel(this, 0, &carId)) {
-            return;  // cancelled: abort creation rather than default to a car
+            return;
         }
     }
 
@@ -627,8 +603,6 @@ void MainWindow::saveProjectJsonDialog()
         return;
     }
 
-    // If this project already has an associated file, overwrite it silently instead
-    // of prompting. A legacy .json is migrated to .3so by saveProjectJson.
     if (!projectJsonPath_.isEmpty()) {
         QString error;
         if (!saveProjectJson(projectJsonPath_, &error)) {
@@ -753,8 +727,6 @@ void MainWindow::refreshHeaderMetadataWidget()
         return;
     }
 
-    // Seed editable metadata: prefer existing metadata, else parse imported header bytes,
-    // else start from sensible draft defaults.
     fh6::HeaderMetadata meta;
     if (state_->project_.headerMetadata) {
         meta = *state_->project_.headerMetadata;
@@ -804,23 +776,19 @@ void MainWindow::applyHeaderMetadata()
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
 
     if (importedDraft && !rebuild) {
-        // Keep the byte-exact source header; export will rename it to the new name.
-        state_->project_.headerMetadata = meta; // store edits for reference / future rebuilds
+        state_->project_.headerMetadata = meta;
     } else {
-        state_->project_.sourceHeader.clear(); // export will synthesize from metadata
+        state_->project_.sourceHeader.clear();
         state_->project_.headerMetadata = meta;
     }
     updateStatus();
-    refreshHeaderMetadataWidget(); // reflect the (possibly dropped) source-header state
+    refreshHeaderMetadataWidget();
     statusBar()->showMessage(QStringLiteral("Header metadata updated"), 5000);
 }
 
 void MainWindow::saveLayout()
 {
     QSettings settings;
-    // Persist geometry alongside the dock state. restoreState() stores dock
-    // sizes relative to the window size at save time, so the geometry must be
-    // restored first or the splits (e.g. a bottom-docked Shapes panel) drift.
     settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("layout/state"), saveState());
     statusBar()->showMessage(QStringLiteral("Layout saved"), 5000);
@@ -833,8 +801,6 @@ bool MainWindow::restoreLayout()
     if (state.isEmpty()) {
         return false;
     }
-    // Restore geometry before state so restoreState() reconstructs dock sizes
-    // against the same window size they were saved with.
     const QByteArray geometry = settings.value(QStringLiteral("layout/geometry")).toByteArray();
     if (!geometry.isEmpty()) {
         restoreGeometry(geometry);

@@ -30,14 +30,11 @@ struct Project {
     QString sourceFolder;
     QByteArray sourceDecPrefix;
     QByteArray sourceHeader;
-    std::optional<HeaderMetadata> headerMetadata; // drives export when sourceHeader is empty (new projects)
-    std::unique_ptr<scene::Group> root;            // authoritative runtime scene tree
+    std::optional<HeaderMetadata> headerMetadata;
+    std::unique_ptr<scene::Group> root;
     QVector<std::array<quint8, 4>> colorSwatches;
-    bool isLivery = false;  // imported from a C_livery: root children are the 11 sections
-    int carId = 0;          // target car id (C_livery vlrc 0x10); 0 = unset. See livery-car-id-encoding.
-    // Decompressed original C_livery payload captured on import. The livery encoder
-    // rebuilds the export container from this (applying carId); empty for a livery
-    // authored from scratch (artwork-synthesis path not yet implemented).
+    bool isLivery = false;
+    int carId = 0;
     QByteArray liverySource;
 };
 
@@ -99,8 +96,6 @@ struct VinylGroup {
     QByteArray effectiveTransformMarker;
     QByteArray headerControlBytes;
     bool rootTransformExempt = false;
-    // Records with IDs outside the shipped shape registry still occupy encoded
-    // child slots. They are counted structurally but never exposed as shapes.
     int skippedChildren = 0;
     QVector<VinylItem> items;
     int totalChildren() const { return items.size() + skippedChildren; }

@@ -59,9 +59,6 @@ void MainWindow::setupTreeView()
         updateSelectionFromTree();
     });
 
-    // C_livery section selector ("tabs"), mirroring the shapes-browser category
-    // list. Hidden unless a livery is loaded. Selecting a section swaps the tree
-    // contents and the single section drawn on the canvas.
     sectionBar_ = new LiverySectionBar(this);
     connect(sectionBar_, &LiverySectionBar::sectionActivated, this, &MainWindow::setActiveSection);
 }
@@ -120,8 +117,6 @@ void MainWindow::setupDocks()
     detailsDock->raise();
 
     properties_ = new PropertyPanel(state_, this);
-    // Multi/group transforms pivot about the selection's visual bounding box, which
-    // needs shape sizes from the canvas geometry store.
     properties_->setSpriteSizeFn([this](int id) {
         return canvas_ != nullptr ? canvas_->shapeSize(id) : QSizeF(0.0, 0.0);
     });
@@ -184,8 +179,6 @@ void MainWindow::setupDocks()
     splitDockWidget(propertiesDock, paletteDock, Qt::Vertical);
     splitDockWidget(paletteDock, shapesDock, Qt::Vertical);
 
-    // 3D car preview: renders an imported car model with the current vinyl scene
-    // applied to its paint surface. Hidden until a model is imported.
     carPreview_ = new CarPreviewWidget(this);
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
@@ -251,8 +244,6 @@ void MainWindow::setupFileMenu()
         connect(action, &QAction::triggered, this, slot);
         return action;
     };
-    // Icon-bearing entries are also registered with the shortcut system (with an empty
-    // default sequence) so every menu action can be assigned a hotkey in Settings.
     auto addIconEntry = [this, fileMenu](const QString &iconName, const QString &text, const QString &id,
                                          const QString &label, auto slot) {
         QAction *action = fileMenu->addAction(assetIcon(iconName), text);
@@ -290,8 +281,6 @@ void MainWindow::setupFileMenu()
 void MainWindow::setupEditMenu()
 {
     auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
-    // Application-context entries are also added to the window itself so their
-    // shortcuts fire regardless of which widget has focus.
     auto addEditEntry = [this, editMenu](const QString &text, const QString &id, const QString &label,
                                          const QKeySequence &shortcut, const QString &iconName, auto slot,
                                          Qt::ShortcutContext context = Qt::ApplicationShortcut,
@@ -332,8 +321,6 @@ void MainWindow::setupEditMenu()
                  QKeySequence(Qt::Key_F1), QStringLiteral("ToolbarSelect.xpm"), &MainWindow::centerViewOnSelection);
 
     editMenu->addSeparator();
-    // Align/Distribute act on the current selection by evaluating each unit's shape
-    // geometry (no icons yet). Registered so the hotkeys are rebindable in Settings.
     auto *alignMenu = editMenu->addMenu(QStringLiteral("&Align"));
     auto addAlignEntry = [this, alignMenu](const QString &text, const QString &id, const QKeySequence &shortcut,
                                            ProjectCanvas::AlignEdge edge) {
@@ -386,8 +373,6 @@ void MainWindow::distributeSelection(ProjectCanvas::DistributeAxis axis)
 void MainWindow::setupProjectMenu()
 {
     auto *projectMenu = menuBar()->addMenu(QStringLiteral("&Project"));
-    // Each entry opens a dialog that edits one project parameter. Registered with the
-    // shortcut system (no default hotkey) so they can be bound in Settings.
     auto addProjectEntry = [this, projectMenu](const QString &text, const QString &id, const QString &iconName,
                                                auto slot) {
         QAction *action = iconName.isEmpty() ? projectMenu->addAction(text)
@@ -408,8 +393,6 @@ void MainWindow::setupProjectMenu()
 void MainWindow::setupOptionsMenu()
 {
     auto *optionsMenu = menuBar()->addMenu(QStringLiteral("&Options"));
-    // Behavior toggles are registered with the shortcut system so they can be bound
-    // to a hotkey in Settings, even though most ship with no default sequence.
     auto addBehaviorOption = [this, optionsMenu](const QString &text, const QString &id, bool BehaviorSettings::*member,
                                                  const QKeySequence &shortcut = QKeySequence()) {
         QAction *action = optionsMenu->addAction(text);
@@ -461,7 +444,6 @@ void MainWindow::setupOptionsMenu()
     connect(transformRelativeOption, &QAction::toggled, this, applyTransformRelativeOption);
     canvas_->setTransformRelativeMode(initialTransformSettings.relativeMode);
 
-    // Toggle for the imported car's UV-unwrap overlay (enabled once a car is loaded).
     carUnwrapAction_ = optionsMenu->addAction(QStringLiteral("Show Car UV Unwrap"));
     carUnwrapAction_->setCheckable(true);
     carUnwrapAction_->setEnabled(false);
@@ -800,16 +782,12 @@ void MainWindow::installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidget
         }
         toggleDockAreaCollapsed(area, dock, button);
     });
-    // Keep the arrow glyph pointing at the dock's real area: dockLocationChanged
-    // fires both on layout restore and when the user re-anchors the dock.
     if (dock != nullptr) {
         connect(dock, &QDockWidget::dockLocationChanged, this,
                 [this, dock](Qt::DockWidgetArea area) {
                     updateDockCollapseButton(dock, area);
                     updateDockCollapseButtonVisibility();
                 });
-        // Re-evaluate which single dock owns the area's collapse button when a dock is
-        // detached/re-attached or shown/hidden.
         connect(dock, &QDockWidget::topLevelChanged, this,
                 [this](bool) { updateDockCollapseButtonVisibility(); });
         connect(dock, &QDockWidget::visibilityChanged, this,
@@ -823,18 +801,12 @@ void MainWindow::updateDockCollapseButtonVisibility()
     for (const DockCollapseButton &entry : dockCollapseButtons_) {
         if (entry.button != nullptr) {
             buttonFor.insert(entry.dock, entry.button);
-            // Hide every button first; the loop below re-shows the ones that own an area.
             entry.button->setVisible(false);
         }
     }
     const Qt::DockWidgetArea areas[] = {Qt::LeftDockWidgetArea, Qt::RightDockWidgetArea,
                                         Qt::TopDockWidgetArea, Qt::BottomDockWidgetArea};
     for (Qt::DockWidgetArea area : areas) {
-        // Grant the collapse button to at most one *simultaneously title-bar-visible*
-        // dock stack per area. Tabified docks share one visible title bar (only the active
-        // tab shows), so they can each keep the button; split (side-by-side) docks show
-        // their title bars at the same time, so only the first stack keeps it. Floating
-        // docks are already excluded by dockWidgetsInArea().
         QVector<QDockWidget *> granted;
         for (QDockWidget *dock : dockWidgetsInArea(area)) {
             QToolButton *button = buttonFor.value(dock, nullptr);
@@ -845,7 +817,7 @@ void MainWindow::updateDockCollapseButtonVisibility()
             bool duplicatesVisible = false;
             for (QDockWidget *shown : granted) {
                 if (!tabSiblings.contains(shown)) {
-                    duplicatesVisible = true;  // shown's title bar is up at the same time
+                    duplicatesVisible = true;
                     break;
                 }
             }
@@ -913,9 +885,6 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
                     dock->show();
                 }
             }
-            // Mark the area expanded before restoreState(): re-showing the sibling
-            // docks emits dockLocationChanged, and updateDockCollapseButton() reads
-            // this flag to decide each arrow's direction.
             control.collapsed = false;
             if (!control.layoutState.isEmpty()) {
                 restoreState(control.layoutState);
@@ -930,7 +899,6 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
             control.anchorDock = nullptr;
             control.anchorButton = nullptr;
             control.anchorWidgetWasVisible = false;
-            // Correct every button in the area, not just the anchor's.
             syncDockCollapseButtons();
         } else {
             control.hiddenDocks.clear();
