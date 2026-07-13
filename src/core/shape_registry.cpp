@@ -62,6 +62,15 @@ const ShapeRange *rangeForShape(quint16 shapeId)
 
 namespace fh6::detail {
 
+quint16 canonicalShapeId(quint16 encodedShapeId)
+{
+    // Captured C_group and C_livery streams encode Arial lowercase `a` one
+    // below its logical registry ID. Keep the wire alias at the decode boundary
+    // so every runtime/editor shape continues to use the ID present in
+    // shape_names.json and shape_geometry.json.gz.
+    return encodedShapeId == 0x07d0 ? 0x07d1 : encodedShapeId;
+}
+
 bool isKnownShapeId(quint16 shapeId)
 {
     return rangeForShape(shapeId) != nullptr;

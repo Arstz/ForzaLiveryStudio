@@ -136,6 +136,15 @@ flush against the payload drops the transform *and* the whole group (the group's
 shapes then decode as loose siblings, so a section that is a copy of another decodes
 with a different tree).
 
+There is an ambiguity between that one-byte-gap form and a flag immediately before
+another separate transform. A sequence `<flag> <lead> <payload> <group>` can also
+produce numerically plausible floats when decoded one byte early as
+`<lead> <payload> <flag> <group>`. When the first byte is a recognized flag, prefer
+the parse whose transform payload ends exactly at the group. The walker consumes
+the flag first and reads the aligned transform on its next step. This keeps mirrored
+copies structurally equivalent even when one shifted payload happens to pass the
+normal float-range checks.
+
 A second framed successor form places a 9-byte trailer between the transform and
 the group:
 
@@ -228,6 +237,13 @@ shape. The decoder uses the exact ID set in
 `assets/vector/shape_names.json`, which is the shipped vector-shape registry.
 Values merely falling inside the broader encoded range are not exposed as shapes;
 in particular, `256` is not a sentinel and receives no special treatment.
+
+One confirmed wire alias is canonicalized before that lookup: captured `C_group`
+and `C_livery` streams encode Arial lowercase `a` as `0x07d0`, while the logical
+ID used by `shape_names.json` and `shape_geometry.json.gz` is `0x07d1`. The
+decoder maps only this observed wire value to the logical registry ID; it does not
+expand the accepted numeric range. The alias occurs in multiple standalone and
+livery captures and accounts for otherwise missing leaves in mirrored sections.
 
 A complete, well-framed 32-byte record whose ID is absent from that registry can
 still occupy a structural child/decal position. The section walker counts that

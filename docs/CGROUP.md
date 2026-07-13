@@ -232,6 +232,11 @@ a sentinel. In a livery stream, a complete unsupported record may be counted onl
 as structural occupancy to preserve section alignment; it is not exposed as an
 editable shape.
 
+The one confirmed wire alias is Arial lowercase `a`: captures encode `0x07d0`,
+which the decoder canonicalizes to the registry/geometry ID `0x07d1`. This mapping
+is applied before exact registry validation and does not make `0x07d0` a separate
+runtime shape.
+
 `01 02` is not a universal mask marker. It is context-sensitive and can occur
 on ordinary visible nested shapes.
 

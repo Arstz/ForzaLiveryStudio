@@ -137,7 +137,7 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
         if (pos + 32 > end) {
             return false;
         }
-        const quint16 sid = readLeU16(data, pos + 2);
+        const quint16 sid = detail::canonicalShapeId(readLeU16(data, pos + 2));
         if (!detail::isKnownShapeId(sid)) {
             return false;
         }
@@ -158,7 +158,7 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
         if (pos + 31 > end) {
             return false;
         }
-        const quint16 sid = readLeU16(data, pos + 1);
+        const quint16 sid = detail::canonicalShapeId(readLeU16(data, pos + 1));
         if (!detail::isKnownShapeId(sid)) {
             return false;
         }
@@ -191,7 +191,7 @@ bool isUnsupportedShapeRecordAt(const QByteArray &data, int pos, int end)
         || !(bytesAt(data, pos, {0x00, 0x02}) || bytesAt(data, pos, {0x01, 0x02}))) {
         return false;
     }
-    const quint16 sid = readLeU16(data, pos + 2);
+    const quint16 sid = detail::canonicalShapeId(readLeU16(data, pos + 2));
     if (sid == 0 || detail::isKnownShapeId(sid)
         || static_cast<quint8>(data[pos + 31]) != 0xff) {
         return false;
@@ -221,7 +221,7 @@ VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false
     if (off == 0 && flags == 0) {
         flags = first;
     }
-    shape.shapeId = readLeU16(data, absPos + 2 + off);
+    shape.shapeId = detail::canonicalShapeId(readLeU16(data, absPos + 2 + off));
     shape.rotation = readLeFloat(data, absPos + 4 + off);
     shape.posX = readLeFloat(data, absPos + 8 + off);
     shape.posY = readLeFloat(data, absPos + 12 + off);
@@ -822,6 +822,45 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
     if (!isLiveryTransformLead(data, pos, end)) {
         return std::nullopt;
     }
+
+    // A flag followed by a 00-led transform can also look like an arbitrary-lead
+    // transform whose payload is shifted left by one byte. Occasionally those
+    // shifted floats are still numerically plausible, and the real transform's
+    // final byte then looks like the optional control byte before the group. Prefer
+    // the interpretation with the stronger boundary: flag + valid transform +
+    // group immediately after its payload. The flag is left for walkStep to consume,
+    // then the next iteration reads the correctly aligned transform.
+    const quint8 lead = static_cast<quint8>(data[pos]);
+    const bool recognizedFlag = lead == 0x01 || lead == 0x02 || lead == 0x03
+        || lead == 0x0f || lead == 0x60 || lead == 0xff;
+    if (recognizedFlag && pos + 1 < end && isLiveryTransformLead(data, pos + 1, end)) {
+        for (int markerSize : liverySeparateTransformMarkerSizes(data, pos + 1, end)) {
+            auto aligned = readTransformPayload(data, pos + 1 + markerSize, end);
+            if (!aligned) {
+                continue;
+            }
+            int alignedSize = markerSize + 16;
+            const int syPos = pos + 1 + alignedSize;
+            if (syPos + 5 <= end && (static_cast<quint8>(data[syPos]) & ~0x40) == 0x30) {
+                const double sy = readLeFloat(data, syPos + 1);
+                if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
+                    alignedSize += 5;
+                }
+            }
+            const int alignedNext = pos + 1 + alignedSize;
+            const bool groupFollowsExactly = validCountedGroupAt(data, alignedNext, end, true)
+                || validMarkerlessGroupAt(data, alignedNext, end, true, true);
+            const bool trailerThenGroup = isLiveryTransformTrailerAt(data, alignedNext, end)
+                && (validCountedGroupAt(data, alignedNext + kLiveryTransformTrailerSize, end, true)
+                    || validMarkerlessGroupAt(data,
+                                              alignedNext + kLiveryTransformTrailerSize,
+                                              end, true, true));
+            if (groupFollowsExactly || trailerThenGroup) {
+                return std::nullopt;
+            }
+        }
+    }
+
     for (int markerSize : liverySeparateTransformMarkerSizes(data, pos, end)) {
         auto transform = readTransformPayload(data, pos + markerSize, end);
         if (!transform) {
