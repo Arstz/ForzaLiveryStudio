@@ -1,6 +1,9 @@
 #include "vinyl_decoder.h"
 
 #include "binary_io.h"
+#include "shape_registry.h"
+
+#include <QHash>
 
 #include <algorithm>
 #include <cmath>
@@ -135,7 +138,7 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
             return false;
         }
         const quint16 sid = readLeU16(data, pos + 2);
-        if (!(sid > 0 && sid < 0x2000)) {
+        if (!detail::isKnownShapeId(sid)) {
             return false;
         }
         // Validate coords/scale too (as the bare-02 branch does). Without this a
@@ -156,7 +159,7 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
             return false;
         }
         const quint16 sid = readLeU16(data, pos + 1);
-        if (!(sid > 0 && sid < 0x2000)) {
+        if (!detail::isKnownShapeId(sid)) {
             return false;
         }
         const double px = readLeFloat(data, pos + 7);
@@ -175,6 +178,35 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
             && std::abs(sy) < 5000.0;
     }
     return false;
+}
+
+bool isUnsupportedShapeRecordAt(const QByteArray &data, int pos, int end)
+{
+    // This is deliberately narrower than shape recognition. Unsupported IDs
+    // may contribute to a livery section's stored decal count, but must never
+    // become VinylShape nodes. Require the complete framed record and a normal
+    // opaque shape tail so transform/control bytes that happen to begin `00 02`
+    // cannot advance the section or group counters.
+    if (pos < 0 || pos + 32 > end || pos + 32 > data.size()
+        || !(bytesAt(data, pos, {0x00, 0x02}) || bytesAt(data, pos, {0x01, 0x02}))) {
+        return false;
+    }
+    const quint16 sid = readLeU16(data, pos + 2);
+    if (sid == 0 || detail::isKnownShapeId(sid)
+        || static_cast<quint8>(data[pos + 31]) != 0xff) {
+        return false;
+    }
+    const double rotation = readLeFloat(data, pos + 4);
+    const double px = readLeFloat(data, pos + 8);
+    const double py = readLeFloat(data, pos + 12);
+    const double sx = readLeFloat(data, pos + 16);
+    const double sy = readLeFloat(data, pos + 20);
+    const double skew = readLeFloat(data, pos + 24);
+    return std::isfinite(rotation) && std::abs(rotation) <= 10000.0
+        && std::abs(px) < 50000.0 && std::abs(py) < 50000.0
+        && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
+        && std::abs(sy) > 1e-6 && std::abs(sy) < 5000.0
+        && std::isfinite(skew) && std::abs(skew) < 200.0;
 }
 
 VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false, int flags = 0)
@@ -401,6 +433,22 @@ bool sparseWrappedChildBitmapPlausible(const QByteArray &data, int bitmapStart, 
     return nonzero <= std::max(8, childBlocks / 16);
 }
 
+constexpr int kLiveryTransformTrailerSize = 9;
+
+bool isLiveryTransformTrailerAt(const QByteArray &data, int pos, int end)
+{
+    // Some production gyvl group transforms retain a framed 9-byte trailer
+    // between their 16-byte payload and the following group. The middle six
+    // bytes vary per record, while the 0x21 lead and little-endian 0x0009 tail
+    // identify the frame. Consume the complete frame so its bytes cannot be
+    // reinterpreted as flags or as another transform lead.
+    return pos >= 0 && pos + kLiveryTransformTrailerSize <= end
+        && pos + kLiveryTransformTrailerSize <= data.size()
+        && static_cast<quint8>(data[pos]) == 0x21
+        && static_cast<quint8>(data[pos + 7]) == 0x09
+        && static_cast<quint8>(data[pos + 8]) == 0x00;
+}
+
 // Lead byte of a C_livery SEPARATE/inline transform. The standalone C_group writes
 // a separate group transform as `<control/bitmap byte> <body> 03` and the livery
 // usually collapses the marker to a single leading control byte in front of the
@@ -460,6 +508,21 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
         const int child = pos + size;
         if (validCountedGroupAt(data, child, end, true)
             || validMarkerlessGroupAt(data, child, end, true, true)) {
+            return true;
+        }
+        if (isLiveryTransformTrailerAt(data, child, end)
+            && (validCountedGroupAt(data, child + kLiveryTransformTrailerSize, end, true)
+                || validMarkerlessGroupAt(data, child + kLiveryTransformTrailerSize, end,
+                                          true, true))) {
+            return true;
+        }
+        // The same single control byte accepted by readLiveryTransform can occur
+        // between this payload and its group. Accept exactly one byte here too so
+        // an enclosing markerless group can validate its transformed first child;
+        // requiring a known shape ID above prevents shape data from being skipped.
+        if (child + 1 < end && !isValidShapeAt(data, child, end)
+            && (validCountedGroupAt(data, child + 1, end, true)
+                || validMarkerlessGroupAt(data, child + 1, end, true, true))) {
             return true;
         }
         const quint8 lead = static_cast<quint8>(data[pos]);
@@ -673,6 +736,17 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
     return info;
 }
 
+bool groupAtOrAfterControlByte(const QByteArray &data, int pos, int end, bool livery)
+{
+    if (validCountedGroupAt(data, pos, end, livery)
+        || validMarkerlessGroupAt(data, pos, end, false, livery)) {
+        return true;
+    }
+    return livery && pos + 1 < end && !isValidShapeAt(data, pos, end)
+        && (validCountedGroupAt(data, pos + 1, end, true)
+            || validMarkerlessGroupAt(data, pos + 1, end, false, true));
+}
+
 bool inlineTransformForFirstChild(const QByteArray &marker)
 {
     // Accept both the standalone 0x03 terminator and the C_livery 0x01 terminator.
@@ -732,7 +806,8 @@ std::optional<TransformRecord> readTransformRecord(const QByteArray &data, int p
 // collapses the marker to its first control byte, but the 00-family can retain a
 // `00 01` prefix. The control byte is ARBITRARY (00, 01, 03, 07, 0f, 3c, 71, c3,
 // ... -- see isLiveryTransformLead), so this reader does NOT test the lead value:
-// it requires a valid 16-float payload AND a following GROUP (shapes, logos and
+// it requires a valid 16-float payload AND a following GROUP, optionally separated
+// by one control byte or the framed 9-byte transform trailer (shapes, logos and
 // counted/markerless groups at `pos` are all matched earlier in walkStep, so by the
 // time this runs, an arbitrary lead + valid floats + a group is unambiguously a
 // separate transform). The successive 0x00/0x01-only and 0x00/odd-only rules each
@@ -765,17 +840,24 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
         // flag/control byte can sit between them -- e.g. Livery_2357 Left encodes a
         // count-11 group as `00 <payload> 00 0b 00 02 ...` (a `00` before the markerless
         // count) where the mirror-image Right side uses a counted `20 0b ...` with no gap.
-        // Accept the group at `next` OR one flag byte later; the intervening byte (if
-        // any) is left for walkStep to consume as a flag while the pending transform it
-        // set here carries through to the group.
+        // Accept the group at `next`, one flag byte later, or after the framed
+        // transform trailer. A lone intervening byte is left for walkStep to consume
+        // as a flag while the pending transform carries through. The complete trailer
+        // is opaque framing and is consumed here so none of it leaks into flag state.
         const int next = pos + size;
-        const bool groupFollows =
-            validCountedGroupAt(data, next, end, true)
-            || validMarkerlessGroupAt(data, next, end, true, true)
-            || (next + 1 < end && !isValidShapeAt(data, next, end)
-                && (validCountedGroupAt(data, next + 1, end, true)
-                    || validMarkerlessGroupAt(data, next + 1, end, true, true)));
-        if (groupFollows) {
+        const bool groupFollowsImmediately = validCountedGroupAt(data, next, end, true)
+            || validMarkerlessGroupAt(data, next, end, true, true);
+        const bool groupFollowsControl = next + 1 < end && !isValidShapeAt(data, next, end)
+            && (validCountedGroupAt(data, next + 1, end, true)
+                || validMarkerlessGroupAt(data, next + 1, end, true, true));
+        const bool groupFollowsTrailer = isLiveryTransformTrailerAt(data, next, end)
+            && (validCountedGroupAt(data, next + kLiveryTransformTrailerSize, end, true)
+                || validMarkerlessGroupAt(data, next + kLiveryTransformTrailerSize, end,
+                                          true, true));
+        if (groupFollowsImmediately || groupFollowsControl || groupFollowsTrailer) {
+            if (groupFollowsTrailer) {
+                size += kLiveryTransformTrailerSize;
+            }
             return TransformRecord{size, *transform, data.mid(pos, markerSize)};
         }
     }
@@ -870,6 +952,33 @@ int countShapes(const VinylGroupPtr &node)
         }
     }
     return count;
+}
+
+int countEncodedLiveryDecals(const VinylGroup &node)
+{
+    int count = node.skippedChildren;
+    for (const VinylItem &item : node.items) {
+        if (item.isShape()) {
+            ++count;
+        } else {
+            count += countEncodedLiveryDecals(*std::get<VinylGroupPtr>(item.value));
+        }
+    }
+    return count;
+}
+
+void collectLiveryLogoCounts(const VinylGroup &node, QHash<quint16, int> &counts)
+{
+    for (const VinylItem &item : node.items) {
+        if (item.isShape()) {
+            const VinylShape &shape = std::get<VinylShape>(item.value);
+            if (shape.isLogo) {
+                ++counts[shape.logoId];
+            }
+        } else {
+            collectLiveryLogoCounts(*std::get<VinylGroupPtr>(item.value), counts);
+        }
+    }
 }
 
 void collectGroups(const VinylGroupPtr &node, QVector<VinylGroupPtr> &groups)
@@ -1157,12 +1266,9 @@ struct WalkState {
     QByteArray pendingTransformPrefix;
     int pendingFlags = 0;
     bool pendingMask = false;
+    int decodedDecals = 0;
+    const QHash<quint16, int> *logoExtraCounts = nullptr;
 };
-
-int decodedLiveryDecals(const VinylGroupPtr &sectionNode)
-{
-    return countShapes(sectionNode);
-}
 
 bool isIdentityNodeTransform(const VinylGroup &node)
 {
@@ -1187,7 +1293,6 @@ void extendLiverySectionSpanContainer(const VinylGroupPtr &sectionNode, int targ
         || !first->inlineTransformMarker.isEmpty()
         || !first->effectiveTransformMarker.isEmpty()
         || !first->expectedChildren
-        || *first->expectedChildren < 16
         || !isIdentityNodeTransform(*first)) {
         return;
     }
@@ -1314,8 +1419,7 @@ int pushMarkerlessGroup(const QByteArray &data, int pos, int end, const GroupInf
 {
     const bool inlineForFirstChild = info.inlineTransform
         && inlineTransformForFirstChild(info.marker)
-        && (validCountedGroupAt(data, pos + info.size, end, livery)
-            || validMarkerlessGroupAt(data, pos + info.size, end, false, livery));
+        && groupAtOrAfterControlByte(data, pos + info.size, end, livery);
     auto node = std::make_shared<VinylGroup>();
     node->nodeType = QStringLiteral("group");
     node->absPos = pos;
@@ -1369,8 +1473,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
         const auto &info = *countedInfo;
         const bool inlineForFirstChild = info.inlineTransform
             && inlineTransformForFirstChild(info.marker)
-            && (validCountedGroupAt(layerData, pos + info.size, end, liveryDialect)
-                || validMarkerlessGroupAt(layerData, pos + info.size, end, false, liveryDialect));
+            && groupAtOrAfterControlByte(layerData, pos + info.size, end, liveryDialect);
         auto node = std::make_shared<VinylGroup>();
         node->nodeType = QStringLiteral("group");
         node->absPos = pos;
@@ -1402,7 +1505,9 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
     }
 
     if (liveryDialect && isLiveryLogoAt(layerData, pos, end)) {
-        addShape(*stack.back(), decodeLiveryLogoAt(layerData, pos));
+        const VinylShape logo = decodeLiveryLogoAt(layerData, pos);
+        addShape(*stack.back(), logo);
+        s.decodedDecals += 1 + (s.logoExtraCounts ? s.logoExtraCounts->value(logo.logoId, 0) : 0);
         s.pendingTransform.reset();
         s.pendingTransformMarker.clear();
         s.pendingTransformPrefix.clear();
@@ -1438,6 +1543,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
             flags |= 0x01;
         }
         addShape(*stack.back(), decodeShapeAt(layerData, pos, isMask, flags));
+        ++s.decodedDecals;
         s.pendingFlags = 0;
         s.pendingMask = false;
         s.pendingTransformMarker.clear();
@@ -1478,6 +1584,21 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s, bool l
         s.pendingTransformMarker = s.pendingTransformPrefix + transformInfo->marker;
         s.pendingTransformPrefix.clear();
         return pos + transformInfo->size;
+    }
+
+    // The stats table counts some well-framed records whose IDs are absent from
+    // the shipped vector registry. Preserve only their structural occupancy so
+    // the next section starts at the right byte; do not decode or expose them as
+    // shapes. Keeping this after every group/transform interpretation is vital:
+    // transform bytes can overlap the `00 02` shape prefix.
+    if (!s.pendingTransform && isUnsupportedShapeRecordAt(layerData, pos, end)) {
+        ++stack.back()->skippedChildren;
+        ++s.decodedDecals;
+        s.pendingTransformMarker.clear();
+        s.pendingTransformPrefix.clear();
+        s.pendingFlags = 0;
+        s.pendingMask = false;
+        return pos + 32;
     }
 
     const quint8 byte = static_cast<quint8>(layerData[pos]);
@@ -1565,102 +1686,154 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
     return buildLiverySections(body, sectionCounts, kFH6LiverySlots, kFH6SectionCount);
 }
 
-QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body,
-                                                             const QVector<int> &sectionCounts,
-                                                             const LiverySlotDef *slotDefs,
-                                                             int slotCount) const
+QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts,
+                                                             const LiverySlotDef *slotDefs, int slotCount) const
 {
-    QVector<LiverySection> sections;
-    sections.reserve(slotCount);
-
-    int pos = 0;
     const int end = body.size();
-    for (int slot = 0; slot < slotCount; ++slot) {
-        LiverySection section;
-        section.slot = slot;
-        section.name = QString::fromLatin1(slotDefs[slot].name);
-        section.rotationDeg = slotDefs[slot].rotationDeg;
-        section.absPos = pos;
+    QHash<quint16, int> logoExtraCounts;
+    for (int pass = 0; pass < 2; ++pass) {
+        QVector<LiverySection> sections;
+        sections.reserve(slotCount);
+        int pos = 0;
+        for (int slot = 0; slot < slotCount; ++slot) {
+            LiverySection section;
+            section.slot = slot;
+            section.name = QString::fromLatin1(slotDefs[slot].name);
+            section.rotationDeg = slotDefs[slot].rotationDeg;
+            section.absPos = pos;
 
-        const int target = slot < sectionCounts.size() ? sectionCounts[slot] : 0;
-        if (target <= 0) {
-            section.populated = false;
-            pos = std::min(end, pos + kLiveryEmptySlotSize);
-            sections.push_back(section);
-            continue;
-        }
-
-        section.populated = true;
-        auto sectionNode = std::make_shared<VinylGroup>();
-        sectionNode->nodeType = QStringLiteral("group");
-        sectionNode->source = QStringLiteral("livery_section");
-        sectionNode->absPos = pos;
-
-        auto holder = std::make_shared<VinylGroup>();
-        addChild(*holder, sectionNode);
-
-        // Drive the shared grammar over the whole section until its decals reach
-        // the ground-truth target. A section's first top-level group (and any that
-        // follow without a preceding transform) is a "bare" markerless count-N
-        // group that walkStep cannot start on its own (it needs a pending
-        // transform), so bootstrap those explicitly via the SAME markerless logic
-        // (inline transform + flag bytes included); everything else (transform-led
-        // groups, counted groups, shapes) flows through walkStep.
-        // A section whose decals cannot reach its stats target (an end-of-body
-        // grammar deficit) must NOT run to the body end and swallow the following
-        // slots' bytes -- doing so drops the trailing empty-slot scaffolds, which
-        // an exporter that byte-preserves those slots would then omit. Reserve what
-        // the remaining slots provably need -- every later empty slot is a constant
-        // 23-byte scaffold, every later populated slot at least 32 bytes per decal
-        // -- plus this section's own trailing remnant, and cap the walk there.
-        // Since the reservation is a LOWER bound on the real later bytes, walkLimit
-        // is always >= this section's true content end, so the cap never truncates
-        // a section that DOES reach its count (it stops at or before the cap); it
-        // only bounds the deficit case.
-        int reservedTail = kLiveryRemnantSize;
-        for (int later = slot + 1; later < kLiverySectionCount; ++later) {
-            const int laterTarget = later < sectionCounts.size() ? sectionCounts[later] : 0;
-            reservedTail += laterTarget <= 0 ? kLiveryEmptySlotSize : laterTarget * 32;
-        }
-        const int walkLimit = std::max(pos, end - reservedTail);
-
-        WalkState state;
-        state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
-        int guard = 0;
-        while (decodedLiveryDecals(sectionNode) < target && pos < walkLimit && guard < end + 16) {
-            ++guard;
-            closeCompleteStack(state.stack);
-            if (state.stack.size() < 2) {
-                break;
+            const int target = slot < sectionCounts.size() ? sectionCounts[slot] : 0;
+            if (target <= 0) {
+                section.populated = false;
+                pos = std::min(end, pos + kLiveryEmptySlotSize);
+                sections.push_back(section);
+                continue;
             }
-            const bool atSectionTop = state.stack.back() == sectionNode;
-            if (atSectionTop && !state.pendingTransform) {
-                if (const auto info = validMarkerlessGroupAt(body, pos, end, /*allowCountOne=*/true, /*livery=*/true)) {
-                    pos = pushMarkerlessGroup(body, pos, end, *info, state, /*livery=*/true);
-                    continue;
+
+            section.populated = true;
+            auto sectionNode = std::make_shared<VinylGroup>();
+            sectionNode->nodeType = QStringLiteral("group");
+            sectionNode->source = QStringLiteral("livery_section");
+            sectionNode->absPos = pos;
+
+            auto holder = std::make_shared<VinylGroup>();
+            addChild(*holder, sectionNode);
+
+            // Drive the shared grammar over the whole section until its decals reach
+            // the ground-truth target. A section's first top-level group (and any
+            // that follow without a preceding transform) is a "bare" markerless
+            // count-N group that walkStep cannot start on its own (it needs a pending
+            // transform), so bootstrap those explicitly via the SAME markerless logic
+            // (inline transform + flag bytes included); everything else
+            // (transform-led groups, counted groups, shapes) flows through walkStep.
+            // A section whose decals cannot reach its stats target (an end-of-body
+            // grammar deficit) must NOT run to the body end and swallow the following
+            // slots' bytes -- doing so drops the trailing empty-slot scaffolds, which
+            // an exporter that byte-preserves those slots would then omit. Reserve
+            // what the remaining slots provably need -- every later empty slot is a
+            // constant 23-byte scaffold, every later populated slot at least 32 bytes
+            // per decal
+            // -- plus this section's own trailing remnant, and cap the walk there.
+            // Since the reservation is a LOWER bound on the real later bytes,
+            // walkLimit is always >= this section's true content end, so the cap
+            // never truncates a section that DOES reach its count (it stops at or
+            // before the cap); it only bounds the deficit case.
+            int reservedTail = kLiveryRemnantSize;
+            for (int later = slot + 1; later < slotCount; ++later) {
+                const int laterTarget = later < sectionCounts.size() ? sectionCounts[later] : 0;
+                reservedTail += laterTarget <= 0 ? kLiveryEmptySlotSize : laterTarget * 32;
+            }
+            const int walkLimit = std::max(pos, end - reservedTail);
+
+            WalkState state;
+            state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
+            state.logoExtraCounts = &logoExtraCounts;
+            int guard = 0;
+            while (state.decodedDecals < target && pos < walkLimit && guard < end + 16) {
+                ++guard;
+                closeCompleteStack(state.stack);
+                if (state.stack.size() < 2) {
+                    break;
+                }
+                const bool atSectionRoot = state.stack.back() == sectionNode;
+                const int deficit = target - state.decodedDecals;
+                const bool nextSlotPopulated =
+                    slot + 1 < slotCount && slot + 1 < sectionCounts.size() && sectionCounts[slot + 1] > 0;
+                if (atSectionRoot && !state.pendingTransform && nextSlotPopulated && deficit > 0 && deficit <= 8) {
+                    // Some yrvl counts retain a few logical source decals that have
+                    // no registry-backed gyvl shape record. Do not satisfy that small
+                    // deficit by walking through the fixed remnant into the next
+                    // populated section's markerless root container.
+                    const auto nextSection = validMarkerlessGroupAt(body, pos + kLiveryRemnantSize, end,
+                                                                    /*allowCountOne=*/true, /*livery=*/true);
+                    if (nextSection && nextSection->count >= 8) {
+                        break;
+                    }
+                }
+                if (atSectionRoot && !state.pendingTransform) {
+                    if (const auto info =
+                            validMarkerlessGroupAt(body, pos, end, /*allowCountOne=*/true, /*livery=*/true)) {
+                        pos = pushMarkerlessGroup(body, pos, end, *info, state,
+                                                  /*livery=*/true);
+                        continue;
+                    }
+                }
+                const int next = walkStep(body, pos, end, state, /*liveryDialect=*/true);
+                if (next <= pos) {
+                    break;
+                }
+                pos = next;
+            }
+            closeCompleteStack(state.stack);
+            extendLiverySectionSpanContainer(sectionNode, target);
+            extendLiveryNestedSpanContainers(sectionNode);
+
+            section.subtree = *sectionNode;
+            // Clamp back to the reserved boundary before skipping the remnant, so a
+            // deficit walk that overshot by a partial record still lands the next
+            // slot on its scaffold. (No-op when the section reached its count: pos is
+            // then at its content end, which is <= walkLimit.)
+            pos = std::min(pos, walkLimit);
+            pos = std::min(end, pos + kLiveryRemnantSize);
+            sections.push_back(section);
+        }
+
+        if (pass == 0) {
+            // A placed custom logo is one gyvl record, but yrvl can retain the
+            // number of vector decals from which that uploaded logo was built.
+            // The last populated slot cannot borrow records from a later slot, so
+            // its residual count reveals the extra weight. Reuse that weight for
+            // matching logo IDs in earlier mirrored sections and decode once more.
+            int lastPopulated = -1;
+            for (int slot = 0; slot < slotCount; ++slot) {
+                if (slot < sectionCounts.size() && sectionCounts[slot] > 0) {
+                    lastPopulated = slot;
                 }
             }
-            const int next = walkStep(body, pos, end, state, /*liveryDialect=*/true);
-            if (next <= pos) {
-                break;
+            if (lastPopulated >= 0 && lastPopulated < sections.size()) {
+                const int target = sectionCounts[lastPopulated];
+                const int residual = target - countEncodedLiveryDecals(sections[lastPopulated].subtree);
+                QHash<quint16, int> logos;
+                collectLiveryLogoCounts(sections[lastPopulated].subtree, logos);
+                if (residual > 0 && logos.size() == 1) {
+                    const auto it = logos.constBegin();
+                    int earlierPlacements = 0;
+                    for (int slot = 0; slot < lastPopulated; ++slot) {
+                        QHash<quint16, int> earlierLogos;
+                        collectLiveryLogoCounts(sections[slot].subtree, earlierLogos);
+                        earlierPlacements += earlierLogos.value(it.key(), 0);
+                    }
+                    if (earlierPlacements > 0 && it.value() > 0 && residual % it.value() == 0) {
+                        logoExtraCounts.insert(it.key(), residual / it.value());
+                        continue;
+                    }
+                }
             }
-            pos = next;
         }
-        closeCompleteStack(state.stack);
-        extendLiverySectionSpanContainer(sectionNode, target);
-        extendLiveryNestedSpanContainers(sectionNode);
 
-        section.subtree = *sectionNode;
-        // Clamp back to the reserved boundary before skipping the remnant, so a
-        // deficit walk that overshot by a partial record still lands the next slot
-        // on its scaffold. (No-op when the section reached its count: pos is then
-        // at its content end, which is <= walkLimit.)
-        pos = std::min(pos, walkLimit);
-        pos = std::min(end, pos + kLiveryRemnantSize);
-        sections.push_back(section);
+        return sections;
     }
-
-    return sections;
+    return {};
 }
 
 QVector<QString> VinylTreeDecoder::validateTree(const VinylGroup &root) const
@@ -1670,15 +1843,18 @@ QVector<QString> VinylTreeDecoder::validateTree(const VinylGroup &root) const
         if (node.nodeType == QStringLiteral("root") && path == QStringLiteral("root") && node.totalChildren() == 0) {
             errors.push_back(QStringLiteral("%1: root has no children").arg(path));
         }
-        if (node.nodeType == QStringLiteral("group") && node.expectedChildren && node.totalChildren() != *node.expectedChildren) {
+        if (node.nodeType == QStringLiteral("group") && node.expectedChildren && node.totalChildren() != *node.expectedChildren)
+        {
             errors.push_back(QStringLiteral("%1: group has %2 child(ren), expected %3")
                                  .arg(path)
                                  .arg(node.totalChildren())
                                  .arg(*node.expectedChildren));
         }
         int childIndex = 0;
-        for (const VinylItem &item : node.items) {
-            if (!item.isShape()) {
+        for (const VinylItem &item : node.items)
+        {
+            if (!item.isShape())
+            {
                 visit(*std::get<VinylGroupPtr>(item.value),
                       QStringLiteral("%1.children[%2]").arg(path).arg(childIndex++));
             }

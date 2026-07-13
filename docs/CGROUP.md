@@ -176,6 +176,13 @@ from standalone `C_group`: a separate group transform is usually a single lead
 byte plus the 16-byte transform payload, and the `00` family can retain a
 `00 01` prefix before that payload.
 
+The following group can start immediately, after one control byte, or after the
+framed 9-byte livery trailer `21 ?? ?? ?? ?? ?? ?? 09 00`. The trailer is consumed
+as one opaque unit. It is not a free-form scan allowance: only successor offsets
+0, 1, and the exact 9-byte frame are accepted, each requiring a structurally valid
+group at the resulting position. See [`CLIVERY.md`](CLIVERY.md) for the full
+transform-dialect and section-boundary rules.
+
 Large section-start identity containers can be followed by more transform-led
 records that still belong to the same decoded section container. When a large
 section reaches its stats count and the first at-section-start identity group
@@ -217,6 +224,13 @@ u8  g
 u8  r
 u8  a
 ```
+
+Built-in vector IDs are validated against the exact runtime registry in
+`assets/vector/shape_names.json`, not by accepting an entire numeric interval.
+An in-range value absent from the registry is not a vector shape, and `256` is not
+a sentinel. In a livery stream, a complete unsupported record may be counted only
+as structural occupancy to preserve section alignment; it is not exposed as an
+editable shape.
 
 `01 02` is not a universal mask marker. It is context-sensitive and can occur
 on ordinary visible nested shapes.

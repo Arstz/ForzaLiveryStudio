@@ -104,11 +104,6 @@ if(FH6_BUILD_HELPER_TOOLS)
     )
     target_link_libraries(fh6_pack_decals PRIVATE fh6_core Qt6::Core)
 
-    # Diagnostic: test FM2023 import with a given folder.
-    add_executable(fh6_fm_diag
-        tools/fm_diag/main.cpp
-    )
-    target_link_libraries(fh6_fm_diag PRIVATE fh6_core Qt6::Core)
 endif()
 
 set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)

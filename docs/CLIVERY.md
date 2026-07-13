@@ -114,12 +114,13 @@ standalone marker's leading control/bitmap byte and is therefore **arbitrary** �
 surveyed across the production samples it takes values `00 01 03 07 0f 10 19 1e 1f
 33 3c 43 71 c3 f6 ff …`, spanning even bytes too. **It cannot be matched by value.**
 A separate transform must be recognized purely **structurally**: a lead byte + a
-valid 16-float payload (+ optional 30/70 suffix) **immediately followed by a
-group**. Requiring the following group is what makes an arbitrary lead unambiguous
-against a per-shape flag byte in front of a `01 02` shape (the one extra byte-level
-guard: reject a lead whose *next* byte begins a shape). Any lead-value allow-list —
-`{00,01}`, then `{00, odd}` — silently drops the transform of any group whose lead
-falls outside it (`07` on Livery_0423 Top, the even `3c` on Livery_1379 Right),
+valid 16-float payload (+ optional 30/70 suffix) followed by a group through one
+of the bounded successor forms below. Requiring the following group is what makes
+an arbitrary lead unambiguous against a per-shape flag byte in front of a `01 02`
+shape. The one extra byte-level guard is to reject a lead whose *next* byte begins
+a shape. Any lead-value allow-list — `{00,01}`, then `{00, odd}` — silently drops
+the transform of any group whose lead falls outside it (`07` on Livery_0423 Top,
+the even `3c` on Livery_1379 Right),
 leaving that group at identity. See the first-group-in-section case below and
 `isLiveryTransformLead` in the decoder.
 
@@ -134,6 +135,25 @@ consume that flag while the pending transform carries through; requiring the gro
 flush against the payload drops the transform *and* the whole group (the group's
 shapes then decode as loose siblings, so a section that is a copy of another decodes
 with a different tree).
+
+A second framed successor form places a 9-byte trailer between the transform and
+the group:
+
+```text
+<lead> <payload> [30/70 + scale_y] 21 ?? ?? ?? ?? ?? ?? 09 00 <group>
+```
+
+The middle six bytes vary. The complete trailer is opaque framing and must be
+consumed atomically; walking it as flags can cause a byte inside the preceding
+transform to be accepted as a new lead, replacing the real transform with
+misaligned floats. Livery_4038 Right repeats this form before its top-level groups:
+recognizing the frame recovers transforms such as `px=-80 py=-70.5 sx=0.08` and
+prevents the final group from acquiring a false negative scale.
+
+The confirmed group-successor offsets are therefore 0 bytes, one flag byte, or
+the exact 9-byte frame. Scanning an arbitrary distance for a group is unsafe
+because transform payload and shape bytes frequently contain plausible
+markerless counts.
 
 That intervening flag byte has a second trap: the **greedy standalone transform
 reader must be disabled while a separate transform is already pending**. A markerless
@@ -201,21 +221,45 @@ group) — any lead-value allow-list dropped these, decoding the group at identi
 Subsequent top-level groups in the slot use their own separate transforms the same
 way (an ordinary bare `00` when the placement is simple).
 
+### Built-in shape ID validation
+
+The numeric interval around an ID is not sufficient to identify a built-in vector
+shape. The decoder uses the exact ID set in
+`assets/vector/shape_names.json`, which is the shipped vector-shape registry.
+Values merely falling inside the broader encoded range are not exposed as shapes;
+in particular, `256` is not a sentinel and receives no special treatment.
+
+A complete, well-framed 32-byte record whose ID is absent from that registry can
+still occupy a structural child/decal position. The section walker counts that
+occupancy so later groups and slots remain aligned, but it does not create a
+`VinylShape` or an editor layer for the unsupported ID. This structural fallback
+requires the full record framing, sane finite transform values, and the ordinary
+opaque record tail so transform bytes cannot be mistaken for a skipped shape.
+
 ### Custom logo / decal records
 
 A placed custom graphic (shared logo/decal) is stored inside the section stream as
-an ordinary 32-byte shape record (`00 02`/`01 02` + payload) whose **shape id is
-≥ 0x8000** — the high bit marks it as a raster decal rather than a built-in vector
-shape (built-in ids are < 0x2000; the raster id is `id & 0x7fff`, indexing the
-`yrvl` descriptor table). Its transform is **arbitrary**, exactly like a vector
+an ordinary 32-byte shape record (`00 02`/`01 02` + payload) whose **shape id has
+the high bit set**. This marks it as a raster decal rather than an ID from the
+built-in vector registry; the raster id is `id & 0x7fff`, indexing the `yrvl`
+descriptor table. Its transform is **arbitrary**, exactly like a vector
 shape: position, scale, rotation, skew and color are all whatever the author placed
 it at. Do NOT assume an identity transform or a white color — a decoder that only
 recognises an identity-placed opaque-white logo (the old rule) fails to consume a
 real placed logo's 32-byte record, then the high id also fails the built-in
-`id < 0x2000` shape check, so the record is walked one byte at a time and the whole
+registry check, so the record is walked one byte at a time and the whole
 slot desyncs (Livery_2357 Left: the "layer ~130" logo `id 0xa715 scale 0.22
 rot 359` broke the walk, so the first group swallowed the rest of the slot).
 Recognise a logo by `id ≥ 0x8000` with a sane (shape-valid) transform.
+
+One logo is one physical gyvl record, but the corresponding section's `yrvl` count
+can retain the number of vector decals from which that uploaded logo was created.
+When that happens, the logo has a logical count greater than one. The decoder
+learns this weight only from a constrained residual: the last populated slot must
+contain exactly one logo ID, the residual must divide evenly across its placements,
+and the same logo ID must occur in an earlier slot. It then reparses all slots with
+that learned weight. This prevents an earlier mirrored section from borrowing the
+first records of the following section without assigning a per-livery exception.
 
 **All 11 slots are always emitted, in order** — the body never stops after the last
 populated slot. The empty scaffolds that follow it are part of the record and act
@@ -226,6 +270,14 @@ against the body end. Without that bound, a populated slot whose decodable decal
 fall short of its stats count keeps walking to the end of the body and swallows the
 trailing empty scaffolds; an exporter that byte-preserves those slots would then
 omit them, shifting every following slot and corrupting the section container.
+
+There is an additional root-level boundary guard for a small remaining stats
+deficit. It is considered only when the walker is back at the current section root,
+has no pending transform, and the next slot is populated. If the fixed 18-byte
+remnant is followed by a structurally valid markerless root for that next slot, the
+current walk stops before the remnant instead of consuming the next section to
+satisfy the deficit. Restricting the check to section-root state prevents a nested
+group from being closed on a coincidental byte pattern.
 
 ## yrvl info record (first yrvl, @0x1a)
 

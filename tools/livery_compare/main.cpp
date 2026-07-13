@@ -23,6 +23,7 @@
 #include "layer.h"
 #include "matrix_math.h"
 #include "project_codec.h"
+#include "shape_registry.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -249,7 +250,7 @@ bool nudgeFirstBuiltInShape(scene::Layer &node)
 {
     if (node.kind() == scene::LayerKind::Shape) {
         auto &shape = static_cast<scene::Shape &>(node);
-        if (!shape.raster && shape.shapeId != 256) {
+        if (!shape.raster && detail::isKnownShapeId(shape.shapeId)) {
             shape.x += 10.0;
             return true;
         }
@@ -270,7 +271,7 @@ bool layerHasBuiltInShape(const scene::Layer &node)
 {
     if (node.kind() == scene::LayerKind::Shape) {
         const auto &shape = static_cast<const scene::Shape &>(node);
-        return !shape.raster && shape.shapeId != 256;
+        return !shape.raster && detail::isKnownShapeId(shape.shapeId);
     }
     if (node.kind() != scene::LayerKind::Group) {
         return false;

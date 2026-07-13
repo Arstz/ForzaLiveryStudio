@@ -1,3 +1,7 @@
+Small changes:
+    -Privacy policy enabled, still can open locked livery and groups
+    -Hex search by id breaks GUI in shapes widget, ignore 0x towards required length to compensate, so user should input at least 0x + 3 symbols if starts with 0x 
+
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied
     -Retire legacy format support in next version

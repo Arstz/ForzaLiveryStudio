@@ -99,8 +99,11 @@ struct VinylGroup {
     QByteArray effectiveTransformMarker;
     QByteArray headerControlBytes;
     bool rootTransformExempt = false;
+    // Records with IDs outside the shipped shape registry still occupy encoded
+    // child slots. They are counted structurally but never exposed as shapes.
+    int skippedChildren = 0;
     QVector<VinylItem> items;
-    int totalChildren() const { return items.size(); }
+    int totalChildren() const { return items.size() + skippedChildren; }
 };
 
 struct FlattenedLayer {

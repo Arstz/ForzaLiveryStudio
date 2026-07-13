@@ -330,7 +330,7 @@ bool matchesSourceShape(const scene::Shape &shape, const SourceShapeView &source
 {
     const scene::Transform2D world = decomposeTransform2D(shape.worldMatrix());
     const bool transformMatches = shape.hasSourceTransform
-        ? (shape.shapeId == 256 || !reliableTransform(shape.sourceTransform) || transformClose(world, shape.sourceTransform))
+        ? (!reliableTransform(shape.sourceTransform) || transformClose(world, shape.sourceTransform))
         : (source.color[3] == 0
            || matrixClose(shape.worldMatrix(), source.worldMatrix)
            || transformClose(world, source.world));
