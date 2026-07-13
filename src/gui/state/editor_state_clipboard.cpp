@@ -118,17 +118,32 @@ bool EditorState::duplicateEntriesInPlace(const QVector<QString> &entryIds,
     if (!buildEntryClipboard(entries, copied)) {
         return false;
     }
-    QString parentId = cache.parentByChild.value(entries.back());
-    int insertAt = cache.orderByChild.value(entries.back(), -1) + 1;
-    bool haveTarget = insertAt > 0;
-    int guideInsertAt = -1;
-    for (const QString &id : entries) {
-        if (cache.guides.contains(id)) {
-            guideInsertAt = std::max(guideInsertAt, cache.orderByChild.value(id, -1) + 1);
+
+    struct InsertionBatch {
+        QString parentId;
+        int insertAt = 0;
+        ProjectClipboard clipboard;
+    };
+    QVector<InsertionBatch> batches;
+    QHash<QString, int> batchByParent;
+    for (int i = 0; i < copied.rootIds.size(); ++i) {
+        const QString &id = copied.rootIds[i];
+        const QString parentId = cache.parentByChild.value(id);
+        int batchIndex = batchByParent.value(parentId, -1);
+        if (batchIndex < 0) {
+            batchIndex = batches.size();
+            batchByParent.insert(parentId, batchIndex);
+            batches.push_back({parentId, 0, {}});
         }
+        InsertionBatch &batch = batches[batchIndex];
+        batch.insertAt = std::max(batch.insertAt, cache.orderByChild.value(id, -1) + 1);
+        batch.clipboard.rootIds.push_back(id);
+        batch.clipboard.nodes.push_back(std::move(copied.nodes[static_cast<size_t>(i)]));
     }
-    insertClipboardAt(copied, parentId, insertAt, haveTarget, guideInsertAt,
-                      newLayerSelection, newGuideLayerSelection, false);
+    for (const InsertionBatch &batch : batches) {
+        insertClipboardAt(batch.clipboard, batch.parentId, batch.insertAt, true, batch.insertAt,
+                          newLayerSelection, newGuideLayerSelection, false);
+    }
     return true;
 }
 
@@ -234,7 +249,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         if (newGuideLayerSelection != nullptr) {
             *newGuideLayerSelection += insertedGuides;
         }
-        if (node->kind() == fh6::scene::LayerKind::Guide) {
+        if (node->kind() == fh6::scene::LayerKind::Guide && target != project_.root.get()) {
             project_.root->insert(insertGuideAt++, std::move(node));
         } else {
             target->insert(insertAt++, std::move(node));

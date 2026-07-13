@@ -1204,11 +1204,12 @@ void ShapesBrowserWidget::refreshGrid()
     const QString query = search_->text().trimmed().toLower();
 
     constexpr int MinSearchLength = 3;
-    if (!query.isEmpty() && query.size() < MinSearchLength) {
+    const int queryLength = query.startsWith(QStringLiteral("0x")) ? query.size() - 2 : query.size();
+    if (!query.isEmpty() && queryLength < MinSearchLength) {
         showGridMessage(QStringLiteral("Type at least %1 characters to search").arg(MinSearchLength));
         return;
     }
-    const bool searching = query.size() >= MinSearchLength;
+    const bool searching = queryLength >= MinSearchLength;
 
     if (!searching && currentCategory_ == QString::fromLatin1(CustomCategory)) {
         const int columns = std::max(1, scroll_->viewport()->width() / (TileSize.width() + 10));

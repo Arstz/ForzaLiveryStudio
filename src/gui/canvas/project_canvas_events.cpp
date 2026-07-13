@@ -171,13 +171,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
             && (dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove);
         if (dragUsesProjectEdit_) {
             state_->beginProjectEdit();
-            QVector<QString> entries;
-            for (const QString &id : state_->selectedLayerIds()) {
-                entries.push_back(id);
-            }
-            for (const QString &id : state_->selectedGuideLayerIds()) {
-                entries.push_back(id);
-            }
+            const QVector<QString> entries = state_->selectedTransformTargetIds();
             QSet<QString> newLayerSel;
             QSet<QString> newGuideSel;
             if (state_->duplicateEntriesInPlace(entries, &newLayerSel, &newGuideSel)
