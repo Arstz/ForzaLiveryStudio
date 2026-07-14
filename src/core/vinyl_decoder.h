@@ -16,6 +16,8 @@ struct LiverySlotDef {
 extern const LiverySlotDef kFH6LiverySlots[11];
 inline constexpr int kFH6SectionCount = 11;
 
+Matrix3 liverySectionCanvasTransform(int slot);
+
 struct LiverySection {
     int slot = 0;
     QString name;

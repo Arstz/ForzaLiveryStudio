@@ -1484,6 +1484,16 @@ const LiverySlotDef kFH6LiverySlots[11] = {
     {"LeftWindow", 180.0}, {"RightWindow", 0.0},
 };
 
+Matrix3 liverySectionCanvasTransform(int slot)
+{
+    Matrix3 transform;
+    if (slot == 5) {
+        transform.m[0][0] = -1.0;
+        transform.m[1][1] = -1.0;
+    }
+    return transform;
+}
+
 LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const
 {
     if (payload.size() > 0x24

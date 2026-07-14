@@ -121,8 +121,9 @@ recommended working pipelines. For build/developer notes see
   and loads it as an editable group project or a read-only livery viewer.
 - **Import Car Model** (**File → Import Car Model…**) — load a `.modelbin`,
   `.carbin`, or zipped car folder into the **3D Preview** dock, which shows the
-  current vinyl projected onto the car's paint (reference only; the in-game render
-  may differ). Opening a livery auto-loads its matching car from the **car models
+  current vinyl mapped through the model's livery UVs and coverage masks (reference
+  only; the in-game material and lighting may differ). Opening a livery auto-loads
+  its matching car from the **car models
   folder** set in Settings (prompted once if unset); **Discard current model on
   livery open** (Settings, on by default) controls whether that replaces the
   currently loaded model.
@@ -173,8 +174,8 @@ recommended working pipelines. For build/developer notes see
   counts, and the target car for liveries). Edit these via the **Project** menu.
 - **Header** — edit header metadata written into exported projects.
 - **3D Preview** — an orbit-camera view of an imported car with the current vinyl
-  projected onto its paint. Drag to orbit, middle-drag to pan, wheel to zoom. This
-  is a reference approximation, not the exact in-game render.
+  mapped onto its paint. Drag to orbit, middle-drag to pan, wheel to zoom. Material
+  and lighting are a reference approximation rather than the in-game render.
 
 ## Recommended Pipelines
 

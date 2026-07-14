@@ -21,6 +21,13 @@ struct ModelVec3 {
     float z = 0.0f;
 };
 
+struct TexCoordTransform {
+    float offsetU = 0.0f;
+    float scaleU = 1.0f;
+    float offsetV = 0.0f;
+    float scaleV = 1.0f;
+};
+
 // Matrices use row-vector order with translation in elements 12..14.
 struct ModelMat4 {
     std::array<float, 16> m = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -45,12 +52,22 @@ struct CarMesh {
     std::vector<std::vector<ModelVec2>> uvChannels;
     std::vector<quint32> indices;
     ModelMat4 boneTransform;
-    int liveryUvChannel = 0;
+    std::array<TexCoordTransform, 5> texCoordTransforms;
+    int liveryUvChannel = -1;
+    int carPartType = -1;
+    bool stockPart = true;
+};
+
+struct CarLocator {
+    QString name;
+    ModelVec3 position;
 };
 
 struct CarModel {
     QString sourcePath;
     std::vector<CarMesh> meshes;
+    std::vector<CarMesh> liveryProjectionMeshes;
+    std::vector<CarLocator> locators;
     ModelVec3 boundsMin;
     ModelVec3 boundsMax;
 

@@ -69,31 +69,25 @@ exports flat game-compatible folders.
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
   shows it in the **3D Preview** dock.
-  The vinyl scene is rasterized into a configurable paint-canvas texture (4x by default)
-  and applied to the car's
-  body paint by **runtime planar projection**: each body fragment's world position is
-  projected onto each livery side's paint canvas (per the car's `LiveryMasks/Masks.xml`
-  axes + region), the side's `*.swatchbin` coverage mask clips that projection, and the
-  paint canvas is sampled there over a flat base paint colour. Which side owns a
-  fragment is decided in the shader by:
-  - a per-mesh **allowed-sides mask** keyed on the part's model name, so the livery
-    crops at panel seams instead of bleeding across them, and interior/optics parts
-    take none;
-  - a **facing-angle gate** (`dot(side facing, normal) ≥ ~cos 80°`) that lets a side
-    reach into curved nooks; and
-  - **highest facing wins** among the surviving sides — the fragment goes to whichever
-    side it faces most directly — with a bias giving Left/Right priority over Top on
-    parts that take both (body/fenders), so the side↔Top border lands on the shoulder.
+  The vinyl scene is rasterized into a configurable paint-canvas texture (4x by default).
+  Imported sections retain their XML origins and are stored in isolated paint regions.
+  Mesh UV channel 3 is transformed by the corresponding per-mesh texture-coordinate
+  vector from the model bundle. The fragment shader converts the transformed coordinates
+  from backing-texture addressing into the mask atlas, resolves them against the supplied
+  `*.swatchbin` masks, and remaps the covered section into its paint region. Meshes without
+  this UV data use the geometry projection registered from the
+  model scene, XML axes, mask boundaries, part classifications, and locator transforms.
+  Section-coordinate orientation is normalized while building and sampling the isolated
+  paint regions; decoded project geometry remains unchanged.
 
   Only the highest LOD of each part is uploaded (names ending `_LOD1`.. are dropped) to
   avoid body overdraw. The swatch masks are uploaded to the GPU as a 2x upsampled
   texture array. Imported `C_livery` section geometry is not rewritten for the preview;
-  any orientation correction is done only in the car shader's paint-sampling path,
-  leaving mask sampling in the original swatch orientation. Forza bakes no livery UV
-  into the mesh (channel 4 is empty; no other channel maps to the swatch atlas either),
-  so the projection is computed live. The preview updates live as layers are edited.
-  A "reference only" note is pinned in the preview's corner since the runtime projection
-  approximates the game's own paint pipeline.
+  texture-coordinate conversion is performed in the car shader's sampling path while
+  mask sampling remains in the original swatch orientation. The preview updates live as
+  layers are edited.
+  A "reference only" note is pinned in the preview's corner because its material and
+  lighting remain a simplified representation of the in-game renderer.
   When a livery project is opened, the matching car model is auto-loaded from a
   user-configured **car models folder** (matched by the livery's target car id → the
   car registry's model code, searched recursively). If the folder is unset the app
@@ -248,12 +242,15 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     canvas, layer-tree/clipboard/browser thumbnails).
   - `model_bundle.*` / `model_geometry.*`: read-only decoder for ForzaTech "Grub"
     bundles (`.modelbin`) — blob/metadata parsing plus per-mesh geometry dequant
-    (positions/normals/UVs/indices, bone transforms) ported from ForzaTechStudio's
-    ModelImporter. No proprietary DLL: geometry buffers are raw in the bundle.
+    (positions/normals/UVs/indices, bone transforms, texture-coordinate transforms)
+    ported from ForzaTechStudio's ModelImporter. No proprietary DLL: geometry buffers
+    are raw in the bundle.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
-    part's transform (× its own skeleton bone) into a single merged `CarModel`.
-    Stock parts only; upgrades are skipped.
+    part's transform (× its own skeleton bone) into a merged `CarModel`. Stock
+    selections form the displayed mesh set; all variants also form a projection-only
+    mesh set used to register the universal livery masks. Part classifications and
+    sibling locator transforms are retained as projection landmarks.
   - `zip_extract.*`: minimal ZIP extractor for car model archives. The 3D preview
     extracts `.zip` car folders to a temporary directory, then reuses the normal
     `.carbin` and sibling-asset loading path.
@@ -262,7 +259,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     single-channel `SwatchMask`; Xbox/Durango tiled textures are unsupported.
   - `livery_masks.*`: parses a car's `LiveryMasks/` folder — `Masks.xml` per-side
     planar-projection parameters plus the body-side coverage swatchbins — into a
-    `LiveryMaskSet` used by the 3D preview's livery projection.
+    `LiveryMaskSet` used for atlas coverage and projection fallback.
 - `src/gui/app/` (`main_window.*`, `dock_chrome.*`, `settings_dialog.*`,
   `theme_manager.*`, `gui_assets.*`, `gui_constants.h`, `perf_utils.h`)
   - Main editor shell, menus/toolbars/docks, import/export actions, drag/drop,
@@ -299,14 +296,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     tree with a matrix stack — composing each group's frame into its descendants and
     dispatching vector vs raster off the visual container — and also exposes
     `renderSceneToTexture` for the 3D preview); the perspective/depth car mesh
-    renderer (`car_model_renderer`) whose fragment shader applies the livery to
-    body paint by runtime planar projection — projecting each fragment's world
-    position onto the per-side paint canvases (swatchbin coverage packed into a 2x
-    upsampled texture array), gated by a per-mesh name-keyed allowed-sides mask and
-    a facing-angle threshold, then picking the side the fragment faces most directly
-    (Left/Right biased over Top on the body/fenders), keeping mask sampling in swatch
-    orientation and applying the imported-livery Y correction only to the paint
-    texture sample; it uploads only each part's highest LOD; and layer drag cursors.
+    renderer (`car_model_renderer`) whose fragment shader applies the livery through
+    transformed mesh UV3, converts backing-texture coordinates into the mask atlas,
+    resolves coverage from the swatch texture array, normalizes section coordinates,
+    and samples separate packed paint regions. Meshes without usable UV3 fall back to
+    registered planar projection using the model scene, mask boundary, part metadata,
+    and locator landmarks. It uploads only each part's highest LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
   `layer_state_delegate.*`, `color_palette_widget.*`, `shapes_browser_widget.*`,
   `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,
@@ -315,9 +310,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `import_locations.*`)
   - `car_preview_widget`: the dockable 3D car preview `QOpenGLWidget` — orbit
     camera, its own scene/car renderers, and a configurable livery paint texture regenerated
-    from `EditorState` change signals. Imported `C_livery` sections are rendered
-    into their Masks.xml clip rectangles without mutating decoded section/group
-    transforms; projection-orientation fixes live in `car_model_renderer`'s shader.
+    from `EditorState` change signals. Imported `C_livery` sections are rendered into
+    isolated packed regions derived from `Masks.xml`; section axes are normalized in the
+    preview copy and sampling path without mutating decoded section/group transforms.
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with
     sibling-only drag/drop reordering, row badges, and thumbnails; the

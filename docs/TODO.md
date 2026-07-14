@@ -1,3 +1,7 @@
+Medium changes:
+    -Unify tranform detection in decoder
+    -Debug mask flag ignored in liveries
+
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied
     -Retire legacy format support in next version

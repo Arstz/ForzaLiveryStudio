@@ -68,7 +68,7 @@ private:
     QMatrix4x4 cameraView() const;
     QMatrix4x4 cameraProjection() const;
     QSize liveryTextureSize() const;
-    QTransform liveryWorldToScreen() const;
+    QTransform liveryWorldToScreen(const QSize &textureSize) const;
     void fitCameraToModel();
 
     NativeShapeRenderer shapeRenderer_;

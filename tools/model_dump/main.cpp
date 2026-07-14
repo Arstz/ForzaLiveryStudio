@@ -73,6 +73,16 @@ static float maskSample(const SwatchMask &mask, const ModelVec2 &uv)
     return static_cast<float>(mask.at(x, y));
 }
 
+static ModelVec2 transformedUv(const CarMesh &mesh, int channel, const ModelVec2 &uv)
+{
+    if (channel < 0 || channel >= static_cast<int>(mesh.texCoordTransforms.size())) {
+        return uv;
+    }
+    const TexCoordTransform &transform = mesh.texCoordTransforms[channel];
+    return {uv.u * transform.scaleU + transform.offsetU,
+            uv.v * transform.scaleV + transform.offsetV};
+}
+
 static int normalSide(const CarMesh &mesh, size_t vertex)
 {
     const float facing[5][3] = {
@@ -154,8 +164,12 @@ static int maskHits(const QString &carbinPath)
                 }
                 ++totals[geom];
                 bool vertexHit = false;
+                ModelVec2 uv = transformedUv(mesh, c, uvs[i]);
+                if (c == 3) {
+                    uv.u *= 0.5f;
+                }
                 for (int s = 0; s < 6; ++s) {
-                    if (maskSample(masks.sides[s].mask, uvs[i]) >= 128.0f) {
+                    if (maskSample(masks.sides[s].mask, uv) >= 128.0f) {
                         ++hits[geom][s];
                         vertexHit = true;
                     }
@@ -201,9 +215,40 @@ static int fitLivery(const QString &carbinPath)
         return 1;
     }
 
-    const float facing[6][3] = {
-        {0, 0, 1}, {0, 0, -1}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
     const char *names[6] = {"Front", "Back", "Top", "Left", "Right", "Spoiler"};
+
+    std::vector<float> wheelZ;
+    for (const CarMesh &mesh : model.meshes) {
+        if (!mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
+            || mesh.positions.empty()) {
+            continue;
+        }
+        double sum = 0.0;
+        for (const ModelVec3 &position : mesh.positions) {
+            sum += mesh.boneTransform.transformPoint(position).z;
+        }
+        wheelZ.push_back(static_cast<float>(sum / mesh.positions.size()));
+    }
+    if (wheelZ.size() >= 2) {
+        float rear = *std::min_element(wheelZ.begin(), wheelZ.end());
+        float front = *std::max_element(wheelZ.begin(), wheelZ.end());
+        for (int iteration = 0; iteration < 8; ++iteration) {
+            double rearSum = 0.0, frontSum = 0.0;
+            int rearCount = 0, frontCount = 0;
+            for (float z : wheelZ) {
+                if (std::abs(z - rear) < std::abs(z - front)) {
+                    rearSum += z;
+                    ++rearCount;
+                } else {
+                    frontSum += z;
+                    ++frontCount;
+                }
+            }
+            if (rearCount > 0) rear = static_cast<float>(rearSum / rearCount);
+            if (frontCount > 0) front = static_cast<float>(frontSum / frontCount);
+        }
+        std::printf("axles rear=%.4f front=%.4f wheelbase=%.4f\n", rear, front, front - rear);
+    }
 
     auto axisOf = [](const ModelVec3 &v, int a) { return a == 0 ? v.x : (a == 1 ? v.y : v.z); };
 
@@ -211,22 +256,16 @@ static int fitLivery(const QString &carbinPath)
         const LiverySide &L = masks.sides[s];
         float axlo = 1e9f, axhi = -1e9f, aylo = 1e9f, ayhi = -1e9f;
         long long count = 0;
-        for (const CarMesh &mesh : model.meshes) {
+        const std::vector<CarMesh> &projectionMeshes = model.liveryProjectionMeshes.empty()
+            ? model.meshes
+            : model.liveryProjectionMeshes;
+        for (const CarMesh &mesh : projectionMeshes) {
             if (!isPaintMaterial(mesh.materialName) || mesh.positions.empty()) continue;
             const bool spoiler = !mesh.name.contains(QStringLiteral("mirror"), Qt::CaseInsensitive)
                 && (mesh.name.contains(QStringLiteral("spoiler"), Qt::CaseInsensitive) || mesh.name.contains(QStringLiteral("wing"), Qt::CaseInsensitive));
-            for (size_t i = 0; i < mesh.positions.size(); ++i) {
-                int side = -1;
-                if (spoiler) side = 5;
-                else if (i < mesh.normals.size()) {
-                    ModelVec3 wn = mesh.boneTransform.transformVector(mesh.normals[i]);
-                    const float len = std::sqrt(wn.x * wn.x + wn.y * wn.y + wn.z * wn.z);
-                    if (len > 1e-6f) { wn.x /= len; wn.y /= len; wn.z /= len; }
-                    float best = 0.3f;
-                    for (int t = 0; t < 5; ++t) { float d = facing[t][0] * wn.x + facing[t][1] * wn.y + facing[t][2] * wn.z; if (d > best) { best = d; side = t; } }
-                }
-                if (side != s) continue;
-                const ModelVec3 wp = mesh.boneTransform.transformPoint(mesh.positions[i]);
+            if ((s == 5) != spoiler) continue;
+            for (const ModelVec3 &position : mesh.positions) {
+                const ModelVec3 wp = mesh.boneTransform.transformPoint(position);
                 const float ax = (L.xSign * L.xScale) * axisOf(wp, L.xAxis);
                 const float ay = (L.ySign * L.yScale) * axisOf(wp, L.yAxis);
                 axlo = std::min(axlo, ax); axhi = std::max(axhi, ax);
@@ -445,6 +484,8 @@ int main(int argc, char *argv[])
 
     std::printf("%s\n", qPrintable(path));
     std::printf("  meshes:   %lld\n", static_cast<long long>(model.meshes.size()));
+    std::printf("  projection meshes: %lld\n", static_cast<long long>(model.liveryProjectionMeshes.size()));
+    std::printf("  locators: %lld\n", static_cast<long long>(model.locators.size()));
     std::printf("  vertices: %lld\n", model.totalVertices());
     std::printf("  indices:  %lld (%lld triangles)\n", model.totalIndices(), model.totalIndices() / 3);
     std::printf("  bounds:   min (%.3f, %.3f, %.3f)  max (%.3f, %.3f, %.3f)\n",
@@ -475,7 +516,7 @@ int main(int argc, char *argv[])
                         qPrintable(mesh.materialName.isEmpty() ? QStringLiteral("(none)") : mesh.materialName),
                         static_cast<long long>(mesh.positions.size()),
                         cx * inv, cy * inv, cz * inv, nx * inv, ny * inv, nz * inv);
-            for (int c = 0; false && c < static_cast<int>(mesh.uvChannels.size()); ++c) {
+            for (int c = 0; c < static_cast<int>(mesh.uvChannels.size()); ++c) {
                 const auto &ch = mesh.uvChannels[c];
                 if (ch.empty()) {
                     continue;
@@ -487,8 +528,12 @@ int main(int argc, char *argv[])
                     vMin = std::min(vMin, t.v); vMax = std::max(vMax, t.v);
                     uSum += t.u; vSum += t.v;
                 }
-                std::printf("           uv[%d] u:[%.3f,%.3f] v:[%.3f,%.3f] mean(%.3f,%.3f)\n",
-                            c, uMin, uMax, vMin, vMax, uSum / ch.size(), vSum / ch.size());
+                const TexCoordTransform transform = c < static_cast<int>(mesh.texCoordTransforms.size())
+                    ? mesh.texCoordTransforms[c]
+                    : TexCoordTransform{};
+                std::printf("           uv[%d] u:[%.3f,%.3f] v:[%.3f,%.3f] mean(%.3f,%.3f) transform(%.6f,%.6f,%.6f,%.6f)\n",
+                            c, uMin, uMax, vMin, vMax, uSum / ch.size(), vSum / ch.size(),
+                            transform.offsetU, transform.scaleU, transform.offsetV, transform.scaleV);
             }
         }
     }

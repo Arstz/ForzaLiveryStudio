@@ -6,6 +6,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
+#include <QSet>
 
 #include <algorithm>
 #include <limits>
@@ -68,7 +70,19 @@ struct PartInstance {
     ModelMat4 transform;
     QString boneName;
     qint16 boneId = -1;
+    int partType = -1;
+    bool stock = true;
 };
+
+struct SceneParts {
+    std::vector<PartInstance> stock;
+    std::vector<PartInstance> projection;
+};
+
+int canonicalPartType(quint32 type)
+{
+    return type >= 42 ? static_cast<int>(type + 1) : static_cast<int>(type);
+}
 
 PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
 {
@@ -191,20 +205,23 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
     return part;
 }
 
-void readPart(Cursor &c, Series series, quint16 sceneVersion, std::vector<PartInstance> &out)
+void readPart(Cursor &c, Series series, quint16 sceneVersion, SceneParts &out)
 {
     const quint16 version = c.u16();
-    c.u32(); // Type
+    const int partType = canonicalPartType(c.u32());
     const quint32 modelCount = c.u32();
     for (quint32 i = 0; i < modelCount; ++i) {
-        out.push_back(readRenderModel(c, series, sceneVersion));
+        PartInstance part = readRenderModel(c, series, sceneVersion);
+        part.partType = partType;
+        out.stock.push_back(part);
+        out.projection.push_back(std::move(part));
     }
     if (version >= 2) {
         c.skip(32); // AABB (2x Vector4)
     }
 }
 
-std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName, QString &skeletonPath)
+SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skeletonPath)
 {
     Cursor c(bytes);
     const quint16 version = c.u16();
@@ -226,7 +243,7 @@ std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName,
         c.u16(); // LODDetails
     }
 
-    std::vector<PartInstance> parts;
+    SceneParts parts;
 
     const quint32 nonUpgradableCount = c.u32();
     for (quint32 i = 0; i < nonUpgradableCount; ++i) {
@@ -239,7 +256,7 @@ std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName,
     const quint32 upgradableCount = c.u32();
     for (quint32 i = 0; i < upgradableCount; ++i) {
         const quint16 partVersion = c.u16();
-        c.u32(); // Type
+        const int partType = canonicalPartType(c.u32());
         std::vector<int> stockUpgradeIds;
 
         const quint32 upgradeCount = c.u32();
@@ -257,8 +274,11 @@ std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName,
                 const quint32 modelCount = c.u32();
                 for (quint32 m = 0; m < modelCount; ++m) {
                     PartInstance inst = readRenderModel(c, series, version);
+                    inst.partType = partType;
+                    inst.stock = isStock;
+                    parts.projection.push_back(inst);
                     if (isStock) {
-                        parts.push_back(std::move(inst));
+                        parts.stock.push_back(std::move(inst));
                     }
                 }
             }
@@ -276,18 +296,85 @@ std::vector<PartInstance> readScene(const QByteArray &bytes, QString &mediaName,
                     upgradeIds[k] = c.i32();
                 }
                 PartInstance inst = readRenderModel(c, series, version);
+                inst.partType = partType;
                 const bool stock = idCount == 0
                     || std::any_of(upgradeIds.begin(), upgradeIds.end(), [&](int id) {
                            return std::find(stockUpgradeIds.begin(), stockUpgradeIds.end(), id) != stockUpgradeIds.end();
                        });
+                inst.stock = stock;
+                parts.projection.push_back(inst);
                 if (stock) {
-                    parts.push_back(std::move(inst));
+                    parts.stock.push_back(std::move(inst));
                 }
             }
         }
     }
 
     return parts;
+}
+
+QString partKey(const PartInstance &part)
+{
+    QString key = part.path.toLower() + QLatin1Char('|') + part.boneName.toLower()
+        + QLatin1Char('|') + QString::number(part.boneId)
+        + QLatin1Char('|') + QString::number(part.partType);
+    for (float value : part.transform.m) {
+        key += QLatin1Char('|') + QString::number(value, 'g', 9);
+    }
+    return key;
+}
+
+std::vector<CarLocator> loadCarLocators(const QString &carbinDir)
+{
+    QFile file(QDir(carbinDir).filePath(QStringLiteral("Locators.xml")));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    const QString text = QString::fromUtf8(file.readAll());
+    const QRegularExpression locatorExpression(
+        QStringLiteral(R"(<Locator\b[^>]*>([\s\S]*?)</Locator>)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression nameExpression(
+        QStringLiteral(R"re(<Name\s+value="([^"]+)")re"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression transformExpression(
+        QStringLiteral(R"(<SceneTransform\s+([^>]*)/>)"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    std::vector<CarLocator> locators;
+    QRegularExpressionMatchIterator it = locatorExpression.globalMatch(text);
+    while (it.hasNext()) {
+        const QString block = it.next().captured(1);
+        const QRegularExpressionMatch nameMatch = nameExpression.match(block);
+        const QRegularExpressionMatch transformMatch = transformExpression.match(block);
+        if (!nameMatch.hasMatch() || !transformMatch.hasMatch()) {
+            continue;
+        }
+        const QString attributes = transformMatch.captured(1);
+        const auto component = [&](const char *name, bool &ok) {
+            const QRegularExpression expression(
+                QStringLiteral(R"re(value\._%1="([^"]+)")re").arg(QLatin1String(name)));
+            const QRegularExpressionMatch match = expression.match(attributes);
+            if (!match.hasMatch()) {
+                ok = false;
+                return 0.0f;
+            }
+            bool parsed = false;
+            const float value = match.captured(1).toFloat(&parsed);
+            ok = ok && parsed;
+            return value;
+        };
+        bool ok = true;
+        CarLocator locator;
+        locator.name = nameMatch.captured(1);
+        locator.position.x = component("41", ok);
+        locator.position.y = component("42", ok);
+        locator.position.z = component("43", ok);
+        if (ok) {
+            locators.push_back(std::move(locator));
+        }
+    }
+    return locators;
 }
 
 QString resolvePath(const QString &gamePath, const QString &carbinDir, const QString &mediaName)
@@ -332,7 +419,7 @@ CarModel loadCarBin(const QString &path, QString *error)
 
     QString mediaName;
     QString skeletonPath;
-    std::vector<PartInstance> parts;
+    SceneParts parts;
     try {
         parts = readScene(bytes, mediaName, skeletonPath);
     } catch (const std::exception &ex) {
@@ -347,6 +434,7 @@ CarModel loadCarBin(const QString &path, QString *error)
 
     CarModel car;
     car.sourcePath = path;
+    car.locators = loadCarLocators(carbinDir);
     float minX = std::numeric_limits<float>::max();
     float minY = minX;
     float minZ = minX;
@@ -354,8 +442,19 @@ CarModel loadCarBin(const QString &path, QString *error)
     float maxY = maxX;
     float maxZ = maxX;
     int loaded = 0;
+    QSet<QString> stockParts;
+    for (const PartInstance &part : parts.stock) {
+        stockParts.insert(partKey(part));
+    }
+    QSet<QString> loadedParts;
 
-    for (const PartInstance &part : parts) {
+    for (const PartInstance &part : parts.projection) {
+        const QString key = partKey(part);
+        if (loadedParts.contains(key)) {
+            continue;
+        }
+        loadedParts.insert(key);
+        const bool stock = stockParts.contains(key);
         const QString modelPath = resolvePath(part.path, carbinDir, mediaName);
         QFile modelFile(modelPath);
         if (!modelFile.open(QIODevice::ReadOnly)) {
@@ -380,18 +479,25 @@ CarModel loadCarBin(const QString &path, QString *error)
 
         for (CarMesh &mesh : model.meshes) {
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
-            for (const ModelVec3 &p : mesh.positions) {
-                const ModelVec3 w = mesh.boneTransform.transformPoint(p);
-                minX = std::min(minX, w.x);
-                minY = std::min(minY, w.y);
-                minZ = std::min(minZ, w.z);
-                maxX = std::max(maxX, w.x);
-                maxY = std::max(maxY, w.y);
-                maxZ = std::max(maxZ, w.z);
+            mesh.carPartType = part.partType;
+            mesh.stockPart = stock;
+            if (stock) {
+                for (const ModelVec3 &p : mesh.positions) {
+                    const ModelVec3 w = mesh.boneTransform.transformPoint(p);
+                    minX = std::min(minX, w.x);
+                    minY = std::min(minY, w.y);
+                    minZ = std::min(minZ, w.z);
+                    maxX = std::max(maxX, w.x);
+                    maxY = std::max(maxY, w.y);
+                    maxZ = std::max(maxZ, w.z);
+                }
+                car.meshes.push_back(mesh);
             }
-            car.meshes.push_back(std::move(mesh));
+            car.liveryProjectionMeshes.push_back(std::move(mesh));
         }
-        ++loaded;
+        if (stock) {
+            ++loaded;
+        }
     }
 
     if (car.meshes.empty()) {

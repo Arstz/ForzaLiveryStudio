@@ -406,9 +406,10 @@ QByteArray sourceEmptySlot(const SourceLivery *source, int slot)
     return out;
 }
 
-LiveryExportShape exportLiveryShape(const scene::Shape &shape)
+LiveryExportShape exportLiveryShape(const scene::Shape &shape, const Matrix3 &worldAdjustment = Matrix3{})
 {
-    const scene::Transform2D t = decomposeTransform2D(shape.worldMatrix());
+    const Matrix3 worldMatrix = detail::multiply(worldAdjustment, shape.worldMatrix());
+    const scene::Transform2D t = decomposeTransform2D(worldMatrix);
     LiveryExportShape out;
     out.node = &shape;
     out.shapeId = shape.shapeId;
@@ -548,9 +549,9 @@ QPointF shapeHalfExtents(const LiveryExportShape &shape)
     return QPointF(64.0, 64.0);
 }
 
-QVector<QPointF> shapeCorners(const scene::Shape &shape)
+QVector<QPointF> shapeCorners(const scene::Shape &shape, const Matrix3 &worldAdjustment)
 {
-    const LiveryExportShape exported = exportLiveryShape(shape);
+    const LiveryExportShape exported = exportLiveryShape(shape, worldAdjustment);
     const QPointF he = shapeHalfExtents(exported);
     FlattenedLayer layer;
     layer.rotation = exported.rotation;
@@ -570,7 +571,7 @@ QVector<QPointF> shapeCorners(const scene::Shape &shape)
     return corners;
 }
 
-QPointF shapesOrigin(const QVector<const scene::Shape *> &leaves)
+QPointF shapesOrigin(const QVector<const scene::Shape *> &leaves, const Matrix3 &worldAdjustment)
 {
     if (leaves.isEmpty()) {
         return QPointF(0.0, 0.0);
@@ -578,11 +579,11 @@ QPointF shapesOrigin(const QVector<const scene::Shape *> &leaves)
     QVector<QPointF> points;
     for (const scene::Shape *shape : leaves) {
         if (shape != nullptr) {
-            points.append(shapeCorners(*shape));
+            points.append(shapeCorners(*shape, worldAdjustment));
         }
     }
     if (points.isEmpty()) {
-        const LiveryExportShape first = exportLiveryShape(*leaves.front());
+        const LiveryExportShape first = exportLiveryShape(*leaves.front(), worldAdjustment);
         return QPointF(first.x, first.y);
     }
 
@@ -599,11 +600,11 @@ QPointF shapesOrigin(const QVector<const scene::Shape *> &leaves)
     return QPointF((minX + maxX) / 2.0, (minY + maxY) / 2.0);
 }
 
-QPointF entryOrigin(const LiveryEntry &entry)
+QPointF entryOrigin(const LiveryEntry &entry, const Matrix3 &worldAdjustment)
 {
     QVector<const scene::Shape *> leaves;
     entryShapes(entry, leaves);
-    return shapesOrigin(leaves);
+    return shapesOrigin(leaves, worldAdjustment);
 }
 
 bool entryAllMasked(const LiveryEntry &entry)
@@ -719,7 +720,7 @@ int terminalDepth(const LiveryEntry &entry)
 }
 
 QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const QByteArray &transformMarker,
-                           bool parentMask, bool &previousShapeMask)
+                           bool parentMask, bool &previousShapeMask, const Matrix3 &worldAdjustment)
 {
     const QVector<LiveryEntry> children = childrenForEntry(entry);
     if (children.isEmpty()) {
@@ -727,7 +728,7 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
     }
     const bool isMaskGroup = entryAllMasked(entry);
     const bool childMask = parentMask || isMaskGroup;
-    const QPointF origin = entryOrigin(entry);
+    const QPointF origin = entryOrigin(entry, worldAdjustment);
 
     QByteArray out = packLiveryGroupTransform(origin.x() - parentOffset.x(),
                                              origin.y() - parentOffset.y(),
@@ -749,7 +750,8 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
             }
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
             previousShapeMask = false;
-            out.append(packLiveryGroup(child, origin, marker, childMask, previousShapeMask));
+            out.append(packLiveryGroup(child, origin, marker, childMask, previousShapeMask,
+                                       worldAdjustment));
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
@@ -757,7 +759,7 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
                 out.append('\x00');
                 out.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
             }
-            const LiveryExportShape packed = exportLiveryShape(*child.shape);
+            const LiveryExportShape packed = exportLiveryShape(*child.shape, worldAdjustment);
             const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
             appendLiveryShapeRecord(out, packed, origin.x(), origin.y(), lead);
             previousWasGroup = false;
@@ -788,6 +790,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
     bool previousShapeMask = false;
     bool hasPreviousSibling = false;
     const QPointF sectionOrigin(0.0, 0.0);
+    const Matrix3 worldAdjustment = invertAffine(liverySectionCanvasTransform(slot));
     for (const LiveryEntry &child : children) {
         if (child.kind == LiveryEntry::Group) {
             QByteArray marker;
@@ -800,7 +803,8 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
             }
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
             previousShapeMask = false;
-            body.append(packLiveryGroup(child, sectionOrigin, marker, false, previousShapeMask));
+            body.append(packLiveryGroup(child, sectionOrigin, marker, false, previousShapeMask,
+                                        worldAdjustment));
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
@@ -808,7 +812,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
                 body.append('\x00');
                 body.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
             }
-            const LiveryExportShape packed = exportLiveryShape(*child.shape);
+            const LiveryExportShape packed = exportLiveryShape(*child.shape, worldAdjustment);
             const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
             appendLiveryShapeRecord(body, packed, sectionOrigin.x(), sectionOrigin.y(), lead);
             previousWasGroup = false;

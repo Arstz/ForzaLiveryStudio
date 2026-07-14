@@ -101,6 +101,7 @@ struct MeshInfo {
     qint32 indexCount = 0;
     qint32 vertexLayoutIndex = 0;
     std::vector<VbUsage> vertexBuffers;
+    std::array<TexCoordTransform, 5> texCoordTransforms;
     std::array<float, 4> positionScale = {1, 1, 1, 1};
     std::array<float, 4> positionTranslate = {0, 0, 0, 0};
 };
@@ -210,11 +211,11 @@ ModelVec3 readNormal(const char *p, int format, float wFromPos)
 
 ModelVec2 readUv(const char *p, int format)
 {
-    if (format == 35) { // R16G16_UNORM (V-flipped to match importer/OBJ convention)
-        return {readLeU16Raw(p, 0) / 65535.0f, 1.0f - (readLeU16Raw(p, 2) / 65535.0f)};
+    if (format == 35) { // R16G16_UNORM
+        return {readLeU16Raw(p, 0) / 65535.0f, readLeU16Raw(p, 2) / 65535.0f};
     }
     if (format == 16) { // R32G32_FLOAT
-        return {readLeFloatRaw(p, 0), 1.0f - readLeFloatRaw(p, 4)};
+        return {readLeFloatRaw(p, 0), readLeFloatRaw(p, 4)};
     }
     return {0.0f, 0.0f};
 }
@@ -335,7 +336,12 @@ MeshInfo decodeMesh(const BundleBlobRecord &blob)
         c.u32(); // source mesh index
     }
     if (blob.isAtLeastVersion(1, 5)) {
-        c.skip(0x10 * 5); // TexCoordTransforms
+        for (TexCoordTransform &transform : mesh.texCoordTransforms) {
+            transform.offsetU = c.f32();
+            transform.scaleU = c.f32();
+            transform.offsetV = c.f32();
+            transform.scaleV = c.f32();
+        }
     }
     if (blob.isAtLeastVersion(1, 8)) {
         for (int i = 0; i < 4; ++i) {
@@ -678,7 +684,8 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
             }
         }
 
-        out.liveryUvChannel = (out.uvChannels.size() > 4 && !out.uvChannels[4].empty()) ? 4 : 0;
+        out.texCoordTransforms = info.texCoordTransforms;
+        out.liveryUvChannel = (out.uvChannels.size() > 3 && !out.uvChannels[3].empty()) ? 3 : -1;
 
         for (const ModelVec3 &p : out.positions) {
             const ModelVec3 w = out.boneTransform.transformPoint(p);

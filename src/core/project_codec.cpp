@@ -915,6 +915,7 @@ Project importCLivery(const QString &folderOrFile)
                 sectionMask = sectionMask || topGroup->isMask;
                 sectionRoot = topGroup.get();
             }
+            sectionMatrix = detail::multiply(liverySectionCanvasTransform(section.slot), sectionMatrix);
             const QVector<VinylItem> *sectionItems = &sectionRoot->items;
             for (const VinylItem &item : *sectionItems) {
                 if (item.isShape()) {

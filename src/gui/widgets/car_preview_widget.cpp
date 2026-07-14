@@ -21,27 +21,9 @@ constexpr int kProjectedSectionToMaskSlot[fh6::kLiverySideCount] = {
     0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
 };
 
-bool sectionOverlayFlipX(int displayedSectionSlot)
+bool transposedSection(int maskSlot)
 {
-    switch (displayedSectionSlot) {
-    case 1:  // Back
-    case 4:  // Right
-    case 10: // RightWindow
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool sectionOverlayFlipY(int displayedSectionSlot)
-{
-    switch (displayedSectionSlot) {
-    case 3: // Left
-    case 9: // LeftWindow
-        return true;
-    default:
-        return false;
-    }
+    return maskSlot == 5 || maskSlot == 7;
 }
 
 struct ProjectedLiverySection {
@@ -49,19 +31,74 @@ struct ProjectedLiverySection {
     QRect clipRect;
 };
 
-QRect liverySideClipRect(const fh6::LiverySide &side, const QSize &texSize)
+struct PackedLiveryLayout {
+    std::array<QRect, fh6::kLiverySideCount> rects;
+    QVector<QVector4D> uvRegions;
+    QSize textureSize;
+    bool valid = false;
+};
+
+PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSize &baseTextureSize)
 {
-    const double left = std::min(side.left, side.right);
-    const double right = std::max(side.left, side.right);
-    const double top = std::min(side.top, side.bottom);
-    const double bottom = std::max(side.top, side.bottom);
-    const double sx = static_cast<double>(texSize.width()) / (2.0 * fh6::kLiveryCanvasHalfWidth);
-    const double sy = static_cast<double>(texSize.height()) / (2.0 * fh6::kLiveryCanvasHalfHeight);
-    const int x0 = std::clamp(static_cast<int>(std::floor((left + fh6::kLiveryCanvasHalfWidth) * sx)), 0, texSize.width());
-    const int x1 = std::clamp(static_cast<int>(std::ceil((right + fh6::kLiveryCanvasHalfWidth) * sx)), 0, texSize.width());
-    const int y0 = std::clamp(static_cast<int>(std::floor((fh6::kLiveryCanvasHalfHeight + top) * sy)), 0, texSize.height());
-    const int y1 = std::clamp(static_cast<int>(std::ceil((fh6::kLiveryCanvasHalfHeight + bottom) * sy)), 0, texSize.height());
-    return QRect(x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
+    PackedLiveryLayout layout;
+    layout.uvRegions.resize(fh6::kLiverySideCount);
+    struct Item {
+        int slot = 0;
+        QSize size;
+    };
+    QVector<Item> items;
+    const double scale = static_cast<double>(baseTextureSize.width()) / kLiveryBaseTexWidth;
+    for (int slot = 0; slot < fh6::kLiverySideCount; ++slot) {
+        const fh6::LiverySide &side = masks.sides[slot];
+        if (!side.valid) {
+            continue;
+        }
+        QSize size(
+            std::max(0, static_cast<int>(std::ceil(std::abs(side.right - side.left) * scale))),
+            std::max(0, static_cast<int>(std::ceil(std::abs(side.bottom - side.top) * scale))));
+        if (transposedSection(slot)) {
+            size.transpose();
+        }
+        if (!size.isEmpty()) {
+            items.push_back({slot, size});
+        }
+    }
+    std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) {
+        return a.size.height() != b.size.height()
+            ? a.size.height() > b.size.height()
+            : a.size.width() > b.size.width();
+    });
+
+    const int padding = std::max(1, baseTextureSize.width() / kLiveryBaseTexWidth);
+    int x = padding;
+    int y = padding;
+    int rowHeight = 0;
+    for (const Item &item : items) {
+        if (x + item.size.width() + padding > baseTextureSize.width()) {
+            x = padding;
+            y += rowHeight + padding;
+            rowHeight = 0;
+        }
+        if (item.size.width() + 2 * padding > baseTextureSize.width()) {
+            return layout;
+        }
+        layout.rects[item.slot] = QRect(QPoint(x, y), item.size);
+        x += item.size.width() + padding;
+        rowHeight = std::max(rowHeight, item.size.height());
+    }
+    layout.textureSize = QSize(
+        baseTextureSize.width(), std::max(baseTextureSize.height(), y + rowHeight + padding));
+
+    for (int slot = 0; slot < fh6::kLiverySideCount; ++slot) {
+        const QRect rect = layout.rects[slot];
+        layout.uvRegions[slot] = QVector4D(
+            static_cast<float>(rect.left()) / layout.textureSize.width(),
+            static_cast<float>(rect.left() + rect.width()) / layout.textureSize.width(),
+            1.0f - static_cast<float>(rect.top()) / layout.textureSize.height(),
+            1.0f - static_cast<float>(rect.top() + rect.height()) / layout.textureSize.height());
+    }
+    layout.valid = true;
+    return layout;
 }
 
 fh6::Matrix3 fromQTransform(const QTransform &t)
@@ -101,55 +138,13 @@ void collectProjectedShapes(const fh6::scene::Layer &node,
     outRoot.append(std::move(copy));
 }
 
-QVector<ProjectedLiverySection> buildProjectedLiverySections(const fh6::Project &project,
-                                                             const fh6::LiveryMaskSet &masks,
-                                                             const QSize &texSize)
-{
-    QVector<ProjectedLiverySection> projectedSections;
-    if (!project.root) {
-        return projectedSections;
-    }
-
-    for (const auto &rootChild : project.root->children) {
-        if (rootChild->kind() != fh6::scene::LayerKind::Group) {
-            continue;
-        }
-        const auto *section = static_cast<const fh6::scene::Group *>(rootChild.get());
-        if (!section->isLiverySection) {
-            continue;
-        }
-        const int slot = section->liverySectionSlot;
-        if (slot < 0 || slot >= fh6::kLiverySideCount) {
-            continue;
-        }
-        const int maskSlot = kProjectedSectionToMaskSlot[slot];
-        if (maskSlot < 0 || maskSlot >= fh6::kLiverySideCount) {
-            continue;
-        }
-        const fh6::LiverySide &side = masks.sides[maskSlot];
-        if (!side.valid) {
-            continue;
-        }
-
-        ProjectedLiverySection projected;
-        projected.project.name = QStringLiteral("%1/%2").arg(project.name, section->name);
-        projected.clipRect = liverySideClipRect(side, texSize);
-        collectProjectedShapes(*section, QTransform(), side.xOrigin, side.yOrigin, *projected.project.root);
-        if (projected.project.root->children.empty()) {
-            continue;
-        }
-        projectedSections.push_back(std::move(projected));
-    }
-
-    return projectedSections;
-}
-
 std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Project &project,
                                                                   const fh6::scene::Group &section,
                                                                   const fh6::LiveryMaskSet &masks,
-                                                                  const QSize &texSize)
+                                                                  const QSize &texSize,
+                                                                  const PackedLiveryLayout &layout)
 {
-    if (!section.isLiverySection) {
+    if (!section.isLiverySection || !layout.valid) {
         return std::nullopt;
     }
     const int slot = section.liverySectionSlot;
@@ -167,8 +162,27 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Pro
 
     ProjectedLiverySection projected;
     projected.project.name = QStringLiteral("%1/%2").arg(project.name, section.name);
-    projected.clipRect = liverySideClipRect(side, texSize);
-    collectProjectedShapes(section, QTransform(), side.xOrigin, side.yOrigin, *projected.project.root);
+    projected.clipRect = layout.rects[maskSlot];
+    const double scale = static_cast<double>(texSize.width()) / kLiveryBaseTexWidth;
+    const bool transpose = transposedSection(maskSlot);
+    const double left = transpose
+        ? std::min(side.top, side.bottom)
+        : std::min(side.left, side.right);
+    const double top = transpose
+        ? std::min(side.left, side.right)
+        : std::min(side.top, side.bottom);
+    const double originX = transpose ? side.yOrigin : side.xOrigin;
+    const double originY = transpose ? side.xOrigin : side.yOrigin;
+    const double originPixelX = projected.clipRect.x() + (originX - left) * scale;
+    const double originPixelY = projected.clipRect.y() + (originY - top) * scale;
+    const double packedOriginX = (originPixelX - layout.textureSize.width() * 0.5) / scale;
+    const double packedOriginY = (originPixelY - layout.textureSize.height() * 0.5) / scale;
+    QTransform projectionTransform;
+    if (slot == 5) {
+        projectionTransform.scale(-1.0, 1.0);
+    }
+    collectProjectedShapes(
+        section, projectionTransform, packedOriginX, packedOriginY, *projected.project.root);
     if (projected.project.root->children.empty()) {
         return std::nullopt;
     }
@@ -343,9 +357,15 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
         }
         lastSide = firstSide + 1;
     }
-    const bool flipSectionX = liverySectionSlot >= 0 && sectionOverlayFlipX(liverySectionSlot);
-    const bool flipSectionY = liverySectionSlot >= 0 && sectionOverlayFlipY(liverySectionSlot);
-
+    const bool flipSectionX = liverySectionSlot >= 0
+        && liverySectionSlot != 2
+        && liverySectionSlot != 3
+        && liverySectionSlot != 9;
+    const bool flipSectionY = liverySectionSlot == 2
+        || liverySectionSlot == 3
+        || liverySectionSlot == 7
+        || liverySectionSlot == 9;
+    const bool transpose = liverySectionSlot == 5 || liverySectionSlot == 7;
     bool drew = false;
     for (int s = firstSide; s < lastSide; ++s) {
         const fh6::LiverySide &side = liveryMasks_.sides[s];
@@ -373,27 +393,28 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
         const double originY = liverySectionSlot >= 0 ? side.yOrigin : 0.0;
         for (int y = y0; y < y1; ++y) {
             const double canvasY = fh6::kLiveryCanvasHalfHeight - (static_cast<double>(y) + 0.5) / sy;
-            int outY = static_cast<int>(std::floor((canvasY - originY + fh6::kLiveryCanvasHalfHeight) * sy));
-            if (outY < 0 || outY >= h) {
-                continue;
-            }
-            if (flipSectionY) {
-                outY = h - 1 - outY;
-            }
-            QRgb *row = reinterpret_cast<QRgb *>(image.scanLine(outY));
             const uint8_t *cov = &mask.coverage[static_cast<size_t>(y) * w];
             for (int x = x0; x < x1; ++x) {
                 if (cov[x] < 32) {
                     continue;
                 }
                 const double canvasX = (static_cast<double>(x) + 0.5) / sx - fh6::kLiveryCanvasHalfWidth;
-                int outX = static_cast<int>(std::floor((canvasX - originX + fh6::kLiveryCanvasHalfWidth) * sx));
-                if (outX < 0 || outX >= w) {
+                const double sectionX = transpose ? canvasY - originY : canvasX - originX;
+                const double sectionY = transpose ? canvasX - originX : canvasY - originY;
+                int outX = static_cast<int>(std::floor(
+                    (sectionX + fh6::kLiveryCanvasHalfWidth) * sx));
+                int outY = static_cast<int>(std::floor(
+                    (sectionY + fh6::kLiveryCanvasHalfHeight) * sy));
+                if (outX < 0 || outX >= w || outY < 0 || outY >= h) {
                     continue;
                 }
                 if (flipSectionX) {
                     outX = w - 1 - outX;
                 }
+                if (flipSectionY) {
+                    outY = h - 1 - outY;
+                }
+                QRgb *row = reinterpret_cast<QRgb *>(image.scanLine(outY));
                 row[outX] = qRgba(c.red(), c.green(), c.blue(), 255);
                 drew = true;
             }
@@ -543,6 +564,12 @@ void CarPreviewWidget::paintGL()
         if (liveryDirty_ || liveryTexture_ == 0) {
             const QSize texSize = liveryTextureSize();
             const bool projectImportedLivery = project_->isLivery && liveryMasks_.valid();
+            const PackedLiveryLayout paintLayout = projectImportedLivery
+                ? packedLiveryLayout(liveryMasks_, texSize)
+                : PackedLiveryLayout{};
+            const QSize paintTextureSize = paintLayout.valid ? paintLayout.textureSize : texSize;
+            carRenderer_.setPaintTextureRegions(
+                paintLayout.valid ? paintLayout.uvRegions : QVector<QVector4D>{});
             const bool fullRebuild = liveLiveryFullDirty_ || liveryTexture_ == 0
                 || projectedSectionCache_.isEmpty() || dirtySectionIds_.isEmpty();
             QVector<ProjectedLiverySection> projectedSections;
@@ -561,7 +588,8 @@ void CarPreviewWidget::paintGL()
                     const bool sectionDirty = fullRebuild || dirtySectionIds_.contains(section->id)
                         || !projectedSectionCache_.contains(section->id);
                     if (sectionDirty) {
-                        if (const std::optional<ProjectedLiverySection> projected = buildProjectedLiverySection(*project_, *section, liveryMasks_, texSize)) {
+                        if (const std::optional<ProjectedLiverySection> projected = buildProjectedLiverySection(
+                                *project_, *section, liveryMasks_, texSize, paintLayout)) {
                             projectedSectionCache_.insert(section->id, {projected->project, projected->clipRect});
                         } else {
                             projectedSectionCache_.remove(section->id);
@@ -630,8 +658,8 @@ void CarPreviewWidget::paintGL()
                         QVector<QRect> clusterClips;
                         collect(cluster, clusterProjects, clusterClips);
                         tex = shapeRenderer_.renderScenesToTexture(
-                            clusterProjects, clusterClips, geometry_, liveryWorldToScreen(),
-                            texSize, /*preserveExisting=*/true);
+                            clusterProjects, clusterClips, geometry_, liveryWorldToScreen(paintTextureSize),
+                            paintTextureSize, /*preserveExisting=*/true);
                     }
                 }
                 if (tex == 0) {
@@ -639,12 +667,12 @@ void CarPreviewWidget::paintGL()
                     QVector<QRect> clipRects;
                     collect(projectedSections, sectionProjects, clipRects);
                     tex = shapeRenderer_.renderScenesToTexture(
-                        sectionProjects, clipRects, geometry_, liveryWorldToScreen(), texSize);
+                        sectionProjects, clipRects, geometry_, liveryWorldToScreen(paintTextureSize), paintTextureSize);
                 }
                 liveryTexture_ = tex;
             } else {
                 liveryTexture_ = shapeRenderer_.renderSceneToTexture(
-                    *project_, geometry_, liveryWorldToScreen(), texSize);
+                    *project_, geometry_, liveryWorldToScreen(paintTextureSize), paintTextureSize);
             }
             liveryDirty_ = false;
             liveLiveryFullDirty_ = false;
@@ -694,15 +722,11 @@ QSize CarPreviewWidget::liveryTextureSize() const
     return QSize(kLiveryBaseTexWidth * liveryTextureScale_, kLiveryBaseTexHeight * liveryTextureScale_);
 }
 
-QTransform CarPreviewWidget::liveryWorldToScreen() const
+QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const
 {
-    // Canvas and OpenGL texture coordinates use opposite vertical origins.
-    const QSize texSize = liveryTextureSize();
-    const double sx = static_cast<double>(texSize.width()) / (2.0 * fh6::kLiveryCanvasHalfWidth);
-    const double sy = static_cast<double>(texSize.height()) / (2.0 * fh6::kLiveryCanvasHalfHeight);
     QTransform transform;
-    transform.translate(texSize.width() * 0.5, texSize.height() * 0.5);
-    transform.scale(sx, sy);
+    transform.translate(textureSize.width() * 0.5, textureSize.height() * 0.5);
+    transform.scale(liveryTextureScale_, liveryTextureScale_);
     return transform;
 }
 

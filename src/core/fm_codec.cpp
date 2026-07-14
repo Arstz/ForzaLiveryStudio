@@ -275,6 +275,7 @@ Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileDa
                 sectionMask = sectionMask || topGroup->isMask;
                 sectionRoot = topGroup.get();
             }
+            sectionMatrix = detail::multiply(liverySectionCanvasTransform(section.slot), sectionMatrix);
             for (const VinylItem &item : sectionRoot->items) {
                 if (item.isShape())
                     sectionGroup->append(importShape(std::get<VinylShape>(item.value), sectionMatrix, sectionMask));
