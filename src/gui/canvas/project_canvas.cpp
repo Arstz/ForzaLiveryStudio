@@ -271,9 +271,6 @@ bool ProjectCanvas::selectionFlashEnabled() const
 void ProjectCanvas::setCarUnwrapOverlay(const QImage &overlay)
 {
     carUnwrapOverlay_ = overlay;
-    if (carUnwrapOverlay_.isNull()) {
-        carUnwrapVisible_ = false;
-    }
     update();
 }
 
@@ -282,7 +279,7 @@ void ProjectCanvas::setCarUnwrapVisible(bool visible)
     if (carUnwrapVisible_ == visible) {
         return;
     }
-    carUnwrapVisible_ = visible && !carUnwrapOverlay_.isNull();
+    carUnwrapVisible_ = visible;
     update();
 }
 

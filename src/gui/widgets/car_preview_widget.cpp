@@ -25,7 +25,7 @@ constexpr int kProjectedSectionToMaskSlot[fh6::kLiverySideCount] = {
 
 bool transposedSection(int maskSlot)
 {
-    return maskSlot == 5 || maskSlot == 7;
+    return maskSlot == 5 || maskSlot == 6 || maskSlot == 7;
 }
 
 struct ProjectedLiverySection {
@@ -180,7 +180,7 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Pro
     const double packedOriginX = (originPixelX - layout.textureSize.width() * 0.5) / scale;
     const double packedOriginY = (originPixelY - layout.textureSize.height() * 0.5) / scale;
     QTransform projectionTransform;
-    if (slot == 5) {
+    if (slot == 5 || slot == 6) {
         projectionTransform.scale(-1.0, 1.0);
     }
     collectProjectedShapes(
@@ -789,7 +789,9 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
         || liverySectionSlot == 3
         || liverySectionSlot == 7
         || liverySectionSlot == 9;
-    const bool transpose = liverySectionSlot == 5 || liverySectionSlot == 7;
+    const bool transpose = liverySectionSlot == 5
+        || liverySectionSlot == 6
+        || liverySectionSlot == 7;
     bool drew = false;
     for (int s = firstSide; s < lastSide; ++s) {
         const fh6::LiverySide &side = liveryMasks_.sides[s];

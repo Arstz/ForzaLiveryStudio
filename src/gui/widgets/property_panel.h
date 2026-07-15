@@ -65,7 +65,7 @@ private:
     bool beginValueLabelDrag(const QString &property, QDoubleSpinBox *box, const QPoint &globalPos);
     void updateValueLabelDrag(const QPoint &globalPos);
     void endValueLabelDrag(bool commit);
-    void applySingle();
+    void applySingle(QWidget *sender);
     void applyMulti(QWidget *sender, const QString &property);
     bool isBoxSelection() const;
     void setBoxProxyFields(bool neutralTransformValues = true);

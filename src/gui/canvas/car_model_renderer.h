@@ -55,7 +55,7 @@ private:
         float alpha = 1.0f;
         quint64 paintMaterialHash = 0;
         bool hasMaterialColor = false;
-        QVector3D materialColor{0.55f, 0.55f, 0.55f};
+        QVector3D materialColor;
         QVector3D emissiveColor;
         float emissiveIntensity = 0.0f;
         float gloss = 0.45f;

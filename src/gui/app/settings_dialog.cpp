@@ -11,6 +11,31 @@ namespace {
 
 constexpr int ShortcutEditRole = Qt::UserRole + 10;
 
+class ShortcutSequenceEdit final : public QKeySequenceEdit {
+public:
+    using QKeySequenceEdit::QKeySequenceEdit;
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            if (keyEvent->key() == Qt::Key_Tab || keyEvent->key() == Qt::Key_Backtab) {
+                if (event->type() == QEvent::KeyPress) {
+                    Qt::KeyboardModifiers modifiers = keyEvent->modifiers();
+                    if (keyEvent->key() == Qt::Key_Backtab) {
+                        modifiers |= Qt::ShiftModifier;
+                    }
+                    setKeySequence(QKeySequence(modifiers | Qt::Key_Tab));
+                }
+                event->accept();
+                return true;
+            }
+        }
+        return QKeySequenceEdit::event(event);
+    }
+};
+
 } // namespace
 
 SettingsDialog::SettingsDialog(UiTheme theme,
@@ -162,7 +187,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         name->setFlags(name->flags() & ~Qt::ItemIsEditable);
         shortcutTable_->setItem(row, 0, name);
 
-        auto *edit = new QKeySequenceEdit(shortcuts_[row].currentSequence, shortcutTable_);
+        auto *edit = new ShortcutSequenceEdit(shortcuts_[row].currentSequence, shortcutTable_);
         shortcutTable_->setCellWidget(row, 1, edit);
 
         auto *reset = new QPushButton(QStringLiteral("Reset"), shortcutTable_);

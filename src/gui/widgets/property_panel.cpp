@@ -1433,7 +1433,7 @@ void PropertyPanel::applyChanged(QWidget *sender)
             state_->setLayerLockScope(layer->id, value);
         }
     } else if (layers_.size() == 1) {
-        applySingle();
+        applySingle(sender);
     } else {
         applyMulti(sender, property);
     }
@@ -1790,11 +1790,13 @@ void PropertyPanel::setSelectionByIds(const QSet<QString> &layerIds,
     setSelection(layers, guides, groups);
 }
 
-void PropertyPanel::applySingle()
+void PropertyPanel::applySingle(QWidget *sender)
 {
     fh6::scene::Shape *layer = layers_.front();
     layer->name = name_->text();
-    layer->shapeId = static_cast<quint16>(shapeId_->value());
+    if (sender == shapeId_ && !layer->isRaster()) {
+        layer->setVectorShape(static_cast<quint16>(shapeId_->value()));
+    }
     layer->x = x_->value();
     layer->y = y_->value();
     layer->scaleX = scaleX_->value();
@@ -1824,7 +1826,9 @@ void PropertyPanel::applyMulti(QWidget *sender, const QString &property)
         }
     } else if (auto *box = qobject_cast<QSpinBox *>(sender)) {
         for (fh6::scene::Shape *layer : layers_) {
-            layer->shapeId = static_cast<quint16>(box->value());
+            if (!layer->isRaster()) {
+                layer->setVectorShape(static_cast<quint16>(box->value()));
+            }
         }
     } else if (auto *line = qobject_cast<QLineEdit *>(sender)) {
         for (fh6::scene::Shape *layer : layers_) {

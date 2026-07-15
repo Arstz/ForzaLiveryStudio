@@ -81,19 +81,33 @@ uniform int has_native_emissive;
 
 out vec4 out_color;
 
+const vec3 DEBUG_FRONT_COLOR = vec3(1.0, 0.2, 0.2);
+const vec3 DEBUG_BACK_COLOR = vec3(0.2, 1.0, 0.2);
+const vec3 DEBUG_TOP_COLOR = vec3(0.3, 0.5, 1.0);
+const vec3 DEBUG_LEFT_COLOR = vec3(1.0, 1.0, 0.2);
+const vec3 DEBUG_RIGHT_COLOR = vec3(1.0, 0.3, 1.0);
+const vec3 DEBUG_SPOILER_COLOR = vec3(0.2, 1.0, 1.0);
+const vec3 DEBUG_FRONT_GLASS_COLOR = vec3(1.0, 0.5, 0.2);
+const vec3 DEBUG_BACK_GLASS_COLOR = vec3(0.5, 1.0, 0.5);
+const vec3 DEBUG_TOP_GLASS_COLOR = vec3(0.5, 0.8, 1.0);
+const vec3 DEBUG_LEFT_GLASS_COLOR = vec3(1.0, 0.9, 0.4);
+const vec3 DEBUG_RIGHT_GLASS_COLOR = vec3(1.0, 0.5, 1.0);
+const vec3 ENVIRONMENT_LOW_COLOR = vec3(0.025, 0.028, 0.035);
+const vec3 ENVIRONMENT_HIGH_COLOR = vec3(0.58, 0.64, 0.72);
+
 vec3 sideColor(int s)
 {
-    if (s == 0) return vec3(1.0, 0.2, 0.2); // Front  red
-    if (s == 1) return vec3(0.2, 1.0, 0.2); // Back   green
-    if (s == 2) return vec3(0.3, 0.5, 1.0); // Top    blue
-    if (s == 3) return vec3(1.0, 1.0, 0.2); // Left   yellow
-    if (s == 4) return vec3(1.0, 0.3, 1.0); // Right  magenta
-    if (s == 5) return vec3(0.2, 1.0, 1.0); // Spoiler cyan
-    if (s == 6) return vec3(1.0, 0.5, 0.2); // Front glass
-    if (s == 7) return vec3(0.5, 1.0, 0.5); // Back glass
-    if (s == 8) return vec3(0.5, 0.8, 1.0); // Top glass
-    if (s == 9) return vec3(1.0, 0.9, 0.4); // Left glass
-    return vec3(1.0, 0.5, 1.0);             // Right glass
+    if (s == 0) return DEBUG_FRONT_COLOR;
+    if (s == 1) return DEBUG_BACK_COLOR;
+    if (s == 2) return DEBUG_TOP_COLOR;
+    if (s == 3) return DEBUG_LEFT_COLOR;
+    if (s == 4) return DEBUG_RIGHT_COLOR;
+    if (s == 5) return DEBUG_SPOILER_COLOR;
+    if (s == 6) return DEBUG_FRONT_GLASS_COLOR;
+    if (s == 7) return DEBUG_BACK_GLASS_COLOR;
+    if (s == 8) return DEBUG_TOP_GLASS_COLOR;
+    if (s == 9) return DEBUG_LEFT_GLASS_COLOR;
+    return DEBUG_RIGHT_GLASS_COLOR;
 }
 
 float axisComponent(vec3 v, float axis)
@@ -155,6 +169,9 @@ void main()
                     if ((allowed_sides & (1 << s)) == 0) {
                         continue;
                     }
+                    if (dot(side_facing[s], normalize(v_normal)) <= 0.0) {
+                        continue;
+                    }
                     float candidate = texture(side_masks, vec3(atlasUv, float(s))).r;
                     if (candidate > coverage) {
                         coverage = candidate;
@@ -170,7 +187,7 @@ void main()
                 vec2 sourceRange = sourceEnd - sourceStart;
                 if (abs(sourceRange.x) > 0.000001 && abs(sourceRange.y) > 0.000001) {
                     vec2 sectionUv = (atlasUv - sourceStart) / sourceRange;
-                    if (coveredSide == 5 || coveredSide == 7) {
+                    if (coveredSide == 5 || coveredSide == 6 || coveredSide == 7) {
                         sectionUv = sectionUv.yx;
                     }
                     if (coveredSide == 2 || coveredSide == 4 || coveredSide == 10) {
@@ -231,7 +248,7 @@ void main()
             }
             vec4 paintRegion = side_paint_region[s];
             vec2 sectionUv = nrm;
-            if (s == 5 || s == 7) {
+            if (s == 5 || s == 6 || s == 7) {
                 sectionUv = sectionUv.yx;
             }
             sectionUv = (s == 2 || s == 4 || s == 10)
@@ -288,8 +305,8 @@ void main()
     vec3 fresnel = fresnelBase
         + (vec3(1.0) - fresnelBase) * pow(1.0 - nDotV, 5.0);
     vec3 reflected = reflect(-viewDir, n);
-    vec3 environment = mix(vec3(0.025, 0.028, 0.035),
-                           vec3(0.58, 0.64, 0.72),
+    vec3 environment = mix(ENVIRONMENT_LOW_COLOR,
+                           ENVIRONMENT_HIGH_COLOR,
                            clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0));
     vec3 environmentSpecular = environment * fresnel
         * mix(0.12, 0.82, surfaceGloss)
@@ -401,6 +418,32 @@ struct MaterialFallback {
     float minimumColor = 0.0f;
 };
 
+const QVector3D kMirrorColor(0.42f, 0.48f, 0.56f);
+const QVector3D kChromeColor(0.68f, 0.71f, 0.76f);
+const QVector3D kGoldColor(0.64f, 0.43f, 0.10f);
+const QVector3D kAluminumColor(0.42f, 0.44f, 0.46f);
+const QVector3D kTitaniumColor(0.30f, 0.31f, 0.34f);
+const QVector3D kGunmetalColor(0.10f, 0.11f, 0.13f);
+const QVector3D kSteelColor(0.28f, 0.30f, 0.33f);
+const QVector3D kPaintedMetalColor(0.055f, 0.058f, 0.064f);
+const QVector3D kCarbonColor(0.085f, 0.092f, 0.10f);
+const QVector3D kRubberColor(0.018f, 0.019f, 0.021f);
+const QVector3D kBlackExteriorColor(0.008f, 0.009f, 0.011f);
+const QVector3D kPlasticColor(0.025f, 0.027f, 0.030f);
+const QVector3D kBadgeColor(0.46f, 0.49f, 0.53f);
+const QVector3D kPlateColor(0.78f, 0.79f, 0.75f);
+const QVector3D kBlackWheelColor(0.015f, 0.015f, 0.018f);
+const QVector3D kRimColor(0.32f, 0.34f, 0.37f);
+const QVector3D kInnerRimColor(0.12f, 0.13f, 0.15f);
+const QVector3D kLugColor(0.38f, 0.40f, 0.43f);
+const QVector3D kDefaultMaterialColor(0.55f, 0.55f, 0.55f);
+const QVector3D kTextureMaterialColor(1.0f, 1.0f, 1.0f);
+const QVector3D kLampChromeColor(0.72f, 0.74f, 0.78f);
+const QVector3D kLampGlassColor(0.78f, 0.82f, 0.88f);
+const QVector3D kTailLampEmissionColor(1.0f, 0.025f, 0.012f);
+const QVector3D kIndicatorEmissionColor(1.0f, 0.30f, 0.025f);
+const QVector3D kHeadLampEmissionColor(1.0f, 0.86f, 0.68f);
+
 float linearToDisplay(float value)
 {
     const float linear = std::clamp(value, 0.0f, 1.0f);
@@ -415,50 +458,50 @@ std::optional<MaterialFallback> exteriorMaterialFallback(const fh6::CarMesh &mes
     const QString material = resource.isEmpty() ? materialIdentity(mesh) : resource;
     if (material.contains(QStringLiteral("mirror_left"))
         || material.contains(QStringLiteral("mirror_right"))) {
-        return MaterialFallback{QVector3D(0.42f, 0.48f, 0.56f), 0.98f, 0.82f};
+        return MaterialFallback{kMirrorColor, 0.98f, 0.82f};
     }
     if (material.contains(QStringLiteral("chrome"))) {
-        return MaterialFallback{QVector3D(0.68f, 0.71f, 0.76f), 0.96f, 1.0f};
+        return MaterialFallback{kChromeColor, 0.96f, 1.0f};
     }
     if (material.contains(QStringLiteral("gold"))) {
-        return MaterialFallback{QVector3D(0.64f, 0.43f, 0.10f), 0.86f, 0.92f};
+        return MaterialFallback{kGoldColor, 0.86f, 0.92f};
     }
     if (material.contains(QStringLiteral("aluminum"))) {
-        return MaterialFallback{QVector3D(0.42f, 0.44f, 0.46f), 0.62f, 0.82f};
+        return MaterialFallback{kAluminumColor, 0.62f, 0.82f};
     }
     if (material.contains(QStringLiteral("titanium"))) {
-        return MaterialFallback{QVector3D(0.30f, 0.31f, 0.34f), 0.68f, 0.88f};
+        return MaterialFallback{kTitaniumColor, 0.68f, 0.88f};
     }
     if (material.contains(QStringLiteral("gunmetal"))
         || material.contains(QStringLiteral("anodizedmetal"))) {
-        return MaterialFallback{QVector3D(0.10f, 0.11f, 0.13f), 0.72f, 0.86f};
+        return MaterialFallback{kGunmetalColor, 0.72f, 0.86f};
     }
     if (material.contains(QStringLiteral("steel"))
         || material.contains(QStringLiteral("metallic"))) {
-        return MaterialFallback{QVector3D(0.28f, 0.30f, 0.33f), 0.70f, 0.84f};
+        return MaterialFallback{kSteelColor, 0.70f, 0.84f};
     }
     if (material.contains(QStringLiteral("paintedmetal"))) {
-        return MaterialFallback{QVector3D(0.055f, 0.058f, 0.064f), 0.58f, 0.45f};
+        return MaterialFallback{kPaintedMetalColor, 0.58f, 0.45f};
     }
     if (material.contains(QStringLiteral("carbon"))) {
-        return MaterialFallback{QVector3D(0.085f, 0.092f, 0.10f), 0.78f, 0.0f, 0.08f};
+        return MaterialFallback{kCarbonColor, 0.78f, 0.0f, 0.08f};
     }
     if (material.contains(QStringLiteral("rubber"))) {
-        return MaterialFallback{QVector3D(0.018f, 0.019f, 0.021f), 0.18f, 0.0f};
+        return MaterialFallback{kRubberColor, 0.18f, 0.0f};
     }
     if (material.contains(QStringLiteral("blackframe"))
         || material.contains(QStringLiteral("blackhole"))
         || material.contains(QStringLiteral("grille"))) {
-        return MaterialFallback{QVector3D(0.008f, 0.009f, 0.011f), 0.22f, 0.05f};
+        return MaterialFallback{kBlackExteriorColor, 0.22f, 0.05f};
     }
     if (material.contains(QStringLiteral("plastic"))) {
-        return MaterialFallback{QVector3D(0.025f, 0.027f, 0.030f), 0.30f, 0.0f};
+        return MaterialFallback{kPlasticColor, 0.30f, 0.0f};
     }
     if (material.contains(QStringLiteral("badge"))) {
-        return MaterialFallback{QVector3D(0.46f, 0.49f, 0.53f), 0.86f, 0.78f};
+        return MaterialFallback{kBadgeColor, 0.86f, 0.78f};
     }
     if (material.contains(QStringLiteral("plate"))) {
-        return MaterialFallback{QVector3D(0.78f, 0.79f, 0.75f), 0.35f, 0.0f};
+        return MaterialFallback{kPlateColor, 0.35f, 0.0f};
     }
     return std::nullopt;
 }
@@ -764,16 +807,16 @@ std::optional<WheelMaterialFallback> wheelMaterialFallback(const fh6::CarMesh &m
     }
     const QString material = mesh.materialName.toLower();
     if (material == QStringLiteral("black")) {
-        return WheelMaterialFallback{QVector3D(0.015f, 0.015f, 0.018f), 0.25f, 0.0f};
+        return WheelMaterialFallback{kBlackWheelColor, 0.25f, 0.0f};
     }
     if (material == QStringLiteral("rim") || material == QStringLiteral("rim2")) {
-        return WheelMaterialFallback{QVector3D(0.32f, 0.34f, 0.37f), 0.78f, 0.85f};
+        return WheelMaterialFallback{kRimColor, 0.78f, 0.85f};
     }
     if (material == QStringLiteral("inner_rim") || material == QStringLiteral("hub")) {
-        return WheelMaterialFallback{QVector3D(0.12f, 0.13f, 0.15f), 0.48f, 0.65f};
+        return WheelMaterialFallback{kInnerRimColor, 0.48f, 0.65f};
     }
     if (material == QStringLiteral("lug")) {
-        return WheelMaterialFallback{QVector3D(0.38f, 0.40f, 0.43f), 0.72f, 0.8f};
+        return WheelMaterialFallback{kLugColor, 0.72f, 0.8f};
     }
     return std::nullopt;
 }
@@ -803,7 +846,7 @@ int projectionSidesForMesh(const fh6::CarMesh &mesh)
         if (isSpoilerMesh(mesh.name)) {
             sides = kSideSpoiler;
         } else if (isTrunkPanelMesh(mesh.name)) {
-            sides = kSideTop;
+            sides = kSideBack | kSideTop;
         } else {
             switch (mesh.carPartType) {
             case kFrontBumperPart:
@@ -1556,6 +1599,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
         }
 
         auto buffers = std::make_unique<MeshBuffers>();
+        buffers->materialColor = kDefaultMaterialColor;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
         int bodySides = 0;
@@ -1563,7 +1607,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
             if (isSpoilerMesh(mesh.name)) {
                 bodySides = kSideSpoiler;
             } else if (isTrunkPanelMesh(mesh.name)) {
-                bodySides = kSideTop;
+                bodySides = kSideBack | kSideTop;
             } else {
                 bodySides = kAllBodySides;
             }
@@ -1597,7 +1641,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
             }
             if (buffers->diffuseTexture != 0 && !buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
-                buffers->materialColor = QVector3D(1.0f, 1.0f, 1.0f);
+                buffers->materialColor = kTextureMaterialColor;
             }
         }
         if (isBodyPaintMaterial(mesh.materialName)) {
@@ -1607,7 +1651,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
         const std::optional<MaterialFallback> material = exteriorMaterialFallback(mesh);
         if (mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)) {
             buffers->hasMaterialColor = true;
-            buffers->materialColor = QVector3D(0.018f, 0.019f, 0.021f);
+            buffers->materialColor = kRubberColor;
             buffers->gloss = 0.22f;
             buffers->metallic = 0.0f;
         } else if (wheel) {
@@ -1641,14 +1685,14 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
                 || material.contains(QStringLiteral("glass"));
             if (materialClass.contains(QStringLiteral("chrome"))) {
                 buffers->hasMaterialColor = true;
-                buffers->materialColor = QVector3D(0.72f, 0.74f, 0.78f);
+                buffers->materialColor = kLampChromeColor;
                 buffers->gloss = 0.94f;
                 buffers->metallic = 1.0f;
             }
             if (glass) {
                 buffers->hasMaterialColor = true;
-                if (buffers->materialColor == QVector3D(0.55f, 0.55f, 0.55f)) {
-                    buffers->materialColor = QVector3D(0.78f, 0.82f, 0.88f);
+                if (buffers->materialColor == kDefaultMaterialColor) {
+                    buffers->materialColor = kLampGlassColor;
                 }
                 buffers->alpha = material.contains(QStringLiteral("colored")) ? 0.34f : 0.20f;
                 buffers->gloss = 0.96f;
@@ -1657,12 +1701,12 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
             if (emitter) {
                 if (buffers->emissiveColor.lengthSquared() < 0.000001f) {
                     if (name.contains(QStringLiteral("tail"))) {
-                        buffers->emissiveColor = QVector3D(1.0f, 0.025f, 0.012f);
+                        buffers->emissiveColor = kTailLampEmissionColor;
                     } else if (name.contains(QStringLiteral("marker"))
                                || name.contains(QStringLiteral("indicator"))) {
-                        buffers->emissiveColor = QVector3D(1.0f, 0.30f, 0.025f);
+                        buffers->emissiveColor = kIndicatorEmissionColor;
                     } else {
-                        buffers->emissiveColor = QVector3D(1.0f, 0.86f, 0.68f);
+                        buffers->emissiveColor = kHeadLampEmissionColor;
                     }
                 }
                 if (buffers->emissiveIntensity <= 0.0f) {

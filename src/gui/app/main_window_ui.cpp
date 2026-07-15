@@ -526,7 +526,6 @@ void MainWindow::updateCarUnwrapOverlay()
             canvas_->setCarUnwrapOverlay({});
             if (carUnwrapAction_ != nullptr) {
                 carUnwrapAction_->setEnabled(false);
-                carUnwrapAction_->setChecked(false);
             }
             return;
         }
@@ -535,9 +534,6 @@ void MainWindow::updateCarUnwrapOverlay()
     canvas_->setCarUnwrapOverlay(overlay);
     if (carUnwrapAction_ != nullptr) {
         carUnwrapAction_->setEnabled(!overlay.isNull());
-        if (overlay.isNull()) {
-            carUnwrapAction_->setChecked(false);
-        }
     }
 }
 
@@ -955,9 +951,19 @@ bool MainWindow::event(QEvent *event)
         if (keyEvent->key() == Qt::Key_Backtab) {
             pressed = QKeySequence(Qt::ShiftModifier | Qt::Key_Tab);
         }
-        if (flipSelectionAction_ != nullptr
-            && !flipSelectionAction_->shortcut().isEmpty()
-            && flipSelectionAction_->shortcut().matches(pressed) == QKeySequence::ExactMatch) {
+        QAction *matchedAction = nullptr;
+        if (keyEvent->key() == Qt::Key_Tab || keyEvent->key() == Qt::Key_Backtab) {
+            for (const ShortcutAction &binding : std::as_const(shortcutActions_)) {
+                if (binding.action != nullptr
+                    && binding.action->isEnabled()
+                    && !binding.action->shortcut().isEmpty()
+                    && binding.action->shortcut().matches(pressed) == QKeySequence::ExactMatch) {
+                    matchedAction = binding.action;
+                    break;
+                }
+            }
+        }
+        if (matchedAction != nullptr) {
             if (event->type() == QEvent::ShortcutOverride) {
                 event->accept();
                 return true;
@@ -966,7 +972,7 @@ bool MainWindow::event(QEvent *event)
                 event->accept();
                 return true;
             }
-            flipSelectionAction_->trigger();
+            matchedAction->trigger();
             event->accept();
             return true;
         }
