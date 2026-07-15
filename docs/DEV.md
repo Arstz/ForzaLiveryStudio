@@ -93,7 +93,8 @@ exports flat game-compatible folders.
   car registry's model code, searched recursively). If the folder is unset the app
   prompts once to pick it; it can also be set in Settings. A **Discard current model on
   livery open** option (on by default) controls whether opening a livery replaces the
-  currently loaded model or keeps it.
+  currently loaded model or keeps it. Native car texture loading is an opt-in preview
+  setting and is disabled by default.
 - Configure UI theme, canvas colors, layout, keybinds, behavior options, guide
   visibility borders, nudge step sizes, the car models folder, and the discard-model
   option. Every menu-bar action can be bound to a hotkey in the keybind settings, even
@@ -244,6 +245,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     for ForzaTech "Grub" bundles (`.modelbin`) — blob/metadata parsing, nested
     material resources, typed shader parameters, and per-mesh geometry dequant
     (positions/normals/UVs/indices, bone transforms, texture-coordinate transforms).
+    Material defaults retain their native texture slots and UV tiling for preview use.
+    Resolved material defaults and decoded textures are retained in bounded runtime caches,
+    while uploaded native textures are reused for the lifetime of the preview context.
     No proprietary DLL is required.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
@@ -299,7 +303,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     renderer (`car_model_renderer`) whose fragment shader applies the livery through
     transformed mesh UV3, converts backing-texture coordinates into the mask atlas,
     resolves coverage from the swatch texture array, normalizes section coordinates,
-    and samples separate packed paint regions. Meshes without usable UV3 fall back to
+    samples separate packed paint regions, and shades non-paint materials with native
+    diffuse, alpha, normal, surface, and emissive maps. Meshes without usable UV3 fall back to
     registered planar projection using the model scene, mask boundary, part metadata,
     and locator landmarks. It uploads only each part's highest LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,

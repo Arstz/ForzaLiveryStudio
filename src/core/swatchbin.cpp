@@ -4,6 +4,8 @@
 
 #include <QFile>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <optional>
 
@@ -147,6 +149,167 @@ SwatchImage decodeRgba8Surface(const QByteArray &data, int width, int height, QS
     image.height = height;
     image.rgba.resize(static_cast<size_t>(needed));
     std::memcpy(image.rgba.data(), data.constData(), static_cast<size_t>(needed));
+    return image;
+}
+
+std::array<uint8_t, 4> color565(quint16 value)
+{
+    const int r = (value >> 11) & 0x1f;
+    const int g = (value >> 5) & 0x3f;
+    const int b = value & 0x1f;
+    return {static_cast<uint8_t>((r * 255 + 15) / 31),
+            static_cast<uint8_t>((g * 255 + 31) / 63),
+            static_cast<uint8_t>((b * 255 + 15) / 31), 255};
+}
+
+void decodeBc1Colors(const uint8_t *block, bool opaque, uint8_t out[64])
+{
+    const quint16 c0 = static_cast<quint16>(block[0] | (block[1] << 8));
+    const quint16 c1 = static_cast<quint16>(block[2] | (block[3] << 8));
+    std::array<std::array<uint8_t, 4>, 4> colors{};
+    colors[0] = color565(c0);
+    colors[1] = color565(c1);
+    if (c0 > c1 || opaque) {
+        for (int channel = 0; channel < 3; ++channel) {
+            colors[2][channel] = static_cast<uint8_t>((2 * colors[0][channel] + colors[1][channel]) / 3);
+            colors[3][channel] = static_cast<uint8_t>((colors[0][channel] + 2 * colors[1][channel]) / 3);
+        }
+        colors[2][3] = 255;
+        colors[3][3] = 255;
+    } else {
+        for (int channel = 0; channel < 3; ++channel) {
+            colors[2][channel] = static_cast<uint8_t>((colors[0][channel] + colors[1][channel]) / 2);
+        }
+        colors[2][3] = 255;
+        colors[3] = {0, 0, 0, 0};
+    }
+    const quint32 indices = static_cast<quint32>(block[4])
+        | (static_cast<quint32>(block[5]) << 8)
+        | (static_cast<quint32>(block[6]) << 16)
+        | (static_cast<quint32>(block[7]) << 24);
+    for (int pixel = 0; pixel < 16; ++pixel) {
+        const auto &color = colors[(indices >> (pixel * 2)) & 3];
+        std::copy(color.begin(), color.end(), out + pixel * 4);
+    }
+}
+
+SwatchImage decodeBcSurface(const QByteArray &data, int width, int height, Encoding encoding, QString *error)
+{
+    const int blockBytes = encoding == Encoding::Bc1 ? 8 : 16;
+    const int blocksWide = (width + 3) / 4;
+    const int blocksHigh = (height + 3) / 4;
+    const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * blockBytes;
+    if (data.size() < needed) {
+        setError(error, QStringLiteral("swatchbin BC data truncated"));
+        return {};
+    }
+
+    SwatchImage image;
+    image.width = width;
+    image.height = height;
+    image.rgba.assign(static_cast<size_t>(width) * height * 4, 0);
+    const auto *src = reinterpret_cast<const uint8_t *>(data.constData());
+    for (int by = 0; by < blocksHigh; ++by) {
+        for (int bx = 0; bx < blocksWide; ++bx) {
+            uint8_t tile[64];
+            if (encoding == Encoding::Bc1) {
+                decodeBc1Colors(src, false, tile);
+            } else {
+                decodeBc1Colors(src + 8, true, tile);
+                if (encoding == Encoding::Bc2) {
+                    for (int pixel = 0; pixel < 16; ++pixel) {
+                        const int nibble = (src[pixel / 2] >> ((pixel & 1) * 4)) & 0xf;
+                        tile[pixel * 4 + 3] = static_cast<uint8_t>(nibble * 17);
+                    }
+                } else {
+                    uint8_t alpha[16];
+                    decodeBc4Block(src, alpha);
+                    for (int pixel = 0; pixel < 16; ++pixel) {
+                        tile[pixel * 4 + 3] = alpha[pixel];
+                    }
+                }
+            }
+            src += blockBytes;
+            for (int ty = 0; ty < 4; ++ty) {
+                const int py = by * 4 + ty;
+                if (py >= height) {
+                    continue;
+                }
+                for (int tx = 0; tx < 4; ++tx) {
+                    const int px = bx * 4 + tx;
+                    if (px >= width) {
+                        continue;
+                    }
+                    const size_t dst = (static_cast<size_t>(py) * width + px) * 4;
+                    std::copy_n(tile + (ty * 4 + tx) * 4, 4, image.rgba.begin() + dst);
+                }
+            }
+        }
+    }
+    return image;
+}
+
+SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QString *error)
+{
+    const int blocksWide = (width + 3) / 4;
+    const int blocksHigh = (height + 3) / 4;
+    const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 16;
+    if (data.size() < needed) {
+        setError(error, QStringLiteral("swatchbin BC5 data truncated"));
+        return {};
+    }
+    SwatchImage image;
+    image.width = width;
+    image.height = height;
+    image.rgba.assign(static_cast<size_t>(width) * height * 4, 255);
+    const auto *src = reinterpret_cast<const uint8_t *>(data.constData());
+    for (int by = 0; by < blocksHigh; ++by) {
+        for (int bx = 0; bx < blocksWide; ++bx) {
+            uint8_t red[16];
+            uint8_t green[16];
+            decodeBc4Block(src, red);
+            decodeBc4Block(src + 8, green);
+            src += 16;
+            for (int ty = 0; ty < 4; ++ty) {
+                const int py = by * 4 + ty;
+                if (py >= height) {
+                    continue;
+                }
+                for (int tx = 0; tx < 4; ++tx) {
+                    const int px = bx * 4 + tx;
+                    if (px >= width) {
+                        continue;
+                    }
+                    const int pixel = ty * 4 + tx;
+                    const size_t dst = (static_cast<size_t>(py) * width + px) * 4;
+                    image.rgba[dst] = red[pixel];
+                    image.rgba[dst + 1] = green[pixel];
+                    image.rgba[dst + 2] = 255;
+                }
+            }
+        }
+    }
+    return image;
+}
+
+SwatchImage decodeChannelSurface(const QByteArray &data, int width, int height, int channels, QString *error)
+{
+    const qint64 needed = static_cast<qint64>(width) * height * channels;
+    if (data.size() < needed) {
+        setError(error, QStringLiteral("swatchbin channel data truncated"));
+        return {};
+    }
+    SwatchImage image;
+    image.width = width;
+    image.height = height;
+    image.rgba.assign(static_cast<size_t>(width) * height * 4, 255);
+    const auto *src = reinterpret_cast<const uint8_t *>(data.constData());
+    for (int pixel = 0; pixel < width * height; ++pixel) {
+        const size_t dst = static_cast<size_t>(pixel) * 4;
+        image.rgba[dst] = src[pixel * channels];
+        image.rgba[dst + 1] = channels > 1 ? src[pixel * channels + 1] : src[pixel * channels];
+        image.rgba[dst + 2] = channels > 1 ? 0 : src[pixel * channels];
+    }
     return image;
 }
 
@@ -493,11 +656,24 @@ SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error)
     }
 
     switch (static_cast<Encoding>(surface->formatEncoded)) {
+    case Encoding::Bc1:
+    case Encoding::Bc2:
+    case Encoding::Bc3:
+        return decodeBcSurface(surface->pixels, surface->width, surface->height,
+                               static_cast<Encoding>(surface->formatEncoded), error);
+    case Encoding::UnsignedBc5:
+    case Encoding::SignedBc5:
+        return decodeBc5Surface(surface->pixels, surface->width, surface->height, error);
     case Encoding::Bc7:
     case Encoding::Bc7HighQuality:
         return decodeBc7Surface(surface->pixels, surface->width, surface->height, error);
     case Encoding::R8G8B8A8:
         return decodeRgba8Surface(surface->pixels, surface->width, surface->height, error);
+    case Encoding::R8:
+    case Encoding::A8:
+        return decodeChannelSurface(surface->pixels, surface->width, surface->height, 1, error);
+    case Encoding::R8G8:
+        return decodeChannelSurface(surface->pixels, surface->width, surface->height, 2, error);
     default:
         setError(error, QStringLiteral("swatchbin encoding %1 not supported as a color image")
                             .arg(surface->formatEncoded));

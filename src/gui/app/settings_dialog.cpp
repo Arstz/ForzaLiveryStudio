@@ -141,6 +141,10 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     discardModelOnLiveryOpen_->setChecked(behaviorSettings_.discardModelOnLiveryOpen);
     generalLayout->addRow(QStringLiteral("Discard current model on livery open"), discardModelOnLiveryOpen_);
 
+    loadCarTextures_ = new QCheckBox(general);
+    loadCarTextures_->setChecked(behaviorSettings_.loadCarTextures);
+    generalLayout->addRow(QStringLiteral("Load car textures"), loadCarTextures_);
+
     tabs->addTab(general, QStringLiteral("General"));
 
     auto *keybinds = new QWidget(tabs);
@@ -231,6 +235,9 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
     }
     if (discardModelOnLiveryOpen_ != nullptr) {
         result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
+    }
+    if (loadCarTextures_ != nullptr) {
+        result.loadCarTextures = loadCarTextures_->isChecked();
     }
     return result;
 }

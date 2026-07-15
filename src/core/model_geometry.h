@@ -52,7 +52,7 @@ struct CarMesh {
     QString sourceModelPath;
     QString materialName;
     qint16 materialId = -1;
-    std::shared_ptr<const ModelMaterial> material;
+    std::shared_ptr<ModelMaterial> material;
     quint64 paintMaterialHash = 0;
     std::vector<ModelVec3> positions;
     std::vector<ModelVec3> normals;

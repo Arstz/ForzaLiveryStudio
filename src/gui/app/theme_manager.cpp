@@ -110,6 +110,7 @@ BehaviorSettings loadBehaviorSettings()
     result.autosaveIntervalMinutes = settings.value(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), 5).toInt();
     result.carModelsFolder = settings.value(QStringLiteral("ui/behavior/carModelsFolder")).toString();
     result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), true).toBool();
+    result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), false).toBool();
     if (result.nudgeStep <= 0.0) {
         result.nudgeStep = 0.1;
     }
@@ -140,6 +141,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), std::clamp(settings.autosaveIntervalMinutes, 0, 1440));
     qsettings.setValue(QStringLiteral("ui/behavior/carModelsFolder"), settings.carModelsFolder);
     qsettings.setValue(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), settings.discardModelOnLiveryOpen);
+    qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);
 }
 
 QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings)

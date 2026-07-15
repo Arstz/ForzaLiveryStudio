@@ -180,6 +180,7 @@ void MainWindow::setupDocks()
     splitDockWidget(paletteDock, shapesDock, Qt::Vertical);
 
     carPreview_ = new CarPreviewWidget(this);
+    carPreview_->setLoadCarTextures(loadBehaviorSettings().loadCarTextures);
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
     carPreviewDock_ = addPanelDock(QStringLiteral("3D Preview"), QStringLiteral("CarPreviewDock"),
@@ -690,6 +691,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     }
     if (carPreview_ != nullptr) {
         carPreview_->setLiveryTextureScale(settings.liveryTextureScale);
+        carPreview_->setLoadCarTextures(settings.loadCarTextures);
     }
     configureAutosaveTimer(settings);
     if (save) {

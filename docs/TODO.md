@@ -2,6 +2,9 @@ Small changes:
     -If a car does not have a UV section associated do not tich "Show UV unwrap to false"
     -Front window needs transpose horizontal->vertical in canvas render, both shapes and UV overlay
     -Deny UV mask leak to other side Right/Left, Back/Front
+    -Override Tab in QT navigation to be elidgeable for binding in Settings widget
+    -Shape retains visuals after manual ShapeID change in Properties widget
+    -Define arbitrary colour values in car_renderer as variables 
 
 Medium changes:
     -Unify tranform detection in decoder

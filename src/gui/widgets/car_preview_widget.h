@@ -43,6 +43,7 @@ public:
     void setBasePaint(const QColor &color);
     int liveryTextureScale() const;
     void setLiveryTextureScale(int scale);
+    void setLoadCarTextures(bool enabled);
 
 public Q_SLOTS:
     void markLiveryDirty();
@@ -82,6 +83,8 @@ private:
     fh6::CarModel model_;
     bool modelUploadPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
+    QString loadedCarPath_;
+    bool loadCarTextures_ = false;
 
     fh6::LiveryMaskSet liveryMasks_;
     QString liveryMasksDir_;

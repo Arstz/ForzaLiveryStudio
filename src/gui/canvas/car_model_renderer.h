@@ -10,6 +10,10 @@
 #include <memory>
 #include <vector>
 
+namespace fh6 {
+struct ModelMaterialTexture;
+}
+
 namespace gui {
 
 class CarModelRenderer {
@@ -56,14 +60,27 @@ private:
         float emissiveIntensity = 0.0f;
         float gloss = 0.45f;
         float metallic = 0.0f;
+        GLuint diffuseTexture = 0;
+        GLuint alphaTexture = 0;
+        GLuint normalTexture = 0;
+        GLuint surfaceTexture = 0;
+        GLuint emissiveTexture = 0;
         QVector3D center;
         QMatrix4x4 model;
+    };
+
+    struct MaterialTextureCacheEntry {
+        std::shared_ptr<const fh6::ModelMaterialTexture> source;
+        GLuint id = 0;
+        qsizetype bytes = 0;
     };
 
     static constexpr int kLiverySideCount = fh6::kLiverySideCount;
 
     QOpenGLShaderProgram program_;
     std::vector<std::unique_ptr<MeshBuffers>> meshes_;
+    QHash<QString, MaterialTextureCacheEntry> materialTextureCache_;
+    qsizetype materialTextureCacheBytes_ = 0;
     bool initialized_ = false;
 
     GLuint sideMaskArray_ = 0;
@@ -100,6 +117,16 @@ private:
     int metallicLocation_ = -1;
     int emissiveLocation_ = -1;
     int eyePositionLocation_ = -1;
+    int nativeDiffuseLocation_ = -1;
+    int nativeAlphaLocation_ = -1;
+    int nativeNormalLocation_ = -1;
+    int nativeSurfaceLocation_ = -1;
+    int nativeEmissiveLocation_ = -1;
+    int hasNativeDiffuseLocation_ = -1;
+    int hasNativeAlphaLocation_ = -1;
+    int hasNativeNormalLocation_ = -1;
+    int hasNativeSurfaceLocation_ = -1;
+    int hasNativeEmissiveLocation_ = -1;
 };
 
 } // namespace gui

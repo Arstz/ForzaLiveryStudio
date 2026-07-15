@@ -68,6 +68,7 @@ private:
     QSpinBox *autosaveIntervalMinutes_ = nullptr;
     QLineEdit *carModelsFolder_ = nullptr;
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;
+    QCheckBox *loadCarTextures_ = nullptr;
     QCheckBox *valueEditingWheelCheck_ = nullptr;
     QTableWidget *shortcutTable_ = nullptr;
     QLabel *validationLabel_ = nullptr;

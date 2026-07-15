@@ -8,6 +8,7 @@
 #include "zip_extract.h"
 
 #include <QLabel>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -262,27 +263,209 @@ QString materialArchiveEntry(QString resourcePath)
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
 }
 
+QString assetFileIdentity(const QString &path)
+{
+    const QFileInfo info(path);
+    return QDir::cleanPath(info.absoluteFilePath()).toLower()
+        + QLatin1Char('|') + QString::number(info.size())
+        + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
+}
+
+QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &materialDefaultsCache()
+{
+    static QHash<QString, std::shared_ptr<fh6::ModelMaterial>> cache;
+    return cache;
+}
+
+class NativeTextureCache {
+public:
+    std::shared_ptr<const fh6::ModelMaterialTexture> find(const QString &key, bool &known)
+    {
+        const auto it = entries_.find(key);
+        known = it != entries_.end();
+        if (!known) {
+            return {};
+        }
+        it->lastUse = ++clock_;
+        return it->texture;
+    }
+
+    void insert(const QString &key,
+                const std::shared_ptr<const fh6::ModelMaterialTexture> &texture)
+    {
+        Entry entry;
+        entry.texture = texture;
+        entry.bytes = texture ? static_cast<qsizetype>(texture->image.rgba.size()) : 0;
+        entry.lastUse = ++clock_;
+        entries_.insert(key, std::move(entry));
+        bytes_ += entries_.value(key).bytes;
+    }
+
+    void trim()
+    {
+        constexpr qsizetype budget = 256ll * 1024 * 1024;
+        while (bytes_ > budget) {
+            auto oldest = entries_.end();
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (!it->texture || it->texture.use_count() != 1) {
+                    continue;
+                }
+                if (oldest == entries_.end() || it->lastUse < oldest->lastUse) {
+                    oldest = it;
+                }
+            }
+            if (oldest == entries_.end()) {
+                break;
+            }
+            bytes_ -= oldest->bytes;
+            entries_.erase(oldest);
+        }
+    }
+
+private:
+    struct Entry {
+        std::shared_ptr<const fh6::ModelMaterialTexture> texture;
+        qsizetype bytes = 0;
+        quint64 lastUse = 0;
+    };
+
+    QHash<QString, Entry> entries_;
+    qsizetype bytes_ = 0;
+    quint64 clock_ = 0;
+};
+
+NativeTextureCache &nativeTextureCache()
+{
+    static NativeTextureCache cache;
+    return cache;
+}
+
 bool isExteriorModelPath(QString path)
 {
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive);
 }
 
-void resolveExteriorMaterials(fh6::CarModel &model, const QString &sourcePath)
+enum class NativeTextureSlot {
+    Diffuse,
+    Alpha,
+    Normal,
+    Surface,
+    Emissive,
+    Unknown,
+};
+
+NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter)
+{
+    QString path = parameter.texturePath.toLower();
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (parameter.nameHash == 0xF9E8078D
+        || path.contains(QStringLiteral("normal"))
+        || path.contains(QStringLiteral("nrml"))) {
+        return NativeTextureSlot::Normal;
+    }
+    if (parameter.nameHash == 0x8D9C56EF
+        || path.contains(QStringLiteral("rmao"))
+        || path.contains(QStringLiteral("roughmetal"))
+        || path.contains(QStringLiteral("metalrough"))) {
+        return NativeTextureSlot::Surface;
+    }
+    if (parameter.nameHash == 0x4E0D5E89
+        || parameter.nameHash == 0x6161E552
+        || parameter.nameHash == 0x020B22EB
+        || parameter.nameHash == 0x212B4B48
+        || parameter.nameHash == 0x3CB4DFCB
+        || path.contains(QStringLiteral("emissive"))
+        || path.contains(QStringLiteral("emission"))) {
+        return NativeTextureSlot::Emissive;
+    }
+    if (parameter.nameHash == 0x85E937A9
+        || path.contains(QStringLiteral("basecolor"))
+        || path.contains(QStringLiteral("diffuse"))
+        || path.contains(QStringLiteral("albedo"))) {
+        return NativeTextureSlot::Diffuse;
+    }
+    if (parameter.nameHash == 0x698CA64F
+        || parameter.nameHash == 0x57D9D49E
+        || parameter.nameHash == 0x66E53F62
+        || parameter.nameHash == 0x2FDCDBF0
+        || path.contains(QStringLiteral("opacity"))
+        || path.contains(QStringLiteral("opac"))
+        || path.contains(QStringLiteral("alpha"))) {
+        return NativeTextureSlot::Alpha;
+    }
+    return NativeTextureSlot::Unknown;
+}
+
+QString normalizedTexturePath(QString path)
+{
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return path.toLower();
+}
+
+QString sharedTextureEntry(const QString &path)
+{
+    const QString normalized = normalizedTexturePath(path);
+    const QString marker = QStringLiteral("/_library/textures/");
+    const int offset = normalized.indexOf(marker);
+    return offset < 0 ? QString() : normalized.mid(offset + marker.size());
+}
+
+QString localTexturePath(const QString &path, const QString &carRoot)
+{
+    QString normalized = path;
+    normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const int cars = normalized.indexOf(QStringLiteral("/cars/"), 0, Qt::CaseInsensitive);
+    if (cars >= 0) {
+        const QString carRelative = normalized.mid(cars + 6);
+        const int separator = carRelative.indexOf(QLatin1Char('/'));
+        if (separator >= 0) {
+            return QDir(carRoot).filePath(carRelative.mid(separator + 1));
+        }
+    }
+    if (normalized.startsWith(QStringLiteral("textures/"), Qt::CaseInsensitive)) {
+        return QDir(carRoot).filePath(normalized);
+    }
+    return {};
+}
+
+void assignNativeTexture(fh6::ModelMaterial &material,
+                         NativeTextureSlot slot,
+                         const std::shared_ptr<const fh6::ModelMaterialTexture> &texture)
+{
+    switch (slot) {
+    case NativeTextureSlot::Diffuse:
+        material.diffuseTexture = texture;
+        break;
+    case NativeTextureSlot::Alpha:
+        material.alphaTexture = texture;
+        break;
+    case NativeTextureSlot::Normal:
+        material.normalTexture = texture;
+        break;
+    case NativeTextureSlot::Surface:
+        material.surfaceTexture = texture;
+        break;
+    case NativeTextureSlot::Emissive:
+        material.emissiveTexture = texture;
+        break;
+    case NativeTextureSlot::Unknown:
+        break;
+    }
+}
+
+void resolveExteriorMaterials(
+    fh6::CarModel &model, const QString &sourcePath, const QString &carRoot)
 {
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
         return;
     }
-    QTemporaryDir extracted;
-    QString error;
-    if (!extracted.isValid()
-        || !fh6::extractZipArchive(archivePath, extracted.path(), &error)) {
-        return;
-    }
-
-    QHash<QString, std::shared_ptr<fh6::ModelMaterial>> defaults;
+    const QString materialArchiveKey = assetFileIdentity(archivePath);
+    QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &defaults = materialDefaultsCache();
+    QStringList missingMaterialEntries;
+    QSet<QString> requestedMaterials;
     for (fh6::CarMesh &mesh : model.meshes) {
         if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
             continue;
@@ -291,25 +474,146 @@ void resolveExteriorMaterials(fh6::CarModel &model, const QString &sourcePath)
         if (entry.isEmpty()) {
             continue;
         }
-        const QString key = entry.toLower();
-        std::shared_ptr<fh6::ModelMaterial> materialDefaults = defaults.value(key);
-        if (!materialDefaults) {
-            QFile file(QDir(extracted.path()).filePath(entry));
-            if (!file.open(QIODevice::ReadOnly)) {
-                continue;
-            }
-            try {
-                materialDefaults = fh6::decodeMaterialBundle(file.readAll());
-            } catch (const std::exception &) {
-                continue;
-            }
-            if (!materialDefaults) {
-                continue;
-            }
-            defaults.insert(key, materialDefaults);
+        const QString key = materialArchiveKey + QLatin1Char('|') + entry.toLower();
+        if (!defaults.contains(key) && !requestedMaterials.contains(entry.toLower())) {
+            requestedMaterials.insert(entry.toLower());
+            missingMaterialEntries.push_back(entry);
         }
-        mesh.material = fh6::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
     }
+    const QHash<QString, QByteArray> missingMaterialData =
+        fh6::readZipEntries(archivePath, missingMaterialEntries);
+    for (const QString &entry : missingMaterialEntries) {
+        std::shared_ptr<fh6::ModelMaterial> decoded;
+        const QByteArray bytes = missingMaterialData.value(entry.toLower());
+        if (!bytes.isEmpty()) {
+            try {
+                decoded = fh6::decodeMaterialBundle(bytes);
+            } catch (const std::exception &) {
+            }
+        }
+        defaults.insert(materialArchiveKey + QLatin1Char('|') + entry.toLower(), decoded);
+    }
+    for (fh6::CarMesh &mesh : model.meshes) {
+        if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
+            continue;
+        }
+        const QString entry = materialArchiveEntry(mesh.material->resourcePath);
+        const std::shared_ptr<fh6::ModelMaterial> materialDefaults =
+            defaults.value(materialArchiveKey + QLatin1Char('|') + entry.toLower());
+        if (materialDefaults) {
+            mesh.material = fh6::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
+        }
+    }
+
+    struct PendingTexture {
+        std::shared_ptr<fh6::ModelMaterial> material;
+        NativeTextureSlot slot = NativeTextureSlot::Unknown;
+        QString path;
+        QString sharedEntry;
+        QString localPath;
+        QString cacheKey;
+    };
+    QVector<PendingTexture> pending;
+    QSet<const fh6::ModelMaterial *> visited;
+    for (fh6::CarMesh &mesh : model.meshes) {
+        if (!mesh.material || visited.contains(mesh.material.get())
+            || !isExteriorModelPath(mesh.sourceModelPath)
+            || mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
+            continue;
+        }
+        visited.insert(mesh.material.get());
+        for (const fh6::ModelMaterialParameter &parameter : mesh.material->parameters) {
+            if (parameter.type != fh6::ModelMaterialParameterType::Texture2D
+                || parameter.texturePath.isEmpty()) {
+                continue;
+            }
+            const NativeTextureSlot slot = nativeTextureSlot(parameter);
+            if (slot == NativeTextureSlot::Unknown) {
+                continue;
+            }
+            PendingTexture item;
+            item.material = mesh.material;
+            item.slot = slot;
+            item.path = parameter.texturePath;
+            item.sharedEntry = sharedTextureEntry(item.path);
+            if (item.sharedEntry.isEmpty()) {
+                item.localPath = localTexturePath(item.path, carRoot);
+            }
+            pending.push_back(std::move(item));
+        }
+    }
+
+    const QString textureArchive = findSharedCarAsset(
+        sourcePath, QStringLiteral("_library/Textures.zip"));
+    const QString textureArchiveKey = textureArchive.isEmpty()
+        ? QString()
+        : assetFileIdentity(textureArchive);
+    const bool sourceIsArchive = sourcePath.endsWith(
+        QStringLiteral(".zip"), Qt::CaseInsensitive);
+    const QString sourceArchiveKey = sourceIsArchive
+        ? assetFileIdentity(sourcePath)
+        : QString();
+    NativeTextureCache &textureCache = nativeTextureCache();
+    QStringList missingSharedEntries;
+    QSet<QString> requestedSharedEntries;
+    for (PendingTexture &item : pending) {
+        item.cacheKey = !item.sharedEntry.isEmpty()
+            ? textureArchiveKey + QLatin1Char('|') + item.sharedEntry.toLower()
+            : (sourceIsArchive
+                ? sourceArchiveKey + QLatin1Char('|') + normalizedTexturePath(item.path)
+                : !item.localPath.isEmpty()
+                ? assetFileIdentity(item.localPath)
+                : QDir::cleanPath(carRoot).toLower() + QLatin1Char('|')
+                    + normalizedTexturePath(item.path));
+        bool known = false;
+        const auto texture = textureCache.find(item.cacheKey, known);
+        if (known) {
+            if (texture) {
+                assignNativeTexture(*item.material, item.slot, texture);
+            }
+            item.cacheKey.clear();
+        } else if (!item.sharedEntry.isEmpty()
+                   && !requestedSharedEntries.contains(item.sharedEntry.toLower())) {
+            requestedSharedEntries.insert(item.sharedEntry.toLower());
+            missingSharedEntries.push_back(item.sharedEntry);
+        }
+    }
+    const QHash<QString, QByteArray> sharedData = textureArchive.isEmpty()
+        ? QHash<QString, QByteArray>{}
+        : fh6::readZipEntries(textureArchive, missingSharedEntries);
+    for (const PendingTexture &item : pending) {
+        if (item.cacheKey.isEmpty()) {
+            continue;
+        }
+        bool known = false;
+        std::shared_ptr<const fh6::ModelMaterialTexture> texture =
+            textureCache.find(item.cacheKey, known);
+        if (!known) {
+            QByteArray bytes;
+            if (!item.sharedEntry.isEmpty()) {
+                bytes = sharedData.value(item.sharedEntry.toLower());
+            } else if (!item.localPath.isEmpty()) {
+                QFile file(item.localPath);
+                if (file.open(QIODevice::ReadOnly)) {
+                    bytes = file.readAll();
+                }
+            }
+            if (!bytes.isEmpty()) {
+                fh6::SwatchImage image = fh6::decodeSwatchImage(bytes);
+                if (image.valid()) {
+                    auto decoded = std::make_shared<fh6::ModelMaterialTexture>();
+                    decoded->path = item.path;
+                    decoded->image = std::move(image);
+                    texture = std::move(decoded);
+                }
+            }
+            textureCache.insert(item.cacheKey, texture);
+        }
+        if (texture) {
+            assignNativeTexture(*item.material, item.slot, texture);
+        }
+    }
+    textureCache.trim();
 }
 
 } // namespace
@@ -378,9 +682,12 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
         return false;
     }
     appendSharedTireB(model, path);
-    resolveExteriorMaterials(model, path);
+    if (loadCarTextures_) {
+        resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath());
+    }
     model_ = std::move(model);
     extractedCarDir_ = std::move(extracted);
+    loadedCarPath_ = path;
     modelUploadPending_ = true;
 
     liveryMasks_ = {};
@@ -408,6 +715,7 @@ bool CarPreviewWidget::hasModel() const
 
 void CarPreviewWidget::clearModel()
 {
+    loadedCarPath_.clear();
     if (!hasModel() && !carRenderer_.hasModel()) {
         return;
     }
@@ -811,6 +1119,22 @@ void CarPreviewWidget::paintGL()
     carRenderer_.render(
         cameraView(), cameraProjection(), liveryTexture, basePaint_,
         project_ != nullptr ? &project_->liveryPaint : nullptr);
+}
+
+void CarPreviewWidget::setLoadCarTextures(bool enabled)
+{
+    if (loadCarTextures_ == enabled) {
+        return;
+    }
+    loadCarTextures_ = enabled;
+    if (loadedCarPath_.isEmpty()) {
+        return;
+    }
+    const QString path = loadedCarPath_;
+    QString error;
+    if (!loadCar(path, &error)) {
+        qWarning().noquote() << error;
+    }
 }
 
 QMatrix4x4 CarPreviewWidget::cameraView() const

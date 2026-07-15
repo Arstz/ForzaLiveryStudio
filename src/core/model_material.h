@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model_bundle.h"
+#include "swatchbin.h"
 
 #include <QString>
 #include <QStringList>
@@ -43,6 +44,11 @@ struct ModelMaterialParameter {
     QVector<std::array<float, 4>> gradient;
 };
 
+struct ModelMaterialTexture {
+    QString path;
+    SwatchImage image;
+};
+
 struct ModelMaterial {
     QString name;
     QString resourcePath;
@@ -54,6 +60,13 @@ struct ModelMaterial {
     float emissiveIntensity = 0.0f;
     float opacity = 1.0f;
     float gloss = 0.45f;
+    float uTiling = 1.0f;
+    float vTiling = 1.0f;
+    std::shared_ptr<const ModelMaterialTexture> diffuseTexture;
+    std::shared_ptr<const ModelMaterialTexture> alphaTexture;
+    std::shared_ptr<const ModelMaterialTexture> normalTexture;
+    std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
+    std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
 };
 
 std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob);

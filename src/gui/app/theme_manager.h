@@ -47,6 +47,7 @@ struct BehaviorSettings {
     int autosaveIntervalMinutes = 5;
     QString carModelsFolder;
     bool discardModelOnLiveryOpen = true;
+    bool loadCarTextures = false;
 };
 
 QString themeSettingsValue(UiTheme theme);

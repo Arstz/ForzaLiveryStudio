@@ -3,6 +3,7 @@
 #include "binary_io.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace fh6 {
@@ -218,6 +219,20 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
             0x5FF94E67, 0x70328B61, 0xF8D6CE36, 0x355CC996, 0xBD820385,
             0xDC5CC796, 0xD2AFDCA3, 0xBA21FEC7, 0x7E88DE7D})) {
         material.gloss = std::clamp(parameter.scalar, 0.0f, 1.0f);
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == 0x19A7D8F1 && std::isfinite(parameter.scalar)) {
+        material.uTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == 0x4A3D8375 && std::isfinite(parameter.scalar)) {
+        material.vTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
+    }
+    if (parameter.type == ModelMaterialParameterType::Vector2
+        && parameter.nameHash == 0xB99646E7
+        && std::isfinite(parameter.vector[0]) && std::isfinite(parameter.vector[1])) {
+        material.uTiling = std::abs(parameter.vector[0]) > 0.000001f ? parameter.vector[0] : 1.0f;
+        material.vTiling = std::abs(parameter.vector[1]) > 0.000001f ? parameter.vector[1] : 1.0f;
     }
 }
 
