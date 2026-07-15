@@ -197,16 +197,21 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
     }
     if (vectorValue && containsHash(parameter.nameHash, {
             0x4E0D5E89, 0x6161E552, 0x020B22EB, 0x212B4B48,
-            0x3CB4DFCB, 0x21EC1E4D, 0xEFBBC518})) {
+            0x3CB4DFCB, 0x21EC1E4D, 0xEFBBC518, 0x1D6AA640,
+            0x2B55178E})) {
         material.emissiveColor = {parameter.vector[0], parameter.vector[1], parameter.vector[2]};
         material.emissiveIntensity = std::max(material.emissiveIntensity, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && containsHash(parameter.nameHash, {0x074CCD8C, 0x9421C781, 0xD78943E8, 0x4C6E94DA, 0x22F9702D})) {
+        && containsHash(parameter.nameHash, {
+            0x074CCD8C, 0x9421C781, 0xD78943E8, 0x4C6E94DA,
+            0x22F9702D, 0xE76C20ED, 0xA7DD3ED8, 0xD13807E5})) {
         material.emissiveIntensity = std::max(0.0f, parameter.scalar);
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && containsHash(parameter.nameHash, {0x698CA64F, 0x5D3E6F2D, 0x85E937A9, 0x03ED197F, 0x9C489ADE})) {
+        && containsHash(parameter.nameHash, {
+            0x698CA64F, 0x5D3E6F2D, 0x85E937A9, 0x03ED197F,
+            0x9C489ADE, 0x40CCF359})) {
         material.opacity = std::clamp(parameter.scalar, 0.0f, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
@@ -226,18 +231,13 @@ void appendParameters(ModelMaterial &material, const BundleBlobRecord &blob)
     }
 }
 
-} // namespace
-
-std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob)
+std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
+    const ModelBundle &bundle, const QString &name)
 {
-    if (blob.tag != bundle_tags::MaterialInstance || blob.data.isEmpty()) {
-        return {};
-    }
-    const ModelBundle nested = parseModelBundle(blob.data);
     auto material = std::make_shared<ModelMaterial>();
-    material->name = blob.name;
+    material->name = name;
 
-    for (const BundleBlobRecord &child : nested.blobs) {
+    for (const BundleBlobRecord &child : bundle.blobs) {
         if (child.tag == bundle_tags::MaterialResource) {
             Cursor cursor(child.data);
             material->resourcePath = cursor.string7();
@@ -252,17 +252,57 @@ std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob)
             }
         }
     }
-    for (const BundleBlobRecord &child : nested.blobs) {
+    for (const BundleBlobRecord &child : bundle.blobs) {
         if (child.tag == bundle_tags::DefaultMaterialParameters) {
             appendParameters(*material, child);
         }
     }
-    for (const BundleBlobRecord &child : nested.blobs) {
+    for (const BundleBlobRecord &child : bundle.blobs) {
         if (child.tag == bundle_tags::MaterialParameters) {
             appendParameters(*material, child);
         }
     }
     return material;
+}
+
+} // namespace
+
+std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob)
+{
+    if (blob.tag != bundle_tags::MaterialInstance || blob.data.isEmpty()) {
+        return {};
+    }
+    const ModelBundle nested = parseModelBundle(blob.data);
+    return decodeMaterialFromBundle(nested, blob.name);
+}
+
+std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes)
+{
+    if (bytes.isEmpty()) {
+        return {};
+    }
+    return decodeMaterialFromBundle(parseModelBundle(bytes), {});
+}
+
+std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
+    const ModelMaterial &defaults, const ModelMaterial &instance)
+{
+    auto merged = std::make_shared<ModelMaterial>();
+    merged->name = instance.name;
+    merged->resourcePath = instance.resourcePath;
+    merged->linkedPaths = defaults.linkedPaths;
+    merged->linkedPaths.append(instance.linkedPaths);
+    merged->parameters.reserve(defaults.parameters.size() + instance.parameters.size());
+
+    for (const ModelMaterialParameter &parameter : defaults.parameters) {
+        applyPreviewParameter(*merged, parameter);
+        merged->parameters.push_back(parameter);
+    }
+    for (const ModelMaterialParameter &parameter : instance.parameters) {
+        applyPreviewParameter(*merged, parameter);
+        merged->parameters.push_back(parameter);
+    }
+    return merged;
 }
 
 } // namespace fh6

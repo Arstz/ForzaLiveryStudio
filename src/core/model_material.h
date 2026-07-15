@@ -58,4 +58,9 @@ struct ModelMaterial {
 
 std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob);
 
+std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes);
+
+std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
+    const ModelMaterial &defaults, const ModelMaterial &instance);
+
 } // namespace fh6

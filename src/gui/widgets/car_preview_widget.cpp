@@ -3,6 +3,7 @@
 #include "car_scene.h"
 #include "editor_state.h"
 #include "matrix_math.h"
+#include "model_material.h"
 #include "scene_view.h"
 #include "zip_extract.h"
 
@@ -198,12 +199,11 @@ QString findCarbin(const QString &root)
     return {};
 }
 
-QString findSharedTireArchive(const QString &sourcePath, const QString &archiveName)
+QString findSharedCarAsset(const QString &sourcePath, const QString &relativePath)
 {
     QDir dir = QFileInfo(sourcePath).absoluteDir();
     for (int depth = 0; depth < 6; ++depth) {
-        const QString candidate = dir.filePath(
-            QStringLiteral("_library/scene/tires/") + archiveName);
+        const QString candidate = dir.filePath(relativePath);
         if (QFileInfo::exists(candidate)) {
             return candidate;
         }
@@ -238,8 +238,10 @@ std::optional<fh6::CarModel> loadArchivedModel(
 
 void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath)
 {
-    const QString leftArchive = findSharedTireArchive(sourcePath, QStringLiteral("tire_b.zip"));
-    const QString rightArchive = findSharedTireArchive(sourcePath, QStringLiteral("tireR_b.zip"));
+    const QString leftArchive = findSharedCarAsset(
+        sourcePath, QStringLiteral("_library/scene/tires/tire_b.zip"));
+    const QString rightArchive = findSharedCarAsset(
+        sourcePath, QStringLiteral("_library/scene/tires/tireR_b.zip"));
     const std::optional<fh6::CarModel> left = loadArchivedModel(
         leftArchive, QStringLiteral("tireL_b.modelbin"));
     std::optional<fh6::CarModel> right = loadArchivedModel(
@@ -249,6 +251,61 @@ void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath)
     }
     if (left && right) {
         fh6::appendApproximateTires(model, *left, *right);
+    }
+}
+
+QString materialArchiveEntry(QString resourcePath)
+{
+    resourcePath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const int materials = resourcePath.indexOf(
+        QStringLiteral("/materials/"), 0, Qt::CaseInsensitive);
+    return materials < 0 ? QString() : resourcePath.mid(materials + 11);
+}
+
+void resolveHeadlightMaterials(fh6::CarModel &model, const QString &sourcePath)
+{
+    const QString archivePath = findSharedCarAsset(
+        sourcePath, QStringLiteral("_library/Materials.zip"));
+    if (archivePath.isEmpty()) {
+        return;
+    }
+    QTemporaryDir extracted;
+    QString error;
+    if (!extracted.isValid()
+        || !fh6::extractZipArchive(archivePath, extracted.path(), &error)) {
+        return;
+    }
+
+    QHash<QString, std::shared_ptr<fh6::ModelMaterial>> defaults;
+    for (fh6::CarMesh &mesh : model.meshes) {
+        if (!mesh.material
+            || (!mesh.name.contains(QStringLiteral("headlight"), Qt::CaseInsensitive)
+                && !mesh.name.contains(QStringLiteral("headlamp"), Qt::CaseInsensitive)
+                && !mesh.name.contains(QStringLiteral("lens"), Qt::CaseInsensitive))) {
+            continue;
+        }
+        const QString entry = materialArchiveEntry(mesh.material->resourcePath);
+        if (entry.isEmpty()) {
+            continue;
+        }
+        const QString key = entry.toLower();
+        std::shared_ptr<fh6::ModelMaterial> materialDefaults = defaults.value(key);
+        if (!materialDefaults) {
+            QFile file(QDir(extracted.path()).filePath(entry));
+            if (!file.open(QIODevice::ReadOnly)) {
+                continue;
+            }
+            try {
+                materialDefaults = fh6::decodeMaterialBundle(file.readAll());
+            } catch (const std::exception &) {
+                continue;
+            }
+            if (!materialDefaults) {
+                continue;
+            }
+            defaults.insert(key, materialDefaults);
+        }
+        mesh.material = fh6::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
     }
 }
 
@@ -318,6 +375,7 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
         return false;
     }
     appendSharedTireB(model, path);
+    resolveHeadlightMaterials(model, path);
     model_ = std::move(model);
     extractedCarDir_ = std::move(extracted);
     modelUploadPending_ = true;

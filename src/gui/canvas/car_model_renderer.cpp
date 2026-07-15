@@ -271,6 +271,23 @@ bool isInteriorWindowShell(const QString &rawName)
     return name.startsWith(QStringLiteral("glass")) && name.contains(QStringLiteral("int"));
 }
 
+bool isHeadlightSurface(const fh6::CarMesh &mesh)
+{
+    return mesh.name.contains(QStringLiteral("headlight"), Qt::CaseInsensitive)
+        || mesh.name.contains(QStringLiteral("headlamp"), Qt::CaseInsensitive)
+        || mesh.name.contains(QStringLiteral("lens"), Qt::CaseInsensitive);
+}
+
+bool isLampEmitterMaterial(const fh6::CarMesh &mesh)
+{
+    const QString material = mesh.materialName.toLower();
+    return material.contains(QStringLiteral("lights"))
+        || material.contains(QStringLiteral("lightbulb"))
+        || (mesh.material
+            && mesh.material->resourcePath.contains(
+                QStringLiteral("/lamp/"), Qt::CaseInsensitive));
+}
+
 } // namespace
 
 CarModelRenderer::CarModelRenderer() = default;
@@ -1257,6 +1274,45 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
                 buffers->materialColor = wheel->color;
                 buffers->gloss = wheel->gloss;
                 buffers->metallic = wheel->metallic;
+            }
+        }
+        if (isHeadlightSurface(mesh)) {
+            const QString material = mesh.materialName.toLower();
+            const bool emitter = isLampEmitterMaterial(mesh);
+            const bool glass = mesh.name.contains(QStringLiteral("lens"), Qt::CaseInsensitive)
+                || material.startsWith(QStringLiteral("gls"))
+                || material.contains(QStringLiteral("glass"));
+            if (material.contains(QStringLiteral("chrome"))
+                || material.contains(QStringLiteral("metal_smooth"))) {
+                buffers->hasMaterialColor = true;
+                buffers->materialColor = QVector3D(0.72f, 0.74f, 0.78f);
+                buffers->gloss = 0.94f;
+                buffers->metallic = 1.0f;
+            }
+            if (glass) {
+                buffers->hasMaterialColor = true;
+                if (buffers->materialColor == QVector3D(0.55f, 0.55f, 0.55f)) {
+                    buffers->materialColor = QVector3D(0.78f, 0.82f, 0.88f);
+                }
+                buffers->alpha = material.contains(QStringLiteral("colored")) ? 0.34f : 0.20f;
+                buffers->gloss = 0.96f;
+                buffers->metallic = 0.0f;
+            }
+            if (emitter) {
+                if (buffers->emissiveColor.lengthSquared() < 0.000001f) {
+                    buffers->emissiveColor = QVector3D(1.0f, 0.86f, 0.68f);
+                }
+                if (buffers->emissiveIntensity <= 0.0f) {
+                    buffers->emissiveIntensity = 1.0f;
+                }
+                buffers->hasMaterialColor = true;
+                buffers->materialColor = buffers->emissiveColor * 0.10f;
+                buffers->gloss = 0.84f;
+                if (material.contains(QStringLiteral("lightbulb"))) {
+                    buffers->alpha = 0.52f;
+                }
+            } else {
+                buffers->emissiveIntensity = 0.0f;
             }
         }
         if (windowGlass && buffers->alpha >= 0.995f) {
