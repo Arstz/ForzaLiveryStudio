@@ -49,6 +49,7 @@ struct SkeletonBone {
 
 struct CarMesh {
     QString name;
+    QString sourceModelPath;
     QString materialName;
     qint16 materialId = -1;
     std::shared_ptr<const ModelMaterial> material;

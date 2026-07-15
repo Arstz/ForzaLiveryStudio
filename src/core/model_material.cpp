@@ -197,15 +197,14 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
     }
     if (vectorValue && containsHash(parameter.nameHash, {
             0x4E0D5E89, 0x6161E552, 0x020B22EB, 0x212B4B48,
-            0x3CB4DFCB, 0x21EC1E4D, 0xEFBBC518, 0x1D6AA640,
-            0x2B55178E})) {
+            0x3CB4DFCB, 0x21EC1E4D, 0xEFBBC518, 0x1D6AA640})) {
         material.emissiveColor = {parameter.vector[0], parameter.vector[1], parameter.vector[2]};
         material.emissiveIntensity = std::max(material.emissiveIntensity, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
         && containsHash(parameter.nameHash, {
             0x074CCD8C, 0x9421C781, 0xD78943E8, 0x4C6E94DA,
-            0x22F9702D, 0xE76C20ED, 0xA7DD3ED8, 0xD13807E5})) {
+            0x22F9702D, 0xE76C20ED})) {
         material.emissiveIntensity = std::max(0.0f, parameter.scalar);
     }
     if (parameter.type == ModelMaterialParameterType::Float

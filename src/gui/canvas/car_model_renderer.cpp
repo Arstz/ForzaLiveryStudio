@@ -244,9 +244,9 @@ bool isBodyPaintMaterial(const QString &material)
     return name.startsWith(QStringLiteral("carpaint")) || name.startsWith(QStringLiteral("car_paint"));
 }
 
-bool isWindowGlassMaterial(const QString &material)
+bool isWindowGlassMaterial(const fh6::CarMesh &mesh)
 {
-    const QString name = material.toLower();
+    const QString name = mesh.materialName.toLower();
     if (name.isEmpty()
         || name.contains(QStringLiteral("screw"))
         || name.contains(QStringLiteral("frame"))
@@ -255,10 +255,17 @@ bool isWindowGlassMaterial(const QString &material)
         || name.contains(QStringLiteral("light"))) {
         return false;
     }
+    QString resource;
+    if (mesh.material) {
+        resource = mesh.material->resourcePath.toLower();
+        resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    }
+    const bool glassResource = resource.isEmpty()
+        || resource.contains(QStringLiteral("/glass/"));
     return name.contains(QStringLiteral("window"))
         || name.contains(QStringLiteral("windshield"))
         || name.contains(QStringLiteral("windsheild"))
-        || name.contains(QStringLiteral("blackglass"));
+        || (name.contains(QStringLiteral("blackglass")) && glassResource);
 }
 
 bool isInteriorWindowShell(const QString &rawName)
@@ -271,21 +278,107 @@ bool isInteriorWindowShell(const QString &rawName)
     return name.startsWith(QStringLiteral("glass")) && name.contains(QStringLiteral("int"));
 }
 
-bool isHeadlightSurface(const fh6::CarMesh &mesh)
+QString materialIdentity(const fh6::CarMesh &mesh)
 {
-    return mesh.name.contains(QStringLiteral("headlight"), Qt::CaseInsensitive)
-        || mesh.name.contains(QStringLiteral("headlamp"), Qt::CaseInsensitive)
-        || mesh.name.contains(QStringLiteral("lens"), Qt::CaseInsensitive);
+    QString identity = mesh.materialName.toLower();
+    if (mesh.material) {
+        identity += QLatin1Char('|') + mesh.material->name.toLower();
+        identity += QLatin1Char('|') + mesh.material->resourcePath.toLower();
+    }
+    identity.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return identity;
+}
+
+QString materialResourceIdentity(const fh6::CarMesh &mesh)
+{
+    if (!mesh.material) {
+        return {};
+    }
+    QString resource = mesh.material->resourcePath.toLower();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return resource;
+}
+
+bool isLampSurface(const fh6::CarMesh &mesh)
+{
+    const QString name = mesh.name.toLower();
+    const QString material = materialIdentity(mesh);
+    const bool lampGlass = name.startsWith(QStringLiteral("glass"))
+        && (name.contains(QStringLiteral("hl_"))
+            || name.contains(QStringLiteral("tl_"))
+            || name.contains(QStringLiteral("chmsl")));
+    return name.contains(QStringLiteral("headlight"))
+        || name.contains(QStringLiteral("headlamp"))
+        || name.contains(QStringLiteral("taillight"))
+        || name.contains(QStringLiteral("taillamp"))
+        || name.contains(QStringLiteral("sidemarker"))
+        || lampGlass
+        || material.contains(QStringLiteral("/lamp/"));
 }
 
 bool isLampEmitterMaterial(const fh6::CarMesh &mesh)
 {
-    const QString material = mesh.materialName.toLower();
+    const QString material = materialIdentity(mesh);
     return material.contains(QStringLiteral("lights"))
         || material.contains(QStringLiteral("lightbulb"))
-        || (mesh.material
-            && mesh.material->resourcePath.contains(
-                QStringLiteral("/lamp/"), Qt::CaseInsensitive));
+        || material.contains(QStringLiteral("emitter"));
+}
+
+struct MaterialFallback {
+    QVector3D color;
+    float gloss = 0.45f;
+    float metallic = 0.0f;
+};
+
+std::optional<MaterialFallback> exteriorMaterialFallback(const fh6::CarMesh &mesh)
+{
+    const QString resource = materialResourceIdentity(mesh);
+    const QString material = resource.isEmpty() ? materialIdentity(mesh) : resource;
+    if (material.contains(QStringLiteral("mirror_left"))
+        || material.contains(QStringLiteral("mirror_right"))) {
+        return MaterialFallback{QVector3D(0.42f, 0.48f, 0.56f), 0.98f, 0.82f};
+    }
+    if (material.contains(QStringLiteral("chrome"))) {
+        return MaterialFallback{QVector3D(0.68f, 0.71f, 0.76f), 0.96f, 1.0f};
+    }
+    if (material.contains(QStringLiteral("gold"))) {
+        return MaterialFallback{QVector3D(0.64f, 0.43f, 0.10f), 0.86f, 0.92f};
+    }
+    if (material.contains(QStringLiteral("aluminum"))) {
+        return MaterialFallback{QVector3D(0.42f, 0.44f, 0.46f), 0.62f, 0.82f};
+    }
+    if (material.contains(QStringLiteral("titanium"))) {
+        return MaterialFallback{QVector3D(0.30f, 0.31f, 0.34f), 0.68f, 0.88f};
+    }
+    if (material.contains(QStringLiteral("gunmetal"))
+        || material.contains(QStringLiteral("anodizedmetal"))) {
+        return MaterialFallback{QVector3D(0.10f, 0.11f, 0.13f), 0.72f, 0.86f};
+    }
+    if (material.contains(QStringLiteral("steel"))
+        || material.contains(QStringLiteral("metallic"))) {
+        return MaterialFallback{QVector3D(0.28f, 0.30f, 0.33f), 0.70f, 0.84f};
+    }
+    if (material.contains(QStringLiteral("paintedmetal"))) {
+        return MaterialFallback{QVector3D(0.055f, 0.058f, 0.064f), 0.58f, 0.45f};
+    }
+    if (material.contains(QStringLiteral("rubber"))) {
+        return MaterialFallback{QVector3D(0.018f, 0.019f, 0.021f), 0.18f, 0.0f};
+    }
+    if (material.contains(QStringLiteral("blackframe"))
+        || material.contains(QStringLiteral("blackhole"))
+        || material.contains(QStringLiteral("grille"))) {
+        return MaterialFallback{QVector3D(0.008f, 0.009f, 0.011f), 0.22f, 0.05f};
+    }
+    if (material.contains(QStringLiteral("plastic"))) {
+        return MaterialFallback{QVector3D(0.025f, 0.027f, 0.030f), 0.30f, 0.0f};
+    }
+    if (material.contains(QStringLiteral("badge"))) {
+        return MaterialFallback{QVector3D(0.46f, 0.49f, 0.53f), 0.86f, 0.78f};
+    }
+    if (material.contains(QStringLiteral("plate"))) {
+        return MaterialFallback{QVector3D(0.78f, 0.79f, 0.75f), 0.35f, 0.0f};
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -491,6 +584,12 @@ bool isSpoilerMesh(const QString &name)
         || name.contains(QStringLiteral("wing"), Qt::CaseInsensitive);
 }
 
+bool isTrunkPanelMesh(const QString &name)
+{
+    return name.startsWith(QStringLiteral("trunk"), Qt::CaseInsensitive)
+        && !isSpoilerMesh(name);
+}
+
 enum SideBit {
     kSideFront = 1 << 0,
     kSideBack = 1 << 1,
@@ -508,7 +607,6 @@ enum SideBit {
 };
 
 enum CarPartType {
-    kRearWingPart = 9,
     kFrontBumperPart = 34,
     kRearBumperPart = 35,
     kHoodPart = 36,
@@ -518,14 +616,14 @@ enum CarPartType {
 quint64 fallbackPaintHash(const fh6::CarMesh &mesh)
 {
     const QString identity = mesh.name.toLower() + QLatin1Char('|') + mesh.materialName.toLower();
-    if (isWindowGlassMaterial(mesh.materialName)) {
+    if (isWindowGlassMaterial(mesh)) {
         return 0x9582FD1BA2FFF9A4ull;
     }
     if (identity.contains(QStringLiteral("caliper")) || identity.contains(QStringLiteral("brake"))) {
         return 0xA5495E0A43DF55B9ull;
     }
     if (isBodyPaintMaterial(mesh.materialName)) {
-        if (mesh.carPartType == kRearWingPart || isSpoilerMesh(mesh.name)) {
+        if (isSpoilerMesh(mesh.name)) {
             return 0xCD48110253EE319Aull;
         }
         if (mesh.carPartType == kHoodPart || identity.contains(QStringLiteral("hood"))) {
@@ -588,8 +686,10 @@ int projectionSidesForMesh(const fh6::CarMesh &mesh)
 {
     int sides = 0;
     if (isBodyPaintMaterial(mesh.materialName)) {
-        if (mesh.carPartType == kRearWingPart || isSpoilerMesh(mesh.name)) {
+        if (isSpoilerMesh(mesh.name)) {
             sides = kSideSpoiler;
+        } else if (isTrunkPanelMesh(mesh.name)) {
+            sides = kSideTop;
         } else {
             switch (mesh.carPartType) {
             case kFrontBumperPart:
@@ -610,7 +710,7 @@ int projectionSidesForMesh(const fh6::CarMesh &mesh)
             }
         }
     }
-    if (isWindowGlassMaterial(mesh.materialName)) {
+    if (isWindowGlassMaterial(mesh)) {
         sides |= allowedWindowSidesForPart(mesh.name);
     }
     return sides;
@@ -1239,12 +1339,17 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
         auto buffers = std::make_unique<MeshBuffers>();
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
-        const int bodySides = isBodyPaintMaterial(mesh.materialName)
-            ? ((mesh.carPartType == kRearWingPart || isSpoilerMesh(mesh.name))
-                   ? kSideSpoiler
-                   : kAllBodySides)
-            : 0;
-        const bool windowGlass = isWindowGlassMaterial(mesh.materialName);
+        int bodySides = 0;
+        if (isBodyPaintMaterial(mesh.materialName)) {
+            if (isSpoilerMesh(mesh.name)) {
+                bodySides = kSideSpoiler;
+            } else if (isTrunkPanelMesh(mesh.name)) {
+                bodySides = kSideTop;
+            } else {
+                bodySides = kAllBodySides;
+            }
+        }
+        const bool windowGlass = isWindowGlassMaterial(mesh);
         const int windowSides = windowGlass && allowedWindowSidesForPart(mesh.name) != 0
             ? kAllGlassSides
             : 0;
@@ -1263,27 +1368,43 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
             buffers->gloss = mesh.material->gloss;
             buffers->alpha = mesh.material->opacity;
         }
+        if (isBodyPaintMaterial(mesh.materialName)) {
+            buffers->hasMaterialColor = false;
+        }
+        const std::optional<WheelMaterialFallback> wheel = wheelMaterialFallback(mesh);
+        const std::optional<MaterialFallback> material = exteriorMaterialFallback(mesh);
         if (mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)) {
             buffers->hasMaterialColor = true;
             buffers->materialColor = QVector3D(0.018f, 0.019f, 0.021f);
             buffers->gloss = 0.22f;
             buffers->metallic = 0.0f;
-        } else if (!buffers->hasMaterialColor) {
-            if (const std::optional<WheelMaterialFallback> wheel = wheelMaterialFallback(mesh)) {
+        } else if (wheel) {
+            if (!buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
                 buffers->materialColor = wheel->color;
-                buffers->gloss = wheel->gloss;
-                buffers->metallic = wheel->metallic;
             }
+            buffers->gloss = wheel->gloss;
+            buffers->metallic = wheel->metallic;
+        } else if (material) {
+            if (!buffers->hasMaterialColor) {
+                buffers->hasMaterialColor = true;
+                buffers->materialColor = material->color;
+            }
+            buffers->gloss = material->gloss;
+            buffers->metallic = material->metallic;
         }
-        if (isHeadlightSurface(mesh)) {
-            const QString material = mesh.materialName.toLower();
+        if (isLampSurface(mesh)) {
+            const QString material = materialIdentity(mesh);
+            const QString resource = materialResourceIdentity(mesh);
+            const QString materialClass = resource.isEmpty() ? material : resource;
+            const QString name = mesh.name.toLower();
             const bool emitter = isLampEmitterMaterial(mesh);
-            const bool glass = mesh.name.contains(QStringLiteral("lens"), Qt::CaseInsensitive)
+            const bool glass = name.contains(QStringLiteral("glass"))
+                || name.contains(QStringLiteral("lens"))
                 || material.startsWith(QStringLiteral("gls"))
+                || material.contains(QStringLiteral("|gls"))
                 || material.contains(QStringLiteral("glass"));
-            if (material.contains(QStringLiteral("chrome"))
-                || material.contains(QStringLiteral("metal_smooth"))) {
+            if (materialClass.contains(QStringLiteral("chrome"))) {
                 buffers->hasMaterialColor = true;
                 buffers->materialColor = QVector3D(0.72f, 0.74f, 0.78f);
                 buffers->gloss = 0.94f;
@@ -1300,7 +1421,14 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model)
             }
             if (emitter) {
                 if (buffers->emissiveColor.lengthSquared() < 0.000001f) {
-                    buffers->emissiveColor = QVector3D(1.0f, 0.86f, 0.68f);
+                    if (name.contains(QStringLiteral("tail"))) {
+                        buffers->emissiveColor = QVector3D(1.0f, 0.025f, 0.012f);
+                    } else if (name.contains(QStringLiteral("marker"))
+                               || name.contains(QStringLiteral("indicator"))) {
+                        buffers->emissiveColor = QVector3D(1.0f, 0.30f, 0.025f);
+                    } else {
+                        buffers->emissiveColor = QVector3D(1.0f, 0.86f, 0.68f);
+                    }
                 }
                 if (buffers->emissiveIntensity <= 0.0f) {
                     buffers->emissiveIntensity = 1.0f;

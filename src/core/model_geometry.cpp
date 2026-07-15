@@ -745,6 +745,9 @@ CarModel loadModelBin(const QString &path, QString *error)
         const ModelBundle bundle = parseModelBundle(bytes);
         CarModel model = decodeModel(bundle, error);
         model.sourcePath = path;
+        for (CarMesh &mesh : model.meshes) {
+            mesh.sourceModelPath = path;
+        }
         return model;
     } catch (const std::exception &ex) {
         if (error) {

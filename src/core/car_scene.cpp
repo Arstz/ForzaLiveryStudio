@@ -614,6 +614,7 @@ CarModel loadCarBin(const QString &path, QString *error)
         }
 
         for (CarMesh &mesh : model.meshes) {
+            mesh.sourceModelPath = part.path;
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             mesh.carPartType = part.partType;
             mesh.modelInstanceId = currentInstanceId;

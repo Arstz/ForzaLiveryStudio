@@ -262,7 +262,13 @@ QString materialArchiveEntry(QString resourcePath)
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
 }
 
-void resolveHeadlightMaterials(fh6::CarModel &model, const QString &sourcePath)
+bool isExteriorModelPath(QString path)
+{
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive);
+}
+
+void resolveExteriorMaterials(fh6::CarModel &model, const QString &sourcePath)
 {
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
@@ -278,10 +284,7 @@ void resolveHeadlightMaterials(fh6::CarModel &model, const QString &sourcePath)
 
     QHash<QString, std::shared_ptr<fh6::ModelMaterial>> defaults;
     for (fh6::CarMesh &mesh : model.meshes) {
-        if (!mesh.material
-            || (!mesh.name.contains(QStringLiteral("headlight"), Qt::CaseInsensitive)
-                && !mesh.name.contains(QStringLiteral("headlamp"), Qt::CaseInsensitive)
-                && !mesh.name.contains(QStringLiteral("lens"), Qt::CaseInsensitive))) {
+        if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
             continue;
         }
         const QString entry = materialArchiveEntry(mesh.material->resourcePath);
@@ -375,7 +378,7 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
         return false;
     }
     appendSharedTireB(model, path);
-    resolveHeadlightMaterials(model, path);
+    resolveExteriorMaterials(model, path);
     model_ = std::move(model);
     extractedCarDir_ = std::move(extracted);
     modelUploadPending_ = true;
