@@ -1,6 +1,11 @@
+Small changes:
+    -If a car does not have a UV section associated do not tich "Show UV unwrap to false"
+    -Front window needs transpose horizontal->vertical in canvas render, both shapes and UV overlay
+    -Deny UV mask leak to other side Right/Left, Back/Front
+
 Medium changes:
     -Unify tranform detection in decoder
-    -Debug mask flag ignored in liveries
+    -Debug mask flag being ignored in liveries
 
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied

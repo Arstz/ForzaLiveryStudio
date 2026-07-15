@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core_types.h"
 #include "livery_masks.h"
 #include "model_geometry.h"
 
@@ -34,7 +35,8 @@ public:
     void render(const QMatrix4x4 &view,
                 const QMatrix4x4 &projection,
                 GLuint liveryTexture,
-                const QColor &basePaint);
+                const QColor &basePaint,
+                const fh6::LiveryPaintState *paintState);
 
 private:
     struct MeshBuffers {
@@ -47,6 +49,13 @@ private:
         int allowedSides = 0;
         bool translucent = false;
         float alpha = 1.0f;
+        quint64 paintMaterialHash = 0;
+        bool hasMaterialColor = false;
+        QVector3D materialColor{0.55f, 0.55f, 0.55f};
+        QVector3D emissiveColor;
+        float emissiveIntensity = 0.0f;
+        float gloss = 0.45f;
+        float metallic = 0.0f;
         QVector3D center;
         QMatrix4x4 model;
     };
@@ -85,6 +94,12 @@ private:
     int debugModeLocation_ = -1;
     int allowedSidesLocation_ = -1;
     int materialAlphaLocation_ = -1;
+    int secondaryPaintLocation_ = -1;
+    int secondaryMixLocation_ = -1;
+    int glossLocation_ = -1;
+    int metallicLocation_ = -1;
+    int emissiveLocation_ = -1;
+    int eyePositionLocation_ = -1;
 };
 
 } // namespace gui

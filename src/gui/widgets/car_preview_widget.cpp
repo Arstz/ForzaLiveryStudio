@@ -198,6 +198,60 @@ QString findCarbin(const QString &root)
     return {};
 }
 
+QString findSharedTireArchive(const QString &sourcePath, const QString &archiveName)
+{
+    QDir dir = QFileInfo(sourcePath).absoluteDir();
+    for (int depth = 0; depth < 6; ++depth) {
+        const QString candidate = dir.filePath(
+            QStringLiteral("_library/scene/tires/") + archiveName);
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+        if (!dir.cdUp()) {
+            break;
+        }
+    }
+    return {};
+}
+
+std::optional<fh6::CarModel> loadArchivedModel(
+    const QString &archivePath, const QString &modelName)
+{
+    if (archivePath.isEmpty()) {
+        return std::nullopt;
+    }
+    QTemporaryDir extracted;
+    QString error;
+    if (!extracted.isValid()
+        || !fh6::extractZipArchive(archivePath, extracted.path(), &error)) {
+        return std::nullopt;
+    }
+    QDirIterator it(
+        extracted.path(), QStringList{modelName}, QDir::Files, QDirIterator::Subdirectories);
+    if (!it.hasNext()) {
+        return std::nullopt;
+    }
+    fh6::CarModel model = fh6::loadModelBin(it.next(), &error);
+    return model.meshes.empty() ? std::nullopt
+                                : std::optional<fh6::CarModel>(std::move(model));
+}
+
+void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath)
+{
+    const QString leftArchive = findSharedTireArchive(sourcePath, QStringLiteral("tire_b.zip"));
+    const QString rightArchive = findSharedTireArchive(sourcePath, QStringLiteral("tireR_b.zip"));
+    const std::optional<fh6::CarModel> left = loadArchivedModel(
+        leftArchive, QStringLiteral("tireL_b.modelbin"));
+    std::optional<fh6::CarModel> right = loadArchivedModel(
+        rightArchive, QStringLiteral("tireR_b.modelbin"));
+    if (!right) {
+        right = loadArchivedModel(leftArchive, QStringLiteral("tireR_b.modelbin"));
+    }
+    if (left && right) {
+        fh6::appendApproximateTires(model, *left, *right);
+    }
+}
+
 } // namespace
 
 CarPreviewWidget::CarPreviewWidget(QWidget *parent)
@@ -263,6 +317,7 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
     if (model.meshes.empty()) {
         return false;
     }
+    appendSharedTireB(model, path);
     model_ = std::move(model);
     extractedCarDir_ = std::move(extracted);
     modelUploadPending_ = true;
@@ -692,7 +747,9 @@ void CarPreviewWidget::paintGL()
     if (!carRenderer_.hasModel()) {
         return;
     }
-    carRenderer_.render(cameraView(), cameraProjection(), liveryTexture, basePaint_);
+    carRenderer_.render(
+        cameraView(), cameraProjection(), liveryTexture, basePaint_,
+        project_ != nullptr ? &project_->liveryPaint : nullptr);
 }
 
 QMatrix4x4 CarPreviewWidget::cameraView() const

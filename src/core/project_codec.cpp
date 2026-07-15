@@ -821,6 +821,7 @@ Project importCLivery(const QString &folderOrFile)
     project.isLivery = true;
     project.carId = livery.carId;
     project.liverySource = livery.raw;
+    project.liveryPaint = livery.paint;
     project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
     scene::ensureProjectSceneRoot(project);
 
@@ -960,6 +961,10 @@ Project projectFromJson(const QJsonObject &object)
     const QString liverySource = object.value(QStringLiteral("livery_source")).toString();
     if (!liverySource.isEmpty()) {
         project.liverySource = QByteArray::fromBase64(liverySource.toLatin1());
+        try {
+            project.liveryPaint = parseInflatedLiveryPayload(project.liverySource).paint;
+        } catch (const std::exception &) {
+        }
     }
     if (object.value(QStringLiteral("header_metadata")).isObject()) {
         project.headerMetadata = headerMetadataFromJson(object.value(QStringLiteral("header_metadata")).toObject());

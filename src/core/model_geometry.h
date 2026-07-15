@@ -5,10 +5,13 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace fh6 {
+
+struct ModelMaterial;
 
 struct ModelVec2 {
     float u = 0.0f;
@@ -47,6 +50,9 @@ struct SkeletonBone {
 struct CarMesh {
     QString name;
     QString materialName;
+    qint16 materialId = -1;
+    std::shared_ptr<const ModelMaterial> material;
+    quint64 paintMaterialHash = 0;
     std::vector<ModelVec3> positions;
     std::vector<ModelVec3> normals;
     std::vector<std::vector<ModelVec2>> uvChannels;
@@ -55,6 +61,7 @@ struct CarMesh {
     std::array<TexCoordTransform, 5> texCoordTransforms;
     int liveryUvChannel = -1;
     int carPartType = -1;
+    int modelInstanceId = -1;
     bool stockPart = true;
 };
 

@@ -42,6 +42,8 @@ add_library(fh6_core STATIC
     src/core/model_bundle.h
     src/core/model_geometry.cpp
     src/core/model_geometry.h
+    src/core/model_material.cpp
+    src/core/model_material.h
     src/core/project_codec.cpp
     src/core/project_codec.h
     src/core/raster_decals.cpp
@@ -72,7 +74,7 @@ endif()
 
 target_include_directories(fh6_core PUBLIC src/core)
 
-option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
+option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" OFF)
 option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 

@@ -279,18 +279,122 @@ drive the section walk. The 12th u32 is a small counter; write 0.
 
 ### yrvl descriptor table (variable)
 
-A panel/graphic registry. For artwork using built-in shapes it is a **592-byte
-global constant**. Its layout: an `00 02` header, 8 fixed block/material GUIDs
-(32-byte records), 11 fixed panel GUIDs (`…ffffffff 00000000 <panel-guid>`), then
-a tail `0b 00 00 00` (=11) followed by the 11 panel GUIDs concatenated. All of
-these GUIDs are global constants (not car- or livery-specific).
+A panel, material, paint and graphic registry. A minimal table with default paint
+is 592 bytes, but paint bindings and graphic references make the table variable.
+The `yrvl` tag may be followed by an opaque graphic-reference prefix before the
+record table.
 
-The table grows only when the artwork references **custom uploaded graphics**
-(shared logos/decals, which carry their own share GUIDs) — the extra size is
-dominated by 27-byte-per-reference records, with other record kinds also present.
-**A from-scratch livery using only built-in shapes can emit the 592-byte
-constant verbatim.** The per-custom-graphic record layout is the one remaining
-open item, needed only for uploaded-logo support.
+The record table can be located structurally. From its header through the end of
+the descriptor chunk its size is `102 + record_count * 27` bytes:
+
+```text
+u8       table mode, observed 00 or 01
+u8       02
+u16      record_count
+6 bytes  initial zero padding
+27 bytes records[record_count]
+u32      panel_count = 11
+8 bytes  panel_ids[11]
+```
+
+The final 92 bytes are fixed: `0b 00 00 00` followed by the 11 panel identifiers.
+The record count includes material paint bindings and the 11 panel records.
+Cars can add material aliases, so paint records must be selected by identifier
+rather than by their table position.
+
+#### Paint material record
+
+Paint values use the same 27-byte record envelope as the panel records:
+
+```text
+0x00  8    material identifier
+0x08  u8   value type = 02
+0x09  u8   primary color enabled
+0x0a  4    primary color, BGRA8
+0x0e  u8   secondary color enabled
+0x0f  4    secondary color, BGRA8
+0x13  u32  manufacturer-color selector
+0x17  u32  finish code
+```
+
+The three editor color channels are converted to RGB and stored in byte order
+blue, green, red. The alpha byte is normally `ff`. A disabled color field can
+retain stale channel bytes and must be ignored.
+
+A manual editor color uses manufacturer selector `ffffffff` and a hexadecimal
+finish code from the following table:
+
+```text
+00  none
+01  gloss
+02  semigloss
+03  matte
+04  metallic
+32  two-tone matte
+33  two-tone polished
+34  two-tone semigloss
+45  candy
+46  metallic low flake
+47  metallic high flake
+48  metallic glitter
+```
+
+Metallic and two-tone finishes enable the secondary BGRA color. Candy uses only
+the primary color. Other finish codes can exist in the unobserved gaps.
+
+A manufacturer color stores its selector in the four bytes at `0x13` and uses an
+all-zero finish. The selector is an opaque palette value and is not assumed to be
+the zero-based record position.
+
+The palette data is stored with the matching car in `ManufacturerColors.bin`.
+Each palette record includes its affected material-channel names, a primary RGB
+float triple, a calibrated material path, and a second RGB float triple. The
+material path supplies the manufacturer finish definition. Palette resolution
+therefore requires the car assets in addition to the livery descriptor.
+
+The observed palette block begins with its `u8` record count at raw offset `0x2c`.
+Its variable-length entries use this layout:
+
+```text
+u8        primary color enabled
+u32       material-channel count
+repeat    u8 string length + ASCII material-channel name
+f32[3]    primary RGB
+u8        material-path length
+bytes     ASCII material path
+u8        secondary color enabled
+f32[3]    secondary RGB
+u16       entry tail
+```
+
+The color floats are normalized record values and are not the livery table's
+BGRA8 encoding. Additional data can follow the counted palette entries.
+
+The common material identifiers are:
+
+```text
+Body       75a639c8a7e8dbf7  172b921176b2e548  57aa6a5afa926f49
+Hood       53d9e57fd8e9c16a  111c9af2b55fd94f  e1af6b67b934d478
+Mirrors    2211740cf5f05f1e  e2fa31058d3b5f11  e0f816ef8fede623
+Wing       9a31ee53021148cd  6569a28ac213eabc  83b84e1a39c263b9
+           a0f1a88cb3f07f4a  babbd810ff6b5006  98376f6b633d889a
+Brakes     b955df430a5e49a5
+Window     a4f9ffa21bfd8295
+```
+
+Rims use five paired material channels:
+
+```text
+channel  front             rear
+1        78de6407455e92b8  43e77afae8b11366
+2        227ffc9e86b6ed15  11e717cfa8bd3c3a
+3        3de891e13bd30724  50d97f4721ea38c3
+4        18d320f30bf84d56  6390ea14e780150f
+5        114f706cefb18b81  64efb6ea85954e87
+```
+
+The per-custom-graphic record layout remains open and is needed for uploaded-logo
+output.
 
 ### yrvl terminator (8 B)
 
@@ -307,6 +411,7 @@ C_livery = zlib( vlrc[header] + yrvl[info] + gyvl[ = one C_group ]
                  + yrvl[stats] + yrvl[descriptor table] + yrvl[end] )
 ```
 
-All artwork and panel assignment live inside `gyvl`: shapes/groups per the
-`C_group` grammar with the transform-marker dialect above, panel membership by
-positional slot. The trailing `yrvl` table is constant scaffolding.
+Artwork and panel assignment live inside `gyvl`: shapes/groups per the `C_group`
+grammar with the transform-marker dialect above, and panel membership by
+positional slot. The trailing `yrvl` table carries the material paint state,
+panel registry and graphic references.

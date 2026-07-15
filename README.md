@@ -7,7 +7,6 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and i
 - Import/export to Forza proprietary binary format.
 - Save/load project to json files.
 - Full transformations for shapes and groups.
-- Align and distribute tools for the current selection.
 - Custom groups, reusable in multiple projects.
 - Add raster image overlay as guide layer.
 - Direct shape parity with the game engine.
@@ -26,7 +25,7 @@ All settings as well as custom groups are stored in your QSettings, in the regis
 
 ### Windows
 
-Requirements: Qt6 via vcpkg, C++ compiler.
+Requirements: Qt6 via vcpkg, C++ compiler, zlib.
 
 Run the build script:
 ```powershell
@@ -70,7 +69,7 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 ## Status
 
-The import/export for groups is fully supported, core functionality in place. Liveries can be imported and previewed in 3D on a car model, but livery **export is not available yet** — the encoder is written and in-game confirmed for the container, but full artwork synthesis is still in progress, so the Export action refuses liveries for now. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. The application targets Forza games generally; compatibility may still vary by title because not every game/version has been verified.
+The import/export for groups is fully supported, core functionality in place. Liveries can be imported and previewed in 3D on a car model, but livery **export is not available yet** — the encoder is written and in-game confirmed for the container, but full artwork synthesis is still in progress, so the Export action refuses liveries for now. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. The application targets Forza games generally; I will make a proper table once multiple title support is made, currently FH6 supports both import/export.
 
 ## Documentation
 
@@ -96,5 +95,5 @@ The import/export for groups is fully supported, core functionality in place. Li
 - [Zloysvin](https://github.com/Zloysvin) - PR Manager / shape renamer.
 - [Pengyss](https://github.com/Pengyss) - non-uniform group tranform algorithm.
 - Eaterrius - big money man, provided tokens.
-- [Doliman100](https://github.com/Doliman100) - Reverse engineering Forza file formats and documentation.
+- [Doliman100](https://github.com/Doliman100) - reverse engineering Forza file formats and documentation.
 - All the people's liveries/groups I used to decode the format.

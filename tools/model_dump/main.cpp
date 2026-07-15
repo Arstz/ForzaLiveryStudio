@@ -1,6 +1,7 @@
 #include "car_scene.h"
 #include "livery_masks.h"
 #include "model_geometry.h"
+#include "model_material.h"
 #include "swatchbin.h"
 #include "zip_extract.h"
 
@@ -511,11 +512,58 @@ int main(int argc, char *argv[])
                 }
             }
             const double inv = mesh.positions.empty() ? 1.0 : 1.0 / mesh.positions.size();
-            std::printf("  [%3d] %-24s mat=%-18s verts=%-6lld  centroid(%.2f,%.2f,%.2f) avgN(%.2f,%.2f,%.2f)\n",
+            std::printf("  [%3d] %-24s mat=%-18s instance=%-4d paint=%016llX params=%-4lld rgba(%.3f,%.3f,%.3f,%.3f) gloss=%.3f verts=%-6lld  centroid(%.2f,%.2f,%.2f) avgN(%.2f,%.2f,%.2f)\n",
                         i++, qPrintable(mesh.name.isEmpty() ? QStringLiteral("(unnamed)") : mesh.name),
                         qPrintable(mesh.materialName.isEmpty() ? QStringLiteral("(none)") : mesh.materialName),
+                        mesh.modelInstanceId,
+                        static_cast<unsigned long long>(mesh.paintMaterialHash),
+                        static_cast<long long>(mesh.material ? mesh.material->parameters.size() : 0),
+                        mesh.material ? mesh.material->baseColor[0] : 0.0f,
+                        mesh.material ? mesh.material->baseColor[1] : 0.0f,
+                        mesh.material ? mesh.material->baseColor[2] : 0.0f,
+                        mesh.material ? mesh.material->opacity : 1.0f,
+                        mesh.material ? mesh.material->gloss : 0.45f,
                         static_cast<long long>(mesh.positions.size()),
                         cx * inv, cy * inv, cz * inv, nx * inv, ny * inv, nz * inv);
+            if (mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
+                && mesh.name.contains(QStringLiteral("LODS0"), Qt::CaseInsensitive)
+                && !mesh.positions.empty()) {
+                ModelVec3 lo = mesh.boneTransform.transformPoint(mesh.positions.front());
+                ModelVec3 hi = lo;
+                for (const ModelVec3 &position : mesh.positions) {
+                    const ModelVec3 world = mesh.boneTransform.transformPoint(position);
+                    lo.x = std::min(lo.x, world.x); lo.y = std::min(lo.y, world.y); lo.z = std::min(lo.z, world.z);
+                    hi.x = std::max(hi.x, world.x); hi.y = std::max(hi.y, world.y); hi.z = std::max(hi.z, world.z);
+                }
+                long long validTriangles = 0;
+                long long invalidTriangles = 0;
+                long long nondegenerateTriangles = 0;
+                for (size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
+                    const quint32 ia = mesh.indices[index];
+                    const quint32 ib = mesh.indices[index + 1];
+                    const quint32 ic = mesh.indices[index + 2];
+                    if (ia >= mesh.positions.size() || ib >= mesh.positions.size() || ic >= mesh.positions.size()) {
+                        ++invalidTriangles;
+                        continue;
+                    }
+                    ++validTriangles;
+                    const ModelVec3 a = mesh.positions[ia];
+                    const ModelVec3 b = mesh.positions[ib];
+                    const ModelVec3 c = mesh.positions[ic];
+                    const float abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+                    const float acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+                    const float nx = aby * acz - abz * acy;
+                    const float ny = abz * acx - abx * acz;
+                    const float nz = abx * acy - aby * acx;
+                    if (nx * nx + ny * ny + nz * nz > 1.0e-12f) {
+                        ++nondegenerateTriangles;
+                    }
+                }
+                std::printf("           worldBounds[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)] indices=%lld triangles(valid=%lld nondegenerate=%lld invalid=%lld)\n",
+                            lo.x, lo.y, lo.z, hi.x, hi.y, hi.z,
+                            static_cast<long long>(mesh.indices.size()), validTriangles,
+                            nondegenerateTriangles, invalidTriangles);
+            }
             for (int c = 0; c < static_cast<int>(mesh.uvChannels.size()); ++c) {
                 const auto &ch = mesh.uvChannels[c];
                 if (ch.empty()) {

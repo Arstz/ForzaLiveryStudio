@@ -2,6 +2,7 @@
 
 #include "binary_io.h"
 #include "model_bundle.h"
+#include "model_material.h"
 
 #include <QFile>
 #include <QtEndian>
@@ -514,9 +515,18 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
     }
 
     std::unordered_map<quint32, QString> materialNames;
+    std::unordered_map<quint32, std::shared_ptr<ModelMaterial>> materials;
     for (const BundleBlobRecord &blob : bundle.blobs) {
         if (blob.id.has_value() && !blob.name.isEmpty()) {
             materialNames.emplace(*blob.id, blob.name);
+        }
+        if (blob.tag == bundle_tags::MaterialInstance && blob.id.has_value()) {
+            try {
+                if (std::shared_ptr<ModelMaterial> material = decodeModelMaterial(blob)) {
+                    materials[*blob.id] = std::move(material);
+                }
+            } catch (const std::exception &) {
+            }
         }
     }
 
@@ -587,8 +597,15 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
 
         CarMesh out;
         out.name = info.name;
+        out.materialId = info.materialId;
         if (auto it = materialNames.find(static_cast<quint32>(info.materialId)); it != materialNames.end()) {
             out.materialName = it->second;
+        }
+        if (auto it = materials.find(static_cast<quint32>(info.materialId)); it != materials.end()) {
+            out.material = it->second;
+            if (out.materialName.isEmpty()) {
+                out.materialName = it->second->name;
+            }
         }
         out.positions.assign(vertexCount, {});
         out.normals.assign(vertexCount, {0.0f, 1.0f, 0.0f});

@@ -19,6 +19,12 @@ constexpr quint32 VertexLayout = 0x564C6179;   // "VLay"
 constexpr quint32 InstancedVertexLayout = 0x494C6179; // "ILay"
 constexpr quint32 VertexBuffer = 0x56657242;   // "VerB"
 constexpr quint32 Skeleton = 0x536B656C;       // "Skel"
+constexpr quint32 MaterialInstance = 0x4D617449;
+constexpr quint32 MaterialResource = 0x4D415449;
+constexpr quint32 MaterialLinks = 0x4D41544C;
+constexpr quint32 MaterialParameters = 0x4D545052;
+constexpr quint32 DefaultMaterialParameters = 0x44465052;
+constexpr quint32 ManufacturerColors = 0x4D4E434C;
 
 constexpr quint32 MetaName = 0x4E616D65;       // "Name"
 constexpr quint32 MetaIdentifier = 0x49642020; // "Id  "

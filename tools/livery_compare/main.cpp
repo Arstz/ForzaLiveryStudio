@@ -360,11 +360,41 @@ int main(int argc, char *argv[])
     bool rawMode = args.removeAll(QStringLiteral("--raw")) > 0;
     bool markersMode = args.removeAll(QStringLiteral("--markers")) > 0;
     bool rangesMode = args.removeAll(QStringLiteral("--ranges")) > 0;
+    bool paintMode = args.removeAll(QStringLiteral("--paint")) > 0;
     bool roundtripMode = args.removeAll(QStringLiteral("--roundtrip")) > 0;
     bool exportReencodedMode = args.removeAll(QStringLiteral("--export-reencoded")) > 0;
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+
+    if (paintMode) {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --paint <liveryFolder>\n");
+            return 2;
+        }
+        const LiveryPayload payload = readLiveryPayload(args[1]);
+        std::printf("paint materials=%lld raw=%lld gyvl=%d body=%lld\n",
+                    static_cast<long long>(payload.paint.materials.size()),
+                    static_cast<long long>(payload.raw.size()), payload.gyvlOffset,
+                    static_cast<long long>(payload.body.size()));
+        for (const LiveryPaintMaterial &material : payload.paint.materials) {
+            if (!material.primary.enabled && !material.secondary.enabled
+                && material.manufacturerSelector == 0xffffffffu) {
+                continue;
+            }
+            std::printf(
+                "  %016llX primary=%d:%02X%02X%02X%02X secondary=%d:%02X%02X%02X%02X selector=%u finish=%u\n",
+                static_cast<unsigned long long>(material.materialHash),
+                material.primary.enabled ? 1 : 0,
+                material.primary.bgra[0], material.primary.bgra[1],
+                material.primary.bgra[2], material.primary.bgra[3],
+                material.secondary.enabled ? 1 : 0,
+                material.secondary.bgra[0], material.secondary.bgra[1],
+                material.secondary.bgra[2], material.secondary.bgra[3],
+                material.manufacturerSelector, material.finish);
+        }
+        return 0;
+    }
 
     if (exportReencodedMode) {
         if (args.size() < 3) {

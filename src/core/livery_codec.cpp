@@ -29,7 +29,49 @@ QString resolveLiveryPath(const QString &folderOrFile)
     return folderOrFile;
 }
 
-LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw)
+quint64 readLeU64(const QByteArray &bytes, int offset)
+{
+    return static_cast<quint64>(detail::readLeU32(bytes, offset))
+        | (static_cast<quint64>(detail::readLeU32(bytes, offset + 4)) << 32);
+}
+
+LiveryPaintState readPaintState(const QByteArray &raw, int end)
+{
+    LiveryPaintState state;
+    const int firstCandidate = std::max(0, end - 4096);
+    for (int start = end - 102; start >= firstCandidate; --start) {
+        if (start + 10 > end
+            || static_cast<quint8>(raw[start]) > 1
+            || static_cast<quint8>(raw[start + 1]) != 2) {
+            continue;
+        }
+        const int count = detail::readLeU16(raw, start + 2);
+        if (count <= 0 || count > 256 || start + 102 + count * 27 != end) {
+            continue;
+        }
+        state.materials.reserve(count);
+        int pos = start + 10;
+        for (int i = 0; i < count; ++i, pos += 27) {
+            LiveryPaintMaterial material;
+            material.materialHash = readLeU64(raw, pos);
+            material.primary.enabled = raw[pos + 9] != 0;
+            for (int channel = 0; channel < 4; ++channel) {
+                material.primary.bgra[channel] = static_cast<quint8>(raw[pos + 10 + channel]);
+            }
+            material.secondary.enabled = raw[pos + 14] != 0;
+            for (int channel = 0; channel < 4; ++channel) {
+                material.secondary.bgra[channel] = static_cast<quint8>(raw[pos + 15 + channel]);
+            }
+            material.manufacturerSelector = detail::readLeU32(raw, pos + 19);
+            material.finish = detail::readLeU32(raw, pos + 23);
+            state.materials.push_back(material);
+        }
+        return state;
+    }
+    return state;
+}
+
+LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw)
 {
     LiveryPayload payload;
     payload.raw = raw;
@@ -56,6 +98,13 @@ LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw)
     payload.body = payload.raw.mid(bodyStart, bodyEnd - bodyStart);
 
     const int statsTag = bodyEnd;
+    const int paintTag = payload.raw.indexOf(QByteArray("yrvl", 4), statsTag + 4);
+    const int paintEnd = paintTag >= 0
+        ? payload.raw.indexOf(QByteArray("yrvl", 4), paintTag + 4)
+        : -1;
+    if (paintEnd >= 0) {
+        payload.paint = readPaintState(payload.raw, paintEnd);
+    }
     payload.sectionCounts.reserve(11);
     if (statsTag >= 0 && payload.raw.mid(statsTag, 4) == QByteArray("yrvl", 4)) {
         for (int i = 0; i < 11; ++i) {
@@ -74,6 +123,11 @@ LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw)
 
 } // namespace
 
+LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw)
+{
+    return parseInflatedLiveryPayloadImpl(raw);
+}
+
 LiveryPayload readLiveryPayload(const QString &folderOrFile)
 {
     QFile file(resolveLiveryPath(folderOrFile));
@@ -81,47 +135,7 @@ LiveryPayload readLiveryPayload(const QString &folderOrFile)
         throw std::runtime_error(("could not open C_livery: " + file.fileName()).toStdString());
     }
 
-    LiveryPayload payload;
-    payload.raw = inflateContainer(file.readAll());
-
-    const int vlrc = payload.raw.indexOf(QByteArray("vlrc", 4));
-    if (vlrc >= 0 && vlrc + 0x14 <= payload.raw.size()) {
-        payload.carId = static_cast<int>(detail::readLeU32(payload.raw, vlrc + 0x10));
-    }
-
-    const int gyvl = payload.raw.indexOf(QByteArray("gyvl", 4));
-    if (gyvl < 0) {
-        throw std::runtime_error("C_livery has no embedded gyvl chunk");
-    }
-    payload.gyvlOffset = gyvl;
-
-    const int bodyStart = gyvl + 0x15;
-    int bodyEnd = payload.raw.indexOf(QByteArray("yrvl", 4), gyvl);
-    if (bodyEnd < 0 || bodyEnd < bodyStart) {
-        bodyEnd = payload.raw.size();
-    }
-    if (bodyStart >= payload.raw.size()) {
-        throw std::runtime_error("C_livery gyvl body is truncated");
-    }
-    payload.body = payload.raw.mid(bodyStart, bodyEnd - bodyStart);
-
-    const int statsTag = bodyEnd;
-    payload.sectionCounts.reserve(11);
-    if (statsTag >= 0 && payload.raw.mid(statsTag, 4) == QByteArray("yrvl", 4)) {
-        for (int i = 0; i < 11; ++i) {
-            const int off = statsTag + 4 + i * 4;
-            if (off + 4 <= payload.raw.size()) {
-                payload.sectionCounts.push_back(static_cast<int>(detail::readLeU32(payload.raw, off)));
-            } else {
-                payload.sectionCounts.push_back(0);
-            }
-        }
-    } else {
-        for (int i = 0; i < 11; ++i) {
-            payload.sectionCounts.push_back(0);
-        }
-    }
-    return payload;
+    return parseInflatedLiveryPayload(inflateContainer(file.readAll()));
 }
 
 namespace {

@@ -240,17 +240,17 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   - `raster_decals.*`: the indexed decal-pixel pack, plus `sharedRasterDecals()` — a
     process-wide lazily-loaded pack shared by every surface that draws logos (GL
     canvas, layer-tree/clipboard/browser thumbnails).
-  - `model_bundle.*` / `model_geometry.*`: read-only decoder for ForzaTech "Grub"
-    bundles (`.modelbin`) — blob/metadata parsing plus per-mesh geometry dequant
-    (positions/normals/UVs/indices, bone transforms, texture-coordinate transforms)
-    ported from ForzaTechStudio's ModelImporter. No proprietary DLL: geometry buffers
-    are raw in the bundle.
+  - `model_bundle.*` / `model_geometry.*` / `model_material.*`: read-only decoder
+    for ForzaTech "Grub" bundles (`.modelbin`) — blob/metadata parsing, nested
+    material resources, typed shader parameters, and per-mesh geometry dequant
+    (positions/normals/UVs/indices, bone transforms, texture-coordinate transforms).
+    No proprietary DLL is required.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
     part's transform (× its own skeleton bone) into a merged `CarModel`. Stock
     selections form the displayed mesh set; all variants also form a projection-only
     mesh set used to register the universal livery masks. Part classifications and
-    sibling locator transforms are retained as projection landmarks.
+    sibling locator transforms and material paint bindings are retained.
   - `zip_extract.*`: minimal ZIP extractor for car model archives. The 3D preview
     extracts `.zip` car folders to a temporary directory, then reuses the normal
     `.carbin` and sibling-asset loading path.

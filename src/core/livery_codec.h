@@ -16,9 +16,11 @@ struct LiveryPayload {
     int carId = 0;
     QByteArray body;
     QVector<int> sectionCounts;
+    LiveryPaintState paint;
 };
 
 LiveryPayload readLiveryPayload(const QString &folderOrFile);
+LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw);
 
 QByteArray buildLiveryGyvl(const Project &project,
                            std::array<int, 11> *outSectionCounts = nullptr);

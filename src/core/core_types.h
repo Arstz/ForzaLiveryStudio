@@ -18,6 +18,25 @@ class Group;
 
 namespace fh6 {
 
+struct LiveryPaintColor {
+    bool enabled = false;
+    std::array<quint8, 4> bgra = {0, 0, 0, 0};
+};
+
+struct LiveryPaintMaterial {
+    quint64 materialHash = 0;
+    LiveryPaintColor primary;
+    LiveryPaintColor secondary;
+    quint32 manufacturerSelector = 0xffffffffu;
+    quint32 finish = 0;
+};
+
+struct LiveryPaintState {
+    QVector<LiveryPaintMaterial> materials;
+
+    const LiveryPaintMaterial *find(quint64 materialHash) const;
+};
+
 struct Project {
     Project();
     ~Project();
@@ -36,6 +55,7 @@ struct Project {
     bool isLivery = false;
     int carId = 0;
     QByteArray liverySource;
+    LiveryPaintState liveryPaint;
 };
 
 struct LayerData {

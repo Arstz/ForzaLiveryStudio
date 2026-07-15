@@ -2,6 +2,7 @@
 
 #include "binary_io.h"
 #include "model_bundle.h"
+#include "model_material.h"
 
 #include <QDir>
 #include <QFile>
@@ -10,7 +11,9 @@
 #include <QSet>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 
 namespace fh6 {
@@ -38,6 +41,7 @@ struct Cursor {
     quint16 u16() { require(2); const quint16 v = readLeU16(bytes, pos); pos += 2; return v; }
     qint32 i32() { require(4); const quint32 v = readLeU32(bytes, pos); pos += 4; return static_cast<qint32>(v); }
     quint32 u32() { require(4); const quint32 v = readLeU32(bytes, pos); pos += 4; return v; }
+    quint64 u64() { const quint64 lo = u32(); return lo | (static_cast<quint64>(u32()) << 32); }
     float f32() { require(4); const float v = readLeFloat(bytes, pos); pos += 4; return v; }
     void skip(int n) { require(n); pos += n; }
 
@@ -66,12 +70,18 @@ struct Cursor {
 enum class Series { Horizon, Motorsport };
 
 struct PartInstance {
+    struct MaterialBinding {
+        QString name;
+        quint64 hash = 0;
+    };
+
     QString path;
     ModelMat4 transform;
     QString boneName;
     qint16 boneId = -1;
     int partType = -1;
     bool stock = true;
+    std::vector<MaterialBinding> materialBindings;
 };
 
 struct SceneParts {
@@ -116,13 +126,16 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
     }
     if (version >= 3) {
         const quint32 indexCount = c.u32();
+        part.materialBindings.reserve(indexCount);
         for (quint32 i = 0; i < indexCount; ++i) {
-            c.str();
+            PartInstance::MaterialBinding binding;
+            binding.name = c.str();
             if (version >= 21) {
-                c.skip(8); // u64
+                binding.hash = c.u64();
             } else {
-                c.i32();
+                binding.hash = static_cast<quint32>(c.i32());
             }
+            part.materialBindings.push_back(std::move(binding));
         }
     }
     if (version >= 6) {
@@ -321,7 +334,128 @@ QString partKey(const PartInstance &part)
     for (float value : part.transform.m) {
         key += QLatin1Char('|') + QString::number(value, 'g', 9);
     }
+    for (const PartInstance::MaterialBinding &binding : part.materialBindings) {
+        key += QLatin1Char('|') + binding.name.toLower()
+            + QLatin1Char('=') + QString::number(binding.hash, 16);
+    }
     return key;
+}
+
+QString materialToken(QString value)
+{
+    value.replace('\\', '/');
+    value = value.mid(value.lastIndexOf('/') + 1).toLower();
+    const int pipe = value.indexOf('|');
+    if (pipe >= 0) {
+        value.truncate(pipe);
+    }
+    if (value.endsWith(QStringLiteral(".materialbin"))) {
+        value.chop(12);
+    }
+    return value;
+}
+
+quint64 materialBindingHash(const PartInstance &part, const CarMesh &mesh)
+{
+    QStringList candidates;
+    candidates.push_back(materialToken(mesh.materialName));
+    if (mesh.material) {
+        candidates.push_back(materialToken(mesh.material->name));
+        candidates.push_back(materialToken(mesh.material->resourcePath));
+    }
+    for (const PartInstance::MaterialBinding &binding : part.materialBindings) {
+        const QString key = materialToken(binding.name);
+        for (const QString &candidate : candidates) {
+            if (!key.isEmpty() && key == candidate) {
+                return binding.hash;
+            }
+        }
+    }
+    for (const PartInstance::MaterialBinding &binding : part.materialBindings) {
+        const QString key = materialToken(binding.name);
+        for (const QString &candidate : candidates) {
+            if (key.size() >= 6 && candidate.size() >= 6
+                && (key.contains(candidate) || candidate.contains(key))) {
+                return binding.hash;
+            }
+        }
+    }
+    return 0;
+}
+
+bool isWheelModelPath(QString path)
+{
+    path.replace('\\', '/');
+    return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
+}
+
+void bakeWheelTransform(CarMesh &mesh)
+{
+    constexpr float radialScale = 1.632857f;
+    for (ModelVec3 &position : mesh.positions) {
+        position = mesh.boneTransform.transformPoint(
+            {-position.x, position.y * radialScale, -position.z * radialScale});
+    }
+    for (ModelVec3 &normal : mesh.normals) {
+        normal = mesh.boneTransform.transformVector(
+            {-normal.x, normal.y / radialScale, -normal.z / radialScale});
+        const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+        if (length > 0.000001f) {
+            normal.x /= length;
+            normal.y /= length;
+            normal.z /= length;
+        }
+    }
+    mesh.boneTransform = ModelMat4{};
+}
+
+int wheelPaintChannel(const QString &materialName)
+{
+    const QString name = materialName.toLower();
+    if (name == QStringLiteral("rim")) return 0;
+    if (name == QStringLiteral("rim2")) return 1;
+    if (name == QStringLiteral("inner_rim")) return 2;
+    if (name == QStringLiteral("hub")) return 3;
+    if (name == QStringLiteral("lug")) return 4;
+    return -1;
+}
+
+bool frontWheel(const PartInstance &part, const CarMesh &mesh)
+{
+    const QString identity = part.boneName.toLower() + QLatin1Char('|') + mesh.name.toLower();
+    if (identity.contains(QStringLiteral("wheellf"))
+        || identity.contains(QStringLiteral("wheelrf"))) {
+        return true;
+    }
+    if (identity.contains(QStringLiteral("wheellr"))
+        || identity.contains(QStringLiteral("wheelrr"))) {
+        return false;
+    }
+    if (mesh.positions.empty()) {
+        return false;
+    }
+    double z = 0.0;
+    for (const ModelVec3 &position : mesh.positions) {
+        z += position.z;
+    }
+    return z / static_cast<double>(mesh.positions.size()) >= 0.0;
+}
+
+quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh)
+{
+    static constexpr quint64 Front[] = {
+        0xB8925E450764DE78ull, 0x15EDB6869EFC7F22ull, 0x2407D33BE191E83Dull,
+        0x564DF80BF320D318ull, 0x818BB1EF6C704F11ull,
+    };
+    static constexpr quint64 Rear[] = {
+        0x6613B1E8FA7AE743ull, 0x3A3CBDA8CF17E711ull, 0xC338EA21477FD950ull,
+        0x0F1580E714EA9063ull, 0x874E9585EAB6EF64ull,
+    };
+    const int channel = wheelPaintChannel(mesh.materialName);
+    if (channel < 0) {
+        return 0;
+    }
+    return frontWheel(part, mesh) ? Front[channel] : Rear[channel];
 }
 
 std::vector<CarLocator> loadCarLocators(const QString &carbinDir)
@@ -447,8 +581,10 @@ CarModel loadCarBin(const QString &path, QString *error)
         stockParts.insert(partKey(part));
     }
     QSet<QString> loadedParts;
+    int modelInstanceId = 0;
 
     for (const PartInstance &part : parts.projection) {
+        const int currentInstanceId = modelInstanceId++;
         const QString key = partKey(part);
         if (loadedParts.contains(key)) {
             continue;
@@ -480,7 +616,15 @@ CarModel loadCarBin(const QString &path, QString *error)
         for (CarMesh &mesh : model.meshes) {
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             mesh.carPartType = part.partType;
+            mesh.modelInstanceId = currentInstanceId;
             mesh.stockPart = stock;
+            mesh.paintMaterialHash = materialBindingHash(part, mesh);
+            if (isWheelModelPath(part.path)) {
+                bakeWheelTransform(mesh);
+                if (mesh.paintMaterialHash == 0) {
+                    mesh.paintMaterialHash = wheelPaintHash(part, mesh);
+                }
+            }
             if (stock) {
                 for (const ModelVec3 &p : mesh.positions) {
                     const ModelVec3 w = mesh.boneTransform.transformPoint(p);
@@ -512,6 +656,146 @@ CarModel loadCarBin(const QString &path, QString *error)
     car.boundsMin = {minX, minY, minZ};
     car.boundsMax = {maxX, maxY, maxZ};
     return car;
+}
+
+void appendApproximateTires(
+    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate)
+{
+    struct MountBounds {
+        float minX = std::numeric_limits<float>::max();
+        float minY = minX;
+        float minZ = minX;
+        float maxX = std::numeric_limits<float>::lowest();
+        float maxY = maxX;
+        float maxZ = maxX;
+        std::vector<ModelVec3> positions;
+    };
+
+    std::map<int, MountBounds> mounts;
+    int nextInstanceId = 0;
+    for (const CarMesh &mesh : car.meshes) {
+        nextInstanceId = std::max(nextInstanceId, mesh.modelInstanceId + 1);
+        const QString material = mesh.materialName.toLower();
+        if (mesh.modelInstanceId < 0
+            || !mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
+            || !mesh.name.contains(QStringLiteral("LODS0"), Qt::CaseInsensitive)
+            || (material != QStringLiteral("rim") && material != QStringLiteral("rim2"))) {
+            continue;
+        }
+        MountBounds &bounds = mounts[mesh.modelInstanceId];
+        for (const ModelVec3 &position : mesh.positions) {
+            bounds.minX = std::min(bounds.minX, position.x);
+            bounds.minY = std::min(bounds.minY, position.y);
+            bounds.minZ = std::min(bounds.minZ, position.z);
+            bounds.maxX = std::max(bounds.maxX, position.x);
+            bounds.maxY = std::max(bounds.maxY, position.y);
+            bounds.maxZ = std::max(bounds.maxZ, position.z);
+            bounds.positions.push_back(position);
+        }
+    }
+
+    struct TemplateBounds {
+        float minX = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float radius = 0.0f;
+    };
+    const auto templateBounds = [](const CarModel &source) {
+        TemplateBounds bounds;
+        for (const CarMesh &mesh : source.meshes) {
+            if (!mesh.name.contains(QStringLiteral("LODS0"), Qt::CaseInsensitive)) {
+                continue;
+            }
+            for (const ModelVec3 &position : mesh.positions) {
+                const ModelVec3 p = mesh.boneTransform.transformPoint(position);
+                bounds.minX = std::min(bounds.minX, p.x);
+                bounds.maxX = std::max(bounds.maxX, p.x);
+                bounds.radius = std::max(bounds.radius, std::hypot(p.y, p.z));
+            }
+        }
+        return bounds;
+    };
+    const TemplateBounds leftBounds = templateBounds(leftTemplate);
+    const TemplateBounds rightBounds = templateBounds(rightTemplate);
+
+    constexpr float widthToRimRadius = 0.305f / 0.2286f;
+    constexpr float tireToRimRadius = 0.3201f / 0.2286f;
+
+    for (const auto &[sourceInstanceId, bounds] : mounts) {
+        (void)sourceInstanceId;
+        if (bounds.minX > bounds.maxX) {
+            continue;
+        }
+        const float side = bounds.minX + bounds.maxX >= 0.0f ? 1.0f : -1.0f;
+        const float centerY = (bounds.minY + bounds.maxY) * 0.5f;
+        const float centerZ = (bounds.minZ + bounds.maxZ) * 0.5f;
+        const float rimRadius = std::max(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ) * 0.5f;
+        const float tireWidth = rimRadius * widthToRimRadius;
+        const float tireRadius = rimRadius * tireToRimRadius;
+        std::vector<float> lipSamples;
+        lipSamples.reserve(bounds.positions.size());
+        for (const ModelVec3 &position : bounds.positions) {
+            const float radius = std::hypot(position.y - centerY, position.z - centerZ);
+            if (radius >= rimRadius * 0.82f) {
+                lipSamples.push_back(side * position.x);
+            }
+        }
+        std::sort(lipSamples.begin(), lipSamples.end());
+        const float rimOuterX = lipSamples.empty()
+            ? (side > 0.0f ? bounds.maxX : bounds.minX)
+            : side * lipSamples[static_cast<size_t>(
+                  0.9f * static_cast<float>(lipSamples.size() - 1))];
+        const float centerX = rimOuterX - side * tireWidth * 0.5f;
+        const CarModel &source = side < 0.0f ? leftTemplate : rightTemplate;
+        const TemplateBounds &sourceBounds = side < 0.0f ? leftBounds : rightBounds;
+        const float sourceWidth = sourceBounds.maxX - sourceBounds.minX;
+        if (rimRadius <= 0.0f || sourceWidth <= 0.0f || sourceBounds.radius <= 0.0f) {
+            continue;
+        }
+        const float sourceCenterX = (sourceBounds.minX + sourceBounds.maxX) * 0.5f;
+        const float axialScale = tireWidth / sourceWidth;
+        const float radialScale = tireRadius / sourceBounds.radius;
+        const int instanceId = nextInstanceId++;
+
+        for (const CarMesh &sourceMesh : source.meshes) {
+            CarMesh mesh = sourceMesh;
+            mesh.carPartType = 8;
+            mesh.modelInstanceId = instanceId;
+            mesh.stockPart = true;
+            mesh.paintMaterialHash = 0;
+            mesh.boneTransform = ModelMat4{};
+
+            for (ModelVec3 &position : mesh.positions) {
+                const ModelVec3 p = sourceMesh.boneTransform.transformPoint(position);
+                position = {
+                    centerX - side * (p.x - sourceCenterX) * axialScale,
+                    centerY + p.y * radialScale,
+                    centerZ + p.z * radialScale,
+                };
+                car.boundsMin.x = std::min(car.boundsMin.x, position.x);
+                car.boundsMin.y = std::min(car.boundsMin.y, position.y);
+                car.boundsMin.z = std::min(car.boundsMin.z, position.z);
+                car.boundsMax.x = std::max(car.boundsMax.x, position.x);
+                car.boundsMax.y = std::max(car.boundsMax.y, position.y);
+                car.boundsMax.z = std::max(car.boundsMax.z, position.z);
+            }
+            for (ModelVec3 &normal : mesh.normals) {
+                normal = sourceMesh.boneTransform.transformVector(normal);
+                normal = {
+                    normal.x / (-side * axialScale),
+                    normal.y / radialScale,
+                    normal.z / radialScale,
+                };
+                const float length = std::sqrt(
+                    normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+                if (length > 0.000001f) {
+                    normal.x /= length;
+                    normal.y /= length;
+                    normal.z /= length;
+                }
+            }
+            car.meshes.push_back(std::move(mesh));
+        }
+    }
 }
 
 } // namespace fh6
