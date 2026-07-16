@@ -315,9 +315,36 @@ void ProjectCanvas::setGuideLayersOnTop(bool enabled)
     update();
 }
 
+void ProjectCanvas::setGuideLayersVisible(bool visible)
+{
+    if (guideLayersVisible_ == visible) {
+        return;
+    }
+    guideLayersVisible_ = visible;
+    sectionCanvasCache_.clear();
+    update();
+}
+
 bool ProjectCanvas::guideLayersOnTop() const
 {
     return guideLayersOnTop_;
+}
+
+void ProjectCanvas::setGuidelinesVisible(bool visible)
+{
+    if (guidelinesVisible_ == visible) {
+        return;
+    }
+    guidelinesVisible_ = visible;
+    if (!visible && draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        if (state_ != nullptr) {
+            state_->commitProjectEdit();
+        }
+        draggedGuidelineOrientation_ = GuidelineOrientation::None;
+        draggedGuidelineIndex_ = -1;
+    }
+    updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+    update();
 }
 
 void ProjectCanvas::setGuidelinesLocked(bool locked)

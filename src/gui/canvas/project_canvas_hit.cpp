@@ -27,7 +27,7 @@ QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries()
 
 QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
 {
-    if (sceneTree() == nullptr) {
+    if (!guideLayersVisible_ || sceneTree() == nullptr) {
         return {};
     }
     updateViewTransform();
@@ -48,7 +48,7 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
 
 std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &point) const
 {
-    if (project_ == nullptr || sceneTree() == nullptr) {
+    if (!guideLayersVisible_ || project_ == nullptr || sceneTree() == nullptr) {
         return std::nullopt;
     }
     const_cast<ProjectCanvas *>(this)->updateViewTransform();

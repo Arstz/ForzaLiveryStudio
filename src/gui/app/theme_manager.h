@@ -37,7 +37,9 @@ struct BehaviorSettings {
     bool moveToolAutoSelect = false;
     bool selectionFlashEnabled = true;
     bool displayAnchorsDuringTransformDrag = true;
+    bool guideLayersVisible = true;
     bool guideLayersOnTop = true;
+    bool guidelinesVisible = true;
     bool guidelinesLocked = false;
     QColor guidelineColor = QColor(0, 170, 255);
     bool visibilityBordersEnabled = true;

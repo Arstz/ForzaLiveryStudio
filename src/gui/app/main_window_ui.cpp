@@ -169,6 +169,7 @@ void MainWindow::setupDocks()
 
     shapesBrowser_ = new ShapesBrowserWidget(this);
     shapesBrowser_->setShapeSelectedCallback([this](int shapeId) { insertShape(shapeId); });
+    shapesBrowser_->setShapeReplaceCallback([this](int shapeId) { replaceSelectedShape(shapeId); });
     shapesBrowser_->setLogoSelectedCallback([this](quint32 rasterId, int width, int height) {
         insertLogo(rasterId, width, height);
     });
@@ -314,6 +315,15 @@ void MainWindow::setupEditMenu()
     editMenu->addSeparator();
     addEditEntry(QStringLiteral("Stamp (Duplicate in Place)"), QStringLiteral("stamp"), QStringLiteral("Stamp"),
                  QKeySequence(Qt::Key_Y), QStringLiteral("MenuPaste.xpm"), &MainWindow::stampSelection);
+    QAction *flipSelection = editMenu->addAction(QStringLiteral("Flip Selection"));
+    registerShortcutAction(flipSelection, QStringLiteral("flip_selection"), QStringLiteral("Flip Selection"),
+                           QKeySequence(Qt::Key_Tab), QString(), false, Qt::ApplicationShortcut);
+    addAction(flipSelection);
+    connect(flipSelection, &QAction::triggered, this, [this]() {
+        if (canvas_ != nullptr) {
+            canvas_->cycleFlipSelection();
+        }
+    });
     editMenu->addSeparator();
     addEditEntry(QStringLiteral("Center View on Selection"), QStringLiteral("center_view_on_selection"), QStringLiteral("Center View on Selection"),
                  QKeySequence(Qt::Key_F1), QStringLiteral("ToolbarSelect.xpm"), &MainWindow::centerViewOnSelection);
@@ -336,8 +346,10 @@ void MainWindow::setupEditMenu()
                   QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Left), ProjectCanvas::AlignEdge::Left);
     addAlignEntry(QStringLiteral("&Right"), QStringLiteral("align_right"),
                   QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Right), ProjectCanvas::AlignEdge::Right);
-    addAlignEntry(QStringLiteral("&Centre"), QStringLiteral("align_centre"),
-                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C), ProjectCanvas::AlignEdge::Center);
+    addAlignEntry(QStringLiteral("Horizontal &Centre"), QStringLiteral("align_centre"),
+                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C), ProjectCanvas::AlignEdge::VCenter);
+    addAlignEntry(QStringLiteral("Vertical C&entre"), QStringLiteral("align_vertical_centre"),
+                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D), ProjectCanvas::AlignEdge::HCenter);
 
     auto *distributeMenu = editMenu->addMenu(QStringLiteral("&Distribute"));
     auto addDistributeEntry = [this, distributeMenu](const QString &text, const QString &id, const QKeySequence &shortcut,
@@ -391,9 +403,9 @@ void MainWindow::setupProjectMenu()
 void MainWindow::setupOptionsMenu()
 {
     auto *optionsMenu = menuBar()->addMenu(QStringLiteral("&Options"));
-    auto addBehaviorOption = [this, optionsMenu](const QString &text, const QString &id, bool BehaviorSettings::*member,
-                                                 const QKeySequence &shortcut = QKeySequence()) {
-        QAction *action = optionsMenu->addAction(text);
+    auto addBehaviorOption = [this](QMenu *menu, const QString &text, const QString &id, bool BehaviorSettings::*member,
+                                    const QKeySequence &shortcut = QKeySequence()) {
+        QAction *action = menu->addAction(text);
         action->setCheckable(true);
         action->setChecked(loadBehaviorSettings().*member);
         registerShortcutAction(action, id, text, shortcut, QString(), false, Qt::ApplicationShortcut);
@@ -405,15 +417,18 @@ void MainWindow::setupOptionsMenu()
         });
         return action;
     };
-    addBehaviorOption(QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
-    addBehaviorOption(QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
-    addBehaviorOption(QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
-    addBehaviorOption(QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
-    addBehaviorOption(QStringLiteral("Flash Selected Layers"), QStringLiteral("toggle_selection_flash"), &BehaviorSettings::selectionFlashEnabled, QKeySequence(QStringLiteral("\\")));
-    addBehaviorOption(QStringLiteral("Guide Layers On Top"), QStringLiteral("toggle_guide_layers_on_top"), &BehaviorSettings::guideLayersOnTop, QKeySequence(Qt::Key_QuoteLeft));
-    addBehaviorOption(QStringLiteral("Lock Guidelines"), QStringLiteral("toggle_guidelines_locked"), &BehaviorSettings::guidelinesLocked,
-                      QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Semicolon));
-    QAction *deleteGuidelines = optionsMenu->addAction(QStringLiteral("Delete All Guidelines"));
+    addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
+    addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
+    addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
+    addBehaviorOption(optionsMenu, QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
+    addBehaviorOption(optionsMenu, QStringLiteral("Show Selection Flash"), QStringLiteral("toggle_selection_flash"), &BehaviorSettings::selectionFlashEnabled, QKeySequence(QStringLiteral("\\")));
+
+    QMenu *guidesMenu = optionsMenu->addMenu(QStringLiteral("&Guides"));
+    addBehaviorOption(guidesMenu, QStringLiteral("Show Guidelines"), QStringLiteral("show_guidelines"),
+                      &BehaviorSettings::guidelinesVisible, QKeySequence(Qt::CTRL | Qt::Key_Semicolon));
+    addBehaviorOption(guidesMenu, QStringLiteral("Lock Guidelines"), QStringLiteral("toggle_guidelines_locked"),
+                      &BehaviorSettings::guidelinesLocked, QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Semicolon));
+    QAction *deleteGuidelines = guidesMenu->addAction(QStringLiteral("Delete All Guidelines"));
     registerShortcutAction(deleteGuidelines, QStringLiteral("delete_all_guidelines"), QStringLiteral("Delete All Guidelines"),
                            QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_Semicolon),
                            QString(), false, Qt::ApplicationShortcut);
@@ -423,21 +438,13 @@ void MainWindow::setupOptionsMenu()
             canvas_->deleteAllGuidelines();
         }
     });
-    addBehaviorOption(QStringLiteral("Show Visibility Borders"), QStringLiteral("toggle_visibility_borders"), &BehaviorSettings::visibilityBordersEnabled);
-    flipSelectionAction_ = optionsMenu->addAction(QStringLiteral("Flip Selection"));
-    registerShortcutAction(flipSelectionAction_, QStringLiteral("flip_selection"), QStringLiteral("Flip Selection"),
-                           QKeySequence(Qt::Key_Tab), QString(), false, Qt::ApplicationShortcut);
-    addAction(flipSelectionAction_);
-    connect(flipSelectionAction_, &QAction::triggered, this, [this]() {
-        if (canvas_ != nullptr) {
-            canvas_->cycleFlipSelection();
-        }
-    });
-    QAction *guideVisibleOption = optionsMenu->addAction(QStringLiteral("Toggle Guide Layer Visibility"));
-    registerShortcutAction(guideVisibleOption, QStringLiteral("toggle_guide_layer_visibility"), QStringLiteral("Toggle Guide Layer Visibility"),
-                           QKeySequence(), QString(), false, Qt::ApplicationShortcut);
-    addAction(guideVisibleOption);
-    connect(guideVisibleOption, &QAction::triggered, this, &MainWindow::toggleGuideLayerVisibility);
+    guidesMenu->addSeparator();
+    addBehaviorOption(guidesMenu, QStringLiteral("Show Guide Layers"), QStringLiteral("toggle_guide_layer_visibility"),
+                      &BehaviorSettings::guideLayersVisible);
+    addBehaviorOption(guidesMenu, QStringLiteral("Show Guide Layers On Top"), QStringLiteral("toggle_guide_layers_on_top"),
+                      &BehaviorSettings::guideLayersOnTop, QKeySequence(Qt::Key_QuoteLeft));
+
+    addBehaviorOption(optionsMenu, QStringLiteral("Show Visibility Borders"), QStringLiteral("toggle_visibility_borders"), &BehaviorSettings::visibilityBordersEnabled);
     QAction *transformRelativeOption = optionsMenu->addAction(QStringLiteral("Transform Relative Mode"));
     transformRelativeOption->setCheckable(true);
     const TransformModeSettings initialTransformSettings = loadTransformModeSettings();
@@ -689,7 +696,9 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);
+        canvas_->setGuideLayersVisible(settings.guideLayersVisible);
         canvas_->setGuideLayersOnTop(settings.guideLayersOnTop);
+        canvas_->setGuidelinesVisible(settings.guidelinesVisible);
         canvas_->setGuidelinesLocked(settings.guidelinesLocked);
         canvas_->setGuidelineColor(settings.guidelineColor);
         canvas_->setVisibilityBordersEnabled(settings.visibilityBordersEnabled);

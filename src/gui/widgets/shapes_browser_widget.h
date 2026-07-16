@@ -32,6 +32,7 @@ public:
     void setFavourite(bool enabled);
     void refreshTheme();
     void setPressedCallback(std::function<void(int)> callback);
+    void setRightPressedCallback(std::function<void(int)> callback);
     void setFavouriteCallback(std::function<void(int, bool)> callback);
 
 protected:
@@ -52,6 +53,7 @@ private:
     mutable QHash<QSize, QImage> previewCache_;
     bool hovered_ = false;
     std::function<void(int)> pressedCallback_;
+    std::function<void(int)> rightPressedCallback_;
     std::function<void(int, bool)> favouriteCallback_;
 };
 
@@ -117,6 +119,7 @@ public:
     explicit ShapesBrowserWidget(QWidget *parent = nullptr);
 
     void setShapeSelectedCallback(std::function<void(int)> callback);
+    void setShapeReplaceCallback(std::function<void(int)> callback);
     void setLogoSelectedCallback(std::function<void(quint32, int, int)> callback);
     void setCustomGroupSelectedCallback(std::function<void(const CustomShapeGroup &)> callback);
     void setAddCurrentSelectionCallback(std::function<void()> callback);
@@ -163,6 +166,7 @@ private:
     QGridLayout *grid_ = nullptr;
     QLabel *searchHint_ = nullptr;
     std::function<void(int)> shapeSelectedCallback_;
+    std::function<void(int)> shapeReplaceCallback_;
     std::function<void(quint32, int, int)> logoSelectedCallback_;
     std::function<void(const CustomShapeGroup &)> customGroupSelectedCallback_;
     std::function<void()> addCurrentSelectionCallback_;

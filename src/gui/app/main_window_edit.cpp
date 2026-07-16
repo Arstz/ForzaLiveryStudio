@@ -162,37 +162,6 @@ void MainWindow::sampleGuideColorToSelection()
     statusBar()->showMessage(QStringLiteral("Picked guide color"), 1500);
 }
 
-void MainWindow::toggleGuideLayerVisibility()
-{
-    QVector<fh6::scene::GuideLayer *> allGuides;
-    forEachGuide(state_->project_, [&](fh6::scene::GuideLayer &guide) { allGuides.push_back(&guide); });
-    if (!state_->hasProject() || allGuides.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("No guide layers"), 1500);
-        return;
-    }
-
-    const QSet<QString> selectedGuideIds = state_->selectedGuideLayerIds();
-    const bool useSelection = !selectedGuideIds.isEmpty();
-    bool anyVisible = false;
-    for (const fh6::scene::GuideLayer *guide : allGuides) {
-        if ((!useSelection || selectedGuideIds.contains(guide->id)) && guide->visible) {
-            anyVisible = true;
-            break;
-        }
-    }
-    const bool nextVisible = !anyVisible;
-
-    state_->beginProjectEdit();
-    for (fh6::scene::GuideLayer *guide : allGuides) {
-        if (!useSelection || selectedGuideIds.contains(guide->id)) {
-            guide->visible = nextVisible;
-        }
-    }
-    state_->commitProjectEdit();
-    state_->noteProjectGeometryChanged(true);
-    statusBar()->showMessage(nextVisible ? QStringLiteral("Guide layers visible") : QStringLiteral("Guide layers hidden"), 1500);
-}
-
 void MainWindow::insertShape(int shapeId)
 {
     if (!ensureProjectForInsertion()) {
@@ -225,6 +194,32 @@ void MainWindow::insertShape(int shapeId)
         canvas_->setFocus();
     }
     statusBar()->showMessage(QStringLiteral("Inserted %1").arg(insertedName), 1500);
+}
+
+void MainWindow::replaceSelectedShape(int shapeId)
+{
+    const QVector<fh6::scene::Shape *> selected = state_->selectedLayers();
+    if (selected.size() != 1 || !state_->selectedGuideLayerIds().isEmpty()
+        || selected.front() == nullptr) {
+        statusBar()->showMessage(QStringLiteral("Select one shape to replace"), 2000);
+        return;
+    }
+
+    fh6::scene::Shape *layer = selected.front();
+    if (!layer->isRaster() && layer->shapeId == shapeId) {
+        statusBar()->showMessage(QStringLiteral("Selected shape already uses this geometry"), 1500);
+        return;
+    }
+
+    state_->beginProjectEdit();
+    layer->setVectorShape(static_cast<quint16>(shapeId));
+    layer->sourceLogoId = 0;
+    state_->commitProjectEdit();
+    state_->noteProjectGeometryChanged(true, {layer->id});
+    if (canvas_ != nullptr) {
+        canvas_->setFocus();
+    }
+    statusBar()->showMessage(QStringLiteral("Replaced selected shape"), 1500);
 }
 
 void MainWindow::insertLogo(quint32 rasterId, int width, int height)

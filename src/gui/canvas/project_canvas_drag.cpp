@@ -549,7 +549,6 @@ bool ProjectCanvas::alignSelection(AlignEdge edge)
                 dy = whole.top() - b.top();
                 break;
             case AlignEdge::VCenter:
-            case AlignEdge::Center:
                 dy = whole.center().y() - b.center().y();
                 break;
             }
@@ -576,18 +575,24 @@ bool ProjectCanvas::distributeSelection(DistributeAxis axis)
             return horizontal ? bounds[a].center().x() < bounds[b].center().x()
                               : bounds[a].center().y() < bounds[b].center().y();
         });
-        const double first = horizontal ? bounds[order.front()].center().x() : bounds[order.front()].center().y();
-        const double last = horizontal ? bounds[order.back()].center().x() : bounds[order.back()].center().y();
-        const double step = (last - first) / static_cast<double>(n - 1);
+        const auto start = [&](int index) { return horizontal ? bounds[index].left() : bounds[index].top(); };
+        const auto end = [&](int index) { return horizontal ? bounds[index].right() : bounds[index].bottom(); };
+        const auto extent = [&](int index) { return horizontal ? bounds[index].width() : bounds[index].height(); };
+        double totalExtent = 0.0;
+        for (int index : order) {
+            totalExtent += extent(index);
+        }
+        const double gap = (end(order.back()) - start(order.front()) - totalExtent) / static_cast<double>(n - 1);
+        double nextStart = end(order.front()) + gap;
         for (int rank = 1; rank < n - 1; ++rank) {
             const int idx = order[rank];
-            const double target = first + step * rank;
-            const double current = horizontal ? bounds[idx].center().x() : bounds[idx].center().y();
+            const double delta = nextStart - start(idx);
             if (horizontal) {
-                deltas[idx].setX(target - current);
+                deltas[idx].setX(delta);
             } else {
-                deltas[idx].setY(target - current);
+                deltas[idx].setY(delta);
             }
+            nextStart += extent(idx) + gap;
         }
         return deltas;
     }, /*descendSoleGroup=*/true);

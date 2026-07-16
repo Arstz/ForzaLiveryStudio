@@ -39,7 +39,7 @@ exports flat game-compatible folders.
 - Drag numeric property labels vertically for live value changes.
 - Use editor-only raster guide layers for references; guide layers are saved in
   the project container and ignored by game export. Guide layers can render above
-  or below shapes, can be toggled from the keyboard, and can be sampled by the
+  or below shapes, can be shown or hidden together, and can be sampled by the
   Pipette/color picker ignoring guide opacity.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
@@ -56,9 +56,10 @@ exports flat game-compatible folders.
   **Project Name…**, and **Creator Name…** (the last also persists as the default
   creator for new projects).
 - Align and distribute the current selection from the **Edit** menu. **Align**
-  (Top/Bottom/Left/Right/Centre) snaps each selected top-level unit — a whole group
-  counts as one unit, loose leaves individually — to a shared edge (Centre aligns on
-  the Y axis). **Distribute** (Vertical/Horizontal) evens the spacing of unit centres
+  (Top/Bottom/Left/Right/Horizontal Centre/Vertical Centre) snaps each selected
+  top-level unit — a whole group counts as one unit, loose leaves individually —
+  to a shared edge or centre line.
+  **Distribute** (Vertical/Horizontal) evens the gaps between unit bounds
   along one axis; a lone selected group distributes its own direct children. Both
   evaluate world-space shape geometry.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
@@ -106,7 +107,7 @@ exports flat game-compatible folders.
 - Collapse dock areas from the dock title-bar collapse buttons. The button appears on
   only one dock per area (never duplicated across split docks) and is hidden on
   floating docks.
-- Toggle selected-layer flash with `\` or from the Options menu.
+- Show selected-layer flash with `\` or from the Options menu.
 - Switch Transform Relative mode from the Options menu when transform handles
   should follow the selected shape or group rotation.
 

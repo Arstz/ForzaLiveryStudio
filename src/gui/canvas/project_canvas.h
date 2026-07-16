@@ -50,8 +50,10 @@ public:
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
     void setDisplayAnchorsDuringTransformDrag(bool enabled);
+    void setGuideLayersVisible(bool visible);
     void setGuideLayersOnTop(bool enabled);
     bool guideLayersOnTop() const;
+    void setGuidelinesVisible(bool visible);
     void setGuidelinesLocked(bool locked);
     bool guidelinesLocked() const;
     void setGuidelineColor(const QColor &color);
@@ -70,7 +72,7 @@ public:
     bool hasCarUnwrap() const;
     void cycleFlipSelection();
 
-    enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom, Center };
+    enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom };
     enum class DistributeAxis { Horizontal, Vertical };
     bool alignSelection(AlignEdge edge);
     bool distributeSelection(DistributeAxis axis);
@@ -255,7 +257,9 @@ private:
     bool moveToolAutoSelect_ = false;
     bool selectionFlashEnabled_ = true;
     bool displayAnchorsDuringTransformDrag_ = true;
+    bool guideLayersVisible_ = true;
     bool guideLayersOnTop_ = true;
+    bool guidelinesVisible_ = true;
     bool guidelinesLocked_ = false;
     QColor guidelineColor_ = QColor(0, 170, 255);
     GuidelineOrientation draggedGuidelineOrientation_ = GuidelineOrientation::None;

@@ -99,7 +99,9 @@ BehaviorSettings loadBehaviorSettings()
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), false).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), true).toBool();
     result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), true).toBool();
+    result.guideLayersVisible = settings.value(QStringLiteral("ui/behavior/guideLayersVisible"), true).toBool();
     result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), true).toBool();
+    result.guidelinesVisible = settings.value(QStringLiteral("ui/behavior/guidelinesVisible"), true).toBool();
     result.guidelinesLocked = settings.value(QStringLiteral("ui/behavior/guidelinesLocked"), false).toBool();
     result.guidelineColor = QColor(settings.value(QStringLiteral("ui/behavior/guidelineColor"),
                                                  QStringLiteral("#00aaff")).toString());
@@ -138,7 +140,9 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), settings.displayAnchorsDuringTransformDrag);
+    qsettings.setValue(QStringLiteral("ui/behavior/guideLayersVisible"), settings.guideLayersVisible);
     qsettings.setValue(QStringLiteral("ui/behavior/guideLayersOnTop"), settings.guideLayersOnTop);
+    qsettings.setValue(QStringLiteral("ui/behavior/guidelinesVisible"), settings.guidelinesVisible);
     qsettings.setValue(QStringLiteral("ui/behavior/guidelinesLocked"), settings.guidelinesLocked);
     qsettings.setValue(QStringLiteral("ui/behavior/guidelineColor"),
                        (settings.guidelineColor.isValid() ? settings.guidelineColor : QColor(0, 170, 255)).name(QColor::HexArgb));

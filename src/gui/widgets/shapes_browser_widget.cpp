@@ -400,6 +400,11 @@ void ShapeTile::setPressedCallback(std::function<void(int)> callback)
     pressedCallback_ = std::move(callback);
 }
 
+void ShapeTile::setRightPressedCallback(std::function<void(int)> callback)
+{
+    rightPressedCallback_ = std::move(callback);
+}
+
 void ShapeTile::setFavouriteCallback(std::function<void(int, bool)> callback)
 {
     favouriteCallback_ = std::move(callback);
@@ -421,12 +426,17 @@ void ShapeTile::leaveEvent(QEvent *event)
 
 void ShapeTile::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && !favourite_->geometry().contains(event->position().toPoint())) {
-        if (pressedCallback_) {
+    if (!favourite_->geometry().contains(event->position().toPoint())) {
+        if (event->button() == Qt::LeftButton && pressedCallback_) {
             pressedCallback_(shapeId_);
+            event->accept();
+            return;
         }
-        event->accept();
-        return;
+        if (event->button() == Qt::RightButton && rightPressedCallback_) {
+            rightPressedCallback_(shapeId_);
+            event->accept();
+            return;
+        }
     }
     QWidget::mousePressEvent(event);
 }
@@ -1064,6 +1074,11 @@ void ShapesBrowserWidget::setShapeSelectedCallback(std::function<void(int)> call
     shapeSelectedCallback_ = std::move(callback);
 }
 
+void ShapesBrowserWidget::setShapeReplaceCallback(std::function<void(int)> callback)
+{
+    shapeReplaceCallback_ = std::move(callback);
+}
+
 void ShapesBrowserWidget::setLogoSelectedCallback(std::function<void(quint32, int, int)> callback)
 {
     logoSelectedCallback_ = std::move(callback);
@@ -1365,6 +1380,11 @@ ShapeTile *ShapesBrowserWidget::tileForShape(int shapeId)
     tile->setPressedCallback([this](int id) {
         if (shapeSelectedCallback_) {
             shapeSelectedCallback_(id);
+        }
+    });
+    tile->setRightPressedCallback([this](int id) {
+        if (shapeReplaceCallback_) {
+            shapeReplaceCallback_(id);
         }
     });
     tile->setFavouriteCallback([this](int id, bool enabled) { setFavourite(id, enabled); });

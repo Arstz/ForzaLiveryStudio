@@ -41,7 +41,8 @@ recommended working pipelines. For build/developer notes see
 | Center View on Selection | `F1` |
 | Align Top / Bottom | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` |
 | Align Left / Right | `Ctrl+Shift+Left` / `Ctrl+Shift+Right` |
-| Align Centre (vertical) | `Ctrl+Shift+C` |
+| Align Horizontal Centre | `Ctrl+Shift+C` |
+| Align Vertical Centre | `Ctrl+Shift+D` |
 | Distribute Vertical / Horizontal | `Ctrl+Shift+V` / `Ctrl+Shift+H` |
 
 ### Project
@@ -67,11 +68,12 @@ recommended working pipelines. For build/developer notes see
 
 | Action | Shortcut |
 | --- | --- |
-| Toggle Flash Selected Layers | `\` |
-| Toggle Guide Layers On Top | `` ` `` |
+| Show Selection Flash | `\` |
+| Show Guidelines | `Ctrl+;` |
 | Lock Guidelines | `Ctrl+Alt+;` |
 | Delete All Guidelines | `Ctrl+Alt+Shift+;` |
-| Toggle Guide Layer Visibility | *(unbound)* |
+| Show Guide Layers | *(unbound)* |
+| Show Guide Layers On Top | `` ` `` |
 | Settings… | `Ctrl+K` |
 
 ## Tools & Behaviours
@@ -112,9 +114,10 @@ recommended working pipelines. For build/developer notes see
 - **Align / Distribute** (**Edit → Align** / **Edit → Distribute**) — arrange the
   current selection by its shape geometry. Each selected top-level unit — a whole
   group counts as one, loose shapes/guides count individually — is snapped to a
-  shared edge (**Top/Bottom/Left/Right**) or its **Centre** (vertical). **Distribute
-  Vertical/Horizontal** evens the spacing of unit centres; selecting a single group
-  distributes that group's own direct children. Align needs ≥2 units, distribute ≥3.
+  shared edge (**Top/Bottom/Left/Right**) or a shared **Horizontal/Vertical Centre**.
+  **Distribute Vertical/Horizontal** evens the gaps between unit bounds; selecting
+  a single group distributes that group's own direct children. Align needs ≥2 units,
+  distribute ≥3.
 - **Project menu** — edit one project field at a time: **Target Car…** (the car a
   livery targets), **Project Name…**, and **Creator Name…** (also saved as the
   default creator for new projects).
@@ -138,14 +141,14 @@ recommended working pipelines. For build/developer notes see
 - **Guide layers** — import a raster image as an editor-only reference layer
   (**File → Import Guide Layer…**, toolbar **Add Guide Layer**, or drag an image
   from Explorer). Guide layers are stored inside the project file and ignored by
-  game export. **Guide Layers On Top** is enabled by default and can be toggled
-  with `` ` ``. Guide-layer visibility can be toggled from **Options** and
-  rebound in Settings.
+  game export. **Options → Guides → Show Guide Layers On Top** is enabled by
+  default and can be changed with `` ` ``. All guide layers can be shown or hidden
+  together from the same menu without changing their individual visibility.
 - **Rulers and guidelines** — canvas rulers track world coordinates while the
   view is panned or zoomed. `Alt`+left-click a ruler to add a project guideline,
   drag its ruler marker to reposition it, or right-click the marker to remove it.
-  Guideline locking, clearing, shortcuts, and color are configurable from the
-  Options menu and Settings.
+  Guideline visibility, locking, clearing, shortcuts, and color are configurable
+  from **Options → Guides** and Settings.
 - **Visibility borders** — Settings can show viewport/placement reference
   borders on the canvas and choose the reference resolution. **Position Limit
   Border** is off by default.

@@ -70,7 +70,7 @@ ProjectCanvas::GuidelineOrientation ProjectCanvas::rulerAt(const QPointF &point)
 
 int ProjectCanvas::guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const
 {
-    if (project_ == nullptr || orientation == GuidelineOrientation::None) {
+    if (!guidelinesVisible_ || project_ == nullptr || orientation == GuidelineOrientation::None) {
         return -1;
     }
     const QVector<double> &guidelines = orientation == GuidelineOrientation::Vertical
@@ -139,7 +139,7 @@ bool ProjectCanvas::handleRulerPress(QMouseEvent *event)
     }
     rulerPressActive_ = true;
 
-    if ((event->modifiers() & Qt::AltModifier) && !guidelinesLocked_) {
+    if ((event->modifiers() & Qt::AltModifier) && guidelinesVisible_ && !guidelinesLocked_) {
         if (state_ != nullptr) {
             state_->beginProjectEdit();
         }

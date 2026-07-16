@@ -34,6 +34,11 @@ constexpr double CursorHintCursorOffset = 18.0;
 constexpr double CursorHintScreenMargin = 4.0;
 
 const QColor EmptyCanvasTextColor(190, 194, 201);
+const QColor ShapeCountTextColor(255, 255, 255);
+const QColor ShapeCountOutlineColor(0, 0, 0);
+constexpr double ShapeCountOutlineWidth = 3.0;
+constexpr double ShapeCountMargin = 8.0;
+constexpr double ShapeCountSupersampling = 2.0;
 
 double rulerMajorStep(double pixelsPerWorldUnit)
 {
@@ -179,20 +184,22 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
     const QRectF contentRect(RulerExtent, RulerExtent,
                              std::max(0.0, width() - RulerExtent),
                              std::max(0.0, height() - RulerExtent));
-    painter.save();
-    painter.setClipRect(contentRect);
-    QPen guidelinePen(guidelineColor_, 1.0);
-    guidelinePen.setCosmetic(true);
-    painter.setPen(guidelinePen);
-    for (double coordinate : project_->verticalGuidelines) {
-        const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
-        painter.drawLine(QPointF(x, contentRect.top()), QPointF(x, contentRect.bottom()));
+    if (guidelinesVisible_) {
+        painter.save();
+        painter.setClipRect(contentRect);
+        QPen guidelinePen(guidelineColor_, 1.0);
+        guidelinePen.setCosmetic(true);
+        painter.setPen(guidelinePen);
+        for (double coordinate : project_->verticalGuidelines) {
+            const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
+            painter.drawLine(QPointF(x, contentRect.top()), QPointF(x, contentRect.bottom()));
+        }
+        for (double coordinate : project_->horizontalGuidelines) {
+            const double y = worldToScreen(QPointF(0.0, coordinate)).y();
+            painter.drawLine(QPointF(contentRect.left(), y), QPointF(contentRect.right(), y));
+        }
+        painter.restore();
     }
-    for (double coordinate : project_->horizontalGuidelines) {
-        const double y = worldToScreen(QPointF(0.0, coordinate)).y();
-        painter.drawLine(QPointF(contentRect.left(), y), QPointF(contentRect.right(), y));
-    }
-    painter.restore();
 
     const bool dark = isDarkTheme(currentUiTheme());
     const QColor rulerBackground = dark ? QColor(38, 40, 44) : QColor(229, 231, 234);
@@ -253,22 +260,24 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
         }
     }
 
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(guidelineColor_);
-    for (double coordinate : project_->verticalGuidelines) {
-        const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
-        if (x >= contentRect.left() && x <= contentRect.right()) {
-            painter.drawPolygon(QPolygonF({QPointF(x - 4.0, RulerExtent - 7.0),
-                                           QPointF(x + 4.0, RulerExtent - 7.0),
-                                           QPointF(x, RulerExtent - 1.0)}));
+    if (guidelinesVisible_) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(guidelineColor_);
+        for (double coordinate : project_->verticalGuidelines) {
+            const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
+            if (x >= contentRect.left() && x <= contentRect.right()) {
+                painter.drawPolygon(QPolygonF({QPointF(x - 4.0, RulerExtent - 7.0),
+                                               QPointF(x + 4.0, RulerExtent - 7.0),
+                                               QPointF(x, RulerExtent - 1.0)}));
+            }
         }
-    }
-    for (double coordinate : project_->horizontalGuidelines) {
-        const double y = worldToScreen(QPointF(0.0, coordinate)).y();
-        if (y >= contentRect.top() && y <= contentRect.bottom()) {
-            painter.drawPolygon(QPolygonF({QPointF(RulerExtent - 7.0, y - 4.0),
-                                           QPointF(RulerExtent - 7.0, y + 4.0),
-                                           QPointF(RulerExtent - 1.0, y)}));
+        for (double coordinate : project_->horizontalGuidelines) {
+            const double y = worldToScreen(QPointF(0.0, coordinate)).y();
+            if (y >= contentRect.top() && y <= contentRect.bottom()) {
+                painter.drawPolygon(QPolygonF({QPointF(RulerExtent - 7.0, y - 4.0),
+                                               QPointF(RulerExtent - 7.0, y + 4.0),
+                                               QPointF(RulerExtent - 1.0, y)}));
+            }
         }
     }
     painter.restore();
@@ -355,6 +364,56 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
         painter.setPen(QPen(SelectionAccentColor, 1, Qt::DashLine));
         painter.drawRect(marqueeRect_);
     }
+
+    int loadedCount = 0;
+    forEachSceneShape([&](const fh6::scene::Shape &, const QTransform &, int) {
+        ++loadedCount;
+        return true;
+    }, false);
+    const int selectedCount = state_ != nullptr ? state_->selectedLayerIds().size() : 0;
+    const QStringList countLines = {
+        QStringLiteral("Shapes loaded: %1").arg(loadedCount),
+        QStringLiteral("Shapes selected: %1").arg(selectedCount),
+    };
+    QFont countFont = painter.font();
+    if (countFont.pointSizeF() > 0.0) {
+        countFont.setPointSizeF(countFont.pointSizeF() * 1.5);
+    } else {
+        countFont.setPixelSize(std::max(1, qRound(countFont.pixelSize() * 1.5)));
+    }
+    const QFontMetricsF metrics(countFont);
+    qreal textWidth = 0.0;
+    for (const QString &line : countLines) {
+        textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
+    }
+    const qreal padding = ShapeCountOutlineWidth + 1.0;
+    const QSizeF imageSize(textWidth + padding * 2.0,
+                           metrics.height() * countLines.size() + padding * 2.0);
+    const qreal renderScale = devicePixelRatioF() * ShapeCountSupersampling;
+    QImage countImage(QSize(qCeil(imageSize.width() * renderScale),
+                            qCeil(imageSize.height() * renderScale)),
+                      QImage::Format_ARGB32_Premultiplied);
+    countImage.setDevicePixelRatio(renderScale);
+    countImage.fill(Qt::transparent);
+
+    QPainter countPainter(&countImage);
+    countPainter.setRenderHint(QPainter::Antialiasing, true);
+    countPainter.setRenderHint(QPainter::TextAntialiasing, true);
+    qreal baseline = padding + metrics.ascent();
+    for (const QString &line : countLines) {
+        QPainterPath path;
+        path.addText(QPointF(padding, baseline), countFont, line);
+        countPainter.strokePath(path, QPen(ShapeCountOutlineColor, ShapeCountOutlineWidth,
+                                           Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        countPainter.fillPath(path, ShapeCountTextColor);
+        baseline += metrics.height();
+    }
+    countPainter.end();
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.drawImage(QPointF(RulerExtent + ShapeCountMargin - padding,
+                              RulerExtent + ShapeCountMargin - padding),
+                      countImage);
+
     drawCursorHint(painter);
     painter.restore();
 }
@@ -465,7 +524,7 @@ QString ProjectCanvas::sectionCanvasCacheKey() const
     if (project_ == nullptr || state_ == nullptr || !project_->isLivery || state_->activeSectionId_.isEmpty() || size().isEmpty()) {
         return {};
     }
-    return QStringLiteral("%1|%2x%3|%4|%5,%6,%7,%8,%9,%10|%11|%12")
+    return QStringLiteral("%1|%2x%3|%4|%5,%6,%7,%8,%9,%10|%11|%12|%13")
         .arg(state_->activeSectionId_)
         .arg(width())
         .arg(height())
@@ -477,7 +536,8 @@ QString ProjectCanvas::sectionCanvasCacheKey() const
         .arg(QString::number(worldToScreen_.dx(), 'g', 17))
         .arg(QString::number(worldToScreen_.dy(), 'g', 17))
         .arg(canvasColor_.rgba())
-        .arg(guideLayersOnTop_ ? 1 : 0);
+        .arg(guideLayersOnTop_ ? 1 : 0)
+        .arg(guideLayersVisible_ ? 1 : 0);
 }
 
 void ProjectCanvas::storeSectionCanvasCache(const QString &key)
@@ -498,7 +558,7 @@ void ProjectCanvas::storeSectionCanvasCache(const QString &key)
 
 void ProjectCanvas::drawGuideLayers(QPainter &painter)
 {
-    if (sceneTree() == nullptr) {
+    if (!guideLayersVisible_ || sceneTree() == nullptr) {
         return;
     }
     painter.save();

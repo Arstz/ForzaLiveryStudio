@@ -54,8 +54,8 @@ public:
     void pasteClipboard();
     void stampSelection();
     void sampleGuideColorToSelection();
-    void toggleGuideLayerVisibility();
     void insertShape(int shapeId);
+    void replaceSelectedShape(int shapeId);
     void insertLogo(quint32 rasterId, int width, int height);
     void placeTextDialog();
     void saveCurrentSelectionAsCustomGroup();
@@ -185,7 +185,6 @@ private:
     CarPreviewWidget *carPreview_ = nullptr;
     QDockWidget *carPreviewDock_ = nullptr;
     QAction *carUnwrapAction_ = nullptr;
-    QAction *flipSelectionAction_ = nullptr;
     QTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;
     QLabel *details_ = nullptr;
