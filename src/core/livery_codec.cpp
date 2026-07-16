@@ -260,10 +260,7 @@ void collectSourceShapes(const VinylGroup &node, const Matrix3 &parentMatrix, bo
             view.color = shape.color;
             view.absPos = shape.absPos;
             view.marker = shape.marker;
-            view.mask = inheritedMask || shape.isMask;
-            if (hasColorData(shape.color)) {
-                view.mask = false;
-            }
+            view.mask = inheritedMask || (shape.isMask && !hasColorData(shape.color));
             view.worldMatrix = detail::multiply(groupMatrix, shapeMatrixForShape(shape));
             view.world = decomposeTransform2D(view.worldMatrix);
             out.push_back(view);
@@ -654,8 +651,8 @@ QByteArray packMarkerlessGroupHeader(const QVector<LiveryEntry> &children, const
     QByteArray out;
     detail::appendLeU16(out, static_cast<quint16>(children.size()));
     out.append(static_cast<char>(bitmap.size()));
+    out.append(QByteArray(3, '\0'));
     out.append(bitmap);
-    out.append(QByteArray(2, '\0'));
     return out;
 }
 
@@ -666,8 +663,8 @@ QByteArray packCountedGroupHeader(const QVector<LiveryEntry> &children, bool mas
     out.append(mask ? '\x60' : '\x20');
     detail::appendLeU16(out, static_cast<quint16>(children.size()));
     out.append(static_cast<char>(bitmap.size()));
+    out.append(QByteArray(3, '\0'));
     out.append(bitmap);
-    out.append(QByteArray(2, '\0'));
     return out;
 }
 
@@ -813,7 +810,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
             } else if (hasPreviousSibling) {
                 marker = QByteArray("\x00\x03", 2);
             } else {
-                marker = QByteArray("\x03", 1);
+                marker = QByteArray();
             }
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
             previousShapeMask = false;

@@ -117,9 +117,9 @@ void dumpTree(const scene::Layer &node, int depth, int maxDepth, int maxChildren
     if (node.kind() == scene::LayerKind::Shape) {
         const auto &s = static_cast<const scene::Shape &>(node);
         const scene::Transform2D world = decomposeTransform2D(s.worldMatrix());
-        std::printf("%sshape id=%u x=%.2f y=%.2f sx=%.3f sy=%.3f rot=%.1f\n",
+        std::printf("%sshape id=%u x=%.2f y=%.2f sx=%.3f sy=%.3f rot=%.1f mask=%d\n",
                     ind.toLatin1().constData(), s.shapeId, world.x, world.y,
-                    world.scaleX, world.scaleY, world.rotation);
+                    world.scaleX, world.scaleY, world.rotation, s.mask ? 1 : 0);
         return;
     }
     if (node.kind() != scene::LayerKind::Group) return;
@@ -395,6 +395,22 @@ void dumpRaw(const VinylGroup &node, int depth, int maxDepth, int maxChildren)
     }
 }
 
+void dumpRawGroups(const VinylGroup &node, int depth)
+{
+    for (const VinylItem &item : node.items) {
+        if (item.isShape()) {
+            continue;
+        }
+        const VinylGroup &group = *std::get<VinylGroupPtr>(item.value);
+        std::printf("%*sGROUP @%d px=%.6f py=%.6f sx=%.6f sy=%.6f rot=%.6f exp=%d flags=%d ptm=%s inl=%s\n",
+                    depth * 2, "", group.absPos, group.px, group.py, group.sx, group.sy,
+                    group.rot, group.expectedChildren ? *group.expectedChildren : -1,
+                    group.flags, group.pendingTransformMarker.toHex().constData(),
+                    group.inlineTransformMarker.toHex().constData());
+        dumpRawGroups(group, depth + 1);
+    }
+}
+
 void collectTransformGroups(const VinylGroup &node, QVector<const VinylGroup *> &out)
 {
     for (const VinylItem &item : node.items) {
@@ -421,6 +437,7 @@ int main(int argc, char *argv[])
     bool verbose = args.removeAll(QStringLiteral("--verbose")) > 0;
     bool treeMode = args.removeAll(QStringLiteral("--tree")) > 0;
     bool rawMode = args.removeAll(QStringLiteral("--raw")) > 0;
+    bool rawGroupsMode = args.removeAll(QStringLiteral("--raw-groups")) > 0;
     bool markersMode = args.removeAll(QStringLiteral("--markers")) > 0;
     bool rangesMode = args.removeAll(QStringLiteral("--ranges")) > 0;
     bool paintMode = args.removeAll(QStringLiteral("--paint")) > 0;
@@ -429,6 +446,29 @@ int main(int argc, char *argv[])
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+    const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
+
+    if (bodyRangeMode) {
+        if (args.size() < 4) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --body-range <liveryFolder> <start> <length>\n");
+            return 2;
+        }
+        bool startOk = false;
+        bool lengthOk = false;
+        const int start = args[2].toInt(&startOk, 0);
+        const int length = args[3].toInt(&lengthOk, 0);
+        if (!startOk || !lengthOk || start < 0 || length < 0) {
+            std::fprintf(stderr, "invalid body range\n");
+            return 2;
+        }
+        const LiveryPayload payload = readLiveryPayload(args[1]);
+        const int end = std::min(start + length, static_cast<int>(payload.body.size()));
+        for (int pos = start; pos < end; pos += 16) {
+            const QByteArray row = payload.body.mid(pos, std::min(16, end - pos));
+            std::printf("%08x  %s\n", pos, row.toHex(' ').constData());
+        }
+        return 0;
+    }
 
     const bool fmStatsMode = args.removeAll(QStringLiteral("--fm-stats")) > 0;
     if (fmStatsMode) {
@@ -633,12 +673,25 @@ int main(int argc, char *argv[])
                             tg[i]->pendingTransformMarker.toHex().constData(),
                             tg[i]->inlineTransformMarker.toHex().constData(),
                             tg[i]->expectedChildren ? *tg[i]->expectedChildren : -1);
+                if (verbose) {
+                    std::printf("       L@%d p=(%.6f,%.6f) s=(%.6f,%.6f) r=%.6f flags=%d exp=%d ctrl=%s bits=%s"
+                                "  T@%d p=(%.6f,%.6f) s=(%.6f,%.6f) r=%.6f flags=%d ctrl=%s bits=%s\n",
+                                lg[i]->absPos, lg[i]->px, lg[i]->py, lg[i]->sx, lg[i]->sy,
+                                lg[i]->rot, lg[i]->flags,
+                                lg[i]->expectedChildren ? *lg[i]->expectedChildren : -1,
+                                lg[i]->headerControlBytes.toHex().constData(),
+                                lg[i]->childTypeBitmap.toHex().constData(),
+                                tg[i]->absPos, tg[i]->px, tg[i]->py, tg[i]->sx, tg[i]->sy,
+                                tg[i]->rot, tg[i]->flags,
+                                tg[i]->headerControlBytes.toHex().constData(),
+                                tg[i]->childTypeBitmap.toHex().constData());
+                }
             }
         }
         return 0;
     }
 
-    if (rawMode) {
+    if (rawMode || rawGroupsMode) {
         const LiveryPayload lp = readLiveryPayload(liveryFolder);
         const QVector<LiverySection> sections = buildLiverySections(lp.body, lp.sectionCounts);
         for (const SectionMap &sm : kSections) {
@@ -647,8 +700,12 @@ int main(int argc, char *argv[])
             for (const LiverySection &sec : sections) {
                 if (sec.slot == sm.slot) {
                     std::printf("section absPos=%d populated=%d\n", sec.absPos, sec.populated);
-                    dumpRaw(sec.subtree, 0, allMode ? 100000 : (verbose ? 40 : 4),
-                            allMode ? 100000 : (verbose ? 500 : 14));
+                    if (rawGroupsMode) {
+                        dumpRawGroups(sec.subtree, 0);
+                    } else {
+                        dumpRaw(sec.subtree, 0, allMode ? 100000 : (verbose ? 40 : 4),
+                                allMode ? 100000 : (verbose ? 500 : 14));
+                    }
                     break;
                 }
             }

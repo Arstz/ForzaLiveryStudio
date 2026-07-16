@@ -98,6 +98,7 @@ BehaviorSettings loadBehaviorSettings()
     result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), false).toBool();
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), false).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), true).toBool();
+    result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), true).toBool();
     result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), true).toBool();
     result.visibilityBordersEnabled = settings.value(QStringLiteral("ui/behavior/visibilityBordersEnabled"), true).toBool();
     result.positionLimitBorderEnabled = settings.value(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), false).toBool();
@@ -130,6 +131,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
+    qsettings.setValue(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), settings.displayAnchorsDuringTransformDrag);
     qsettings.setValue(QStringLiteral("ui/behavior/guideLayersOnTop"), settings.guideLayersOnTop);
     qsettings.setValue(QStringLiteral("ui/behavior/visibilityBordersEnabled"), settings.visibilityBordersEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), settings.positionLimitBorderEnabled);

@@ -39,10 +39,7 @@ void flattenInto(const VinylGroup &node, const Matrix3 &parentMat, bool parentMa
             layer.absPos = shape.absPos;
             layer.marker = shape.marker;
             layer.flags = shape.flags;
-            layer.isMask = inheritedMask || shape.isMask;
-            if (hasColorData(shape.color)) {
-                layer.isMask = false;
-            }
+            layer.isMask = inheritedMask || (shape.isMask && !hasColorData(shape.color));
             layer.groupMatrix = groupMat;
             result.push_back(layer);
         } else {

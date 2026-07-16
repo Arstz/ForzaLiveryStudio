@@ -676,6 +676,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (canvas_ != nullptr) {
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
+        canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);
         canvas_->setGuideLayersOnTop(settings.guideLayersOnTop);
         canvas_->setVisibilityBordersEnabled(settings.visibilityBordersEnabled);
         canvas_->setPositionLimitBorderEnabled(settings.positionLimitBorderEnabled);

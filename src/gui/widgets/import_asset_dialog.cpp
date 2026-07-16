@@ -218,6 +218,12 @@ public:
         searchEdit_->setClearButtonEnabled(true);
         typeFilter_ = new QComboBox(this);
         typeFilter_->addItems({QStringLiteral("All"), QStringLiteral("Livery"), QStringLiteral("Group")});
+        QSettings settings;
+        searchEdit_->setText(settings.value(QStringLiteral("import/sourceBrowserSearch")).toString());
+        const int savedTypeFilter = settings.value(QStringLiteral("import/sourceBrowserType"), 0).toInt();
+        if (savedTypeFilter >= 0 && savedTypeFilter < typeFilter_->count()) {
+            typeFilter_->setCurrentIndex(savedTypeFilter);
+        }
         filters->addWidget(searchEdit_, 1);
         filters->addWidget(typeFilter_);
         layout->addLayout(filters);
@@ -252,8 +258,14 @@ public:
             }
             navigate(requested);
         });
-        connect(searchEdit_, &QLineEdit::textChanged, this, [this]() { applyFilters(); });
-        connect(typeFilter_, &QComboBox::currentIndexChanged, this, [this]() { applyFilters(); });
+        connect(searchEdit_, &QLineEdit::textChanged, this, [this](const QString &text) {
+            QSettings().setValue(QStringLiteral("import/sourceBrowserSearch"), text);
+            applyFilters();
+        });
+        connect(typeFilter_, &QComboBox::currentIndexChanged, this, [this](int index) {
+            QSettings().setValue(QStringLiteral("import/sourceBrowserType"), index);
+            applyFilters();
+        });
         connect(list_, &QListWidget::currentItemChanged, this,
                 [this](QListWidgetItem *current, QListWidgetItem *) { updateSelection(current); });
         connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
@@ -305,6 +317,7 @@ private:
             return;
         }
         currentDirectory_ = info.absoluteFilePath();
+        QSettings().setValue(QStringLiteral("import/sourceBrowserDirectory"), currentDirectory_);
         if (recordHistory) {
             while (history_.size() > historyIndex_ + 1) {
                 history_.removeLast();

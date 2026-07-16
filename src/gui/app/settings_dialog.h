@@ -61,6 +61,7 @@ private:
     QPushButton *lightCanvasColorButton_ = nullptr;
     QCheckBox *visibilityBordersCheck_ = nullptr;
     QCheckBox *positionLimitBorderCheck_ = nullptr;
+    QCheckBox *displayAnchorsDuringTransformDrag_ = nullptr;
     QComboBox *visibilityBorderResolution_ = nullptr;
     QDoubleSpinBox *nudgeStep_ = nullptr;
     QDoubleSpinBox *nudgeShiftStep_ = nullptr;

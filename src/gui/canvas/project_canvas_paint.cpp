@@ -180,7 +180,8 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
             painter.setPen(QPen(SelectionFrameColor, SelectionFrameLineWidth));
             painter.drawPolygon(boxPolygon);
         }
-        if (tool_ == QStringLiteral("transform")) {
+        if (tool_ == QStringLiteral("transform")
+            && (!isTransformDrag() || displayAnchorsDuringTransformDrag_)) {
             QVector<QPointF> handles = {
                 topLeft, topRight, bottomLeft, bottomRight,
                 toScreen.map(QPointF(lr.left(), lr.center().y())),

@@ -8,7 +8,8 @@ exports flat game-compatible folders.
 
 - Import supported asset folders through one context-aware **Import…** action.
   Its minimal filesystem browser identifies importable folders, shows available
-  header metadata and thumbnails, and routes the selection to the matching decoder.
+  header metadata and thumbnails, routes the selection to the matching decoder,
+  and restores its last folder and filters when reopened.
 - Open/save editor projects as a `.3so` container: the editor project JSON
   wrapped in a gzip stream. The document is the unified scene tree (v2: a recursive
   `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON
@@ -96,9 +97,9 @@ exports flat game-compatible folders.
   currently loaded model or keeps it. Native car texture loading is an opt-in preview
   setting and is disabled by default.
 - Configure UI theme, canvas colors, layout, keybinds, behavior options, guide
-  visibility borders, nudge step sizes, the car models folder, and the discard-model
-  option. Every menu-bar action can be bound to a hotkey in the keybind settings, even
-  those with no default shortcut.
+  visibility borders, transform-drag anchors, nudge step sizes, the car models folder,
+  and the discard-model option. Every menu-bar action can be bound to a hotkey in the
+  keybind settings, even those with no default shortcut.
   Fresh settings default to the Dark theme with theme-default canvas colors.
 - Collapse dock areas from the dock title-bar collapse buttons. The button appears on
   only one dock per area (never duplicated across split docks) and is hidden on
@@ -230,10 +231,10 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     supplies decoder-only terminal section padding before using the shared livery
     tree walker.
     The livery decoder handles the embedded `gyvl` transform dialect (including
-    framed 9-byte separate-transform trailers), wrapped child-bitmap byte fields,
-    registry-backed vector ID validation, custom-logo stats weighting, section-root
-    boundary guards, section-span wrapper recovery, and second-level livery span
-    recovery before converting the decoded tree into scene layers.
+    framed 9-byte separate-transform trailers), three-byte group controls and
+    variable child bitmaps, registry-backed vector ID validation, custom-logo stats
+    weighting, and section-root boundary guards before converting the decoded tree
+    into scene layers.
   - `layer.*` / `visual_container.h`: the unified scene-object hierarchy in
     namespace `fh6::scene` — `Layer` (id, `Transform2D`, opacity, visibility/lock,
     parent) subclassed by `Shape` / `GuideLayer` / `Group`. A group carries its own

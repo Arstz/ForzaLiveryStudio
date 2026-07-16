@@ -100,6 +100,10 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     positionLimitBorderCheck_->setChecked(behaviorSettings_.positionLimitBorderEnabled);
     generalLayout->addRow(QStringLiteral("Position Limit Border"), positionLimitBorderCheck_);
 
+    displayAnchorsDuringTransformDrag_ = new QCheckBox(general);
+    displayAnchorsDuringTransformDrag_->setChecked(behaviorSettings_.displayAnchorsDuringTransformDrag);
+    generalLayout->addRow(QStringLiteral("Display anchors during transform drag"), displayAnchorsDuringTransformDrag_);
+
     visibilityBorderResolution_ = new QComboBox(general);
     const QVector<QSize> visibilityResolutions = {QSize(1920, 1080), QSize(2560, 1440), QSize(3840, 2160)};
     for (const QSize &resolution : visibilityResolutions) {
@@ -238,6 +242,8 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
     BehaviorSettings result = behaviorSettings_;
     result.visibilityBordersEnabled = visibilityBordersCheck_ != nullptr && visibilityBordersCheck_->isChecked();
     result.positionLimitBorderEnabled = positionLimitBorderCheck_ != nullptr && positionLimitBorderCheck_->isChecked();
+    result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_ != nullptr
+        && displayAnchorsDuringTransformDrag_->isChecked();
     if (visibilityBorderResolution_ != nullptr) {
         const QSize resolution = visibilityBorderResolution_->currentData().toSize();
         result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);

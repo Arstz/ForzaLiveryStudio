@@ -2,8 +2,8 @@
 
 Concise reference for the Forza `C_livery` binary payload. It describes the chunk
 container and how the embedded artwork relates to the [`C_group`](CGROUP.md)
-format: a `C_livery` wraps one embedded `C_group` (a `gyvl` chunk) whose only
-difference from the standalone form is the transform-marker dialect below.
+format: a `C_livery` wraps one embedded group-derived artwork stream (a `gyvl`
+chunk) with livery-specific root, section, and transform framing.
 
 ## Container
 
@@ -80,22 +80,32 @@ There is no root counted-group marker (`20`/`60`) and no root child bitmap at th
 standalone offsets. The body at rel 0x15 is a flat positional stream of the 11
 section slots (see Sections), not a counted root.
 
-## Transform-Marker Dialect
+## Group Headers and Transform Framing
 
-Shapes, group headers, child bitmaps, and transform payloads are byte-identical to
-`C_group`. Only the **transform markers** differ. A standalone `C_group` transform
-marker is `<lead> <body> 03`; in the livery:
+Counted and markerless groups own three control bytes followed by a variable-size
+child bitmap. The bitmap length is derived from the child count, so every bitmap
+byte is consumed before looking for a transform marker:
 
 ```text
-00-family   00 [01]* 03   ->   00           (collapse to a single byte)
-odd-family  <odd> 03       ->   <odd> 01      (terminating 03 becomes 01)
+counted:    20|60  u16 count  u8 bitmap_blocks  control[3]  bitmap[ceil(count/8)]
+markerless:        u16 count  u8 bitmap_blocks  control[3]  bitmap[ceil(count/8)]
 ```
 
-`<odd>` is any odd lead byte (01, 03, 05, 07, 0b, 0d, 0f, 1b, 1d, 1f, 33, 3d, 3f,
-7f, ff, ...). The **inline** (in-group-header) marker set is the closed grammar
-`{ 00, <odd> 01, 01 }`; a **separate** transform is not so constrained — see below.
-The 16-float payload (px, py, sx, rot) is unchanged, as is the optional signed-Y
-suffix — except its marker byte:
+For bitmaps larger than the byte-sized block field, the field stores the wrapped
+low byte while the decoder derives the full length from the count. The detailed
+meaning of the complete structural bitmap remains open; it is preserved even when
+it is not used to choose a decoded child type.
+
+Transform framing begins after the complete header. Standalone `C_group` markers
+terminate in `03`; their livery equivalents terminate in `01`. An odd final bitmap
+byte immediately followed by `01` is therefore a bitmap byte followed by a
+one-byte livery transform marker.
+
+The 16-byte transform payload stores `px`, `py`, `sx`, and the wire rotation. A
+separate transform led by `01` uses the opposite editor rotation sign when its
+normal non-mirrored successor begins with a scaled first-child frame. Top-section,
+unit-scale container, mask, and mirrored transforms retain the wire sign. A `00`
+lead retains the wire sign. The optional signed-Y suffix is:
 
 ```text
 30 + f32 scale_y      normal group
@@ -104,17 +114,21 @@ suffix — except its marker byte:
 
 Recognize both suffixes with `(byte & ~0x40) == 0x30`.
 
-A **separate** (pending) transform — one that stands before a group rather than
-inside its header — collapses to just a single **lead byte** + the 16-float
-payload; the trailing `01`/`03` run of the inline form is dropped. The lead is the
-standalone marker's leading control/bitmap byte and is therefore **arbitrary**,
-including both odd and even values. **It cannot be matched by value.**
-A separate transform must be recognized purely **structurally**: a lead byte + a
-valid 16-float payload (+ optional 30/70 suffix) followed by a group through one
-of the bounded successor forms below. Requiring the following group is what makes
-an arbitrary lead unambiguous against a per-shape flag byte in front of a `01 02`
-shape. The one extra byte-level guard is to reject a lead whose *next* byte begins
-a shape. See `isLiveryTransformLead` in the decoder.
+A counted `60` group establishes mask state for every descendant shape. Shape
+color bytes do not override that inherited group state; chromatic color can only
+reject ambiguous mask state attached directly to an otherwise normal record.
+
+Record-level mask state is trailing. When an odd shape lead follows a direct shape
+sibling, its low bit marks that preceding shape. An odd group-transform lead can
+carry the same state after a group closes; it resolves through the immediately
+preceding terminal-child chain. The remainder of either token describes the
+current shape or group.
+
+A separate pending transform stands outside a group header. It uses a lead byte
+and a valid 16-byte payload, with the optional signed-Y suffix, followed by a group
+through a bounded successor form. It is recognized structurally rather than from
+the lead value. Requiring the successor group disambiguates it from per-record
+flags and shape data.
 
 A separate transform's group need not sit **immediately** after the payload — a
 single flag/control byte can intervene: `<lead> <payload> <flag> <group>`. A
@@ -124,11 +138,10 @@ lets the walker consume the flag while carrying the pending transform forward.
 There is an ambiguity between that one-byte-gap form and a flag immediately before
 another separate transform. A sequence `<flag> <lead> <payload> <group>` can also
 produce numerically plausible floats when decoded one byte early as
-`<lead> <payload> <flag> <group>`. When the first byte is a recognized flag, prefer
-the parse whose transform payload ends exactly at the group. The walker consumes
-the flag first and reads the aligned transform on its next step. This keeps mirrored
-copies structurally equivalent even when one shifted payload happens to pass the
-normal float-range checks.
+`<lead> <payload> <flag> <group>`. A valid transform at the current position takes
+precedence when its payload ends directly at a group or framed successor. A
+recognized flag is consumed first only when the current candidate requires the
+one-byte gap and the shifted candidate has exact structural alignment.
 
 A second framed successor form places a 9-byte trailer between the transform and
 the group:
@@ -155,17 +168,14 @@ The same ambiguity exists for **shapes**. A shape record is `00 02`/`01 02`
 Validate the **full** transform of a candidate shape, including `scale_y`, before
 accepting a bare record.
 
-The 03→01 collapse makes the bare livery `01` marker **ambiguous**: it is the
-collapse of *both* a standalone `01 03` separate transform (whose signed-Y suffix
-sign is spurious and must be forced positive, matching the standalone decoder) and
-a standalone bare `03` separate transform (whose negative signed-Y is **real** — a
-genuine vertical flip). Tell them apart by the group's inline first-child marker:
-the `03` form carries one (`inl = 01 01`), the spurious `01 03` form does not. So a
-bare-`01` group keeps its negative `sy` when it has a non-empty inline marker, and
-normalises `sy` to positive when the inline marker is empty.
+The markerless section wrapper may place its first-child transform payload directly
+after the bitmap without a marker. This form is accepted only when the bitmap and
+the following counted or markerless group agree structurally. The payload may use
+the signed-Y suffix and framed successor described above.
 
-Everything else — counted groups, markerless groups, inline first-child
-transforms, masks, flattening — follows the `C_group` rules unchanged.
+Decoded transform values and group ancestry come directly from the parsed records.
+The decoder does not normalize signed scale, absorb siblings, or reparent section
+spans after the walk.
 
 ## Sections
 
@@ -186,11 +196,8 @@ slot is a run of one or more top-level groups whose decal count sums to that
 section's stats value, followed by an 18-byte scaffold remnant.
 
 A populated slot's **first** top-level group is wrapped in a markerless group whose
-header is `<count> 00 <child_blocks> 00 … 00` (count = the wrapper's direct
-children; `child_blocks` = ceil(count/8) bitmap bytes, all `00`; two control bytes
-`00`), and that first child group is preceded by a **separate transform** carrying
-the section's placement (position, scale and orientation). That transform's lead
-byte is arbitrary (see above).
+header contains its direct-child count, bitmap-block field, three control bytes,
+and child bitmap. The first child placement payload follows that bitmap directly.
 Subsequent top-level groups in the slot use their own separate transforms the same
 way (an ordinary bare `00` when the placement is simple).
 

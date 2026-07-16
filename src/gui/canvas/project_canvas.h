@@ -49,6 +49,7 @@ public:
     bool moveToolAutoSelect() const;
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
+    void setDisplayAnchorsDuringTransformDrag(bool enabled);
     void setGuideLayersOnTop(bool enabled);
     bool guideLayersOnTop() const;
     void setVisibilityBordersEnabled(bool enabled);
@@ -238,6 +239,7 @@ private:
     bool transformRelativeMode_ = false;
     bool moveToolAutoSelect_ = false;
     bool selectionFlashEnabled_ = true;
+    bool displayAnchorsDuringTransformDrag_ = true;
     bool guideLayersOnTop_ = true;
     bool visibilityBordersEnabled_ = true;
     bool positionLimitBorderEnabled_ = false;

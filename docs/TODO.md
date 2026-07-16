@@ -1,6 +1,8 @@
+Small changes:
+    -Add a toggle in Settings "Display anchors during transform drag" on by default
+    -Keep the Explorer GUI warm with last folder opened and filter applied
+
 Medium changes:
-    -Unify tranform detection in decoder, debug last transform mutations
-    -Debug mask flag being ignored in liveries
 
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied

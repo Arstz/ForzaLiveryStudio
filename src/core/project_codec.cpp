@@ -730,10 +730,7 @@ Project importCGroupNested(const QString &folderOrFile)
             layer.width = 256;
             layer.height = 256;
             layer.color = shape.color;
-            layer.mask = parentMask || shape.isMask;
-            if (hasColorData(shape.color)) {
-                layer.mask = false;
-            }
+            layer.mask = parentMask || (shape.isMask && !hasColorData(shape.color));
             layer.visible = true;
             layer.locked = false;
             layer.sourceShape = shapeIndex;
@@ -848,10 +845,7 @@ Project importCLivery(const QString &folderOrFile)
             layer.width = 256;
             layer.height = 256;
             layer.color = shape.color;
-            layer.mask = parentMask || shape.isMask;
-            if (hasColorData(shape.color)) {
-                layer.mask = false;
-            }
+            layer.mask = parentMask || (shape.isMask && !hasColorData(shape.color));
             layer.visible = true;
             layer.locked = false;
             layer.sourceShape = shapeIndex;

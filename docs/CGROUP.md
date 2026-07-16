@@ -69,9 +69,7 @@ Optional signed Y scale extension:
 30 + f32 scale_y
 ```
 
-If the `30` extension is absent, `scale_y` is usually equal to `scale_x`.
-Parser-created containers introduced by bare `01 03` can use `abs(scale_x)` for
-`scale_y`.
+If the `30` extension is absent, `scale_y` is equal to `scale_x`.
 
 Known transform marker forms:
 
@@ -85,26 +83,23 @@ Known transform marker forms:
 00 + repeated 01 bytes + 03
 03 03
 df 03 03
-odd_byte 03
 ```
 
-The `odd_byte 03` form is best understood as:
+An apparent `odd_byte 03` sequence at the end of a group header is:
 
 ```text
-control/bitmap byte
+final bitmap byte
 03 transform marker
 ```
 
-The decoder currently recognizes it as one marker so the transform is attached
-to the correct child. Observed odd bytes include values such as `07`, `0b`,
-`0d`, `15`, `1f`, `2f`, and `3f`.
+Header lengths determine that ownership before transform parsing begins.
 
 ## Groups
 
 Counted group record:
 
 ```text
-20/60 + u16 child_count + u8 child_blocks + control[child_blocks + 2]
+20/60 + u16 child_count + u8 child_blocks + control[3] + bitmap[ceil(child_count / 8)]
 ```
 
 `child_blocks` is:
@@ -125,24 +120,19 @@ Groups and shapes consume one child slot of the current group. Transform and
 control records do not consume child slots.
 
 The decoder closes a group as soon as its declared direct child count is
-satisfied. Root bitmap constraints can force a standalone root shape into the
-previous root group when the root bitmap says the next root item must be a
-group.
+satisfied.
 
 ## Markerless Groups
 
 After a pending transform, a counted group can omit the `20/60` marker:
 
 ```text
-u16 child_count + u8 child_blocks + control[child_blocks + 2]
+u16 child_count + u8 child_blocks + control[3] + bitmap[ceil(child_count / 8)]
 ```
 
 This markerless form is accepted only after a pending transform and only when
 the following bytes continue with a valid child record or an inline transform
 for the first child.
-
-Markerless groups can also carry a single extra control byte before their first
-child.
 
 The same wrapped-bitmap rule used for counted groups applies to markerless
 groups in embedded livery payloads. Because the markerless form is ambiguous
@@ -163,10 +153,10 @@ First-child inline transform markers include:
 01 03
 03 03
 df 03 03
-odd_byte 03
 ```
 
-This rule applies to both counted and markerless groups.
+This rule applies to both counted and markerless groups. Marker recognition starts
+after all three control bytes and the complete child bitmap.
 
 ## Embedded Livery Section Walk
 
@@ -183,21 +173,9 @@ as one opaque unit. It is not a free-form scan allowance: only successor offsets
 group at the resulting position. See [`CLIVERY.md`](CLIVERY.md) for the full
 transform-dialect and section-boundary rules.
 
-Large section-start identity containers can be followed by more transform-led
-records that still belong to the same decoded section container. When a large
-section reaches its stats count and the first at-section-start identity group
-captured only a minority of the section leaves, the decoder marks that group as
-`livery_section_span` and moves the remaining section-top records under it. The
-importer preserves that marked wrapper instead of flattening it into the section
-folder.
-
-Some embedded livery sections contain a second-level span with a tiny
-`ff`/`3f` markerless group at the start of a much longer sibling run. After the
-section-span wrapper is recovered, the decoder can mark that child as
-`livery_nested_span` and absorb following siblings until the next structurally
-plausible sibling run begins. Current boundary guards require the anchor to be
-small, the parent run to be large, and the stop point to be either a counted
-group or a markerless group followed by a loose run of direct shapes.
+The section walker retains the ancestry produced by counted records and bounded
+successor framing. It does not move sibling records into inferred containers after
+decoding.
 
 ## Shapes
 
@@ -240,14 +218,18 @@ runtime shape.
 `01 02` is not a universal mask marker. It is context-sensitive and can occur
 on ordinary visible nested shapes.
 
+At a shared parent boundary, an odd shape lead carries trailing mask state for the
+preceding direct shape sibling. An odd group-transform lead can carry that state
+through the immediately preceding terminal-child chain after a group closes.
+
 ## Masks
 
 Confirmed mask rules:
 
 ```text
 60 group marker => mask group
-mask state inherits through children
-chromatic color data clears decoded mask state
+mask state inherits through children and remains authoritative
+chromatic color data clears ambiguous record-level mask state outside mask groups
 ```
 
 Chromatic color data means:
@@ -256,7 +238,8 @@ Chromatic color data means:
 B != G or G != R
 ```
 
-This override handles corrupted mask flags from extracted grouped files.
+This override handles corrupted record-level mask flags from extracted grouped
+files without discarding explicit mask-group ancestry.
 
 ## Raster Shape Basis
 
@@ -297,11 +280,3 @@ The `01 02` marker is a *trailing* flag: the game masks the shape that
 record at `00 02` and stamping `01 02` onto the next record. Flat export emits
 `01 02` for a record when the previous visible layer carries the editor mask
 flag.
-
-## Export Status
-
-Flat export is the stable export path.
-
-Grouped/nested export is experimental. The decoder can recover many nested
-trees, but canonical nested serialization still depends on control/bitmap byte
-ownership that is not fully formalized for every file.

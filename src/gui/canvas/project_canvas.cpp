@@ -268,6 +268,15 @@ bool ProjectCanvas::selectionFlashEnabled() const
     return selectionFlashEnabled_;
 }
 
+void ProjectCanvas::setDisplayAnchorsDuringTransformDrag(bool enabled)
+{
+    if (displayAnchorsDuringTransformDrag_ == enabled) {
+        return;
+    }
+    displayAnchorsDuringTransformDrag_ = enabled;
+    update();
+}
+
 void ProjectCanvas::setCarUnwrapOverlay(const QImage &overlay)
 {
     carUnwrapOverlay_ = overlay;

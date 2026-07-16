@@ -118,7 +118,8 @@ recommended working pipelines. For build/developer notes see
   default creator for new projects).
 - **Import** (**File → Import…**) — browse folders in the built-in asset explorer.
   Importable folders show their available metadata and thumbnail; selecting one
-  routes it to the matching importer. The explorer returns to its last location.
+  routes it to the matching importer. The explorer restores its last location,
+  search text, and asset-type filter.
 - **Import Car Model** (**File → Import Car Model…**) — load a `.modelbin`,
   `.carbin`, or zipped car folder into the **3D Preview** dock, which shows the
   current vinyl mapped through the model's livery UVs and coverage masks (reference
@@ -141,6 +142,8 @@ recommended working pipelines. For build/developer notes see
 - **Visibility borders** — Settings can show viewport/placement reference
   borders on the canvas and choose the reference resolution. **Position Limit
   Border** is off by default.
+- **Transform anchors** — Settings can hide transform handles during a drag.
+  They remain visible by default.
 - **Swatches** — saved colors are project-specific. Click a swatch to apply it
   to the current selection, click `+` to save the current selection color, and
   middle-click or right-click a swatch to remove it.
