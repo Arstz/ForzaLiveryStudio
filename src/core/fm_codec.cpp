@@ -62,6 +62,25 @@ QByteArray readOptionalFile(const QString &path)
     return file.readAll();
 }
 
+QByteArray inflateFM2023Blocks(const QByteArray &fileData)
+{
+    QByteArray raw;
+    int pos = 0;
+    while (pos < fileData.size()) {
+        if (pos + 8 > fileData.size())
+            throw std::runtime_error("FM2023 livery block header is truncated");
+        const quint32 compressedSize = readLeU32(fileData, pos);
+        const quint32 decompressedSize = readLeU32(fileData, pos + 4);
+        if (compressedSize == 0 || decompressedSize == 0
+            || compressedSize > static_cast<quint32>(fileData.size() - pos - 8)) {
+            throw std::runtime_error("FM2023 livery block size is invalid");
+        }
+        raw.append(inflateFirstContainer(fileData.mid(pos, 8 + static_cast<int>(compressedSize))));
+        pos += 8 + static_cast<int>(compressedSize);
+    }
+    return raw;
+}
+
 Matrix3 shapeMatrixForShape(const VinylShape &shape)
 {
     FlattenedLayer layer;
@@ -81,7 +100,7 @@ bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos,
     const quint16 encodedShapeId = readLeU16(data, idPos);
     const quint16 shapeId = encodedShapeId == 0x0bb8
         ? 0x0bb9 : detail::canonicalShapeId(encodedShapeId);
-    if (!detail::isKnownShapeId(shapeId))
+    if (!detail::isKnownShapeId(shapeId) && encodedShapeId < 0x8000)
         return false;
     const double rotation = readLeFloat(data, transformPos);
     const double px = readLeFloat(data, transformPos + 4);
@@ -160,10 +179,13 @@ QByteArray normalizeFM2023Records(QByteArray data)
     int pos = 0;
     while (pos + 31 <= data.size()) {
         if (pos + 32 <= data.size()
-            && (data.mid(pos, 2) == QByteArray("\x00\x02", 2)
-                || data.mid(pos, 2) == QByteArray("\x01\x02", 2))
+            && (static_cast<quint8>(data[pos]) == 0x00
+                || static_cast<quint8>(data[pos]) == 0x01)
+            && (static_cast<quint8>(data[pos + 1]) == 0x01
+                || static_cast<quint8>(data[pos + 1]) == 0x02)
             && isFM2023ShapePayloadAt(data, pos + 2, pos + 4, pos + 32)) {
             const quint16 encodedShapeId = readLeU16(data, pos + 2);
+            data[pos + 1] = static_cast<char>(0x02);
             if (encodedShapeId == 0x0bb8) {
                 data[pos + 2] = static_cast<char>(0xb9);
                 data[pos + 3] = static_cast<char>(0x0b);
@@ -187,6 +209,23 @@ QByteArray normalizeFM2023Records(QByteArray data)
         }
     }
     return data;
+}
+
+QVector<LiverySection> buildFM2023LiverySections(const QByteArray &body,
+                                                 const QVector<int> &sectionCounts)
+{
+    QByteArray decoderBody = normalizeFM2023Records(body);
+    int lastPopulated = -1;
+    for (int slot = 0; slot < kFM2023SectionCount; ++slot) {
+        if (slot < sectionCounts.size() && sectionCounts[slot] > 0)
+            lastPopulated = slot;
+    }
+    if (lastPopulated >= 0) {
+        const int trailingSlots = kFM2023SectionCount - lastPopulated - 1;
+        decoderBody.append(QByteArray(18 + trailingSlots * 23, '\0'));
+    }
+    return VinylTreeDecoder{}.buildLiverySections(decoderBody, sectionCounts,
+                                                   kFM2023LiverySlots, kFM2023SectionCount);
 }
 
 LayerData getFM2023LayerData(const QByteArray &payload, QByteArray *decoderPayload)
@@ -269,7 +308,7 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
     if (!isFM2023LiveryImpl(fileData))
         throw std::runtime_error("not an FM2023 livery file");
 
-    const QByteArray raw = inflateFirstContainer(fileData);
+    const QByteArray raw = inflateFM2023Blocks(fileData);
 
     FM2023LiveryPayload payload;
     payload.raw = raw;
@@ -292,47 +331,19 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
         throw std::runtime_error("FM2023 livery gyvl body is truncated");
     payload.gyvlBody = raw.mid(bodyStart, bodyEnd - bodyStart);
 
-    const quint32 container1CompSize = readLeU32(fileData, 0);
-    const int container1Total = 8 + static_cast<int>(container1CompSize);
-
     payload.sectionCounts.reserve(7);
 
-    if (container1Total + 8 + 8 <= fileData.size()) {
-        const int c2Start = container1Total;
-        const quint32 compSize2 = readLeU32(fileData, c2Start);
-        const int c3Start = c2Start + 8 + static_cast<int>(compSize2);
-        if (c3Start + 8 <= fileData.size()) {
-            const QByteArray container3 = fileData.mid(c3Start);
-            const QByteArray metaRaw = inflateFirstContainer(container3);
-
-            const int metaYrvl = metaRaw.indexOf(QByteArray("yrvl", 4));
-            if (metaYrvl >= 0) {
-                for (int i = 0; i < 7; ++i) {
-                    const int off = metaYrvl + 4 + i * 4;
-                    if (off + 4 <= metaRaw.size())
-                        payload.sectionCounts.push_back(static_cast<int>(readLeU32(metaRaw, off)));
-                    else
-                        payload.sectionCounts.push_back(0);
-                }
-                return payload;
-            }
-        }
-    }
-
-    {
-        const int statsTag = bodyEnd;
-        if (statsTag >= 0 && raw.mid(statsTag, 4) == QByteArray("yrvl", 4)) {
-            for (int i = 0; i < 7; ++i) {
-                const int off = statsTag + 4 + i * 4;
-                if (off + 4 <= raw.size())
-                    payload.sectionCounts.push_back(static_cast<int>(readLeU32(raw, off)));
-                else
-                    payload.sectionCounts.push_back(0);
-            }
-        } else {
-            for (int i = 0; i < 7; ++i)
+    if (bodyEnd >= 0 && raw.mid(bodyEnd, 4) == QByteArray("yrvl", 4)) {
+        for (int i = 0; i < 7; ++i) {
+            const int off = bodyEnd + 4 + i * 4;
+            if (off + 4 <= raw.size())
+                payload.sectionCounts.push_back(static_cast<int>(readLeU32(raw, off)));
+            else
                 payload.sectionCounts.push_back(0);
         }
+    } else {
+        for (int i = 0; i < 7; ++i)
+            payload.sectionCounts.push_back(0);
     }
 
     return payload;
@@ -354,8 +365,7 @@ Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileDa
     const FM2023LiveryPayload payload = readFM2023LiveryPayloadImpl(folderOrFile);
 
     const QVector<LiverySection> sections =
-        VinylTreeDecoder{}.buildLiverySections(payload.gyvlBody, payload.sectionCounts,
-                                                kFM2023LiverySlots, kFM2023SectionCount);
+        buildFM2023LiverySections(payload.gyvlBody, payload.sectionCounts);
 
     Project project;
     const QFileInfo info(folderOrFile);
@@ -592,6 +602,11 @@ bool fh6::isRawGyvl(const QByteArray &fileData)
 fh6::FM2023LiveryPayload fh6::readFM2023LiveryPayload(const QString &folderOrFile)
 {
     return readFM2023LiveryPayloadImpl(folderOrFile);
+}
+
+QVector<fh6::LiverySection> fh6::decodeFM2023LiverySections(const FM2023LiveryPayload &payload)
+{
+    return buildFM2023LiverySections(payload.gyvlBody, payload.sectionCounts);
 }
 
 fh6::VinylGroup fh6::decodeFM2023RawGroup(const QByteArray &payload)

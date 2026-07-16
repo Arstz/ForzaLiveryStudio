@@ -225,6 +225,10 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     The FM group decoder normalizes legacy root headers, shape and transform
     markers, signed Y scale, glyph identifiers, and trailing mask state before
     using the shared vinyl tree builder.
+    The FM livery decoder concatenates sequential compressed blocks, extracts the
+    complete tagged stream, normalizes framed and bare legacy shape records, and
+    supplies decoder-only terminal section padding before using the shared livery
+    tree walker.
     The livery decoder handles the embedded `gyvl` transform dialect (including
     framed 9-byte separate-transform trailers), wrapped child-bitmap byte fields,
     registry-backed vector ID validation, custom-logo stats weighting, section-root
@@ -339,7 +343,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `buildTree()` / `validateTree()` / `flattenGroup()`
 - `importCGroupFlat()` / `importCGroupNested()`
 - `importCLivery()` / `readLiveryPayload()` / `buildLiverySections()`
-- `importFM2023Asset()` / `decodeFM2023RawGroup()` / `readFM2023LiveryPayload()`
+- `importFM2023Asset()` / `decodeFM2023RawGroup()` /
+  `readFM2023LiveryPayload()` / `decodeFM2023LiverySections()`
 - `buildFlatPayload()` / `buildNestedPayload()`
 - `exportFlatProjectFolder()` / `exportNestedProjectFolder()`
 - `projectToJson()` / `projectFromJson()` (v2 scene-tree JSON; v1 flat loader kept)

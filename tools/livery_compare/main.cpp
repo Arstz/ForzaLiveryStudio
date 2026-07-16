@@ -226,6 +226,7 @@ int sceneShapeCount(const Project &p)
 
 struct RawStats {
     int shapes = 0;
+    int logos = 0;
     int masks = 0;
     int skipped = 0;
     int groups = 0;
@@ -238,7 +239,11 @@ void collectRawStats(const VinylGroup &node, RawStats &stats)
     for (const VinylItem &item : node.items) {
         if (item.isShape()) {
             ++stats.shapes;
-            if (std::get<VinylShape>(item.value).isMask) {
+            const VinylShape &shape = std::get<VinylShape>(item.value);
+            if (shape.isLogo) {
+                ++stats.logos;
+            }
+            if (shape.isMask) {
                 ++stats.masks;
             }
             continue;
@@ -249,6 +254,23 @@ void collectRawStats(const VinylGroup &node, RawStats &stats)
             ++stats.incompleteGroups;
         }
         collectRawStats(group, stats);
+    }
+}
+
+void printIncompleteGroups(const VinylGroup &node)
+{
+    for (const VinylItem &item : node.items) {
+        if (item.isShape()) {
+            continue;
+        }
+        const VinylGroup &group = *std::get<VinylGroupPtr>(item.value);
+        if (group.expectedChildren && group.totalChildren() != *group.expectedChildren) {
+            std::printf("    incomplete abs=%d expected=%d actual=%d source=%s marker=%s\n",
+                        group.absPos, *group.expectedChildren, group.totalChildren(),
+                        group.source.toLatin1().constData(),
+                        group.effectiveTransformMarker.toHex().constData());
+        }
+        printIncompleteGroups(group);
     }
 }
 
@@ -439,12 +461,12 @@ int main(int argc, char *argv[])
                 return 0;
             }
             const FM2023LiveryPayload payload = readFM2023LiveryPayload(args[1]);
-            const QVector<LiverySection> sections =
-                VinylTreeDecoder{}.buildLiverySections(payload.gyvlBody, payload.sectionCounts,
-                                                        kFM2023LiverySlots, kFM2023SectionCount);
-            std::printf("FM %s body=%d counts=",
+            const QVector<LiverySection> sections = decodeFM2023LiverySections(payload);
+            const Project project = importFM2023Asset(args[1]);
+            std::printf("FM %s body=%d carId=%d vectors=%d masks=%d counts=",
                         QFileInfo(args[1]).fileName().toLatin1().constData(),
-                        static_cast<int>(payload.gyvlBody.size()));
+                        static_cast<int>(payload.gyvlBody.size()), payload.carId,
+                        sceneShapeCount(project), sceneMaskCount(project));
             for (int count : payload.sectionCounts) {
                 std::printf("%d,", count);
             }
@@ -454,9 +476,10 @@ int main(int argc, char *argv[])
                 collectRawStats(section.subtree, stats);
                 const int target = section.slot < payload.sectionCounts.size()
                     ? payload.sectionCounts[section.slot] : 0;
-                std::printf("  %-18s target=%-5d shapes=%-5d skipped=%-5d groups=%-4d incomplete=%-3d abs=%d\n",
+                std::printf("  %-18s target=%-5d shapes=%-5d logos=%-4d skipped=%-5d groups=%-4d incomplete=%-3d abs=%d\n",
                             section.name.toLatin1().constData(), target, stats.shapes,
-                            stats.skipped, stats.groups, stats.incompleteGroups, section.absPos);
+                            stats.logos, stats.skipped, stats.groups, stats.incompleteGroups, section.absPos);
+                printIncompleteGroups(section.subtree);
             }
         } catch (const std::exception &e) {
             std::fprintf(stderr, "FM stats failed: %s\n", e.what());
