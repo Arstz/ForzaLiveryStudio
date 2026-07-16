@@ -213,7 +213,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
   scripts are Windows-only; on Linux, use CMake directly.
 - `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and format notes
-  (`CGROUP.md`, `HEADER.md`).
+  for FH6 and Forza Motorsport containers, groups, liveries, and headers.
 
 ## Code Map
 
@@ -222,6 +222,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `src/core/`
   - Binary codecs, vinyl tree decoding, livery decoding, project JSON, flat and
     nested payload export, matrix math, header parse/build, and shape registry.
+    The FM group decoder normalizes legacy root headers, shape and transform
+    markers, signed Y scale, glyph identifiers, and trailing mask state before
+    using the shared vinyl tree builder.
     The livery decoder handles the embedded `gyvl` transform dialect (including
     framed 9-byte separate-transform trailers), wrapped child-bitmap byte fields,
     registry-backed vector ID validation, custom-logo stats weighting, section-root
@@ -336,6 +339,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `buildTree()` / `validateTree()` / `flattenGroup()`
 - `importCGroupFlat()` / `importCGroupNested()`
 - `importCLivery()` / `readLiveryPayload()` / `buildLiverySections()`
+- `importFM2023Asset()` / `decodeFM2023RawGroup()` / `readFM2023LiveryPayload()`
 - `buildFlatPayload()` / `buildNestedPayload()`
 - `exportFlatProjectFolder()` / `exportNestedProjectFolder()`
 - `projectToJson()` / `projectFromJson()` (v2 scene-tree JSON; v1 flat loader kept)

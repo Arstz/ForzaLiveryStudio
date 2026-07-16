@@ -2,13 +2,14 @@
 
 Concise reference for the Forza Motorsport (2023+) `C_livery` binary payload.
 It describes the chunk container, how the embedded artwork relates to the
-[`C_group`](CGROUP.md) format, and the multi-container file structure used by
-FM2023.
+standalone [`FM C_group`](FM_CGROUP.md) and current [`C_group`](CGROUP.md)
+formats, and the multi-container file structure used by FM2023.
 
 **Relationship to FH6:** FM2023 and FH6 share the same chunk-tag system
-(`vlrc`/`yrvl`/`gyvl`), the same `C_group` shape/group grammar, and the same
-transform-marker livery dialect. They differ in section count (7 vs 11),
-container packaging (multi-container vs single blob), and header version.
+(`vlrc`/`yrvl`/`gyvl`) and high-level artwork model. Embedded livery artwork
+uses the shortened livery stream described here. Standalone FM groups use the
+older record dialect documented in [`FM_CGROUP.md`](FM_CGROUP.md). The livery
+formats also differ in section count, container packaging, and header version.
 
 ---
 
@@ -191,6 +192,6 @@ Container3 = zlib( yrvl[stats 7x u32] + yrvl[descriptor table] + yrvl[terminator
 ```
 
 All artwork and panel assignment live inside the two `gyvl` bodies (Container 1
-= original, Container 2 = working copy), using the `C_group` grammar with the
-livery transform-marker dialect. Panel membership is by positional slot across
-7 sections. The `yrvl` metadata in Container 3 drives the section walker.
+= original, Container 2 = working copy), using the embedded livery grammar.
+Panel membership is by positional slot across 7 sections. The `yrvl` metadata
+in Container 3 drives the section walker.

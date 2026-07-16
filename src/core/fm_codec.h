@@ -27,6 +27,8 @@ struct FM2023LiveryPayload {
 
 FM2023LiveryPayload readFM2023LiveryPayload(const QString &folderOrFile);
 
+VinylGroup decodeFM2023RawGroup(const QByteArray &payload);
+
 Project importFM2023Asset(const QString &folderOrFile);
 
 } // namespace fh6

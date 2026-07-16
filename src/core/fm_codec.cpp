@@ -14,6 +14,7 @@
 #include <QFileInfo>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <optional>
 #include <stdexcept>
@@ -22,6 +23,8 @@
 namespace fh6 {
 namespace {
 
+using detail::readLeFloat;
+using detail::readLeU16;
 using detail::readLeU32;
 
 bool isFM2023LiveryImpl(const QByteArray &fileData)
@@ -69,6 +72,182 @@ Matrix3 shapeMatrixForShape(const VinylShape &shape)
     layer.scaleY = shape.scaleY;
     layer.skew = shape.skew;
     return shapeMatrix(layer);
+}
+
+bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos, int endPos)
+{
+    if (idPos < 0 || endPos > data.size())
+        return false;
+    const quint16 encodedShapeId = readLeU16(data, idPos);
+    const quint16 shapeId = encodedShapeId == 0x0bb8
+        ? 0x0bb9 : detail::canonicalShapeId(encodedShapeId);
+    if (!detail::isKnownShapeId(shapeId))
+        return false;
+    const double rotation = readLeFloat(data, transformPos);
+    const double px = readLeFloat(data, transformPos + 4);
+    const double py = readLeFloat(data, transformPos + 8);
+    const double sx = readLeFloat(data, transformPos + 12);
+    const double sy = readLeFloat(data, transformPos + 16);
+    const double skew = readLeFloat(data, transformPos + 20);
+    return std::isfinite(rotation) && std::abs(rotation) <= 10000.0
+        && std::abs(px) < 50000.0 && std::abs(py) < 50000.0
+        && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
+        && std::abs(sy) > 1e-6 && std::abs(sy) < 5000.0
+        && std::isfinite(skew) && std::abs(skew) < 200.0;
+}
+
+bool isFM2023BareShapeAt(const QByteArray &data, int pos)
+{
+    if (pos < 0 || pos + 31 > data.size())
+        return false;
+    const quint8 marker = static_cast<quint8>(data[pos]);
+    return (marker == 0x01 || marker == 0x02 || marker == 0x03)
+        && isFM2023ShapePayloadAt(data, pos + 1, pos + 3, pos + 31);
+}
+
+bool isFM2023GroupAt(const QByteArray &data, int pos, bool counted)
+{
+    const int headerSize = counted ? 4 : 3;
+    if (pos < 0 || pos + headerSize > data.size())
+        return false;
+    if (counted && static_cast<quint8>(data[pos]) != 0x20
+        && static_cast<quint8>(data[pos]) != 0x60) {
+        return false;
+    }
+    const int countPos = pos + (counted ? 1 : 0);
+    const int count = readLeU16(data, countPos);
+    const int childBlocks = static_cast<quint8>(data[countPos + 2]);
+    return count > 0 && childBlocks == (count + 7) / 8
+        && pos + headerSize + childBlocks + 2 <= data.size();
+}
+
+int fm2023TransformSizeAt(const QByteArray &data, int pos)
+{
+    if (pos < 0 || pos + 17 > data.size())
+        return 0;
+    const quint8 marker = static_cast<quint8>(data[pos]);
+    if (marker != 0x01 && marker != 0x02)
+        return 0;
+    const double px = readLeFloat(data, pos + 1);
+    const double py = readLeFloat(data, pos + 5);
+    const double sx = readLeFloat(data, pos + 9);
+    const double rotation = readLeFloat(data, pos + 13);
+    if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(sx)
+        || !std::isfinite(rotation) || std::abs(px) >= 50000.0
+        || std::abs(py) >= 50000.0 || std::abs(sx) < 0.0001
+        || std::abs(sx) > 200.0 || std::abs(rotation) > 10000.0) {
+        return 0;
+    }
+    int size = 17;
+    const int syPos = pos + size;
+    if (syPos + 5 <= data.size()
+        && (static_cast<quint8>(data[syPos]) & ~0x40) == 0x30) {
+        const double sy = readLeFloat(data, syPos + 1);
+        if (std::isfinite(sy) && std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0)
+            size += 5;
+    }
+    const int next = pos + size;
+    const bool groupFollows = isFM2023GroupAt(data, next, true)
+        || isFM2023GroupAt(data, next, false)
+        || (next + 1 < data.size()
+            && (isFM2023GroupAt(data, next + 1, true)
+                || isFM2023GroupAt(data, next + 1, false)));
+    return groupFollows ? size : 0;
+}
+
+QByteArray normalizeFM2023Records(QByteArray data)
+{
+    int pos = 0;
+    while (pos + 31 <= data.size()) {
+        if (pos + 32 <= data.size()
+            && (data.mid(pos, 2) == QByteArray("\x00\x02", 2)
+                || data.mid(pos, 2) == QByteArray("\x01\x02", 2))
+            && isFM2023ShapePayloadAt(data, pos + 2, pos + 4, pos + 32)) {
+            const quint16 encodedShapeId = readLeU16(data, pos + 2);
+            if (encodedShapeId == 0x0bb8) {
+                data[pos + 2] = static_cast<char>(0xb9);
+                data[pos + 3] = static_cast<char>(0x0b);
+            }
+            pos += 32;
+            continue;
+        }
+        if (isFM2023BareShapeAt(data, pos)) {
+            const quint16 encodedShapeId = readLeU16(data, pos + 1);
+            data[pos] = static_cast<char>(0x02);
+            if (encodedShapeId == 0x0bb8) {
+                data[pos + 1] = static_cast<char>(0xb9);
+                data[pos + 2] = static_cast<char>(0x0b);
+            }
+            pos += 31;
+        } else if (const int transformSize = fm2023TransformSizeAt(data, pos)) {
+            data[pos] = static_cast<char>(0x03);
+            pos += transformSize;
+        } else {
+            ++pos;
+        }
+    }
+    return data;
+}
+
+LayerData getFM2023LayerData(const QByteArray &payload, QByteArray *decoderPayload)
+{
+    *decoderPayload = payload;
+    if (payload.size() > 0x24 && static_cast<quint8>(payload[0x1d]) == 0x00) {
+        const int count = readLeU16(payload, 0x1e);
+        const int childBlocks = static_cast<quint8>(payload[0x20]);
+        if (count > 0 && childBlocks == (count + 7) / 8) {
+            const int start = 0x24 + childBlocks;
+            if (start < payload.size()) {
+                (*decoderPayload)[0x1d] = static_cast<char>(0x20);
+                return LayerData{normalizeFM2023Records(payload.mid(start)), start};
+            }
+        }
+    }
+    LayerData layerData = getLayerData(payload);
+    layerData.data = normalizeFM2023Records(std::move(layerData.data));
+    return layerData;
+}
+
+void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool root)
+{
+    VinylShape *previousShape = nullptr;
+    for (VinylItem &item : group.items) {
+        if (item.isShape()) {
+            VinylShape &shape = std::get<VinylShape>(item.value);
+            if (previousShape != nullptr && shape.marker == QByteArray("\x01\x02", 2))
+                previousShape->isMask = true;
+            previousShape = &shape;
+        } else {
+            applyFM2023ShapeMasks(*std::get<VinylGroupPtr>(item.value), layerData, false);
+            previousShape = nullptr;
+        }
+    }
+    if (!root || previousShape == nullptr)
+        return;
+    const int recordSize = previousShape->marker.size() == 2 ? 32 : 31;
+    const int trailerPos = previousShape->absPos + recordSize;
+    const int trailerSize = layerData.size() - trailerPos;
+    if (trailerSize >= 1 && trailerSize <= 2
+        && static_cast<quint8>(layerData[trailerPos]) == 0x01) {
+        previousShape->isMask = true;
+    }
+}
+
+VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decodedLayerData)
+{
+    QByteArray decoderPayload;
+    LayerData layerData = getFM2023LayerData(payload, &decoderPayload);
+    VinylGroup root = buildTree(layerData.data, decoderPayload);
+    if (payload.size() >= 0x22
+        && (static_cast<quint8>(payload[0x1d]) & ~0x40) == 0x30) {
+        const double sy = readLeFloat(payload, 0x1e);
+        if (std::isfinite(sy) && std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0)
+            root.sy = sy;
+    }
+    applyFM2023ShapeMasks(root, layerData.data, true);
+    if (decodedLayerData != nullptr)
+        *decodedLayerData = std::move(layerData);
+    return root;
 }
 
 FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
@@ -293,9 +472,8 @@ Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileDa
 Project importFM2023RawGroup(const QString &folderOrFile, const QByteArray &fileData)
 {
     const QByteArray &payload = fileData;
-
-    const LayerData layerData = getLayerData(payload);
-    const VinylGroup root = buildTree(layerData.data, payload);
+    LayerData layerData;
+    VinylGroup root = decodeFM2023RawGroupImpl(payload, &layerData);
 
     Project project;
     const QFileInfo info(folderOrFile);
@@ -333,7 +511,7 @@ Project importFM2023RawGroup(const QString &folderOrFile, const QByteArray &file
             s->color = shape.color;
             s->opacity = static_cast<double>(shape.color[3]) / 255.0;
             s->mask = parentMask || shape.isMask;
-            if (hasColorData(shape.color))
+            if (hasColorData(shape.color) && !shape.isMask)
                 s->mask = false;
             s->visible = true;
             s->sourceShape = shapeIndex;
@@ -414,6 +592,11 @@ bool fh6::isRawGyvl(const QByteArray &fileData)
 fh6::FM2023LiveryPayload fh6::readFM2023LiveryPayload(const QString &folderOrFile)
 {
     return readFM2023LiveryPayloadImpl(folderOrFile);
+}
+
+fh6::VinylGroup fh6::decodeFM2023RawGroup(const QByteArray &payload)
+{
+    return decodeFM2023RawGroupImpl(payload, nullptr);
 }
 
 fh6::Project fh6::importFM2023Asset(const QString &folderOrFile)

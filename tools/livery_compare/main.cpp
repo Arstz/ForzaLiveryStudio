@@ -1,4 +1,5 @@
 #include "fh6_core.h"
+#include "fm_codec.h"
 #include "vinyl_decoder.h"
 #include "livery_codec.h"
 #include "cgroup_codec.h"
@@ -9,6 +10,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QString>
@@ -222,6 +224,45 @@ int sceneShapeCount(const Project &p)
     return truthLeaves(p).size();
 }
 
+struct RawStats {
+    int shapes = 0;
+    int masks = 0;
+    int skipped = 0;
+    int groups = 0;
+    int incompleteGroups = 0;
+};
+
+void collectRawStats(const VinylGroup &node, RawStats &stats)
+{
+    stats.skipped += node.skippedChildren;
+    for (const VinylItem &item : node.items) {
+        if (item.isShape()) {
+            ++stats.shapes;
+            if (std::get<VinylShape>(item.value).isMask) {
+                ++stats.masks;
+            }
+            continue;
+        }
+        const VinylGroup &group = *std::get<VinylGroupPtr>(item.value);
+        ++stats.groups;
+        if (group.expectedChildren && group.totalChildren() != *group.expectedChildren) {
+            ++stats.incompleteGroups;
+        }
+        collectRawStats(group, stats);
+    }
+}
+
+int sceneMaskCount(const Project &project)
+{
+    int count = 0;
+    for (const ShapeView &view : truthLeaves(project)) {
+        if (view.shape != nullptr && view.shape->mask) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 bool nudgeFirstBuiltInShape(scene::Layer &node)
 {
     if (node.kind() == scene::LayerKind::Shape) {
@@ -366,6 +407,63 @@ int main(int argc, char *argv[])
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+
+    const bool fmStatsMode = args.removeAll(QStringLiteral("--fm-stats")) > 0;
+    if (fmStatsMode) {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --fm-stats <assetFolder>\n");
+            return 2;
+        }
+        try {
+            QFile dataFile(QDir(args[1]).filePath(QStringLiteral("data")));
+            if (!dataFile.open(QIODevice::ReadOnly)) {
+                throw std::runtime_error("could not open FM data file");
+            }
+            const QByteArray fileData = dataFile.readAll();
+            if (isRawGyvl(fileData)) {
+                const LayerData layerData = getLayerData(fileData);
+                const VinylGroup legacyTree = buildTree(layerData.data, fileData);
+                const VinylGroup tree = decodeFM2023RawGroup(fileData);
+                RawStats legacyStats;
+                RawStats stats;
+                collectRawStats(legacyTree, legacyStats);
+                collectRawStats(tree, stats);
+                const Project project = importFM2023Asset(args[1]);
+                std::printf("FM %s bytes=%d layerStart=%d rootExpected=%d legacyShapes=%d shapes=%d importedShapes=%d masks=%d/%d skipped=%d groups=%d incomplete=%d\n",
+                            QFileInfo(args[1]).fileName().toLatin1().constData(),
+                            static_cast<int>(fileData.size()), layerData.start,
+                            tree.expectedChildren ? *tree.expectedChildren : -1,
+                            legacyStats.shapes, stats.shapes, sceneShapeCount(project),
+                            stats.masks, sceneMaskCount(project), stats.skipped,
+                            stats.groups, stats.incompleteGroups);
+                return 0;
+            }
+            const FM2023LiveryPayload payload = readFM2023LiveryPayload(args[1]);
+            const QVector<LiverySection> sections =
+                VinylTreeDecoder{}.buildLiverySections(payload.gyvlBody, payload.sectionCounts,
+                                                        kFM2023LiverySlots, kFM2023SectionCount);
+            std::printf("FM %s body=%d counts=",
+                        QFileInfo(args[1]).fileName().toLatin1().constData(),
+                        static_cast<int>(payload.gyvlBody.size()));
+            for (int count : payload.sectionCounts) {
+                std::printf("%d,", count);
+            }
+            std::printf("\n");
+            for (const LiverySection &section : sections) {
+                RawStats stats;
+                collectRawStats(section.subtree, stats);
+                const int target = section.slot < payload.sectionCounts.size()
+                    ? payload.sectionCounts[section.slot] : 0;
+                std::printf("  %-18s target=%-5d shapes=%-5d skipped=%-5d groups=%-4d incomplete=%-3d abs=%d\n",
+                            section.name.toLatin1().constData(), target, stats.shapes,
+                            stats.skipped, stats.groups, stats.incompleteGroups, section.absPos);
+            }
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "FM stats failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
 
     if (paintMode) {
         if (args.size() < 2) {

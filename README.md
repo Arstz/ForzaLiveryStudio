@@ -71,6 +71,11 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 The import/export for groups is fully supported, core functionality in place. Liveries can be imported and previewed in 3D on a car model, but livery **export is not available yet** — the encoder is written and in-game confirmed for the container, but full artwork synthesis is still in progress, so the Export action refuses liveries for now. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. The application targets Forza games generally; I will make a proper table once multiple title support is made, currently FH6 supports both import/export.
 
+| Version     | Group          | Livery |
+|-------------|----------------|--------|
+| Horizon 6   | Import/Export  | Import |
+| Motosport 23| Import         |    X   |
+
 ## Documentation
 
 - [**User Manual**](docs/MANUAL.md) - keyboard shortcuts, tools, panels, and recommended pipelines.
