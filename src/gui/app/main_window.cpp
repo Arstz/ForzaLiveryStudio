@@ -38,4 +38,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     updateStatus();
 }
+
+MainWindow::~MainWindow()
+{
+    cancelGeneratedFill();
+}
 } // namespace gui

@@ -28,6 +28,8 @@ public:
 
     virtual bool handleRelease(QMouseEvent *event);
 
+    virtual bool handleDoubleClick(QMouseEvent *event);
+
     virtual bool hoverCursor(const QPointF &point, QCursor *cursor) const;
 
     virtual Qt::CursorShape idleCursorShape(const QPointF &point) const;
@@ -87,6 +89,24 @@ public:
     QString name() const override;
     bool handlePress(QMouseEvent *event) override;
     bool hoverCursor(const QPointF &point, QCursor *cursor) const override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class PenTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    bool handleDoubleClick(QMouseEvent *event) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class PolygonalLassoTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    bool handleDoubleClick(QMouseEvent *event) override;
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 

@@ -60,9 +60,11 @@ recommended working pipelines. For build/developer notes see
 | Select | `S` | Click/drag to select and move layers and groups. |
 | Move | `V` | Reposition the selection; optional auto-select of the clicked layer. |
 | Marquee | `F` | Rubber-band select multiple layers. |
+| Polygonal Lasso | `L` | Mesh a straight-edged polygon exactly with Squares and Triangles. |
 | Transform | `T` | Scale/skew the selection via bounding-box handles. |
 | Rotate | `R` | Rotate the selection about its centre. |
 | Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
+| Pen | `P` | Draw a closed quadratic path and fill it with contained Primitive shapes. |
 
 ### Options & Window
 
@@ -100,6 +102,33 @@ recommended working pipelines. For build/developer notes see
   stacking, applies the picked color to the current selection, and adds it to the
   project swatches. Guide colors are sampled from original guide pixels, ignoring
   guide opacity.
+- **Pen (`P`)** — place a closed vector contour which is converted into ordinary
+  Forza Primitive layers. The first point is a hard corner. Single-click places a
+  soft quadratic control and double-click places a hard point; click the first
+  point again to close and fill the path. Adjacent hard points form a line,
+  hard–soft–hard forms a quadratic curve, and consecutive soft points share an
+  implied midpoint. `Backspace` removes the latest point and `Escape` cancels the
+  path or a running fill. Self-intersecting contours are highlighted and must be
+  corrected before closing.
+
+  Pen uses only **Square** (`101`), **Circle** (`102`), and **Triangle** (`103`),
+  keeps every generated shape inside the contour, and chooses one best boundary
+  candidate per line/curve. It subtracts the current boundary coverage, then fills
+  only the remaining interior in bounded ear-clipping passes with Triangle
+  primitives, so the fill cannot cycle or add wholly redundant inner shapes. The
+  generated layers share the last selected shape color when the corresponding new-shape
+  behavior is enabled (otherwise white) and are placed in one **Pen Fill** group
+  as a single undoable operation. Filling runs in the background.
+- **Polygonal Lasso (`L`)** — click to place straight-edged vertices, then click
+  the first vertex or double-click to close. `Backspace` removes the latest
+  vertex and `Escape` cancels the path or a running mesh. Self-intersecting
+  contours are highlighted and retained for correction.
+
+  The lasso is filled exactly: it is ear-clipped into triangles, then compatible
+  adjacent triangle pairs are replaced with squares to reduce the shape count.
+  Only **Square** (`101`) and **Triangle** (`103`) primitives are generated, with
+  no fill margin, gaps, or boundary overhang. They use the normal new-shape colour
+  behavior and are inserted in one **Lasso Fill** group as a single undoable edit.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,

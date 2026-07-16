@@ -10,6 +10,7 @@
 #include "property_panel.h"
 #include "shape_registry.h"
 #include "shapes_browser_widget.h"
+#include "matrix_math.h"
 
 #include <QtGui>
 
@@ -21,6 +22,265 @@
 namespace gui {
 
 using namespace mw_detail;
+
+namespace {
+
+fh6::Matrix3 generatedShapeMatrix(const QTransform &transform)
+{
+    fh6::Matrix3 matrix;
+    matrix.m[0][0] = transform.m11();
+    matrix.m[0][1] = transform.m21();
+    matrix.m[0][2] = transform.dx();
+    matrix.m[1][0] = transform.m12();
+    matrix.m[1][1] = transform.m22();
+    matrix.m[1][2] = transform.dy();
+    return matrix;
+}
+
+} // namespace
+
+void MainWindow::startPenFill(const QVector<PenPoint> &points)
+{
+    if (!ensureProjectForInsertion() || canvas_ == nullptr) {
+        if (canvas_ != nullptr) {
+            canvas_->setPenFillRunning(false);
+        }
+        return;
+    }
+    cancelGeneratedFill();
+    updateLastSelectedShapeDefaults();
+    const BehaviorSettings behavior = loadBehaviorSettings();
+    generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
+        ? lastSelectedShapeColor_
+        : std::array<quint8, 4>{255, 255, 255, 255};
+    generatedFillInsertionEntries_ = selectedEntryIds();
+    generatedFillLabel_ = QStringLiteral("Pen fill");
+
+    PenFillRequest request;
+    request.points = points;
+    request.primitives = canvas_->penPrimitiveCatalog();
+    if (request.primitives.isEmpty()) {
+        canvas_->setPenFillRunning(false);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        statusBar()->showMessage(QStringLiteral("Pen fill failed: Primitive geometry is unavailable"), 4000);
+        return;
+    }
+
+    const quint64 generation = ++generatedFillGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    generatedFillCancel_ = token;
+    canvas_->setPenFillRunning(true, QStringLiteral("Filling Pen path…"));
+    statusBar()->showMessage(QStringLiteral("Filling Pen path… Press Esc to cancel"));
+
+    QPointer<MainWindow> guard(this);
+    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
+        PenFillResult result = fillPenPath(request, [token]() {
+            return token->load(std::memory_order_relaxed);
+        });
+        if (guard.isNull()) {
+            return;
+        }
+        QMetaObject::invokeMethod(guard.data(),
+                                  [guard, generation, result = std::move(result)]() mutable {
+                                      if (!guard.isNull()) {
+                                          guard->finishPenFill(generation, std::move(result));
+                                      }
+                                  },
+                                  Qt::QueuedConnection);
+    });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+}
+
+void MainWindow::startLassoFill(const QVector<QPointF> &points)
+{
+    if (!ensureProjectForInsertion() || canvas_ == nullptr) {
+        if (canvas_ != nullptr) {
+            canvas_->setLassoFillRunning(false);
+        }
+        return;
+    }
+    cancelGeneratedFill();
+    updateLastSelectedShapeDefaults();
+    const BehaviorSettings behavior = loadBehaviorSettings();
+    generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
+        ? lastSelectedShapeColor_
+        : std::array<quint8, 4>{255, 255, 255, 255};
+    generatedFillInsertionEntries_ = selectedEntryIds();
+    generatedFillLabel_ = QStringLiteral("Lasso fill");
+
+    PolygonMeshRequest request;
+    request.points = points;
+    request.sources = canvas_->polygonMeshSources();
+    if (!request.sources.valid()) {
+        canvas_->setLassoFillRunning(false);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        statusBar()->showMessage(QStringLiteral("Lasso fill failed: Square or Triangle geometry is unavailable"),
+                                 4000);
+        return;
+    }
+
+    const quint64 generation = ++generatedFillGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    generatedFillCancel_ = token;
+    canvas_->setLassoFillRunning(true, QStringLiteral("Meshing polygonal lasso…"));
+    statusBar()->showMessage(QStringLiteral("Meshing polygonal lasso… Press Esc to cancel"));
+
+    QPointer<MainWindow> guard(this);
+    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
+        PolygonMeshResult result = meshPolygon(request, [token]() {
+            return token->load(std::memory_order_relaxed);
+        });
+        if (guard.isNull()) {
+            return;
+        }
+        QMetaObject::invokeMethod(guard.data(),
+                                  [guard, generation, result = std::move(result)]() mutable {
+                                      if (!guard.isNull()) {
+                                          guard->finishLassoFill(generation, std::move(result));
+                                      }
+                                  },
+                                  Qt::QueuedConnection);
+    });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+}
+
+void MainWindow::cancelGeneratedFill()
+{
+    if (generatedFillCancel_ == nullptr) {
+        return;
+    }
+    generatedFillCancel_->store(true, std::memory_order_relaxed);
+    generatedFillCancel_.reset();
+    ++generatedFillGeneration_;
+    generatedFillInsertionEntries_.clear();
+    if (canvas_ != nullptr) {
+        canvas_->setPenFillRunning(false);
+        canvas_->setLassoFillRunning(false);
+    }
+    statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
+    generatedFillLabel_.clear();
+}
+
+void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
+{
+    if (generation != generatedFillGeneration_ || generatedFillCancel_ == nullptr) {
+        return;
+    }
+    generatedFillCancel_.reset();
+    if (canvas_ != nullptr) {
+        canvas_->setPenFillRunning(false);
+    }
+    if (result.cancelled) {
+        statusBar()->showMessage(QStringLiteral("Pen fill cancelled"), 1500);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        return;
+    }
+    if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Pen fill failed: %1")
+                                     .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
+                                 5000);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        return;
+    }
+
+    QVector<QPair<int, QTransform>> placements;
+    placements.reserve(result.placements.size());
+    for (const PenPlacement &placement : result.placements) {
+        placements.push_back({placement.shapeId, placement.transform});
+    }
+    insertGeneratedFill(QStringLiteral("Pen Fill"), QStringLiteral("Pen Fill"), placements);
+}
+
+void MainWindow::finishLassoFill(quint64 generation, PolygonMeshResult result)
+{
+    if (generation != generatedFillGeneration_ || generatedFillCancel_ == nullptr) {
+        return;
+    }
+    generatedFillCancel_.reset();
+    if (canvas_ != nullptr) {
+        canvas_->setLassoFillRunning(false);
+    }
+    if (result.cancelled) {
+        statusBar()->showMessage(QStringLiteral("Lasso fill cancelled"), 1500);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        return;
+    }
+    if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Lasso fill failed: %1")
+                                     .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
+                                 5000);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        return;
+    }
+
+    QVector<QPair<int, QTransform>> placements;
+    placements.reserve(result.placements.size());
+    for (const PolygonMeshPlacement &placement : result.placements) {
+        placements.push_back({placement.shapeId, placement.transform});
+    }
+    insertGeneratedFill(QStringLiteral("Lasso Fill"), QStringLiteral("Lasso Fill"), placements);
+}
+
+void MainWindow::insertGeneratedFill(const QString &groupName,
+                                     const QString &displayName,
+                                     const QVector<QPair<int, QTransform>> &placements)
+{
+    if (placements.isEmpty() || !state_->hasProject()) {
+        generatedFillInsertionEntries_.clear();
+        return;
+    }
+
+    auto group = std::make_unique<fh6::scene::Group>();
+    group->id = state_->uniqueGroupId();
+    const QString groupId = group->id;
+    group->name = groupName;
+    QSet<QString> generatedIds;
+    generatedIds.reserve(placements.size());
+    for (const auto &placement : placements) {
+        auto shape = std::make_unique<fh6::scene::Shape>();
+        shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        shape->name = fh6::detail::shapeName(static_cast<quint16>(placement.first));
+        shape->setVectorShape(static_cast<quint16>(placement.first));
+        shape->transform = fh6::decomposeTransform2D(generatedShapeMatrix(placement.second));
+        shape->color = generatedFillColor_;
+        generatedIds.insert(shape->id);
+        group->append(std::move(shape));
+    }
+
+    state_->beginProjectEdit();
+    state_->insertLayerAboveSelection(std::move(group), generatedFillInsertionEntries_);
+    if (fh6::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
+        const QString parentId = state_->parentGroupForEntry(groupId);
+        if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
+            const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
+            for (const auto &child : inserted->children) {
+                child->transform = fh6::decomposeTransform2D(
+                    fh6::detail::multiply(parentInverse, child->transform.matrix()));
+            }
+        }
+    }
+    state_->selectedLayerIds_ = generatedIds;
+    state_->selectedGuideLayerIds_.clear();
+    state_->commitProjectEdit();
+    generatedFillInsertionEntries_.clear();
+    generatedFillLabel_.clear();
+    state_->noteProjectStructureChanged();
+    if (canvas_ != nullptr) {
+        canvas_->setFocus();
+    }
+    statusBar()->showMessage(QStringLiteral("Created %1 with %2 shapes")
+                                 .arg(displayName)
+                                 .arg(placements.size()),
+                             3500);
+}
 
 fh6::Project *MainWindow::project()
 {

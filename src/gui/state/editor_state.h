@@ -147,7 +147,7 @@ public:
     bool duplicateEntriesInPlace(const QVector<QString> &entryIds,
                                  QSet<QString> *newLayerSelection = nullptr,
                                  QSet<QString> *newGuideLayerSelection = nullptr);
-    void insertLayerAboveSelection(std::unique_ptr<fh6::scene::Shape> layer, const QVector<QString> &selectedEntries);
+    void insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries);
     void groupEntries(const QVector<QString> &entryIds);
     void ungroupEntries(const QVector<QString> &entryIds, bool flatten);
     bool reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow);

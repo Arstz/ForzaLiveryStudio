@@ -6,6 +6,7 @@
 #include <QMouseEvent>
 
 #include <optional>
+#include <algorithm>
 
 namespace gui {
 
@@ -22,6 +23,12 @@ void CanvasTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWor
 }
 
 bool CanvasTool::handleRelease(QMouseEvent *event)
+{
+    Q_UNUSED(event);
+    return false;
+}
+
+bool CanvasTool::handleDoubleClick(QMouseEvent *event)
 {
     Q_UNUSED(event);
     return false;
@@ -274,6 +281,125 @@ Qt::CursorShape PipetteTool::idleCursorShape(const QPointF &point) const
 {
     Q_UNUSED(point);
     return Qt::ArrowCursor;
+}
+
+
+QString PenTool::name() const
+{
+    return QStringLiteral("pen");
+}
+
+bool PenTool::handlePress(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || canvas_.penFillRunning_) {
+        return false;
+    }
+    ProjectCanvas &c = canvas_;
+    const QPointF world = c.screenToWorld(event->position());
+    if (c.penPoints_.size() >= 3
+        && QLineF(event->position(), c.worldToScreen(c.penPoints_.front().position)).length()
+               <= ProjectCanvas::PenCloseRadius) {
+        c.closePenPath();
+        event->accept();
+        return true;
+    }
+    if (!c.penPoints_.isEmpty()
+        && QLineF(world, c.penPoints_.back().position).length() <= 1e-8) {
+        event->accept();
+        return true;
+    }
+    c.penPoints_.push_back({world,
+                            c.penPoints_.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
+    c.penHoverWorld_ = world;
+    c.penError_.clear();
+    c.penCrossings_.clear();
+    c.update();
+    event->accept();
+    return true;
+}
+
+bool PenTool::handleDoubleClick(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || canvas_.penFillRunning_) {
+        return false;
+    }
+    ProjectCanvas &c = canvas_;
+    const QPointF world = c.screenToWorld(event->position());
+    if (!c.penPoints_.isEmpty()
+        && QLineF(world, c.penPoints_.back().position).length()
+               <= std::max(1e-8, ProjectCanvas::PenCloseRadius / std::max(c.baseScale_ * c.zoom_, 1e-8))) {
+        c.penPoints_.back().position = world;
+        c.penPoints_.back().kind = PenPointKind::Hard;
+    } else {
+        c.penPoints_.push_back({world, PenPointKind::Hard});
+    }
+    c.penHoverWorld_ = world;
+    c.penError_.clear();
+    c.penCrossings_.clear();
+    c.update();
+    event->accept();
+    return true;
+}
+
+Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const
+{
+    Q_UNUSED(point);
+    return Qt::CrossCursor;
+}
+
+QString PolygonalLassoTool::name() const
+{
+    return QStringLiteral("polygon_lasso");
+}
+
+bool PolygonalLassoTool::handlePress(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || canvas_.lassoFillRunning_) {
+        return false;
+    }
+    ProjectCanvas &c = canvas_;
+    const QPointF world = c.screenToWorld(event->position());
+    if (c.lassoPoints_.size() >= 3
+        && QLineF(event->position(), c.worldToScreen(c.lassoPoints_.front())).length()
+               <= ProjectCanvas::LassoCloseRadius) {
+        c.closeLassoPath();
+        event->accept();
+        return true;
+    }
+    if (!c.lassoPoints_.isEmpty()
+        && QLineF(world, c.lassoPoints_.back()).length() <= 1e-8) {
+        event->accept();
+        return true;
+    }
+    c.lassoPoints_.push_back(world);
+    c.lassoHoverWorld_ = world;
+    c.lassoCrossings_.clear();
+    c.lassoError_.clear();
+    c.update();
+    event->accept();
+    return true;
+}
+
+bool PolygonalLassoTool::handleDoubleClick(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || canvas_.lassoFillRunning_) {
+        return false;
+    }
+    ProjectCanvas &c = canvas_;
+    c.lassoHoverWorld_ = c.screenToWorld(event->position());
+    if (c.lassoPoints_.size() >= 3) {
+        c.closeLassoPath();
+    } else {
+        c.update();
+    }
+    event->accept();
+    return true;
+}
+
+Qt::CursorShape PolygonalLassoTool::idleCursorShape(const QPointF &point) const
+{
+    Q_UNUSED(point);
+    return Qt::CrossCursor;
 }
 
 } // namespace gui

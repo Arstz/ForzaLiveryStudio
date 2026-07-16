@@ -3,6 +3,8 @@
 #include "core_types.h"
 #include "layer.h"
 #include "native_shape_renderer.h"
+#include "pen_fill.h"
+#include "polygon_mesh.h"
 #include "shape_geometry_store.h"
 
 #include <QtCore>
@@ -65,6 +67,16 @@ public:
     std::optional<QColor> guideColorAtScreenPoint(const QPointF &point) const;
     std::optional<QColor> colorAtScreenPoint(const QPointF &point) const;
     void setPipetteColorPickedCallback(std::function<void(const QColor &)> callback);
+    void setPenFillRequestedCallback(std::function<void(const QVector<PenPoint> &)> callback);
+    void setPenFillCancelCallback(std::function<void()> callback);
+    QVector<PenPrimitive> penPrimitiveCatalog() const;
+    void setPenFillRunning(bool running, const QString &message = QString());
+    void cancelPenInteraction();
+    void setLassoFillRequestedCallback(std::function<void(const QVector<QPointF> &)> callback);
+    void setLassoFillCancelCallback(std::function<void()> callback);
+    PolygonMeshSources polygonMeshSources() const;
+    void setLassoFillRunning(bool running, const QString &message = QString());
+    void cancelLassoInteraction();
 
     void setCarUnwrapOverlay(const QImage &overlay);
     void setCarUnwrapVisible(bool visible);
@@ -88,6 +100,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
@@ -102,6 +115,11 @@ private:
     friend class TransformTool;
     friend class RotateTool;
     friend class PipetteTool;
+    friend class PenTool;
+    friend class PolygonalLassoTool;
+
+    static constexpr double PenCloseRadius = 8.0;
+    static constexpr double LassoCloseRadius = 8.0;
 
     enum class DragMode {
         None,
@@ -228,6 +246,12 @@ private:
     QImage guideImage(const fh6::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;
     void storeSectionCanvasCache(const QString &key);
+    void closePenPath();
+    void drawPenOverlay(QPainter &painter);
+    QPainterPath penPreviewPath(bool closeToStart) const;
+    void closeLassoPath();
+    void drawLassoOverlay(QPainter &painter);
+    QPainterPath lassoPreviewPath(bool closeToStart) const;
 
 
     EditorState *state_ = nullptr;
@@ -271,6 +295,22 @@ private:
     double nudgeStep_ = 0.1;
     double nudgeShiftStep_ = 1.0;
     std::function<void(const QColor &)> pipetteColorPickedCallback_;
+    std::function<void(const QVector<PenPoint> &)> penFillRequestedCallback_;
+    std::function<void()> penFillCancelCallback_;
+    QVector<PenPoint> penPoints_;
+    QPointF penHoverWorld_;
+    QVector<QPointF> penCrossings_;
+    QString penError_;
+    QString penFillMessage_;
+    bool penFillRunning_ = false;
+    std::function<void(const QVector<QPointF> &)> lassoFillRequestedCallback_;
+    std::function<void()> lassoFillCancelCallback_;
+    QVector<QPointF> lassoPoints_;
+    QPointF lassoHoverWorld_;
+    QVector<QPointF> lassoCrossings_;
+    QString lassoError_;
+    QString lassoFillMessage_;
+    bool lassoFillRunning_ = false;
     mutable double frameReferenceRotation_ = 0.0;
     mutable QSet<QString> frameLayerSignature_;
     mutable QSet<QString> frameGuideSignature_;

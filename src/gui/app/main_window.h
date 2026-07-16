@@ -11,6 +11,8 @@
 #include <QtWidgets>
 
 #include <array>
+#include <atomic>
+#include <memory>
 
 class QDockWidget;
 class QAction;
@@ -40,6 +42,7 @@ class ShapesBrowserWidget;
 class MainWindow final : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     bool loadProject(const QString &path, QString *error = nullptr);
     bool loadLivery(const QString &path, QString *error = nullptr);
@@ -139,6 +142,14 @@ private:
     QVector<fh6::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
+    void startPenFill(const QVector<PenPoint> &points);
+    void startLassoFill(const QVector<QPointF> &points);
+    void cancelGeneratedFill();
+    void finishPenFill(quint64 generation, PenFillResult result);
+    void finishLassoFill(quint64 generation, PolygonMeshResult result);
+    void insertGeneratedFill(const QString &groupName,
+                             const QString &displayName,
+                             const QVector<QPair<int, QTransform>> &placements);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
     enum class ExternalDropKind {
@@ -241,6 +252,11 @@ private:
     std::array<quint8, 4> lastSelectedShapeColor_ = {255, 255, 255, 255};
     double lastSelectedShapeScaleX_ = 1.0;
     double lastSelectedShapeScaleY_ = 1.0;
+    std::shared_ptr<std::atomic_bool> generatedFillCancel_;
+    quint64 generatedFillGeneration_ = 0;
+    QVector<QString> generatedFillInsertionEntries_;
+    std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
+    QString generatedFillLabel_;
 };
 
 } // namespace gui

@@ -148,6 +148,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
     src/gui/canvas/native_shape_renderer.h
+    src/gui/canvas/pen_fill.cpp
+    src/gui/canvas/pen_fill.h
+    src/gui/canvas/polygon_mesh.cpp
+    src/gui/canvas/polygon_mesh.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
@@ -205,6 +209,51 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::OpenGLWidgets
 )
 
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(fh6_pen_fill_tests
+        tests/pen_fill_tests.cpp
+        src/gui/canvas/pen_fill.cpp
+        src/gui/canvas/pen_fill.h
+        src/gui/canvas/polygon_mesh.cpp
+        src/gui/canvas/polygon_mesh.h
+        src/gui/widgets/shape_geometry_store.cpp
+        src/gui/widgets/shape_geometry_store.h
+    )
+    target_include_directories(fh6_pen_fill_tests PRIVATE
+        src/core
+        src/gui/canvas
+        src/gui/widgets
+    )
+    target_link_libraries(fh6_pen_fill_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        ZLIB::ZLIB
+        fh6_core
+    )
+    add_test(NAME pen_fill COMMAND fh6_pen_fill_tests)
+
+    add_executable(fh6_polygon_mesh_tests
+        tests/polygon_mesh_tests.cpp
+        src/gui/canvas/polygon_mesh.cpp
+        src/gui/canvas/polygon_mesh.h
+        src/gui/widgets/shape_geometry_store.cpp
+        src/gui/widgets/shape_geometry_store.h
+    )
+    target_include_directories(fh6_polygon_mesh_tests PRIVATE
+        src/core
+        src/gui/canvas
+        src/gui/widgets
+    )
+    target_link_libraries(fh6_polygon_mesh_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        ZLIB::ZLIB
+        fh6_core
+    )
+    add_test(NAME polygon_mesh COMMAND fh6_polygon_mesh_tests)
+endif()
+
 set(FH6_GUI_ASSETS
     Cursor.xpm
     CursorPipette.xpm
@@ -236,7 +285,9 @@ set(FH6_GUI_ASSETS
     ShapeBrowserFavOn.xpm
     ShapeBrowserSearch.xpm
     ToolbarMarquee.xpm
+    ToolbarLasso.xpm
     ToolbarMove.xpm
+    ToolbarPen.xpm
     ToolbarRotate.xpm
     ToolbarScale.xpm
     ToolbarSelect.xpm

@@ -33,6 +33,14 @@ void MainWindow::setupCanvas()
     if (!canvas_->loadGeometry(&geometryError)) {
         statusBar()->showMessage(geometryError);
     }
+    canvas_->setPenFillRequestedCallback([this](const QVector<PenPoint> &points) {
+        startPenFill(points);
+    });
+    canvas_->setPenFillCancelCallback([this]() { cancelGeneratedFill(); });
+    canvas_->setLassoFillRequestedCallback([this](const QVector<QPointF> &points) {
+        startLassoFill(points);
+    });
+    canvas_->setLassoFillCancelCallback([this]() { cancelGeneratedFill(); });
     setCentralWidget(canvas_);
 }
 
@@ -200,6 +208,11 @@ void MainWindow::connectEditorStateSignals()
         refreshSelectionProperties();
     });
     connect(state_, &EditorState::projectGeometryChanged, this, &MainWindow::noteProjectGeometryChanged);
+    connect(state_, &EditorState::projectGeometryChanged, this, [this]() {
+        if (generatedFillCancel_ != nullptr) {
+            cancelGeneratedFill();
+        }
+    });
     connect(state_, &EditorState::transformLiveChanged, this, [this]() {
         if (canvas_ != nullptr) {
             canvas_->invalidateSceneCache();
@@ -215,10 +228,16 @@ void MainWindow::connectEditorStateSignals()
         canvas_->update();
     });
     connect(state_, &EditorState::projectStructureChanged, this, &MainWindow::noteProjectStructureChanged);
+    connect(state_, &EditorState::projectStructureChanged, this, [this]() {
+        if (generatedFillCancel_ != nullptr) {
+            cancelGeneratedFill();
+        }
+    });
     connect(state_, &EditorState::clipboardChanged, this, &MainWindow::updateClipboardWidget);
     connect(state_, &EditorState::toolNameChanged, this, &MainWindow::setToolName);
     connect(state_, &EditorState::modifiedChanged, this, [this]() { updateWindowTitle(); });
     connect(state_, &EditorState::projectReset, this, [this]() {
+        cancelGeneratedFill();
         haveLastSelectedShapeDefaults_ = false;
         lastSelectedShapeColor_ = {255, 255, 255, 255};
         lastSelectedShapeScaleX_ = 1.0;
@@ -494,9 +513,11 @@ void MainWindow::setupToolbar()
     toolGroup->addAction(selectTool);
     toolGroup->addAction(addTool(QStringLiteral("Move"), QStringLiteral("move"), QKeySequence(Qt::Key_V), QStringLiteral("ToolbarMove.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Marquee"), QStringLiteral("marquee"), QKeySequence(Qt::Key_F), QStringLiteral("ToolbarMarquee.xpm")));
+    toolGroup->addAction(addTool(QStringLiteral("Polygonal Lasso"), QStringLiteral("polygon_lasso"), QKeySequence(Qt::Key_L), QStringLiteral("ToolbarLasso.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Transform"), QStringLiteral("transform"), QKeySequence(Qt::Key_T), QStringLiteral("ToolbarScale.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QKeySequence(Qt::Key_I), QStringLiteral("ToolPipette.xpm")));
+    toolGroup->addAction(addTool(QStringLiteral("Pen"), QStringLiteral("pen"), QKeySequence(Qt::Key_P), QStringLiteral("ToolbarPen.xpm")));
     selectTool->setChecked(true);
     toolBar->addSeparator();
     QAction *placeTextAction = toolBar->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Place Text"));

@@ -308,34 +308,6 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 {
-    if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
-        updateViewTransform();
-        QVector<double> &guidelines = draggedGuidelineOrientation_ == GuidelineOrientation::Vertical
-            ? project_->verticalGuidelines
-            : project_->horizontalGuidelines;
-        if (draggedGuidelineIndex_ >= 0 && draggedGuidelineIndex_ < guidelines.size()) {
-            guidelines[draggedGuidelineIndex_] = guidelineCoordinateAt(event->position(), draggedGuidelineOrientation_);
-            update();
-        }
-        updateCursorForPoint(event->position());
-        event->accept();
-        return;
-    }
-    if (rulerPressActive_) {
-        updateCursorForPoint(event->position());
-        event->accept();
-        return;
-    }
-    if (dragMode_ == DragMode::None && project_ != nullptr
-        && (event->position().x() < RulerExtent || event->position().y() < RulerExtent)) {
-        hoverLayerId_.clear();
-        hoverPolygon_ = {};
-        clearCursorHint();
-        updateCursorForPoint(event->position());
-        update();
-        event->accept();
-        return;
-    }
     if (dragMode_ == DragMode::Marquee) {
         updateCursorForPoint(event->position());
         const QRectF nextRect = QRectF(dragStartScreen_, event->position()).normalized();
@@ -423,6 +395,15 @@ void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
     QOpenGLWidget::mouseReleaseEvent(event);
 }
 
+void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    updateViewTransform();
+    if (activeTool_ != nullptr && activeTool_->handleDoubleClick(event)) {
+        return;
+    }
+    QOpenGLWidget::mouseDoubleClickEvent(event);
+}
+
 void ProjectCanvas::wheelEvent(QWheelEvent *event)
 {
     updateViewTransform();
@@ -447,6 +428,40 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         spaceDown_ = true;
         updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+        event->accept();
+        return;
+    }
+    if (tool_ == QStringLiteral("pen") && event->key() == Qt::Key_Backspace && !penFillRunning_) {
+        if (!penPoints_.isEmpty()) {
+            penPoints_.removeLast();
+            penCrossings_.clear();
+            penError_.clear();
+            clearCursorHint();
+            update();
+        }
+        event->accept();
+        return;
+    }
+    if (tool_ == QStringLiteral("polygon_lasso")
+        && event->key() == Qt::Key_Backspace
+        && !lassoFillRunning_) {
+        if (!lassoPoints_.isEmpty()) {
+            lassoPoints_.removeLast();
+            lassoCrossings_.clear();
+            lassoError_.clear();
+            clearCursorHint();
+            update();
+        }
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("pen")) {
+        cancelPenInteraction();
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("polygon_lasso")) {
+        cancelLassoInteraction();
         event->accept();
         return;
     }

@@ -6,6 +6,215 @@ namespace gui {
 
 using namespace pc_detail;
 
+QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const
+{
+    if (penPoints_.isEmpty()) {
+        return {};
+    }
+    if (closeToStart && penPoints_.size() >= 3) {
+        return buildPenContour(penPoints_).path;
+    }
+    QPainterPath path;
+    path.moveTo(penPoints_.front().position);
+    int index = 1;
+    while (index < penPoints_.size()) {
+        const PenPoint &next = penPoints_[index];
+        if (next.kind == PenPointKind::Hard) {
+            path.lineTo(next.position);
+            ++index;
+            continue;
+        }
+        if (index + 1 >= penPoints_.size()) {
+            break;
+        }
+        const PenPoint &after = penPoints_[index + 1];
+        const QPointF end = after.kind == PenPointKind::Hard
+            ? after.position
+            : (next.position + after.position) * 0.5;
+        path.quadTo(next.position, end);
+        index += after.kind == PenPointKind::Hard ? 2 : 1;
+    }
+    return path;
+}
+
+void ProjectCanvas::drawPenOverlay(QPainter &painter)
+{
+    if (tool_ != QStringLiteral("pen") && !penFillRunning_) {
+        return;
+    }
+    painter.save();
+    painter.resetTransform();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    if (penFillRunning_) {
+        const QString message = penFillMessage_.isEmpty()
+            ? QStringLiteral("Filling Pen path…")
+            : penFillMessage_;
+        const QFontMetrics metrics(painter.font());
+        const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
+        QRect bubble = textRect;
+        bubble.moveCenter(rect().center());
+        painter.setPen(QPen(QColor(235, 235, 235), 1));
+        painter.setBrush(QColor(25, 27, 31, 220));
+        painter.drawRoundedRect(bubble, 6, 6);
+        painter.drawText(bubble, Qt::AlignCenter, message);
+        painter.restore();
+        return;
+    }
+    if (penPoints_.isEmpty()) {
+        painter.restore();
+        return;
+    }
+
+    const bool nearStart = penPoints_.size() >= 3
+        && QLineF(worldToScreen(penHoverWorld_), worldToScreen(penPoints_.front().position)).length()
+               <= PenCloseRadius;
+    const QPainterPath worldPath = penPreviewPath(nearStart);
+    const QPainterPath screenPath = worldToScreen_.map(worldPath);
+    QColor fill(83, 164, 255, nearStart ? 50 : 25);
+    QPen halo(QColor(15, 17, 20, 230), 4.0);
+    halo.setCosmetic(true);
+    painter.setPen(halo);
+    painter.setBrush(fill);
+    painter.drawPath(screenPath);
+    QPen pathPen(penError_.isEmpty() ? QColor(83, 164, 255) : QColor(235, 78, 78), 2.0);
+    pathPen.setCosmetic(true);
+    painter.setPen(pathPen);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(screenPath);
+
+    if (!nearStart && !penPoints_.isEmpty()) {
+        QPen guide(QColor(190, 195, 205, 180), 1.0, Qt::DashLine);
+        guide.setCosmetic(true);
+        painter.setPen(guide);
+        painter.drawLine(worldToScreen(penPoints_.back().position), worldToScreen(penHoverWorld_));
+    }
+
+    for (int i = 0; i < penPoints_.size(); ++i) {
+        const PenPoint &point = penPoints_[i];
+        const QPointF screen = worldToScreen(point.position);
+        const double radius = i == 0 ? 5.5 : 4.5;
+        painter.setPen(QPen(QColor(18, 20, 24), 2.0));
+        painter.setBrush(point.kind == PenPointKind::Hard
+                             ? QColor(232, 72, 72)
+                             : QColor(238, 240, 244));
+        painter.drawEllipse(screen, radius, radius);
+        if (i == 0) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(nearStart ? QColor(120, 220, 135) : QColor(83, 164, 255), 1.5));
+            painter.drawEllipse(screen, PenCloseRadius, PenCloseRadius);
+        }
+    }
+    painter.setPen(QPen(QColor(245, 65, 65), 2.0));
+    for (const QPointF &crossing : penCrossings_) {
+        const QPointF screen = worldToScreen(crossing);
+        painter.drawLine(screen + QPointF(-6, -6), screen + QPointF(6, 6));
+        painter.drawLine(screen + QPointF(-6, 6), screen + QPointF(6, -6));
+    }
+    if (!penError_.isEmpty()) {
+        painter.setPen(QColor(245, 85, 85));
+        painter.drawText(QRectF(12, 12, width() - 24, 30), Qt::AlignLeft | Qt::AlignVCenter, penError_);
+    }
+    painter.restore();
+}
+
+QPainterPath ProjectCanvas::lassoPreviewPath(bool closeToStart) const
+{
+    if (lassoPoints_.isEmpty()) {
+        return {};
+    }
+    QPainterPath path;
+    path.moveTo(lassoPoints_.front());
+    for (int i = 1; i < lassoPoints_.size(); ++i) {
+        path.lineTo(lassoPoints_[i]);
+    }
+    if (closeToStart && lassoPoints_.size() >= 3) {
+        path.closeSubpath();
+    }
+    return path;
+}
+
+void ProjectCanvas::drawLassoOverlay(QPainter &painter)
+{
+    if (tool_ != QStringLiteral("polygon_lasso") && !lassoFillRunning_) {
+        return;
+    }
+    painter.save();
+    painter.resetTransform();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    if (lassoFillRunning_) {
+        const QString message = lassoFillMessage_.isEmpty()
+            ? QStringLiteral("Meshing polygonal lasso…")
+            : lassoFillMessage_;
+        const QFontMetrics metrics(painter.font());
+        const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
+        QRect bubble = textRect;
+        bubble.moveCenter(rect().center());
+        painter.setPen(QPen(QColor(235, 235, 235), 1));
+        painter.setBrush(QColor(25, 27, 31, 220));
+        painter.drawRoundedRect(bubble, 6, 6);
+        painter.drawText(bubble, Qt::AlignCenter, message);
+        painter.restore();
+        return;
+    }
+    if (lassoPoints_.isEmpty()) {
+        painter.restore();
+        return;
+    }
+
+    const bool nearStart = lassoPoints_.size() >= 3
+        && QLineF(worldToScreen(lassoHoverWorld_), worldToScreen(lassoPoints_.front())).length()
+               <= LassoCloseRadius;
+    const QPainterPath screenPath = worldToScreen_.map(lassoPreviewPath(nearStart));
+    painter.setPen(QPen(QColor(12, 14, 18, 230), 4.0));
+    painter.setBrush(QColor(255, 205, 70, nearStart ? 48 : 20));
+    painter.drawPath(screenPath);
+    QPen linePen(lassoError_.isEmpty() ? QColor(255, 210, 75) : QColor(235, 78, 78),
+                 2.0,
+                 Qt::DashLine);
+    linePen.setCosmetic(true);
+    painter.setPen(linePen);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(screenPath);
+
+    if (!nearStart) {
+        QPen guide(QColor(225, 228, 235, 190), 1.0, Qt::DashLine);
+        guide.setCosmetic(true);
+        painter.setPen(guide);
+        painter.drawLine(worldToScreen(lassoPoints_.back()), worldToScreen(lassoHoverWorld_));
+    }
+
+    for (int i = 0; i < lassoPoints_.size(); ++i) {
+        const QPointF screen = worldToScreen(lassoPoints_[i]);
+        const double radius = i == 0 ? 5.5 : 4.0;
+        painter.setPen(QPen(QColor(18, 20, 24), 2.0));
+        painter.setBrush(QColor(255, 210, 75));
+        painter.drawRect(QRectF(screen.x() - radius,
+                                screen.y() - radius,
+                                radius * 2.0,
+                                radius * 2.0));
+        if (i == 0) {
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(nearStart ? QColor(120, 220, 135) : QColor(255, 210, 75), 1.5));
+            painter.drawEllipse(screen, LassoCloseRadius, LassoCloseRadius);
+        }
+    }
+    painter.setPen(QPen(QColor(245, 65, 65), 2.0));
+    for (const QPointF &crossing : lassoCrossings_) {
+        const QPointF screen = worldToScreen(crossing);
+        painter.drawLine(screen + QPointF(-6, -6), screen + QPointF(6, 6));
+        painter.drawLine(screen + QPointF(-6, 6), screen + QPointF(6, -6));
+    }
+    if (!lassoError_.isEmpty()) {
+        painter.setPen(QColor(245, 85, 85));
+        painter.drawText(QRectF(12, 44, width() - 24, 30),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         lassoError_);
+    }
+    painter.restore();
+}
+
 namespace {
 
 const QColor SelectionAccentColor(255, 200, 50);
@@ -414,6 +623,8 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
                               RulerExtent + ShapeCountMargin - padding),
                       countImage);
 
+    drawPenOverlay(painter);
+    drawLassoOverlay(painter);
     drawCursorHint(painter);
     painter.restore();
 }

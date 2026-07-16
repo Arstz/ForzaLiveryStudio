@@ -291,7 +291,7 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                       newLayerSelection, newGuideLayerSelection, renameCopies);
 }
 
-void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Shape> layer, const QVector<QString> &selectedEntries)
+void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries)
 {
     if (!layer || !project_.root) {
         return;
