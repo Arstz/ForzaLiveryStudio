@@ -22,15 +22,17 @@ exports flat game-compatible folders.
   subtracts those candidates from the fill domain, then covers the remaining
   interior with finite ear-clipped Triangle meshes. Its result is an ordinary
   single-colour scene group.
-  Polygonal Lasso validates a simple straight-edged contour, computes a fast exact
-  non-overlapping Triangle/Square baseline, then spends up to 150 ms looking for a
-  contained overlapping cover with no more shapes. Its fourth and later input
-  vertices visibly snap within 2 screen pixels to the local parallelogram corner
-  implied by the previous three vertices. Equal-count choices prioritize Squares,
-  then safe interior-anchored candidates, then centre-biased Triangles; up to
-  three sparse interior anchors are eligible only when exact coverage and the
-  baseline count are preserved. The baseline is returned when the bounded
-  optimization cannot improve it in time.
+  Polygonal Lasso validates a simple straight-edged contour and ear-clips an exact
+  Triangle baseline. A deterministic shared-edge pass first combines every pair
+  whose exact union is a Rectangle or skewed Rectangle (parallelogram). It then
+  derives additional tight rotated Rectangle candidates from bounded pairs of
+  current triangles, rejects every candidate whose boundary leaves the lasso,
+  and greedily replaces two or more still-needed triangles per Rectangle.
+  Each accepted merge strictly lowers the shape count. Up to three interior
+  anchors are tried as centre fans or local Triangle splits, but only when
+  Rectangle savings keep the result at or below the baseline count. Rectangle
+  optimization operates only on the interior mesh and never moves or snaps the
+  input contour.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   When auto-select is off, clicking outside the selected bounds preserves the
   current selection unless no selection exists.
@@ -325,10 +327,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     construction, boundary candidate scoring, strict containment, and the
     cancellable finite interior-mesh pass;
     `polygon_mesh.*` owns polygon normalization, intersection validation,
-    deterministic ear clipping for triangle-only Pen remainder meshes, exact
-    minimum non-overlapping partitions and bounded best-so-far overlapping cover
-    search for Polygonal Lasso (including Square-first/centre-biased tie breaking
-    and sparse safe interior anchors), and affine primitive placement;
+    deterministic ear clipping, contained rotated-Rectangle merging and optional
+    count-funded interior-anchor splits for Polygonal Lasso, and affine primitive
+    placement;
     OpenGL shape rendering (`native_shape_renderer`, which walks the `scene::Group`
     tree with a matrix stack — composing each group's frame into its descendants and
     dispatching vector vs raster off the visual container — and also exposes

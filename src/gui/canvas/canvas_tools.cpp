@@ -366,14 +366,13 @@ bool PolygonalLassoTool::handlePress(QMouseEvent *event)
         event->accept();
         return true;
     }
-    const QPointF snappedWorld = c.snappedLassoPoint(world);
     if (!c.lassoPoints_.isEmpty()
-        && QLineF(snappedWorld, c.lassoPoints_.back()).length() <= 1e-8) {
+        && QLineF(world, c.lassoPoints_.back()).length() <= 1e-8) {
         event->accept();
         return true;
     }
-    c.lassoPoints_.push_back(snappedWorld);
-    c.lassoHoverWorld_ = snappedWorld;
+    c.lassoPoints_.push_back(world);
+    c.lassoHoverWorld_ = world;
     c.lassoCrossings_.clear();
     c.lassoError_.clear();
     c.update();
@@ -387,7 +386,7 @@ bool PolygonalLassoTool::handleDoubleClick(QMouseEvent *event)
         return false;
     }
     ProjectCanvas &c = canvas_;
-    c.lassoHoverWorld_ = c.snappedLassoPoint(c.screenToWorld(event->position()));
+    c.lassoHoverWorld_ = c.screenToWorld(event->position());
     if (c.lassoPoints_.size() >= 3) {
         c.closeLassoPath();
     } else {

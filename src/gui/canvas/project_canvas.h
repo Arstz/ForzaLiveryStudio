@@ -250,7 +250,6 @@ private:
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
     void closeLassoPath();
-    QPointF snappedLassoPoint(const QPointF &world) const;
     void drawLassoOverlay(QPainter &painter);
     QPainterPath lassoPreviewPath(bool closeToStart) const;
 

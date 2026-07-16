@@ -60,7 +60,7 @@ recommended working pipelines. For build/developer notes see
 | Select | `S` | Click/drag to select and move layers and groups. |
 | Move | `V` | Reposition the selection; optional auto-select of the clicked layer. |
 | Marquee | `F` | Rubber-band select multiple layers. |
-| Polygonal Lasso | `L` | Mesh a straight-edged polygon exactly with Squares and Triangles. |
+| Polygonal Lasso | `L` | Mesh a straight-edged polygon with Rectangles and Triangles. |
 | Transform | `T` | Scale/skew the selection via bounding-box handles. |
 | Rotate | `R` | Rotate the selection about its centre. |
 | Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
@@ -122,21 +122,21 @@ recommended working pipelines. For build/developer notes see
 - **Polygonal Lasso (`L`)** — click to place straight-edged vertices, then click
   the first vertex or double-click to close. `Backspace` removes the latest
   vertex and `Escape` cancels the path or a running mesh. Self-intersecting
-  contours are highlighted and retained for correction. From the fourth vertex
-  onward, the live point snaps within 2 screen pixels to the local parallelogram
-  corner implied by the previous three points; this makes an intentionally drawn
-  Square exact without hiding a larger correction.
+  contours are highlighted and retained for correction. Vertices remain exactly
+  where they are clicked; Rectangle optimization never moves or snaps the lasso
+  contour.
 
-  The lasso first receives a fast exact non-overlapping fill, then a short bounded
-  pass looks for a smaller contained cover. Shapes may overlap inside the contour
-  when useful, but no shape may cross its boundary and the result never uses more
-  shapes than the initial fill. Equal-count results prefer Squares first, then
-  safe interior-anchored candidates, then Triangle area near the selection centre;
-  unnecessary vertex concentration is the final geometric tie-break. Up to three
-  interior anchors may be considered when they preserve the same exact coverage
-  and count. Only **Square** (`101`) and
-  **Triangle** (`103`) primitives are generated, with no fill margin, gaps, or
-  boundary overhang. They use the normal new-shape colour behavior and are
+  The lasso begins with an exact Triangle fill. It then tries contained rotated
+  Rectangles, exhaustively combining adjacent Triangles anywhere in the interior
+  when their exact union is a Rectangle or skewed Rectangle (parallelogram), and
+  greedily replaces additional shapes whenever that lowers the count. Selected
+  Rectangles may overlap other fill shapes, but never the lasso boundary.
+  Rectangle savings can fund Triangle splits around up to three interior anchors,
+  so centre vertices appear only when they do not make the result exceed the
+  initial Triangle count. The game **Square** primitive (`101`)
+  is non-uniformly scaled, rotated, and when needed sheared for each Rectangle;
+  the remaining shapes use **Triangle** (`103`). There is no fill margin, gap, or
+  boundary overhang. Shapes use the normal new-shape colour behavior and are
   inserted in one **Lasso Fill** group as a single undoable edit.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,

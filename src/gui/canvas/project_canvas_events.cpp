@@ -352,7 +352,7 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
     }
     updateCursorForPoint(event->position());
     if (tool_ == QStringLiteral("polygon_lasso") && !lassoFillRunning_) {
-        const QPointF hover = snappedLassoPoint(screenToWorld(event->position()));
+        const QPointF hover = screenToWorld(event->position());
         if (hover != lassoHoverWorld_) {
             lassoHoverWorld_ = hover;
             update();
