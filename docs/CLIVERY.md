@@ -195,11 +195,12 @@ extent/bounds field — per-panel bounds are not stored in the file). A populate
 slot is a run of one or more top-level groups whose decal count sums to that
 section's stats value, followed by an 18-byte scaffold remnant.
 
-A populated slot's **first** top-level group is wrapped in a markerless group whose
-header contains its direct-child count, bitmap-block field, three control bytes,
-and child bitmap. The first child placement payload follows that bitmap directly.
-Subsequent top-level groups in the slot use their own separate transforms the same
-way (an ordinary bare `00` when the placement is simple).
+A populated slot begins with a markerless section-root frame whose header contains
+its direct-child count, bitmap-block field, three control bytes, and child bitmap.
+The frame's direct children are section layers; the frame is not itself a layer.
+The first child placement payload follows that bitmap directly. Later section
+groups use their own separate transforms the same way (an ordinary bare `00` when
+the placement is simple).
 
 ### Built-in shape ID validation
 

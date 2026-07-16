@@ -457,19 +457,39 @@ Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileDa
             Matrix3 sectionMatrix = groupNodeMatrix(section.subtree);
             bool sectionMask = section.subtree.isMask;
             const VinylGroup *sectionRoot = &section.subtree;
-            while (sectionRoot->items.size() == 1 && !sectionRoot->items.front().isShape()) {
-                const auto topGroup = std::get<VinylGroupPtr>(sectionRoot->items.front().value);
-                if (!topGroup) break;
-                sectionMatrix = detail::multiply(sectionMatrix, groupNodeMatrix(*topGroup));
-                sectionMask = sectionMask || topGroup->isMask;
-                sectionRoot = topGroup.get();
-            }
-            sectionMatrix = detail::multiply(liverySectionCanvasTransform(section.slot), sectionMatrix);
-            for (const VinylItem &item : sectionRoot->items) {
-                if (item.isShape())
-                    sectionGroup->append(importShape(std::get<VinylShape>(item.value), sectionMatrix, sectionMask));
-                else
-                    sectionGroup->append(importGroup(*std::get<VinylGroupPtr>(item.value), sectionMatrix, sectionMask));
+            const auto appendItems = [&](const QVector<VinylItem> &items, int begin,
+                                         const Matrix3 &matrix, bool mask) {
+                for (int i = begin; i < items.size(); ++i) {
+                    const VinylItem &item = items[i];
+                    if (item.isShape())
+                        sectionGroup->append(importShape(std::get<VinylShape>(item.value), matrix, mask));
+                    else
+                        sectionGroup->append(importGroup(*std::get<VinylGroupPtr>(item.value), matrix, mask));
+                }
+            };
+            const VinylGroupPtr leadingRoot = !sectionRoot->items.isEmpty()
+                    && !sectionRoot->items.front().isShape()
+                ? std::get<VinylGroupPtr>(sectionRoot->items.front().value)
+                : VinylGroupPtr{};
+            if (leadingRoot && leadingRoot->source == QStringLiteral("livery_section_root")) {
+                const Matrix3 leadingMatrix = detail::multiply(sectionMatrix, groupNodeMatrix(*leadingRoot));
+                const bool leadingMask = sectionMask || leadingRoot->isMask;
+                const Matrix3 leadingCanvasMatrix = detail::multiply(
+                    liverySectionCanvasTransform(section.slot), leadingMatrix);
+                appendItems(leadingRoot->items, 0, leadingCanvasMatrix, leadingMask);
+                const Matrix3 remainingMatrix = detail::multiply(
+                    liverySectionCanvasTransform(section.slot), sectionMatrix);
+                appendItems(sectionRoot->items, 1, remainingMatrix, sectionMask);
+            } else {
+                while (sectionRoot->items.size() == 1 && !sectionRoot->items.front().isShape()) {
+                    const auto topGroup = std::get<VinylGroupPtr>(sectionRoot->items.front().value);
+                    if (!topGroup) break;
+                    sectionMatrix = detail::multiply(sectionMatrix, groupNodeMatrix(*topGroup));
+                    sectionMask = sectionMask || topGroup->isMask;
+                    sectionRoot = topGroup.get();
+                }
+                sectionMatrix = detail::multiply(liverySectionCanvasTransform(section.slot), sectionMatrix);
+                appendItems(sectionRoot->items, 0, sectionMatrix, sectionMask);
             }
             for (const auto &child : sectionGroup->children)
                 sectionGroup->sourceChildren.push_back(child->id);

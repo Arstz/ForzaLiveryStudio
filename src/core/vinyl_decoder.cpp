@@ -524,8 +524,7 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
                 child += kLiveryTransformTrailerSize;
                 transformSize += kLiveryTransformTrailerSize;
             }
-            if (validCountedGroupAt(data, child, end, true)
-                || validMarkerlessGroupAt(data, child, end, true, true)) {
+            if (groupAtOrAfterControlByte(data, child, end, true)) {
                 info.inlineTransform = *candidate;
                 info.transformForFirstChild = true;
                 info.size += transformSize;
@@ -626,7 +625,10 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
             return std::nullopt;
         }
     }
-    if (!foundTransform && extra < end && (static_cast<quint8>(data[extra]) == 0x02
+    if (!foundTransform && extra < end
+        && !isValidShapeAt(data, extra, end)
+        && !(livery && isLiveryLogoAt(data, extra, end))
+        && (static_cast<quint8>(data[extra]) == 0x02
             || static_cast<quint8>(data[extra]) == 0x03
             || static_cast<quint8>(data[extra]) == 0xff)) {
         info.flags |= static_cast<quint8>(data[extra]) & ~0x40;
@@ -1280,8 +1282,12 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 if (atSectionRoot && !state.pendingTransform) {
                     if (const auto info =
                             validMarkerlessGroupAt(body, pos, end, /*allowCountOne=*/true, /*livery=*/true)) {
+                        const bool sectionRootFrame = pos == section.absPos;
                         pos = pushMarkerlessGroup(body, pos, end, *info, state,
                                                   /*livery=*/true);
+                        if (sectionRootFrame) {
+                            state.stack.back()->source = QStringLiteral("livery_section_root");
+                        }
                         continue;
                     }
                 }
