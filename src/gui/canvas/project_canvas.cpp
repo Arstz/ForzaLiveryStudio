@@ -562,6 +562,19 @@ void ProjectCanvas::cancelLassoInteraction()
     update();
 }
 
+QPointF ProjectCanvas::snappedLassoPoint(const QPointF &world) const
+{
+    if (lassoPoints_.size() < 3) {
+        return world;
+    }
+    const int last = lassoPoints_.size() - 1;
+    const QPointF parallelogramPoint = lassoPoints_[last - 2]
+        + lassoPoints_[last] - lassoPoints_[last - 1];
+    return QLineF(worldToScreen(world), worldToScreen(parallelogramPoint)).length() <= 2.0
+        ? parallelogramPoint
+        : world;
+}
+
 void ProjectCanvas::closeLassoPath()
 {
     const double worldPerPixel = 1.0 / std::max(baseScale_ * zoom_, 1e-8);

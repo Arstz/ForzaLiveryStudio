@@ -122,13 +122,22 @@ recommended working pipelines. For build/developer notes see
 - **Polygonal Lasso (`L`)** — click to place straight-edged vertices, then click
   the first vertex or double-click to close. `Backspace` removes the latest
   vertex and `Escape` cancels the path or a running mesh. Self-intersecting
-  contours are highlighted and retained for correction.
+  contours are highlighted and retained for correction. From the fourth vertex
+  onward, the live point snaps within 2 screen pixels to the local parallelogram
+  corner implied by the previous three points; this makes an intentionally drawn
+  Square exact without hiding a larger correction.
 
-  The lasso is filled exactly: it is ear-clipped into triangles, then compatible
-  adjacent triangle pairs are replaced with squares to reduce the shape count.
-  Only **Square** (`101`) and **Triangle** (`103`) primitives are generated, with
-  no fill margin, gaps, or boundary overhang. They use the normal new-shape colour
-  behavior and are inserted in one **Lasso Fill** group as a single undoable edit.
+  The lasso first receives a fast exact non-overlapping fill, then a short bounded
+  pass looks for a smaller contained cover. Shapes may overlap inside the contour
+  when useful, but no shape may cross its boundary and the result never uses more
+  shapes than the initial fill. Equal-count results prefer Squares first, then
+  safe interior-anchored candidates, then Triangle area near the selection centre;
+  unnecessary vertex concentration is the final geometric tie-break. Up to three
+  interior anchors may be considered when they preserve the same exact coverage
+  and count. Only **Square** (`101`) and
+  **Triangle** (`103`) primitives are generated, with no fill margin, gaps, or
+  boundary overhang. They use the normal new-shape colour behavior and are
+  inserted in one **Lasso Fill** group as a single undoable edit.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,
