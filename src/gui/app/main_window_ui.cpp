@@ -411,6 +411,18 @@ void MainWindow::setupOptionsMenu()
     addBehaviorOption(QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
     addBehaviorOption(QStringLiteral("Flash Selected Layers"), QStringLiteral("toggle_selection_flash"), &BehaviorSettings::selectionFlashEnabled, QKeySequence(QStringLiteral("\\")));
     addBehaviorOption(QStringLiteral("Guide Layers On Top"), QStringLiteral("toggle_guide_layers_on_top"), &BehaviorSettings::guideLayersOnTop, QKeySequence(Qt::Key_QuoteLeft));
+    addBehaviorOption(QStringLiteral("Lock Guidelines"), QStringLiteral("toggle_guidelines_locked"), &BehaviorSettings::guidelinesLocked,
+                      QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Semicolon));
+    QAction *deleteGuidelines = optionsMenu->addAction(QStringLiteral("Delete All Guidelines"));
+    registerShortcutAction(deleteGuidelines, QStringLiteral("delete_all_guidelines"), QStringLiteral("Delete All Guidelines"),
+                           QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_Semicolon),
+                           QString(), false, Qt::ApplicationShortcut);
+    addAction(deleteGuidelines);
+    connect(deleteGuidelines, &QAction::triggered, this, [this]() {
+        if (canvas_ != nullptr) {
+            canvas_->deleteAllGuidelines();
+        }
+    });
     addBehaviorOption(QStringLiteral("Show Visibility Borders"), QStringLiteral("toggle_visibility_borders"), &BehaviorSettings::visibilityBordersEnabled);
     flipSelectionAction_ = optionsMenu->addAction(QStringLiteral("Flip Selection"));
     registerShortcutAction(flipSelectionAction_, QStringLiteral("flip_selection"), QStringLiteral("Flip Selection"),
@@ -678,6 +690,8 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);
         canvas_->setGuideLayersOnTop(settings.guideLayersOnTop);
+        canvas_->setGuidelinesLocked(settings.guidelinesLocked);
+        canvas_->setGuidelineColor(settings.guidelineColor);
         canvas_->setVisibilityBordersEnabled(settings.visibilityBordersEnabled);
         canvas_->setPositionLimitBorderEnabled(settings.positionLimitBorderEnabled);
         canvas_->setVisibilityBorderResolution(settings.visibilityBorderResolution);

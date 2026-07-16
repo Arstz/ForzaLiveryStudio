@@ -222,6 +222,12 @@ QCursor ProjectCanvas::cursorForTransformHandle(const QString &handle, const Sel
 
 Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point)
 {
+    if (draggedGuidelineOrientation_ == GuidelineOrientation::Vertical) {
+        return Qt::SizeHorCursor;
+    }
+    if (draggedGuidelineOrientation_ == GuidelineOrientation::Horizontal) {
+        return Qt::SizeVerCursor;
+    }
     switch (dragMode_) {
     case DragMode::Pan:
         return Qt::ClosedHandCursor;
@@ -262,6 +268,26 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point)
     }
     if (dragMode_ == DragMode::Scale || dragMode_ == DragMode::Skew) {
         setCursor(cursorForTransformHandle(activeHandle_, &dragStartBox_));
+        return;
+    }
+    const GuidelineOrientation ruler = rulerAt(point);
+    const bool rulerArea = project_ != nullptr && point.x() >= 0.0 && point.y() >= 0.0
+        && point.x() < width() && point.y() < height()
+        && (point.x() < RulerExtent || point.y() < RulerExtent);
+    if (draggedGuidelineOrientation_ != GuidelineOrientation::None || rulerArea) {
+        Qt::CursorShape shape = Qt::ArrowCursor;
+        const GuidelineOrientation orientation = draggedGuidelineOrientation_ != GuidelineOrientation::None
+            ? draggedGuidelineOrientation_
+            : ruler;
+        if (!guidelinesLocked_ && draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+            shape = orientation == GuidelineOrientation::Vertical ? Qt::SizeHorCursor : Qt::SizeVerCursor;
+        } else if (orientation != GuidelineOrientation::None
+                   && !guidelinesLocked_ && guidelineAtRuler(point, orientation) >= 0) {
+            shape = orientation == GuidelineOrientation::Vertical ? Qt::SizeHorCursor : Qt::SizeVerCursor;
+        } else if (!guidelinesLocked_ && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)) {
+            shape = Qt::CrossCursor;
+        }
+        setCursor(QCursor(shape));
         return;
     }
     if (activeTool_ != nullptr) {

@@ -52,6 +52,10 @@ public:
     void setDisplayAnchorsDuringTransformDrag(bool enabled);
     void setGuideLayersOnTop(bool enabled);
     bool guideLayersOnTop() const;
+    void setGuidelinesLocked(bool locked);
+    bool guidelinesLocked() const;
+    void setGuidelineColor(const QColor &color);
+    bool deleteAllGuidelines();
     void setVisibilityBordersEnabled(bool enabled);
     void setPositionLimitBorderEnabled(bool enabled);
     void setVisibilityBorderResolution(const QSize &resolution);
@@ -106,6 +110,12 @@ private:
         Scale,
         Skew,
         Rotate,
+    };
+
+    enum class GuidelineOrientation {
+        None,
+        Horizontal,
+        Vertical,
     };
 
     struct HitEntry {
@@ -194,7 +204,12 @@ private:
     QCursor rotateCursor() const;
     QCursor rotateCursorForPoint(const QPointF &point, const SelectionBox &box) const;
     void drawVisibilityBorders(QPainter &painter);
+    void drawRulersAndGuidelines(QPainter &painter);
     void drawOverlay(QPainter &painter);
+    GuidelineOrientation rulerAt(const QPointF &point) const;
+    int guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const;
+    double guidelineCoordinateAt(const QPointF &point, GuidelineOrientation orientation) const;
+    bool handleRulerPress(QMouseEvent *event);
     bool selectionIsGroupLike() const;
     void updateSelectionFlashState();
     void setFlashingLayerIds(const QSet<QString> &ids);
@@ -241,6 +256,11 @@ private:
     bool selectionFlashEnabled_ = true;
     bool displayAnchorsDuringTransformDrag_ = true;
     bool guideLayersOnTop_ = true;
+    bool guidelinesLocked_ = false;
+    QColor guidelineColor_ = QColor(0, 170, 255);
+    GuidelineOrientation draggedGuidelineOrientation_ = GuidelineOrientation::None;
+    int draggedGuidelineIndex_ = -1;
+    bool rulerPressActive_ = false;
     bool visibilityBordersEnabled_ = true;
     bool positionLimitBorderEnabled_ = false;
     QSize visibilityBorderResolution_ = QSize(1920, 1080);

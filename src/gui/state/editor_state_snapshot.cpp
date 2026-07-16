@@ -351,6 +351,8 @@ bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEdit
 {
     ScopedPerf perf("EditorState::snapshotsEqual");
     if (a.project.colorSwatches != b.project.colorSwatches
+        || a.project.horizontalGuidelines != b.project.horizontalGuidelines
+        || a.project.verticalGuidelines != b.project.verticalGuidelines
         || static_cast<bool>(a.project.root) != static_cast<bool>(b.project.root)) {
         return false;
     }

@@ -46,6 +46,9 @@ ProjectCanvas::~ProjectCanvas() = default;
 void ProjectCanvas::setProject(fh6::Project *project)
 {
     project_ = project;
+    draggedGuidelineOrientation_ = GuidelineOrientation::None;
+    draggedGuidelineIndex_ = -1;
+    rulerPressActive_ = false;
     guideImageCache_.clear();
     sectionCanvasCache_.clear();
     zoom_ = 1.0;
@@ -317,6 +320,65 @@ bool ProjectCanvas::guideLayersOnTop() const
     return guideLayersOnTop_;
 }
 
+void ProjectCanvas::setGuidelinesLocked(bool locked)
+{
+    if (guidelinesLocked_ == locked) {
+        return;
+    }
+    guidelinesLocked_ = locked;
+    if (locked && draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        if (state_ != nullptr) {
+            state_->commitProjectEdit();
+        }
+        draggedGuidelineOrientation_ = GuidelineOrientation::None;
+        draggedGuidelineIndex_ = -1;
+    }
+    updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+    update();
+}
+
+bool ProjectCanvas::guidelinesLocked() const
+{
+    return guidelinesLocked_;
+}
+
+void ProjectCanvas::setGuidelineColor(const QColor &color)
+{
+    const QColor validColor = color.isValid() ? color : QColor(0, 170, 255);
+    if (guidelineColor_ == validColor) {
+        return;
+    }
+    guidelineColor_ = validColor;
+    update();
+}
+
+bool ProjectCanvas::deleteAllGuidelines()
+{
+    if (project_ == nullptr
+        || (project_->horizontalGuidelines.isEmpty() && project_->verticalGuidelines.isEmpty())) {
+        return false;
+    }
+    if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        if (state_ != nullptr) {
+            state_->commitProjectEdit();
+        }
+        draggedGuidelineOrientation_ = GuidelineOrientation::None;
+        draggedGuidelineIndex_ = -1;
+    }
+    if (state_ != nullptr) {
+        state_->beginProjectEdit();
+    }
+    project_->horizontalGuidelines.clear();
+    project_->verticalGuidelines.clear();
+    if (state_ != nullptr) {
+        state_->commitProjectEdit();
+    }
+    draggedGuidelineOrientation_ = GuidelineOrientation::None;
+    draggedGuidelineIndex_ = -1;
+    update();
+    return true;
+}
+
 void ProjectCanvas::setVisibilityBordersEnabled(bool enabled)
 {
     if (visibilityBordersEnabled_ == enabled) {
@@ -374,7 +436,8 @@ bool ProjectCanvas::centerViewOnSelection()
         return false;
     }
     const QPointF selectionScreenCenter = worldToScreen(bounds.center());
-    pan_ += QPointF(width() * 0.5, height() * 0.5) - selectionScreenCenter;
+    pan_ += QPointF(RulerExtent + (width() - RulerExtent) * 0.5,
+                    RulerExtent + (height() - RulerExtent) * 0.5) - selectionScreenCenter;
     invalidateSceneCache();
     update();
     return true;
@@ -383,7 +446,8 @@ bool ProjectCanvas::centerViewOnSelection()
 QPointF ProjectCanvas::viewCenterWorld()
 {
     updateViewTransform();
-    return screenToWorld(QPointF(width() * 0.5, height() * 0.5));
+    return screenToWorld(QPointF(RulerExtent + (width() - RulerExtent) * 0.5,
+                                 RulerExtent + (height() - RulerExtent) * 0.5));
 }
 
 QRectF ProjectCanvas::projectBounds() const
@@ -416,11 +480,14 @@ void ProjectCanvas::updateViewTransform()
     currentBounds_ = viewBounds_;
     const double paddedWidth = std::max(currentBounds_.width() * 1.16, 1.0);
     const double paddedHeight = std::max(currentBounds_.height() * 1.16, 1.0);
-    baseScale_ = std::min(width() / paddedWidth, height() / paddedHeight);
+    const double viewportWidth = std::max(width() - RulerExtent, 1.0);
+    const double viewportHeight = std::max(height() - RulerExtent, 1.0);
+    baseScale_ = std::min(viewportWidth / paddedWidth, viewportHeight / paddedHeight);
     const QPointF center = currentBounds_.center();
 
     worldToScreen_.reset();
-    worldToScreen_.translate(width() * 0.5 + pan_.x(), height() * 0.5 + pan_.y());
+    worldToScreen_.translate(RulerExtent + viewportWidth * 0.5 + pan_.x(),
+                             RulerExtent + viewportHeight * 0.5 + pan_.y());
     worldToScreen_.scale(baseScale_ * zoom_, -baseScale_ * zoom_);
     worldToScreen_.translate(-center.x(), -center.y());
     screenToWorld_ = worldToScreen_.inverted();

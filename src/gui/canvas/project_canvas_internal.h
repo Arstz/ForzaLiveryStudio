@@ -28,6 +28,8 @@ constexpr double ScaleGrabOutside = 12.0;
 constexpr double RotateCornerReach = 131.0;
 constexpr double SkewHandleOffset = 30.0;
 constexpr double ClickDragThreshold = 5.0;
+constexpr double RulerExtent = 28.0;
+constexpr double GuidelineHitRadius = 5.0;
 
 constexpr qint64 SelectionFlashDurationMs = 750;
 constexpr qint64 SelectionFlashPeriodMs = 3750;

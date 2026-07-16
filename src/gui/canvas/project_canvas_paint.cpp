@@ -35,6 +35,34 @@ constexpr double CursorHintScreenMargin = 4.0;
 
 const QColor EmptyCanvasTextColor(190, 194, 201);
 
+double rulerMajorStep(double pixelsPerWorldUnit)
+{
+    const double target = 80.0 / std::max(pixelsPerWorldUnit, 1e-12);
+    const double magnitude = std::pow(10.0, std::floor(std::log10(target)));
+    const double normalized = target / magnitude;
+    if (normalized <= 1.0) {
+        return magnitude;
+    }
+    if (normalized <= 2.0) {
+        return magnitude * 2.0;
+    }
+    if (normalized <= 5.0) {
+        return magnitude * 5.0;
+    }
+    return magnitude * 10.0;
+}
+
+QString rulerLabel(double value, double majorStep)
+{
+    const int decimals = majorStep >= 1.0
+        ? 0
+        : std::clamp(static_cast<int>(std::ceil(-std::log10(majorStep))), 0, 6);
+    if (std::abs(value) < majorStep * 1e-6) {
+        value = 0.0;
+    }
+    return QString::number(value, 'f', decimals);
+}
+
 } // namespace
 
 
@@ -137,10 +165,122 @@ void ProjectCanvas::drawVisibilityBorders(QPainter &painter)
     }
 }
 
+void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
+{
+    if (project_ == nullptr) {
+        return;
+    }
+
+    painter.save();
+    painter.resetTransform();
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setRenderHint(QPainter::TextAntialiasing, false);
+
+    const QRectF contentRect(RulerExtent, RulerExtent,
+                             std::max(0.0, width() - RulerExtent),
+                             std::max(0.0, height() - RulerExtent));
+    painter.save();
+    painter.setClipRect(contentRect);
+    QPen guidelinePen(guidelineColor_, 1.0);
+    guidelinePen.setCosmetic(true);
+    painter.setPen(guidelinePen);
+    for (double coordinate : project_->verticalGuidelines) {
+        const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
+        painter.drawLine(QPointF(x, contentRect.top()), QPointF(x, contentRect.bottom()));
+    }
+    for (double coordinate : project_->horizontalGuidelines) {
+        const double y = worldToScreen(QPointF(0.0, coordinate)).y();
+        painter.drawLine(QPointF(contentRect.left(), y), QPointF(contentRect.right(), y));
+    }
+    painter.restore();
+
+    const bool dark = isDarkTheme(currentUiTheme());
+    const QColor rulerBackground = dark ? QColor(38, 40, 44) : QColor(229, 231, 234);
+    const QColor rulerDivider = dark ? QColor(83, 87, 94) : QColor(151, 155, 162);
+    const QColor rulerText = dark ? QColor(216, 219, 224) : QColor(45, 48, 53);
+    painter.fillRect(QRectF(0.0, 0.0, width(), RulerExtent), rulerBackground);
+    painter.fillRect(QRectF(0.0, RulerExtent, RulerExtent, height() - RulerExtent), rulerBackground);
+    painter.setPen(QPen(rulerDivider, 1.0));
+    painter.drawLine(QPointF(RulerExtent - 0.5, 0.0), QPointF(RulerExtent - 0.5, height()));
+    painter.drawLine(QPointF(0.0, RulerExtent - 0.5), QPointF(width(), RulerExtent - 0.5));
+
+    QFont rulerFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    rulerFont.setPixelSize(10);
+    rulerFont.setHintingPreference(QFont::PreferFullHinting);
+    painter.setFont(rulerFont);
+    painter.setPen(rulerText);
+    const double pixelsPerWorldUnit = std::max(std::abs(worldToScreen_.m11()), 1e-12);
+    const double majorStep = rulerMajorStep(pixelsPerWorldUnit);
+    const double minorStep = majorStep / 10.0;
+
+    const double leftWorld = screenToWorld(QPointF(contentRect.left(), contentRect.top())).x();
+    const double rightWorld = screenToWorld(QPointF(contentRect.right(), contentRect.top())).x();
+    const qint64 firstX = static_cast<qint64>(std::ceil(std::min(leftWorld, rightWorld) / minorStep));
+    const qint64 lastX = static_cast<qint64>(std::floor(std::max(leftWorld, rightWorld) / minorStep));
+    for (qint64 index = firstX; index <= lastX; ++index) {
+        const double coordinate = index * minorStep;
+        const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
+        const int subdivision = static_cast<int>(((index % 10) + 10) % 10);
+        const bool major = subdivision == 0;
+        const bool half = subdivision == 5;
+        const double tick = major ? 11.0 : (half ? 7.0 : 4.0);
+        painter.drawLine(QPointF(x, RulerExtent), QPointF(x, RulerExtent - tick));
+        if (major) {
+            painter.drawText(QRectF(std::round(x) + 3.0, 1.0, 72.0, RulerExtent - 12.0),
+                             Qt::AlignLeft | Qt::AlignVCenter, rulerLabel(coordinate, majorStep));
+        }
+    }
+
+    const double topWorld = screenToWorld(QPointF(contentRect.left(), contentRect.top())).y();
+    const double bottomWorld = screenToWorld(QPointF(contentRect.left(), contentRect.bottom())).y();
+    const qint64 firstY = static_cast<qint64>(std::ceil(std::min(topWorld, bottomWorld) / minorStep));
+    const qint64 lastY = static_cast<qint64>(std::floor(std::max(topWorld, bottomWorld) / minorStep));
+    for (qint64 index = firstY; index <= lastY; ++index) {
+        const double coordinate = index * minorStep;
+        const double y = worldToScreen(QPointF(0.0, coordinate)).y();
+        const int subdivision = static_cast<int>(((index % 10) + 10) % 10);
+        const bool major = subdivision == 0;
+        const bool half = subdivision == 5;
+        const double tick = major ? 11.0 : (half ? 7.0 : 4.0);
+        painter.drawLine(QPointF(RulerExtent, y), QPointF(RulerExtent - tick, y));
+        if (major) {
+            painter.save();
+            painter.translate(RulerExtent * 0.5 - 1.0, std::round(y));
+            painter.rotate(-90.0);
+            painter.drawText(QRectF(-36.0, -RulerExtent * 0.5, 72.0, RulerExtent - 12.0),
+                             Qt::AlignCenter, rulerLabel(coordinate, majorStep));
+            painter.restore();
+        }
+    }
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(guidelineColor_);
+    for (double coordinate : project_->verticalGuidelines) {
+        const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
+        if (x >= contentRect.left() && x <= contentRect.right()) {
+            painter.drawPolygon(QPolygonF({QPointF(x - 4.0, RulerExtent - 7.0),
+                                           QPointF(x + 4.0, RulerExtent - 7.0),
+                                           QPointF(x, RulerExtent - 1.0)}));
+        }
+    }
+    for (double coordinate : project_->horizontalGuidelines) {
+        const double y = worldToScreen(QPointF(0.0, coordinate)).y();
+        if (y >= contentRect.top() && y <= contentRect.bottom()) {
+            painter.drawPolygon(QPolygonF({QPointF(RulerExtent - 7.0, y - 4.0),
+                                           QPointF(RulerExtent - 7.0, y + 4.0),
+                                           QPointF(RulerExtent - 1.0, y)}));
+        }
+    }
+    painter.restore();
+}
+
 void ProjectCanvas::drawOverlay(QPainter &painter)
 {
     painter.save();
     painter.resetTransform();
+    painter.setClipRect(QRectF(RulerExtent, RulerExtent,
+                               std::max(0.0, width() - RulerExtent),
+                               std::max(0.0, height() - RulerExtent)));
     painter.setRenderHint(QPainter::Antialiasing, true);
 
     if (carUnwrapVisible_ && !carUnwrapOverlay_.isNull()) {
@@ -419,6 +559,7 @@ void ProjectCanvas::paintGL()
             QPainter painter(this);
             painter.setRenderHint(QPainter::Antialiasing, true);
             painter.drawImage(rect(), cached.value());
+            drawRulersAndGuidelines(painter);
             drawOverlay(painter);
             return;
         }
@@ -457,6 +598,7 @@ void ProjectCanvas::paintGL()
         painter.setRenderHint(QPainter::Antialiasing, true);
     }
 
+    drawRulersAndGuidelines(painter);
     drawOverlay(painter);
 }
 

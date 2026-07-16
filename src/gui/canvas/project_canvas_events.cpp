@@ -55,10 +55,125 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
     }
 }
 
+ProjectCanvas::GuidelineOrientation ProjectCanvas::rulerAt(const QPointF &point) const
+{
+    if (point.x() >= RulerExtent && point.x() < width()
+        && point.y() >= 0.0 && point.y() < RulerExtent) {
+        return GuidelineOrientation::Vertical;
+    }
+    if (point.x() >= 0.0 && point.x() < RulerExtent
+        && point.y() >= RulerExtent && point.y() < height()) {
+        return GuidelineOrientation::Horizontal;
+    }
+    return GuidelineOrientation::None;
+}
+
+int ProjectCanvas::guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const
+{
+    if (project_ == nullptr || orientation == GuidelineOrientation::None) {
+        return -1;
+    }
+    const QVector<double> &guidelines = orientation == GuidelineOrientation::Vertical
+        ? project_->verticalGuidelines
+        : project_->horizontalGuidelines;
+    int closestIndex = -1;
+    double closestDistance = GuidelineHitRadius + 1.0;
+    for (int index = 0; index < guidelines.size(); ++index) {
+        const QPointF screen = worldToScreen(QPointF(
+            orientation == GuidelineOrientation::Vertical ? guidelines[index] : 0.0,
+            orientation == GuidelineOrientation::Horizontal ? guidelines[index] : 0.0));
+        const double distance = orientation == GuidelineOrientation::Vertical
+            ? std::abs(screen.x() - point.x())
+            : std::abs(screen.y() - point.y());
+        if (distance <= GuidelineHitRadius && distance < closestDistance) {
+            closestDistance = distance;
+            closestIndex = index;
+        }
+    }
+    return closestIndex;
+}
+
+double ProjectCanvas::guidelineCoordinateAt(const QPointF &point, GuidelineOrientation orientation) const
+{
+    const QPointF world = screenToWorld(point);
+    return orientation == GuidelineOrientation::Vertical ? world.x() : world.y();
+}
+
+bool ProjectCanvas::handleRulerPress(QMouseEvent *event)
+{
+    const GuidelineOrientation orientation = rulerAt(event->position());
+    if (project_ == nullptr) {
+        return false;
+    }
+    if (orientation == GuidelineOrientation::None) {
+        const bool corner = event->position().x() >= 0.0 && event->position().x() < RulerExtent
+            && event->position().y() >= 0.0 && event->position().y() < RulerExtent;
+        if (!corner || (event->button() != Qt::LeftButton && event->button() != Qt::RightButton)) {
+            return false;
+        }
+        rulerPressActive_ = event->button() == Qt::LeftButton;
+        event->accept();
+        return true;
+    }
+
+    const int guidelineIndex = guidelineAtRuler(event->position(), orientation);
+    if (event->button() == Qt::RightButton) {
+        if (!guidelinesLocked_ && guidelineIndex >= 0) {
+            if (state_ != nullptr) {
+                state_->beginProjectEdit();
+            }
+            QVector<double> &guidelines = orientation == GuidelineOrientation::Vertical
+                ? project_->verticalGuidelines
+                : project_->horizontalGuidelines;
+            guidelines.removeAt(guidelineIndex);
+            if (state_ != nullptr) {
+                state_->commitProjectEdit();
+            }
+            update();
+        }
+        event->accept();
+        return true;
+    }
+    if (event->button() != Qt::LeftButton) {
+        return false;
+    }
+    rulerPressActive_ = true;
+
+    if ((event->modifiers() & Qt::AltModifier) && !guidelinesLocked_) {
+        if (state_ != nullptr) {
+            state_->beginProjectEdit();
+        }
+        QVector<double> &guidelines = orientation == GuidelineOrientation::Vertical
+            ? project_->verticalGuidelines
+            : project_->horizontalGuidelines;
+        guidelines.push_back(guidelineCoordinateAt(event->position(), orientation));
+        if (state_ != nullptr) {
+            state_->commitProjectEdit();
+        }
+        update();
+        event->accept();
+        return true;
+    }
+
+    if (!guidelinesLocked_ && guidelineIndex >= 0) {
+        if (state_ != nullptr) {
+            state_->beginProjectEdit();
+        }
+        draggedGuidelineOrientation_ = orientation;
+        draggedGuidelineIndex_ = guidelineIndex;
+        updateCursorForPoint(event->position());
+    }
+    event->accept();
+    return true;
+}
+
 void ProjectCanvas::mousePressEvent(QMouseEvent *event)
 {
     setFocus();
     updateViewTransform();
+    if (handleRulerPress(event)) {
+        return;
+    }
     dragStartScreen_ = event->position();
     dragLastScreen_ = event->position();
     dragStartWorld_ = screenToWorld(dragStartScreen_);
@@ -193,6 +308,34 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        updateViewTransform();
+        QVector<double> &guidelines = draggedGuidelineOrientation_ == GuidelineOrientation::Vertical
+            ? project_->verticalGuidelines
+            : project_->horizontalGuidelines;
+        if (draggedGuidelineIndex_ >= 0 && draggedGuidelineIndex_ < guidelines.size()) {
+            guidelines[draggedGuidelineIndex_] = guidelineCoordinateAt(event->position(), draggedGuidelineOrientation_);
+            update();
+        }
+        updateCursorForPoint(event->position());
+        event->accept();
+        return;
+    }
+    if (rulerPressActive_) {
+        updateCursorForPoint(event->position());
+        event->accept();
+        return;
+    }
+    if (dragMode_ == DragMode::None && project_ != nullptr
+        && (event->position().x() < RulerExtent || event->position().y() < RulerExtent)) {
+        hoverLayerId_.clear();
+        hoverPolygon_ = {};
+        clearCursorHint();
+        updateCursorForPoint(event->position());
+        update();
+        event->accept();
+        return;
+    }
     if (dragMode_ == DragMode::Marquee) {
         updateCursorForPoint(event->position());
         const QRectF nextRect = QRectF(dragStartScreen_, event->position()).normalized();
@@ -242,6 +385,25 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton
+        && draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        if (state_ != nullptr) {
+            state_->commitProjectEdit();
+        }
+        draggedGuidelineOrientation_ = GuidelineOrientation::None;
+        draggedGuidelineIndex_ = -1;
+        rulerPressActive_ = false;
+        updateCursorForPoint(event->position());
+        update();
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && rulerPressActive_) {
+        rulerPressActive_ = false;
+        updateCursorForPoint(event->position());
+        event->accept();
+        return;
+    }
     if (activeTool_ != nullptr && activeTool_->handleRelease(event)) {
         return;
     }
@@ -289,6 +451,24 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (event->key() == Qt::Key_Escape) {
+        if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+            if (state_ != nullptr) {
+                state_->cancelProjectEdit();
+            }
+            draggedGuidelineOrientation_ = GuidelineOrientation::None;
+            draggedGuidelineIndex_ = -1;
+            rulerPressActive_ = false;
+            updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+            update();
+            event->accept();
+            return;
+        }
+        if (rulerPressActive_) {
+            rulerPressActive_ = false;
+            updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+            event->accept();
+            return;
+        }
         cancelDrag();
         if (tool_ == QStringLiteral("transform")) {
             setTool(QStringLiteral("select"));

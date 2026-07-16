@@ -46,6 +46,7 @@ private:
     void resetShortcutRow(int row);
     void resetAllShortcuts();
     void chooseCanvasColor(UiTheme theme);
+    void chooseGuidelineColor();
     void updateCanvasColorControls();
     void accept() override;
 
@@ -59,6 +60,7 @@ private:
     QPushButton *darkCanvasColorButton_ = nullptr;
     QComboBox *lightCanvasMode_ = nullptr;
     QPushButton *lightCanvasColorButton_ = nullptr;
+    QPushButton *guidelineColorButton_ = nullptr;
     QCheckBox *visibilityBordersCheck_ = nullptr;
     QCheckBox *positionLimitBorderCheck_ = nullptr;
     QCheckBox *displayAnchorsDuringTransformDrag_ = nullptr;

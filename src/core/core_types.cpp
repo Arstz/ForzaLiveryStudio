@@ -34,6 +34,8 @@ Project::Project(const Project &other)
                      static_cast<scene::Group *>(other.root->clone().release()))
                : std::make_unique<scene::Group>())
     , colorSwatches(other.colorSwatches)
+    , horizontalGuidelines(other.horizontalGuidelines)
+    , verticalGuidelines(other.verticalGuidelines)
     , isLivery(other.isLivery)
     , carId(other.carId)
     , liverySource(other.liverySource)
@@ -61,6 +63,8 @@ Project &Project::operator=(const Project &other)
         root->id = QStringLiteral("__root__");
     }
     colorSwatches = other.colorSwatches;
+    horizontalGuidelines = other.horizontalGuidelines;
+    verticalGuidelines = other.verticalGuidelines;
     isLivery = other.isLivery;
     carId = other.carId;
     liverySource = other.liverySource;

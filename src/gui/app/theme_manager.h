@@ -38,6 +38,8 @@ struct BehaviorSettings {
     bool selectionFlashEnabled = true;
     bool displayAnchorsDuringTransformDrag = true;
     bool guideLayersOnTop = true;
+    bool guidelinesLocked = false;
+    QColor guidelineColor = QColor(0, 170, 255);
     bool visibilityBordersEnabled = true;
     bool positionLimitBorderEnabled = false;
     bool valueEditingWheelEnabled = true;

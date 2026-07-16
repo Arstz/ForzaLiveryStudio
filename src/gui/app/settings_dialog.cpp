@@ -92,6 +92,11 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
     updateCanvasColorControls();
 
+    guidelineColorButton_ = new QPushButton(general);
+    QObject::connect(guidelineColorButton_, &QPushButton::clicked, this, &SettingsDialog::chooseGuidelineColor);
+    generalLayout->addRow(QStringLiteral("Guideline color"), guidelineColorButton_);
+    updateCanvasColorControls();
+
     visibilityBordersCheck_ = new QCheckBox(general);
     visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
     generalLayout->addRow(QStringLiteral("Show visibility borders"), visibilityBordersCheck_);
@@ -324,6 +329,20 @@ void SettingsDialog::chooseCanvasColor(UiTheme theme)
     updateCanvasColorControls();
 }
 
+void SettingsDialog::chooseGuidelineColor()
+{
+    const QColor current = behaviorSettings_.guidelineColor.isValid()
+        ? behaviorSettings_.guidelineColor
+        : QColor(0, 170, 255);
+    const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Guideline Color"),
+                                                 QColorDialog::ShowAlphaChannel);
+    if (!picked.isValid()) {
+        return;
+    }
+    behaviorSettings_.guidelineColor = picked;
+    updateCanvasColorControls();
+}
+
 void SettingsDialog::updateCanvasColorControls()
 {
     const auto updateButton = [](QPushButton *button, const QColor &color, bool customEnabled) {
@@ -343,6 +362,9 @@ void SettingsDialog::updateCanvasColorControls()
     updateButton(lightCanvasColorButton_,
                  settings.lightMode == CanvasColorMode::Custom ? settings.lightCustom : defaultCanvasColor(UiTheme::Light),
                  settings.lightMode == CanvasColorMode::Custom);
+    updateButton(guidelineColorButton_,
+                 behaviorSettings_.guidelineColor.isValid() ? behaviorSettings_.guidelineColor : QColor(0, 170, 255),
+                 true);
 }
 
 bool SettingsDialog::shortcutsAreValid()

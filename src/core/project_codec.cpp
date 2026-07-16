@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <variant>
 
@@ -963,6 +964,20 @@ Project projectFromJson(const QJsonObject &object)
     project.sourceFolder = object.value(QStringLiteral("source_folder")).toString();
     project.isLivery = object.value(QStringLiteral("is_livery")).toBool(false);
     project.carId = object.value(QStringLiteral("car_id")).toInt(0);
+    const auto loadGuidelines = [](const QJsonValue &value) {
+        QVector<double> result;
+        const QJsonArray array = value.toArray();
+        result.reserve(array.size());
+        for (const QJsonValue &entry : array) {
+            const double coordinate = entry.toDouble(std::numeric_limits<double>::quiet_NaN());
+            if (std::isfinite(coordinate)) {
+                result.push_back(coordinate);
+            }
+        }
+        return result;
+    };
+    project.horizontalGuidelines = loadGuidelines(object.value(QStringLiteral("horizontal_guidelines")));
+    project.verticalGuidelines = loadGuidelines(object.value(QStringLiteral("vertical_guidelines")));
     const QString prefix = object.value(QStringLiteral("source_dec_prefix")).toString();
     if (!prefix.isEmpty()) {
         project.sourceDecPrefix = QByteArray::fromBase64(prefix.toLatin1());
@@ -1056,6 +1071,17 @@ QJsonObject projectToJson(const Project &project)
     object.insert(QStringLiteral("name"), project.name);
     object.insert(QStringLiteral("source_folder"), project.sourceFolder);
     object.insert(QStringLiteral("is_livery"), project.isLivery);
+    const auto saveGuidelines = [](const QVector<double> &guidelines) {
+        QJsonArray array;
+        for (double coordinate : guidelines) {
+            if (std::isfinite(coordinate)) {
+                array.append(coordinate);
+            }
+        }
+        return array;
+    };
+    object.insert(QStringLiteral("horizontal_guidelines"), saveGuidelines(project.horizontalGuidelines));
+    object.insert(QStringLiteral("vertical_guidelines"), saveGuidelines(project.verticalGuidelines));
     if (project.carId != 0) {
         object.insert(QStringLiteral("car_id"), project.carId);
     }

@@ -52,6 +52,8 @@ struct Project {
     std::optional<HeaderMetadata> headerMetadata;
     std::unique_ptr<scene::Group> root;
     QVector<std::array<quint8, 4>> colorSwatches;
+    QVector<double> horizontalGuidelines;
+    QVector<double> verticalGuidelines;
     bool isLivery = false;
     int carId = 0;
     QByteArray liverySource;

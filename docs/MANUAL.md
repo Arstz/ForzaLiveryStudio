@@ -69,6 +69,8 @@ recommended working pipelines. For build/developer notes see
 | --- | --- |
 | Toggle Flash Selected Layers | `\` |
 | Toggle Guide Layers On Top | `` ` `` |
+| Lock Guidelines | `Ctrl+Alt+;` |
+| Delete All Guidelines | `Ctrl+Alt+Shift+;` |
 | Toggle Guide Layer Visibility | *(unbound)* |
 | Settings… | `Ctrl+K` |
 
@@ -139,6 +141,11 @@ recommended working pipelines. For build/developer notes see
   game export. **Guide Layers On Top** is enabled by default and can be toggled
   with `` ` ``. Guide-layer visibility can be toggled from **Options** and
   rebound in Settings.
+- **Rulers and guidelines** — canvas rulers track world coordinates while the
+  view is panned or zoomed. `Alt`+left-click a ruler to add a project guideline,
+  drag its ruler marker to reposition it, or right-click the marker to remove it.
+  Guideline locking, clearing, shortcuts, and color are configurable from the
+  Options menu and Settings.
 - **Visibility borders** — Settings can show viewport/placement reference
   borders on the canvas and choose the reference resolution. **Position Limit
   Border** is off by default.

@@ -100,6 +100,12 @@ BehaviorSettings loadBehaviorSettings()
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), true).toBool();
     result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), true).toBool();
     result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), true).toBool();
+    result.guidelinesLocked = settings.value(QStringLiteral("ui/behavior/guidelinesLocked"), false).toBool();
+    result.guidelineColor = QColor(settings.value(QStringLiteral("ui/behavior/guidelineColor"),
+                                                 QStringLiteral("#00aaff")).toString());
+    if (!result.guidelineColor.isValid()) {
+        result.guidelineColor = QColor(0, 170, 255);
+    }
     result.visibilityBordersEnabled = settings.value(QStringLiteral("ui/behavior/visibilityBordersEnabled"), true).toBool();
     result.positionLimitBorderEnabled = settings.value(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), false).toBool();
     result.valueEditingWheelEnabled = settings.value(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), true).toBool();
@@ -133,6 +139,9 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), settings.displayAnchorsDuringTransformDrag);
     qsettings.setValue(QStringLiteral("ui/behavior/guideLayersOnTop"), settings.guideLayersOnTop);
+    qsettings.setValue(QStringLiteral("ui/behavior/guidelinesLocked"), settings.guidelinesLocked);
+    qsettings.setValue(QStringLiteral("ui/behavior/guidelineColor"),
+                       (settings.guidelineColor.isValid() ? settings.guidelineColor : QColor(0, 170, 255)).name(QColor::HexArgb));
     qsettings.setValue(QStringLiteral("ui/behavior/visibilityBordersEnabled"), settings.visibilityBordersEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), settings.positionLimitBorderEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), settings.valueEditingWheelEnabled);

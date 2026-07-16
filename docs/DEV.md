@@ -23,6 +23,8 @@ exports flat game-compatible folders.
   current selection unless no selection exists.
 - Nudge selected layers/guides precisely in Move or Transform with arrow keys;
   normal and Shift step sizes are configurable in Settings.
+- Read world coordinates from pan/zoom-aware canvas rulers and manage persistent
+  horizontal and vertical guidelines from their ruler markers.
 - Edit layer properties: name, shape ID, position, scale, rotation, skew,
   opacity, color, visibility, mask, and lock state.
 - Edit a group or multi-shape selection's position, scale, rotation, and skew as
@@ -96,7 +98,7 @@ exports flat game-compatible folders.
   livery open** option (on by default) controls whether opening a livery replaces the
   currently loaded model or keeps it. Native car texture loading is an opt-in preview
   setting and is disabled by default.
-- Configure UI theme, canvas colors, layout, keybinds, behavior options, guide
+- Configure UI theme, canvas and guideline colors, layout, keybinds, behavior options, guide
   visibility borders, transform-drag anchors, nudge step sizes, the car models folder,
   and the discard-model option. Every menu-bar action can be bound to a hotkey in the
   keybind settings, even those with no default shortcut.
@@ -292,7 +294,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `project_canvas_paint.cpp` / `project_canvas_events.cpp` and the shared
   `project_canvas_internal.h`; `canvas_tools.*`, `native_shape_renderer.*`,
   `car_model_renderer.*`, `drag_cursors.*`)
-  - OpenGL canvas, pan/zoom, hit testing, guide layer rendering, selection
+  - OpenGL canvas, pan/zoom, coordinate rulers, project guidelines, hit testing, guide layer rendering, selection
     overlays, color sampling, visibility borders, keyboard nudging, and cursor
     handling. `ProjectCanvas` is one class declared in `project_canvas.h` but split
     across translation units by concern (lifecycle/view in `project_canvas.cpp`;

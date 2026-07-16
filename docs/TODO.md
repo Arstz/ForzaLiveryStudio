@@ -1,8 +1,7 @@
 Small changes:
-    -Add a toggle in Settings "Display anchors during transform drag" on by default
-    -Keep the Explorer GUI warm with last folder opened and filter applied
 
 Medium changes:
+    -Adjust distribution to use bounding boxes instead of just distributing centers, make a new bind for vertical distibution as well
 
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied
