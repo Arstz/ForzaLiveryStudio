@@ -168,6 +168,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/widgets/header_metadata_widget.h
     src/gui/widgets/image_io.cpp
     src/gui/widgets/image_io.h
+    src/gui/widgets/import_asset_dialog.cpp
+    src/gui/widgets/import_asset_dialog.h
     src/gui/widgets/import_locations.cpp
     src/gui/widgets/import_locations.h
     src/gui/widgets/layer_state_delegate.cpp

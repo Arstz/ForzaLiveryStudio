@@ -190,6 +190,28 @@ QImage readGuideImage(const QString &path, QByteArray *format, QString *error)
     return {};
 }
 
+QImage readThumbnailImage(const QString &path, QString *error)
+{
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    QImage image = reader.read();
+    if (!image.isNull()) {
+        return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+
+#ifdef Q_OS_WIN
+    image = readImageWithWic(path, error);
+    if (!image.isNull()) {
+        return image.mirrored(false, true).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+#endif
+
+    if (error != nullptr && error->isEmpty()) {
+        *error = QStringLiteral("Could not decode thumbnail: %1").arg(path);
+    }
+    return {};
+}
+
 QByteArray encodeGuideImage(const QImage &image, QString *formatOut)
 {
     if (image.isNull()) {

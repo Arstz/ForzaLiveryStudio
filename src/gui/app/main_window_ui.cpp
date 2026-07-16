@@ -267,9 +267,6 @@ void MainWindow::setupFileMenu()
                  QStringLiteral("import"), QStringLiteral("Import"), &MainWindow::importFileDialog);
     addIconEntry(QStringLiteral("ImportCar.xpm"), QStringLiteral("Import &Car Model..."),
                  QStringLiteral("import_car_model"), QStringLiteral("Import Car Model"), &MainWindow::importCarModel);
-    addIconEntry(QStringLiteral("MenuOpenCGroup.xpm"), QStringLiteral("Import &Motorsport Asset..."),
-                 QStringLiteral("import_motorsport"), QStringLiteral("Import Motorsport Asset"),
-                 &MainWindow::importFM2023Dialog);
     addIconEntry(QStringLiteral("ImportGuide.xpm"), QStringLiteral("Import &Guide Layer..."),
                  QStringLiteral("import_guide_layer"), QStringLiteral("Import Guide Layer"), &MainWindow::importGuideLayerDialog);
     addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("&Export..."),

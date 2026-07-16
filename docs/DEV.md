@@ -6,9 +6,9 @@ exports flat game-compatible folders.
 
 ## Functionality
 
-- Import a `C_group` or `C_livery` source (file or folder) through one
-  context-aware **Import…** action that detects group vs livery and loads it as
-  an editable project or a read-only multi-section viewer.
+- Import supported asset folders through one context-aware **Import…** action.
+  Its minimal filesystem browser identifies importable folders, shows available
+  header metadata and thumbnails, and routes the selection to the matching decoder.
 - Open/save editor projects as a `.3so` container: the editor project JSON
   wrapped in a gzip stream. The document is the unified scene tree (v2: a recursive
   `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON

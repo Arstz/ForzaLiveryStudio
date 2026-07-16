@@ -16,7 +16,7 @@ recommended working pipelines. For build/developer notes see
 | New Project | `Ctrl+N` |
 | Open Project (`.3so`) | `Ctrl+O` |
 | Save Project (`.3so`) | `Ctrl+S` |
-| Import (C_group / C_livery) / Import Guide Layer / Import Car Model | *(menu only)* |
+| Import Asset / Import Guide Layer / Import Car Model | *(menu only)* |
 | Export (grouped C_group) | *(menu only)* |
 | Exit | *(menu only)* |
 
@@ -116,9 +116,9 @@ recommended working pipelines. For build/developer notes see
 - **Project menu** — edit one project field at a time: **Target Car…** (the car a
   livery targets), **Project Name…**, and **Creator Name…** (also saved as the
   default creator for new projects).
-- **Import** (**File → Import…**) — one context-aware importer. Pick a `C_group`
-  or `C_livery` file (or drop a file/folder in); the editor detects which it is
-  and loads it as an editable group project or a read-only livery viewer.
+- **Import** (**File → Import…**) — browse folders in the built-in asset explorer.
+  Importable folders show their available metadata and thumbnail; selecting one
+  routes it to the matching importer. The explorer returns to its last location.
 - **Import Car Model** (**File → Import Car Model…**) — load a `.modelbin`,
   `.carbin`, or zipped car folder into the **3D Preview** dock, which shows the
   current vinyl mapped through the model's livery UVs and coverage masks (reference
@@ -181,8 +181,7 @@ recommended working pipelines. For build/developer notes see
 
 ### Edit an existing game vinyl
 
-1. **File → Import…** and pick the `C_group` file (or folder) to load a game
-   group as an editable project.
+1. Use **File → Import…** and pick an importable asset folder.
 2. Edit with the canvas tools and the Layers / Properties docks.
 3. **File → Save Project…** (`Ctrl+S`) to keep an editable `.3so` copy.
 4. **File → Export…** to write a game-compatible `C_group` folder.

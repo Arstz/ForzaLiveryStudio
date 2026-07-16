@@ -78,6 +78,33 @@ QString importDialogStartDirectory(QWidget *parent)
     return selected;
 }
 
+QString importBrowserStartDirectory(const QString &actionKey, const QStringList &fallbackActionKeys)
+{
+    QSettings settings;
+    const auto configuredDirectory = [&](const QString &key) {
+        const QString path = settings.value(QStringLiteral("import/%1Directory").arg(key)).toString();
+        return !path.isEmpty() && QFileInfo(path).isDir() ? path : QString();
+    };
+
+    const QString current = configuredDirectory(actionKey);
+    if (!current.isEmpty()) {
+        return current;
+    }
+    for (const QString &fallbackKey : fallbackActionKeys) {
+        const QString fallback = configuredDirectory(fallbackKey);
+        if (!fallback.isEmpty()) {
+            return fallback;
+        }
+    }
+
+    const QString legacy = settings.value(QStringLiteral("import/defaultDirectory")).toString();
+    if (!legacy.isEmpty() && QFileInfo(legacy).isDir()) {
+        return legacy;
+    }
+    const QString detected = mostRecentContainersRoot();
+    return detected.isEmpty() ? QDir::homePath() : detected;
+}
+
 void rememberImportDirectory(const QString &path)
 {
     const QFileInfo info(path);

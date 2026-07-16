@@ -7,6 +7,7 @@
 #include "fm_codec.h"
 #include "header_metadata_widget.h"
 #include "image_io.h"
+#include "import_asset_dialog.h"
 #include "layer.h"
 #include "project_codec.h"
 #include "shape_geometry_store.h"
@@ -452,26 +453,28 @@ bool MainWindow::importAny(const QString &path, QString *error)
 
 void MainWindow::importFileDialog()
 {
-    if (!confirmDiscardUnsavedChanges()) {
-        return;
+    const ImportAssetSelection selection = showImportAssetDialog(
+        this,
+        importBrowserStartDirectory(
+            QStringLiteral("sourceBrowser"),
+            QStringList{
+                QStringLiteral("source"),
+                QStringLiteral("motorsportFolder"),
+                QStringLiteral("liveryFolder"),
+                QStringLiteral("cgroupFolder"),
+            }));
+    if (!selection.directory.isEmpty()) {
+        rememberImportDirectory(selection.directory, QStringLiteral("sourceBrowser"));
     }
-    const QString path = QFileDialog::getOpenFileName(this,
-                                                      QStringLiteral("Import C_group or C_livery"),
-                                                      importDialogStartDirectoryWithFallbacks(
-                                                          this,
-                                                          QStringLiteral("source"),
-                                                          QStringList{
-                                                              QStringLiteral("cgroupFile"),
-                                                              QStringLiteral("liveryFolder"),
-                                                              QStringLiteral("cgroupFolder"),
-                                                          }),
-                                                      QStringLiteral("Forza source (C_group C_livery);;All files (*)"));
-    if (path.isEmpty()) {
+    if (selection.path.isEmpty() || !confirmDiscardUnsavedChanges()) {
         return;
     }
 
     QString error;
-    if (!importAny(path, &error)) {
+    const bool imported = selection.motorsport
+        ? importFM2023Folder(selection.path, &error)
+        : importAny(selection.path, &error);
+    if (!imported) {
         QMessageBox::critical(this, QStringLiteral("Import failed"), error);
     }
 }
@@ -493,43 +496,13 @@ void MainWindow::importGuideLayerDialog()
     }
 }
 
-void MainWindow::importFM2023Dialog()
-{
-    if (!confirmDiscardUnsavedChanges()) {
-        return;
-    }
-    const QString path = QFileDialog::getExistingDirectory(
-        this,
-        QStringLiteral("Select FM2023 Asset Folder (header + data)"),
-        importDialogStartDirectory(this, QStringLiteral("motorsportFolder")));
-    if (path.isEmpty()) {
-        return;
-    }
-
-    if (!QFileInfo(QDir(path).filePath(QStringLiteral("header"))).isFile()
-        || !QFileInfo(QDir(path).filePath(QStringLiteral("data"))).isFile()) {
-        QMessageBox::critical(
-            this,
-            QStringLiteral("Import Motorsport Asset"),
-            QStringLiteral("Selected folder does not contain header and data files."));
-        return;
-    }
-
-    rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
-    QString error;
-    if (!importFM2023Folder(path, &error)) {
-        QMessageBox::critical(this, QStringLiteral("Import failed"), error);
-    }
-}
-
 bool MainWindow::importFM2023Folder(const QString &path, QString *error)
 {
     try {
-        if (!confirmDiscardUnsavedChanges()) {
-            return false;
-        }
+        rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
         fh6::Project project = fh6::importFM2023Asset(path);
         setProject(std::move(project));
+        statusBar()->showMessage(QStringLiteral("Imported %1").arg(path), 5000);
         return true;
     } catch (const std::exception &e) {
         if (error) *error = QString::fromStdString(e.what());
