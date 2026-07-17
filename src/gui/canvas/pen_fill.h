@@ -47,8 +47,6 @@ struct PenPlacement {
     int shapeId = 0;
     QTransform transform;
     double area = 0.0;
-    double matchedLength = 0.0;
-    bool fullBoundaryMatch = false;
 };
 
 struct PenFillRequest {
@@ -60,7 +58,10 @@ struct PenFillRequest {
 struct PenFillResult {
     QVector<PenPlacement> placements;
     QPainterPath unfilled;
-    int boundaryPlacementCount = 0;
+    double targetArea = 0.0;
+    double coveredArea = 0.0;
+    double outsideArea = 0.0;
+    int shapeLimit = 0;
     bool cancelled = false;
     QString error;
 };

@@ -112,13 +112,14 @@ recommended working pipelines. For build/developer notes see
   corrected before closing.
 
   Pen uses only **Square** (`101`), **Circle** (`102`), and **Triangle** (`103`),
-  keeps every generated shape inside the contour, and chooses one best boundary
-  candidate per line/curve. It subtracts the current boundary coverage, then fills
-  only the remaining interior in bounded ear-clipping passes with Triangle
-  primitives, so the fill cannot cycle or add wholly redundant inner shapes. The
-  generated layers share the last selected shape color when the corresponding new-shape
-  behavior is enabled (otherwise white) and are placed in one **Pen Fill** group
-  as a single undoable operation. Filling runs in the background.
+  including affine rectangle and ellipse forms. It follows the contour inward:
+  outward curved boundaries receive fitted Circle or Ellipse placements and become
+  chords, then the remaining core is deterministically meshed with Triangle and
+  compatible Square placements. Overlap is allowed, curve fits use a bounded spill
+  tolerance, and generated shape count is capped at twice the Pen point count. The
+  generated layers share the last selected shape color when the corresponding
+  new-shape behavior is enabled (otherwise white) and are placed in one **Pen Fill**
+  group as a single undoable operation. Filling runs in the background.
 - **Polygonal Lasso (`L`)** — click to place straight-edged vertices, then click
   the first vertex or double-click to close. `Backspace` removes the latest
   vertex and `Escape` cancels the path or a running mesh. Self-intersecting
