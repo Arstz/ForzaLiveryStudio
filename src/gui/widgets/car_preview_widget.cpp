@@ -626,6 +626,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(24);
     format.setAlphaBufferSize(8);
+    format.setSamples(4);
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
 
@@ -976,6 +977,7 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds)
 
 void CarPreviewWidget::initializeGL()
 {
+    context()->functions()->glEnable(GL_MULTISAMPLE);
     geometryLoaded_ = geometry_.loadDefault();
     shapeRenderer_.initialize();
     if (geometryLoaded_ && shapeRenderer_.isInitialized()) {

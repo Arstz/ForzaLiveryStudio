@@ -300,6 +300,7 @@ void MainWindow::pasteClipboard()
     state_->insertClipboardAboveSelection(*state_->clipboard(), selectedEntryIds(), &newLayerSelection, &newGuideSelection);
     state_->selectedLayerIds_ = newLayerSelection;
     state_->selectedGuideLayerIds_ = newGuideSelection;
+    state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
     state_->noteProjectStructureChanged();
     statusBar()->showMessage(QStringLiteral("Pasted selection"), 1500);
@@ -588,10 +589,35 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     if (clipboard.nodes.empty()) {
         return;
     }
+    ProjectClipboard placement;
+    if (clipboard.nodes.size() == 1 && clipboard.nodes.front()
+        && clipboard.nodes.front()->kind() == fh6::scene::LayerKind::Group) {
+        std::unique_ptr<fh6::scene::Layer> root = clipboard.nodes.front()->clone();
+        root->name = name;
+        placement.rootIds = {root->id};
+        placement.nodes.push_back(std::move(root));
+    } else {
+        auto root = std::make_unique<fh6::scene::Group>();
+        root->id = QStringLiteral("custom_group_root");
+        root->name = name;
+        for (const auto &node : clipboard.nodes) {
+            if (node) {
+                root->append(node->clone());
+            }
+        }
+        placement.rootIds = {root->id};
+        placement.nodes.push_back(std::move(root));
+    }
+
     QSet<QString> layerSelection;
     QSet<QString> guideSelection;
+    QVector<QString> insertedRoots;
     state_->beginProjectEdit();
-    state_->insertClipboardAboveSelection(clipboard, selectedEntryIds(), &layerSelection, &guideSelection, true);
+    state_->insertClipboardAboveSelection(
+        placement, selectedEntryIds(), &layerSelection, &guideSelection, false, &insertedRoots);
+    state_->selectedLayerIds_ = layerSelection;
+    state_->selectedGuideLayerIds_ = guideSelection;
+    state_->selectedEntryIds_.clear();
     QRectF insertedBounds;
     bool hasInsertedBounds = false;
     for (const QString &id : layerSelection) {
@@ -607,15 +633,10 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     if (hasInsertedBounds) {
         const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
         const QPointF delta = center - insertedBounds.center();
-        for (const QString &id : layerSelection) {
-            if (auto *layer = dynamic_cast<fh6::scene::Shape *>(state_->sceneNode(id))) {
-                layer->x += delta.x();
-                layer->y += delta.y();
-            }
+        if (!insertedRoots.isEmpty()) {
+            state_->transformGroupFrames(insertedRoots, QTransform::fromTranslate(delta.x(), delta.y()));
         }
     }
-    state_->selectedLayerIds_ = layerSelection;
-    state_->selectedGuideLayerIds_ = guideSelection;
     state_->commitProjectEdit();
     state_->noteProjectStructureChanged();
     if (canvas_ != nullptr) {

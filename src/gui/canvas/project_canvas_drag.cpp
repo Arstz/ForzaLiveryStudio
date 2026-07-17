@@ -120,10 +120,34 @@ void ProjectCanvas::cycleFlipSelection()
     if (state_ == nullptr || project_ == nullptr) {
         return;
     }
-    QVector<fh6::scene::Shape *> layers = selectedLayers();
-    QVector<fh6::scene::GuideLayer *> guides = selectedGuideLayers();
-    if (layers.isEmpty() && guides.isEmpty()) {
+    const QVector<fh6::scene::Shape *> selectedShapeLeaves = selectedLayers();
+    const QVector<fh6::scene::GuideLayer *> selectedGuideLeaves = selectedGuideLayers();
+    if (selectedShapeLeaves.isEmpty() && selectedGuideLeaves.isEmpty()) {
         return;
+    }
+
+    QVector<QString> groupIds;
+    QHash<QString, QTransform> groupStartFrames;
+    QSet<QString> groupedLayerIds;
+    QSet<QString> groupedGuideIds;
+    collectDragGroups(groupIds, groupStartFrames, groupedLayerIds, groupedGuideIds);
+
+    QVector<fh6::scene::Shape *> layers;
+    QVector<fh6::scene::GuideLayer *> guides;
+    for (fh6::scene::Shape *layer : selectedShapeLeaves) {
+        if (!groupedLayerIds.contains(layer->id)) {
+            layers.push_back(layer);
+        }
+    }
+    for (fh6::scene::GuideLayer *guide : selectedGuideLeaves) {
+        if (!groupedGuideIds.contains(guide->id)) {
+            guides.push_back(guide);
+        }
+    }
+    if (!groupIds.isEmpty() && layers.isEmpty() && guides.isEmpty()) {
+        groupIds.clear();
+        layers = selectedShapeLeaves;
+        guides = selectedGuideLeaves;
     }
 
     const double repScaleX = layers.isEmpty() ? guides.front()->scaleX : layers.front()->scaleX;
@@ -143,9 +167,15 @@ void ProjectCanvas::cycleFlipSelection()
         return normalizeRotation(180.0 - rotation);
     };
 
-    layers = selectedLayers();
-    guides = selectedGuideLayers();
-    state_->beginTransformCommand(buildTransformTargetIds({}, layers, guides));
+    state_->beginTransformCommand(buildTransformTargetIds(groupIds, layers, guides));
+
+    if (!groupIds.isEmpty()) {
+        QTransform worldFlip;
+        worldFlip.translate(center.x(), center.y());
+        worldFlip.scale(toggleVertical ? -1.0 : 1.0, toggleHorizontal ? -1.0 : 1.0);
+        worldFlip.translate(-center.x(), -center.y());
+        state_->transformGroupFrames(groupIds, worldFlip);
+    }
 
     for (fh6::scene::Shape *layer : layers) {
         if (toggleVertical) {

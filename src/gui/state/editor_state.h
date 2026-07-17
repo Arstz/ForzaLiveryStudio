@@ -143,7 +143,8 @@ public:
                                        const QVector<QString> &selectedEntries,
                                        QSet<QString> *newLayerSelection,
                                        QSet<QString> *newGuideLayerSelection = nullptr,
-                                       bool renameCopies = true);
+                                       bool renameCopies = true,
+                                       QVector<QString> *newRootEntryIds = nullptr);
     bool duplicateEntriesInPlace(const QVector<QString> &entryIds,
                                  QSet<QString> *newLayerSelection = nullptr,
                                  QSet<QString> *newGuideLayerSelection = nullptr);
@@ -168,7 +169,7 @@ public:
     void insertClipboardAt(const ProjectClipboard &clipboard,
                            const QString &parentId, int insertAt, bool haveTarget, int guideInsertAt,
                            QSet<QString> *newLayerSelection, QSet<QString> *newGuideLayerSelection,
-                           bool renameCopies);
+                           bool renameCopies, QVector<QString> *newRootEntryIds);
     void pruneEmptyGroups();
 
     fh6::Project project_;

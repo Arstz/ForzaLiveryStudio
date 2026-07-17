@@ -142,7 +142,7 @@ bool EditorState::duplicateEntriesInPlace(const QVector<QString> &entryIds,
     }
     for (const InsertionBatch &batch : batches) {
         insertClipboardAt(batch.clipboard, batch.parentId, batch.insertAt, true, batch.insertAt,
-                          newLayerSelection, newGuideLayerSelection, false);
+                          newLayerSelection, newGuideLayerSelection, false, nullptr);
     }
     return true;
 }
@@ -166,7 +166,7 @@ void EditorState::removeEntries(const QVector<QString> &entryIds)
 void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
                                     const QString &parentId, int insertAt, bool haveTarget, int guideInsertAt,
                                     QSet<QString> *newLayerSelection, QSet<QString> *newGuideLayerSelection,
-                                    bool renameCopies)
+                                    bool renameCopies, QVector<QString> *newRootEntryIds)
 {
     if (!hasProject_) {
         return;
@@ -240,6 +240,9 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
                 group.sourceChildren.clear();
             }
         });
+        if (newRootEntryIds != nullptr) {
+            newRootEntryIds->push_back(node->id);
+        }
         QSet<QString> insertedLayers;
         QSet<QString> insertedGuides;
         collectLeafIds(*node, insertedLayers, insertedGuides);
@@ -262,7 +265,8 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                                                 const QVector<QString> &selectedEntries,
                                                 QSet<QString> *newLayerSelection,
                                                 QSet<QString> *newGuideLayerSelection,
-                                                bool renameCopies)
+                                                bool renameCopies,
+                                                QVector<QString> *newRootEntryIds)
 {
     const ProjectIndexCache &cache = projectIndexCache();
     const QVector<QString> normalizedSelection = normalizeEntrySelection(selectedEntries);
@@ -288,7 +292,7 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
         }
     }
     insertClipboardAt(clipboard, parentId, insertAt, haveTarget, guideInsertAt,
-                      newLayerSelection, newGuideLayerSelection, renameCopies);
+                      newLayerSelection, newGuideLayerSelection, renameCopies, newRootEntryIds);
 }
 
 void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries)

@@ -74,7 +74,7 @@ endif()
 
 target_include_directories(fls_core PUBLIC src/core)
 
-option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
+option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" OFF)
 option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 
