@@ -143,10 +143,8 @@ private:
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
     void startPenFill(const QVector<PenPoint> &points);
-    void startLassoFill(const QVector<QPointF> &points);
     void cancelGeneratedFill();
     void finishPenFill(quint64 generation, PenFillResult result);
-    void finishLassoFill(quint64 generation, PolygonMeshResult result);
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);

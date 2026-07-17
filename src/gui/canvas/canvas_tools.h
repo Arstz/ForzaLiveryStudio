@@ -101,13 +101,4 @@ public:
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 
-class PolygonalLassoTool final : public CanvasTool {
-public:
-    using CanvasTool::CanvasTool;
-    QString name() const override;
-    bool handlePress(QMouseEvent *event) override;
-    bool handleDoubleClick(QMouseEvent *event) override;
-    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
-};
-
 } // namespace gui

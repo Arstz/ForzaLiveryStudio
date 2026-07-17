@@ -93,61 +93,6 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points)
     QThreadPool::globalInstance()->start(task);
 }
 
-void MainWindow::startLassoFill(const QVector<QPointF> &points)
-{
-    if (!ensureProjectForInsertion() || canvas_ == nullptr) {
-        if (canvas_ != nullptr) {
-            canvas_->setLassoFillRunning(false);
-        }
-        return;
-    }
-    cancelGeneratedFill();
-    updateLastSelectedShapeDefaults();
-    const BehaviorSettings behavior = loadBehaviorSettings();
-    generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
-        ? lastSelectedShapeColor_
-        : std::array<quint8, 4>{255, 255, 255, 255};
-    generatedFillInsertionEntries_ = selectedEntryIds();
-    generatedFillLabel_ = QStringLiteral("Lasso fill");
-
-    PolygonMeshRequest request;
-    request.points = points;
-    request.sources = canvas_->polygonMeshSources();
-    if (!request.sources.valid()) {
-        canvas_->setLassoFillRunning(false);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        statusBar()->showMessage(QStringLiteral("Lasso fill failed: Square or Triangle geometry is unavailable"),
-                                 4000);
-        return;
-    }
-
-    const quint64 generation = ++generatedFillGeneration_;
-    const auto token = std::make_shared<std::atomic_bool>(false);
-    generatedFillCancel_ = token;
-    canvas_->setLassoFillRunning(true, QStringLiteral("Meshing polygonal lasso…"));
-    statusBar()->showMessage(QStringLiteral("Meshing polygonal lasso… Press Esc to cancel"));
-
-    QPointer<MainWindow> guard(this);
-    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
-        PolygonMeshResult result = meshPolygon(request, [token]() {
-            return token->load(std::memory_order_relaxed);
-        });
-        if (guard.isNull()) {
-            return;
-        }
-        QMetaObject::invokeMethod(guard.data(),
-                                  [guard, generation, result = std::move(result)]() mutable {
-                                      if (!guard.isNull()) {
-                                          guard->finishLassoFill(generation, std::move(result));
-                                      }
-                                  },
-                                  Qt::QueuedConnection);
-    });
-    task->setAutoDelete(true);
-    QThreadPool::globalInstance()->start(task);
-}
-
 void MainWindow::cancelGeneratedFill()
 {
     if (generatedFillCancel_ == nullptr) {
@@ -159,7 +104,6 @@ void MainWindow::cancelGeneratedFill()
     generatedFillInsertionEntries_.clear();
     if (canvas_ != nullptr) {
         canvas_->setPenFillRunning(false);
-        canvas_->setLassoFillRunning(false);
     }
     statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
     generatedFillLabel_.clear();
@@ -195,38 +139,6 @@ void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
         placements.push_back({placement.shapeId, placement.transform});
     }
     insertGeneratedFill(QStringLiteral("Pen Fill"), QStringLiteral("Pen Fill"), placements);
-}
-
-void MainWindow::finishLassoFill(quint64 generation, PolygonMeshResult result)
-{
-    if (generation != generatedFillGeneration_ || generatedFillCancel_ == nullptr) {
-        return;
-    }
-    generatedFillCancel_.reset();
-    if (canvas_ != nullptr) {
-        canvas_->setLassoFillRunning(false);
-    }
-    if (result.cancelled) {
-        statusBar()->showMessage(QStringLiteral("Lasso fill cancelled"), 1500);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        return;
-    }
-    if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("Lasso fill failed: %1")
-                                     .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
-                                 5000);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        return;
-    }
-
-    QVector<QPair<int, QTransform>> placements;
-    placements.reserve(result.placements.size());
-    for (const PolygonMeshPlacement &placement : result.placements) {
-        placements.push_back({placement.shapeId, placement.transform});
-    }
-    insertGeneratedFill(QStringLiteral("Lasso Fill"), QStringLiteral("Lasso Fill"), placements);
 }
 
 void MainWindow::insertGeneratedFill(const QString &groupName,

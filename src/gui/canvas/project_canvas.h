@@ -4,7 +4,6 @@
 #include "layer.h"
 #include "native_shape_renderer.h"
 #include "pen_fill.h"
-#include "polygon_mesh.h"
 #include "shape_geometry_store.h"
 
 #include <QtCore>
@@ -72,11 +71,6 @@ public:
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
-    void setLassoFillRequestedCallback(std::function<void(const QVector<QPointF> &)> callback);
-    void setLassoFillCancelCallback(std::function<void()> callback);
-    PolygonMeshSources polygonMeshSources() const;
-    void setLassoFillRunning(bool running, const QString &message = QString());
-    void cancelLassoInteraction();
 
     void setCarUnwrapOverlay(const QImage &overlay);
     void setCarUnwrapVisible(bool visible);
@@ -116,10 +110,8 @@ private:
     friend class RotateTool;
     friend class PipetteTool;
     friend class PenTool;
-    friend class PolygonalLassoTool;
 
     static constexpr double PenCloseRadius = 8.0;
-    static constexpr double LassoCloseRadius = 8.0;
 
     enum class DragMode {
         None,
@@ -249,9 +241,6 @@ private:
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
-    void closeLassoPath();
-    void drawLassoOverlay(QPainter &painter);
-    QPainterPath lassoPreviewPath(bool closeToStart) const;
 
 
     EditorState *state_ = nullptr;
@@ -303,14 +292,6 @@ private:
     QString penError_;
     QString penFillMessage_;
     bool penFillRunning_ = false;
-    std::function<void(const QVector<QPointF> &)> lassoFillRequestedCallback_;
-    std::function<void()> lassoFillCancelCallback_;
-    QVector<QPointF> lassoPoints_;
-    QPointF lassoHoverWorld_;
-    QVector<QPointF> lassoCrossings_;
-    QString lassoError_;
-    QString lassoFillMessage_;
-    bool lassoFillRunning_ = false;
     mutable double frameReferenceRotation_ = 0.0;
     mutable QSet<QString> frameLayerSignature_;
     mutable QSet<QString> frameGuideSignature_;

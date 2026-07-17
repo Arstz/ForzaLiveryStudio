@@ -37,10 +37,6 @@ void MainWindow::setupCanvas()
         startPenFill(points);
     });
     canvas_->setPenFillCancelCallback([this]() { cancelGeneratedFill(); });
-    canvas_->setLassoFillRequestedCallback([this](const QVector<QPointF> &points) {
-        startLassoFill(points);
-    });
-    canvas_->setLassoFillCancelCallback([this]() { cancelGeneratedFill(); });
     setCentralWidget(canvas_);
 }
 
@@ -513,7 +509,6 @@ void MainWindow::setupToolbar()
     toolGroup->addAction(selectTool);
     toolGroup->addAction(addTool(QStringLiteral("Move"), QStringLiteral("move"), QKeySequence(Qt::Key_V), QStringLiteral("ToolbarMove.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Marquee"), QStringLiteral("marquee"), QKeySequence(Qt::Key_F), QStringLiteral("ToolbarMarquee.xpm")));
-    toolGroup->addAction(addTool(QStringLiteral("Polygonal Lasso"), QStringLiteral("polygon_lasso"), QKeySequence(Qt::Key_L), QStringLiteral("ToolbarLasso.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Transform"), QStringLiteral("transform"), QKeySequence(Qt::Key_T), QStringLiteral("ToolbarScale.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QKeySequence(Qt::Key_I), QStringLiteral("ToolPipette.xpm")));

@@ -16,15 +16,13 @@ exports flat game-compatible folders.
   (`.json`) projects still load and are upgraded to v2 on save.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
-- Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and
-  Polygonal Lasso canvas tools. Pen builds a simple closed hard/soft quadratic contour,
+- Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, and Pen
+  canvas tools. Pen builds a simple closed hard/soft quadratic contour,
   fits Circle or affine Ellipse primitives along outward curved boundaries, and
   replaces those boundaries with chords before meshing the remaining interior.
   The chordal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
-  Polygonal Lasso validates a simple straight-edged contour, triangulates it
-  exactly, and replaces compatible adjacent triangle pairs with Square primitives.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   When auto-select is off, clicking outside the selected bounds preserves the
   current selection unless no selection exists.
@@ -313,7 +311,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     scene through the shared `forEachSceneShape`/`forEachSceneGuide` iterators, which
     hide the EditorState-render-entries vs. canvas-local-tree backends. Per-tool
     interaction strategies
-    (select/move/marquee/transform/rotate/pipette/pen/polygonal lasso) as
+    (select/move/marquee/transform/rotate/pipette/pen) as
     `CanvasTool` subclasses;
     `pen_fill.*` owns quadratic contour validation, Primitive silhouettes,
     outward-curve fitting, bounded core construction, and union-area reporting;

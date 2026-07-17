@@ -9,6 +9,19 @@ using namespace pc_detail;
 
 void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers modifiers)
 {
+    if (tool_ == QStringLiteral("pen")) {
+        if (penFillRunning_) {
+            return;
+        }
+        const QPointF world = screenToWorld(point);
+        if (world != penHoverWorld_) {
+            penHoverWorld_ = world;
+            if (!penPoints_.isEmpty()) {
+                update();
+            }
+        }
+        return;
+    }
     if (tool_ != QStringLiteral("select")) {
         return;
     }
@@ -442,26 +455,8 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
-    if (tool_ == QStringLiteral("polygon_lasso")
-        && event->key() == Qt::Key_Backspace
-        && !lassoFillRunning_) {
-        if (!lassoPoints_.isEmpty()) {
-            lassoPoints_.removeLast();
-            lassoCrossings_.clear();
-            lassoError_.clear();
-            clearCursorHint();
-            update();
-        }
-        event->accept();
-        return;
-    }
     if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("pen")) {
         cancelPenInteraction();
-        event->accept();
-        return;
-    }
-    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("polygon_lasso")) {
-        cancelLassoInteraction();
         event->accept();
         return;
     }

@@ -240,7 +240,6 @@ set(FH6_GUI_ASSETS
     ShapeBrowserFavOn.xpm
     ShapeBrowserSearch.xpm
     ToolbarMarquee.xpm
-    ToolbarLasso.xpm
     ToolbarMove.xpm
     ToolbarPen.xpm
     ToolbarRotate.xpm

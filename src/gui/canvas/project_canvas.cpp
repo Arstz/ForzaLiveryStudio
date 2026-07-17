@@ -39,7 +39,6 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     tools_.push_back(std::make_unique<RotateTool>(*this));
     tools_.push_back(std::make_unique<PipetteTool>(*this));
     tools_.push_back(std::make_unique<PenTool>(*this));
-    tools_.push_back(std::make_unique<PolygonalLassoTool>(*this));
     activeTool_ = tools_.front().get();
 }
 
@@ -48,7 +47,6 @@ ProjectCanvas::~ProjectCanvas() = default;
 void ProjectCanvas::setProject(fh6::Project *project)
 {
     cancelPenInteraction();
-    cancelLassoInteraction();
     project_ = project;
     draggedGuidelineOrientation_ = GuidelineOrientation::None;
     draggedGuidelineIndex_ = -1;
@@ -102,9 +100,6 @@ void ProjectCanvas::setTool(const QString &tool)
     cancelDrag();
     if (tool_ == QStringLiteral("pen") && tool != tool_) {
         cancelPenInteraction();
-    }
-    if (tool_ == QStringLiteral("polygon_lasso") && tool != tool_) {
-        cancelLassoInteraction();
     }
     tool_ = tool;
     activeTool_ = next;
@@ -520,79 +515,6 @@ void ProjectCanvas::closePenPath()
     penFillMessage_ = QStringLiteral("Filling Pen path…");
     update();
     penFillRequestedCallback_(points);
-}
-
-void ProjectCanvas::setLassoFillRequestedCallback(std::function<void(const QVector<QPointF> &)> callback)
-{
-    lassoFillRequestedCallback_ = std::move(callback);
-}
-
-void ProjectCanvas::setLassoFillCancelCallback(std::function<void()> callback)
-{
-    lassoFillCancelCallback_ = std::move(callback);
-}
-
-PolygonMeshSources ProjectCanvas::polygonMeshSources() const
-{
-    return buildPolygonMeshSources(geometry_);
-}
-
-void ProjectCanvas::setLassoFillRunning(bool running, const QString &message)
-{
-    lassoFillRunning_ = running;
-    lassoFillMessage_ = running ? message : QString();
-    if (!running) {
-        lassoCrossings_.clear();
-        lassoError_.clear();
-    }
-    update();
-}
-
-void ProjectCanvas::cancelLassoInteraction()
-{
-    const bool wasRunning = lassoFillRunning_;
-    lassoPoints_.clear();
-    lassoCrossings_.clear();
-    lassoError_.clear();
-    lassoFillMessage_.clear();
-    lassoFillRunning_ = false;
-    if (wasRunning && lassoFillCancelCallback_ != nullptr) {
-        lassoFillCancelCallback_();
-    }
-    update();
-}
-
-void ProjectCanvas::closeLassoPath()
-{
-    const double worldPerPixel = 1.0 / std::max(baseScale_ * zoom_, 1e-8);
-    const PolygonContour contour = buildPolygonContour(lassoPoints_, worldPerPixel * 0.25);
-    if (!contour.valid()) {
-        lassoCrossings_ = contour.crossings;
-        lassoError_ = contour.error.isEmpty()
-            ? QStringLiteral("Invalid polygonal lasso")
-            : contour.error;
-        setCursorHint(worldToScreen(lassoPoints_.front()), {lassoError_});
-        update();
-        return;
-    }
-    if (lassoFillRequestedCallback_ == nullptr) {
-        lassoError_ = QStringLiteral("Polygonal Lasso fill is unavailable");
-        update();
-        return;
-    }
-    QVector<QPointF> points;
-    points.reserve(contour.polygon.size());
-    for (const QPointF &point : contour.polygon) {
-        points.push_back(point);
-    }
-    lassoPoints_.clear();
-    lassoCrossings_.clear();
-    lassoError_.clear();
-    clearCursorHint();
-    lassoFillRunning_ = true;
-    lassoFillMessage_ = QStringLiteral("Meshing polygonal lasso…");
-    update();
-    lassoFillRequestedCallback_(points);
 }
 
 void ProjectCanvas::refitView()

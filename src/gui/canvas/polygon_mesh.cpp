@@ -591,7 +591,7 @@ PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolera
         }
     }
     if (result.polygon.size() < 3) {
-        result.error = QStringLiteral("A polygonal lasso needs at least three distinct vertices");
+        result.error = QStringLiteral("A polygon needs at least three distinct vertices");
         return result;
     }
 
@@ -599,11 +599,11 @@ PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolera
     const double coordinateEpsilon = polygonCoordinateEpsilon(result.polygon);
     result.crossings = polygonCrossings(result.polygon);
     if (!result.crossings.isEmpty()) {
-        result.error = QStringLiteral("The polygonal lasso crosses itself");
+        result.error = QStringLiteral("The polygon crosses itself");
         return result;
     }
     if (std::abs(signedArea(result.polygon)) <= coordinateEpsilon * scale) {
-        result.error = QStringLiteral("The polygonal lasso has no fillable area");
+        result.error = QStringLiteral("The polygon has no fillable area");
         return result;
     }
     result.path = polygonPath(result.polygon);
@@ -633,7 +633,7 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
     }
     const PolygonContour contour = buildPolygonContour(request.points);
     if (!contour.valid()) {
-        result.error = contour.error.isEmpty() ? QStringLiteral("Invalid polygonal lasso") : contour.error;
+        result.error = contour.error.isEmpty() ? QStringLiteral("Invalid polygon") : contour.error;
         return result;
     }
     result.contour = contour.path;
