@@ -280,3 +280,49 @@ The `01 02` marker is a *trailing* flag: the game masks the shape that
 record at `00 02` and stamping `01 02` onto the next record. Flat export emits
 `01 02` for a record when the previous visible layer carries the editor mask
 flag.
+
+## Forza Motorsport Record Dialect
+
+Forza Motorsport (2023+) standalone groups use an uncompressed `gyvl` data
+file with the same scene model and companion-header arrangement. The root
+transform starts at `0x0c` and accepts generation markers `01`, `02`, and `03`.
+An optional signed Y-scale extension follows as `30 + f32` or `70 + f32`, with
+the high form carrying mask state.
+
+The root is normally a counted group:
+
+```text
+20/60 + u16 child_count + u8 child_blocks + control[child_blocks + 2]
+```
+
+Older assets can replace the group marker with `00`. For both forms,
+`child_blocks = ceil(child_count / 8)` and the layer stream starts at
+`0x24 + child_blocks`. Structurally valid records determine the boundary when
+additional transform or control data appears before the first child.
+
+The dialect accepts 32-byte framed shapes and 31-byte bare shapes:
+
+```text
+00 02 + shape payload
+01 02 + shape payload
+
+01/02/03 + shape payload
+```
+
+The payload fields match the shape layout above. Shape identifiers are
+canonicalized and checked against the registry before a candidate is accepted.
+
+Separate group transforms use a generation marker followed by position,
+uniform scale, and rotation. The optional signed Y-scale extension follows the
+same layout as the root. Marker recognition also requires a structurally valid
+group after the transform so shape markers remain unambiguous.
+
+Nested counted and markerless groups use the same child-count and bitmap model.
+Flat mask state is trailing: `01 02` on a shape marks the preceding shape, and a
+final `01` trailer marks the last shape. Group masks continue to inherit through
+descendants.
+
+Both dialects enter `VinylTreeDecoder::decodeGroup()`. The Motorsport profile
+normalizes its record markers, root header, glyph identifiers, signed scale,
+and trailing mask state inside that shared pipeline before the decoded tree is
+converted to scene layers.

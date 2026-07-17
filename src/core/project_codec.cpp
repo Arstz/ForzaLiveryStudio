@@ -659,8 +659,8 @@ Project importCGroupFlat(const QString &folderOrFile)
 {
     const QByteArray payload = readCGroupPayload(folderOrFile);
     enforcePrivacyPolicyForCGroup(payload);
-    const LayerData layerData = getLayerData(payload);
-    const VinylGroup root = buildTree(layerData.data, payload);
+    LayerData layerData;
+    const VinylGroup root = decodeGroup(payload, &layerData);
     const QVector<FlattenedLayer> flat = flattenGroup(root);
 
     Project project = newImportProject(folderOrFile, payload);
@@ -702,8 +702,8 @@ Project importCGroupNested(const QString &folderOrFile)
 {
     const QByteArray payload = readCGroupPayload(folderOrFile);
     enforcePrivacyPolicyForCGroup(payload);
-    const LayerData layerData = getLayerData(payload);
-    const VinylGroup root = buildTree(layerData.data, payload);
+    LayerData layerData;
+    const VinylGroup root = decodeGroup(payload, &layerData);
     Project project = newImportProject(folderOrFile, payload);
     scene::ensureProjectSceneRoot(project);
 

@@ -69,11 +69,8 @@ exports flat game-compatible folders.
   evaluate world-space shape geometry.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
-  preview thumbnail, and draft/imported header handling. **Livery export is enabled
-  for in-game testing**: exporting a livery invokes `exportCLivery`, which rebuilds
-  the `C_livery` container, byte-preserves unchanged section slots, and
-  re-synthesizes changed built-in-shape sections. Changed custom (uploaded) logo
-  decals are not yet synthesizable and raise an export error.
+  preview thumbnail, and draft/imported header handling. Livery export is
+  temporarily blocked in the UI while artwork synthesis remains incomplete.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
@@ -122,10 +119,8 @@ translation-only origin transform and shapes packed relative to it, mask groups 
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
 their own child-type bitmaps. It is validated in-game for sibling groups, multi-level
 nesting, and masks, but is not byte-identical to the game's own encoding. Livery
-(`C_livery`) export is wired through `exportCLivery` and enabled in the UI for
-in-game testing: unchanged section slots are byte-preserved and changed
-built-in-shape sections are re-synthesized (changed custom logo decals still raise
-an error).
+(`C_livery`) encoding remains available in the core for development, but the UI
+rejects livery export until artwork synthesis is complete.
 
 ## Build
 
@@ -221,8 +216,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind
   `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
   scripts are Windows-only; on Linux, use CMake directly.
-- `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and format notes
-  for FH6 and Forza Motorsport containers, groups, liveries, and headers.
+- `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and consolidated
+  format notes for Forza Horizon and Forza Motorsport containers, groups,
+  liveries, and headers.
 
 ## Code Map
 
@@ -231,13 +227,11 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `src/core/`
   - Binary codecs, vinyl tree decoding, livery decoding, project JSON, flat and
     nested payload export, matrix math, header parse/build, and shape registry.
-    The FM group decoder normalizes legacy root headers, shape and transform
-    markers, signed Y scale, glyph identifiers, and trailing mask state before
-    using the shared vinyl tree builder.
-    The FM livery decoder concatenates sequential compressed blocks, extracts the
-    complete tagged stream, normalizes framed and bare legacy shape records, and
-    supplies decoder-only terminal section padding before using the shared livery
-    tree walker.
+    `VinylTreeDecoder` provides the shared group and livery decode pipelines.
+    Format profiles supply record normalization, root-header handling, terminal
+    padding, and post-decode state while both formats use the same tree walkers.
+    The FM container reader concatenates sequential compressed blocks and extracts
+    the complete tagged stream before entering that pipeline.
     The livery decoder handles the embedded `gyvl` transform dialect (including
     framed 9-byte separate-transform trailers), three-byte group controls and
     variable child bitmaps, registry-backed vector ID validation, custom-logo stats
@@ -355,7 +349,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 
 - `readCGroupPayload()` / `writeCGroupFile()`
 - `getLayerData()`
-- `buildTree()` / `validateTree()` / `flattenGroup()`
+- `decodeGroup()` / `buildTree()` / `validateTree()` / `flattenGroup()`
 - `importCGroupFlat()` / `importCGroupNested()`
 - `importCLivery()` / `readLiveryPayload()` / `buildLiverySections()`
 - `importFM2023Asset()` / `decodeFM2023RawGroup()` /

@@ -27,9 +27,19 @@ struct LiverySection {
     int absPos = 0;
 };
 
+struct VinylDecoderOptions {
+    bool markerlessRootHeader = false;
+    bool appendLiveryTailPadding = false;
+    QByteArray (*normalizeRecords)(QByteArray) = nullptr;
+    void (*finalizeGroup)(VinylGroup &, const QByteArray &, const LayerData &) = nullptr;
+};
+
 class VinylTreeDecoder {
 public:
+    explicit VinylTreeDecoder(VinylDecoderOptions options = {});
+
     LayerData getLayerData(const QByteArray &payload) const;
+    VinylGroup decodeGroup(const QByteArray &payload, LayerData *decodedLayerData = nullptr) const;
     VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload = {}) const;
     QVector<LiverySection> buildLiverySections(const QByteArray &body,
                                                const QVector<int> &sectionCounts) const;
@@ -38,9 +48,13 @@ public:
                                                const LiverySlotDef *slotDefs,
                                                int slotCount) const;
     QVector<QString> validateTree(const VinylGroup &root) const;
+
+private:
+    VinylDecoderOptions options_;
 };
 
 LayerData getLayerData(const QByteArray &payload);
+VinylGroup decodeGroup(const QByteArray &payload, LayerData *decodedLayerData);
 VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload);
 QVector<LiverySection> buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts);
 QVector<QString> validateTree(const VinylGroup &root);

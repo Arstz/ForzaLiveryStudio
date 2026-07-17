@@ -181,6 +181,7 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     }
     state_->selectedLayerIds_ = generatedIds;
     state_->selectedGuideLayerIds_.clear();
+    state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();

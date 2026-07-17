@@ -423,3 +423,56 @@ Artwork and panel assignment live inside `gyvl`: shapes/groups per the `C_group`
 grammar with the transform-marker dialect above, and panel membership by
 positional slot. The trailing `yrvl` table carries the material paint state,
 panel registry and graphic references.
+
+## Forza Motorsport Container Dialect
+
+Forza Motorsport (2023+) stores one logical tagged stream in consecutive zlib
+blocks. Every block starts with little-endian compressed and decompressed sizes,
+followed by the zlib payload. Decoding inflates all blocks and concatenates them
+in file order before locating container tags.
+
+The inflated stream uses this sequence:
+
+```text
+vlrc  root metadata
+yrvl  livery information
+gyvl  embedded artwork
+yrvl  section counters
+yrvl  section descriptors
+yrvl  stream terminator
+```
+
+The target car identifier is stored in the `vlrc` root metadata. The embedded
+`gyvl` header is shorter than the layout above, with its section stream starting
+at offset `0x15`. The first `yrvl` after the artwork bounds that stream.
+
+Motorsport artwork contains seven positional slots: Front, Back, Top, Left,
+Right, Spoiler, and FrontWindshield. Populated slots contain group and shape
+records followed by the section transform remnant; empty scaffolds occupy 23
+bytes. Omitted terminal scaffolds are supplied only to the decoder and are not
+added to the preserved source payload.
+
+Artwork accepts the current framed shape form plus older framed and bare forms:
+
+```text
+00 02 + shape payload
+01 02 + shape payload
+00 01 + shape payload
+01 01 + shape payload
+01/02/03 + shape payload
+```
+
+The shape payload matches the `C_group` layout. Vector identifiers are checked
+against the registry, uploaded-logo identifiers remain distinct, and legacy
+glyph identifiers are canonicalized during record normalization.
+
+Group counts and child bitmaps follow the standalone group grammar. Embedded
+transforms use the livery marker dialect and can carry the signed Y-scale
+extension. Section counters describe logical decal occupancy rather than byte
+lengths and can include uploaded-logo weighting.
+
+`readFM2023LiveryPayload()` reconstructs and extracts the tagged stream.
+`VinylTreeDecoder::buildLiverySections()` then uses the Motorsport normalization
+profile and slot table while retaining the same section walker used by the
+current container dialect. `importFM2023Asset()` converts the resulting trees to
+the editor scene.

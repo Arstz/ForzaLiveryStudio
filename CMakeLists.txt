@@ -10,7 +10,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 find_package(ZLIB REQUIRED)
 qt_standard_project_setup()
 
-add_library(fh6_core STATIC
+add_library(fls_core STATIC
     src/core/binary_io.cpp
     src/core/binary_io.h
     src/core/cgroup_codec.cpp
@@ -62,23 +62,23 @@ add_library(fh6_core STATIC
     src/core/zip_extract.h
 )
 
-target_link_libraries(fh6_core
+target_link_libraries(fls_core
     PUBLIC
         Qt6::Core
         ZLIB::ZLIB
 )
 
 if(WIN32)
-    target_link_libraries(fh6_core PUBLIC d3d11 d3dcompiler)
+    target_link_libraries(fls_core PUBLIC d3d11 d3dcompiler)
 endif()
 
-target_include_directories(fh6_core PUBLIC src/core)
+target_include_directories(fls_core PUBLIC src/core)
 
-option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" OFF)
+option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
 option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 
-target_compile_definitions(fh6_core
+target_compile_definitions(fls_core
     PUBLIC
         FH6_PRIVACY_POLICY=$<BOOL:${FH6_PRIVACY_POLICY}>
 )
@@ -89,7 +89,7 @@ if(FH6_BUILD_HELPER_TOOLS AND FH6_BUILD_LIVERY_COMPARE)
     add_executable(fh6_livery_compare
         tools/livery_compare/main.cpp
     )
-    target_link_libraries(fh6_livery_compare PRIVATE fh6_core Qt6::Core)
+    target_link_libraries(fh6_livery_compare PRIVATE fls_core Qt6::Core)
 endif()
 
 if(FH6_BUILD_HELPER_TOOLS)
@@ -98,13 +98,13 @@ if(FH6_BUILD_HELPER_TOOLS)
     add_executable(fh6_model_dump
         tools/model_dump/main.cpp
     )
-    target_link_libraries(fh6_model_dump PRIVATE fh6_core Qt6::Core)
+    target_link_libraries(fh6_model_dump PRIVATE fls_core Qt6::Core)
 
     # Console harness: decode built-in decal swatchbins into one indexed RGBA pack.
     add_executable(fh6_pack_decals
         tools/pack_decals/main.cpp
     )
-    target_link_libraries(fh6_pack_decals PRIVATE fh6_core Qt6::Core)
+    target_link_libraries(fh6_pack_decals PRIVATE fls_core Qt6::Core)
 
 endif()
 
@@ -202,7 +202,7 @@ target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
 
 target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
     PRIVATE
-        fh6_core
+        fls_core
         Qt6::Gui
         Qt6::Widgets
         Qt6::OpenGL

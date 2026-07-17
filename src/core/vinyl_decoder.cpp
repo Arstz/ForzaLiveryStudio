@@ -1166,23 +1166,71 @@ Matrix3 liverySectionCanvasTransform(int slot)
     return transform;
 }
 
+VinylTreeDecoder::VinylTreeDecoder(VinylDecoderOptions options)
+    : options_(options)
+{
+}
+
 LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const
 {
-    if (payload.size() > 0x24
-        && (static_cast<quint8>(payload[0x1d]) == 0x20
-            || static_cast<quint8>(payload[0x1d]) == 0x60)) {
+    LayerData layerData;
+    if (options_.markerlessRootHeader
+        && payload.size() > 0x24
+        && static_cast<quint8>(payload[0x1d]) == 0x00) {
+        const int count = readLeU16(payload, 0x1e);
         const int childBlocks = static_cast<quint8>(payload[0x20]);
         const int start = 0x24 + childBlocks;
-        if (start < payload.size()) {
-            return LayerData{payload.mid(start), start};
+        if (count > 0 && childBlocks == (count + 7) / 8 && start < payload.size()) {
+            layerData = LayerData{payload.mid(start), start};
         }
     }
-    if (payload.size() > 69
+    if (layerData.data.isNull()) {
+        if (payload.size() > 0x24
+            && (static_cast<quint8>(payload[0x1d]) == 0x20
+                || static_cast<quint8>(payload[0x1d]) == 0x60)) {
+            const int childBlocks = static_cast<quint8>(payload[0x20]);
+            const int start = 0x24 + childBlocks;
+            if (start < payload.size()) {
+                layerData = LayerData{payload.mid(start), start};
+            }
+        }
+    }
+    if (layerData.data.isNull() && payload.size() > 69
         && static_cast<quint8>(payload[37]) == 0x02
         && isValidShapeAt(payload, 37, payload.size())) {
-        return LayerData{payload.mid(37), 37};
+        layerData = LayerData{payload.mid(37), 37};
     }
-    return LayerData{payload.mid(38), 38};
+    if (layerData.data.isNull()) {
+        layerData = LayerData{payload.mid(38), 38};
+    }
+    if (options_.normalizeRecords != nullptr) {
+        layerData.data = options_.normalizeRecords(std::move(layerData.data));
+    }
+    return layerData;
+}
+
+VinylGroup VinylTreeDecoder::decodeGroup(const QByteArray &payload,
+                                         LayerData *decodedLayerData) const
+{
+    LayerData layerData = getLayerData(payload);
+    QByteArray decoderPayload = payload;
+    if (options_.markerlessRootHeader
+        && decoderPayload.size() > 0x20
+        && static_cast<quint8>(decoderPayload[0x1d]) == 0x00
+        && readLeU16(decoderPayload, 0x1e) > 0
+        && static_cast<quint8>(decoderPayload[0x20])
+            == (readLeU16(decoderPayload, 0x1e) + 7) / 8
+        && layerData.start == 0x24 + static_cast<quint8>(decoderPayload[0x20])) {
+        decoderPayload[0x1d] = static_cast<char>(0x20);
+    }
+    VinylGroup root = buildTree(layerData.data, decoderPayload);
+    if (options_.finalizeGroup != nullptr) {
+        options_.finalizeGroup(root, payload, layerData);
+    }
+    if (decodedLayerData != nullptr) {
+        *decodedLayerData = std::move(layerData);
+    }
+    return root;
 }
 
 VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteArray &fullPayload) const
@@ -1219,7 +1267,24 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
 QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts,
                                                              const LiverySlotDef *slotDefs, int slotCount) const
 {
-    const int end = body.size();
+    QByteArray decoderBody = options_.normalizeRecords != nullptr
+        ? options_.normalizeRecords(body)
+        : body;
+    if (options_.appendLiveryTailPadding) {
+        int lastPopulated = -1;
+        for (int slot = 0; slot < slotCount; ++slot) {
+            if (slot < sectionCounts.size() && sectionCounts[slot] > 0) {
+                lastPopulated = slot;
+            }
+        }
+        if (lastPopulated >= 0) {
+            const int trailingSlots = slotCount - lastPopulated - 1;
+            decoderBody.append(QByteArray(kLiveryRemnantSize
+                                              + trailingSlots * kLiveryEmptySlotSize,
+                                          '\0'));
+        }
+    }
+    const int end = decoderBody.size();
     QHash<quint16, int> logoExtraCounts;
     for (int pass = 0; pass < 2; ++pass) {
         QVector<LiverySection> sections;
@@ -1273,7 +1338,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 const bool nextSlotPopulated =
                     slot + 1 < slotCount && slot + 1 < sectionCounts.size() && sectionCounts[slot + 1] > 0;
                 if (atSectionRoot && !state.pendingTransform && nextSlotPopulated && deficit > 0 && deficit <= 8) {
-                    const auto nextSection = validMarkerlessGroupAt(body, pos + kLiveryRemnantSize, end,
+                    const auto nextSection = validMarkerlessGroupAt(decoderBody, pos + kLiveryRemnantSize, end,
                                                                     /*allowCountOne=*/true, /*livery=*/true);
                     if (nextSection && nextSection->count >= 8) {
                         break;
@@ -1281,9 +1346,9 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 }
                 if (atSectionRoot && !state.pendingTransform) {
                     if (const auto info =
-                            validMarkerlessGroupAt(body, pos, end, /*allowCountOne=*/true, /*livery=*/true)) {
+                            validMarkerlessGroupAt(decoderBody, pos, end, /*allowCountOne=*/true, /*livery=*/true)) {
                         const bool sectionRootFrame = pos == section.absPos;
-                        pos = pushMarkerlessGroup(body, pos, end, *info, state,
+                        pos = pushMarkerlessGroup(decoderBody, pos, end, *info, state,
                                                   /*livery=*/true);
                         if (sectionRootFrame) {
                             state.stack.back()->source = QStringLiteral("livery_section_root");
@@ -1291,7 +1356,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                         continue;
                     }
                 }
-                const int next = walkStep(body, pos, end, state, true,
+                const int next = walkStep(decoderBody, pos, end, state, true,
                                           invertOddLiveryRotation);
                 if (next <= pos) {
                     break;
@@ -1371,6 +1436,11 @@ QVector<QString> VinylTreeDecoder::validateTree(const VinylGroup &root) const
 LayerData getLayerData(const QByteArray &payload)
 {
     return VinylTreeDecoder{}.getLayerData(payload);
+}
+
+VinylGroup decodeGroup(const QByteArray &payload, LayerData *decodedLayerData)
+{
+    return VinylTreeDecoder{}.decodeGroup(payload, decodedLayerData);
 }
 
 VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload)

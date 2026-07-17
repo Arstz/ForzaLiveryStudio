@@ -1,8 +1,6 @@
 Small changes:
-    -Turn on privacy policy for public build
 
 Medium changes:
-    -Rename fh6_core lib to fls_core in cmake lists, unify decoder between fh6 and fm23, merge docs for cgroup and clivery
 
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied

@@ -211,40 +211,13 @@ QByteArray normalizeFM2023Records(QByteArray data)
     return data;
 }
 
+VinylDecoderOptions fm2023DecoderOptions();
+
 QVector<LiverySection> buildFM2023LiverySections(const QByteArray &body,
                                                  const QVector<int> &sectionCounts)
 {
-    QByteArray decoderBody = normalizeFM2023Records(body);
-    int lastPopulated = -1;
-    for (int slot = 0; slot < kFM2023SectionCount; ++slot) {
-        if (slot < sectionCounts.size() && sectionCounts[slot] > 0)
-            lastPopulated = slot;
-    }
-    if (lastPopulated >= 0) {
-        const int trailingSlots = kFM2023SectionCount - lastPopulated - 1;
-        decoderBody.append(QByteArray(18 + trailingSlots * 23, '\0'));
-    }
-    return VinylTreeDecoder{}.buildLiverySections(decoderBody, sectionCounts,
-                                                   kFM2023LiverySlots, kFM2023SectionCount);
-}
-
-LayerData getFM2023LayerData(const QByteArray &payload, QByteArray *decoderPayload)
-{
-    *decoderPayload = payload;
-    if (payload.size() > 0x24 && static_cast<quint8>(payload[0x1d]) == 0x00) {
-        const int count = readLeU16(payload, 0x1e);
-        const int childBlocks = static_cast<quint8>(payload[0x20]);
-        if (count > 0 && childBlocks == (count + 7) / 8) {
-            const int start = 0x24 + childBlocks;
-            if (start < payload.size()) {
-                (*decoderPayload)[0x1d] = static_cast<char>(0x20);
-                return LayerData{normalizeFM2023Records(payload.mid(start)), start};
-            }
-        }
-    }
-    LayerData layerData = getLayerData(payload);
-    layerData.data = normalizeFM2023Records(std::move(layerData.data));
-    return layerData;
+    return VinylTreeDecoder{fm2023DecoderOptions()}.buildLiverySections(
+        body, sectionCounts, kFM2023LiverySlots, kFM2023SectionCount);
 }
 
 void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool root)
@@ -272,11 +245,9 @@ void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool 
     }
 }
 
-VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decodedLayerData)
+void finalizeFM2023Group(VinylGroup &root, const QByteArray &payload,
+                         const LayerData &layerData)
 {
-    QByteArray decoderPayload;
-    LayerData layerData = getFM2023LayerData(payload, &decoderPayload);
-    VinylGroup root = buildTree(layerData.data, decoderPayload);
     if (payload.size() >= 0x22
         && (static_cast<quint8>(payload[0x1d]) & ~0x40) == 0x30) {
         const double sy = readLeFloat(payload, 0x1e);
@@ -284,9 +255,21 @@ VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decode
             root.sy = sy;
     }
     applyFM2023ShapeMasks(root, layerData.data, true);
-    if (decodedLayerData != nullptr)
-        *decodedLayerData = std::move(layerData);
-    return root;
+}
+
+VinylDecoderOptions fm2023DecoderOptions()
+{
+    VinylDecoderOptions options;
+    options.markerlessRootHeader = true;
+    options.appendLiveryTailPadding = true;
+    options.normalizeRecords = normalizeFM2023Records;
+    options.finalizeGroup = finalizeFM2023Group;
+    return options;
+}
+
+VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decodedLayerData)
+{
+    return VinylTreeDecoder{fm2023DecoderOptions()}.decodeGroup(payload, decodedLayerData);
 }
 
 FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)

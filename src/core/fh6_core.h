@@ -20,6 +20,7 @@ Matrix3 affine(double a, double b, double c, double d, double e, double f);
 Matrix3 shapeMatrix(const FlattenedLayer &layer);
 bool hasColorData(const std::array<quint8, 4> &color);
 LayerData getLayerData(const QByteArray &payload);
+VinylGroup decodeGroup(const QByteArray &payload, LayerData *decodedLayerData = nullptr);
 VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload = {});
 QVector<QString> validateTree(const VinylGroup &root);
 QVector<FlattenedLayer> flattenGroup(const VinylGroup &root);
