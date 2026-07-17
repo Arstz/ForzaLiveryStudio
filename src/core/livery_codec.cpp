@@ -154,10 +154,15 @@ const std::array<float, 11> kSlotRotation = {
     0.0f, 0.0f, 0.0f, 180.0f, 90.0f, -90.0f, 90.0f, 0.0f, 0.0f, 180.0f, 0.0f,
 };
 
+const std::array<float, 11> kEmptySlotRotation = {
+    0.0f, 0.0f, 0.0f, 0.0f, 180.0f, 0.0f, -90.0f, 90.0f, 0.0f, 0.0f, 180.0f,
+};
+
 constexpr int kLiveryBodyTruncate = 17;
 constexpr int kLiverySectionCount = 11;
 constexpr int kLiveryEmptySlotBytes = 23;
-constexpr int kMaxDirectChildren = 0xff * 8;
+constexpr int kMaxDirectChildren = 0xffff;
+constexpr bool kFlattenLiverySections = true;
 
 struct LiveryEntry {
     enum Kind { Group, Shape } kind = Shape;
@@ -344,9 +349,29 @@ bool matchesSourceShape(const scene::Shape &shape, const SourceShapeView &source
 
 QByteArray sourceSlotBytes(const SourceLivery *source, int slot);
 
-bool sectionMatchesSource(const QVector<const scene::Shape *> &shapes, const LiverySection *section)
+bool decodedSectionHasArtworkGroup(const LiverySection *section)
 {
     if (section == nullptr) {
+        return false;
+    }
+    for (const VinylItem &item : section->subtree.items) {
+        if (item.isShape()) {
+            continue;
+        }
+        const VinylGroup &root = *std::get<VinylGroupPtr>(item.value);
+        for (const VinylItem &rootItem : root.items) {
+            if (!rootItem.isShape()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool sectionMatchesSource(const QVector<const scene::Shape *> &shapes, const LiverySection *section,
+                          bool hasGroupedArtwork)
+{
+    if (section == nullptr || hasGroupedArtwork != decodedSectionHasArtworkGroup(section)) {
         return false;
     }
     const QVector<SourceShapeView> sourceShapes = sourceSectionShapes(*section);
@@ -406,15 +431,35 @@ QByteArray sourceRemnant(const SourceLivery *source, int slot)
     return defaultRemnant(slot);
 }
 
+bool sourceHasArtworkGroup(const SourceLivery *source, int slot)
+{
+    return decodedSectionHasArtworkGroup(sourceSection(source, slot));
+}
+
+QByteArray defaultEmptySlot(int slot)
+{
+    QByteArray out(8, '\0');
+    detail::appendLeFloat(out, 1.0f);
+    detail::appendLeFloat(out, kEmptySlotRotation[slot]);
+    out.append(QByteArray(7, '\0'));
+    return out;
+}
+
+bool isEmptySlotRecord(const QByteArray &bytes)
+{
+    return bytes.size() >= kLiveryEmptySlotBytes
+        && bytes.left(8) == QByteArray(8, '\0')
+        && bytes.mid(8, 4) == QByteArray("\x00\x00\x80\x3f", 4)
+        && bytes.mid(16, 7) == QByteArray(7, '\0');
+}
+
 QByteArray sourceEmptySlot(const SourceLivery *source, int slot)
 {
     const QByteArray slotBytes = sourceSlotBytes(source, slot);
-    if (slotBytes.size() >= 23) {
+    if (isEmptySlotRecord(slotBytes)) {
         return slotBytes.left(23);
     }
-    QByteArray out(5, '\0');
-    out.append(sourceRemnant(source, slot));
-    return out;
+    return defaultEmptySlot(slot);
 }
 
 LiveryExportShape exportLiveryShape(const scene::Shape &shape, const Matrix3 &worldAdjustment = Matrix3{})
@@ -437,10 +482,14 @@ LiveryExportShape exportLiveryShape(const scene::Shape &shape, const Matrix3 &wo
 }
 
 void appendLiveryShapeRecord(QByteArray &out, const LiveryExportShape &shape, double offsetX,
-                             double offsetY, quint8 lead)
+                             double offsetY, quint8 lead, bool bare)
 {
-    out.append(static_cast<char>(lead));
-    out.append('\x02');
+    if (bare) {
+        out.append('\x02');
+    } else {
+        out.append(static_cast<char>(lead));
+        out.append('\x02');
+    }
     detail::appendLeU16(out, shape.shapeId);
     detail::appendLeFloat(out, static_cast<float>(normalizeRotation(shape.rotation)));
     detail::appendLeFloat(out, static_cast<float>(shape.x - offsetX));
@@ -463,9 +512,6 @@ int checkLiveryChildCount(int count, const char *label)
         throw std::runtime_error(std::string(label) + " has too many direct children for the child bitmap");
     }
     const int blocks = (count + 7) / 8;
-    if (blocks > 0xff) {
-        throw std::runtime_error(std::string(label) + " needs too many child bitmap blocks");
-    }
     return blocks;
 }
 
@@ -473,9 +519,7 @@ void collectSectionShapes(const scene::Layer &node, QVector<const scene::Shape *
 {
     if (node.kind() == scene::LayerKind::Shape) {
         const auto &shape = static_cast<const scene::Shape &>(node);
-        if (shape.visible) {
-            out.push_back(&shape);
-        }
+        out.push_back(&shape);
         return;
     }
     if (node.kind() == scene::LayerKind::Group) {
@@ -490,11 +534,11 @@ void collectSectionShapes(const scene::Layer &node, QVector<const scene::Shape *
 
 void collectVisibleShapeLeaves(const scene::Layer &node, QVector<const scene::Shape *> &out)
 {
-    if (!node.visible) {
-        return;
-    }
     if (node.kind() == scene::LayerKind::Shape) {
         out.push_back(static_cast<const scene::Shape *>(&node));
+        return;
+    }
+    if (!node.visible) {
         return;
     }
     if (node.kind() == scene::LayerKind::Group) {
@@ -507,7 +551,7 @@ void collectVisibleShapeLeaves(const scene::Layer &node, QVector<const scene::Sh
 void entryShapes(const LiveryEntry &entry, QVector<const scene::Shape *> &out)
 {
     if (entry.kind == LiveryEntry::Shape) {
-        if (entry.shape != nullptr && entry.shape->visible) {
+        if (entry.shape != nullptr) {
             out.push_back(entry.shape);
         }
         return;
@@ -515,6 +559,48 @@ void entryShapes(const LiveryEntry &entry, QVector<const scene::Shape *> &out)
     if (entry.group != nullptr) {
         collectVisibleShapeLeaves(*entry.group, out);
     }
+}
+
+QByteArray defaultGroupedRemnant(int slot, const QVector<LiveryEntry> &entries)
+{
+    QVector<const scene::Shape *> shapes;
+    for (const LiveryEntry &entry : entries) {
+        entryShapes(entry, shapes);
+    }
+    const quint16 shapeId = shapes.isEmpty() ? 0 : shapes.back()->shapeId;
+    QByteArray out(1, '\0');
+    detail::appendLeU16(out, shapeId);
+    out.append(QByteArray(6, '\0'));
+    detail::appendLeFloat(out, 1.0f);
+    detail::appendLeFloat(out, kSlotRotation[slot]);
+    out.append('\x80');
+    return out;
+}
+
+QByteArray defaultMixedRemnant(int slot, const QVector<LiveryEntry> &entries)
+{
+    QVector<const scene::Shape *> shapes;
+    for (const LiveryEntry &entry : entries) {
+        entryShapes(entry, shapes);
+    }
+    const quint8 opacity = shapes.isEmpty() ? 0xff : shapes.back()->color[3];
+    QByteArray out(1, '\0');
+    out.append(static_cast<char>(opacity));
+    out.append(defaultGroupedRemnant(slot, entries).left(16));
+    return out;
+}
+
+QByteArray groupedRemnant(const SourceLivery *source, int slot,
+                          const QVector<LiveryEntry> &entries)
+{
+    const QByteArray preserved = sourceRemnant(source, slot);
+    if (sourceHasArtworkGroup(source, slot) && preserved.size() == 18) {
+        return preserved;
+    }
+    if (!entries.isEmpty() && entries.back().kind == LiveryEntry::Shape) {
+        return defaultMixedRemnant(slot, entries);
+    }
+    return defaultGroupedRemnant(slot, entries);
 }
 
 bool hasVisibleShapeLeaves(const scene::Layer &node)
@@ -528,12 +614,10 @@ QVector<LiveryEntry> directVisibleChildren(const scene::Group &group)
 {
     QVector<LiveryEntry> entries;
     for (const auto &child : group.children) {
-        if (!child->visible) {
-            continue;
-        }
         if (child->kind() == scene::LayerKind::Shape) {
             entries.push_back({LiveryEntry::Shape, nullptr, static_cast<const scene::Shape *>(child.get())});
-        } else if (child->kind() == scene::LayerKind::Group && hasVisibleShapeLeaves(*child)) {
+        } else if (child->kind() == scene::LayerKind::Group
+                   && child->visible && hasVisibleShapeLeaves(*child)) {
             const auto *childGroup = static_cast<const scene::Group *>(child.get());
             const QVector<LiveryEntry> normalizedChildren = directVisibleChildren(*childGroup);
             if (normalizedChildren.isEmpty()) {
@@ -547,6 +631,39 @@ QVector<LiveryEntry> directVisibleChildren(const scene::Group &group)
         }
     }
     return entries;
+}
+
+QVector<LiveryEntry> liverySectionChildren(const scene::Group &group)
+{
+    const QVector<LiveryEntry> structured = directVisibleChildren(group);
+    if (!kFlattenLiverySections) {
+        return structured;
+    }
+    QVector<const scene::Shape *> shapes;
+    collectVisibleShapeLeaves(group, shapes);
+    const bool hasMasks = std::any_of(shapes.cbegin(), shapes.cend(), [](const scene::Shape *shape) {
+        return shape != nullptr && shape->mask;
+    });
+    if (hasMasks) {
+        return structured;
+    }
+    QVector<LiveryEntry> flattened;
+    flattened.reserve(shapes.size());
+    for (const scene::Shape *shape : shapes) {
+        flattened.push_back({LiveryEntry::Shape, nullptr, shape});
+    }
+    return flattened;
+}
+
+bool hasGroupedArtwork(const scene::Group *sectionGroup)
+{
+    if (sectionGroup == nullptr) {
+        return false;
+    }
+    const QVector<LiveryEntry> children = liverySectionChildren(*sectionGroup);
+    return std::any_of(children.cbegin(), children.cend(), [](const LiveryEntry &entry) {
+        return entry.kind == LiveryEntry::Group;
+    });
 }
 
 QPointF shapeHalfExtents(const LiveryExportShape &shape)
@@ -650,8 +767,8 @@ QByteArray packMarkerlessGroupHeader(const QVector<LiveryEntry> &children, const
     const QByteArray bitmap = childBitmap(children, label);
     QByteArray out;
     detail::appendLeU16(out, static_cast<quint16>(children.size()));
-    out.append(static_cast<char>(bitmap.size()));
-    out.append(QByteArray(3, '\0'));
+    detail::appendLeU16(out, static_cast<quint16>(bitmap.size()));
+    out.append(QByteArray(2, '\0'));
     out.append(bitmap);
     return out;
 }
@@ -662,8 +779,8 @@ QByteArray packCountedGroupHeader(const QVector<LiveryEntry> &children, bool mas
     QByteArray out;
     out.append(mask ? '\x60' : '\x20');
     detail::appendLeU16(out, static_cast<quint16>(children.size()));
-    out.append(static_cast<char>(bitmap.size()));
-    out.append(QByteArray(3, '\0'));
+    detail::appendLeU16(out, static_cast<quint16>(bitmap.size()));
+    out.append(QByteArray(2, '\0'));
     out.append(bitmap);
     return out;
 }
@@ -744,7 +861,12 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
     QByteArray out = packLiveryGroupTransform(origin.x() - parentOffset.x(),
                                              origin.y() - parentOffset.y(),
                                              liveryTransformMarker(transformMarker));
-    out.append(packCountedGroupHeader(children, isMaskGroup, "livery group"));
+    if (isMaskGroup) {
+        out.append(packCountedGroupHeader(children, true, "livery group"));
+    } else {
+        out.append('\0');
+        out.append(packMarkerlessGroupHeader(children, "livery group"));
+    }
 
     bool previousWasGroup = false;
     int previousGroupDepth = 0;
@@ -757,7 +879,7 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
             } else if (hasPreviousSibling) {
                 marker = QByteArray("\x00\x03", 2);
             } else {
-                marker = QByteArray("\x03", 1);
+                marker = QByteArray();
             }
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
             previousShapeMask = false;
@@ -766,13 +888,15 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
+            const bool followsGroup = previousWasGroup;
             if (previousWasGroup) {
                 out.append('\x00');
                 out.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
             }
             const LiveryExportShape packed = exportLiveryShape(*child.shape, worldAdjustment);
             const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
-            appendLiveryShapeRecord(out, packed, origin.x(), origin.y(), lead);
+            appendLiveryShapeRecord(out, packed, origin.x(), origin.y(), lead,
+                                    !hasPreviousSibling || followsGroup);
             previousWasGroup = false;
             previousGroupDepth = 0;
             previousShapeMask = childMask || packed.mask;
@@ -783,17 +907,20 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
 }
 
 void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
-                              const SourceLivery *source, int slot)
+                              const SourceLivery *source, int slot, bool hasLaterArtwork)
 {
     if (sectionGroup == nullptr) {
         body.append(sourceEmptySlot(source, slot));
         return;
     }
-    const QVector<LiveryEntry> children = directVisibleChildren(*sectionGroup);
+    const QVector<LiveryEntry> children = liverySectionChildren(*sectionGroup);
     if (children.isEmpty()) {
         body.append(sourceEmptySlot(source, slot));
         return;
     }
+    const bool hasGroupedArtwork = std::any_of(children.cbegin(), children.cend(), [](const LiveryEntry &entry) {
+        return entry.kind == LiveryEntry::Group;
+    });
 
     body.append(packMarkerlessGroupHeader(children, "livery section"));
     bool previousWasGroup = false;
@@ -819,20 +946,35 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
+            const bool followsGroup = previousWasGroup;
             if (previousWasGroup) {
                 body.append('\x00');
                 body.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
             }
             const LiveryExportShape packed = exportLiveryShape(*child.shape, worldAdjustment);
             const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
-            appendLiveryShapeRecord(body, packed, sectionOrigin.x(), sectionOrigin.y(), lead);
+            appendLiveryShapeRecord(body, packed, sectionOrigin.x(), sectionOrigin.y(), lead,
+                                    !hasPreviousSibling || followsGroup);
             previousWasGroup = false;
             previousGroupDepth = 0;
             previousShapeMask = packed.mask;
         }
         hasPreviousSibling = true;
     }
-    body.append(sourceRemnant(source, slot));
+    const bool endsInNestedGroup = !children.isEmpty()
+        && children.back().kind == LiveryEntry::Group
+        && terminalDepth(children.back()) > 1;
+    if (endsInNestedGroup) {
+        body.append('\0');
+        return;
+    }
+    if (hasGroupedArtwork) {
+        body.append(groupedRemnant(source, slot, children));
+    } else if (hasLaterArtwork) {
+        body.append(sourceRemnant(source, slot));
+    } else {
+        body.append('\0');
+    }
 }
 
 } // namespace
@@ -857,18 +999,37 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
 
     const std::optional<SourceLivery> source = sourceLivery(project);
     const SourceLivery *sourcePtr = source ? &*source : nullptr;
+    bool requiresStructuralArtwork = false;
+    for (int slot = 0; slot < kLiverySectionCount; ++slot) {
+        if (!slotShapes[slot].isEmpty()
+            && !sectionMatchesSource(slotShapes[slot], sourceSection(sourcePtr, slot),
+                                     hasGroupedArtwork(slotGroups[slot]))) {
+            requiresStructuralArtwork = true;
+            break;
+        }
+    }
     // yrvl counts are coupled to the records emitted for each slot.
     std::array<int, kLiverySectionCount> counts{};
     QByteArray body;
     for (int slot = 0; slot < kLiverySectionCount; ++slot) {
         const QVector<const scene::Shape *> &shapes = slotShapes[slot];
         const LiverySection *section = sourceSection(sourcePtr, slot);
-        const int sourceDecals = (sourcePtr && slot < sourcePtr->payload.sectionCounts.size())
-                                     ? sourcePtr->payload.sectionCounts[slot]
-                                     : static_cast<int>(shapes.size());
+        const bool hasRasterArtwork = std::any_of(shapes.cbegin(), shapes.cend(), [](const scene::Shape *shape) {
+            return shape != nullptr && shape->raster;
+        });
+        const int sourceDecals = hasRasterArtwork && sourcePtr
+                && slot < sourcePtr->payload.sectionCounts.size()
+            ? sourcePtr->payload.sectionCounts[slot]
+            : static_cast<int>(shapes.size());
+
+        if (requiresStructuralArtwork && shapes.isEmpty() && slot + 1 < kLiverySectionCount) {
+            body.append(sourceEmptySlot(sourcePtr, slot));
+            counts[static_cast<size_t>(slot)] = 0;
+            continue;
+        }
 
         // Source-faithful spans preserve unchanged and partially decoded slots.
-        if (sectionMatchesSource(shapes, section)) {
+        if (sectionMatchesSource(shapes, section, hasGroupedArtwork(slotGroups[slot]))) {
             const QByteArray preserved = sourceSlotBytes(sourcePtr, slot);
             if (shapes.isEmpty() && preserved.size() < kLiveryEmptySlotBytes) {
                 body.append(sourceEmptySlot(sourcePtr, slot));
@@ -885,7 +1046,14 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
                 throw std::runtime_error("changed custom logo decals cannot be synthesized yet");
             }
         }
-        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot);
+        bool hasLaterArtwork = false;
+        for (int later = slot + 1; later < kLiverySectionCount; ++later) {
+            if (!slotShapes[later].isEmpty()) {
+                hasLaterArtwork = true;
+                break;
+            }
+        }
+        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot, hasLaterArtwork);
         counts[static_cast<size_t>(slot)] = static_cast<int>(shapes.size());
     }
     body = body.left(std::max<qsizetype>(0, body.size() - kLiveryBodyTruncate));

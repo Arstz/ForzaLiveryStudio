@@ -887,6 +887,9 @@ void MainWindow::noteProjectStructureChanged()
             treeModel_->setProject(&state_->project_);
         }
     }
+    if (state_->project_.isLivery) {
+        rebuildSectionBar();
+    }
     syncTreeSelectionFromIds();
     noteProjectGeometryChanged();
     refreshSelectionProperties();

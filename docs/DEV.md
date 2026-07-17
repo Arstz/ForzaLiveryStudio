@@ -69,8 +69,8 @@ exports grouped `C_group` folders.
   evaluate world-space shape geometry.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
-  preview thumbnail, and draft/imported header handling. Livery export is
-  temporarily blocked in the UI while artwork synthesis remains incomplete.
+  preview thumbnail, and draft/imported header handling. The same action exports
+  source-backed livery projects through the development encoder.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
@@ -118,8 +118,7 @@ each group is written with a
 translation-only origin transform and shapes packed relative to it, mask groups are
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
 their own child-type bitmaps. It is not byte-identical to the game's own encoding. Livery
-(`C_livery`) encoding remains available in the core for development, but the UI
-rejects livery export until artwork synthesis is complete.
+(`C_livery`) encoding is available through the core and GUI for development.
 
 ## Build
 

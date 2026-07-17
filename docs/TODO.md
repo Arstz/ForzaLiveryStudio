@@ -1,6 +1,10 @@
 Small changes:
+    -Add "Save as" button on Control Shift S
+    -Change debug binding from P to U in 3d model view
+    -Car model not updated on Target car changed
 
 Medium changes:
+    -Save car color metadata on project save if imported from livery
 
 Big changes:
     -Render BigThumb.webp for livery export from the car model with textures applied

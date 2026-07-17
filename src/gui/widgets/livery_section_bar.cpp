@@ -33,10 +33,14 @@ void LiverySectionBar::refreshTheme()
 
 void LiverySectionBar::setSections(const QVector<SectionInfo> &sections)
 {
+    const QString previousSectionId = currentItem() != nullptr
+        ? currentItem()->data(Qt::UserRole).toString()
+        : QString();
     switching_ = true;
     clear();
 
     int firstPopulatedRow = -1;
+    int previousRow = -1;
     for (int row = 0; row < sections.size(); ++row) {
         const SectionInfo &section = sections[row];
         auto *item = new QListWidgetItem(
@@ -48,12 +52,18 @@ void LiverySectionBar::setSections(const QVector<SectionInfo> &sections)
         } else if (firstPopulatedRow < 0) {
             firstPopulatedRow = row;
         }
+        if (!previousSectionId.isEmpty() && section.id == previousSectionId) {
+            previousRow = row;
+        }
         addItem(item);
     }
     setVisible(count() > 0);
-    switching_ = false;
 
-    if (count() > 0) {
+    if (previousRow >= 0) {
+        setCurrentRow(previousRow);
+    }
+    switching_ = false;
+    if (count() > 0 && previousRow < 0) {
         setCurrentRow(firstPopulatedRow >= 0 ? firstPopulatedRow : 0);
     }
 }

@@ -297,15 +297,14 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
         }
         return false;
     }
-    if (state_->project_.isLivery) {
-        if (error != nullptr) {
-            *error = QStringLiteral("Livery export is temporarily unavailable.");
-        }
-        return false;
-    }
-
     try {
         fh6::Project exportProject = state_->project_;
+        if (exportProject.isLivery) {
+            const QString targetFolder = projectExportFolder(folder, exportProject.name, true);
+            fh6::exportCLivery(exportProject, targetFolder);
+            statusBar()->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
+            return true;
+        }
         if (projectContainsRasterLogo(exportProject)) {
             throw std::runtime_error("logo layers can only be exported from livery projects");
         }
@@ -515,13 +514,6 @@ void MainWindow::exportDialog()
         QMessageBox::information(this, QStringLiteral("Export"), QStringLiteral("Open a project before exporting."));
         return;
     }
-    if (state_->project_.isLivery) {
-        QMessageBox::critical(this,
-                              QStringLiteral("Export unavailable"),
-                              QStringLiteral("Livery export is temporarily unavailable."));
-        return;
-    }
-
     const QString folder = QFileDialog::getExistingDirectory(this,
                                                             QStringLiteral("Export Folder"),
                                                             importDialogStartDirectoryWithFallbacks(

@@ -13,7 +13,7 @@
 namespace fh6 {
 namespace {
 
-constexpr int kMaxDirectChildren = 0xff * 8;
+constexpr int kMaxDirectChildren = 0xffff;
 
 using detail::appendLeFloat;
 using detail::appendLeU16;
@@ -96,9 +96,6 @@ int checkChildCount(int count, const char *label)
         throw std::runtime_error(std::string(label) + " has too many direct children for the child bitmap");
     }
     const int blocks = (count + 7) / 8;
-    if (blocks > 0xff) {
-        throw std::runtime_error(std::string(label) + " needs too many child blocks");
-    }
     return blocks;
 }
 
@@ -155,8 +152,8 @@ QByteArray packGroupHeader(int count, const QByteArray &bitmap, quint8 marker, c
     QByteArray out;
     out.append(static_cast<char>(marker));
     appendLeU16(out, static_cast<quint16>(count));
-    out.append(static_cast<char>(bitmap.size()));
-    out.append(QByteArray(3, '\x00'));
+    appendLeU16(out, static_cast<quint16>(bitmap.size()));
+    out.append(QByteArray(2, '\x00'));
     out.append(bitmap);
     return out;
 }
@@ -447,8 +444,8 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
     QByteArray payload = prefix;
     payload.append('\x20');
     appendLeU16(payload, static_cast<quint16>(items.size()));
-    payload.append(static_cast<char>(rootBitmap.size()));
-    payload.append(QByteArray(3, '\x00'));
+    appendLeU16(payload, static_cast<quint16>(rootBitmap.size()));
+    payload.append(QByteArray(2, '\x00'));
     payload.append(rootBitmap);
 
     bool previousWasGroup = false;

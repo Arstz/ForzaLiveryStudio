@@ -306,10 +306,7 @@ bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks)
         return false;
     }
     const int expected = expectedChildBlocks(count);
-    const bool matches = expected <= 0xff
-        ? storedBlocks == expected
-        : storedBlocks == (expected & 0xff);
-    if (!matches) {
+    if (storedBlocks != expected) {
         return false;
     }
     if (effectiveBlocks != nullptr) {
@@ -335,29 +332,6 @@ QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos,
     }
     sizes.push_back(1);
     return sizes;
-}
-
-bool wrappedChildBlockCountPlausible(int count, int pos, int baseSize, int end)
-{
-    constexpr int kMinChildRecordSize = 7;
-    if (pos + baseSize > end) {
-        return false;
-    }
-    return count <= (end - (pos + baseSize)) / kMinChildRecordSize;
-}
-
-bool sparseWrappedChildBitmapPlausible(const QByteArray &data, int bitmapStart, int childBlocks)
-{
-    if (bitmapStart < 0 || bitmapStart + childBlocks > data.size()) {
-        return false;
-    }
-    int nonzero = 0;
-    for (int i = 0; i < childBlocks; ++i) {
-        if (static_cast<quint8>(data[bitmapStart + i]) != 0) {
-            ++nonzero;
-        }
-    }
-    return nonzero <= std::max(8, childBlocks / 16);
 }
 
 bool childBitmapBit(const QByteArray &bitmap, int index)
@@ -447,32 +421,27 @@ bool childTokenAt(const QByteArray &data, int pos, int end, bool livery)
 std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos, int end,
                                                 bool allowCountOne = false, bool livery = false)
 {
-    if (pos + 3 > end) {
+    if (pos + 4 > end) {
         return std::nullopt;
     }
     const int count = readLeU16(data, pos);
-    const int storedChildBlocks = static_cast<quint8>(data[pos + 2]);
+    const int storedChildBlocks = readLeU16(data, pos + 2);
     const int minCount = allowCountOne ? 1 : 2;
     int childBlocks = 0;
     if (count < minCount || !childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
         return std::nullopt;
     }
-    constexpr int kControlBytes = 3;
-    const int bitmapStart = pos + 3 + kControlBytes;
-    const int baseSize = 3 + kControlBytes + childBlocks;
+    constexpr int kControlBytes = 2;
+    const int bitmapStart = pos + 4 + kControlBytes;
+    const int baseSize = 4 + kControlBytes + childBlocks;
     if (pos + baseSize > end) {
-        return std::nullopt;
-    }
-    if (childBlocks != storedChildBlocks
-        && (!wrappedChildBlockCountPlausible(count, pos, baseSize, end)
-            || !sparseWrappedChildBitmapPlausible(data, bitmapStart, childBlocks))) {
         return std::nullopt;
     }
     GroupInfo info;
     info.count = count;
     info.childBlocks = childBlocks;
     info.size = baseSize;
-    info.controlBytes = data.mid(pos + 3, kControlBytes);
+    info.controlBytes = data.mid(pos + 4, kControlBytes);
     info.childTypeBitmap = data.mid(bitmapStart, childBlocks);
     int extra = pos + baseSize;
     bool foundTransform = false;
@@ -555,7 +524,7 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
 
 std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, int end, bool livery)
 {
-    if (pos + 4 > end) {
+    if (pos + 5 > end) {
         return std::nullopt;
     }
     const quint8 markerByte = static_cast<quint8>(data[pos]);
@@ -563,27 +532,22 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
         return std::nullopt;
     }
     const int count = readLeU16(data, pos + 1);
-    const int storedChildBlocks = static_cast<quint8>(data[pos + 3]);
+    const int storedChildBlocks = readLeU16(data, pos + 3);
     int childBlocks = 0;
     if (!childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
         return std::nullopt;
     }
-    constexpr int kControlBytes = 3;
-    const int bitmapStart = pos + 4 + kControlBytes;
-    const int baseSize = 4 + kControlBytes + childBlocks;
+    constexpr int kControlBytes = 2;
+    const int bitmapStart = pos + 5 + kControlBytes;
+    const int baseSize = 5 + kControlBytes + childBlocks;
     if (pos + baseSize > end) {
-        return std::nullopt;
-    }
-    if (childBlocks != storedChildBlocks
-        && (!wrappedChildBlockCountPlausible(count, pos, baseSize, end)
-            || !sparseWrappedChildBitmapPlausible(data, bitmapStart, childBlocks))) {
         return std::nullopt;
     }
     GroupInfo info;
     info.count = count;
     info.childBlocks = childBlocks;
     info.size = baseSize;
-    info.controlBytes = data.mid(pos + 4, kControlBytes);
+    info.controlBytes = data.mid(pos + 5, kControlBytes);
     info.childTypeBitmap = data.mid(bitmapStart, childBlocks);
     info.flags = markerByte == 0x60 ? 0x40 : 0;
     int extra = pos + baseSize;
@@ -617,13 +581,6 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
         }
         foundTransform = true;
         break;
-    }
-    if (!foundTransform && childBlocks != storedChildBlocks) {
-        const bool childHere = childTokenAt(data, extra, end, livery)
-            || (extra + 1 < end && childTokenAt(data, extra + 1, end, livery));
-        if (!childHere) {
-            return std::nullopt;
-        }
     }
     if (!foundTransform && extra < end
         && !isValidShapeAt(data, extra, end)

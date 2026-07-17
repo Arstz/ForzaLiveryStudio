@@ -11,7 +11,7 @@
 namespace fh6 {
 namespace {
 
-constexpr int kMaxDirectChildren = 0xff * 8;
+constexpr int kMaxDirectChildren = 0xffff;
 
 QByteArray defaultPrefix()
 {
@@ -138,7 +138,7 @@ QByteArray buildFlatPayload(const Project &project)
     QByteArray payload = prefix;
     payload.append('\x20');
     appendLeU16(payload, static_cast<quint16>(count));
-    payload.append(static_cast<char>(childBlocks));
+    appendLeU16(payload, static_cast<quint16>(childBlocks));
     payload.append(QByteArray(childBlocks + 2, '\x00'));
     bool prevWasMask = false;
     for (const ExportShape &layer : visibleLayers) {
