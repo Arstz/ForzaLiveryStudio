@@ -16,6 +16,7 @@ build and developer notes see
 | New Project | `Ctrl+N` |
 | Open Project (`.3so`) | `Ctrl+O` |
 | Save Project (`.3so`) | `Ctrl+S` |
+| Save Project As (`.3so`) | `Ctrl+Shift+S` |
 | Import Asset / Import Guide Layer / Import Car Model | *(menu only)* |
 | Export (grouped C_group) | *(menu only)* |
 | Exit | *(menu only)* |
@@ -139,7 +140,8 @@ build and developer notes see
   distribute ≥3.
 - **Project menu** — edit one project field at a time: **Target Car…** (the car a
   livery targets), **Project Name…**, and **Creator Name…** (also saved as the
-  default creator for new projects).
+  default creator for new projects). Changing the target car reloads its matching
+  model in the 3D preview.
 - **Import** (**File → Import…**) — browse folders in the built-in asset explorer.
   Importable folders show their available metadata and thumbnail; selecting one
   routes it to the matching importer. The explorer restores its last location,
@@ -153,8 +155,10 @@ build and developer notes see
   livery open** (Settings, on by default) controls whether that replaces the
   currently loaded model.
 - **Export** (**File → Export…**) — writes a grouped `C_group` folder while
-  preserving structure, nesting, and masks. Livery projects show an unavailable
-  error before the destination picker opens.
+  preserving structure, nesting, and masks. Source-backed livery projects write a
+  `C_livery` folder with ordinary section artwork flattened to world-space shapes;
+  sections containing masks retain their mask structure. When a car model is loaded,
+  livery export renders `bigThumb.webp` from the textured 3D preview.
 - **Project files** — projects save to a `.3so` container: the editor project
   JSON wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still open.
 - **Guide layers** — import a raster image as an editor-only reference layer
@@ -186,7 +190,8 @@ build and developer notes see
 - **Canvas** — the OpenGL editing surface; pan and zoom to navigate.
 - **Layers** — the layer/group/guide tree with thumbnails and visibility / mask
   / lock badges. Reorder siblings by internal drag/drop; group, ungroup, delete,
-  copy/cut/paste, duplicate, and stamp from here or the Edit menu.
+  copy/cut/paste, duplicate, and stamp from here or the Edit menu. Livery section
+  labels display leaf counts that update after structural edits.
 - **Properties** — edit name, shape ID, position, scale, rotation, skew,
   opacity, colour, visibility, mask, and lock for the current selection.
   The color picker samples original guide pixels under the cursor, ignoring
@@ -207,4 +212,5 @@ build and developer notes see
 - **Header** — edit header metadata written into exported projects.
 - **3D Preview** — an orbit-camera view of an imported car with the current vinyl
   mapped onto its paint. Drag to orbit, middle-drag to pan, wheel to zoom. Material
-  and lighting are a reference approximation rather than the in-game render.
+  and lighting are a reference approximation rather than the in-game render. Press
+  `U` while the preview has focus to cycle its projection diagnostics.

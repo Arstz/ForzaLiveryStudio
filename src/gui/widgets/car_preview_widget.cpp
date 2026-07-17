@@ -625,6 +625,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(24);
+    format.setAlphaBufferSize(8);
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
 
@@ -711,6 +712,29 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
 bool CarPreviewWidget::hasModel() const
 {
     return !model_.meshes.empty();
+}
+
+QImage CarPreviewWidget::renderThumbnail(const QSize &size)
+{
+    if (!hasModel() || !size.isValid() || size.isEmpty()) {
+        return {};
+    }
+    const int debugMode = carRenderer_.debugMode();
+    carRenderer_.setDebugMode(0);
+    transparentBackground_ = true;
+    repaint();
+    const QImage framebuffer = grabFramebuffer();
+    transparentBackground_ = false;
+    carRenderer_.setDebugMode(debugMode);
+    update();
+    if (framebuffer.isNull()) {
+        return {};
+    }
+    const QImage scaled = framebuffer.scaled(
+        size, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    const int x = std::max(0, (scaled.width() - size.width()) / 2);
+    const int y = std::max(0, (scaled.height() - size.height()) / 2);
+    return scaled.copy(x, y, size.width(), size.height());
 }
 
 void CarPreviewWidget::clearModel()
@@ -1112,7 +1136,11 @@ void CarPreviewWidget::paintGL()
     const int ph = std::max(1, static_cast<int>(std::lround(height() * dpr)));
     functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
     functions->glViewport(0, 0, pw, ph);
-    functions->glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
+    if (transparentBackground_) {
+        functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        functions->glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
+    }
     functions->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     if (!carRenderer_.hasModel()) {
@@ -1220,7 +1248,7 @@ void CarPreviewWidget::wheelEvent(QWheelEvent *event)
 void CarPreviewWidget::keyPressEvent(QKeyEvent *event)
 {
     switch (event->key()) {
-    case Qt::Key_P:
+    case Qt::Key_U:
         carRenderer_.setDebugMode((carRenderer_.debugMode() + 1) % 3);
         break;
     default:

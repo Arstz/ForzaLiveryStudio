@@ -1,6 +1,6 @@
 # Forza Livery Studio
 
-I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and in the future *probably* for liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion.
+I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion.
 
 ## Features
 
@@ -69,11 +69,11 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 ## Status
 
-The import/export for groups is fully supported, core functionality in place. Liveries can be imported, previewed in 3D on a car model, and exported through the flattened encoder. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
+The import/export for groups is fully supported, core functionality in place. Source-backed liveries can be imported, previewed in 3D on a car model, and exported through the flattened encoder. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
 
 | Version     | Group          | Livery |
 |-------------|----------------|--------| 
-| Horizon 6   | Import/Export  | Import |
+| Horizon 6   | Import/Export  | Import/Export |
 | Motosport 23| Import         | Import |
 
 ## Documentation

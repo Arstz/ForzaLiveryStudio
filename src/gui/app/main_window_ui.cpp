@@ -278,6 +278,10 @@ void MainWindow::setupFileMenu()
     refreshRecentProjectJsonMenu();
     addShortcutEntry(QStringLiteral("&Save Project..."), QStringLiteral("save_project_json"),
                      QStringLiteral("Save Project"), QKeySequence::Save, &MainWindow::saveProjectJsonDialog);
+    addShortcutEntry(QStringLiteral("Save Project &As..."), QStringLiteral("save_project_json_as"),
+                     QStringLiteral("Save Project As"),
+                     QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S),
+                     &MainWindow::saveProjectJsonAsDialog);
     fileMenu->addSeparator();
     addIconEntry(QStringLiteral("MenuOpenCGroup.xpm"), QStringLiteral("&Import..."),
                  QStringLiteral("import"), QStringLiteral("Import"), &MainWindow::importFileDialog);

@@ -45,7 +45,7 @@ void MainWindow::setProject(fh6::Project project)
     updateCarUnwrapOverlay();
 }
 
-void MainWindow::maybeAutoLoadCarForProject()
+void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel)
 {
     if (carPreview_ == nullptr || state_ == nullptr || !state_->hasProject_) {
         return;
@@ -57,7 +57,7 @@ void MainWindow::maybeAutoLoadCarForProject()
 
     BehaviorSettings settings = loadBehaviorSettings();
     if (carPreview_->hasModel()) {
-        if (!settings.discardModelOnLiveryOpen) {
+        if (!replaceLoadedModel && !settings.discardModelOnLiveryOpen) {
             return;
         }
         carPreview_->clearModel();
@@ -609,6 +609,7 @@ void MainWindow::setTargetCarDialog()
     updateStatus();
     statusBar()->showMessage(
         QStringLiteral("Target car set to %1").arg(sharedCarRegistry().displayName(carId)), 5000);
+    maybeAutoLoadCarForProject(true);
 }
 
 void MainWindow::setProjectNameDialog()

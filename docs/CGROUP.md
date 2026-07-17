@@ -98,7 +98,7 @@ Header lengths determine that ownership before transform parsing begins.
 Counted group record:
 
 ```text
-20/60 + u16 child_count + u8 child_blocks + control[3] + bitmap[ceil(child_count / 8)]
+20/60 + u16 child_count + u16 child_blocks + reserved[2] + bitmap[ceil(child_count / 8)]
 ```
 
 `child_blocks` is:
@@ -107,11 +107,8 @@ Counted group record:
 ceil(child_count / 8)
 ```
 
-In embedded livery `gyvl` payloads, records whose bitmap is longer than one
-byte can store only the low byte of that value in the `child_blocks` field. The
-decoder expands this to the full `ceil(child_count / 8)` length only when the
-surrounding bytes are structurally plausible and the recovered bitmap is sparse
-enough to distinguish it from shape payload bytes.
+The child bitmap contains one type bit per declared direct child. Its stored block
+count must match the bitmap length derived from `child_count`.
 
 `20` opens a normal group. `60` opens a mask group.
 
@@ -126,23 +123,21 @@ satisfied.
 After a pending transform, a counted group can omit the `20/60` marker:
 
 ```text
-u16 child_count + u8 child_blocks + control[3] + bitmap[ceil(child_count / 8)]
+u16 child_count + u16 child_blocks + reserved[2] + bitmap[ceil(child_count / 8)]
 ```
 
 This markerless form is accepted only after a pending transform and only when
 the following bytes continue with a valid child record or an inline transform
 for the first child.
 
-The same wrapped-bitmap rule used for counted groups applies to markerless
-groups in embedded livery payloads. Because the markerless form is ambiguous
-inside shape data, wrapped markerless groups are accepted only with the sparse
-bitmap and following-child guards.
+Because the markerless form is ambiguous inside shape data, it is accepted only
+when the declared bitmap and following child record are structurally valid.
 
 ## Inline First-Child Transforms
 
-Group records can carry a transform after their control bytes. If the next
-token is another group, the transform belongs to the first child rather than the
-current group.
+Group records can carry a transform after their reserved bytes and child bitmap.
+If the next token is another group, the transform belongs to the first child rather
+than the current group.
 
 First-child inline transform markers include:
 
@@ -155,7 +150,7 @@ df 03 03
 ```
 
 This rule applies to both counted and markerless groups. Marker recognition starts
-after all three control bytes and the complete child bitmap.
+after the complete group header and child bitmap.
 
 ## Embedded Livery Section Walk
 

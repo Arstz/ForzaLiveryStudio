@@ -64,17 +64,16 @@ rather than a counted root group.
 
 ## Groups and Transforms
 
-Counted and markerless groups contain three control bytes followed by a child
-bitmap whose effective size is derived from the child count:
+Counted and markerless groups store the direct-child count and child-bitmap block
+count as little-endian fields, followed by two reserved bytes and the bitmap:
 
 ```text
-counted:    20|60  u16 count  u8 bitmap_blocks  control[3]  bitmap[]
-markerless:        u16 count  u8 bitmap_blocks  control[3]  bitmap[]
+counted:    20|60  u16 count  u16 bitmap_blocks  reserved[2]  bitmap[]
+markerless:        u16 count  u16 bitmap_blocks  reserved[2]  bitmap[]
 ```
 
-The byte-sized bitmap field can wrap; the decoder accepts the expanded bitmap
-only when the group structure remains valid. A `60` group supplies inherited mask
-state to its descendants.
+The bitmap contains one child-type bit per declared direct child. A `60` group
+supplies inherited mask state to its descendants.
 
 Livery transform markers terminate in `01`. The transform payload contains
 position, uniform scale, and rotation, followed by an optional signed Y-scale:
@@ -115,6 +114,10 @@ RightWindow
 Section membership is positional and is represented in the editor by a top-level
 group carrying `isLiverySection` and `liverySectionSlot`.
 
+Export composes group transforms into direct world-space shape records for ordinary
+sections. A section containing masked shapes retains structured records so group
+mask ancestry and trailing shape-mask state remain expressible.
+
 An empty slot uses a 23-byte scaffold. A populated slot contains its section root,
 grouped artwork, and an 18-byte remnant. Section counters describe logical decal
 occupancy rather than byte length. The decoder reserves the remaining section
@@ -139,7 +142,12 @@ The `yrvl` record preceding the artwork stores creator metadata, state, and the
 
 The section-counter record following the artwork stores eleven section counts and
 one trailing counter. The decoder uses the section counts to bound and validate
-the artwork walk.
+the artwork walk. The encoder rebuilds these counts from the exported section
+contents.
+
+If trailing mask state belongs to the final shape in a section, a standalone `01`
+marker follows the completed section walk. The decoder applies it to that terminal
+shape before advancing to the section remnant.
 
 ## Descriptor Table
 

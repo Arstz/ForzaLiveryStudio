@@ -969,11 +969,20 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
         return;
     }
     if (hasGroupedArtwork) {
-        body.append(groupedRemnant(source, slot, children));
+        QByteArray remnant = groupedRemnant(source, slot, children);
+        if (!children.isEmpty() && children.back().kind == LiveryEntry::Shape
+            && previousShapeMask && !remnant.isEmpty()) {
+            remnant[0] = '\x01';
+        }
+        body.append(remnant);
     } else if (hasLaterArtwork) {
-        body.append(sourceRemnant(source, slot));
+        QByteArray remnant = sourceRemnant(source, slot);
+        if (previousShapeMask && !remnant.isEmpty()) {
+            remnant[0] = '\x01';
+        }
+        body.append(remnant);
     } else {
-        body.append('\0');
+        body.append(previousShapeMask ? '\x01' : '\x00');
     }
 }
 

@@ -1321,6 +1321,9 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 pos = next;
             }
             closeCompleteStack(state.stack);
+            if (pos < end && static_cast<quint8>(decoderBody[pos]) == 0x01) {
+                markPreviousTerminalShapeAsMask(state);
+            }
 
             section.subtree = *sectionNode;
             pos = std::min(pos, walkLimit);

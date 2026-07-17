@@ -33,6 +33,7 @@ public:
     bool loadCar(const QString &path, QString *error = nullptr);
     bool hasModel() const;
     void clearModel();
+    QImage renderThumbnail(const QSize &size);
 
     QImage unwrapOverlay(int liverySectionSlot = -1) const;
 
@@ -98,6 +99,7 @@ private:
     int liveryTextureScale_ = 4;
 
     QColor basePaint_ = QColor(180, 182, 190);
+    bool transparentBackground_ = false;
 
     QLabel *referenceNote_ = nullptr;
 

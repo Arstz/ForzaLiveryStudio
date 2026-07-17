@@ -69,6 +69,100 @@ QString colorSwatchToJson(const std::array<quint8, 4> &color)
         .arg(color[0], 2, 16, QLatin1Char('0'));
 }
 
+QJsonObject liveryPaintColorToJson(const LiveryPaintColor &color)
+{
+    QJsonArray bgra;
+    for (const quint8 channel : color.bgra) {
+        bgra.append(channel);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("enabled"), color.enabled);
+    object.insert(QStringLiteral("bgra"), bgra);
+    return object;
+}
+
+LiveryPaintColor liveryPaintColorFromJson(const QJsonValue &value)
+{
+    if (!value.isObject()) {
+        throw std::runtime_error("livery paint color is not an object");
+    }
+    const QJsonObject object = value.toObject();
+    const QJsonArray bgra = object.value(QStringLiteral("bgra")).toArray();
+    if (bgra.size() != 4) {
+        throw std::runtime_error("livery paint color must contain four BGRA channels");
+    }
+    LiveryPaintColor color;
+    color.enabled = object.value(QStringLiteral("enabled")).toBool(false);
+    for (int channel = 0; channel < 4; ++channel) {
+        color.bgra[static_cast<size_t>(channel)] = byteFromJson(bgra, channel);
+    }
+    return color;
+}
+
+quint32 liveryPaintU32FromJson(const QJsonValue &value, quint32 fallback)
+{
+    if (value.isUndefined()) {
+        return fallback;
+    }
+    const double number = value.toDouble(-1.0);
+    if (!std::isfinite(number) || number < 0.0
+        || number > static_cast<double>(std::numeric_limits<quint32>::max())
+        || std::floor(number) != number) {
+        throw std::runtime_error("livery paint integer is outside the unsigned 32-bit range");
+    }
+    return static_cast<quint32>(number);
+}
+
+QJsonObject liveryPaintStateToJson(const LiveryPaintState &state)
+{
+    QJsonArray materials;
+    for (const LiveryPaintMaterial &material : state.materials) {
+        QJsonObject object;
+        object.insert(QStringLiteral("material_hash"),
+                      QStringLiteral("%1").arg(material.materialHash, 16, 16, QLatin1Char('0')));
+        object.insert(QStringLiteral("primary"), liveryPaintColorToJson(material.primary));
+        object.insert(QStringLiteral("secondary"), liveryPaintColorToJson(material.secondary));
+        object.insert(QStringLiteral("manufacturer_selector"),
+                      static_cast<qint64>(material.manufacturerSelector));
+        object.insert(QStringLiteral("finish"), static_cast<qint64>(material.finish));
+        materials.append(object);
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("materials"), materials);
+    return object;
+}
+
+LiveryPaintState liveryPaintStateFromJson(const QJsonValue &value)
+{
+    if (!value.isObject()) {
+        throw std::runtime_error("livery paint metadata is not an object");
+    }
+    LiveryPaintState state;
+    const QJsonArray materials = value.toObject().value(QStringLiteral("materials")).toArray();
+    state.materials.reserve(materials.size());
+    for (const QJsonValue &entry : materials) {
+        if (!entry.isObject()) {
+            throw std::runtime_error("livery paint material is not an object");
+        }
+        const QJsonObject object = entry.toObject();
+        bool hashOk = false;
+        const quint64 materialHash = object.value(QStringLiteral("material_hash"))
+                                         .toString().toULongLong(&hashOk, 16);
+        if (!hashOk) {
+            throw std::runtime_error("livery paint material hash is invalid");
+        }
+        LiveryPaintMaterial material;
+        material.materialHash = materialHash;
+        material.primary = liveryPaintColorFromJson(object.value(QStringLiteral("primary")));
+        material.secondary = liveryPaintColorFromJson(object.value(QStringLiteral("secondary")));
+        material.manufacturerSelector = liveryPaintU32FromJson(
+            object.value(QStringLiteral("manufacturer_selector")), 0xffffffffu);
+        material.finish = liveryPaintU32FromJson(object.value(QStringLiteral("finish")), 0);
+        state.materials.push_back(material);
+    }
+    return state;
+}
+
 bool looksGzipped(const QByteArray &bytes)
 {
     return bytes.size() >= 2 && static_cast<quint8>(bytes[0]) == 0x1f
@@ -994,6 +1088,9 @@ Project projectFromJson(const QJsonObject &object)
         } catch (const std::exception &) {
         }
     }
+    if (object.contains(QStringLiteral("livery_paint"))) {
+        project.liveryPaint = liveryPaintStateFromJson(object.value(QStringLiteral("livery_paint")));
+    }
     if (object.value(QStringLiteral("header_metadata")).isObject()) {
         project.headerMetadata = headerMetadataFromJson(object.value(QStringLiteral("header_metadata")).toObject());
     }
@@ -1089,6 +1186,9 @@ QJsonObject projectToJson(const Project &project)
     object.insert(QStringLiteral("source_header"), toBase64(project.sourceHeader));
     if (!project.liverySource.isEmpty()) {
         object.insert(QStringLiteral("livery_source"), toBase64(project.liverySource));
+    }
+    if (!project.liveryPaint.materials.isEmpty()) {
+        object.insert(QStringLiteral("livery_paint"), liveryPaintStateToJson(project.liveryPaint));
     }
     if (project.headerMetadata) {
         object.insert(QStringLiteral("header_metadata"), headerMetadataToJson(*project.headerMetadata));

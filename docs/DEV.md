@@ -2,7 +2,7 @@
 
 Standalone Qt6/C++ editor for Forza vinyl projects. It imports supported game
 assets, edits vector and guide layers, saves editor project containers, and
-exports grouped `C_group` folders.
+exports grouped `C_group` folders and source-backed `C_livery` folders.
 
 ## Functionality
 
@@ -13,7 +13,8 @@ exports grouped `C_group` folders.
 - Open/save editor projects as a `.3so` container: the editor project JSON
   wrapped in a gzip stream. The document is the unified scene tree (v2: a recursive
   `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON
-  (`.json`) projects still load and are upgraded to v2 on save.
+  (`.json`) projects still load and are upgraded to v2 on save. Imported livery
+  paint-material colors, selectors, and finishes are stored as project metadata.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, and Pen
@@ -49,7 +50,7 @@ exports grouped `C_group` folders.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,
-  and stamp.
+  and stamp. Livery section labels show live leaf counts after structural edits.
 - Browse and insert vector shapes from the Shapes dock.
 - Place text as a line of vector font glyphs (toolbar **Place Text**): pick one of
   the 11 fonts, type a string, and the glyph shapes are laid out proportionally at
@@ -70,7 +71,9 @@ exports grouped `C_group` folders.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
   preview thumbnail, and draft/imported header handling. The same action exports
-  source-backed livery projects through the development encoder.
+  source-backed livery projects by flattening ordinary section artwork into
+  world-space shape records and preserving mask-bearing section structure. With a
+  car model loaded, livery export writes `bigThumb.webp` from the textured car render.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
@@ -99,7 +102,8 @@ exports grouped `C_group` folders.
   car registry's model code, searched recursively). If the folder is unset the app
   prompts once to pick it; it can also be set in Settings. A **Discard current model on
   livery open** option (on by default) controls whether opening a livery replaces the
-  currently loaded model or keeps it. Native car texture loading is an opt-in preview
+  currently loaded model or keeps it. Changing the target car always reloads the
+  matching preview model. Native car texture loading is an opt-in preview
   setting and is disabled by default.
 - Configure UI theme, canvas and guideline colors, layout, keybinds, behavior options, guide
   visibility borders, transform-drag anchors, nudge step sizes, the car models folder,
@@ -113,12 +117,17 @@ exports grouped `C_group` folders.
 - Switch Transform Relative mode from the Options menu when transform handles
   should follow the selected shape or group rotation.
 
-Grouped export is the canonical GUI export path. It preserves group semantics:
-each group is written with a
+Grouped `C_group` export is the canonical group export path. It preserves group
+semantics: each group is written with a
 translation-only origin transform and shapes packed relative to it, mask groups are
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
-their own child-type bitmaps. It is not byte-identical to the game's own encoding. Livery
-(`C_livery`) encoding is available through the core and GUI for development.
+their own child-type bitmaps. It is not byte-identical to the game's own encoding.
+
+Livery (`C_livery`) export is available through the core and GUI for source-backed
+projects. Ordinary sections are emitted as direct shapes after composing their world
+transforms. Sections containing masks retain structured records so mask ancestry and
+trailing mask state can be represented. A terminal masked shape uses the trailing
+`01` marker after the section walk.
 
 ## Build
 
@@ -232,8 +241,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     The FM container reader concatenates sequential compressed blocks and extracts
     the complete tagged stream before entering that pipeline.
     The livery decoder handles the embedded `gyvl` transform dialect (including
-    framed 9-byte separate-transform trailers), three-byte group controls and
-    variable child bitmaps, registry-backed vector ID validation, custom-logo stats
+    framed 9-byte separate-transform trailers), 16-bit child and bitmap-block counts,
+    reserved group bytes, registry-backed vector ID validation, custom-logo stats
     weighting, and section-root boundary guards before converting the decoded tree
     into scene layers.
   - `layer.*` / `visual_container.h`: the unified scene-object hierarchy in
@@ -329,7 +338,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `header_metadata_widget.*`, `livery_section_bar.*`, `image_io.*`,
   `import_locations.*`)
   - `car_preview_widget`: the dockable 3D car preview `QOpenGLWidget` — orbit
-    camera, its own scene/car renderers, and a configurable livery paint texture regenerated
+    camera, framebuffer thumbnail capture, its own scene/car renderers, and a configurable livery paint texture regenerated
     from `EditorState` change signals. Imported `C_livery` sections are rendered into
     isolated packed regions derived from `Masks.xml`; section axes are normalized in the
     preview copy and sampling path without mutating decoded section/group transforms.
@@ -351,6 +360,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `decodeGroup()` / `buildTree()` / `validateTree()` / `flattenGroup()`
 - `importCGroupFlat()` / `importCGroupNested()`
 - `importCLivery()` / `readLiveryPayload()` / `buildLiverySections()`
+- `buildLiveryGyvl()` / `encodeCLiveryPayload()` / `exportCLivery()`
 - `importFM2023Asset()` / `decodeFM2023RawGroup()` /
   `readFM2023LiveryPayload()` / `decodeFM2023LiverySections()`
 - `buildFlatPayload()` / `buildNestedPayload()`

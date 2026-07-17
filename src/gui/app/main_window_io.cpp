@@ -2,6 +2,7 @@
 
 #include "main_window_internal.h"
 
+#include "car_preview_widget.h"
 #include "car_registry.h"
 #include "fh6_core.h"
 #include "fm_codec.h"
@@ -301,7 +302,23 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
         fh6::Project exportProject = state_->project_;
         if (exportProject.isLivery) {
             const QString targetFolder = projectExportFolder(folder, exportProject.name, true);
+            QImage thumb;
+            if (carPreview_ != nullptr && carPreview_->hasModel()) {
+                if (!QImageWriter::supportedImageFormats().contains("webp")) {
+                    throw std::runtime_error(
+                        "Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
+                }
+                thumb = carPreview_->renderThumbnail(QSize(670, 376));
+                if (thumb.isNull()) {
+                    throw std::runtime_error("could not render bigThumb.webp from the car preview");
+                }
+            }
             fh6::exportCLivery(exportProject, targetFolder);
+            if (!thumb.isNull()) {
+                if (!thumb.save(QDir(targetFolder).filePath(QStringLiteral("bigThumb.webp")), "WEBP")) {
+                    throw std::runtime_error("could not write bigThumb.webp");
+                }
+            }
             statusBar()->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
             return true;
         }
@@ -581,11 +598,24 @@ void MainWindow::saveProjectJsonDialog()
         return;
     }
 
+    saveProjectJsonAsDialog();
+}
+
+void MainWindow::saveProjectJsonAsDialog()
+{
+    if (!state_->hasProject_) {
+        QMessageBox::information(this, QStringLiteral("Save Project As"),
+                                 QStringLiteral("Create or open a project before saving."));
+        return;
+    }
+
     const QString suggested = state_->project_.name.isEmpty() ? QStringLiteral("project") : state_->project_.name;
-    const QString suggestedPath = QDir(importDialogStartDirectory(this, QStringLiteral("projectJson")))
-                                      .filePath(suggested + QStringLiteral(".3so"));
+    const QString suggestedPath = projectJsonPath_.isEmpty()
+        ? QDir(importDialogStartDirectory(this, QStringLiteral("projectJson")))
+              .filePath(suggested + QStringLiteral(".3so"))
+        : projectJsonPath_;
     const QString path = QFileDialog::getSaveFileName(this,
-                                                      QStringLiteral("Save Project"),
+                                                      QStringLiteral("Save Project As"),
                                                       suggestedPath,
                                                       QStringLiteral("Forza Project (*.3so);;All files (*)"));
     if (path.isEmpty()) {

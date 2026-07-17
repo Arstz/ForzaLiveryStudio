@@ -102,6 +102,7 @@ private:
     void setCreatorNameDialog();
     void newProjectDialog();
     void saveProjectJsonDialog();
+    void saveProjectJsonAsDialog();
     void autosaveProject();
     void loadProjectJsonDialog();
     void openRecentProjectJson(const QString &path);
@@ -183,7 +184,7 @@ private:
     void setupToolbar();
     void setupWindowMenu();
     void importCarModel();
-    void maybeAutoLoadCarForProject();
+    void maybeAutoLoadCarForProject(bool replaceLoadedModel = false);
     QString findCarModelPath(const QString &folder, const QString &modelName) const;
 
     EditorState *state_ = nullptr;
