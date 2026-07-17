@@ -6,15 +6,17 @@
 #include "car_registry.h"
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
+#include "header_codec.h"
+#include "livery_codec.h"
 #include "livery_section_bar.h"
 #include "perf_utils.h"
 #include "property_panel.h"
-#include "livery_codec.h"
 
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
 
+#include <exception>
 #include <functional>
 
 namespace gui {
@@ -609,6 +611,9 @@ void MainWindow::setTargetCarDialog()
         return;
     }
     state_->project_.carId = carId;
+    if (state_->project_.headerMetadata) {
+        state_->project_.headerMetadata->carId = static_cast<quint32>(carId);
+    }
     state_->setModified(true);
     updateStatus();
     statusBar()->showMessage(
@@ -635,6 +640,14 @@ void MainWindow::setProjectNameDialog()
         return;
     }
     state_->project_.name = trimmed;
+    if (!state_->project_.headerMetadata) {
+        try {
+            state_->project_.headerMetadata = fh6::parseHeader(state_->project_.sourceHeader);
+        } catch (const std::exception &) {
+            state_->project_.headerMetadata = fh6::defaultDraftHeader(
+                trimmed, creatorName_, static_cast<quint32>(state_->project_.carId));
+        }
+    }
     if (state_->project_.headerMetadata) {
         state_->project_.headerMetadata->name = trimmed;
     }
@@ -667,6 +680,14 @@ void MainWindow::setCreatorNameDialog()
     }
     creatorName_ = trimmed;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
+    if (!state_->project_.headerMetadata) {
+        try {
+            state_->project_.headerMetadata = fh6::parseHeader(state_->project_.sourceHeader);
+        } catch (const std::exception &) {
+            state_->project_.headerMetadata = fh6::defaultDraftHeader(
+                state_->project_.name, trimmed, static_cast<quint32>(state_->project_.carId));
+        }
+    }
     if (state_->project_.headerMetadata) {
         state_->project_.headerMetadata->creatorName = trimmed;
     }

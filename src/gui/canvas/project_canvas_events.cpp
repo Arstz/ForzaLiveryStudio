@@ -321,6 +321,20 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        updateViewTransform();
+        QVector<double> &guidelines = draggedGuidelineOrientation_ == GuidelineOrientation::Vertical
+            ? project_->verticalGuidelines
+            : project_->horizontalGuidelines;
+        if (draggedGuidelineIndex_ >= 0 && draggedGuidelineIndex_ < guidelines.size()) {
+            guidelines[draggedGuidelineIndex_] =
+                guidelineCoordinateAt(event->position(), draggedGuidelineOrientation_);
+            update();
+        }
+        updateCursorForPoint(event->position());
+        event->accept();
+        return;
+    }
     if (dragMode_ == DragMode::Marquee) {
         updateCursorForPoint(event->position());
         const QRectF nextRect = QRectF(dragStartScreen_, event->position()).normalized();

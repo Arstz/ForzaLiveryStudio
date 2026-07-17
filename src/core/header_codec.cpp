@@ -14,7 +14,6 @@ constexpr int CreatorTagSize = 8;   // tag1[4] + tag2[2] + sep[2]
 constexpr int FieldBlockSize = 16;  // fieldA..pad
 constexpr int GuidSize = 16;
 constexpr int PaddingBeforeSec3 = 28;
-constexpr int Sec3HeaderSize = 13;  // 01 02 + 7 zero bytes + u32 typeValue
 
 QString readUtf16(const QByteArray &bytes, int offset, quint32 charCount)
 {
@@ -31,15 +30,6 @@ void appendUtf16(QByteArray &out, const QString &text)
 {
     out.append(reinterpret_cast<const char *>(text.utf16()),
                text.size() * static_cast<int>(sizeof(char16_t)));
-}
-
-QByteArray defaultTrailing(quint32 typeValue)
-{
-    QByteArray trailing;
-    detail::appendLeU32(trailing, 0);
-    detail::appendLeU32(trailing, typeValue);
-    trailing.append(QByteArray(16, '\0'));
-    return trailing;
 }
 
 } // namespace
@@ -65,12 +55,10 @@ HeaderMetadata parseHeader(const QByteArray &bytes)
         meta.published = true;
         meta.description = readUtf16(bytes, offset, descLenOrNull);
         offset += static_cast<int>(descLenOrNull) * 2;
-        meta.publishedTail = bytes.mid(offset);
-        meta.parsedOk = true;
-        return meta;
+    } else {
+        meta.published = false;
     }
 
-    meta.published = false;
     meta.year = detail::readLeU16(bytes, offset);
     meta.month = static_cast<quint8>(bytes.at(offset + 2));
     meta.day = static_cast<quint8>(bytes.at(offset + 3));
@@ -93,12 +81,18 @@ HeaderMetadata parseHeader(const QByteArray &bytes)
     meta.creatorName = readUtf16(bytes, offset, creatorLen);
     offset += static_cast<int>(creatorLen) * 2;
 
-    const int sec3Offset = offset + PaddingBeforeSec3;
-    if (!detail::bytesAt(bytes, sec3Offset, {0x01, 0x02})) {
+    meta.sectionPrefix = bytes.mid(offset, PaddingBeforeSec3);
+    if (meta.sectionPrefix.size() != PaddingBeforeSec3) {
+        throw std::runtime_error("header truncated before sec3 marker");
+    }
+    offset += PaddingBeforeSec3;
+    if (!detail::bytesAt(bytes, offset, {0x01, 0x02})) {
         throw std::runtime_error("header sec3 marker not found at expected offset");
     }
-    offset = sec3Offset + 9; // skip 01 02 + 7 zero bytes
+    offset += 9;
     meta.typeValue = detail::readLeU32(bytes, offset);
+    offset += 4;
+    meta.carId = detail::readLeU32(bytes, offset);
     offset += 4;
 
     meta.guid = bytes.mid(offset, GuidSize);
@@ -122,11 +116,14 @@ QByteArray buildHeader(const HeaderMetadata &meta)
     if (meta.published) {
         detail::appendLeU32(out, static_cast<quint32>(meta.description.size()));
         appendUtf16(out, meta.description);
-        out.append(meta.publishedTail);
-        return out;
+        if (meta.sectionPrefix.isEmpty() && !meta.publishedTail.isEmpty()) {
+            out.append(meta.publishedTail);
+            return out;
+        }
+    } else {
+        detail::appendLeU32(out, 0);
     }
 
-    detail::appendLeU32(out, 0); // descLenOrNull (draft)
     detail::appendLeU16(out, meta.year);
     out.append(static_cast<char>(meta.month));
     out.append(static_cast<char>(meta.day));
@@ -148,12 +145,14 @@ QByteArray buildHeader(const HeaderMetadata &meta)
     detail::appendLeU32(out, static_cast<quint32>(meta.creatorName.size()));
     appendUtf16(out, meta.creatorName);
 
-    out.append(QByteArray(PaddingBeforeSec3, '\0'));
+    QByteArray sectionPrefix = meta.sectionPrefix.left(PaddingBeforeSec3);
+    sectionPrefix.append(QByteArray(PaddingBeforeSec3 - sectionPrefix.size(), '\0'));
+    out.append(sectionPrefix);
     out.append('\x01');
     out.append('\x02');
     out.append(QByteArray(7, '\0'));
     detail::appendLeU32(out, meta.typeValue);
-    Q_UNUSED(Sec3HeaderSize);
+    detail::appendLeU32(out, meta.carId);
 
     QByteArray guid = meta.guid;
     if (guid.isEmpty()) {
@@ -162,11 +161,11 @@ QByteArray buildHeader(const HeaderMetadata &meta)
     guid.resize(GuidSize);
     out.append(guid);
 
-    out.append(meta.trailing.isEmpty() ? defaultTrailing(meta.typeValue) : meta.trailing);
+    out.append(meta.trailing);
     return out;
 }
 
-HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName)
+HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId)
 {
     HeaderMetadata meta;
     meta.formatVersion = 7;
@@ -180,7 +179,9 @@ HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorNam
     meta.fieldBlock[12] = 2;
     meta.creatorTag = QByteArray(CreatorTagSize, '\0');
     meta.creatorName = creatorName;
+    meta.sectionPrefix = QByteArray(PaddingBeforeSec3, '\0');
     meta.typeValue = 0;
+    meta.carId = carId;
     meta.guid = QUuid::createUuid().toRfc4122();
     meta.trailing.clear();
     meta.parsedOk = true;

@@ -237,7 +237,9 @@ QJsonObject headerMetadataToJson(const HeaderMetadata &meta)
     object.insert(QStringLiteral("field_block"), toBase64(meta.fieldBlock));
     object.insert(QStringLiteral("creator_tag"), toBase64(meta.creatorTag));
     object.insert(QStringLiteral("creator_name"), meta.creatorName);
+    object.insert(QStringLiteral("section_prefix"), toBase64(meta.sectionPrefix));
     object.insert(QStringLiteral("type_value"), static_cast<qint64>(meta.typeValue));
+    object.insert(QStringLiteral("car_id"), static_cast<qint64>(meta.carId));
     object.insert(QStringLiteral("guid"), toBase64(meta.guid));
     object.insert(QStringLiteral("trailing"), toBase64(meta.trailing));
     object.insert(QStringLiteral("published_tail"), toBase64(meta.publishedTail));
@@ -257,7 +259,9 @@ HeaderMetadata headerMetadataFromJson(const QJsonObject &object)
     meta.fieldBlock = QByteArray::fromBase64(object.value(QStringLiteral("field_block")).toString().toLatin1());
     meta.creatorTag = QByteArray::fromBase64(object.value(QStringLiteral("creator_tag")).toString().toLatin1());
     meta.creatorName = object.value(QStringLiteral("creator_name")).toString();
+    meta.sectionPrefix = QByteArray::fromBase64(object.value(QStringLiteral("section_prefix")).toString().toLatin1());
     meta.typeValue = static_cast<quint32>(object.value(QStringLiteral("type_value")).toInt(0));
+    meta.carId = static_cast<quint32>(object.value(QStringLiteral("car_id")).toInt(0));
     meta.guid = QByteArray::fromBase64(object.value(QStringLiteral("guid")).toString().toLatin1());
     meta.trailing = QByteArray::fromBase64(object.value(QStringLiteral("trailing")).toString().toLatin1());
     meta.publishedTail = QByteArray::fromBase64(object.value(QStringLiteral("published_tail")).toString().toLatin1());
@@ -915,6 +919,15 @@ Project importCLivery(const QString &folderOrFile)
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
     project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            project.headerMetadata = parseHeader(project.sourceHeader);
+            if (!project.headerMetadata->name.trimmed().isEmpty()) {
+                project.name = project.headerMetadata->name;
+            }
+        } catch (const std::exception &) {
+        }
+    }
     scene::ensureProjectSceneRoot(project);
 
     int shapeIndex = 0;
@@ -1296,6 +1309,44 @@ void writeRawFile(const QString &path, const QByteArray &bytes)
     }
 }
 
+QByteArray buildLiveryHeader(const Project &project)
+{
+    std::optional<HeaderMetadata> sourceMetadata;
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            sourceMetadata = parseHeader(project.sourceHeader);
+        } catch (const std::exception &) {
+        }
+    }
+
+    if (sourceMetadata) {
+        HeaderMetadata metadata = *sourceMetadata;
+        if (project.headerMetadata) {
+            metadata.creatorName = project.headerMetadata->creatorName;
+            metadata.year = project.headerMetadata->year;
+        }
+        metadata.name = project.name;
+        metadata.carId = static_cast<quint32>(project.carId);
+        return buildHeader(metadata);
+    }
+
+    if (!project.sourceHeader.isEmpty()) {
+        QByteArray header = renameHeader(project.sourceHeader, project.name);
+        if (header.size() >= 20) {
+            writeLeU32InPlace(header, header.size() - 20, static_cast<quint32>(project.carId));
+        }
+        return header;
+    }
+
+    if (project.headerMetadata) {
+        HeaderMetadata metadata = *project.headerMetadata;
+        metadata.name = project.name;
+        metadata.carId = static_cast<quint32>(project.carId);
+        return buildHeader(metadata);
+    }
+    return {};
+}
+
 } // namespace
 
 QByteArray encodeCLiveryPayload(const Project &project)
@@ -1371,11 +1422,8 @@ void exportCLivery(const Project &project, const QString &outputFolder)
 
     writeCGroupFile(outputDir.filePath(QStringLiteral("C_livery")), payload);
 
-    QByteArray header = project.sourceHeader;
+    const QByteArray header = buildLiveryHeader(project);
     if (!header.isEmpty()) {
-        if (header.size() >= 20) {
-            writeLeU32InPlace(header, header.size() - 20, static_cast<quint32>(project.carId));
-        }
         writeRawFile(outputDir.filePath(QStringLiteral("header")), header);
     }
 

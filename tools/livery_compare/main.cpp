@@ -1,5 +1,6 @@
 #include "fh6_core.h"
 #include "fm_codec.h"
+#include "header_codec.h"
 #include "vinyl_decoder.h"
 #include "livery_codec.h"
 #include "cgroup_codec.h"
@@ -1157,6 +1158,18 @@ int main(int argc, char *argv[])
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
     const bool generateSyntheticMode = args.removeAll(QStringLiteral("--generate-synthetic")) > 0;
     const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
+    const auto takeOption = [&args](const QString &name) {
+        const int index = args.indexOf(name);
+        if (index < 0 || index + 1 >= args.size()) {
+            return QString();
+        }
+        const QString value = args.takeAt(index + 1);
+        args.removeAt(index);
+        return value;
+    };
+    const QString targetCarOption = takeOption(QStringLiteral("--target-car"));
+    const QString projectNameOption = takeOption(QStringLiteral("--project-name"));
+    const QString creatorOption = takeOption(QStringLiteral("--creator"));
 
     if (generateSyntheticMode) {
         if (args.size() < 3) {
@@ -1294,6 +1307,25 @@ int main(int argc, char *argv[])
         } catch (const std::exception &e) {
             std::fprintf(stderr, "import failed: %s\n", e.what());
             return 1;
+        }
+        if (!targetCarOption.isEmpty()) {
+            bool ok = false;
+            const int carId = targetCarOption.toInt(&ok);
+            if (!ok || carId <= 0) {
+                std::fprintf(stderr, "invalid target car\n");
+                return 2;
+            }
+            project.carId = carId;
+        }
+        if (!projectNameOption.isEmpty()) {
+            project.name = projectNameOption;
+        }
+        if (!creatorOption.isEmpty()) {
+            if (!project.headerMetadata) {
+                project.headerMetadata = defaultDraftHeader(
+                    project.name, creatorOption, static_cast<quint32>(project.carId));
+            }
+            project.headerMetadata->creatorName = creatorOption;
         }
         if (nudgeFirstShape && (!project.root || !nudgeFirstBuiltInShape(*project.root))) {
             std::fprintf(stderr, "no built-in shape found to nudge\n");

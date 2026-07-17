@@ -17,7 +17,9 @@ struct HeaderMetadata {
     QByteArray fieldBlock;
     QByteArray creatorTag;
     QString creatorName;
+    QByteArray sectionPrefix;
     quint32 typeValue = 0;
+    quint32 carId = 0;
     QByteArray guid;
     QByteArray trailing;
     QByteArray publishedTail;
@@ -27,6 +29,6 @@ struct HeaderMetadata {
 HeaderMetadata parseHeader(const QByteArray &bytes);
 QByteArray buildHeader(const HeaderMetadata &meta);
 
-HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName);
+HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId = 0);
 
 } // namespace fh6

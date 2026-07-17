@@ -51,7 +51,8 @@ fh6::Project createNewProject(bool livery, const QString &creatorName, int carId
     project.name = QStringLiteral("Untitled");
     project.isLivery = livery;
     project.carId = livery ? carId : 0;
-    project.headerMetadata = fh6::defaultDraftHeader(project.name, creatorName);
+    project.headerMetadata = fh6::defaultDraftHeader(project.name, creatorName,
+                                                      static_cast<quint32>(project.carId));
     if (livery && project.root) {
         for (int slot = 0; slot < static_cast<int>(std::size(kEmptyLiverySectionNames)); ++slot) {
             auto section = std::make_unique<fh6::scene::Group>();
@@ -734,10 +735,12 @@ void MainWindow::refreshHeaderMetadataWidget()
         try {
             meta = fh6::parseHeader(state_->project_.sourceHeader);
         } catch (const std::exception &) {
-            meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_);
+            meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_,
+                                           static_cast<quint32>(state_->project_.carId));
         }
     } else {
-        meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_);
+        meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_,
+                                       static_cast<quint32>(state_->project_.carId));
     }
     if (meta.name.isEmpty()) {
         meta.name = state_->project_.name;
@@ -767,7 +770,8 @@ void MainWindow::applyHeaderMetadata()
         return;
     }
 
-    const fh6::HeaderMetadata meta = headerMetadata_->metadata();
+    fh6::HeaderMetadata meta = headerMetadata_->metadata();
+    meta.carId = static_cast<quint32>(state_->project_.carId);
     const bool importedDraft = !state_->project_.sourceHeader.isEmpty();
     const bool rebuild = headerMetadata_->rebuildRequested();
 
@@ -781,6 +785,7 @@ void MainWindow::applyHeaderMetadata()
         state_->project_.sourceHeader.clear();
         state_->project_.headerMetadata = meta;
     }
+    state_->setModified(true);
     updateStatus();
     refreshHeaderMetadataWidget();
     statusBar()->showMessage(QStringLiteral("Header metadata updated"), 5000);
