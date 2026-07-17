@@ -156,8 +156,8 @@ build and developer notes see
   currently loaded model.
 - **Export** (**File → Export…**) — writes a grouped `C_group` folder while
   preserving structure, nesting, and masks. Source-backed livery projects write a
-  `C_livery` folder with ordinary section artwork flattened to world-space shapes;
-  sections containing masks retain their mask structure. When a car model is loaded,
+  `C_livery` folder preserving visible section groups, nesting, and masks. When a car
+  model is loaded,
   livery export renders `bigThumb.webp` from the textured 3D preview.
 - **Project files** — projects save to a `.3so` container: the editor project
   JSON wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still open.
@@ -191,7 +191,9 @@ build and developer notes see
 - **Layers** — the layer/group/guide tree with thumbnails and visibility / mask
   / lock badges. Reorder siblings by internal drag/drop; group, ungroup, delete,
   copy/cut/paste, duplicate, and stamp from here or the Edit menu. Livery section
-  labels display leaf counts that update after structural edits.
+  labels display leaf counts that update after structural edits. Builds with
+  shape-limit enforcement enabled display an over-limit count in red and reject
+  the livery export.
 - **Properties** — edit name, shape ID, position, scale, rotation, skew,
   opacity, colour, visibility, mask, and lock for the current selection.
   The color picker samples original guide pixels under the cursor, ignoring

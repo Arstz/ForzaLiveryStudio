@@ -347,6 +347,650 @@ int rootEntryCount(const Project &p)
     return p.root ? static_cast<int>(p.root->children.size()) : 0;
 }
 
+scene::Group *syntheticSection(Project &project, int slot)
+{
+    if (!project.root) {
+        return nullptr;
+    }
+    for (const auto &child : project.root->children) {
+        if (child->kind() != scene::LayerKind::Group) {
+            continue;
+        }
+        auto *group = static_cast<scene::Group *>(child.get());
+        if (group->isLiverySection && group->liverySectionSlot == slot) {
+            return group;
+        }
+    }
+    return nullptr;
+}
+
+void clearSyntheticArtwork(Project &project)
+{
+    if (!project.root) {
+        return;
+    }
+    for (const auto &child : project.root->children) {
+        if (child->kind() != scene::LayerKind::Group) {
+            continue;
+        }
+        auto &group = static_cast<scene::Group &>(*child);
+        if (group.isLiverySection) {
+            group.children.clear();
+            group.sourceChildren.clear();
+        }
+    }
+}
+
+quint16 syntheticShapeId(int index)
+{
+    static constexpr quint16 ids[] = {
+        101, 102, 122, 127, 136, 138, 139, 606, 1536, 1909, 1912, 1926, 2026, 2103, 2104, 2118, 2133,
+    };
+    return ids[index % static_cast<int>(std::size(ids))];
+}
+
+std::array<quint8, 4> syntheticColor(int index)
+{
+    static constexpr std::array<quint8, 4> colors[] = {
+        {36, 88, 240, 255}, {220, 48, 34, 255}, {42, 210, 112, 255},
+        {238, 190, 28, 255}, {180, 55, 224, 220}, {245, 245, 245, 180},
+    };
+    return colors[index % static_cast<int>(std::size(colors))];
+}
+
+std::unique_ptr<scene::Shape> syntheticShape(int &idCounter, int index,
+                                              double x, double y, bool mask = false)
+{
+    auto shape = std::make_unique<scene::Shape>();
+    shape->id = QStringLiteral("synthetic-shape-%1").arg(++idCounter, 6, 10, QLatin1Char('0'));
+    shape->name = QStringLiteral("Synthetic %1").arg(idCounter);
+    shape->setVectorShape(syntheticShapeId(index));
+    shape->x = x;
+    shape->y = y;
+    shape->scaleX = (index % 5 == 0 ? -1.0 : 1.0) * (0.10 + 0.017 * (index % 11));
+    shape->scaleY = (index % 7 == 0 ? -1.0 : 1.0) * (0.08 + 0.013 * (index % 13));
+    shape->rotation = std::fmod(index * 37.0 + 11.0, 360.0);
+    shape->skew = (index % 4 - 1.5) * 0.08;
+    shape->mask = mask;
+    shape->color = mask ? std::array<quint8, 4>{0, 0, 0, 0} : syntheticColor(index);
+    return shape;
+}
+
+std::unique_ptr<scene::Group> syntheticGroup(int &idCounter, const QString &name,
+                                              int index, double x = 0.0, double y = 0.0)
+{
+    auto group = std::make_unique<scene::Group>();
+    group->id = QStringLiteral("synthetic-group-%1").arg(++idCounter, 6, 10, QLatin1Char('0'));
+    group->name = name;
+    group->x = x;
+    group->y = y;
+    group->scaleX = index % 4 == 0 ? -1.0 : 1.0;
+    group->scaleY = 0.85 + 0.05 * (index % 5);
+    group->rotation = std::fmod(index * 19.0, 360.0);
+    group->skew = (index % 3 - 1.0) * 0.04;
+    return group;
+}
+
+void appendFlatCluster(scene::Group &section, int &idCounter, int seed, int count,
+                       double x, double y)
+{
+    auto outer = syntheticGroup(idCounter, QStringLiteral("Flat cluster %1").arg(seed), seed, x, y);
+    for (int branch = 0; branch < 3; ++branch) {
+        auto inner = syntheticGroup(idCounter, QStringLiteral("Flat branch %1").arg(branch),
+                                    seed + branch + 1, branch * 17.0 - 17.0, branch * 9.0 - 9.0);
+        for (int i = branch; i < count; i += 3) {
+            inner->append(syntheticShape(idCounter, seed + i,
+                                         (i % 9) * 13.0 - 52.0,
+                                         (i / 9) * 15.0 - 30.0));
+        }
+        outer->append(std::move(inner));
+    }
+    section.append(std::move(outer));
+}
+
+std::unique_ptr<scene::Group> maskedPair(int &idCounter, int seed, double x, double y)
+{
+    auto group = syntheticGroup(idCounter, QStringLiteral("Masked pair %1").arg(seed), seed, x, y);
+    group->append(syntheticShape(idCounter, seed, -8.0, -5.0, true));
+    group->append(syntheticShape(idCounter, seed + 1, 9.0, 6.0, true));
+    return group;
+}
+
+std::unique_ptr<scene::Group> deepMaskedBranch(int &idCounter, int seed, int depth)
+{
+    auto group = syntheticGroup(idCounter, QStringLiteral("Mask depth %1").arg(depth),
+                                seed + depth, 6.0 * depth, -4.0 * depth);
+    group->append(syntheticShape(idCounter, seed + depth, -10.0, depth * 3.0, true));
+    if (depth > 1) {
+        group->append(deepMaskedBranch(idCounter, seed + 7, depth - 1));
+    } else {
+        group->append(syntheticShape(idCounter, seed + 1, 11.0, -3.0, true));
+    }
+    return group;
+}
+
+Project syntheticBase(const QString &sourceFolder)
+{
+    Project project = importCLivery(sourceFolder);
+    clearSyntheticArtwork(project);
+    return project;
+}
+
+void buildSparseFlatSlots(Project &project)
+{
+    int ids = 0;
+    const int sectionSlots[] = {0, 2, 5, 8, 10};
+    const int counts[] = {13, 9, 17, 5, 33};
+    for (int i = 0; i < 5; ++i) {
+        if (scene::Group *section = syntheticSection(project, sectionSlots[i])) {
+            appendFlatCluster(*section, ids, 30 + i * 40, counts[i], i * 23.0 - 45.0, i * -11.0);
+        }
+    }
+}
+
+void populateFrontMaskTransitions(scene::Group &front, int &ids)
+{
+    front.append(syntheticShape(ids, 10, -105.0, -48.0));
+    auto nineMasks = syntheticGroup(ids, QStringLiteral("Nine masks"), 11, -55.0, -12.0);
+    for (int i = 0; i < 9; ++i) {
+        nineMasks->append(syntheticShape(ids, 20 + i, (i % 3) * 15.0, (i / 3) * 13.0, true));
+    }
+    front.append(std::move(nineMasks));
+    front.append(syntheticShape(ids, 31, -8.0, 42.0));
+
+    auto mixed = syntheticGroup(ids, QStringLiteral("Mixed mask sandwich"), 32, 45.0, -8.0);
+    mixed->append(syntheticShape(ids, 33, -27.0, 15.0));
+    mixed->append(maskedPair(ids, 34, 2.0, -7.0));
+    mixed->append(syntheticShape(ids, 36, 31.0, -13.0));
+    front.append(std::move(mixed));
+    front.append(maskedPair(ids, 37, 92.0, 25.0));
+    front.append(syntheticShape(ids, 39, 126.0, -37.0));
+}
+
+void populateTopMaskTransitions(scene::Group &top, int &ids)
+{
+    top.append(syntheticShape(ids, 41, -70.0, -22.0));
+    top.append(maskedPair(ids, 42, 0.0, 0.0));
+    top.append(syntheticShape(ids, 44, 74.0, 27.0, true));
+}
+
+void buildAlternatingMaskTransitions(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    scene::Group *top = syntheticSection(project, 2);
+    if (!front || !top) {
+        throw std::runtime_error("scaffold is missing livery sections");
+    }
+    populateFrontMaskTransitions(*front, ids);
+    populateTopMaskTransitions(*top, ids);
+}
+
+void buildFrontMaskTransitions(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    if (!front) {
+        throw std::runtime_error("scaffold is missing the front section");
+    }
+    populateFrontMaskTransitions(*front, ids);
+}
+
+void buildTopMaskTransitions(Project &project)
+{
+    int ids = 0;
+    scene::Group *top = syntheticSection(project, 2);
+    if (!top) {
+        throw std::runtime_error("scaffold is missing the top section");
+    }
+    populateTopMaskTransitions(*top, ids);
+}
+
+void buildSingleMaskGroup(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    if (!front) {
+        throw std::runtime_error("scaffold is missing the front section");
+    }
+    front->append(syntheticShape(ids, 50, -95.0, -34.0));
+    auto masks = syntheticGroup(ids, QStringLiteral("Nine-mask boundary group"), 51, -8.0, 4.0);
+    for (int i = 0; i < 9; ++i) {
+        masks->append(syntheticShape(ids, 60 + i,
+                                     (i % 3) * 18.0 - 18.0,
+                                     (i / 3) * 16.0 - 16.0, true));
+    }
+    front->append(std::move(masks));
+    front->append(syntheticShape(ids, 70, 96.0, 37.0));
+}
+
+void buildNestedMixedMaskGroup(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    if (!front) {
+        throw std::runtime_error("scaffold is missing the front section");
+    }
+    front->append(syntheticShape(ids, 80, -104.0, -27.0));
+    auto mixed = syntheticGroup(ids, QStringLiteral("Nested mixed group"), 81, 5.0, -6.0);
+    mixed->append(syntheticShape(ids, 82, -38.0, 16.0));
+    mixed->append(maskedPair(ids, 83, 0.0, -3.0));
+    mixed->append(syntheticShape(ids, 85, 41.0, -14.0));
+    front->append(std::move(mixed));
+    front->append(syntheticShape(ids, 86, 109.0, 32.0));
+}
+
+void buildDirectTrailingMasks(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    if (!front) {
+        throw std::runtime_error("scaffold is missing the front section");
+    }
+    for (int i = 0; i < 13; ++i) {
+        front->append(syntheticShape(ids, 90 + i,
+                                     (i % 5) * 38.0 - 76.0,
+                                     (i / 5) * 34.0 - 36.0,
+                                     i % 3 == 1 || i == 12));
+    }
+}
+
+void buildGroupShapeAlternation(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    if (!front) {
+        throw std::runtime_error("scaffold is missing the front section");
+    }
+    front->append(maskedPair(ids, 110, -103.0, -18.0));
+    front->append(syntheticShape(ids, 112, -68.0, 31.0));
+    front->append(maskedPair(ids, 113, -24.0, -9.0));
+    front->append(syntheticShape(ids, 115, 12.0, 38.0));
+    auto mixed = syntheticGroup(ids, QStringLiteral("Alternating mixed group"), 116, 58.0, -11.0);
+    mixed->append(syntheticShape(ids, 117, -24.0, 15.0));
+    mixed->append(maskedPair(ids, 118, 3.0, -6.0));
+    mixed->append(syntheticShape(ids, 120, 29.0, 12.0));
+    front->append(std::move(mixed));
+    front->append(syntheticShape(ids, 121, 112.0, 34.0, true));
+}
+
+void buildTwoMaskSections(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    scene::Group *top = syntheticSection(project, 2);
+    if (!front || !top) {
+        throw std::runtime_error("scaffold is missing livery sections");
+    }
+    front->append(syntheticShape(ids, 130, -92.0, -29.0));
+    front->append(maskedPair(ids, 131, -5.0, 7.0));
+    front->append(syntheticShape(ids, 133, 91.0, 33.0));
+    top->append(syntheticShape(ids, 134, -73.0, -25.0));
+    top->append(maskedPair(ids, 135, 2.0, -4.0));
+    top->append(syntheticShape(ids, 137, 76.0, 29.0, true));
+}
+
+void buildBitmapBoundaries(Project &project)
+{
+    int ids = 0;
+    scene::Group *top = syntheticSection(project, 2);
+    if (!top) {
+        throw std::runtime_error("scaffold is missing the top section");
+    }
+    const int groupPositions[] = {0, 7, 8, 15, 16};
+    for (int i = 0; i < 17; ++i) {
+        const bool isGroup = std::find(std::begin(groupPositions), std::end(groupPositions), i)
+            != std::end(groupPositions);
+        if (!isGroup) {
+            top->append(syntheticShape(ids, 100 + i,
+                                       (i % 6) * 31.0 - 80.0,
+                                       (i / 6) * 29.0 - 45.0,
+                                       i == 9));
+            continue;
+        }
+        if (i == 8) {
+            auto large = syntheticGroup(ids, QStringLiteral("Sixty-five direct children"), 120, 0.0, 5.0);
+            const int nestedPositions[] = {7, 8, 15, 16, 31, 32, 63, 64};
+            for (int child = 0; child < 65; ++child) {
+                const bool nested = std::find(std::begin(nestedPositions), std::end(nestedPositions), child)
+                    != std::end(nestedPositions);
+                if (nested) {
+                    large->append(maskedPair(ids, 200 + child,
+                                             (child % 13) * 12.0 - 72.0,
+                                             (child / 13) * 14.0 - 28.0));
+                } else {
+                    large->append(syntheticShape(ids, 200 + child,
+                                                 (child % 13) * 12.0 - 72.0,
+                                                 (child / 13) * 14.0 - 28.0,
+                                                 child == 33));
+                }
+            }
+            top->append(std::move(large));
+        } else {
+            top->append(maskedPair(ids, 300 + i, i * 8.0 - 65.0, i * -3.0));
+        }
+    }
+}
+
+void buildSeventeenChildSection(Project &project)
+{
+    int ids = 0;
+    scene::Group *top = syntheticSection(project, 2);
+    if (!top) {
+        throw std::runtime_error("scaffold is missing the top section");
+    }
+    const int groupPositions[] = {0, 7, 8, 15, 16};
+    for (int i = 0; i < 17; ++i) {
+        const bool isGroup = std::find(std::begin(groupPositions), std::end(groupPositions), i)
+            != std::end(groupPositions);
+        if (isGroup) {
+            top->append(maskedPair(ids, 400 + i, i * 9.0 - 72.0, i * -3.0));
+        } else {
+            top->append(syntheticShape(ids, 420 + i,
+                                       (i % 6) * 31.0 - 80.0,
+                                       (i / 6) * 29.0 - 45.0,
+                                       i == 9));
+        }
+    }
+}
+
+void buildSeventeenDirectShapes(Project &project)
+{
+    int ids = 0;
+    scene::Group *top = syntheticSection(project, 2);
+    if (!top) {
+        throw std::runtime_error("scaffold is missing the top section");
+    }
+    for (int i = 0; i < 17; ++i) {
+        top->append(syntheticShape(ids, 460 + i,
+                                   (i % 6) * 34.0 - 85.0,
+                                   (i / 6) * 31.0 - 42.0,
+                                   i == 5 || i == 16));
+    }
+}
+
+void appendSixtyFiveChildGroup(Project &project, int mode)
+{
+    int ids = 0;
+    scene::Group *top = syntheticSection(project, 2);
+    if (!top) {
+        throw std::runtime_error("scaffold is missing the top section");
+    }
+    top->append(syntheticShape(ids, 500 + mode, -112.0, -47.0));
+    auto large = syntheticGroup(ids, QStringLiteral("Sixty-five child mode %1").arg(mode),
+                                510 + mode, 0.0, 3.0);
+    const int nestedPositions[] = {7, 8, 15, 16, 31, 32, 63, 64};
+    for (int child = 0; child < 65; ++child) {
+        const bool nested = std::find(std::begin(nestedPositions), std::end(nestedPositions), child)
+            != std::end(nestedPositions);
+        if (mode == 2 && nested) {
+            large->append(maskedPair(ids, 600 + child,
+                                     (child % 13) * 12.0 - 72.0,
+                                     (child / 13) * 14.0 - 28.0));
+        } else {
+            large->append(syntheticShape(ids, 600 + child,
+                                         (child % 13) * 12.0 - 72.0,
+                                         (child / 13) * 14.0 - 28.0,
+                                         mode == 1 || (mode == 0 && child == 64)));
+        }
+    }
+    top->append(std::move(large));
+    top->append(syntheticShape(ids, 700 + mode, 114.0, 49.0, mode == 2));
+}
+
+void buildSixtyFiveDirectShapes(Project &project)
+{
+    appendSixtyFiveChildGroup(project, 0);
+}
+
+void buildSixtyFiveMaskGroup(Project &project)
+{
+    appendSixtyFiveChildGroup(project, 1);
+}
+
+void buildSixtyFiveNestedBitmap(Project &project)
+{
+    appendSixtyFiveChildGroup(project, 2);
+}
+
+void buildDeepNestedMasks(Project &project)
+{
+    int ids = 0;
+    scene::Group *left = syntheticSection(project, 3);
+    scene::Group *right = syntheticSection(project, 4);
+    if (!left || !right) {
+        throw std::runtime_error("scaffold is missing side sections");
+    }
+    left->append(syntheticShape(ids, 400, -115.0, 38.0));
+    auto mixed = syntheticGroup(ids, QStringLiteral("Mixed outer branch"), 401, -25.0, -10.0);
+    mixed->append(syntheticShape(ids, 402, -22.0, 24.0));
+    mixed->append(maskedPair(ids, 403, 17.0, -8.0));
+    left->append(std::move(mixed));
+    left->append(deepMaskedBranch(ids, 420, 7));
+
+    right->append(syntheticShape(ids, 500, -76.0, -28.0));
+    right->append(maskedPair(ids, 501, 0.0, 3.0));
+    right->append(syntheticShape(ids, 503, 78.0, 31.0, true));
+}
+
+void populateMixedSection(scene::Group &section, int &ids, int slot)
+{
+    if (slot % 2 == 0 && slot != 10) {
+        appendFlatCluster(section, ids, 600 + slot * 20, 7 + slot,
+                          slot * 9.0 - 45.0, slot * -4.0);
+        return;
+    }
+    section.append(syntheticShape(ids, 700 + slot, -75.0, -31.0));
+    section.append(maskedPair(ids, 710 + slot, -20.0, 14.0));
+    auto mixed = syntheticGroup(ids, QStringLiteral("Section mixed %1").arg(slot),
+                                720 + slot, 38.0, -9.0);
+    mixed->append(syntheticShape(ids, 730 + slot, -16.0, 12.0));
+    mixed->append(maskedPair(ids, 740 + slot, 13.0, -5.0));
+    mixed->append(syntheticShape(ids, 750 + slot, 29.0, 17.0));
+    section.append(std::move(mixed));
+    if (slot == 10) {
+        section.append(deepMaskedBranch(ids, 780, 4));
+    } else {
+        section.append(syntheticShape(ids, 760 + slot, 88.0, 35.0, slot % 3 == 0));
+    }
+}
+
+void buildMixedSectionRange(Project &project, int first, int last)
+{
+    int ids = 0;
+    for (int slot = first; slot <= last; ++slot) {
+        scene::Group *section = syntheticSection(project, slot);
+        if (!section) {
+            throw std::runtime_error("scaffold is missing livery sections");
+        }
+        populateMixedSection(*section, ids, slot);
+    }
+}
+
+void buildAllSectionsMixed(Project &project)
+{
+    buildMixedSectionRange(project, 0, 10);
+}
+
+void buildMixedSectionsZeroToTwo(Project &project)
+{
+    buildMixedSectionRange(project, 0, 2);
+}
+
+void buildMixedSectionsZeroToFive(Project &project)
+{
+    buildMixedSectionRange(project, 0, 5);
+}
+
+void buildMixedSectionsZeroToNine(Project &project)
+{
+    buildMixedSectionRange(project, 0, 9);
+}
+
+void buildMixedSectionsThreeToFive(Project &project)
+{
+    buildMixedSectionRange(project, 3, 5);
+}
+
+void buildMixedSectionsSixToTen(Project &project)
+{
+    buildMixedSectionRange(project, 6, 10);
+}
+
+void moveSectionTerminalShapeIntoGroup(Project &project, int slot)
+{
+    scene::Group *section = syntheticSection(project, slot);
+    if (section == nullptr || section->children.size() < 2
+        || section->children.back()->kind() != scene::LayerKind::Shape
+        || section->children[section->children.size() - 2]->kind() != scene::LayerKind::Group) {
+        throw std::runtime_error("synthetic section does not have a group-shape terminal pair");
+    }
+    std::unique_ptr<scene::Layer> terminal = section->takeAt(
+        static_cast<int>(section->children.size()) - 1);
+    auto &group = static_cast<scene::Group &>(*section->children.back());
+    group.append(std::move(terminal));
+}
+
+void buildMixedSectionsFiveToSix(Project &project)
+{
+    buildMixedSectionRange(project, 5, 6);
+}
+
+void buildMixedSectionsFiveToSixGroupTerminal(Project &project)
+{
+    buildMixedSectionRange(project, 5, 6);
+    moveSectionTerminalShapeIntoGroup(project, 5);
+}
+
+void buildAllSectionsGroupTerminal(Project &project)
+{
+    buildAllSectionsMixed(project);
+    moveSectionTerminalShapeIntoGroup(project, 5);
+}
+
+void appendLargeFlatSection(scene::Group &section, int &ids, int seed, int count)
+{
+    auto group = syntheticGroup(ids, QStringLiteral("Large flat %1").arg(count), seed);
+    for (int i = 0; i < count; ++i) {
+        group->append(syntheticShape(ids, seed + i,
+                                     (i % 47) * 5.5 - 126.5,
+                                     (i / 47) * 4.25 - 92.0));
+    }
+    section.append(std::move(group));
+}
+
+void buildLargeStructuredCounts(Project &project)
+{
+    int ids = 0;
+    scene::Group *front = syntheticSection(project, 0);
+    scene::Group *back = syntheticSection(project, 1);
+    scene::Group *left = syntheticSection(project, 3);
+    scene::Group *rightWindow = syntheticSection(project, 10);
+    if (!front || !back || !left || !rightWindow) {
+        throw std::runtime_error("scaffold is missing livery sections");
+    }
+    appendLargeFlatSection(*front, ids, 900, 257);
+    appendLargeFlatSection(*back, ids, 1200, 513);
+
+    left->append(syntheticShape(ids, 1800, -135.0, -72.0));
+    auto structured = syntheticGroup(ids, QStringLiteral("One-thousand-twenty-five children"), 1801);
+    for (int i = 0; i < 1025; ++i) {
+        structured->append(syntheticShape(ids, 1900 + i,
+                                          (i % 53) * 4.8 - 125.0,
+                                          (i / 53) * 7.2 - 68.0,
+                                          i == 512));
+    }
+    left->append(std::move(structured));
+    left->append(syntheticShape(ids, 3000, 137.0, 75.0));
+
+    appendLargeFlatSection(*rightWindow, ids, 3200, 2049);
+}
+
+struct SyntheticCase {
+    const char *folder;
+    const char *purpose;
+    void (*build)(Project &);
+};
+
+void generateSyntheticLiveries(const QString &sourceFolder, const QString &outputRoot)
+{
+    const SyntheticCase cases[] = {
+        {"Synthetic_01_SparseFlatSlots", "Flat transformed groups in non-contiguous sections, including the final slot.", buildSparseFlatSlots},
+        {"Synthetic_02_AlternatingMaskTransitions", "Alternating shapes, mask groups, mixed groups, and terminal masks.", buildAlternatingMaskTransitions},
+        {"Synthetic_02A_FrontTransitionsOnly", "The complete Front section from test 2 without Top artwork.", buildFrontMaskTransitions},
+        {"Synthetic_02B_TopTransitionsOnly", "The complete Top section from test 2 without Front artwork.", buildTopMaskTransitions},
+        {"Synthetic_02C_SingleMaskGroup", "A nine-child mask group between ordinary direct shapes.", buildSingleMaskGroup},
+        {"Synthetic_02D_NestedMixedGroup", "A nested mask pair between ordinary children of a mixed group.", buildNestedMixedMaskGroup},
+        {"Synthetic_02E_DirectTrailingMasks", "Thirteen direct shapes with alternating trailing mask state and a terminal mask.", buildDirectTrailingMasks},
+        {"Synthetic_02F_GroupShapeAlternation", "Repeated mask-group and shape transitions with nested mixed artwork.", buildGroupShapeAlternation},
+        {"Synthetic_02G_TwoMaskSections", "Reduced structured mask groups in two non-adjacent sections.", buildTwoMaskSections},
+        {"Synthetic_03_BitmapBoundaries", "Structured child bitmaps crossing 8, 16, and 64 direct-child boundaries.", buildBitmapBoundaries},
+        {"Synthetic_03A_SeventeenChildSection", "A 17-child section with group bits on both bitmap boundaries.", buildSeventeenChildSection},
+        {"Synthetic_03B_SeventeenDirectShapes", "A 17-child section bitmap containing only direct shapes.", buildSeventeenDirectShapes},
+        {"Synthetic_03C_SixtyFiveDirectShapes", "A normal group with 65 direct shapes and terminal mask state.", buildSixtyFiveDirectShapes},
+        {"Synthetic_03D_SixtyFiveMaskGroup", "A mask group containing 65 direct shapes.", buildSixtyFiveMaskGroup},
+        {"Synthetic_03E_SixtyFiveNestedBitmap", "A 65-child mixed group with nested group bits at byte boundaries.", buildSixtyFiveNestedBitmap},
+        {"Synthetic_04_DeepNestedMasks", "Seven-deep terminal mask nesting followed by artwork in a later section.", buildDeepNestedMasks},
+        {"Synthetic_05_AllSectionsMixed", "Every section populated with alternating flat and structured artwork.", buildAllSectionsMixed},
+        {"Synthetic_05A_Sections0To2", "The first three sections from test 5.", buildMixedSectionsZeroToTwo},
+        {"Synthetic_05B_Sections0To5", "The first six sections from test 5.", buildMixedSectionsZeroToFive},
+        {"Synthetic_05C_Sections0To9", "The first ten sections from test 5.", buildMixedSectionsZeroToNine},
+        {"Synthetic_05D_Sections3To5", "The middle three sections from test 5.", buildMixedSectionsThreeToFive},
+        {"Synthetic_05E_Sections6To10", "The final five sections from test 5.", buildMixedSectionsSixToTen},
+        {"Synthetic_05F_Sections5To6", "The exact Spoiler-to-FrontWindow boundary from test 5.", buildMixedSectionsFiveToSix},
+        {"Synthetic_05G_Sections5To6_GroupTerminal", "The same boundary with the final Spoiler shape inside its preceding group.", buildMixedSectionsFiveToSixGroupTerminal},
+        {"Synthetic_05H_AllSections_GroupTerminal", "Test 5 with the final Spoiler shape inside its preceding group.", buildAllSectionsGroupTerminal},
+        {"Synthetic_06_LargeStructuredCounts", "Large flat counts plus a structured group with 1025 direct children.", buildLargeStructuredCounts},
+    };
+
+    if (!QDir().mkpath(outputRoot)) {
+        throw std::runtime_error("could not create synthetic output root");
+    }
+    QString manifest = QStringLiteral(
+        "Synthetic livery encoder cases\n"
+        "Scaffold: %1\n\n"
+        "Try in numeric order. Stop at the first folder the game does not recognize or decodes incorrectly.\n\n")
+        .arg(QDir::toNativeSeparators(QFileInfo(sourceFolder).absoluteFilePath()));
+
+    for (const SyntheticCase &testCase : cases) {
+        Project project = syntheticBase(sourceFolder);
+        project.name = QString::fromLatin1(testCase.folder);
+        testCase.build(project);
+        QStringList requestedCounts;
+        for (int slot = 0; slot < 11; ++slot) {
+            requestedCounts.push_back(QString::number(sectionLeaves(project, slot).size()));
+        }
+        const QString outputFolder = QDir(outputRoot).filePath(QString::fromLatin1(testCase.folder));
+        exportCLivery(project, outputFolder);
+
+        const Project decoded = importCLivery(outputFolder);
+        QStringList decodedCounts;
+        for (int slot = 0; slot < 11; ++slot) {
+            decodedCounts.push_back(QString::number(sectionLeaves(decoded, slot).size()));
+        }
+        manifest += QStringLiteral("%1\n  %2\n  requested=[%3]\n  decoded=[%4] leaves=%5 masks=%6%7\n\n")
+            .arg(QString::fromLatin1(testCase.folder), QString::fromLatin1(testCase.purpose))
+            .arg(requestedCounts.join(QLatin1Char(',')))
+            .arg(decodedCounts.join(QLatin1Char(',')))
+            .arg(sceneShapeCount(decoded))
+            .arg(sceneMaskCount(decoded))
+            .arg(requestedCounts == decodedCounts
+                     ? QString()
+                     : QStringLiteral(" ROUNDTRIP_COUNT_MISMATCH"));
+        std::printf("WROTE %-42s leaves=%d masks=%d requested=%s decoded=%s%s\n",
+                    testCase.folder, sceneShapeCount(decoded), sceneMaskCount(decoded),
+                    requestedCounts.join(QLatin1Char(',')).toLatin1().constData(),
+                    decodedCounts.join(QLatin1Char(',')).toLatin1().constData(),
+                    requestedCounts == decodedCounts ? "" : " MISMATCH");
+    }
+
+    QFile manifestFile(QDir(outputRoot).filePath(QStringLiteral("TEST_ORDER.txt")));
+    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || manifestFile.write(manifest.toUtf8()) != manifest.toUtf8().size()) {
+        throw std::runtime_error("could not write synthetic test manifest");
+    }
+}
+
 void printShape(const char *tag, const ShapeView *s)
 {
     if (!s || s->shape == nullptr) {
@@ -428,6 +1072,69 @@ void collectTransformGroups(const VinylGroup &node, QVector<const VinylGroup *> 
     }
 }
 
+int rawTerminalGroupDepth(const VinylGroup &group)
+{
+    if (group.items.isEmpty() || group.items.back().isShape()) {
+        return 1;
+    }
+    return 1 + rawTerminalGroupDepth(*std::get<VinylGroupPtr>(group.items.back().value));
+}
+
+void printRawGroupShapeTransitions(const VinylGroup &group, const QByteArray &body, int slot)
+{
+    for (int i = 0; i < group.items.size(); ++i) {
+        const VinylItem &item = group.items[i];
+        if (!item.isShape()) {
+            printRawGroupShapeTransitions(*std::get<VinylGroupPtr>(item.value), body, slot);
+        }
+        if (i == 0 || !item.isShape() || group.items[i - 1].isShape()) {
+            continue;
+        }
+        const VinylGroup &previous = *std::get<VinylGroupPtr>(group.items[i - 1].value);
+        const VinylShape &shape = std::get<VinylShape>(item.value);
+        const int prefixStart = std::max(0, shape.absPos - 8);
+        std::printf("slot=%d parent=%d previous=%d depth=%d flags=%d shape=%d marker=%s before=%s\n",
+                    slot, group.absPos, previous.absPos, rawTerminalGroupDepth(previous),
+                    previous.flags, shape.absPos, shape.marker.toHex().constData(),
+                    body.mid(prefixStart, shape.absPos - prefixStart).toHex(' ').constData());
+    }
+}
+
+const VinylShape *terminalRawShape(const VinylGroup &group, int &groupDepth)
+{
+    if (group.items.isEmpty()) {
+        return nullptr;
+    }
+    const VinylItem *item = &group.items.back();
+    while (!item->isShape()) {
+        const VinylGroup &child = *std::get<VinylGroupPtr>(item->value);
+        ++groupDepth;
+        if (child.items.isEmpty()) {
+            return nullptr;
+        }
+        item = &child.items.back();
+    }
+    return &std::get<VinylShape>(item->value);
+}
+
+void printSectionTerminals(const QVector<LiverySection> &sections, const QByteArray &body)
+{
+    for (int i = 0; i < sections.size(); ++i) {
+        const LiverySection &section = sections[i];
+        int depth = 0;
+        const VinylShape *shape = terminalRawShape(section.subtree, depth);
+        if (shape == nullptr) {
+            continue;
+        }
+        const int recordEnd = shape->absPos + shape->marker.size() + 30;
+        const int next = i + 1 < sections.size() ? sections[i + 1].absPos : body.size();
+        std::printf("slot=%d depth=%d shape=%d marker=%s recordEnd=%d next=%d gap=%d bytes=%s\n",
+                    section.slot, depth, shape->absPos, shape->marker.toHex().constData(),
+                    recordEnd, next, next - recordEnd,
+                    body.mid(recordEnd, std::max(0, next - recordEnd)).toHex(' ').constData());
+    }
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -438,6 +1145,8 @@ int main(int argc, char *argv[])
     bool treeMode = args.removeAll(QStringLiteral("--tree")) > 0;
     bool rawMode = args.removeAll(QStringLiteral("--raw")) > 0;
     bool rawGroupsMode = args.removeAll(QStringLiteral("--raw-groups")) > 0;
+    bool transitionsMode = args.removeAll(QStringLiteral("--transitions")) > 0;
+    bool sectionTerminalsMode = args.removeAll(QStringLiteral("--section-terminals")) > 0;
     bool markersMode = args.removeAll(QStringLiteral("--markers")) > 0;
     bool rangesMode = args.removeAll(QStringLiteral("--ranges")) > 0;
     bool paintMode = args.removeAll(QStringLiteral("--paint")) > 0;
@@ -446,7 +1155,22 @@ int main(int argc, char *argv[])
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+    const bool generateSyntheticMode = args.removeAll(QStringLiteral("--generate-synthetic")) > 0;
     const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
+
+    if (generateSyntheticMode) {
+        if (args.size() < 3) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --generate-synthetic <sourceFolder> <outputRoot>\n");
+            return 2;
+        }
+        try {
+            generateSyntheticLiveries(args[1], args[2]);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "synthetic generation failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
 
     if (bodyRangeMode) {
         if (args.size() < 4) {
@@ -630,6 +1354,31 @@ int main(int argc, char *argv[])
                     QFileInfo(folder).fileName().toLatin1().constData(),
                     static_cast<int>(origChunk.size()), static_cast<int>(re.size()), diff);
         return 1;
+    }
+
+    if (transitionsMode) {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --transitions <liveryFolder>\n");
+            return 2;
+        }
+        const LiveryPayload payload = readLiveryPayload(args[1]);
+        const QVector<LiverySection> sections = buildLiverySections(payload.body, payload.sectionCounts);
+        for (const LiverySection &section : sections) {
+            printRawGroupShapeTransitions(section.subtree, payload.body, section.slot);
+        }
+        return 0;
+    }
+
+
+    if (sectionTerminalsMode) {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "usage: fh6_livery_compare --section-terminals <liveryFolder>\n");
+            return 2;
+        }
+        const LiveryPayload payload = readLiveryPayload(args[1]);
+        const QVector<LiverySection> sections = buildLiverySections(payload.body, payload.sectionCounts);
+        printSectionTerminals(sections, payload.body);
+        return 0;
     }
 
     if (args.size() < 3) {

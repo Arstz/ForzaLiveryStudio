@@ -91,7 +91,12 @@ carry the first-child transform directly after their bitmap.
 
 Record-level mask state is trailing. It resolves against the preceding direct
 shape or terminal group child, while inherited mask-group state remains
-authoritative.
+authoritative. Every shape inheriting a `60` group carries an explicit `01 02`
+lead, including the group's first shape.
+
+When a shape follows a group, its record begins with exactly one state byte
+(`00` or `01`) followed by `02`. Counted group boundaries close the preceding
+nesting, so this transition does not carry one unwind byte per group depth.
 
 ## Sections
 
@@ -114,14 +119,20 @@ RightWindow
 Section membership is positional and is represented in the editor by a top-level
 group carrying `isLiverySection` and `liverySectionSlot`.
 
-Export composes group transforms into direct world-space shape records for ordinary
-sections. A section containing masked shapes retains structured records so group
-mask ancestry and trailing shape-mask state remain expressible.
+Export retains visible section group hierarchy and composes scene transforms into
+encoded group origins and relative shape records. Mask ancestry and trailing
+shape-mask state remain expressible through the same structured representation.
 
-An empty slot uses a 23-byte scaffold. A populated slot contains its section root,
-grouped artwork, and an 18-byte remnant. Section counters describe logical decal
-occupancy rather than byte length. The decoder reserves the remaining section
-footprint while walking each slot so record parsing stays within its boundary.
+An empty slot uses a 23-byte scaffold. A populated slot followed by later artwork
+contains its section root, artwork, and an 18-byte remnant even when its terminal
+child is nested. A synthesized grouped remnant contains a state byte, terminal
+shape identifier, six reserved bytes, unit scale, section rotation, and a final
+control byte. The final populated slot can instead end with its one-byte terminal
+state.
+
+Section counters describe logical decal occupancy rather than byte length. The
+decoder reserves the remaining section footprint while walking each slot so record
+parsing stays within its boundary.
 
 ## Shape Records
 

@@ -9,6 +9,7 @@
 #include "livery_section_bar.h"
 #include "perf_utils.h"
 #include "property_panel.h"
+#include "livery_codec.h"
 
 #include <QInputDialog>
 #include <QLineEdit>
@@ -183,7 +184,10 @@ void MainWindow::rebuildSectionBar()
     }
     QVector<LiverySectionBar::SectionInfo> sections;
     for (fh6::scene::Group *group : liverySections(state_->project_)) {
-        sections.push_back({group->id, group->name, static_cast<int>(state_->leafLayerIdsForEntry(group->id).size())});
+        const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(group->id).size());
+        sections.push_back({group->id, group->name, shapeCount,
+                            fh6::kEnforceLiveryShapeLimits
+                                && shapeCount > fh6::liverySectionShapeLimit(group->liverySectionSlot)});
     }
     sectionBar_->setSections(sections);
 }

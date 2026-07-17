@@ -8,7 +8,18 @@
 #include <QString>
 #include <QVector>
 
+#ifndef ENFORCE_SHAPE_LIMITS
+#define ENFORCE_SHAPE_LIMITS 1
+#endif
+
 namespace fh6 {
+
+inline constexpr bool kEnforceLiveryShapeLimits = ENFORCE_SHAPE_LIMITS != 0;
+
+inline constexpr int liverySectionShapeLimit(int slot) noexcept
+{
+    return slot == 2 || slot == 3 || slot == 4 ? 3000 : 1000;
+}
 
 struct LiveryPayload {
     QByteArray raw;

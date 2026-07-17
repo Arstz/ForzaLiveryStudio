@@ -69,7 +69,7 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 ## Status
 
-The import/export for groups is fully supported, core functionality in place. Source-backed liveries can be imported, previewed in 3D on a car model, and exported through the flattened encoder. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
+The import/export for groups is fully supported, core functionality in place. Source-backed liveries can be imported, previewed in 3D on a car model. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import/export may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
 
 | Version     | Group          | Livery |
 |-------------|----------------|--------| 

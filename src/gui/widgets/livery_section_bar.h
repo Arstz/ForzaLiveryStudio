@@ -14,6 +14,7 @@ public:
         QString id;
         QString name;
         int decalCount = 0;
+        bool overShapeLimit = false;
     };
 
     explicit LiverySectionBar(QWidget *parent = nullptr);

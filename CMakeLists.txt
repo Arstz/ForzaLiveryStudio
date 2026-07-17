@@ -74,13 +74,15 @@ endif()
 
 target_include_directories(fls_core PUBLIC src/core)
 
-option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" OFF)
+option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
 option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
+option(ENFORCE_SHAPE_LIMITS "Enforce per-section livery shape limits during export" ON)
 
 target_compile_definitions(fls_core
     PUBLIC
         FH6_PRIVACY_POLICY=$<BOOL:${FH6_PRIVACY_POLICY}>
+        ENFORCE_SHAPE_LIMITS=$<BOOL:${ENFORCE_SHAPE_LIMITS}>
 )
 
 if(FH6_BUILD_HELPER_TOOLS AND FH6_BUILD_LIVERY_COMPARE)

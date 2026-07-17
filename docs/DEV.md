@@ -71,8 +71,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
   preview thumbnail, and draft/imported header handling. The same action exports
-  source-backed livery projects by flattening ordinary section artwork into
-  world-space shape records and preserving mask-bearing section structure. With a
+  source-backed livery projects while preserving visible section group structure,
+  nesting, and masks. With a
   car model loaded, livery export writes `bigThumb.webp` from the textured car render.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
@@ -124,10 +124,11 @@ emitted as `60` records with per-shape trailing mask flags, and nested groups ca
 their own child-type bitmaps. It is not byte-identical to the game's own encoding.
 
 Livery (`C_livery`) export is available through the core and GUI for source-backed
-projects. Ordinary sections are emitted as direct shapes after composing their world
-transforms. Sections containing masks retain structured records so mask ancestry and
-trailing mask state can be represented. A terminal masked shape uses the trailing
-`01` marker after the section walk.
+projects. Visible section groups are emitted as nested records with composed group and
+shape transforms. Mask ancestry and trailing shape-mask state remain represented. A
+terminal masked shape uses the trailing `01` marker after the section walk. Structured
+sections emit inherited mask leads, single-byte group-to-shape state transitions, and
+complete remnants between populated section slots.
 
 ## Build
 
@@ -146,6 +147,11 @@ locked game content. Private development builds can opt out at configure time:
 ```powershell
 cmake -S . -B build -DFH6_PRIVACY_POLICY=OFF
 ```
+
+Livery export shape-limit enforcement is controlled by `ENFORCE_SHAPE_LIMITS`
+and defaults to `ON`. Top, Left, and Right sections allow up to 3000 shapes;
+the remaining sections allow up to 1000. Configure with
+`-DENFORCE_SHAPE_LIMITS=OFF` when this validation is not required.
 
 ### Linux (Arch)
 
