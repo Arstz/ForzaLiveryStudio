@@ -1,7 +1,7 @@
 # Forza Livery Studio — User Manual
 
-A practical guide to the editor's tools, keyboard shortcuts, panels, and
-recommended working pipelines. For build/developer notes see
+A practical guide to the editor's tools, keyboard shortcuts, and panels. For
+build and developer notes see
 [DEV.md](DEV.md).
 
 > All keyboard shortcuts below are the defaults. Every shortcut is rebindable
@@ -152,9 +152,9 @@ recommended working pipelines. For build/developer notes see
   folder** set in Settings (prompted once if unset); **Discard current model on
   livery open** (Settings, on by default) controls whether that replaces the
   currently loaded model.
-- **Export** (**File → Export…**) — writes a grouped, game-compatible `C_group`
-  folder (structure, nesting, and masks preserved) to a destination folder.
-  **Livery export is not available yet** and shows an error popup.
+- **Export** (**File → Export…**) — writes a grouped `C_group` folder while
+  preserving structure, nesting, and masks. Livery projects show an unavailable
+  error before the destination picker opens.
 - **Project files** — projects save to a `.3so` container: the editor project
   JSON wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still open.
 - **Guide layers** — import a raster image as an editor-only reference layer
@@ -208,37 +208,3 @@ recommended working pipelines. For build/developer notes see
 - **3D Preview** — an orbit-camera view of an imported car with the current vinyl
   mapped onto its paint. Drag to orbit, middle-drag to pan, wheel to zoom. Material
   and lighting are a reference approximation rather than the in-game render.
-
-## Recommended Pipelines
-
-### Edit an existing game vinyl
-
-1. Use **File → Import…** and pick an importable asset folder.
-2. Edit with the canvas tools and the Layers / Properties docks.
-3. **File → Save Project…** (`Ctrl+S`) to keep an editable `.3so` copy.
-4. **File → Export…** to write a game-compatible `C_group` folder.
-
-### Build a new design from shapes
-
-1. **File → New Project** (`Ctrl+N`).
-2. Open the **Shapes** dock, search by name or ID, and insert shapes.
-3. Arrange with Select/Move, size with Transform, orient with Rotate.
-4. Select related shapes and **Group** (`Ctrl+G`); reuse a finished cluster by
-   selecting it and choosing **Add current selection** in the Shapes dock.
-5. Export when done.
-
-### Trace over a reference image
-
-1. Import the reference via **Import Guide Layer…** (or drag it in).
-2. Build your shapes on top; the guide layer never exports to the game.
-3. Hide or delete the guide layer before finishing (it is safely ignored by
-   export regardless).
-
-### Export notes
-
-- **Groups** export as a single grouped `C_group` folder that preserves group
-  structure, nesting, and masks. It is validated in-game for sibling groups,
-  multi-level nesting, and masks, but is not byte-identical to the game's own
-  encoding.
-- **Liveries** cannot be exported yet — the Export action shows an error popup for
-  livery projects. You can still import, edit, and preview liveries in 3D.

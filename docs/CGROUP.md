@@ -1,8 +1,7 @@
 # C_group Encoding Reference
 
-This is the current concise reference for the Forza vinyl `C_group` binary
-payload. It describes the active decoder model and separates confirmed
-structures from areas that are still treated conservatively.
+This is the current reference for the Forza vinyl `C_group` binary payload and
+the structures used by the editor codec.
 
 ## Container
 
@@ -17,9 +16,9 @@ structures from areas that are still treated conservatively.
 The decompressed payload begins with:
 
 ```text
-0x00 4 bytes  magic, usually "gyvl"
-0x04 u32      version, observed as 1
-0x08 u32      unknown
+0x00 4 bytes  magic "gyvl"
+0x04 u32      version = 1
+0x08 u32      reserved
 ```
 
 ## Header
@@ -28,12 +27,12 @@ The internal header contains a root/global transform followed by the root
 counted group record:
 
 ```text
-0x0C byte     root transform marker, usually 03
+0x0C byte     root transform marker
 0x0D f32      root px
 0x11 f32      root py
 0x15 f32      root scale
 0x19 f32      root rotation
-0x1D byte     root group marker, usually 20 or 60
+0x1D byte     root group marker, 20 or 60
 0x1E u16      root direct child count
 0x20 u8       root child block count = ceil(child_count / 8)
 0x21 3 bytes  fixed/control area
@@ -85,7 +84,7 @@ Known transform marker forms:
 df 03 03
 ```
 
-An apparent `odd_byte 03` sequence at the end of a group header is:
+An `odd_byte 03` sequence at the end of a group header is parsed as:
 
 ```text
 final bitmap byte
@@ -141,7 +140,7 @@ bitmap and following-child guards.
 
 ## Inline First-Child Transforms
 
-Some group records carry a transform after their control bytes. If the next
+Group records can carry a transform after their control bytes. If the next
 token is another group, the transform belongs to the first child rather than the
 current group.
 
@@ -203,17 +202,10 @@ u8  r
 u8  a
 ```
 
-Built-in vector IDs are validated against the exact runtime registry in
-`assets/vector/shape_names.json`, not by accepting an entire numeric interval.
-An in-range value absent from the registry is not a vector shape, and `256` is not
-a sentinel. In a livery stream, a complete unsupported record may be counted only
-as structural occupancy to preserve section alignment; it is not exposed as an
-editable shape.
-
-The one confirmed wire alias is Arial lowercase `a`: captures encode `0x07d0`,
-which the decoder canonicalizes to the registry/geometry ID `0x07d1`. This mapping
-is applied before exact registry validation and does not make `0x07d0` a separate
-runtime shape.
+Built-in vector IDs are canonicalized and validated against the runtime registry
+in `assets/vector/shape_names.json`. A complete unsupported livery record can
+still contribute structural occupancy to preserve section alignment, but it is
+not exposed as an editable shape.
 
 `01 02` is not a universal mask marker. It is context-sensitive and can occur
 on ordinary visible nested shapes.
@@ -224,7 +216,7 @@ through the immediately preceding terminal-child chain after a group closes.
 
 ## Masks
 
-Confirmed mask rules:
+Mask rules:
 
 ```text
 60 group marker => mask group
@@ -238,8 +230,8 @@ Chromatic color data means:
 B != G or G != R
 ```
 
-This override handles corrupted record-level mask flags from extracted grouped
-files without discarding explicit mask-group ancestry.
+This keeps explicit mask-group ancestry authoritative while rejecting ambiguous
+record-level mask state.
 
 ## Raster Shape Basis
 
@@ -268,9 +260,6 @@ group transforms
 shape local transform
 ```
 
-Some decoded root children can be marked root-transform-exempt when their local
-bytes are already root-space.
-
 Flat export writes one root containing only visible flat shape records. Ordinary
 flat shape records use `00 02`; a `01 02` record marks a mask (there is no `60`
 group wrapper available in a flat root).
@@ -295,7 +284,7 @@ The root is normally a counted group:
 20/60 + u16 child_count + u8 child_blocks + control[child_blocks + 2]
 ```
 
-Older assets can replace the group marker with `00`. For both forms,
+The Motorsport markerless root replaces the group marker with `00`. For both forms,
 `child_blocks = ceil(child_count / 8)` and the layer stream starts at
 `0x24 + child_blocks`. Structurally valid records determine the boundary when
 additional transform or control data appears before the first child.

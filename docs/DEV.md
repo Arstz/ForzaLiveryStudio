@@ -1,8 +1,8 @@
 # Forza GUI Editor
 
-Standalone Qt6/C++ editor for Forza vinyl `C_group` projects. It imports game
-files, edits vector layers and guide layers, saves editor project JSON, and
-exports flat game-compatible folders.
+Standalone Qt6/C++ editor for Forza vinyl projects. It imports supported game
+assets, edits vector and guide layers, saves editor project containers, and
+exports grouped `C_group` folders.
 
 ## Functionality
 
@@ -113,12 +113,11 @@ exports flat game-compatible folders.
 - Switch Transform Relative mode from the Options menu when transform handles
   should follow the selected shape or group rotation.
 
-Grouped (nested) export is the single canonical game export path (the legacy flat
-export was removed). It preserves group semantics: each group is written with a
+Grouped export is the canonical GUI export path. It preserves group semantics:
+each group is written with a
 translation-only origin transform and shapes packed relative to it, mask groups are
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
-their own child-type bitmaps. It is validated in-game for sibling groups, multi-level
-nesting, and masks, but is not byte-identical to the game's own encoding. Livery
+their own child-type bitmaps. It is not byte-identical to the game's own encoding. Livery
 (`C_livery`) encoding remains available in the core for development, but the UI
 rejects livery export until artwork synthesis is complete.
 
@@ -182,7 +181,7 @@ Build output is written to `build/ForzaLiveryStudio`.
 ### Runtime Assets
 
 Runtime assets live in `assets/` (repo root). The build copies that folder next
-to the editor executable, including `assets/vector/shape_geometry.json` and
+to the editor executable, including `assets/vector/shape_geometry.json.gz` and
 `assets/vector/shape_names.json`.
 
 ## Run
@@ -208,7 +207,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 ## Repository Layout
 
 - `src/`  EC++ sources (`core/` library, `gui/` editor split into
-  `app/ state/ canvas/ widgets/`, and `main.cpp`).
+  `app/ state/ canvas/ widgets/`, and `main.cpp`). The core library target is
+  `fls_core`.
 - `assets/`  Eruntime XPM icons and `vector/` shape data, copied next to the
   executable at build time.
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
