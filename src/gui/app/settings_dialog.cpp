@@ -137,12 +137,19 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     liveryTextureScale_->setValue(std::clamp(behaviorSettings_.liveryTextureScale, 1, 8));
     generalLayout->addRow(QStringLiteral("3D livery texture scale"), liveryTextureScale_);
 
+    autosaveEnabledCheck_ = new QCheckBox(general);
+    autosaveEnabledCheck_->setChecked(behaviorSettings_.autosaveEnabled);
+    generalLayout->addRow(QStringLiteral("Auto Save"), autosaveEnabledCheck_);
+
     autosaveIntervalMinutes_ = new QSpinBox(general);
     autosaveIntervalMinutes_->setRange(0, 1440);
     autosaveIntervalMinutes_->setSingleStep(1);
     autosaveIntervalMinutes_->setSuffix(QStringLiteral(" min"));
     autosaveIntervalMinutes_->setSpecialValueText(QStringLiteral("Disabled"));
     autosaveIntervalMinutes_->setValue(std::clamp(behaviorSettings_.autosaveIntervalMinutes, 0, 1440));
+    autosaveIntervalMinutes_->setEnabled(autosaveEnabledCheck_->isChecked());
+    QObject::connect(autosaveEnabledCheck_, &QCheckBox::toggled,
+                     autosaveIntervalMinutes_, &QWidget::setEnabled);
     generalLayout->addRow(QStringLiteral("Autosave interval"), autosaveIntervalMinutes_);
 
     valueEditingWheelCheck_ = new QCheckBox(general);
@@ -262,6 +269,7 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
     if (liveryTextureScale_ != nullptr) {
         result.liveryTextureScale = liveryTextureScale_->value();
     }
+    result.autosaveEnabled = autosaveEnabledCheck_ != nullptr && autosaveEnabledCheck_->isChecked();
     if (autosaveIntervalMinutes_ != nullptr) {
         result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
     }

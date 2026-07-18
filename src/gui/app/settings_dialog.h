@@ -68,6 +68,7 @@ private:
     QDoubleSpinBox *nudgeStep_ = nullptr;
     QDoubleSpinBox *nudgeShiftStep_ = nullptr;
     QSpinBox *liveryTextureScale_ = nullptr;
+    QCheckBox *autosaveEnabledCheck_ = nullptr;
     QSpinBox *autosaveIntervalMinutes_ = nullptr;
     QLineEdit *carModelsFolder_ = nullptr;
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;

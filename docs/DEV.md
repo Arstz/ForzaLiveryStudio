@@ -15,6 +15,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON
   (`.json`) projects still load and are upgraded to v2 on save. Imported livery
   paint-material colors, selectors, and finishes are stored as project metadata.
+  Periodic autosave is enabled by default and can be suspended independently of
+  its configured interval from Settings.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, and Pen

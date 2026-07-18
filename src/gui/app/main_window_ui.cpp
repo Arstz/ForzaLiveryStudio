@@ -741,7 +741,7 @@ void MainWindow::configureAutosaveTimer(const BehaviorSettings &settings)
     if (autosaveTimer_ == nullptr) {
         return;
     }
-    if (settings.autosaveIntervalMinutes <= 0) {
+    if (!settings.autosaveEnabled || settings.autosaveIntervalMinutes <= 0) {
         autosaveTimer_->stop();
         return;
     }

@@ -49,6 +49,7 @@ struct BehaviorSettings {
     double nudgeStep = 0.1;
     double nudgeShiftStep = 1.0;
     int liveryTextureScale = 4;
+    bool autosaveEnabled = true;
     int autosaveIntervalMinutes = 5;
     QString carModelsFolder;
     bool discardModelOnLiveryOpen = true;

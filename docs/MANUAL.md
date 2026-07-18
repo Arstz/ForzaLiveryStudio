@@ -161,6 +161,8 @@ build and developer notes see
   livery export renders `bigThumb.webp` from the textured 3D preview.
 - **Project files** — projects save to a `.3so` container: the editor project
   JSON wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still open.
+  **Auto Save** is enabled by default in Settings; turn it off to suspend periodic
+  saves without changing the configured autosave interval.
 - **Guide layers** — import a raster image as an editor-only reference layer
   (**File → Import Guide Layer…**, toolbar **Add Guide Layer**, or drag an image
   from Explorer). Guide layers are stored inside the project file and ignored by

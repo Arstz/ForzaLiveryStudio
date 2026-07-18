@@ -505,7 +505,9 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) {
+    const Qt::KeyboardModifiers shortcutModifiers =
+        event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    if (event->key() == Qt::Key_Tab && shortcutModifiers == Qt::NoModifier) {
         if (!event->isAutoRepeat()) {
             cycleFlipSelection();
         }

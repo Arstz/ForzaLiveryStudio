@@ -351,6 +351,9 @@ void MainWindow::insertShape(int shapeId)
     layer->y = center.y();
     updateLastSelectedShapeDefaults();
     const BehaviorSettings behavior = loadBehaviorSettings();
+    if (behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_) {
+        layer->color = lastSelectedShapeColor_;
+    }
     if (behavior.insertShapeWithLastSelectedScale && haveLastSelectedShapeDefaults_) {
         layer->scaleX = lastSelectedShapeScaleX_;
         layer->scaleY = lastSelectedShapeScaleY_;
