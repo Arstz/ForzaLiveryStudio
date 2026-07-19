@@ -145,7 +145,8 @@ private:
     QVector<fh6::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
-    void startPenFill(const QVector<PenPoint> &points);
+    void startPenFill(const QVector<PenPoint> &points,
+                      const std::optional<QColor> &fillColor = std::nullopt);
     void cancelGeneratedFill();
     void finishPenFill(quint64 generation, PenFillResult result);
     void insertGeneratedFill(const QString &groupName,

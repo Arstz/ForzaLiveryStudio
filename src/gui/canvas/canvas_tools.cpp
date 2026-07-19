@@ -4,6 +4,7 @@
 #include "project_canvas.h"
 
 #include <QMouseEvent>
+#include <QWheelEvent>
 
 #include <optional>
 #include <algorithm>
@@ -11,6 +12,18 @@
 namespace gui {
 
 bool CanvasTool::handlePress(QMouseEvent *event)
+{
+    Q_UNUSED(event);
+    return false;
+}
+
+bool CanvasTool::handleMove(QMouseEvent *event)
+{
+    Q_UNUSED(event);
+    return false;
+}
+
+bool CanvasTool::handleWheel(QWheelEvent *event)
 {
     Q_UNUSED(event);
     return false;
@@ -342,6 +355,59 @@ bool PenTool::handleDoubleClick(QMouseEvent *event)
 }
 
 Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const
+{
+    Q_UNUSED(point);
+    return Qt::CrossCursor;
+}
+
+QString BucketTool::name() const
+{
+    return QStringLiteral("bucket");
+}
+
+bool BucketTool::handlePress(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton) {
+        return false;
+    }
+    canvas_.commitBucketPreview(event->position());
+    event->accept();
+    return true;
+}
+
+bool BucketTool::handleMove(QMouseEvent *event)
+{
+    canvas_.updateBucketPreview(event->position());
+    canvas_.updateCursorForPoint(event->position());
+    event->accept();
+    return true;
+}
+
+bool BucketTool::handleWheel(QWheelEvent *event)
+{
+    const QPoint angle = event->angleDelta();
+    const QPoint pixels = event->pixelDelta();
+    const int raw = angle.y() != 0 ? angle.y()
+        : angle.x() != 0 ? angle.x()
+        : pixels.y() != 0 ? pixels.y()
+        : pixels.x();
+    if (raw == 0) {
+        event->accept();
+        return true;
+    }
+    int steps = raw / 120;
+    if (steps == 0) {
+        steps = raw > 0 ? 1 : -1;
+    }
+    if (event->modifiers() & Qt::ShiftModifier) {
+        steps *= 5;
+    }
+    canvas_.adjustBucketTolerance(steps, event->position());
+    event->accept();
+    return true;
+}
+
+Qt::CursorShape BucketTool::idleCursorShape(const QPointF &point) const
 {
     Q_UNUSED(point);
     return Qt::CrossCursor;

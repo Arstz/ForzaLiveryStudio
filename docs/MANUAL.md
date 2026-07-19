@@ -102,6 +102,12 @@ build and developer notes see
   stacking, applies the picked color to the current selection, and adds it to the
   project swatches. Guide colors are sampled from original guide pixels, ignoring
   guide opacity.
+- **Bucket (`B`)** — select one visible guide layer, then hover its image to
+  preview the contiguous color region under the cursor. Use the mouse wheel to
+  change the `0–255` RGBA tolerance (`Shift` changes it in steps of five). Click
+  to trace the preview with Potrace and load the resulting optimized closed
+  contour into Pen. Click the first Pen point to run the normal Pen fill; every
+  generated shape uses the average RGBA color of the selected bucket region.
 - **Pen (`P`)** — place a closed vector contour which is converted into ordinary
   Forza Primitive layers. The first point is a hard corner. Single-click places a
   soft quadratic control and double-click places a hard point; click the first

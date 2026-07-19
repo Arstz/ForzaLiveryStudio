@@ -5,6 +5,7 @@
 #include <QString>
 
 class QMouseEvent;
+class QWheelEvent;
 
 namespace gui {
 
@@ -23,6 +24,10 @@ public:
     virtual bool picksUnderCursor() const { return false; }
 
     virtual bool handlePress(QMouseEvent *event);
+
+    virtual bool handleMove(QMouseEvent *event);
+
+    virtual bool handleWheel(QWheelEvent *event);
 
     virtual void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld);
 
@@ -98,6 +103,16 @@ public:
     QString name() const override;
     bool handlePress(QMouseEvent *event) override;
     bool handleDoubleClick(QMouseEvent *event) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class BucketTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    bool handleMove(QMouseEvent *event) override;
+    bool handleWheel(QWheelEvent *event) override;
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 

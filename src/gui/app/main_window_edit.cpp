@@ -39,7 +39,8 @@ fh6::Matrix3 generatedShapeMatrix(const QTransform &transform)
 
 } // namespace
 
-void MainWindow::startPenFill(const QVector<PenPoint> &points)
+void MainWindow::startPenFill(const QVector<PenPoint> &points,
+                              const std::optional<QColor> &fillColor)
 {
     if (!ensureProjectForInsertion() || canvas_ == nullptr) {
         if (canvas_ != nullptr) {
@@ -50,9 +51,18 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points)
     cancelGeneratedFill();
     updateLastSelectedShapeDefaults();
     const BehaviorSettings behavior = loadBehaviorSettings();
-    generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
-        ? lastSelectedShapeColor_
-        : std::array<quint8, 4>{255, 255, 255, 255};
+    if (fillColor.has_value() && fillColor->isValid()) {
+        generatedFillColor_ = {
+            static_cast<quint8>(fillColor->blue()),
+            static_cast<quint8>(fillColor->green()),
+            static_cast<quint8>(fillColor->red()),
+            static_cast<quint8>(fillColor->alpha()),
+        };
+    } else {
+        generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
+            ? lastSelectedShapeColor_
+            : std::array<quint8, 4>{255, 255, 255, 255};
+    }
     generatedFillInsertionEntries_ = selectedEntryIds();
     generatedFillLabel_ = QStringLiteral("Pen fill");
 
@@ -970,6 +980,12 @@ void MainWindow::noteProjectStructureChanged()
 
 void MainWindow::setToolName(const QString &name)
 {
+    for (QAction *action : actions()) {
+        const QVariant toolName = action->property("canvasToolName");
+        if (toolName.isValid()) {
+            action->setChecked(toolName.toString() == name);
+        }
+    }
     statusBar()->showMessage(QStringLiteral("Tool: %1").arg(name), 1500);
 }
 

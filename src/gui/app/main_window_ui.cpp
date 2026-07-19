@@ -33,8 +33,9 @@ void MainWindow::setupCanvas()
     if (!canvas_->loadGeometry(&geometryError)) {
         statusBar()->showMessage(geometryError);
     }
-    canvas_->setPenFillRequestedCallback([this](const QVector<PenPoint> &points) {
-        startPenFill(points);
+    canvas_->setPenFillRequestedCallback(
+        [this](const QVector<PenPoint> &points, const std::optional<QColor> &fillColor) {
+        startPenFill(points, fillColor);
     });
     canvas_->setPenFillCancelCallback([this]() { cancelGeneratedFill(); });
     setCentralWidget(canvas_);
@@ -508,6 +509,7 @@ void MainWindow::setupToolbar()
     auto addTool = [this, toolBar](const QString &label, const QString &tool, const QKeySequence &shortcut, const QString &iconName) {
         QAction *action = toolBar->addAction(assetIcon(iconName), label);
         action->setCheckable(true);
+        action->setProperty("canvasToolName", tool);
         registerShortcutAction(action, QStringLiteral("tool_%1").arg(tool), label, shortcut, iconName, false, Qt::ApplicationShortcut);
         addAction(action);
         connect(action, &QAction::triggered, this, [this, tool]() { canvas_->setTool(tool); });
@@ -521,6 +523,7 @@ void MainWindow::setupToolbar()
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QKeySequence(Qt::Key_I), QStringLiteral("ToolPipette.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pen"), QStringLiteral("pen"), QKeySequence(Qt::Key_P), QStringLiteral("ToolbarPen.xpm")));
+    toolGroup->addAction(addTool(QStringLiteral("Bucket"), QStringLiteral("bucket"), QKeySequence(Qt::Key_B), QStringLiteral("ToolBucket.xpm")));
     selectTool->setChecked(true);
     toolBar->addSeparator();
     QAction *placeTextAction = toolBar->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Place Text"));

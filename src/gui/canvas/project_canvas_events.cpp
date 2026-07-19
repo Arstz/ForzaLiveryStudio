@@ -377,6 +377,9 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
         event->accept();
         return;
     }
+    if (activeTool_ != nullptr && activeTool_->handleMove(event)) {
+        return;
+    }
     updateCursorForPoint(event->position());
     refreshHover(event->position(), event->modifiers());
     QOpenGLWidget::mouseMoveEvent(event);
@@ -434,6 +437,9 @@ void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event)
 void ProjectCanvas::wheelEvent(QWheelEvent *event)
 {
     updateViewTransform();
+    if (activeTool_ != nullptr && activeTool_->handleWheel(event)) {
+        return;
+    }
     const QPointF anchorWorld = screenToWorld(event->position());
     const QPoint wheelDelta = event->angleDelta();
     const int notch = wheelDelta.y() != 0 ? wheelDelta.y() : wheelDelta.x();
@@ -471,6 +477,11 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     }
     if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("pen")) {
         cancelPenInteraction();
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("bucket")) {
+        clearBucketPreview();
         event->accept();
         return;
     }
@@ -565,6 +576,9 @@ void ProjectCanvas::leaveEvent(QEvent *event)
     hoverLayerId_.clear();
     hoverPolygon_ = {};
     clearCursorHint();
+    if (tool_ == QStringLiteral("bucket")) {
+        clearBucketPreview();
+    }
     unsetCursor();
     update();
     QOpenGLWidget::leaveEvent(event);

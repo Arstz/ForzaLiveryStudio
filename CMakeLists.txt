@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(ForzaLiveryStudio LANGUAGES CXX C)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -158,6 +160,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/canvas_tools.h
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
+    src/gui/canvas/bucket_fill.cpp
+    src/gui/canvas/bucket_fill.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
@@ -171,6 +175,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/region_fill.cpp
     src/gui/canvas/region_fill.h
     src/gui/canvas/project_canvas.cpp
+    src/gui/canvas/project_canvas_bucket.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
     src/gui/canvas/project_canvas_hit.cpp
@@ -228,6 +233,29 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::OpenGLWidgets
 )
 
+if(BUILD_TESTING)
+    add_executable(fls_region_pen_conversion_tests
+        tools/region_pen_conversion_test.cpp
+        src/gui/canvas/bucket_fill.cpp
+        src/gui/canvas/pen_fill.cpp
+        src/gui/canvas/polygon_mesh.cpp
+        src/gui/canvas/region_extract.cpp
+        src/gui/canvas/region_fill.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_region_pen_conversion_tests PRIVATE
+        src/gui/canvas
+        src/gui/widgets
+    )
+    target_link_libraries(fls_region_pen_conversion_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        ZLIB::ZLIB
+        potrace
+    )
+    add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
+endif()
+
 set(FH6_GUI_ASSETS
     Cursor.xpm
     CursorPipette.xpm
@@ -266,6 +294,7 @@ set(FH6_GUI_ASSETS
     ToolbarSelect.xpm
     ToolbarSkew.xpm
     ToolPipette.xpm
+    ToolBucket.xpm
     ToolRotateE.xpm
     ToolRotateN.xpm
     ToolRotateNE.xpm

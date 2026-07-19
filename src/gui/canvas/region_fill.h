@@ -28,12 +28,33 @@ struct GeneratedRegionShape {
     std::array<std::uint8_t, 4> color = {255, 255, 255, 255};
 };
 
-// Convert the outer contour of a traced region outline into Pen points. The
-// potrace trace already encodes hardpoints: a LineTo element is a corner (Hard),
-// a CurveTo (cubic) becomes a Soft quadratic control plus a Hard endpoint, so
-// the curve-capper still engages on rounded boundaries. Holes are dropped - the
-// largest-area subpath is used. Returns fewer than 3 points on failure.
-QVector<PenPoint> regionOutlineToPenPoints(const QPainterPath &outline);
+struct RegionPenConversionOptions {
+    // Maximum extra boundary deviation introduced by removing Potrace cubic
+    // junctions, in the outline's coordinate system (image pixels for traces).
+    double mergeTolerance = 0.5;
+    double closureTolerance = 1e-6;
+};
+
+struct RegionPenConversionResult {
+    QVector<PenPoint> points;
+    QString error;
+    int originalPointCount = 0;
+    int removedHardPoints = 0;
+    double baselineDeviation = 0.0;
+    double maximumDeviation = 0.0;
+
+    bool valid() const { return error.isEmpty() && points.size() >= 3; }
+};
+
+// Convert the single closed outer contour of a traced region into Pen points.
+// Potrace line/corner anchors remain Hard. Cubics first become Hard-Soft-Hard
+// quadratic sectors, then redundant cubic-to-cubic Hard junctions are removed
+// when the complete Pen contour remains valid and within mergeTolerance of the
+// unoptimized trace. Contained hole subpaths are ignored; open, degenerate, and
+// multiple independent outer contours are rejected.
+RegionPenConversionResult regionOutlineToPenPoints(
+    const QPainterPath &outline,
+    const RegionPenConversionOptions &options = {});
 
 // Fill one region outline with affine primitives via the Pen fitter.
 PenFillResult fillRegionOutline(const QPainterPath &outline,

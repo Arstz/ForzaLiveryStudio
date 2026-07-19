@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace gui {
 namespace {
+
+constexpr double kGeometryEpsilon = 1e-9;
+constexpr int kBoundarySamplesPerCurve = 32;
 
 // One boundary op of a subpath: a straight segment to a corner (Line) or a
 // cubic bezier (Cubic, with two controls and an endpoint).
@@ -18,6 +22,12 @@ struct Op {
 struct Subpath {
     QPointF start;
     QVector<Op> ops;
+    bool closed = false;
+};
+
+struct ConvertiblePoint {
+    PenPoint point;
+    bool removable = false;
 };
 
 double signedArea(const QPolygonF &polygon)
@@ -41,26 +51,39 @@ QPointF cubicPoint(const QPointF &p0, const QPointF &c1, const QPointF &c2, cons
 }
 
 // Split a QPainterPath into subpaths, preserving Line/Cubic element types.
-QVector<Subpath> toSubpaths(const QPainterPath &path)
+QVector<Subpath> toSubpaths(const QPainterPath &path, double closureTolerance = 1e-6)
 {
     QVector<Subpath> subpaths;
     Subpath current;
     bool have = false;
+    const auto finishCurrent = [&]() {
+        if (!have || current.ops.isEmpty()) {
+            return;
+        }
+        current.closed = QLineF(current.ops.back().end, current.start).length()
+            <= closureTolerance;
+        subpaths.push_back(current);
+    };
     for (int i = 0; i < path.elementCount(); ++i) {
         const QPainterPath::Element element = path.elementAt(i);
         if (element.isMoveTo()) {
-            if (have) {
-                subpaths.push_back(current);
-            }
+            finishCurrent();
             current = Subpath{};
             current.start = QPointF(element.x, element.y);
             have = true;
         } else if (element.isLineTo()) {
+            if (!have) {
+                continue;
+            }
             Op op;
             op.kind = Op::Line;
             op.end = QPointF(element.x, element.y);
             current.ops.push_back(op);
         } else if (element.type == QPainterPath::CurveToElement) {
+            if (!have || i + 2 >= path.elementCount()) {
+                current.ops.clear();
+                continue;
+            }
             Op op;
             op.kind = Op::Cubic;
             op.control1 = QPointF(element.x, element.y);
@@ -70,13 +93,11 @@ QVector<Subpath> toSubpaths(const QPainterPath &path)
             i += 2;
         }
     }
-    if (have) {
-        subpaths.push_back(current);
-    }
+    finishCurrent();
     return subpaths;
 }
 
-QPolygonF flattenSubpath(const Subpath &subpath)
+QPolygonF flattenSubpath(const Subpath &subpath, int curveSamples = 8)
 {
     QPolygonF polygon;
     polygon.push_back(subpath.start);
@@ -85,8 +106,12 @@ QPolygonF flattenSubpath(const Subpath &subpath)
         if (op.kind == Op::Line) {
             polygon.push_back(op.end);
         } else {
-            for (int step = 1; step <= 8; ++step) {
-                polygon.push_back(cubicPoint(previous, op.control1, op.control2, op.end, step / 8.0));
+            for (int step = 1; step <= curveSamples; ++step) {
+                polygon.push_back(cubicPoint(previous,
+                                             op.control1,
+                                             op.control2,
+                                             op.end,
+                                             static_cast<double>(step) / curveSamples));
             }
         }
         previous = op.end;
@@ -104,6 +129,215 @@ double perpendicularDistance(const QPointF &point, const QPointF &a, const QPoin
     const double t = ((point.x() - a.x()) * ab.x() + (point.y() - a.y()) * ab.y()) / lengthSquared;
     const QPointF projection = a + t * ab;
     return QLineF(point, projection).length();
+}
+
+double pointToClosedPolylineDistance(const QPointF &point, const QPolygonF &polyline)
+{
+    if (polyline.isEmpty()) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double best = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < polyline.size(); ++i) {
+        best = std::min(best,
+                        perpendicularDistance(point,
+                                              polyline[i],
+                                              polyline[(i + 1) % polyline.size()]));
+    }
+    return best;
+}
+
+double boundaryDeviation(const QPolygonF &left, const QPolygonF &right)
+{
+    if (left.size() < 3 || right.size() < 3) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double result = 0.0;
+    for (const QPointF &point : left) {
+        result = std::max(result, pointToClosedPolylineDistance(point, right));
+    }
+    for (const QPointF &point : right) {
+        result = std::max(result, pointToClosedPolylineDistance(point, left));
+    }
+    return result;
+}
+
+QPolygonF flattenPenContour(const PenContour &contour, int curveSamples)
+{
+    QPolygonF polygon;
+    if (contour.segments.isEmpty()) {
+        return polygon;
+    }
+    polygon.push_back(contour.segments.front().start);
+    for (const PenBoundarySegment &segment : contour.segments) {
+        if (!segment.curved) {
+            polygon.push_back(segment.end);
+            continue;
+        }
+        for (int step = 1; step <= curveSamples; ++step) {
+            const double t = static_cast<double>(step) / curveSamples;
+            const double u = 1.0 - t;
+            polygon.push_back(segment.start * (u * u)
+                              + segment.control * (2.0 * u * t)
+                              + segment.end * (t * t));
+        }
+    }
+    while (polygon.size() > 1
+           && QLineF(polygon.back(), polygon.front()).length() <= kGeometryEpsilon) {
+        polygon.removeLast();
+    }
+    return polygon;
+}
+
+QVector<PenPoint> penPoints(const QVector<ConvertiblePoint> &points)
+{
+    QVector<PenPoint> result;
+    result.reserve(points.size());
+    for (const ConvertiblePoint &point : points) {
+        result.push_back(point.point);
+    }
+    return result;
+}
+
+double removalDisplacement(const QVector<ConvertiblePoint> &points, int index)
+{
+    if (points.size() < 3 || index < 0 || index >= points.size()
+        || !points[index].removable
+        || points[index].point.kind != PenPointKind::Hard) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const int previous = (index + points.size() - 1) % points.size();
+    const int next = (index + 1) % points.size();
+    if (points[previous].point.kind != PenPointKind::Soft
+        || points[next].point.kind != PenPointKind::Soft) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const QPointF implied =
+        (points[previous].point.position + points[next].point.position) * 0.5;
+    return QLineF(points[index].point.position, implied).length();
+}
+
+bool sameOrientation(double referenceArea, double candidateArea)
+{
+    return (referenceArea > kGeometryEpsilon && candidateArea > kGeometryEpsilon)
+        || (referenceArea < -kGeometryEpsilon && candidateArea < -kGeometryEpsilon);
+}
+
+QVector<ConvertiblePoint> initialPenPoints(const Subpath &subpath,
+                                           double closureTolerance)
+{
+    QVector<ConvertiblePoint> points;
+    if (subpath.ops.isEmpty()) {
+        return points;
+    }
+    const int opCount = subpath.ops.size();
+    const bool startRemovable = subpath.ops.back().kind == Op::Cubic
+        && subpath.ops.front().kind == Op::Cubic;
+    points.push_back({{subpath.start, PenPointKind::Hard}, startRemovable});
+    QPointF previous = subpath.start;
+    for (int i = 0; i < opCount; ++i) {
+        const Op &op = subpath.ops[i];
+        const bool closesAtStart = i == opCount - 1
+            && QLineF(op.end, subpath.start).length() <= closureTolerance;
+        if (op.kind == Op::Line) {
+            if (!closesAtStart) {
+                points.push_back({{op.end, PenPointKind::Hard}, false});
+            }
+        } else {
+            const QPointF control =
+                (op.control1 * 3.0 + op.control2 * 3.0 - previous - op.end) * 0.25;
+            points.push_back({{control, PenPointKind::Soft}, false});
+            if (!closesAtStart) {
+                const Op &next = subpath.ops[(i + 1) % opCount];
+                points.push_back({{op.end, PenPointKind::Hard},
+                                  next.kind == Op::Cubic});
+            }
+        }
+        previous = op.end;
+    }
+    return points;
+}
+
+void protectCyclicSeam(QVector<ConvertiblePoint> *points)
+{
+    const bool hasProtectedHard = std::any_of(points->cbegin(),
+                                              points->cend(),
+                                              [](const ConvertiblePoint &point) {
+        return point.point.kind == PenPointKind::Hard && !point.removable;
+    });
+    if (hasProtectedHard) {
+        return;
+    }
+    int seam = -1;
+    double largestDisplacement = -1.0;
+    for (int i = 0; i < points->size(); ++i) {
+        const double displacement = removalDisplacement(*points, i);
+        if (std::isfinite(displacement) && displacement > largestDisplacement) {
+            largestDisplacement = displacement;
+            seam = i;
+        }
+    }
+    if (seam >= 0) {
+        (*points)[seam].removable = false;
+    }
+}
+
+struct OuterSelection {
+    Subpath subpath;
+    QPolygonF polygon;
+    QString error;
+};
+
+OuterSelection selectClosedOuter(const QPainterPath &outline,
+                                 double closureTolerance)
+{
+    OuterSelection result;
+    const QVector<Subpath> subpaths = toSubpaths(outline, closureTolerance);
+    if (subpaths.isEmpty()) {
+        result.error = QStringLiteral("Region outline has no contour");
+        return result;
+    }
+    QVector<QPolygonF> polygons;
+    polygons.reserve(subpaths.size());
+    for (const Subpath &subpath : subpaths) {
+        if (!subpath.closed) {
+            result.error = QStringLiteral("Region outline contains an open contour");
+            return result;
+        }
+        QPolygonF polygon = flattenSubpath(subpath, kBoundarySamplesPerCurve);
+        while (polygon.size() > 1
+               && QLineF(polygon.back(), polygon.front()).length() <= closureTolerance) {
+            polygon.removeLast();
+        }
+        if (polygon.size() < 3 || std::abs(signedArea(polygon)) <= kGeometryEpsilon) {
+            result.error = QStringLiteral("Region outline contains a degenerate contour");
+            return result;
+        }
+        polygons.push_back(std::move(polygon));
+    }
+
+    QVector<int> outerIndices;
+    for (int i = 0; i < polygons.size(); ++i) {
+        bool contained = false;
+        const QPointF probe = polygons[i].front();
+        for (int j = 0; j < polygons.size(); ++j) {
+            if (i != j && polygons[j].containsPoint(probe, Qt::OddEvenFill)) {
+                contained = true;
+                break;
+            }
+        }
+        if (!contained) {
+            outerIndices.push_back(i);
+        }
+    }
+    if (outerIndices.size() != 1) {
+        result.error = outerIndices.isEmpty()
+            ? QStringLiteral("Region outline has no outer contour")
+            : QStringLiteral("Region outline contains multiple outer contours");
+        return result;
+    }
+    result.subpath = subpaths[outerIndices.front()];
+    result.polygon = polygons[outerIndices.front()];
+    return result;
 }
 
 // RDP on an open polyline [first, last] inclusive; appends kept points (except
@@ -182,48 +416,93 @@ QPolygonF largestFlattenedContour(const QPainterPath &outline)
 
 } // namespace
 
-QVector<PenPoint> regionOutlineToPenPoints(const QPainterPath &outline)
+RegionPenConversionResult regionOutlineToPenPoints(
+    const QPainterPath &outline,
+    const RegionPenConversionOptions &options)
 {
-    const QVector<Subpath> subpaths = toSubpaths(outline);
-    if (subpaths.isEmpty()) {
-        return {};
+    RegionPenConversionResult result;
+    if (!std::isfinite(options.mergeTolerance) || options.mergeTolerance < 0.0
+        || !std::isfinite(options.closureTolerance) || options.closureTolerance <= 0.0) {
+        result.error = QStringLiteral("Region Pen conversion tolerances are invalid");
+        return result;
     }
 
-    // Fill the largest-area subpath (the outer contour); holes are overpainted.
-    int outer = 0;
-    double outerArea = -1.0;
-    for (int i = 0; i < subpaths.size(); ++i) {
-        const double area = std::abs(signedArea(flattenSubpath(subpaths[i])));
-        if (area > outerArea) {
-            outerArea = area;
-            outer = i;
+    const OuterSelection outer = selectClosedOuter(outline, options.closureTolerance);
+    if (!outer.error.isEmpty()) {
+        result.error = outer.error;
+        return result;
+    }
+
+    QVector<ConvertiblePoint> working =
+        initialPenPoints(outer.subpath, options.closureTolerance);
+    protectCyclicSeam(&working);
+    result.originalPointCount = working.size();
+    const PenContour baseline = buildPenContour(penPoints(working));
+    if (!baseline.valid()) {
+        result.error = baseline.error.isEmpty()
+            ? QStringLiteral("Region outline does not form a valid Pen contour")
+            : baseline.error;
+        return result;
+    }
+
+    const QPolygonF baselinePolygon =
+        flattenPenContour(baseline, kBoundarySamplesPerCurve);
+    const double referenceArea = signedArea(baselinePolygon);
+    result.baselineDeviation = boundaryDeviation(outer.polygon, baselinePolygon);
+    result.maximumDeviation = result.baselineDeviation;
+    const double allowedDeviation = result.baselineDeviation + options.mergeTolerance;
+
+    while (working.size() > 3) {
+        struct Candidate {
+            int index = -1;
+            double displacement = 0.0;
+        };
+        QVector<Candidate> candidates;
+        for (int i = 0; i < working.size(); ++i) {
+            const double displacement = removalDisplacement(working, i);
+            if (std::isfinite(displacement)
+                && displacement <= options.mergeTolerance + kGeometryEpsilon) {
+                candidates.push_back({i, displacement});
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
+            if (std::abs(a.displacement - b.displacement) > kGeometryEpsilon) {
+                return a.displacement < b.displacement;
+            }
+            return a.index < b.index;
+        });
+
+        bool removed = false;
+        for (const Candidate &candidate : candidates) {
+            QVector<ConvertiblePoint> trial = working;
+            trial.removeAt(candidate.index);
+            const PenContour contour = buildPenContour(penPoints(trial));
+            if (!contour.valid()) {
+                continue;
+            }
+            const QPolygonF candidatePolygon =
+                flattenPenContour(contour, kBoundarySamplesPerCurve);
+            if (!sameOrientation(referenceArea, signedArea(candidatePolygon))) {
+                continue;
+            }
+            const double deviation = boundaryDeviation(outer.polygon, candidatePolygon);
+            if (!std::isfinite(deviation)
+                || deviation > allowedDeviation + kGeometryEpsilon) {
+                continue;
+            }
+            working = std::move(trial);
+            result.maximumDeviation = deviation;
+            ++result.removedHardPoints;
+            removed = true;
+            break;
+        }
+        if (!removed) {
+            break;
         }
     }
-    const Subpath &subpath = subpaths[outer];
 
-    QVector<PenPoint> points;
-    points.push_back({subpath.start, PenPointKind::Hard});
-    QPointF previous = subpath.start;
-    for (const Op &op : subpath.ops) {
-        if (op.kind == Op::Line) {
-            points.push_back({op.end, PenPointKind::Hard});
-        } else {
-            // Single-quadratic approximation of the cubic; its control point is
-            // a Soft Pen point, the on-curve endpoint stays a Hard anchor.
-            const QPointF control = (op.control1 * 3.0 + op.control2 * 3.0 - previous - op.end) * 0.25;
-            points.push_back({control, PenPointKind::Soft});
-            points.push_back({op.end, PenPointKind::Hard});
-        }
-        previous = op.end;
-    }
-
-    // Drop the closing point if it coincides with the start (closed subpath).
-    while (points.size() > 1
-           && points.back().kind == PenPointKind::Hard
-           && QLineF(points.back().position, points.front().position).length() <= 1e-6) {
-        points.removeLast();
-    }
-    return points;
+    result.points = penPoints(working);
+    return result;
 }
 
 PenFillResult fillRegionOutline(const QPainterPath &outline,
@@ -232,13 +511,15 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const std::function<bool()> &cancelled)
 {
     PenFillResult result;
-    const QVector<PenPoint> points = regionOutlineToPenPoints(outline);
-    if (points.size() < 3) {
-        result.error = QStringLiteral("Region outline has no fillable contour");
+    const RegionPenConversionResult conversion = regionOutlineToPenPoints(outline);
+    if (!conversion.valid()) {
+        result.error = conversion.error.isEmpty()
+            ? QStringLiteral("Region outline has no fillable contour")
+            : conversion.error;
         return result;
     }
     PenFillRequest request;
-    request.points = points;
+    request.points = conversion.points;
     request.primitives = primitives;
     request.boundaryTolerance = boundaryTolerance;
     return fillPenPath(request, cancelled);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bucket_fill.h"
 #include "core_types.h"
 #include "layer.h"
 #include "native_shape_renderer.h"
@@ -68,7 +69,8 @@ public:
     std::optional<QColor> guideColorAtScreenPoint(const QPointF &point) const;
     std::optional<QColor> colorAtScreenPoint(const QPointF &point) const;
     void setPipetteColorPickedCallback(std::function<void(const QColor &)> callback);
-    void setPenFillRequestedCallback(std::function<void(const QVector<PenPoint> &)> callback);
+    void setPenFillRequestedCallback(
+        std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     void setPenFillRunning(bool running, const QString &message = QString());
@@ -129,6 +131,7 @@ private:
     friend class RotateTool;
     friend class PipetteTool;
     friend class PenTool;
+    friend class BucketTool;
 
     static constexpr double PenCloseRadius = 8.0;
 
@@ -261,6 +264,17 @@ private:
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
+    bool updateBucketPreview(const QPointF &screenPoint);
+    bool commitBucketPreview(const QPointF &screenPoint);
+    void adjustBucketTolerance(int delta, const QPointF &screenPoint);
+    void clearBucketPreview();
+    void drawBucketOverlay(QPainter &painter);
+    bool bucketGuideContext(const QPointF &screenPoint,
+                            const fh6::scene::GuideLayer **guide,
+                            QTransform *guideWorld,
+                            QImage *image,
+                            QPoint *imagePoint,
+                            QString *error) const;
 
 
     EditorState *state_ = nullptr;
@@ -304,14 +318,22 @@ private:
     double nudgeStep_ = 0.1;
     double nudgeShiftStep_ = 1.0;
     std::function<void(const QColor &)> pipetteColorPickedCallback_;
-    std::function<void(const QVector<PenPoint> &)> penFillRequestedCallback_;
+    std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> penFillRequestedCallback_;
     std::function<void()> penFillCancelCallback_;
     QVector<PenPoint> penPoints_;
+    std::optional<QColor> penFillColor_;
     QPointF penHoverWorld_;
     QVector<QPointF> penCrossings_;
     QString penError_;
     QString penFillMessage_;
     bool penFillRunning_ = false;
+    int bucketTolerance_ = 16;
+    QString bucketGuideId_;
+    QString bucketSourceGuideId_;
+    QPoint bucketSeedPixel_ = QPoint(-1, -1);
+    BucketFillResult bucketFill_;
+    QImage bucketSourceImage_;
+    QImage bucketPreviewImage_;
     mutable double frameReferenceRotation_ = 0.0;
     mutable QSet<QString> frameLayerSignature_;
     mutable QSet<QString> frameGuideSignature_;

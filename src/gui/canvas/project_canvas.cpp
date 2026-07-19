@@ -39,6 +39,7 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     tools_.push_back(std::make_unique<RotateTool>(*this));
     tools_.push_back(std::make_unique<PipetteTool>(*this));
     tools_.push_back(std::make_unique<PenTool>(*this));
+    tools_.push_back(std::make_unique<BucketTool>(*this));
     activeTool_ = tools_.front().get();
 }
 
@@ -47,6 +48,7 @@ ProjectCanvas::~ProjectCanvas() = default;
 void ProjectCanvas::setProject(fh6::Project *project)
 {
     cancelPenInteraction();
+    clearBucketPreview();
     project_ = project;
     draggedGuidelineOrientation_ = GuidelineOrientation::None;
     draggedGuidelineIndex_ = -1;
@@ -100,6 +102,9 @@ void ProjectCanvas::setTool(const QString &tool)
     cancelDrag();
     if (tool_ == QStringLiteral("pen") && tool != tool_) {
         cancelPenInteraction();
+    }
+    if (tool_ == QStringLiteral("bucket") && tool != tool_) {
+        clearBucketPreview();
     }
     tool_ = tool;
     activeTool_ = next;
@@ -450,7 +455,8 @@ void ProjectCanvas::setPipetteColorPickedCallback(std::function<void(const QColo
     pipetteColorPickedCallback_ = std::move(callback);
 }
 
-void ProjectCanvas::setPenFillRequestedCallback(std::function<void(const QVector<PenPoint> &)> callback)
+void ProjectCanvas::setPenFillRequestedCallback(
+    std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> callback)
 {
     penFillRequestedCallback_ = std::move(callback);
 }
@@ -480,6 +486,7 @@ void ProjectCanvas::cancelPenInteraction()
 {
     const bool wasRunning = penFillRunning_;
     penPoints_.clear();
+    penFillColor_.reset();
     penCrossings_.clear();
     penError_.clear();
     penFillMessage_.clear();
@@ -507,14 +514,16 @@ void ProjectCanvas::closePenPath()
         return;
     }
     const QVector<PenPoint> points = penPoints_;
+    const std::optional<QColor> fillColor = penFillColor_;
     penPoints_.clear();
+    penFillColor_.reset();
     penCrossings_.clear();
     penError_.clear();
     clearCursorHint();
     penFillRunning_ = true;
     penFillMessage_ = QStringLiteral("Filling Pen path…");
     update();
-    penFillRequestedCallback_(points);
+    penFillRequestedCallback_(points, fillColor);
 }
 
 void ProjectCanvas::refitView()

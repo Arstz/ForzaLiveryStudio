@@ -424,6 +424,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     }
 
     drawRegionOverlay(painter);
+    drawBucketOverlay(painter);
     drawVisibilityBorders(painter);
 
     if (!hoverPolygon_.isEmpty()) {
