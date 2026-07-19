@@ -70,7 +70,7 @@ PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessToler
 PenPrimitive buildPenPrimitive(int shapeId, const ShapeGeometry &geometry);
 QVector<PenPrimitive> buildPenPrimitiveCatalog(const ShapeGeometryStore &geometry,
                                                int firstShapeId = 101,
-                                               int lastShapeId = 130);
+                                               int lastShapeId = 0x084b);
 PenFillResult fillPenPath(const PenFillRequest &request,
                          const std::function<bool()> &cancelled = {});
 

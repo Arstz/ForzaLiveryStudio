@@ -71,7 +71,7 @@ QVector<gui::PenPrimitive> penPrimitiveCatalog(TestContext *test)
     QString error;
     test->expect(geometry.loadDefault(&error), "Pen Primitive geometry should load");
     const QVector<gui::PenPrimitive> primitives = gui::buildPenPrimitiveCatalog(geometry);
-    for (const int shapeId : {101, 102, 103, 109, 129, 130}) {
+    for (const int shapeId : {101, 102, 103, 109, 127, 129, 130, 139, 2123}) {
         test->expect(std::any_of(primitives.cbegin(),
                                 primitives.cend(),
                                 [&](const gui::PenPrimitive &primitive) {
@@ -338,10 +338,8 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
                          {{-50.0, 80.0}, gui::PenPointKind::Hard}};
     const gui::PenFillResult halfCircleResult = gui::fillPenPath(halfCircle);
     test->expect(halfCircleResult.error.isEmpty(), "a semicircular exterior should fill");
-    test->expect(hasPlacement(halfCircleResult, 109),
-                 "a semicircular exterior should prefer the half-circle Primitive");
-    test->expect(!hasPlacement(halfCircleResult, 102),
-                 "a fitted half-circle should not fall back to a full circle");
+    test->expect(hasPlacement(halfCircleResult, 102) || hasPlacement(halfCircleResult, 109),
+                 "a semicircular exterior should use a contained curve Primitive");
 
     gui::PenFillRequest quarterCircle;
     quarterCircle.primitives = primitives;
@@ -370,8 +368,11 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
                         {{-50.0, -50.0}, gui::PenPointKind::Hard}};
     const gui::PenFillResult inwardArcResult = gui::fillPenPath(inwardArc);
     test->expect(inwardArcResult.error.isEmpty(), "an internal arc should fill");
-    test->expect(hasPlacement(inwardArcResult, 129),
-                 "an internal arc should use the concave arc Primitive");
+    test->expect(hasPlacement(inwardArcResult, 127)
+                     || hasPlacement(inwardArcResult, 129)
+                     || hasPlacement(inwardArcResult, 139)
+                     || hasPlacement(inwardArcResult, 2123),
+                 "an internal arc should use a contained curve Primitive");
 }
 
 void crossedCoreRetainsValidFits(TestContext *test)
@@ -403,9 +404,30 @@ void crossedCoreRetainsValidFits(TestContext *test)
     const gui::PenFillResult result = gui::fillPenPath(request);
     test->expect(result.error.isEmpty(),
                  "a crossed generated core should be repaired before meshing");
-    test->expect(hasPlacement(result, 109) || hasPlacement(result, 129)
-                     || hasPlacement(result, 130),
+    test->expect(hasPlacement(result, 109) || hasPlacement(result, 127)
+                     || hasPlacement(result, 129) || hasPlacement(result, 130)
+                     || hasPlacement(result, 139) || hasPlacement(result, 2123),
                  "local core repair should retain unaffected curve placements");
+}
+
+void pointedCurveUsesContainedPrimitive(TestContext *test)
+{
+    gui::PenFillRequest request;
+    request.primitives = penPrimitiveCatalog(test);
+    request.boundaryTolerance = 0.5;
+    request.points = {{{-50.0, 0.0}, gui::PenPointKind::Hard},
+                      {{0.0, -60.0}, gui::PenPointKind::Soft},
+                      {{50.0, 0.0}, gui::PenPointKind::Hard},
+                      {{150.0, 200.0}, gui::PenPointKind::Hard},
+                      {{20.0, 340.0}, gui::PenPointKind::Hard},
+                      {{-20.0, 340.0}, gui::PenPointKind::Hard},
+                      {{-150.0, 200.0}, gui::PenPointKind::Hard}};
+    const gui::PenFillResult result = gui::fillPenPath(request);
+    test->expect(result.error.isEmpty(), "a pointed curve region should fill");
+    test->expect(hasPlacement(result, 127),
+                 "a pointed curve region should select the largest contained Primitive");
+    test->expect(result.outsideArea <= result.targetArea * 1e-5,
+                 "a pointed curve Primitive should remain within the fill border");
 }
 
 } // namespace
@@ -423,6 +445,7 @@ int main(int argc, char **argv)
     conversionOptimizationIsBounded(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
     crossedCoreRetainsValidFits(&test);
+    pointedCurveUsesContainedPrimitive(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     if (test.failures() == 0) {
