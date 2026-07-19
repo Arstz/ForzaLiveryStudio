@@ -485,6 +485,17 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
+    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("select")) {
+        if (state_ != nullptr) {
+            state_->clearSelection();
+        }
+        hoverLayerId_.clear();
+        hoverPolygon_ = {};
+        updateSelectionFlashState();
+        update();
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Escape) {
         if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
             if (state_ != nullptr) {

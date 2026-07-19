@@ -81,7 +81,8 @@ build and developer notes see
 ## Tools & Behaviours
 
 - **Select (`S`)** — primary editing tool. Click a shape or group to select it,
-  drag to move. Works together with the layer tree selection.
+  drag to move. Works together with the layer tree selection. Press `Escape` to
+  clear the current layer, guide, or group selection.
 - **Move (`V`)** — dedicated move tool. Enable **Options → Move Tool
   Auto-Select** to select the layer group you click. When auto-select is off,
   clicking outside the current selection preserves it unless nothing is selected.
