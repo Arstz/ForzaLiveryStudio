@@ -289,6 +289,10 @@ void MainWindow::setupFileMenu()
                  QStringLiteral("import_car_model"), QStringLiteral("Import Car Model"), &MainWindow::importCarModel);
     addIconEntry(QStringLiteral("ImportGuide.xpm"), QStringLiteral("Import &Guide Layer..."),
                  QStringLiteral("import_guide_layer"), QStringLiteral("Import Guide Layer"), &MainWindow::importGuideLayerDialog);
+    addShortcutEntry(QStringLiteral("Create &Regions"), QStringLiteral("create_regions"),
+                     QStringLiteral("Create Regions"), QKeySequence(), &MainWindow::createRegions);
+    addShortcutEntry(QStringLiteral("&Fill Regions"), QStringLiteral("fill_regions"),
+                     QStringLiteral("Fill Regions"), QKeySequence(), &MainWindow::fillRegions);
     addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("&Export..."),
                  QStringLiteral("export"), QStringLiteral("Export"), &MainWindow::exportDialog);
     fileMenu->addSeparator();

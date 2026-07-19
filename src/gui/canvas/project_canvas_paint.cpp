@@ -2,6 +2,13 @@
 
 #include "project_canvas_internal.h"
 
+#include <QElapsedTimer>
+#include <QFile>
+#include <QTextStream>
+
+#include <cstdint>
+#include <vector>
+
 namespace gui {
 
 using namespace pc_detail;
@@ -416,6 +423,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
         painter.restore();
     }
 
+    drawRegionOverlay(painter);
     drawVisibilityBorders(painter);
 
     if (!hoverPolygon_.isEmpty()) {
@@ -698,6 +706,689 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter)
         painter.restore();
         return true;
     }, /*reverse=*/false);
+    painter.restore();
+}
+
+bool ProjectCanvas::createRegionsForSelectedGuide(QString *message)
+{
+    const QVector<fh6::scene::GuideLayer *> guides = selectedGuideLayers();
+    if (guides.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Select a guide layer first");
+        }
+        return false;
+    }
+    if (guides.size() > 1) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Select a single guide layer");
+        }
+        return false;
+    }
+    const fh6::scene::GuideLayer *guide = guides.front();
+    const QImage image = guideImage(*guide);
+    if (image.isNull()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("The selected guide layer has no image");
+        }
+        return false;
+    }
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    const RegionExtractionResult regions = extractRegions(image);
+    QGuiApplication::restoreOverrideCursor();
+    if (!regions.valid()) {
+        if (message != nullptr) {
+            *message = regions.error.isEmpty()
+                ? QStringLiteral("Region extraction produced no regions")
+                : regions.error;
+        }
+        return false;
+    }
+    regionOverlayGuideId_ = guide->id;
+    regionOverlay_ = regions;
+    regionFills_.clear();
+    regionFillSilhouettes_.clear();
+    showRegionFills_ = false;
+    regionOverlayHidden_ = false;
+    update();
+    if (message != nullptr) {
+        *message = QStringLiteral("Created %1 regions (%2 colour, %3 lineart)")
+            .arg(regions.regions.size())
+            .arg(regions.colorRegionCount)
+            .arg(regions.lineartRegionCount);
+    }
+    return true;
+}
+
+void ProjectCanvas::clearRegionOverlay()
+{
+    if (regionOverlay_.regions.isEmpty() && regionOverlayGuideId_.isEmpty()) {
+        return;
+    }
+    regionOverlayGuideId_.clear();
+    regionOverlay_ = RegionExtractionResult{};
+    regionFills_.clear();
+    regionFillSilhouettes_.clear();
+    showRegionFills_ = false;
+    regionOverlayHidden_ = false;
+    update();
+}
+
+namespace {
+
+// Split a simplified (WindingFill) union path into its outer blob contours,
+// discarding hole subpaths (a subpath contained inside another). Each returned
+// path is a single closed outer contour, filled solid downstream so that holes
+// are overpainted by whatever higher-z region sits in them.
+QVector<QPainterPath> outerBlobsFromUnion(const QPainterPath &united)
+{
+    const QList<QPolygonF> subs = united.toSubpathPolygons();
+    QVector<QPolygonF> polys;
+    for (const QPolygonF &polygon : subs) {
+        if (polygon.size() < 3) {
+            continue;
+        }
+        double twiceArea = 0.0;
+        for (int i = 0; i < polygon.size(); ++i) {
+            const QPointF &a = polygon[i];
+            const QPointF &b = polygon[(i + 1) % polygon.size()];
+            twiceArea += a.x() * b.y() - a.y() * b.x();
+        }
+        if (std::abs(twiceArea) < 1.0) {
+            continue;
+        }
+        polys.push_back(polygon);
+    }
+    QVector<QPainterPath> blobs;
+    for (int i = 0; i < polys.size(); ++i) {
+        bool contained = false;
+        const QPointF probe = polys[i].first();
+        for (int j = 0; j < polys.size(); ++j) {
+            if (i == j) {
+                continue;
+            }
+            if (polys[j].containsPoint(probe, Qt::OddEvenFill)) {
+                contained = true;
+                break;
+            }
+        }
+        if (!contained) {
+            QPainterPath path;
+            path.addPolygon(polys[i]);
+            path.closeSubpath();
+            blobs.push_back(path);
+        }
+    }
+    return blobs;
+}
+
+} // namespace
+
+bool ProjectCanvas::fillRegionsForOverlay(QString *message)
+{
+    if (regionOverlay_.regions.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Create regions first");
+        }
+        return false;
+    }
+    const QVector<PenPrimitive> primitives = penPrimitiveCatalog();
+    if (primitives.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Pen primitive geometry is unavailable");
+        }
+        return false;
+    }
+
+    QHash<int, QPainterPath> silhouettes;
+    for (const PenPrimitive &primitive : primitives) {
+        silhouettes.insert(primitive.shapeId, primitive.silhouette);
+    }
+    // Fit tolerance scales with the image so it stays a small fraction of a pixel
+    // of visible error regardless of guide resolution.
+    const double tolerance = std::max(1.0,
+                                      std::min(regionOverlay_.imageSize.width(),
+                                               regionOverlay_.imageSize.height()) * 0.004);
+
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QVector<RegionFillLayer> fills;
+    int filled = 0;
+    int failed = 0;
+    int timedOut = 0;
+    int placementCount = 0;
+    int mergedBlobs = 0;
+    int meshFallbacks = 0;
+    QHash<QString, int> failureReasons;
+    // Bound each fill by wall clock so a pathological outline cannot drive the
+    // fitter's boolean-union accumulation into an unbounded quadratic blow-up.
+    constexpr qint64 kRegionBudgetMs = 3000;
+    // Direct-triangulation fallback sources (Square 101 / Triangle 103 hulls).
+    const PolygonMeshSources meshSources = buildPolygonMeshSources(geometry_);
+    // RDP corridor for the mesh path: sub-visible, collapses potrace's 8x-
+    // oversampled flattening back down so complex/merged blobs are not
+    // triangulated at full resolution.
+    const double simplifyEpsilon = tolerance;
+
+    const int imageW = regionOverlay_.imageSize.width();
+    const int imageH = regionOverlay_.imageSize.height();
+
+    // Build the paint UNITS: same-colour regions are unioned and split into
+    // solid outer blobs (adjacent same-colour pieces the segmenter split apart
+    // merge into one). Disjoint single regions keep their smooth outline so the
+    // Pen fitter's circle caps still engage; merged blobs are polygonal.
+    struct FillUnit {
+        QColor color;
+        QPainterPath outline;   // what to fill / rasterize
+        double area = 0.0;
+        bool polygonal = false; // came from a merge -> mesh path with occlusion band
+    };
+    QVector<FillUnit> units;
+    {
+        struct ColorGroup {
+            QColor color;
+            double area = 0.0;
+            QVector<const ExtractedRegion *> regions;
+        };
+        QHash<QRgb, int> colorIndex;
+        QVector<ColorGroup> groups;
+        for (const ExtractedRegion &region : regionOverlay_.regions) {
+            if (region.lineart) {
+                continue;
+            }
+            const QRgb key = region.color.rgb();
+            int idx = colorIndex.value(key, -1);
+            if (idx < 0) {
+                idx = groups.size();
+                colorIndex.insert(key, idx);
+                groups.push_back(ColorGroup{region.color, 0.0, {}});
+            }
+            groups[idx].area += region.area;
+            groups[idx].regions.push_back(&region);
+        }
+        for (const ColorGroup &group : groups) {
+            QPainterPath unionPath;
+            unionPath.setFillRule(Qt::WindingFill);
+            for (const ExtractedRegion *region : group.regions) {
+                unionPath.addPath(region->outline);
+            }
+            unionPath = unionPath.simplified();
+            const QVector<QPainterPath> blobs = outerBlobsFromUnion(unionPath);
+            if (blobs.size() < group.regions.size()) {
+                for (const QPainterPath &blob : blobs) {
+                    const QPolygonF poly = regionOuterContour(blob);
+                    double twiceArea = 0.0;
+                    for (int k = 0; k < poly.size(); ++k) {
+                        const QPointF &p0 = poly[k];
+                        const QPointF &p1 = poly[(k + 1) % poly.size()];
+                        twiceArea += p0.x() * p1.y() - p0.y() * p1.x();
+                    }
+                    units.push_back(FillUnit{group.color, blob,
+                                             std::abs(twiceArea) * 0.5, true});
+                    ++mergedBlobs;
+                }
+            } else {
+                for (const ExtractedRegion *region : group.regions) {
+                    units.push_back(FillUnit{group.color, region->outline,
+                                             static_cast<double>(region->area), false});
+                }
+            }
+        }
+    }
+
+    // z-order: largest area first == bottom of the stack. Planning walks the
+    // stack TOP-DOWN, accumulating an `occluded` raster mask of everything above;
+    // rendering (fills emitted here) stays largest-first == bottom-up.
+    std::sort(units.begin(), units.end(), [](const FillUnit &a, const FillUnit &b) {
+        return a.area > b.area;
+    });
+
+    QStringList log;
+    log << QStringLiteral("Fill Regions diagnostic - image %1x%2, tolerance %3, rdp %4, %5 units")
+               .arg(imageW)
+               .arg(imageH)
+               .arg(tolerance, 0, 'f', 3)
+               .arg(simplifyEpsilon, 0, 'f', 3)
+               .arg(units.size());
+
+    const auto recordFailure = [&](const PenFillResult &fit) {
+        if (fit.cancelled) {
+            ++timedOut;
+        } else {
+            ++failed;
+        }
+        const QString reason = fit.error.isEmpty()
+            ? (fit.cancelled ? QStringLiteral("timed out") : QStringLiteral("empty result"))
+            : fit.error;
+        failureReasons[reason] += 1;
+    };
+
+    const size_t pixelTotal = static_cast<size_t>(imageW) * imageH;
+    // Occlusion mask: 1 where some already-planned (higher-z) unit paints. A
+    // lower unit may GROW its fill into these pixels because they are repainted
+    // from above. `vk`/`comp` are scratch masks reused per unit.
+    std::vector<std::uint8_t> occluded(pixelTotal, 0);
+    std::vector<std::uint8_t> vk(pixelTotal, 0);
+    std::vector<std::uint8_t> comp(pixelTotal, 0);
+
+    // Rasterize a path's fill into `dst` (set to 1), returning the touched rect.
+    const auto rasterizePath = [&](const QPainterPath &path, std::vector<std::uint8_t> &dst) -> QRect {
+        const QRect b = path.boundingRect().toAlignedRect().intersected(QRect(0, 0, imageW, imageH));
+        if (b.isEmpty()) {
+            return b;
+        }
+        QImage tile(b.width(), b.height(), QImage::Format_Grayscale8);
+        tile.fill(0);
+        QPainter painter(&tile);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.translate(-b.topLeft());
+        painter.fillPath(path, Qt::white);
+        painter.end();
+        for (int y = 0; y < b.height(); ++y) {
+            const std::uint8_t *row = tile.constScanLine(y);
+            std::uint8_t *out = dst.data() + static_cast<size_t>(b.top() + y) * imageW + b.left();
+            for (int x = 0; x < b.width(); ++x) {
+                if (row[x]) {
+                    out[x] = 1;
+                }
+            }
+        }
+        return b;
+    };
+
+    // Seed the occlusion mask with all lineart: it renders on top of every
+    // colour layer, so every colour region may grow under the strokes -- the
+    // universal leeway that lets a region fill across the lines dividing it.
+    for (const ExtractedRegion &region : regionOverlay_.regions) {
+        if (region.lineart) {
+            rasterizePath(region.outline, occluded);
+        }
+    }
+
+    const RegionExtractionParams traceParams; // defaults are fine for re-tracing
+    QVector<RegionFillLayer> unitFills(units.size());
+    long grownPixels = 0;
+    long seedPixels = 0;
+    for (int i = units.size() - 1; i >= 0; --i) {
+        const FillUnit &unit = units[i];
+        QElapsedTimer clock;
+        clock.start();
+        const auto cancelled = [&clock]() {
+            return clock.elapsed() > kRegionBudgetMs;
+        };
+
+        // Rasterize this unit's own footprint (V_R).
+        const QRect vkBounds = rasterizePath(unit.outline, vk);
+
+        // Flood-grow across mayCover = occluded | V_R, seeded from V_R. The grown
+        // component fills under every higher layer it touches and stops at
+        // lower-z (still-unplanned, visible) neighbours -- which remain holes.
+        QRect compBounds = vkBounds;
+        std::vector<int> stack;
+        int unitSeed = 0;
+        for (int y = vkBounds.top(); y <= vkBounds.bottom(); ++y) {
+            const std::uint8_t *vkRow = vk.data() + static_cast<size_t>(y) * imageW;
+            for (int x = vkBounds.left(); x <= vkBounds.right(); ++x) {
+                if (vkRow[x] && !comp[static_cast<size_t>(y) * imageW + x]) {
+                    comp[static_cast<size_t>(y) * imageW + x] = 1;
+                    stack.push_back(y * imageW + x);
+                    ++unitSeed;
+                }
+            }
+        }
+        while (!stack.empty()) {
+            const int idx = stack.back();
+            stack.pop_back();
+            const int px = idx % imageW;
+            const int py = idx / imageW;
+            compBounds |= QRect(px, py, 1, 1);
+            const int nb[4][2] = {{px - 1, py}, {px + 1, py}, {px, py - 1}, {px, py + 1}};
+            for (const auto &n : nb) {
+                const int nx = n[0];
+                const int ny = n[1];
+                if (nx < 0 || ny < 0 || nx >= imageW || ny >= imageH) {
+                    continue;
+                }
+                const size_t nIdx = static_cast<size_t>(ny) * imageW + nx;
+                if (comp[nIdx]) {
+                    continue;
+                }
+                if (occluded[nIdx] || vk[nIdx]) {
+                    comp[nIdx] = 1;
+                    stack.push_back(ny * imageW + nx);
+                }
+            }
+        }
+
+        int compArea = 0;
+        for (int y = compBounds.top(); y <= compBounds.bottom(); ++y) {
+            const std::uint8_t *row = comp.data() + static_cast<size_t>(y) * imageW;
+            for (int x = compBounds.left(); x <= compBounds.right(); ++x) {
+                compArea += row[x];
+            }
+        }
+        seedPixels += unitSeed;
+        grownPixels += compArea;
+
+        // Re-vectorize the grown component (potrace handles outer + holes), then
+        // triangulate each simple fill polygon.
+        QString via = QStringLiteral("grown");
+        PenFillResult fit;
+        const QPainterPath grown = traceMaskToPath(comp, imageW, imageH, compBounds, traceParams);
+        if (!grown.isEmpty()) {
+            const QList<QPolygonF> fillPolys = grown.toFillPolygons();
+            bool anyFail = false;
+            for (const QPolygonF &poly : fillPolys) {
+                if (poly.size() < 3) {
+                    continue;
+                }
+                QPolygonF trimmed = poly;
+                while (trimmed.size() > 1
+                       && QLineF(trimmed.front(), trimmed.back()).length() <= 1e-6) {
+                    trimmed.removeLast();
+                }
+                const QPolygonF simplified = simplifyClosedPolygon(trimmed, simplifyEpsilon);
+                const PenFillResult part = fillPolygonMesh(simplified, meshSources, cancelled);
+                if (part.error.isEmpty() && !part.placements.isEmpty()) {
+                    fit.placements += part.placements;
+                } else if (part.cancelled) {
+                    fit.cancelled = true;
+                    anyFail = true;
+                    break;
+                } else {
+                    anyFail = true;
+                }
+            }
+            if (anyFail && fit.placements.isEmpty()) {
+                fit.error = QStringLiteral("grown mesh failed");
+            }
+        }
+        // Fallback: solid fill of the original outline (drop holes) if growth failed.
+        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled) {
+            const PenFillResult meshFit =
+                fillRegionOutlineMesh(unit.outline, meshSources, simplifyEpsilon, cancelled);
+            if (meshFit.error.isEmpty() && !meshFit.placements.isEmpty()) {
+                ++meshFallbacks;
+                fit = meshFit;
+                via = QStringLiteral("solid-fallback");
+            } else if (fit.placements.isEmpty()) {
+                fit = meshFit;
+                via = QStringLiteral("failed");
+            }
+        }
+
+        if (fit.error.isEmpty() && !fit.placements.isEmpty()) {
+            RegionFillLayer &layer = unitFills[i];
+            layer.color = unit.color;
+            layer.area = unit.area;
+            layer.placements = fit.placements;
+            placementCount += fit.placements.size();
+            ++filled;
+        } else {
+            recordFailure(fit);
+        }
+
+        // This unit now sits above every lower unit still to be planned: its
+        // grown footprint becomes occlusion leeway for them.
+        for (int y = compBounds.top(); y <= compBounds.bottom(); ++y) {
+            const std::uint8_t *src = comp.data() + static_cast<size_t>(y) * imageW;
+            std::uint8_t *dst = occluded.data() + static_cast<size_t>(y) * imageW;
+            for (int x = compBounds.left(); x <= compBounds.right(); ++x) {
+                if (src[x]) {
+                    dst[x] = 1;
+                }
+            }
+        }
+        // Clear the scratch masks within their touched bounds for reuse.
+        for (int y = compBounds.top(); y <= compBounds.bottom(); ++y) {
+            std::uint8_t *cRow = comp.data() + static_cast<size_t>(y) * imageW;
+            std::uint8_t *vRow = vk.data() + static_cast<size_t>(y) * imageW;
+            for (int x = compBounds.left(); x <= compBounds.right(); ++x) {
+                cRow[x] = 0;
+                vRow[x] = 0;
+            }
+        }
+
+        log << QStringLiteral("unit #%1 %2 %3: seed=%4 grown=%5 -> %6 shapes, %7 ms%8")
+                   .arg(i)
+                   .arg(unit.color.name())
+                   .arg(via)
+                   .arg(unitSeed)
+                   .arg(compArea)
+                   .arg(fit.placements.size())
+                   .arg(clock.elapsed())
+                   .arg(fit.error.isEmpty() ? QString()
+                                            : QStringLiteral(" [error: %1]").arg(fit.error));
+    }
+
+    // Emit bottom-up (largest first) so the scene stack matches the plan.
+    for (RegionFillLayer &layer : unitFills) {
+        if (!layer.placements.isEmpty()) {
+            fills.push_back(std::move(layer));
+        }
+    }
+    log << QStringLiteral("Occlusion: grew %1 seed px to %2 filled px (%3x leeway)")
+               .arg(seedPixels)
+               .arg(grownPixels)
+               .arg(seedPixels > 0 ? static_cast<double>(grownPixels) / seedPixels : 0.0, 0, 'f', 2);
+    QGuiApplication::restoreOverrideCursor();
+
+    log << QStringLiteral("Summary: %1 fills (%2 merged blobs, %3 mesh fallbacks), "
+                          "%4 shapes across %5 colour layers, %6 failed, %7 timed out")
+               .arg(filled)
+               .arg(mergedBlobs)
+               .arg(meshFallbacks)
+               .arg(placementCount)
+               .arg(fills.size())
+               .arg(failed)
+               .arg(timedOut);
+    const QString logPath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/region_fill.log");
+    QFile logFile(logPath);
+    if (logFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        QTextStream stream(&logFile);
+        stream << log.join(QLatin1Char('\n')) << '\n';
+        logFile.close();
+    }
+    qWarning().noquote() << "Fill Regions log written to" << logPath;
+
+    // Build a "top failure reason" suffix so the cause is visible in-app.
+    QString reasonSuffix;
+    if (!failureReasons.isEmpty()) {
+        QString topReason;
+        int topCount = 0;
+        for (auto it = failureReasons.constBegin(); it != failureReasons.constEnd(); ++it) {
+            if (it.value() > topCount) {
+                topCount = it.value();
+                topReason = it.key();
+            }
+        }
+        reasonSuffix = QStringLiteral(" - top reason: %1 (x%2)").arg(topReason).arg(topCount);
+    }
+
+    if (fills.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("No regions could be filled%1").arg(reasonSuffix);
+        }
+        return false;
+    }
+    // Largest region first so nested (smaller) regions draw on top.
+    std::sort(fills.begin(), fills.end(), [](const RegionFillLayer &a, const RegionFillLayer &b) {
+        return a.area > b.area;
+    });
+    regionFills_ = std::move(fills);
+    regionFillSilhouettes_ = std::move(silhouettes);
+    showRegionFills_ = true;
+    update();
+    if (message != nullptr) {
+        *message = QStringLiteral("Filled %1 colour layers with %2 shapes "
+                                  "(%3 merged blobs, %4 failed, %5 timed out)%6")
+            .arg(fills.size())
+            .arg(placementCount)
+            .arg(mergedBlobs)
+            .arg(failed)
+            .arg(timedOut)
+            .arg(reasonSuffix);
+    }
+    return true;
+}
+
+void ProjectCanvas::clearRegionFills()
+{
+    if (regionFills_.isEmpty() && !showRegionFills_) {
+        return;
+    }
+    regionFills_.clear();
+    regionFillSilhouettes_.clear();
+    showRegionFills_ = false;
+    update();
+}
+
+QVector<GeneratedRegionShape> ProjectCanvas::regionFillWorldPlacements()
+{
+    QVector<GeneratedRegionShape> result;
+    if (regionFills_.isEmpty() || regionOverlayGuideId_.isEmpty()) {
+        return result;
+    }
+    const QSize imageSize = regionOverlay_.imageSize;
+    if (imageSize.width() < 1 || imageSize.height() < 1) {
+        return result;
+    }
+
+    // Same image-pixel -> world mapping the overlay uses to draw, minus the
+    // world->screen step: image -> guide local -> world.
+    QTransform guideWorld;
+    QSizeF guideSize;
+    bool found = false;
+    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+        if (guide.id != regionOverlayGuideId_ || !isSectionActive(sectionGroupId)) {
+            return true;
+        }
+        guideWorld = world;
+        guideSize = sceneNodeSize(guide, geometry_);
+        found = true;
+        return false;
+    }, /*reverse=*/false);
+    if (!found || guideSize.width() <= 0.0 || guideSize.height() <= 0.0) {
+        return result;
+    }
+    QTransform imageToLocal;
+    imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
+    imageToLocal.scale(guideSize.width() / imageSize.width(),
+                       guideSize.height() / imageSize.height());
+    const QTransform imageToWorld = imageToLocal * guideWorld;
+
+    for (const RegionFillLayer &fill : regionFills_) {
+        // Scene shape colour is stored BGRA.
+        const std::array<std::uint8_t, 4> color = {
+            static_cast<std::uint8_t>(fill.color.blue()),
+            static_cast<std::uint8_t>(fill.color.green()),
+            static_cast<std::uint8_t>(fill.color.red()),
+            255,
+        };
+        for (const PenPlacement &placement : fill.placements) {
+            GeneratedRegionShape shape;
+            shape.shapeId = placement.shapeId;
+            shape.transform = placement.transform * imageToWorld;
+            shape.color = color;
+            result.push_back(shape);
+        }
+    }
+    return result;
+}
+
+void ProjectCanvas::hideRegionOverlay()
+{
+    regionOverlayHidden_ = true;
+    showRegionFills_ = false;
+    update();
+}
+
+void ProjectCanvas::drawRegionOverlay(QPainter &painter)
+{
+    if (regionOverlay_.regions.isEmpty() || regionOverlayGuideId_.isEmpty() || regionOverlayHidden_) {
+        return;
+    }
+    const QSize imageSize = regionOverlay_.imageSize;
+    if (imageSize.width() < 1 || imageSize.height() < 1) {
+        return;
+    }
+
+    // Find the current world placement of the guide the overlay was built from.
+    QTransform guideWorld;
+    QSizeF guideSize;
+    bool found = false;
+    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+        if (guide.id != regionOverlayGuideId_ || !isSectionActive(sectionGroupId)) {
+            return true;
+        }
+        guideWorld = world;
+        guideSize = sceneNodeSize(guide, geometry_);
+        found = true;
+        return false;
+    }, /*reverse=*/false);
+    if (!found || guideSize.width() <= 0.0 || guideSize.height() <= 0.0) {
+        return;
+    }
+
+    // Image-pixel space -> guide local space (matches drawImage(localRect, image)).
+    QTransform imageToLocal;
+    imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
+    imageToLocal.scale(guideSize.width() / imageSize.width(),
+                       guideSize.height() / imageSize.height());
+    const QTransform imageToScreen = imageToLocal * guideWorld * worldToScreen_;
+
+    // Distinct debug palette; the graph coloring guarantees adjacent regions
+    // pick different entries, so neighbours never blend together.
+    static const QColor kDebugPalette[] = {
+        QColor(228, 87, 86), QColor(88, 163, 222), QColor(126, 194, 106),
+        QColor(240, 179, 74), QColor(163, 122, 214), QColor(74, 204, 196),
+        QColor(232, 130, 197), QColor(150, 158, 170),
+    };
+    constexpr int kDebugPaletteCount = int(sizeof(kDebugPalette) / sizeof(kDebugPalette[0]));
+
+    painter.save();
+    painter.setTransform(imageToScreen, true);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    if (showRegionFills_ && !regionFills_.isEmpty()) {
+        // Filled preview: each region's primitive placements in the region colour.
+        painter.setPen(Qt::NoPen);
+        for (const RegionFillLayer &fill : regionFills_) {
+            painter.setBrush(fill.color);
+            for (const PenPlacement &placement : fill.placements) {
+                const auto silhouette = regionFillSilhouettes_.constFind(placement.shapeId);
+                if (silhouette != regionFillSilhouettes_.constEnd()) {
+                    painter.drawPath(placement.transform.map(silhouette.value()));
+                }
+            }
+        }
+    } else {
+        // Debug region map: colour regions filled with their graph-colour so each
+        // reads as a distinct area.
+        QPen outlinePen(QColor(20, 22, 26, 180), 1.0);
+        outlinePen.setCosmetic(true);
+        for (const ExtractedRegion &region : regionOverlay_.regions) {
+            if (region.lineart) {
+                continue;
+            }
+            QColor fill = kDebugPalette[region.debugColor % kDebugPaletteCount];
+            fill.setAlpha(120);
+            painter.setBrush(fill);
+            painter.setPen(outlinePen);
+            painter.drawPath(region.outline);
+        }
+    }
+
+    // Lineart always draws on top, opaque in the opposite colour.
+    painter.setPen(Qt::NoPen);
+    for (const ExtractedRegion &region : regionOverlay_.regions) {
+        if (!region.lineart) {
+            continue;
+        }
+        painter.setBrush(QColor(255 - region.color.red(),
+                                255 - region.color.green(),
+                                255 - region.color.blue()));
+        painter.drawPath(region.outline);
+    }
     painter.restore();
 }
 

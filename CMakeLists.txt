@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ForzaLiveryStudio LANGUAGES CXX)
+project(ForzaLiveryStudio LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 find_package(ZLIB REQUIRED)
 qt_standard_project_setup()
+
+# Vendored potrace bitmap tracer (potracelib core only), GPLv2-or-later, which
+# is compatible with this project's AGPLv3. See third_party/potrace/COPYING.
+add_library(potrace STATIC
+    third_party/potrace/potracelib.c
+    third_party/potrace/curve.c
+    third_party/potrace/trace.c
+    third_party/potrace/decompose.c
+)
+target_include_directories(potrace PUBLIC third_party/potrace)
+target_compile_definitions(potrace PRIVATE VERSION="1.16" HAVE_INTTYPES_H=1 HAVE_STDINT_H=1)
+set_target_properties(potrace PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
 add_library(fls_core STATIC
     src/core/binary_io.cpp
@@ -154,6 +166,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/pen_fill.h
     src/gui/canvas/polygon_mesh.cpp
     src/gui/canvas/polygon_mesh.h
+    src/gui/canvas/region_extract.cpp
+    src/gui/canvas/region_extract.h
+    src/gui/canvas/region_fill.cpp
+    src/gui/canvas/region_fill.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
@@ -205,6 +221,7 @@ target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
 target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
     PRIVATE
         fls_core
+        potrace
         Qt6::Gui
         Qt6::Widgets
         Qt6::OpenGL

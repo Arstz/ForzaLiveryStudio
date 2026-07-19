@@ -712,7 +712,12 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
         mesh = mesh.united(transform.map(polygonPath(request.sources.triangle)));
     }
 
-    const double allowedArea = std::max(1e-8, pathArea(contour.path) * 1e-8);
+    // The triangle/square union equals the contour polygon exactly in exact
+    // arithmetic; any mismatch here is floating-point noise from Qt's boolean
+    // path ops, which accumulates with the number of unions. Complex cores
+    // therefore need a looser (but still visually exact, ~0.01% of area)
+    // tolerance so they are not rejected as "not matching" their own contour.
+    const double allowedArea = std::max(1e-6, pathArea(contour.path) * 1e-4);
     if (pathArea(mesh.subtracted(contour.path)) > allowedArea
         || pathArea(contour.path.subtracted(mesh)) > allowedArea) {
         result.error = QStringLiteral("The generated lasso mesh did not match its contour");

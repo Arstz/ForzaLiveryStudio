@@ -512,6 +512,51 @@ void MainWindow::importGuideLayerDialog()
     }
 }
 
+void MainWindow::createRegions()
+{
+    if (canvas_ == nullptr) {
+        return;
+    }
+    QString message;
+    if (canvas_->createRegionsForSelectedGuide(&message)) {
+        statusBar()->showMessage(message, 5000);
+    } else {
+        statusBar()->showMessage(message.isEmpty()
+                                     ? QStringLiteral("Could not create regions")
+                                     : message,
+                                 5000);
+    }
+}
+
+void MainWindow::fillRegions()
+{
+    if (canvas_ == nullptr) {
+        return;
+    }
+    QString message;
+    if (!canvas_->fillRegionsForOverlay(&message)) {
+        statusBar()->showMessage(message.isEmpty()
+                                     ? QStringLiteral("Could not fill regions")
+                                     : message,
+                                 5000);
+        return;
+    }
+    if (!state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
+        return;
+    }
+    const QVector<GeneratedRegionShape> shapes = canvas_->regionFillWorldPlacements();
+    if (shapes.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Region fill produced no shapes"), 4000);
+        return;
+    }
+    insertGeneratedFillColored(QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
+                               shapes, selectedEntryIds());
+    // Real shapes now render; hide the preview but keep the extracted regions so
+    // a re-fill stays cheap.
+    canvas_->hideRegionOverlay();
+}
+
 bool MainWindow::importFM2023Folder(const QString &path, QString *error)
 {
     try {

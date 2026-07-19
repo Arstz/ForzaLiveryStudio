@@ -195,6 +195,58 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
                              3500);
 }
 
+void MainWindow::insertGeneratedFillColored(const QString &groupName,
+                                            const QString &displayName,
+                                            const QVector<GeneratedRegionShape> &shapes,
+                                            const QVector<QString> &insertionEntries)
+{
+    if (shapes.isEmpty() || !state_->hasProject()) {
+        return;
+    }
+
+    auto group = std::make_unique<fh6::scene::Group>();
+    group->id = state_->uniqueGroupId();
+    const QString groupId = group->id;
+    group->name = groupName;
+    QSet<QString> generatedIds;
+    generatedIds.reserve(shapes.size());
+    for (const GeneratedRegionShape &placement : shapes) {
+        auto shape = std::make_unique<fh6::scene::Shape>();
+        shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        shape->name = fh6::detail::shapeName(static_cast<quint16>(placement.shapeId));
+        shape->setVectorShape(static_cast<quint16>(placement.shapeId));
+        shape->transform = fh6::decomposeTransform2D(generatedShapeMatrix(placement.transform));
+        shape->color = {placement.color[0], placement.color[1], placement.color[2], placement.color[3]};
+        generatedIds.insert(shape->id);
+        group->append(std::move(shape));
+    }
+
+    state_->beginProjectEdit();
+    state_->insertLayerAboveSelection(std::move(group), insertionEntries);
+    if (fh6::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
+        const QString parentId = state_->parentGroupForEntry(groupId);
+        if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
+            const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
+            for (const auto &child : inserted->children) {
+                child->transform = fh6::decomposeTransform2D(
+                    fh6::detail::multiply(parentInverse, child->transform.matrix()));
+            }
+        }
+    }
+    state_->selectedLayerIds_ = generatedIds;
+    state_->selectedGuideLayerIds_.clear();
+    state_->selectedEntryIds_.clear();
+    state_->commitProjectEdit();
+    state_->noteProjectStructureChanged();
+    if (canvas_ != nullptr) {
+        canvas_->setFocus();
+    }
+    statusBar()->showMessage(QStringLiteral("Created %1 with %2 shapes")
+                                 .arg(displayName)
+                                 .arg(shapes.size()),
+                             3500);
+}
+
 fh6::Project *MainWindow::project()
 {
     return state_->project();

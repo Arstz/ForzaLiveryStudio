@@ -1,4 +1,7 @@
 Small changes:
+    -Add escape to cancel selection in Move/Rotate/Transform
+    -Cannot copy guide layer to another section, results in empty
+    -Apply last shape color flag does not work
 
 Medium changes:
 

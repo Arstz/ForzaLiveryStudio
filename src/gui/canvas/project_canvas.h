@@ -4,6 +4,8 @@
 #include "layer.h"
 #include "native_shape_renderer.h"
 #include "pen_fill.h"
+#include "region_extract.h"
+#include "region_fill.h"
 #include "shape_geometry_store.h"
 
 #include <QtCore>
@@ -77,6 +79,23 @@ public:
     bool carUnwrapVisible() const;
     bool hasCarUnwrap() const;
     void cycleFlipSelection();
+
+    // Runs the region-extraction draft on a selected guide layer and shows the
+    // result as a canvas overlay. Returns false with a human-readable reason.
+    bool createRegionsForSelectedGuide(QString *message = nullptr);
+    void clearRegionOverlay();
+
+    // Fills the non-lineart regions of the current overlay with affine
+    // primitives via the Pen fitter and shows the placements. Returns false
+    // with a human-readable reason.
+    bool fillRegionsForOverlay(QString *message = nullptr);
+    void clearRegionFills();
+    // The computed fill placements, mapped from image-pixel space into world
+    // space and tagged with each region's colour, ready for scene insertion.
+    QVector<GeneratedRegionShape> regionFillWorldPlacements();
+    // Hide the region overlay preview (e.g. once real shapes were inserted)
+    // without discarding the extracted regions, so a re-fill stays cheap.
+    void hideRegionOverlay();
 
     enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom };
     enum class DistributeAxis { Horizontal, Vertical };
@@ -235,6 +254,7 @@ private:
     bool movedPastClickThreshold(const QPointF &point) const;
     QString guideAtScreenPoint(const QPointF &point);
     void drawGuideLayers(QPainter &painter);
+    void drawRegionOverlay(QPainter &painter);
     QImage guideImage(const fh6::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;
     void storeSectionCanvasCache(const QString &key);
@@ -331,6 +351,12 @@ private:
     mutable QHash<QString, QImage> sectionCanvasCache_;
     QImage carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;
+    QString regionOverlayGuideId_;
+    RegionExtractionResult regionOverlay_;
+    QVector<RegionFillLayer> regionFills_;
+    QHash<int, QPainterPath> regionFillSilhouettes_;
+    bool showRegionFills_ = false;
+    bool regionOverlayHidden_ = false;
     mutable std::optional<QRectF> selectionWorldBoundsCache_;
     QColor canvasColor_;
 };

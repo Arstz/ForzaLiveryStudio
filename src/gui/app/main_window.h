@@ -87,6 +87,8 @@ private:
 
     void importFileDialog();
     void importGuideLayerDialog();
+    void createRegions();
+    void fillRegions();
     bool importFM2023Folder(const QString &path, QString *error);
     void rebuildSectionBar();
     void setActiveSection(const QString &sectionGroupId);
@@ -149,6 +151,10 @@ private:
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);
+    void insertGeneratedFillColored(const QString &groupName,
+                                    const QString &displayName,
+                                    const QVector<GeneratedRegionShape> &shapes,
+                                    const QVector<QString> &insertionEntries);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
     enum class ExternalDropKind {
