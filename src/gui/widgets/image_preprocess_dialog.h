@@ -7,6 +7,8 @@
 
 class QDialogButtonBox;
 class QLabel;
+class QListWidget;
+class QPushButton;
 class QSlider;
 class QTimer;
 class QToolButton;
@@ -18,10 +20,13 @@ class ImagePreviewWidget;
 
 class ImagePreprocessDialog final : public QDialog {
 public:
-    explicit ImagePreprocessDialog(const QImage &source, QWidget *parent = nullptr);
+    explicit ImagePreprocessDialog(const QImage &source,
+                                   const QVector<QColor> &projectSwatches = {},
+                                   QWidget *parent = nullptr);
 
     QImage resultImage() const;
     int retainedColorCount() const;
+    QVector<QColor> retainedPalette() const;
     ImagePreprocessSettings selectedSettings() const;
 
 protected:
@@ -35,12 +40,23 @@ private:
     void finishFullResolutionProcessing(const ImagePreprocessResult &result);
     void setControlsEnabled(bool enabled);
     void applySharedView(double scale, const QPointF &center, bool centerValid);
+    void importProjectSwatches();
+    void choosePaletteColor();
+    void beginEyedropper();
+    void addPaletteColor(const QColor &color);
+    void removeSelectedPaletteColor();
+    void rebuildPaletteList();
+    void setEyedropperActive(bool active);
 
     QImage source_;
     QImage displaySource_;
     QImage previewSource_;
     QImage result_;
     int retainedColorCount_ = 0;
+    QVector<QColor> retainedPalette_;
+    QVector<QColor> projectSwatches_;
+    QVector<QColor> paletteColors_;
+    bool fixedPalette_ = false;
     ImagePreviewWidget *originalView_ = nullptr;
     ImagePreviewWidget *processedView_ = nullptr;
     QWidget *settingsPanel_ = nullptr;
@@ -48,6 +64,10 @@ private:
     QToolButton *advancedButton_ = nullptr;
     QLabel *statusLabel_ = nullptr;
     QLabel *zoomLabel_ = nullptr;
+    QLabel *paletteModeLabel_ = nullptr;
+    QListWidget *paletteList_ = nullptr;
+    QPushButton *importSwatchesButton_ = nullptr;
+    QPushButton *eyedropperButton_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;
     QTimer *previewTimer_ = nullptr;
 
@@ -64,6 +84,7 @@ private:
     QSlider *detailRadius_ = nullptr;
     QSlider *quantizationIterations_ = nullptr;
     QSlider *minimumColorFraction_ = nullptr;
+    QSlider *speckleSize_ = nullptr;
 
     double viewScale_ = 0.0;
     QPointF viewCenter_;

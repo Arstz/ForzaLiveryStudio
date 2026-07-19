@@ -6,6 +6,7 @@
 #include "car_registry.h"
 #include "fh6_core.h"
 #include "fm_codec.h"
+#include "gui_constants.h"
 #include "header_metadata_widget.h"
 #include "image_io.h"
 #include "image_preprocess_dialog.h"
@@ -556,7 +557,13 @@ void MainWindow::preprocessSelectedGuide()
 
     const QString guideId = guide->id;
     const QString guideName = guide->name;
-    ImagePreprocessDialog dialog(source, this);
+    QVector<QColor> projectSwatches;
+    projectSwatches.reserve(state_->project_.colorSwatches.size());
+    for (const std::array<quint8, 4> &swatch : std::as_const(state_->project_.colorSwatches)) {
+        projectSwatches.push_back(QColor(swatch[ColorByteRed], swatch[ColorByteGreen],
+                                        swatch[ColorByteBlue], swatch[ColorByteAlpha]));
+    }
+    ImagePreprocessDialog dialog(source, projectSwatches, this);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -601,10 +608,27 @@ void MainWindow::preprocessSelectedGuide()
                                       processed.sizeInBytes());
     guide->preprocessColorCount = std::clamp(dialog.retainedColorCount(), 0, 256);
     const int retainedColors = guide->preprocessColorCount;
+    int addedSwatches = 0;
+    for (const QColor &color : dialog.retainedPalette()) {
+        const bool exists = std::any_of(
+            state_->project_.colorSwatches.cbegin(), state_->project_.colorSwatches.cend(),
+            [&](const std::array<quint8, 4> &swatch) {
+                return swatch[ColorByteRed] == color.red()
+                    && swatch[ColorByteGreen] == color.green()
+                    && swatch[ColorByteBlue] == color.blue();
+            });
+        if (!exists) {
+            state_->project_.colorSwatches.push_back({static_cast<quint8>(color.blue()),
+                                                      static_cast<quint8>(color.green()),
+                                                      static_cast<quint8>(color.red()),
+                                                      255});
+            ++addedSwatches;
+        }
+    }
     state_->commitProjectEdit();
     state_->noteProjectGeometryChanged(true, {guideId});
-    statusBar()->showMessage(QStringLiteral("Preprocessed guide layer %1 (%2 retained colors)")
-                                 .arg(guideName).arg(retainedColors),
+    statusBar()->showMessage(QStringLiteral("Preprocessed guide layer %1 (%2 retained colors, %3 new swatches)")
+                                 .arg(guideName).arg(retainedColors).arg(addedSwatches),
                              3500);
 }
 

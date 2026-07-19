@@ -52,15 +52,25 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   edge-preserving smoothing, median flattening, and circular-hue HSV palette
   clustering, then buckets clusters below the configurable minimum color share
   into their nearest retained color and restores saturation plus an edge-free
-  local detail residual. The final retained-color count is stored on the guide
-  and becomes the palette cap for region extraction. The dialog shows
+  local detail residual without introducing colors outside the retained palette.
+  Fully transparent source pixels remain transparent, while every partially or
+  fully visible pixel becomes fully opaque. An advanced speckle threshold removes
+  small 8-connected visible color components by assigning the dominant visible
+  neighboring palette color without filling transparent areas.
+  Colors chosen with the color dialog or either preview's eyedropper are locked
+  while HSV clustering fills the remaining color limit. Importing project
+  swatches switches to a fixed palette containing those swatches plus any manual
+  additions; fixed-palette output uses only those exact colors. Colors can be
+  removed from either palette. The final palette is added to project swatches as
+  part of the same undoable edit. The final retained-color count is stored on the
+  guide and becomes the palette cap for region extraction. The dialog shows
   the original beside an asynchronously regenerated downscaled preview, exposes
   four main controls and keeps the remaining numeric controls under **Advanced
   settings**. Both views share wheel zoom and mouse-drag panning, with **Fit**,
   **100%**, and double-click-to-fit navigation. **OK** processes the original
-  resolution, preserves dimensions and alpha, and replaces the guide image as one
-  undoable edit. **Create Regions** and **Fill Regions** are also in the **ImgGen**
-  menu.
+  resolution, preserves dimensions, produces binary alpha, and replaces
+  the guide image as one undoable edit. **Create Regions** and **Fill Regions**
+  are also in the **ImgGen** menu.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,

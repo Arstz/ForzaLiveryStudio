@@ -13,10 +13,13 @@ namespace gui {
 class ImagePreviewWidget final : public QWidget {
 public:
     using ViewChanged = std::function<void(double, const QPointF &, bool)>;
+    using ColorPicked = std::function<void(const QColor &)>;
 
-    explicit ImagePreviewWidget(ViewChanged viewChanged, QWidget *parent = nullptr)
+    explicit ImagePreviewWidget(ViewChanged viewChanged, ColorPicked colorPicked,
+                                QWidget *parent = nullptr)
         : QWidget(parent)
         , viewChanged_(std::move(viewChanged))
+        , colorPicked_(std::move(colorPicked))
     {
         setMinimumSize(280, 240);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -36,6 +39,12 @@ public:
         center_ = center;
         centerValid_ = centerValid;
         update();
+    }
+
+    void setEyedropperActive(bool active)
+    {
+        eyedropperActive_ = active;
+        setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
     }
 
 protected:
@@ -86,6 +95,17 @@ protected:
 
     void mousePressEvent(QMouseEvent *event) override
     {
+        if (eyedropperActive_ && event->button() == Qt::LeftButton && !image_.isNull()) {
+            const double scale = effectiveScale();
+            const QPointF imagePoint = effectiveCenter()
+                + (event->position() - QPointF(width() * 0.5, height() * 0.5)) / scale;
+            if (imagePoint.x() >= 0.0 && imagePoint.y() >= 0.0
+                && imagePoint.x() < image_.width() && imagePoint.y() < image_.height()) {
+                colorPicked_(image_.pixelColor(qFloor(imagePoint.x()), qFloor(imagePoint.y())));
+            }
+            event->accept();
+            return;
+        }
         if ((event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) && !image_.isNull()) {
             panning_ = true;
             panLast_ = event->position();
@@ -113,7 +133,7 @@ protected:
     {
         if (panning_ && (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton)) {
             panning_ = false;
-            unsetCursor();
+            setCursor(eyedropperActive_ ? Qt::CrossCursor : Qt::ArrowCursor);
             event->accept();
             return;
         }
@@ -152,10 +172,12 @@ private:
 
     QImage image_;
     ViewChanged viewChanged_;
+    ColorPicked colorPicked_;
     double scale_ = 0.0;
     QPointF center_;
     bool centerValid_ = false;
     bool panning_ = false;
+    bool eyedropperActive_ = false;
     QPointF panLast_;
 };
 
@@ -198,11 +220,36 @@ ImagePreprocessResult preprocessSafely(const QImage &input, const ImagePreproces
     }
 }
 
+QVector<QColor> uniqueOpaqueColors(const QVector<QColor> &colors)
+{
+    QVector<QColor> result;
+    result.reserve(std::min(256, static_cast<int>(colors.size())));
+    for (const QColor &input : colors) {
+        if (!input.isValid()) {
+            continue;
+        }
+        const QColor color(input.red(), input.green(), input.blue(), 255);
+        const bool duplicate = std::any_of(result.cbegin(), result.cend(), [&](const QColor &existing) {
+            return existing.rgb() == color.rgb();
+        });
+        if (!duplicate) {
+            result.push_back(color);
+            if (result.size() == 256) {
+                break;
+            }
+        }
+    }
+    return result;
+}
+
 } // namespace
 
-ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source, QWidget *parent)
+ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
+                                             const QVector<QColor> &projectSwatches,
+                                             QWidget *parent)
     : QDialog(parent)
     , source_(source.convertToFormat(QImage::Format_ARGB32_Premultiplied))
+    , projectSwatches_(uniqueOpaqueColors(projectSwatches))
 {
     setWindowTitle(QStringLiteral("Preprocess Image"));
     resize(1100, 680);
@@ -242,7 +289,11 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source, QWidget *pare
     const auto viewChanged = [this](double scale, const QPointF &center, bool centerValid) {
         applySharedView(scale, center, centerValid);
     };
-    auto makeImageColumn = [imageRow, viewChanged](const QString &title, ImagePreviewWidget **view) {
+    const auto colorPicked = [this](const QColor &color) {
+        setEyedropperActive(false);
+        addPaletteColor(color);
+    };
+    auto makeImageColumn = [imageRow, viewChanged, colorPicked](const QString &title, ImagePreviewWidget **view) {
         auto *column = new QWidget(imageRow);
         auto *layout = new QVBoxLayout(column);
         auto *heading = new QLabel(title, column);
@@ -250,7 +301,7 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source, QWidget *pare
         font.setBold(true);
         heading->setFont(font);
         heading->setAlignment(Qt::AlignCenter);
-        *view = new ImagePreviewWidget(viewChanged, column);
+        *view = new ImagePreviewWidget(viewChanged, colorPicked, column);
         layout->addWidget(heading);
         layout->addWidget(*view, 1);
         return column;
@@ -277,7 +328,7 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source, QWidget *pare
     settingsLayout->addLayout(mainForm);
     const ImagePreprocessSettings defaults = ImagePreprocessSettings::animeDetail();
     const auto changed = [this]() { schedulePreview(); };
-    colors_ = addSlider(mainForm, QStringLiteral("Colors"), 2, 256, defaults.colors,
+    colors_ = addSlider(mainForm, QStringLiteral("Colors"), 1, 256, defaults.colors,
                         [](int value) { return QString::number(value); }, changed);
     flattenStrength_ = addSlider(mainForm, QStringLiteral("Flatten"), 0, 100,
                                  qRound(defaults.flattenStrength * 100.0), percentValue, changed);
@@ -319,13 +370,61 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source, QWidget *pare
         advancedForm, QStringLiteral("Minimum color share"), 0, 500,
         qRound(defaults.minimumColorFraction * 10000.0),
         [](int value) { return QStringLiteral("%1%").arg(value / 100.0, 0, 'f', 2); }, changed);
+    speckleSize_ = addSlider(advancedForm, QStringLiteral("Speckle size"), 0, 64,
+                             defaults.speckleSize,
+                             [](int value) { return QString::number(value); }, changed);
     advancedPanel_->hide();
     settingsLayout->addWidget(advancedPanel_);
+
+    auto *paletteGroup = new QGroupBox(QStringLiteral("Palette"), settingsPanel_);
+    auto *paletteLayout = new QVBoxLayout(paletteGroup);
+    paletteModeLabel_ = new QLabel(QStringLiteral("Generated HSV palette"), paletteGroup);
+    paletteModeLabel_->setWordWrap(true);
+    paletteLayout->addWidget(paletteModeLabel_);
+    paletteList_ = new QListWidget(paletteGroup);
+    paletteList_->setViewMode(QListView::IconMode);
+    paletteList_->setFlow(QListView::LeftToRight);
+    paletteList_->setWrapping(true);
+    paletteList_->setResizeMode(QListView::Adjust);
+    paletteList_->setIconSize(QSize(24, 24));
+    paletteList_->setGridSize(QSize(42, 42));
+    paletteList_->setMaximumHeight(96);
+    paletteLayout->addWidget(paletteList_);
+    auto *paletteButtons = new QGridLayout;
+    importSwatchesButton_ = new QPushButton(QStringLiteral("Import swatches"), paletteGroup);
+    auto *chooseColorButton = new QPushButton(QStringLiteral("Choose…"), paletteGroup);
+    eyedropperButton_ = new QPushButton(QStringLiteral("Pick from image"), paletteGroup);
+    eyedropperButton_->setCheckable(true);
+    auto *removeColorButton = new QPushButton(QStringLiteral("Remove"), paletteGroup);
+    importSwatchesButton_->setEnabled(!projectSwatches_.isEmpty());
+    if (projectSwatches_.isEmpty()) {
+        importSwatchesButton_->setToolTip(QStringLiteral("This project has no swatches"));
+    }
+    paletteButtons->addWidget(importSwatchesButton_, 0, 0);
+    paletteButtons->addWidget(chooseColorButton, 0, 1);
+    paletteButtons->addWidget(eyedropperButton_, 1, 0);
+    paletteButtons->addWidget(removeColorButton, 1, 1);
+    paletteLayout->addLayout(paletteButtons);
+    settingsLayout->addWidget(paletteGroup);
     settingsLayout->addStretch(1);
     QObject::connect(advancedButton_, &QToolButton::toggled, this, [this](bool shown) {
         advancedPanel_->setVisible(shown);
         advancedButton_->setArrowType(shown ? Qt::DownArrow : Qt::RightArrow);
     });
+    QObject::connect(importSwatchesButton_, &QPushButton::clicked,
+                     this, &ImagePreprocessDialog::importProjectSwatches);
+    QObject::connect(chooseColorButton, &QPushButton::clicked,
+                     this, &ImagePreprocessDialog::choosePaletteColor);
+    QObject::connect(eyedropperButton_, &QPushButton::clicked,
+                     this, &ImagePreprocessDialog::beginEyedropper);
+    QObject::connect(removeColorButton, &QPushButton::clicked,
+                     this, &ImagePreprocessDialog::removeSelectedPaletteColor);
+    QObject::connect(colors_, &QSlider::valueChanged, this, [this](int value) {
+        if (!fixedPalette_ && value < paletteColors_.size()) {
+            colors_->setValue(paletteColors_.size());
+        }
+    });
+    rebuildPaletteList();
     content->addWidget(settingsPanel_);
     content->setStretchFactor(0, 1);
     content->setStretchFactor(1, 0);
@@ -354,6 +453,11 @@ int ImagePreprocessDialog::retainedColorCount() const
     return retainedColorCount_;
 }
 
+QVector<QColor> ImagePreprocessDialog::retainedPalette() const
+{
+    return retainedPalette_;
+}
+
 ImagePreprocessSettings ImagePreprocessDialog::selectedSettings() const
 {
     ImagePreprocessSettings settings;
@@ -370,6 +474,9 @@ ImagePreprocessSettings ImagePreprocessDialog::selectedSettings() const
     settings.detailRadius = detailRadius_->value();
     settings.quantizationIterations = quantizationIterations_->value();
     settings.minimumColorFraction = minimumColorFraction_->value() / 10000.0;
+    settings.speckleSize = speckleSize_->value();
+    settings.paletteColors = paletteColors_;
+    settings.fixedPalette = fixedPalette_;
     return settings;
 }
 
@@ -464,6 +571,7 @@ void ImagePreprocessDialog::finishFullResolutionProcessing(const ImagePreprocess
 {
     result_ = result.image.mirrored(false, true);
     retainedColorCount_ = result.retainedColorCount;
+    retainedPalette_ = result.retainedPalette;
     if (result_.isNull()) {
         fullResolutionRunning_ = false;
         setControlsEnabled(true);
@@ -500,6 +608,124 @@ void ImagePreprocessDialog::applySharedView(double scale, const QPointF &center,
         zoomLabel_->setText(viewScale_ > 0.0
                                 ? QStringLiteral("%1%").arg(qRound(viewScale_ * 100.0))
                                 : QStringLiteral("Fit"));
+    }
+}
+
+void ImagePreprocessDialog::importProjectSwatches()
+{
+    if (projectSwatches_.isEmpty()) {
+        statusLabel_->setText(QStringLiteral("This project has no swatches to import."));
+        return;
+    }
+    // Project swatches define fixed mode, so preserve all of them before any
+    // manually locked additions if the 256-color image limit is reached.
+    paletteColors_ = uniqueOpaqueColors(projectSwatches_ + paletteColors_);
+    fixedPalette_ = true;
+    setEyedropperActive(false);
+    rebuildPaletteList();
+    schedulePreview();
+}
+
+void ImagePreprocessDialog::choosePaletteColor()
+{
+    QColor initial = Qt::white;
+    if (paletteList_ != nullptr && paletteList_->currentItem() != nullptr) {
+        initial = paletteList_->currentItem()->data(Qt::UserRole).value<QColor>();
+    }
+    const QColor color = QColorDialog::getColor(initial, this, QStringLiteral("Choose Palette Color"));
+    if (color.isValid()) {
+        addPaletteColor(color);
+    }
+}
+
+void ImagePreprocessDialog::beginEyedropper()
+{
+    const bool active = eyedropperButton_ != nullptr && eyedropperButton_->isChecked();
+    setEyedropperActive(active);
+    if (active) {
+        statusLabel_->setText(QStringLiteral("Click either image to add that color to the palette."));
+    }
+}
+
+void ImagePreprocessDialog::addPaletteColor(const QColor &input)
+{
+    if (!input.isValid()) {
+        return;
+    }
+    const QColor color(input.red(), input.green(), input.blue(), 255);
+    if (std::any_of(paletteColors_.cbegin(), paletteColors_.cend(), [&](const QColor &existing) {
+            return existing.rgb() == color.rgb();
+        })) {
+        statusLabel_->setText(QStringLiteral("That color is already in the preprocessing palette."));
+        return;
+    }
+    if (paletteColors_.size() >= 256) {
+        statusLabel_->setText(QStringLiteral("The preprocessing palette is limited to 256 colors."));
+        return;
+    }
+    paletteColors_.push_back(color);
+    if (!fixedPalette_ && colors_->value() < paletteColors_.size()) {
+        colors_->setValue(paletteColors_.size());
+    }
+    rebuildPaletteList();
+    schedulePreview();
+}
+
+void ImagePreprocessDialog::removeSelectedPaletteColor()
+{
+    if (paletteList_ == nullptr || paletteList_->currentRow() < 0) {
+        statusLabel_->setText(QStringLiteral("Select a palette color to remove."));
+        return;
+    }
+    if (fixedPalette_ && paletteColors_.size() <= 1) {
+        statusLabel_->setText(QStringLiteral("A fixed palette must contain at least one color."));
+        return;
+    }
+    paletteColors_.removeAt(paletteList_->currentRow());
+    rebuildPaletteList();
+    schedulePreview();
+}
+
+void ImagePreprocessDialog::rebuildPaletteList()
+{
+    if (paletteList_ == nullptr || colors_ == nullptr) {
+        return;
+    }
+    paletteList_->clear();
+    for (const QColor &color : paletteColors_) {
+        QPixmap swatch(24, 24);
+        swatch.fill(color);
+        auto *item = new QListWidgetItem(QIcon(swatch), QString(), paletteList_);
+        item->setData(Qt::UserRole, color);
+        item->setToolTip(color.name(QColor::HexRgb));
+    }
+    if (fixedPalette_) {
+        colors_->setValue(std::max(1, static_cast<int>(paletteColors_.size())));
+        colors_->setEnabled(false);
+        paletteModeLabel_->setText(QStringLiteral("Fixed palette: output uses only these %1 colors.")
+                                       .arg(paletteColors_.size()));
+    } else {
+        colors_->setEnabled(true);
+        if (colors_->value() < paletteColors_.size()) {
+            colors_->setValue(paletteColors_.size());
+        }
+        paletteModeLabel_->setText(paletteColors_.isEmpty()
+                                       ? QStringLiteral("Generated HSV palette")
+                                       : QStringLiteral("%1 locked colors; HSV fills the remaining limit.")
+                                             .arg(paletteColors_.size()));
+    }
+}
+
+void ImagePreprocessDialog::setEyedropperActive(bool active)
+{
+    if (eyedropperButton_ != nullptr) {
+        eyedropperButton_->setChecked(active);
+    }
+    if (originalView_ != nullptr) {
+        originalView_->setEyedropperActive(active);
+    }
+    if (processedView_ != nullptr) {
+        processedView_->setEyedropperActive(active);
     }
 }
 

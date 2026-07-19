@@ -26,6 +26,7 @@ struct HistogramColor {
 struct QuantizeResult {
     QImage image;
     int retainedColorCount = 0;
+    QVector<QColor> retainedPalette;
 };
 
 constexpr double kEpsilon = 1e-9;
@@ -62,6 +63,182 @@ double hsvDistanceSquared(const HsvColor &left, const HsvColor &right)
 int colorBin(QRgb pixel)
 {
     return ((qRed(pixel) >> 3) << 10) | ((qGreen(pixel) >> 3) << 5) | (qBlue(pixel) >> 3);
+}
+
+QImage normalizeBinaryAlpha(const QImage &source)
+{
+    QImage result = source.convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < result.height(); ++y) {
+        auto *line = reinterpret_cast<QRgb *>(result.scanLine(y));
+        for (int x = 0; x < result.width(); ++x) {
+            if (qAlpha(line[x]) > 0) {
+                line[x] = qRgb(qRed(line[x]), qGreen(line[x]), qBlue(line[x]));
+            } else {
+                line[x] = qRgba(0, 0, 0, 0);
+            }
+        }
+    }
+    return result;
+}
+
+QVector<QColor> normalizedPalette(const QVector<QColor> &colors)
+{
+    QVector<QColor> result;
+    result.reserve(std::min(256, static_cast<int>(colors.size())));
+    for (const QColor &input : colors) {
+        if (!input.isValid()) {
+            continue;
+        }
+        const QColor color(input.red(), input.green(), input.blue(), 255);
+        const bool duplicate = std::any_of(result.cbegin(), result.cend(), [&](const QColor &existing) {
+            return existing.rgb() == color.rgb();
+        });
+        if (!duplicate) {
+            result.push_back(color);
+            if (result.size() == 256) {
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+QuantizeResult quantizeToFixedPalette(const QImage &source, const QVector<QColor> &inputPalette)
+{
+    constexpr int histogramSize = 32 * 32 * 32;
+    const QVector<QColor> palette = normalizedPalette(inputPalette);
+    if (palette.isEmpty()) {
+        return {};
+    }
+    QVector<HsvColor> paletteHsv;
+    paletteHsv.reserve(palette.size());
+    for (const QColor &color : palette) {
+        paletteHsv.push_back(rgbToHsv(color.red(), color.green(), color.blue()));
+    }
+    std::array<int, histogramSize> assignments;
+    assignments.fill(-1);
+    QImage result(source.size(), QImage::Format_ARGB32);
+    for (int y = 0; y < source.height(); ++y) {
+        const auto *input = reinterpret_cast<const QRgb *>(source.constScanLine(y));
+        auto *output = reinterpret_cast<QRgb *>(result.scanLine(y));
+        for (int x = 0; x < source.width(); ++x) {
+            if (qAlpha(input[x]) == 0) {
+                output[x] = input[x];
+                continue;
+            }
+            const int bin = colorBin(input[x]);
+            int &assignment = assignments[static_cast<size_t>(bin)];
+            if (assignment < 0) {
+                const HsvColor hsv = rgbToHsv(qRed(input[x]), qGreen(input[x]), qBlue(input[x]));
+                double nearest = std::numeric_limits<double>::max();
+                for (int index = 0; index < paletteHsv.size(); ++index) {
+                    const double distance = hsvDistanceSquared(hsv, paletteHsv[index]);
+                    if (distance < nearest) {
+                        nearest = distance;
+                        assignment = index;
+                    }
+                }
+            }
+            const QColor color = palette[assignment];
+            output[x] = qRgba(color.red(), color.green(), color.blue(), qAlpha(input[x]));
+        }
+    }
+    return {result, static_cast<int>(palette.size()), palette};
+}
+
+QImage removeSmallColorRegions(const QImage &source, int maximumPixels)
+{
+    QImage result = source.convertToFormat(QImage::Format_ARGB32);
+    const int threshold = std::clamp(maximumPixels, 0, 64);
+    const int width = result.width();
+    const int height = result.height();
+    const qsizetype pixelCount = static_cast<qsizetype>(width) * height;
+    if (threshold == 0 || pixelCount <= 0) {
+        return result;
+    }
+
+    const QImage snapshot = result;
+    std::vector<quint8> visited(static_cast<size_t>(pixelCount), 0);
+    std::vector<int> queue;
+    std::vector<int> component;
+    queue.reserve(static_cast<size_t>(threshold + 1));
+    component.reserve(static_cast<size_t>(threshold + 1));
+    constexpr std::array<QPoint, 8> neighbors = {
+        QPoint(-1, -1), QPoint(0, -1), QPoint(1, -1), QPoint(-1, 0),
+        QPoint(1, 0), QPoint(-1, 1), QPoint(0, 1), QPoint(1, 1),
+    };
+
+    for (int seed = 0; seed < pixelCount; ++seed) {
+        if (visited[static_cast<size_t>(seed)] != 0) {
+            continue;
+        }
+        const int seedX = seed % width;
+        const int seedY = seed / width;
+        const QRgb componentColor = snapshot.pixel(seedX, seedY);
+        if (qAlpha(componentColor) == 0) {
+            visited[static_cast<size_t>(seed)] = 1;
+            continue;
+        }
+        queue.clear();
+        component.clear();
+        queue.push_back(seed);
+        visited[static_cast<size_t>(seed)] = 1;
+        for (size_t head = 0; head < queue.size(); ++head) {
+            const int index = queue[head];
+            if (component.size() <= static_cast<size_t>(threshold)) {
+                component.push_back(index);
+            }
+            const int x = index % width;
+            const int y = index / width;
+            for (const QPoint &offset : neighbors) {
+                const int nx = x + offset.x();
+                const int ny = y + offset.y();
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                    continue;
+                }
+                const int neighborIndex = ny * width + nx;
+                if (visited[static_cast<size_t>(neighborIndex)] == 0
+                    && snapshot.pixel(nx, ny) == componentColor) {
+                    visited[static_cast<size_t>(neighborIndex)] = 1;
+                    queue.push_back(neighborIndex);
+                }
+            }
+        }
+        if (component.size() > static_cast<size_t>(threshold)) {
+            continue;
+        }
+
+        QMap<QRgb, int> neighborCounts;
+        for (int index : component) {
+            const int x = index % width;
+            const int y = index / width;
+            for (const QPoint &offset : neighbors) {
+                const int nx = x + offset.x();
+                const int ny = y + offset.y();
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                    continue;
+                }
+                const QRgb color = snapshot.pixel(nx, ny);
+                if (qAlpha(color) > 0 && color != componentColor) {
+                    ++neighborCounts[color];
+                }
+            }
+        }
+        QRgb replacement = componentColor;
+        int bestCount = 0;
+        for (auto it = neighborCounts.cbegin(); it != neighborCounts.cend(); ++it) {
+            if (it.value() > bestCount) {
+                replacement = it.key();
+                bestCount = it.value();
+            }
+        }
+        if (bestCount > 0) {
+            for (int index : component) {
+                result.setPixel(index % width, index / width, replacement);
+            }
+        }
+    }
+    return result;
 }
 
 QImage bilateralOneDimension(const QImage &source, int radius, double sigmaColor,
@@ -262,7 +439,7 @@ QImage boxBlur(const QImage &source, int radius)
 }
 
 QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximumIterations,
-                           double minimumColorFraction)
+                           double minimumColorFraction, const QVector<QColor> &lockedInput)
 {
     constexpr int histogramSize = 32 * 32 * 32;
     struct Accumulator {
@@ -299,25 +476,37 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
         const int blue = qRound(static_cast<double>(entry.blue) / entry.weight);
         colors.push_back({rgbToHsv(red, green, blue), static_cast<double>(entry.weight)});
     }
+    const QVector<QColor> lockedPalette = normalizedPalette(lockedInput);
     if (colors.empty()) {
-        return {source, 0};
+        return {source, static_cast<int>(lockedPalette.size()), lockedPalette};
     }
 
-    const int clusterCount = std::clamp(requestedColors, 1, std::min(256, static_cast<int>(colors.size())));
+    const int fixedCenterCount = lockedPalette.size();
+    const int clusterCount = std::clamp(std::max(requestedColors, fixedCenterCount), 1,
+                                        std::min(256, fixedCenterCount + static_cast<int>(colors.size())));
     std::vector<HsvColor> centers;
     centers.reserve(static_cast<size_t>(clusterCount));
+    for (const QColor &color : lockedPalette) {
+        centers.push_back(rgbToHsv(color.red(), color.green(), color.blue()));
+    }
     const auto mostFrequent = std::max_element(colors.begin(), colors.end(), [](const auto &left, const auto &right) {
         return left.weight < right.weight;
     });
-    centers.push_back(mostFrequent->hsv);
+    if (centers.empty()) {
+        centers.push_back(mostFrequent->hsv);
+    }
     std::vector<double> nearestDistances(colors.size(), std::numeric_limits<double>::max());
+    for (const HsvColor &center : centers) {
+        for (size_t index = 0; index < colors.size(); ++index) {
+            nearestDistances[index] = std::min(
+                nearestDistances[index], hsvDistanceSquared(colors[index].hsv, center));
+        }
+    }
     while (static_cast<int>(centers.size()) < clusterCount) {
         double bestScore = -1.0;
         HsvColor best = colors.front().hsv;
-        const HsvColor &latest = centers.back();
         for (size_t index = 0; index < colors.size(); ++index) {
             const HistogramColor &color = colors[index];
-            nearestDistances[index] = std::min(nearestDistances[index], hsvDistanceSquared(color.hsv, latest));
             const double score = nearestDistances[index] * color.weight;
             if (score > bestScore) {
                 bestScore = score;
@@ -325,6 +514,10 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
             }
         }
         centers.push_back(best);
+        for (size_t index = 0; index < colors.size(); ++index) {
+            nearestDistances[index] = std::min(
+                nearestDistances[index], hsvDistanceSquared(colors[index].hsv, best));
+        }
     }
 
     std::vector<int> assignments(colors.size(), 0);
@@ -362,6 +555,9 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
         }
         double movement = 0.0;
         for (int index = 0; index < clusterCount; ++index) {
+            if (index < fixedCenterCount) {
+                continue;
+            }
             const ClusterSum &sum = sums[static_cast<size_t>(index)];
             if (sum.weight <= kEpsilon) {
                 continue;
@@ -406,7 +602,9 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
     std::vector<int> retainedClusters;
     retainedClusters.reserve(static_cast<size_t>(clusterCount));
     for (int index = 0; index < clusterCount; ++index) {
-        if (clusterWeights[static_cast<size_t>(index)] >= floor && clusterWeights[static_cast<size_t>(index)] > 0.0) {
+        if (index < fixedCenterCount
+            || (clusterWeights[static_cast<size_t>(index)] >= floor
+                && clusterWeights[static_cast<size_t>(index)] > 0.0)) {
             retainedClusters.push_back(index);
         }
     }
@@ -448,9 +646,15 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
         }
     }
     std::vector<QRgb> palette;
+    QVector<QColor> retainedPalette;
     palette.reserve(retainedClusters.size());
+    retainedPalette.reserve(static_cast<qsizetype>(retainedClusters.size()));
     for (int retained : retainedClusters) {
-        palette.push_back(hsvToRgb(centers[static_cast<size_t>(retained)]));
+        const QColor color = retained < fixedCenterCount
+            ? lockedPalette[retained]
+            : QColor::fromRgb(hsvToRgb(centers[static_cast<size_t>(retained)]));
+        palette.push_back(color.rgb());
+        retainedPalette.push_back(color);
     }
 
     QImage result(source.size(), QImage::Format_ARGB32);
@@ -467,7 +671,7 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
             output[x] = qRgba(qRed(color), qGreen(color), qBlue(color), alpha);
         }
     }
-    return {result, static_cast<int>(palette.size())};
+    return {result, static_cast<int>(palette.size()), retainedPalette};
 }
 
 double saturationOf(QRgb pixel)
@@ -521,17 +725,31 @@ ImagePreprocessResult preprocessImageDetailed(const QImage &source,
     if (source.isNull()) {
         return {};
     }
-    const QImage input = source.convertToFormat(QImage::Format_ARGB32);
+    const QImage input = normalizeBinaryAlpha(source);
     const QImage smoothed = bilateralSmooth(input, settings);
     const QImage median = medianBlur(smoothed, std::clamp(settings.flattenRadius, 0, 8));
     const QImage flattened = blendImages(smoothed, median, settings.flattenStrength);
-    const QuantizeResult quantized = quantizeHsv(flattened, settings.colors,
-                                                 settings.quantizationIterations,
-                                                 settings.minimumColorFraction);
+    const QuantizeResult quantized = settings.fixedPalette
+        ? quantizeToFixedPalette(flattened, settings.paletteColors)
+        : quantizeHsv(flattened, settings.colors,
+                      settings.quantizationIterations,
+                      settings.minimumColorFraction,
+                      settings.paletteColors);
+    if (quantized.image.isNull()) {
+        return {};
+    }
+    const QImage restored = restoreSaturationAndDetail(quantized.image, flattened, settings);
+    if (quantized.retainedPalette.isEmpty()) {
+        return {restored.convertToFormat(QImage::Format_ARGB32_Premultiplied), 0, {}};
+    }
+    // Restoration changes local color assignment without allowing extra output
+    // colors: map it back onto the retained palette after applying the residual.
+    const QuantizeResult final = quantizeToFixedPalette(restored, quantized.retainedPalette);
     return {
-        restoreSaturationAndDetail(quantized.image, flattened, settings)
+        removeSmallColorRegions(final.image, settings.speckleSize)
             .convertToFormat(QImage::Format_ARGB32_Premultiplied),
-        quantized.retainedColorCount,
+        final.retainedColorCount,
+        final.retainedPalette,
     };
 }
 
