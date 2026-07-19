@@ -13,13 +13,7 @@ void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers mod
         if (penFillRunning_) {
             return;
         }
-        const QPointF world = screenToWorld(point);
-        if (world != penHoverWorld_) {
-            penHoverWorld_ = world;
-            if (!penPoints_.isEmpty()) {
-                update();
-            }
-        }
+        refreshPenInteractionHint(point, modifiers);
         return;
     }
     if (tool_ != QStringLiteral("select")) {
@@ -196,6 +190,13 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         dragMode_ = DragMode::Pan;
         updateCursorForPoint(event->position());
         event->accept();
+        return;
+    }
+    if (project_ != nullptr
+        && tool_ == QStringLiteral("pen")
+        && event->button() != Qt::LeftButton
+        && activeTool_ != nullptr
+        && activeTool_->handlePress(event)) {
         return;
     }
     if (event->button() != Qt::LeftButton || project_ == nullptr) {
@@ -464,7 +465,8 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
-    if (tool_ == QStringLiteral("pen") && event->key() == Qt::Key_Backspace && !penFillRunning_) {
+    if (tool_ == QStringLiteral("pen") && event->key() == Qt::Key_Backspace
+        && !penFillRunning_ && !penLooped_) {
         if (!penPoints_.isEmpty()) {
             penPoints_.removeLast();
             penCrossings_.clear();
@@ -477,6 +479,12 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     }
     if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("pen")) {
         cancelPenInteraction();
+        event->accept();
+        return;
+    }
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && tool_ == QStringLiteral("pen") && penLooped_ && !penFillRunning_) {
+        closePenPath();
         event->accept();
         return;
     }

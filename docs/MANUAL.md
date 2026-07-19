@@ -107,16 +107,23 @@ build and developer notes see
   preview the contiguous color region under the cursor. Use the mouse wheel to
   change the `0–255` RGBA tolerance (`Shift` changes it in steps of five). Click
   to trace the preview with Potrace and load the resulting optimized closed
-  contour into Pen. Click the first Pen point to run the normal Pen fill; every
+  contour into Pen. Press `Enter` to run the normal Pen fill; every
   generated shape uses the average RGBA color of the selected bucket region.
 - **Pen (`P`)** — place a closed vector contour which is converted into ordinary
   Forza Primitive layers. The first point is a hard corner. Single-click places a
   soft quadratic control and double-click places a hard point; click the first
-  point again to close and fill the path. Adjacent hard points form a line,
-  hard–soft–hard forms a quadratic curve, and consecutive soft points share an
-  implied midpoint. `Backspace` removes the latest point and `Escape` cancels the
-  path or a running fill. Self-intersecting contours are highlighted and must be
-  corrected before closing.
+  point again to loop the path. Once looped, `Ctrl`+left-click a curve to add a
+  soft point, `Ctrl`+left-click a soft point to make it hard, `Alt`+left-drag a
+  point to move it, or right-click a point to remove it. Press `Enter` to fill.
+  Contextual reminders appear beside the cursor while editing. Adjacent hard
+  points form a line, hard–soft–hard forms a quadratic curve, and consecutive
+  soft points share an implied midpoint. Before looping, `Backspace` removes the
+  latest point. `Escape` cancels the path or a running fill. Self-intersecting
+  contours are highlighted and must be corrected before filling. Open and
+  looped Pen paths remain intact when another tool is selected and reappear
+  when returning to Pen; only `Escape` or a completed fill clears that
+  progress. Finish or cancel an existing Pen path before tracing a new one with
+  Bucket.
 
   Pen uses only **Square** (`101`), **Circle** (`102`), and **Triangle** (`103`),
   including affine rectangle and ellipse forms. It follows the contour inward:

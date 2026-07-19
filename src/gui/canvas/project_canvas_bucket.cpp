@@ -187,6 +187,13 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
     if (!updateBucketPreview(screenPoint) || !bucketFill_.valid()) {
         return false;
     }
+    if (!penPoints_.isEmpty()) {
+        setCursorHint(screenPoint,
+                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
+                       QStringLiteral("Finish or cancel the existing Pen path first")});
+        update();
+        return false;
+    }
 
     const fh6::scene::GuideLayer *guide = nullptr;
     QTransform guideWorld;
@@ -249,12 +256,16 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
     }
 
     penPoints_ = std::move(worldPoints);
+    normalizePenPointOrder();
     penFillColor_ = bucketFill_.averageColor;
+    penLooped_ = true;
     penHoverWorld_ = penPoints_.front().position;
     penCrossings_.clear();
     penError_.clear();
     clearBucketPreview();
     setTool(QStringLiteral("pen"));
+    validatePenInteraction();
+    refreshPenInteractionHint(screenPoint, QGuiApplication::keyboardModifiers());
     return true;
 }
 

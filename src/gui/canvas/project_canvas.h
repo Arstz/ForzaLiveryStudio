@@ -14,6 +14,7 @@
 #include <QtOpenGLWidgets>
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -134,6 +135,7 @@ private:
     friend class BucketTool;
 
     static constexpr double PenCloseRadius = 8.0;
+    static constexpr double PenEditRadius = 9.0;
 
     enum class DragMode {
         None,
@@ -172,6 +174,14 @@ private:
         bool valid = false;
         QRectF localRect;
         QTransform localToWorld;
+    };
+
+    struct PenCurveHit {
+        int insertIndex = -1;
+        QPointF worldPosition;
+        double screenDistance = std::numeric_limits<double>::max();
+
+        bool valid() const { return insertIndex >= 0; }
     };
 
     QRectF projectBounds() const;
@@ -264,6 +274,12 @@ private:
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
+    int penPointAtScreen(const QPointF &screenPoint) const;
+    PenCurveHit penCurveAtScreen(const QPointF &screenPoint) const;
+    void normalizePenPointOrder();
+    void validatePenInteraction();
+    void refreshPenInteractionHint(const QPointF &screenPoint,
+                                   Qt::KeyboardModifiers modifiers);
     bool updateBucketPreview(const QPointF &screenPoint);
     bool commitBucketPreview(const QPointF &screenPoint);
     void adjustBucketTolerance(int delta, const QPointF &screenPoint);
@@ -323,6 +339,11 @@ private:
     QVector<PenPoint> penPoints_;
     std::optional<QColor> penFillColor_;
     QPointF penHoverWorld_;
+    bool penLooped_ = false;
+    int penHoverPoint_ = -1;
+    PenCurveHit penHoverCurve_;
+    int penDragPoint_ = -1;
+    QPointF penDragOffsetWorld_;
     QVector<QPointF> penCrossings_;
     QString penError_;
     QString penFillMessage_;

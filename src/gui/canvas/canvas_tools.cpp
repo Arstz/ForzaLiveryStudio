@@ -304,15 +304,84 @@ QString PenTool::name() const
 
 bool PenTool::handlePress(QMouseEvent *event)
 {
-    if (event->button() != Qt::LeftButton || canvas_.penFillRunning_) {
+    if ((event->button() != Qt::LeftButton && event->button() != Qt::RightButton)
+        || canvas_.penFillRunning_) {
         return false;
     }
     ProjectCanvas &c = canvas_;
     const QPointF world = c.screenToWorld(event->position());
+
+    if (c.penLooped_) {
+        c.refreshPenInteractionHint(event->position(), event->modifiers());
+        const int pointIndex = c.penHoverPoint_;
+
+        if (event->button() == Qt::RightButton) {
+            if (pointIndex >= 0) {
+                const bool removingOnlyHard =
+                    c.penPoints_[pointIndex].kind == PenPointKind::Hard
+                    && std::count_if(c.penPoints_.cbegin(),
+                                     c.penPoints_.cend(),
+                                     [](const PenPoint &point) {
+                    return point.kind == PenPointKind::Hard;
+                }) == 1;
+                if (c.penPoints_.size() <= 3 || removingOnlyHard) {
+                    const QString removalMessage = c.penPoints_.size() <= 3
+                        ? QStringLiteral("A closed Pen path needs at least three points")
+                        : QStringLiteral("A closed Pen path needs at least one hard point");
+                    c.validatePenInteraction();
+                    c.refreshPenInteractionHint(event->position(), event->modifiers());
+                    QStringList lines = c.cursorHintLines_;
+                    if (!lines.contains(QString())) {
+                        lines.push_back(QString());
+                    }
+                    lines.push_back(removalMessage);
+                    c.setCursorHint(event->position(), lines);
+                } else {
+                    c.penPoints_.removeAt(pointIndex);
+                    c.normalizePenPointOrder();
+                    c.validatePenInteraction();
+                    c.refreshPenInteractionHint(event->position(), event->modifiers());
+                }
+            }
+            event->accept();
+            return true;
+        }
+
+        if ((event->modifiers() & Qt::AltModifier) && pointIndex >= 0) {
+            c.penDragPoint_ = pointIndex;
+            c.penDragOffsetWorld_ = c.penPoints_[pointIndex].position - world;
+            c.updateCursorForPoint(event->position());
+            event->accept();
+            return true;
+        }
+
+        if (event->modifiers() & Qt::ControlModifier) {
+            if (pointIndex >= 0) {
+                if (c.penPoints_[pointIndex].kind == PenPointKind::Soft) {
+                    c.penPoints_[pointIndex].kind = PenPointKind::Hard;
+                    c.normalizePenPointOrder();
+                    c.validatePenInteraction();
+                }
+            } else if (c.penHoverCurve_.valid()) {
+                c.penPoints_.insert(c.penHoverCurve_.insertIndex,
+                                    {c.penHoverCurve_.worldPosition, PenPointKind::Soft});
+                c.validatePenInteraction();
+            }
+            c.refreshPenInteractionHint(event->position(), event->modifiers());
+        }
+        event->accept();
+        return true;
+    }
+
+    if (event->button() != Qt::LeftButton) {
+        return false;
+    }
     if (c.penPoints_.size() >= 3
         && QLineF(event->position(), c.worldToScreen(c.penPoints_.front().position)).length()
                <= ProjectCanvas::PenCloseRadius) {
-        c.closePenPath();
+        c.penLooped_ = true;
+        c.validatePenInteraction();
+        c.refreshPenInteractionHint(event->position(), event->modifiers());
         event->accept();
         return true;
     }
@@ -331,12 +400,45 @@ bool PenTool::handlePress(QMouseEvent *event)
     return true;
 }
 
+bool PenTool::handleMove(QMouseEvent *event)
+{
+    ProjectCanvas &c = canvas_;
+    if (c.penDragPoint_ < 0 || c.penDragPoint_ >= c.penPoints_.size()) {
+        return false;
+    }
+    c.penPoints_[c.penDragPoint_].position =
+        c.screenToWorld(event->position()) + c.penDragOffsetWorld_;
+    c.validatePenInteraction();
+    c.refreshPenInteractionHint(event->position(), event->modifiers());
+    c.updateCursorForPoint(event->position());
+    event->accept();
+    return true;
+}
+
+bool PenTool::handleRelease(QMouseEvent *event)
+{
+    ProjectCanvas &c = canvas_;
+    if (event->button() != Qt::LeftButton || c.penDragPoint_ < 0) {
+        return false;
+    }
+    c.penDragPoint_ = -1;
+    c.validatePenInteraction();
+    c.refreshPenInteractionHint(event->position(), event->modifiers());
+    c.updateCursorForPoint(event->position());
+    event->accept();
+    return true;
+}
+
 bool PenTool::handleDoubleClick(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton || canvas_.penFillRunning_) {
         return false;
     }
     ProjectCanvas &c = canvas_;
+    if (c.penLooped_) {
+        event->accept();
+        return true;
+    }
     const QPointF world = c.screenToWorld(event->position());
     if (!c.penPoints_.isEmpty()
         && QLineF(world, c.penPoints_.back().position).length()
@@ -356,7 +458,11 @@ bool PenTool::handleDoubleClick(QMouseEvent *event)
 
 Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const
 {
-    Q_UNUSED(point);
+    if (canvas_.penLooped_
+        && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)
+        && canvas_.penPointAtScreen(point) >= 0) {
+        return Qt::SizeAllCursor;
+    }
     return Qt::CrossCursor;
 }
 

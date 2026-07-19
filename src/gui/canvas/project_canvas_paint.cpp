@@ -75,12 +75,13 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter)
         return;
     }
 
-    const bool nearStart = penPoints_.size() >= 3
+    const bool nearStart = !penLooped_ && penPoints_.size() >= 3
         && QLineF(worldToScreen(penHoverWorld_), worldToScreen(penPoints_.front().position)).length()
                <= PenCloseRadius;
-    const QPainterPath worldPath = penPreviewPath(nearStart);
+    const bool closed = penLooped_ || nearStart;
+    const QPainterPath worldPath = penPreviewPath(closed);
     const QPainterPath screenPath = worldToScreen_.map(worldPath);
-    QColor fill(83, 164, 255, nearStart ? 50 : 25);
+    QColor fill(83, 164, 255, closed ? 50 : 25);
     QPen halo(QColor(15, 17, 20, 230), 4.0);
     halo.setCosmetic(true);
     painter.setPen(halo);
@@ -92,7 +93,7 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter)
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(screenPath);
 
-    if (!nearStart && !penPoints_.isEmpty()) {
+    if (!closed && !penPoints_.isEmpty()) {
         QPen guide(QColor(190, 195, 205, 180), 1.0, Qt::DashLine);
         guide.setCosmetic(true);
         painter.setPen(guide);
@@ -102,17 +103,25 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter)
     for (int i = 0; i < penPoints_.size(); ++i) {
         const PenPoint &point = penPoints_[i];
         const QPointF screen = worldToScreen(point.position);
-        const double radius = i == 0 ? 5.5 : 4.5;
-        painter.setPen(QPen(QColor(18, 20, 24), 2.0));
+        const bool hovered = penLooped_ && i == penHoverPoint_;
+        const double radius = (i == 0 ? 5.5 : 4.5) + (hovered ? 1.5 : 0.0);
+        painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),
+                            hovered ? 2.5 : 2.0));
         painter.setBrush(point.kind == PenPointKind::Hard
                              ? QColor(232, 72, 72)
                              : QColor(238, 240, 244));
         painter.drawEllipse(screen, radius, radius);
         if (i == 0) {
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(nearStart ? QColor(120, 220, 135) : QColor(83, 164, 255), 1.5));
+            painter.setPen(QPen(closed ? QColor(120, 220, 135) : QColor(83, 164, 255), 1.5));
             painter.drawEllipse(screen, PenCloseRadius, PenCloseRadius);
         }
+    }
+    if (penLooped_ && penHoverPoint_ < 0 && penHoverCurve_.valid()) {
+        const QPointF screen = worldToScreen(penHoverCurve_.worldPosition);
+        painter.setPen(QPen(QColor(18, 20, 24), 2.0));
+        painter.setBrush(QColor(120, 220, 135));
+        painter.drawEllipse(screen, 4.0, 4.0);
     }
     painter.setPen(QPen(QColor(245, 65, 65), 2.0));
     for (const QPointF &crossing : penCrossings_) {
@@ -212,15 +221,42 @@ void ProjectCanvas::drawCursorHint(QPainter &painter)
     painter.save();
     painter.resetTransform();
     const QFontMetrics metrics(painter.font());
-    int textWidth = 0;
+    QVector<QStringList> sections;
+    QStringList section;
     for (const QString &line : cursorHintLines_) {
-        textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
+        if (line.isEmpty()) {
+            if (!section.isEmpty()) {
+                sections.push_back(section);
+                section.clear();
+            }
+        } else {
+            section.push_back(line);
+        }
+    }
+    if (!section.isEmpty()) {
+        sections.push_back(section);
+    }
+    if (sections.isEmpty()) {
+        painter.restore();
+        return;
+    }
+
+    int textWidth = 0;
+    for (const QStringList &lines : sections) {
+        for (const QString &line : lines) {
+            textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
+        }
     }
     const int paddingX = CursorHintPaddingX;
     const int paddingY = CursorHintPaddingY;
     const int lineHeight = metrics.height();
+    constexpr int sectionGap = 4;
+    int totalHeight = sectionGap * (sections.size() - 1);
+    for (const QStringList &lines : sections) {
+        totalHeight += lines.size() * lineHeight + paddingY * 2;
+    }
     const QSize hintSize(textWidth + paddingX * 2,
-                         cursorHintLines_.size() * lineHeight + paddingY * 2);
+                         totalHeight);
     QPointF topLeft = cursorHintPoint_ + QPointF(CursorHintCursorOffset, CursorHintCursorOffset);
     topLeft.setX(std::min(topLeft.x(), static_cast<double>(width() - hintSize.width() - CursorHintScreenMargin)));
     topLeft.setY(std::min(topLeft.y(), static_cast<double>(height() - hintSize.height() - CursorHintScreenMargin)));
@@ -237,15 +273,24 @@ void ProjectCanvas::drawCursorHint(QPainter &painter)
 
     QPainter hintPainter(&bubble);
     hintPainter.setRenderHint(QPainter::Antialiasing, true);
-    hintPainter.setPen(QPen(CursorHintBorderColor, 1));
-    hintPainter.setBrush(CursorHintFillColor);
-    hintPainter.drawRoundedRect(QRectF(QPointF(0.0, 0.0), hintSize), CursorHintCornerRadius, CursorHintCornerRadius);
-    hintPainter.setPen(CursorHintTextColor);
     hintPainter.setRenderHint(QPainter::TextAntialiasing, true);
-    int textY = paddingY;
-    for (const QString &line : cursorHintLines_) {
-        hintPainter.drawText(QRectF(paddingX, textY, textWidth, lineHeight), Qt::AlignLeft | Qt::AlignVCenter, line);
-        textY += lineHeight;
+    int sectionY = 0;
+    for (const QStringList &lines : sections) {
+        const int sectionHeight = lines.size() * lineHeight + paddingY * 2;
+        hintPainter.setPen(QPen(CursorHintBorderColor, 1));
+        hintPainter.setBrush(CursorHintFillColor);
+        hintPainter.drawRoundedRect(QRectF(0.0, sectionY, hintSize.width(), sectionHeight),
+                                    CursorHintCornerRadius,
+                                    CursorHintCornerRadius);
+        hintPainter.setPen(CursorHintTextColor);
+        int textY = sectionY + paddingY;
+        for (const QString &line : lines) {
+            hintPainter.drawText(QRectF(paddingX, textY, textWidth, lineHeight),
+                                 Qt::AlignLeft | Qt::AlignVCenter,
+                                 line);
+            textY += lineHeight;
+        }
+        sectionY += sectionHeight + sectionGap;
     }
     hintPainter.end();
 

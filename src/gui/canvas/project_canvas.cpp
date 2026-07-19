@@ -101,7 +101,11 @@ void ProjectCanvas::setTool(const QString &tool)
     }
     cancelDrag();
     if (tool_ == QStringLiteral("pen") && tool != tool_) {
-        cancelPenInteraction();
+        penHoverPoint_ = -1;
+        penHoverCurve_ = {};
+        penDragPoint_ = -1;
+        penDragOffsetWorld_ = {};
+        clearCursorHint();
     }
     if (tool_ == QStringLiteral("bucket") && tool != tool_) {
         clearBucketPreview();
@@ -113,7 +117,11 @@ void ProjectCanvas::setTool(const QString &tool)
     if (state_ != nullptr) {
         state_->setToolName(tool_);
     }
-    updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+    const QPoint cursorPoint = mapFromGlobal(QCursor::pos());
+    updateCursorForPoint(cursorPoint);
+    if (tool_ == QStringLiteral("pen") && !penFillRunning_) {
+        refreshPenInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
+    }
     update();
 }
 
@@ -487,10 +495,16 @@ void ProjectCanvas::cancelPenInteraction()
     const bool wasRunning = penFillRunning_;
     penPoints_.clear();
     penFillColor_.reset();
+    penLooped_ = false;
+    penHoverPoint_ = -1;
+    penHoverCurve_ = {};
+    penDragPoint_ = -1;
+    penDragOffsetWorld_ = {};
     penCrossings_.clear();
     penError_.clear();
     penFillMessage_.clear();
     penFillRunning_ = false;
+    clearCursorHint();
     if (wasRunning && penFillCancelCallback_ != nullptr) {
         penFillCancelCallback_();
     }
@@ -504,12 +518,15 @@ void ProjectCanvas::closePenPath()
     if (!contour.valid()) {
         penCrossings_ = contour.crossings;
         penError_ = contour.error.isEmpty() ? QStringLiteral("Invalid Pen path") : contour.error;
-        setCursorHint(worldToScreen(penPoints_.front().position), {penError_});
+        refreshPenInteractionHint(worldToScreen(penHoverWorld_),
+                                  QGuiApplication::keyboardModifiers());
         update();
         return;
     }
     if (penFillRequestedCallback_ == nullptr) {
         penError_ = QStringLiteral("Pen fill is unavailable");
+        refreshPenInteractionHint(worldToScreen(penHoverWorld_),
+                                  QGuiApplication::keyboardModifiers());
         update();
         return;
     }
@@ -517,6 +534,11 @@ void ProjectCanvas::closePenPath()
     const std::optional<QColor> fillColor = penFillColor_;
     penPoints_.clear();
     penFillColor_.reset();
+    penLooped_ = false;
+    penHoverPoint_ = -1;
+    penHoverCurve_ = {};
+    penDragPoint_ = -1;
+    penDragOffsetWorld_ = {};
     penCrossings_.clear();
     penError_.clear();
     clearCursorHint();

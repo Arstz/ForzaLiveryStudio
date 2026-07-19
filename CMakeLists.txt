@@ -176,6 +176,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/region_fill.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas_bucket.cpp
+    src/gui/canvas/project_canvas_pen.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
     src/gui/canvas/project_canvas_hit.cpp
