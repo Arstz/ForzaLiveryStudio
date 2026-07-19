@@ -87,6 +87,7 @@ private:
 
     void importFileDialog();
     void importGuideLayerDialog();
+    void preprocessSelectedGuide();
     void createRegions();
     void fillRegions();
     bool importFM2023Folder(const QString &path, QString *error);
@@ -187,6 +188,7 @@ private:
     void setupFileMenu();
     void setupEditMenu();
     void setupProjectMenu();
+    void setupImgGenMenu();
     void setupOptionsMenu();
     void setupToolbar();
     void setupWindowMenu();

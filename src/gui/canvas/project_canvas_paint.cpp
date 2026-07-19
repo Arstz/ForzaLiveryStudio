@@ -779,7 +779,11 @@ bool ProjectCanvas::createRegionsForSelectedGuide(QString *message)
         return false;
     }
     QGuiApplication::setOverrideCursor(Qt::WaitCursor);
-    const RegionExtractionResult regions = extractRegions(image);
+    RegionExtractionParams params;
+    if (guide->preprocessColorCount > 0) {
+        params.colorCount = guide->preprocessColorCount;
+    }
+    const RegionExtractionResult regions = extractRegions(image, params);
     QGuiApplication::restoreOverrideCursor();
     if (!regions.valid()) {
         if (message != nullptr) {

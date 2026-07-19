@@ -28,6 +28,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupFileMenu();
     setupEditMenu();
     setupProjectMenu();
+    setupImgGenMenu();
     setupOptionsMenu();
     setupToolbar();
     setupWindowMenu();

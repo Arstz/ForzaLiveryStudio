@@ -145,6 +145,12 @@ void ProjectCanvas::invalidateSceneCache()
     sectionCanvasCache_.clear();
 }
 
+void ProjectCanvas::invalidateGuideImageCache()
+{
+    guideImageCache_.clear();
+    sectionCanvasCache_.clear();
+}
+
 const fh6::scene::Group *ProjectCanvas::sceneTree() const
 {
     if (state_ != nullptr) {

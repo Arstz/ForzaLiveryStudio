@@ -196,6 +196,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/widgets/header_metadata_widget.h
     src/gui/widgets/image_io.cpp
     src/gui/widgets/image_io.h
+    src/gui/widgets/image_preprocess_dialog.cpp
+    src/gui/widgets/image_preprocess_dialog.h
+    src/gui/widgets/image_preprocessor.cpp
+    src/gui/widgets/image_preprocessor.h
     src/gui/widgets/import_asset_dialog.cpp
     src/gui/widgets/import_asset_dialog.h
     src/gui/widgets/import_locations.cpp
@@ -235,6 +239,28 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(BUILD_TESTING)
+    add_executable(fls_guide_preprocess_metadata_tests
+        tools/guide_preprocess_metadata_test.cpp
+    )
+    target_link_libraries(fls_guide_preprocess_metadata_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME guide_preprocess_metadata COMMAND fls_guide_preprocess_metadata_tests)
+
+    add_executable(fls_image_preprocessor_tests
+        tools/image_preprocessor_test.cpp
+        src/gui/widgets/image_preprocessor.cpp
+    )
+    target_include_directories(fls_image_preprocessor_tests PRIVATE
+        src/gui/widgets
+    )
+    target_link_libraries(fls_image_preprocessor_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+    )
+    add_test(NAME image_preprocessor COMMAND fls_image_preprocessor_tests)
+
     add_executable(fls_region_pen_conversion_tests
         tools/region_pen_conversion_test.cpp
         src/gui/canvas/bucket_fill.cpp

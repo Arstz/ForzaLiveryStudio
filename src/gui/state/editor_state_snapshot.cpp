@@ -57,7 +57,9 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
     case fh6::scene::LayerKind::Guide: {
         const auto &ga = static_cast<const fh6::scene::GuideLayer &>(a);
         const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
-        if (ga.sourcePath != gb.sourcePath || static_cast<bool>(ga.image) != static_cast<bool>(gb.image)) {
+        if (ga.sourcePath != gb.sourcePath
+            || ga.preprocessColorCount != gb.preprocessColorCount
+            || static_cast<bool>(ga.image) != static_cast<bool>(gb.image)) {
             return false;
         }
         if (!ga.image) {
@@ -125,18 +127,31 @@ bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
     return true;
 }
 
-bool colorOnlyPreviewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
+bool previewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
 {
     if (a.kind() == fh6::scene::LayerKind::Shape) {
         const auto &sa = static_cast<const fh6::scene::Shape &>(a);
         const auto &sb = static_cast<const fh6::scene::Shape &>(b);
         return sa.color != sb.color || sa.shapeId != sb.shapeId || sa.rasterId != sb.rasterId;
     }
+    if (a.kind() == fh6::scene::LayerKind::Guide) {
+        const auto &ga = static_cast<const fh6::scene::GuideLayer &>(a);
+        const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
+        if (static_cast<bool>(ga.image) != static_cast<bool>(gb.image)) {
+            return true;
+        }
+        return ga.preprocessColorCount != gb.preprocessColorCount
+            || (ga.image && (ga.image->width != gb.image->width
+            || ga.image->height != gb.image->height
+            || ga.image->pixels != gb.image->pixels
+            || ga.image->encoded != gb.image->encoded
+            || ga.image->format != gb.image->format));
+    }
     if (a.kind() == fh6::scene::LayerKind::Group) {
         const auto &ga = static_cast<const fh6::scene::Group &>(a);
         const auto &gb = static_cast<const fh6::scene::Group &>(b);
         for (int i = 0; i < static_cast<int>(ga.children.size()); ++i) {
-            if (colorOnlyPreviewChange(*ga.children[i], *gb.children[i])) {
+            if (previewChange(*ga.children[i], *gb.children[i])) {
                 return true;
             }
         }
@@ -368,7 +383,7 @@ ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapsho
     if (!a.project.root || !b.project.root || !structureEqual(*a.project.root, *b.project.root)) {
         return ProjectEditRefresh::Structure;
     }
-    if (colorOnlyPreviewChange(*a.project.root, *b.project.root)) {
+    if (previewChange(*a.project.root, *b.project.root)) {
         return ProjectEditRefresh::Previews;
     }
     return ProjectEditRefresh::GeometryOnly;

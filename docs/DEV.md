@@ -47,6 +47,20 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   the project container and ignored by game export. Guide layers can render above
   or below shapes, can be shown or hidden together, and can be sampled by the
   Pipette/color picker ignoring guide opacity.
+- Preprocess one selected, unlocked guide from **ImgGen → Preprocess Image…**.
+  The Qt/C++ pipeline starts from the `anime_detail` settings, performs
+  edge-preserving smoothing, median flattening, and circular-hue HSV palette
+  clustering, then buckets clusters below the configurable minimum color share
+  into their nearest retained color and restores saturation plus an edge-free
+  local detail residual. The final retained-color count is stored on the guide
+  and becomes the palette cap for region extraction. The dialog shows
+  the original beside an asynchronously regenerated downscaled preview, exposes
+  four main controls and keeps the remaining numeric controls under **Advanced
+  settings**. Both views share wheel zoom and mouse-drag panning, with **Fit**,
+  **100%**, and double-click-to-fit navigation. **OK** processes the original
+  resolution, preserves dimensions and alpha, and replaces the guide image as one
+  undoable edit. **Create Regions** and **Fill Regions** are also in the **ImgGen**
+  menu.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,
@@ -342,6 +356,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,
   `clipboard_buffer_widget.*`, `car_preview_widget.*`,
   `header_metadata_widget.*`, `livery_section_bar.*`, `image_io.*`,
+  `image_preprocessor.*`, `image_preprocess_dialog.*`,
   `import_locations.*`)
   - `car_preview_widget`: the dockable 3D car preview `QOpenGLWidget` — orbit
     camera, framebuffer thumbnail capture, its own scene/car renderers, and a configurable livery paint texture regenerated
@@ -357,8 +372,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     (`assets/vector/shape_names.json`, reparsed each launch); the shared font
     glyph-block table (`font_glyphs.*`) mapping characters to font-letter shape
     ids and merged browser sections, used by both the browser and the Place Text
-    tool; header editing; and image decode (Qt plus Windows WIC) / guide-image
-    encode / accepted suffixes.
+    tool; header editing; image decode (Qt plus Windows WIC) / guide-image encode /
+    accepted suffixes; and the edge-free C++ guide preprocessing engine plus its
+    live-preview dialog.
 ## Core Entry Points
 
 - `readCGroupPayload()` / `writeCGroupFile()`

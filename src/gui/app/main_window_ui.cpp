@@ -290,10 +290,6 @@ void MainWindow::setupFileMenu()
                  QStringLiteral("import_car_model"), QStringLiteral("Import Car Model"), &MainWindow::importCarModel);
     addIconEntry(QStringLiteral("ImportGuide.xpm"), QStringLiteral("Import &Guide Layer..."),
                  QStringLiteral("import_guide_layer"), QStringLiteral("Import Guide Layer"), &MainWindow::importGuideLayerDialog);
-    addShortcutEntry(QStringLiteral("Create &Regions"), QStringLiteral("create_regions"),
-                     QStringLiteral("Create Regions"), QKeySequence(), &MainWindow::createRegions);
-    addShortcutEntry(QStringLiteral("&Fill Regions"), QStringLiteral("fill_regions"),
-                     QStringLiteral("Fill Regions"), QKeySequence(), &MainWindow::fillRegions);
     addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("&Export..."),
                  QStringLiteral("export"), QStringLiteral("Export"), &MainWindow::exportDialog);
     fileMenu->addSeparator();
@@ -422,6 +418,26 @@ void MainWindow::setupProjectMenu()
                     QString(), &MainWindow::setProjectNameDialog);
     addProjectEntry(QStringLiteral("&Creator Name..."), QStringLiteral("set_creator_name"),
                     QString(), &MainWindow::setCreatorNameDialog);
+}
+
+void MainWindow::setupImgGenMenu()
+{
+    auto *imgGenMenu = menuBar()->addMenu(QStringLiteral("&ImgGen"));
+    auto addEntry = [this, imgGenMenu](const QString &text, const QString &id,
+                                       const QString &label, auto slot) {
+        QAction *action = imgGenMenu->addAction(text);
+        registerShortcutAction(action, id, label, QKeySequence(), QString(), false,
+                               Qt::ApplicationShortcut);
+        addAction(action);
+        connect(action, &QAction::triggered, this, slot);
+    };
+    addEntry(QStringLiteral("&Preprocess Image..."), QStringLiteral("preprocess_image"),
+             QStringLiteral("Preprocess Image"), &MainWindow::preprocessSelectedGuide);
+    imgGenMenu->addSeparator();
+    addEntry(QStringLiteral("Create &Regions"), QStringLiteral("create_regions"),
+             QStringLiteral("Create Regions"), &MainWindow::createRegions);
+    addEntry(QStringLiteral("&Fill Regions"), QStringLiteral("fill_regions"),
+             QStringLiteral("Fill Regions"), &MainWindow::fillRegions);
 }
 
 void MainWindow::setupOptionsMenu()

@@ -99,6 +99,7 @@ public:
 
     std::unique_ptr<RasterContainer> image;
     QString sourcePath;
+    int preprocessColorCount = 0;
 
     LayerKind kind() const override { return LayerKind::Guide; }
     std::unique_ptr<Layer> clone() const override;
