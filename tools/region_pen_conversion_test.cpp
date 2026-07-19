@@ -259,6 +259,43 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
                  "the end-to-end bucket result should be directly consumable by Pen");
 }
 
+QPainterPath smoothCircularPath(int curveCount)
+{
+    constexpr double radius = 1000.0;
+    QPainterPath path;
+    path.moveTo(radius, 0.0);
+    const double step = 2.0 * std::acos(-1.0) / curveCount;
+    for (int i = 0; i < curveCount; ++i) {
+        const double middle = (i + 0.5) * step;
+        const double end = (i + 1.0) * step;
+        quadraticTo(&path,
+                    QPointF(radius * std::cos(middle) / std::cos(step * 0.5),
+                            radius * std::sin(middle) / std::cos(step * 0.5)),
+                    QPointF(radius * std::cos(end), radius * std::sin(end)));
+    }
+    path.closeSubpath();
+    return path;
+}
+
+void conversionOptimizationIsBounded(TestContext *test)
+{
+    const gui::RegionPenConversionResult atLimit =
+        gui::regionOutlineToPenPoints(smoothCircularPath(64));
+    test->expect(atLimit.valid(), "a contour at the optimization limit should convert");
+    test->expect(!atLimit.optimizationSkipped,
+                 "a contour at the optimization limit should be simplified");
+    test->expect(atLimit.originalPointCount == 128 && atLimit.removedHardPoints == 63,
+                 "local simplification should merge every redundant circular junction");
+
+    const gui::RegionPenConversionResult overLimit =
+        gui::regionOutlineToPenPoints(smoothCircularPath(65));
+    test->expect(overLimit.valid(), "a contour over the optimization limit should convert");
+    test->expect(overLimit.optimizationSkipped && overLimit.removedHardPoints == 0,
+                 "a contour over the optimization limit should retain its baseline points");
+    test->expect(overLimit.points.size() == overLimit.originalPointCount,
+                 "the optimization cutoff should not discard baseline points");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -271,6 +308,7 @@ int main(int argc, char **argv)
     containedHoleIsIgnored(&test);
     invalidContoursAreRejected(&test);
     conversionIsDeterministic(&test);
+    conversionOptimizationIsBounded(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     if (test.failures() == 0) {

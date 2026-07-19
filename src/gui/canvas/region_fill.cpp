@@ -126,7 +126,10 @@ double perpendicularDistance(const QPointF &point, const QPointF &a, const QPoin
     if (lengthSquared <= 1e-12) {
         return QLineF(point, a).length();
     }
-    const double t = ((point.x() - a.x()) * ab.x() + (point.y() - a.y()) * ab.y()) / lengthSquared;
+    const double t = std::clamp(
+        ((point.x() - a.x()) * ab.x() + (point.y() - a.y()) * ab.y()) / lengthSquared,
+        0.0,
+        1.0);
     const QPointF projection = a + t * ab;
     return QLineF(point, projection).length();
 }
@@ -422,8 +425,9 @@ RegionPenConversionResult regionOutlineToPenPoints(
 {
     RegionPenConversionResult result;
     if (!std::isfinite(options.mergeTolerance) || options.mergeTolerance < 0.0
-        || !std::isfinite(options.closureTolerance) || options.closureTolerance <= 0.0) {
-        result.error = QStringLiteral("Region Pen conversion tolerances are invalid");
+        || !std::isfinite(options.closureTolerance) || options.closureTolerance <= 0.0
+        || options.maxOptimizedPointCount < 0) {
+        result.error = QStringLiteral("Region Pen conversion options are invalid");
         return result;
     }
 
@@ -444,6 +448,11 @@ RegionPenConversionResult regionOutlineToPenPoints(
             : baseline.error;
         return result;
     }
+    if (working.size() > options.maxOptimizedPointCount) {
+        result.points = penPoints(working);
+        result.optimizationSkipped = true;
+        return result;
+    }
 
     const QPolygonF baselinePolygon =
         flattenPenContour(baseline, kBoundarySamplesPerCurve);
@@ -452,52 +461,119 @@ RegionPenConversionResult regionOutlineToPenPoints(
     result.maximumDeviation = result.baselineDeviation;
     const double allowedDeviation = result.baselineDeviation + options.mergeTolerance;
 
-    while (working.size() > 3) {
-        struct Candidate {
-            int index = -1;
-            double displacement = 0.0;
-        };
-        QVector<Candidate> candidates;
-        for (int i = 0; i < working.size(); ++i) {
-            const double displacement = removalDisplacement(working, i);
-            if (std::isfinite(displacement)
-                && displacement <= options.mergeTolerance + kGeometryEpsilon) {
-                candidates.push_back({i, displacement});
-            }
+    struct Candidate {
+        int pointIndex = -1;
+        double displacement = 0.0;
+        int previous = -1;
+        int next = -1;
+    };
+    QVector<Candidate> candidates;
+    QVector<int> candidateAtPoint(working.size(), -1);
+    for (int i = 0; i < working.size(); ++i) {
+        const double displacement = removalDisplacement(working, i);
+        if (std::isfinite(displacement)
+            && displacement <= options.mergeTolerance + kGeometryEpsilon) {
+            candidateAtPoint[i] = candidates.size();
+            candidates.push_back({i, displacement});
         }
-        std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
-            if (std::abs(a.displacement - b.displacement) > kGeometryEpsilon) {
-                return a.displacement < b.displacement;
+    }
+    for (int candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
+        const int pointIndex = candidates[candidateIndex].pointIndex;
+        for (int offset = 1; offset < working.size(); ++offset) {
+            const int nextPoint = (pointIndex + offset) % working.size();
+            if (working[nextPoint].point.kind != PenPointKind::Hard) {
+                continue;
             }
-            return a.index < b.index;
-        });
+            const int nextCandidate = candidateAtPoint[nextPoint];
+            if (nextCandidate >= 0) {
+                candidates[candidateIndex].next = nextCandidate;
+                candidates[nextCandidate].previous = candidateIndex;
+            }
+            break;
+        }
+    }
 
-        bool removed = false;
-        for (const Candidate &candidate : candidates) {
-            QVector<ConvertiblePoint> trial = working;
-            trial.removeAt(candidate.index);
-            const PenContour contour = buildPenContour(penPoints(trial));
-            if (!contour.valid()) {
-                continue;
-            }
-            const QPolygonF candidatePolygon =
-                flattenPenContour(contour, kBoundarySamplesPerCurve);
-            if (!sameOrientation(referenceArea, signedArea(candidatePolygon))) {
-                continue;
-            }
-            const double deviation = boundaryDeviation(outer.polygon, candidatePolygon);
-            if (!std::isfinite(deviation)
-                || deviation > allowedDeviation + kGeometryEpsilon) {
-                continue;
-            }
-            working = std::move(trial);
-            result.maximumDeviation = deviation;
-            ++result.removedHardPoints;
-            removed = true;
-            break;
+    QVector<int> order;
+    order.reserve(candidates.size());
+    for (int i = 0; i < candidates.size(); ++i) {
+        order.push_back(i);
+    }
+    std::sort(order.begin(), order.end(), [&](int left, int right) {
+        const Candidate &a = candidates[left];
+        const Candidate &b = candidates[right];
+        if (std::abs(a.displacement - b.displacement) > kGeometryEpsilon) {
+            return a.displacement < b.displacement;
         }
-        if (!removed) {
-            break;
+        return a.pointIndex < b.pointIndex;
+    });
+
+    QVector<int> parents(candidates.size(), -1);
+    QVector<double> clusterErrors(candidates.size(), 0.0);
+    QVector<bool> accepted(candidates.size(), false);
+    QVector<bool> removedPoints(working.size(), false);
+    const auto findRoot = [&](int candidateIndex) {
+        int root = candidateIndex;
+        while (parents[root] != root) {
+            root = parents[root];
+        }
+        int current = candidateIndex;
+        while (parents[current] != current) {
+            const int parent = parents[current];
+            parents[current] = root;
+            current = parent;
+        }
+        return root;
+    };
+    for (const int candidateIndex : order) {
+        const Candidate &candidate = candidates[candidateIndex];
+        const int leftRoot = candidate.previous >= 0 && accepted[candidate.previous]
+            ? findRoot(candidate.previous)
+            : -1;
+        const int rightRoot = candidate.next >= 0 && accepted[candidate.next]
+            ? findRoot(candidate.next)
+            : -1;
+        double combinedError = candidate.displacement;
+        if (leftRoot >= 0) {
+            combinedError += clusterErrors[leftRoot];
+        }
+        if (rightRoot >= 0 && rightRoot != leftRoot) {
+            combinedError += clusterErrors[rightRoot];
+        }
+        if (combinedError > options.mergeTolerance + kGeometryEpsilon) {
+            continue;
+        }
+        accepted[candidateIndex] = true;
+        removedPoints[candidate.pointIndex] = true;
+        parents[candidateIndex] = candidateIndex;
+        clusterErrors[candidateIndex] = combinedError;
+        if (leftRoot >= 0) {
+            parents[leftRoot] = candidateIndex;
+        }
+        if (rightRoot >= 0 && rightRoot != leftRoot) {
+            parents[rightRoot] = candidateIndex;
+        }
+    }
+
+    QVector<ConvertiblePoint> simplified;
+    simplified.reserve(working.size());
+    for (int i = 0; i < working.size(); ++i) {
+        if (!removedPoints[i]) {
+            simplified.push_back(working[i]);
+        }
+    }
+    const PenContour simplifiedContour = buildPenContour(penPoints(simplified));
+    if (simplifiedContour.valid()) {
+        const QPolygonF candidatePolygon =
+            flattenPenContour(simplifiedContour, kBoundarySamplesPerCurve);
+        const double deviation = boundaryDeviation(outer.polygon, candidatePolygon);
+        if (sameOrientation(referenceArea, signedArea(candidatePolygon))
+            && std::isfinite(deviation)
+            && deviation <= allowedDeviation + kGeometryEpsilon) {
+            working = std::move(simplified);
+            result.maximumDeviation = deviation;
+            result.removedHardPoints = std::count(removedPoints.cbegin(),
+                                                  removedPoints.cend(),
+                                                  true);
         }
     }
 

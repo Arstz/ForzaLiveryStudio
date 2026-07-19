@@ -33,6 +33,7 @@ struct RegionPenConversionOptions {
     // junctions, in the outline's coordinate system (image pixels for traces).
     double mergeTolerance = 0.5;
     double closureTolerance = 1e-6;
+    int maxOptimizedPointCount = 128;
 };
 
 struct RegionPenConversionResult {
@@ -40,18 +41,13 @@ struct RegionPenConversionResult {
     QString error;
     int originalPointCount = 0;
     int removedHardPoints = 0;
+    bool optimizationSkipped = false;
     double baselineDeviation = 0.0;
     double maximumDeviation = 0.0;
 
     bool valid() const { return error.isEmpty() && points.size() >= 3; }
 };
 
-// Convert the single closed outer contour of a traced region into Pen points.
-// Potrace line/corner anchors remain Hard. Cubics first become Hard-Soft-Hard
-// quadratic sectors, then redundant cubic-to-cubic Hard junctions are removed
-// when the complete Pen contour remains valid and within mergeTolerance of the
-// unoptimized trace. Contained hole subpaths are ignored; open, degenerate, and
-// multiple independent outer contours are rejected.
 RegionPenConversionResult regionOutlineToPenPoints(
     const QPainterPath &outline,
     const RegionPenConversionOptions &options = {});
