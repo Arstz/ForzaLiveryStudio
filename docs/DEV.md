@@ -19,9 +19,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, and Pen
   canvas tools. Pen builds a simple closed hard/soft quadratic contour,
-  fits Circle or affine Ellipse primitives along outward curved boundaries, and
-  replaces those boundaries with chords before meshing the remaining interior.
-  The chordal core uses deterministic ear clipping and compatible Square merging.
+  fits affine vector primitives along curved boundaries, and prepares an interior
+  boundary before meshing the remaining area.
+  The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.

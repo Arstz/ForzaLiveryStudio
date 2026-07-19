@@ -125,15 +125,13 @@ build and developer notes see
   progress. Finish or cancel an existing Pen path before tracing a new one with
   Bucket.
 
-  Pen uses only **Square** (`101`), **Circle** (`102`), and **Triangle** (`103`),
-  including affine rectangle and ellipse forms. It follows the contour inward:
-  outward curved boundaries receive fitted Circle or Ellipse placements and become
-  chords, then the remaining core is deterministically meshed with Triangle and
-  compatible Square placements. Overlap is allowed, curve fits use a bounded spill
-  tolerance, and generated shape count is capped at twice the Pen point count. The
-  generated layers share the last selected shape color when the corresponding
-  new-shape behavior is enabled (otherwise white) and are placed in one **Pen Fill**
-  group as a single undoable operation. Filling runs in the background.
+  Pen uses a bounded catalog of compatible vector primitives and follows the contour
+  inward. Curved boundaries receive fitted affine placements, then the remaining
+  core is deterministically meshed. Overlap is allowed, curve fits use a bounded
+  spill tolerance, and generated shape count is capped at twice the Pen point count.
+  The generated layers share the last selected shape color when the corresponding
+  new-shape behavior is enabled (otherwise white) and are placed in one **Pen
+  Fill** group as a single undoable operation. Filling runs in the background.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,
