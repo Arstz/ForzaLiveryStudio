@@ -149,6 +149,9 @@ void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
         placements.push_back({placement.shapeId, placement.transform});
     }
     insertGeneratedFill(QStringLiteral("Pen Fill"), QStringLiteral("Pen Fill"), placements);
+    if (canvas_ != nullptr) {
+        canvas_->cancelPenInteraction();
+    }
 }
 
 void MainWindow::insertGeneratedFill(const QString &groupName,

@@ -885,6 +885,17 @@ struct CurveSpanPlacement {
     CurvePlacement curve;
 };
 
+struct CoreLayout {
+    QVector<QPointF> points;
+    QVector<int> spanAtStart;
+};
+
+enum class CoreFitKind {
+    None,
+    Span,
+    InwardCurve,
+};
+
 struct SpanSelectionCost {
     bool valid = false;
     int fallbackSegments = 0;
@@ -1219,19 +1230,13 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.cancelled = true;
         return result;
     }
-    QVector<int> spanAtStart(segments.size(), -1);
     QVector<bool> spanCovered(segments.size(), false);
-    int removedCoreVertices = 0;
-    for (int spanIndex = 0; spanIndex < curveSpans.size(); ++spanIndex) {
-        const CurveSpanPlacement &span = curveSpans[spanIndex];
-        spanAtStart[span.first] = spanIndex;
-        removedCoreVertices += span.last - span.first;
+    for (const CurveSpanPlacement &span : curveSpans) {
         for (int i = span.first; i <= span.last; ++i) {
             spanCovered[i] = true;
         }
     }
     QVector<std::optional<InwardCurvePlacement>> inwardCurves(segments.size());
-    int inwardCurveCount = 0;
     if (concaveArc != nullptr) {
         for (int i = 0; i < segments.size(); ++i) {
             if (cancelled && cancelled()) {
@@ -1248,80 +1253,180 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                                                    contour.path,
                                                    result.targetArea,
                                                    request.boundaryTolerance);
-            if (inwardCurves[i]) {
-                ++inwardCurveCount;
+        }
+    }
+    QVector<bool> activeSpans(curveSpans.size(), true);
+    QVector<bool> activeInwardCurves(segments.size(), false);
+    for (int i = 0; i < inwardCurves.size(); ++i) {
+        activeInwardCurves[i] = inwardCurves[i].has_value();
+    }
+    const auto coreLayout = [&](const QVector<bool> &enabledSpans,
+                                const QVector<bool> &enabledInwardCurves) {
+        CoreLayout layout;
+        layout.spanAtStart.fill(-1, segments.size());
+        QVector<bool> activeSpanCovered(segments.size(), false);
+        int activeSpanCount = 0;
+        int activeInwardCount = 0;
+        int activeRemovedVertices = 0;
+        for (int spanIndex = 0; spanIndex < curveSpans.size(); ++spanIndex) {
+            if (!enabledSpans[spanIndex]) {
+                continue;
+            }
+            const CurveSpanPlacement &span = curveSpans[spanIndex];
+            layout.spanAtStart[span.first] = spanIndex;
+            activeRemovedVertices += span.last - span.first;
+            ++activeSpanCount;
+            for (int i = span.first; i <= span.last; ++i) {
+                activeSpanCovered[i] = true;
             }
         }
-    }
-    QVector<int> midpointCandidates;
-    for (int i = 0; i < segments.size(); ++i) {
-        if (segments[i].curved && !spanCovered[i] && !inwardCurves[i]) {
-            midpointCandidates.push_back(i);
+        QVector<int> activeMidpointCandidates;
+        for (int i = 0; i < segments.size(); ++i) {
+            if (enabledInwardCurves[i]) {
+                ++activeInwardCount;
+            } else if (segments[i].curved && !activeSpanCovered[i]) {
+                activeMidpointCandidates.push_back(i);
+            }
         }
-    }
-    const int capCount = curveSpans.size() + inwardCurveCount;
-    const int baseVertices = segments.size() - removedCoreVertices + inwardCurveCount;
-    const int maximumCoreVertices = std::max(3, result.shapeLimit - capCount + 2);
-    const int midpointBudget = std::max(0, maximumCoreVertices - baseVertices);
-    std::sort(midpointCandidates.begin(), midpointCandidates.end(), [&](int a, int b) {
-        const PenBoundarySegment &left = segments[a];
-        const PenBoundarySegment &right = segments[b];
-        const double leftCurvature = std::sqrt(distanceSquaredToSegment(left.control, left.start, left.end));
-        const double rightCurvature = std::sqrt(distanceSquaredToSegment(right.control, right.start, right.end));
-        if (std::abs(leftCurvature - rightCurvature) > kEpsilon) {
-            return leftCurvature > rightCurvature;
+        const int capCount = activeSpanCount + activeInwardCount;
+        const int baseVertices = segments.size() - activeRemovedVertices + activeInwardCount;
+        const int maximumCoreVertices = std::max(3, result.shapeLimit - capCount + 2);
+        const int midpointBudget = std::max(0, maximumCoreVertices - baseVertices);
+        std::sort(activeMidpointCandidates.begin(),
+                  activeMidpointCandidates.end(),
+                  [&](int a, int b) {
+            const PenBoundarySegment &left = segments[a];
+            const PenBoundarySegment &right = segments[b];
+            const double leftCurvature = std::sqrt(
+                distanceSquaredToSegment(left.control, left.start, left.end));
+            const double rightCurvature = std::sqrt(
+                distanceSquaredToSegment(right.control, right.start, right.end));
+            if (std::abs(leftCurvature - rightCurvature) > kEpsilon) {
+                return leftCurvature > rightCurvature;
+            }
+            return a < b;
+        });
+        QSet<int> midpointSegments;
+        for (int i = 0;
+             i < std::min(midpointBudget, static_cast<int>(activeMidpointCandidates.size()));
+             ++i) {
+            midpointSegments.insert(activeMidpointCandidates[i]);
         }
-        return a < b;
-    });
-    QSet<int> midpointSegments;
-    for (int i = 0; i < std::min(midpointBudget, static_cast<int>(midpointCandidates.size())); ++i) {
-        midpointSegments.insert(midpointCandidates[i]);
+        layout.points.push_back(segments.front().start);
+        for (int i = 0; i < segments.size();) {
+            const int spanIndex = layout.spanAtStart[i];
+            if (spanIndex >= 0) {
+                const CurveSpanPlacement &span = curveSpans[spanIndex];
+                layout.points.push_back(segments[span.last].end);
+                i = span.last + 1;
+                continue;
+            }
+            const PenBoundarySegment &segment = segments[i];
+            if (enabledInwardCurves[i]) {
+                layout.points.push_back(inwardCurves[i]->coreMiddle);
+            } else if (segment.curved && midpointSegments.contains(i)) {
+                layout.points.push_back(segmentPoint(segment, 0.5));
+            }
+            layout.points.push_back(segment.end);
+            ++i;
+        }
+        QVector<QPointF> normalized;
+        normalized.reserve(layout.points.size());
+        for (const QPointF &point : std::as_const(layout.points)) {
+            if (normalized.isEmpty() || QLineF(normalized.back(), point).length() > kEpsilon) {
+                normalized.push_back(point);
+            }
+        }
+        if (normalized.size() > 1
+            && QLineF(normalized.front(), normalized.back()).length() <= kEpsilon) {
+            normalized.removeLast();
+        }
+        layout.points = std::move(normalized);
+        return layout;
+    };
+    CoreLayout layout = coreLayout(activeSpans, activeInwardCurves);
+    PolygonContour coreContour = buildPolygonContour(layout.points);
+    while (!coreContour.crossings.isEmpty()) {
+        CoreFitKind bestKind = CoreFitKind::None;
+        int bestIndex = -1;
+        int bestScore = std::numeric_limits<int>::max();
+        CoreLayout bestLayout;
+        PolygonContour bestContour;
+        const auto consider = [&](CoreFitKind kind, int index) {
+            CoreLayout candidateLayout = coreLayout(activeSpans, activeInwardCurves);
+            PolygonContour candidateContour = buildPolygonContour(candidateLayout.points);
+            const int score = candidateContour.valid()
+                ? -1
+                : (!candidateContour.crossings.isEmpty()
+                       ? candidateContour.crossings.size()
+                       : std::numeric_limits<int>::max());
+            if (score < bestScore) {
+                bestKind = kind;
+                bestIndex = index;
+                bestScore = score;
+                bestLayout = std::move(candidateLayout);
+                bestContour = std::move(candidateContour);
+            }
+        };
+        for (int i = 0; i < activeSpans.size() && bestScore != -1; ++i) {
+            if (!activeSpans[i]) {
+                continue;
+            }
+            activeSpans[i] = false;
+            consider(CoreFitKind::Span, i);
+            activeSpans[i] = true;
+            if (cancelled && cancelled()) {
+                result.cancelled = true;
+                return result;
+            }
+        }
+        for (int i = 0; i < activeInwardCurves.size() && bestScore != -1; ++i) {
+            if (!activeInwardCurves[i]) {
+                continue;
+            }
+            activeInwardCurves[i] = false;
+            consider(CoreFitKind::InwardCurve, i);
+            activeInwardCurves[i] = true;
+            if (cancelled && cancelled()) {
+                result.cancelled = true;
+                return result;
+            }
+        }
+        if (bestKind == CoreFitKind::None
+            || bestScore == std::numeric_limits<int>::max()) {
+            break;
+        }
+        if (bestKind == CoreFitKind::Span) {
+            activeSpans[bestIndex] = false;
+        } else {
+            activeInwardCurves[bestIndex] = false;
+        }
+        layout = std::move(bestLayout);
+        coreContour = std::move(bestContour);
     }
-    QVector<QPointF> corePoints;
-    corePoints.push_back(segments.front().start);
+    if (layout.points.size() < 3) {
+        result.error = QStringLiteral("The Pen contour left no polygonal core");
+        return result;
+    }
     QPainterPath coverage;
     coverage.setFillRule(Qt::WindingFill);
     for (int i = 0; i < segments.size();) {
-        const int spanIndex = spanAtStart[i];
+        const int spanIndex = layout.spanAtStart[i];
         if (spanIndex >= 0) {
             const CurveSpanPlacement &span = curveSpans[spanIndex];
             result.placements.push_back(span.curve.placement);
             coverage = coverage.united(span.curve.path);
-            corePoints.push_back(segments[span.last].end);
             i = span.last + 1;
             continue;
         }
-        const PenBoundarySegment &segment = segments[i];
-        if (inwardCurves[i]) {
+        if (activeInwardCurves[i]) {
             result.placements.push_back(inwardCurves[i]->curve.placement);
             coverage = coverage.united(inwardCurves[i]->curve.path);
-            corePoints.push_back(inwardCurves[i]->coreMiddle);
-            corePoints.push_back(segment.end);
-            ++i;
-            continue;
         }
-        if (segment.curved && midpointSegments.contains(i)) {
-            corePoints.push_back(segmentPoint(segment, 0.5));
-        }
-        corePoints.push_back(segment.end);
         ++i;
     }
-    QVector<QPointF> normalizedCore;
-    for (const QPointF &point : corePoints) {
-        if (normalizedCore.isEmpty() || QLineF(normalizedCore.back(), point).length() > kEpsilon) {
-            normalizedCore.push_back(point);
-        }
-    }
-    if (normalizedCore.size() > 1
-        && QLineF(normalizedCore.front(), normalizedCore.back()).length() <= kEpsilon) {
-        normalizedCore.removeLast();
-    }
-    if (normalizedCore.size() < 3) {
-        result.error = QStringLiteral("The Pen contour left no polygonal core");
-        return result;
-    }
     PolygonMeshRequest meshRequest;
-    meshRequest.points = normalizedCore;
+    meshRequest.points = layout.points;
     meshRequest.sources = meshSources;
     meshRequest.mergeSquares = true;
     const PolygonMeshResult mesh = meshPolygon(meshRequest, cancelled);

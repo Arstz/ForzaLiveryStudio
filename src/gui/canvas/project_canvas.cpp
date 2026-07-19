@@ -532,9 +532,6 @@ void ProjectCanvas::closePenPath()
     }
     const QVector<PenPoint> points = penPoints_;
     const std::optional<QColor> fillColor = penFillColor_;
-    penPoints_.clear();
-    penFillColor_.reset();
-    penLooped_ = false;
     penHoverPoint_ = -1;
     penHoverCurve_ = {};
     penDragPoint_ = -1;

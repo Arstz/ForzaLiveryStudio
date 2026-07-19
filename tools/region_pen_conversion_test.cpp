@@ -374,6 +374,40 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
                  "an internal arc should use the concave arc Primitive");
 }
 
+void crossedCoreRetainsValidFits(TestContext *test)
+{
+    const QVector<gui::PenPrimitive> primitives = penPrimitiveCatalog(test);
+    gui::PenFillRequest request;
+    request.primitives = primitives;
+    request.boundaryTolerance = 0.5;
+    request.points = {{{113.734, 0.0}, gui::PenPointKind::Hard},
+                      {{32.6528, 11.8846}, gui::PenPointKind::Soft},
+                      {{95.7775, 80.3669}, gui::PenPointKind::Hard},
+                      {{14.3184, 24.8003}, gui::PenPointKind::Soft},
+                      {{21.5951, 122.472}, gui::PenPointKind::Hard},
+                      {{-26.0475, 147.723}, gui::PenPointKind::Soft},
+                      {{-61.0773, 105.789}, gui::PenPointKind::Hard},
+                      {{-34.5291, 28.9734}, gui::PenPointKind::Soft},
+                      {{-91.7899, 33.4088}, gui::PenPointKind::Hard},
+                      {{-181.514, 0.0}, gui::PenPointKind::Soft},
+                      {{-116.816, -42.5177}, gui::PenPointKind::Hard},
+                      {{-70.0474, -58.7767}, gui::PenPointKind::Soft},
+                      {{-62.194, -107.723}, gui::PenPointKind::Hard},
+                      {{-4.40167, -24.9631}, gui::PenPointKind::Soft},
+                      {{17.1126, -97.0503}, gui::PenPointKind::Hard},
+                      {{75.438, -130.662}, gui::PenPointKind::Soft},
+                      {{59.969, -50.3199}, gui::PenPointKind::Hard},
+                      {{101.037, -36.7745}, gui::PenPointKind::Soft}};
+    test->expect(gui::buildPenContour(request.points).valid(),
+                 "the local-repair contour should be a simple Pen path");
+    const gui::PenFillResult result = gui::fillPenPath(request);
+    test->expect(result.error.isEmpty(),
+                 "a crossed generated core should be repaired before meshing");
+    test->expect(hasPlacement(result, 109) || hasPlacement(result, 129)
+                     || hasPlacement(result, 130),
+                 "local core repair should retain unaffected curve placements");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -388,6 +422,7 @@ int main(int argc, char **argv)
     conversionIsDeterministic(&test);
     conversionOptimizationIsBounded(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
+    crossedCoreRetainsValidFits(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     if (test.failures() == 0) {
