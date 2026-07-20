@@ -466,6 +466,179 @@ Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const
     return Qt::CrossCursor;
 }
 
+QString LiningTool::name() const
+{
+    return QStringLiteral("lining");
+}
+
+bool LiningTool::handlePress(QMouseEvent *event)
+{
+    if ((event->button() != Qt::LeftButton && event->button() != Qt::RightButton)
+        || canvas_.liningFillRunning_) {
+        return false;
+    }
+    ProjectCanvas &c = canvas_;
+    const QPointF world = c.screenToWorld(event->position());
+
+    if (c.liningComplete_) {
+        c.refreshLiningInteractionHint(event->position(), event->modifiers());
+        const int pointIndex = c.liningHoverPoint_;
+        if (event->button() == Qt::RightButton) {
+            if (pointIndex >= 0) {
+                if (c.liningPoints_.size() <= 2) {
+                    c.liningError_ = QStringLiteral("A lining path needs at least two points");
+                } else {
+                    c.liningPoints_.removeAt(pointIndex);
+                    c.liningPoints_.front().kind = PenPointKind::Hard;
+                    c.liningPoints_.back().kind = PenPointKind::Hard;
+                    c.validateLiningInteraction();
+                }
+                c.refreshLiningInteractionHint(event->position(), event->modifiers());
+            }
+            event->accept();
+            return true;
+        }
+        if ((event->modifiers() & Qt::AltModifier) && pointIndex >= 0) {
+            c.liningDragPoint_ = pointIndex;
+            c.liningDragOffsetWorld_ = c.liningPoints_[pointIndex].position - world;
+            c.updateCursorForPoint(event->position());
+            event->accept();
+            return true;
+        }
+        if (event->modifiers() & Qt::ControlModifier) {
+            if (pointIndex >= 0) {
+                if (c.liningPoints_[pointIndex].kind == PenPointKind::Soft) {
+                    c.liningPoints_[pointIndex].kind = PenPointKind::Hard;
+                    c.validateLiningInteraction();
+                }
+            } else if (c.liningHoverCurve_.valid()) {
+                c.liningPoints_.insert(c.liningHoverCurve_.insertIndex,
+                                       {c.liningHoverCurve_.worldPosition, PenPointKind::Soft});
+                c.validateLiningInteraction();
+            }
+            c.refreshLiningInteractionHint(event->position(), event->modifiers());
+        }
+        event->accept();
+        return true;
+    }
+
+    if (event->button() == Qt::RightButton) {
+        if (c.liningPoints_.size() < 2) {
+            c.liningError_ = QStringLiteral("A lining path needs at least two points");
+        } else {
+            c.liningPoints_.front().kind = PenPointKind::Hard;
+            c.liningPoints_.back().kind = PenPointKind::Hard;
+            c.liningComplete_ = true;
+            c.validateLiningInteraction();
+        }
+        c.refreshLiningInteractionHint(event->position(), event->modifiers());
+        event->accept();
+        return true;
+    }
+
+    if (!c.liningPoints_.isEmpty()
+        && QLineF(world, c.liningPoints_.back().position).length() <= 1e-8) {
+        event->accept();
+        return true;
+    }
+    c.liningPoints_.push_back({world,
+                               c.liningPoints_.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
+    c.liningHoverWorld_ = world;
+    c.liningError_.clear();
+    c.update();
+    event->accept();
+    return true;
+}
+
+bool LiningTool::handleMove(QMouseEvent *event)
+{
+    ProjectCanvas &c = canvas_;
+    if (c.liningDragPoint_ < 0 || c.liningDragPoint_ >= c.liningPoints_.size()) {
+        return false;
+    }
+    c.liningPoints_[c.liningDragPoint_].position =
+        c.screenToWorld(event->position()) + c.liningDragOffsetWorld_;
+    c.validateLiningInteraction();
+    c.refreshLiningInteractionHint(event->position(), event->modifiers());
+    c.updateCursorForPoint(event->position());
+    event->accept();
+    return true;
+}
+
+bool LiningTool::handleWheel(QWheelEvent *event)
+{
+    const QPoint angle = event->angleDelta();
+    const QPoint pixels = event->pixelDelta();
+    const int raw = angle.y() != 0 ? angle.y()
+        : angle.x() != 0 ? angle.x()
+        : pixels.y() != 0 ? pixels.y()
+        : pixels.x();
+    if (raw == 0 || canvas_.liningFillRunning_) {
+        event->accept();
+        return true;
+    }
+    int steps = raw / 120;
+    if (steps == 0) {
+        steps = raw > 0 ? 1 : -1;
+    }
+    if (event->modifiers() & Qt::ShiftModifier) {
+        steps *= 5;
+    }
+    canvas_.adjustLiningWidth(steps * 0.5, event->position());
+    event->accept();
+    return true;
+}
+
+bool LiningTool::handleRelease(QMouseEvent *event)
+{
+    ProjectCanvas &c = canvas_;
+    if (event->button() != Qt::LeftButton || c.liningDragPoint_ < 0) {
+        return false;
+    }
+    c.liningDragPoint_ = -1;
+    c.validateLiningInteraction();
+    c.refreshLiningInteractionHint(event->position(), event->modifiers());
+    c.updateCursorForPoint(event->position());
+    event->accept();
+    return true;
+}
+
+bool LiningTool::handleDoubleClick(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || canvas_.liningFillRunning_) {
+        return false;
+    }
+    ProjectCanvas &c = canvas_;
+    if (c.liningComplete_) {
+        event->accept();
+        return true;
+    }
+    const QPointF world = c.screenToWorld(event->position());
+    if (!c.liningPoints_.isEmpty()
+        && QLineF(world, c.liningPoints_.back().position).length()
+               <= std::max(1e-8, ProjectCanvas::PenEditRadius / std::max(c.baseScale_ * c.zoom_, 1e-8))) {
+        c.liningPoints_.back().position = world;
+        c.liningPoints_.back().kind = PenPointKind::Hard;
+    } else {
+        c.liningPoints_.push_back({world, PenPointKind::Hard});
+    }
+    c.liningHoverWorld_ = world;
+    c.liningError_.clear();
+    c.update();
+    event->accept();
+    return true;
+}
+
+Qt::CursorShape LiningTool::idleCursorShape(const QPointF &point) const
+{
+    if (canvas_.liningComplete_
+        && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)
+        && canvas_.liningPointAtScreen(point) >= 0) {
+        return Qt::SizeAllCursor;
+    }
+    return Qt::CrossCursor;
+}
+
 QString BucketTool::name() const
 {
     return QStringLiteral("bucket");

@@ -38,6 +38,13 @@ void MainWindow::setupCanvas()
         startPenFill(points, fillColor);
     });
     canvas_->setPenFillCancelCallback([this]() { cancelGeneratedFill(); });
+    canvas_->setLiningFillRequestedCallback(
+        [this](const QVector<PenPoint> &points,
+               double width,
+               const std::optional<QColor> &fillColor) {
+        startLiningFill(points, width, fillColor);
+    });
+    canvas_->setLiningFillCancelCallback([this]() { cancelGeneratedFill(); });
     setCentralWidget(canvas_);
 }
 
@@ -507,7 +514,9 @@ void MainWindow::setupToolbar()
     auto *toolGroup = new QActionGroup(toolBar);
     toolGroup->setExclusive(true);
     auto addTool = [this, toolBar](const QString &label, const QString &tool, const QKeySequence &shortcut, const QString &iconName) {
-        QAction *action = toolBar->addAction(assetIcon(iconName), label);
+        QAction *action = iconName.isEmpty()
+            ? toolBar->addAction(label)
+            : toolBar->addAction(assetIcon(iconName), label);
         action->setCheckable(true);
         action->setProperty("canvasToolName", tool);
         registerShortcutAction(action, QStringLiteral("tool_%1").arg(tool), label, shortcut, iconName, false, Qt::ApplicationShortcut);
@@ -523,6 +532,27 @@ void MainWindow::setupToolbar()
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QKeySequence(Qt::Key_I), QStringLiteral("ToolPipette.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pen"), QStringLiteral("pen"), QKeySequence(Qt::Key_P), QStringLiteral("ToolbarPen.xpm")));
+    toolGroup->addAction(addTool(QStringLiteral("Lining"), QStringLiteral("lining"), QKeySequence(Qt::Key_L), QString()));
+    liningWidthLabel_ = new QLabel(QStringLiteral("Width"), toolBar);
+    liningWidthSpin_ = new QDoubleSpinBox(toolBar);
+    liningWidthSpin_->setRange(0.1, 256.0);
+    liningWidthSpin_->setDecimals(2);
+    liningWidthSpin_->setSingleStep(0.5);
+    liningWidthSpin_->setValue(canvas_->liningWidth());
+    liningWidthSpin_->setSuffix(QStringLiteral(" units"));
+    liningWidthLabel_->setVisible(false);
+    liningWidthSpin_->setVisible(false);
+    toolBar->addWidget(liningWidthLabel_);
+    toolBar->addWidget(liningWidthSpin_);
+    connect(liningWidthSpin_, &QDoubleSpinBox::valueChanged,
+            canvas_, &ProjectCanvas::setLiningWidth);
+    canvas_->setLiningWidthChangedCallback([this](double width) {
+        if (liningWidthSpin_ == nullptr) {
+            return;
+        }
+        const QSignalBlocker blocker(liningWidthSpin_);
+        liningWidthSpin_->setValue(width);
+    });
     toolGroup->addAction(addTool(QStringLiteral("Bucket"), QStringLiteral("bucket"), QKeySequence(Qt::Key_B), QStringLiteral("ToolBucket.xpm")));
     selectTool->setChecked(true);
     toolBar->addSeparator();

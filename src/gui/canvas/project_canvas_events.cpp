@@ -16,6 +16,13 @@ void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers mod
         refreshPenInteractionHint(point, modifiers);
         return;
     }
+    if (tool_ == QStringLiteral("lining")) {
+        if (liningFillRunning_) {
+            return;
+        }
+        refreshLiningInteractionHint(point, modifiers);
+        return;
+    }
     if (tool_ != QStringLiteral("select")) {
         return;
     }
@@ -193,7 +200,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
     if (project_ != nullptr
-        && tool_ == QStringLiteral("pen")
+        && (tool_ == QStringLiteral("pen") || tool_ == QStringLiteral("lining"))
         && event->button() != Qt::LeftButton
         && activeTool_ != nullptr
         && activeTool_->handlePress(event)) {
@@ -479,6 +486,28 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     }
     if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("pen")) {
         cancelPenInteraction();
+        event->accept();
+        return;
+    }
+    if (tool_ == QStringLiteral("lining") && event->key() == Qt::Key_Backspace
+        && !liningFillRunning_ && !liningComplete_) {
+        if (!liningPoints_.isEmpty()) {
+            liningPoints_.removeLast();
+            liningError_.clear();
+            clearCursorHint();
+            update();
+        }
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("lining")) {
+        cancelLiningInteraction();
+        event->accept();
+        return;
+    }
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && tool_ == QStringLiteral("lining") && liningComplete_ && !liningFillRunning_) {
+        requestLiningFill();
         event->accept();
         return;
     }

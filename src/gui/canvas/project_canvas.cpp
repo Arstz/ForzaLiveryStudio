@@ -2,6 +2,8 @@
 
 #include "project_canvas_internal.h"
 
+#include <cmath>
+
 namespace gui {
 
 using namespace pc_detail;
@@ -39,6 +41,7 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     tools_.push_back(std::make_unique<RotateTool>(*this));
     tools_.push_back(std::make_unique<PipetteTool>(*this));
     tools_.push_back(std::make_unique<PenTool>(*this));
+    tools_.push_back(std::make_unique<LiningTool>(*this));
     tools_.push_back(std::make_unique<BucketTool>(*this));
     activeTool_ = tools_.front().get();
 }
@@ -48,6 +51,7 @@ ProjectCanvas::~ProjectCanvas() = default;
 void ProjectCanvas::setProject(fh6::Project *project)
 {
     cancelPenInteraction();
+    cancelLiningInteraction();
     clearBucketPreview();
     project_ = project;
     draggedGuidelineOrientation_ = GuidelineOrientation::None;
@@ -107,6 +111,13 @@ void ProjectCanvas::setTool(const QString &tool)
         penDragOffsetWorld_ = {};
         clearCursorHint();
     }
+    if (tool_ == QStringLiteral("lining") && tool != tool_) {
+        liningHoverPoint_ = -1;
+        liningHoverCurve_ = {};
+        liningDragPoint_ = -1;
+        liningDragOffsetWorld_ = {};
+        clearCursorHint();
+    }
     if (tool_ == QStringLiteral("bucket") && tool != tool_) {
         clearBucketPreview();
     }
@@ -121,6 +132,9 @@ void ProjectCanvas::setTool(const QString &tool)
     updateCursorForPoint(cursorPoint);
     if (tool_ == QStringLiteral("pen") && !penFillRunning_) {
         refreshPenInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
+    }
+    if (tool_ == QStringLiteral("lining") && !liningFillRunning_) {
+        refreshLiningInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
     }
     update();
 }
@@ -511,6 +525,85 @@ void ProjectCanvas::cancelPenInteraction()
     update();
 }
 
+void ProjectCanvas::setLiningFillRequestedCallback(
+    std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> callback)
+{
+    liningFillRequestedCallback_ = std::move(callback);
+}
+
+void ProjectCanvas::setLiningFillCancelCallback(std::function<void()> callback)
+{
+    liningFillCancelCallback_ = std::move(callback);
+}
+
+void ProjectCanvas::setLiningWidthChangedCallback(std::function<void(double)> callback)
+{
+    liningWidthChangedCallback_ = std::move(callback);
+}
+
+QVector<PenPrimitive> ProjectCanvas::liningPrimitiveCatalog() const
+{
+    return buildLiningPrimitiveCatalog(geometry_);
+}
+
+void ProjectCanvas::setLiningFillRunning(bool running, const QString &message)
+{
+    liningFillRunning_ = running;
+    liningFillMessage_ = running ? message : QString();
+    if (!running) {
+        liningError_.clear();
+    }
+    update();
+}
+
+void ProjectCanvas::cancelLiningInteraction()
+{
+    const bool wasRunning = liningFillRunning_;
+    liningPoints_.clear();
+    liningFillColor_.reset();
+    liningComplete_ = false;
+    liningHoverPoint_ = -1;
+    liningHoverCurve_ = {};
+    liningDragPoint_ = -1;
+    liningDragOffsetWorld_ = {};
+    liningError_.clear();
+    liningFillMessage_.clear();
+    liningFillRunning_ = false;
+    clearCursorHint();
+    if (wasRunning && liningFillCancelCallback_ != nullptr) {
+        liningFillCancelCallback_();
+    }
+    update();
+}
+
+void ProjectCanvas::setLiningWidth(double width)
+{
+    if (!std::isfinite(width) || width <= 0.0) {
+        return;
+    }
+    const double adjusted = std::clamp(width, 0.1, 256.0);
+    if (qFuzzyCompare(liningWidth_, adjusted)) {
+        return;
+    }
+    liningWidth_ = adjusted;
+    validateLiningInteraction();
+    if (liningWidthChangedCallback_ != nullptr) {
+        liningWidthChangedCallback_(liningWidth_);
+    }
+    update();
+}
+
+double ProjectCanvas::liningWidth() const
+{
+    return liningWidth_;
+}
+
+void ProjectCanvas::adjustLiningWidth(double delta, const QPointF &screenPoint)
+{
+    setLiningWidth(liningWidth_ + delta);
+    refreshLiningInteractionHint(screenPoint, QGuiApplication::keyboardModifiers());
+}
+
 void ProjectCanvas::closePenPath()
 {
     const double worldPerPixel = 1.0 / std::max(baseScale_ * zoom_, 1e-8);
@@ -543,6 +636,36 @@ void ProjectCanvas::closePenPath()
     penFillMessage_ = QStringLiteral("Filling Pen path…");
     update();
     penFillRequestedCallback_(points, fillColor);
+}
+
+void ProjectCanvas::requestLiningFill()
+{
+    validateLiningInteraction();
+    if (!liningError_.isEmpty()) {
+        refreshLiningInteractionHint(worldToScreen(liningHoverWorld_),
+                                     QGuiApplication::keyboardModifiers());
+        update();
+        return;
+    }
+    if (liningFillRequestedCallback_ == nullptr) {
+        liningError_ = QStringLiteral("Lining fill is unavailable");
+        refreshLiningInteractionHint(worldToScreen(liningHoverWorld_),
+                                     QGuiApplication::keyboardModifiers());
+        update();
+        return;
+    }
+    const QVector<PenPoint> points = liningPoints_;
+    const std::optional<QColor> fillColor = liningFillColor_;
+    liningHoverPoint_ = -1;
+    liningHoverCurve_ = {};
+    liningDragPoint_ = -1;
+    liningDragOffsetWorld_ = {};
+    liningError_.clear();
+    clearCursorHint();
+    liningFillRunning_ = true;
+    liningFillMessage_ = QStringLiteral("Filling lining path…");
+    update();
+    liningFillRequestedCallback_(points, liningWidth_, fillColor);
 }
 
 void ProjectCanvas::refitView()

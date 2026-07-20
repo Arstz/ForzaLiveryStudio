@@ -166,6 +166,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
     src/gui/canvas/native_shape_renderer.h
+    src/gui/canvas/lining_fill.cpp
+    src/gui/canvas/lining_fill.h
     src/gui/canvas/pen_fill.cpp
     src/gui/canvas/pen_fill.h
     src/gui/canvas/polygon_mesh.cpp
@@ -238,6 +240,7 @@ if(BUILD_TESTING)
     add_executable(fls_region_pen_conversion_tests
         tools/region_pen_conversion_test.cpp
         src/gui/canvas/bucket_fill.cpp
+        src/gui/canvas/lining_fill.cpp
         src/gui/canvas/pen_fill.cpp
         src/gui/canvas/polygon_mesh.cpp
         src/gui/canvas/region_extract.cpp

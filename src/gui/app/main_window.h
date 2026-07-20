@@ -147,8 +147,11 @@ private:
     void refreshPropertyBoxFieldsFromCanvas();
     void startPenFill(const QVector<PenPoint> &points,
                       const std::optional<QColor> &fillColor = std::nullopt);
+    void startLiningFill(const QVector<PenPoint> &points,
+                         double width,
+                         const std::optional<QColor> &fillColor = std::nullopt);
     void cancelGeneratedFill();
-    void finishPenFill(quint64 generation, PenFillResult result);
+    void finishGeneratedFill(quint64 generation, PenFillResult result);
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);
@@ -205,6 +208,8 @@ private:
     QTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;
     QLabel *details_ = nullptr;
+    QLabel *liningWidthLabel_ = nullptr;
+    QDoubleSpinBox *liningWidthSpin_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;
@@ -263,6 +268,7 @@ private:
     QVector<QString> generatedFillInsertionEntries_;
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
+    QString generatedFillTool_;
 };
 
 } // namespace gui

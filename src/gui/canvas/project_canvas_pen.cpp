@@ -179,4 +179,132 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
     update();
 }
 
+int ProjectCanvas::liningPointAtScreen(const QPointF &screenPoint) const
+{
+    int result = -1;
+    double best = PenEditRadius + 1.0;
+    for (int i = 0; i < liningPoints_.size(); ++i) {
+        const double distance = QLineF(screenPoint, worldToScreen(liningPoints_[i].position)).length();
+        if (distance <= PenEditRadius && distance < best) {
+            best = distance;
+            result = i;
+        }
+    }
+    return result;
+}
+
+ProjectCanvas::PenCurveHit ProjectCanvas::liningCurveAtScreen(const QPointF &screenPoint) const
+{
+    PenCurveHit best;
+    if (!liningComplete_ || liningPoints_.size() < 2) {
+        return best;
+    }
+    const LiningPath path = buildLiningPath(liningPoints_);
+    if (!path.valid()) {
+        return best;
+    }
+
+    int pointIndex = 1;
+    for (const PenBoundarySegment &segment : path.segments) {
+        int insertIndex = pointIndex;
+        if (pointIndex < liningPoints_.size()
+            && liningPoints_[pointIndex].kind == PenPointKind::Soft) {
+            insertIndex = pointIndex + 1;
+            pointIndex += pointIndex + 1 < liningPoints_.size()
+                    && liningPoints_[pointIndex + 1].kind == PenPointKind::Hard
+                ? 2
+                : 1;
+        } else {
+            ++pointIndex;
+        }
+
+        constexpr int samples = 32;
+        QPointF previousWorld = segment.start;
+        QPointF previousScreen = worldToScreen(previousWorld);
+        for (int sample = 1; sample <= samples; ++sample) {
+            const double endT = static_cast<double>(sample) / samples;
+            const QPointF nextWorld = quadraticPoint(segment, endT);
+            const QPointF nextScreen = worldToScreen(nextWorld);
+            double localT = 0.0;
+            const double distance =
+                closestPointOnLine(screenPoint, previousScreen, nextScreen, &localT);
+            if (distance < best.screenDistance) {
+                best.screenDistance = distance;
+                best.insertIndex = std::min(insertIndex, static_cast<int>(liningPoints_.size()));
+                best.worldPosition = previousWorld * (1.0 - localT) + nextWorld * localT;
+            }
+            previousWorld = nextWorld;
+            previousScreen = nextScreen;
+        }
+    }
+    if (best.screenDistance > PenEditRadius) {
+        return {};
+    }
+    return best;
+}
+
+void ProjectCanvas::validateLiningInteraction()
+{
+    liningError_.clear();
+    if (!liningComplete_) {
+        return;
+    }
+    const LiningPath path = buildLiningPath(liningPoints_);
+    if (!path.valid()) {
+        liningError_ = path.error.isEmpty()
+            ? QStringLiteral("Invalid lining path")
+            : path.error;
+    }
+}
+
+void ProjectCanvas::refreshLiningInteractionHint(const QPointF &screenPoint,
+                                                 Qt::KeyboardModifiers modifiers)
+{
+    liningHoverWorld_ = screenToWorld(screenPoint);
+    liningHoverPoint_ = -1;
+    liningHoverCurve_ = {};
+    if (!liningComplete_) {
+        QStringList lines{QStringLiteral("Width: %1").arg(liningWidth_, 0, 'f', 2)};
+        if (!liningPoints_.isEmpty()) {
+            lines.push_back(QStringLiteral("RMB: Complete path"));
+            lines.push_back(QStringLiteral("Double LMB: Hard point"));
+        }
+        if (!liningError_.isEmpty()) {
+            lines.push_back(liningError_);
+        }
+        if (lines.isEmpty()) {
+            clearCursorHint();
+        } else {
+            setCursorHint(screenPoint, lines);
+        }
+        update();
+        return;
+    }
+
+    liningHoverPoint_ = liningPointAtScreen(screenPoint);
+    if (liningHoverPoint_ < 0) {
+        liningHoverCurve_ = liningCurveAtScreen(screenPoint);
+    }
+    QStringList lines{QStringLiteral("Width: %1").arg(liningWidth_, 0, 'f', 2),
+                      QStringLiteral("Press Enter to fill")};
+    if (!liningError_.isEmpty()) {
+        lines.push_back(liningError_);
+    }
+    if (liningHoverPoint_ >= 0 || liningHoverCurve_.valid()) {
+        lines.push_back(QString());
+        if (liningHoverPoint_ >= 0) {
+            if (liningPoints_[liningHoverPoint_].kind == PenPointKind::Soft) {
+                lines.push_back(QStringLiteral("Ctrl+LMB: Make hard"));
+            }
+            lines.push_back(QStringLiteral("Alt+drag: Move point"));
+            lines.push_back(QStringLiteral("RMB: Remove point"));
+        } else {
+            lines.push_back(QStringLiteral("Ctrl+LMB: Add soft point"));
+        }
+    }
+    Q_UNUSED(modifiers);
+    setCursorHint(screenPoint, lines);
+    update();
+}
+
 } // namespace gui

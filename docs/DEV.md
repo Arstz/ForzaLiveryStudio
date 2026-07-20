@@ -17,13 +17,20 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   paint-material colors, selectors, and finishes are stored as project metadata.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
-- Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, and Pen
+- Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pen builds a simple closed hard/soft quadratic contour,
   fits affine vector primitives along curved boundaries, and prepares an interior
   boundary before meshing the remaining area.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
+  Lining builds an editable open hard/soft quadratic centreline, expands it to a
+  constant-width ribbon, and selects a contained sequence from its dedicated
+  Primitive catalog. Selection follows the authored point structure, ranks
+  centreline agreement before width coverage, emits one primary placement per
+  authored span, and requires connected overlap before producing an ordinary
+  single-colour scene group. Curved placement transforms expand toward the
+  requested width within the containment and curve-error bounds.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   When auto-select is off, clicking outside the selected bounds preserves the
   current selection unless no selection exists.
@@ -319,10 +326,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     scene through the shared `forEachSceneShape`/`forEachSceneGuide` iterators, which
     hide the EditorState-render-entries vs. canvas-local-tree backends. Per-tool
     interaction strategies
-    (select/move/marquee/transform/rotate/pipette/pen) as
+    (select/move/marquee/transform/rotate/pipette/pen/lining) as
     `CanvasTool` subclasses;
     `pen_fill.*` owns quadratic contour validation, Primitive silhouettes,
     outward-curve fitting, bounded core construction, and union-area reporting;
+    `lining_fill.*` owns open-centreline construction, semantic span fitting,
+    stroke containment, and overlap-connected lining Primitive selection;
     `polygon_mesh.*` owns polygon normalization, intersection validation,
     deterministic ear clipping, maximum compatible square pairing, and exact
     Square/Triangle affine placement;

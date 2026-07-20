@@ -3,6 +3,7 @@
 #include "bucket_fill.h"
 #include "core_types.h"
 #include "layer.h"
+#include "lining_fill.h"
 #include "native_shape_renderer.h"
 #include "pen_fill.h"
 #include "region_extract.h"
@@ -76,6 +77,15 @@ public:
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
+    void setLiningFillRequestedCallback(
+        std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> callback);
+    void setLiningFillCancelCallback(std::function<void()> callback);
+    void setLiningWidthChangedCallback(std::function<void(double)> callback);
+    QVector<PenPrimitive> liningPrimitiveCatalog() const;
+    void setLiningFillRunning(bool running, const QString &message = QString());
+    void cancelLiningInteraction();
+    void setLiningWidth(double width);
+    double liningWidth() const;
 
     void setCarUnwrapOverlay(const QImage &overlay);
     void setCarUnwrapVisible(bool visible);
@@ -132,6 +142,7 @@ private:
     friend class RotateTool;
     friend class PipetteTool;
     friend class PenTool;
+    friend class LiningTool;
     friend class BucketTool;
 
     static constexpr double PenCloseRadius = 8.0;
@@ -280,6 +291,15 @@ private:
     void validatePenInteraction();
     void refreshPenInteractionHint(const QPointF &screenPoint,
                                    Qt::KeyboardModifiers modifiers);
+    void requestLiningFill();
+    void drawLiningOverlay(QPainter &painter);
+    QPainterPath liningPreviewPath() const;
+    int liningPointAtScreen(const QPointF &screenPoint) const;
+    PenCurveHit liningCurveAtScreen(const QPointF &screenPoint) const;
+    void validateLiningInteraction();
+    void refreshLiningInteractionHint(const QPointF &screenPoint,
+                                      Qt::KeyboardModifiers modifiers);
+    void adjustLiningWidth(double delta, const QPointF &screenPoint);
     bool updateBucketPreview(const QPointF &screenPoint);
     bool commitBucketPreview(const QPointF &screenPoint);
     void adjustBucketTolerance(int delta, const QPointF &screenPoint);
@@ -348,6 +368,21 @@ private:
     QString penError_;
     QString penFillMessage_;
     bool penFillRunning_ = false;
+    std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> liningFillRequestedCallback_;
+    std::function<void()> liningFillCancelCallback_;
+    std::function<void(double)> liningWidthChangedCallback_;
+    QVector<PenPoint> liningPoints_;
+    std::optional<QColor> liningFillColor_;
+    QPointF liningHoverWorld_;
+    bool liningComplete_ = false;
+    int liningHoverPoint_ = -1;
+    PenCurveHit liningHoverCurve_;
+    int liningDragPoint_ = -1;
+    QPointF liningDragOffsetWorld_;
+    QString liningError_;
+    QString liningFillMessage_;
+    bool liningFillRunning_ = false;
+    double liningWidth_ = 8.0;
     int bucketTolerance_ = 16;
     QString bucketGuideId_;
     QString bucketSourceGuideId_;

@@ -136,6 +136,92 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter)
     painter.restore();
 }
 
+QPainterPath ProjectCanvas::liningPreviewPath() const
+{
+    if (liningPoints_.isEmpty()) {
+        return {};
+    }
+    QVector<PenPoint> points = liningPoints_;
+    if (!liningComplete_) {
+        points.push_back({liningHoverWorld_, PenPointKind::Hard});
+    }
+    points.front().kind = PenPointKind::Hard;
+    points.back().kind = PenPointKind::Hard;
+    return buildLiningPath(points).centerline;
+}
+
+void ProjectCanvas::drawLiningOverlay(QPainter &painter)
+{
+    if (tool_ != QStringLiteral("lining") && !liningFillRunning_) {
+        return;
+    }
+    painter.save();
+    painter.resetTransform();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    if (liningFillRunning_) {
+        const QString message = liningFillMessage_.isEmpty()
+            ? QStringLiteral("Filling lining path…")
+            : liningFillMessage_;
+        const QFontMetrics metrics(painter.font());
+        const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
+        QRect bubble = textRect;
+        bubble.moveCenter(rect().center());
+        painter.setPen(QPen(QColor(235, 235, 235), 1));
+        painter.setBrush(QColor(25, 27, 31, 220));
+        painter.drawRoundedRect(bubble, 6, 6);
+        painter.drawText(bubble, Qt::AlignCenter, message);
+        painter.restore();
+        return;
+    }
+    const QPainterPath centerline = liningPreviewPath();
+    if (centerline.isEmpty()) {
+        painter.restore();
+        return;
+    }
+    const QPainterPath ribbon = buildLiningRibbon(centerline, liningWidth_);
+    const QPainterPath screenRibbon = worldToScreen_.map(ribbon);
+    const QPainterPath screenCenterline = worldToScreen_.map(centerline);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(83, 164, 255, liningComplete_ ? 55 : 35));
+    painter.drawPath(screenRibbon);
+
+    QPen halo(QColor(15, 17, 20, 230), 4.0);
+    halo.setCosmetic(true);
+    painter.setPen(halo);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(screenCenterline);
+    QPen centerPen(liningError_.isEmpty() ? QColor(83, 164, 255) : QColor(235, 78, 78), 2.0);
+    centerPen.setCosmetic(true);
+    painter.setPen(centerPen);
+    painter.drawPath(screenCenterline);
+
+    for (int i = 0; i < liningPoints_.size(); ++i) {
+        const PenPoint &point = liningPoints_[i];
+        const QPointF screen = worldToScreen(point.position);
+        const bool hovered = liningComplete_ && i == liningHoverPoint_;
+        const double radius = 4.5 + (hovered ? 1.5 : 0.0);
+        painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),
+                            hovered ? 2.5 : 2.0));
+        painter.setBrush(point.kind == PenPointKind::Hard
+                             ? QColor(232, 72, 72)
+                             : QColor(238, 240, 244));
+        painter.drawEllipse(screen, radius, radius);
+    }
+    if (liningComplete_ && liningHoverPoint_ < 0 && liningHoverCurve_.valid()) {
+        painter.setPen(QPen(QColor(18, 20, 24), 2.0));
+        painter.setBrush(QColor(120, 220, 135));
+        painter.drawEllipse(worldToScreen(liningHoverCurve_.worldPosition), 4.0, 4.0);
+    }
+    if (!liningError_.isEmpty()) {
+        painter.setPen(QColor(245, 85, 85));
+        painter.drawText(QRectF(12, 12, width() - 24, 30),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         liningError_);
+    }
+    painter.restore();
+}
+
 namespace {
 
 const QColor SelectionAccentColor(255, 200, 50);
@@ -583,6 +669,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
                       countImage);
 
     drawPenOverlay(painter);
+    drawLiningOverlay(painter);
     drawCursorHint(painter);
     painter.restore();
 }

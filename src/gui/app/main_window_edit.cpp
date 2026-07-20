@@ -65,6 +65,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
     }
     generatedFillInsertionEntries_ = selectedEntryIds();
     generatedFillLabel_ = QStringLiteral("Pen fill");
+    generatedFillTool_ = QStringLiteral("pen");
 
     PenFillRequest request;
     request.points = points;
@@ -73,6 +74,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         canvas_->setPenFillRunning(false);
         generatedFillInsertionEntries_.clear();
         generatedFillLabel_.clear();
+        generatedFillTool_.clear();
         statusBar()->showMessage(QStringLiteral("Pen fill failed: Primitive geometry is unavailable"), 4000);
         return;
     }
@@ -94,7 +96,75 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         QMetaObject::invokeMethod(guard.data(),
                                   [guard, generation, result = std::move(result)]() mutable {
                                       if (!guard.isNull()) {
-                                          guard->finishPenFill(generation, std::move(result));
+                                          guard->finishGeneratedFill(generation, std::move(result));
+                                      }
+                                  },
+                                  Qt::QueuedConnection);
+    });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+}
+
+void MainWindow::startLiningFill(const QVector<PenPoint> &points,
+                                 double width,
+                                 const std::optional<QColor> &fillColor)
+{
+    if (!ensureProjectForInsertion() || canvas_ == nullptr) {
+        if (canvas_ != nullptr) {
+            canvas_->setLiningFillRunning(false);
+        }
+        return;
+    }
+    cancelGeneratedFill();
+    updateLastSelectedShapeDefaults();
+    const BehaviorSettings behavior = loadBehaviorSettings();
+    if (fillColor.has_value() && fillColor->isValid()) {
+        generatedFillColor_ = {
+            static_cast<quint8>(fillColor->blue()),
+            static_cast<quint8>(fillColor->green()),
+            static_cast<quint8>(fillColor->red()),
+            static_cast<quint8>(fillColor->alpha()),
+        };
+    } else {
+        generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
+            ? lastSelectedShapeColor_
+            : std::array<quint8, 4>{255, 255, 255, 255};
+    }
+    generatedFillInsertionEntries_ = selectedEntryIds();
+    generatedFillLabel_ = QStringLiteral("Lining fill");
+    generatedFillTool_ = QStringLiteral("lining");
+
+    LiningFillRequest request;
+    request.points = points;
+    request.width = width;
+    request.primitives = canvas_->liningPrimitiveCatalog();
+    if (request.primitives.isEmpty()) {
+        canvas_->setLiningFillRunning(false);
+        generatedFillInsertionEntries_.clear();
+        generatedFillLabel_.clear();
+        generatedFillTool_.clear();
+        statusBar()->showMessage(QStringLiteral("Lining fill failed: Primitive geometry is unavailable"), 4000);
+        return;
+    }
+
+    const quint64 generation = ++generatedFillGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    generatedFillCancel_ = token;
+    canvas_->setLiningFillRunning(true, QStringLiteral("Filling lining path…"));
+    statusBar()->showMessage(QStringLiteral("Filling lining path… Press Esc to cancel"));
+
+    QPointer<MainWindow> guard(this);
+    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
+        PenFillResult result = fillLiningPath(request, [token]() {
+            return token->load(std::memory_order_relaxed);
+        });
+        if (guard.isNull()) {
+            return;
+        }
+        QMetaObject::invokeMethod(guard.data(),
+                                  [guard, generation, result = std::move(result)]() mutable {
+                                      if (!guard.isNull()) {
+                                          guard->finishGeneratedFill(generation, std::move(result));
                                       }
                                   },
                                   Qt::QueuedConnection);
@@ -114,32 +184,41 @@ void MainWindow::cancelGeneratedFill()
     generatedFillInsertionEntries_.clear();
     if (canvas_ != nullptr) {
         canvas_->setPenFillRunning(false);
+        canvas_->setLiningFillRunning(false);
     }
     statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
     generatedFillLabel_.clear();
+    generatedFillTool_.clear();
 }
 
-void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
+void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result)
 {
     if (generation != generatedFillGeneration_ || generatedFillCancel_ == nullptr) {
         return;
     }
     generatedFillCancel_.reset();
     if (canvas_ != nullptr) {
-        canvas_->setPenFillRunning(false);
+        if (generatedFillTool_ == QStringLiteral("lining")) {
+            canvas_->setLiningFillRunning(false);
+        } else {
+            canvas_->setPenFillRunning(false);
+        }
     }
     if (result.cancelled) {
-        statusBar()->showMessage(QStringLiteral("Pen fill cancelled"), 1500);
+        statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
         generatedFillInsertionEntries_.clear();
         generatedFillLabel_.clear();
+        generatedFillTool_.clear();
         return;
     }
     if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("Pen fill failed: %1")
+        statusBar()->showMessage(QStringLiteral("%1 failed: %2")
+                                     .arg(generatedFillLabel_)
                                      .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
                                  5000);
         generatedFillInsertionEntries_.clear();
         generatedFillLabel_.clear();
+        generatedFillTool_.clear();
         return;
     }
 
@@ -148,10 +227,18 @@ void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
     for (const PenPlacement &placement : result.placements) {
         placements.push_back({placement.shapeId, placement.transform});
     }
-    insertGeneratedFill(QStringLiteral("Pen Fill"), QStringLiteral("Pen Fill"), placements);
+    const bool lining = generatedFillTool_ == QStringLiteral("lining");
+    const QString groupName = lining ? QStringLiteral("Lining") : QStringLiteral("Pen Fill");
+    insertGeneratedFill(groupName, groupName, placements);
     if (canvas_ != nullptr) {
-        canvas_->cancelPenInteraction();
+        if (lining) {
+            canvas_->cancelLiningInteraction();
+        } else {
+            canvas_->cancelPenInteraction();
+        }
     }
+    generatedFillLabel_.clear();
+    generatedFillTool_.clear();
 }
 
 void MainWindow::insertGeneratedFill(const QString &groupName,
@@ -988,6 +1075,13 @@ void MainWindow::setToolName(const QString &name)
         if (toolName.isValid()) {
             action->setChecked(toolName.toString() == name);
         }
+    }
+    const bool lining = name == QStringLiteral("lining");
+    if (liningWidthLabel_ != nullptr) {
+        liningWidthLabel_->setVisible(lining);
+    }
+    if (liningWidthSpin_ != nullptr) {
+        liningWidthSpin_->setVisible(lining);
     }
     statusBar()->showMessage(QStringLiteral("Tool: %1").arg(name), 1500);
 }

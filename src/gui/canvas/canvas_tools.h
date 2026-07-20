@@ -108,6 +108,18 @@ public:
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 
+class LiningTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    bool handleMove(QMouseEvent *event) override;
+    bool handleWheel(QWheelEvent *event) override;
+    bool handleRelease(QMouseEvent *event) override;
+    bool handleDoubleClick(QMouseEvent *event) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
 class BucketTool final : public CanvasTool {
 public:
     using CanvasTool::CanvasTool;

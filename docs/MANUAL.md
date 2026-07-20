@@ -65,6 +65,7 @@ build and developer notes see
 | Rotate | `R` | Rotate the selection about its centre. |
 | Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
 | Pen | `P` | Draw a closed quadratic path and fill it with contained Primitive shapes. |
+| Lining | `L` | Draw an open centreline and fit contained lining Primitive shapes to its width. |
 
 ### Options & Window
 
@@ -132,6 +133,16 @@ build and developer notes see
   The generated layers share the last selected shape color when the corresponding
   new-shape behavior is enabled (otherwise white) and are placed in one **Pen
   Fill** group as a single undoable operation. Filling runs in the background.
+- **Lining (`L`)** — draw an open hard/soft quadratic centreline and set its
+  universal width in the toolbar. The mouse wheel changes the width in `0.5`
+  steps and `Shift` changes it five times faster. Right-click completes the path
+  without generating shapes. The completed path remains editable with the Pen
+  point controls until `Enter` fits contained lining Primitives and creates a
+  single **Lining** group. The hard/soft point structure guides the fit, curve
+  agreement is prioritized ahead of width coverage, curved placements expand
+  toward the selected width, and neighboring placements must overlap. Each
+  authored span receives one primary placement. `Escape` clears the path or
+  cancels a running fit.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,

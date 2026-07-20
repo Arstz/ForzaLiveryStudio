@@ -1,4 +1,5 @@
 #include "bucket_fill.h"
+#include "lining_fill.h"
 #include "region_extract.h"
 #include "region_fill.h"
 
@@ -8,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <optional>
 
 namespace {
 
@@ -79,6 +82,161 @@ QVector<gui::PenPrimitive> penPrimitiveCatalog(TestContext *test)
                                 }),
                      "the Pen Primitive catalog should include every fill shape");
     }
+    return primitives;
+}
+
+double filledPathArea(const QPainterPath &path)
+{
+    double result = 0.0;
+    for (const QPolygonF &polygon : path.toFillPolygons()) {
+        double twiceArea = 0.0;
+        for (int i = 0; i < polygon.size(); ++i) {
+            const QPointF &a = polygon[i];
+            const QPointF &b = polygon[(i + 1) % polygon.size()];
+            twiceArea += a.x() * b.y() - a.y() * b.x();
+        }
+        result += std::abs(twiceArea * 0.5);
+    }
+    return result;
+}
+
+std::optional<QPointF> primitiveTip(const gui::PenPrimitive &primitive)
+{
+    QVector<QPointF> points;
+    for (const QPolygonF &contour : primitive.contours) {
+        points += contour;
+    }
+    if (points.size() < 3) {
+        return std::nullopt;
+    }
+    QPointF centroid;
+    for (const QPointF &point : points) {
+        centroid += point;
+    }
+    centroid /= points.size();
+
+    double xx = 0.0;
+    double xy = 0.0;
+    double yy = 0.0;
+    for (const QPointF &point : points) {
+        const QPointF delta = point - centroid;
+        xx += delta.x() * delta.x();
+        xy += delta.x() * delta.y();
+        yy += delta.y() * delta.y();
+    }
+    const double angle = 0.5 * std::atan2(2.0 * xy, xx - yy);
+    const QPointF axis(std::cos(angle), std::sin(angle));
+    const QPointF normal(-axis.y(), axis.x());
+    double minimum = std::numeric_limits<double>::max();
+    double maximum = std::numeric_limits<double>::lowest();
+    for (const QPointF &point : points) {
+        const double along = QPointF::dotProduct(point - centroid, axis);
+        minimum = std::min(minimum, along);
+        maximum = std::max(maximum, along);
+    }
+    const double radius = (maximum - minimum) * 0.04;
+    const auto endpoint = [&](double position) {
+        QPointF center;
+        int count = 0;
+        double acrossMinimum = std::numeric_limits<double>::max();
+        double acrossMaximum = std::numeric_limits<double>::lowest();
+        for (const QPointF &point : points) {
+            const QPointF delta = point - centroid;
+            if (std::abs(QPointF::dotProduct(delta, axis) - position) > radius) {
+                continue;
+            }
+            const double across = QPointF::dotProduct(delta, normal);
+            acrossMinimum = std::min(acrossMinimum, across);
+            acrossMaximum = std::max(acrossMaximum, across);
+            center += point;
+            ++count;
+        }
+        return QPair<QPointF, double>(count > 0 ? center / count : QPointF(),
+                                      acrossMaximum - acrossMinimum);
+    };
+    const auto first = endpoint(minimum);
+    const auto second = endpoint(maximum);
+    return first.second < second.second ? first.first : second.first;
+}
+
+std::optional<QPointF> placedHairTip(const gui::PenPlacement &placement,
+                                     const QVector<gui::PenPrimitive> &primitives)
+{
+    if (placement.shapeId != 2112) {
+        return std::nullopt;
+    }
+    const auto primitive = std::find_if(primitives.cbegin(),
+                                        primitives.cend(),
+                                        [](const gui::PenPrimitive &candidate) {
+        return candidate.shapeId == 2112;
+    });
+    if (primitive == primitives.cend()) {
+        return std::nullopt;
+    }
+    const std::optional<QPointF> tip = primitiveTip(*primitive);
+    return tip.has_value() ? std::optional<QPointF>(placement.transform.map(*tip))
+                           : std::nullopt;
+}
+
+bool placementsConnected(const gui::PenFillResult &result,
+                         const QVector<gui::PenPrimitive> &primitives)
+{
+    QVector<QPainterPath> placedPaths;
+    for (const gui::PenPlacement &placement : result.placements) {
+        const auto primitive = std::find_if(primitives.cbegin(),
+                                            primitives.cend(),
+                                            [&](const gui::PenPrimitive &candidate) {
+            return candidate.shapeId == placement.shapeId;
+        });
+        if (primitive != primitives.cend()) {
+            placedPaths.push_back(placement.transform.map(primitive->silhouette));
+        }
+    }
+    if (placedPaths.isEmpty()) {
+        return false;
+    }
+    QSet<int> connected{0};
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int candidate = 0; candidate < placedPaths.size(); ++candidate) {
+            if (connected.contains(candidate)) {
+                continue;
+            }
+            for (const int existing : std::as_const(connected)) {
+                if (filledPathArea(placedPaths[existing].intersected(placedPaths[candidate]))
+                    > 1e-4) {
+                    connected.insert(candidate);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    return connected.size() == placedPaths.size();
+}
+
+QVector<gui::PenPrimitive> liningPrimitiveCatalog(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error), "Lining Primitive geometry should load");
+    const QVector<gui::PenPrimitive> primitives = gui::buildLiningPrimitiveCatalog(geometry);
+    for (const int shapeId : {2112, 2131, 136, 2133}) {
+        test->expect(std::any_of(primitives.cbegin(),
+                                primitives.cend(),
+                                [&](const gui::PenPrimitive &primitive) {
+                                    return primitive.shapeId == shapeId;
+                                }),
+                     "the Lining Primitive catalog should include every lining shape");
+    }
+    test->expect(std::none_of(primitives.cbegin(),
+                              primitives.cend(),
+                              [](const gui::PenPrimitive &primitive) {
+        return primitive.shapeId == 139 || primitive.shapeId == 2123
+            || primitive.shapeId == 2128;
+    }),
+                 "the Lining Primitive catalog should exclude unsuitable fill shapes");
     return primitives;
 }
 
@@ -430,6 +588,191 @@ void pointedCurveUsesContainedPrimitive(TestContext *test)
                  "a pointed curve Primitive should remain within the fill border");
 }
 
+void openCenterlineBuildsAndFills(TestContext *test)
+{
+    const QVector<gui::PenPoint> points = {
+        {{-80.0, 0.0}, gui::PenPointKind::Hard},
+        {{80.0, 0.0}, gui::PenPointKind::Hard},
+    };
+    const gui::LiningPath path = gui::buildLiningPath(points);
+    test->expect(path.valid(), "a completed open centerline should be valid");
+    test->expect(!gui::buildLiningRibbon(path.centerline, 8.0).isEmpty(),
+                 "a completed centerline should produce a width ribbon");
+
+    gui::LiningFillRequest request;
+    request.points = points;
+    request.width = 8.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    test->expect(result.error.isEmpty(), "a straight centerline should fit lining Primitives");
+    test->expect(!result.placements.isEmpty(), "a lining fill should generate placements");
+    test->expect(result.placements.size() == 1 && hasPlacement(result, 2133),
+                 "one straight authored span should use one Pill Primitive");
+    test->expect(result.coveredArea >= result.targetArea * 0.2,
+                 "a lining fill should cover a substantial part of a straight width ribbon");
+    test->expect(std::all_of(result.placements.cbegin(),
+                             result.placements.cend(),
+                             [](const gui::PenPlacement &placement) {
+        return placement.shapeId == 2112 || placement.shapeId == 2131
+            || placement.shapeId == 136
+            || placement.shapeId == 2133;
+    }),
+                 "a lining fill should use only the lining catalog");
+    test->expect(result.outsideArea <= result.targetArea * 1e-5,
+                 "lining placements should remain within the width ribbon");
+}
+
+void curvedCenterlineBuildsAndFills(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-60.0, 0.0}, gui::PenPointKind::Hard},
+        {{0.0, -55.0}, gui::PenPointKind::Soft},
+        {{60.0, 0.0}, gui::PenPointKind::Hard},
+    };
+    request.width = 10.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    test->expect(result.error.isEmpty(), "a quadratic centerline should fit lining Primitives");
+    test->expect(!result.placements.isEmpty(), "a curved lining fill should generate placements");
+    test->expect(result.placements.size() == 1,
+                 "one angled authored curve should use one curve Primitive");
+    test->expect(std::all_of(result.placements.cbegin(),
+                             result.placements.cend(),
+                             [](const gui::PenPlacement &placement) {
+        return placement.shapeId == 2131;
+    }),
+                 "an angled curve should use curve-matching Primitives");
+    test->expect(result.coveredArea >= result.targetArea * 0.4,
+                 "a curved lining fill should retain substantial width coverage");
+    test->expect(result.outsideArea <= result.targetArea * 1e-5,
+                 "curved lining placements should remain within the width ribbon");
+}
+
+void adjacentLiningPlacementsOverlap(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-150.0, 0.0}, gui::PenPointKind::Hard},
+        {{-75.0, -55.0}, gui::PenPointKind::Soft},
+        {{0.0, 0.0}, gui::PenPointKind::Hard},
+        {{75.0, 55.0}, gui::PenPointKind::Soft},
+        {{150.0, 0.0}, gui::PenPointKind::Hard},
+    };
+    request.width = 10.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    test->expect(result.error.isEmpty(), "a multi-curve centerline should fit lining Primitives");
+    test->expect(result.placements.size() == 2,
+                 "each authored curve should use one curve Primitive");
+    test->expect(hasPlacement(result, 2131),
+                 "an angled lining should use a curve-matching Primitive");
+
+    test->expect(placementsConnected(result, request.primitives),
+                 "lining Primitive overlaps should form one connected chain");
+    const int pointCount = static_cast<int>(request.points.size());
+    const int expectedBudget = pointCount + std::max(1, pointCount / 2);
+    test->expect(result.placements.size() <= expectedBudget,
+                 "lining shape count should remain tied to authored point count");
+}
+
+void shallowCurveCanUseComplementaryHairs(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-100.0, 0.0}, gui::PenPointKind::Hard},
+        {{0.0, -20.0}, gui::PenPointKind::Soft},
+        {{100.0, 0.0}, gui::PenPointKind::Hard},
+    };
+    request.width = 10.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    const int hairCount = static_cast<int>(std::count_if(
+        result.placements.cbegin(),
+        result.placements.cend(),
+        [](const gui::PenPlacement &placement) { return placement.shapeId == 2112; }));
+    test->expect(result.error.isEmpty(), "a shallow curve should fit lining Primitives");
+    test->expect(hairCount == 2,
+                 "a single shallow curve should use complementary Hair Primitives");
+    if (result.placements.size() == 2) {
+        test->expect(result.placements[0].transform != result.placements[1].transform,
+                     "complementary Hair placements should use distinct orientations");
+        const std::optional<QPointF> firstTip = placedHairTip(result.placements[0],
+                                                              request.primitives);
+        const std::optional<QPointF> secondTip = placedHairTip(result.placements[1],
+                                                               request.primitives);
+        const QPointF start = request.points.front().position;
+        const QPointF end = request.points.back().position;
+        const bool faceAway = firstTip.has_value() && secondTip.has_value()
+            && ((QLineF(*firstTip, start).length() < QLineF(*firstTip, end).length()
+                 && QLineF(*secondTip, end).length() < QLineF(*secondTip, start).length())
+                || (QLineF(*firstTip, end).length() < QLineF(*firstTip, start).length()
+                    && QLineF(*secondTip, start).length()
+                        < QLineF(*secondTip, end).length()));
+        test->expect(faceAway,
+                     "complementary Hair tips should face away from each other");
+    }
+    test->expect(placementsConnected(result, request.primitives),
+                 "complementary Hair placements should overlap");
+}
+
+void sharpHardJoinUsesOverlappingStrokeShapes(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-100.0, 40.0}, gui::PenPointKind::Hard},
+        {{0.0, -40.0}, gui::PenPointKind::Hard},
+        {{100.0, 40.0}, gui::PenPointKind::Hard},
+    };
+    request.width = 10.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    test->expect(result.error.isEmpty(), "a sharp hard join should fit lining Primitives");
+    test->expect(std::all_of(result.placements.cbegin(),
+                             result.placements.cend(),
+                             [](const gui::PenPlacement &placement) {
+        return placement.shapeId == 2112 || placement.shapeId == 2133;
+    }),
+                 "a sharp hard join should use Hair or Pill Primitives");
+    int hairCount = 0;
+    bool hairsFaceOutward = true;
+    const QPointF join = request.points[1].position;
+    for (const gui::PenPlacement &placement : result.placements) {
+        const std::optional<QPointF> tip = placedHairTip(placement, request.primitives);
+        if (!tip.has_value()) {
+            continue;
+        }
+        ++hairCount;
+        const double outerDistance = std::min(QLineF(*tip,
+                                                     request.points.front().position).length(),
+                                              QLineF(*tip,
+                                                     request.points.back().position).length());
+        hairsFaceOutward = hairsFaceOutward
+            && outerDistance < QLineF(*tip, join).length();
+    }
+    test->expect(hairCount == 0 || hairsFaceOutward,
+                 "Hair tips at a sharp hard join should face outward");
+    test->expect(placementsConnected(result, request.primitives),
+                 "sharp hard-join placements should overlap");
+}
+
+void wideCenterlineCanUsePill(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-100.0, 0.0}, gui::PenPointKind::Hard},
+        {{100.0, 0.0}, gui::PenPointKind::Hard},
+    };
+    request.width = 32.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    test->expect(result.error.isEmpty(), "a wide centerline should fit lining Primitives");
+    test->expect(hasPlacement(result, 2133),
+                 "a wide centerline should be able to select the Pill Primitive");
+    test->expect(result.placements.size() == 1,
+                 "a wide centerline should avoid redundant overlays");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -446,6 +789,12 @@ int main(int argc, char **argv)
     arcPrimitivesFillCurvedBoundaries(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);
+    openCenterlineBuildsAndFills(&test);
+    curvedCenterlineBuildsAndFills(&test);
+    adjacentLiningPlacementsOverlap(&test);
+    shallowCurveCanUseComplementaryHairs(&test);
+    sharpHardJoinUsesOverlappingStrokeShapes(&test);
+    wideCenterlineCanUsePill(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     if (test.failures() == 0) {
