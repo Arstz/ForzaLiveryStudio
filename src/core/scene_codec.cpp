@@ -122,6 +122,9 @@ QJsonObject guideToJson(const GuideLayer &g)
     o.insert(QStringLiteral("kind"), QStringLiteral("guide"));
     writeBase(o, g);
     o.insert(QStringLiteral("source_path"), g.sourcePath);
+    if (g.preprocessColorCount > 0) {
+        o.insert(QStringLiteral("preprocess_color_count"), g.preprocessColorCount);
+    }
     QJsonObject image;
     if (g.image) {
         image.insert(QStringLiteral("format"), g.image->format);
@@ -218,6 +221,8 @@ std::unique_ptr<GuideLayer> guideFromJson(const QJsonObject &o)
     auto guide = std::make_unique<GuideLayer>();
     readBase(o, *guide);
     guide->sourcePath = o.value(QStringLiteral("source_path")).toString();
+    guide->preprocessColorCount = std::clamp(
+        o.value(QStringLiteral("preprocess_color_count")).toInt(0), 0, 256);
     auto raster = std::make_unique<RasterContainer>();
     const QJsonObject image = o.value(QStringLiteral("image")).toObject();
     raster->rasterId = 0;

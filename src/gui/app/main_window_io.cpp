@@ -6,8 +6,10 @@
 #include "car_registry.h"
 #include "fh6_core.h"
 #include "fm_codec.h"
+#include "gui_constants.h"
 #include "header_metadata_widget.h"
 #include "image_io.h"
+#include "image_preprocess_dialog.h"
 #include "import_asset_dialog.h"
 #include "layer.h"
 #include "project_codec.h"
@@ -15,6 +17,7 @@
 
 #include <QtGui>
 
+#include <algorithm>
 #include <exception>
 #include <iterator>
 #include <memory>
@@ -510,6 +513,123 @@ void MainWindow::importGuideLayerDialog()
     if (!importGuideLayer(path, &error)) {
         QMessageBox::critical(this, QStringLiteral("Guide layer import failed"), error);
     }
+}
+
+void MainWindow::preprocessSelectedGuide()
+{
+    if (state_ == nullptr || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 3500);
+        return;
+    }
+    const QVector<fh6::scene::GuideLayer *> guides = state_->selectedGuideLayers();
+    if (guides.size() != 1) {
+        statusBar()->showMessage(guides.isEmpty()
+                                     ? QStringLiteral("Select a guide layer first")
+                                     : QStringLiteral("Select exactly one guide layer"),
+                                 3500);
+        return;
+    }
+    fh6::scene::GuideLayer *guide = guides.front();
+    if (guide == nullptr || guide->locked) {
+        statusBar()->showMessage(QStringLiteral("Unlock the selected guide layer first"), 3500);
+        return;
+    }
+    if (!guide->image) {
+        statusBar()->showMessage(QStringLiteral("The selected guide layer has no image"), 3500);
+        return;
+    }
+
+    QImage source;
+    if (!guide->image->pixels.isEmpty() && guide->image->width > 0 && guide->image->height > 0) {
+        source = QImage(reinterpret_cast<const uchar *>(guide->image->pixels.constData()),
+                        guide->image->width,
+                        guide->image->height,
+                        guide->image->width * 4,
+                        QImage::Format_ARGB32_Premultiplied).copy();
+    } else if (!guide->image->encoded.isEmpty()) {
+        source.loadFromData(guide->image->encoded, guide->image->format.toLatin1().constData());
+        source = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+    if (source.isNull()) {
+        statusBar()->showMessage(QStringLiteral("Could not decode the selected guide image"), 4000);
+        return;
+    }
+
+    const QString guideId = guide->id;
+    const QString guideName = guide->name;
+    QVector<QColor> projectSwatches;
+    projectSwatches.reserve(state_->project_.colorSwatches.size());
+    for (const std::array<quint8, 4> &swatch : std::as_const(state_->project_.colorSwatches)) {
+        projectSwatches.push_back(QColor(swatch[ColorByteRed], swatch[ColorByteGreen],
+                                        swatch[ColorByteBlue], swatch[ColorByteAlpha]));
+    }
+    ImagePreprocessDialog dialog(source, projectSwatches, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QImage processed = dialog.resultImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (processed.isNull() || processed.size() != source.size()) {
+        QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
+                              QStringLiteral("Full-resolution image preprocessing failed."));
+        return;
+    }
+
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QString embedFormat;
+    const QByteArray encoded = encodeGuideImage(processed, &embedFormat);
+    QGuiApplication::restoreOverrideCursor();
+    if (encoded.isEmpty()) {
+        QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
+                              QStringLiteral("Could not encode the processed guide image."));
+        return;
+    }
+
+    fh6::scene::Layer *node = state_->sceneNode(guideId);
+    if (node == nullptr || node->kind() != fh6::scene::LayerKind::Guide) {
+        QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
+                              QStringLiteral("The selected guide layer is no longer available."));
+        return;
+    }
+    guide = static_cast<fh6::scene::GuideLayer *>(node);
+    if (guide->locked) {
+        statusBar()->showMessage(QStringLiteral("The selected guide layer is locked"), 3500);
+        return;
+    }
+
+    state_->beginProjectEdit();
+    if (!guide->image) {
+        guide->image = std::make_unique<fh6::scene::RasterContainer>();
+    }
+    guide->image->width = processed.width();
+    guide->image->height = processed.height();
+    guide->image->format = embedFormat;
+    guide->image->encoded = encoded;
+    guide->image->pixels = QByteArray(reinterpret_cast<const char *>(processed.constBits()),
+                                      processed.sizeInBytes());
+    guide->preprocessColorCount = std::clamp(dialog.retainedColorCount(), 0, 256);
+    const int retainedColors = guide->preprocessColorCount;
+    int addedSwatches = 0;
+    for (const QColor &color : dialog.retainedPalette()) {
+        const bool exists = std::any_of(
+            state_->project_.colorSwatches.cbegin(), state_->project_.colorSwatches.cend(),
+            [&](const std::array<quint8, 4> &swatch) {
+                return swatch[ColorByteRed] == color.red()
+                    && swatch[ColorByteGreen] == color.green()
+                    && swatch[ColorByteBlue] == color.blue();
+            });
+        if (!exists) {
+            state_->project_.colorSwatches.push_back({static_cast<quint8>(color.blue()),
+                                                      static_cast<quint8>(color.green()),
+                                                      static_cast<quint8>(color.red()),
+                                                      255});
+            ++addedSwatches;
+        }
+    }
+    state_->commitProjectEdit();
+    state_->noteProjectGeometryChanged(true, {guideId});
+    statusBar()->showMessage(QStringLiteral("Preprocessed guide layer %1 (%2 retained colors, %3 new swatches)")
+                                 .arg(guideName).arg(retainedColors).arg(addedSwatches),
+                             3500);
 }
 
 void MainWindow::createRegions()

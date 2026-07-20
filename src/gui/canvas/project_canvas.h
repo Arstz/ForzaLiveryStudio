@@ -44,6 +44,7 @@ public:
     QString tool() const;
     void invalidateSelectionCache();
     void invalidateSceneCache();
+    void invalidateGuideImageCache();
     void resetRelativeSelectionFrame();
     void refitView();
     bool centerViewOnSelection();

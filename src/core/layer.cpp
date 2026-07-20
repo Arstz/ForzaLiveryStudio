@@ -98,6 +98,7 @@ std::unique_ptr<Layer> GuideLayer::clone() const
     copyBaseTo(*copy);
     copy->image = image ? std::make_unique<RasterContainer>(*image) : nullptr;
     copy->sourcePath = sourcePath;
+    copy->preprocessColorCount = preprocessColorCount;
     return copy;
 }
 

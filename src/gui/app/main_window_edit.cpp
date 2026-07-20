@@ -1020,6 +1020,10 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
 {
     ScopedPerf perf(refreshPreviews ? "noteProjectGeometryChanged(previews)" : "noteProjectGeometryChanged");
     if (canvas_ != nullptr) {
+        if (refreshPreviews) {
+            canvas_->clearRegionOverlay();
+            canvas_->invalidateGuideImageCache();
+        }
         canvas_->invalidateSelectionCache();
         canvas_->invalidateSceneCache();
         canvas_->update();
