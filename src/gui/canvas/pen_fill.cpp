@@ -29,6 +29,23 @@ constexpr double kMaximumSpanErrorRatio = 0.05;
 constexpr int kSpanSamples = 64;
 constexpr int kMaximumSpanEvaluations = 2048;
 
+int curveEvaluationBudget(int segmentCount)
+{
+    if (segmentCount > 384) {
+        return 4;
+    }
+    if (segmentCount > 192) {
+        return 8;
+    }
+    if (segmentCount > 96) {
+        return 16;
+    }
+    if (segmentCount > 48) {
+        return 32;
+    }
+    return kMaximumSpanEvaluations;
+}
+
 bool isAllowedPenShape(int shapeId)
 {
     return shapeId == kSquareShapeId
@@ -1050,10 +1067,35 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
     QVector<bool> outward(count, false);
     QVector<CurveSpanPlacement> candidates;
     QVector<QVector<int>> candidatesAt(count);
+    QVector<int> outwardIndices;
     for (int i = 0; i < count; ++i) {
         outward[i] = isOutwardCurve(segments[i], orientationSign);
-        if (!outward[i]) {
-            continue;
+        if (outward[i]) {
+            outwardIndices.push_back(i);
+        }
+    }
+    std::sort(outwardIndices.begin(), outwardIndices.end(), [&](int left, int right) {
+        const PenBoundarySegment &a = segments[left];
+        const PenBoundarySegment &b = segments[right];
+        const double aChord = QLineF(a.start, a.end).length();
+        const double bChord = QLineF(b.start, b.end).length();
+        const double aBow = std::sqrt(distanceSquaredToSegment(a.control, a.start, a.end));
+        const double bBow = std::sqrt(distanceSquaredToSegment(b.control, b.start, b.end));
+        const double aImportance = aChord * std::max(aBow, boundaryTolerance * 0.25);
+        const double bImportance = bChord * std::max(bBow, boundaryTolerance * 0.25);
+        if (std::abs(aImportance - bImportance) > kEpsilon) {
+            return aImportance > bImportance;
+        }
+        return left < right;
+    });
+    const int maximumEvaluations = curveEvaluationBudget(count);
+    const int maximumSingleEvaluations = count > 96
+        ? maximumEvaluations * 2 / 3
+        : maximumEvaluations;
+    int evaluations = 0;
+    for (const int i : std::as_const(outwardIndices)) {
+        if (evaluations >= maximumSingleEvaluations) {
+            break;
         }
         if (cancelled && cancelled()) {
             *wasCancelled = true;
@@ -1066,6 +1108,7 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
         const double diagonal = std::hypot(bounds.width(), bounds.height());
         const double maximumError = std::max(boundaryTolerance,
                                              diagonal * kMaximumSpanErrorRatio);
+        ++evaluations;
         if (const auto placement = outwardCurvePlacement(caps,
                                                          segments[i],
                                                          target,
@@ -1075,7 +1118,6 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
             candidates.push_back({i, i, *placement});
         }
     }
-    int evaluations = 0;
     int runStart = 0;
     while (runStart < count) {
         while (runStart < count && !outward[runStart]) {
@@ -1094,10 +1136,10 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
         const int maximumSpanLength = std::min(runLength, count - 2);
         bool acceptedWholeRun = false;
         for (int spanLength = maximumSpanLength;
-             spanLength >= 2 && evaluations < kMaximumSpanEvaluations;
+             spanLength >= 2 && evaluations < maximumEvaluations;
              --spanLength) {
             for (int first = runStart;
-                 first + spanLength - 1 <= runEnd && evaluations < kMaximumSpanEvaluations;
+                 first + spanLength - 1 <= runEnd && evaluations < maximumEvaluations;
                  ++first) {
                 if (cancelled && cancelled()) {
                     *wasCancelled = true;
@@ -1350,6 +1392,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                                                                    &selectionCancelled);
     if (selectionCancelled) {
         result.cancelled = true;
+        result.error = QStringLiteral("Pen curve-span selection timed out");
         return result;
     }
     QVector<bool> spanCovered(segments.size(), false);
@@ -1360,16 +1403,39 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     }
     QVector<std::optional<InwardCurvePlacement>> inwardCurves(segments.size());
     if (!inwardCaps.isEmpty()) {
+        QVector<int> inwardCandidates;
         for (int i = 0; i < segments.size(); ++i) {
+            if (segments[i].curved
+                && !spanCovered[i]
+                && !isOutwardCurve(segments[i], orientationSign)) {
+                inwardCandidates.push_back(i);
+            }
+        }
+        std::sort(inwardCandidates.begin(), inwardCandidates.end(), [&](int left, int right) {
+            const PenBoundarySegment &a = segments[left];
+            const PenBoundarySegment &b = segments[right];
+            const double aImportance = QLineF(a.start, a.end).length()
+                * std::max(std::sqrt(distanceSquaredToSegment(a.control, a.start, a.end)),
+                           request.boundaryTolerance * 0.25);
+            const double bImportance = QLineF(b.start, b.end).length()
+                * std::max(std::sqrt(distanceSquaredToSegment(b.control, b.start, b.end)),
+                           request.boundaryTolerance * 0.25);
+            if (std::abs(aImportance - bImportance) > kEpsilon) {
+                return aImportance > bImportance;
+            }
+            return left < right;
+        });
+        const int maximumInwardEvaluations = curveEvaluationBudget(segments.size());
+        for (int candidateIndex = 0;
+             candidateIndex < std::min(maximumInwardEvaluations,
+                                       static_cast<int>(inwardCandidates.size()));
+             ++candidateIndex) {
             if (cancelled && cancelled()) {
                 result.cancelled = true;
+                result.error = QStringLiteral("Pen inward-curve selection timed out");
                 return result;
             }
-            if (!segments[i].curved
-                || spanCovered[i]
-                || isOutwardCurve(segments[i], orientationSign)) {
-                continue;
-            }
+            const int i = inwardCandidates[candidateIndex];
             inwardCurves[i] = inwardCurvePlacement(inwardCaps,
                                                    segments[i],
                                                    contour.path,
@@ -1499,6 +1565,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             activeSpans[i] = true;
             if (cancelled && cancelled()) {
                 result.cancelled = true;
+                result.error = QStringLiteral("Pen core repair timed out");
                 return result;
             }
         }
@@ -1511,6 +1578,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             activeInwardCurves[i] = true;
             if (cancelled && cancelled()) {
                 result.cancelled = true;
+                result.error = QStringLiteral("Pen core repair timed out");
                 return result;
             }
         }
@@ -1555,6 +1623,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     if (mesh.cancelled || (cancelled && cancelled())) {
         result.placements.clear();
         result.cancelled = true;
+        result.error = QStringLiteral("Pen core mesh timed out");
         return result;
     }
     if (!mesh.error.isEmpty()) {

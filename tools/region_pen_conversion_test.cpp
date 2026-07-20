@@ -288,7 +288,7 @@ void alternatingCurvatureMerges(TestContext *test)
     test->expect(hasConsecutiveSoftPoints(result.points),
                  "a merged sector should be represented by consecutive soft points");
     test->expect(result.maximumDeviation
-                     <= result.baselineDeviation + 0.5 + 1e-6,
+                     <= result.baselineDeviation + 1.1 + 1e-6,
                  "optimized contour should stay inside the cumulative deviation budget");
     test->expect(gui::buildPenContour(result.points).valid(),
                  "optimized alternating contour should remain valid for Pen");
@@ -502,13 +502,51 @@ void conversionOptimizationIsBounded(TestContext *test)
     test->expect(atLimit.originalPointCount == 128 && atLimit.removedHardPoints == 63,
                  "local simplification should merge every redundant circular junction");
 
-    const gui::RegionPenConversionResult overLimit =
+    const gui::RegionPenConversionResult overLegacyLimit =
         gui::regionOutlineToPenPoints(smoothCircularPath(65));
-    test->expect(overLimit.valid(), "a contour over the optimization limit should convert");
-    test->expect(overLimit.optimizationSkipped && overLimit.removedHardPoints == 0,
-                 "a contour over the optimization limit should retain its baseline points");
-    test->expect(overLimit.points.size() == overLimit.originalPointCount,
-                 "the optimization cutoff should not discard baseline points");
+    test->expect(overLegacyLimit.valid(),
+                 "a contour over the former optimization limit should convert");
+    test->expect(!overLegacyLimit.optimizationSkipped
+                     && overLegacyLimit.removedHardPoints > 0,
+                 "dense contours should use the topology-safe optimizer");
+    test->expect(overLegacyLimit.points.size() < overLegacyLimit.originalPointCount,
+                 "dense contour optimization should reduce its Pen point count");
+
+    gui::RegionPenConversionOptions capped;
+    capped.maxOptimizedPointCount = 128;
+    const gui::RegionPenConversionResult explicitlyCapped =
+        gui::regionOutlineToPenPoints(smoothCircularPath(65), capped);
+    test->expect(explicitlyCapped.valid() && explicitlyCapped.optimizationSkipped,
+                 "an explicit caller cutoff should still skip dense optimization");
+    test->expect(explicitlyCapped.points.size() == explicitlyCapped.originalPointCount,
+                 "an explicit cutoff should retain all baseline points");
+}
+
+void rasterDssimGuardsCurveSimplification(TestContext *test)
+{
+    QPainterPath path;
+    path.moveTo(65.0, 40.0);
+    quadraticTo(&path, QPointF(65.0, 15.0), QPointF(40.0, 15.1));
+    quadraticTo(&path, QPointF(15.0, 15.0), QPointF(15.0, 40.0));
+    quadraticTo(&path, QPointF(15.0, 65.0), QPointF(40.0, 65.0));
+    quadraticTo(&path, QPointF(65.0, 65.0), QPointF(65.0, 40.0));
+    path.closeSubpath();
+
+    gui::RegionPenConversionOptions permissive;
+    permissive.comparisonImageSize = QSize(80, 80);
+    const gui::RegionPenConversionResult accepted =
+        gui::regionOutlineToPenPoints(path, permissive);
+    test->expect(accepted.valid() && accepted.dssim <= permissive.maximumDssim + 1e-9,
+                 "accepted raster-guarded optimization should stay below its DSSIM cap");
+
+    gui::RegionPenConversionOptions exact = permissive;
+    exact.maximumDssim = 0.0;
+    const gui::RegionPenConversionResult guarded =
+        gui::regionOutlineToPenPoints(path, exact);
+    test->expect(guarded.valid() && guarded.dssim <= 1e-9,
+                 "a zero DSSIM cap should retain an identical raster contour");
+    test->expect(guarded.points.size() >= accepted.points.size(),
+                 "tightening DSSIM must not produce a more aggressive simplification");
 }
 
 void arcPrimitivesFillCurvedBoundaries(TestContext *test)
@@ -598,6 +636,12 @@ void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
                  "region fill diagnostics should report original, optimized, and flattened points");
     test->expect(optimizedPenPoints.size() == contourStats.optimizedPointCount,
                  "region fill diagnostics should retain every optimized Pen point");
+    const QPolygonF simplifiedFallback =
+        gui::simplifyClosedPolygon(optimizedContour, 0.45);
+    test->expect(gui::buildPolygonContour(simplifiedFallback).valid(),
+                 "fallback RDP should retain a valid non-crossing contour");
+    test->expect(simplifiedFallback.size() <= optimizedContour.size(),
+                 "fallback RDP must not increase the mesh point count");
 
     constexpr int width = 96;
     constexpr int height = 96;
@@ -1123,11 +1167,144 @@ void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
     test->expect(curveMatches, "dense lining Hairs should retain their fitted curves");
 }
 
+int checkLoggedRegion(const QString &path, const QSize &imageSize)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        std::cerr << "Could not open region point log\n";
+        return 2;
+    }
+    QPainterPath outline;
+    bool inSourcePath = false;
+    int curveStage = 0;
+    QPointF control1;
+    QPointF control2;
+    QTextStream stream(&file);
+    while (!stream.atEnd()) {
+        const QString line = stream.readLine().trimmed();
+        if (line == QStringLiteral("[source_qpainter_path]")) {
+            inSourcePath = true;
+            continue;
+        }
+        if (inSourcePath && line.startsWith(QLatin1Char('['))) {
+            break;
+        }
+        if (!inSourcePath || line.isEmpty() || line.startsWith(QStringLiteral("count="))
+            || line.startsWith(QStringLiteral("index,"))) {
+            continue;
+        }
+        const QStringList fields = line.split(QLatin1Char(','));
+        if (fields.size() != 4) {
+            continue;
+        }
+        bool xOk = false;
+        bool yOk = false;
+        const QPointF point(fields[2].toDouble(&xOk), fields[3].toDouble(&yOk));
+        if (!xOk || !yOk) {
+            continue;
+        }
+        const QString &type = fields[1];
+        if (type == QStringLiteral("move")) {
+            outline.moveTo(point);
+            curveStage = 0;
+        } else if (type == QStringLiteral("line")) {
+            outline.lineTo(point);
+            curveStage = 0;
+        } else if (type == QStringLiteral("curve-control-1")) {
+            control1 = point;
+            curveStage = 1;
+        } else if (type == QStringLiteral("curve-data") && curveStage == 1) {
+            control2 = point;
+            curveStage = 2;
+        } else if (type == QStringLiteral("curve-data") && curveStage == 2) {
+            outline.cubicTo(control1, control2, point);
+            curveStage = 0;
+        }
+    }
+    gui::RegionPenConversionOptions options;
+    options.comparisonImageSize = imageSize;
+    QElapsedTimer timer;
+    timer.start();
+    const gui::RegionPenConversionResult result =
+        gui::regionOutlineToPenPoints(outline, options);
+    std::cout << "valid=" << (result.valid() ? "yes" : "no")
+              << " original=" << result.originalPointCount
+              << " optimized=" << result.points.size()
+              << " removed=" << result.removedHardPoints
+              << " dssim=" << result.dssim
+              << " elapsed_ms=" << timer.elapsed() << '\n';
+    if (!result.error.isEmpty()) {
+        std::cerr << result.error.toStdString() << '\n';
+    }
+    if (!result.valid()) {
+        return 1;
+    }
+
+    gui::ShapeGeometryStore geometry;
+    QString geometryError;
+    if (!geometry.loadDefault(&geometryError)) {
+        std::cerr << geometryError.toStdString() << '\n';
+        return 2;
+    }
+    const QVector<gui::PenPrimitive> primitives = gui::buildPenPrimitiveCatalog(geometry);
+    QElapsedTimer fillTimer;
+    fillTimer.start();
+    const auto timedOut = [&fillTimer]() { return fillTimer.elapsed() > 3000; };
+    gui::RegionFillContourStats stats;
+    QPolygonF optimizedContour;
+    const gui::PenFillResult fill = gui::fillRegionOutline(outline,
+                                                            primitives,
+                                                            4.224,
+                                                            timedOut,
+                                                            &optimizedContour,
+                                                            &stats,
+                                                            nullptr,
+                                                            imageSize);
+    std::cout << "fill_cancelled=" << (fill.cancelled ? "yes" : "no")
+              << " placements=" << fill.placements.size()
+              << " optimized=" << stats.optimizedPointCount
+              << " fill_elapsed_ms=" << fillTimer.elapsed();
+    if (!fill.error.isEmpty()) {
+        std::cout << " error=" << fill.error.toStdString();
+    }
+    std::cout << '\n';
+
+    const gui::PolygonMeshSources meshSources = gui::buildPolygonMeshSources(geometry);
+    QPolygonF simplifiedMesh = gui::simplifyClosedPolygon(optimizedContour, 0.45);
+    if (!gui::buildPolygonContour(simplifiedMesh).valid()) {
+        simplifiedMesh = optimizedContour;
+    }
+    QElapsedTimer meshTimer;
+    meshTimer.start();
+    const gui::PenFillResult mesh =
+        gui::fillPolygonMesh(simplifiedMesh, meshSources);
+    std::cout << "fallback_points=" << optimizedContour.size()
+              << " simplified_points=" << simplifiedMesh.size()
+              << " mesh_placements=" << mesh.placements.size()
+              << " mesh_elapsed_ms=" << meshTimer.elapsed();
+    if (!mesh.error.isEmpty()) {
+        std::cout << " error=" << mesh.error.toStdString();
+    }
+    std::cout << '\n';
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+    if (argc == 5 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-region-log")) {
+        bool widthOk = false;
+        bool heightOk = false;
+        const int width = QString::fromLocal8Bit(argv[3]).toInt(&widthOk);
+        const int height = QString::fromLocal8Bit(argv[4]).toInt(&heightOk);
+        if (!widthOk || !heightOk || width <= 0 || height <= 0) {
+            std::cerr << "Invalid region image dimensions\n";
+            return 2;
+        }
+        return checkLoggedRegion(QString::fromLocal8Bit(argv[2]), QSize(width, height));
+    }
     TestContext test;
     alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);
@@ -1136,6 +1313,7 @@ int main(int argc, char **argv)
     invalidContoursAreRejected(&test);
     conversionIsDeterministic(&test);
     conversionOptimizationIsBounded(&test);
+    rasterDssimGuardsCurveSimplification(&test);
     denseValidPolygonTriangulates(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);

@@ -981,12 +981,14 @@ RegionFillBatchResult computeRegionFills(
     int timedOut = 0;
     int placementCount = 0;
     int meshFallbacks = 0;
+    int baselineRetries = 0;
     QHash<QString, int> failureReasons;
     // Bound each fill by wall clock so a pathological outline cannot drive the
     // fitter's boolean-union accumulation into an unbounded quadratic blow-up.
     constexpr qint64 kRegionBudgetMs = 3000;
     // Direct-triangulation fallback sources (Square 101 / Triangle 103 hulls).
     const PolygonMeshSources &meshSources = request.meshSources;
+    constexpr double kFallbackSimplifyEpsilon = 0.45;
     // Preserve the extraction result exactly: one fill unit per non-lineart
     // region, in extraction order. There is no same-colour union, area sorting,
     // or growth into neighbouring/occluded pixels.
@@ -1034,6 +1036,9 @@ RegionFillBatchResult computeRegionFills(
         qint64 elapsedMs = 0;
         bool timedOut = false;
         bool meshFallback = false;
+        QString penError;
+        int fallbackInputPoints = 0;
+        int fallbackMeshPoints = 0;
         RegionFillContourStats contourStats;
         QVector<PenPoint> optimizedPenPoints;
         QPolygonF optimizedContour;
@@ -1078,9 +1083,13 @@ RegionFillBatchResult computeRegionFills(
                                                  unitCancelled, &optimizedContour,
                                                  &work.contourStats,
                                                  i == biggestUnitIndex
-                                                     ? &work.optimizedPenPoints : nullptr);
+                                                     ? &work.optimizedPenPoints : nullptr,
+                                                 regionOverlay.imageSize);
                     if (i == biggestUnitIndex) {
                         work.optimizedContour = optimizedContour;
+                    }
+                    if (work.contourStats.baselineRetry && fitSucceeded(work.fit)) {
+                        work.via = QStringLiteral("baseline-pen-retry");
                     }
                     if (work.fit.cancelled && !globallyCancelled()) {
                         work.timedOut = true;
@@ -1090,13 +1099,28 @@ RegionFillBatchResult computeRegionFills(
                     // from the already-optimized contour. Never union, grow,
                     // reorder, or revert to a different source outline here.
                     if (!fitSucceeded(work.fit) && !globallyCancelled()) {
+                        work.penError = work.fit.error;
                         work.meshFallback = true;
                         work.via = work.timedOut
                             ? QStringLiteral("optimized-mesh-timeout")
                             : QStringLiteral("optimized-mesh-fallback");
                         if (optimizedContour.size() >= 3) {
-                            work.fit = fillPolygonMesh(optimizedContour, meshSources,
+                            work.fallbackInputPoints = optimizedContour.size();
+                            QPolygonF meshContour = simplifyClosedPolygon(
+                                optimizedContour, kFallbackSimplifyEpsilon);
+                            if (!buildPolygonContour(meshContour).valid()) {
+                                meshContour = optimizedContour;
+                            }
+                            work.fallbackMeshPoints = meshContour.size();
+                            work.fit = fillPolygonMesh(meshContour, meshSources,
                                                        globallyCancelled);
+                            if (!fitSucceeded(work.fit)
+                                && meshContour.size() != optimizedContour.size()
+                                && !globallyCancelled()) {
+                                work.fallbackMeshPoints = optimizedContour.size();
+                                work.fit = fillPolygonMesh(optimizedContour, meshSources,
+                                                           globallyCancelled);
+                            }
                         } else if (work.fit.error.isEmpty()) {
                             work.fit = PenFillResult{};
                             work.fit.error = QStringLiteral("Optimized contour is unavailable");
@@ -1126,7 +1150,7 @@ RegionFillBatchResult computeRegionFills(
         workResults[static_cast<size_t>(biggestUnitIndex)];
     log << QStringLiteral("Biggest region points: region #%1 (source #%2) %3 area=%4, "
                           "original=%5 optimized=%6 flattened=%7 removed-hard=%8, "
-                          "optimization-skipped=%9")
+                          "optimization-skipped=%9, DSSIM=%10")
                .arg(biggestUnitIndex)
                .arg(biggestUnit.sourceIndex)
                .arg(biggestUnit.color.name())
@@ -1136,7 +1160,8 @@ RegionFillBatchResult computeRegionFills(
                .arg(biggestWork.contourStats.flattenedPointCount)
                .arg(biggestWork.contourStats.removedHardPoints)
                .arg(biggestWork.contourStats.optimizationSkipped
-                        ? QStringLiteral("yes") : QStringLiteral("no"));
+                        ? QStringLiteral("yes") : QStringLiteral("no"))
+               .arg(biggestWork.contourStats.dssim, 0, 'g', 8);
 
     const QString pointsLogPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/region_points.log");
@@ -1155,7 +1180,8 @@ RegionFillBatchResult computeRegionFills(
                << "optimized_pen_point_count="
                << biggestWork.contourStats.optimizedPointCount << '\n'
                << "flattened_point_count="
-               << biggestWork.contourStats.flattenedPointCount << "\n\n";
+               << biggestWork.contourStats.flattenedPointCount << '\n'
+               << "dssim=" << biggestWork.contourStats.dssim << "\n\n";
 
         const auto elementTypeName = [](QPainterPath::ElementType type) {
             switch (type) {
@@ -1214,6 +1240,9 @@ RegionFillBatchResult computeRegionFills(
         if (work.meshFallback && fitSucceeded(work.fit)) {
             ++meshFallbacks;
         }
+        if (work.contourStats.baselineRetry && fitSucceeded(work.fit)) {
+            ++baselineRetries;
+        }
         if (fitSucceeded(work.fit)) {
             RegionFillLayer &layer = unitFills[i];
             layer.color = unit.color;
@@ -1227,6 +1256,18 @@ RegionFillBatchResult computeRegionFills(
                 ? QStringLiteral("empty result") : work.fit.error;
             failureReasons[reason] += 1;
         }
+        QString detail;
+        if (!work.penError.isEmpty()) {
+            detail += QStringLiteral(" [Pen: %1]").arg(work.penError);
+        }
+        if (!work.fit.error.isEmpty() && work.fit.error != work.penError) {
+            detail += QStringLiteral(" [error: %1]").arg(work.fit.error);
+        }
+        if (work.meshFallback && work.fallbackInputPoints > 0) {
+            detail += QStringLiteral(" [mesh points: %1 -> %2]")
+                          .arg(work.fallbackInputPoints)
+                          .arg(work.fallbackMeshPoints);
+        }
         log << QStringLiteral("region #%1 (source #%2) %3 %4: area=%5 -> %6 shapes, %7 ms%8")
                    .arg(i)
                    .arg(unit.sourceIndex)
@@ -1235,9 +1276,7 @@ RegionFillBatchResult computeRegionFills(
                    .arg(unit.area, 0, 'f', 0)
                    .arg(unitFills[i].placements.size())
                    .arg(work.elapsedMs)
-                   .arg(work.fit.error.isEmpty() ? QString()
-                                                 : QStringLiteral(" [error: %1]")
-                                                       .arg(work.fit.error));
+                   .arg(detail);
     }
 
     // Preserve extraction order regardless of parallel completion order.
@@ -1246,9 +1285,11 @@ RegionFillBatchResult computeRegionFills(
             fills.push_back(std::move(layer));
         }
     }
-    log << QStringLiteral("Summary: %1 source regions filled (%2 optimized-contour mesh "
-                          "fallbacks), %3 shapes, %4 failed, %5 timed out")
+    log << QStringLiteral("Summary: %1 source regions filled (%2 baseline Pen retries, "
+                          "%3 optimized-contour mesh fallbacks), %4 shapes, %5 failed, "
+                          "%6 timed out")
                .arg(filled)
+               .arg(baselineRetries)
                .arg(meshFallbacks)
                .arg(placementCount)
                .arg(failed)

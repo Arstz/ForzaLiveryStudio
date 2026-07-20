@@ -59,11 +59,19 @@ RegionFillBatchResult computeRegionFills(
     const std::function<bool()> &cancelled = {});
 
 struct RegionPenConversionOptions {
-    // Maximum extra boundary deviation introduced by removing Potrace cubic
-    // junctions, in the outline's coordinate system (image pixels for traces).
-    double mergeTolerance = 0.5;
+    // Maximum displacement of a removable Potrace cubic junction. The chosen
+    // point count remains contour-dependent; this is not a target count.
+    double mergeTolerance = 1.1;
+    // Supersampled raster DSSIM guard for accepting the simplified contour.
+    // It is evaluated when comparisonImageSize is valid.
+    double maximumDssim = 0.001;
+    int dssimSupersample = 4;
+    QSize comparisonImageSize;
     double closureTolerance = 1e-6;
-    int maxOptimizedPointCount = 128;
+    // Zero means unlimited. A positive value is available to callers that need
+    // an explicit complexity cutoff; automatic region/bucket conversion does not.
+    int maxOptimizedPointCount = 0;
+    int adaptiveSearchSteps = 8;
 };
 
 struct RegionPenConversionResult {
@@ -74,6 +82,7 @@ struct RegionPenConversionResult {
     bool optimizationSkipped = false;
     double baselineDeviation = 0.0;
     double maximumDeviation = 0.0;
+    double dssim = 0.0;
 
     bool valid() const { return error.isEmpty() && points.size() >= 3; }
 };
@@ -84,6 +93,8 @@ struct RegionFillContourStats {
     int flattenedPointCount = 0;
     int removedHardPoints = 0;
     bool optimizationSkipped = false;
+    bool baselineRetry = false;
+    double dssim = 0.0;
 };
 
 RegionPenConversionResult regionOutlineToPenPoints(
@@ -101,7 +112,8 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const std::function<bool()> &cancelled = {},
                                 QPolygonF *optimizedContour = nullptr,
                                 RegionFillContourStats *contourStats = nullptr,
-                                QVector<PenPoint> *optimizedPenPoints = nullptr);
+                                QVector<PenPoint> *optimizedPenPoints = nullptr,
+                                const QSize &comparisonImageSize = {});
 
 // Ramer-Douglas-Peucker simplification of a closed polygon: drops vertices that
 // lie within `epsilon` of the chord between kept neighbours. Fewer vertices ->

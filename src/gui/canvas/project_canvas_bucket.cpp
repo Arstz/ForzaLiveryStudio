@@ -222,7 +222,10 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
         return false;
     }
 
-    const RegionPenConversionResult conversion = regionOutlineToPenPoints(traced);
+    RegionPenConversionOptions conversionOptions;
+    conversionOptions.comparisonImageSize = image.size();
+    const RegionPenConversionResult conversion =
+        regionOutlineToPenPoints(traced, conversionOptions);
     if (!conversion.valid()) {
         setCursorHint(screenPoint,
                       {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),

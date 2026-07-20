@@ -95,11 +95,22 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   Fitting runs in parallel on half of the available CPU threads, reports
   completed/total regions in a status-bar progress bar, and remains cancellable
   with **Esc**. Potrace curves use the same optimized Pen-point and
-  curve-Primitive fitter as Bucket Fill; complex or timed-out fits continue by
-  meshing that region's current optimized contour. Scene insertion keeps the
+  curve-Primitive fitter as Bucket Fill. Dense traces are no longer skipped at
+  a fixed point-count cutoff: removable cubic junctions use a 1.1-pixel cap,
+  preserve orientation and non-crossing single-contour topology, and are
+  accepted only when a native-size, 4x-supersampled raster comparison remains
+  at or below DSSIM 0.001. An unsafe candidate is backed off through a bounded
+  adaptive search. Curve candidates on dense contours are ranked by visual
+  importance and evaluated under a point-count-scaled budget, preventing the
+  curve search from consuming the whole per-region deadline. If an optimized
+  Pen contour fails normally, the fitter retries once with the unmerged Potrace
+  controls before using a mesh fallback. Unavoidable fallbacks simplify the
+  current optimized contour with a 0.45-pixel RDP pass, accept it only when the
+  result remains a valid non-crossing polygon, and retry the original contour if
+  simplified triangulation fails. Scene insertion keeps the
   result in one **Region Fill** container with one child group per filled region.
   `region_fill.log` records every source-region result and the largest region's
-  original, optimized, and flattened contour point counts. `region_points.log`
+  original, optimized, and flattened contour point counts plus DSSIM. `region_points.log`
   records every raw path element, optimized Hard/Soft Pen point, and flattened
   optimized-contour point for that largest region.
 - Store project-specific color swatches in the `.3so` project document.

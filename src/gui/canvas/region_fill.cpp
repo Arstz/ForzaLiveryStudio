@@ -191,6 +191,209 @@ QPolygonF flattenPenContour(const PenContour &contour, int curveSamples)
     return polygon;
 }
 
+struct SsimAccumulation {
+    double sum = 0.0;
+    qint64 count = 0;
+};
+
+QImage renderContourMask(const QPolygonF &polygon,
+                         const QRect &sourceRect,
+                         int supersample)
+{
+    if (polygon.size() < 3 || sourceRect.isEmpty() || supersample < 1) {
+        return {};
+    }
+    const qint64 highWidth = static_cast<qint64>(sourceRect.width()) * supersample;
+    const qint64 highHeight = static_cast<qint64>(sourceRect.height()) * supersample;
+    if (highWidth <= 0 || highHeight <= 0
+        || highWidth > std::numeric_limits<int>::max()
+        || highHeight > std::numeric_limits<int>::max()) {
+        return {};
+    }
+    QImage high(static_cast<int>(highWidth),
+                static_cast<int>(highHeight),
+                QImage::Format_Grayscale8);
+    if (high.isNull()) {
+        return {};
+    }
+    high.fill(0);
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    path.addPolygon(polygon);
+    path.closeSubpath();
+    QPainter painter(&high);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.scale(supersample, supersample);
+    painter.translate(-sourceRect.left(), -sourceRect.top());
+    painter.fillPath(path, Qt::white);
+    painter.end();
+    return high.scaled(sourceRect.size(),
+                       Qt::IgnoreAspectRatio,
+                       Qt::SmoothTransformation)
+        .convertToFormat(QImage::Format_Grayscale8);
+}
+
+SsimAccumulation ssimAccumulation(const QImage &left, const QImage &right)
+{
+    SsimAccumulation result;
+    if (left.isNull() || right.isNull() || left.size() != right.size()) {
+        return result;
+    }
+    constexpr int window = 7;
+    constexpr int radius = window / 2;
+    constexpr double sampleCount = window * window;
+    constexpr double covarianceDivisor = sampleCount - 1.0;
+    constexpr double c1 = 6.5025;   // (0.01 * 255)^2
+    constexpr double c2 = 58.5225;  // (0.03 * 255)^2
+    const int width = left.width();
+    const int height = left.height();
+    if (width < window || height < window) {
+        double sx = 0.0;
+        double sy = 0.0;
+        double sxx = 0.0;
+        double syy = 0.0;
+        double sxy = 0.0;
+        for (int y = 0; y < height; ++y) {
+            const uchar *a = left.constScanLine(y);
+            const uchar *b = right.constScanLine(y);
+            for (int x = 0; x < width; ++x) {
+                const double av = a[x];
+                const double bv = b[x];
+                sx += av;
+                sy += bv;
+                sxx += av * av;
+                syy += bv * bv;
+                sxy += av * bv;
+            }
+        }
+        const double count = static_cast<double>(width) * height;
+        if (count <= 0.0) {
+            return result;
+        }
+        const double mx = sx / count;
+        const double my = sy / count;
+        const double divisor = std::max(1.0, count - 1.0);
+        const double vx = std::max(0.0, (sxx - sx * sx / count) / divisor);
+        const double vy = std::max(0.0, (syy - sy * sy / count) / divisor);
+        const double covariance = (sxy - sx * sy / count) / divisor;
+        result.sum = ((2.0 * mx * my + c1) * (2.0 * covariance + c2))
+            / ((mx * mx + my * my + c1) * (vx + vy + c2));
+        result.count = 1;
+        return result;
+    }
+
+    using MomentRows = std::array<QVector<double>, 5>;
+    std::array<MomentRows, window> ring;
+    MomentRows vertical;
+    MomentRows horizontal;
+    for (int moment = 0; moment < 5; ++moment) {
+        vertical[moment].fill(0.0, width);
+        horizontal[moment].fill(0.0, width);
+        for (int row = 0; row < window; ++row) {
+            ring[row][moment].fill(0.0, width);
+        }
+    }
+
+    for (int y = 0; y < height; ++y) {
+        const uchar *a = left.constScanLine(y);
+        const uchar *b = right.constScanLine(y);
+        std::array<double, 5> rolling{};
+        for (int x = 0; x < window; ++x) {
+            const double av = a[x];
+            const double bv = b[x];
+            rolling[0] += av;
+            rolling[1] += bv;
+            rolling[2] += av * av;
+            rolling[3] += bv * bv;
+            rolling[4] += av * bv;
+        }
+        for (int center = radius; center < width - radius; ++center) {
+            for (int moment = 0; moment < 5; ++moment) {
+                horizontal[moment][center] = rolling[moment];
+            }
+            const int remove = center - radius;
+            const int add = center + radius + 1;
+            if (add < width) {
+                const double removeA = a[remove];
+                const double removeB = b[remove];
+                const double addA = a[add];
+                const double addB = b[add];
+                rolling[0] += addA - removeA;
+                rolling[1] += addB - removeB;
+                rolling[2] += addA * addA - removeA * removeA;
+                rolling[3] += addB * addB - removeB * removeB;
+                rolling[4] += addA * addB - removeA * removeB;
+            }
+        }
+
+        const int slot = y % window;
+        for (int center = radius; center < width - radius; ++center) {
+            for (int moment = 0; moment < 5; ++moment) {
+                if (y >= window) {
+                    vertical[moment][center] -= ring[slot][moment][center];
+                }
+                ring[slot][moment][center] = horizontal[moment][center];
+                vertical[moment][center] += horizontal[moment][center];
+            }
+        }
+        if (y < window - 1) {
+            continue;
+        }
+        for (int center = radius; center < width - radius; ++center) {
+            const double sx = vertical[0][center];
+            const double sy = vertical[1][center];
+            const double mx = sx / sampleCount;
+            const double my = sy / sampleCount;
+            const double vx = std::max(
+                0.0, (vertical[2][center] - sx * sx / sampleCount)
+                         / covarianceDivisor);
+            const double vy = std::max(
+                0.0, (vertical[3][center] - sy * sy / sampleCount)
+                         / covarianceDivisor);
+            const double covariance =
+                (vertical[4][center] - sx * sy / sampleCount) / covarianceDivisor;
+            result.sum += ((2.0 * mx * my + c1) * (2.0 * covariance + c2))
+                / ((mx * mx + my * my + c1) * (vx + vy + c2));
+            ++result.count;
+        }
+    }
+    return result;
+}
+
+double contourDssim(const QPolygonF &baseline,
+                    const QPolygonF &candidate,
+                    const QSize &imageSize,
+                    int supersample)
+{
+    if (baseline.size() < 3 || candidate.size() < 3
+        || !imageSize.isValid() || imageSize.isEmpty()) {
+        return 0.0;
+    }
+    constexpr int ssimRadius = 3;
+    constexpr int resamplingMargin = 5;
+    const QRect imageRect(QPoint(0, 0), imageSize);
+    const QRectF affected = baseline.boundingRect().united(candidate.boundingRect())
+        .adjusted(-(ssimRadius + resamplingMargin),
+                  -(ssimRadius + resamplingMargin),
+                  ssimRadius + resamplingMargin,
+                  ssimRadius + resamplingMargin);
+    QRect sourceRect = affected.toAlignedRect().intersected(imageRect);
+    if (sourceRect.width() < 7 || sourceRect.height() < 7) {
+        sourceRect = sourceRect.adjusted(-4, -4, 4, 4).intersected(imageRect);
+    }
+    const QImage baselineMask = renderContourMask(baseline, sourceRect, supersample);
+    const QImage candidateMask = renderContourMask(candidate, sourceRect, supersample);
+    const SsimAccumulation local = ssimAccumulation(baselineMask, candidateMask);
+    const qint64 fullCount = static_cast<qint64>(std::max(1, imageSize.width() - 6))
+        * std::max(1, imageSize.height() - 6);
+    if (local.count <= 0 || local.count > fullCount) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double similarity =
+        (local.sum + static_cast<double>(fullCount - local.count)) / fullCount;
+    return (1.0 - std::clamp(similarity, -1.0, 1.0)) * 0.5;
+}
+
 QVector<PenPoint> penPoints(const QVector<ConvertiblePoint> &points)
 {
     QVector<PenPoint> result;
@@ -425,8 +628,14 @@ RegionPenConversionResult regionOutlineToPenPoints(
 {
     RegionPenConversionResult result;
     if (!std::isfinite(options.mergeTolerance) || options.mergeTolerance < 0.0
+        || !std::isfinite(options.maximumDssim) || options.maximumDssim < 0.0
+        || options.maximumDssim > 1.0
         || !std::isfinite(options.closureTolerance) || options.closureTolerance <= 0.0
-        || options.maxOptimizedPointCount < 0) {
+        || options.dssimSupersample < 1 || options.dssimSupersample > 8
+        || options.maxOptimizedPointCount < 0
+        || options.adaptiveSearchSteps < 0 || options.adaptiveSearchSteps > 16
+        || ((options.comparisonImageSize.width() > 0)
+            != (options.comparisonImageSize.height() > 0))) {
         result.error = QStringLiteral("Region Pen conversion options are invalid");
         return result;
     }
@@ -448,7 +657,8 @@ RegionPenConversionResult regionOutlineToPenPoints(
             : baseline.error;
         return result;
     }
-    if (working.size() > options.maxOptimizedPointCount) {
+    if (options.maxOptimizedPointCount > 0
+        && working.size() > options.maxOptimizedPointCount) {
         result.points = penPoints(working);
         result.optimizationSkipped = true;
         return result;
@@ -457,124 +667,93 @@ RegionPenConversionResult regionOutlineToPenPoints(
     const QPolygonF baselinePolygon =
         flattenPenContour(baseline, kBoundarySamplesPerCurve);
     const double referenceArea = signedArea(baselinePolygon);
-    result.baselineDeviation = boundaryDeviation(outer.polygon, baselinePolygon);
-    result.maximumDeviation = result.baselineDeviation;
-    const double allowedDeviation = result.baselineDeviation + options.mergeTolerance;
-
-    struct Candidate {
-        int pointIndex = -1;
-        double displacement = 0.0;
-        int previous = -1;
-        int next = -1;
-    };
-    QVector<Candidate> candidates;
-    QVector<int> candidateAtPoint(working.size(), -1);
-    for (int i = 0; i < working.size(); ++i) {
-        const double displacement = removalDisplacement(working, i);
-        if (std::isfinite(displacement)
-            && displacement <= options.mergeTolerance + kGeometryEpsilon) {
-            candidateAtPoint[i] = candidates.size();
-            candidates.push_back({i, displacement});
-        }
+    // The exact Hausdorff-style diagnostic is quadratic. Keep it for ordinary
+    // contours, while DSSIM is the bounded quality gate for dense traces.
+    constexpr qint64 kDeviationComparisonLimit = 2'000'000;
+    const bool measureBaselineDeviation =
+        static_cast<qint64>(outer.polygon.size()) * baselinePolygon.size()
+        <= kDeviationComparisonLimit;
+    if (measureBaselineDeviation) {
+        result.baselineDeviation = boundaryDeviation(outer.polygon, baselinePolygon);
     }
-    for (int candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
-        const int pointIndex = candidates[candidateIndex].pointIndex;
-        for (int offset = 1; offset < working.size(); ++offset) {
-            const int nextPoint = (pointIndex + offset) % working.size();
-            if (working[nextPoint].point.kind != PenPointKind::Hard) {
+    result.maximumDeviation = result.baselineDeviation;
+
+    struct EvaluatedCandidate {
+        QVector<ConvertiblePoint> points;
+        QPolygonF polygon;
+        double dssim = 0.0;
+        double deviation = 0.0;
+        bool valid = false;
+    };
+    const auto evaluate = [&](double tolerance) {
+        EvaluatedCandidate evaluated;
+        evaluated.points.reserve(working.size());
+        for (int i = 0; i < working.size(); ++i) {
+            const double displacement = removalDisplacement(working, i);
+            if (std::isfinite(displacement)
+                && displacement <= tolerance + kGeometryEpsilon) {
                 continue;
             }
-            const int nextCandidate = candidateAtPoint[nextPoint];
-            if (nextCandidate >= 0) {
-                candidates[candidateIndex].next = nextCandidate;
-                candidates[nextCandidate].previous = candidateIndex;
-            }
-            break;
+            evaluated.points.push_back(working[i]);
         }
-    }
-
-    QVector<int> order;
-    order.reserve(candidates.size());
-    for (int i = 0; i < candidates.size(); ++i) {
-        order.push_back(i);
-    }
-    std::sort(order.begin(), order.end(), [&](int left, int right) {
-        const Candidate &a = candidates[left];
-        const Candidate &b = candidates[right];
-        if (std::abs(a.displacement - b.displacement) > kGeometryEpsilon) {
-            return a.displacement < b.displacement;
+        if (evaluated.points.size() == working.size()) {
+            evaluated.polygon = baselinePolygon;
+            evaluated.deviation = result.baselineDeviation;
+            evaluated.valid = true;
+            return evaluated;
         }
-        return a.pointIndex < b.pointIndex;
-    });
-
-    QVector<int> parents(candidates.size(), -1);
-    QVector<double> clusterErrors(candidates.size(), 0.0);
-    QVector<bool> accepted(candidates.size(), false);
-    QVector<bool> removedPoints(working.size(), false);
-    const auto findRoot = [&](int candidateIndex) {
-        int root = candidateIndex;
-        while (parents[root] != root) {
-            root = parents[root];
+        // buildPenContour rejects self-crossings. Because this model emits one
+        // closed contour, validity also preserves its one-component/no-hole
+        // topology; the signed-area check below preserves orientation.
+        const PenContour contour = buildPenContour(penPoints(evaluated.points));
+        if (!contour.valid()) {
+            return evaluated;
         }
-        int current = candidateIndex;
-        while (parents[current] != current) {
-            const int parent = parents[current];
-            parents[current] = root;
-            current = parent;
+        evaluated.polygon = flattenPenContour(contour, kBoundarySamplesPerCurve);
+        if (!sameOrientation(referenceArea, signedArea(evaluated.polygon))) {
+            return evaluated;
         }
-        return root;
+        evaluated.dssim = contourDssim(baselinePolygon,
+                                       evaluated.polygon,
+                                       options.comparisonImageSize,
+                                       options.dssimSupersample);
+        if (!std::isfinite(evaluated.dssim)
+            || evaluated.dssim > options.maximumDssim + kGeometryEpsilon) {
+            return evaluated;
+        }
+        if (static_cast<qint64>(outer.polygon.size()) * evaluated.polygon.size()
+            <= kDeviationComparisonLimit) {
+            evaluated.deviation = boundaryDeviation(outer.polygon, evaluated.polygon);
+        } else {
+            evaluated.deviation = result.baselineDeviation;
+        }
+        evaluated.valid = true;
+        return evaluated;
     };
-    for (const int candidateIndex : order) {
-        const Candidate &candidate = candidates[candidateIndex];
-        const int leftRoot = candidate.previous >= 0 && accepted[candidate.previous]
-            ? findRoot(candidate.previous)
-            : -1;
-        const int rightRoot = candidate.next >= 0 && accepted[candidate.next]
-            ? findRoot(candidate.next)
-            : -1;
-        double combinedError = candidate.displacement;
-        if (leftRoot >= 0) {
-            combinedError += clusterErrors[leftRoot];
-        }
-        if (rightRoot >= 0 && rightRoot != leftRoot) {
-            combinedError += clusterErrors[rightRoot];
-        }
-        if (combinedError > options.mergeTolerance + kGeometryEpsilon) {
-            continue;
-        }
-        accepted[candidateIndex] = true;
-        removedPoints[candidate.pointIndex] = true;
-        parents[candidateIndex] = candidateIndex;
-        clusterErrors[candidateIndex] = combinedError;
-        if (leftRoot >= 0) {
-            parents[leftRoot] = candidateIndex;
-        }
-        if (rightRoot >= 0 && rightRoot != leftRoot) {
-            parents[rightRoot] = candidateIndex;
-        }
-    }
 
-    QVector<ConvertiblePoint> simplified;
-    simplified.reserve(working.size());
-    for (int i = 0; i < working.size(); ++i) {
-        if (!removedPoints[i]) {
-            simplified.push_back(working[i]);
+    EvaluatedCandidate best = evaluate(options.mergeTolerance);
+    if (!best.valid && options.mergeTolerance > 0.0) {
+        // Usually the recommended cap succeeds in one evaluation. If a contour
+        // would cross itself or exceed DSSIM, bisect toward the unchanged
+        // baseline and retain the strongest safe result found.
+        double safeTolerance = 0.0;
+        double unsafeTolerance = options.mergeTolerance;
+        for (int step = 0; step < options.adaptiveSearchSteps; ++step) {
+            const double middle = (safeTolerance + unsafeTolerance) * 0.5;
+            EvaluatedCandidate candidate = evaluate(middle);
+            if (candidate.valid) {
+                safeTolerance = middle;
+                best = std::move(candidate);
+            } else {
+                unsafeTolerance = middle;
+            }
         }
     }
-    const PenContour simplifiedContour = buildPenContour(penPoints(simplified));
-    if (simplifiedContour.valid()) {
-        const QPolygonF candidatePolygon =
-            flattenPenContour(simplifiedContour, kBoundarySamplesPerCurve);
-        const double deviation = boundaryDeviation(outer.polygon, candidatePolygon);
-        if (sameOrientation(referenceArea, signedArea(candidatePolygon))
-            && std::isfinite(deviation)
-            && deviation <= allowedDeviation + kGeometryEpsilon) {
-            working = std::move(simplified);
-            result.maximumDeviation = deviation;
-            result.removedHardPoints = std::count(removedPoints.cbegin(),
-                                                  removedPoints.cend(),
-                                                  true);
-        }
+    if (best.valid) {
+        result.removedHardPoints = working.size() - best.points.size();
+        result.maximumDeviation = best.deviation;
+        result.dssim = best.dssim;
+        working = std::move(best.points);
     }
 
     result.points = penPoints(working);
@@ -587,7 +766,8 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const std::function<bool()> &cancelled,
                                 QPolygonF *optimizedContour,
                                 RegionFillContourStats *contourStats,
-                                QVector<PenPoint> *optimizedPenPoints)
+                                QVector<PenPoint> *optimizedPenPoints,
+                                const QSize &comparisonImageSize)
 {
     PenFillResult result;
     if (optimizedContour != nullptr) {
@@ -599,21 +779,65 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
     if (optimizedPenPoints != nullptr) {
         optimizedPenPoints->clear();
     }
-    const RegionPenConversionResult conversion = regionOutlineToPenPoints(outline);
-    if (contourStats != nullptr) {
-        contourStats->originalPointCount = conversion.originalPointCount;
-        contourStats->optimizedPointCount = conversion.points.size();
-        contourStats->removedHardPoints = conversion.removedHardPoints;
-        contourStats->optimizationSkipped = conversion.optimizationSkipped;
-    }
-    if (optimizedPenPoints != nullptr) {
-        *optimizedPenPoints = conversion.points;
-    }
+    RegionPenConversionOptions conversionOptions;
+    conversionOptions.comparisonImageSize = comparisonImageSize;
+    RegionPenConversionResult conversion =
+        regionOutlineToPenPoints(outline, conversionOptions);
     if (!conversion.valid()) {
         result.error = conversion.error.isEmpty()
             ? QStringLiteral("Region outline has no fillable contour")
             : conversion.error;
         return result;
+    }
+
+    PenFillRequest request;
+    request.points = conversion.points;
+    request.primitives = primitives;
+    request.boundaryTolerance = boundaryTolerance;
+    result = fillPenPath(request, cancelled);
+    const auto succeeded = [](const PenFillResult &fill) {
+        return fill.error.isEmpty() && !fill.placements.isEmpty() && !fill.cancelled;
+    };
+    bool usedBaselineRetry = false;
+    if (!succeeded(result) && !result.cancelled
+        && !(cancelled && cancelled()) && conversion.removedHardPoints > 0) {
+        // A small number of intricate contours fit poorly after adjacent cubic
+        // junctions are merged. Retry those through the same curve-aware Pen
+        // path with the unmerged Potrace controls before falling back to a dense
+        // flattened triangle mesh.
+        RegionPenConversionOptions baselineOptions = conversionOptions;
+        baselineOptions.mergeTolerance = 0.0;
+        RegionPenConversionResult baseline =
+            regionOutlineToPenPoints(outline, baselineOptions);
+        if (baseline.valid() && baseline.points.size() != conversion.points.size()) {
+            request.points = baseline.points;
+            PenFillResult retry = fillPenPath(request, cancelled);
+            if (succeeded(retry)) {
+                result = std::move(retry);
+                conversion = std::move(baseline);
+                usedBaselineRetry = true;
+            } else if (retry.cancelled) {
+                result = std::move(retry);
+            } else if (!retry.error.isEmpty()) {
+                const QString retryError =
+                    QStringLiteral("baseline retry: %1").arg(retry.error);
+                result.error = result.error.isEmpty()
+                    ? retryError
+                    : result.error + QStringLiteral("; ") + retryError;
+            }
+        }
+    }
+
+    if (contourStats != nullptr) {
+        contourStats->originalPointCount = conversion.originalPointCount;
+        contourStats->optimizedPointCount = conversion.points.size();
+        contourStats->removedHardPoints = conversion.removedHardPoints;
+        contourStats->optimizationSkipped = conversion.optimizationSkipped;
+        contourStats->baselineRetry = usedBaselineRetry;
+        contourStats->dssim = conversion.dssim;
+    }
+    if (optimizedPenPoints != nullptr) {
+        *optimizedPenPoints = conversion.points;
     }
     if (optimizedContour != nullptr || contourStats != nullptr) {
         const PenContour contour = buildPenContour(conversion.points);
@@ -628,11 +852,7 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
             }
         }
     }
-    PenFillRequest request;
-    request.points = conversion.points;
-    request.primitives = primitives;
-    request.boundaryTolerance = boundaryTolerance;
-    return fillPenPath(request, cancelled);
+    return result;
 }
 
 QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon)
