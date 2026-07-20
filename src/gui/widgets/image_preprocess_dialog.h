@@ -6,6 +6,8 @@
 #include <QImage>
 
 class QDialogButtonBox;
+class QCheckBox;
+class QComboBox;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -45,6 +47,8 @@ private:
     void beginEyedropper();
     void addPaletteColor(const QColor &color);
     void removeSelectedPaletteColor();
+    void chooseLineColor();
+    void updateLineColorButton();
     void rebuildPaletteList();
     void setEyedropperActive(bool active);
 
@@ -85,6 +89,14 @@ private:
     QSlider *quantizationIterations_ = nullptr;
     QSlider *minimumColorFraction_ = nullptr;
     QSlider *speckleSize_ = nullptr;
+    QCheckBox *noDetailNearEdges_ = nullptr;
+    QSlider *edgeCleanupPasses_ = nullptr;
+    QComboBox *edgeCleanupWindow_ = nullptr;
+    QCheckBox *forceFlatFills_ = nullptr;
+    QSlider *flatFillMinimumArea_ = nullptr;
+    QCheckBox *lineMode_ = nullptr;
+    QPushButton *lineColorButton_ = nullptr;
+    QColor lineColor_;
 
     double viewScale_ = 0.0;
     QPointF viewCenter_;

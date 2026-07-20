@@ -373,6 +373,43 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
     speckleSize_ = addSlider(advancedForm, QStringLiteral("Speckle size"), 0, 64,
                              defaults.speckleSize,
                              [](int value) { return QString::number(value); }, changed);
+    edgeCleanupPasses_ = addSlider(advancedForm, QStringLiteral("Edge cleanup passes"), 0, 2,
+                                   defaults.edgeCleanupPasses,
+                                   [](int value) { return QString::number(value); }, changed);
+    edgeCleanupWindow_ = new QComboBox(advancedPanel_);
+    edgeCleanupWindow_->addItem(QStringLiteral("3×3"), 3);
+    edgeCleanupWindow_->addItem(QStringLiteral("5×5"), 5);
+    edgeCleanupWindow_->setCurrentIndex(defaults.edgeCleanupWindow >= 5 ? 1 : 0);
+    advancedForm->addRow(QStringLiteral("Edge cleanup window"), edgeCleanupWindow_);
+    QObject::connect(edgeCleanupWindow_, &QComboBox::currentIndexChanged, this, changed);
+    noDetailNearEdges_ = new QCheckBox(QStringLiteral("No detail near edges"), advancedPanel_);
+    noDetailNearEdges_->setChecked(defaults.noDetailNearEdges);
+    advancedForm->addRow(noDetailNearEdges_);
+    QObject::connect(noDetailNearEdges_, &QCheckBox::toggled, this, changed);
+    forceFlatFills_ = new QCheckBox(QStringLiteral("Force flat fills per region"), advancedPanel_);
+    forceFlatFills_->setChecked(defaults.forceFlatFills);
+    advancedForm->addRow(forceFlatFills_);
+    QObject::connect(forceFlatFills_, &QCheckBox::toggled, this, [this, changed](bool enabled) {
+        flatFillMinimumArea_->setEnabled(enabled);
+        changed();
+    });
+    flatFillMinimumArea_ = addSlider(advancedForm, QStringLiteral("Flat region minimum area"), 1, 4096,
+                                     defaults.flatFillMinimumArea,
+                                     [](int value) { return QStringLiteral("%1 px").arg(value); }, changed);
+    flatFillMinimumArea_->setEnabled(defaults.forceFlatFills);
+    lineMode_ = new QCheckBox(QStringLiteral("Separate dark thin lines"), advancedPanel_);
+    lineMode_->setChecked(defaults.lineMode);
+    advancedForm->addRow(lineMode_);
+    QObject::connect(lineMode_, &QCheckBox::toggled, this, [this, changed](bool enabled) {
+        lineColorButton_->setEnabled(enabled);
+        changed();
+    });
+    lineColorButton_ = new QPushButton(QStringLiteral("Auto-derived"), advancedPanel_);
+    lineColorButton_->setToolTip(QStringLiteral("Override the automatically derived line color"));
+    advancedForm->addRow(QStringLiteral("Line color"), lineColorButton_);
+    QObject::connect(lineColorButton_, &QPushButton::clicked,
+                     this, &ImagePreprocessDialog::chooseLineColor);
+    updateLineColorButton();
     advancedPanel_->hide();
     settingsLayout->addWidget(advancedPanel_);
 
@@ -425,7 +462,14 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
         }
     });
     rebuildPaletteList();
-    content->addWidget(settingsPanel_);
+    auto *settingsScroll = new QScrollArea(content);
+    settingsScroll->setWidgetResizable(true);
+    settingsScroll->setFrameShape(QFrame::NoFrame);
+    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settingsScroll->setMinimumWidth(330);
+    settingsScroll->setMaximumWidth(410);
+    settingsScroll->setWidget(settingsPanel_);
+    content->addWidget(settingsScroll);
     content->setStretchFactor(0, 1);
     content->setStretchFactor(1, 0);
 
@@ -475,6 +519,13 @@ ImagePreprocessSettings ImagePreprocessDialog::selectedSettings() const
     settings.quantizationIterations = quantizationIterations_->value();
     settings.minimumColorFraction = minimumColorFraction_->value() / 10000.0;
     settings.speckleSize = speckleSize_->value();
+    settings.noDetailNearEdges = noDetailNearEdges_->isChecked();
+    settings.edgeCleanupPasses = edgeCleanupPasses_->value();
+    settings.edgeCleanupWindow = edgeCleanupWindow_->currentData().toInt();
+    settings.forceFlatFills = forceFlatFills_->isChecked();
+    settings.flatFillMinimumArea = flatFillMinimumArea_->value();
+    settings.lineMode = lineMode_->isChecked();
+    settings.lineColor = lineColor_;
     settings.paletteColors = paletteColors_;
     settings.fixedPalette = fixedPalette_;
     return settings;
@@ -684,6 +735,47 @@ void ImagePreprocessDialog::removeSelectedPaletteColor()
     paletteColors_.removeAt(paletteList_->currentRow());
     rebuildPaletteList();
     schedulePreview();
+}
+
+void ImagePreprocessDialog::chooseLineColor()
+{
+    const QColor initial = lineColor_.isValid() ? lineColor_ : QColor(24, 24, 24);
+    const QColor chosen = QColorDialog::getColor(initial, this, QStringLiteral("Choose Line Color"));
+    if (!chosen.isValid()) {
+        return;
+    }
+    lineColor_ = QColor(chosen.red(), chosen.green(), chosen.blue(), 255);
+    if (fixedPalette_) {
+        const bool alreadyPresent = std::any_of(
+            paletteColors_.cbegin(), paletteColors_.cend(), [&](const QColor &color) {
+                return color.rgb() == lineColor_.rgb();
+            });
+        if (!alreadyPresent && paletteColors_.size() < 256) {
+            paletteColors_.push_back(lineColor_);
+            rebuildPaletteList();
+        }
+    } else if (colors_->value() <= paletteColors_.size() && colors_->value() < 256) {
+        colors_->setValue(paletteColors_.size() + 1);
+    }
+    updateLineColorButton();
+    schedulePreview();
+}
+
+void ImagePreprocessDialog::updateLineColorButton()
+{
+    if (lineColorButton_ == nullptr) {
+        return;
+    }
+    if (!lineColor_.isValid()) {
+        lineColorButton_->setText(QStringLiteral("Auto-derived"));
+        lineColorButton_->setStyleSheet(QString());
+        return;
+    }
+    lineColorButton_->setText(lineColor_.name(QColor::HexRgb).toUpper());
+    const QColor foreground = lineColor_.lightness() < 128 ? Qt::white : Qt::black;
+    lineColorButton_->setStyleSheet(
+        QStringLiteral("background-color: %1; color: %2;")
+            .arg(lineColor_.name(QColor::HexRgb), foreground.name(QColor::HexRgb)));
 }
 
 void ImagePreprocessDialog::rebuildPaletteList()

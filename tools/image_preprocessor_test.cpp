@@ -79,6 +79,7 @@ int main()
     settings.flattenStrength = 0.0;
     settings.saturationRestore = 0.0;
     settings.detailRestore = 0.0;
+    settings.lineMode = false;
     settings.minimumColorFraction = 0.05;
     const gui::ImagePreprocessResult bucketed = gui::preprocessImageDetailed(rareColor, settings);
     if (!require(bucketed.retainedColorCount == 1, "rare HSV cluster was not bucketed")
@@ -152,6 +153,77 @@ int main()
                 locked.retainedPalette.cbegin(), locked.retainedPalette.cend(),
                 [&](const QColor &paletteColor) { return paletteColor.rgb() == color.rgb(); });
             if (!require(retained, "detail restoration introduced a non-palette color")) {
+                return 1;
+            }
+        }
+    }
+
+    // A manual line override reserves one of the generated palette slots and
+    // line pixels remain on that immutable label through cleanup.
+    QImage lined(21, 11, QImage::Format_ARGB32);
+    lined.fill(qRgb(245, 245, 245));
+    for (int x = 2; x < 19; ++x) {
+        lined.setPixel(x, 5, qRgb(12, 12, 12));
+    }
+    settings = gui::ImagePreprocessSettings::animeDetail();
+    settings.colors = 2;
+    settings.smoothingPasses = 0;
+    settings.flattenStrength = 0.0;
+    settings.saturationRestore = 0.0;
+    settings.detailRestore = 0.0;
+    settings.minimumColorFraction = 0.0;
+    settings.speckleSize = 64;
+    settings.edgeCleanupPasses = 2;
+    settings.lineMode = true;
+    settings.lineColor = QColor(20, 60, 210);
+    const gui::ImagePreprocessResult separatedLine = gui::preprocessImageDetailed(lined, settings);
+    if (!require(separatedLine.retainedColorCount == 2,
+                 "dedicated line color did not consume one generated palette slot")
+        || !require(separatedLine.image.pixelColor(10, 5).rgb() == settings.lineColor.rgb(),
+                    "immutable line label did not retain the selected line color")) {
+        return 1;
+    }
+    settings.lineColor = QColor();
+    const gui::ImagePreprocessResult automaticLine = gui::preprocessImageDetailed(lined, settings);
+    const QColor automaticLinePixel = automaticLine.image.pixelColor(10, 5);
+    if (!require(automaticLine.retainedColorCount == 2,
+                 "automatically derived line color did not reserve a palette slot")
+        || !require(automaticLinePixel.lightness() < 64,
+                    "automatic line color was not derived from the dark line pixels")) {
+        return 1;
+    }
+    for (int y = 0; y < automaticLine.image.height(); ++y) {
+        for (int x = 0; x < automaticLine.image.width(); ++x) {
+            const QColor output = automaticLine.image.pixelColor(x, y);
+            const bool retained = std::any_of(
+                automaticLine.retainedPalette.cbegin(), automaticLine.retainedPalette.cend(),
+                [&](const QColor &paletteColor) { return paletteColor.rgb() == output.rgb(); });
+            if (!require(retained, "label pipeline emitted a non-palette RGB value")) {
+                return 1;
+            }
+        }
+    }
+
+    // Region flattening treats a low-gradient, edge-bounded area as one region
+    // and replaces all of its labels with the dominant label.
+    QImage mixedRegion(20, 12, QImage::Format_ARGB32);
+    mixedRegion.fill(qRgb(100, 100, 100));
+    for (int y = 3; y < 9; ++y) {
+        for (int x = 7; x < 12; ++x) {
+            mixedRegion.setPixel(x, y, qRgb(110, 110, 110));
+        }
+    }
+    settings.fixedPalette = true;
+    settings.paletteColors = {QColor(100, 100, 100), QColor(110, 110, 110)};
+    settings.lineMode = false;
+    settings.edgeCleanupPasses = 0;
+    settings.forceFlatFills = true;
+    settings.flatFillMinimumArea = 1;
+    const gui::ImagePreprocessResult flattenedRegion = gui::preprocessImageDetailed(mixedRegion, settings);
+    for (int y = 0; y < flattenedRegion.image.height(); ++y) {
+        for (int x = 0; x < flattenedRegion.image.width(); ++x) {
+            if (!require(flattenedRegion.image.pixelColor(x, y).rgb() == QColor(100, 100, 100).rgb(),
+                         "edge-bounded region was not flattened to its dominant label")) {
                 return 1;
             }
         }

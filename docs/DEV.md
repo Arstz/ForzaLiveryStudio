@@ -60,12 +60,20 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   The Qt/C++ pipeline starts from the `anime_detail` settings, performs
   edge-preserving smoothing, median flattening, and circular-hue HSV palette
   clustering, then buckets clusters below the configurable minimum color share
-  into their nearest retained color and restores saturation plus an edge-free
-  local detail residual without introducing colors outside the retained palette.
+  into their nearest retained color. It then converts visible pixels to a 16-bit
+  palette-index image; detail selection, edge cleanup, line preservation, and
+  optional region flattening operate only on those labels. Sobel magnitude from
+  the smoothed source produces a one-pixel-dilated edge mask. Local detail can
+  select a different retained label in region interiors, fades toward detected
+  edges, and is disabled throughout the edge mask by default. Output therefore
+  remains strictly palette-only.
   Fully transparent source pixels remain transparent, while every partially or
-  fully visible pixel becomes fully opaque. An advanced speckle threshold removes
-  small 8-connected visible color components by assigning the dominant visible
-  neighboring palette color without filling transparent areas.
+  fully visible pixel becomes fully opaque. The advanced speckle threshold is the
+  maximum component size eligible for 3×3 or 5×5 label-majority replacement over
+  zero to two edge-cleanup passes. Optional flat fills replace labels inside large
+  edge-bounded regions with the region's dominant label. Dark thin-line separation
+  is enabled by default: it derives a dedicated line color, reserves a palette
+  slot, and keeps detected line labels immutable; the color can be overridden.
   Colors chosen with the color dialog or either preview's eyedropper are locked
   while HSV clustering fills the remaining color limit. Importing project
   swatches switches to a fixed palette containing those swatches plus any manual
@@ -79,7 +87,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   **100%**, and double-click-to-fit navigation. **OK** processes the original
   resolution, preserves dimensions, produces binary alpha, and replaces
   the guide image as one undoable edit. **Create Regions** and **Fill Regions**
-  are also in the **ImgGen** menu.
+  are also in the **ImgGen** menu. Region filling sends Potrace curves through
+  the same optimized Pen-point and curve-Primitive fitter used by Bucket Fill;
+  complex contours fall back to the Square/Triangle polygon mesh.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,
@@ -394,8 +404,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     glyph-block table (`font_glyphs.*`) mapping characters to font-letter shape
     ids and merged browser sections, used by both the browser and the Place Text
     tool; header editing; image decode (Qt plus Windows WIC) / guide-image encode /
-    accepted suffixes; and the edge-free C++ guide preprocessing engine plus its
-    live-preview dialog.
+    accepted suffixes; and the label-based, edge-aware C++ guide preprocessing
+    engine plus its live-preview dialog.
 ## Core Entry Points
 
 - `readCGroupPayload()` / `writeCGroupFile()`

@@ -22,6 +22,13 @@ struct ImagePreprocessSettings {
     int quantizationIterations = 60;
     double minimumColorFraction = 5e-4;
     int speckleSize = 4;
+    bool noDetailNearEdges = true;
+    int edgeCleanupPasses = 1;
+    int edgeCleanupWindow = 3;
+    bool forceFlatFills = false;
+    int flatFillMinimumArea = 128;
+    bool lineMode = true;
+    QColor lineColor;
     QVector<QColor> paletteColors;
     bool fixedPalette = false;
 
@@ -34,12 +41,11 @@ struct ImagePreprocessResult {
     QVector<QColor> retainedPalette;
 };
 
-// Edge-free image preprocessing. Dimensions and fully transparent pixels are
-// preserved; every visible output pixel is opaque. Colour flattening is
-// performed in HSV. Clusters below minimumColorFraction are bucketed into their
-// closest retained colour, detail is restored from a local high-frequency
-// residual instead of an edge or silhouette mask, and small colour components
-// are merged into a visible neighbour.
+// Label-based image preprocessing. Dimensions and fully transparent pixels are
+// preserved; every visible output pixel is opaque and exactly matches a retained
+// palette colour. After HSV clustering, cleanup and edge-safe detail selection
+// operate on palette indices. Optional line pixels use an immutable dedicated
+// palette label.
 ImagePreprocessResult preprocessImageDetailed(const QImage &source,
                                               const ImagePreprocessSettings &settings);
 QImage preprocessImage(const QImage &source, const ImagePreprocessSettings &settings);

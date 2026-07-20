@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <vector>
 
 namespace {
 
@@ -563,6 +564,54 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
                  "an internal arc should use a contained curve Primitive");
 }
 
+void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
+{
+    QPainterPath outline;
+    outline.moveTo(0.0, -50.0);
+    quadraticTo(&outline, QPointF(50.0, -50.0), QPointF(50.0, 0.0));
+    outline.lineTo(50.0, 80.0);
+    outline.lineTo(-50.0, 80.0);
+    outline.lineTo(-50.0, -50.0);
+    outline.closeSubpath();
+
+    const QVector<gui::PenPrimitive> primitives = penPrimitiveCatalog(test);
+    const gui::PenFillResult result =
+        gui::fillRegionOutline(outline, primitives, 0.5);
+    test->expect(result.error.isEmpty(),
+                 "automatic region outline should use the curve-aware Pen fitter");
+    test->expect(hasPlacement(result, 130),
+                 "automatic region outline should retain its quarter-circle Primitive");
+
+    constexpr int width = 96;
+    constexpr int height = 96;
+    std::vector<std::uint8_t> circleMask(static_cast<size_t>(width) * height, 0);
+    const QPointF center(width * 0.5, height * 0.5);
+    constexpr double radius = 30.0;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const QPointF delta(x + 0.5 - center.x(), y + 0.5 - center.y());
+            if (QPointF::dotProduct(delta, delta) <= radius * radius) {
+                circleMask[static_cast<size_t>(y) * width + x] = 1;
+            }
+        }
+    }
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    const QPainterPath tracedCircle = gui::traceMaskToPath(
+        circleMask, width, height, QRect(0, 0, width, height), traceOptions);
+    const gui::PenFillResult tracedResult =
+        gui::fillRegionOutline(tracedCircle, primitives, 1.0);
+    const bool hasCurvePlacement = std::any_of(
+        tracedResult.placements.cbegin(), tracedResult.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.shapeId != 101 && placement.shapeId != 103;
+        });
+    test->expect(tracedResult.error.isEmpty(),
+                 "a Potrace-generated region should pass through the automatic Pen fitter");
+    test->expect(hasCurvePlacement,
+                 "a Potrace-generated circle should not flatten to only Squares/Triangles");
+}
+
 void crossedCoreRetainsValidFits(TestContext *test)
 {
     const QVector<gui::PenPrimitive> primitives = penPrimitiveCatalog(test);
@@ -1011,6 +1060,7 @@ int main(int argc, char **argv)
     conversionIsDeterministic(&test);
     conversionOptimizationIsBounded(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
+    automaticRegionFillRetainsCurvedBoundary(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);
     openCenterlineBuildsAndFills(&test);

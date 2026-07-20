@@ -146,101 +146,6 @@ QuantizeResult quantizeToFixedPalette(const QImage &source, const QVector<QColor
     return {result, static_cast<int>(palette.size()), palette};
 }
 
-QImage removeSmallColorRegions(const QImage &source, int maximumPixels)
-{
-    QImage result = source.convertToFormat(QImage::Format_ARGB32);
-    const int threshold = std::clamp(maximumPixels, 0, 64);
-    const int width = result.width();
-    const int height = result.height();
-    const qsizetype pixelCount = static_cast<qsizetype>(width) * height;
-    if (threshold == 0 || pixelCount <= 0) {
-        return result;
-    }
-
-    const QImage snapshot = result;
-    std::vector<quint8> visited(static_cast<size_t>(pixelCount), 0);
-    std::vector<int> queue;
-    std::vector<int> component;
-    queue.reserve(static_cast<size_t>(threshold + 1));
-    component.reserve(static_cast<size_t>(threshold + 1));
-    constexpr std::array<QPoint, 8> neighbors = {
-        QPoint(-1, -1), QPoint(0, -1), QPoint(1, -1), QPoint(-1, 0),
-        QPoint(1, 0), QPoint(-1, 1), QPoint(0, 1), QPoint(1, 1),
-    };
-
-    for (int seed = 0; seed < pixelCount; ++seed) {
-        if (visited[static_cast<size_t>(seed)] != 0) {
-            continue;
-        }
-        const int seedX = seed % width;
-        const int seedY = seed / width;
-        const QRgb componentColor = snapshot.pixel(seedX, seedY);
-        if (qAlpha(componentColor) == 0) {
-            visited[static_cast<size_t>(seed)] = 1;
-            continue;
-        }
-        queue.clear();
-        component.clear();
-        queue.push_back(seed);
-        visited[static_cast<size_t>(seed)] = 1;
-        for (size_t head = 0; head < queue.size(); ++head) {
-            const int index = queue[head];
-            if (component.size() <= static_cast<size_t>(threshold)) {
-                component.push_back(index);
-            }
-            const int x = index % width;
-            const int y = index / width;
-            for (const QPoint &offset : neighbors) {
-                const int nx = x + offset.x();
-                const int ny = y + offset.y();
-                if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-                    continue;
-                }
-                const int neighborIndex = ny * width + nx;
-                if (visited[static_cast<size_t>(neighborIndex)] == 0
-                    && snapshot.pixel(nx, ny) == componentColor) {
-                    visited[static_cast<size_t>(neighborIndex)] = 1;
-                    queue.push_back(neighborIndex);
-                }
-            }
-        }
-        if (component.size() > static_cast<size_t>(threshold)) {
-            continue;
-        }
-
-        QMap<QRgb, int> neighborCounts;
-        for (int index : component) {
-            const int x = index % width;
-            const int y = index / width;
-            for (const QPoint &offset : neighbors) {
-                const int nx = x + offset.x();
-                const int ny = y + offset.y();
-                if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-                    continue;
-                }
-                const QRgb color = snapshot.pixel(nx, ny);
-                if (qAlpha(color) > 0 && color != componentColor) {
-                    ++neighborCounts[color];
-                }
-            }
-        }
-        QRgb replacement = componentColor;
-        int bestCount = 0;
-        for (auto it = neighborCounts.cbegin(); it != neighborCounts.cend(); ++it) {
-            if (it.value() > bestCount) {
-                replacement = it.key();
-                bestCount = it.value();
-            }
-        }
-        if (bestCount > 0) {
-            for (int index : component) {
-                result.setPixel(index % width, index / width, replacement);
-            }
-        }
-    }
-    return result;
-}
-
 QImage bilateralOneDimension(const QImage &source, int radius, double sigmaColor,
                              double sigmaSpace, bool horizontal)
 {
@@ -681,35 +586,470 @@ double saturationOf(QRgb pixel)
     return maximum == 0 ? 0.0 : 255.0 * static_cast<double>(maximum - minimum) / maximum;
 }
 
-QImage restoreSaturationAndDetail(const QImage &quantized, const QImage &flattened,
-                                  const ImagePreprocessSettings &settings)
+constexpr quint16 kTransparentLabel = std::numeric_limits<quint16>::max();
+
+quint16 labelAt(const QImage &image, int x, int y)
 {
-    const QImage detailBlur = boxBlur(flattened, std::max(1, settings.detailRadius));
-    QImage result(flattened.size(), QImage::Format_ARGB32);
-    const double saturationAmount = std::clamp(settings.saturationRestore, 0.0, 1.0);
-    const double detailAmount = std::clamp(settings.detailRestore, 0.0, 1.0);
-    constexpr double transitionWidth = 32.0;
-    for (int y = 0; y < flattened.height(); ++y) {
-        const auto *quant = reinterpret_cast<const QRgb *>(quantized.constScanLine(y));
-        const auto *base = reinterpret_cast<const QRgb *>(flattened.constScanLine(y));
-        const auto *blur = reinterpret_cast<const QRgb *>(detailBlur.constScanLine(y));
-        auto *output = reinterpret_cast<QRgb *>(result.scanLine(y));
-        for (int x = 0; x < flattened.width(); ++x) {
-            const double mask = std::clamp((saturationOf(base[x]) - settings.saturationThreshold) / transitionWidth, 0.0, 1.0);
-            const double saturationBlend = saturationAmount * mask;
-            const double red = qRed(quant[x]) * (1.0 - saturationBlend) + qRed(base[x]) * saturationBlend
-                + detailAmount * (qRed(base[x]) - qRed(blur[x]));
-            const double green = qGreen(quant[x]) * (1.0 - saturationBlend) + qGreen(base[x]) * saturationBlend
-                + detailAmount * (qGreen(base[x]) - qGreen(blur[x]));
-            const double blue = qBlue(quant[x]) * (1.0 - saturationBlend) + qBlue(base[x]) * saturationBlend
-                + detailAmount * (qBlue(base[x]) - qBlue(blur[x]));
-            output[x] = qRgba(std::clamp(qRound(red), 0, 255),
-                              std::clamp(qRound(green), 0, 255),
-                              std::clamp(qRound(blue), 0, 255),
-                              qAlpha(base[x]));
+    return reinterpret_cast<const quint16 *>(image.constScanLine(y))[x];
+}
+
+int nearestPaletteLabel(QRgb pixel, const QVector<QColor> &palette)
+{
+    const HsvColor hsv = rgbToHsv(qRed(pixel), qGreen(pixel), qBlue(pixel));
+    double nearest = std::numeric_limits<double>::max();
+    int nearestIndex = 0;
+    for (int index = 0; index < palette.size(); ++index) {
+        const QColor &candidate = palette[index];
+        const double distance = hsvDistanceSquared(
+            hsv, rgbToHsv(candidate.red(), candidate.green(), candidate.blue()));
+        if (distance < nearest) {
+            nearest = distance;
+            nearestIndex = index;
+        }
+    }
+    return nearestIndex;
+}
+
+QImage buildIndexImage(const QImage &quantized, const QVector<QColor> &palette)
+{
+    QImage result(quantized.size(), QImage::Format_Grayscale16);
+    QHash<QRgb, int> paletteIndices;
+    for (int index = 0; index < palette.size(); ++index) {
+        paletteIndices.insert(palette[index].rgb(), index);
+    }
+    for (int y = 0; y < quantized.height(); ++y) {
+        const auto *source = reinterpret_cast<const QRgb *>(quantized.constScanLine(y));
+        auto *labels = reinterpret_cast<quint16 *>(result.scanLine(y));
+        for (int x = 0; x < quantized.width(); ++x) {
+            if (qAlpha(source[x]) == 0) {
+                labels[x] = kTransparentLabel;
+                continue;
+            }
+            const auto found = paletteIndices.constFind(QColor::fromRgb(source[x]).rgb());
+            labels[x] = static_cast<quint16>(found == paletteIndices.cend()
+                ? nearestPaletteLabel(source[x], palette) : found.value());
         }
     }
     return result;
+}
+
+QImage renderIndexImage(const QImage &indexImage, const QVector<QColor> &palette)
+{
+    QImage result(indexImage.size(), QImage::Format_ARGB32);
+    for (int y = 0; y < indexImage.height(); ++y) {
+        const auto *labels = reinterpret_cast<const quint16 *>(indexImage.constScanLine(y));
+        auto *output = reinterpret_cast<QRgb *>(result.scanLine(y));
+        for (int x = 0; x < indexImage.width(); ++x) {
+            if (labels[x] == kTransparentLabel) {
+                output[x] = qRgba(0, 0, 0, 0);
+            } else {
+                const QColor &color = palette[labels[x]];
+                output[x] = qRgb(color.red(), color.green(), color.blue());
+            }
+        }
+    }
+    return result;
+}
+
+struct EdgeData {
+    std::vector<double> gradient;
+    std::vector<quint8> core;
+    std::vector<quint8> edgeMask;
+    std::vector<double> distance;
+};
+
+double pixelLuminance(QRgb pixel)
+{
+    return 0.2126 * qRed(pixel) + 0.7152 * qGreen(pixel) + 0.0722 * qBlue(pixel);
+}
+
+EdgeData detectEdges(const QImage &source)
+{
+    const int width = source.width();
+    const int height = source.height();
+    const size_t count = static_cast<size_t>(width) * height;
+    EdgeData result;
+    result.gradient.assign(count, 0.0);
+    result.core.assign(count, 0);
+    result.edgeMask.assign(count, 0);
+    result.distance.assign(count, 3.0);
+    if (width <= 0 || height <= 0) {
+        return result;
+    }
+
+    std::vector<double> luminance(count, 0.0);
+    std::vector<quint8> visible(count, 0);
+    for (int y = 0; y < height; ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(source.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            visible[index] = qAlpha(line[x]) > 0;
+            luminance[index] = pixelLuminance(line[x]);
+        }
+    }
+    const auto sample = [&](int x, int y, int centerX, int centerY) {
+        x = std::clamp(x, 0, width - 1);
+        y = std::clamp(y, 0, height - 1);
+        const size_t index = static_cast<size_t>(y) * width + x;
+        return visible[index] != 0 ? luminance[index]
+                                   : luminance[static_cast<size_t>(centerY) * width + centerX];
+    };
+    double gradientSum = 0.0;
+    int gradientCount = 0;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (visible[index] == 0) {
+                continue;
+            }
+            const double gx = -sample(x - 1, y - 1, x, y) + sample(x + 1, y - 1, x, y)
+                - 2.0 * sample(x - 1, y, x, y) + 2.0 * sample(x + 1, y, x, y)
+                - sample(x - 1, y + 1, x, y) + sample(x + 1, y + 1, x, y);
+            const double gy = -sample(x - 1, y - 1, x, y) - 2.0 * sample(x, y - 1, x, y)
+                - sample(x + 1, y - 1, x, y) + sample(x - 1, y + 1, x, y)
+                + 2.0 * sample(x, y + 1, x, y) + sample(x + 1, y + 1, x, y);
+            double magnitude = std::sqrt(gx * gx + gy * gy);
+            for (int dy = -1; dy <= 1 && magnitude < 1020.0; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = x + dx;
+                    const int ny = y + dy;
+                    if (nx >= 0 && ny >= 0 && nx < width && ny < height
+                        && visible[static_cast<size_t>(ny) * width + nx] == 0) {
+                        magnitude = 1020.0;
+                        break;
+                    }
+                }
+            }
+            result.gradient[index] = magnitude;
+            gradientSum += magnitude;
+            ++gradientCount;
+        }
+    }
+    const double meanGradient = gradientCount > 0 ? gradientSum / gradientCount : 0.0;
+    const double threshold = std::clamp(meanGradient * 1.6, 90.0, 320.0);
+    for (size_t index = 0; index < count; ++index) {
+        result.core[index] = visible[index] != 0 && result.gradient[index] >= threshold;
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (visible[index] == 0) {
+                continue;
+            }
+            for (int dy = -2; dy <= 2; ++dy) {
+                for (int dx = -2; dx <= 2; ++dx) {
+                    const int nx = x + dx;
+                    const int ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height
+                        || result.core[static_cast<size_t>(ny) * width + nx] == 0) {
+                        continue;
+                    }
+                    const double distance = std::sqrt(static_cast<double>(dx * dx + dy * dy));
+                    result.distance[index] = std::min(result.distance[index], distance);
+                    if (std::abs(dx) <= 1 && std::abs(dy) <= 1) {
+                        result.edgeMask[index] = 1;
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
+
+struct LineData {
+    std::vector<quint8> lineMask;
+    QColor derivedColor;
+};
+
+LineData detectLines(const QImage &source, const EdgeData &edges)
+{
+    const int width = source.width();
+    const int height = source.height();
+    const size_t count = static_cast<size_t>(width) * height;
+    LineData result;
+    result.lineMask.assign(count, 0);
+    std::vector<int> values;
+    values.reserve(count);
+    for (int y = 0; y < height; ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(source.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            if (qAlpha(line[x]) == 0) {
+                continue;
+            }
+            const double lum = pixelLuminance(line[x]);
+            values.push_back(qRound(lum));
+        }
+    }
+    if (values.empty()) {
+        return result;
+    }
+    const size_t percentile = values.size() / 5;
+    std::nth_element(values.begin(), values.begin() + static_cast<qsizetype>(percentile), values.end());
+    const double darkThreshold = std::clamp(static_cast<double>(values[percentile] + 12), 35.0, 112.0);
+    quint64 red = 0;
+    quint64 green = 0;
+    quint64 blue = 0;
+    quint64 pixels = 0;
+    for (int y = 0; y < height; ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(source.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (qAlpha(line[x]) == 0 || pixelLuminance(line[x]) > darkThreshold) {
+                continue;
+            }
+            double neighborMean = 0.0;
+            int neighborCount = 0;
+            for (const QPoint offset : {QPoint(-1, 0), QPoint(1, 0), QPoint(0, -1), QPoint(0, 1)}) {
+                const int nx = x + offset.x();
+                const int ny = y + offset.y();
+                if (nx >= 0 && ny >= 0 && nx < width && ny < height) {
+                    const QRgb neighbor = source.pixel(nx, ny);
+                    if (qAlpha(neighbor) > 0) {
+                        neighborMean += pixelLuminance(neighbor);
+                        ++neighborCount;
+                    }
+                }
+            }
+            neighborMean = neighborCount > 0 ? neighborMean / neighborCount : pixelLuminance(line[x]);
+            const bool thinDarkRidge = neighborMean - pixelLuminance(line[x]) >= 22.0;
+            if (edges.edgeMask[index] == 0 && !thinDarkRidge) {
+                continue;
+            }
+            result.lineMask[index] = 1;
+            red += qRed(line[x]);
+            green += qGreen(line[x]);
+            blue += qBlue(line[x]);
+            ++pixels;
+        }
+    }
+    if (pixels > 0) {
+        result.derivedColor = QColor(static_cast<int>(red / pixels),
+                                     static_cast<int>(green / pixels),
+                                     static_cast<int>(blue / pixels));
+    }
+    return result;
+}
+
+QImage restoreLabelsWithDetail(const QImage &indexImage, const QVector<QColor> &palette,
+                               const QImage &flattened, const ImagePreprocessSettings &settings,
+                               const EdgeData &edges, const std::vector<quint8> &lineMask)
+{
+    const QImage detailBlur = boxBlur(flattened, std::max(1, settings.detailRadius));
+    QImage result = indexImage.copy();
+    const double saturationAmount = std::clamp(settings.saturationRestore, 0.0, 1.0);
+    const double detailAmount = std::clamp(settings.detailRestore, 0.0, 1.0);
+    constexpr int histogramSize = 32 * 32 * 32;
+    std::array<int, histogramSize> labelCache;
+    labelCache.fill(-1);
+    constexpr double transitionWidth = 32.0;
+    for (int y = 0; y < flattened.height(); ++y) {
+        const auto *sourceLabels = reinterpret_cast<const quint16 *>(indexImage.constScanLine(y));
+        auto *outputLabels = reinterpret_cast<quint16 *>(result.scanLine(y));
+        const auto *base = reinterpret_cast<const QRgb *>(flattened.constScanLine(y));
+        const auto *blur = reinterpret_cast<const QRgb *>(detailBlur.constScanLine(y));
+        for (int x = 0; x < flattened.width(); ++x) {
+            const size_t index = static_cast<size_t>(y) * flattened.width() + x;
+            if (sourceLabels[x] == kTransparentLabel || lineMask[index] != 0) {
+                continue;
+            }
+            const QColor &quantized = palette[sourceLabels[x]];
+            const double mask = std::clamp((saturationOf(base[x]) - settings.saturationThreshold) / transitionWidth, 0.0, 1.0);
+            const double saturationBlend = saturationAmount * mask;
+            double edgeWeight = std::clamp(edges.distance[index] / 2.0, 0.0, 1.0);
+            if (settings.noDetailNearEdges && edges.edgeMask[index] != 0) {
+                edgeWeight = 0.0;
+            }
+            const double red = quantized.red() * (1.0 - saturationBlend) + qRed(base[x]) * saturationBlend
+                + detailAmount * edgeWeight * (qRed(base[x]) - qRed(blur[x]));
+            const double green = quantized.green() * (1.0 - saturationBlend) + qGreen(base[x]) * saturationBlend
+                + detailAmount * edgeWeight * (qGreen(base[x]) - qGreen(blur[x]));
+            const double blue = quantized.blue() * (1.0 - saturationBlend) + qBlue(base[x]) * saturationBlend
+                + detailAmount * edgeWeight * (qBlue(base[x]) - qBlue(blur[x]));
+            const QRgb restored = qRgb(std::clamp(qRound(red), 0, 255),
+                                       std::clamp(qRound(green), 0, 255),
+                                       std::clamp(qRound(blue), 0, 255));
+            int &cachedLabel = labelCache[static_cast<size_t>(colorBin(restored))];
+            if (cachedLabel < 0) {
+                cachedLabel = nearestPaletteLabel(restored, palette);
+            }
+            outputLabels[x] = static_cast<quint16>(cachedLabel);
+        }
+    }
+    return result;
+}
+
+std::vector<int> componentSizes(const QImage &indexImage)
+{
+    const int width = indexImage.width();
+    const int height = indexImage.height();
+    const int count = width * height;
+    std::vector<int> sizes(static_cast<size_t>(count), 0);
+    std::vector<quint8> visited(static_cast<size_t>(count), 0);
+    std::vector<int> queue;
+    std::vector<int> component;
+    constexpr std::array<QPoint, 8> neighbors = {
+        QPoint(-1, -1), QPoint(0, -1), QPoint(1, -1), QPoint(-1, 0),
+        QPoint(1, 0), QPoint(-1, 1), QPoint(0, 1), QPoint(1, 1),
+    };
+    for (int seed = 0; seed < count; ++seed) {
+        if (visited[static_cast<size_t>(seed)] != 0) {
+            continue;
+        }
+        const quint16 label = labelAt(indexImage, seed % width, seed / width);
+        visited[static_cast<size_t>(seed)] = 1;
+        if (label == kTransparentLabel) {
+            continue;
+        }
+        queue.assign(1, seed);
+        component.clear();
+        for (size_t head = 0; head < queue.size(); ++head) {
+            const int index = queue[head];
+            component.push_back(index);
+            const int x = index % width;
+            const int y = index / width;
+            for (const QPoint &offset : neighbors) {
+                const int nx = x + offset.x();
+                const int ny = y + offset.y();
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                    continue;
+                }
+                const int neighbor = ny * width + nx;
+                if (visited[static_cast<size_t>(neighbor)] == 0
+                    && labelAt(indexImage, nx, ny) == label) {
+                    visited[static_cast<size_t>(neighbor)] = 1;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        for (const int index : component) {
+            sizes[static_cast<size_t>(index)] = static_cast<int>(component.size());
+        }
+    }
+    return sizes;
+}
+
+QImage majorityCleanup(const QImage &input, const ImagePreprocessSettings &settings,
+                       const std::vector<quint8> &lineMask, int lineLabel)
+{
+    QImage result = input;
+    const int width = result.width();
+    const int height = result.height();
+    const int passes = std::clamp(settings.edgeCleanupPasses, 0, 2);
+    const int threshold = std::clamp(settings.speckleSize, 0, 64);
+    const int radius = settings.edgeCleanupWindow >= 5 ? 2 : 1;
+    for (int pass = 0; pass < passes && threshold > 0; ++pass) {
+        const QImage snapshot = result;
+        const std::vector<int> sizes = componentSizes(snapshot);
+        for (int y = 0; y < height; ++y) {
+            auto *output = reinterpret_cast<quint16 *>(result.scanLine(y));
+            for (int x = 0; x < width; ++x) {
+                const size_t index = static_cast<size_t>(y) * width + x;
+                const quint16 center = labelAt(snapshot, x, y);
+                if (center == kTransparentLabel || lineMask[index] != 0
+                    || sizes[index] > threshold) {
+                    continue;
+                }
+                std::array<int, 256> votes{};
+                bool boundary = false;
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    const int sy = std::clamp(y + dy, 0, height - 1);
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        const int sx = std::clamp(x + dx, 0, width - 1);
+                        const size_t sampleIndex = static_cast<size_t>(sy) * width + sx;
+                        const quint16 label = labelAt(snapshot, sx, sy);
+                        if (label == kTransparentLabel || lineMask[sampleIndex] != 0
+                            || label == lineLabel) {
+                            continue;
+                        }
+                        ++votes[label];
+                        boundary = boundary || label != center;
+                    }
+                }
+                if (!boundary) {
+                    continue;
+                }
+                int majority = center;
+                int bestVotes = votes[center];
+                for (int label = 0; label < static_cast<int>(votes.size()); ++label) {
+                    if (votes[static_cast<size_t>(label)] > bestVotes) {
+                        majority = label;
+                        bestVotes = votes[static_cast<size_t>(label)];
+                    }
+                }
+                if (majority != center) {
+                    output[x] = static_cast<quint16>(majority);
+                }
+            }
+        }
+    }
+    return result;
+}
+
+void flattenEdgeBoundedRegions(QImage &indexImage, const ImagePreprocessSettings &settings,
+                               const EdgeData &edges, const std::vector<quint8> &lineMask,
+                               int lineLabel)
+{
+    if (!settings.forceFlatFills) {
+        return;
+    }
+    const int width = indexImage.width();
+    const int height = indexImage.height();
+    const int count = width * height;
+    const int minimumArea = std::max(1, settings.flatFillMinimumArea);
+    std::vector<quint8> visited(static_cast<size_t>(count), 0);
+    std::vector<int> queue;
+    std::vector<int> component;
+    constexpr std::array<QPoint, 4> neighbors = {
+        QPoint(-1, 0), QPoint(1, 0), QPoint(0, -1), QPoint(0, 1),
+    };
+    for (int seed = 0; seed < count; ++seed) {
+        if (visited[static_cast<size_t>(seed)] != 0 || edges.edgeMask[static_cast<size_t>(seed)] != 0
+            || lineMask[static_cast<size_t>(seed)] != 0
+            || labelAt(indexImage, seed % width, seed / width) == kTransparentLabel) {
+            continue;
+        }
+        visited[static_cast<size_t>(seed)] = 1;
+        queue.assign(1, seed);
+        component.clear();
+        std::array<int, 256> votes{};
+        for (size_t head = 0; head < queue.size(); ++head) {
+            const int index = queue[head];
+            component.push_back(index);
+            const quint16 label = labelAt(indexImage, index % width, index / width);
+            if (label != lineLabel) {
+                ++votes[label];
+            }
+            const int x = index % width;
+            const int y = index / width;
+            for (const QPoint &offset : neighbors) {
+                const int nx = x + offset.x();
+                const int ny = y + offset.y();
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                    continue;
+                }
+                const int neighbor = ny * width + nx;
+                const size_t neighborIndex = static_cast<size_t>(neighbor);
+                if (visited[neighborIndex] == 0 && edges.edgeMask[neighborIndex] == 0
+                    && lineMask[neighborIndex] == 0
+                    && labelAt(indexImage, nx, ny) != kTransparentLabel) {
+                    visited[neighborIndex] = 1;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        if (static_cast<int>(component.size()) < minimumArea) {
+            continue;
+        }
+        const int dominant = static_cast<int>(std::distance(
+            votes.begin(), std::max_element(votes.begin(), votes.end())));
+        if (votes[static_cast<size_t>(dominant)] == 0) {
+            continue;
+        }
+        for (const int index : component) {
+            reinterpret_cast<quint16 *>(indexImage.scanLine(index / width))[index % width]
+                = static_cast<quint16>(dominant);
+        }
+    }
 }
 
 } // namespace
@@ -729,27 +1069,71 @@ ImagePreprocessResult preprocessImageDetailed(const QImage &source,
     const QImage smoothed = bilateralSmooth(input, settings);
     const QImage median = medianBlur(smoothed, std::clamp(settings.flattenRadius, 0, 8));
     const QImage flattened = blendImages(smoothed, median, settings.flattenStrength);
+    const EdgeData edges = detectEdges(smoothed);
+    LineData lines;
+    lines.lineMask.assign(static_cast<size_t>(input.width()) * input.height(), 0);
+    if (settings.lineMode) {
+        lines = detectLines(smoothed, edges);
+    }
+
+    QVector<QColor> clusteringPalette = normalizedPalette(settings.paletteColors);
+    QColor lineColor;
+    if (settings.lineMode && lines.derivedColor.isValid()) {
+        lineColor = settings.lineColor.isValid()
+            ? QColor(settings.lineColor.red(), settings.lineColor.green(), settings.lineColor.blue())
+            : lines.derivedColor;
+        const auto exactLine = std::find_if(
+            clusteringPalette.cbegin(), clusteringPalette.cend(), [&](const QColor &color) {
+                return color.rgb() == lineColor.rgb();
+            });
+        if (exactLine == clusteringPalette.cend()) {
+            const bool hasGeneratedSlot = !settings.fixedPalette
+                && clusteringPalette.size() < std::clamp(settings.colors, 1, 256);
+            const bool explicitFixedLine = settings.fixedPalette && settings.lineColor.isValid();
+            if ((hasGeneratedSlot || explicitFixedLine || clusteringPalette.isEmpty())
+                && clusteringPalette.size() < 256) {
+                clusteringPalette.push_back(lineColor);
+            } else {
+                lineColor = clusteringPalette[nearestPaletteLabel(lineColor.rgb(), clusteringPalette)];
+            }
+        }
+    }
     const QuantizeResult quantized = settings.fixedPalette
-        ? quantizeToFixedPalette(flattened, settings.paletteColors)
+        ? quantizeToFixedPalette(flattened, clusteringPalette)
         : quantizeHsv(flattened, settings.colors,
                       settings.quantizationIterations,
                       settings.minimumColorFraction,
-                      settings.paletteColors);
+                      clusteringPalette);
     if (quantized.image.isNull()) {
         return {};
     }
-    const QImage restored = restoreSaturationAndDetail(quantized.image, flattened, settings);
     if (quantized.retainedPalette.isEmpty()) {
-        return {restored.convertToFormat(QImage::Format_ARGB32_Premultiplied), 0, {}};
+        return {input.convertToFormat(QImage::Format_ARGB32_Premultiplied), 0, {}};
     }
-    // Restoration changes local color assignment without allowing extra output
-    // colors: map it back onto the retained palette after applying the residual.
-    const QuantizeResult final = quantizeToFixedPalette(restored, quantized.retainedPalette);
+
+    QImage indexImage = buildIndexImage(quantized.image, quantized.retainedPalette);
+    int lineLabel = -1;
+    if (settings.lineMode && lineColor.isValid()) {
+        lineLabel = nearestPaletteLabel(lineColor.rgb(), quantized.retainedPalette);
+        for (int y = 0; y < indexImage.height(); ++y) {
+            auto *labels = reinterpret_cast<quint16 *>(indexImage.scanLine(y));
+            for (int x = 0; x < indexImage.width(); ++x) {
+                const size_t index = static_cast<size_t>(y) * indexImage.width() + x;
+                if (lines.lineMask[index] != 0 && labels[x] != kTransparentLabel) {
+                    labels[x] = static_cast<quint16>(lineLabel);
+                }
+            }
+        }
+    }
+    indexImage = restoreLabelsWithDetail(indexImage, quantized.retainedPalette, flattened,
+                                         settings, edges, lines.lineMask);
+    indexImage = majorityCleanup(indexImage, settings, lines.lineMask, lineLabel);
+    flattenEdgeBoundedRegions(indexImage, settings, edges, lines.lineMask, lineLabel);
     return {
-        removeSmallColorRegions(final.image, settings.speckleSize)
+        renderIndexImage(indexImage, quantized.retainedPalette)
             .convertToFormat(QImage::Format_ARGB32_Premultiplied),
-        final.retainedColorCount,
-        final.retainedPalette,
+        quantized.retainedColorCount,
+        quantized.retainedPalette,
     };
 }
 

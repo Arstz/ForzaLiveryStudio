@@ -1010,13 +1010,12 @@ bool ProjectCanvas::fillRegionsForOverlay(QString *message)
 
     // Build the paint UNITS: same-colour regions are unioned and split into
     // solid outer blobs (adjacent same-colour pieces the segmenter split apart
-    // merge into one). Disjoint single regions keep their smooth outline so the
-    // Pen fitter's circle caps still engage; merged blobs are polygonal.
+    // merge into one). Every resulting outline enters the curve-aware Pen
+    // fitter first; polygon meshing is reserved for fallback.
     struct FillUnit {
         QColor color;
         QPainterPath outline;   // what to fill / rasterize
         double area = 0.0;
-        bool polygonal = false; // came from a merge -> mesh path with occlusion band
     };
     QVector<FillUnit> units;
     {
@@ -1059,13 +1058,13 @@ bool ProjectCanvas::fillRegionsForOverlay(QString *message)
                         twiceArea += p0.x() * p1.y() - p0.y() * p1.x();
                     }
                     units.push_back(FillUnit{group.color, blob,
-                                             std::abs(twiceArea) * 0.5, true});
+                                             std::abs(twiceArea) * 0.5});
                     ++mergedBlobs;
                 }
             } else {
                 for (const ExtractedRegion *region : group.regions) {
                     units.push_back(FillUnit{group.color, region->outline,
-                                             static_cast<double>(region->area), false});
+                                             static_cast<double>(region->area)});
                 }
             }
         }
@@ -1205,49 +1204,57 @@ bool ProjectCanvas::fillRegionsForOverlay(QString *message)
         seedPixels += unitSeed;
         grownPixels += compArea;
 
-        // Re-vectorize the grown component (potrace handles outer + holes), then
-        // triangulate each simple fill polygon.
-        QString via = QStringLiteral("grown");
+        // Re-vectorize the grown component and use the same curve-aware
+        // outline -> Pen-point -> Primitive fitter as Bucket Fill. Complex
+        // contours that the Pen fitter cannot represent retain the robust
+        // Square/Triangle mesh path as a fallback.
+        QString via = QStringLiteral("grown-pen");
         PenFillResult fit;
         const QPainterPath grown = traceMaskToPath(comp, imageW, imageH, compBounds, traceParams);
         if (!grown.isEmpty()) {
-            const QList<QPolygonF> fillPolys = grown.toFillPolygons();
-            bool anyFail = false;
-            for (const QPolygonF &poly : fillPolys) {
-                if (poly.size() < 3) {
-                    continue;
-                }
-                QPolygonF trimmed = poly;
-                while (trimmed.size() > 1
-                       && QLineF(trimmed.front(), trimmed.back()).length() <= 1e-6) {
-                    trimmed.removeLast();
-                }
-                const QPolygonF simplified = simplifyClosedPolygon(trimmed, simplifyEpsilon);
-                const PenFillResult part = fillPolygonMesh(simplified, meshSources, cancelled);
-                if (part.error.isEmpty() && !part.placements.isEmpty()) {
-                    fit.placements += part.placements;
-                } else if (part.cancelled) {
-                    fit.cancelled = true;
-                    anyFail = true;
-                    break;
-                } else {
-                    anyFail = true;
-                }
-            }
-            if (anyFail && fit.placements.isEmpty()) {
-                fit.error = QStringLiteral("grown mesh failed");
+            fit = fillRegionOutline(grown, primitives, tolerance, cancelled);
+        } else {
+            fit.error = QStringLiteral("grown contour tracing failed");
+        }
+
+        // A grown contour can be more complicated than its source because it
+        // includes occlusion leeway. Retry the original smooth outline through
+        // the Pen fitter before allowing either contour to flatten to a mesh.
+        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled) {
+            const PenFillResult originalPen =
+                fillRegionOutline(unit.outline, primitives, tolerance, cancelled);
+            if (originalPen.error.isEmpty() && !originalPen.placements.isEmpty()) {
+                fit = originalPen;
+                via = QStringLiteral("original-pen-fallback");
+            } else if (originalPen.cancelled) {
+                fit = originalPen;
             }
         }
-        // Fallback: solid fill of the original outline (drop holes) if growth failed.
-        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled) {
+
+        // Preserve the grown footprint when possible once both curve-aware
+        // routes have failed; flatten only at this fallback boundary.
+        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled
+            && !grown.isEmpty()) {
             const PenFillResult meshFit =
-                fillRegionOutlineMesh(unit.outline, meshSources, simplifyEpsilon, cancelled);
+                fillRegionOutlineMesh(grown, meshSources, simplifyEpsilon, cancelled);
             if (meshFit.error.isEmpty() && !meshFit.placements.isEmpty()) {
                 ++meshFallbacks;
                 fit = meshFit;
-                via = QStringLiteral("solid-fallback");
+                via = QStringLiteral("grown-mesh-fallback");
             } else if (fit.placements.isEmpty()) {
                 fit = meshFit;
+                via = QStringLiteral("failed");
+            }
+        }
+        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled) {
+            const PenFillResult originalMesh =
+                fillRegionOutlineMesh(unit.outline, meshSources, simplifyEpsilon, cancelled);
+            if (originalMesh.error.isEmpty() && !originalMesh.placements.isEmpty()) {
+                ++meshFallbacks;
+                fit = originalMesh;
+                via = QStringLiteral("original-mesh-fallback");
+            } else {
+                fit = originalMesh;
                 via = QStringLiteral("failed");
             }
         }
