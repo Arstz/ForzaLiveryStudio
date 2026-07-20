@@ -64,6 +64,7 @@ private:
     QCheckBox *visibilityBordersCheck_ = nullptr;
     QCheckBox *positionLimitBorderCheck_ = nullptr;
     QCheckBox *displayAnchorsDuringTransformDrag_ = nullptr;
+    QCheckBox *generatePreviewsWithTransformations_ = nullptr;
     QComboBox *visibilityBorderResolution_ = nullptr;
     QDoubleSpinBox *nudgeStep_ = nullptr;
     QDoubleSpinBox *nudgeShiftStep_ = nullptr;

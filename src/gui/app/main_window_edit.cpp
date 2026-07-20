@@ -1016,7 +1016,9 @@ void MainWindow::centerViewOnSelection()
 
 void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
 {
-    ScopedPerf perf(refreshPreviews ? "noteProjectGeometryChanged(previews)" : "noteProjectGeometryChanged");
+    const bool updateLayerPreviews = refreshPreviews
+        || (treeModel_ != nullptr && treeModel_->generatePreviewsWithTransformations());
+    ScopedPerf perf(updateLayerPreviews ? "noteProjectGeometryChanged(previews)" : "noteProjectGeometryChanged");
     if (canvas_ != nullptr) {
         if (refreshPreviews) {
             canvas_->clearRegionOverlay();
@@ -1026,7 +1028,7 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
         canvas_->invalidateSceneCache();
         canvas_->update();
     }
-    if (refreshPreviews) {
+    if (updateLayerPreviews && treeModel_ != nullptr) {
         ScopedPerf perfPrev("  refreshPreviews");
         treeModel_->refreshStateRoles(&state_->project_);
         treeModel_->refreshPreviews(&state_->project_);

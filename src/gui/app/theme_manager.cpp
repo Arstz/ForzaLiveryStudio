@@ -99,6 +99,7 @@ BehaviorSettings loadBehaviorSettings()
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), false).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), true).toBool();
     result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), true).toBool();
+    result.generatePreviewsWithTransformations = settings.value(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), false).toBool();
     result.guideLayersVisible = settings.value(QStringLiteral("ui/behavior/guideLayersVisible"), true).toBool();
     result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), true).toBool();
     result.guidelinesVisible = settings.value(QStringLiteral("ui/behavior/guidelinesVisible"), true).toBool();
@@ -140,6 +141,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), settings.displayAnchorsDuringTransformDrag);
+    qsettings.setValue(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), settings.generatePreviewsWithTransformations);
     qsettings.setValue(QStringLiteral("ui/behavior/guideLayersVisible"), settings.guideLayersVisible);
     qsettings.setValue(QStringLiteral("ui/behavior/guideLayersOnTop"), settings.guideLayersOnTop);
     qsettings.setValue(QStringLiteral("ui/behavior/guidelinesVisible"), settings.guidelinesVisible);

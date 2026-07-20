@@ -761,6 +761,14 @@ void MainWindow::refreshThemedIcons()
 
 void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool save)
 {
+    if (treeModel_ != nullptr) {
+        const bool previewSettingChanged = treeModel_->generatePreviewsWithTransformations()
+            != settings.generatePreviewsWithTransformations;
+        treeModel_->setGeneratePreviewsWithTransformations(settings.generatePreviewsWithTransformations);
+        if (previewSettingChanged && state_ != nullptr && state_->hasProject_) {
+            treeModel_->refreshPreviews(&state_->project_);
+        }
+    }
     if (properties_ != nullptr) {
         properties_->setDebugVisible(settings.showPropertyDebug);
         properties_->setValueEditingWheelEnabled(settings.valueEditingWheelEnabled);

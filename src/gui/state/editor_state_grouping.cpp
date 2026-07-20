@@ -1,5 +1,7 @@
 #include "editor_state.h"
 
+#include "matrix_math.h"
+
 #include <algorithm>
 
 namespace gui {
@@ -32,18 +34,21 @@ void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &out)
     }
 }
 
-void flattenLeaves(std::unique_ptr<fh6::scene::Layer> node, std::vector<std::unique_ptr<fh6::scene::Layer>> &out)
+void flattenLeaves(std::unique_ptr<fh6::scene::Layer> node, const fh6::Matrix3 &ancestorFrame,
+                   std::vector<std::unique_ptr<fh6::scene::Layer>> &out)
 {
     if (!node) {
         return;
     }
+    const fh6::Matrix3 frame = fh6::detail::multiply(ancestorFrame, node->transform.matrix());
     if (node->kind() != fh6::scene::LayerKind::Group) {
+        node->transform = fh6::decomposeTransform2D(frame);
         out.push_back(std::move(node));
         return;
     }
     auto *group = static_cast<fh6::scene::Group *>(node.get());
     while (!group->children.empty()) {
-        flattenLeaves(group->takeAt(0), out);
+        flattenLeaves(group->takeAt(0), frame, out);
     }
 }
 
@@ -121,13 +126,20 @@ void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten)
         }
         const int row = projectIndexCache().orderByChild.value(entryId, -1);
         std::unique_ptr<fh6::scene::Layer> removed = takeNode(*this, entryId);
+        if (!removed) {
+            continue;
+        }
         std::vector<std::unique_ptr<fh6::scene::Layer>> replacement;
         if (flatten) {
-            flattenLeaves(std::move(removed), replacement);
+            flattenLeaves(std::move(removed), fh6::Matrix3{}, replacement);
         } else {
+            const fh6::Matrix3 groupFrame = removed->transform.matrix();
             auto *removedGroup = static_cast<fh6::scene::Group *>(removed.get());
             while (!removedGroup->children.empty()) {
-                replacement.push_back(removedGroup->takeAt(0));
+                std::unique_ptr<fh6::scene::Layer> child = removedGroup->takeAt(0);
+                child->transform = fh6::decomposeTransform2D(
+                    fh6::detail::multiply(groupFrame, child->transform.matrix()));
+                replacement.push_back(std::move(child));
             }
         }
         int insertAt = row;

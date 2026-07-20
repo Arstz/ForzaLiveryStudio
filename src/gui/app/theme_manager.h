@@ -37,6 +37,7 @@ struct BehaviorSettings {
     bool moveToolAutoSelect = false;
     bool selectionFlashEnabled = true;
     bool displayAnchorsDuringTransformDrag = true;
+    bool generatePreviewsWithTransformations = false;
     bool guideLayersVisible = true;
     bool guideLayersOnTop = true;
     bool guidelinesVisible = true;

@@ -32,6 +32,8 @@ public:
 
     explicit LayerTreeModel(QObject *parent = nullptr);
     void setEditorState(EditorState *state);
+    void setGeneratePreviewsWithTransformations(bool enabled);
+    bool generatePreviewsWithTransformations() const;
     void setProject(const fh6::Project *project);
     void setProjectSection(const fh6::Project *project, const QString &sectionGroupId);
     void clearSectionCache();
@@ -59,6 +61,7 @@ private:
     QHash<QString, int> leafPositions_;
     QHash<QString, QList<QList<QStandardItem *>>> sectionRowsCache_;
     bool geometryLoaded_ = false;
+    bool generatePreviewsWithTransformations_ = false;
     mutable QHash<quint64, QIcon> previewCache_;
     mutable QHash<QString, quint64> previewSignatureCache_;
 };

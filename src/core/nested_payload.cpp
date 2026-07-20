@@ -232,6 +232,29 @@ void entryShapes(const GroupEntry &entry, QVector<const scene::Shape *> &out)
     }
 }
 
+QString entryShapeRange(const ExportContext &ctx, const GroupEntry &entry)
+{
+    QVector<const scene::Shape *> entryLeaves;
+    entryShapes(entry, entryLeaves);
+    QVector<const scene::Shape *> projectLeaves;
+    if (ctx.project.root != nullptr) {
+        collectShapeLeaves(*ctx.project.root, projectLeaves);
+    }
+
+    int minPosition = 0;
+    int maxPosition = 0;
+    for (const scene::Shape *shape : entryLeaves) {
+        const int index = projectLeaves.indexOf(shape);
+        if (index < 0) {
+            continue;
+        }
+        const int position = index + 1;
+        minPosition = minPosition == 0 ? position : std::min(minPosition, position);
+        maxPosition = std::max(maxPosition, position);
+    }
+    return QStringLiteral("%1-%2").arg(minPosition).arg(maxPosition);
+}
+
 QPointF shapesOrigin(const ExportContext &ctx, const QVector<const scene::Shape *> &leaves)
 {
     if (leaves.isEmpty()) {
@@ -326,7 +349,10 @@ QByteArray packNestedGroup(const ExportContext &ctx, const GroupEntry &entry,
 {
     const QVector<GroupEntry> children = directChildren(entry);
     if (children.size() < 2) {
-        throw std::runtime_error("nested group has fewer than two children");
+        throw std::runtime_error(
+            QStringLiteral("nested group has fewer than two children: %1")
+                .arg(entryShapeRange(ctx, entry))
+                .toStdString());
     }
     const bool isMaskGroup = entryAllMasked(entry);
     const bool childMask = parentMask || isMaskGroup;

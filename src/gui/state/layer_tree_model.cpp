@@ -231,6 +231,54 @@ QColor shapePreviewColor(const fh6::scene::Shape &shape, double alphaScale = 1.0
                   std::clamp(static_cast<int>(std::round(shape.color[3] * shape.opacity * alphaScale)), 0, 255));
 }
 
+void rasterizePreviewTriangle(QImage &image,
+                              const QColor &ink,
+                              const QPointF &p0,
+                              const QPointF &p1,
+                              const QPointF &p2,
+                              double alpha0,
+                              double alpha1,
+                              double alpha2)
+{
+    if (image.isNull()) {
+        return;
+    }
+    const int left = std::clamp(static_cast<int>(std::floor(std::min({p0.x(), p1.x(), p2.x()}))), 0, image.width() - 1);
+    const int right = std::clamp(static_cast<int>(std::ceil(std::max({p0.x(), p1.x(), p2.x()}))), 0, image.width() - 1);
+    const int top = std::clamp(static_cast<int>(std::floor(std::min({p0.y(), p1.y(), p2.y()}))), 0, image.height() - 1);
+    const int bottom = std::clamp(static_cast<int>(std::ceil(std::max({p0.y(), p1.y(), p2.y()}))), 0, image.height() - 1);
+    const double denominator = (p1.y() - p2.y()) * (p0.x() - p2.x())
+        + (p2.x() - p1.x()) * (p0.y() - p2.y());
+    if (std::abs(denominator) < 1e-8) {
+        return;
+    }
+
+    for (int y = top; y <= bottom; ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = left; x <= right; ++x) {
+            const double sampleX = x + 0.5;
+            const double sampleY = y + 0.5;
+            const double w0 = ((p1.y() - p2.y()) * (sampleX - p2.x())
+                               + (p2.x() - p1.x()) * (sampleY - p2.y()))
+                / denominator;
+            const double w1 = ((p2.y() - p0.y()) * (sampleX - p2.x())
+                               + (p0.x() - p2.x()) * (sampleY - p2.y()))
+                / denominator;
+            const double w2 = 1.0 - w0 - w1;
+            if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4
+                || w0 > 1.0001 || w1 > 1.0001 || w2 > 1.0001) {
+                continue;
+            }
+
+            const double vertexAlpha = std::clamp(w0 * alpha0 + w1 * alpha1 + w2 * alpha2, 0.0, 1.0);
+            const int alpha = std::clamp(static_cast<int>(std::round(ink.alpha() * vertexAlpha)), 0, 255);
+            if (alpha > qAlpha(line[x])) {
+                line[x] = qPremultiply(qRgba(ink.red(), ink.green(), ink.blue(), alpha));
+            }
+        }
+    }
+}
+
 void paintPreviewShape(QImage &image,
                        const fh6::scene::Shape &shape,
                        const ShapeGeometryStore &geometry,
@@ -268,15 +316,20 @@ void paintPreviewShape(QImage &image,
 
     const ShapeGeometry *shapeGeometry = shape.raster ? nullptr : geometry.shape(shape.shapeId);
     if (shapeGeometry != nullptr && !shapeGeometry->triangles.isEmpty()) {
-        painter.setRenderHint(QPainter::Antialiasing, false);
+        QImage shapeImage(image.size(), QImage::Format_ARGB32_Premultiplied);
+        shapeImage.fill(Qt::transparent);
+        const QColor ink = shapePreviewColor(shape);
         for (const ShapeTriangle &triangle : shapeGeometry->triangles) {
-            QPolygonF polygon;
-            polygon << localToPreview.map(triangle.p0)
-                    << localToPreview.map(triangle.p1)
-                    << localToPreview.map(triangle.p2);
-            painter.setBrush(shapePreviewColor(shape, (triangle.alpha0 + triangle.alpha1 + triangle.alpha2) / 3.0));
-            painter.drawPolygon(polygon);
+            rasterizePreviewTriangle(shapeImage,
+                                     ink,
+                                     localToPreview.map(triangle.p0),
+                                     localToPreview.map(triangle.p1),
+                                     localToPreview.map(triangle.p2),
+                                     triangle.alpha0,
+                                     triangle.alpha1,
+                                     triangle.alpha2);
         }
+        painter.drawImage(QPoint(), shapeImage);
         return;
     }
 
@@ -310,11 +363,13 @@ void paintPreviewNode(QImage &image,
     }
 }
 
-QIcon shapeIcon(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry)
+QIcon shapeIcon(const fh6::scene::Layer &node,
+                const ShapeGeometryStore &geometry,
+                bool includeRootTransform)
 {
     QImage image(ShapePreviewSize, ShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
     image.fill(QColor(42, 42, 42));
-    QRectF bounds = previewNodeBounds(node, geometry, QTransform(), false);
+    QRectF bounds = previewNodeBounds(node, geometry, QTransform(), includeRootTransform);
     if (!bounds.isValid() || bounds.isEmpty()) {
         bounds = QRectF(-32, -32, 64, 64);
     }
@@ -324,7 +379,7 @@ QIcon shapeIcon(const fh6::scene::Layer &node, const ShapeGeometryStore &geometr
                                   (ShapePreviewSize - 10.0) / std::max(1.0, bounds.height()));
     worldToPreview.scale(scale, -scale);
     worldToPreview.translate(-bounds.center().x(), -bounds.center().y());
-    paintPreviewNode(image, node, geometry, worldToPreview, QTransform(), false);
+    paintPreviewNode(image, node, geometry, worldToPreview, QTransform(), includeRootTransform);
     return QIcon(QPixmap::fromImage(image));
 }
 
@@ -417,6 +472,21 @@ LayerTreeModel::LayerTreeModel(QObject *parent)
 void LayerTreeModel::setEditorState(EditorState *state)
 {
     state_ = state;
+}
+
+void LayerTreeModel::setGeneratePreviewsWithTransformations(bool enabled)
+{
+    if (generatePreviewsWithTransformations_ == enabled) {
+        return;
+    }
+    generatePreviewsWithTransformations_ = enabled;
+    previewCache_.clear();
+    previewSignatureCache_.clear();
+}
+
+bool LayerTreeModel::generatePreviewsWithTransformations() const
+{
+    return generatePreviewsWithTransformations_;
 }
 
 QStandardItem *LayerTreeModel::itemForId(const ProjectLookup &lookup, const QString &id, bool ancestorLocked) const
@@ -638,12 +708,14 @@ QIcon LayerTreeModel::previewIconForId(const ProjectLookup &lookup, const QStrin
 
 QIcon LayerTreeModel::previewIconForNode(const fh6::scene::Layer &node) const
 {
-    const quint64 signature = contentSignature(node, previewSignatureCache_);
+    const quint64 signature = generatePreviewsWithTransformations_
+        ? transformedContentSignature(node, previewSignatureCache_)
+        : contentSignature(node, previewSignatureCache_);
     const auto cached = previewCache_.constFind(signature);
     if (cached != previewCache_.constEnd()) {
         return cached.value();
     }
-    const QIcon icon = shapeIcon(node, geometry_);
+    const QIcon icon = shapeIcon(node, geometry_, generatePreviewsWithTransformations_);
     if (previewCache_.size() > 4096) {
         previewCache_.clear();
     }

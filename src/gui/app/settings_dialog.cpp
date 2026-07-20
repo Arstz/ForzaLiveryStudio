@@ -109,6 +109,10 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     displayAnchorsDuringTransformDrag_->setChecked(behaviorSettings_.displayAnchorsDuringTransformDrag);
     generalLayout->addRow(QStringLiteral("Display anchors during transform drag"), displayAnchorsDuringTransformDrag_);
 
+    generatePreviewsWithTransformations_ = new QCheckBox(general);
+    generatePreviewsWithTransformations_->setChecked(behaviorSettings_.generatePreviewsWithTransformations);
+    generalLayout->addRow(QStringLiteral("Generate previews with transformations applied"), generatePreviewsWithTransformations_);
+
     visibilityBorderResolution_ = new QComboBox(general);
     const QVector<QSize> visibilityResolutions = {QSize(1920, 1080), QSize(2560, 1440), QSize(3840, 2160)};
     for (const QSize &resolution : visibilityResolutions) {
@@ -249,6 +253,8 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
     result.positionLimitBorderEnabled = positionLimitBorderCheck_ != nullptr && positionLimitBorderCheck_->isChecked();
     result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_ != nullptr
         && displayAnchorsDuringTransformDrag_->isChecked();
+    result.generatePreviewsWithTransformations = generatePreviewsWithTransformations_ != nullptr
+        && generatePreviewsWithTransformations_->isChecked();
     if (visibilityBorderResolution_ != nullptr) {
         const QSize resolution = visibilityBorderResolution_->currentData().toSize();
         result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
