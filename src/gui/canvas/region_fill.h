@@ -93,13 +93,15 @@ RegionPenConversionResult regionOutlineToPenPoints(
 // Fill one region outline with affine primitives via the Pen fitter. When
 // requested, optimizedContour is populated before fitting so callers can mesh
 // that exact contour if the time budget interrupts the Primitive search;
-// contourStats reports its conversion and flattening point counts.
+// contourStats reports its conversion and flattening point counts, while
+// optimizedPenPoints optionally returns the optimized Hard/Soft point sequence.
 PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const QVector<PenPrimitive> &primitives,
                                 double boundaryTolerance,
                                 const std::function<bool()> &cancelled = {},
                                 QPolygonF *optimizedContour = nullptr,
-                                RegionFillContourStats *contourStats = nullptr);
+                                RegionFillContourStats *contourStats = nullptr,
+                                QVector<PenPoint> *optimizedPenPoints = nullptr);
 
 // Ramer-Douglas-Peucker simplification of a closed polygon: drops vertices that
 // lie within `epsilon` of the chord between kept neighbours. Fewer vertices ->

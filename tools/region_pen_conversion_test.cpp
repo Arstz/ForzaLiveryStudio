@@ -584,9 +584,10 @@ void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
 
     QPolygonF optimizedContour;
     gui::RegionFillContourStats contourStats;
+    QVector<gui::PenPoint> optimizedPenPoints;
     const gui::PenFillResult interrupted = gui::fillRegionOutline(
         outline, primitives, 0.5, []() { return true; }, &optimizedContour,
-        &contourStats);
+        &contourStats, &optimizedPenPoints);
     test->expect(interrupted.cancelled,
                  "an interrupted region fit should report cancellation");
     test->expect(optimizedContour.size() >= 3,
@@ -595,6 +596,8 @@ void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
                      && contourStats.optimizedPointCount >= 3
                      && contourStats.flattenedPointCount == optimizedContour.size(),
                  "region fill diagnostics should report original, optimized, and flattened points");
+    test->expect(optimizedPenPoints.size() == contourStats.optimizedPointCount,
+                 "region fill diagnostics should retain every optimized Pen point");
 
     constexpr int width = 96;
     constexpr int height = 96;

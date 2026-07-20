@@ -586,7 +586,8 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 double boundaryTolerance,
                                 const std::function<bool()> &cancelled,
                                 QPolygonF *optimizedContour,
-                                RegionFillContourStats *contourStats)
+                                RegionFillContourStats *contourStats,
+                                QVector<PenPoint> *optimizedPenPoints)
 {
     PenFillResult result;
     if (optimizedContour != nullptr) {
@@ -595,12 +596,18 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
     if (contourStats != nullptr) {
         *contourStats = RegionFillContourStats{};
     }
+    if (optimizedPenPoints != nullptr) {
+        optimizedPenPoints->clear();
+    }
     const RegionPenConversionResult conversion = regionOutlineToPenPoints(outline);
     if (contourStats != nullptr) {
         contourStats->originalPointCount = conversion.originalPointCount;
         contourStats->optimizedPointCount = conversion.points.size();
         contourStats->removedHardPoints = conversion.removedHardPoints;
         contourStats->optimizationSkipped = conversion.optimizationSkipped;
+    }
+    if (optimizedPenPoints != nullptr) {
+        *optimizedPenPoints = conversion.points;
     }
     if (!conversion.valid()) {
         result.error = conversion.error.isEmpty()

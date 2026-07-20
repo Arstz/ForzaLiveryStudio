@@ -99,7 +99,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   meshing that region's current optimized contour. Scene insertion keeps the
   result in one **Region Fill** container with one child group per filled region.
   `region_fill.log` records every source-region result and the largest region's
-  original, optimized, and flattened contour point counts.
+  original, optimized, and flattened contour point counts. `region_points.log`
+  records every raw path element, optimized Hard/Soft Pen point, and flattened
+  optimized-contour point for that largest region.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,

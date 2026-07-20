@@ -1035,6 +1035,8 @@ RegionFillBatchResult computeRegionFills(
         bool timedOut = false;
         bool meshFallback = false;
         RegionFillContourStats contourStats;
+        QVector<PenPoint> optimizedPenPoints;
+        QPolygonF optimizedContour;
     };
     std::vector<UnitWorkResult> workResults(static_cast<size_t>(units.size()));
     const auto globallyCancelled = [&cancelled]() {
@@ -1074,7 +1076,12 @@ RegionFillBatchResult computeRegionFills(
                     work.via = QStringLiteral("optimized-pen");
                     work.fit = fillRegionOutline(unit.outline, primitives, tolerance,
                                                  unitCancelled, &optimizedContour,
-                                                 &work.contourStats);
+                                                 &work.contourStats,
+                                                 i == biggestUnitIndex
+                                                     ? &work.optimizedPenPoints : nullptr);
+                    if (i == biggestUnitIndex) {
+                        work.optimizedContour = optimizedContour;
+                    }
                     if (work.fit.cancelled && !globallyCancelled()) {
                         work.timedOut = true;
                     }
@@ -1130,6 +1137,72 @@ RegionFillBatchResult computeRegionFills(
                .arg(biggestWork.contourStats.removedHardPoints)
                .arg(biggestWork.contourStats.optimizationSkipped
                         ? QStringLiteral("yes") : QStringLiteral("no"));
+
+    const QString pointsLogPath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/region_points.log");
+    QFile pointsLogFile(pointsLogPath);
+    if (pointsLogFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        QTextStream stream(&pointsLogFile);
+        stream.setRealNumberNotation(QTextStream::SmartNotation);
+        stream.setRealNumberPrecision(17);
+        stream << "Largest Fill Region path points\n"
+               << "region_index=" << biggestUnitIndex << '\n'
+               << "source_index=" << biggestUnit.sourceIndex << '\n'
+               << "color=" << biggestUnit.color.name() << '\n'
+               << "area=" << biggestUnit.area << '\n'
+               << "original_pen_point_count="
+               << biggestWork.contourStats.originalPointCount << '\n'
+               << "optimized_pen_point_count="
+               << biggestWork.contourStats.optimizedPointCount << '\n'
+               << "flattened_point_count="
+               << biggestWork.contourStats.flattenedPointCount << "\n\n";
+
+        const auto elementTypeName = [](QPainterPath::ElementType type) {
+            switch (type) {
+            case QPainterPath::MoveToElement:
+                return QStringLiteral("move");
+            case QPainterPath::LineToElement:
+                return QStringLiteral("line");
+            case QPainterPath::CurveToElement:
+                return QStringLiteral("curve-control-1");
+            case QPainterPath::CurveToDataElement:
+                return QStringLiteral("curve-data");
+            }
+            return QStringLiteral("unknown");
+        };
+
+        stream << "[source_qpainter_path]\n"
+               << "count=" << biggestUnit.outline.elementCount() << '\n'
+               << "index,type,x,y\n";
+        for (int i = 0; i < biggestUnit.outline.elementCount(); ++i) {
+            const QPainterPath::Element element = biggestUnit.outline.elementAt(i);
+            stream << i << ',' << elementTypeName(element.type) << ','
+                   << element.x << ',' << element.y << '\n';
+        }
+
+        stream << "\n[optimized_pen_points]\n"
+               << "count=" << biggestWork.optimizedPenPoints.size() << '\n'
+               << "index,kind,x,y\n";
+        for (int i = 0; i < biggestWork.optimizedPenPoints.size(); ++i) {
+            const PenPoint &point = biggestWork.optimizedPenPoints[i];
+            stream << i << ','
+                   << (point.kind == PenPointKind::Hard ? "hard" : "soft") << ','
+                   << point.position.x() << ',' << point.position.y() << '\n';
+        }
+
+        stream << "\n[flattened_optimized_contour]\n"
+               << "count=" << biggestWork.optimizedContour.size() << '\n'
+               << "index,x,y\n";
+        for (int i = 0; i < biggestWork.optimizedContour.size(); ++i) {
+            const QPointF &point = biggestWork.optimizedContour[i];
+            stream << i << ',' << point.x() << ',' << point.y() << '\n';
+        }
+        pointsLogFile.close();
+        qWarning().noquote() << "Largest region points log written to" << pointsLogPath;
+    } else {
+        qWarning().noquote() << "Could not write largest region points log to"
+                             << pointsLogPath;
+    }
 
     QVector<RegionFillLayer> unitFills(units.size());
     for (int i = 0; i < units.size(); ++i) {
