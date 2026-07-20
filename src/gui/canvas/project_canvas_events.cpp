@@ -445,7 +445,9 @@ void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event)
 void ProjectCanvas::wheelEvent(QWheelEvent *event)
 {
     updateViewTransform();
-    if (activeTool_ != nullptr && activeTool_->handleWheel(event)) {
+    const bool editToolZoom = (event->modifiers() & Qt::AltModifier)
+        && (tool_ == QStringLiteral("bucket") || tool_ == QStringLiteral("lining"));
+    if (!editToolZoom && activeTool_ != nullptr && activeTool_->handleWheel(event)) {
         return;
     }
     const QPointF anchorWorld = screenToWorld(event->position());

@@ -323,6 +323,7 @@ set(FH6_GUI_ASSETS
     ToolbarScale.xpm
     ToolbarSelect.xpm
     ToolbarSkew.xpm
+    ToolLining.xpm
     ToolPipette.xpm
     ToolBucket.xpm
     ToolRotateE.xpm

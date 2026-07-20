@@ -680,6 +680,7 @@ void EditorState::noteProjectStructureChanged()
     }
     selectedEntryIds_ = normalizeEntrySelection(existingEntries);
     Q_EMIT projectStructureChanged();
+    Q_EMIT selectionChanged();
 }
 
 void EditorState::noteClipboardChanged()

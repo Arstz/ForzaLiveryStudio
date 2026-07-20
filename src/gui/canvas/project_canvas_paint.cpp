@@ -183,7 +183,7 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter)
     const QPainterPath screenRibbon = worldToScreen_.map(ribbon);
     const QPainterPath screenCenterline = worldToScreen_.map(centerline);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(83, 164, 255, liningComplete_ ? 55 : 35));
+    painter.setBrush(QColor(255, 200, 50, liningComplete_ ? 55 : 35));
     painter.drawPath(screenRibbon);
 
     QPen halo(QColor(15, 17, 20, 230), 4.0);
@@ -191,7 +191,7 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter)
     painter.setPen(halo);
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(screenCenterline);
-    QPen centerPen(liningError_.isEmpty() ? QColor(83, 164, 255) : QColor(235, 78, 78), 2.0);
+    QPen centerPen(liningError_.isEmpty() ? QColor(255, 200, 50) : QColor(235, 78, 78), 2.0);
     centerPen.setCosmetic(true);
     painter.setPen(centerPen);
     painter.drawPath(screenCenterline);

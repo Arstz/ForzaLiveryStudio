@@ -548,7 +548,7 @@ void MainWindow::setupToolbar()
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QKeySequence(Qt::Key_I), QStringLiteral("ToolPipette.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pen"), QStringLiteral("pen"), QKeySequence(Qt::Key_P), QStringLiteral("ToolbarPen.xpm")));
-    toolGroup->addAction(addTool(QStringLiteral("Lining"), QStringLiteral("lining"), QKeySequence(Qt::Key_L), QString()));
+    toolGroup->addAction(addTool(QStringLiteral("Lining"), QStringLiteral("lining"), QKeySequence(Qt::Key_L), QStringLiteral("ToolLining.xpm")));
     liningWidthLabel_ = new QLabel(QStringLiteral("Width"), toolBar);
     liningWidthSpin_ = new QDoubleSpinBox(toolBar);
     liningWidthSpin_->setRange(0.1, 256.0);

@@ -50,7 +50,6 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
     }
     cancelGeneratedFill();
     updateLastSelectedShapeDefaults();
-    const BehaviorSettings behavior = loadBehaviorSettings();
     if (fillColor.has_value() && fillColor->isValid()) {
         generatedFillColor_ = {
             static_cast<quint8>(fillColor->blue()),
@@ -59,7 +58,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
             static_cast<quint8>(fillColor->alpha()),
         };
     } else {
-        generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
+        generatedFillColor_ = haveLastSelectedShapeDefaults_
             ? lastSelectedShapeColor_
             : std::array<quint8, 4>{255, 255, 255, 255};
     }
@@ -117,7 +116,6 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     }
     cancelGeneratedFill();
     updateLastSelectedShapeDefaults();
-    const BehaviorSettings behavior = loadBehaviorSettings();
     if (fillColor.has_value() && fillColor->isValid()) {
         generatedFillColor_ = {
             static_cast<quint8>(fillColor->blue()),
@@ -126,7 +124,7 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
             static_cast<quint8>(fillColor->alpha()),
         };
     } else {
-        generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
+        generatedFillColor_ = haveLastSelectedShapeDefaults_
             ? lastSelectedShapeColor_
             : std::array<quint8, 4>{255, 255, 255, 255};
     }
