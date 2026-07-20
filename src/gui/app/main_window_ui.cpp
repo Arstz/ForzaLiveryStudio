@@ -45,6 +45,18 @@ void MainWindow::setupCanvas()
         startLiningFill(points, width, fillColor);
     });
     canvas_->setLiningFillCancelCallback([this]() { cancelGeneratedFill(); });
+    regionFillProgress_ = new QProgressBar(statusBar());
+    regionFillProgress_->setTextVisible(true);
+    regionFillProgress_->setFormat(QStringLiteral("Fill Regions %v/%m"));
+    regionFillProgress_->setMinimumWidth(190);
+    regionFillProgress_->setMaximumWidth(280);
+    regionFillProgress_->hide();
+    statusBar()->addPermanentWidget(regionFillProgress_);
+    regionFillCancelShortcut_ = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    regionFillCancelShortcut_->setContext(Qt::WindowShortcut);
+    regionFillCancelShortcut_->setEnabled(false);
+    connect(regionFillCancelShortcut_, &QShortcut::activated,
+            this, &MainWindow::cancelRegionFill);
     setCentralWidget(canvas_);
 }
 
@@ -216,6 +228,9 @@ void MainWindow::connectEditorStateSignals()
         if (generatedFillCancel_ != nullptr) {
             cancelGeneratedFill();
         }
+        if (regionFillCancel_ != nullptr) {
+            cancelRegionFill();
+        }
     });
     connect(state_, &EditorState::transformLiveChanged, this, [this]() {
         if (canvas_ != nullptr) {
@@ -235,6 +250,9 @@ void MainWindow::connectEditorStateSignals()
     connect(state_, &EditorState::projectStructureChanged, this, [this]() {
         if (generatedFillCancel_ != nullptr) {
             cancelGeneratedFill();
+        }
+        if (regionFillCancel_ != nullptr) {
+            cancelRegionFill();
         }
     });
     connect(state_, &EditorState::clipboardChanged, this, &MainWindow::updateClipboardWidget);
@@ -440,6 +458,32 @@ void MainWindow::setupImgGenMenu()
     };
     addEntry(QStringLiteral("&Preprocess Image..."), QStringLiteral("preprocess_image"),
              QStringLiteral("Preprocess Image"), &MainWindow::preprocessSelectedGuide);
+    imgGenMenu->addSeparator();
+    regionMergeAreaThreshold_ = std::clamp(
+        QSettings().value(QStringLiteral("imggen/smallRegionMergeArea"), 12).toInt(), 0, 512);
+    auto *mergeAction = new QWidgetAction(imgGenMenu);
+    auto *mergeRow = new QWidget(imgGenMenu);
+    auto *mergeLayout = new QHBoxLayout(mergeRow);
+    mergeLayout->setContentsMargins(8, 3, 8, 3);
+    auto *mergeLabel = new QLabel(QStringLiteral("Merge regions below"), mergeRow);
+    auto *mergeSlider = new QSlider(Qt::Horizontal, mergeRow);
+    mergeSlider->setRange(0, 512);
+    mergeSlider->setValue(regionMergeAreaThreshold_);
+    mergeSlider->setMinimumWidth(120);
+    mergeSlider->setToolTip(QStringLiteral("Merge smaller connected regions into the adjacent region with the closest RGB color"));
+    auto *mergeValue = new QLabel(QStringLiteral("%1 px").arg(regionMergeAreaThreshold_), mergeRow);
+    mergeValue->setMinimumWidth(48);
+    mergeValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    mergeLayout->addWidget(mergeLabel);
+    mergeLayout->addWidget(mergeSlider, 1);
+    mergeLayout->addWidget(mergeValue);
+    mergeAction->setDefaultWidget(mergeRow);
+    imgGenMenu->addAction(mergeAction);
+    connect(mergeSlider, &QSlider::valueChanged, this, [this, mergeValue](int value) {
+        regionMergeAreaThreshold_ = value;
+        mergeValue->setText(QStringLiteral("%1 px").arg(value));
+        QSettings().setValue(QStringLiteral("imggen/smallRegionMergeArea"), value);
+    });
     imgGenMenu->addSeparator();
     addEntry(QStringLiteral("Create &Regions"), QStringLiteral("create_regions"),
              QStringLiteral("Create Regions"), &MainWindow::createRegions);

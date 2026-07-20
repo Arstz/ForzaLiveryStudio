@@ -275,15 +275,18 @@ QTransform affineFromTriangles(const QPointF &a,
     return QTransform(m11, m12, m21, m22, dx, dy);
 }
 
-bool pointInTriangle(const QPointF &point,
-                     const QPointF &a,
-                     const QPointF &b,
-                     const QPointF &c,
-                     double epsilon)
+bool pointStrictlyInTriangle(const QPointF &point,
+                             const QPointF &a,
+                             const QPointF &b,
+                             const QPointF &c,
+                             double epsilon)
 {
-    return cross(b - a, point - a) >= -epsilon
-        && cross(c - b, point - b) >= -epsilon
-        && cross(a - c, point - c) >= -epsilon;
+    // A vertex on an ear edge must not block that ear. Dense flattened curves
+    // commonly put many vertices numerically on a candidate diagonal; treating
+    // the boundary as inside can leave a valid simple polygon with no ear.
+    return cross(b - a, point - a) > epsilon
+        && cross(c - b, point - b) > epsilon
+        && cross(a - c, point - c) > epsilon;
 }
 
 struct MeshTriangle {
@@ -329,11 +332,11 @@ QVector<MeshTriangle> triangulate(const QPolygonF &polygon,
                 if (candidate == previous || candidate == current || candidate == next) {
                     continue;
                 }
-                if (pointInTriangle(polygon[candidate],
-                                    polygon[previous],
-                                    polygon[current],
-                                    polygon[next],
-                                    epsilon)) {
+                if (pointStrictlyInTriangle(polygon[candidate],
+                                            polygon[previous],
+                                            polygon[current],
+                                            polygon[next],
+                                            epsilon)) {
                     containsVertex = true;
                     break;
                 }
@@ -638,7 +641,11 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
     }
     result.contour = contour.path;
     const double scale = polygonScale(contour.polygon);
-    const double epsilon = kEpsilon * scale * scale;
+    // Use an area tolerance derived from coordinate roundoff. The previous
+    // scale-squared heuristic became large enough on image-sized, densely
+    // sampled curves to classify every shallow convex ear as collinear.
+    const double epsilon = std::max(kEpsilon,
+                                    polygonCoordinateEpsilon(contour.polygon) * scale);
     QString triangulationError;
     const QVector<MeshTriangle> triangles = triangulate(contour.polygon,
                                                         epsilon,
@@ -664,6 +671,9 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
     QVector<bool> consumed(triangles.size(), false);
     QPainterPath mesh;
     mesh.setFillRule(Qt::WindingFill);
+    // Mesh cells only share boundaries, so accumulating their subpaths is
+    // equivalent to repeatedly unioning them. Deferring the boolean operation
+    // to the final coverage check avoids quadratic work on dense contours.
     for (int candidateIndex : selectedSquareIndices) {
         const SquareCandidate &candidate = candidates[candidateIndex];
         bool ok = false;
@@ -683,7 +693,7 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
         result.placements.push_back({101, transform});
         consumed[candidate.firstTriangle] = true;
         consumed[candidate.secondTriangle] = true;
-        mesh = mesh.united(transform.map(polygonPath(request.sources.square)));
+        mesh.addPath(transform.map(polygonPath(request.sources.square)));
     }
     for (int i = 0; i < triangles.size(); ++i) {
         if (cancelled && cancelled()) {
@@ -709,7 +719,7 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
             return result;
         }
         result.placements.push_back({103, transform});
-        mesh = mesh.united(transform.map(polygonPath(request.sources.triangle)));
+        mesh.addPath(transform.map(polygonPath(request.sources.triangle)));
     }
 
     // The triangle/square union equals the contour polygon exactly in exact

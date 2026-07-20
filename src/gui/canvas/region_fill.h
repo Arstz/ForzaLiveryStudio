@@ -2,6 +2,7 @@
 
 #include "pen_fill.h"
 #include "polygon_mesh.h"
+#include "region_extract.h"
 
 #include <QtGui>
 
@@ -12,8 +13,7 @@
 namespace gui {
 
 // One filled colour region: the affine primitive placements the Pen fitter
-// produced, plus the fill colour and area (area drives largest-first draw order
-// so nested regions land on top).
+// produced, plus its source colour and area. Results retain extraction order.
 struct RegionFillLayer {
     QColor color;
     double area = 0.0;
@@ -27,6 +27,36 @@ struct GeneratedRegionShape {
     QTransform transform;
     std::array<std::uint8_t, 4> color = {255, 255, 255, 255};
 };
+
+// One generated scene group per successfully filled region.
+struct GeneratedRegionGroup {
+    QVector<GeneratedRegionShape> shapes;
+};
+
+struct RegionFillBatchRequest {
+    RegionExtractionResult regions;
+    QVector<PenPrimitive> primitives;
+    PolygonMeshSources meshSources;
+    QString overlayGuideId;
+    quint64 overlayGeneration = 0;
+};
+
+struct RegionFillBatchResult {
+    QVector<RegionFillLayer> fills;
+    QHash<int, QPainterPath> silhouettes;
+    QString overlayGuideId;
+    quint64 overlayGeneration = 0;
+    QString summary;
+    QString error;
+    bool cancelled = false;
+    int completedRegions = 0;
+    int totalRegions = 0;
+};
+
+RegionFillBatchResult computeRegionFills(
+    const RegionFillBatchRequest &request,
+    const std::function<void(int completed, int total)> &progress = {},
+    const std::function<bool()> &cancelled = {});
 
 struct RegionPenConversionOptions {
     // Maximum extra boundary deviation introduced by removing Potrace cubic
@@ -48,15 +78,28 @@ struct RegionPenConversionResult {
     bool valid() const { return error.isEmpty() && points.size() >= 3; }
 };
 
+struct RegionFillContourStats {
+    int originalPointCount = 0;
+    int optimizedPointCount = 0;
+    int flattenedPointCount = 0;
+    int removedHardPoints = 0;
+    bool optimizationSkipped = false;
+};
+
 RegionPenConversionResult regionOutlineToPenPoints(
     const QPainterPath &outline,
     const RegionPenConversionOptions &options = {});
 
-// Fill one region outline with affine primitives via the Pen fitter.
+// Fill one region outline with affine primitives via the Pen fitter. When
+// requested, optimizedContour is populated before fitting so callers can mesh
+// that exact contour if the time budget interrupts the Primitive search;
+// contourStats reports its conversion and flattening point counts.
 PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const QVector<PenPrimitive> &primitives,
                                 double boundaryTolerance,
-                                const std::function<bool()> &cancelled = {});
+                                const std::function<bool()> &cancelled = {},
+                                QPolygonF *optimizedContour = nullptr,
+                                RegionFillContourStats *contourStats = nullptr);
 
 // Ramer-Douglas-Peucker simplification of a closed polygon: drops vertices that
 // lie within `epsilon` of the chord between kept neighbours. Fewer vertices ->

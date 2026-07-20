@@ -96,17 +96,20 @@ public:
 
     // Runs the region-extraction draft on a selected guide layer and shows the
     // result as a canvas overlay. Returns false with a human-readable reason.
-    bool createRegionsForSelectedGuide(QString *message = nullptr);
+    bool createRegionsForSelectedGuide(int smallRegionMergeArea,
+                                       QString *message = nullptr);
     void clearRegionOverlay();
 
-    // Fills the non-lineart regions of the current overlay with affine
-    // primitives via the Pen fitter and shows the placements. Returns false
-    // with a human-readable reason.
-    bool fillRegionsForOverlay(QString *message = nullptr);
+    // Snapshot/apply boundary for asynchronous region filling. The expensive
+    // computeRegionFills() call runs without touching the canvas on a worker.
+    bool prepareRegionFillBatch(RegionFillBatchRequest *request,
+                                QString *message = nullptr) const;
+    bool applyRegionFillBatch(RegionFillBatchResult result,
+                              QString *message = nullptr);
     void clearRegionFills();
-    // The computed fill placements, mapped from image-pixel space into world
-    // space and tagged with each region's colour, ready for scene insertion.
-    QVector<GeneratedRegionShape> regionFillWorldPlacements();
+    // The computed fills, kept separate per region and mapped from image-pixel
+    // space into world space, ready for grouped scene insertion.
+    QVector<GeneratedRegionGroup> regionFillWorldGroups();
     // Hide the region overlay preview (e.g. once real shapes were inserted)
     // without discarding the extracted regions, so a re-fill stays cheap.
     void hideRegionOverlay();
@@ -436,6 +439,7 @@ private:
     QHash<int, QPainterPath> regionFillSilhouettes_;
     bool showRegionFills_ = false;
     bool regionOverlayHidden_ = false;
+    quint64 regionOverlayGeneration_ = 0;
     mutable std::optional<QRectF> selectionWorldBoundsCache_;
     QColor canvasColor_;
 };

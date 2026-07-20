@@ -49,6 +49,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         return;
     }
     cancelGeneratedFill();
+    cancelRegionFill();
     updateLastSelectedShapeDefaults();
     if (fillColor.has_value() && fillColor->isValid()) {
         generatedFillColor_ = {
@@ -115,6 +116,7 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
         return;
     }
     cancelGeneratedFill();
+    cancelRegionFill();
     updateLastSelectedShapeDefaults();
     if (fillColor.has_value() && fillColor->isValid()) {
         generatedFillColor_ = {
@@ -293,12 +295,13 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
                              3500);
 }
 
-void MainWindow::insertGeneratedFillColored(const QString &groupName,
-                                            const QString &displayName,
-                                            const QVector<GeneratedRegionShape> &shapes,
-                                            const QVector<QString> &insertionEntries)
+void MainWindow::insertGeneratedRegionGroups(
+    const QString &groupName,
+    const QString &displayName,
+    const QVector<GeneratedRegionGroup> &regions,
+    const QVector<QString> &insertionEntries)
 {
-    if (shapes.isEmpty() || !state_->hasProject()) {
+    if (regions.isEmpty() || !state_->hasProject()) {
         return;
     }
 
@@ -307,16 +310,37 @@ void MainWindow::insertGeneratedFillColored(const QString &groupName,
     const QString groupId = group->id;
     group->name = groupName;
     QSet<QString> generatedIds;
-    generatedIds.reserve(shapes.size());
-    for (const GeneratedRegionShape &placement : shapes) {
-        auto shape = std::make_unique<fh6::scene::Shape>();
-        shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-        shape->name = fh6::detail::shapeName(static_cast<quint16>(placement.shapeId));
-        shape->setVectorShape(static_cast<quint16>(placement.shapeId));
-        shape->transform = fh6::decomposeTransform2D(generatedShapeMatrix(placement.transform));
-        shape->color = {placement.color[0], placement.color[1], placement.color[2], placement.color[3]};
-        generatedIds.insert(shape->id);
-        group->append(std::move(shape));
+    int shapeCount = 0;
+    for (const GeneratedRegionGroup &region : regions) {
+        shapeCount += region.shapes.size();
+    }
+    generatedIds.reserve(shapeCount);
+    int regionCount = 0;
+    for (const GeneratedRegionGroup &region : regions) {
+        if (region.shapes.isEmpty()) {
+            continue;
+        }
+        auto regionGroup = std::make_unique<fh6::scene::Group>();
+        regionGroup->id = QStringLiteral("group_%1").arg(
+            QUuid::createUuid().toString(QUuid::WithoutBraces));
+        regionGroup->name = QStringLiteral("Region %1").arg(++regionCount);
+        for (const GeneratedRegionShape &placement : region.shapes) {
+            auto shape = std::make_unique<fh6::scene::Shape>();
+            shape->id = QStringLiteral("layer_%1").arg(
+                QUuid::createUuid().toString(QUuid::WithoutBraces));
+            shape->name = fh6::detail::shapeName(static_cast<quint16>(placement.shapeId));
+            shape->setVectorShape(static_cast<quint16>(placement.shapeId));
+            shape->transform = fh6::decomposeTransform2D(
+                generatedShapeMatrix(placement.transform));
+            shape->color = {placement.color[0], placement.color[1],
+                            placement.color[2], placement.color[3]};
+            generatedIds.insert(shape->id);
+            regionGroup->append(std::move(shape));
+        }
+        group->append(std::move(regionGroup));
+    }
+    if (regionCount == 0) {
+        return;
     }
 
     state_->beginProjectEdit();
@@ -325,9 +349,15 @@ void MainWindow::insertGeneratedFillColored(const QString &groupName,
         const QString parentId = state_->parentGroupForEntry(groupId);
         if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
             const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
-            for (const auto &child : inserted->children) {
-                child->transform = fh6::decomposeTransform2D(
-                    fh6::detail::multiply(parentInverse, child->transform.matrix()));
+            for (const auto &regionNode : inserted->children) {
+                if (regionNode->kind() != fh6::scene::LayerKind::Group) {
+                    continue;
+                }
+                auto *regionGroup = static_cast<fh6::scene::Group *>(regionNode.get());
+                for (const auto &shape : regionGroup->children) {
+                    shape->transform = fh6::decomposeTransform2D(
+                        fh6::detail::multiply(parentInverse, shape->transform.matrix()));
+                }
             }
         }
     }
@@ -339,9 +369,10 @@ void MainWindow::insertGeneratedFillColored(const QString &groupName,
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Created %1 with %2 shapes")
+    statusBar()->showMessage(QStringLiteral("Created %1 with %2 region groups and %3 shapes")
                                  .arg(displayName)
-                                 .arg(shapes.size()),
+                                 .arg(regionCount)
+                                 .arg(shapeCount),
                              3500);
 }
 

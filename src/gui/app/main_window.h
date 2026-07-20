@@ -18,6 +18,8 @@ class QDockWidget;
 class QAction;
 class QLabel;
 class QMenu;
+class QProgressBar;
+class QShortcut;
 class QObject;
 class QModelIndex;
 class QTreeView;
@@ -153,13 +155,16 @@ private:
                          const std::optional<QColor> &fillColor = std::nullopt);
     void cancelGeneratedFill();
     void finishGeneratedFill(quint64 generation, PenFillResult result);
+    void cancelRegionFill();
+    void updateRegionFillProgress(quint64 generation, int completed, int total);
+    void finishRegionFill(quint64 generation, RegionFillBatchResult result);
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);
-    void insertGeneratedFillColored(const QString &groupName,
-                                    const QString &displayName,
-                                    const QVector<GeneratedRegionShape> &shapes,
-                                    const QVector<QString> &insertionEntries);
+    void insertGeneratedRegionGroups(const QString &groupName,
+                                     const QString &displayName,
+                                     const QVector<GeneratedRegionGroup> &regions,
+                                     const QVector<QString> &insertionEntries);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
     enum class ExternalDropKind {
@@ -271,6 +276,12 @@ private:
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;
+    int regionMergeAreaThreshold_ = 12;
+    std::shared_ptr<std::atomic_bool> regionFillCancel_;
+    quint64 regionFillGeneration_ = 0;
+    QVector<QString> regionFillInsertionEntries_;
+    QProgressBar *regionFillProgress_ = nullptr;
+    QShortcut *regionFillCancelShortcut_ = nullptr;
 };
 
 } // namespace gui

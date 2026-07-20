@@ -637,8 +637,9 @@ void MainWindow::createRegions()
     if (canvas_ == nullptr) {
         return;
     }
+    cancelRegionFill();
     QString message;
-    if (canvas_->createRegionsForSelectedGuide(&message)) {
+    if (canvas_->createRegionsForSelectedGuide(regionMergeAreaThreshold_, &message)) {
         statusBar()->showMessage(message, 5000);
     } else {
         statusBar()->showMessage(message.isEmpty()
@@ -650,28 +651,129 @@ void MainWindow::createRegions()
 
 void MainWindow::fillRegions()
 {
-    if (canvas_ == nullptr) {
+    if (canvas_ == nullptr || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
         return;
     }
+    cancelGeneratedFill();
+    cancelRegionFill();
+    RegionFillBatchRequest request;
     QString message;
-    if (!canvas_->fillRegionsForOverlay(&message)) {
+    if (!canvas_->prepareRegionFillBatch(&request, &message)) {
         statusBar()->showMessage(message.isEmpty()
                                      ? QStringLiteral("Could not fill regions")
                                      : message,
                                  5000);
         return;
     }
-    if (!state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
+
+    const quint64 generation = ++regionFillGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    regionFillCancel_ = token;
+    regionFillInsertionEntries_ = selectedEntryIds();
+    regionFillProgress_->setRange(0, std::max(1, request.regions.colorRegionCount));
+    regionFillProgress_->setValue(0);
+    regionFillProgress_->show();
+    regionFillCancelShortcut_->setEnabled(true);
+    statusBar()->showMessage(QStringLiteral("Filling regions… Press Esc to cancel"));
+
+    QPointer<MainWindow> guard(this);
+    auto *task = QRunnable::create(
+        [guard, generation, request = std::move(request), token]() mutable {
+            RegionFillBatchResult result = computeRegionFills(
+                request,
+                [guard, generation](int completed, int total) {
+                    if (guard.isNull()) {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        guard.data(),
+                        [guard, generation, completed, total]() {
+                            if (!guard.isNull()) {
+                                guard->updateRegionFillProgress(generation, completed, total);
+                            }
+                        },
+                        Qt::QueuedConnection);
+                },
+                [token]() { return token->load(std::memory_order_relaxed); });
+            if (guard.isNull()) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                guard.data(),
+                [guard, generation, result = std::move(result)]() mutable {
+                    if (!guard.isNull()) {
+                        guard->finishRegionFill(generation, std::move(result));
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+}
+
+void MainWindow::cancelRegionFill()
+{
+    if (regionFillCancel_ == nullptr) {
         return;
     }
-    const QVector<GeneratedRegionShape> shapes = canvas_->regionFillWorldPlacements();
-    if (shapes.isEmpty()) {
+    regionFillCancel_->store(true, std::memory_order_relaxed);
+    regionFillCancel_.reset();
+    ++regionFillGeneration_;
+    regionFillInsertionEntries_.clear();
+    if (regionFillProgress_ != nullptr) {
+        regionFillProgress_->hide();
+    }
+    if (regionFillCancelShortcut_ != nullptr) {
+        regionFillCancelShortcut_->setEnabled(false);
+    }
+    statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
+}
+
+void MainWindow::updateRegionFillProgress(quint64 generation, int completed, int total)
+{
+    if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr
+        || regionFillProgress_ == nullptr) {
+        return;
+    }
+    regionFillProgress_->setRange(0, std::max(1, total));
+    regionFillProgress_->setValue(std::max(
+        regionFillProgress_->value(),
+        std::clamp(completed, 0, std::max(1, total))));
+}
+
+void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult result)
+{
+    if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr) {
+        return;
+    }
+    regionFillCancel_.reset();
+    regionFillProgress_->hide();
+    regionFillCancelShortcut_->setEnabled(false);
+    if (result.cancelled) {
+        regionFillInsertionEntries_.clear();
+        statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
+        return;
+    }
+    QString message;
+    if (canvas_ == nullptr || !state_->hasProject()
+        || !canvas_->applyRegionFillBatch(std::move(result), &message)) {
+        regionFillInsertionEntries_.clear();
+        statusBar()->showMessage(message.isEmpty()
+                                     ? QStringLiteral("Could not fill regions") : message,
+                                 5000);
+        return;
+    }
+    const QVector<GeneratedRegionGroup> regions = canvas_->regionFillWorldGroups();
+    if (regions.isEmpty()) {
+        regionFillInsertionEntries_.clear();
         statusBar()->showMessage(QStringLiteral("Region fill produced no shapes"), 4000);
         return;
     }
-    insertGeneratedFillColored(QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
-                               shapes, selectedEntryIds());
+    const QVector<QString> insertionEntries = regionFillInsertionEntries_;
+    regionFillInsertionEntries_.clear();
+    insertGeneratedRegionGroups(QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
+                                regions, insertionEntries);
     // Real shapes now render; hide the preview but keep the extracted regions so
     // a re-fill stays cheap.
     canvas_->hideRegionOverlay();

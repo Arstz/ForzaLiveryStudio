@@ -584,15 +584,42 @@ RegionPenConversionResult regionOutlineToPenPoints(
 PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const QVector<PenPrimitive> &primitives,
                                 double boundaryTolerance,
-                                const std::function<bool()> &cancelled)
+                                const std::function<bool()> &cancelled,
+                                QPolygonF *optimizedContour,
+                                RegionFillContourStats *contourStats)
 {
     PenFillResult result;
+    if (optimizedContour != nullptr) {
+        optimizedContour->clear();
+    }
+    if (contourStats != nullptr) {
+        *contourStats = RegionFillContourStats{};
+    }
     const RegionPenConversionResult conversion = regionOutlineToPenPoints(outline);
+    if (contourStats != nullptr) {
+        contourStats->originalPointCount = conversion.originalPointCount;
+        contourStats->optimizedPointCount = conversion.points.size();
+        contourStats->removedHardPoints = conversion.removedHardPoints;
+        contourStats->optimizationSkipped = conversion.optimizationSkipped;
+    }
     if (!conversion.valid()) {
         result.error = conversion.error.isEmpty()
             ? QStringLiteral("Region outline has no fillable contour")
             : conversion.error;
         return result;
+    }
+    if (optimizedContour != nullptr || contourStats != nullptr) {
+        const PenContour contour = buildPenContour(conversion.points);
+        if (contour.valid()) {
+            const QPolygonF flattened =
+                flattenPenContour(contour, kBoundarySamplesPerCurve);
+            if (optimizedContour != nullptr) {
+                *optimizedContour = flattened;
+            }
+            if (contourStats != nullptr) {
+                contourStats->flattenedPointCount = flattened.size();
+            }
+        }
     }
     PenFillRequest request;
     request.points = conversion.points;

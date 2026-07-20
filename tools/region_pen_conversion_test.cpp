@@ -582,6 +582,20 @@ void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
     test->expect(hasPlacement(result, 130),
                  "automatic region outline should retain its quarter-circle Primitive");
 
+    QPolygonF optimizedContour;
+    gui::RegionFillContourStats contourStats;
+    const gui::PenFillResult interrupted = gui::fillRegionOutline(
+        outline, primitives, 0.5, []() { return true; }, &optimizedContour,
+        &contourStats);
+    test->expect(interrupted.cancelled,
+                 "an interrupted region fit should report cancellation");
+    test->expect(optimizedContour.size() >= 3,
+                 "an interrupted region fit should retain its optimized contour for fallback");
+    test->expect(contourStats.originalPointCount >= contourStats.optimizedPointCount
+                     && contourStats.optimizedPointCount >= 3
+                     && contourStats.flattenedPointCount == optimizedContour.size(),
+                 "region fill diagnostics should report original, optimized, and flattened points");
+
     constexpr int width = 96;
     constexpr int height = 96;
     std::vector<std::uint8_t> circleMask(static_cast<size_t>(width) * height, 0);
@@ -610,6 +624,66 @@ void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
                  "a Potrace-generated region should pass through the automatic Pen fitter");
     test->expect(hasCurvePlacement,
                  "a Potrace-generated circle should not flatten to only Squares/Triangles");
+}
+
+void denseValidPolygonTriangulates(TestContext *test)
+{
+    gui::PolygonMeshRequest request;
+    constexpr int pointCount = 4000;
+    constexpr double radius = 500.0;
+    request.points.reserve(pointCount);
+    for (int i = 0; i < pointCount; ++i) {
+        const double angle = 2.0 * 3.14159265358979323846 * i / pointCount;
+        request.points.push_back({radius * std::cos(angle), radius * std::sin(angle)});
+    }
+    request.sources.triangle = {{0.0, 0.0}, {1.0, 0.0}, {0.0, 1.0}};
+    request.mergeSquares = false;
+    const gui::PolygonMeshResult result = gui::meshPolygon(request);
+    if (!result.error.isEmpty()) {
+        std::cerr << "Dense polygon mesh error: "
+                  << result.error.toStdString() << '\n';
+    }
+    test->expect(result.error.isEmpty(),
+                 "a dense valid polygon should not lose every shallow ear to scale tolerance");
+    test->expect(result.placements.size() == pointCount - 2,
+                 "a dense valid polygon should produce one triangle per clipped ear");
+}
+
+void smallRegionMergesIntoClosestColorNeighbor(TestContext *test)
+{
+    QImage image(9, 5, QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            image.setPixelColor(x, y, x < 4 ? QColor(200, 0, 0)
+                                             : QColor(220, 100, 0));
+        }
+    }
+    image.setPixelColor(4, 2, QColor(216, 82, 0));
+
+    gui::RegionExtractionParams params;
+    params.colorCount = 3;
+    params.colorMergeDistance = 0.0;
+    params.colorFrequencyFloor = 0.0;
+    params.minRegionArea = 1;
+    params.smallRegionMergeArea = 2;
+    params.blurPasses = 0;
+    params.traceSpeckle = 0;
+    const gui::RegionExtractionResult result = gui::extractRegions(image, params);
+    test->expect(result.valid(), "small-region merge fixture should extract");
+    test->expect(result.mergedSmallRegionCount == 1,
+                 "one sub-threshold region should be merged");
+    test->expect(result.colorRegionCount == 2,
+                 "merged small region should not survive as a third region");
+    const auto orange = std::find_if(
+        result.regions.cbegin(), result.regions.cend(), [](const gui::ExtractedRegion &region) {
+            return !region.lineart && region.color.green() > 50;
+        });
+    test->expect(orange != result.regions.cend(),
+                 "closest orange neighbor should remain after merging");
+    if (orange != result.regions.cend()) {
+        test->expect(orange->area == 25,
+                     "small region pixels should be reassigned to the closest-color neighbor");
+    }
 }
 
 void crossedCoreRetainsValidFits(TestContext *test)
@@ -1059,8 +1133,10 @@ int main(int argc, char **argv)
     invalidContoursAreRejected(&test);
     conversionIsDeterministic(&test);
     conversionOptimizationIsBounded(&test);
+    denseValidPolygonTriangulates(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);
+    smallRegionMergesIntoClosestColorNeighbor(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);
     openCenterlineBuildsAndFills(&test);

@@ -5,7 +5,10 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QTextStream>
+#include <QThread>
+#include <QThreadPool>
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -842,7 +845,8 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter)
     painter.restore();
 }
 
-bool ProjectCanvas::createRegionsForSelectedGuide(QString *message)
+bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
+                                                  QString *message)
 {
     const QVector<fh6::scene::GuideLayer *> guides = selectedGuideLayers();
     if (guides.isEmpty()) {
@@ -867,6 +871,7 @@ bool ProjectCanvas::createRegionsForSelectedGuide(QString *message)
     }
     QGuiApplication::setOverrideCursor(Qt::WaitCursor);
     RegionExtractionParams params;
+    params.smallRegionMergeArea = std::max(0, smallRegionMergeArea);
     if (guide->preprocessColorCount > 0) {
         params.colorCount = guide->preprocessColorCount;
     }
@@ -882,16 +887,18 @@ bool ProjectCanvas::createRegionsForSelectedGuide(QString *message)
     }
     regionOverlayGuideId_ = guide->id;
     regionOverlay_ = regions;
+    ++regionOverlayGeneration_;
     regionFills_.clear();
     regionFillSilhouettes_.clear();
     showRegionFills_ = false;
     regionOverlayHidden_ = false;
     update();
     if (message != nullptr) {
-        *message = QStringLiteral("Created %1 regions (%2 colour, %3 lineart)")
+        *message = QStringLiteral("Created %1 regions (%2 colour, %3 lineart, %4 small merged)")
             .arg(regions.regions.size())
             .arg(regions.colorRegionCount)
-            .arg(regions.lineartRegionCount);
+            .arg(regions.lineartRegionCount)
+            .arg(regions.mergedSmallRegionCount);
     }
     return true;
 }
@@ -903,6 +910,7 @@ void ProjectCanvas::clearRegionOverlay()
     }
     regionOverlayGuideId_.clear();
     regionOverlay_ = RegionExtractionResult{};
+    ++regionOverlayGeneration_;
     regionFills_.clear();
     regionFillSilhouettes_.clear();
     showRegionFills_ = false;
@@ -910,58 +918,15 @@ void ProjectCanvas::clearRegionOverlay()
     update();
 }
 
-namespace {
-
-// Split a simplified (WindingFill) union path into its outer blob contours,
-// discarding hole subpaths (a subpath contained inside another). Each returned
-// path is a single closed outer contour, filled solid downstream so that holes
-// are overpainted by whatever higher-z region sits in them.
-QVector<QPainterPath> outerBlobsFromUnion(const QPainterPath &united)
+bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
+                                           QString *message) const
 {
-    const QList<QPolygonF> subs = united.toSubpathPolygons();
-    QVector<QPolygonF> polys;
-    for (const QPolygonF &polygon : subs) {
-        if (polygon.size() < 3) {
-            continue;
+    if (request == nullptr) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Region fill request is unavailable");
         }
-        double twiceArea = 0.0;
-        for (int i = 0; i < polygon.size(); ++i) {
-            const QPointF &a = polygon[i];
-            const QPointF &b = polygon[(i + 1) % polygon.size()];
-            twiceArea += a.x() * b.y() - a.y() * b.x();
-        }
-        if (std::abs(twiceArea) < 1.0) {
-            continue;
-        }
-        polys.push_back(polygon);
+        return false;
     }
-    QVector<QPainterPath> blobs;
-    for (int i = 0; i < polys.size(); ++i) {
-        bool contained = false;
-        const QPointF probe = polys[i].first();
-        for (int j = 0; j < polys.size(); ++j) {
-            if (i == j) {
-                continue;
-            }
-            if (polys[j].containsPoint(probe, Qt::OddEvenFill)) {
-                contained = true;
-                break;
-            }
-        }
-        if (!contained) {
-            QPainterPath path;
-            path.addPolygon(polys[i]);
-            path.closeSubpath();
-            blobs.push_back(path);
-        }
-    }
-    return blobs;
-}
-
-} // namespace
-
-bool ProjectCanvas::fillRegionsForOverlay(QString *message)
-{
     if (regionOverlay_.regions.isEmpty()) {
         if (message != nullptr) {
             *message = QStringLiteral("Create regions first");
@@ -976,6 +941,30 @@ bool ProjectCanvas::fillRegionsForOverlay(QString *message)
         return false;
     }
 
+    *request = RegionFillBatchRequest{};
+    request->regions = regionOverlay_;
+    request->primitives = primitives;
+    request->meshSources = buildPolygonMeshSources(geometry_);
+    request->overlayGuideId = regionOverlayGuideId_;
+    request->overlayGeneration = regionOverlayGeneration_;
+    return true;
+}
+
+RegionFillBatchResult computeRegionFills(
+    const RegionFillBatchRequest &request,
+    const std::function<void(int, int)> &progress,
+    const std::function<bool()> &cancelled)
+{
+    RegionFillBatchResult result;
+    result.overlayGuideId = request.overlayGuideId;
+    result.overlayGeneration = request.overlayGeneration;
+    const RegionExtractionResult &regionOverlay = request.regions;
+    const QVector<PenPrimitive> &primitives = request.primitives;
+    if (regionOverlay.regions.isEmpty() || primitives.isEmpty()) {
+        result.error = QStringLiteral("Region fill input is empty");
+        return result;
+    }
+
     QHash<int, QPainterPath> silhouettes;
     for (const PenPrimitive &primitive : primitives) {
         silhouettes.insert(primitive.shapeId, primitive.silhouette);
@@ -983,345 +972,212 @@ bool ProjectCanvas::fillRegionsForOverlay(QString *message)
     // Fit tolerance scales with the image so it stays a small fraction of a pixel
     // of visible error regardless of guide resolution.
     const double tolerance = std::max(1.0,
-                                      std::min(regionOverlay_.imageSize.width(),
-                                               regionOverlay_.imageSize.height()) * 0.004);
+                                      std::min(regionOverlay.imageSize.width(),
+                                               regionOverlay.imageSize.height()) * 0.004);
 
-    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
     QVector<RegionFillLayer> fills;
     int filled = 0;
     int failed = 0;
     int timedOut = 0;
     int placementCount = 0;
-    int mergedBlobs = 0;
     int meshFallbacks = 0;
     QHash<QString, int> failureReasons;
     // Bound each fill by wall clock so a pathological outline cannot drive the
     // fitter's boolean-union accumulation into an unbounded quadratic blow-up.
     constexpr qint64 kRegionBudgetMs = 3000;
     // Direct-triangulation fallback sources (Square 101 / Triangle 103 hulls).
-    const PolygonMeshSources meshSources = buildPolygonMeshSources(geometry_);
-    // RDP corridor for the mesh path: sub-visible, collapses potrace's 8x-
-    // oversampled flattening back down so complex/merged blobs are not
-    // triangulated at full resolution.
-    const double simplifyEpsilon = tolerance;
-
-    const int imageW = regionOverlay_.imageSize.width();
-    const int imageH = regionOverlay_.imageSize.height();
-
-    // Build the paint UNITS: same-colour regions are unioned and split into
-    // solid outer blobs (adjacent same-colour pieces the segmenter split apart
-    // merge into one). Every resulting outline enters the curve-aware Pen
-    // fitter first; polygon meshing is reserved for fallback.
+    const PolygonMeshSources &meshSources = request.meshSources;
+    // Preserve the extraction result exactly: one fill unit per non-lineart
+    // region, in extraction order. There is no same-colour union, area sorting,
+    // or growth into neighbouring/occluded pixels.
     struct FillUnit {
         QColor color;
-        QPainterPath outline;   // what to fill / rasterize
+        QPainterPath outline;
         double area = 0.0;
+        int sourceIndex = -1;
     };
     QVector<FillUnit> units;
-    {
-        struct ColorGroup {
-            QColor color;
-            double area = 0.0;
-            QVector<const ExtractedRegion *> regions;
-        };
-        QHash<QRgb, int> colorIndex;
-        QVector<ColorGroup> groups;
-        for (const ExtractedRegion &region : regionOverlay_.regions) {
-            if (region.lineart) {
-                continue;
-            }
-            const QRgb key = region.color.rgb();
-            int idx = colorIndex.value(key, -1);
-            if (idx < 0) {
-                idx = groups.size();
-                colorIndex.insert(key, idx);
-                groups.push_back(ColorGroup{region.color, 0.0, {}});
-            }
-            groups[idx].area += region.area;
-            groups[idx].regions.push_back(&region);
-        }
-        for (const ColorGroup &group : groups) {
-            QPainterPath unionPath;
-            unionPath.setFillRule(Qt::WindingFill);
-            for (const ExtractedRegion *region : group.regions) {
-                unionPath.addPath(region->outline);
-            }
-            unionPath = unionPath.simplified();
-            const QVector<QPainterPath> blobs = outerBlobsFromUnion(unionPath);
-            if (blobs.size() < group.regions.size()) {
-                for (const QPainterPath &blob : blobs) {
-                    const QPolygonF poly = regionOuterContour(blob);
-                    double twiceArea = 0.0;
-                    for (int k = 0; k < poly.size(); ++k) {
-                        const QPointF &p0 = poly[k];
-                        const QPointF &p1 = poly[(k + 1) % poly.size()];
-                        twiceArea += p0.x() * p1.y() - p0.y() * p1.x();
-                    }
-                    units.push_back(FillUnit{group.color, blob,
-                                             std::abs(twiceArea) * 0.5});
-                    ++mergedBlobs;
-                }
-            } else {
-                for (const ExtractedRegion *region : group.regions) {
-                    units.push_back(FillUnit{group.color, region->outline,
-                                             static_cast<double>(region->area)});
-                }
-            }
+    units.reserve(regionOverlay.colorRegionCount);
+    for (int i = 0; i < regionOverlay.regions.size(); ++i) {
+        const ExtractedRegion &region = regionOverlay.regions[i];
+        if (!region.lineart) {
+            units.push_back(FillUnit{region.color, region.outline,
+                                     static_cast<double>(region.area), i});
         }
     }
-
-    // z-order: largest area first == bottom of the stack. Planning walks the
-    // stack TOP-DOWN, accumulating an `occluded` raster mask of everything above;
-    // rendering (fills emitted here) stays largest-first == bottom-up.
-    std::sort(units.begin(), units.end(), [](const FillUnit &a, const FillUnit &b) {
-        return a.area > b.area;
-    });
+    result.totalRegions = units.size();
+    if (progress) {
+        progress(0, result.totalRegions);
+    }
+    if (units.isEmpty()) {
+        result.error = QStringLiteral("No colour regions are available to fill");
+        return result;
+    }
+    int biggestUnitIndex = 0;
+    for (int i = 1; i < units.size(); ++i) {
+        if (units[i].area > units[biggestUnitIndex].area) {
+            biggestUnitIndex = i;
+        }
+    }
 
     QStringList log;
-    log << QStringLiteral("Fill Regions diagnostic - image %1x%2, tolerance %3, rdp %4, %5 units")
-               .arg(imageW)
-               .arg(imageH)
+    log << QStringLiteral("Fill Regions diagnostic - image %1x%2, tolerance %3, "
+                          "%4 source regions (as-is, extraction order)")
+               .arg(regionOverlay.imageSize.width())
+               .arg(regionOverlay.imageSize.height())
                .arg(tolerance, 0, 'f', 3)
-               .arg(simplifyEpsilon, 0, 'f', 3)
                .arg(units.size());
 
-    const auto recordFailure = [&](const PenFillResult &fit) {
-        if (fit.cancelled) {
-            ++timedOut;
-        } else {
-            ++failed;
-        }
-        const QString reason = fit.error.isEmpty()
-            ? (fit.cancelled ? QStringLiteral("timed out") : QStringLiteral("empty result"))
-            : fit.error;
-        failureReasons[reason] += 1;
+    struct UnitWorkResult {
+        PenFillResult fit;
+        QString via = QStringLiteral("failed");
+        qint64 elapsedMs = 0;
+        bool timedOut = false;
+        bool meshFallback = false;
+        RegionFillContourStats contourStats;
     };
+    std::vector<UnitWorkResult> workResults(static_cast<size_t>(units.size()));
+    const auto globallyCancelled = [&cancelled]() {
+        return cancelled && cancelled();
+    };
+    const auto fitSucceeded = [](const PenFillResult &fit) {
+        return fit.error.isEmpty() && !fit.placements.isEmpty() && !fit.cancelled;
+    };
+    std::atomic<int> nextUnit{0};
+    std::atomic<int> completedUnits{0};
+    const int availableThreads = std::max(1, QThread::idealThreadCount());
+    const int requestedWorkers = std::max(1, availableThreads / 2);
+    const int workerCount = std::min(requestedWorkers, static_cast<int>(units.size()));
+    log << QStringLiteral("Workers: %1 of %2 available CPU threads")
+               .arg(workerCount)
+               .arg(availableThreads);
 
-    const size_t pixelTotal = static_cast<size_t>(imageW) * imageH;
-    // Occlusion mask: 1 where some already-planned (higher-z) unit paints. A
-    // lower unit may GROW its fill into these pixels because they are repainted
-    // from above. `vk`/`comp` are scratch masks reused per unit.
-    std::vector<std::uint8_t> occluded(pixelTotal, 0);
-    std::vector<std::uint8_t> vk(pixelTotal, 0);
-    std::vector<std::uint8_t> comp(pixelTotal, 0);
+    QThreadPool fillPool;
+    fillPool.setMaxThreadCount(workerCount);
+    for (int worker = 0; worker < workerCount; ++worker) {
+        fillPool.start([&, worker]() {
+            Q_UNUSED(worker);
+            while (true) {
+                const int i = nextUnit.fetch_add(1, std::memory_order_relaxed);
+                if (i >= units.size()) {
+                    return;
+                }
+                UnitWorkResult &work = workResults[static_cast<size_t>(i)];
+                if (!globallyCancelled()) {
+                    const FillUnit &unit = units[i];
+                    QElapsedTimer clock;
+                    clock.start();
+                    const auto unitCancelled = [&clock, &globallyCancelled]() {
+                        return globallyCancelled() || clock.elapsed() > kRegionBudgetMs;
+                    };
+                    QPolygonF optimizedContour;
+                    work.via = QStringLiteral("optimized-pen");
+                    work.fit = fillRegionOutline(unit.outline, primitives, tolerance,
+                                                 unitCancelled, &optimizedContour,
+                                                 &work.contourStats);
+                    if (work.fit.cancelled && !globallyCancelled()) {
+                        work.timedOut = true;
+                    }
 
-    // Rasterize a path's fill into `dst` (set to 1), returning the touched rect.
-    const auto rasterizePath = [&](const QPainterPath &path, std::vector<std::uint8_t> &dst) -> QRect {
-        const QRect b = path.boundingRect().toAlignedRect().intersected(QRect(0, 0, imageW, imageH));
-        if (b.isEmpty()) {
-            return b;
-        }
-        QImage tile(b.width(), b.height(), QImage::Format_Grayscale8);
-        tile.fill(0);
-        QPainter painter(&tile);
-        painter.setRenderHint(QPainter::Antialiasing, false);
-        painter.translate(-b.topLeft());
-        painter.fillPath(path, Qt::white);
-        painter.end();
-        for (int y = 0; y < b.height(); ++y) {
-            const std::uint8_t *row = tile.constScanLine(y);
-            std::uint8_t *out = dst.data() + static_cast<size_t>(b.top() + y) * imageW + b.left();
-            for (int x = 0; x < b.width(); ++x) {
-                if (row[x]) {
-                    out[x] = 1;
+                    // Both an ordinary Pen failure and a Pen timeout continue
+                    // from the already-optimized contour. Never union, grow,
+                    // reorder, or revert to a different source outline here.
+                    if (!fitSucceeded(work.fit) && !globallyCancelled()) {
+                        work.meshFallback = true;
+                        work.via = work.timedOut
+                            ? QStringLiteral("optimized-mesh-timeout")
+                            : QStringLiteral("optimized-mesh-fallback");
+                        if (optimizedContour.size() >= 3) {
+                            work.fit = fillPolygonMesh(optimizedContour, meshSources,
+                                                       globallyCancelled);
+                        } else if (work.fit.error.isEmpty()) {
+                            work.fit = PenFillResult{};
+                            work.fit.error = QStringLiteral("Optimized contour is unavailable");
+                        }
+                    }
+                    if (!fitSucceeded(work.fit)) {
+                        work.via = QStringLiteral("failed");
+                    }
+                    work.elapsedMs = clock.elapsed();
+                }
+                const int done = completedUnits.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (progress) {
+                    progress(done, result.totalRegions);
                 }
             }
-        }
-        return b;
-    };
-
-    // Seed the occlusion mask with all lineart: it renders on top of every
-    // colour layer, so every colour region may grow under the strokes -- the
-    // universal leeway that lets a region fill across the lines dividing it.
-    for (const ExtractedRegion &region : regionOverlay_.regions) {
-        if (region.lineart) {
-            rasterizePath(region.outline, occluded);
-        }
+        });
+    }
+    fillPool.waitForDone();
+    result.completedRegions = completedUnits.load(std::memory_order_relaxed);
+    if (globallyCancelled()) {
+        result.cancelled = true;
+        return result;
     }
 
-    const RegionExtractionParams traceParams; // defaults are fine for re-tracing
+    const FillUnit &biggestUnit = units[biggestUnitIndex];
+    const UnitWorkResult &biggestWork =
+        workResults[static_cast<size_t>(biggestUnitIndex)];
+    log << QStringLiteral("Biggest region points: region #%1 (source #%2) %3 area=%4, "
+                          "original=%5 optimized=%6 flattened=%7 removed-hard=%8, "
+                          "optimization-skipped=%9")
+               .arg(biggestUnitIndex)
+               .arg(biggestUnit.sourceIndex)
+               .arg(biggestUnit.color.name())
+               .arg(biggestUnit.area, 0, 'f', 0)
+               .arg(biggestWork.contourStats.originalPointCount)
+               .arg(biggestWork.contourStats.optimizedPointCount)
+               .arg(biggestWork.contourStats.flattenedPointCount)
+               .arg(biggestWork.contourStats.removedHardPoints)
+               .arg(biggestWork.contourStats.optimizationSkipped
+                        ? QStringLiteral("yes") : QStringLiteral("no"));
+
     QVector<RegionFillLayer> unitFills(units.size());
-    long grownPixels = 0;
-    long seedPixels = 0;
-    for (int i = units.size() - 1; i >= 0; --i) {
+    for (int i = 0; i < units.size(); ++i) {
         const FillUnit &unit = units[i];
-        QElapsedTimer clock;
-        clock.start();
-        const auto cancelled = [&clock]() {
-            return clock.elapsed() > kRegionBudgetMs;
-        };
-
-        // Rasterize this unit's own footprint (V_R).
-        const QRect vkBounds = rasterizePath(unit.outline, vk);
-
-        // Flood-grow across mayCover = occluded | V_R, seeded from V_R. The grown
-        // component fills under every higher layer it touches and stops at
-        // lower-z (still-unplanned, visible) neighbours -- which remain holes.
-        QRect compBounds = vkBounds;
-        std::vector<int> stack;
-        int unitSeed = 0;
-        for (int y = vkBounds.top(); y <= vkBounds.bottom(); ++y) {
-            const std::uint8_t *vkRow = vk.data() + static_cast<size_t>(y) * imageW;
-            for (int x = vkBounds.left(); x <= vkBounds.right(); ++x) {
-                if (vkRow[x] && !comp[static_cast<size_t>(y) * imageW + x]) {
-                    comp[static_cast<size_t>(y) * imageW + x] = 1;
-                    stack.push_back(y * imageW + x);
-                    ++unitSeed;
-                }
-            }
+        UnitWorkResult &work = workResults[static_cast<size_t>(i)];
+        if (work.timedOut) {
+            ++timedOut;
         }
-        while (!stack.empty()) {
-            const int idx = stack.back();
-            stack.pop_back();
-            const int px = idx % imageW;
-            const int py = idx / imageW;
-            compBounds |= QRect(px, py, 1, 1);
-            const int nb[4][2] = {{px - 1, py}, {px + 1, py}, {px, py - 1}, {px, py + 1}};
-            for (const auto &n : nb) {
-                const int nx = n[0];
-                const int ny = n[1];
-                if (nx < 0 || ny < 0 || nx >= imageW || ny >= imageH) {
-                    continue;
-                }
-                const size_t nIdx = static_cast<size_t>(ny) * imageW + nx;
-                if (comp[nIdx]) {
-                    continue;
-                }
-                if (occluded[nIdx] || vk[nIdx]) {
-                    comp[nIdx] = 1;
-                    stack.push_back(ny * imageW + nx);
-                }
-            }
+        if (work.meshFallback && fitSucceeded(work.fit)) {
+            ++meshFallbacks;
         }
-
-        int compArea = 0;
-        for (int y = compBounds.top(); y <= compBounds.bottom(); ++y) {
-            const std::uint8_t *row = comp.data() + static_cast<size_t>(y) * imageW;
-            for (int x = compBounds.left(); x <= compBounds.right(); ++x) {
-                compArea += row[x];
-            }
-        }
-        seedPixels += unitSeed;
-        grownPixels += compArea;
-
-        // Re-vectorize the grown component and use the same curve-aware
-        // outline -> Pen-point -> Primitive fitter as Bucket Fill. Complex
-        // contours that the Pen fitter cannot represent retain the robust
-        // Square/Triangle mesh path as a fallback.
-        QString via = QStringLiteral("grown-pen");
-        PenFillResult fit;
-        const QPainterPath grown = traceMaskToPath(comp, imageW, imageH, compBounds, traceParams);
-        if (!grown.isEmpty()) {
-            fit = fillRegionOutline(grown, primitives, tolerance, cancelled);
-        } else {
-            fit.error = QStringLiteral("grown contour tracing failed");
-        }
-
-        // A grown contour can be more complicated than its source because it
-        // includes occlusion leeway. Retry the original smooth outline through
-        // the Pen fitter before allowing either contour to flatten to a mesh.
-        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled) {
-            const PenFillResult originalPen =
-                fillRegionOutline(unit.outline, primitives, tolerance, cancelled);
-            if (originalPen.error.isEmpty() && !originalPen.placements.isEmpty()) {
-                fit = originalPen;
-                via = QStringLiteral("original-pen-fallback");
-            } else if (originalPen.cancelled) {
-                fit = originalPen;
-            }
-        }
-
-        // Preserve the grown footprint when possible once both curve-aware
-        // routes have failed; flatten only at this fallback boundary.
-        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled
-            && !grown.isEmpty()) {
-            const PenFillResult meshFit =
-                fillRegionOutlineMesh(grown, meshSources, simplifyEpsilon, cancelled);
-            if (meshFit.error.isEmpty() && !meshFit.placements.isEmpty()) {
-                ++meshFallbacks;
-                fit = meshFit;
-                via = QStringLiteral("grown-mesh-fallback");
-            } else if (fit.placements.isEmpty()) {
-                fit = meshFit;
-                via = QStringLiteral("failed");
-            }
-        }
-        if (!(fit.error.isEmpty() && !fit.placements.isEmpty()) && !fit.cancelled) {
-            const PenFillResult originalMesh =
-                fillRegionOutlineMesh(unit.outline, meshSources, simplifyEpsilon, cancelled);
-            if (originalMesh.error.isEmpty() && !originalMesh.placements.isEmpty()) {
-                ++meshFallbacks;
-                fit = originalMesh;
-                via = QStringLiteral("original-mesh-fallback");
-            } else {
-                fit = originalMesh;
-                via = QStringLiteral("failed");
-            }
-        }
-
-        if (fit.error.isEmpty() && !fit.placements.isEmpty()) {
+        if (fitSucceeded(work.fit)) {
             RegionFillLayer &layer = unitFills[i];
             layer.color = unit.color;
             layer.area = unit.area;
-            layer.placements = fit.placements;
-            placementCount += fit.placements.size();
+            layer.placements = std::move(work.fit.placements);
+            placementCount += layer.placements.size();
             ++filled;
         } else {
-            recordFailure(fit);
+            ++failed;
+            const QString reason = work.fit.error.isEmpty()
+                ? QStringLiteral("empty result") : work.fit.error;
+            failureReasons[reason] += 1;
         }
-
-        // This unit now sits above every lower unit still to be planned: its
-        // grown footprint becomes occlusion leeway for them.
-        for (int y = compBounds.top(); y <= compBounds.bottom(); ++y) {
-            const std::uint8_t *src = comp.data() + static_cast<size_t>(y) * imageW;
-            std::uint8_t *dst = occluded.data() + static_cast<size_t>(y) * imageW;
-            for (int x = compBounds.left(); x <= compBounds.right(); ++x) {
-                if (src[x]) {
-                    dst[x] = 1;
-                }
-            }
-        }
-        // Clear the scratch masks within their touched bounds for reuse.
-        for (int y = compBounds.top(); y <= compBounds.bottom(); ++y) {
-            std::uint8_t *cRow = comp.data() + static_cast<size_t>(y) * imageW;
-            std::uint8_t *vRow = vk.data() + static_cast<size_t>(y) * imageW;
-            for (int x = compBounds.left(); x <= compBounds.right(); ++x) {
-                cRow[x] = 0;
-                vRow[x] = 0;
-            }
-        }
-
-        log << QStringLiteral("unit #%1 %2 %3: seed=%4 grown=%5 -> %6 shapes, %7 ms%8")
+        log << QStringLiteral("region #%1 (source #%2) %3 %4: area=%5 -> %6 shapes, %7 ms%8")
                    .arg(i)
+                   .arg(unit.sourceIndex)
                    .arg(unit.color.name())
-                   .arg(via)
-                   .arg(unitSeed)
-                   .arg(compArea)
-                   .arg(fit.placements.size())
-                   .arg(clock.elapsed())
-                   .arg(fit.error.isEmpty() ? QString()
-                                            : QStringLiteral(" [error: %1]").arg(fit.error));
+                   .arg(work.via)
+                   .arg(unit.area, 0, 'f', 0)
+                   .arg(unitFills[i].placements.size())
+                   .arg(work.elapsedMs)
+                   .arg(work.fit.error.isEmpty() ? QString()
+                                                 : QStringLiteral(" [error: %1]")
+                                                       .arg(work.fit.error));
     }
 
-    // Emit bottom-up (largest first) so the scene stack matches the plan.
+    // Preserve extraction order regardless of parallel completion order.
     for (RegionFillLayer &layer : unitFills) {
         if (!layer.placements.isEmpty()) {
             fills.push_back(std::move(layer));
         }
     }
-    log << QStringLiteral("Occlusion: grew %1 seed px to %2 filled px (%3x leeway)")
-               .arg(seedPixels)
-               .arg(grownPixels)
-               .arg(seedPixels > 0 ? static_cast<double>(grownPixels) / seedPixels : 0.0, 0, 'f', 2);
-    QGuiApplication::restoreOverrideCursor();
-
-    log << QStringLiteral("Summary: %1 fills (%2 merged blobs, %3 mesh fallbacks), "
-                          "%4 shapes across %5 colour layers, %6 failed, %7 timed out")
+    log << QStringLiteral("Summary: %1 source regions filled (%2 optimized-contour mesh "
+                          "fallbacks), %3 shapes, %4 failed, %5 timed out")
                .arg(filled)
-               .arg(mergedBlobs)
                .arg(meshFallbacks)
                .arg(placementCount)
-               .arg(fills.size())
                .arg(failed)
                .arg(timedOut);
     const QString logPath = QCoreApplication::applicationDirPath()
@@ -1349,28 +1205,50 @@ bool ProjectCanvas::fillRegionsForOverlay(QString *message)
     }
 
     if (fills.isEmpty()) {
+        result.error = QStringLiteral("No regions could be filled%1").arg(reasonSuffix);
+        return result;
+    }
+    result.summary = QStringLiteral("Filled %1 regions with %2 shapes "
+                                    "(%3 failed, %4 timed out)%5")
+        .arg(fills.size())
+        .arg(placementCount)
+        .arg(failed)
+        .arg(timedOut)
+        .arg(reasonSuffix);
+    result.fills = std::move(fills);
+    result.silhouettes = std::move(silhouettes);
+    return result;
+}
+
+bool ProjectCanvas::applyRegionFillBatch(RegionFillBatchResult result,
+                                         QString *message)
+{
+    if (result.cancelled) {
         if (message != nullptr) {
-            *message = QStringLiteral("No regions could be filled%1").arg(reasonSuffix);
+            *message = QStringLiteral("Region Fill cancelled");
         }
         return false;
     }
-    // Largest region first so nested (smaller) regions draw on top.
-    std::sort(fills.begin(), fills.end(), [](const RegionFillLayer &a, const RegionFillLayer &b) {
-        return a.area > b.area;
-    });
-    regionFills_ = std::move(fills);
-    regionFillSilhouettes_ = std::move(silhouettes);
+    if (result.overlayGeneration != regionOverlayGeneration_
+        || result.overlayGuideId != regionOverlayGuideId_) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Region Fill result is stale; create regions again");
+        }
+        return false;
+    }
+    if (!result.error.isEmpty() || result.fills.isEmpty()) {
+        if (message != nullptr) {
+            *message = result.error.isEmpty()
+                ? QStringLiteral("Region Fill produced no layers") : result.error;
+        }
+        return false;
+    }
+    regionFills_ = std::move(result.fills);
+    regionFillSilhouettes_ = std::move(result.silhouettes);
     showRegionFills_ = true;
     update();
     if (message != nullptr) {
-        *message = QStringLiteral("Filled %1 colour layers with %2 shapes "
-                                  "(%3 merged blobs, %4 failed, %5 timed out)%6")
-            .arg(fills.size())
-            .arg(placementCount)
-            .arg(mergedBlobs)
-            .arg(failed)
-            .arg(timedOut)
-            .arg(reasonSuffix);
+        *message = result.summary;
     }
     return true;
 }
@@ -1386,9 +1264,9 @@ void ProjectCanvas::clearRegionFills()
     update();
 }
 
-QVector<GeneratedRegionShape> ProjectCanvas::regionFillWorldPlacements()
+QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups()
 {
-    QVector<GeneratedRegionShape> result;
+    QVector<GeneratedRegionGroup> result;
     if (regionFills_.isEmpty() || regionOverlayGuideId_.isEmpty()) {
         return result;
     }
@@ -1421,6 +1299,8 @@ QVector<GeneratedRegionShape> ProjectCanvas::regionFillWorldPlacements()
     const QTransform imageToWorld = imageToLocal * guideWorld;
 
     for (const RegionFillLayer &fill : regionFills_) {
+        GeneratedRegionGroup group;
+        group.shapes.reserve(fill.placements.size());
         // Scene shape colour is stored BGRA.
         const std::array<std::uint8_t, 4> color = {
             static_cast<std::uint8_t>(fill.color.blue()),
@@ -1433,7 +1313,10 @@ QVector<GeneratedRegionShape> ProjectCanvas::regionFillWorldPlacements()
             shape.shapeId = placement.shapeId;
             shape.transform = placement.transform * imageToWorld;
             shape.color = color;
-            result.push_back(shape);
+            group.shapes.push_back(shape);
+        }
+        if (!group.shapes.isEmpty()) {
+            result.push_back(std::move(group));
         }
     }
     return result;

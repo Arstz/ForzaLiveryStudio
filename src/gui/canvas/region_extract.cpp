@@ -301,7 +301,164 @@ struct PassResult {
     std::vector<int> maxDistance;     // per label, city-block half-width
     std::vector<QSet<int>> adjacency; // per label
     double widthCap = 0.0;
+    int mergedSmallRegions = 0;
 };
+
+int mergeSmallRegions(PassResult *pass, int width, int height, int areaThreshold)
+{
+    const int threshold = std::max(0, areaThreshold);
+    const int labelCount = static_cast<int>(pass->accums.size());
+    if (threshold <= 1 || labelCount < 2) {
+        return 0;
+    }
+
+    std::vector<int> parent(static_cast<size_t>(labelCount));
+    std::vector<int> rootArea(static_cast<size_t>(labelCount));
+    std::vector<QHash<int, int>> boundaryCounts(static_cast<size_t>(labelCount));
+    for (int label = 0; label < labelCount; ++label) {
+        parent[static_cast<size_t>(label)] = label;
+        rootArea[static_cast<size_t>(label)] = pass->accums[static_cast<size_t>(label)].area;
+    }
+    const auto addBoundary = [&](int left, int right) {
+        if (left >= 0 && right >= 0 && left != right) {
+            ++boundaryCounts[static_cast<size_t>(left)][right];
+            ++boundaryCounts[static_cast<size_t>(right)][left];
+        }
+    };
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const int label = pass->labels[static_cast<size_t>(y) * width + x];
+            if (x + 1 < width) {
+                addBoundary(label, pass->labels[static_cast<size_t>(y) * width + x + 1]);
+            }
+            if (y + 1 < height) {
+                addBoundary(label, pass->labels[static_cast<size_t>(y + 1) * width + x]);
+            }
+        }
+    }
+    const auto findRoot = [&](int label) {
+        int root = label;
+        while (parent[static_cast<size_t>(root)] != root) {
+            root = parent[static_cast<size_t>(root)];
+        }
+        int current = label;
+        while (parent[static_cast<size_t>(current)] != current) {
+            const int next = parent[static_cast<size_t>(current)];
+            parent[static_cast<size_t>(current)] = root;
+            current = next;
+        }
+        return root;
+    };
+
+    QVector<int> order;
+    order.reserve(labelCount);
+    for (int label = 0; label < labelCount; ++label) {
+        order.push_back(label);
+    }
+    std::sort(order.begin(), order.end(), [&](int left, int right) {
+        if (pass->accums[static_cast<size_t>(left)].area
+            != pass->accums[static_cast<size_t>(right)].area) {
+            return pass->accums[static_cast<size_t>(left)].area
+                < pass->accums[static_cast<size_t>(right)].area;
+        }
+        return left < right;
+    });
+
+    int merged = 0;
+    for (const int label : order) {
+        const int source = findRoot(label);
+        if (source != label || rootArea[static_cast<size_t>(source)] >= threshold) {
+            continue;
+        }
+        QHash<int, int> resolvedBoundary;
+        for (auto it = boundaryCounts[static_cast<size_t>(source)].cbegin();
+             it != boundaryCounts[static_cast<size_t>(source)].cend(); ++it) {
+            const int neighbor = findRoot(it.key());
+            if (neighbor != source) {
+                resolvedBoundary[neighbor] += it.value();
+            }
+        }
+        if (resolvedBoundary.isEmpty()) {
+            continue;
+        }
+
+        const QColor sourceColor = pass->palette[
+            pass->accums[static_cast<size_t>(source)].paletteIndex];
+        int best = -1;
+        qint64 bestDistance = std::numeric_limits<qint64>::max();
+        int bestBoundary = -1;
+        int bestArea = -1;
+        for (auto it = resolvedBoundary.cbegin(); it != resolvedBoundary.cend(); ++it) {
+            const int neighbor = it.key();
+            const QColor neighborColor = pass->palette[
+                pass->accums[static_cast<size_t>(neighbor)].paletteIndex];
+            const qint64 dr = sourceColor.red() - neighborColor.red();
+            const qint64 dg = sourceColor.green() - neighborColor.green();
+            const qint64 db = sourceColor.blue() - neighborColor.blue();
+            const qint64 distance = dr * dr + dg * dg + db * db;
+            const int neighborArea = rootArea[static_cast<size_t>(neighbor)];
+            if (distance < bestDistance
+                || (distance == bestDistance && it.value() > bestBoundary)
+                || (distance == bestDistance && it.value() == bestBoundary
+                    && neighborArea > bestArea)
+                || (distance == bestDistance && it.value() == bestBoundary
+                    && neighborArea == bestArea && neighbor < best)) {
+                best = neighbor;
+                bestDistance = distance;
+                bestBoundary = it.value();
+                bestArea = neighborArea;
+            }
+        }
+        if (best < 0) {
+            continue;
+        }
+        parent[static_cast<size_t>(source)] = best;
+        rootArea[static_cast<size_t>(best)] += rootArea[static_cast<size_t>(source)];
+        for (auto it = boundaryCounts[static_cast<size_t>(source)].cbegin();
+             it != boundaryCounts[static_cast<size_t>(source)].cend(); ++it) {
+            boundaryCounts[static_cast<size_t>(best)][it.key()] += it.value();
+        }
+        ++merged;
+    }
+    if (merged == 0) {
+        return 0;
+    }
+
+    QHash<int, int> compactLabel;
+    std::vector<RegionAccum> compactAccums;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int oldLabel = pass->labels[index];
+            if (oldLabel < 0) {
+                continue;
+            }
+            const int root = findRoot(oldLabel);
+            auto found = compactLabel.find(root);
+            int newLabel = 0;
+            if (found == compactLabel.end()) {
+                newLabel = static_cast<int>(compactAccums.size());
+                compactLabel.insert(root, newLabel);
+                RegionAccum accum;
+                accum.paletteIndex = pass->accums[static_cast<size_t>(root)].paletteIndex;
+                accum.minX = accum.maxX = x;
+                accum.minY = accum.maxY = y;
+                compactAccums.push_back(accum);
+            } else {
+                newLabel = found.value();
+            }
+            pass->labels[index] = newLabel;
+            RegionAccum &accum = compactAccums[static_cast<size_t>(newLabel)];
+            ++accum.area;
+            accum.minX = std::min(accum.minX, x);
+            accum.minY = std::min(accum.minY, y);
+            accum.maxX = std::max(accum.maxX, x);
+            accum.maxY = std::max(accum.maxY, y);
+        }
+    }
+    pass->accums = std::move(compactAccums);
+    return merged;
+}
 
 // One segmentation pass at a fixed colour count: quantize, label connected
 // components, compute adjacency + a boundary distance transform, and classify
@@ -381,6 +538,9 @@ PassResult segmentPass(const QImage &image,
     if (pass.accums.empty()) {
         return pass;
     }
+
+    pass.mergedSmallRegions = mergeSmallRegions(
+        &pass, width, height, params.smallRegionMergeArea);
 
     // Region adjacency graph (drives the separator test and debug coloring).
     pass.adjacency.assign(pass.accums.size(), {});
@@ -562,6 +722,7 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         result.error = QStringLiteral("The guide layer produced no regions");
         return result;
     }
+    result.mergedSmallRegionCount = finalSeg.mergedSmallRegions;
 
     // Graph-colour the finest colour segmentation (linking regions that share a
     // thin neighbour so areas across a line still differ).

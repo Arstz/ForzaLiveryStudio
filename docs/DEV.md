@@ -87,9 +87,19 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   **100%**, and double-click-to-fit navigation. **OK** processes the original
   resolution, preserves dimensions, produces binary alpha, and replaces
   the guide image as one undoable edit. **Create Regions** and **Fill Regions**
-  are also in the **ImgGen** menu. Region filling sends Potrace curves through
-  the same optimized Pen-point and curve-Primitive fitter used by Bucket Fill;
-  complex contours fall back to the Square/Triangle polygon mesh.
+  are also in the **ImgGen** menu. Create Regions merges components below its
+  persistent ImgGen area slider into the adjacent component with the closest RGB
+  colour before tracing. Region filling runs without blocking the main window:
+  each extracted colour region is fitted independently, as-is and in extraction
+  order, with no same-colour union, occlusion growth, or area prioritization.
+  Fitting runs in parallel on half of the available CPU threads, reports
+  completed/total regions in a status-bar progress bar, and remains cancellable
+  with **Esc**. Potrace curves use the same optimized Pen-point and
+  curve-Primitive fitter as Bucket Fill; complex or timed-out fits continue by
+  meshing that region's current optimized contour. Scene insertion keeps the
+  result in one **Region Fill** container with one child group per filled region.
+  `region_fill.log` records every source-region result and the largest region's
+  original, optimized, and flattened contour point counts.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,

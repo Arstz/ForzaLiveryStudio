@@ -25,6 +25,8 @@ struct RegionExtractionParams {
                                      // of opaque pixels are treated as noise
     double alphaThreshold = 0.5;     // pixels below this alpha are background
     int minRegionArea = 12;          // components smaller than this are dropped
+    int smallRegionMergeArea = 12;   // components smaller than this are merged
+                                     // into their colour-nearest adjacent region
     double lineWidthFactor = 0.016;  // max stroke-width cap as a fraction of min(w,h)
     double lineWidthFloor = 3.0;     // absolute max stroke-width cap in pixels
     double contrastThreshold = 0.22; // luminance distance from the mean to be lineart
@@ -52,6 +54,7 @@ struct RegionExtractionResult {
     QVector<ExtractedRegion> regions;
     int colorRegionCount = 0;
     int lineartRegionCount = 0;
+    int mergedSmallRegionCount = 0;
     QString error;
 
     bool valid() const { return error.isEmpty() && !regions.isEmpty(); }
