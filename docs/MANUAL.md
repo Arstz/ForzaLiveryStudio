@@ -65,7 +65,7 @@ build and developer notes see
 | Rotate | `R` | Rotate the selection about its centre. |
 | Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
 | Pen | `P` | Draw a closed quadratic path and fill it with contained Primitive shapes. |
-| Lining | `L` | Draw an open centreline and fit contained lining Primitive shapes to its width. |
+| Lining | `L` | Draw an open centreline and fit lining Primitive shapes to its width. |
 
 ### Options & Window
 
@@ -137,12 +137,13 @@ build and developer notes see
   universal width in the toolbar. The mouse wheel changes the width in `0.5`
   steps and `Shift` changes it five times faster. Right-click completes the path
   without generating shapes. The completed path remains editable with the Pen
-  point controls until `Enter` fits contained lining Primitives and creates a
+  point controls until `Enter` fits lining Primitives and creates a
   single **Lining** group. The hard/soft point structure guides the fit, curve
-  agreement is prioritized ahead of width coverage, curved placements expand
-  toward the selected width, and neighboring placements must overlap. Each
-  authored span receives one primary placement. `Escape` clears the path or
-  cancels a running fit.
+  agreement is prioritized ahead of width coverage, placement widths are
+  normalized to the generated curve coverage, path direction controls asymmetric
+  shape orientation, and neighboring placements must overlap. Each authored span
+  receives one primary placement. `Escape` clears the path or cancels a running fit.
+  The latest fit trace is written to `lining_fill.log` beside the executable.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,

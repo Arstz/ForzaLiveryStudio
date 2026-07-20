@@ -100,7 +100,13 @@ double filledPathArea(const QPainterPath &path)
     return result;
 }
 
-std::optional<QPointF> primitiveTip(const gui::PenPrimitive &primitive)
+struct PrimitiveEnds {
+    QPointF tip;
+    QPointF base;
+    QPointF middle;
+};
+
+std::optional<PrimitiveEnds> primitiveEnds(const gui::PenPrimitive &primitive)
 {
     QVector<QPointF> points;
     for (const QPolygonF &contour : primitive.contours) {
@@ -156,7 +162,31 @@ std::optional<QPointF> primitiveTip(const gui::PenPrimitive &primitive)
     };
     const auto first = endpoint(minimum);
     const auto second = endpoint(maximum);
-    return first.second < second.second ? first.first : second.first;
+    const double middlePosition = (minimum + maximum) * 0.5;
+    const double middleRadius = (maximum - minimum) * 0.08;
+    double middleMinimum = std::numeric_limits<double>::max();
+    double middleMaximum = std::numeric_limits<double>::lowest();
+    for (const QPointF &point : points) {
+        const QPointF delta = point - centroid;
+        if (std::abs(QPointF::dotProduct(delta, axis) - middlePosition)
+            > middleRadius) {
+            continue;
+        }
+        const double across = QPointF::dotProduct(delta, normal);
+        middleMinimum = std::min(middleMinimum, across);
+        middleMaximum = std::max(middleMaximum, across);
+    }
+    const QPointF middle = centroid + axis * middlePosition
+        + normal * ((middleMinimum + middleMaximum) * 0.5);
+    return first.second < second.second
+        ? std::optional<PrimitiveEnds>(PrimitiveEnds{first.first, second.first, middle})
+        : std::optional<PrimitiveEnds>(PrimitiveEnds{second.first, first.first, middle});
+}
+
+std::optional<QPointF> primitiveTip(const gui::PenPrimitive &primitive)
+{
+    const std::optional<PrimitiveEnds> ends = primitiveEnds(primitive);
+    return ends.has_value() ? std::optional<QPointF>(ends->tip) : std::nullopt;
 }
 
 std::optional<QPointF> placedHairTip(const gui::PenPlacement &placement,
@@ -773,6 +803,173 @@ void wideCenterlineCanUsePill(TestContext *test)
                  "a wide centerline should avoid redundant overlays");
 }
 
+void hairOrientationFollowsPathSide(TestContext *test)
+{
+    const QVector<gui::PenPoint> source = {
+        {{-180.0, 0.0}, gui::PenPointKind::Hard},
+        {{-135.0, -15.0}, gui::PenPointKind::Soft},
+        {{-90.0, 0.0}, gui::PenPointKind::Hard},
+        {{90.0, 0.0}, gui::PenPointKind::Hard},
+        {{135.0, -15.0}, gui::PenPointKind::Soft},
+        {{180.0, 0.0}, gui::PenPointKind::Hard},
+    };
+    for (const double rotation : {0.0, 67.0}) {
+        for (const bool reverse : {false, true}) {
+            QTransform transform;
+            transform.rotate(rotation);
+            QVector<gui::PenPoint> points = source;
+            for (gui::PenPoint &point : points) {
+                point.position = transform.map(point.position);
+            }
+            if (reverse) {
+                std::reverse(points.begin(), points.end());
+            }
+            gui::LiningFillRequest request;
+            request.points = points;
+            request.width = 10.0;
+            request.primitives = liningPrimitiveCatalog(test);
+            const gui::PenFillResult result = gui::fillLiningPath(request);
+            test->expect(result.error.isEmpty(),
+                         "rotated mixed lining paths should produce placements");
+            const bool primarySequence = result.placements.size() >= 3
+                && result.placements[0].shapeId == 2112
+                && result.placements[1].shapeId == 2133
+                && result.placements[2].shapeId == 2112;
+            test->expect(primarySequence,
+                         "mixed lining paths should retain their Hair-Pill-Hair sequence");
+            if (!primarySequence) {
+                continue;
+            }
+            const QPointF pathChord = points.back().position - points.front().position;
+            double pathSide = 0.0;
+            for (int index = 1; index + 1 < points.size(); ++index) {
+                const QPointF delta = points[index].position - points.front().position;
+                pathSide += pathChord.x() * delta.y() - pathChord.y() * delta.x();
+            }
+            const auto hair = std::find_if(request.primitives.cbegin(),
+                                           request.primitives.cend(),
+                                           [](const gui::PenPrimitive &primitive) {
+                return primitive.shapeId == 2112;
+            });
+            const std::optional<PrimitiveEnds> ends = hair != request.primitives.cend()
+                ? primitiveEnds(*hair)
+                : std::nullopt;
+            const QPointF desiredDirection(-pathChord.y() * pathSide,
+                                           pathChord.x() * pathSide);
+            const QPointF firstDirection = ends.has_value()
+                ? result.placements[0].transform.map(ends->tip)
+                    - result.placements[0].transform.map(ends->base)
+                : QPointF();
+            const QPointF secondDirection = ends.has_value()
+                ? result.placements[2].transform.map(ends->tip)
+                    - result.placements[2].transform.map(ends->base)
+                : QPointF();
+            test->expect(ends.has_value()
+                             && QPointF::dotProduct(firstDirection, desiredDirection) > 0.0
+                             && QPointF::dotProduct(secondDirection, desiredDirection) > 0.0,
+                         "every rotated Hair should retain one path-wide direction");
+        }
+    }
+}
+
+void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-215.1029, 457.9713}, gui::PenPointKind::Hard},
+        {{-232.8158, 454.8224}, gui::PenPointKind::Hard},
+        {{-213.9221, 472.1416}, gui::PenPointKind::Hard},
+        {{-233.9966, 465.4501}, gui::PenPointKind::Hard},
+        {{-207.2306, 500.4821}, gui::PenPointKind::Hard},
+        {{-220.2200, 495.7587}, gui::PenPointKind::Hard},
+        {{-204.0816, 511.5034}, gui::PenPointKind::Hard},
+        {{-221.0072, 512.6843}, gui::PenPointKind::Soft},
+        {{-244.2307, 502.8438}, gui::PenPointKind::Hard},
+        {{-222.5817, 524.4928}, gui::PenPointKind::Soft},
+        {{-201.3263, 531.1844}, gui::PenPointKind::Hard},
+        {{-224.9434, 539.4503}, gui::PenPointKind::Hard},
+        {{-209.5923, 552.8334}, gui::PenPointKind::Soft},
+        {{-189.5177, 549.2908}, gui::PenPointKind::Hard},
+        {{-206.4433, 561.8866}, gui::PenPointKind::Soft},
+        {{-216.6774, 582.7484}, gui::PenPointKind::Hard},
+        {{-197.3901, 577.6313}, gui::PenPointKind::Hard},
+        {{-202.1135, 589.8335}, gui::PenPointKind::Hard},
+        {{-191.8794, 585.8973}, gui::PenPointKind::Hard},
+        {{-205.6561, 622.5038}, gui::PenPointKind::Soft},
+        {{-208.4114, 664.2274}, gui::PenPointKind::Hard},
+        {{-175.7411, 631.9507}, gui::PenPointKind::Hard},
+        {{-177.7092, 642.5784}, gui::PenPointKind::Soft},
+        {{-172.5921, 652.0252}, gui::PenPointKind::Hard},
+        {{-165.9006, 637.4613}, gui::PenPointKind::Hard},
+        {{-163.9325, 675.6423}, gui::PenPointKind::Soft},
+        {{-147.0069, 705.1637}, gui::PenPointKind::Hard},
+        {{-128.9005, 648.4827}, gui::PenPointKind::Hard},
+        {{-122.6026, 668.1636}, gui::PenPointKind::Soft},
+        {{-112.7621, 681.9402}, gui::PenPointKind::Hard},
+        {{-109.6132, 668.5572}, gui::PenPointKind::Soft},
+        {{-98.1982, 660.6848}, gui::PenPointKind::Hard},
+        {{-96.2301, 665.8019}, gui::PenPointKind::Hard},
+        {{-90.7195, 657.9295}, gui::PenPointKind::Hard},
+        {{-87.1769, 675.2487}, gui::PenPointKind::Hard},
+        {{-83.6344, 665.0146}, gui::PenPointKind::Soft},
+        {{-75.3684, 659.1103}, gui::PenPointKind::Hard},
+    };
+    request.width = 4.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    const gui::LiningPath path = gui::buildLiningPath(request.points);
+    test->expect(result.error.isEmpty(), "a dense lining path should produce placements");
+    test->expect(result.placements.size() >= path.segments.size(),
+                 "a dense lining path should retain its primary placements");
+    if (!result.error.isEmpty() || result.placements.size() < path.segments.size()) {
+        return;
+    }
+    const auto hair = std::find_if(request.primitives.cbegin(),
+                                   request.primitives.cend(),
+                                   [](const gui::PenPrimitive &primitive) {
+        return primitive.shapeId == 2112;
+    });
+    const std::optional<PrimitiveEnds> ends = hair != request.primitives.cend()
+        ? primitiveEnds(*hair)
+        : std::nullopt;
+    int hairCount = 0;
+    bool directionMatches = ends.has_value();
+    bool curveMatches = ends.has_value();
+    const QPointF pathChord = request.points.back().position
+        - request.points.front().position;
+    double pathSide = 0.0;
+    for (int index = 1; index + 1 < request.points.size(); ++index) {
+        pathSide += pathChord.x()
+                * (request.points[index].position.y() - request.points.front().position.y())
+            - pathChord.y()
+                * (request.points[index].position.x() - request.points.front().position.x());
+    }
+    const QPointF desiredDirection(-pathChord.y() * pathSide,
+                                   pathChord.x() * pathSide);
+    for (int index = 0; index < path.segments.size(); ++index) {
+        const gui::PenPlacement &placement = result.placements[index];
+        if (placement.shapeId != 2112 || !ends.has_value()) {
+            continue;
+        }
+        ++hairCount;
+        const gui::PenBoundarySegment &segment = path.segments[index];
+        const QPointF tip = placement.transform.map(ends->tip);
+        const QPointF base = placement.transform.map(ends->base);
+        directionMatches = directionMatches
+            && QPointF::dotProduct(tip - base, desiredDirection) > 0.0;
+        if (segment.curved) {
+            const QPointF targetMiddle = segment.start * 0.25
+                + segment.control * 0.5 + segment.end * 0.25;
+            const QPointF placedMiddle = placement.transform.map(ends->middle);
+            curveMatches = curveMatches
+                && QLineF(placedMiddle, targetMiddle).length() <= request.width;
+        }
+    }
+    test->expect(hairCount >= 2, "a dense lining path should exercise multiple Hairs");
+    test->expect(directionMatches, "dense lining Hairs should retain one direction");
+    test->expect(curveMatches, "dense lining Hairs should retain their fitted curves");
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -795,6 +992,8 @@ int main(int argc, char **argv)
     shallowCurveCanUseComplementaryHairs(&test);
     sharpHardJoinUsesOverlappingStrokeShapes(&test);
     wideCenterlineCanUsePill(&test);
+    hairOrientationFollowsPathSide(&test);
+    denseLiningPathKeepsHairDirectionAndCurve(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     if (test.failures() == 0) {

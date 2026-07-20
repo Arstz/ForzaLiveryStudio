@@ -25,12 +25,14 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
-  constant-width ribbon, and selects a contained sequence from its dedicated
+  constant-width ribbon, and selects a ranked sequence from its dedicated
   Primitive catalog. Selection follows the authored point structure, ranks
   centreline agreement before width coverage, emits one primary placement per
   authored span, and requires connected overlap before producing an ordinary
-  single-colour scene group. Curved placement transforms expand toward the
-  requested width within the containment and curve-error bounds.
+  single-colour scene group. The completed sequence normalizes placement widths
+  to its curve coverage and derives asymmetric placement orientation
+  from the authored path direction. Each fit writes its selection and transform
+  diagnostics to `lining_fill.log` beside the executable.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   When auto-select is off, clicking outside the selected bounds preserves the
   current selection unless no selection exists.
