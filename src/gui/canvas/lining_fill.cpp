@@ -831,6 +831,7 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         0.0, -0.04, 0.04, -0.08, 0.08, -0.12, 0.12,
     };
     constexpr std::array<double, 3> overlapFactors = {0.35, 0.22, 0.0};
+    constexpr double chainedCurveOverlap = 0.45;
 
     const auto unitDirection = [](const QPointF &vector) {
         const double length = std::hypot(vector.x(), vector.y());
@@ -876,6 +877,18 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
                        .arg(pointText(hairDirection))
                        .arg(pointText(samples.front()))
                        .arg(pointText(samples.back())));
+    const auto absoluteIndex = [&](double position) {
+        const auto found = std::lower_bound(lengths.cbegin(), lengths.cend(), position);
+        if (found == lengths.cbegin()) {
+            return 0;
+        }
+        if (found == lengths.cend()) {
+            return static_cast<int>(lengths.size()) - 1;
+        }
+        const int upper = static_cast<int>(found - lengths.cbegin());
+        const int lower = upper - 1;
+        return position - lengths[lower] <= lengths[upper] - position ? lower : upper;
+    };
 
     const auto bestFit = [&](int start,
                              int end,
@@ -885,7 +898,8 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
                              double forcedSideSign = 0.0,
                              int forcedHairTipAtStart = -1,
                              int forcedOffsetSign = 0,
-                             bool requireContained = true) {
+                             bool requireContained = true,
+                             double minimumOverlapFactor = 0.0) {
         if (end <= start) {
             return std::optional<Candidate>{};
         }
@@ -894,6 +908,9 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         }
         std::optional<Candidate> best;
         for (const double overlapFactor : overlapFactors) {
+            if (overlapFactor + kEpsilon < minimumOverlapFactor) {
+                continue;
+            }
             const int factorCount = curvePriority
                 ? static_cast<int>(curveBlendFactors.size())
                 : static_cast<int>(widthFactors.size());
@@ -1014,16 +1031,18 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         return best;
     };
 
-    QVector<bool> sharpJoins(path.segments.size() + 1, false);
-    for (int join = 1; join < path.segments.size(); ++join) {
-        const QPointF position = path.segments[join].start;
-        const bool hard = std::any_of(request.points.cbegin(),
-                                      request.points.cend(),
-                                      [&](const PenPoint &point) {
+    const auto isAuthoredHard = [&](const QPointF &position) {
+        return std::any_of(request.points.cbegin(),
+                           request.points.cend(),
+                           [&](const PenPoint &point) {
             return point.kind == PenPointKind::Hard
                 && QLineF(point.position, position).length() <= 1e-5;
         });
-        if (!hard) {
+    };
+    QVector<bool> sharpJoins(path.segments.size() + 1, false);
+    for (int join = 1; join < path.segments.size(); ++join) {
+        const QPointF position = path.segments[join].start;
+        if (!isAuthoredHard(position)) {
             continue;
         }
         const PenBoundarySegment &before = path.segments[join - 1];
@@ -1046,6 +1065,30 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
                                                 : QStringLiteral("false"))
                            .arg(dot, 0, 'f', 6));
     }
+    QVector<int> curveRunSizes(path.segments.size(), 1);
+    QVector<int> curveRunOffsets(path.segments.size(), 0);
+    QVector<int> curveRunStarts(path.segments.size(), 0);
+    QVector<int> curveRunEnds(path.segments.size(), 0);
+    for (int runStart = 0; runStart < path.segments.size();) {
+        if (!path.segments[runStart].curved) {
+            ++runStart;
+            continue;
+        }
+        int runEnd = runStart + 1;
+        while (runEnd < path.segments.size()
+               && path.segments[runEnd].curved
+               && !isAuthoredHard(path.segments[runEnd].start)) {
+            ++runEnd;
+        }
+        const int runSize = runEnd - runStart;
+        for (int index = runStart; index < runEnd; ++index) {
+            curveRunSizes[index] = runSize;
+            curveRunOffsets[index] = index - runStart;
+            curveRunStarts[index] = runStart;
+            curveRunEnds[index] = runEnd;
+        }
+        runStart = runEnd;
+    }
 
     struct SegmentFit {
         int start = 0;
@@ -1054,6 +1097,7 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         bool curvePriority = false;
         bool shallowCurve = false;
         double curveSideSign = 0.0;
+        double minimumOverlapFactor = 0.0;
         int forcedHairTipAtStart = -1;
     };
     QVector<SegmentFit> segmentFits;
@@ -1090,6 +1134,28 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
 
         fit.curvePriority = true;
         fit.curveSideSign = pathSideSign;
+        if (curveRunSizes[index] > 1) {
+            const int runStart = curveRunStarts[index];
+            const int runEnd = curveRunEnds[index];
+            const int runOffset = curveRunOffsets[index];
+            const double runStartLength = lengths[segmentBoundaries[runStart]];
+            const double runEndLength = lengths[segmentBoundaries[runEnd]];
+            const double runLength = runEndLength - runStartLength;
+            const double strideFactor = 1.0 - chainedCurveOverlap;
+            const double windowLength = runLength
+                / (1.0 + (curveRunSizes[index] - 1) * strideFactor);
+            const double stride = windowLength * strideFactor;
+            const double windowStart = runStartLength + runOffset * stride;
+            const double windowEnd = runOffset + 1 == curveRunSizes[index]
+                ? runEndLength
+                : windowStart + windowLength;
+            fit.start = runOffset == 0
+                ? segmentBoundaries[runStart]
+                : absoluteIndex(windowStart);
+            fit.end = runOffset + 1 == curveRunSizes[index]
+                ? segmentBoundaries[runEnd]
+                : absoluteIndex(windowEnd);
+        }
         const QPointF startDirection = unitDirection(segment.control - segment.start);
         const QPointF endDirection = unitDirection(segment.end - segment.control);
         const double tangentDot = std::clamp(QPointF::dotProduct(startDirection,
@@ -1100,7 +1166,10 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         const double spanLength = lengths[fit.end] - lengths[fit.start];
         const bool shortCurve = spanLength <= request.width * 5.0;
         fit.shallowCurve = turn <= std::numbers::pi * 0.30;
-        if (shortCurve) {
+        if (curveRunSizes[index] > 1) {
+            fit.shapeIds = {136};
+            fit.minimumOverlapFactor = overlapFactors.front();
+        } else if (shortCurve) {
             fit.shapeIds = {136, 2131, 2112};
         } else if (fit.shallowCurve) {
             fit.shapeIds = {2112};
@@ -1108,16 +1177,24 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
             fit.shapeIds = {2131, 136, 2112};
         }
         diagnostic.add(QStringLiteral("fitSegment[%1] samples=%2..%3 curved=true "
-                                      "side=%4 shallow=%5 turn=%6 length=%7 forcedTip=%8 "
-                                      "shapes=%9")
+                                      "side=%4 shallow=%5 runSlot=%6/%7 turn=%8 length=%9 "
+                                      "overlap=%10 forcedTip=%11 shapes=%12")
                            .arg(index)
                            .arg(fit.start)
                            .arg(fit.end)
                            .arg(fit.curveSideSign, 0, 'f', 0)
                            .arg(fit.shallowCurve ? QStringLiteral("true")
                                                  : QStringLiteral("false"))
+                           .arg(curveRunOffsets[index] + 1)
+                           .arg(curveRunSizes[index])
                            .arg(turn, 0, 'f', 6)
                            .arg(spanLength, 0, 'f', 4)
+                           .arg(curveRunSizes[index] > 1
+                                    ? chainedCurveOverlap
+                                    : fit.minimumOverlapFactor,
+                                0,
+                                'f',
+                                2)
                            .arg(fit.forcedHairTipAtStart)
                            .arg(shapeIdsText(fit.shapeIds)));
         segmentFits.push_back(std::move(fit));
@@ -1148,7 +1225,10 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
                                                      request.width,
                                                      fit.curvePriority,
                                                      fit.curveSideSign,
-                                                     fit.forcedHairTipAtStart);
+                                                     fit.forcedHairTipAtStart,
+                                                     0,
+                                                     true,
+                                                     fit.minimumOverlapFactor);
         if (!candidate.has_value()) {
             candidate = bestFit(fit.start,
                                 fit.end,
@@ -1158,7 +1238,8 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
                                 fit.curveSideSign,
                                 fit.forcedHairTipAtStart,
                                 0,
-                                false);
+                                false,
+                                fit.minimumOverlapFactor);
             forced = candidate.has_value();
             usedForcedCandidate = usedForcedCandidate || candidate.has_value();
         }
@@ -1178,18 +1259,6 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         return result;
     }
 
-    const auto absoluteIndex = [&](double position) {
-        const auto found = std::lower_bound(lengths.cbegin(), lengths.cend(), position);
-        if (found == lengths.cbegin()) {
-            return 0;
-        }
-        if (found == lengths.cend()) {
-            return static_cast<int>(lengths.size()) - 1;
-        }
-        const int upper = static_cast<int>(found - lengths.cbegin());
-        const int lower = upper - 1;
-        return position - lengths[lower] <= lengths[upper] - position ? lower : upper;
-    };
     QVector<Candidate> overlays;
     if (segmentFits.size() == 1 && segmentFits.front().shallowCurve
         && selected.size() == 1 && selected.front().primitive->shapeId == 2112

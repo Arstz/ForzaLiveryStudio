@@ -872,6 +872,33 @@ void hairOrientationFollowsPathSide(TestContext *test)
     }
 }
 
+void longSoftRunUsesOverlappingArcs(TestContext *test)
+{
+    gui::LiningFillRequest request;
+    request.points = {
+        {{-218.1588, 456.7003}, gui::PenPointKind::Hard},
+        {{-169.7437, 502.7537}, gui::PenPointKind::Soft},
+        {{-100.4668, 548.8070}, gui::PenPointKind::Soft},
+        {{-54.4135, 569.6688}, gui::PenPointKind::Soft},
+        {{-13.0835, 583.8391}, gui::PenPointKind::Soft},
+        {{49.5018, 594.8604}, gui::PenPointKind::Hard},
+    };
+    request.width = 4.0;
+    request.primitives = liningPrimitiveCatalog(test);
+    const gui::PenFillResult result = gui::fillLiningPath(request);
+    test->expect(result.error.isEmpty(), "a long soft run should produce placements");
+    test->expect(result.placements.size() == 4,
+                 "a four-span soft run should use four placements");
+    test->expect(std::all_of(result.placements.cbegin(),
+                             result.placements.cend(),
+                             [](const gui::PenPlacement &placement) {
+        return placement.shapeId == 136;
+    }),
+                 "a long soft run should use Arc placements");
+    test->expect(placementsConnected(result, request.primitives),
+                 "Arc placements in a long soft run should overlap");
+}
+
 void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
 {
     gui::LiningFillRequest request;
@@ -994,6 +1021,7 @@ int main(int argc, char **argv)
     wideCenterlineCanUsePill(&test);
     hairOrientationFollowsPathSide(&test);
     denseLiningPathKeepsHairDirectionAndCurve(&test);
+    longSoftRunUsesOverlappingArcs(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     if (test.failures() == 0) {
