@@ -340,10 +340,15 @@ void paintPreviewNode(QImage &image,
 }
 
 QIcon shapeIcon(const fh6::scene::Layer &node,
-                const ShapeGeometryStore &geometry,
-                bool includeRootTransform) {
+                 const ShapeGeometryStore &geometry,
+                 bool includeRootTransform,
+                 const PreviewBackground &background,
+                 UiTheme theme) {
     QImage image(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
-    image.fill(QColor(42, 42, 42));
+    {
+        QPainter painter(&image);
+        painter.fillRect(image.rect(), previewBackgroundBrush(theme, background));
+    }
     QRectF bounds = previewNodeBounds(node, geometry, QTransform(), includeRootTransform);
     if (!bounds.isValid() || bounds.isEmpty()) {
         bounds = QRectF(-32, -32, 64, 64);
@@ -358,7 +363,9 @@ QIcon shapeIcon(const fh6::scene::Layer &node,
     return QIcon(QPixmap::fromImage(image));
 }
 
-QIcon guideIcon(const fh6::scene::GuideLayer &guide) {
+QIcon guideIcon(const fh6::scene::GuideLayer &guide,
+                const PreviewBackground &background,
+                UiTheme theme) {
     QImage image;
     if (guide.image) {
         if (!guide.image->pixels.isEmpty() && guide.image->width > 0 && guide.image->height > 0) {
@@ -371,13 +378,20 @@ QIcon guideIcon(const fh6::scene::GuideLayer &guide) {
             image.loadFromData(guide.image->encoded, guide.image->format.toLatin1().constData());
         }
     }
-    if (image.isNull()) {
-        image = QImage(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
-        image.fill(QColor(70, 70, 70, 180));
-    } else {
+    if (!image.isNull()) {
         image = image.mirrored(false, true);
     }
-    return QIcon(QPixmap::fromImage(image.scaled(kShapePreviewSize, kShapePreviewSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+    QImage composed(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
+    QPainter painter(&composed);
+    painter.fillRect(composed.rect(), previewBackgroundBrush(theme, background));
+    if (!image.isNull()) {
+        const QImage scaled = image.scaled(kShapePreviewSize, kShapePreviewSize,
+                                           Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        painter.drawImage(QPoint((kShapePreviewSize - scaled.width()) / 2,
+                                 (kShapePreviewSize - scaled.height()) / 2), scaled);
+    }
+
+    return QIcon(QPixmap::fromImage(composed));
 }
 
 quint64 contentSignature(const fh6::scene::Layer &node, QHash<QString, quint64> &cache);
@@ -440,6 +454,10 @@ LayerTreeModel::LayerTreeModel(QObject *parent)
     geometryLoaded_ = geometry_.loadDefault();
 }
 
+LayerTreeModel::~LayerTreeModel() {
+    clearSectionCache();
+}
+
 void LayerTreeModel::setEditorState(EditorState *state) {
     state_ = state;
 }
@@ -449,6 +467,17 @@ void LayerTreeModel::setGeneratePreviewsWithTransformations(bool enabled) {
         return;
     }
     generatePreviewsWithTransformations_ = enabled;
+    previewCache_.clear();
+    previewSignatureCache_.clear();
+}
+
+void LayerTreeModel::setPreviewBackground(const PreviewBackground &background, UiTheme theme) {
+    if (previewBackground_.mode == background.mode
+        && previewBackground_.custom == background.custom && theme_ == theme) {
+        return;
+    }
+    previewBackground_ = background;
+    theme_ = theme;
     previewCache_.clear();
     previewSignatureCache_.clear();
 }
@@ -508,7 +537,8 @@ void LayerTreeModel::updateItemPreview(QStandardItem &item, const fh6::scene::La
     const bool isGroup = node.kind() == fh6::scene::LayerKind::Group;
 
     if (node.kind() == fh6::scene::LayerKind::Guide) {
-        item.setIcon(guideIcon(static_cast<const fh6::scene::GuideLayer &>(node)));
+        item.setIcon(guideIcon(static_cast<const fh6::scene::GuideLayer &>(node),
+                               previewBackground_, theme_));
     } else if (geometryLoaded_) {
         item.setIcon(previewIconForNode(node));
     }
@@ -530,19 +560,36 @@ void LayerTreeModel::setProject(const fh6::Project *project) {
 }
 
 void LayerTreeModel::setProjectSection(const fh6::Project *project, const QString &sectionGroupId) {
-    previewSignatureCache_.clear();
+    if (displayParentGroupId_ == sectionGroupId && rowCount() > 0) {
+        return;
+    }
+    cacheDisplayedSectionRows();
     clear();
     setHorizontalHeaderLabels({QStringLiteral("Layer")});
     displayParentGroupId_ = sectionGroupId;
-    if (project == nullptr) {
+    if (project == nullptr || !project->root) {
+        return;
+    }
+    const auto cached = sectionRowsCache_.find(sectionGroupId);
+    if (cached != sectionRowsCache_.end()) {
+        const QList<QList<QStandardItem *>> rows = cached.value();
+        sectionRowsCache_.erase(cached);
+        for (const QList<QStandardItem *> &row : rows) {
+            appendRow(row);
+        }
         return;
     }
     const ProjectLookup lookup = buildLookup(*project);
     const fh6::scene::Group *section = lookup.groups.value(sectionGroupId, nullptr);
-    if (section == nullptr) {
-        return;
+    if (section != nullptr) {
+        populateGroup(lookup, *section);
     }
-    populateGroup(lookup, *section);
+    for (int index = static_cast<int>(project->root->children.size()) - 1; index >= 0; --index) {
+        const fh6::scene::Layer &node = *project->root->children[index];
+        if (node.kind() == fh6::scene::LayerKind::Guide) {
+            appendRow(itemForId(lookup, node.id));
+        }
+    }
 }
 
 void LayerTreeModel::populateGroup(const ProjectLookup &lookup, const fh6::scene::Group &group) {
@@ -560,7 +607,25 @@ void LayerTreeModel::populateGroup(const ProjectLookup &lookup, const fh6::scene
 }
 
 void LayerTreeModel::clearSectionCache() {
+    for (const QList<QList<QStandardItem *>> &rows : std::as_const(sectionRowsCache_)) {
+        for (const QList<QStandardItem *> &row : rows) {
+            qDeleteAll(row);
+        }
+    }
     sectionRowsCache_.clear();
+}
+
+void LayerTreeModel::cacheDisplayedSectionRows() {
+    if (displayParentGroupId_.isEmpty() || rowCount() == 0
+        || sectionRowsCache_.contains(displayParentGroupId_)) {
+        return;
+    }
+    QList<QList<QStandardItem *>> rows;
+    rows.reserve(rowCount());
+    while (rowCount() > 0) {
+        rows.push_back(takeRow(0));
+    }
+    sectionRowsCache_.insert(displayParentGroupId_, rows);
 }
 
 Qt::ItemFlags LayerTreeModel::flags(const QModelIndex &index) const {
@@ -680,7 +745,8 @@ QIcon LayerTreeModel::previewIconForNode(const fh6::scene::Layer &node) const {
     if (cached != previewCache_.constEnd()) {
         return cached.value();
     }
-    const QIcon icon = shapeIcon(node, geometry_, generatePreviewsWithTransformations_);
+    const QIcon icon = shapeIcon(node, geometry_, generatePreviewsWithTransformations_,
+                                 previewBackground_, theme_);
     if (previewCache_.size() > 4096) {
         previewCache_.clear();
     }

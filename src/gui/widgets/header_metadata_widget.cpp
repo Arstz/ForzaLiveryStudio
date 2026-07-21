@@ -22,10 +22,11 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     yearSpin_->setRange(2000, 2100);
     yearSpin_->setValue(QDate::currentDate().year());
     form->addRow(QStringLiteral("Year"), yearSpin_);
-    auto *publishedCheck = new QCheckBox(QStringLiteral("Published"), this);
-    publishedCheck->setChecked(false);
-    publishedCheck->setEnabled(false);
-    form->addRow(QString(), publishedCheck);
+    publishedCheck_ = new QCheckBox(QStringLiteral("Published"), this);
+    publishedCheck_->setChecked(false);
+    publishedCheck_->setEnabled(false);
+    publishedCheck_->setStyleSheet(QStringLiteral("QCheckBox:disabled { color: palette(mid); }"));
+    form->addRow(QString(), publishedCheck_);
     auto *descEdit = new QPlainTextEdit(this);
     descEdit->setPlaceholderText(QStringLiteral("Description (published only)"));
     descEdit->setReadOnly(true);
@@ -59,6 +60,7 @@ void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool imp
     nameEdit_->setText(seed.name);
     creatorEdit_->setText(seed.creatorName);
     yearSpin_->setValue(seed.year == 0 ? QDate::currentDate().year() : seed.year);
+    publishedCheck_->setChecked(seed.published);
 
     rebuildCheck_->setVisible(importedDraft);
     if (!importedDraft) {

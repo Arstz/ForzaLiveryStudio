@@ -30,6 +30,8 @@ class QDropEvent;
 class QUrl;
 class QWidget;
 class QToolButton;
+class QSplitter;
+class QToolBar;
 
 namespace gui {
 
@@ -211,6 +213,7 @@ private:
     void setupImgGenMenu();
     void setupOptionsMenu();
     void setupToolbar();
+    void applyToolbarStyle(bool vertical);
     void setupWindowMenu();
     void importCarModel();
     void maybeAutoLoadCarForProject(bool replaceLoadedModel = false);
@@ -227,9 +230,11 @@ private:
     QAction *carUnwrapAction_ = nullptr;
     QTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;
+    QSplitter *layersSplitter_ = nullptr;
     QLabel *details_ = nullptr;
     QLabel *liningWidthLabel_ = nullptr;
     QDoubleSpinBox *liningWidthSpin_ = nullptr;
+    QToolBar *toolBar_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;

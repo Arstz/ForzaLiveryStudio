@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QBrush>
 #include <QPalette>
 #include <QSize>
 #include <QString>
@@ -35,6 +36,7 @@ struct BehaviorSettings {
     bool insertShapeWithLastSelectedScale = false;
     bool showPropertyDebug = false;
     bool moveToolAutoSelect = false;
+    bool allowMoveOutsideBoundingBox = true;
     bool selectionFlashEnabled = true;
     bool displayAnchorsDuringTransformDrag = true;
     bool generatePreviewsWithTransformations = false;
@@ -54,6 +56,23 @@ struct BehaviorSettings {
     QString carModelsFolder;
     bool discardModelOnLiveryOpen = true;
     bool loadCarTextures = false;
+    bool verticalToolbar = false;
+};
+
+enum class PreviewBackgroundMode {
+    ThemeDefault,
+    Checkerboard,
+    Custom,
+};
+
+struct PreviewBackground {
+    PreviewBackgroundMode mode = PreviewBackgroundMode::ThemeDefault;
+    QColor custom;
+};
+
+struct PreviewBackgroundSettings {
+    PreviewBackground buffer;
+    PreviewBackground layers;
 };
 
 QString themeSettingsValue(UiTheme theme);
@@ -63,6 +82,11 @@ void saveUiTheme(UiTheme theme);
 QColor defaultCanvasColor(UiTheme theme);
 CanvasColorSettings loadCanvasColorSettings();
 void saveCanvasColorSettings(const CanvasColorSettings &settings);
+PreviewBackgroundSettings loadPreviewBackgroundSettings();
+void savePreviewBackgroundSettings(const PreviewBackgroundSettings &settings);
+QColor defaultPreviewBackgroundColor(UiTheme theme);
+QColor previewBackgroundColor(UiTheme theme, const PreviewBackground &background);
+QBrush previewBackgroundBrush(UiTheme theme, const PreviewBackground &background);
 TransformModeSettings loadTransformModeSettings();
 void saveTransformModeSettings(const TransformModeSettings &settings);
 BehaviorSettings loadBehaviorSettings();

@@ -908,11 +908,11 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     search_->addAction(assetIcon(QStringLiteral("ShapeBrowserSearch.xpm")), QLineEdit::LeadingPosition);
     layout->addWidget(search_);
 
-    auto *splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->setHandleWidth(6);
-    layout->addWidget(splitter, 1);
+    splitter_ = new QSplitter(Qt::Horizontal, this);
+    splitter_->setHandleWidth(6);
+    layout->addWidget(splitter_, 1);
 
-    auto *categoryPane = new QWidget(splitter);
+    auto *categoryPane = new QWidget(splitter_);
     auto *categoryLayout = new QVBoxLayout(categoryPane);
     categoryLayout->setContentsMargins(0, 0, 0, 0);
     categoryLayout->setSpacing(6);
@@ -924,10 +924,10 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     addSelection_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addSelection_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     categoryLayout->addWidget(addSelection_);
-    splitter->addWidget(categoryPane);
-    splitter->setCollapsible(0, false);
+    splitter_->addWidget(categoryPane);
+    splitter_->setCollapsible(0, false);
 
-    scroll_ = new QScrollArea(splitter);
+    scroll_ = new QScrollArea(splitter_);
     scroll_->setWidgetResizable(true);
     gridHost_ = new QWidget(scroll_);
     grid_ = new QGridLayout(gridHost_);
@@ -936,9 +936,17 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     grid_->setVerticalSpacing(8);
     grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     scroll_->setWidget(gridHost_);
-    splitter->addWidget(scroll_);
-    splitter->setStretchFactor(1, 1);
-    installSplitterResizeCursor(splitter);
+    splitter_->addWidget(scroll_);
+    splitter_->setStretchFactor(1, 1);
+    installSplitterResizeCursor(splitter_);
+    const QByteArray splitterState = settings().value(
+        QStringLiteral("ui/splitters/shapesSections")).toByteArray();
+    if (!splitterState.isEmpty()) {
+        splitter_->restoreState(splitterState);
+    }
+    connect(splitter_, &QSplitter::splitterMoved, this, [this]() {
+        settings().setValue(QStringLiteral("ui/splitters/shapesSections"), splitter_->saveState());
+    });
     refreshTheme();
 
     connect(search_, &QLineEdit::textChanged, this, [this]() { refreshGrid(); });

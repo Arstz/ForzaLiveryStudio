@@ -56,6 +56,7 @@ public:
     void setTransformRelativeMode(bool relative);
     void setMoveToolAutoSelect(bool enabled);
     bool moveToolAutoSelect() const;
+    void setAllowMoveOutsideBoundingBox(bool enabled);
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
     void setDisplayAnchorsDuringTransformDrag(bool enabled);
@@ -271,6 +272,7 @@ private:
         QSize borderResolution = kDefaultVisibilityBorderResolution;
         bool transformRelativeMode = false;
         bool moveToolAutoSelect = false;
+        bool allowMoveOutsideBoundingBox = true;
         bool displayAnchorsDuringTransformDrag = true;
         bool guideLayersVisible = true;
         bool guideLayersOnTop = true;
@@ -408,6 +410,7 @@ private:
     ShapeGeometryStore geometry_;
     bool geometryLoaded_ = false;
     QString tool_ = QStringLiteral("select");
+    QString lastNonPipetteTool_ = QStringLiteral("select");
     std::vector<std::unique_ptr<CanvasTool>> tools_;
     CanvasTool *activeTool_ = nullptr;
     CanvasCamera camera_;

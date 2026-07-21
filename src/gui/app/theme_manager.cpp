@@ -1,6 +1,8 @@
 #include "theme_manager.h"
 
 #include <QApplication>
+#include <QPainter>
+#include <QPixmap>
 #include <QSettings>
 #include <QStyleFactory>
 
@@ -13,6 +15,28 @@ UiTheme currentTheme = UiTheme::Dark;
 
 QColor validColor(const QColor &color, const QColor &fallback) {
     return color.isValid() ? color : fallback;
+}
+
+PreviewBackgroundMode previewBackgroundMode(const QString &value) {
+    if (value == QStringLiteral("checkerboard")) {
+        return PreviewBackgroundMode::Checkerboard;
+    }
+    if (value == QStringLiteral("custom")) {
+        return PreviewBackgroundMode::Custom;
+    }
+    return PreviewBackgroundMode::ThemeDefault;
+}
+
+QString previewBackgroundModeValue(PreviewBackgroundMode mode) {
+    switch (mode) {
+    case PreviewBackgroundMode::Checkerboard:
+        return QStringLiteral("checkerboard");
+    case PreviewBackgroundMode::Custom:
+        return QStringLiteral("custom");
+    case PreviewBackgroundMode::ThemeDefault:
+        return QStringLiteral("default");
+    }
+    return QStringLiteral("default");
 }
 
 } // namespace
@@ -92,6 +116,8 @@ BehaviorSettings loadBehaviorSettings() {
     result.insertShapeWithLastSelectedScale = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), result.insertShapeWithLastSelectedScale).toBool();
     result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), result.showPropertyDebug).toBool();
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), result.moveToolAutoSelect).toBool();
+    result.allowMoveOutsideBoundingBox = settings.value(
+        QStringLiteral("ui/behavior/allowMoveOutsideBoundingBox"), result.allowMoveOutsideBoundingBox).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), result.selectionFlashEnabled).toBool();
     result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), result.displayAnchorsDuringTransformDrag).toBool();
     result.generatePreviewsWithTransformations = settings.value(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), result.generatePreviewsWithTransformations).toBool();
@@ -113,6 +139,7 @@ BehaviorSettings loadBehaviorSettings() {
     result.carModelsFolder = settings.value(QStringLiteral("ui/behavior/carModelsFolder")).toString();
     result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), result.discardModelOnLiveryOpen).toBool();
     result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), result.loadCarTextures).toBool();
+    result.verticalToolbar = settings.value(QStringLiteral("ui/behavior/verticalToolbar"), result.verticalToolbar).toBool();
     result.guidelineColor = validColor(result.guidelineColor, defaults.guidelineColor);
     if (result.nudgeStep <= 0.0) {
         result.nudgeStep = defaults.nudgeStep;
@@ -132,6 +159,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), settings.insertShapeWithLastSelectedScale);
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
+    qsettings.setValue(QStringLiteral("ui/behavior/allowMoveOutsideBoundingBox"), settings.allowMoveOutsideBoundingBox);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), settings.displayAnchorsDuringTransformDrag);
     qsettings.setValue(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), settings.generatePreviewsWithTransformations);
@@ -152,6 +180,65 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/carModelsFolder"), settings.carModelsFolder);
     qsettings.setValue(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), settings.discardModelOnLiveryOpen);
     qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);
+    qsettings.setValue(QStringLiteral("ui/behavior/verticalToolbar"), settings.verticalToolbar);
+}
+
+PreviewBackgroundSettings loadPreviewBackgroundSettings() {
+    QSettings settings;
+    PreviewBackgroundSettings result;
+    result.buffer.mode = previewBackgroundMode(
+        settings.value(QStringLiteral("ui/previews/bufferMode"), QStringLiteral("default")).toString());
+    result.layers.mode = previewBackgroundMode(
+        settings.value(QStringLiteral("ui/previews/layersMode"), QStringLiteral("default")).toString());
+    result.buffer.custom = QColor(settings.value(
+        QStringLiteral("ui/previews/bufferCustom"), defaultCanvasColor(UiTheme::Dark).name()).toString());
+    result.layers.custom = QColor(settings.value(
+        QStringLiteral("ui/previews/layersCustom"), defaultCanvasColor(UiTheme::Dark).name()).toString());
+    result.buffer.custom = validColor(result.buffer.custom, defaultCanvasColor(UiTheme::Dark));
+    result.layers.custom = validColor(result.layers.custom, defaultCanvasColor(UiTheme::Dark));
+
+    return result;
+}
+
+void savePreviewBackgroundSettings(const PreviewBackgroundSettings &settings) {
+    QSettings qsettings;
+    qsettings.setValue(QStringLiteral("ui/previews/bufferMode"),
+                       previewBackgroundModeValue(settings.buffer.mode));
+    qsettings.setValue(QStringLiteral("ui/previews/layersMode"),
+                       previewBackgroundModeValue(settings.layers.mode));
+    qsettings.setValue(QStringLiteral("ui/previews/bufferCustom"),
+                       validColor(settings.buffer.custom, defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
+    qsettings.setValue(QStringLiteral("ui/previews/layersCustom"),
+                       validColor(settings.layers.custom, defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
+}
+
+QColor defaultPreviewBackgroundColor(UiTheme theme) {
+    return paletteForTheme(theme).color(QPalette::Base);
+}
+
+QColor previewBackgroundColor(UiTheme theme, const PreviewBackground &background) {
+    if (background.mode == PreviewBackgroundMode::Custom && background.custom.isValid()) {
+        return background.custom;
+    }
+
+    return defaultPreviewBackgroundColor(theme);
+}
+
+QBrush previewBackgroundBrush(UiTheme theme, const PreviewBackground &background) {
+    if (background.mode != PreviewBackgroundMode::Checkerboard) {
+        return QBrush(previewBackgroundColor(theme, background));
+    }
+    constexpr int kCheckerExtent = 8;
+    constexpr int kCheckerTileExtent = kCheckerExtent * 2;
+    const QColor base = defaultPreviewBackgroundColor(theme);
+    const QColor alternate = isDarkTheme(theme) ? base.lighter(145) : base.darker(112);
+    QImage tile(kCheckerTileExtent, kCheckerTileExtent, QImage::Format_RGB32);
+    tile.fill(base);
+    QPainter painter(&tile);
+    painter.fillRect(0, 0, kCheckerExtent, kCheckerExtent, alternate);
+    painter.fillRect(kCheckerExtent, kCheckerExtent, kCheckerExtent, kCheckerExtent, alternate);
+
+    return QBrush(QPixmap::fromImage(tile));
 }
 
 QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings) {

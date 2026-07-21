@@ -494,6 +494,9 @@ void MainWindow::insertShape(int shapeId) {
     layer->y = center.y();
     updateLastSelectedShapeDefaults();
     const BehaviorSettings behavior = loadBehaviorSettings();
+    if (behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_) {
+        layer->color = lastSelectedShapeColor_;
+    }
     if (behavior.insertShapeWithLastSelectedScale && haveLastSelectedShapeDefaults_) {
         layer->scaleX = lastSelectedShapeScaleX_;
         layer->scaleY = lastSelectedShapeScaleY_;
@@ -1048,8 +1051,9 @@ void MainWindow::setToolName(const QString &name) {
         }
     }
     const bool lining = name == QStringLiteral("lining");
+    const bool verticalToolbar = toolBar_ != nullptr && toolBar_->orientation() == Qt::Vertical;
     if (liningWidthLabel_ != nullptr) {
-        liningWidthLabel_->setVisible(lining);
+        liningWidthLabel_->setVisible(lining && !verticalToolbar);
     }
     if (liningWidthSpin_ != nullptr) {
         liningWidthSpin_->setVisible(lining);

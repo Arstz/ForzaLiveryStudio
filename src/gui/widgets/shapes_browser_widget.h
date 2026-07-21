@@ -16,6 +16,7 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QScrollArea;
+class QSplitter;
 class QToolButton;
 
 namespace gui {
@@ -165,6 +166,7 @@ private:
     QLineEdit *search_ = nullptr;
     QListWidget *categoriesList_ = nullptr;
     QToolButton *addSelection_ = nullptr;
+    QSplitter *splitter_ = nullptr;
     QScrollArea *scroll_ = nullptr;
     QWidget *gridHost_ = nullptr;
     QGridLayout *grid_ = nullptr;

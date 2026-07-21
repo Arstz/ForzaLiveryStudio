@@ -61,29 +61,39 @@ void ClipboardBufferWidget::setClipboard(const ProjectClipboard *clipboard) {
     update();
 }
 
+void ClipboardBufferWidget::setPreviewBackground(const PreviewBackground &background, UiTheme theme) {
+    if (previewBackground_.mode == background.mode
+        && previewBackground_.custom == background.custom && theme_ == theme) {
+        return;
+    }
+    previewBackground_ = background;
+    theme_ = theme;
+    update();
+}
+
 void ClipboardBufferWidget::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), QColor(24, 24, 24));
+    painter.fillRect(rect(), palette().color(QPalette::Window));
 
     if (clipboard_ == nullptr || clipboard_->nodes.empty()) {
-        painter.setPen(QColor(200, 200, 200));
+        painter.setPen(palette().color(QPalette::WindowText));
         painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("Buffer empty"));
         return;
     }
 
     const QString countText = QString::number(shapeCount(*clipboard_));
-    painter.setPen(QColor(240, 240, 240));
+    painter.setPen(palette().color(QPalette::WindowText));
     painter.drawText(QRect(width() - 76, 8, 66, 22), Qt::AlignRight | Qt::AlignVCenter, countText);
 
     const QRect previewRect = rect().adjusted(12, 34, -12, -12);
     if (previewRect.width() <= 0 || previewRect.height() <= 0) {
         return;
     }
-    painter.fillRect(previewRect, QColor(16, 16, 16));
-    painter.setPen(QPen(QColor(60, 60, 60), 1));
+    painter.fillRect(previewRect, previewBackgroundBrush(theme_, previewBackground_));
+    painter.setPen(QPen(palette().color(QPalette::Mid), 1));
     painter.drawRect(previewRect.adjusted(0, 0, -1, -1));
 
     BoundsAccumulator boundsAccumulator;

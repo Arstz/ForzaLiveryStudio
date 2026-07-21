@@ -108,6 +108,24 @@ bool isTextInput(const QWidget *widget) {
     return combo != nullptr && combo->isEditable();
 }
 
+bool isKeySequenceInput(const QWidget *widget) {
+    for (const QWidget *current = widget; current != nullptr; current = current->parentWidget()) {
+        if (qobject_cast<const QKeySequenceEdit *>(current) != nullptr) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool isUiNavigationKey(const QKeyEvent &event) {
+    return event.key() == Qt::Key_Tab || event.key() == Qt::Key_Backtab;
+}
+
+bool isUiConfirmKey(const QKeyEvent &event) {
+    return event.key() == Qt::Key_Return || event.key() == Qt::Key_Enter;
+}
+
 bool textInputClaims(const QKeyEvent &event, const QWidget *focus) {
     if (!isTextInput(focus)) {
         return false;
@@ -185,6 +203,7 @@ QKeySequence defaultShortcut(const QString &id) {
         {QStringLiteral("toggle_insert_last_scale"), {}},
         {QStringLiteral("toggle_property_debug"), {}},
         {QStringLiteral("toggle_move_auto_select"), {}},
+        {QStringLiteral("toggle_allow_move_outside_bounding_box"), {}},
         {QStringLiteral("toggle_selection_flash"), QKeySequence(QStringLiteral("\\"))},
         {QStringLiteral("show_guidelines"), QKeySequence(Qt::CTRL | Qt::Key_Semicolon)},
         {QStringLiteral("toggle_guidelines_locked"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Semicolon)},
@@ -290,11 +309,43 @@ bool KeyBindingRouter::eventFilter(QObject *watched, QEvent *event) {
         clearPendingSequence();
         return false;
     }
+    if (event->type() == QEvent::ShortcutOverride) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (!isKeySequenceInput(QApplication::focusWidget())
+            && (isUiNavigationKey(*keyEvent) || isUiConfirmKey(*keyEvent))) {
+            event->accept();
+            return true;
+        }
+        return false;
+    }
     if (event->type() == QEvent::KeyPress) {
-        return routeKeyPress(*static_cast<QKeyEvent *>(event));
+        auto &keyEvent = *static_cast<QKeyEvent *>(event);
+        if (routeKeyPress(keyEvent)) {
+            return true;
+        }
+        QWidget *focus = QApplication::focusWidget();
+        if (!isKeySequenceInput(focus) && isUiNavigationKey(keyEvent)) {
+            keyEvent.accept();
+            return true;
+        }
+        if (!isKeySequenceInput(focus) && !isTextInput(focus) && isUiConfirmKey(keyEvent)) {
+            keyEvent.accept();
+            return true;
+        }
+        return false;
     }
     if (event->type() == QEvent::KeyRelease) {
-        return routeKeyRelease(*static_cast<QKeyEvent *>(event));
+        auto &keyEvent = *static_cast<QKeyEvent *>(event);
+        if (routeKeyRelease(keyEvent)) {
+            return true;
+        }
+        QWidget *focus = QApplication::focusWidget();
+        if (!isKeySequenceInput(focus)
+            && (isUiNavigationKey(keyEvent) || (!isTextInput(focus) && isUiConfirmKey(keyEvent)))) {
+            keyEvent.accept();
+            return true;
+        }
+        return false;
     }
 
     return false;

@@ -18,7 +18,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
-  canvas tools. Pen builds a simple closed hard/soft quadratic contour,
+  canvas tools. Pipette returns to the previously used tool after a successful pick.
+  Pen builds a simple closed hard/soft quadratic contour,
   fits affine vector primitives along curved boundaries, and prepares an interior
   boundary before meshing the remaining area.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
@@ -34,14 +35,17 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
-  When auto-select is off, clicking outside the selected bounds preserves the
-  current selection unless no selection exists.
+  **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
+  drag the current selection from outside its bounds and giving that selection
+  priority over auto-select. Disable it to retain bounds-gated interaction.
 - Nudge selected layers/guides precisely in Move or Transform with arrow keys;
   normal and Shift step sizes are configurable in Settings.
 - Read world coordinates from pan/zoom-aware canvas rulers and manage persistent
   horizontal and vertical guidelines from their ruler markers.
 - Edit layer properties: name, shape ID, position, scale, rotation, skew,
-  opacity, color, visibility, mask, and lock state.
+  opacity, color, visibility, mask, and lock state. Direct numeric input accepts
+  arithmetic expressions with parentheses and `+`, `-`, `*`, `/`, and `%`.
+  The Scale X/Y link applies the same proportional change to both axes.
 - Edit a group or multi-shape selection's position, scale, rotation, and skew as
   a unit: the values transform the selection's bounding box (about its centre)
   rather than each shape in place. A group also carries its own transform frame in
@@ -142,7 +146,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,
-  and stamp. Livery section labels show live leaf counts after structural edits.
+  and stamp. Livery section labels show live leaf counts after structural edits;
+  switching sections reuses cached tree rows and keeps root guide layers available.
 - Browse and insert vector shapes from the Shapes dock.
 - Place text as a line of vector font glyphs (toolbar **Place Text**): pick one of
   the 11 fonts, type a string, and the glyph shapes are laid out proportionally at
@@ -197,10 +202,13 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   currently loaded model or keeps it. Changing the target car always reloads the
   matching preview model. Native car texture loading is an opt-in preview
   setting and is disabled by default.
-- Configure UI theme, canvas and guideline colors, layout, keybinds, behavior options, guide
+- Configure UI theme, canvas, preview-background and guideline colors, layout,
+  keybinds, behavior options, guide
   visibility borders, transform-drag anchors, nudge step sizes, the car models folder,
   and the discard-model option. Every menu-bar action can be bound to a hotkey in the
   keybind settings, even those with no default shortcut.
+  Buffer and layer-preview backgrounds independently support theme-default,
+  checkerboard, and custom modes. The toolbar can use a vertical icon-only layout.
   Fresh settings default to the Dark theme with theme-default canvas colors.
 - Collapse dock areas from the dock title-bar collapse buttons. The button appears on
   only one dock per area (never duplicated across split docks) and is hidden on

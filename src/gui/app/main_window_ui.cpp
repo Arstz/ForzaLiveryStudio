@@ -133,19 +133,31 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
 
 void MainWindow::setupDocks() {
     const BehaviorSettings behaviorSettings = loadBehaviorSettings();
+    const PreviewBackgroundSettings previewBackgroundSettings = loadPreviewBackgroundSettings();
 
-    auto *layersContainer = new QSplitter(Qt::Vertical, this);
-    layersContainer->setChildrenCollapsible(false);
-    layersContainer->setHandleWidth(kDockSplitterHandleWidth);
-    layersContainer->addWidget(sectionBar_);
-    layersContainer->addWidget(tree_);
-    layersContainer->setStretchFactor(1, 1);
-    installSplitterResizeCursor(layersContainer);
+    layersSplitter_ = new QSplitter(Qt::Vertical, this);
+    layersSplitter_->setChildrenCollapsible(false);
+    layersSplitter_->setHandleWidth(kDockSplitterHandleWidth);
+    layersSplitter_->addWidget(sectionBar_);
+    layersSplitter_->addWidget(tree_);
+    layersSplitter_->setStretchFactor(1, 1);
+    installSplitterResizeCursor(layersSplitter_);
+    const QByteArray layersSplitterState = QSettings().value(
+        QStringLiteral("ui/splitters/layersSections")).toByteArray();
+    if (!layersSplitterState.isEmpty()) {
+        layersSplitter_->restoreState(layersSplitterState);
+    }
+    connect(layersSplitter_, &QSplitter::splitterMoved, this, [this]() {
+        QSettings().setValue(QStringLiteral("ui/splitters/layersSections"),
+                             layersSplitter_->saveState());
+    });
 
     auto *layersDock = addPanelDock(QStringLiteral("Layers"), QStringLiteral("LayersDock"),
-                                    QStringLiteral("WidgetLayers.xpm"), Qt::RightDockWidgetArea, layersContainer);
+                                    QStringLiteral("WidgetLayers.xpm"), Qt::RightDockWidgetArea, layersSplitter_);
 
     clipboardWidget_ = new ClipboardBufferWidget(this);
+    clipboardWidget_->setPreviewBackground(previewBackgroundSettings.buffer, theme_);
+    treeModel_->setPreviewBackground(previewBackgroundSettings.layers, theme_);
     auto *clipboardDock = addPanelDock(QStringLiteral("Buffer"), QStringLiteral("BufferDock"),
                                        QStringLiteral("WidgetBuffer.xpm"), Qt::RightDockWidgetArea, clipboardWidget_);
     splitDockWidget(layersDock, clipboardDock, Qt::Vertical);
@@ -506,6 +518,9 @@ void MainWindow::setupOptionsMenu() {
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
     addBehaviorOption(optionsMenu, QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
+    addBehaviorOption(optionsMenu, QStringLiteral("Allow Move Outside Bounding Box"),
+                      QStringLiteral("toggle_allow_move_outside_bounding_box"),
+                      &BehaviorSettings::allowMoveOutsideBoundingBox);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Selection Flash"), QStringLiteral("toggle_selection_flash"), &BehaviorSettings::selectionFlashEnabled);
 
     QMenu *guidesMenu = optionsMenu->addMenu(QStringLiteral("&Guides"));
@@ -559,16 +574,15 @@ void MainWindow::setupOptionsMenu() {
 }
 
 void MainWindow::setupToolbar() {
-    auto *toolBar = addToolBar(QStringLiteral("Tools"));
-    toolBar->setObjectName(QStringLiteral("MainToolBar"));
-    toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    toolBar->setIconSize(QSize(kToolbarIconExtent, kToolbarIconExtent));
-    auto *toolGroup = new QActionGroup(toolBar);
+    toolBar_ = new QToolBar(QStringLiteral("Tools"), this);
+    toolBar_->setObjectName(QStringLiteral("MainToolBar"));
+    toolBar_->setIconSize(QSize(kToolbarIconExtent, kToolbarIconExtent));
+    auto *toolGroup = new QActionGroup(toolBar_);
     toolGroup->setExclusive(true);
-    auto addTool = [this, toolBar](const QString &label, const QString &tool, const QString &iconName) {
+    auto addTool = [this](const QString &label, const QString &tool, const QString &iconName) {
         QAction *action = iconName.isEmpty()
-            ? toolBar->addAction(label)
-            : toolBar->addAction(assetIcon(iconName), label);
+            ? toolBar_->addAction(label)
+            : toolBar_->addAction(assetIcon(iconName), label);
         action->setCheckable(true);
         action->setProperty("canvasToolName", tool);
         registerShortcutAction(action, QStringLiteral("tool_%1").arg(tool), label, iconName);
@@ -585,8 +599,8 @@ void MainWindow::setupToolbar() {
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QStringLiteral("ToolPipette.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pen"), QStringLiteral("pen"), QStringLiteral("ToolbarPen.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Lining"), QStringLiteral("lining"), QStringLiteral("ToolLining.xpm")));
-    liningWidthLabel_ = new QLabel(QStringLiteral("Width"), toolBar);
-    liningWidthSpin_ = new QDoubleSpinBox(toolBar);
+    liningWidthLabel_ = new QLabel(QStringLiteral("Width"), toolBar_);
+    liningWidthSpin_ = new QDoubleSpinBox(toolBar_);
     liningWidthSpin_->setRange(0.1, 256.0);
     liningWidthSpin_->setDecimals(2);
     liningWidthSpin_->setSingleStep(0.5);
@@ -594,8 +608,8 @@ void MainWindow::setupToolbar() {
     liningWidthSpin_->setSuffix(QStringLiteral(" units"));
     liningWidthLabel_->setVisible(false);
     liningWidthSpin_->setVisible(false);
-    toolBar->addWidget(liningWidthLabel_);
-    toolBar->addWidget(liningWidthSpin_);
+    toolBar_->addWidget(liningWidthLabel_);
+    toolBar_->addWidget(liningWidthSpin_);
     connect(liningWidthSpin_, &QDoubleSpinBox::valueChanged,
             canvas_, &ProjectCanvas::setLiningWidth);
     canvas_->setLiningWidthChangedCallback([this](double width) {
@@ -607,12 +621,33 @@ void MainWindow::setupToolbar() {
     });
     toolGroup->addAction(addTool(QStringLiteral("Bucket"), QStringLiteral("bucket"), QStringLiteral("ToolBucket.xpm")));
     selectTool->setChecked(true);
-    toolBar->addSeparator();
-    QAction *placeTextAction = toolBar->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Place Text"));
+    toolBar_->addSeparator();
+    QAction *placeTextAction = toolBar_->addAction(assetIcon(QStringLiteral("PropertyName.xpm")), QStringLiteral("Place Text"));
     registerShortcutAction(placeTextAction, QStringLiteral("place_text"), QStringLiteral("Place Text"),
                            QStringLiteral("PropertyName.xpm"));
     addAction(placeTextAction);
     connect(placeTextAction, &QAction::triggered, this, [this]() { placeTextDialog(); });
+    applyToolbarStyle(loadBehaviorSettings().verticalToolbar);
+}
+
+void MainWindow::applyToolbarStyle(bool vertical) {
+    if (toolBar_ == nullptr) {
+        return;
+    }
+    const Qt::ToolBarArea targetArea = vertical ? Qt::LeftToolBarArea : Qt::TopToolBarArea;
+    toolBar_->setAllowedAreas(targetArea);
+    if (toolBarArea(toolBar_) != targetArea) {
+        addToolBar(targetArea, toolBar_);
+    }
+    toolBar_->setToolButtonStyle(vertical ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon);
+    const bool lining = canvas_ != nullptr && canvas_->tool() == QStringLiteral("lining");
+    if (liningWidthLabel_ != nullptr) {
+        liningWidthLabel_->setVisible(lining && !vertical);
+    }
+    if (liningWidthSpin_ != nullptr) {
+        liningWidthSpin_->setVisible(lining);
+        liningWidthSpin_->setMaximumWidth(vertical ? kToolbarIconExtent * 2 : QWIDGETSIZE_MAX);
+    }
 }
 
 void MainWindow::importCarModel() {
@@ -776,6 +811,17 @@ void MainWindow::applyTheme(UiTheme theme, bool save) {
     if (canvas_ != nullptr) {
         canvas_->setCanvasColor(canvasColorForTheme(theme, loadCanvasColorSettings()));
     }
+    const PreviewBackgroundSettings previewBackgroundSettings = loadPreviewBackgroundSettings();
+    if (clipboardWidget_ != nullptr) {
+        clipboardWidget_->setPreviewBackground(previewBackgroundSettings.buffer, theme);
+    }
+    if (treeModel_ != nullptr) {
+        treeModel_->clearSectionCache();
+        treeModel_->setPreviewBackground(previewBackgroundSettings.layers, theme);
+        if (state_ != nullptr && state_->hasProject_) {
+            treeModel_->refreshPreviews(&state_->project_);
+        }
+    }
 }
 
 void MainWindow::refreshThemedIcons() {
@@ -801,6 +847,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     }
     if (canvas_ != nullptr) {
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
+        canvas_->setAllowMoveOutsideBoundingBox(settings.allowMoveOutsideBoundingBox);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);
         canvas_->setGuideLayersVisible(settings.guideLayersVisible);
@@ -817,6 +864,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         carPreview_->setLiveryTextureScale(settings.liveryTextureScale);
         carPreview_->setLoadCarTextures(settings.loadCarTextures);
     }
+    applyToolbarStyle(settings.verticalToolbar);
     configureAutosaveTimer(settings);
     if (save) {
         saveBehaviorSettings(settings);
@@ -849,7 +897,8 @@ void MainWindow::refreshShortcutActionText(QAction *action,
 
 void MainWindow::showSettingsDialog() {
     const UiTheme originalTheme = theme_;
-    SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadBehaviorSettings(), shortcutSettingsItems(), this);
+    SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadPreviewBackgroundSettings(),
+                          loadBehaviorSettings(), shortcutSettingsItems(), this);
     dialog.setThemeChangedCallback([this](UiTheme theme) {
         applyTheme(theme, false);
     });
@@ -860,6 +909,7 @@ void MainWindow::showSettingsDialog() {
     applyShortcutSettings(dialog.shortcutItems());
     applyBehaviorSettings(dialog.selectedBehaviorSettings());
     saveCanvasColorSettings(dialog.selectedCanvasSettings());
+    savePreviewBackgroundSettings(dialog.selectedPreviewBackgroundSettings());
     applyTheme(dialog.selectedTheme());
 }
 

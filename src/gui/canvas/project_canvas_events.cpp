@@ -243,6 +243,8 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
 
     if (tool_ == QStringLiteral("move")
         && options_.moveToolAutoSelect
+        && (!options_.allowMoveOutsideBoundingBox
+            || (state_->selectedLayerIds().isEmpty() && state_->selectedGuideLayerIds().isEmpty()))
         && !selectedScreenBounds().contains(event->position())) {
         if (!selectMoveAutoTarget()) {
             event->accept();
@@ -252,6 +254,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
 
     if (tool_ == QStringLiteral("move")
         && !options_.moveToolAutoSelect
+        && !options_.allowMoveOutsideBoundingBox
         && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())
         && !selectedScreenBounds().contains(event->position())) {
         event->accept();

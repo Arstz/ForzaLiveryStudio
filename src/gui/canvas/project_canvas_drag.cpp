@@ -154,45 +154,41 @@ void ProjectCanvas::cycleFlipSelection() {
     }
 
     const QPointF center = selectedWorldBounds().center();
-    const auto complementRotation = [](double rotation) {
-        return normalizeRotation(180.0 - rotation);
-    };
-
     state_->beginTransformCommand(buildTransformTargetIds(groupIds, layers, guides));
 
-    if (!groupIds.isEmpty()) {
-        QTransform worldFlip;
-        worldFlip.translate(center.x(), center.y());
-        worldFlip.scale(toggleVertical ? -1.0 : 1.0, toggleHorizontal ? -1.0 : 1.0);
-        worldFlip.translate(-center.x(), -center.y());
-        state_->transformGroupFrames(groupIds, worldFlip);
-    }
+    QTransform worldFlip;
+    worldFlip.translate(center.x(), center.y());
+    worldFlip.scale(toggleVertical ? -1.0 : 1.0, toggleHorizontal ? -1.0 : 1.0);
+    worldFlip.translate(-center.x(), -center.y());
+    state_->setGroupFramesFromStart(groupStartFrames, worldFlip);
 
+    const auto applyFlip = [&worldFlip, toggleHorizontal](auto *item) {
+        using Item = std::remove_pointer_t<decltype(item)>;
+        const double skew = [] (const Item *entry) {
+            if constexpr (std::is_same_v<Item, fh6::scene::Shape>) {
+                return entry->skew;
+            }
+            return 0.0;
+        }(item);
+        const EntryStart start = {item->x, item->y, item->scaleX, item->scaleY,
+                                  item->rotation, skew};
+        ScaleDecomposition decomposition = decomposeScaleResult(
+            localResultForWorldTransform(*item, start, worldFlip), start.skew);
+        if (decomposition.ok) {
+            const bool scaleXNegative = (start.scaleX < 0.0) != toggleHorizontal;
+            if ((decomposition.scaleX < 0.0) != scaleXNegative) {
+                decomposition.scaleX = -decomposition.scaleX;
+                decomposition.scaleY = -decomposition.scaleY;
+                decomposition.rotation = normalizeRotation(decomposition.rotation + 180.0);
+            }
+            assignDecomposition(item, decomposition);
+        }
+    };
     for (fh6::scene::Shape *layer : layers) {
-        if (toggleVertical) {
-            layer->x = 2.0 * center.x() - layer->x;
-            layer->scaleY = -layer->scaleY;
-            layer->skew = -layer->skew;
-            layer->rotation = complementRotation(layer->rotation);
-        }
-        if (toggleHorizontal) {
-            layer->y = 2.0 * center.y() - layer->y;
-            layer->scaleX = -layer->scaleX;
-            layer->skew = -layer->skew;
-            layer->rotation = complementRotation(layer->rotation);
-        }
+        applyFlip(layer);
     }
     for (fh6::scene::GuideLayer *guide : guides) {
-        if (toggleVertical) {
-            guide->x = 2.0 * center.x() - guide->x;
-            guide->scaleY = -guide->scaleY;
-            guide->rotation = complementRotation(guide->rotation);
-        }
-        if (toggleHorizontal) {
-            guide->y = 2.0 * center.y() - guide->y;
-            guide->scaleX = -guide->scaleX;
-            guide->rotation = complementRotation(guide->rotation);
-        }
+        applyFlip(guide);
     }
 
     state_->commitTransformCommand();

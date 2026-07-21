@@ -166,7 +166,8 @@ void TransformTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenter
         c.captureScaleReference();
     } else if (c.rotateZoneAt(screenPos, c.drag_.startBox)) {
         c.beginRotateDrag(boxCenterWorld);
-    } else if (c.boxContainsScreenPoint(c.drag_.startBox, screenPos)) {
+    } else if (c.options_.allowMoveOutsideBoundingBox
+               || c.boxContainsScreenPoint(c.drag_.startBox, screenPos)) {
         c.drag_.mode = ProjectCanvas::DragMode::TransformMove;
     }
 }
@@ -248,6 +249,7 @@ bool PipetteTool::handlePress(QMouseEvent *event) {
     const std::optional<QColor> color = canvas_.colorAtScreenPoint(event->position());
     if (color.has_value() && canvas_.pipetteColorPickedCallback_ != nullptr) {
         canvas_.pipetteColorPickedCallback_(color.value());
+        canvas_.setTool(canvas_.lastNonPipetteTool_);
     }
     event->accept();
     return true;

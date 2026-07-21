@@ -16,6 +16,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
+class QToolButton;
 
 namespace gui {
 
@@ -62,11 +63,18 @@ private:
     void setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &guides);
     void clearMixedStyles();
     void applyChanged(QWidget *sender);
+    void propagateLinkedScale(QDoubleSpinBox *source, QDoubleSpinBox *target);
+    double scaleValueBeforeChange(QDoubleSpinBox *box) const;
+    void applyLinkedScaleBoxTransform(double scaleXFrom,
+                                      double scaleXTo,
+                                      double scaleYFrom,
+                                      double scaleYTo);
+    void updateScaleLinkEnabled();
     bool beginValueLabelDrag(const QString &property, QDoubleSpinBox *box, const QPoint &globalPos);
     void updateValueLabelDrag(const QPoint &globalPos);
     void endValueLabelDrag(bool commit);
     void applySingle(QWidget *sender);
-    void applyMulti(QWidget *sender, const QString &property);
+    void applyMulti(QWidget *sender, const QString &property, bool linkedScaleChange);
     bool isBoxSelection() const;
     void setBoxProxyFields(bool neutralTransformValues = true);
     QPointF selectionBoxCenter() const;
@@ -118,6 +126,7 @@ private:
     QDoubleSpinBox *y_ = nullptr;
     QDoubleSpinBox *scaleX_ = nullptr;
     QDoubleSpinBox *scaleY_ = nullptr;
+    QDoubleSpinBox *linkedScaleOther_ = nullptr;
     QDoubleSpinBox *rotation_ = nullptr;
     QDoubleSpinBox *skew_ = nullptr;
     QCheckBox *visible_ = nullptr;
@@ -125,10 +134,14 @@ private:
     QCheckBox *mask_ = nullptr;
     QDoubleSpinBox *opacity_ = nullptr;
     QPushButton *colorButton_ = nullptr;
+    QToolButton *scaleLink_ = nullptr;
     QWidget *debugLabel_ = nullptr;
     QLabel *debug_ = nullptr;
+    bool linkedScaleChangePending_ = false;
     bool debugVisible_ = false;
     bool valueEditingWheelEnabled_ = true;
+    double linkedScaleOtherFrom_ = 0.0;
+    double linkedScaleOtherTo_ = 0.0;
     QHash<QWidget *, QString> widgetProperties_;
 };
 

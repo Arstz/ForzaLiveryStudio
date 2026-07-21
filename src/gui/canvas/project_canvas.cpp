@@ -107,6 +107,13 @@ void ProjectCanvas::setTool(const QString &tool) {
     if (tool_ == QStringLiteral("bucket") && tool != tool_) {
         clearBucketPreview();
     }
+    if (tool == QStringLiteral("pipette")) {
+        if (tool_ != QStringLiteral("pipette")) {
+            lastNonPipetteTool_ = tool_;
+        }
+    } else {
+        lastNonPipetteTool_ = tool;
+    }
     tool_ = tool;
     activeTool_ = next;
     hoverLayerId_.clear();
@@ -260,6 +267,10 @@ void ProjectCanvas::setMoveToolAutoSelect(bool enabled) {
 
 bool ProjectCanvas::moveToolAutoSelect() const {
     return options_.moveToolAutoSelect;
+}
+
+void ProjectCanvas::setAllowMoveOutsideBoundingBox(bool enabled) {
+    options_.allowMoveOutsideBoundingBox = enabled;
 }
 
 void ProjectCanvas::setSelectionFlashEnabled(bool enabled) {
