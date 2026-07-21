@@ -95,6 +95,22 @@ bool projectContainsRasterLogo(const fh6::Project &project) {
     return false;
 }
 
+fh6::HeaderMetadata effectiveHeaderMetadata(const fh6::Project &project,
+                                            const QString &creatorName) {
+    if (project.headerMetadata) {
+        return *project.headerMetadata;
+    }
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            return fh6::parseHeader(project.sourceHeader);
+        } catch (const std::exception &) {
+        }
+    }
+
+    return fh6::defaultDraftHeader(project.name, creatorName,
+                                   static_cast<quint32>(project.carId));
+}
+
 } // namespace
 
 MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString &path) const {
@@ -111,8 +127,7 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
         return ExternalDropKind::Unsupported;
     }
 
-    if (info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || info.suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0) {
+    if (isProjectDocumentFile(info)) {
         return ExternalDropKind::ProjectJson;
     }
     if (info.fileName().compare(QStringLiteral("C_group"), Qt::CaseInsensitive) == 0
@@ -144,13 +159,13 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls) {
         statusBar()->showMessage(QStringLiteral("Unsupported dropped file: %1").arg(QFileInfo(path).fileName()), 4000);
         return false;
     }
+    if (kind != ExternalDropKind::Image && !confirmDiscardUnsavedChanges()) {
+        return false;
+    }
 
     QString error;
     switch (kind) {
     case ExternalDropKind::ProjectJson:
-        if (!confirmDiscardUnsavedChanges()) {
-            return false;
-        }
         rememberImportDirectory(path, QStringLiteral("projectJson"));
         if (!loadProjectJson(path, &error)) {
             QMessageBox::critical(this, QStringLiteral("Open failed"), error);
@@ -158,9 +173,6 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls) {
         }
         return true;
     case ExternalDropKind::CGroup:
-        if (!confirmDiscardUnsavedChanges()) {
-            return false;
-        }
         if (!importAny(path, &error)) {
             QMessageBox::critical(this, QStringLiteral("Import failed"), error);
             return false;
@@ -255,22 +267,21 @@ void MainWindow::updateWindowTitle() {
 }
 
 bool MainWindow::loadProject(const QString &path, QString *error) {
-    try {
-        setProject(fh6::importCGroupNested(path));
-        statusBar()->showMessage(QStringLiteral("Imported %1").arg(path), 5000);
-        return true;
-    } catch (const std::exception &ex) {
-        if (error != nullptr) {
-            *error = QString::fromUtf8(ex.what());
-        }
-        return false;
-    }
+    return loadImportedProject([&path]() { return fh6::importCGroupNested(path); },
+                               QStringLiteral("Imported %1").arg(path), error);
 }
 
 bool MainWindow::loadLivery(const QString &path, QString *error) {
+    return loadImportedProject([&path]() { return fh6::importCLivery(path); },
+                               QStringLiteral("Imported livery %1").arg(path), error);
+}
+
+bool MainWindow::loadImportedProject(const std::function<fh6::Project()> &load,
+                                     const QString &statusMessage,
+                                     QString *error) {
     try {
-        setProject(fh6::importCLivery(path));
-        statusBar()->showMessage(QStringLiteral("Imported livery %1").arg(path), 5000);
+        setProject(load());
+        statusBar()->showMessage(statusMessage, 5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -314,22 +325,13 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
         if (projectContainsRasterLogo(exportProject)) {
             throw std::runtime_error("logo layers can only be exported from livery projects");
         }
-        fh6::HeaderMetadata meta;
-        if (exportProject.headerMetadata) {
-            meta = *exportProject.headerMetadata;
-        } else if (!exportProject.sourceHeader.isEmpty()) {
-            try {
-                meta = fh6::parseHeader(exportProject.sourceHeader);
-            } catch (const std::exception &) {
-                meta = fh6::defaultDraftHeader(exportProject.name, creatorName_);
-            }
-            if (meta.published) {
-                fh6::HeaderMetadata draft = fh6::defaultDraftHeader(exportProject.name, creatorName_);
-                draft.name = meta.name;
-                meta = draft;
-            }
-        } else {
-            meta = fh6::defaultDraftHeader(exportProject.name, creatorName_);
+        const bool parsedSourceHeader = !exportProject.headerMetadata
+            && !exportProject.sourceHeader.isEmpty();
+        fh6::HeaderMetadata meta = effectiveHeaderMetadata(exportProject, creatorName_);
+        if (parsedSourceHeader && meta.published) {
+            fh6::HeaderMetadata draft = fh6::defaultDraftHeader(exportProject.name, creatorName_);
+            draft.name = meta.name;
+            meta = draft;
         }
         meta.published = false;
         meta.description.clear();
@@ -346,7 +348,8 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
         const QImage thumb = renderProjectPreviewImage(exportProject, QSize(256, 256));
         if (!QImageWriter::supportedImageFormats().contains("webp")) {
             throw std::runtime_error("Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
-        } else if (!thumb.isNull() && !thumb.save(QDir(targetFolder).filePath(QStringLiteral("thumb.webp")), "WEBP")) {
+        }
+        if (!thumb.isNull() && !thumb.save(QDir(targetFolder).filePath(QStringLiteral("thumb.webp")), "WEBP")) {
             throw std::runtime_error("could not write thumb.webp");
         }
         statusBar()->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
@@ -746,22 +749,13 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
     regionFillInsertionEntries_.clear();
     insertGeneratedRegionGroups(QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
                                 regions, insertionEntries);
-    // Real shapes now render; hide the preview but keep the extracted regions so
-    // a re-fill stays cheap.
     canvas_->hideRegionOverlay();
 }
 
 bool MainWindow::importFM2023Folder(const QString &path, QString *error) {
-    try {
-        rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
-        fh6::Project project = fh6::importFM2023Asset(path);
-        setProject(std::move(project));
-        statusBar()->showMessage(QStringLiteral("Imported %1").arg(path), 5000);
-        return true;
-    } catch (const std::exception &e) {
-        if (error) *error = QString::fromStdString(e.what());
-        return false;
-    }
+    rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
+    return loadImportedProject([&path]() { return fh6::importFM2023Asset(path); },
+                               QStringLiteral("Imported %1").arg(path), error);
 }
 
 void MainWindow::exportDialog() {
@@ -808,10 +802,8 @@ void MainWindow::newProjectDialog() {
 
     const bool livery = box.clickedButton() == liveryButton;
     int carId = 0;
-    if (livery) {
-        if (!chooseCarModel(this, 0, &carId)) {
-            return;
-        }
+    if (livery && !chooseCarModel(this, 0, &carId)) {
+        return;
     }
 
     QString error;
@@ -956,20 +948,7 @@ void MainWindow::refreshHeaderMetadataWidget() {
         return;
     }
 
-    fh6::HeaderMetadata meta;
-    if (state_->project_.headerMetadata) {
-        meta = *state_->project_.headerMetadata;
-    } else if (!state_->project_.sourceHeader.isEmpty()) {
-        try {
-            meta = fh6::parseHeader(state_->project_.sourceHeader);
-        } catch (const std::exception &) {
-            meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_,
-                                           static_cast<quint32>(state_->project_.carId));
-        }
-    } else {
-        meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_,
-                                       static_cast<quint32>(state_->project_.carId));
-    }
+    fh6::HeaderMetadata meta = effectiveHeaderMetadata(state_->project_, creatorName_);
     if (meta.name.isEmpty()) {
         meta.name = state_->project_.name;
     }
@@ -1005,12 +984,10 @@ void MainWindow::applyHeaderMetadata() {
     creatorName_ = meta.creatorName;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
 
-    if (importedDraft && !rebuild) {
-        state_->project_.headerMetadata = meta;
-    } else {
+    if (!importedDraft || rebuild) {
         state_->project_.sourceHeader.clear();
-        state_->project_.headerMetadata = meta;
     }
+    state_->project_.headerMetadata = meta;
     state_->setModified(true);
     updateStatus();
     refreshHeaderMetadataWidget();

@@ -36,6 +36,15 @@ fh6::Matrix3 generatedShapeMatrix(const QTransform &transform) {
     return matrix;
 }
 
+std::array<quint8, 4> colorBytes(const QColor &color) {
+    return {
+        static_cast<quint8>(color.blue()),
+        static_cast<quint8>(color.green()),
+        static_cast<quint8>(color.red()),
+        static_cast<quint8>(color.alpha()),
+    };
+}
+
 } // namespace
 
 void MainWindow::startPenFill(const QVector<PenPoint> &points,
@@ -46,61 +55,24 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         }
         return;
     }
-    cancelGeneratedFill();
-    cancelRegionFill();
-    updateLastSelectedShapeDefaults();
-    if (fillColor.has_value() && fillColor->isValid()) {
-        generatedFillColor_ = {
-            static_cast<quint8>(fillColor->blue()),
-            static_cast<quint8>(fillColor->green()),
-            static_cast<quint8>(fillColor->red()),
-            static_cast<quint8>(fillColor->alpha()),
-        };
-    } else {
-        generatedFillColor_ = haveLastSelectedShapeDefaults_
-            ? lastSelectedShapeColor_
-            : std::array<quint8, 4>{255, 255, 255, 255};
-    }
-    generatedFillInsertionEntries_ = selectedEntryIds();
-    generatedFillLabel_ = QStringLiteral("Pen fill");
-    generatedFillTool_ = QStringLiteral("pen");
+    prepareGeneratedFill(fillColor, QStringLiteral("Pen fill"), QStringLiteral("pen"));
 
     PenFillRequest request;
     request.points = points;
     request.primitives = canvas_->penPrimitiveCatalog();
     if (request.primitives.isEmpty()) {
         canvas_->setPenFillRunning(false);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        generatedFillTool_.clear();
+        clearGeneratedFillState();
         statusBar()->showMessage(QStringLiteral("Pen fill failed: Primitive geometry is unavailable"), 4000);
         return;
     }
 
-    const quint64 generation = ++generatedFillGeneration_;
-    const auto token = std::make_shared<std::atomic_bool>(false);
-    generatedFillCancel_ = token;
     canvas_->setPenFillRunning(true, QStringLiteral("Filling Pen path…"));
     statusBar()->showMessage(QStringLiteral("Filling Pen path… Press Esc to cancel"));
 
-    QPointer<MainWindow> guard(this);
-    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
-        PenFillResult result = fillPenPath(request, [token]() {
-            return token->load(std::memory_order_relaxed);
-        });
-        if (guard.isNull()) {
-            return;
-        }
-        QMetaObject::invokeMethod(guard.data(),
-                                  [guard, generation, result = std::move(result)]() mutable {
-                                      if (!guard.isNull()) {
-                                          guard->finishGeneratedFill(generation, std::move(result));
-                                      }
-                                  },
-                                  Qt::QueuedConnection);
+    startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
+        return fillPenPath(request, cancelled);
     });
-    task->setAutoDelete(true);
-    QThreadPool::globalInstance()->start(task);
 }
 
 void MainWindow::startLiningFill(const QVector<PenPoint> &points,
@@ -112,24 +84,7 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
         }
         return;
     }
-    cancelGeneratedFill();
-    cancelRegionFill();
-    updateLastSelectedShapeDefaults();
-    if (fillColor.has_value() && fillColor->isValid()) {
-        generatedFillColor_ = {
-            static_cast<quint8>(fillColor->blue()),
-            static_cast<quint8>(fillColor->green()),
-            static_cast<quint8>(fillColor->red()),
-            static_cast<quint8>(fillColor->alpha()),
-        };
-    } else {
-        generatedFillColor_ = haveLastSelectedShapeDefaults_
-            ? lastSelectedShapeColor_
-            : std::array<quint8, 4>{255, 255, 255, 255};
-    }
-    generatedFillInsertionEntries_ = selectedEntryIds();
-    generatedFillLabel_ = QStringLiteral("Lining fill");
-    generatedFillTool_ = QStringLiteral("lining");
+    prepareGeneratedFill(fillColor, QStringLiteral("Lining fill"), QStringLiteral("lining"));
 
     LiningFillRequest request;
     request.points = points;
@@ -137,22 +92,42 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     request.primitives = canvas_->liningPrimitiveCatalog();
     if (request.primitives.isEmpty()) {
         canvas_->setLiningFillRunning(false);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        generatedFillTool_.clear();
+        clearGeneratedFillState();
         statusBar()->showMessage(QStringLiteral("Lining fill failed: Primitive geometry is unavailable"), 4000);
         return;
     }
 
-    const quint64 generation = ++generatedFillGeneration_;
-    const auto token = std::make_shared<std::atomic_bool>(false);
-    generatedFillCancel_ = token;
     canvas_->setLiningFillRunning(true, QStringLiteral("Filling lining path…"));
     statusBar()->showMessage(QStringLiteral("Filling lining path… Press Esc to cancel"));
 
+    startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
+        return fillLiningPath(request, cancelled);
+    });
+}
+
+void MainWindow::prepareGeneratedFill(const std::optional<QColor> &fillColor,
+                                      const QString &label,
+                                      const QString &tool) {
+    cancelActiveFills();
+    updateLastSelectedShapeDefaults();
+    generatedFillColor_ = fillColor.has_value() && fillColor->isValid()
+        ? colorBytes(*fillColor)
+        : (haveLastSelectedShapeDefaults_
+               ? lastSelectedShapeColor_
+               : std::array<quint8, 4>{255, 255, 255, 255});
+    generatedFillInsertionEntries_ = selectedEntryIds();
+    generatedFillLabel_ = label;
+    generatedFillTool_ = tool;
+}
+
+void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
+    const quint64 generation = ++generatedFillGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    generatedFillCancel_ = token;
+
     QPointer<MainWindow> guard(this);
-    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
-        PenFillResult result = fillLiningPath(request, [token]() {
+    auto *task = QRunnable::create([guard, generation, fill = std::move(fill), token]() mutable {
+        PenFillResult result = fill([token]() {
             return token->load(std::memory_order_relaxed);
         });
         if (guard.isNull()) {
@@ -170,6 +145,17 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     QThreadPool::globalInstance()->start(task);
 }
 
+void MainWindow::clearGeneratedFillState() {
+    generatedFillInsertionEntries_.clear();
+    generatedFillLabel_.clear();
+    generatedFillTool_.clear();
+}
+
+void MainWindow::cancelActiveFills() {
+    cancelGeneratedFill();
+    cancelRegionFill();
+}
+
 void MainWindow::cancelGeneratedFill() {
     if (generatedFillCancel_ == nullptr) {
         return;
@@ -177,14 +163,12 @@ void MainWindow::cancelGeneratedFill() {
     generatedFillCancel_->store(true, std::memory_order_relaxed);
     generatedFillCancel_.reset();
     ++generatedFillGeneration_;
-    generatedFillInsertionEntries_.clear();
     if (canvas_ != nullptr) {
         canvas_->setPenFillRunning(false);
         canvas_->setLiningFillRunning(false);
     }
     statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
-    generatedFillLabel_.clear();
-    generatedFillTool_.clear();
+    clearGeneratedFillState();
 }
 
 void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
@@ -201,9 +185,7 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
     }
     if (result.cancelled) {
         statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        generatedFillTool_.clear();
+        clearGeneratedFillState();
         return;
     }
     if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
@@ -211,9 +193,7 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
                                      .arg(generatedFillLabel_)
                                      .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
                                  5000);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
-        generatedFillTool_.clear();
+        clearGeneratedFillState();
         return;
     }
 
@@ -232,8 +212,7 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
             canvas_->cancelPenInteraction();
         }
     }
-    generatedFillLabel_.clear();
-    generatedFillTool_.clear();
+    clearGeneratedFillState();
 }
 
 void MainWindow::insertGeneratedFill(const QString &groupName,
@@ -278,7 +257,6 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
     generatedFillInsertionEntries_.clear();
-    generatedFillLabel_.clear();
     state_->noteProjectStructureChanged();
     if (canvas_ != nullptr) {
         canvas_->setFocus();
@@ -867,15 +845,11 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     const QString guideId = guide->id;
     const QString guideName = guide->name;
     const QString sectionId = state_->project_.isLivery ? activeLiverySectionId() : QString();
-    if (!sectionId.isEmpty()) {
-        if (fh6::scene::Group *section = state_->groupForId(sectionId)) {
-            section->append(std::move(guide));
-        } else {
-            state_->project_.root->append(std::move(guide));
-        }
-    } else {
-        state_->project_.root->append(std::move(guide));
+    fh6::scene::Group *parent = sectionId.isEmpty() ? nullptr : state_->groupForId(sectionId);
+    if (parent == nullptr) {
+        parent = state_->project_.root.get();
     }
+    parent->append(std::move(guide));
     state_->selectedLayerIds_.clear();
     state_->selectedGuideLayerIds_ = {guideId};
     state_->commitProjectEdit();
@@ -1040,7 +1014,7 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews) {
 
 void MainWindow::noteProjectStructureChanged() {
     ScopedPerf perf("noteProjectStructureChanged");
-    state_->selectedLayerIds_ = existingLayerIds(state_->selectedLayerIds_);
+    state_->selectedLayerIds_ = state_->existingLayerIds(state_->selectedLayerIds_);
     state_->selectedGuideLayerIds_ = state_->existingGuideLayerIds(state_->selectedGuideLayerIds_);
     autoExpandedTreeIndexes_.clear();
     autoExpandedGroupIds_.clear();
@@ -1049,25 +1023,19 @@ void MainWindow::noteProjectStructureChanged() {
         if (!sectionId.isEmpty()) {
             applyLiverySectionVisibility(sectionId);
             treeModel_->clearSectionCache();
-            treeModel_->clear(); {
-                ScopedPerf perfTree("  treeModel_->setProjectSection");
-                treeModel_->setProjectSection(&state_->project_, sectionId);
-            }
+            treeModel_->clear();
+            ScopedPerf perfTree("  treeModel_->setProjectSection");
+            treeModel_->setProjectSection(&state_->project_, sectionId);
         } else {
             treeModel_->setProject(&state_->project_);
         }
-    } else {
-        {
-            ScopedPerf perfTree("  treeModel_->setProject");
-            treeModel_->setProject(&state_->project_);
-        }
-    }
-    if (state_->project_.isLivery) {
         rebuildSectionBar();
+    } else {
+        ScopedPerf perfTree("  treeModel_->setProject");
+        treeModel_->setProject(&state_->project_);
     }
     syncTreeSelectionFromIds();
     noteProjectGeometryChanged();
-    refreshSelectionProperties();
 }
 
 void MainWindow::setToolName(const QString &name) {

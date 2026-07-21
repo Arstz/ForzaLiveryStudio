@@ -27,7 +27,6 @@ void MainWindow::setupCanvas() {
     canvas_ = new ProjectCanvas(this);
     canvas_->setEditorState(state_);
     canvas_->setTransformRelativeMode(loadTransformModeSettings().relativeMode);
-    applyBehaviorSettings(loadBehaviorSettings(), false);
     QString geometryError;
     if (!canvas_->loadGeometry(&geometryError)) {
         statusBar()->showMessage(geometryError);
@@ -65,7 +64,7 @@ void MainWindow::setupTreeView() {
     tree_ = new LayerTreeView(this);
     tree_->setModel(treeModel_);
     tree_->setHeaderHidden(false);
-    tree_->setIconSize(QSize(TreeIconExtent, TreeIconExtent));
+    tree_->setIconSize(QSize(kTreeIconExtent, kTreeIconExtent));
     tree_->setUniformRowHeights(false);
     tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     tree_->setDragEnabled(true);
@@ -107,9 +106,11 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
 }
 
 void MainWindow::setupDocks() {
+    const BehaviorSettings behaviorSettings = loadBehaviorSettings();
+
     auto *layersContainer = new QSplitter(Qt::Vertical, this);
     layersContainer->setChildrenCollapsible(false);
-    layersContainer->setHandleWidth(DockSplitterHandleWidth);
+    layersContainer->setHandleWidth(kDockSplitterHandleWidth);
     layersContainer->addWidget(sectionBar_);
     layersContainer->addWidget(tree_);
     layersContainer->setStretchFactor(1, 1);
@@ -124,7 +125,7 @@ void MainWindow::setupDocks() {
     splitDockWidget(layersDock, clipboardDock, Qt::Vertical);
 
     details_ = new QLabel(this);
-    details_->setMargin(DetailsLabelMargin);
+    details_->setMargin(kDetailsLabelMargin);
     details_->setWordWrap(true);
     auto *detailsDock = addPanelDock(QStringLiteral("Project"), QStringLiteral("ProjectDock"),
                                      QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
@@ -149,7 +150,7 @@ void MainWindow::setupDocks() {
         }
         return canvas_->guideColorAtScreenPoint(canvas_->mapFromGlobal(QCursor::pos()));
     });
-    applyBehaviorSettings(loadBehaviorSettings(), false);
+    applyBehaviorSettings(behaviorSettings, false);
     auto *propertiesDock = addPanelDock(QStringLiteral("Properties"), QStringLiteral("PropertiesDock"),
                                         QStringLiteral("WidgetProperties.xpm"), Qt::LeftDockWidgetArea, properties_, true);
 
@@ -201,7 +202,7 @@ void MainWindow::setupDocks() {
     splitDockWidget(paletteDock, shapesDock, Qt::Vertical);
 
     carPreview_ = new CarPreviewWidget(this);
-    carPreview_->setLoadCarTextures(loadBehaviorSettings().loadCarTextures);
+    carPreview_->setLoadCarTextures(behaviorSettings.loadCarTextures);
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
     carPreviewDock_ = addPanelDock(QStringLiteral("3D Preview"), QStringLiteral("CarPreviewDock"),
@@ -219,14 +220,7 @@ void MainWindow::connectEditorStateSignals() {
         refreshSelectionProperties();
     });
     connect(state_, &EditorState::projectGeometryChanged, this, &MainWindow::noteProjectGeometryChanged);
-    connect(state_, &EditorState::projectGeometryChanged, this, [this]() {
-        if (generatedFillCancel_ != nullptr) {
-            cancelGeneratedFill();
-        }
-        if (regionFillCancel_ != nullptr) {
-            cancelRegionFill();
-        }
-    });
+    connect(state_, &EditorState::projectGeometryChanged, this, &MainWindow::cancelActiveFills);
     connect(state_, &EditorState::transformLiveChanged, this, [this]() {
         if (canvas_ != nullptr) {
             canvas_->invalidateSceneCache();
@@ -242,14 +236,7 @@ void MainWindow::connectEditorStateSignals() {
         canvas_->update();
     });
     connect(state_, &EditorState::projectStructureChanged, this, &MainWindow::noteProjectStructureChanged);
-    connect(state_, &EditorState::projectStructureChanged, this, [this]() {
-        if (generatedFillCancel_ != nullptr) {
-            cancelGeneratedFill();
-        }
-        if (regionFillCancel_ != nullptr) {
-            cancelRegionFill();
-        }
-    });
+    connect(state_, &EditorState::projectStructureChanged, this, &MainWindow::cancelActiveFills);
     connect(state_, &EditorState::clipboardChanged, this, &MainWindow::updateClipboardWidget);
     connect(state_, &EditorState::toolNameChanged, this, &MainWindow::setToolName);
     connect(state_, &EditorState::modifiedChanged, this, [this]() { updateWindowTitle(); });
@@ -557,7 +544,7 @@ void MainWindow::setupToolbar() {
     auto *toolBar = addToolBar(QStringLiteral("Tools"));
     toolBar->setObjectName(QStringLiteral("MainToolBar"));
     toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    toolBar->setIconSize(QSize(ToolbarIconExtent, ToolbarIconExtent));
+    toolBar->setIconSize(QSize(kToolbarIconExtent, kToolbarIconExtent));
     auto *toolGroup = new QActionGroup(toolBar);
     toolGroup->setExclusive(true);
     auto addTool = [this, toolBar](const QString &label, const QString &tool, const QKeySequence &shortcut, const QString &iconName) {

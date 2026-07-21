@@ -50,7 +50,6 @@ private:
     void updateCanvasColorControls();
     void accept() override;
 
-    UiTheme initialTheme_;
     std::function<void(UiTheme)> themeChangedCallback_;
     CanvasColorSettings canvasSettings_;
     BehaviorSettings behaviorSettings_;

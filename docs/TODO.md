@@ -1,7 +1,6 @@
 Small changes:
     -Cannot copy guide layer to another section, results in empty layer created
     -Apply last shape color flag does not work [fixed on main branch]
-    -Add --parrallel [threads] to build.ps1, default on parrallel 4
 
 Medium changes:
     -Add a checkbox to allow Opacity and Skew tools to be separate (needs 2 new icons), if checked no skew anchor should appear in transform tool, off by default.

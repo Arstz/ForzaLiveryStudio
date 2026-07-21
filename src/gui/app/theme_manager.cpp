@@ -11,6 +11,10 @@ namespace {
 
 UiTheme currentTheme = UiTheme::Dark;
 
+QColor validColor(const QColor &color, const QColor &fallback) {
+    return color.isValid() ? color : fallback;
+}
+
 } // namespace
 
 QString themeSettingsValue(UiTheme theme) {
@@ -49,8 +53,8 @@ CanvasColorSettings loadCanvasColorSettings() {
                                                       : defaultCanvasColor(UiTheme::Dark).name(QColor::HexRgb)).toString());
     const QColor light(settings.value(QStringLiteral("ui/canvas/lightCustom"),
                                       defaultCanvasColor(UiTheme::Light).name(QColor::HexRgb)).toString());
-    result.darkCustom = dark.isValid() ? dark : defaultCanvasColor(UiTheme::Dark);
-    result.lightCustom = light.isValid() ? light : defaultCanvasColor(UiTheme::Light);
+    result.darkCustom = validColor(dark, defaultCanvasColor(UiTheme::Dark));
+    result.lightCustom = validColor(light, defaultCanvasColor(UiTheme::Light));
     if (legacy.isValid() && !settings.contains(QStringLiteral("ui/canvas/darkMode"))) {
         result.darkMode = CanvasColorMode::Custom;
     }
@@ -63,9 +67,9 @@ void saveCanvasColorSettings(const CanvasColorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/canvas/darkMode"), settings.darkMode == CanvasColorMode::Custom ? QStringLiteral("custom") : QStringLiteral("default"));
     qsettings.setValue(QStringLiteral("ui/canvas/lightMode"), settings.lightMode == CanvasColorMode::Custom ? QStringLiteral("custom") : QStringLiteral("default"));
     qsettings.setValue(QStringLiteral("ui/canvas/darkCustom"),
-                       (settings.darkCustom.isValid() ? settings.darkCustom : defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
+                       validColor(settings.darkCustom, defaultCanvasColor(UiTheme::Dark)).name(QColor::HexRgb));
     qsettings.setValue(QStringLiteral("ui/canvas/lightCustom"),
-                       (settings.lightCustom.isValid() ? settings.lightCustom : defaultCanvasColor(UiTheme::Light)).name(QColor::HexRgb));
+                       validColor(settings.lightCustom, defaultCanvasColor(UiTheme::Light)).name(QColor::HexRgb));
 }
 
 TransformModeSettings loadTransformModeSettings() {
@@ -82,40 +86,39 @@ void saveTransformModeSettings(const TransformModeSettings &settings) {
 
 BehaviorSettings loadBehaviorSettings() {
     QSettings settings;
-    BehaviorSettings result;
-    result.insertShapeWithLastSelectedColor = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), true).toBool();
-    result.insertShapeWithLastSelectedScale = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), false).toBool();
-    result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), false).toBool();
-    result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), false).toBool();
-    result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), true).toBool();
-    result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), true).toBool();
-    result.generatePreviewsWithTransformations = settings.value(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), false).toBool();
-    result.guideLayersVisible = settings.value(QStringLiteral("ui/behavior/guideLayersVisible"), true).toBool();
-    result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), true).toBool();
-    result.guidelinesVisible = settings.value(QStringLiteral("ui/behavior/guidelinesVisible"), true).toBool();
-    result.guidelinesLocked = settings.value(QStringLiteral("ui/behavior/guidelinesLocked"), false).toBool();
+    const BehaviorSettings defaults;
+    BehaviorSettings result = defaults;
+    result.insertShapeWithLastSelectedColor = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), result.insertShapeWithLastSelectedColor).toBool();
+    result.insertShapeWithLastSelectedScale = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), result.insertShapeWithLastSelectedScale).toBool();
+    result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), result.showPropertyDebug).toBool();
+    result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), result.moveToolAutoSelect).toBool();
+    result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), result.selectionFlashEnabled).toBool();
+    result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), result.displayAnchorsDuringTransformDrag).toBool();
+    result.generatePreviewsWithTransformations = settings.value(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), result.generatePreviewsWithTransformations).toBool();
+    result.guideLayersVisible = settings.value(QStringLiteral("ui/behavior/guideLayersVisible"), result.guideLayersVisible).toBool();
+    result.guideLayersOnTop = settings.value(QStringLiteral("ui/behavior/guideLayersOnTop"), result.guideLayersOnTop).toBool();
+    result.guidelinesVisible = settings.value(QStringLiteral("ui/behavior/guidelinesVisible"), result.guidelinesVisible).toBool();
+    result.guidelinesLocked = settings.value(QStringLiteral("ui/behavior/guidelinesLocked"), result.guidelinesLocked).toBool();
     result.guidelineColor = QColor(settings.value(QStringLiteral("ui/behavior/guidelineColor"),
-                                                 QStringLiteral("#00aaff")).toString());
-    if (!result.guidelineColor.isValid()) {
-        result.guidelineColor = QColor(0, 170, 255);
-    }
-    result.visibilityBordersEnabled = settings.value(QStringLiteral("ui/behavior/visibilityBordersEnabled"), true).toBool();
-    result.positionLimitBorderEnabled = settings.value(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), false).toBool();
-    result.valueEditingWheelEnabled = settings.value(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), true).toBool();
-    const QSize resolution = settings.value(QStringLiteral("ui/behavior/visibilityBorderResolution"), QSize(1920, 1080)).toSize();
-    result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
-    result.nudgeStep = settings.value(QStringLiteral("ui/behavior/nudgeStep"), 0.1).toDouble();
-    result.nudgeShiftStep = settings.value(QStringLiteral("ui/behavior/nudgeShiftStep"), 1.0).toDouble();
-    result.liveryTextureScale = settings.value(QStringLiteral("ui/behavior/liveryTextureScale"), 4).toInt();
-    result.autosaveIntervalMinutes = settings.value(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), 5).toInt();
+                                                 result.guidelineColor.name(QColor::HexArgb)).toString());
+    result.visibilityBordersEnabled = settings.value(QStringLiteral("ui/behavior/visibilityBordersEnabled"), result.visibilityBordersEnabled).toBool();
+    result.positionLimitBorderEnabled = settings.value(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), result.positionLimitBorderEnabled).toBool();
+    result.valueEditingWheelEnabled = settings.value(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), result.valueEditingWheelEnabled).toBool();
+    const QSize resolution = settings.value(QStringLiteral("ui/behavior/visibilityBorderResolution"), result.visibilityBorderResolution).toSize();
+    result.visibilityBorderResolution = resolution.isValid() ? resolution : defaults.visibilityBorderResolution;
+    result.nudgeStep = settings.value(QStringLiteral("ui/behavior/nudgeStep"), result.nudgeStep).toDouble();
+    result.nudgeShiftStep = settings.value(QStringLiteral("ui/behavior/nudgeShiftStep"), result.nudgeShiftStep).toDouble();
+    result.liveryTextureScale = settings.value(QStringLiteral("ui/behavior/liveryTextureScale"), result.liveryTextureScale).toInt();
+    result.autosaveIntervalMinutes = settings.value(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), result.autosaveIntervalMinutes).toInt();
     result.carModelsFolder = settings.value(QStringLiteral("ui/behavior/carModelsFolder")).toString();
-    result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), true).toBool();
-    result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), false).toBool();
+    result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), result.discardModelOnLiveryOpen).toBool();
+    result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), result.loadCarTextures).toBool();
+    result.guidelineColor = validColor(result.guidelineColor, defaults.guidelineColor);
     if (result.nudgeStep <= 0.0) {
-        result.nudgeStep = 0.1;
+        result.nudgeStep = defaults.nudgeStep;
     }
     if (result.nudgeShiftStep <= 0.0) {
-        result.nudgeShiftStep = 1.0;
+        result.nudgeShiftStep = defaults.nudgeShiftStep;
     }
     result.liveryTextureScale = std::clamp(result.liveryTextureScale, 1, 8);
     result.autosaveIntervalMinutes = std::clamp(result.autosaveIntervalMinutes, 0, 1440);
@@ -124,6 +127,7 @@ BehaviorSettings loadBehaviorSettings() {
 
 void saveBehaviorSettings(const BehaviorSettings &settings) {
     QSettings qsettings;
+    const BehaviorSettings defaults;
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), settings.insertShapeWithLastSelectedColor);
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), settings.insertShapeWithLastSelectedScale);
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
@@ -136,7 +140,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/guidelinesVisible"), settings.guidelinesVisible);
     qsettings.setValue(QStringLiteral("ui/behavior/guidelinesLocked"), settings.guidelinesLocked);
     qsettings.setValue(QStringLiteral("ui/behavior/guidelineColor"),
-                       (settings.guidelineColor.isValid() ? settings.guidelineColor : QColor(0, 170, 255)).name(QColor::HexArgb));
+                       validColor(settings.guidelineColor, defaults.guidelineColor).name(QColor::HexArgb));
     qsettings.setValue(QStringLiteral("ui/behavior/visibilityBordersEnabled"), settings.visibilityBordersEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), settings.positionLimitBorderEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), settings.valueEditingWheelEnabled);
@@ -151,14 +155,10 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
 }
 
 QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings) {
-    if (theme == UiTheme::Light) {
-        return settings.lightMode == CanvasColorMode::Custom && settings.lightCustom.isValid()
-            ? settings.lightCustom
-            : defaultCanvasColor(UiTheme::Light);
-    }
-    return settings.darkMode == CanvasColorMode::Custom && settings.darkCustom.isValid()
-        ? settings.darkCustom
-        : defaultCanvasColor(UiTheme::Dark);
+    const CanvasColorMode mode = theme == UiTheme::Light ? settings.lightMode : settings.darkMode;
+    const QColor custom = theme == UiTheme::Light ? settings.lightCustom : settings.darkCustom;
+
+    return mode == CanvasColorMode::Custom && custom.isValid() ? custom : defaultCanvasColor(theme);
 }
 
 bool isDarkTheme(UiTheme theme) {
@@ -181,30 +181,26 @@ QPalette paletteForTheme(UiTheme theme) {
         palette.setColor(QPalette::Text, QColor(28, 30, 33));
         palette.setColor(QPalette::Button, QColor(238, 240, 243));
         palette.setColor(QPalette::ButtonText, QColor(28, 30, 33));
-        palette.setColor(QPalette::BrightText, QColor(255, 255, 255));
         palette.setColor(QPalette::Highlight, QColor(42, 130, 218));
-        palette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
         palette.setColor(QPalette::Link, QColor(0, 102, 204));
-        palette.setColor(QPalette::Disabled, QPalette::Text, QColor(128, 132, 138));
-        palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(128, 132, 138));
-        return palette;
+    } else {
+        palette.setColor(QPalette::Window, QColor(32, 33, 36));
+        palette.setColor(QPalette::WindowText, QColor(238, 241, 245));
+        palette.setColor(QPalette::Base, QColor(24, 25, 28));
+        palette.setColor(QPalette::AlternateBase, QColor(38, 40, 44));
+        palette.setColor(QPalette::ToolTipBase, QColor(46, 48, 54));
+        palette.setColor(QPalette::ToolTipText, QColor(238, 241, 245));
+        palette.setColor(QPalette::Text, QColor(238, 241, 245));
+        palette.setColor(QPalette::Button, QColor(43, 45, 50));
+        palette.setColor(QPalette::ButtonText, QColor(238, 241, 245));
+        palette.setColor(QPalette::Highlight, QColor(72, 126, 176));
+        palette.setColor(QPalette::Link, QColor(126, 180, 255));
     }
-
-    palette.setColor(QPalette::Window, QColor(32, 33, 36));
-    palette.setColor(QPalette::WindowText, QColor(238, 241, 245));
-    palette.setColor(QPalette::Base, QColor(24, 25, 28));
-    palette.setColor(QPalette::AlternateBase, QColor(38, 40, 44));
-    palette.setColor(QPalette::ToolTipBase, QColor(46, 48, 54));
-    palette.setColor(QPalette::ToolTipText, QColor(238, 241, 245));
-    palette.setColor(QPalette::Text, QColor(238, 241, 245));
-    palette.setColor(QPalette::Button, QColor(43, 45, 50));
-    palette.setColor(QPalette::ButtonText, QColor(238, 241, 245));
     palette.setColor(QPalette::BrightText, QColor(255, 255, 255));
-    palette.setColor(QPalette::Highlight, QColor(72, 126, 176));
     palette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
-    palette.setColor(QPalette::Link, QColor(126, 180, 255));
     palette.setColor(QPalette::Disabled, QPalette::Text, QColor(128, 132, 138));
     palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(128, 132, 138));
+
     return palette;
 }
 

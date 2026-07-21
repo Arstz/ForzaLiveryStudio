@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
 
 class QDockWidget;
@@ -153,6 +154,13 @@ private:
     void startLiningFill(const QVector<PenPoint> &points,
                          double width,
                          const std::optional<QColor> &fillColor = std::nullopt);
+    using GeneratedFillFunction = std::function<PenFillResult(const std::function<bool()> &)>;
+    void prepareGeneratedFill(const std::optional<QColor> &fillColor,
+                              const QString &label,
+                              const QString &tool);
+    void startGeneratedFillTask(GeneratedFillFunction fill);
+    void clearGeneratedFillState();
+    void cancelActiveFills();
     void cancelGeneratedFill();
     void finishGeneratedFill(quint64 generation, PenFillResult result);
     void cancelRegionFill();
@@ -167,6 +175,10 @@ private:
                                      const QVector<QString> &insertionEntries);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
+    bool loadImportedProject(const std::function<fh6::Project()> &load,
+                             const QString &statusMessage,
+                             QString *error);
+    fh6::HeaderMetadata &ensureProjectHeaderMetadata();
     enum class ExternalDropKind {
         Unsupported,
         ProjectJson,
@@ -176,7 +188,6 @@ private:
     ExternalDropKind classifyExternalDropPath(const QString &path) const;
     bool handleExternalDropUrls(const QList<QUrl> &urls);
     QStringList idsForIndex(const QModelIndex &index) const;
-    QSet<QString> existingLayerIds(const QSet<QString> &ids) const;
     void normalizeDockResizeCursor();
     void clearDockResizeCursorOverride();
     void installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidgetArea fallbackArea);

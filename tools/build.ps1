@@ -1,5 +1,22 @@
+param(
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]]$BuildOptions = @()
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$parallelThreads = 4
+if ($BuildOptions.Count -gt 0) {
+    if ($BuildOptions.Count -ne 2 -or $BuildOptions[0] -ne "--parrallel") {
+        throw "Usage: build.ps1 [--parrallel threads]"
+    }
+    $parsedThreads = 0
+    if (-not [int]::TryParse($BuildOptions[1], [ref]$parsedThreads) -or $parsedThreads -lt 1) {
+        throw "Parallel thread count must be a positive integer"
+    }
+    $parallelThreads = $parsedThreads
+}
 
 if (-not $env:VCPKG_ROOT) {
     if (Test-Path "C:\vcpkg\scripts\buildsystems\vcpkg.cmake") {
@@ -33,7 +50,7 @@ try {
         & (Join-Path $PSScriptRoot "configure.ps1")
     }
 
-    cmake --build build --config Release
+    cmake --build build --config Release --parallel $parallelThreads
 } finally {
     Pop-Location
 }

@@ -2,7 +2,6 @@
 
 #include "main_window.h"
 
-#include "import_locations.h"
 #include "font_glyphs.h"
 #include "import_locations.h"
 
@@ -16,12 +15,12 @@
 
 namespace gui::mw_detail {
 
-constexpr int InitialWindowWidth = 1200;
-constexpr int InitialWindowHeight = 780;
-constexpr int TreeIconExtent = 64;
-constexpr int ToolbarIconExtent = 18;
-constexpr int DockSplitterHandleWidth = 6;
-constexpr int DetailsLabelMargin = 10;
+constexpr int kInitialWindowWidth = 1200;
+constexpr int kInitialWindowHeight = 780;
+constexpr int kTreeIconExtent = 64;
+constexpr int kToolbarIconExtent = 18;
+constexpr int kDockSplitterHandleWidth = 6;
+constexpr int kDetailsLabelMargin = 10;
 
 inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut) {
     if (!id.startsWith(QStringLiteral("tool_")) || shortcut.isEmpty()) {
@@ -123,14 +122,13 @@ inline QString entryNameForId(const fh6::Project &project, const QString &id) {
 }
 
 template <typename Fn>
-void forEachShape(fh6::Project &project, Fn fn) {
+void forEachLayer(fh6::Project &project, Fn fn) {
     if (!project.root) {
         return;
     }
     std::function<void(fh6::scene::Layer &)> walk = [&](fh6::scene::Layer &node) {
-        if (node.kind() == fh6::scene::LayerKind::Shape) {
-            fn(static_cast<fh6::scene::Shape &>(node));
-        } else if (node.kind() == fh6::scene::LayerKind::Group) {
+        fn(node);
+        if (node.kind() == fh6::scene::LayerKind::Group) {
             for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
                 walk(*child);
             }
@@ -142,22 +140,21 @@ void forEachShape(fh6::Project &project, Fn fn) {
 }
 
 template <typename Fn>
+void forEachShape(fh6::Project &project, Fn fn) {
+    forEachLayer(project, [&](fh6::scene::Layer &node) {
+        if (node.kind() == fh6::scene::LayerKind::Shape) {
+            fn(static_cast<fh6::scene::Shape &>(node));
+        }
+    });
+}
+
+template <typename Fn>
 void forEachGuide(fh6::Project &project, Fn fn) {
-    if (!project.root) {
-        return;
-    }
-    std::function<void(fh6::scene::Layer &)> walk = [&](fh6::scene::Layer &node) {
+    forEachLayer(project, [&](fh6::scene::Layer &node) {
         if (node.kind() == fh6::scene::LayerKind::Guide) {
             fn(static_cast<fh6::scene::GuideLayer &>(node));
-        } else if (node.kind() == fh6::scene::LayerKind::Group) {
-            for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
-                walk(*child);
-            }
         }
-    };
-    for (const auto &child : project.root->children) {
-        walk(*child);
-    }
+    });
 }
 
 inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project) {

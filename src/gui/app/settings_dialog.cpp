@@ -9,8 +9,6 @@
 namespace gui {
 namespace {
 
-constexpr int ShortcutEditRole = Qt::UserRole + 10;
-
 class ShortcutSequenceEdit final : public QKeySequenceEdit {
 public:
     using QKeySequenceEdit::QKeySequenceEdit;
@@ -43,7 +41,6 @@ SettingsDialog::SettingsDialog(UiTheme theme,
                                const QVector<ShortcutSettingsItem> &shortcuts,
                                QWidget *parent)
     : QDialog(parent)
-    , initialTheme_(theme)
     , canvasSettings_(canvasSettings)
     , behaviorSettings_(behaviorSettings)
     , shortcuts_(shortcuts) {
@@ -88,7 +85,6 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     generalLayout->addRow(QStringLiteral("Light canvas"), makeCanvasRow(UiTheme::Light, &lightCanvasMode_, &lightCanvasColorButton_));
     darkCanvasMode_->setCurrentIndex(canvasSettings_.darkMode == CanvasColorMode::Custom ? 1 : 0);
     lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
-    updateCanvasColorControls();
 
     guidelineColorButton_ = new QPushButton(general);
     QObject::connect(guidelineColorButton_, &QPushButton::clicked, this, &SettingsDialog::chooseGuidelineColor);
@@ -243,39 +239,26 @@ CanvasColorSettings SettingsDialog::selectedCanvasSettings() const {
 }
 
 BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
+    const BehaviorSettings defaults;
     BehaviorSettings result = behaviorSettings_;
-    result.visibilityBordersEnabled = visibilityBordersCheck_ != nullptr && visibilityBordersCheck_->isChecked();
-    result.positionLimitBorderEnabled = positionLimitBorderCheck_ != nullptr && positionLimitBorderCheck_->isChecked();
-    result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_ != nullptr
-        && displayAnchorsDuringTransformDrag_->isChecked();
-    result.generatePreviewsWithTransformations = generatePreviewsWithTransformations_ != nullptr
-        && generatePreviewsWithTransformations_->isChecked();
-    if (visibilityBorderResolution_ != nullptr) {
-        const QSize resolution = visibilityBorderResolution_->currentData().toSize();
-        result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
-    }
-    if (nudgeStep_ != nullptr) {
-        result.nudgeStep = nudgeStep_->value();
-    }
-    if (nudgeShiftStep_ != nullptr) {
-        result.nudgeShiftStep = nudgeShiftStep_->value();
-    }
-    if (liveryTextureScale_ != nullptr) {
-        result.liveryTextureScale = liveryTextureScale_->value();
-    }
-    if (autosaveIntervalMinutes_ != nullptr) {
-        result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
-    }
-    result.valueEditingWheelEnabled = valueEditingWheelCheck_ != nullptr && valueEditingWheelCheck_->isChecked();
-    if (carModelsFolder_ != nullptr) {
-        result.carModelsFolder = carModelsFolder_->text().trimmed();
-    }
-    if (discardModelOnLiveryOpen_ != nullptr) {
-        result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
-    }
-    if (loadCarTextures_ != nullptr) {
-        result.loadCarTextures = loadCarTextures_->isChecked();
-    }
+    const QSize resolution = visibilityBorderResolution_->currentData().toSize();
+
+    result.visibilityBordersEnabled = visibilityBordersCheck_->isChecked();
+    result.positionLimitBorderEnabled = positionLimitBorderCheck_->isChecked();
+    result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_->isChecked();
+    result.generatePreviewsWithTransformations = generatePreviewsWithTransformations_->isChecked();
+    result.visibilityBorderResolution = resolution.isValid()
+        ? resolution
+        : defaults.visibilityBorderResolution;
+    result.nudgeStep = nudgeStep_->value();
+    result.nudgeShiftStep = nudgeShiftStep_->value();
+    result.liveryTextureScale = liveryTextureScale_->value();
+    result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
+    result.valueEditingWheelEnabled = valueEditingWheelCheck_->isChecked();
+    result.carModelsFolder = carModelsFolder_->text().trimmed();
+    result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
+    result.loadCarTextures = loadCarTextures_->isChecked();
+
     return result;
 }
 
@@ -295,8 +278,11 @@ void SettingsDialog::setThemeChangedCallback(std::function<void(UiTheme)> callba
 }
 
 void SettingsDialog::resetShortcutRow(int row) {
+    if (row < 0 || row >= shortcuts_.size()) {
+        return;
+    }
     auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
-    if (edit != nullptr && row >= 0 && row < shortcuts_.size()) {
+    if (edit != nullptr) {
         edit->setKeySequence(shortcuts_[row].defaultSequence);
     }
 }

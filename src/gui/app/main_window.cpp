@@ -10,7 +10,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent) {
     theme_ = loadUiTheme();
     setWindowTitle(QStringLiteral("Forza Livery Studio"));
-    resize(InitialWindowWidth, InitialWindowHeight);
+    resize(kInitialWindowWidth, kInitialWindowHeight);
     setAcceptDrops(true);
 
     state_ = new EditorState(this);
@@ -40,7 +40,6 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 MainWindow::~MainWindow() {
-    cancelGeneratedFill();
-    cancelRegionFill();
+    cancelActiveFills();
 }
 } // namespace gui
