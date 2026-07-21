@@ -23,10 +23,14 @@ constexpr int kDockSplitterHandleWidth = 6;
 constexpr int kDetailsLabelMargin = 10;
 
 inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut) {
-    if (!id.startsWith(QStringLiteral("tool_")) || shortcut.isEmpty()) {
+    if (shortcut.isEmpty()) {
         return label;
     }
-    return QStringLiteral("%1 (%2)").arg(label, shortcut.toString(QKeySequence::NativeText));
+    const QString sequence = shortcut.toString(QKeySequence::NativeText);
+
+    return id.startsWith(QStringLiteral("tool_"))
+        ? QStringLiteral("%1 (%2)").arg(label, sequence)
+        : QStringLiteral("%1\t%2").arg(label, sequence);
 }
 
 inline QString safeGroupName(QString name) {

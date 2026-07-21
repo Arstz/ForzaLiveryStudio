@@ -3,6 +3,7 @@
 #include "core_types.h"
 #include "editor_state.h"
 #include "layer_tree_model.h"
+#include "gui/key_bindings.h"
 #include "project_canvas.h"
 #include "settings_dialog.h"
 #include "theme_manager.h"
@@ -20,7 +21,6 @@ class QAction;
 class QLabel;
 class QMenu;
 class QProgressBar;
-class QShortcut;
 class QObject;
 class QModelIndex;
 class QTreeView;
@@ -128,14 +128,15 @@ private:
     QAction *registerShortcutAction(QAction *action,
                                     const QString &id,
                                     const QString &label,
-                                    const QKeySequence &defaultShortcut,
                                     const QString &iconName = QString(),
-                                    bool mirroredIcon = false,
-                                    Qt::ShortcutContext context = Qt::WindowShortcut);
+                                    bool mirroredIcon = false);
     QAction *trackIconAction(QAction *action, const QString &iconName, bool mirroredIcon = false);
     QVector<ShortcutSettingsItem> shortcutSettingsItems() const;
     void applyShortcutSettings(const QVector<ShortcutSettingsItem> &items);
-    void refreshShortcutActionText(QAction *action, const QString &id, const QString &label) const;
+    void refreshShortcutActionText(QAction *action,
+                                   const QString &id,
+                                   const QString &label,
+                                   const QKeySequence &shortcut) const;
     void setProject(fh6::Project project);
     void updateStatus();
     void updateClipboardWidget();
@@ -216,6 +217,7 @@ private:
     QString findCarModelPath(const QString &folder, const QString &modelName) const;
 
     EditorState *state_ = nullptr;
+    KeyBindingRouter *keyBindings_ = nullptr;
     ProjectCanvas *canvas_ = nullptr;
     ClipboardBufferWidget *clipboardWidget_ = nullptr;
     ColorPaletteWidget *colorPalette_ = nullptr;
@@ -267,6 +269,7 @@ private:
         QString id;
         QString label;
         QKeySequence defaultShortcut;
+        QKeySequence currentShortcut;
         QAction *action = nullptr;
     };
     struct IconAction {
@@ -292,7 +295,6 @@ private:
     quint64 regionFillGeneration_ = 0;
     QVector<QString> regionFillInsertionEntries_;
     QProgressBar *regionFillProgress_ = nullptr;
-    QShortcut *regionFillCancelShortcut_ = nullptr;
 };
 
 } // namespace gui

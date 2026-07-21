@@ -68,7 +68,8 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
     }
 
     canvas_->setPenFillRunning(true, QStringLiteral("Filling Pen path…"));
-    statusBar()->showMessage(QStringLiteral("Filling Pen path… Press Esc to cancel"));
+    statusBar()->showMessage(QStringLiteral("Filling Pen path… Press %1 to cancel")
+                                 .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
         return fillPenPath(request, cancelled);
@@ -98,7 +99,8 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     }
 
     canvas_->setLiningFillRunning(true, QStringLiteral("Filling lining path…"));
-    statusBar()->showMessage(QStringLiteral("Filling lining path… Press Esc to cancel"));
+    statusBar()->showMessage(QStringLiteral("Filling lining path… Press %1 to cancel")
+                                 .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
         return fillLiningPath(request, cancelled);

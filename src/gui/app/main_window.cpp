@@ -13,6 +13,7 @@ MainWindow::MainWindow(QWidget *parent)
     resize(kInitialWindowWidth, kInitialWindowHeight);
     setAcceptDrops(true);
 
+    keyBindings_ = new KeyBindingRouter(this, this);
     state_ = new EditorState(this);
     autosaveTimer_ = new QTimer(this);
     connect(autosaveTimer_, &QTimer::timeout, this, &MainWindow::autosaveProject);

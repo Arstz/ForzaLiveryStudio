@@ -147,6 +147,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/app/settings_dialog.h
     src/gui/app/theme_manager.cpp
     src/gui/app/theme_manager.h
+    src/gui/key_bindings.cpp
+    src/gui/key_bindings.h
     src/gui/state/editor_state.cpp
     src/gui/state/editor_state.h
     src/gui/state/editor_state_clipboard.cpp

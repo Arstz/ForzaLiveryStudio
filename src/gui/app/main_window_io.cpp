@@ -652,8 +652,8 @@ void MainWindow::fillRegions() {
     regionFillProgress_->setRange(0, std::max(1, request.regions.colorRegionCount));
     regionFillProgress_->setValue(0);
     regionFillProgress_->show();
-    regionFillCancelShortcut_->setEnabled(true);
-    statusBar()->showMessage(QStringLiteral("Filling regions… Press Esc to cancel"));
+    statusBar()->showMessage(QStringLiteral("Filling regions… Press %1 to cancel")
+                                 .arg(interactionShortcutText(KeyInteraction::CancelActiveFill)));
 
     QPointer<MainWindow> guard(this);
     auto *task = QRunnable::create(
@@ -701,9 +701,6 @@ void MainWindow::cancelRegionFill() {
     if (regionFillProgress_ != nullptr) {
         regionFillProgress_->hide();
     }
-    if (regionFillCancelShortcut_ != nullptr) {
-        regionFillCancelShortcut_->setEnabled(false);
-    }
     statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
 }
 
@@ -724,7 +721,6 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
     }
     regionFillCancel_.reset();
     regionFillProgress_->hide();
-    regionFillCancelShortcut_->setEnabled(false);
     if (result.cancelled) {
         regionFillInsertionEntries_.clear();
         statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);

@@ -1,5 +1,7 @@
 #include "settings_dialog.h"
 
+#include "gui/key_bindings.h"
+
 #include <QtCore>
 #include <QtGui>
 #include <QtWidgets>
@@ -17,13 +19,10 @@ protected:
     bool event(QEvent *event) override {
         if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);
-            if (keyEvent->key() == Qt::Key_Tab || keyEvent->key() == Qt::Key_Backtab) {
+            const std::optional<QKeySequence> captured = capturedTabShortcut(*keyEvent);
+            if (captured.has_value()) {
                 if (event->type() == QEvent::KeyPress) {
-                    Qt::KeyboardModifiers modifiers = keyEvent->modifiers();
-                    if (keyEvent->key() == Qt::Key_Backtab) {
-                        modifiers |= Qt::ShiftModifier;
-                    }
-                    setKeySequence(QKeySequence(modifiers | Qt::Key_Tab));
+                    setKeySequence(captured.value());
                 }
                 event->accept();
                 return true;

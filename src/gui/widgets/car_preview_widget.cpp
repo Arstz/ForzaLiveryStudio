@@ -1195,15 +1195,8 @@ void CarPreviewWidget::wheelEvent(QWheelEvent *event) {
     update();
 }
 
-void CarPreviewWidget::keyPressEvent(QKeyEvent *event) {
-    switch (event->key()) {
-    case Qt::Key_U:
-        carRenderer_.setDebugMode((carRenderer_.debugMode() + 1) % 3);
-        break;
-    default:
-        QOpenGLWidget::keyPressEvent(event);
-        return;
-    }
+void CarPreviewWidget::cycleDebugMode() {
+    carRenderer_.setDebugMode((carRenderer_.debugMode() + 1) % 3);
     update();
 }
 

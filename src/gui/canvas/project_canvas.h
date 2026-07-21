@@ -5,6 +5,7 @@
 #include "core_types.h"
 #include "layer.h"
 #include "lining_fill.h"
+#include "gui/key_bindings.h"
 #include "native_shape_renderer.h"
 #include "path_interaction.h"
 #include "pen_fill.h"
@@ -24,7 +25,6 @@
 
 class QPainter;
 class QMouseEvent;
-class QKeyEvent;
 class QWheelEvent;
 
 namespace gui {
@@ -112,6 +112,7 @@ public:
     enum class DistributeAxis { Horizontal, Vertical };
     bool alignSelection(AlignEdge edge);
     bool distributeSelection(DistributeAxis axis);
+    bool handleKeyBinding(KeyInteraction interaction, KeyEventPhase phase, bool autoRepeat);
 
     bool currentTransformBox(QPointF *center,
                              double *width,
@@ -126,8 +127,6 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
-    void keyPressEvent(QKeyEvent *event) override;
-    void keyReleaseEvent(QKeyEvent *event) override;
     void leaveEvent(QEvent *event) override;
     bool focusNextPrevChild(bool next) override;
 

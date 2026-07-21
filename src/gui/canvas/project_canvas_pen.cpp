@@ -178,7 +178,8 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
         pen_.hoverCurve = penCurveAtScreen(screenPoint);
     }
 
-    QStringList lines{QStringLiteral("Press Enter to fill")};
+    QStringList lines{QStringLiteral("Press %1 to fill")
+                          .arg(interactionShortcutText(KeyInteraction::CanvasCommitInteraction))};
     if (!pen_.error.isEmpty()) {
         lines.push_back(pen_.error);
     }
@@ -262,7 +263,8 @@ void ProjectCanvas::refreshLiningInteractionHint(const QPointF &screenPoint,
         lining_.hoverCurve = liningCurveAtScreen(screenPoint);
     }
     QStringList lines{QStringLiteral("Width: %1").arg(liningWidth_, 0, 'f', 2),
-                      QStringLiteral("Press Enter to fill")};
+                      QStringLiteral("Press %1 to fill")
+                          .arg(interactionShortcutText(KeyInteraction::CanvasCommitInteraction))};
     if (!lining_.error.isEmpty()) {
         lines.push_back(lining_.error);
     }

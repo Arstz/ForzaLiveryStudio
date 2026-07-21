@@ -455,15 +455,24 @@ void ProjectCanvas::wheelEvent(QWheelEvent *event) {
     event->accept();
 }
 
-void ProjectCanvas::keyPressEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
-        spaceDown_ = true;
+bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase phase, bool autoRepeat) {
+    if (interaction == KeyInteraction::CanvasPan) {
+        if (autoRepeat) {
+            return true;
+        }
+        spaceDown_ = phase == KeyEventPhase::Press;
+        if (phase == KeyEventPhase::Release && drag_.mode == DragMode::Pan) {
+            drag_.mode = DragMode::None;
+        }
         updateCursorForPoint(mapFromGlobal(QCursor::pos()));
-        event->accept();
-        return;
+
+        return true;
     }
-    if (tool_ == QStringLiteral("pen") && event->key() == Qt::Key_Backspace
-        && !pen_.fillRunning && !pen_.closed) {
+    if (phase != KeyEventPhase::Press) {
+        return false;
+    }
+    if (interaction == KeyInteraction::CanvasRemovePathPoint
+        && tool_ == QStringLiteral("pen") && !pen_.fillRunning && !pen_.closed) {
         if (!pen_.points.isEmpty()) {
             pen_.points.removeLast();
             pen_.crossings.clear();
@@ -471,59 +480,61 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event) {
             clearCursorHint();
             update();
         }
-        event->accept();
-        return;
+
+        return true;
     }
-    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("pen")) {
-        cancelPenInteraction();
-        event->accept();
-        return;
-    }
-    if (tool_ == QStringLiteral("lining") && event->key() == Qt::Key_Backspace
-        && !lining_.fillRunning && !lining_.closed) {
+    if (interaction == KeyInteraction::CanvasRemovePathPoint
+        && tool_ == QStringLiteral("lining") && !lining_.fillRunning && !lining_.closed) {
         if (!lining_.points.isEmpty()) {
             lining_.points.removeLast();
             lining_.error.clear();
             clearCursorHint();
             update();
         }
-        event->accept();
-        return;
+
+        return true;
     }
-    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("lining")) {
-        cancelLiningInteraction();
-        event->accept();
-        return;
-    }
-    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+    if (interaction == KeyInteraction::CanvasCommitInteraction
         && tool_ == QStringLiteral("lining") && lining_.closed && !lining_.fillRunning) {
         requestLiningFill();
-        event->accept();
-        return;
+
+        return true;
     }
-    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+    if (interaction == KeyInteraction::CanvasCommitInteraction
         && tool_ == QStringLiteral("pen") && pen_.closed && !pen_.fillRunning) {
         closePenPath();
-        event->accept();
-        return;
+
+        return true;
     }
-    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("bucket")) {
-        clearBucketPreview();
-        event->accept();
-        return;
+    if (interaction == KeyInteraction::CanvasCommitInteraction
+        && tool_ == QStringLiteral("transform")) {
+        setTool(QStringLiteral("select"));
+
+        return true;
     }
-    if (event->key() == Qt::Key_Escape && tool_ == QStringLiteral("select")) {
-        if (state_ != nullptr) {
-            state_->clearSelection();
+    if (interaction == KeyInteraction::CanvasCancelInteraction) {
+        if (tool_ == QStringLiteral("pen")) {
+            cancelPenInteraction();
+            return true;
         }
-        hoverLayerId_.clear();
-        hoverPolygon_ = {};
-        updateSelectionFlashState();
-        update();
-        event->accept();
-        return;
-    }
-    if (event->key() == Qt::Key_Escape) {
+        if (tool_ == QStringLiteral("lining")) {
+            cancelLiningInteraction();
+            return true;
+        }
+        if (tool_ == QStringLiteral("bucket")) {
+            clearBucketPreview();
+            return true;
+        }
+        if (tool_ == QStringLiteral("select")) {
+            if (state_ != nullptr) {
+                state_->clearSelection();
+            }
+            hoverLayerId_.clear();
+            hoverPolygon_ = {};
+            updateSelectionFlashState();
+            update();
+            return true;
+        }
         if (guidelines_.draggedOrientation != GuidelineOrientation::None) {
             if (state_ != nullptr) {
                 state_->cancelProjectEdit();
@@ -533,78 +544,57 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event) {
             guidelines_.rulerPressActive = false;
             updateCursorForPoint(mapFromGlobal(QCursor::pos()));
             update();
-            event->accept();
-            return;
+            return true;
         }
         if (guidelines_.rulerPressActive) {
             guidelines_.rulerPressActive = false;
             updateCursorForPoint(mapFromGlobal(QCursor::pos()));
-            event->accept();
-            return;
+            return true;
         }
         cancelDrag();
         if (tool_ == QStringLiteral("transform")) {
             setTool(QStringLiteral("select"));
         }
-        event->accept();
-        return;
-    }
-    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && tool_ == QStringLiteral("transform")) {
-        setTool(QStringLiteral("select"));
-        event->accept();
-        return;
-    }
-    if (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) {
-        if (!event->isAutoRepeat()) {
-            cycleFlipSelection();
-        }
-        event->accept();
-        return;
+
+        return true;
     }
     const bool nudgeTool = tool_ == QStringLiteral("move") || tool_ == QStringLiteral("transform");
-    if (nudgeTool && drag_.mode == DragMode::None) {
-        QPointF delta;
-        const double step = (event->modifiers() & Qt::ShiftModifier) ? options_.nudgeShiftStep : options_.nudgeStep;
-        switch (event->key()) {
-        case Qt::Key_Left:
-            delta = QPointF(-step, 0.0);
-            break;
-        case Qt::Key_Right:
-            delta = QPointF(step, 0.0);
-            break;
-        case Qt::Key_Up:
-            delta = QPointF(0.0, step);
-            break;
-        case Qt::Key_Down:
-            delta = QPointF(0.0, -step);
-            break;
-        default:
-            break;
-        }
-        if (!delta.isNull() && nudgeSelection(delta)) {
-            event->accept();
-            return;
-        }
+    if (!nudgeTool || drag_.mode != DragMode::None) {
+        return false;
     }
-    QOpenGLWidget::keyPressEvent(event);
+    const bool fast = interaction == KeyInteraction::CanvasNudgeLeftFast
+        || interaction == KeyInteraction::CanvasNudgeRightFast
+        || interaction == KeyInteraction::CanvasNudgeUpFast
+        || interaction == KeyInteraction::CanvasNudgeDownFast;
+    const double step = fast ? options_.nudgeShiftStep : options_.nudgeStep;
+    QPointF delta;
+    switch (interaction) {
+    case KeyInteraction::CanvasNudgeLeft:
+    case KeyInteraction::CanvasNudgeLeftFast:
+        delta = QPointF(-step, 0.0);
+        break;
+    case KeyInteraction::CanvasNudgeRight:
+    case KeyInteraction::CanvasNudgeRightFast:
+        delta = QPointF(step, 0.0);
+        break;
+    case KeyInteraction::CanvasNudgeUp:
+    case KeyInteraction::CanvasNudgeUpFast:
+        delta = QPointF(0.0, step);
+        break;
+    case KeyInteraction::CanvasNudgeDown:
+    case KeyInteraction::CanvasNudgeDownFast:
+        delta = QPointF(0.0, -step);
+        break;
+    default:
+        return false;
+    }
+
+    return nudgeSelection(delta);
 }
 
 bool ProjectCanvas::focusNextPrevChild(bool next) {
     Q_UNUSED(next);
     return false;
-}
-
-void ProjectCanvas::keyReleaseEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
-        spaceDown_ = false;
-        if (drag_.mode == DragMode::Pan) {
-            drag_.mode = DragMode::None;
-        }
-        updateCursorForPoint(mapFromGlobal(QCursor::pos()));
-        event->accept();
-        return;
-    }
-    QOpenGLWidget::keyReleaseEvent(event);
 }
 
 void ProjectCanvas::leaveEvent(QEvent *event) {
