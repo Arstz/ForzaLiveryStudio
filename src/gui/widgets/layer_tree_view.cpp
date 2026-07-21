@@ -1,6 +1,7 @@
 #include "layer_tree_view.h"
 
 #include "drag_cursors.h"
+#include "layer_state_delegate.h"
 #include "layer_tree_model.h"
 
 #include <algorithm>
@@ -8,17 +9,15 @@
 namespace gui {
 
 namespace {
-constexpr int DragHotspotClamp = 24;
-constexpr int BadgeSize = 18;
-constexpr int BadgeGap = 5;
-constexpr int BadgeRightMargin = 8;
+constexpr int kDragHotspotClamp = 24;
 
 bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide) {
     const int badgeCount = guide ? 2 : 3;
-    const int left = rowRect.right() - BadgeRightMargin - badgeCount * BadgeSize - (badgeCount - 1) * BadgeGap + 1;
-    const QRect badgesRect(left, rowRect.center().y() - BadgeSize / 2,
-                           badgeCount * BadgeSize + (badgeCount - 1) * BadgeGap,
-                           BadgeSize);
+    const int left = rowRect.right() - kLayerBadgeRightMargin - badgeCount * kLayerBadgeSize
+        - (badgeCount - 1) * kLayerBadgeGap + 1;
+    const QRect badgesRect(left, rowRect.center().y() - kLayerBadgeSize / 2,
+                           badgeCount * kLayerBadgeSize + (badgeCount - 1) * kLayerBadgeGap,
+                           kLayerBadgeSize);
     return badgesRect.contains(point);
 }
 } // namespace
@@ -158,8 +157,8 @@ void LayerTreeView::startDrag(Qt::DropActions supportedActions) {
     if (rowRect.isValid() && !rowRect.isEmpty()) {
         rowPixmap = viewport()->grab(rowRect);
         drag->setPixmap(rowPixmap);
-        drag->setHotSpot(QPoint(std::min(rowPixmap.width() / 2, DragHotspotClamp),
-                                std::min(rowPixmap.height() / 2, DragHotspotClamp)));
+        drag->setHotSpot(QPoint(std::min(rowPixmap.width() / 2, kDragHotspotClamp),
+                                std::min(rowPixmap.height() / 2, kDragHotspotClamp)));
     }
 
     const QPixmap cursorPixmap = dropAllowedCursorPixmap();

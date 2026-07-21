@@ -204,6 +204,26 @@ ImagePreprocessResult preprocessSafely(const QImage &input, const ImagePreproces
     }
 }
 
+using PreprocessFinished = std::function<void(ImagePreprocessDialog &, const ImagePreprocessResult &)>;
+
+void runPreprocessAsync(ImagePreprocessDialog *dialog,
+                        const QImage &input,
+                        const ImagePreprocessSettings &settings,
+                        PreprocessFinished finished) {
+    const QPointer<ImagePreprocessDialog> guard(dialog);
+    QThreadPool::globalInstance()->start([guard, input, settings, finished = std::move(finished)]() {
+        const ImagePreprocessResult result = preprocessSafely(input, settings);
+        if (guard == nullptr) {
+            return;
+        }
+        QMetaObject::invokeMethod(guard, [guard, result, finished]() {
+            if (guard != nullptr) {
+                finished(*guard, result);
+            }
+        }, Qt::QueuedConnection);
+    });
+}
+
 QVector<QColor> uniqueOpaqueColors(const QVector<QColor> &colors) {
     QVector<QColor> result;
     result.reserve(std::min(256, static_cast<int>(colors.size())));
@@ -534,17 +554,10 @@ void ImagePreprocessDialog::startPreview() {
     const QImage input = previewSource_;
     const ImagePreprocessSettings settings = selectedSettings();
     const quint64 generation = runningGeneration_;
-    const QPointer<ImagePreprocessDialog> guard(this);
     statusLabel_->setText(QStringLiteral("Updating preview…"));
-    QThreadPool::globalInstance()->start([guard, input, settings, generation]() {
-        const ImagePreprocessResult result = preprocessSafely(input, settings);
-        if (guard != nullptr) {
-            QMetaObject::invokeMethod(guard, [guard, generation, result]() {
-                if (guard != nullptr) {
-                    guard->finishPreview(generation, result);
-                }
-            }, Qt::QueuedConnection);
-        }
+    runPreprocessAsync(this, input, settings, [generation](ImagePreprocessDialog &dialog,
+                                                          const ImagePreprocessResult &result) {
+        dialog.finishPreview(generation, result);
     });
 }
 
@@ -578,16 +591,9 @@ void ImagePreprocessDialog::beginFullResolutionProcessing() {
     statusLabel_->setText(QStringLiteral("Processing the full-resolution image…"));
     const QImage input = displaySource_;
     const ImagePreprocessSettings settings = selectedSettings();
-    const QPointer<ImagePreprocessDialog> guard(this);
-    QThreadPool::globalInstance()->start([guard, input, settings]() {
-        const ImagePreprocessResult result = preprocessSafely(input, settings);
-        if (guard != nullptr) {
-            QMetaObject::invokeMethod(guard, [guard, result]() {
-                if (guard != nullptr) {
-                    guard->finishFullResolutionProcessing(result);
-                }
-            }, Qt::QueuedConnection);
-        }
+    runPreprocessAsync(this, input, settings, [](ImagePreprocessDialog &dialog,
+                                                const ImagePreprocessResult &result) {
+        dialog.finishFullResolutionProcessing(result);
     });
 }
 
@@ -607,11 +613,10 @@ void ImagePreprocessDialog::finishFullResolutionProcessing(const ImagePreprocess
 
 void ImagePreprocessDialog::setControlsEnabled(bool enabled) {
     settingsPanel_->setEnabled(enabled);
-    if (QPushButton *ok = buttons_->button(QDialogButtonBox::Ok)) {
-        ok->setEnabled(enabled);
-    }
-    if (QPushButton *cancel = buttons_->button(QDialogButtonBox::Cancel)) {
-        cancel->setEnabled(enabled);
+    for (QDialogButtonBox::StandardButton role : {QDialogButtonBox::Ok, QDialogButtonBox::Cancel}) {
+        if (QPushButton *button = buttons_->button(role)) {
+            button->setEnabled(enabled);
+        }
     }
 }
 
@@ -619,11 +624,10 @@ void ImagePreprocessDialog::applySharedView(double scale, const QPointF &center,
     viewScale_ = scale;
     viewCenter_ = center;
     viewCenterValid_ = centerValid;
-    if (originalView_ != nullptr) {
-        originalView_->setSharedView(viewScale_, viewCenter_, viewCenterValid_);
-    }
-    if (processedView_ != nullptr) {
-        processedView_->setSharedView(viewScale_, viewCenter_, viewCenterValid_);
+    for (ImagePreviewWidget *view : {originalView_, processedView_}) {
+        if (view != nullptr) {
+            view->setSharedView(viewScale_, viewCenter_, viewCenterValid_);
+        }
     }
     if (zoomLabel_ != nullptr) {
         zoomLabel_->setText(viewScale_ > 0.0
@@ -774,11 +778,10 @@ void ImagePreprocessDialog::setEyedropperActive(bool active) {
     if (eyedropperButton_ != nullptr) {
         eyedropperButton_->setChecked(active);
     }
-    if (originalView_ != nullptr) {
-        originalView_->setEyedropperActive(active);
-    }
-    if (processedView_ != nullptr) {
-        processedView_->setEyedropperActive(active);
+    for (ImagePreviewWidget *view : {originalView_, processedView_}) {
+        if (view != nullptr) {
+            view->setEyedropperActive(active);
+        }
     }
 }
 

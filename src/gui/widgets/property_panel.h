@@ -73,7 +73,7 @@ private:
     void applyBoxTransform(const QString &property, double fromValue, double toValue);
     void pickColor();
     void updateColorButton();
-    QVector<std::array<quint8, 4>> selectionColors() const;
+    QVector<std::array<quint8, 4>> selectionColors(bool colorableOnly) const;
     QVector<std::array<quint8, 4>> colorableSelectionColors() const;
 
     EditorState *state_ = nullptr;

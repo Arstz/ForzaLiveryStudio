@@ -676,9 +676,7 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
         liveryMasksDir_.clear();
     }
     liveryMasksPending_ = true;
-    liveryDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
+    invalidateCachedLivery();
 
     update();
     return true;
@@ -721,9 +719,7 @@ void CarPreviewWidget::clearModel() {
     liveryMasksDir_.clear();
     modelUploadPending_ = false;
     liveryMasksPending_ = false;
-    liveryDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
+    invalidateCachedLivery();
     if (carRenderer_.isInitialized()) {
         makeCurrent();
         carRenderer_.clearModel();
@@ -846,9 +842,7 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
 
 void CarPreviewWidget::setProject(fh6::Project *project) {
     project_ = project;
-    liveryDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
+    invalidateCachedLivery();
     update();
 }
 
@@ -873,10 +867,11 @@ QColor CarPreviewWidget::basePaint() const {
 }
 
 void CarPreviewWidget::setBasePaint(const QColor &color) {
-    if (color.isValid() && color != basePaint_) {
-        basePaint_ = color;
-        update();
+    if (!color.isValid() || color == basePaint_) {
+        return;
     }
+    basePaint_ = color;
+    update();
 }
 
 int CarPreviewWidget::liveryTextureScale() const {
@@ -898,9 +893,7 @@ void CarPreviewWidget::setLiveryTextureScale(int scale) {
 
 void CarPreviewWidget::markLiveryDirty() {
     liveLiveryFullDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
-    liveryDirty_ = true;
+    invalidateCachedLivery();
     update();
 }
 
@@ -1165,6 +1158,12 @@ void CarPreviewWidget::fitCameraToModel() {
     distance_ = modelRadius_ * 2.6f;
     yaw_ = 0.6f;
     pitch_ = 0.25f;
+}
+
+void CarPreviewWidget::invalidateCachedLivery() {
+    dirtySectionIds_.clear();
+    projectedSectionCache_.clear();
+    liveryDirty_ = true;
 }
 
 void CarPreviewWidget::mousePressEvent(QMouseEvent *event) {

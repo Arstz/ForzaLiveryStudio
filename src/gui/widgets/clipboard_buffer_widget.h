@@ -23,8 +23,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    QRectF layerBounds(const fh6::scene::Shape &layer, const QTransform &parentWorld) const;
-    void paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &parentWorld) const;
+    void paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &world) const;
 
     const ProjectClipboard *clipboard_ = nullptr;
     ShapeGeometryStore geometry_;

@@ -10,8 +10,8 @@
 namespace gui {
 namespace {
 
-constexpr int SwatchSize = 28;
-constexpr int SwatchesPerRow = 6;
+constexpr int kSwatchSize = 28;
+constexpr int kSwatchesPerRow = 6;
 
 QString swatchStyle(const QColor &color) {
     const QColor text = color.lightness() < 128 ? QColor(255, 255, 255) : QColor(32, 34, 37);
@@ -48,7 +48,7 @@ ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
     grid_->setSpacing(6);
 
     addButton_ = new QPushButton(QStringLiteral("+"), this);
-    addButton_->setFixedSize(SwatchSize, SwatchSize);
+    addButton_->setFixedSize(kSwatchSize, kSwatchSize);
     addButton_->setToolTip(QStringLiteral("Save selected color"));
     connect(addButton_, &QPushButton::clicked, this, [this]() { addCurrentColor(); });
 
@@ -81,14 +81,7 @@ bool ColorPaletteWidget::addColor(const QColor &color) {
     if (std::find(swatches_->begin(), swatches_->end(), swatch) != swatches_->end()) {
         return false;
     }
-    if (beginEditCallback_ != nullptr) {
-        beginEditCallback_();
-    }
-    swatches_->push_back(swatch);
-    if (commitEditCallback_ != nullptr) {
-        commitEditCallback_();
-    }
-    rebuild();
+    editSwatches([this, swatch]() { swatches_->push_back(swatch); });
     return true;
 }
 
@@ -112,7 +105,7 @@ void ColorPaletteWidget::rebuild() {
     for (int i = 0; i < swatchCount; ++i) {
         const Color color = swatches_->at(i);
         auto *button = new SwatchButton(this);
-        button->setFixedSize(SwatchSize, SwatchSize);
+        button->setFixedSize(kSwatchSize, kSwatchSize);
         button->setToolTip(toQColor(color).name(QColor::HexArgb).toUpper());
         button->setStyleSheet(swatchStyle(toQColor(color)));
         button->middleClickCallback = [this, i]() { removeSwatch(i); };
@@ -130,7 +123,7 @@ void ColorPaletteWidget::rebuild() {
             }
         });
         grid_->addWidget(button, row, column);
-        if (++column >= SwatchesPerRow) {
+        if (++column >= kSwatchesPerRow) {
             column = 0;
             ++row;
         }
@@ -139,7 +132,18 @@ void ColorPaletteWidget::rebuild() {
     addButton_->setEnabled(swatches_ != nullptr);
     grid_->addWidget(addButton_, row, column);
     grid_->setRowStretch(row + 1, 1);
-    grid_->setColumnStretch(SwatchesPerRow, 1);
+    grid_->setColumnStretch(kSwatchesPerRow, 1);
+}
+
+void ColorPaletteWidget::editSwatches(const std::function<void()> &edit) {
+    if (beginEditCallback_ != nullptr) {
+        beginEditCallback_();
+    }
+    edit();
+    if (commitEditCallback_ != nullptr) {
+        commitEditCallback_();
+    }
+    rebuild();
 }
 
 void ColorPaletteWidget::addCurrentColor() {
@@ -157,14 +161,7 @@ void ColorPaletteWidget::removeSwatch(int index) {
     if (swatches_ == nullptr || index < 0 || index >= swatches_->size()) {
         return;
     }
-    if (beginEditCallback_ != nullptr) {
-        beginEditCallback_();
-    }
-    swatches_->removeAt(index);
-    if (commitEditCallback_ != nullptr) {
-        commitEditCallback_();
-    }
-    rebuild();
+    editSwatches([this, index]() { swatches_->removeAt(index); });
 }
 
 QColor ColorPaletteWidget::toQColor(const Color &color) {

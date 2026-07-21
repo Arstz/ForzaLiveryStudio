@@ -72,6 +72,7 @@ private:
     QSize liveryTextureSize() const;
     QTransform liveryWorldToScreen(const QSize &textureSize) const;
     void fitCameraToModel();
+    void invalidateCachedLivery();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;

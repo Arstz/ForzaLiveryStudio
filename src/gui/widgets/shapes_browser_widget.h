@@ -25,7 +25,19 @@ QImage renderShapePreviewImage(const ShapeGeometryStore &geometry,
                                const QSize &size,
                                const QColor &ink = QColor(245, 245, 245));
 
-class ShapeTile final : public QWidget {
+class BrowserTile : public QWidget {
+protected:
+    explicit BrowserTile(QWidget *parent = nullptr);
+
+    bool hovered() const;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+
+private:
+    bool hovered_ = false;
+};
+
+class ShapeTile final : public BrowserTile {
 public:
     ShapeTile(int shapeId, const QString &label, const ShapeGeometryStore *geometry, QWidget *parent = nullptr);
 
@@ -36,8 +48,6 @@ public:
     void setFavouriteCallback(std::function<void(int, bool)> callback);
 
 protected:
-    void enterEvent(QEnterEvent *event) override;
-    void leaveEvent(QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
 
@@ -51,7 +61,6 @@ private:
     const ShapeGeometryStore *geometry_ = nullptr;
     QToolButton *favourite_ = nullptr;
     mutable QHash<QSize, QImage> previewCache_;
-    bool hovered_ = false;
     std::function<void(int)> pressedCallback_;
     std::function<void(int)> rightPressedCallback_;
     std::function<void(int, bool)> favouriteCallback_;
@@ -63,7 +72,7 @@ struct CustomShapeGroup {
     ProjectClipboard clipboard;
 };
 
-class CustomGroupTile final : public QWidget {
+class CustomGroupTile final : public BrowserTile {
 public:
     CustomGroupTile(const CustomShapeGroup &group, const ShapeGeometryStore *geometry, QWidget *parent = nullptr);
 
@@ -72,8 +81,6 @@ public:
     void setDeleteCallback(std::function<void(const QString &)> callback);
 
 protected:
-    void enterEvent(QEnterEvent *event) override;
-    void leaveEvent(QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
 
@@ -86,12 +93,11 @@ private:
     const ShapeGeometryStore *geometry_ = nullptr;
     QToolButton *delete_ = nullptr;
     mutable QHash<QSize, QImage> previewCache_;
-    bool hovered_ = false;
     std::function<void(const QString &)> pressedCallback_;
     std::function<void(const QString &)> deleteCallback_;
 };
 
-class LogoTile final : public QWidget {
+class LogoTile final : public BrowserTile {
 public:
     LogoTile(quint32 rasterId, const QSize &size, QWidget *parent = nullptr);
 
@@ -99,8 +105,6 @@ public:
     void setPressedCallback(std::function<void(quint32)> callback);
 
 protected:
-    void enterEvent(QEnterEvent *event) override;
-    void leaveEvent(QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
 
@@ -110,7 +114,6 @@ private:
     quint32 rasterId_ = 0;
     QSize size_;
     mutable QHash<QSize, QImage> previewCache_;
-    bool hovered_ = false;
     std::function<void(quint32)> pressedCallback_;
 };
 
@@ -132,6 +135,7 @@ protected:
 private:
     void populateCategories();
     void refreshGrid();
+    void layoutTiles(const QVector<QWidget *> &tiles);
     void showGridMessage(const QString &text);
     ShapeTile *tileForShape(int shapeId);
     LogoTile *tileForLogo(quint32 rasterId);

@@ -28,6 +28,7 @@ public:
 
 private:
     void rebuild();
+    void editSwatches(const std::function<void()> &edit);
     void addCurrentColor();
     void removeSwatch(int index);
     static QColor toQColor(const Color &color);
