@@ -5,6 +5,17 @@
 #include <limits>
 
 namespace gui {
+
+void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers) {
+    if (layers == nullptr) {
+        return;
+    }
+    std::stable_sort(layers->begin(), layers->end(),
+                     [](const RegionFillLayer &left, const RegionFillLayer &right) {
+                         return left.drawOrder < right.drawOrder;
+                     });
+}
+
 namespace {
 
 constexpr double kGeometryEpsilon = 1e-9;

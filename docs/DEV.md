@@ -89,12 +89,17 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   the guide image as one undoable edit. **Create Regions** and **Fill Regions**
   are also in the **ImgGen** menu. Create Regions merges components below its
   persistent ImgGen area slider into the adjacent component with the closest RGB
-  colour before tracing. Region filling runs without blocking the main window:
-  each extracted colour region is fitted independently, as-is and in extraction
-  order, with no same-colour union, occlusion growth, or area prioritization.
-  Fitting runs in parallel on half of the available CPU threads, reports
-  completed/total regions in a status-bar progress bar, and remains cancellable
-  with **Esc**. Potrace curves use the same optimized Pen-point and
+  colour before tracing. Region filling runs without blocking the main window.
+  The cleaned label raster produces a conservative back-to-front layer plan:
+  connected exact-colour regions are combined, enclosed exact-colour regions can
+  share a unit, and small enclosed regions are incorporated into their surrounding
+  backdrop while remaining as later overlay units. The plan is raster-validated
+  against every owned colour pixel before fitting. A rejected plan retains the
+  original unit geometry with containment ordering. Fitting runs in parallel on
+  half of the available CPU threads, writes results into fixed plan-index slots,
+  restores draw order before insertion, reports completed/total regions in a
+  status-bar progress bar, and remains cancellable with **Esc**. Potrace curves
+  use the same optimized Pen-point and
   curve-Primitive fitter as Bucket Fill. Dense traces are no longer skipped at
   a fixed point-count cutoff: removable cubic junctions use a 1.1-pixel cap,
   preserve orientation and non-crossing single-contour topology, and are
@@ -108,15 +113,17 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   current optimized contour with a 0.45-pixel RDP pass, accept it only when the
   result remains a valid non-crossing polygon, and retry the original contour if
   simplified triangulation fails. Scene insertion keeps the
-  result in one **Region Fill** container with one child group per filled region.
+  result in one **Region Fill** container with one child group per filled unit.
   Before tracing, progressive line-classification votes identify narrow connected
   fringe components and absorb each chain into its strongest shared-boundary color
   neighbor. Candidate widths are normalized to the median recognized stroke width,
   and persistent historical evidence can classify a component independently of
   final-mask adjacency. A chain enclosed by recognized lineart is incorporated into
   that mask.
-  `region_fill.log` records every source-region result and the largest region's
-  original, optimized, and flattened contour point counts plus DSSIM. `region_points.log`
+  `region_layer.log` records source-to-unit mappings, absorptions, dependency
+  counts, validation, and fallback state. `region_fill.log` records every planned
+  unit result, its source labels, and the largest unit's original, optimized, and
+  flattened contour point counts plus DSSIM. `region_points.log`
   records every raw path element, optimized Hard/Soft Pen point, and flattened
   optimized-contour point for that largest region. `region_extract.log` records
   progressive segmentation counts, line-vote persistence, cleanup decisions,

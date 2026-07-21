@@ -1,6 +1,7 @@
 #include "project_canvas.h"
 
 #include "project_canvas_internal.h"
+#include "region_layer_plan.h"
 
 #include <QElapsedTimer>
 #include <QFile>
@@ -960,17 +961,80 @@ RegionFillBatchResult computeRegionFills(
     struct FillUnit {
         QColor color;
         QPainterPath outline;
+        QVector<int> sourceIndices;
+        QVector<int> absorbedIndices;
         double area = 0.0;
-        int sourceIndex = -1;
     };
+    const RegionLayerPlan layerPlan = buildRegionLayerPlan(regionOverlay);
     QVector<FillUnit> units;
-    units.reserve(regionOverlay.colorRegionCount);
-    for (int i = 0; i < regionOverlay.regions.size(); ++i) {
-        const ExtractedRegion &region = regionOverlay.regions[i];
-        if (!region.lineart) {
-            units.push_back(FillUnit{region.color, region.outline,
-                                     static_cast<double>(region.area), i});
+    units.reserve(layerPlan.units.size());
+    for (const RegionLayerUnit &unit : layerPlan.units) {
+        units.push_back(FillUnit{unit.color, unit.outline, unit.sourceRegionIndices,
+                                 unit.absorbedRegionIndices, unit.area});
+    }
+    QStringList log;
+    log << QStringLiteral("Fill Regions diagnostic - image %1x%2, tolerance %3, "
+                          "%4 planned units (back-to-front order)")
+               .arg(regionOverlay.imageSize.width())
+               .arg(regionOverlay.imageSize.height())
+               .arg(tolerance, 0, 'f', 3)
+               .arg(units.size());
+    const QString layerLogPath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/region_layer.log");
+    QFile layerLogFile(layerLogPath);
+    if (layerLogFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        QTextStream stream(&layerLogFile);
+        stream << "Region layer plan diagnostic\n"
+               << "input_regions=" << layerPlan.inputRegionCount << '\n'
+               << "planned_units=" << layerPlan.units.size() << '\n'
+               << "same_color_merges=" << layerPlan.sameColorMergeCount << '\n'
+               << "absorbed_regions=" << layerPlan.absorbedRegionCount << '\n'
+               << "ordering_edges=" << layerPlan.orderingEdgeCount << '\n'
+               << "validation_mismatch_pixels="
+               << layerPlan.validationMismatchPixels << '\n'
+               << "fallback=" << (layerPlan.fallback ? "yes" : "no") << '\n';
+        if (!layerPlan.fallbackReason.isEmpty()) {
+            stream << "fallback_reason=" << layerPlan.fallbackReason << '\n';
         }
+        stream << '\n' << layerPlan.diagnostics.join(QLatin1Char('\n')) << '\n';
+        layerLogFile.close();
+        qWarning().noquote() << "Region layer log written to" << layerLogPath;
+    } else {
+        qWarning().noquote() << "Could not write region layer log to" << layerLogPath;
+    }
+    const auto unitSourcesText = [&regionOverlay](const FillUnit &unit) {
+        QStringList values;
+        values.reserve(unit.sourceIndices.size());
+        for (const int sourceIndex : unit.sourceIndices) {
+            if (sourceIndex >= 0 && sourceIndex < regionOverlay.regions.size()) {
+                values.push_back(QStringLiteral("%1/label-%2")
+                                     .arg(sourceIndex)
+                                     .arg(regionOverlay.regions[sourceIndex].id));
+            }
+        }
+
+        return values.join(QLatin1Char(','));
+    };
+    const auto absorbedSourcesText = [&regionOverlay](const FillUnit &unit) {
+        QStringList values;
+        values.reserve(unit.absorbedIndices.size());
+        for (const int sourceIndex : unit.absorbedIndices) {
+            if (sourceIndex >= 0 && sourceIndex < regionOverlay.regions.size()) {
+                values.push_back(QStringLiteral("%1/label-%2")
+                                     .arg(sourceIndex)
+                                     .arg(regionOverlay.regions[sourceIndex].id));
+            }
+        }
+
+        return values.join(QLatin1Char(','));
+    };
+    for (int i = 0; i < units.size(); ++i) {
+        log << QStringLiteral("plan #%1 color=%2 sources=%3 absorbed=%4 area=%5")
+                   .arg(i)
+                   .arg(units[i].color.name(QColor::HexRgb))
+                   .arg(unitSourcesText(units[i]))
+                   .arg(absorbedSourcesText(units[i]))
+                   .arg(units[i].area, 0, 'f', 0);
     }
     result.totalRegions = units.size();
     if (progress) {
@@ -986,14 +1050,6 @@ RegionFillBatchResult computeRegionFills(
             biggestUnitIndex = i;
         }
     }
-
-    QStringList log;
-    log << QStringLiteral("Fill Regions diagnostic - image %1x%2, tolerance %3, "
-                          "%4 source regions (as-is, extraction order)")
-               .arg(regionOverlay.imageSize.width())
-               .arg(regionOverlay.imageSize.height())
-               .arg(tolerance, 0, 'f', 3)
-               .arg(units.size());
 
     struct UnitWorkResult {
         PenFillResult fit;
@@ -1110,11 +1166,11 @@ RegionFillBatchResult computeRegionFills(
     const FillUnit &biggestUnit = units[biggestUnitIndex];
     const UnitWorkResult &biggestWork =
         workResults[static_cast<size_t>(biggestUnitIndex)];
-    log << QStringLiteral("Biggest region points: region #%1 (source #%2) %3 area=%4, "
+    log << QStringLiteral("Biggest region points: region #%1 (sources %2) %3 area=%4, "
                           "original=%5 optimized=%6 flattened=%7 removed-hard=%8, "
                           "optimization-skipped=%9, DSSIM=%10")
                .arg(biggestUnitIndex)
-               .arg(biggestUnit.sourceIndex)
+               .arg(unitSourcesText(biggestUnit))
                .arg(biggestUnit.color.name())
                .arg(biggestUnit.area, 0, 'f', 0)
                .arg(biggestWork.contourStats.originalPointCount)
@@ -1134,7 +1190,7 @@ RegionFillBatchResult computeRegionFills(
         stream.setRealNumberPrecision(17);
         stream << "Largest Fill Region path points\n"
                << "region_index=" << biggestUnitIndex << '\n'
-               << "source_index=" << biggestUnit.sourceIndex << '\n'
+               << "source_indices=" << unitSourcesText(biggestUnit) << '\n'
                << "color=" << biggestUnit.color.name() << '\n'
                << "area=" << biggestUnit.area << '\n'
                << "original_pen_point_count="
@@ -1210,6 +1266,7 @@ RegionFillBatchResult computeRegionFills(
             layer.color = unit.color;
             layer.area = unit.area;
             layer.placements = std::move(work.fit.placements);
+            layer.drawOrder = i;
             placementCount += layer.placements.size();
             ++filled;
         } else {
@@ -1230,9 +1287,9 @@ RegionFillBatchResult computeRegionFills(
                           .arg(work.fallbackInputPoints)
                           .arg(work.fallbackMeshPoints);
         }
-        log << QStringLiteral("region #%1 (source #%2) %3 %4: area=%5 -> %6 shapes, %7 ms%8")
+        log << QStringLiteral("region #%1 (sources %2) %3 %4: area=%5 -> %6 shapes, %7 ms%8")
                    .arg(i)
-                   .arg(unit.sourceIndex)
+                   .arg(unitSourcesText(unit))
                    .arg(unit.color.name())
                    .arg(work.via)
                    .arg(unit.area, 0, 'f', 0)
@@ -1241,13 +1298,20 @@ RegionFillBatchResult computeRegionFills(
                    .arg(detail);
     }
 
-    // Preserve extraction order regardless of parallel completion order.
     for (RegionFillLayer &layer : unitFills) {
         if (!layer.placements.isEmpty()) {
             fills.push_back(std::move(layer));
         }
     }
-    log << QStringLiteral("Summary: %1 source regions filled (%2 baseline Pen retries, "
+    sortRegionFillLayersByDrawOrder(&fills);
+    const bool drawOrderPreserved = std::is_sorted(
+        fills.cbegin(), fills.cend(),
+        [](const RegionFillLayer &left, const RegionFillLayer &right) {
+            return left.drawOrder < right.drawOrder;
+        });
+    log << QStringLiteral("Parallel draw order preserved: %1")
+               .arg(drawOrderPreserved ? QStringLiteral("yes") : QStringLiteral("no"));
+    log << QStringLiteral("Summary: %1 planned units filled (%2 baseline Pen retries, "
                           "%3 optimized-contour mesh fallbacks), %4 shapes, %5 failed, "
                           "%6 timed out")
                .arg(filled)
@@ -1283,7 +1347,7 @@ RegionFillBatchResult computeRegionFills(
         result.error = QStringLiteral("No regions could be filled%1").arg(reasonSuffix);
         return result;
     }
-    result.summary = QStringLiteral("Filled %1 regions with %2 shapes "
+    result.summary = QStringLiteral("Filled %1 layer units with %2 shapes "
                                     "(%3 failed, %4 timed out)%5")
         .arg(fills.size())
         .arg(placementCount)

@@ -2,6 +2,7 @@
 #include "lining_fill.h"
 #include "region_extract.h"
 #include "region_fill.h"
+#include "region_layer_plan.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -98,6 +99,54 @@ double filledPathArea(const QPainterPath &path)
         }
         result += std::abs(twiceArea * 0.5);
     }
+    return result;
+}
+
+gui::ExtractedRegion rasterRegion(const std::vector<int> &labels,
+                                  const QSize &size,
+                                  int label,
+                                  const QColor &color)
+{
+    std::vector<std::uint8_t> mask(labels.size(), 0);
+    QRect bounds;
+    int area = 0;
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < size.width(); ++x) {
+            const int pixel = y * size.width() + x;
+            if (labels[static_cast<size_t>(pixel)] != label) {
+                continue;
+            }
+            mask[static_cast<size_t>(pixel)] = 1;
+            const QRect pixelBounds(x, y, 1, 1);
+            bounds = bounds.isNull() ? pixelBounds : bounds.united(pixelBounds);
+            ++area;
+        }
+    }
+    gui::RegionExtractionParams params;
+    params.traceSpeckle = 0;
+    gui::ExtractedRegion region;
+    region.id = label;
+    region.color = color;
+    region.outline = gui::traceMaskToPath(mask, size.width(), size.height(), bounds, params);
+    region.bounds = bounds;
+    region.area = area;
+
+    return region;
+}
+
+gui::RegionExtractionResult rasterExtraction(const std::vector<int> &labels,
+                                              const QSize &size,
+                                              QVector<gui::ExtractedRegion> regions)
+{
+    auto raster = QSharedPointer<gui::RegionRasterData>::create();
+    raster->labels = labels;
+    raster->traceParams.traceSpeckle = 0;
+    gui::RegionExtractionResult result;
+    result.imageSize = size;
+    result.colorRegionCount = regions.size();
+    result.regions = std::move(regions);
+    result.raster = raster;
+
     return result;
 }
 
@@ -882,6 +931,72 @@ void residualLineHistoryMergesMissedComponent(TestContext *test) {
     }
 }
 
+void regionLayerPlanAbsorbsBehindEnclosedRegion(TestContext *test)
+{
+    const QSize size(24, 24);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = 11; y <= 12; ++y) {
+        for (int x = 11; x <= 12; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 1, QColor(30, 110, 220)));
+    sourceRegions.push_back(rasterRegion(labels, size, 0, QColor(220, 60, 40)));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "an enclosed-region plan should pass exact raster validation");
+    test->expect(plan.units.size() == 2 && plan.absorbedRegionCount == 1,
+                 "a small enclosed region should retain an overlay over one backdrop");
+    if (plan.units.size() == 2) {
+        test->expect(plan.units[0].sourceRegionIndices == QVector<int>{1}
+                         && plan.units[0].absorbedRegionIndices == QVector<int>{0},
+                     "the surrounding region should absorb the enclosed footprint");
+        test->expect(plan.units[1].sourceRegionIndices == QVector<int>{0},
+                     "the enclosed region should draw after its surrounding region");
+    }
+}
+
+void regionLayerPlanMergesAdjacentExactColors(TestContext *test)
+{
+    const QSize size(16, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = size.width() / 2; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor color(180, 70, 50);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, color));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, color));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(!plan.fallback && plan.units.size() == 1,
+                 "adjacent regions with an exact color match should form one fill unit");
+    test->expect(plan.sameColorMergeCount == 1
+                     && plan.units.front().sourceRegionIndices == QVector<int>{0, 1},
+                 "a same-color unit should retain both source mappings");
+}
+
+void completedRegionLayersUsePlannedDrawOrder(TestContext *test)
+{
+    QVector<gui::RegionFillLayer> layers(3);
+    layers[0].drawOrder = 2;
+    layers[1].drawOrder = 0;
+    layers[2].drawOrder = 1;
+    gui::sortRegionFillLayersByDrawOrder(&layers);
+
+    test->expect(layers[0].drawOrder == 0 && layers[1].drawOrder == 1
+                     && layers[2].drawOrder == 2,
+                 "completed parallel layers should return to planned draw order");
+}
+
 void crossedCoreRetainsValidFits(TestContext *test)
 {
     const QVector<gui::PenPrimitive> primitives = penPrimitiveCatalog(test);
@@ -1470,6 +1585,9 @@ int main(int argc, char **argv)
     lineartDiagnosticCapturesComponentTopology(&test);
     blendWithoutLineVotesRemainsAColorRegion(&test);
     residualLineHistoryMergesMissedComponent(&test);
+    regionLayerPlanAbsorbsBehindEnclosedRegion(&test);
+    regionLayerPlanMergesAdjacentExactColors(&test);
+    completedRegionLayersUsePlannedDrawOrder(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);
     openCenterlineBuildsAndFills(&test);

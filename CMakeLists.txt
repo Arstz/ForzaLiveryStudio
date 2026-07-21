@@ -178,6 +178,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/region_extract.h
     src/gui/canvas/region_fill.cpp
     src/gui/canvas/region_fill.h
+    src/gui/canvas/region_layer_plan.cpp
+    src/gui/canvas/region_layer_plan.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas_bucket.cpp
     src/gui/canvas/project_canvas_pen.cpp
@@ -273,6 +275,7 @@ if(BUILD_TESTING)
         src/gui/canvas/polygon_mesh.cpp
         src/gui/canvas/region_extract.cpp
         src/gui/canvas/region_fill.cpp
+        src/gui/canvas/region_layer_plan.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_region_pen_conversion_tests PRIVATE

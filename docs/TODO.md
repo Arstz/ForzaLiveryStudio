@@ -13,6 +13,7 @@ Small changes:
     -Allow the Toolbar widget to be vertical style with icons only, Photoshop style, add as a switch in Settings
 
 Medium changes:
+    -Handle files that were passed as params on application launch, if 3so -> open project if image pass the image as a Guidelayer to a new project
     -Add a checkbox to allow Opacity and Skew tools to be separate (use ToolOpacity and ToolbarSkew), if checked no skew anchor should appear in Transform tool, off by default.
     -Add dragging layer in Layers widget to scroll the list if near upper or lower borders
 
@@ -23,6 +24,7 @@ Big changes:
     -Retire legacy format support in next version
 
 Manual tasks:
+    -Create application icon, splash screen image
     -Rewrite manual user-oriented
     -Add hints for all settings, regroup options and settings
     -Rename logos and cars to align with the game

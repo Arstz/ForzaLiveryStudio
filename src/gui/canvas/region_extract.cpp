@@ -1936,6 +1936,10 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     if (result.regions.isEmpty()) {
         result.error = QStringLiteral("No regions survived the minimum-area filter");
     }
+    auto raster = QSharedPointer<RegionRasterData>::create();
+    raster->labels = finalSeg.labels;
+    raster->traceParams = params;
+    result.raster = raster;
     writeRegionExtractionDiagnostic(image, params, naturalPalette, diagnosticSeg,
                                     diagnosticLineartMask, finalSeg, lineartMask,
                                     fringeCleanup, passDiagnostics,

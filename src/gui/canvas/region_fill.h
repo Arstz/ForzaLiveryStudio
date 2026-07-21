@@ -16,6 +16,7 @@ struct RegionFillLayer {
     QColor color;
     double area = 0.0;
     QVector<PenPlacement> placements;
+    int drawOrder = -1;
 };
 
 struct GeneratedRegionShape {
@@ -52,6 +53,8 @@ RegionFillBatchResult computeRegionFills(
     const RegionFillBatchRequest &request,
     const std::function<void(int completed, int total)> &progress = {},
     const std::function<bool()> &cancelled = {});
+
+void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers);
 
 struct RegionPenConversionOptions {
     double mergeTolerance = 1.1;

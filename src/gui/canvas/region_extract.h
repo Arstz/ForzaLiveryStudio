@@ -37,9 +37,15 @@ struct ExtractedRegion {
     int debugColor = 0;
 };
 
+struct RegionRasterData {
+    std::vector<int> labels;
+    RegionExtractionParams traceParams;
+};
+
 struct RegionExtractionResult {
     QSize imageSize;
     QVector<ExtractedRegion> regions;
+    QSharedPointer<const RegionRasterData> raster;
     int colorRegionCount = 0;
     int lineartRegionCount = 0;
     int mergedSmallRegionCount = 0;
