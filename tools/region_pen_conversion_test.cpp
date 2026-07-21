@@ -731,6 +731,155 @@ void smallRegionMergesIntoClosestColorNeighbor(TestContext *test)
         test->expect(orange->area == 25,
                      "small region pixels should be reassigned to the closest-color neighbor");
     }
+    QFile diagnosticFile(QDir(QCoreApplication::applicationDirPath())
+                             .filePath(QStringLiteral("region_extract.log")));
+    test->expect(diagnosticFile.open(QIODevice::ReadOnly | QIODevice::Text),
+                 "region extraction should write its diagnostic log");
+    if (diagnosticFile.isOpen()) {
+        const QByteArray diagnostic = diagnosticFile.readAll();
+        test->expect(diagnostic.contains("pass requested_colors="),
+                     "region extraction diagnostics should include progressive pass metrics");
+        test->expect(diagnostic.contains("votes sum="),
+                     "region extraction diagnostics should include progressive line votes");
+        test->expect(diagnostic.contains("cleanup narrow="),
+                     "region extraction diagnostics should include fringe cleanup decisions");
+        test->expect(diagnostic.contains("neighbor label="),
+                     "region extraction diagnostics should include component adjacency");
+    }
+}
+
+void lineartDiagnosticCapturesComponentTopology(TestContext *test) {
+    QImage image(23, 9, QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            QColor color(60, 120, 220);
+            if (x < 10) {
+                color = QColor(220, 80, 60);
+            } else if (x == 10) {
+                color = QColor(105, 42, 33);
+            } else if (x == 11) {
+                color = QColor(10, 10, 10);
+            } else if (x == 12) {
+                color = QColor(33, 60, 105);
+            }
+            image.setPixelColor(x, y, color);
+        }
+    }
+
+    gui::RegionExtractionParams params;
+    params.maxColorCount = 5;
+    params.colorMergeDistance = 0.0;
+    params.colorFrequencyFloor = 0.0;
+    params.minRegionArea = 1;
+    params.smallRegionMergeArea = 0;
+    params.blurPasses = 0;
+    params.traceSpeckle = 0;
+    const gui::RegionExtractionResult result = gui::extractRegions(image, params);
+    test->expect(result.valid() && result.colorRegionCount == 2,
+                  "lineart cleanup fixture should absorb both fringe regions into their fills");
+    test->expect(result.lineartRegionCount == 1,
+                  "lineart diagnostic fixture should detect its separating stroke");
+    const bool expandedFills = std::all_of(
+        result.regions.cbegin(), result.regions.cend(), [](const gui::ExtractedRegion &region) {
+            return region.lineart || region.area == 99;
+        });
+    test->expect(expandedFills,
+                 "lineart fringe pixels should be retained in neighboring color regions");
+
+    QFile diagnosticFile(QDir(QCoreApplication::applicationDirPath())
+                             .filePath(QStringLiteral("region_extract.log")));
+    test->expect(diagnosticFile.open(QIODevice::ReadOnly | QIODevice::Text),
+                 "lineart extraction should write its diagnostic log");
+    if (diagnosticFile.isOpen()) {
+        const QByteArray diagnostic = diagnosticFile.readAll();
+        test->expect(diagnostic.contains("core_lineart_pixels=9"),
+                     "lineart diagnostics should measure the final lineart mask");
+        test->expect(diagnostic.contains("final_lineart=yes"),
+                     "lineart diagnostics should identify final lineart components");
+        test->expect(diagnostic.contains("boundary_edges=9"),
+                     "lineart diagnostics should measure color-to-line boundary contact");
+        test->expect(diagnostic.contains("cleanup_merged_labels=2"),
+                     "lineart diagnostics should record both merged fringe labels");
+        test->expect(diagnostic.count("action=merged-color") == 2,
+                     "lineart diagnostics should record each fringe merge target");
+    }
+}
+
+void blendWithoutLineVotesRemainsAColorRegion(TestContext *test) {
+    QImage image(28, 9, QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            QColor color(60, 120, 220);
+            if (x < 10) {
+                color = QColor(220, 80, 60);
+            } else if (x == 10 || x == 11) {
+                color = QColor(199, 73, 55);
+            } else if (x == 12 || x == 13) {
+                color = QColor(10, 10, 10);
+            } else if (x == 14 || x == 15) {
+                color = QColor(55, 109, 199);
+            }
+            image.setPixelColor(x, y, color);
+        }
+    }
+    image.setPixelColor(0, 0, QColor(10, 10, 10));
+
+    gui::RegionExtractionParams params;
+    params.maxColorCount = 5;
+    params.colorMergeDistance = 0.0;
+    params.colorFrequencyFloor = 0.0;
+    params.minRegionArea = 2;
+    params.smallRegionMergeArea = 0;
+    params.blurPasses = 0;
+    params.traceSpeckle = 0;
+    const gui::RegionExtractionResult result = gui::extractRegions(image, params);
+    test->expect(result.valid() && result.colorRegionCount == 4,
+                 "color blending without progressive line votes should not trigger cleanup");
+    test->expect(result.lineartRegionCount == 1,
+                 "the separating stroke should remain lineart when blend regions are retained");
+}
+
+void residualLineHistoryMergesMissedComponent(TestContext *test) {
+    QImage image(23, 9, QImage::Format_ARGB32);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            QColor color(60, 120, 220);
+            if (x < 10) {
+                color = QColor(220, 80, 60);
+            } else if (x == 10 || x == 11) {
+                color = QColor(180, 100, 100);
+            } else if (x == 12) {
+                color = QColor(10, 10, 10);
+            }
+            image.setPixelColor(x, y, color);
+        }
+    }
+
+    gui::RegionExtractionParams params;
+    params.maxColorCount = 4;
+    params.colorMergeDistance = 0.0;
+    params.colorFrequencyFloor = 0.0;
+    params.minRegionArea = 1;
+    params.smallRegionMergeArea = 0;
+    params.blurPasses = 0;
+    params.traceSpeckle = 0;
+    const gui::RegionExtractionResult result = gui::extractRegions(image, params);
+    test->expect(result.valid() && result.colorRegionCount == 2,
+                 "residual line history should absorb a component missed by the strict gate");
+    test->expect(result.lineartRegionCount == 1,
+                 "residual cleanup should retain the recognized separating stroke");
+
+    QFile diagnosticFile(QDir(QCoreApplication::applicationDirPath())
+                             .filePath(QStringLiteral("region_extract.log")));
+    test->expect(diagnosticFile.open(QIODevice::ReadOnly | QIODevice::Text),
+                 "residual cleanup should write its diagnostic log");
+    if (diagnosticFile.isOpen()) {
+        const QByteArray diagnostic = diagnosticFile.readAll();
+        test->expect(diagnostic.contains("cleanup_residual_evidence_labels=1"),
+                     "residual cleanup diagnostics should count the missed component");
+        test->expect(diagnostic.contains("evidence_reason=residual-line-history"),
+                     "residual cleanup diagnostics should record historical evidence");
+    }
 }
 
 void crossedCoreRetainsValidFits(TestContext *test)
@@ -1318,6 +1467,9 @@ int main(int argc, char **argv)
     arcPrimitivesFillCurvedBoundaries(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);
     smallRegionMergesIntoClosestColorNeighbor(&test);
+    lineartDiagnosticCapturesComponentTopology(&test);
+    blendWithoutLineVotesRemainsAColorRegion(&test);
+    residualLineHistoryMergesMissedComponent(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);
     openCenterlineBuildsAndFills(&test);

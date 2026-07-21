@@ -15,6 +15,37 @@ namespace gui {
 namespace {
 
 constexpr int kPotraceWordBits = static_cast<int>(sizeof(potrace_word) * 8);
+constexpr int kLineFringeBandRadius = 3;
+constexpr int kLineFringeMinimumVotes = 2;
+constexpr int kLineFringeMinimumStreak = 2;
+constexpr double kLineFringeMinimumBandFraction = 0.8;
+constexpr double kLineFringeMinimumContactFraction = 0.08;
+constexpr double kLineFringeMinimumOverlapFraction = 0.05;
+constexpr double kLineFringeMaximumBlendResidual = 18.0;
+constexpr double kLineFringeMinimumTargetFraction = 0.05;
+constexpr double kLineFringeMaximumTargetFraction = 0.95;
+constexpr double kLineFringePersistentVoteFraction = 0.3;
+constexpr double kLineFringePersistentStreakFraction = 0.2;
+constexpr double kLineFringePalettePrior = 0.35;
+constexpr double kLineFringePaletteMeanVoteFraction = 0.2;
+constexpr double kLineFringePalettePersistentCoverage = 0.4;
+constexpr double kLineFringeDirectMeanVoteFraction = 0.3;
+constexpr double kLineFringeDirectPersistentCoverage = 0.55;
+constexpr double kLineFringeBlendMeanVoteFraction = 0.2;
+constexpr double kLineFringeBlendOverlapCoverage = 0.8;
+constexpr int kResidualLineWidthMultiplier = 2;
+constexpr int kResidualLineExtendedWidthMultiplier = 3;
+constexpr double kResidualLinePalettePrior = 0.35;
+constexpr double kResidualLineMinimumOverlapCoverage = 0.25;
+constexpr double kResidualLineMinimumMeanVoteFraction = 0.05;
+constexpr double kResidualLineExtendedOverlapCoverage = 0.9;
+constexpr double kResidualLineExtendedPersistentCoverage = 0.3;
+constexpr double kResidualLineHistoricalOverlapCoverage = 0.9;
+constexpr double kResidualLineHistoricalMeanVoteFraction = 0.05;
+constexpr double kResidualLineDirectPalettePrior = 0.1;
+constexpr double kResidualLineDirectOverlapCoverage = 0.2;
+constexpr double kResidualLineDirectMeanVoteFraction = 0.02;
+constexpr double kResidualLineDirectContactFraction = 0.1;
 
 // potrace works in a y-up space with the bitmap's bottom-left at the origin;
 // map a traced point back to image-pixel space (y-down). Derivation: a 1px
@@ -271,6 +302,90 @@ struct PassResult {
     std::vector<QSet<int>> adjacency; // per label
     double widthCap = 0.0;
     int mergedSmallRegions = 0;
+};
+
+struct ExtractionPassDiagnostic {
+    int requestedColors = 0;
+    int paletteColors = 0;
+    int regions = 0;
+    int lineartRegions = 0;
+    int accumulatedLineartPixels = 0;
+    int mergedSmallRegions = 0;
+};
+
+struct RegionDiagnosticMetrics {
+    QHash<int, int> neighborEdges;
+    qint64 lineRedSum = 0;
+    qint64 lineGreenSum = 0;
+    qint64 lineBlueSum = 0;
+    int lineSamples = 0;
+    int lineOverlapPixels = 0;
+    int lineBoundaryEdges = 0;
+    int perimeterEdges = 0;
+    int backgroundEdges = 0;
+    int bandPixels1 = 0;
+    int bandPixels2 = 0;
+    int bandPixels3 = 0;
+};
+
+struct LineFringeBlend {
+    double targetFraction = 0.0;
+    double residual = std::numeric_limits<double>::infinity();
+    bool valid = false;
+};
+
+enum class LineFringeAction {
+    Retained,
+    MergedIntoColor,
+    AddedToLineart,
+};
+
+struct LineFringeDecision {
+    QString reason = QStringLiteral("not-evaluated");
+    QString evidenceReason = QStringLiteral("none");
+    qint64 voteSum = 0;
+    int persistentPixels = 0;
+    int streakPixels = 0;
+    int overlapPixels = 0;
+    int lineBoundaryEdges = 0;
+    int perimeterEdges = 0;
+    int firstLinePass = -1;
+    int lastLinePass = -1;
+    int graphRoot = -1;
+    int targetLabel = -1;
+    int targetSharedEdges = 0;
+    int blendTargetLabel = -1;
+    double paletteLinePrior = 0.0;
+    double blendTargetFraction = 0.0;
+    double blendResidual = std::numeric_limits<double>::infinity();
+    bool narrow = false;
+    bool evidenceCandidate = false;
+    bool residualCandidate = false;
+    bool cleanupCandidate = false;
+    LineFringeAction action = LineFringeAction::Retained;
+};
+
+struct LineFringeCleanupResult {
+    std::vector<LineFringeDecision> decisions;
+    std::vector<qint64> paletteArea;
+    std::vector<qint64> paletteLineartArea;
+    int passCount = 0;
+    int voteThreshold = 0;
+    int streakThreshold = 0;
+    int referenceLineHalfWidth = 0;
+    int residualLineHalfWidth = 0;
+    int residualLineExtendedHalfWidth = 0;
+    int candidateGraphs = 0;
+    int candidateLabels = 0;
+    int candidatePixels = 0;
+    int residualCandidateLabels = 0;
+    int residualCandidatePixels = 0;
+    int mergedLabels = 0;
+    int mergedPixels = 0;
+    int lineartLabels = 0;
+    int lineartPixels = 0;
+    int foregroundPixelsBefore = 0;
+    int foregroundPixelsAfter = 0;
 };
 
 int mergeSmallRegions(PassResult *pass, int width, int height, int areaThreshold) {
@@ -620,6 +735,979 @@ PassResult segmentPass(const QImage &image,
     return pass;
 }
 
+double rgbDistance(const QColor &left, const QColor &right);
+LineFringeBlend lineFringeBlend(const QColor &sample,
+                                const QColor &line,
+                                const QColor &target);
+
+void rebuildPassTopology(PassResult *pass, int width, int height) {
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    const int distanceInfinity = width + height + 1;
+    std::vector<int> distance(pixelCount, 0);
+    for (RegionAccum &accum : pass->accums) {
+        accum.area = 0;
+        accum.minX = width;
+        accum.minY = height;
+        accum.maxX = -1;
+        accum.maxY = -1;
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int label = pass->labels[index];
+            if (label < 0) {
+                continue;
+            }
+            RegionAccum &accum = pass->accums[static_cast<size_t>(label)];
+            ++accum.area;
+            accum.minX = std::min(accum.minX, x);
+            accum.minY = std::min(accum.minY, y);
+            accum.maxX = std::max(accum.maxX, x);
+            accum.maxY = std::max(accum.maxY, y);
+            const bool boundary = x == 0 || pass->labels[index - 1] != label
+                || x == width - 1 || pass->labels[index + 1] != label
+                || y == 0 || pass->labels[index - width] != label
+                || y == height - 1 || pass->labels[index + width] != label;
+            distance[index] = boundary ? 0 : distanceInfinity;
+        }
+    }
+
+    pass->adjacency.assign(pass->accums.size(), {});
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int label = pass->labels[index];
+            if (label < 0) {
+                continue;
+            }
+            if (x + 1 < width) {
+                const int neighbor = pass->labels[index + 1];
+                if (neighbor >= 0 && neighbor != label) {
+                    pass->adjacency[static_cast<size_t>(label)].insert(neighbor);
+                    pass->adjacency[static_cast<size_t>(neighbor)].insert(label);
+                }
+            }
+            if (y + 1 < height) {
+                const int neighbor = pass->labels[index + width];
+                if (neighbor >= 0 && neighbor != label) {
+                    pass->adjacency[static_cast<size_t>(label)].insert(neighbor);
+                    pass->adjacency[static_cast<size_t>(neighbor)].insert(label);
+                }
+            }
+        }
+    }
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int label = pass->labels[index];
+            if (label < 0 || distance[index] == 0) {
+                continue;
+            }
+            int best = distance[index];
+            if (x > 0 && pass->labels[index - 1] == label) {
+                best = std::min(best, distance[index - 1] + 1);
+            }
+            if (y > 0 && pass->labels[index - width] == label) {
+                best = std::min(best, distance[index - width] + 1);
+            }
+            distance[index] = best;
+        }
+    }
+    pass->maxDistance.assign(pass->accums.size(), 0);
+    for (int y = height - 1; y >= 0; --y) {
+        for (int x = width - 1; x >= 0; --x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int label = pass->labels[index];
+            if (label < 0) {
+                continue;
+            }
+            int best = distance[index];
+            if (best != 0) {
+                if (x + 1 < width && pass->labels[index + 1] == label) {
+                    best = std::min(best, distance[index + 1] + 1);
+                }
+                if (y + 1 < height && pass->labels[index + width] == label) {
+                    best = std::min(best, distance[index + width] + 1);
+                }
+                distance[index] = best;
+            }
+            pass->maxDistance[static_cast<size_t>(label)] = std::max(
+                pass->maxDistance[static_cast<size_t>(label)], best);
+        }
+    }
+    for (RegionAccum &accum : pass->accums) {
+        if (accum.area == 0) {
+            accum.minX = 0;
+            accum.minY = 0;
+            accum.maxX = 0;
+            accum.maxY = 0;
+        }
+    }
+}
+
+LineFringeCleanupResult cleanLineFringes(
+    PassResult *pass,
+    int width,
+    int height,
+    int minimumArea,
+    int passCount,
+    const std::vector<int> &lineVotes,
+    const std::vector<int> &longestLineStreak,
+    const std::vector<int> &firstLinePass,
+    const std::vector<int> &lastLinePass,
+    std::vector<bool> *lineartMask) {
+    const int labelCount = static_cast<int>(pass->accums.size());
+    const int paletteCount = pass->palette.size();
+    const int voteThreshold = std::max(
+        kLineFringeMinimumVotes,
+        static_cast<int>(std::ceil(passCount * kLineFringePersistentVoteFraction)));
+    const int streakThreshold = std::max(
+        kLineFringeMinimumStreak,
+        static_cast<int>(std::ceil(passCount * kLineFringePersistentStreakFraction)));
+    const int directions[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    QVector<int> recognizedLineHalfWidths;
+    std::vector<QHash<int, int>> boundaryEdges(static_cast<size_t>(labelCount));
+    std::vector<int> graphLabel(static_cast<size_t>(labelCount), -1);
+    LineFringeCleanupResult result;
+    for (int label = 0; label < labelCount; ++label) {
+        if (pass->lineart[static_cast<size_t>(label)]
+            && pass->accums[static_cast<size_t>(label)].area >= minimumArea) {
+            recognizedLineHalfWidths.push_back(
+                pass->maxDistance[static_cast<size_t>(label)]);
+        }
+    }
+    std::sort(recognizedLineHalfWidths.begin(), recognizedLineHalfWidths.end());
+    const int referenceLineHalfWidth = recognizedLineHalfWidths.isEmpty()
+        ? 1
+        : std::max(1, recognizedLineHalfWidths[recognizedLineHalfWidths.size() / 2]);
+    result.decisions.resize(static_cast<size_t>(labelCount));
+    result.paletteArea.assign(static_cast<size_t>(paletteCount), 0);
+    result.paletteLineartArea.assign(static_cast<size_t>(paletteCount), 0);
+    result.passCount = passCount;
+    result.voteThreshold = voteThreshold;
+    result.streakThreshold = streakThreshold;
+    result.referenceLineHalfWidth = referenceLineHalfWidth;
+    result.residualLineHalfWidth = referenceLineHalfWidth * kResidualLineWidthMultiplier;
+    result.residualLineExtendedHalfWidth = referenceLineHalfWidth
+        * kResidualLineExtendedWidthMultiplier;
+    for (int label = 0; label < labelCount; ++label) {
+        const RegionAccum &accum = pass->accums[static_cast<size_t>(label)];
+        result.foregroundPixelsBefore += accum.area;
+        result.paletteArea[static_cast<size_t>(accum.paletteIndex)] += accum.area;
+        if (pass->lineart[static_cast<size_t>(label)]) {
+            result.paletteLineartArea[static_cast<size_t>(accum.paletteIndex)] += accum.area;
+        }
+    }
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int label = pass->labels[index];
+            if (label < 0) {
+                continue;
+            }
+            LineFringeDecision &decision = result.decisions[static_cast<size_t>(label)];
+            decision.voteSum += lineVotes[index];
+            if (lineVotes[index] >= voteThreshold) {
+                ++decision.persistentPixels;
+            }
+            if (longestLineStreak[index] >= streakThreshold) {
+                ++decision.streakPixels;
+            }
+            if ((*lineartMask)[index]) {
+                ++decision.overlapPixels;
+            }
+            if (firstLinePass[index] >= 0
+                && (decision.firstLinePass < 0
+                    || firstLinePass[index] < decision.firstLinePass)) {
+                decision.firstLinePass = firstLinePass[index];
+            }
+            decision.lastLinePass = std::max(decision.lastLinePass, lastLinePass[index]);
+            for (const auto &direction : directions) {
+                const int neighborX = x + direction[0];
+                const int neighborY = y + direction[1];
+                if (neighborX < 0 || neighborY < 0
+                    || neighborX >= width || neighborY >= height) {
+                    ++decision.perimeterEdges;
+                    continue;
+                }
+                const size_t neighborIndex = static_cast<size_t>(neighborY) * width + neighborX;
+                const int neighborLabel = pass->labels[neighborIndex];
+                if (neighborLabel == label) {
+                    continue;
+                }
+                ++decision.perimeterEdges;
+                if (neighborLabel >= 0) {
+                    ++boundaryEdges[static_cast<size_t>(label)][neighborLabel];
+                    if (pass->lineart[static_cast<size_t>(neighborLabel)]) {
+                        ++decision.lineBoundaryEdges;
+                    }
+                }
+            }
+        }
+    }
+
+    for (int label = 0; label < labelCount; ++label) {
+        const RegionAccum &accum = pass->accums[static_cast<size_t>(label)];
+        LineFringeDecision &decision = result.decisions[static_cast<size_t>(label)];
+        const double area = std::max(1, accum.area);
+        const double meanVoteFraction = passCount > 0
+            ? decision.voteSum / (area * passCount) : 0.0;
+        const double persistentCoverage = decision.persistentPixels / area;
+        const double overlapCoverage = decision.overlapPixels / area;
+        const double contactFraction = decision.lineBoundaryEdges
+            / static_cast<double>(std::max(1, decision.perimeterEdges));
+        const qint64 paletteArea = result.paletteArea[static_cast<size_t>(accum.paletteIndex)];
+        decision.paletteLinePrior = paletteArea > 0
+            ? static_cast<double>(result.paletteLineartArea[
+                  static_cast<size_t>(accum.paletteIndex)]) / paletteArea
+            : 0.0;
+        decision.narrow = 2.0 * pass->maxDistance[static_cast<size_t>(label)]
+            <= pass->widthCap;
+        if (pass->lineart[static_cast<size_t>(label)]) {
+            decision.reason = QStringLiteral("final-lineart");
+            continue;
+        }
+        if (accum.area < minimumArea) {
+            decision.reason = QStringLiteral("below-minimum-area");
+            continue;
+        }
+        if (!decision.narrow) {
+            decision.reason = QStringLiteral("too-wide");
+            continue;
+        }
+        const bool paletteEvidence = decision.paletteLinePrior >= kLineFringePalettePrior
+            && meanVoteFraction >= kLineFringePaletteMeanVoteFraction
+            && persistentCoverage >= kLineFringePalettePersistentCoverage;
+        const bool strongDirectPersistence = decision.lineBoundaryEdges > 0
+            && meanVoteFraction >= kLineFringeDirectMeanVoteFraction
+            && persistentCoverage >= kLineFringeDirectPersistentCoverage;
+        qint64 lineRed = 0;
+        qint64 lineGreen = 0;
+        qint64 lineBlue = 0;
+        int lineEdges = 0;
+        for (auto it = boundaryEdges[static_cast<size_t>(label)].cbegin();
+             it != boundaryEdges[static_cast<size_t>(label)].cend(); ++it) {
+            const int neighbor = it.key();
+            if (!pass->lineart[static_cast<size_t>(neighbor)]) {
+                continue;
+            }
+            const RegionAccum &neighborAccum = pass->accums[static_cast<size_t>(neighbor)];
+            const QColor neighborColor = pass->palette[neighborAccum.paletteIndex];
+            lineRed += static_cast<qint64>(neighborColor.red()) * it.value();
+            lineGreen += static_cast<qint64>(neighborColor.green()) * it.value();
+            lineBlue += static_cast<qint64>(neighborColor.blue()) * it.value();
+            lineEdges += it.value();
+        }
+        LineFringeBlend bestBlend;
+        if (lineEdges > 0) {
+            const QColor lineColor(static_cast<int>(lineRed / lineEdges),
+                                   static_cast<int>(lineGreen / lineEdges),
+                                   static_cast<int>(lineBlue / lineEdges));
+            const QColor sampleColor = pass->palette[accum.paletteIndex];
+            int bestSharedEdges = -1;
+            for (auto it = boundaryEdges[static_cast<size_t>(label)].cbegin();
+                 it != boundaryEdges[static_cast<size_t>(label)].cend(); ++it) {
+                const int neighbor = it.key();
+                if (pass->lineart[static_cast<size_t>(neighbor)]) {
+                    continue;
+                }
+                const RegionAccum &neighborAccum = pass->accums[static_cast<size_t>(neighbor)];
+                const QColor targetColor = pass->palette[neighborAccum.paletteIndex];
+                const LineFringeBlend blend = lineFringeBlend(
+                    sampleColor, lineColor, targetColor);
+                if (blend.valid
+                    && (!bestBlend.valid || blend.residual < bestBlend.residual
+                        || (blend.residual == bestBlend.residual
+                            && it.value() > bestSharedEdges)
+                        || (blend.residual == bestBlend.residual
+                            && it.value() == bestSharedEdges
+                            && neighbor < decision.blendTargetLabel))) {
+                    bestBlend = blend;
+                    bestSharedEdges = it.value();
+                    decision.blendTargetLabel = neighbor;
+                }
+            }
+        }
+        if (bestBlend.valid) {
+            decision.blendTargetFraction = bestBlend.targetFraction;
+            decision.blendResidual = bestBlend.residual;
+        }
+        const bool blendSupport = bestBlend.valid
+            && bestBlend.residual <= kLineFringeMaximumBlendResidual
+            && bestBlend.targetFraction >= kLineFringeMinimumTargetFraction
+            && bestBlend.targetFraction <= kLineFringeMaximumTargetFraction;
+        const bool blendSupportedPersistence = decision.lineBoundaryEdges > 0
+            && blendSupport
+            && meanVoteFraction >= kLineFringeBlendMeanVoteFraction
+            && overlapCoverage >= kLineFringeBlendOverlapCoverage;
+        const bool directPersistentEvidence = strongDirectPersistence
+            || blendSupportedPersistence;
+        const int halfWidth = pass->maxDistance[static_cast<size_t>(label)];
+        const bool residualPaletteWidth = halfWidth <= result.residualLineHalfWidth
+            || (halfWidth <= result.residualLineExtendedHalfWidth
+                && persistentCoverage >= kResidualLineExtendedPersistentCoverage
+                && overlapCoverage >= kResidualLineExtendedOverlapCoverage);
+        const bool residualPaletteEvidence = residualPaletteWidth
+            && decision.paletteLinePrior >= kResidualLinePalettePrior
+            && overlapCoverage >= kResidualLineMinimumOverlapCoverage
+            && meanVoteFraction >= kResidualLineMinimumMeanVoteFraction;
+        const bool residualHistoricalEvidence = halfWidth <= result.residualLineHalfWidth
+            && overlapCoverage >= kResidualLineHistoricalOverlapCoverage
+            && meanVoteFraction >= kResidualLineHistoricalMeanVoteFraction;
+        const bool residualDirectEvidence = halfWidth <= result.referenceLineHalfWidth
+            && decision.paletteLinePrior >= kResidualLineDirectPalettePrior
+            && overlapCoverage >= kResidualLineDirectOverlapCoverage
+            && meanVoteFraction >= kResidualLineDirectMeanVoteFraction
+            && contactFraction >= kResidualLineDirectContactFraction;
+        decision.residualCandidate = residualPaletteEvidence
+            || residualHistoricalEvidence || residualDirectEvidence;
+        decision.evidenceCandidate = paletteEvidence
+            || directPersistentEvidence || decision.residualCandidate;
+        if (paletteEvidence || directPersistentEvidence) {
+            decision.evidenceReason = paletteEvidence
+                ? QStringLiteral("palette-persistent")
+                : QStringLiteral("boundary-persistent");
+        } else if (decision.residualCandidate) {
+            decision.evidenceReason = residualPaletteEvidence
+                ? QStringLiteral("residual-line-palette")
+                : residualHistoricalEvidence
+                    ? QStringLiteral("residual-line-history")
+                    : QStringLiteral("residual-line-contact");
+        } else {
+            decision.evidenceReason = QStringLiteral("insufficient-persistence");
+        }
+        decision.reason = decision.evidenceReason;
+    }
+
+    for (int label = 0; label < labelCount; ++label) {
+        if (!result.decisions[static_cast<size_t>(label)].evidenceCandidate
+            || graphLabel[static_cast<size_t>(label)] >= 0) {
+            continue;
+        }
+        QVector<int> members;
+        QVector<int> pending{label};
+        graphLabel[static_cast<size_t>(label)] = label;
+        bool touchesLineart = false;
+        bool containsResidualCandidate = false;
+        while (!pending.isEmpty()) {
+            const int current = pending.back();
+            pending.pop_back();
+            members.push_back(current);
+            LineFringeDecision &decision = result.decisions[static_cast<size_t>(current)];
+            touchesLineart = touchesLineart || decision.lineBoundaryEdges > 0;
+            containsResidualCandidate = containsResidualCandidate
+                || decision.residualCandidate;
+            for (auto it = boundaryEdges[static_cast<size_t>(current)].cbegin();
+                 it != boundaryEdges[static_cast<size_t>(current)].cend(); ++it) {
+                const int neighbor = it.key();
+                if (result.decisions[static_cast<size_t>(neighbor)].evidenceCandidate
+                    && graphLabel[static_cast<size_t>(neighbor)] < 0) {
+                    graphLabel[static_cast<size_t>(neighbor)] = label;
+                    pending.push_back(neighbor);
+                }
+            }
+        }
+        if (!touchesLineart && !containsResidualCandidate) {
+            for (const int member : members) {
+                result.decisions[static_cast<size_t>(member)].reason =
+                    QStringLiteral("candidate-detached-from-lineart");
+            }
+            continue;
+        }
+
+        QHash<int, int> targetEdges;
+        qint64 graphRed = 0;
+        qint64 graphGreen = 0;
+        qint64 graphBlue = 0;
+        int graphArea = 0;
+        for (const int member : members) {
+            LineFringeDecision &decision = result.decisions[static_cast<size_t>(member)];
+            const RegionAccum &accum = pass->accums[static_cast<size_t>(member)];
+            const QColor color = pass->palette[accum.paletteIndex];
+            decision.cleanupCandidate = true;
+            decision.graphRoot = label;
+            graphRed += static_cast<qint64>(color.red()) * accum.area;
+            graphGreen += static_cast<qint64>(color.green()) * accum.area;
+            graphBlue += static_cast<qint64>(color.blue()) * accum.area;
+            graphArea += accum.area;
+            ++result.candidateLabels;
+            result.candidatePixels += accum.area;
+            if (decision.residualCandidate) {
+                ++result.residualCandidateLabels;
+                result.residualCandidatePixels += accum.area;
+            }
+            for (auto it = boundaryEdges[static_cast<size_t>(member)].cbegin();
+                 it != boundaryEdges[static_cast<size_t>(member)].cend(); ++it) {
+                const int neighbor = it.key();
+                if (!result.decisions[static_cast<size_t>(neighbor)].evidenceCandidate
+                    && !pass->lineart[static_cast<size_t>(neighbor)]
+                    && pass->accums[static_cast<size_t>(neighbor)].area > 0) {
+                    targetEdges[neighbor] += it.value();
+                }
+            }
+        }
+        ++result.candidateGraphs;
+
+        int target = -1;
+        int bestSharedEdges = -1;
+        int bestTargetArea = -1;
+        qint64 bestColorDistance = std::numeric_limits<qint64>::max();
+        for (auto it = targetEdges.cbegin(); it != targetEdges.cend(); ++it) {
+            const int candidateTarget = it.key();
+            const RegionAccum &targetAccum = pass->accums[static_cast<size_t>(candidateTarget)];
+            const QColor targetColor = pass->palette[targetAccum.paletteIndex];
+            const qint64 red = graphRed - static_cast<qint64>(targetColor.red()) * graphArea;
+            const qint64 green = graphGreen - static_cast<qint64>(targetColor.green()) * graphArea;
+            const qint64 blue = graphBlue - static_cast<qint64>(targetColor.blue()) * graphArea;
+            const qint64 colorDistance = red * red + green * green + blue * blue;
+            if (it.value() > bestSharedEdges
+                || (it.value() == bestSharedEdges && colorDistance < bestColorDistance)
+                || (it.value() == bestSharedEdges && colorDistance == bestColorDistance
+                    && targetAccum.area > bestTargetArea)
+                || (it.value() == bestSharedEdges && colorDistance == bestColorDistance
+                    && targetAccum.area == bestTargetArea && candidateTarget < target)) {
+                target = candidateTarget;
+                bestSharedEdges = it.value();
+                bestTargetArea = targetAccum.area;
+                bestColorDistance = colorDistance;
+            }
+        }
+        for (const int member : members) {
+            LineFringeDecision &decision = result.decisions[static_cast<size_t>(member)];
+            decision.targetLabel = target;
+            decision.targetSharedEdges = bestSharedEdges;
+            if (target >= 0) {
+                decision.action = LineFringeAction::MergedIntoColor;
+                decision.reason = QStringLiteral("merged-by-shared-boundary");
+                ++result.mergedLabels;
+                result.mergedPixels += pass->accums[static_cast<size_t>(member)].area;
+            } else {
+                decision.action = LineFringeAction::AddedToLineart;
+                decision.reason = QStringLiteral("enclosed-by-lineart");
+                ++result.lineartLabels;
+                result.lineartPixels += pass->accums[static_cast<size_t>(member)].area;
+            }
+        }
+    }
+
+    for (size_t index = 0; index < pass->labels.size(); ++index) {
+        const int label = pass->labels[index];
+        if (label < 0) {
+            continue;
+        }
+        const LineFringeDecision &decision = result.decisions[static_cast<size_t>(label)];
+        if (decision.action == LineFringeAction::MergedIntoColor) {
+            pass->labels[index] = decision.targetLabel;
+        } else if (decision.action == LineFringeAction::AddedToLineart) {
+            pass->labels[index] = -1;
+            (*lineartMask)[index] = true;
+        }
+    }
+    rebuildPassTopology(pass, width, height);
+    result.foregroundPixelsAfter = static_cast<int>(std::count_if(
+        pass->labels.cbegin(), pass->labels.cend(), [](int label) { return label >= 0; }));
+
+    return result;
+}
+
+double rgbDistance(const QColor &left, const QColor &right) {
+    const double red = left.red() - right.red();
+    const double green = left.green() - right.green();
+    const double blue = left.blue() - right.blue();
+
+    return std::sqrt(red * red + green * green + blue * blue);
+}
+
+LineFringeBlend lineFringeBlend(const QColor &sample,
+                                const QColor &line,
+                                const QColor &target) {
+    LineFringeBlend result;
+    if (!line.isValid() || !target.isValid()) {
+        return result;
+    }
+    const double red = target.red() - line.red();
+    const double green = target.green() - line.green();
+    const double blue = target.blue() - line.blue();
+    const double lengthSquared = red * red + green * green + blue * blue;
+    if (lengthSquared <= 1e-9) {
+        return result;
+    }
+    const double sampleRed = sample.red() - line.red();
+    const double sampleGreen = sample.green() - line.green();
+    const double sampleBlue = sample.blue() - line.blue();
+    result.targetFraction = (sampleRed * red + sampleGreen * green + sampleBlue * blue)
+        / lengthSquared;
+    const double clampedFraction = std::clamp(result.targetFraction, 0.0, 1.0);
+    const QColor projected(
+        static_cast<int>(std::lround(line.red() + clampedFraction * red)),
+        static_cast<int>(std::lround(line.green() + clampedFraction * green)),
+        static_cast<int>(std::lround(line.blue() + clampedFraction * blue)));
+    result.residual = rgbDistance(sample, projected);
+    result.valid = true;
+
+    return result;
+}
+
+std::vector<int> distanceToLineart(const std::vector<bool> &lineartMask,
+                                   int width,
+                                   int height) {
+    const int infinity = width + height + 1;
+    std::vector<int> distance(lineartMask.size(), infinity);
+    for (size_t index = 0; index < lineartMask.size(); ++index) {
+        if (lineartMask[index]) {
+            distance[index] = 0;
+        }
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (x > 0) {
+                distance[index] = std::min(distance[index], distance[index - 1] + 1);
+            }
+            if (y > 0) {
+                distance[index] = std::min(distance[index], distance[index - width] + 1);
+            }
+        }
+    }
+    for (int y = height - 1; y >= 0; --y) {
+        for (int x = width - 1; x >= 0; --x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (x + 1 < width) {
+                distance[index] = std::min(distance[index], distance[index + 1] + 1);
+            }
+            if (y + 1 < height) {
+                distance[index] = std::min(distance[index], distance[index + width] + 1);
+            }
+        }
+    }
+
+    return distance;
+}
+
+QColor diagnosticLineColor(const RegionDiagnosticMetrics &metrics,
+                           const QColor &fallback) {
+    if (metrics.lineSamples <= 0) {
+        return fallback;
+    }
+
+    return QColor(static_cast<int>(metrics.lineRedSum / metrics.lineSamples),
+                  static_cast<int>(metrics.lineGreenSum / metrics.lineSamples),
+                  static_cast<int>(metrics.lineBlueSum / metrics.lineSamples));
+}
+
+QString lineFringeActionName(LineFringeAction action) {
+    switch (action) {
+    case LineFringeAction::Retained:
+        return QStringLiteral("retained");
+    case LineFringeAction::MergedIntoColor:
+        return QStringLiteral("merged-color");
+    case LineFringeAction::AddedToLineart:
+        return QStringLiteral("added-lineart");
+    }
+
+    return QStringLiteral("unknown");
+}
+
+void writeRegionExtractionDiagnostic(
+    const QImage &image,
+    const RegionExtractionParams &params,
+    const QVector<QColor> &naturalPalette,
+    const PassResult &finalSeg,
+    const std::vector<bool> &lineartMask,
+    const PassResult &cleanedSeg,
+    const std::vector<bool> &outputLineartMask,
+    const LineFringeCleanupResult &fringeCleanup,
+    const QVector<ExtractionPassDiagnostic> &passDiagnostics,
+    const QSet<int> &extractedColorLabels,
+    const RegionExtractionResult &result) {
+    const QString path = QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("region_extract.log"));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        qWarning().noquote() << "Could not write region extraction log to" << path;
+        return;
+    }
+    const int width = image.width();
+    const int height = image.height();
+    const int outputLineartPixels = static_cast<int>(std::count(
+        outputLineartMask.cbegin(), outputLineartMask.cend(), true));
+    std::vector<bool> coreLineartMask(lineartMask.size(), false);
+    for (size_t index = 0; index < finalSeg.labels.size(); ++index) {
+        const int label = finalSeg.labels[index];
+        coreLineartMask[index] = label >= 0
+            && finalSeg.lineart[static_cast<size_t>(label)] != 0;
+    }
+    const std::vector<int> lineDistance = distanceToLineart(coreLineartMask, width, height);
+    std::vector<RegionDiagnosticMetrics> metrics(finalSeg.accums.size());
+    qint64 accumulatedLineRed = 0;
+    qint64 accumulatedLineGreen = 0;
+    qint64 accumulatedLineBlue = 0;
+    qint64 coreLineRed = 0;
+    qint64 coreLineGreen = 0;
+    qint64 coreLineBlue = 0;
+    int accumulatedLinePixels = 0;
+    int coreLinePixels = 0;
+    for (int y = 0; y < height; ++y) {
+        const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (lineartMask[index]) {
+                accumulatedLineRed += qRed(row[x]);
+                accumulatedLineGreen += qGreen(row[x]);
+                accumulatedLineBlue += qBlue(row[x]);
+                ++accumulatedLinePixels;
+            }
+            if (coreLineartMask[index]) {
+                coreLineRed += qRed(row[x]);
+                coreLineGreen += qGreen(row[x]);
+                coreLineBlue += qBlue(row[x]);
+                ++coreLinePixels;
+            }
+        }
+    }
+    const QColor accumulatedLineColor = accumulatedLinePixels > 0
+        ? QColor(static_cast<int>(accumulatedLineRed / accumulatedLinePixels),
+                 static_cast<int>(accumulatedLineGreen / accumulatedLinePixels),
+                 static_cast<int>(accumulatedLineBlue / accumulatedLinePixels))
+        : QColor();
+    const QColor globalLineColor = coreLinePixels > 0
+        ? QColor(static_cast<int>(coreLineRed / coreLinePixels),
+                 static_cast<int>(coreLineGreen / coreLinePixels),
+                 static_cast<int>(coreLineBlue / coreLinePixels))
+        : accumulatedLineColor;
+    const int directions[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    for (int y = 0; y < height; ++y) {
+        const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const int label = finalSeg.labels[index];
+            if (label < 0) {
+                continue;
+            }
+            RegionDiagnosticMetrics &entry = metrics[static_cast<size_t>(label)];
+            if (lineDistance[index] <= 1) {
+                ++entry.bandPixels1;
+            }
+            if (lineDistance[index] <= 2) {
+                ++entry.bandPixels2;
+            }
+            if (lineDistance[index] <= kLineFringeBandRadius) {
+                ++entry.bandPixels3;
+            }
+            if (lineartMask[index]) {
+                ++entry.lineOverlapPixels;
+            }
+            if (coreLineartMask[index]) {
+                entry.lineRedSum += qRed(row[x]);
+                entry.lineGreenSum += qGreen(row[x]);
+                entry.lineBlueSum += qBlue(row[x]);
+                ++entry.lineSamples;
+            }
+            for (const auto &direction : directions) {
+                const int neighborX = x + direction[0];
+                const int neighborY = y + direction[1];
+                if (neighborX < 0 || neighborY < 0
+                    || neighborX >= width || neighborY >= height) {
+                    ++entry.perimeterEdges;
+                    ++entry.backgroundEdges;
+                    continue;
+                }
+                const size_t neighborIndex = static_cast<size_t>(neighborY) * width + neighborX;
+                const int neighborLabel = finalSeg.labels[neighborIndex];
+                if (neighborLabel != label) {
+                    ++entry.perimeterEdges;
+                    if (neighborLabel >= 0) {
+                        ++entry.neighborEdges[neighborLabel];
+                    } else {
+                        ++entry.backgroundEdges;
+                    }
+                }
+                if (!coreLineartMask[index] && coreLineartMask[neighborIndex]) {
+                    const QRgb neighborPixel = reinterpret_cast<const QRgb *>(
+                        image.constScanLine(neighborY))[neighborX];
+                    ++entry.lineBoundaryEdges;
+                    entry.lineRedSum += qRed(neighborPixel);
+                    entry.lineGreenSum += qGreen(neighborPixel);
+                    entry.lineBlueSum += qBlue(neighborPixel);
+                    ++entry.lineSamples;
+                }
+            }
+        }
+    }
+
+    QTextStream stream(&file);
+    stream.setRealNumberNotation(QTextStream::FixedNotation);
+    stream.setRealNumberPrecision(6);
+    stream << "Region extraction diagnostic\n"
+           << "image=" << width << 'x' << height << '\n'
+           << "params max_colors=" << params.maxColorCount
+           << " min_area=" << params.minRegionArea
+           << " small_merge_area=" << params.smallRegionMergeArea
+           << " color_merge_distance=" << params.colorMergeDistance
+           << " color_frequency_floor=" << params.colorFrequencyFloor
+           << " line_width_cap_fraction=" << params.lineWidthCapFraction
+           << " line_width_cap_floor=" << params.lineWidthCapFloor
+           << " contrast_threshold=" << params.contrastThreshold
+           << " min_elongation=" << params.minElongation << '\n'
+           << "natural_palette_count=" << naturalPalette.size()
+           << " final_palette_count=" << finalSeg.palette.size()
+           << " final_label_count=" << finalSeg.accums.size()
+           << " accumulated_lineart_pixels=" << accumulatedLinePixels
+           << " output_lineart_pixels=" << outputLineartPixels
+           << " core_lineart_pixels=" << coreLinePixels
+           << " accumulated_line_color="
+           << (accumulatedLineColor.isValid()
+                   ? accumulatedLineColor.name() : QStringLiteral("none"))
+           << " global_line_color="
+           << (globalLineColor.isValid() ? globalLineColor.name() : QStringLiteral("none"))
+           << '\n'
+           << "heuristic band_radius=" << kLineFringeBandRadius
+           << " minimum_band_fraction=" << kLineFringeMinimumBandFraction
+           << " minimum_contact_fraction=" << kLineFringeMinimumContactFraction
+           << " minimum_overlap_fraction=" << kLineFringeMinimumOverlapFraction
+           << " maximum_blend_residual=" << kLineFringeMaximumBlendResidual
+           << " target_fraction_range=" << kLineFringeMinimumTargetFraction
+           << ',' << kLineFringeMaximumTargetFraction << '\n'
+           << "cleanup passes=" << fringeCleanup.passCount
+           << " vote_threshold=" << fringeCleanup.voteThreshold
+           << " streak_threshold=" << fringeCleanup.streakThreshold
+           << " palette_line_prior=" << kLineFringePalettePrior
+           << " palette_mean_vote_fraction=" << kLineFringePaletteMeanVoteFraction
+           << " palette_persistent_coverage=" << kLineFringePalettePersistentCoverage
+           << " direct_mean_vote_fraction=" << kLineFringeDirectMeanVoteFraction
+           << " direct_persistent_coverage=" << kLineFringeDirectPersistentCoverage
+           << " blend_mean_vote_fraction=" << kLineFringeBlendMeanVoteFraction
+           << " blend_overlap_coverage=" << kLineFringeBlendOverlapCoverage << '\n'
+           << "residual reference_half_width=" << fringeCleanup.referenceLineHalfWidth
+           << " half_width=" << fringeCleanup.residualLineHalfWidth
+           << " extended_half_width=" << fringeCleanup.residualLineExtendedHalfWidth
+           << " palette_line_prior=" << kResidualLinePalettePrior
+           << " minimum_overlap_coverage=" << kResidualLineMinimumOverlapCoverage
+           << " minimum_mean_vote_fraction=" << kResidualLineMinimumMeanVoteFraction
+           << " extended_overlap_coverage=" << kResidualLineExtendedOverlapCoverage
+           << " extended_persistent_coverage="
+           << kResidualLineExtendedPersistentCoverage
+           << " historical_overlap_coverage="
+           << kResidualLineHistoricalOverlapCoverage
+           << " historical_mean_vote_fraction="
+           << kResidualLineHistoricalMeanVoteFraction
+           << " direct_palette_prior=" << kResidualLineDirectPalettePrior
+           << " direct_overlap_coverage=" << kResidualLineDirectOverlapCoverage
+           << " direct_mean_vote_fraction=" << kResidualLineDirectMeanVoteFraction
+           << " direct_contact_fraction=" << kResidualLineDirectContactFraction << '\n';
+    for (int index = 0; index < naturalPalette.size(); ++index) {
+        stream << "natural_palette[" << index << "]=" << naturalPalette[index].name() << '\n';
+    }
+    for (int index = 0; index < finalSeg.palette.size(); ++index) {
+        const qint64 paletteArea = fringeCleanup.paletteArea[static_cast<size_t>(index)];
+        const qint64 lineartArea = fringeCleanup.paletteLineartArea[static_cast<size_t>(index)];
+        const double linePrior = paletteArea > 0
+            ? static_cast<double>(lineartArea) / paletteArea : 0.0;
+        stream << "final_palette[" << index << "]=" << finalSeg.palette[index].name()
+               << " area=" << paletteArea
+               << " lineart_area=" << lineartArea
+               << " line_prior=" << linePrior << '\n';
+    }
+    for (const ExtractionPassDiagnostic &pass : passDiagnostics) {
+        stream << "pass requested_colors=" << pass.requestedColors
+               << " palette_colors=" << pass.paletteColors
+               << " regions=" << pass.regions
+               << " lineart_regions=" << pass.lineartRegions
+               << " accumulated_lineart_pixels=" << pass.accumulatedLineartPixels
+               << " merged_small_regions=" << pass.mergedSmallRegions << '\n';
+    }
+
+    std::vector<int> colorOrdinals(finalSeg.accums.size(), -1);
+    int nextColorOrdinal = 0;
+    for (int label = 0; label < static_cast<int>(finalSeg.accums.size()); ++label) {
+        if (extractedColorLabels.contains(label)) {
+            colorOrdinals[static_cast<size_t>(label)] = nextColorOrdinal++;
+        }
+    }
+    int blendSupportCandidates = 0;
+    int blendSupportCandidatePixels = 0;
+    for (int label = 0; label < static_cast<int>(finalSeg.accums.size()); ++label) {
+        const RegionAccum &accum = finalSeg.accums[static_cast<size_t>(label)];
+        const RegionAccum &cleanedAccum = cleanedSeg.accums[static_cast<size_t>(label)];
+        const RegionDiagnosticMetrics &entry = metrics[static_cast<size_t>(label)];
+        const LineFringeDecision &cleanup = fringeCleanup.decisions[static_cast<size_t>(label)];
+        const QColor color = finalSeg.palette[accum.paletteIndex];
+        const QColor localLineColor = diagnosticLineColor(entry, globalLineColor);
+        const double area = std::max(1, accum.area);
+        const double perimeter = std::max(1, entry.perimeterEdges);
+        const double bandFraction = entry.bandPixels3 / area;
+        const double contactFraction = entry.lineBoundaryEdges / perimeter;
+        const double overlapFraction = entry.lineOverlapPixels / area;
+        const double meanVoteFraction = fringeCleanup.passCount > 0
+            ? cleanup.voteSum / (area * fringeCleanup.passCount) : 0.0;
+        const double persistentCoverage = cleanup.persistentPixels / area;
+        const double streakCoverage = cleanup.streakPixels / area;
+        QVector<int> neighbors = entry.neighborEdges.keys();
+        std::sort(neighbors.begin(), neighbors.end());
+        int bestTarget = -1;
+        int bestSharedEdges = -1;
+        LineFringeBlend bestBlend;
+        for (const int neighbor : neighbors) {
+            if (finalSeg.lineart[static_cast<size_t>(neighbor)]) {
+                continue;
+            }
+            const RegionAccum &neighborAccum = finalSeg.accums[static_cast<size_t>(neighbor)];
+            const QColor neighborColor = finalSeg.palette[neighborAccum.paletteIndex];
+            const LineFringeBlend blend = lineFringeBlend(color, localLineColor, neighborColor);
+            const int sharedEdges = entry.neighborEdges.value(neighbor);
+            if (blend.valid
+                && (!bestBlend.valid || blend.residual < bestBlend.residual - 1e-9
+                    || (std::abs(blend.residual - bestBlend.residual) <= 1e-9
+                        && sharedEdges > bestSharedEdges)
+                    || (std::abs(blend.residual - bestBlend.residual) <= 1e-9
+                        && sharedEdges == bestSharedEdges
+                        && neighborAccum.area
+                            > finalSeg.accums[static_cast<size_t>(bestTarget)].area))) {
+                bestTarget = neighbor;
+                bestSharedEdges = sharedEdges;
+                bestBlend = blend;
+            }
+        }
+        const bool lineRelated = contactFraction >= kLineFringeMinimumContactFraction
+            || overlapFraction >= kLineFringeMinimumOverlapFraction;
+        const bool blendSupportCandidate = !finalSeg.lineart[static_cast<size_t>(label)]
+            && bandFraction >= kLineFringeMinimumBandFraction
+            && lineRelated
+            && bestBlend.valid
+            && bestBlend.residual <= kLineFringeMaximumBlendResidual
+            && bestBlend.targetFraction >= kLineFringeMinimumTargetFraction
+            && bestBlend.targetFraction <= kLineFringeMaximumTargetFraction;
+        if (blendSupportCandidate) {
+            ++blendSupportCandidates;
+            blendSupportCandidatePixels += accum.area;
+        }
+        QString disposition = QStringLiteral("trace-failed");
+        if (cleanup.action == LineFringeAction::MergedIntoColor) {
+            disposition = QStringLiteral("merged-line-fringe");
+        } else if (cleanup.action == LineFringeAction::AddedToLineart) {
+            disposition = QStringLiteral("promoted-line-fringe");
+        } else if (finalSeg.lineart[static_cast<size_t>(label)]) {
+            disposition = QStringLiteral("final-lineart");
+        } else if (accum.area < params.minRegionArea) {
+            disposition = QStringLiteral("below-minimum-area");
+        } else if (extractedColorLabels.contains(label)) {
+            disposition = QStringLiteral("color-region");
+        }
+        stream << "\nlabel=" << label
+               << " disposition=" << disposition
+               << " color=" << color.name()
+               << " palette_index=" << accum.paletteIndex
+               << " area=" << accum.area
+               << " cleaned_area=" << cleanedAccum.area
+               << " bounds=" << accum.minX << ',' << accum.minY << ','
+               << accum.maxX << ',' << accum.maxY
+               << " half_width=" << finalSeg.maxDistance[static_cast<size_t>(label)]
+               << " output_half_width="
+               << cleanedSeg.maxDistance[static_cast<size_t>(label)]
+               << " fill_region=" << colorOrdinals[static_cast<size_t>(label)]
+               << " gui_group="
+               << (colorOrdinals[static_cast<size_t>(label)] >= 0
+                       ? colorOrdinals[static_cast<size_t>(label)] + 1 : -1)
+               << " final_lineart="
+               << (finalSeg.lineart[static_cast<size_t>(label)] ? "yes" : "no") << '\n'
+               << "line band1=" << entry.bandPixels1
+               << " band2=" << entry.bandPixels2
+               << " band3=" << entry.bandPixels3
+               << " band3_fraction=" << bandFraction
+               << " overlap_pixels=" << entry.lineOverlapPixels
+               << " overlap_fraction=" << overlapFraction
+               << " boundary_edges=" << entry.lineBoundaryEdges
+               << " contact_fraction=" << contactFraction
+               << " local_color="
+               << (localLineColor.isValid() ? localLineColor.name() : QStringLiteral("none"))
+               << '\n'
+               << "topology perimeter_edges=" << entry.perimeterEdges
+               << " background_edges=" << entry.backgroundEdges
+               << " neighbor_count=" << neighbors.size() << '\n'
+               << "votes sum=" << cleanup.voteSum
+               << " mean_fraction=" << meanVoteFraction
+               << " persistent_pixels=" << cleanup.persistentPixels
+               << " persistent_coverage=" << persistentCoverage
+               << " streak_pixels=" << cleanup.streakPixels
+               << " streak_coverage=" << streakCoverage
+               << " first_requested_colors=" << cleanup.firstLinePass
+               << " last_requested_colors=" << cleanup.lastLinePass << '\n'
+               << "cleanup narrow=" << (cleanup.narrow ? "yes" : "no")
+               << " palette_line_prior=" << cleanup.paletteLinePrior
+               << " blend_target=" << cleanup.blendTargetLabel
+               << " blend_target_fraction="
+               << (std::isfinite(cleanup.blendResidual)
+                       ? QString::number(cleanup.blendTargetFraction, 'f', 6)
+                       : QStringLiteral("none"))
+               << " blend_residual="
+               << (std::isfinite(cleanup.blendResidual)
+                       ? QString::number(cleanup.blendResidual, 'f', 6)
+                       : QStringLiteral("none"))
+               << " evidence_candidate=" << (cleanup.evidenceCandidate ? "yes" : "no")
+               << " residual_evidence=" << (cleanup.residualCandidate ? "yes" : "no")
+               << " candidate=" << (cleanup.cleanupCandidate ? "yes" : "no")
+               << " graph_root=" << cleanup.graphRoot
+               << " action=" << lineFringeActionName(cleanup.action)
+               << " target=" << cleanup.targetLabel
+               << " target_shared_edges=" << cleanup.targetSharedEdges
+               << " evidence_reason=" << cleanup.evidenceReason
+               << " reason=" << cleanup.reason << '\n'
+               << "blend_support_candidate=" << (blendSupportCandidate ? "yes" : "no")
+               << " best_target=" << bestTarget
+               << " best_shared_edges=" << bestSharedEdges
+               << " best_target_fraction="
+               << (bestBlend.valid ? QString::number(bestBlend.targetFraction, 'f', 6)
+                                   : QStringLiteral("none"))
+               << " best_blend_residual="
+               << (bestBlend.valid ? QString::number(bestBlend.residual, 'f', 6)
+                                   : QStringLiteral("none")) << '\n';
+        for (const int neighbor : neighbors) {
+            const RegionAccum &neighborAccum = finalSeg.accums[static_cast<size_t>(neighbor)];
+            const QColor neighborColor = finalSeg.palette[neighborAccum.paletteIndex];
+            const LineFringeBlend blend = lineFringeBlend(color, localLineColor, neighborColor);
+            stream << "neighbor label=" << neighbor
+                   << " color=" << neighborColor.name()
+                   << " area=" << neighborAccum.area
+                   << " shared_edges=" << entry.neighborEdges.value(neighbor)
+                   << " final_lineart="
+                   << (finalSeg.lineart[static_cast<size_t>(neighbor)] ? "yes" : "no")
+                   << " target_fraction="
+                   << (blend.valid ? QString::number(blend.targetFraction, 'f', 6)
+                                   : QStringLiteral("none"))
+                   << " blend_residual="
+                   << (blend.valid ? QString::number(blend.residual, 'f', 6)
+                                   : QStringLiteral("none"))
+                   << " color_distance=" << rgbDistance(color, neighborColor) << '\n';
+        }
+    }
+    stream << "\nsummary extracted_color_regions=" << result.colorRegionCount
+           << " extracted_lineart_regions=" << result.lineartRegionCount
+           << " merged_small_regions=" << result.mergedSmallRegionCount
+           << " cleanup_candidate_graphs=" << fringeCleanup.candidateGraphs
+           << " cleanup_candidate_labels=" << fringeCleanup.candidateLabels
+           << " cleanup_candidate_pixels=" << fringeCleanup.candidatePixels
+           << " cleanup_residual_evidence_labels="
+           << fringeCleanup.residualCandidateLabels
+           << " cleanup_residual_evidence_pixels="
+           << fringeCleanup.residualCandidatePixels
+           << " cleanup_merged_labels=" << fringeCleanup.mergedLabels
+           << " cleanup_merged_pixels=" << fringeCleanup.mergedPixels
+           << " cleanup_lineart_labels=" << fringeCleanup.lineartLabels
+           << " cleanup_lineart_pixels=" << fringeCleanup.lineartPixels
+           << " foreground_pixels_before=" << fringeCleanup.foregroundPixelsBefore
+           << " foreground_pixels_after=" << fringeCleanup.foregroundPixelsAfter
+           << " foreground_accounted="
+           << (fringeCleanup.foregroundPixelsBefore
+                   == fringeCleanup.foregroundPixelsAfter + fringeCleanup.lineartPixels
+                   ? "yes" : "no")
+           << " blend_support_candidates=" << blendSupportCandidates
+           << " blend_support_candidate_pixels=" << blendSupportCandidatePixels << '\n';
+    file.close();
+    qWarning().noquote() << "Region extraction log written to" << path;
+}
+
 } // namespace
 
 RegionExtractionResult extractRegions(const QImage &sourceImage,
@@ -644,19 +1732,46 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     const size_t pixelCount = static_cast<size_t>(width) * height;
 
     std::vector<bool> lineartMask(pixelCount, false);
+    std::vector<int> lineVotes(pixelCount, 0);
+    std::vector<int> currentLineStreak(pixelCount, 0);
+    std::vector<int> longestLineStreak(pixelCount, 0);
+    std::vector<int> firstLinePass(pixelCount, -1);
+    std::vector<int> lastLinePass(pixelCount, -1);
+    QVector<ExtractionPassDiagnostic> passDiagnostics;
     PassResult finalSeg;
+    int passCount = 0;
     bool haveFinal = false;
     for (int colorCount = 2; colorCount <= maxColors; ++colorCount) {
         PassResult pass = segmentPass(image, width, height, alpha, colorCount, params);
         if (pass.accums.empty()) {
             continue;
         }
+        ++passCount;
         for (size_t i = 0; i < pixelCount; ++i) {
             const int label = pass.labels[i];
             if (label >= 0 && pass.lineart[label]) {
                 lineartMask[i] = true;
+                ++lineVotes[i];
+                ++currentLineStreak[i];
+                longestLineStreak[i] = std::max(longestLineStreak[i], currentLineStreak[i]);
+                if (firstLinePass[i] < 0) {
+                    firstLinePass[i] = colorCount;
+                }
+                lastLinePass[i] = colorCount;
+            } else {
+                currentLineStreak[i] = 0;
             }
         }
+        ExtractionPassDiagnostic diagnostic;
+        diagnostic.requestedColors = colorCount;
+        diagnostic.paletteColors = pass.palette.size();
+        diagnostic.regions = pass.accums.size();
+        diagnostic.lineartRegions = static_cast<int>(std::count(
+            pass.lineart.cbegin(), pass.lineart.cend(), std::uint8_t{1}));
+        diagnostic.accumulatedLineartPixels = static_cast<int>(std::count(
+            lineartMask.cbegin(), lineartMask.cend(), true));
+        diagnostic.mergedSmallRegions = pass.mergedSmallRegions;
+        passDiagnostics.push_back(diagnostic);
         if (colorCount == maxColors) {
             finalSeg = std::move(pass);
             haveFinal = true;
@@ -667,8 +1782,14 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         return result;
     }
     result.mergedSmallRegionCount = finalSeg.mergedSmallRegions;
+    const PassResult diagnosticSeg = finalSeg;
+    const std::vector<bool> diagnosticLineartMask = lineartMask;
+    const LineFringeCleanupResult fringeCleanup = cleanLineFringes(
+        &finalSeg, width, height, params.minRegionArea, passCount, lineVotes,
+        longestLineStreak, firstLinePass, lastLinePass, &lineartMask);
 
     std::vector<QSet<int>> colorAdj = finalSeg.adjacency;
+    QSet<int> extractedColorLabels;
     for (int label = 0; label < static_cast<int>(finalSeg.accums.size()); ++label) {
         if (2.0 * finalSeg.maxDistance[label] > finalSeg.widthCap) {
             continue;
@@ -725,6 +1846,7 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         region.strokeWidth = 2.0 * std::max(0.5, static_cast<double>(finalSeg.maxDistance[label]));
         region.lineart = false;
         result.regions.push_back(std::move(region));
+        extractedColorLabels.insert(label);
         ++result.colorRegionCount;
     }
 
@@ -814,6 +1936,10 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     if (result.regions.isEmpty()) {
         result.error = QStringLiteral("No regions survived the minimum-area filter");
     }
+    writeRegionExtractionDiagnostic(image, params, naturalPalette, diagnosticSeg,
+                                    diagnosticLineartMask, finalSeg, lineartMask,
+                                    fringeCleanup, passDiagnostics,
+                                    extractedColorLabels, result);
     return result;
 }
 

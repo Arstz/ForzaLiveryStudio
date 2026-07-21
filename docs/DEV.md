@@ -109,10 +109,18 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   result remains a valid non-crossing polygon, and retry the original contour if
   simplified triangulation fails. Scene insertion keeps the
   result in one **Region Fill** container with one child group per filled region.
+  Before tracing, progressive line-classification votes identify narrow connected
+  fringe components and absorb each chain into its strongest shared-boundary color
+  neighbor. Candidate widths are normalized to the median recognized stroke width,
+  and persistent historical evidence can classify a component independently of
+  final-mask adjacency. A chain enclosed by recognized lineart is incorporated into
+  that mask.
   `region_fill.log` records every source-region result and the largest region's
   original, optimized, and flattened contour point counts plus DSSIM. `region_points.log`
   records every raw path element, optimized Hard/Soft Pen point, and flattened
-  optimized-contour point for that largest region.
+  optimized-contour point for that largest region. `region_extract.log` records
+  progressive segmentation counts, line-vote persistence, cleanup decisions,
+  output ordinals, and per-component topology and colour metrics.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,
