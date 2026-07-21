@@ -8,8 +8,7 @@
 namespace gui {
 namespace {
 
-QStringList candidateAssetPaths()
-{
+QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     return {
@@ -22,20 +21,17 @@ QStringList candidateAssetPaths()
     };
 }
 
-QPointF vertexPoint(const QJsonArray &vertices, int index)
-{
+QPointF vertexPoint(const QJsonArray &vertices, int index) {
     const QJsonArray vertex = vertices.at(index).toArray();
     return QPointF(vertex.at(0).toDouble(), vertex.at(1).toDouble());
 }
 
-double vertexAlpha(const QJsonArray &vertices, int index)
-{
+double vertexAlpha(const QJsonArray &vertices, int index) {
     const QJsonArray vertex = vertices.at(index).toArray();
     return std::clamp(vertex.at(2).toDouble(1.0), 0.0, 1.0);
 }
 
-bool inflateGzip(const QByteArray &compressed, QByteArray *out, QString *error)
-{
+bool inflateGzip(const QByteArray &compressed, QByteArray *out, QString *error) {
     z_stream stream = {};
     stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(compressed.constData()));
     stream.avail_in = static_cast<uInt>(compressed.size());
@@ -72,8 +68,7 @@ bool inflateGzip(const QByteArray &compressed, QByteArray *out, QString *error)
 
 } // namespace
 
-bool ShapeGeometryStore::loadDefault(QString *error)
-{
+bool ShapeGeometryStore::loadDefault(QString *error) {
     for (const QString &path : candidateAssetPaths()) {
         if (QFile::exists(path)) {
             return loadFromFile(path, error);
@@ -85,8 +80,7 @@ bool ShapeGeometryStore::loadDefault(QString *error)
     return false;
 }
 
-bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error)
-{
+bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error != nullptr) {
@@ -163,14 +157,12 @@ bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error)
     return true;
 }
 
-const ShapeGeometry *ShapeGeometryStore::shape(int shapeId) const
-{
+const ShapeGeometry *ShapeGeometryStore::shape(int shapeId) const {
     const auto it = shapes_.constFind(shapeId);
     return it == shapes_.constEnd() ? nullptr : &it.value();
 }
 
-QSizeF ShapeGeometryStore::shapeSize(int shapeId) const
-{
+QSizeF ShapeGeometryStore::shapeSize(int shapeId) const {
     const ShapeGeometry *geometry = shape(shapeId);
     if (geometry == nullptr) {
         return QSizeF(128.0, 128.0);
@@ -178,8 +170,7 @@ QSizeF ShapeGeometryStore::shapeSize(int shapeId) const
     return QSizeF(geometry->width, geometry->height);
 }
 
-QRectF ShapeGeometryStore::shapeInkBounds(int shapeId) const
-{
+QRectF ShapeGeometryStore::shapeInkBounds(int shapeId) const {
     const ShapeGeometry *geometry = shape(shapeId);
     if (geometry == nullptr || geometry->triangles.isEmpty()) {
         const QSizeF size = shapeSize(shapeId);
@@ -201,8 +192,7 @@ QRectF ShapeGeometryStore::shapeInkBounds(int shapeId) const
     return QRectF(QPointF(minX, minY), QPointF(maxX, maxY));
 }
 
-QVector<int> ShapeGeometryStore::shapeIds() const
-{
+QVector<int> ShapeGeometryStore::shapeIds() const {
     QVector<int> ids;
     ids.reserve(shapes_.size());
     for (auto it = shapes_.constBegin(); it != shapes_.constEnd(); ++it) {

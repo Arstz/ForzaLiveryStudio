@@ -13,15 +13,13 @@ constexpr double kEpsilon = 1e-8;
 constexpr int kMaximumPlacements = 512;
 constexpr std::array<int, 4> kLiningShapeIds = {2112, 2131, 136, 2133};
 
-QString pointText(const QPointF &point)
-{
+QString pointText(const QPointF &point) {
     return QStringLiteral("(%1,%2)")
         .arg(point.x(), 0, 'f', 4)
         .arg(point.y(), 0, 'f', 4);
 }
 
-QString transformText(const QTransform &transform)
-{
+QString transformText(const QTransform &transform) {
     return QStringLiteral("[%1 %2 %3; %4 %5 %6]")
         .arg(transform.m11(), 0, 'f', 6)
         .arg(transform.m21(), 0, 'f', 6)
@@ -33,14 +31,12 @@ QString transformText(const QTransform &transform)
 
 class LiningDiagnostic {
 public:
-    LiningDiagnostic()
-    {
+    LiningDiagnostic() {
         lines_.push_back(QStringLiteral("Lining fill diagnostic %1")
                              .arg(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)));
     }
 
-    ~LiningDiagnostic()
-    {
+    ~LiningDiagnostic() {
         const QString path = QDir(QCoreApplication::applicationDirPath())
             .filePath(QStringLiteral("lining_fill.log"));
         QFile file(path);
@@ -50,8 +46,7 @@ public:
         }
     }
 
-    void add(const QString &line)
-    {
+    void add(const QString &line) {
         lines_.push_back(line);
     }
 
@@ -86,8 +81,7 @@ struct Candidate {
     bool tipAtStart = false;
 };
 
-QString candidateText(const Candidate &candidate)
-{
+QString candidateText(const Candidate &candidate) {
     return QStringLiteral("shape=%1 span=%2..%3 curveError=%4 widthError=%5 "
                           "tipAtStart=%6 transform=%7")
         .arg(candidate.primitive != nullptr ? candidate.primitive->shapeId : -1)
@@ -102,8 +96,7 @@ QString candidateText(const Candidate &candidate)
 double candidateScore(double placementArea,
                       double assignedArea,
                       double width,
-                      int shapeId)
-{
+                      int shapeId) {
     double result = std::min(placementArea, assignedArea) - width * width * 0.04;
     if (shapeId == 2133) {
         result *= 0.72;
@@ -113,13 +106,11 @@ double candidateScore(double placementArea,
     return result;
 }
 
-double cross(const QPointF &a, const QPointF &b)
-{
+double cross(const QPointF &a, const QPointF &b) {
     return a.x() * b.y() - a.y() * b.x();
 }
 
-double signedArea(const QPolygonF &polygon)
-{
+double signedArea(const QPolygonF &polygon) {
     double result = 0.0;
     for (int i = 0; i < polygon.size(); ++i) {
         result += cross(polygon[i], polygon[(i + 1) % polygon.size()]);
@@ -127,8 +118,7 @@ double signedArea(const QPolygonF &polygon)
     return result * 0.5;
 }
 
-double pathArea(const QPainterPath &path)
-{
+double pathArea(const QPainterPath &path) {
     double result = 0.0;
     for (const QPolygonF &polygon : path.toFillPolygons()) {
         result += std::abs(signedArea(polygon));
@@ -136,8 +126,7 @@ double pathArea(const QPainterPath &path)
     return result;
 }
 
-QPointF quadraticPoint(const PenBoundarySegment &segment, double t)
-{
+QPointF quadraticPoint(const PenBoundarySegment &segment, double t) {
     if (!segment.curved) {
         return segment.start * (1.0 - t) + segment.end * t;
     }
@@ -149,8 +138,7 @@ QPointF quadraticPoint(const PenBoundarySegment &segment, double t)
 
 QVector<QPointF> sampleCenterline(const LiningPath &path,
                                   double width,
-                                  QVector<int> *segmentBoundaries)
-{
+                                  QVector<int> *segmentBoundaries) {
     QVector<QPointF> result;
     if (segmentBoundaries != nullptr) {
         segmentBoundaries->clear();
@@ -196,8 +184,7 @@ QVector<QPointF> sampleCenterline(const LiningPath &path,
     return reduced;
 }
 
-QVector<double> cumulativeLengths(const QVector<QPointF> &points)
-{
+QVector<double> cumulativeLengths(const QVector<QPointF> &points) {
     QVector<double> result(points.size(), 0.0);
     for (int i = 1; i < points.size(); ++i) {
         result[i] = result[i - 1] + QLineF(points[i - 1], points[i]).length();
@@ -211,8 +198,7 @@ QTransform affineFromTriangles(const QPointF &a,
                                const QPointF &p,
                                const QPointF &q,
                                const QPointF &r,
-                               bool *ok)
-{
+                               bool *ok) {
     const QPointF d1 = b - a;
     const QPointF d2 = c - a;
     const QPointF e1 = q - p;
@@ -233,8 +219,7 @@ QTransform affineFromTriangles(const QPointF &a,
     return QTransform(m11, m12, m21, m22, dx, dy);
 }
 
-QVector<PrimitiveProfile> primitiveProfiles(const PenPrimitive &primitive)
-{
+QVector<PrimitiveProfile> primitiveProfiles(const PenPrimitive &primitive) {
     if (primitive.shapeId == 2133 && primitive.bounds.width() > kEpsilon
         && primitive.bounds.height() > kEpsilon) {
         PrimitiveProfile profile;
@@ -389,8 +374,7 @@ bool containedBy(const PenPrimitive &primitive,
                  const QTransform &transform,
                  const QPainterPath &allowed,
                  const QRectF &allowedBounds,
-                 bool exact)
-{
+                 bool exact) {
     if (!transform.isAffine() || std::abs(transform.determinant()) <= kEpsilon) {
         return false;
     }
@@ -413,8 +397,7 @@ bool containedBy(const PenPrimitive &primitive,
         <= std::max(1e-8, pathArea(placed) * 1e-6);
 }
 
-QPointF tangentAt(const QVector<QPointF> &samples, int index)
-{
+QPointF tangentAt(const QVector<QPointF> &samples, int index) {
     const int before = std::max(0, index - 1);
     const int after = std::min(static_cast<int>(samples.size()) - 1, index + 1);
     QPointF tangent = samples[after] - samples[before];
@@ -429,8 +412,7 @@ double sectionWidth(const PenPrimitive &primitive,
                     const QTransform &transform,
                     const QPointF &center,
                     const QPointF &tangent,
-                    double window)
-{
+                    double window) {
     const QPointF normal(-tangent.y(), tangent.x());
     double minimum = std::numeric_limits<double>::max();
     double maximum = std::numeric_limits<double>::lowest();
@@ -463,8 +445,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
                                       bool curveAligned,
                                       const QPainterPath &allowed,
                                       const QRectF &allowedBounds,
-                                      bool requireContained)
-{
+                                      bool requireContained) {
     if (end <= start) {
         return std::nullopt;
     }
@@ -643,8 +624,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
 
 } // namespace
 
-LiningPath buildLiningPath(const QVector<PenPoint> &points)
-{
+LiningPath buildLiningPath(const QVector<PenPoint> &points) {
     LiningPath result;
     if (points.size() < 2) {
         result.error = QStringLiteral("A lining path needs at least two points");
@@ -693,8 +673,7 @@ LiningPath buildLiningPath(const QVector<PenPoint> &points)
     return result;
 }
 
-QPainterPath buildLiningRibbon(const QPainterPath &centerline, double width)
-{
+QPainterPath buildLiningRibbon(const QPainterPath &centerline, double width) {
     if (centerline.isEmpty() || !std::isfinite(width) || width <= 0.0) {
         return {};
     }
@@ -705,8 +684,7 @@ QPainterPath buildLiningRibbon(const QPainterPath &centerline, double width)
     return stroker.createStroke(centerline).simplified();
 }
 
-QVector<PenPrimitive> buildLiningPrimitiveCatalog(const ShapeGeometryStore &geometry)
-{
+QVector<PenPrimitive> buildLiningPrimitiveCatalog(const ShapeGeometryStore &geometry) {
     QVector<PenPrimitive> result;
     result.reserve(kLiningShapeIds.size());
     for (const int shapeId : kLiningShapeIds) {
@@ -723,8 +701,7 @@ QVector<PenPrimitive> buildLiningPrimitiveCatalog(const ShapeGeometryStore &geom
 }
 
 PenFillResult fillLiningPath(const LiningFillRequest &request,
-                             const std::function<bool()> &cancelled)
-{
+                             const std::function<bool()> &cancelled) {
     LiningDiagnostic diagnostic;
     diagnostic.add(QStringLiteral("request width=%1 points=%2 primitives=%3")
                        .arg(request.width, 0, 'f', 4)

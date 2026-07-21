@@ -29,8 +29,7 @@ struct Cursor {
     int pos = 0;
     explicit Cursor(const QByteArray &data) : bytes(data) {}
 
-    void require(int n) const
-    {
+    void require(int n) const {
         if (pos < 0 || pos + n > bytes.size()) {
             throw std::runtime_error("carbin: unexpected end of data");
         }
@@ -45,8 +44,7 @@ struct Cursor {
     float f32() { require(4); const float v = readLeFloat(bytes, pos); pos += 4; return v; }
     void skip(int n) { require(n); pos += n; }
 
-    QString str()
-    {
+    QString str() {
         const qint32 n = i32();
         if (n < 0 || n > (1 << 20)) {
             throw std::runtime_error("carbin: bad string length");
@@ -57,8 +55,7 @@ struct Cursor {
         return s;
     }
 
-    ModelMat4 matrix()
-    {
+    ModelMat4 matrix() {
         ModelMat4 m;
         for (int i = 0; i < 16; ++i) {
             m.m[i] = f32();
@@ -89,13 +86,11 @@ struct SceneParts {
     std::vector<PartInstance> projection;
 };
 
-int canonicalPartType(quint32 type)
-{
+int canonicalPartType(quint32 type) {
     return type >= 42 ? static_cast<int>(type + 1) : static_cast<int>(type);
 }
 
-PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
-{
+PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion) {
     const quint16 version = c.u16();
 
     PartInstance part;
@@ -218,8 +213,7 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion)
     return part;
 }
 
-void readPart(Cursor &c, Series series, quint16 sceneVersion, SceneParts &out)
-{
+void readPart(Cursor &c, Series series, quint16 sceneVersion, SceneParts &out) {
     const quint16 version = c.u16();
     const int partType = canonicalPartType(c.u32());
     const quint32 modelCount = c.u32();
@@ -234,8 +228,7 @@ void readPart(Cursor &c, Series series, quint16 sceneVersion, SceneParts &out)
     }
 }
 
-SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skeletonPath)
-{
+SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skeletonPath) {
     Cursor c(bytes);
     const quint16 version = c.u16();
     Series series = Series::Horizon;
@@ -326,8 +319,7 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
     return parts;
 }
 
-QString partKey(const PartInstance &part)
-{
+QString partKey(const PartInstance &part) {
     QString key = part.path.toLower() + QLatin1Char('|') + part.boneName.toLower()
         + QLatin1Char('|') + QString::number(part.boneId)
         + QLatin1Char('|') + QString::number(part.partType);
@@ -341,8 +333,7 @@ QString partKey(const PartInstance &part)
     return key;
 }
 
-QString materialToken(QString value)
-{
+QString materialToken(QString value) {
     value.replace('\\', '/');
     value = value.mid(value.lastIndexOf('/') + 1).toLower();
     const int pipe = value.indexOf('|');
@@ -355,8 +346,7 @@ QString materialToken(QString value)
     return value;
 }
 
-quint64 materialBindingHash(const PartInstance &part, const CarMesh &mesh)
-{
+quint64 materialBindingHash(const PartInstance &part, const CarMesh &mesh) {
     QStringList candidates;
     candidates.push_back(materialToken(mesh.materialName));
     if (mesh.material) {
@@ -383,14 +373,12 @@ quint64 materialBindingHash(const PartInstance &part, const CarMesh &mesh)
     return 0;
 }
 
-bool isWheelModelPath(QString path)
-{
+bool isWheelModelPath(QString path) {
     path.replace('\\', '/');
     return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
 }
 
-void bakeWheelTransform(CarMesh &mesh)
-{
+void bakeWheelTransform(CarMesh &mesh) {
     constexpr float radialScale = 1.632857f;
     for (ModelVec3 &position : mesh.positions) {
         position = mesh.boneTransform.transformPoint(
@@ -409,8 +397,7 @@ void bakeWheelTransform(CarMesh &mesh)
     mesh.boneTransform = ModelMat4{};
 }
 
-int wheelPaintChannel(const QString &materialName)
-{
+int wheelPaintChannel(const QString &materialName) {
     const QString name = materialName.toLower();
     if (name == QStringLiteral("rim")) return 0;
     if (name == QStringLiteral("rim2")) return 1;
@@ -420,8 +407,7 @@ int wheelPaintChannel(const QString &materialName)
     return -1;
 }
 
-bool frontWheel(const PartInstance &part, const CarMesh &mesh)
-{
+bool frontWheel(const PartInstance &part, const CarMesh &mesh) {
     const QString identity = part.boneName.toLower() + QLatin1Char('|') + mesh.name.toLower();
     if (identity.contains(QStringLiteral("wheellf"))
         || identity.contains(QStringLiteral("wheelrf"))) {
@@ -441,8 +427,7 @@ bool frontWheel(const PartInstance &part, const CarMesh &mesh)
     return z / static_cast<double>(mesh.positions.size()) >= 0.0;
 }
 
-quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh)
-{
+quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh) {
     static constexpr quint64 Front[] = {
         0xB8925E450764DE78ull, 0x15EDB6869EFC7F22ull, 0x2407D33BE191E83Dull,
         0x564DF80BF320D318ull, 0x818BB1EF6C704F11ull,
@@ -458,8 +443,7 @@ quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh)
     return frontWheel(part, mesh) ? Front[channel] : Rear[channel];
 }
 
-std::vector<CarLocator> loadCarLocators(const QString &carbinDir)
-{
+std::vector<CarLocator> loadCarLocators(const QString &carbinDir) {
     QFile file(QDir(carbinDir).filePath(QStringLiteral("Locators.xml")));
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
@@ -511,8 +495,7 @@ std::vector<CarLocator> loadCarLocators(const QString &carbinDir)
     return locators;
 }
 
-QString resolvePath(const QString &gamePath, const QString &carbinDir, const QString &mediaName)
-{
+QString resolvePath(const QString &gamePath, const QString &carbinDir, const QString &mediaName) {
     QString normalized = gamePath;
     normalized.replace('\\', '/');
     const QString needle = QStringLiteral("/") + mediaName.toLower() + QStringLiteral("/");
@@ -522,8 +505,7 @@ QString resolvePath(const QString &gamePath, const QString &carbinDir, const QSt
     return QDir(carbinDir).filePath(tail);
 }
 
-const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QString &name, qint16 id)
-{
+const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QString &name, qint16 id) {
     if (!name.isEmpty()) {
         for (const SkeletonBone &bone : bones) {
             if (bone.name.compare(name, Qt::CaseInsensitive) == 0) {
@@ -539,8 +521,7 @@ const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QStri
 
 } // namespace
 
-CarModel loadCarBin(const QString &path, QString *error)
-{
+CarModel loadCarBin(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) {
@@ -660,8 +641,7 @@ CarModel loadCarBin(const QString &path, QString *error)
 }
 
 void appendApproximateTires(
-    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate)
-{
+    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate) {
     struct MountBounds {
         float minX = std::numeric_limits<float>::max();
         float minY = minX;

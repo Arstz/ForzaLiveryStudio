@@ -14,8 +14,7 @@ class ProjectCanvas;
 class CanvasTool {
 public:
     explicit CanvasTool(ProjectCanvas &canvas)
-        : canvas_(canvas)
-    {
+        : canvas_(canvas) {
     }
     virtual ~CanvasTool() = default;
 

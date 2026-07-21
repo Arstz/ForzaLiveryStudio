@@ -8,8 +8,7 @@
 namespace gui {
 namespace {
 
-std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &id)
-{
+std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &id) {
     fh6::scene::Group *parent = state.groupForId(state.parentGroupForEntry(id));
     if (parent == nullptr) {
         return nullptr;
@@ -22,8 +21,7 @@ std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &i
     return nullptr;
 }
 
-void walkNode(fh6::scene::Layer &node, const std::function<void(fh6::scene::Layer &)> &fn)
-{
+void walkNode(fh6::scene::Layer &node, const std::function<void(fh6::scene::Layer &)> &fn) {
     fn(node);
     if (node.kind() == fh6::scene::LayerKind::Group) {
         for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
@@ -32,8 +30,7 @@ void walkNode(fh6::scene::Layer &node, const std::function<void(fh6::scene::Laye
     }
 }
 
-void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &layers, QSet<QString> &guides)
-{
+void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &layers, QSet<QString> &guides) {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         layers.insert(node.id);
     } else if (node.kind() == fh6::scene::LayerKind::Guide) {
@@ -45,8 +42,7 @@ void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &layers, QSet<Q
     }
 }
 
-fh6::scene::Group *defaultInsertionTarget(EditorState &state)
-{
+fh6::scene::Group *defaultInsertionTarget(EditorState &state) {
     if (state.project_.isLivery && !state.activeSectionId_.isEmpty()) {
         if (fh6::scene::Group *section = state.groupForId(state.activeSectionId_);
             section != nullptr && section->isLiverySection) {
@@ -58,8 +54,7 @@ fh6::scene::Group *defaultInsertionTarget(EditorState &state)
 
 } // namespace
 
-bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectClipboard &out) const
-{
+bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectClipboard &out) const {
     ScopedPerf perf("EditorState::buildEntryClipboard");
     if (entries.isEmpty() || !hasProject_) {
         return false;
@@ -87,8 +82,7 @@ bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectCl
     return true;
 }
 
-bool EditorState::copyEntriesToClipboard(const QVector<QString> &entries)
-{
+bool EditorState::copyEntriesToClipboard(const QVector<QString> &entries) {
     ProjectClipboard copied;
     if (!buildEntryClipboard(entries, copied)) {
         return false;
@@ -100,8 +94,7 @@ bool EditorState::copyEntriesToClipboard(const QVector<QString> &entries)
 
 bool EditorState::duplicateEntriesInPlace(const QVector<QString> &entryIds,
                                           QSet<QString> *newLayerSelection,
-                                          QSet<QString> *newGuideLayerSelection)
-{
+                                          QSet<QString> *newGuideLayerSelection) {
     ScopedPerf perf("EditorState::duplicateEntriesInPlace");
     if (!hasProject_) {
         return false;
@@ -147,8 +140,7 @@ bool EditorState::duplicateEntriesInPlace(const QVector<QString> &entryIds,
     return true;
 }
 
-void EditorState::removeEntries(const QVector<QString> &entryIds)
-{
+void EditorState::removeEntries(const QVector<QString> &entryIds) {
     if (!hasProject_) {
         return;
     }
@@ -166,8 +158,7 @@ void EditorState::removeEntries(const QVector<QString> &entryIds)
 void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
                                     const QString &parentId, int insertAt, bool haveTarget, int guideInsertAt,
                                     QSet<QString> *newLayerSelection, QSet<QString> *newGuideLayerSelection,
-                                    bool renameCopies, QVector<QString> *newRootEntryIds)
-{
+                                    bool renameCopies, QVector<QString> *newRootEntryIds) {
     if (!hasProject_) {
         return;
     }
@@ -266,8 +257,7 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                                                 QSet<QString> *newLayerSelection,
                                                 QSet<QString> *newGuideLayerSelection,
                                                 bool renameCopies,
-                                                QVector<QString> *newRootEntryIds)
-{
+                                                QVector<QString> *newRootEntryIds) {
     const ProjectIndexCache &cache = projectIndexCache();
     const QVector<QString> normalizedSelection = normalizeEntrySelection(selectedEntries);
     QString parentId;
@@ -295,8 +285,7 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                       newLayerSelection, newGuideLayerSelection, renameCopies, newRootEntryIds);
 }
 
-void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries)
-{
+void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries) {
     if (!layer || !project_.root) {
         return;
     }
@@ -328,14 +317,12 @@ void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> l
     invalidateProjectIndexCache();
 }
 
-QString EditorState::copyName(const QString &name) const
-{
+QString EditorState::copyName(const QString &name) const {
     const QString suffix = QStringLiteral(" (Copy)");
     return name.endsWith(suffix) ? name : name + suffix;
 }
 
-const ProjectClipboard *EditorState::clipboard() const
-{
+const ProjectClipboard *EditorState::clipboard() const {
     return clipboard_.has_value() ? &*clipboard_ : nullptr;
 }
 

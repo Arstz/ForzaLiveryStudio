@@ -8,44 +8,41 @@
 namespace gui {
 namespace {
 
-constexpr int CursorExtent = 11;
-const QColor DropIndicatorLineColor(244, 197, 66);
-const QColor AllowedBorderColor(30, 30, 30);
-const QColor AllowedFillColor(245, 245, 245);
-const QColor AllowedGlyphColor(70, 70, 70);
-const QColor ForbiddenColor(180, 25, 25);
-const QColor ForbiddenFillColor(255, 255, 255, 230);
+constexpr int kCursorExtent = 11;
+const QColor kDropIndicatorLineColor(244, 197, 66);
+const QColor kAllowedBorderColor(30, 30, 30);
+const QColor kAllowedFillColor(245, 245, 245);
+const QColor kAllowedGlyphColor(70, 70, 70);
+const QColor kForbiddenColor(180, 25, 25);
+const QColor kForbiddenFillColor(255, 255, 255, 230);
 
 } // namespace
 
-QColor dropIndicatorColor()
-{
-    return DropIndicatorLineColor;
+QColor dropIndicatorColor() {
+    return kDropIndicatorLineColor;
 }
 
-QPixmap dropAllowedCursorPixmap()
-{
-    QPixmap pixmap(CursorExtent, CursorExtent);
+QPixmap dropAllowedCursorPixmap() {
+    QPixmap pixmap(kCursorExtent, kCursorExtent);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(QPen(AllowedBorderColor, 1));
-    painter.setBrush(AllowedFillColor);
+    painter.setPen(QPen(kAllowedBorderColor, 1));
+    painter.setBrush(kAllowedFillColor);
     painter.drawRoundedRect(QRectF(2.0, 2.0, 12.0, 9.0), 2.0, 2.0);
-    painter.setPen(QPen(AllowedGlyphColor, 2));
+    painter.setPen(QPen(kAllowedGlyphColor, 2));
     painter.drawLine(QPointF(5.0, 5.0), QPointF(11.0, 5.0));
     painter.drawLine(QPointF(5.0, 8.0), QPointF(11.0, 8.0));
     return pixmap;
 }
 
-QPixmap dropForbiddenCursorPixmap()
-{
-    QPixmap pixmap(CursorExtent, CursorExtent);
+QPixmap dropForbiddenCursorPixmap() {
+    QPixmap pixmap(kCursorExtent, kCursorExtent);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(QPen(ForbiddenColor, 2));
-    painter.setBrush(ForbiddenFillColor);
+    painter.setPen(QPen(kForbiddenColor, 2));
+    painter.setBrush(kForbiddenFillColor);
     painter.drawEllipse(QRectF(2.0, 2.0, 12.0, 12.0));
     painter.drawLine(QPointF(5.0, 11.0), QPointF(11.0, 5.0));
     return pixmap;

@@ -14,13 +14,11 @@
 namespace gui {
 namespace {
 
-QColor layerColor(const fh6::scene::Shape &layer)
-{
+QColor layerColor(const fh6::scene::Shape &layer) {
     return QColor(layer.color[2], layer.color[1], layer.color[0], std::clamp<int>(layer.color[3], 0, 255));
 }
 
-QTransform nodeTransform(const fh6::scene::Layer &node)
-{
+QTransform nodeTransform(const fh6::scene::Layer &node) {
     QTransform transform;
     transform.translate(node.transform.x, node.transform.y);
     transform.rotate(node.transform.rotation);
@@ -29,8 +27,7 @@ QTransform nodeTransform(const fh6::scene::Layer &node)
     return transform;
 }
 
-int shapeCount(const ProjectClipboard &clipboard)
-{
+int shapeCount(const ProjectClipboard &clipboard) {
     int count = 0;
     std::function<void(const fh6::scene::Layer &)> walk = [&](const fh6::scene::Layer &node) {
         if (node.kind() == fh6::scene::LayerKind::Shape) {
@@ -54,20 +51,17 @@ int shapeCount(const ProjectClipboard &clipboard)
 } // namespace
 
 ClipboardBufferWidget::ClipboardBufferWidget(QWidget *parent)
-    : QWidget(parent)
-{
+    : QWidget(parent) {
     setMinimumSize(180, 150);
     geometryLoaded_ = geometry_.loadDefault();
 }
 
-void ClipboardBufferWidget::setClipboard(const ProjectClipboard *clipboard)
-{
+void ClipboardBufferWidget::setClipboard(const ProjectClipboard *clipboard) {
     clipboard_ = clipboard;
     update();
 }
 
-void ClipboardBufferWidget::paintEvent(QPaintEvent *event)
-{
+void ClipboardBufferWidget::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
@@ -154,16 +148,14 @@ void ClipboardBufferWidget::paintEvent(QPaintEvent *event)
     painter.restore();
 }
 
-QRectF ClipboardBufferWidget::layerBounds(const fh6::scene::Shape &layer, const QTransform &parentWorld) const
-{
+QRectF ClipboardBufferWidget::layerBounds(const fh6::scene::Shape &layer, const QTransform &parentWorld) const {
     const QSizeF size = layer.raster ? QSizeF(layer.rasterWidth, layer.rasterHeight)
                                      : geometry_.shapeSize(layer.shapeId);
     const QRectF local(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
     return (nodeTransform(layer) * parentWorld).mapRect(local);
 }
 
-void ClipboardBufferWidget::paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &parentWorld) const
-{
+void ClipboardBufferWidget::paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &parentWorld) const {
     painter.save();
     painter.setTransform(nodeTransform(layer) * parentWorld, true);
     painter.setPen(Qt::NoPen);

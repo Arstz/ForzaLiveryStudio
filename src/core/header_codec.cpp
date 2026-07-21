@@ -15,8 +15,7 @@ constexpr int FieldBlockSize = 16;  // fieldA..pad
 constexpr int GuidSize = 16;
 constexpr int PaddingBeforeSec3 = 28;
 
-QString readUtf16(const QByteArray &bytes, int offset, quint32 charCount)
-{
+QString readUtf16(const QByteArray &bytes, int offset, quint32 charCount) {
     const qsizetype byteCount = static_cast<qsizetype>(charCount) * 2;
     if (offset < 0 || offset + byteCount > bytes.size()) {
         throw std::runtime_error("unexpected end of data while reading UTF-16 string");
@@ -26,16 +25,14 @@ QString readUtf16(const QByteArray &bytes, int offset, quint32 charCount)
         static_cast<qsizetype>(charCount));
 }
 
-void appendUtf16(QByteArray &out, const QString &text)
-{
+void appendUtf16(QByteArray &out, const QString &text) {
     out.append(reinterpret_cast<const char *>(text.utf16()),
                text.size() * static_cast<int>(sizeof(char16_t)));
 }
 
 } // namespace
 
-HeaderMetadata parseHeader(const QByteArray &bytes)
-{
+HeaderMetadata parseHeader(const QByteArray &bytes) {
     HeaderMetadata meta;
     if (bytes.size() < 8) {
         throw std::runtime_error("header too small to parse");
@@ -106,8 +103,7 @@ HeaderMetadata parseHeader(const QByteArray &bytes)
     return meta;
 }
 
-QByteArray buildHeader(const HeaderMetadata &meta)
-{
+QByteArray buildHeader(const HeaderMetadata &meta) {
     QByteArray out;
     detail::appendLeU32(out, meta.formatVersion);
     detail::appendLeU32(out, static_cast<quint32>(meta.name.size()));
@@ -165,8 +161,7 @@ QByteArray buildHeader(const HeaderMetadata &meta)
     return out;
 }
 
-HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId)
-{
+HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId) {
     HeaderMetadata meta;
     meta.formatVersion = 7;
     meta.name = name;

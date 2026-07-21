@@ -15,8 +15,7 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
                                        QTransform *guideWorld,
                                        QImage *image,
                                        QPoint *imagePoint,
-                                       QString *error) const
-{
+                                       QString *error) const {
     if (state_ == nullptr || sceneTree() == nullptr) {
         if (error != nullptr) {
             *error = QStringLiteral("Open a project and select one guide layer");
@@ -32,7 +31,7 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
         }
         return false;
     }
-    if (!guideLayersVisible_) {
+    if (!options_.guideLayersVisible) {
         if (error != nullptr) {
             *error = QStringLiteral("Guide layers are hidden");
         }
@@ -80,7 +79,7 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
         return false;
     }
 
-    const QTransform localToScreen = foundWorld * worldToScreen_;
+    const QTransform localToScreen = foundWorld * camera_.matrix();
     bool invertible = false;
     const QTransform screenToLocal = localToScreen.inverted(&invertible);
     if (!invertible) {
@@ -118,78 +117,75 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
     return true;
 }
 
-bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint)
-{
+bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
     updateViewTransform();
     const fh6::scene::GuideLayer *guide = nullptr;
     QImage image;
     QPoint seed;
     QString error;
     if (!bucketGuideContext(screenPoint, &guide, nullptr, &image, &seed, &error)) {
-        bucketGuideId_.clear();
-        bucketSeedPixel_ = QPoint(-1, -1);
-        bucketFill_ = BucketFillResult{};
-        bucketPreviewImage_ = {};
+        bucket_.guideId.clear();
+        bucket_.seedPixel = QPoint(-1, -1);
+        bucket_.fill = BucketFillResult{};
+        bucket_.previewImage = {};
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_), error});
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance), error});
         update();
         return false;
     }
 
-    if (bucketGuideId_ == guide->id
-        && bucketSeedPixel_ == seed
-        && bucketFill_.valid()
-        && bucketFill_.imageSize == image.size()) {
+    if (bucket_.guideId == guide->id
+        && bucket_.seedPixel == seed
+        && bucket_.fill.valid()
+        && bucket_.fill.imageSize == image.size()) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
-                       QStringLiteral("%1 pixels").arg(bucketFill_.area)});
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
+                       QStringLiteral("%1 pixels").arg(bucket_.fill.area)});
         update();
         return true;
     }
 
-    if (bucketSourceGuideId_ != guide->id
-        || bucketSourceImage_.size() != image.size()
-        || bucketSourceImage_.isNull()) {
-        bucketSourceGuideId_ = guide->id;
-        bucketSourceImage_ = image.convertToFormat(QImage::Format_ARGB32);
+    if (bucket_.sourceGuideId != guide->id
+        || bucket_.sourceImage.size() != image.size()
+        || bucket_.sourceImage.isNull()) {
+        bucket_.sourceGuideId = guide->id;
+        bucket_.sourceImage = image.convertToFormat(QImage::Format_ARGB32);
     }
-    BucketFillResult fill = floodGuideRegion(bucketSourceImage_, seed, bucketTolerance_);
-    bucketGuideId_ = guide->id;
-    bucketSeedPixel_ = seed;
-    bucketFill_ = std::move(fill);
-    bucketPreviewImage_ = bucketMaskPreview(bucketFill_);
-    if (!bucketFill_.valid()) {
+    BucketFillResult fill = floodGuideRegion(bucket_.sourceImage, seed, bucket_.tolerance);
+    bucket_.guideId = guide->id;
+    bucket_.seedPixel = seed;
+    bucket_.fill = std::move(fill);
+    bucket_.previewImage = bucketMaskPreview(bucket_.fill);
+    if (!bucket_.fill.valid()) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
-                       bucketFill_.error});
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
+                       bucket_.fill.error});
         update();
         return false;
     }
     setCursorHint(screenPoint,
-                  {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
-                   QStringLiteral("%1 pixels").arg(bucketFill_.area)});
+                  {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
+                   QStringLiteral("%1 pixels").arg(bucket_.fill.area)});
     update();
     return true;
 }
 
-void ProjectCanvas::adjustBucketTolerance(int delta, const QPointF &screenPoint)
-{
-    bucketTolerance_ = std::clamp(bucketTolerance_ + delta, 0, 255);
-    bucketGuideId_.clear();
-    bucketSeedPixel_ = QPoint(-1, -1);
-    bucketFill_ = BucketFillResult{};
-    bucketPreviewImage_ = {};
+void ProjectCanvas::adjustBucketTolerance(int delta, const QPointF &screenPoint) {
+    bucket_.tolerance = std::clamp(bucket_.tolerance + delta, 0, 255);
+    bucket_.guideId.clear();
+    bucket_.seedPixel = QPoint(-1, -1);
+    bucket_.fill = BucketFillResult{};
+    bucket_.previewImage = {};
     updateBucketPreview(screenPoint);
 }
 
-bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
-{
-    if (!updateBucketPreview(screenPoint) || !bucketFill_.valid()) {
+bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
+    if (!updateBucketPreview(screenPoint) || !bucket_.fill.valid()) {
         return false;
     }
-    if (!penPoints_.isEmpty()) {
+    if (!pen_.points.isEmpty()) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
                        QStringLiteral("Finish or cancel the existing Pen path first")});
         update();
         return false;
@@ -202,21 +198,21 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
     QString error;
     if (!bucketGuideContext(screenPoint, &guide, &guideWorld, &image, &seed, &error)) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_), error});
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance), error});
         update();
         return false;
     }
 
     RegionExtractionParams traceParams;
     traceParams.traceSpeckle = 0;
-    const QPainterPath traced = traceMaskToPath(bucketFill_.mask,
-                                                bucketFill_.imageSize.width(),
-                                                bucketFill_.imageSize.height(),
-                                                bucketFill_.bounds,
+    const QPainterPath traced = traceMaskToPath(bucket_.fill.mask,
+                                                bucket_.fill.imageSize.width(),
+                                                bucket_.fill.imageSize.height(),
+                                                bucket_.fill.bounds,
                                                 traceParams);
     if (traced.isEmpty()) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
                        QStringLiteral("Potrace could not trace this region")});
         update();
         return false;
@@ -228,7 +224,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
         regionOutlineToPenPoints(traced, conversionOptions);
     if (!conversion.valid()) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
                        conversion.error.isEmpty()
                            ? QStringLiteral("The traced region is not a valid Pen contour")
                            : conversion.error});
@@ -250,7 +246,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
     const PenContour worldContour = buildPenContour(worldPoints);
     if (!worldContour.valid()) {
         setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucketTolerance_),
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
                        worldContour.error.isEmpty()
                            ? QStringLiteral("The guide transform produced an invalid Pen contour")
                            : worldContour.error});
@@ -258,13 +254,13 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
         return false;
     }
 
-    penPoints_ = std::move(worldPoints);
+    pen_.points = std::move(worldPoints);
     normalizePenPointOrder();
-    penFillColor_ = bucketFill_.averageColor;
-    penLooped_ = true;
-    penHoverWorld_ = penPoints_.front().position;
-    penCrossings_.clear();
-    penError_.clear();
+    pen_.fillColor = bucket_.fill.averageColor;
+    pen_.closed = true;
+    pen_.hoverWorld = pen_.points.front().position;
+    pen_.crossings.clear();
+    pen_.error.clear();
     clearBucketPreview();
     setTool(QStringLiteral("pen"));
     validatePenInteraction();
@@ -272,25 +268,23 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint)
     return true;
 }
 
-void ProjectCanvas::clearBucketPreview()
-{
-    bucketGuideId_.clear();
-    bucketSourceGuideId_.clear();
-    bucketSeedPixel_ = QPoint(-1, -1);
-    bucketFill_ = BucketFillResult{};
-    bucketSourceImage_ = {};
-    bucketPreviewImage_ = {};
+void ProjectCanvas::clearBucketPreview() {
+    bucket_.guideId.clear();
+    bucket_.sourceGuideId.clear();
+    bucket_.seedPixel = QPoint(-1, -1);
+    bucket_.fill = BucketFillResult{};
+    bucket_.sourceImage = {};
+    bucket_.previewImage = {};
     clearCursorHint();
     update();
 }
 
-void ProjectCanvas::drawBucketOverlay(QPainter &painter)
-{
+void ProjectCanvas::drawBucketOverlay(QPainter &painter) {
     if (tool_ != QStringLiteral("bucket")
-        || bucketGuideId_.isEmpty()
-        || bucketPreviewImage_.isNull()
+        || bucket_.guideId.isEmpty()
+        || bucket_.previewImage.isNull()
         || state_ == nullptr
-        || !state_->selectedGuideLayerIds().contains(bucketGuideId_)) {
+        || !state_->selectedGuideLayerIds().contains(bucket_.guideId)) {
         return;
     }
 
@@ -299,7 +293,7 @@ void ProjectCanvas::drawBucketOverlay(QPainter &painter)
     forEachSceneGuide([&](const fh6::scene::GuideLayer &candidate,
                           const QTransform &world,
                           const QString &sectionGroupId) {
-        if (candidate.id == bucketGuideId_ && isSectionActive(sectionGroupId)) {
+        if (candidate.id == bucket_.guideId && isSectionActive(sectionGroupId)) {
             guide = &candidate;
             guideWorld = world;
             return false;
@@ -313,14 +307,14 @@ void ProjectCanvas::drawBucketOverlay(QPainter &painter)
     const QSizeF guideSize = sceneNodeSize(*guide, geometry_);
     QTransform imageToLocal;
     imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
-    imageToLocal.scale(guideSize.width() / bucketPreviewImage_.width(),
-                       guideSize.height() / bucketPreviewImage_.height());
+    imageToLocal.scale(guideSize.width() / bucket_.previewImage.width(),
+                       guideSize.height() / bucket_.previewImage.height());
 
     painter.save();
     painter.setOpacity(1.0);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    painter.setTransform(imageToLocal * guideWorld * worldToScreen_, false);
-    painter.drawImage(QPointF(0.0, 0.0), bucketPreviewImage_);
+    painter.setTransform(imageToLocal * guideWorld * camera_.matrix(), false);
+    painter.drawImage(QPointF(0.0, 0.0), bucket_.previewImage);
     painter.restore();
 }
 

@@ -13,22 +13,19 @@ class Cursor {
 public:
     explicit Cursor(const QByteArray &bytes) : bytes_(bytes) {}
 
-    quint8 u8()
-    {
+    quint8 u8() {
         require(1);
         return static_cast<quint8>(bytes_[pos_++]);
     }
 
-    quint16 u16()
-    {
+    quint16 u16() {
         require(2);
         const quint16 value = detail::readLeU16(bytes_, pos_);
         pos_ += 2;
         return value;
     }
 
-    quint32 u32()
-    {
+    quint32 u32() {
         require(4);
         const quint32 value = detail::readLeU32(bytes_, pos_);
         pos_ += 4;
@@ -37,22 +34,19 @@ public:
 
     qint32 i32() { return static_cast<qint32>(u32()); }
 
-    float f32()
-    {
+    float f32() {
         require(4);
         const float value = detail::readLeFloat(bytes_, pos_);
         pos_ += 4;
         return value;
     }
 
-    void skip(int count)
-    {
+    void skip(int count) {
         require(count);
         pos_ += count;
     }
 
-    QString string7()
-    {
+    QString string7() {
         quint32 length = 0;
         int shift = 0;
         for (int i = 0; i < 5; ++i) {
@@ -73,8 +67,7 @@ public:
     }
 
 private:
-    void require(int count) const
-    {
+    void require(int count) const {
         if (count < 0 || pos_ < 0 || pos_ + count > bytes_.size()) {
             throw std::runtime_error("material data is truncated");
         }
@@ -84,18 +77,15 @@ private:
     int pos_ = 0;
 };
 
-bool atLeast(quint8 major, quint8 minor, quint8 wantedMajor, quint8 wantedMinor)
-{
+bool atLeast(quint8 major, quint8 minor, quint8 wantedMajor, quint8 wantedMinor) {
     return major > wantedMajor || (major == wantedMajor && minor >= wantedMinor);
 }
 
-std::array<float, 4> readVector(Cursor &cursor)
-{
+std::array<float, 4> readVector(Cursor &cursor) {
     return {cursor.f32(), cursor.f32(), cursor.f32(), cursor.f32()};
 }
 
-ModelMaterialParameter readParameter(Cursor &cursor)
-{
+ModelMaterialParameter readParameter(Cursor &cursor) {
     ModelMaterialParameter parameter;
     parameter.versionMajor = cursor.u8();
     parameter.versionMinor = cursor.u8();
@@ -161,8 +151,7 @@ ModelMaterialParameter readParameter(Cursor &cursor)
     return parameter;
 }
 
-std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob)
-{
+std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob) {
     Cursor cursor(blob.data);
     const quint32 count = blob.isAtLeastVersion(2, 1) ? cursor.u16() : cursor.u8();
     if (count > (1u << 16)) {
@@ -176,13 +165,11 @@ std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob)
     return parameters;
 }
 
-bool containsHash(quint32 hash, std::initializer_list<quint32> hashes)
-{
+bool containsHash(quint32 hash, std::initializer_list<quint32> hashes) {
     return std::find(hashes.begin(), hashes.end(), hash) != hashes.end();
 }
 
-void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter &parameter)
-{
+void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter &parameter) {
     const bool vectorValue = parameter.type == ModelMaterialParameterType::Vector
         || parameter.type == ModelMaterialParameterType::Color;
     if (vectorValue && containsHash(parameter.nameHash, {
@@ -236,8 +223,7 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
     }
 }
 
-void appendParameters(ModelMaterial &material, const BundleBlobRecord &blob)
-{
+void appendParameters(ModelMaterial &material, const BundleBlobRecord &blob) {
     std::vector<ModelMaterialParameter> decoded = readParameters(blob);
     for (const ModelMaterialParameter &parameter : decoded) {
         applyPreviewParameter(material, parameter);
@@ -246,8 +232,7 @@ void appendParameters(ModelMaterial &material, const BundleBlobRecord &blob)
 }
 
 std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
-    const ModelBundle &bundle, const QString &name)
-{
+    const ModelBundle &bundle, const QString &name) {
     auto material = std::make_shared<ModelMaterial>();
     material->name = name;
 
@@ -281,8 +266,7 @@ std::shared_ptr<ModelMaterial> decodeMaterialFromBundle(
 
 } // namespace
 
-std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob)
-{
+std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob) {
     if (blob.tag != bundle_tags::MaterialInstance || blob.data.isEmpty()) {
         return {};
     }
@@ -290,8 +274,7 @@ std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob)
     return decodeMaterialFromBundle(nested, blob.name);
 }
 
-std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes)
-{
+std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes) {
     if (bytes.isEmpty()) {
         return {};
     }
@@ -299,8 +282,7 @@ std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes)
 }
 
 std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
-    const ModelMaterial &defaults, const ModelMaterial &instance)
-{
+    const ModelMaterial &defaults, const ModelMaterial &instance) {
     auto merged = std::make_shared<ModelMaterial>();
     merged->name = instance.name;
     merged->resourcePath = instance.resourcePath;

@@ -9,8 +9,7 @@ using namespace pc_detail;
 namespace {
 
 template <typename Start>
-QTransform entryStartTransform(const Start &start)
-{
+QTransform entryStartTransform(const Start &start) {
     QTransform transform;
     transform.translate(start.x, start.y);
     transform.rotate(start.rotation);
@@ -19,8 +18,7 @@ QTransform entryStartTransform(const Start &start)
     return transform;
 }
 
-QTransform parentWorldTransform(const fh6::scene::Layer &node)
-{
+QTransform parentWorldTransform(const fh6::scene::Layer &node) {
     const fh6::scene::Layer *parent = node.parent();
     return parent != nullptr ? sceneWorldTransform(*parent) : QTransform();
 }
@@ -28,8 +26,7 @@ QTransform parentWorldTransform(const fh6::scene::Layer &node)
 template <typename Start>
 QTransform localResultForWorldTransform(const fh6::scene::Layer &node,
                                         const Start &start,
-                                        const QTransform &worldTransform)
-{
+                                        const QTransform &worldTransform) {
     const QTransform startLocal = entryStartTransform(start);
     const QTransform parentWorld = parentWorldTransform(node);
     bool invertible = false;
@@ -40,16 +37,14 @@ QTransform localResultForWorldTransform(const fh6::scene::Layer &node,
     return startLocal * parentWorld * worldTransform * parentWorldInverse;
 }
 
-double snapRotation(double degrees, Qt::KeyboardModifiers modifiers)
-{
+double snapRotation(double degrees, Qt::KeyboardModifiers modifiers) {
     if (modifiers & Qt::ShiftModifier) {
         return std::round(degrees / 15.0) * 15.0;
     }
     return degrees;
 }
 
-QPointF constrainDelta(QPointF delta, Qt::KeyboardModifiers modifiers)
-{
+QPointF constrainDelta(QPointF delta, Qt::KeyboardModifiers modifiers) {
     if (!(modifiers & Qt::ShiftModifier)) {
         return delta;
     }
@@ -59,8 +54,7 @@ QPointF constrainDelta(QPointF delta, Qt::KeyboardModifiers modifiers)
     return {0.0, delta.y()};
 }
 
-QString formatHintNumber(double value, int decimals = 2)
-{
+QString formatHintNumber(double value, int decimals = 2) {
     if (std::abs(value) < 0.005) {
         value = 0.0;
     }
@@ -77,8 +71,7 @@ struct ScaleDecomposition {
     double scaleY = 1.0;
 };
 
-ScaleDecomposition decomposeScaleResult(const QTransform &result, double fallbackSkew)
-{
+ScaleDecomposition decomposeScaleResult(const QTransform &result, double fallbackSkew) {
     const double a = result.m11();
     const double b = result.m12();
     const double c = result.m21();
@@ -100,8 +93,7 @@ ScaleDecomposition decomposeScaleResult(const QTransform &result, double fallbac
 }
 
 template <typename Item>
-void assignDecomposition(Item *item, const ScaleDecomposition &dec)
-{
+void assignDecomposition(Item *item, const ScaleDecomposition &dec) {
     item->x = dec.x;
     item->y = dec.y;
     item->rotation = dec.rotation;
@@ -115,8 +107,7 @@ void assignDecomposition(Item *item, const ScaleDecomposition &dec)
 } // namespace
 
 
-void ProjectCanvas::cycleFlipSelection()
-{
+void ProjectCanvas::cycleFlipSelection() {
     if (state_ == nullptr || project_ == nullptr) {
         return;
     }
@@ -213,8 +204,7 @@ void ProjectCanvas::cycleFlipSelection()
 void ProjectCanvas::collectDragGroups(QVector<QString> &groupIds,
                                       QHash<QString, QTransform> &startFrames,
                                       QSet<QString> &groupedLayerIds,
-                                      QSet<QString> &groupedGuideIds) const
-{
+                                      QSet<QString> &groupedGuideIds) const {
     if (state_ == nullptr) {
         return;
     }
@@ -233,38 +223,35 @@ void ProjectCanvas::collectDragGroups(QVector<QString> &groupIds,
     }
 }
 
-void ProjectCanvas::captureDragStarts()
-{
-    dragStarts_.clear();
-    dragGuideStarts_.clear();
-    dragGroupIds_.clear();
-    dragGroupStartFrames_.clear();
+void ProjectCanvas::captureDragStarts() {
+    drag_.starts.clear();
+    drag_.guideStarts.clear();
+    drag_.groupIds.clear();
+    drag_.groupStartFrames.clear();
     QSet<QString> groupedLayerIds;
     QSet<QString> groupedGuideIds;
-    collectDragGroups(dragGroupIds_, dragGroupStartFrames_, groupedLayerIds, groupedGuideIds);
-    dragLayers_.clear();
-    dragGuides_.clear();
+    collectDragGroups(drag_.groupIds, drag_.groupStartFrames, groupedLayerIds, groupedGuideIds);
+    drag_.layers.clear();
+    drag_.guides.clear();
     for (fh6::scene::Shape *layer : selectedLayers()) {
         if (!groupedLayerIds.contains(layer->id)) {
-            dragLayers_.push_back(layer);
-            dragStarts_.insert(layer->id, {layer->x, layer->y, layer->scaleX, layer->scaleY, layer->rotation, layer->skew});
+            drag_.layers.push_back(layer);
+            drag_.starts.insert(layer->id, {layer->x, layer->y, layer->scaleX, layer->scaleY, layer->rotation, layer->skew});
         }
     }
     for (fh6::scene::GuideLayer *guide : selectedGuideLayers()) {
         if (!groupedGuideIds.contains(guide->id)) {
-            dragGuides_.push_back(guide);
-            dragGuideStarts_.insert(guide->id, {guide->x, guide->y, guide->scaleX, guide->scaleY, guide->rotation});
+            drag_.guides.push_back(guide);
+            drag_.guideStarts.insert(guide->id, {guide->x, guide->y, guide->scaleX, guide->scaleY, guide->rotation});
         }
     }
 }
 
-QVector<QString> ProjectCanvas::dragTransformTargetIds() const
-{
-    return buildTransformTargetIds(dragGroupIds_, dragLayers_, dragGuides_);
+QVector<QString> ProjectCanvas::dragTransformTargetIds() const {
+    return buildTransformTargetIds(drag_.groupIds, drag_.layers, drag_.guides);
 }
 
-QString ProjectCanvas::transformSelectionSignature() const
-{
+QString ProjectCanvas::transformSelectionSignature() const {
     if (state_ == nullptr) {
         return {};
     }
@@ -279,8 +266,7 @@ QString ProjectCanvas::transformSelectionSignature() const
     return parts.join(QLatin1Char('|'));
 }
 
-QSizeF ProjectCanvas::transformBoxVisualExtents(const SelectionBox &box) const
-{
+QSizeF ProjectCanvas::transformBoxVisualExtents(const SelectionBox &box) const {
     if (!box.valid || box.localRect.isEmpty()) {
         return {};
     }
@@ -291,54 +277,50 @@ QSizeF ProjectCanvas::transformBoxVisualExtents(const SelectionBox &box) const
                   std::abs(box.localRect.height()) * std::max(axisY, 1e-9));
 }
 
-void ProjectCanvas::captureScaleHintReference()
-{
+void ProjectCanvas::captureScaleHintReference() {
     const QString signature = transformSelectionSignature();
-    const QSizeF startExtents = transformBoxVisualExtents(dragStartBox_);
-    const bool reset = !scaleHintBaseValid_
-        || scaleHintSelectionSignature_ != signature
-        || scaleHintBaseExtents_.width() <= 1e-9
-        || scaleHintBaseExtents_.height() <= 1e-9;
+    const QSizeF startExtents = transformBoxVisualExtents(drag_.startBox);
+    const bool reset = !drag_.scaleHintBaseValid
+        || drag_.scaleHintSelectionSignature != signature
+        || drag_.scaleHintBaseExtents.width() <= 1e-9
+        || drag_.scaleHintBaseExtents.height() <= 1e-9;
     if (reset) {
-        scaleHintSelectionSignature_ = signature;
-        scaleHintBaseExtents_ = startExtents;
-        scaleHintBaseValid_ = startExtents.width() > 1e-9 && startExtents.height() > 1e-9;
+        drag_.scaleHintSelectionSignature = signature;
+        drag_.scaleHintBaseExtents = startExtents;
+        drag_.scaleHintBaseValid = startExtents.width() > 1e-9 && startExtents.height() > 1e-9;
     }
-    scaleHintStartScaleX_ = scaleHintBaseValid_ ? startExtents.width() / scaleHintBaseExtents_.width() : 1.0;
-    scaleHintStartScaleY_ = scaleHintBaseValid_ ? startExtents.height() / scaleHintBaseExtents_.height() : 1.0;
+    drag_.scaleHintStartScaleX = drag_.scaleHintBaseValid ? startExtents.width() / drag_.scaleHintBaseExtents.width() : 1.0;
+    drag_.scaleHintStartScaleY = drag_.scaleHintBaseValid ? startExtents.height() / drag_.scaleHintBaseExtents.height() : 1.0;
 }
 
-void ProjectCanvas::applyWorldTransformToDragItems(const QTransform &worldTransform)
-{
+void ProjectCanvas::applyWorldTransformToDragItems(const QTransform &worldTransform) {
     const auto applyItem = [&](auto *item, const EntryStart &start) {
         const ScaleDecomposition dec = decomposeScaleResult(localResultForWorldTransform(*item, start, worldTransform), start.skew);
         if (dec.ok) {
             assignDecomposition(item, dec);
         }
     };
-    for (fh6::scene::Shape *layer : dragLayers_) {
-        applyItem(layer, dragStarts_.value(layer->id));
+    for (fh6::scene::Shape *layer : drag_.layers) {
+        applyItem(layer, drag_.starts.value(layer->id));
     }
-    for (fh6::scene::GuideLayer *guide : dragGuides_) {
-        applyItem(guide, dragGuideStarts_.value(guide->id));
+    for (fh6::scene::GuideLayer *guide : drag_.guides) {
+        applyItem(guide, drag_.guideStarts.value(guide->id));
     }
-    if (!dragGroupStartFrames_.isEmpty()) {
-        state_->setGroupFramesFromStart(dragGroupStartFrames_, worldTransform);
+    if (!drag_.groupStartFrames.isEmpty()) {
+        state_->setGroupFramesFromStart(drag_.groupStartFrames, worldTransform);
     }
 }
 
-void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers)
-{
+void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers) {
     updateCursorForPoint(screenPoint);
-    const QPointF delta = constrainDelta(screenToWorld(screenPoint) - dragStartWorld_, modifiers);
+    const QPointF delta = constrainDelta(screenToWorld(screenPoint) - drag_.startWorld, modifiers);
     applyWorldTransformToDragItems(QTransform::fromTranslate(delta.x(), delta.y()));
     setCursorHint(screenPoint, {QStringLiteral("X: %1").arg(formatHintNumber(delta.x())),
                                 QStringLiteral("Y: %1").arg(formatHintNumber(delta.y()))});
     requestLiveSceneUpdate();
 }
 
-bool ProjectCanvas::nudgeSelection(const QPointF &delta)
-{
+bool ProjectCanvas::nudgeSelection(const QPointF &delta) {
     if (state_ == nullptr || project_ == nullptr || delta.isNull()) {
         return false;
     }
@@ -408,8 +390,7 @@ struct MoveUnit {
 } // namespace
 
 bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(const QVector<QRectF> &)> &computeDeltas,
-                                         bool descendSoleGroup)
-{
+                                         bool descendSoleGroup) {
     if (state_ == nullptr || project_ == nullptr) {
         return false;
     }
@@ -548,8 +529,7 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
     return true;
 }
 
-bool ProjectCanvas::alignSelection(AlignEdge edge)
-{
+bool ProjectCanvas::alignSelection(AlignEdge edge) {
     return applyAlignDistribute([edge](const QVector<QRectF> &bounds) {
         // World +Y is up on the canvas, so a QRectF's numeric bottom() (max Y) is the
         // visual top edge and top() (min Y) is the visual bottom edge.
@@ -588,8 +568,7 @@ bool ProjectCanvas::alignSelection(AlignEdge edge)
     });
 }
 
-bool ProjectCanvas::distributeSelection(DistributeAxis axis)
-{
+bool ProjectCanvas::distributeSelection(DistributeAxis axis) {
     return applyAlignDistribute([axis](const QVector<QRectF> &bounds) {
         const int n = bounds.size();
         QVector<QPointF> deltas(n, QPointF(0.0, 0.0));
@@ -628,44 +607,42 @@ bool ProjectCanvas::distributeSelection(DistributeAxis axis)
     }, /*descendSoleGroup=*/true);
 }
 
-void ProjectCanvas::captureScaleReference()
-{
-    const QRectF &lr = dragStartBox_.localRect;
+void ProjectCanvas::captureScaleReference() {
+    const QRectF &lr = drag_.startBox.localRect;
     captureScaleHintReference();
 
     QPointF handleLocal = lr.center();
     QPointF anchorLocal = lr.center();
-    handleAnchorLocalPoints(activeHandle_, lr, &handleLocal, &anchorLocal);
+    handleAnchorLocalPoints(drag_.activeHandle, lr, &handleLocal, &anchorLocal);
 
-    scaleHandleLocal_ = handleLocal;
-    scaleAnchorLocal_ = anchorLocal;
-    scaleCenterLocal_ = lr.center();
-    const QTransform &M = dragStartBox_.localToWorld;
-    scaleHandleStartWorld_ = M.map(handleLocal);
-    scaleAnchorWorld_ = M.map(anchorLocal);
-    scaleCenterWorld_ = M.map(lr.center());
+    drag_.scaleHandleLocal = handleLocal;
+    drag_.scaleAnchorLocal = anchorLocal;
+    drag_.scaleCenterLocal = lr.center();
+    const QTransform &M = drag_.startBox.localToWorld;
+    drag_.scaleHandleStartWorld = M.map(handleLocal);
+    drag_.scaleAnchorWorld = M.map(anchorLocal);
+    drag_.scaleCenterWorld = M.map(lr.center());
 }
 
-void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers)
-{
+void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers) {
     updateCursorForPoint(screenPoint);
-    if (!dragStartBox_.valid || dragStartBox_.localRect.isEmpty()) {
+    if (!drag_.startBox.valid || drag_.startBox.localRect.isEmpty()) {
         return;
     }
 
-    const HandleAxes axes = handleAxes(activeHandle_);
+    const HandleAxes axes = handleAxes(drag_.activeHandle);
 
-    const QTransform &M = dragStartBox_.localToWorld;
+    const QTransform &M = drag_.startBox.localToWorld;
     bool invertible = false;
     const QTransform Minv = M.inverted(&invertible);
     if (!invertible) {
         return;
     }
 
-    const QPointF anchorLocal = (modifiers & Qt::AltModifier) ? scaleCenterLocal_ : scaleAnchorLocal_;
+    const QPointF anchorLocal = (modifiers & Qt::AltModifier) ? drag_.scaleCenterLocal : drag_.scaleAnchorLocal;
 
-    const QPointF pressLocal = Minv.map(dragStartWorld_);
-    const QPointF grabOffsetLocal = pressLocal - scaleHandleLocal_;
+    const QPointF pressLocal = Minv.map(drag_.startWorld);
+    const QPointF grabOffsetLocal = pressLocal - drag_.scaleHandleLocal;
     const QPointF cursorLocal = Minv.map(screenToWorld(screenPoint));
     const QPointF currentLocal = cursorLocal - grabOffsetLocal;
 
@@ -677,12 +654,12 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
         return (current - anchor) / span;
     };
 
-    double sx = (axes.left || axes.right) ? axisScale(currentLocal.x(), scaleHandleLocal_.x(), anchorLocal.x()) : 1.0;
-    double sy = (axes.top || axes.bottom) ? axisScale(currentLocal.y(), scaleHandleLocal_.y(), anchorLocal.y()) : 1.0;
+    double sx = (axes.left || axes.right) ? axisScale(currentLocal.x(), drag_.scaleHandleLocal.x(), anchorLocal.x()) : 1.0;
+    double sy = (axes.top || axes.bottom) ? axisScale(currentLocal.y(), drag_.scaleHandleLocal.y(), anchorLocal.y()) : 1.0;
 
     const bool uniform = modifiers & Qt::ShiftModifier;
     if (uniform) {
-        const QPointF anchorToHandle = scaleHandleLocal_ - anchorLocal;
+        const QPointF anchorToHandle = drag_.scaleHandleLocal - anchorLocal;
         const QPointF anchorToCurrent = currentLocal - anchorLocal;
         const double denom = anchorToHandle.x() * anchorToHandle.x() + anchorToHandle.y() * anchorToHandle.y();
         const double s = denom > 1e-9
@@ -697,16 +674,16 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
     localScale.scale(sx, sy);
     localScale.translate(-anchorLocal.x(), -anchorLocal.y());
 
-    const bool relativeSingle = transformRelativeMode_
-        && dragGroupStartFrames_.isEmpty()
-        && (dragLayers_.size() + dragGuides_.size() == 1);
+    const bool relativeSingle = options_.transformRelativeMode
+        && drag_.groupStartFrames.isEmpty()
+        && (drag_.layers.size() + drag_.guides.size() == 1);
     if (relativeSingle) {
         applyDragTransform(localScale, /*preMultiply=*/true);
     } else {
         applyDragTransform(Minv * localScale * M, /*preMultiply=*/false);
     }
-    const double hintScaleX = scaleHintStartScaleX_ * sx;
-    const double hintScaleY = scaleHintStartScaleY_ * sy;
+    const double hintScaleX = drag_.scaleHintStartScaleX * sx;
+    const double hintScaleY = drag_.scaleHintStartScaleY * sy;
     if (uniform) {
         setCursorHint(screenPoint, {QStringLiteral("Scale X/Y: %1x").arg(formatHintNumber(hintScaleX, 3))});
     } else {
@@ -716,8 +693,7 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
     requestLiveSceneUpdate();
 }
 
-void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMultiply)
-{
+void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMultiply) {
     const auto apply = [&](auto *item, const EntryStart &start) {
         const QTransform result = preMultiply ? (transform * entryStartTransform(start))
                                               : localResultForWorldTransform(*item, start, transform);
@@ -726,34 +702,33 @@ void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMult
             assignDecomposition(item, dec);
         }
     };
-    for (fh6::scene::Shape *layer : dragLayers_) {
-        apply(layer, dragStarts_.value(layer->id));
+    for (fh6::scene::Shape *layer : drag_.layers) {
+        apply(layer, drag_.starts.value(layer->id));
     }
-    for (fh6::scene::GuideLayer *guide : dragGuides_) {
-        apply(guide, dragGuideStarts_.value(guide->id));
+    for (fh6::scene::GuideLayer *guide : drag_.guides) {
+        apply(guide, drag_.guideStarts.value(guide->id));
     }
-    if (!preMultiply && !dragGroupStartFrames_.isEmpty()) {
-        state_->setGroupFramesFromStart(dragGroupStartFrames_, transform);
+    if (!preMultiply && !drag_.groupStartFrames.isEmpty()) {
+        state_->setGroupFramesFromStart(drag_.groupStartFrames, transform);
     }
 }
 
-void ProjectCanvas::applySkewDrag(const QPointF &screenPoint)
-{
+void ProjectCanvas::applySkewDrag(const QPointF &screenPoint) {
     updateCursorForPoint(screenPoint);
 
-    if (dragLayers_.size() + dragGuides_.size() > 1 || !dragGroupStartFrames_.isEmpty()) {
-        if (!dragStartBox_.valid || dragStartBox_.localRect.isEmpty()) {
+    if (drag_.layers.size() + drag_.guides.size() > 1 || !drag_.groupStartFrames.isEmpty()) {
+        if (!drag_.startBox.valid || drag_.startBox.localRect.isEmpty()) {
             return;
         }
-        const QTransform &M = dragStartBox_.localToWorld;
+        const QTransform &M = drag_.startBox.localToWorld;
         bool invertible = false;
         const QTransform Minv = M.inverted(&invertible);
         if (!invertible) {
             return;
         }
-        const QRectF &lr = dragStartBox_.localRect;
+        const QRectF &lr = drag_.startBox.localRect;
         const QPointF centerLocal = lr.center();
-        const double pressLocalX = Minv.map(dragStartWorld_).x();
+        const double pressLocalX = Minv.map(drag_.startWorld).x();
         const double cursorLocalX = Minv.map(screenToWorld(screenPoint)).x();
         const double deltaLocalX = cursorLocalX - pressLocalX;
         // Qt shear uses x' = x + k(y - cy).
@@ -770,9 +745,9 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint)
     }
 
     const QPointF current = screenToWorld(screenPoint);
-    const double delta = current.x() - dragStartWorld_.x();
-    for (fh6::scene::Shape *layer : dragLayers_) {
-        const EntryStart startState = dragStarts_.value(layer->id);
+    const double delta = current.x() - drag_.startWorld.x();
+    for (fh6::scene::Shape *layer : drag_.layers) {
+        const EntryStart startState = drag_.starts.value(layer->id);
         const QSizeF size = flatEntrySize(*layer, geometry_.shapeSize(layer->shapeId));
         layer->skew = startState.skew + delta / std::max(size.width(), 1.0);
     }
@@ -780,30 +755,28 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint)
     requestLiveSceneUpdate();
 }
 
-void ProjectCanvas::applyRotateDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers)
-{
+void ProjectCanvas::applyRotateDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers) {
     updateCursorForPoint(screenPoint);
     const QPointF current = screenToWorld(screenPoint);
-    const double angle = std::atan2(current.y() - rotateCenterWorld_.y(), current.x() - rotateCenterWorld_.x());
-    const double deltaDegrees = snapRotation((angle - rotateStartAngle_) * 180.0 / kPi, modifiers);
+    const double angle = std::atan2(current.y() - drag_.rotateCenterWorld.y(), current.x() - drag_.rotateCenterWorld.x());
+    const double deltaDegrees = snapRotation((angle - drag_.rotateStartAngle) * 180.0 / kPi, modifiers);
     QTransform worldRotate;
-    worldRotate.translate(rotateCenterWorld_.x(), rotateCenterWorld_.y());
+    worldRotate.translate(drag_.rotateCenterWorld.x(), drag_.rotateCenterWorld.y());
     worldRotate.rotate(deltaDegrees);
-    worldRotate.translate(-rotateCenterWorld_.x(), -rotateCenterWorld_.y());
+    worldRotate.translate(-drag_.rotateCenterWorld.x(), -drag_.rotateCenterWorld.y());
     applyWorldTransformToDragItems(worldRotate);
     double displayedRotation = normalizeRotation(deltaDegrees);
-    if (!dragLayers_.isEmpty()) {
-        displayedRotation = dragLayers_.front()->rotation;
-    } else if (!dragGuides_.isEmpty()) {
-        displayedRotation = dragGuides_.front()->rotation;
+    if (!drag_.layers.isEmpty()) {
+        displayedRotation = drag_.layers.front()->rotation;
+    } else if (!drag_.guides.isEmpty()) {
+        displayedRotation = drag_.guides.front()->rotation;
     }
     setCursorHint(screenPoint, {QStringLiteral("Rotation: %1 deg").arg(formatHintNumber(displayedRotation, 1))});
     requestLiveSceneUpdate();
 }
 
-bool ProjectCanvas::isTransformDrag() const
-{
-    switch (dragMode_) {
+bool ProjectCanvas::isTransformDrag() const {
+    switch (drag_.mode) {
     case DragMode::Move:
     case DragMode::TransformMove:
     case DragMode::Scale:
@@ -818,8 +791,7 @@ bool ProjectCanvas::isTransformDrag() const
     return false;
 }
 
-void ProjectCanvas::requestLiveSceneUpdate()
-{
+void ProjectCanvas::requestLiveSceneUpdate() {
     if (state_ != nullptr) {
         state_->noteTransformLiveChanged(dragTransformTargetIds());
     } else {
@@ -828,33 +800,31 @@ void ProjectCanvas::requestLiveSceneUpdate()
     }
 }
 
-void ProjectCanvas::resetDragState()
-{
-    dragDuplicated_ = false;
-    dragUsesProjectEdit_ = false;
-    dragMode_ = DragMode::None;
-    marqueeRect_ = {};
+void ProjectCanvas::resetDragState() {
+    drag_.duplicated = false;
+    drag_.usesProjectEdit = false;
+    drag_.mode = DragMode::None;
+    drag_.marqueeRect = {};
     clearCursorHint();
-    activeHandle_.clear();
-    dragStarts_.clear();
-    dragGuideStarts_.clear();
-    dragLayers_.clear();
-    dragGuides_.clear();
-    dragGroupIds_.clear();
-    dragGroupStartFrames_.clear();
+    drag_.activeHandle.clear();
+    drag_.starts.clear();
+    drag_.guideStarts.clear();
+    drag_.layers.clear();
+    drag_.guides.clear();
+    drag_.groupIds.clear();
+    drag_.groupStartFrames.clear();
     updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
 }
 
-void ProjectCanvas::finishDrag()
-{
+void ProjectCanvas::finishDrag() {
     if (isTransformDrag() && state_ != nullptr) {
-        if (dragUsesProjectEdit_) {
+        if (drag_.usesProjectEdit) {
             state_->commitProjectEdit();
         } else {
             state_->commitTransformCommand();
         }
-        if (dragDuplicated_) {
+        if (drag_.duplicated) {
             state_->noteProjectStructureChanged();
         } else {
             state_->noteProjectGeometryChanged(false, dragTransformTargetIds());
@@ -863,10 +833,9 @@ void ProjectCanvas::finishDrag()
     resetDragState();
 }
 
-void ProjectCanvas::cancelDrag()
-{
+void ProjectCanvas::cancelDrag() {
     if (isTransformDrag() && state_ != nullptr) {
-        if (dragUsesProjectEdit_) {
+        if (drag_.usesProjectEdit) {
             state_->cancelProjectEdit();
         } else {
             state_->cancelTransformCommand();
@@ -875,19 +844,17 @@ void ProjectCanvas::cancelDrag()
     resetDragState();
 }
 
-void ProjectCanvas::beginToolDrag(const QPointF &screenPos, const QPointF &boxCenterWorld)
-{
+void ProjectCanvas::beginToolDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
     if (activeTool_ != nullptr) {
         activeTool_->beginDrag(screenPos, boxCenterWorld);
     }
 }
 
-void ProjectCanvas::beginRotateDrag(const QPointF &boxCenterWorld)
-{
-    dragMode_ = DragMode::Rotate;
-    rotateCenterWorld_ = boxCenterWorld;
-    rotateStartAngle_ = std::atan2(dragStartWorld_.y() - rotateCenterWorld_.y(),
-                                   dragStartWorld_.x() - rotateCenterWorld_.x());
+void ProjectCanvas::beginRotateDrag(const QPointF &boxCenterWorld) {
+    drag_.mode = DragMode::Rotate;
+    drag_.rotateCenterWorld = boxCenterWorld;
+    drag_.rotateStartAngle = std::atan2(drag_.startWorld.y() - drag_.rotateCenterWorld.y(),
+                                   drag_.startWorld.x() - drag_.rotateCenterWorld.x());
 }
 
 } // namespace gui

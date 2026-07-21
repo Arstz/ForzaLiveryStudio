@@ -17,8 +17,7 @@ struct BucketFillResult {
     int area = 0;
     QString error;
 
-    bool valid() const
-    {
+    bool valid() const {
         return error.isEmpty()
             && area > 0
             && imageSize.width() > 0
@@ -27,13 +26,10 @@ struct BucketFillResult {
     }
 };
 
-// Select the four-connected pixels whose RGBA channels are each within
-// `tolerance` of the seed pixel. Fully transparent pixels are always excluded.
 BucketFillResult floodGuideRegion(const QImage &image,
                                   const QPoint &seed,
                                   int tolerance);
 
-// Build a same-sized translucent raster preview from a valid bucket mask.
 QImage bucketMaskPreview(const BucketFillResult &fill,
                          const QColor &color = QColor(64, 164, 255, 112));
 

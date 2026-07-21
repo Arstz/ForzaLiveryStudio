@@ -7,8 +7,7 @@ namespace gui {
 using namespace mw_detail;
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-{
+    : QMainWindow(parent) {
     theme_ = loadUiTheme();
     setWindowTitle(QStringLiteral("Forza Livery Studio"));
     resize(InitialWindowWidth, InitialWindowHeight);
@@ -40,8 +39,7 @@ MainWindow::MainWindow(QWidget *parent)
     updateStatus();
 }
 
-MainWindow::~MainWindow()
-{
+MainWindow::~MainWindow() {
     cancelGeneratedFill();
     cancelRegionFill();
 }

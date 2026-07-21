@@ -5,8 +5,7 @@
 
 namespace gui {
 
-QString mostRecentContainersRoot()
-{
+QString mostRecentContainersRoot() {
     const QDir pgsDir(QStringLiteral("C:/XboxGames/GameSave/pgs"));
     if (!pgsDir.exists()) {
         return {};
@@ -26,8 +25,7 @@ QString mostRecentContainersRoot()
     return best.exists() ? best.absoluteFilePath() : QString();
 }
 
-QString importDialogStartDirectory(QWidget *parent, const QString &actionKey)
-{
+QString importDialogStartDirectory(QWidget *parent, const QString &actionKey) {
     QSettings settings;
     const QString key = actionKey.isEmpty()
         ? QStringLiteral("import/defaultDirectory")
@@ -55,8 +53,7 @@ QString importDialogStartDirectory(QWidget *parent, const QString &actionKey)
     return selected;
 }
 
-QString importDialogStartDirectory(QWidget *parent)
-{
+QString importDialogStartDirectory(QWidget *parent) {
     QSettings settings;
     const QString configured = settings.value(QStringLiteral("import/defaultDirectory")).toString();
     if (!configured.isEmpty() && QFileInfo(configured).isDir()) {
@@ -78,8 +75,7 @@ QString importDialogStartDirectory(QWidget *parent)
     return selected;
 }
 
-QString importBrowserStartDirectory(const QString &actionKey, const QStringList &fallbackActionKeys)
-{
+QString importBrowserStartDirectory(const QString &actionKey, const QStringList &fallbackActionKeys) {
     QSettings settings;
     const auto configuredDirectory = [&](const QString &key) {
         const QString path = settings.value(QStringLiteral("import/%1Directory").arg(key)).toString();
@@ -105,8 +101,7 @@ QString importBrowserStartDirectory(const QString &actionKey, const QStringList 
     return detected.isEmpty() ? QDir::homePath() : detected;
 }
 
-void rememberImportDirectory(const QString &path)
-{
+void rememberImportDirectory(const QString &path) {
     const QFileInfo info(path);
     const QString folder = info.isDir() ? info.absoluteFilePath() : info.absolutePath();
     if (!folder.isEmpty()) {
@@ -114,8 +109,7 @@ void rememberImportDirectory(const QString &path)
     }
 }
 
-void rememberImportDirectory(const QString &path, const QString &actionKey)
-{
+void rememberImportDirectory(const QString &path, const QString &actionKey) {
     const QFileInfo info(path);
     const QString folder = info.isDir() ? info.absoluteFilePath() : info.absolutePath();
     if (!folder.isEmpty()) {

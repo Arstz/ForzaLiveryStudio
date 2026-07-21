@@ -13,8 +13,7 @@ constexpr int BadgeSize = 18;
 constexpr int BadgeGap = 5;
 constexpr int BadgeRightMargin = 8;
 
-bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide)
-{
+bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide) {
     const int badgeCount = guide ? 2 : 3;
     const int left = rowRect.right() - BadgeRightMargin - badgeCount * BadgeSize - (badgeCount - 1) * BadgeGap + 1;
     const QRect badgesRect(left, rowRect.center().y() - BadgeSize / 2,
@@ -24,8 +23,7 @@ bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide)
 }
 } // namespace
 
-void LayerTreeView::paintEvent(QPaintEvent *event)
-{
+void LayerTreeView::paintEvent(QPaintEvent *event) {
     QTreeView::paintEvent(event);
     QPainter painter(viewport());
     const QColor text = palette().color(QPalette::Text);
@@ -59,8 +57,7 @@ void LayerTreeView::paintEvent(QPaintEvent *event)
     painter.drawLine(QPoint(0, dropIndicatorY_), QPoint(viewport()->width(), dropIndicatorY_));
 }
 
-void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event)
-{
+void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event) {
     if (event != nullptr) {
         const QModelIndex index = indexAt(event->position().toPoint());
         if (index.isValid()
@@ -72,8 +69,7 @@ void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event)
     QTreeView::mouseDoubleClickEvent(event);
 }
 
-void LayerTreeView::dragEnterEvent(QDragEnterEvent *event)
-{
+void LayerTreeView::dragEnterEvent(QDragEnterEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         event->ignore();
         return;
@@ -84,8 +80,7 @@ void LayerTreeView::dragEnterEvent(QDragEnterEvent *event)
     }
 }
 
-void LayerTreeView::dragMoveEvent(QDragMoveEvent *event)
-{
+void LayerTreeView::dragMoveEvent(QDragMoveEvent *event) {
     if (event == nullptr) {
         return;
     }
@@ -108,14 +103,12 @@ void LayerTreeView::dragMoveEvent(QDragMoveEvent *event)
     event->ignore();
 }
 
-void LayerTreeView::dragLeaveEvent(QDragLeaveEvent *event)
-{
+void LayerTreeView::dragLeaveEvent(QDragLeaveEvent *event) {
     setDropIndicatorY(-1);
     QTreeView::dragLeaveEvent(event);
 }
 
-void LayerTreeView::dropEvent(QDropEvent *event)
-{
+void LayerTreeView::dropEvent(QDropEvent *event) {
     if (event == nullptr || model() == nullptr) {
         return;
     }
@@ -143,8 +136,7 @@ void LayerTreeView::dropEvent(QDropEvent *event)
     event->ignore();
 }
 
-void LayerTreeView::startDrag(Qt::DropActions supportedActions)
-{
+void LayerTreeView::startDrag(Qt::DropActions supportedActions) {
     if (model() == nullptr) {
         return;
     }
@@ -180,8 +172,7 @@ void LayerTreeView::startDrag(Qt::DropActions supportedActions)
     drag->exec(supportedActions & Qt::MoveAction ? Qt::MoveAction : supportedActions, Qt::MoveAction);
 }
 
-QModelIndexList LayerTreeView::normalizedSelectedRows() const
-{
+QModelIndexList LayerTreeView::normalizedSelectedRows() const {
     const QModelIndexList selected = selectionModel() == nullptr ? QModelIndexList{} : selectionModel()->selectedRows();
     QSet<QString> selectedIds;
     for (const QModelIndex &index : selected) {
@@ -211,15 +202,13 @@ QModelIndexList LayerTreeView::normalizedSelectedRows() const
     return normalized;
 }
 
-QString LayerTreeView::parentIdForIndex(const QModelIndex &index) const
-{
+QString LayerTreeView::parentIdForIndex(const QModelIndex &index) const {
     return index.parent().isValid()
         ? index.parent().data(LayerTreeModel::EntryIdRole).toString()
         : QString();
 }
 
-QRect LayerTreeView::visualSubtreeRect(const QModelIndex &index) const
-{
+QRect LayerTreeView::visualSubtreeRect(const QModelIndex &index) const {
     QRect rect = visualRect(index);
     if (!index.isValid() || !isExpanded(index)) {
         return rect;
@@ -234,8 +223,7 @@ QRect LayerTreeView::visualSubtreeRect(const QModelIndex &index) const
     return rect;
 }
 
-void LayerTreeView::setDropIndicatorY(int y)
-{
+void LayerTreeView::setDropIndicatorY(int y) {
     if (dropIndicatorY_ == y) {
         return;
     }
@@ -243,8 +231,7 @@ void LayerTreeView::setDropIndicatorY(int y)
     viewport()->update();
 }
 
-bool LayerTreeView::dropTargetForPosition(const QPoint &position, QModelIndex *dropParent, int *dropRow, int *indicatorY) const
-{
+bool LayerTreeView::dropTargetForPosition(const QPoint &position, QModelIndex *dropParent, int *dropRow, int *indicatorY) const {
     if (model() == nullptr || selectionModel() == nullptr || dropParent == nullptr || dropRow == nullptr || indicatorY == nullptr) {
         return false;
     }

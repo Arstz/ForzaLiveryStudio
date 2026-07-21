@@ -14,16 +14,14 @@ constexpr qsizetype HeaderSize = 16;
 constexpr qsizetype EntrySize = 24;
 constexpr char Magic[] = "FH6RAST1";
 
-quint32 readU32(const QByteArray &data, qsizetype pos)
-{
+quint32 readU32(const QByteArray &data, qsizetype pos) {
     return quint32(quint8(data[pos]))
         | (quint32(quint8(data[pos + 1])) << 8)
         | (quint32(quint8(data[pos + 2])) << 16)
         | (quint32(quint8(data[pos + 3])) << 24);
 }
 
-void setError(QString *error, const QString &message)
-{
+void setError(QString *error, const QString &message) {
     if (error != nullptr) {
         *error = message;
     }
@@ -31,8 +29,7 @@ void setError(QString *error, const QString &message)
 
 } // namespace
 
-bool RasterDecalPack::load(const QString &path, QString *error)
-{
+bool RasterDecalPack::load(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         setError(error, QStringLiteral("could not open raster decal pack: %1").arg(path));
@@ -84,8 +81,7 @@ bool RasterDecalPack::load(const QString &path, QString *error)
     return true;
 }
 
-QVector<quint32> RasterDecalPack::ids() const
-{
+QVector<quint32> RasterDecalPack::ids() const {
     QVector<quint32> result;
     result.reserve(entries_.size());
     for (auto it = entries_.cbegin(); it != entries_.cend(); ++it) {
@@ -95,8 +91,7 @@ QVector<quint32> RasterDecalPack::ids() const
     return result;
 }
 
-QSize RasterDecalPack::decalSize(quint32 id) const
-{
+QSize RasterDecalPack::decalSize(quint32 id) const {
     const auto it = entries_.constFind(id);
     if (it == entries_.constEnd()) {
         return {};
@@ -104,8 +99,7 @@ QSize RasterDecalPack::decalSize(quint32 id) const
     return QSize(static_cast<int>(it->width), static_cast<int>(it->height));
 }
 
-RasterDecal RasterDecalPack::decal(quint32 id) const
-{
+RasterDecal RasterDecalPack::decal(quint32 id) const {
     const auto it = entries_.constFind(id);
     if (it == entries_.constEnd()) {
         return {};
@@ -118,8 +112,7 @@ RasterDecal RasterDecalPack::decal(quint32 id) const
     return decal;
 }
 
-const RasterDecalPack &sharedRasterDecals()
-{
+const RasterDecalPack &sharedRasterDecals() {
     static RasterDecalPack pack = [] {
         RasterDecalPack loaded;
         const QString appPath = QCoreApplication::applicationDirPath();

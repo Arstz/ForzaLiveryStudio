@@ -20,21 +20,14 @@ constexpr int kPotraceWordBits = static_cast<int>(sizeof(potrace_word) * 8);
 // map a traced point back to image-pixel space (y-down). Derivation: a 1px
 // top/bottom margin is added, and the image's top row is placed at the high-y
 // end of the bitmap, so image_y = bounds.top - 1 + (bitmapHeight - p.y).
-QPointF potracePoint(const potrace_dpoint_t &point, const QRect &bounds, int bitmapHeight)
-{
+QPointF potracePoint(const potrace_dpoint_t &point, const QRect &bounds, int bitmapHeight) {
     return QPointF(bounds.left() - 1 + point.x,
                    bounds.top() - 1 + (bitmapHeight - point.y));
 }
 
-// Trace one connected component (all pixels with the given label) into a smooth
-// bezier outline via potrace, replacing the axis-aligned staircase tracer.
-// Shared potrace core: builds a padded bitmap from a per-pixel `set` predicate
-// (image coords) over `bounds` and returns the traced path (outer + hole
-// subpaths, WindingFill), mapped back to image-pixel space.
 QPainterPath tracePotraceBitmap(const std::function<bool(int, int)> &set,
                                 const QRect &bounds,
-                                const RegionExtractionParams &params)
-{
+                                const RegionExtractionParams &params) {
     const int bitmapWidth = bounds.width() + 2;
     const int bitmapHeight = bounds.height() + 2;
     const int wordsPerRow = (bitmapWidth + kPotraceWordBits - 1) / kPotraceWordBits;
@@ -102,15 +95,13 @@ QPainterPath tracePotrace(const std::vector<int> &labels,
                           int width,
                           int label,
                           const QRect &bounds,
-                          const RegionExtractionParams &params)
-{
+                          const RegionExtractionParams &params) {
     return tracePotraceBitmap([&](int x, int y) {
         return labels[static_cast<size_t>(y) * width + x] == label;
     }, bounds, params);
 }
 
-double luminance(const QColor &color)
-{
+double luminance(const QColor &color) {
     return (0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF());
 }
 
@@ -121,19 +112,8 @@ struct PaletteBucket {
     quint64 bSum = 0;
 };
 
-// A content-aware palette. Colours are quantized into RGB555 buckets (so
-// visually similar pixels vote together) and ranked by frequency, but a
-// candidate is admitted only when it is at least `mergeDistance` (RGB euclidean)
-// away from every colour already chosen. Near-duplicates -- overwhelmingly
-// anti-aliasing fringes between two flat cel colours -- therefore merge into the
-// more frequent colour instead of claiming their own palette slot (and, later,
-// their own spurious thin regions). Candidates rarer than `frequencyFloor` of
-// the opaque pixels are dropped as noise. `colorCount` is only an upper cap; the
-// returned count emerges from the image, so an image with 6 real colours yields
-// a 6-colour palette even when the cap is 16.
 QVector<QColor> buildPalette(const QImage &image, int alpha, int colorCount,
-                             double mergeDistance, double frequencyFloor)
-{
+                             double mergeDistance, double frequencyFloor) {
     QHash<quint32, PaletteBucket> buckets;
     buckets.reserve(4096);
     quint64 opaquePixels = 0;
@@ -172,8 +152,6 @@ QVector<QColor> buildPalette(const QImage &image, int alpha, int colorCount,
         if (palette.size() >= colorCount) {
             break;
         }
-        // Buckets are frequency-sorted, so once one is below the noise floor the
-        // rest are too. Always keep at least one colour (the dominant one).
         if (bucket.count < floor && !palette.isEmpty()) {
             break;
         }
@@ -203,8 +181,7 @@ QVector<QColor> buildPalette(const QImage &image, int alpha, int colorCount,
     return palette;
 }
 
-int nearestPaletteIndex(const QVector<QColor> &palette, QRgb pixel)
-{
+int nearestPaletteIndex(const QVector<QColor> &palette, QRgb pixel) {
     const int r = qRed(pixel);
     const int g = qGreen(pixel);
     const int b = qBlue(pixel);
@@ -223,11 +200,7 @@ int nearestPaletteIndex(const QVector<QColor> &palette, QRgb pixel)
     return best;
 }
 
-// One 3x3 box-blur pass in premultiplied space (correct across transparent
-// edges). Softens anti-aliasing so a stroke quantizes to a single colour and
-// stays one connected component instead of fragmenting.
-QImage boxBlur(const QImage &input)
-{
+QImage boxBlur(const QImage &input) {
     const QImage src = input.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     const int width = src.width();
     const int height = src.height();
@@ -262,11 +235,7 @@ QImage boxBlur(const QImage &input)
     return out;
 }
 
-// Optional downscale (smooth, i.e. low-pass filtered) plus box-blur passes.
-// Geometry stays in the processed image's pixel space; the canvas rescales it
-// back to the guide's extent, so downscaling is transparent to the caller.
-QImage preprocess(const QImage &image, const RegionExtractionParams &params)
-{
+QImage preprocess(const QImage &image, const RegionExtractionParams &params) {
     QImage working = image;
     if (params.maxDimension > 0) {
         const int longest = std::max(working.width(), working.height());
@@ -304,8 +273,7 @@ struct PassResult {
     int mergedSmallRegions = 0;
 };
 
-int mergeSmallRegions(PassResult *pass, int width, int height, int areaThreshold)
-{
+int mergeSmallRegions(PassResult *pass, int width, int height, int areaThreshold) {
     const int threshold = std::max(0, areaThreshold);
     const int labelCount = static_cast<int>(pass->accums.size());
     if (threshold <= 1 || labelCount < 2) {
@@ -460,18 +428,12 @@ int mergeSmallRegions(PassResult *pass, int width, int height, int areaThreshold
     return merged;
 }
 
-// One segmentation pass at a fixed colour count: quantize, label connected
-// components, compute adjacency + a boundary distance transform, and classify
-// each component as lineart. No tracing here - potrace runs once, later, on the
-// final kept regions. This is invoked repeatedly with increasing colour counts
-// by extractRegions so lineart can be caught wherever it is still coherent.
 PassResult segmentPass(const QImage &image,
                        int width,
                        int height,
                        int alpha,
                        int colorCount,
-                       const RegionExtractionParams &params)
-{
+                       const RegionExtractionParams &params) {
     PassResult pass;
     pass.palette = buildPalette(image, alpha, std::max(1, colorCount),
                                 params.colorMergeDistance, params.colorFrequencyFloor);
@@ -542,7 +504,6 @@ PassResult segmentPass(const QImage &image,
     pass.mergedSmallRegions = mergeSmallRegions(
         &pass, width, height, params.smallRegionMergeArea);
 
-    // Region adjacency graph (drives the separator test and debug coloring).
     pass.adjacency.assign(pass.accums.size(), {});
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
@@ -573,12 +534,9 @@ PassResult segmentPass(const QImage &image,
         areaTotal += accum.area;
     }
     const double meanLum = areaTotal > 0.0 ? lumWeighted / areaTotal : 0.5;
-    pass.widthCap = std::max(params.lineWidthFloor,
-                             std::min(width, height) * params.lineWidthFactor);
+    pass.widthCap = std::max(params.lineWidthCapFloor,
+                             std::min(width, height) * params.lineWidthCapFraction);
 
-    // City-block distance to each region's own boundary; the per-region maximum
-    // is the widest half-width, a thinness measure robust to diagonal/curved and
-    // short segments where a bounding-box aspect ratio fails.
     const int distanceInfinity = width + height + 1;
     std::vector<int> distance(pixelCount, 0);
     for (int y = 0; y < height; ++y) {
@@ -634,7 +592,6 @@ PassResult segmentPass(const QImage &image,
         }
     }
 
-    // Classify lineart: thin AND (separates two larger fills OR dark+elongated).
     pass.lineart.assign(pass.accums.size(), 0);
     for (int label = 0; label < static_cast<int>(pass.accums.size()); ++label) {
         const RegionAccum &accum = pass.accums[label];
@@ -666,8 +623,7 @@ PassResult segmentPass(const QImage &image,
 } // namespace
 
 RegionExtractionResult extractRegions(const QImage &sourceImage,
-                                      const RegionExtractionParams &params)
-{
+                                      const RegionExtractionParams &params) {
     RegionExtractionResult result;
     if (sourceImage.isNull() || sourceImage.width() < 1 || sourceImage.height() < 1) {
         result.error = QStringLiteral("The guide layer has no image data");
@@ -680,25 +636,13 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     result.imageSize = QSize(width, height);
     const int alpha = std::clamp(static_cast<int>(params.alphaThreshold * 255.0), 0, 255);
 
-    // Content-aware colour count: build the palette once at the cap and let the
-    // perceptual-distance gate collapse anti-aliasing near-duplicates. The
-    // number that survives is the image's natural flat-colour count, and it caps
-    // the multi-pass loop so we never over-segment an image into more colours
-    // than it actually has (which would promote AA fringes into false regions).
-    const QVector<QColor> naturalPalette = buildPalette(image, alpha, params.colorCount,
+    const QVector<QColor> naturalPalette = buildPalette(image, alpha, params.maxColorCount,
                                                         params.colorMergeDistance,
                                                         params.colorFrequencyFloor);
     const int maxColors = std::clamp(static_cast<int>(naturalPalette.size()),
-                                     2, std::max(2, params.colorCount));
+                                     2, std::max(2, params.maxColorCount));
     const size_t pixelCount = static_cast<size_t>(width) * height;
 
-    // Progressive multi-pass lineart detection: segment at increasing colour
-    // counts. A line is caught at whichever count it is still a coherent thin
-    // region (low counts keep a stroke whole; high counts split it into many
-    // colour regions). Detections union into a locking mask; because low counts
-    // run first and the mask only ever grows, an early (authoritative) lineart
-    // claim is never overridden by a later colour region, while colour regions
-    // still get finer as the count rises.
     std::vector<bool> lineartMask(pixelCount, false);
     PassResult finalSeg;
     bool haveFinal = false;
@@ -724,8 +668,6 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     }
     result.mergedSmallRegionCount = finalSeg.mergedSmallRegions;
 
-    // Graph-colour the finest colour segmentation (linking regions that share a
-    // thin neighbour so areas across a line still differ).
     std::vector<QSet<int>> colorAdj = finalSeg.adjacency;
     for (int label = 0; label < static_cast<int>(finalSeg.accums.size()); ++label) {
         if (2.0 * finalSeg.maxDistance[label] > finalSeg.widthCap) {
@@ -761,8 +703,6 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         colorOf[label] = color;
     }
 
-    // Colour regions: the non-lineart components of the finest pass. Pushed
-    // first so lineart draws on top of them.
     for (int label = 0; label < static_cast<int>(finalSeg.accums.size()); ++label) {
         const RegionAccum &accum = finalSeg.accums[label];
         if (accum.area < params.minRegionArea || finalSeg.lineart[label]) {
@@ -788,8 +728,6 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         ++result.colorRegionCount;
     }
 
-    // Lineart regions: connected components of the accumulated locking mask,
-    // coloured by their mean original colour (drawn in the opposite colour).
     std::vector<int> lineLabels(pixelCount, -1);
     struct LineAccum {
         int area = 0;
@@ -880,8 +818,7 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
 }
 
 QPainterPath traceMaskToPath(const std::vector<std::uint8_t> &mask, int width, int height,
-                             const QRect &bounds, const RegionExtractionParams &params)
-{
+                             const QRect &bounds, const RegionExtractionParams &params) {
     const QRect clipped = bounds.intersected(QRect(0, 0, width, height));
     if (clipped.isEmpty()) {
         return {};

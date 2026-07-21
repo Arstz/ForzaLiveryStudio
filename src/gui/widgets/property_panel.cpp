@@ -26,28 +26,24 @@ constexpr double LabelDragStepOpacity = 0.01;
 
 constexpr double kPi = 3.14159265358979323846;
 
-bool isTransformProperty(const QString &property)
-{
+bool isTransformProperty(const QString &property) {
     return property == QStringLiteral("x") || property == QStringLiteral("y")
         || property == QStringLiteral("scaleX") || property == QStringLiteral("scaleY")
         || property == QStringLiteral("rotation") || property == QStringLiteral("skew");
 }
 
-bool isColorableShape(const fh6::scene::Shape *layer)
-{
+bool isColorableShape(const fh6::scene::Shape *layer) {
     return layer != nullptr && !layer->raster;
 }
 
 constexpr int PropertyIconExtent = 14;
 constexpr int PropertyLabelSpacing = 5;
 
-QString mixedValueStyle()
-{
+QString mixedValueStyle() {
     return QStringLiteral("color: #888;");
 }
 
-QString mixedColorButtonStyle()
-{
+QString mixedColorButtonStyle() {
     return QStringLiteral("background-color: #888;");
 }
 
@@ -56,8 +52,7 @@ public:
     using QCheckBox::QCheckBox;
 
 protected:
-    void paintEvent(QPaintEvent *event) override
-    {
+    void paintEvent(QPaintEvent *event) override {
         QCheckBox::paintEvent(event);
         if (checkState() != Qt::PartiallyChecked) {
             return;
@@ -78,8 +73,7 @@ protected:
     }
 };
 
-double normalizeRotation(double value)
-{
+double normalizeRotation(double value) {
     if (!std::isfinite(value)) {
         return 0.0;
     }
@@ -94,8 +88,7 @@ class RotationSpinBox final : public QDoubleSpinBox {
 public:
     using QDoubleSpinBox::QDoubleSpinBox;
 
-    void stepBy(int steps) override
-    {
+    void stepBy(int steps) override {
         if (steps == 0) {
             return;
         }
@@ -103,8 +96,7 @@ public:
     }
 };
 
-QTransform aboutPivot(const QPointF &pivot, const QTransform &inner)
-{
+QTransform aboutPivot(const QPointF &pivot, const QTransform &inner) {
     QTransform out;
     out.translate(pivot.x(), pivot.y());
     out = inner * out;
@@ -113,8 +105,7 @@ QTransform aboutPivot(const QPointF &pivot, const QTransform &inner)
     return back * out;
 }
 
-QTransform boxAffine(const QString &property, double from, double to, const QPointF &pivot)
-{
+QTransform boxAffine(const QString &property, double from, double to, const QPointF &pivot) {
     if (property == QStringLiteral("x")) {
         return QTransform::fromTranslate(to - from, 0.0);
     }
@@ -156,8 +147,7 @@ struct AffineDecomposition {
     double scaleY = 1.0;
 };
 
-AffineDecomposition decomposeAffine(const QTransform &result, double fallbackSkew)
-{
+AffineDecomposition decomposeAffine(const QTransform &result, double fallbackSkew) {
     const double a = result.m11();
     const double b = result.m12();
     const double c = result.m21();
@@ -178,8 +168,7 @@ AffineDecomposition decomposeAffine(const QTransform &result, double fallbackSke
     return out;
 }
 
-void applyDecomposedTransform(fh6::scene::Shape *layer, const QTransform &result)
-{
+void applyDecomposedTransform(fh6::scene::Shape *layer, const QTransform &result) {
     const AffineDecomposition dec = decomposeAffine(result, layer->skew);
     if (!dec.ok) {
         return;
@@ -200,8 +189,7 @@ struct TransformAverage {
     double rotationCos = 0.0;
     double skew = 0.0;
 
-    void add(const AffineDecomposition &dec)
-    {
+    void add(const AffineDecomposition &dec) {
         if (!dec.ok) {
             return;
         }
@@ -218,8 +206,7 @@ struct TransformAverage {
     double averageScaleY() const { return count > 0 ? scaleY / count : 1.0; }
     double averageSkew() const { return count > 0 ? skew / count : 0.0; }
 
-    double averageRotation() const
-    {
+    double averageRotation() const {
         if (count == 0 || (std::abs(rotationSin) < 1e-9 && std::abs(rotationCos) < 1e-9)) {
             return 0.0;
         }
@@ -227,8 +214,7 @@ struct TransformAverage {
     }
 };
 
-QString colorStyle(const std::array<quint8, 4> &color)
-{
+QString colorStyle(const std::array<quint8, 4> &color) {
     return QStringLiteral("background-color: rgba(%1,%2,%3,%4);")
         .arg(color[ColorByteRed])
         .arg(color[ColorByteGreen])
@@ -251,8 +237,7 @@ public:
         : QWidget(parent)
         , begin_(std::move(begin))
         , move_(std::move(move))
-        , end_(std::move(end))
-    {
+        , end_(std::move(end)) {
         auto *layout = new QHBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(PropertyLabelSpacing);
@@ -266,16 +251,14 @@ public:
         setCursor(Qt::SizeVerCursor);
     }
 
-    ~DraggablePropertyLabel() override
-    {
+    ~DraggablePropertyLabel() override {
         if (dragging_ && end_) {
             end_(false);
         }
     }
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override
-    {
+    void mousePressEvent(QMouseEvent *event) override {
         if (event->button() == Qt::LeftButton && begin_ != nullptr && begin_(event->globalPosition().toPoint())) {
             dragging_ = true;
             event->accept();
@@ -284,8 +267,7 @@ protected:
         QWidget::mousePressEvent(event);
     }
 
-    void mouseMoveEvent(QMouseEvent *event) override
-    {
+    void mouseMoveEvent(QMouseEvent *event) override {
         if (dragging_ && move_ != nullptr) {
             move_(event->globalPosition().toPoint());
             event->accept();
@@ -294,8 +276,7 @@ protected:
         QWidget::mouseMoveEvent(event);
     }
 
-    void mouseReleaseEvent(QMouseEvent *event) override
-    {
+    void mouseReleaseEvent(QMouseEvent *event) override {
         if (dragging_ && event->button() == Qt::LeftButton) {
             dragging_ = false;
             if (end_ != nullptr) {
@@ -319,8 +300,7 @@ QWidget *propertyLabel(QWidget *parent,
                        const QString &iconName,
                        std::function<bool(const QPoint &)> begin = {},
                        std::function<void(const QPoint &)> move = {},
-                       std::function<void(bool)> end = {})
-{
+                       std::function<void(bool)> end = {}) {
     if (begin != nullptr) {
         return new DraggablePropertyLabel(parent, text, iconName, std::move(begin), std::move(move), std::move(end));
     }
@@ -338,13 +318,11 @@ QWidget *propertyLabel(QWidget *parent,
     return widget;
 }
 
-double opacityFromAlpha(quint8 alpha)
-{
+double opacityFromAlpha(quint8 alpha) {
     return static_cast<double>(alpha) / 255.0;
 }
 
-QTransform flatEntryTransform(const fh6::scene::Shape &layer)
-{
+QTransform flatEntryTransform(const fh6::scene::Shape &layer) {
     QTransform transform;
     transform.translate(layer.x, layer.y);
     transform.rotate(layer.rotation);
@@ -353,16 +331,14 @@ QTransform flatEntryTransform(const fh6::scene::Shape &layer)
     return transform;
 }
 
-QTransform parentWorldTransform(const fh6::scene::Layer &node)
-{
+QTransform parentWorldTransform(const fh6::scene::Layer &node) {
     const fh6::scene::Layer *parent = node.parent();
     return parent != nullptr ? sceneWorldTransform(*parent) : QTransform();
 }
 
 QTransform localResultForWorldTransform(const fh6::scene::Layer &node,
                                         const QTransform &startLocal,
-                                        const QTransform &worldTransform)
-{
+                                        const QTransform &worldTransform) {
     const QTransform parentWorld = parentWorldTransform(node);
     bool invertible = false;
     const QTransform parentWorldInverse = parentWorld.inverted(&invertible);
@@ -372,8 +348,7 @@ QTransform localResultForWorldTransform(const fh6::scene::Layer &node,
     return startLocal * parentWorld * worldTransform * parentWorldInverse;
 }
 
-QSet<QString> coveredLayerIdsForGroups(EditorState *state, const QVector<fh6::scene::Group *> &groups)
-{
+QSet<QString> coveredLayerIdsForGroups(EditorState *state, const QVector<fh6::scene::Group *> &groups) {
     QSet<QString> ids;
     if (state == nullptr) {
         return ids;
@@ -392,8 +367,7 @@ QSet<QString> coveredLayerIdsForGroups(EditorState *state, const QVector<fh6::sc
 QString boxProxySignature(EditorState *state,
                           const QVector<fh6::scene::Shape *> &layers,
                           const QVector<fh6::scene::Group *> &groups,
-                          QSet<QString> *groupedLayerIdsOut = nullptr)
-{
+                          QSet<QString> *groupedLayerIdsOut = nullptr) {
     const QSet<QString> groupedLayerIds = coveredLayerIdsForGroups(state, groups);
     if (groupedLayerIdsOut != nullptr) {
         *groupedLayerIdsOut = groupedLayerIds;
@@ -415,8 +389,7 @@ QString boxProxySignature(EditorState *state,
 
 QRectF shapeVisualLocalRect(const fh6::scene::Shape &layer,
                             const std::function<QSizeF(int)> &spriteSizeFn,
-                            const std::function<QRectF(int)> &shapeVisualBoundsFn)
-{
+                            const std::function<QRectF(int)> &shapeVisualBoundsFn) {
     if (layer.raster) {
         return sceneLocalRect(QSizeF(layer.rasterWidth, layer.rasterHeight));
     }
@@ -432,8 +405,7 @@ QRectF shapeVisualLocalRect(const fh6::scene::Shape &layer,
 
 QRectF selectionWorldBounds(const QVector<fh6::scene::Shape *> &layers,
                             const std::function<QSizeF(int)> &spriteSizeFn,
-                            const std::function<QRectF(int)> &shapeVisualBoundsFn)
-{
+                            const std::function<QRectF(int)> &shapeVisualBoundsFn) {
     BoundsAccumulator acc;
     for (const fh6::scene::Shape *layer : layers) {
         if (layer == nullptr) {
@@ -446,8 +418,7 @@ QRectF selectionWorldBounds(const QVector<fh6::scene::Shape *> &layers,
 
 TransformAverage boxTargetAverage(const QVector<fh6::scene::Shape *> &layers,
                                   const QVector<fh6::scene::Group *> &groups,
-                                  const QSet<QString> &groupedLayerIds)
-{
+                                  const QSet<QString> &groupedLayerIds) {
     TransformAverage average;
     for (const fh6::scene::Group *group : groups) {
         if (group != nullptr) {
@@ -465,8 +436,7 @@ TransformAverage boxTargetAverage(const QVector<fh6::scene::Shape *> &layers,
 QVector<QString> transformTargetIdsForSelection(EditorState *state,
                                                 const QVector<fh6::scene::Shape *> &layers,
                                                 const QVector<fh6::scene::GuideLayer *> &guides,
-                                                const QVector<fh6::scene::Group *> &groups)
-{
+                                                const QVector<fh6::scene::Group *> &groups) {
     QVector<QString> ids;
     QSet<QString> seen;
     const auto add = [&](const QString &id) {
@@ -494,8 +464,7 @@ QVector<QString> transformTargetIdsForSelection(EditorState *state,
     return ids;
 }
 
-quint8 alphaFromOpacity(double opacity)
-{
+quint8 alphaFromOpacity(double opacity) {
     return static_cast<quint8>(std::clamp(static_cast<int>(std::round(opacity * 255.0)), 0, 255));
 }
 
@@ -512,8 +481,7 @@ QVector<QWidget *> layerPropertyWidgets(
     QCheckBox *visible,
     QCheckBox *locked,
     QCheckBox *mask,
-    QPushButton *colorButton)
-{
+    QPushButton *colorButton) {
     return {name, shapeId, x, y, scaleX, scaleY, rotation, skew, opacity, visible, locked, mask, colorButton};
 }
 
@@ -526,8 +494,7 @@ QVector<QWidget *> guidePropertyWidgets(
     QDoubleSpinBox *rotation,
     QDoubleSpinBox *opacity,
     QCheckBox *visible,
-    QCheckBox *locked)
-{
+    QCheckBox *locked) {
     return {name, x, y, scaleX, scaleY, rotation, opacity, visible, locked};
 }
 
@@ -535,8 +502,7 @@ QVector<QWidget *> guidePropertyWidgets(
 
 PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     : QWidget(parent)
-    , state_(state)
-{
+    , state_(state) {
     auto *layout = new QFormLayout(this);
     name_ = new QLineEdit(this);
     shapeId_ = new QSpinBox(this);
@@ -625,8 +591,7 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     setEnabled(false);
 }
 
-void PropertyPanel::setDebugVisible(bool visible)
-{
+void PropertyPanel::setDebugVisible(bool visible) {
     debugVisible_ = visible;
     if (debugLabel_ != nullptr) {
         debugLabel_->setVisible(visible);
@@ -636,28 +601,23 @@ void PropertyPanel::setDebugVisible(bool visible)
     }
 }
 
-void PropertyPanel::setSpriteSizeFn(std::function<QSizeF(int)> fn)
-{
+void PropertyPanel::setSpriteSizeFn(std::function<QSizeF(int)> fn) {
     spriteSizeFn_ = std::move(fn);
 }
 
-void PropertyPanel::setShapeVisualBoundsFn(std::function<QRectF(int)> fn)
-{
+void PropertyPanel::setShapeVisualBoundsFn(std::function<QRectF(int)> fn) {
     shapeVisualBoundsFn_ = std::move(fn);
 }
 
-void PropertyPanel::setGuideColorSampleFn(std::function<std::optional<QColor>()> fn)
-{
+void PropertyPanel::setGuideColorSampleFn(std::function<std::optional<QColor>()> fn) {
     guideColorSampleFn_ = std::move(fn);
 }
 
-void PropertyPanel::setValueEditingWheelEnabled(bool enabled)
-{
+void PropertyPanel::setValueEditingWheelEnabled(bool enabled) {
     valueEditingWheelEnabled_ = enabled;
 }
 
-bool PropertyPanel::eventFilter(QObject *watched, QEvent *event)
-{
+bool PropertyPanel::eventFilter(QObject *watched, QEvent *event) {
     if (!valueEditingWheelEnabled_ && event != nullptr && event->type() == QEvent::Wheel
         && qobject_cast<QAbstractSpinBox *>(watched) != nullptr) {
         auto *wheel = static_cast<QWheelEvent *>(event);
@@ -687,15 +647,13 @@ bool PropertyPanel::eventFilter(QObject *watched, QEvent *event)
     return QWidget::eventFilter(watched, event);
 }
 
-std::array<int, 3> PropertyPanel::flagCheckStates() const
-{
+std::array<int, 3> PropertyPanel::flagCheckStates() const {
     return {static_cast<int>(visible_->checkState()),
             static_cast<int>(locked_->checkState()),
             static_cast<int>(mask_->checkState())};
 }
 
-QDoubleSpinBox *PropertyPanel::floatBox(double low, double high)
-{
+QDoubleSpinBox *PropertyPanel::floatBox(double low, double high) {
     auto *box = new QDoubleSpinBox(this);
     box->setRange(low, high);
     box->setDecimals(FloatSpinDecimals);
@@ -704,15 +662,13 @@ QDoubleSpinBox *PropertyPanel::floatBox(double low, double high)
     return box;
 }
 
-void PropertyPanel::setLayers(const QVector<fh6::scene::Shape *> &layers)
-{
+void PropertyPanel::setLayers(const QVector<fh6::scene::Shape *> &layers) {
     setSelection(layers, {}, {});
 }
 
 void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
                                  const QVector<fh6::scene::GuideLayer *> &guides,
-                                 const QVector<fh6::scene::Group *> &groups)
-{
+                                 const QVector<fh6::scene::Group *> &groups) {
     if (applyingChange_ || valueLabelDragging_) {
         return;
     }
@@ -858,8 +814,7 @@ void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
     loading_ = false;
 }
 
-void PropertyPanel::refreshTransformFields()
-{
+void PropertyPanel::refreshTransformFields() {
     if (loading_ || applyingChange_ || valueLabelDragging_
         || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
         return;
@@ -905,8 +860,7 @@ void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
                                                   double width,
                                                   double height,
                                                   const QTransform &boxFrame,
-                                                  bool valid)
-{
+                                                  bool valid) {
     if (loading_ || applyingChange_ || valueLabelDragging_ || !isBoxSelection()) {
         return;
     }
@@ -987,8 +941,7 @@ void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
     setProxy(skew_, skewValue);
 }
 
-void PropertyPanel::setSingleLayer(const fh6::scene::Shape *layer)
-{
+void PropertyPanel::setSingleLayer(const fh6::scene::Shape *layer) {
     const QSignalBlocker b1(name_);
     const QSignalBlocker b2(shapeId_);
     const QSignalBlocker b3(x_);
@@ -1026,8 +979,7 @@ void PropertyPanel::setSingleLayer(const fh6::scene::Shape *layer)
                         .arg(layer->flags));
 }
 
-void PropertyPanel::setSingleGuide(const fh6::scene::GuideLayer *guide)
-{
+void PropertyPanel::setSingleGuide(const fh6::scene::GuideLayer *guide) {
     const QSignalBlocker b1(name_);
     const QSignalBlocker b3(x_);
     const QSignalBlocker b4(y_);
@@ -1064,8 +1016,7 @@ void PropertyPanel::setSingleGuide(const fh6::scene::GuideLayer *guide)
                         .arg(format));
 }
 
-void PropertyPanel::setMultipleLayers(const QVector<fh6::scene::Shape *> &layers)
-{
+void PropertyPanel::setMultipleLayers(const QVector<fh6::scene::Shape *> &layers) {
     const QSignalBlocker b1(name_);
     const QSignalBlocker b2(shapeId_);
     const QSignalBlocker b3(x_);
@@ -1136,8 +1087,7 @@ void PropertyPanel::setMultipleLayers(const QVector<fh6::scene::Shape *> &layers
     debug_->setText(QStringLiteral("%1 layers selected").arg(layers.size()));
 }
 
-void PropertyPanel::setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &guides)
-{
+void PropertyPanel::setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &guides) {
     const QSignalBlocker b1(name_);
     const QSignalBlocker b3(x_);
     const QSignalBlocker b4(y_);
@@ -1195,19 +1145,16 @@ void PropertyPanel::setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &g
     debug_->setText(QStringLiteral("%1 guide layers selected").arg(guides.size()));
 }
 
-bool PropertyPanel::isBoxSelection() const
-{
+bool PropertyPanel::isBoxSelection() const {
     return guides_.isEmpty() && (!groups_.isEmpty() || layers_.size() > 1);
 }
 
-QPointF PropertyPanel::selectionBoxCenter() const
-{
+QPointF PropertyPanel::selectionBoxCenter() const {
     const QRectF bounds = selectionWorldBounds(layers_, spriteSizeFn_, shapeVisualBoundsFn_);
     return bounds.isValid() ? bounds.center() : QPointF(0.0, 0.0);
 }
 
-void PropertyPanel::setBoxProxyFields(bool neutralTransformValues)
-{
+void PropertyPanel::setBoxProxyFields(bool neutralTransformValues) {
     const QPointF center = selectionBoxCenter();
     const QSignalBlocker bx(x_);
     const QSignalBlocker by(y_);
@@ -1275,8 +1222,7 @@ void PropertyPanel::setBoxProxyFields(bool neutralTransformValues)
     setProxy(skew_, skewValue);
 }
 
-void PropertyPanel::applyBoxTransform(const QString &property, double fromValue, double toValue)
-{
+void PropertyPanel::applyBoxTransform(const QString &property, double fromValue, double toValue) {
     const QTransform transform = boxAffine(property, fromValue, toValue, selectionBoxCenter());
     if (transform.isIdentity()) {
         return;
@@ -1298,8 +1244,7 @@ void PropertyPanel::applyBoxTransform(const QString &property, double fromValue,
     }
 }
 
-void PropertyPanel::clearMixedStyles()
-{
+void PropertyPanel::clearMixedStyles() {
     name_->setStyleSheet(QString());
     shapeId_->setStyleSheet(QString());
     for (QDoubleSpinBox *box : {x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_}) {
@@ -1307,8 +1252,7 @@ void PropertyPanel::clearMixedStyles()
     }
 }
 
-void PropertyPanel::applyChanged(QWidget *sender)
-{
+void PropertyPanel::applyChanged(QWidget *sender) {
     if (loading_ || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
         return;
     }
@@ -1459,8 +1403,7 @@ void PropertyPanel::applyChanged(QWidget *sender)
     }, Qt::QueuedConnection);
 }
 
-bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox *box, const QPoint &globalPos)
-{
+bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox *box, const QPoint &globalPos) {
     if (loading_ || valueLabelDragging_ || box == nullptr || !box->isEnabled()
         || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
         return false;
@@ -1571,8 +1514,7 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
     return true;
 }
 
-void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
-{
+void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos) {
     if (!valueLabelDragging_ || valueLabelBox_ == nullptr) {
         return;
     }
@@ -1613,8 +1555,7 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
         }
         if (!valueLabelGroupStartFrames_.isEmpty()) {
             state_->setGroupFramesFromStart(valueLabelGroupStartFrames_, transform);
-        }
-        {
+        } {
             const QSignalBlocker blocker(valueLabelBox_);
             valueLabelBox_->setValue(proxy);
         }
@@ -1682,8 +1623,7 @@ void PropertyPanel::updateValueLabelDrag(const QPoint &globalPos)
     }
 }
 
-void PropertyPanel::endValueLabelDrag(bool commit)
-{
+void PropertyPanel::endValueLabelDrag(bool commit) {
     if (!valueLabelDragging_) {
         return;
     }
@@ -1740,8 +1680,7 @@ void PropertyPanel::endValueLabelDrag(bool commit)
     valueLabelGroupIds_.clear();
 }
 
-void PropertyPanel::detachSelectionForEdit()
-{
+void PropertyPanel::detachSelectionForEdit() {
     fh6::Project *project = state_->project();
     if (project == nullptr) {
         return;
@@ -1767,8 +1706,7 @@ void PropertyPanel::detachSelectionForEdit()
 
 void PropertyPanel::setSelectionByIds(const QSet<QString> &layerIds,
                                       const QSet<QString> &guideIds,
-                                      const QVector<QString> &groupIds)
-{
+                                      const QVector<QString> &groupIds) {
     QVector<fh6::scene::Shape *> layers;
     QVector<fh6::scene::GuideLayer *> guides;
     QVector<fh6::scene::Group *> groups;
@@ -1790,8 +1728,7 @@ void PropertyPanel::setSelectionByIds(const QSet<QString> &layerIds,
     setSelection(layers, guides, groups);
 }
 
-void PropertyPanel::applySingle(QWidget *sender)
-{
+void PropertyPanel::applySingle(QWidget *sender) {
     fh6::scene::Shape *layer = layers_.front();
     layer->name = name_->text();
     if (sender == shapeId_ && !layer->isRaster()) {
@@ -1809,8 +1746,7 @@ void PropertyPanel::applySingle(QWidget *sender)
     layer->mask = mask_->isChecked();
 }
 
-void PropertyPanel::applyMulti(QWidget *sender, const QString &property)
-{
+void PropertyPanel::applyMulti(QWidget *sender, const QString &property) {
     if (auto *box = qobject_cast<QDoubleSpinBox *>(sender)) {
         if (isTransformProperty(property)) {
             applyBoxTransform(property, baselines_.value(box, box->value()), box->value());
@@ -1851,8 +1787,7 @@ void PropertyPanel::applyMulti(QWidget *sender, const QString &property)
     }
 }
 
-QVector<std::array<quint8, 4>> PropertyPanel::selectionColors() const
-{
+QVector<std::array<quint8, 4>> PropertyPanel::selectionColors() const {
     ScopedPerf perf("PropertyPanel::selectionColors");
     QVector<std::array<quint8, 4>> colors;
     for (const fh6::scene::Shape *layer : layers_) {
@@ -1872,8 +1807,7 @@ QVector<std::array<quint8, 4>> PropertyPanel::selectionColors() const
     return colors;
 }
 
-QVector<std::array<quint8, 4>> PropertyPanel::colorableSelectionColors() const
-{
+QVector<std::array<quint8, 4>> PropertyPanel::colorableSelectionColors() const {
     QVector<std::array<quint8, 4>> colors;
     for (const fh6::scene::Shape *layer : layers_) {
         if (isColorableShape(layer)) {
@@ -1894,8 +1828,7 @@ QVector<std::array<quint8, 4>> PropertyPanel::colorableSelectionColors() const
     return colors;
 }
 
-std::optional<std::array<quint8, 4>> PropertyPanel::currentSelectionColor() const
-{
+std::optional<std::array<quint8, 4>> PropertyPanel::currentSelectionColor() const {
     const QVector<std::array<quint8, 4>> colors = colorableSelectionColors();
     if (colors.isEmpty()) {
         return std::nullopt;
@@ -1903,8 +1836,7 @@ std::optional<std::array<quint8, 4>> PropertyPanel::currentSelectionColor() cons
     return colors.front();
 }
 
-void PropertyPanel::applyColorToSelection(const std::array<quint8, 4> &color)
-{
+void PropertyPanel::applyColorToSelection(const std::array<quint8, 4> &color) {
     if (colorableSelectionColors().isEmpty()) {
         return;
     }
@@ -1923,8 +1855,7 @@ void PropertyPanel::applyColorToSelection(const std::array<quint8, 4> &color)
     updateColorButton();
 }
 
-bool PropertyPanel::sampleGuideColorToSelection()
-{
+bool PropertyPanel::sampleGuideColorToSelection() {
     if (guideColorSampleFn_ == nullptr) {
         return false;
     }
@@ -1939,8 +1870,7 @@ bool PropertyPanel::sampleGuideColorToSelection()
     return true;
 }
 
-void PropertyPanel::pickColor()
-{
+void PropertyPanel::pickColor() {
     const QVector<std::array<quint8, 4>> colors = colorableSelectionColors();
     if (colors.isEmpty()) {
         return;
@@ -1995,8 +1925,7 @@ void PropertyPanel::pickColor()
     }
 }
 
-void PropertyPanel::updateColorButton()
-{
+void PropertyPanel::updateColorButton() {
     const QVector<std::array<quint8, 4>> colors = colorableSelectionColors();
     if (colors.isEmpty()) {
         colorButton_->setEnabled(false);

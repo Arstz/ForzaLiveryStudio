@@ -16,16 +16,15 @@ namespace gui {
 
 using namespace pc_detail;
 
-QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const
-{
-    if (penPoints_.isEmpty()) {
+QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
+    if (pen_.points.isEmpty()) {
         return {};
     }
-    if (closeToStart && penPoints_.size() >= 3) {
-        return buildPenContour(penPoints_).path;
+    if (closeToStart && pen_.points.size() >= 3) {
+        return buildPenContour(pen_.points).path;
     }
-    QVector<PenPoint> previewPoints = penPoints_;
-    previewPoints.push_back({penHoverWorld_, PenPointKind::Soft});
+    QVector<PenPoint> previewPoints = pen_.points;
+    previewPoints.push_back({pen_.hoverWorld, PenPointKind::Soft});
     QPainterPath path;
     path.moveTo(previewPoints.front().position);
     int index = 1;
@@ -49,19 +48,18 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const
     return path;
 }
 
-void ProjectCanvas::drawPenOverlay(QPainter &painter)
-{
-    if (tool_ != QStringLiteral("pen") && !penFillRunning_) {
+void ProjectCanvas::drawPenOverlay(QPainter &painter) {
+    if (tool_ != QStringLiteral("pen") && !pen_.fillRunning) {
         return;
     }
     painter.save();
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (penFillRunning_) {
-        const QString message = penFillMessage_.isEmpty()
+    if (pen_.fillRunning) {
+        const QString message = pen_.fillMessage.isEmpty()
             ? QStringLiteral("Filling Pen path…")
-            : penFillMessage_;
+            : pen_.fillMessage;
         const QFontMetrics metrics(painter.font());
         const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
         QRect bubble = textRect;
@@ -73,40 +71,40 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter)
         painter.restore();
         return;
     }
-    if (penPoints_.isEmpty()) {
+    if (pen_.points.isEmpty()) {
         painter.restore();
         return;
     }
 
-    const bool nearStart = !penLooped_ && penPoints_.size() >= 3
-        && QLineF(worldToScreen(penHoverWorld_), worldToScreen(penPoints_.front().position)).length()
-               <= PenCloseRadius;
-    const bool closed = penLooped_ || nearStart;
+    const bool nearStart = !pen_.closed && pen_.points.size() >= 3
+        && QLineF(worldToScreen(pen_.hoverWorld), worldToScreen(pen_.points.front().position)).length()
+               <= kPenCloseRadius;
+    const bool closed = pen_.closed || nearStart;
     const QPainterPath worldPath = penPreviewPath(closed);
-    const QPainterPath screenPath = worldToScreen_.map(worldPath);
+    const QPainterPath screenPath = camera_.matrix().map(worldPath);
     QColor fill(83, 164, 255, closed ? 50 : 25);
     QPen halo(QColor(15, 17, 20, 230), 4.0);
     halo.setCosmetic(true);
     painter.setPen(halo);
     painter.setBrush(fill);
     painter.drawPath(screenPath);
-    QPen pathPen(penError_.isEmpty() ? QColor(83, 164, 255) : QColor(235, 78, 78), 2.0);
+    QPen pathPen(pen_.error.isEmpty() ? QColor(83, 164, 255) : QColor(235, 78, 78), 2.0);
     pathPen.setCosmetic(true);
     painter.setPen(pathPen);
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(screenPath);
 
-    if (!closed && !penPoints_.isEmpty()) {
+    if (!closed && !pen_.points.isEmpty()) {
         QPen guide(QColor(190, 195, 205, 180), 1.0, Qt::DashLine);
         guide.setCosmetic(true);
         painter.setPen(guide);
-        painter.drawLine(worldToScreen(penPoints_.back().position), worldToScreen(penHoverWorld_));
+        painter.drawLine(worldToScreen(pen_.points.back().position), worldToScreen(pen_.hoverWorld));
     }
 
-    for (int i = 0; i < penPoints_.size(); ++i) {
-        const PenPoint &point = penPoints_[i];
+    for (int i = 0; i < pen_.points.size(); ++i) {
+        const PenPoint &point = pen_.points[i];
         const QPointF screen = worldToScreen(point.position);
-        const bool hovered = penLooped_ && i == penHoverPoint_;
+        const bool hovered = pen_.closed && i == pen_.hoverPoint;
         const double radius = (i == 0 ? 5.5 : 4.5) + (hovered ? 1.5 : 0.0);
         painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),
                             hovered ? 2.5 : 2.0));
@@ -117,55 +115,53 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter)
         if (i == 0) {
             painter.setBrush(Qt::NoBrush);
             painter.setPen(QPen(closed ? QColor(120, 220, 135) : QColor(83, 164, 255), 1.5));
-            painter.drawEllipse(screen, PenCloseRadius, PenCloseRadius);
+            painter.drawEllipse(screen, kPenCloseRadius, kPenCloseRadius);
         }
     }
-    if (penLooped_ && penHoverPoint_ < 0 && penHoverCurve_.valid()) {
-        const QPointF screen = worldToScreen(penHoverCurve_.worldPosition);
+    if (pen_.closed && pen_.hoverPoint < 0 && pen_.hoverCurve.valid()) {
+        const QPointF screen = worldToScreen(pen_.hoverCurve.worldPosition);
         painter.setPen(QPen(QColor(18, 20, 24), 2.0));
         painter.setBrush(QColor(120, 220, 135));
         painter.drawEllipse(screen, 4.0, 4.0);
     }
     painter.setPen(QPen(QColor(245, 65, 65), 2.0));
-    for (const QPointF &crossing : penCrossings_) {
+    for (const QPointF &crossing : pen_.crossings) {
         const QPointF screen = worldToScreen(crossing);
         painter.drawLine(screen + QPointF(-6, -6), screen + QPointF(6, 6));
         painter.drawLine(screen + QPointF(-6, 6), screen + QPointF(6, -6));
     }
-    if (!penError_.isEmpty()) {
+    if (!pen_.error.isEmpty()) {
         painter.setPen(QColor(245, 85, 85));
-        painter.drawText(QRectF(12, 12, width() - 24, 30), Qt::AlignLeft | Qt::AlignVCenter, penError_);
+        painter.drawText(QRectF(12, 12, width() - 24, 30), Qt::AlignLeft | Qt::AlignVCenter, pen_.error);
     }
     painter.restore();
 }
 
-QPainterPath ProjectCanvas::liningPreviewPath() const
-{
-    if (liningPoints_.isEmpty()) {
+QPainterPath ProjectCanvas::liningPreviewPath() const {
+    if (lining_.points.isEmpty()) {
         return {};
     }
-    QVector<PenPoint> points = liningPoints_;
-    if (!liningComplete_) {
-        points.push_back({liningHoverWorld_, PenPointKind::Hard});
+    QVector<PenPoint> points = lining_.points;
+    if (!lining_.closed) {
+        points.push_back({lining_.hoverWorld, PenPointKind::Hard});
     }
     points.front().kind = PenPointKind::Hard;
     points.back().kind = PenPointKind::Hard;
     return buildLiningPath(points).centerline;
 }
 
-void ProjectCanvas::drawLiningOverlay(QPainter &painter)
-{
-    if (tool_ != QStringLiteral("lining") && !liningFillRunning_) {
+void ProjectCanvas::drawLiningOverlay(QPainter &painter) {
+    if (tool_ != QStringLiteral("lining") && !lining_.fillRunning) {
         return;
     }
     painter.save();
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (liningFillRunning_) {
-        const QString message = liningFillMessage_.isEmpty()
+    if (lining_.fillRunning) {
+        const QString message = lining_.fillMessage.isEmpty()
             ? QStringLiteral("Filling lining path…")
-            : liningFillMessage_;
+            : lining_.fillMessage;
         const QFontMetrics metrics(painter.font());
         const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
         QRect bubble = textRect;
@@ -183,10 +179,10 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter)
         return;
     }
     const QPainterPath ribbon = buildLiningRibbon(centerline, liningWidth_);
-    const QPainterPath screenRibbon = worldToScreen_.map(ribbon);
-    const QPainterPath screenCenterline = worldToScreen_.map(centerline);
+    const QPainterPath screenRibbon = camera_.matrix().map(ribbon);
+    const QPainterPath screenCenterline = camera_.matrix().map(centerline);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(255, 200, 50, liningComplete_ ? 55 : 35));
+    painter.setBrush(QColor(255, 200, 50, lining_.closed ? 55 : 35));
     painter.drawPath(screenRibbon);
 
     QPen halo(QColor(15, 17, 20, 230), 4.0);
@@ -194,15 +190,15 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter)
     painter.setPen(halo);
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(screenCenterline);
-    QPen centerPen(liningError_.isEmpty() ? QColor(255, 200, 50) : QColor(235, 78, 78), 2.0);
+    QPen centerPen(lining_.error.isEmpty() ? QColor(255, 200, 50) : QColor(235, 78, 78), 2.0);
     centerPen.setCosmetic(true);
     painter.setPen(centerPen);
     painter.drawPath(screenCenterline);
 
-    for (int i = 0; i < liningPoints_.size(); ++i) {
-        const PenPoint &point = liningPoints_[i];
+    for (int i = 0; i < lining_.points.size(); ++i) {
+        const PenPoint &point = lining_.points[i];
         const QPointF screen = worldToScreen(point.position);
-        const bool hovered = liningComplete_ && i == liningHoverPoint_;
+        const bool hovered = lining_.closed && i == lining_.hoverPoint;
         const double radius = 4.5 + (hovered ? 1.5 : 0.0);
         painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),
                             hovered ? 2.5 : 2.0));
@@ -211,56 +207,55 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter)
                              : QColor(238, 240, 244));
         painter.drawEllipse(screen, radius, radius);
     }
-    if (liningComplete_ && liningHoverPoint_ < 0 && liningHoverCurve_.valid()) {
+    if (lining_.closed && lining_.hoverPoint < 0 && lining_.hoverCurve.valid()) {
         painter.setPen(QPen(QColor(18, 20, 24), 2.0));
         painter.setBrush(QColor(120, 220, 135));
-        painter.drawEllipse(worldToScreen(liningHoverCurve_.worldPosition), 4.0, 4.0);
+        painter.drawEllipse(worldToScreen(lining_.hoverCurve.worldPosition), 4.0, 4.0);
     }
-    if (!liningError_.isEmpty()) {
+    if (!lining_.error.isEmpty()) {
         painter.setPen(QColor(245, 85, 85));
         painter.drawText(QRectF(12, 12, width() - 24, 30),
                          Qt::AlignLeft | Qt::AlignVCenter,
-                         liningError_);
+                         lining_.error);
     }
     painter.restore();
 }
 
 namespace {
 
-const QColor SelectionAccentColor(255, 200, 50);
-const QColor OverlayHaloColor(0, 0, 0);
-const QColor SelectionFrameColor(255, 255, 255);
-constexpr double HoverHaloWidth = 4.0;
-constexpr double HoverAccentWidth = 2.0;
-constexpr double SelectionFrameHaloWidth = 3.0;
-constexpr double SelectionFrameLineWidth = 1.0;
-constexpr double HandleBorderWidth = 2.0;
-constexpr int MarqueeFillAlpha = 32;
-const QColor VisibilityViewportColor(70, 170, 230, 190);
-const QColor VisibilityLooseColor(255, 210, 80, 160);
-constexpr double VisibilityBorderHaloWidth = 3.0;
-constexpr double VisibilityBorderLineWidth = 1.0;
-constexpr double PositionLimitHalfWidth1080p = 1024.0;
-constexpr double PositionLimitHalfHeight1080p = 604.0;
+const QColor kSelectionAccentColor(255, 200, 50);
+const QColor kOverlayHaloColor(0, 0, 0);
+const QColor kSelectionFrameColor(255, 255, 255);
+constexpr double kHoverHaloWidth = 4.0;
+constexpr double kHoverAccentWidth = 2.0;
+constexpr double kSelectionFrameHaloWidth = 3.0;
+constexpr double kSelectionFrameLineWidth = 1.0;
+constexpr double kHandleBorderWidth = 2.0;
+constexpr int kMarqueeFillAlpha = 32;
+const QColor kVisibilityViewportColor(70, 170, 230, 190);
+const QColor kVisibilityLooseColor(255, 210, 80, 160);
+constexpr double kVisibilityBorderHaloWidth = 3.0;
+constexpr double kVisibilityBorderLineWidth = 1.0;
+constexpr double kPositionLimitHalfWidth1080p = 1024.0;
+constexpr double kPositionLimitHalfHeight1080p = 604.0;
 
-const QColor CursorHintBorderColor(0, 0, 0, 180);
-const QColor CursorHintFillColor(20, 20, 22, 210);
-const QColor CursorHintTextColor(245, 246, 248);
-constexpr double CursorHintCornerRadius = 4.0;
-constexpr int CursorHintPaddingX = 8;
-constexpr int CursorHintPaddingY = 6;
-constexpr double CursorHintCursorOffset = 18.0;
-constexpr double CursorHintScreenMargin = 4.0;
+const QColor kCursorHintBorderColor(0, 0, 0, 180);
+const QColor kCursorHintFillColor(20, 20, 22, 210);
+const QColor kCursorHintTextColor(245, 246, 248);
+constexpr double kCursorHintCornerRadius = 4.0;
+constexpr int kCursorHintPaddingX = 8;
+constexpr int kCursorHintPaddingY = 6;
+constexpr double kCursorHintCursorOffset = 18.0;
+constexpr double kCursorHintScreenMargin = 4.0;
 
-const QColor EmptyCanvasTextColor(190, 194, 201);
-const QColor ShapeCountTextColor(255, 255, 255);
-const QColor ShapeCountOutlineColor(0, 0, 0);
-constexpr double ShapeCountOutlineWidth = 3.0;
-constexpr double ShapeCountMargin = 8.0;
-constexpr double ShapeCountSupersampling = 2.0;
+const QColor kEmptyCanvasTextColor(190, 194, 201);
+const QColor kShapeCountTextColor(255, 255, 255);
+const QColor kShapeCountOutlineColor(0, 0, 0);
+constexpr double kShapeCountOutlineWidth = 3.0;
+constexpr double kShapeCountMargin = 8.0;
+constexpr double kShapeCountSupersampling = 2.0;
 
-double rulerMajorStep(double pixelsPerWorldUnit)
-{
+double rulerMajorStep(double pixelsPerWorldUnit) {
     const double target = 80.0 / std::max(pixelsPerWorldUnit, 1e-12);
     const double magnitude = std::pow(10.0, std::floor(std::log10(target)));
     const double normalized = target / magnitude;
@@ -276,8 +271,7 @@ double rulerMajorStep(double pixelsPerWorldUnit)
     return magnitude * 10.0;
 }
 
-QString rulerLabel(double value, double majorStep)
-{
+QString rulerLabel(double value, double majorStep) {
     const int decimals = majorStep >= 1.0
         ? 0
         : std::clamp(static_cast<int>(std::ceil(-std::log10(majorStep))), 0, 6);
@@ -290,19 +284,16 @@ QString rulerLabel(double value, double majorStep)
 } // namespace
 
 
-void ProjectCanvas::clearCursorHint()
-{
+void ProjectCanvas::clearCursorHint() {
     cursorHintLines_.clear();
 }
 
-void ProjectCanvas::setCursorHint(const QPointF &point, const QStringList &lines)
-{
+void ProjectCanvas::setCursorHint(const QPointF &point, const QStringList &lines) {
     cursorHintPoint_ = point;
     cursorHintLines_ = lines;
 }
 
-void ProjectCanvas::drawCursorHint(QPainter &painter)
-{
+void ProjectCanvas::drawCursorHint(QPainter &painter) {
     if (cursorHintLines_.isEmpty()) {
         return;
     }
@@ -336,8 +327,8 @@ void ProjectCanvas::drawCursorHint(QPainter &painter)
             textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
         }
     }
-    const int paddingX = CursorHintPaddingX;
-    const int paddingY = CursorHintPaddingY;
+    const int paddingX = kCursorHintPaddingX;
+    const int paddingY = kCursorHintPaddingY;
     const int lineHeight = metrics.height();
     constexpr int sectionGap = 4;
     int totalHeight = sectionGap * (sections.size() - 1);
@@ -346,11 +337,11 @@ void ProjectCanvas::drawCursorHint(QPainter &painter)
     }
     const QSize hintSize(textWidth + paddingX * 2,
                          totalHeight);
-    QPointF topLeft = cursorHintPoint_ + QPointF(CursorHintCursorOffset, CursorHintCursorOffset);
-    topLeft.setX(std::min(topLeft.x(), static_cast<double>(width() - hintSize.width() - CursorHintScreenMargin)));
-    topLeft.setY(std::min(topLeft.y(), static_cast<double>(height() - hintSize.height() - CursorHintScreenMargin)));
-    topLeft.setX(std::max(topLeft.x(), CursorHintScreenMargin));
-    topLeft.setY(std::max(topLeft.y(), CursorHintScreenMargin));
+    QPointF topLeft = cursorHintPoint_ + QPointF(kCursorHintCursorOffset, kCursorHintCursorOffset);
+    topLeft.setX(std::min(topLeft.x(), static_cast<double>(width() - hintSize.width() - kCursorHintScreenMargin)));
+    topLeft.setY(std::min(topLeft.y(), static_cast<double>(height() - hintSize.height() - kCursorHintScreenMargin)));
+    topLeft.setX(std::max(topLeft.x(), kCursorHintScreenMargin));
+    topLeft.setY(std::max(topLeft.y(), kCursorHintScreenMargin));
     topLeft.setX(std::round(topLeft.x()));
     topLeft.setY(std::round(topLeft.y()));
 
@@ -366,12 +357,12 @@ void ProjectCanvas::drawCursorHint(QPainter &painter)
     int sectionY = 0;
     for (const QStringList &lines : sections) {
         const int sectionHeight = lines.size() * lineHeight + paddingY * 2;
-        hintPainter.setPen(QPen(CursorHintBorderColor, 1));
-        hintPainter.setBrush(CursorHintFillColor);
+        hintPainter.setPen(QPen(kCursorHintBorderColor, 1));
+        hintPainter.setBrush(kCursorHintFillColor);
         hintPainter.drawRoundedRect(QRectF(0.0, sectionY, hintSize.width(), sectionHeight),
-                                    CursorHintCornerRadius,
-                                    CursorHintCornerRadius);
-        hintPainter.setPen(CursorHintTextColor);
+                                    kCursorHintCornerRadius,
+                                    kCursorHintCornerRadius);
+        hintPainter.setPen(kCursorHintTextColor);
         int textY = sectionY + paddingY;
         for (const QString &line : lines) {
             hintPainter.drawText(QRectF(paddingX, textY, textWidth, lineHeight),
@@ -388,9 +379,8 @@ void ProjectCanvas::drawCursorHint(QPainter &painter)
     painter.restore();
 }
 
-void ProjectCanvas::drawVisibilityBorders(QPainter &painter)
-{
-    if (project_ == nullptr || (!visibilityBordersEnabled_ && !positionLimitBorderEnabled_)) {
+void ProjectCanvas::drawVisibilityBorders(QPainter &painter) {
+    if (project_ == nullptr || (!options_.visibilityBordersEnabled && !options_.positionLimitBorderEnabled)) {
         return;
     }
 
@@ -402,31 +392,30 @@ void ProjectCanvas::drawVisibilityBorders(QPainter &painter)
             worldToScreen(worldRect.bottomLeft()),
         });
         painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(OverlayHaloColor, VisibilityBorderHaloWidth, style));
+        painter.setPen(QPen(kOverlayHaloColor, kVisibilityBorderHaloWidth, style));
         painter.drawPolygon(polygon);
-        painter.setPen(QPen(color, VisibilityBorderLineWidth, style));
+        painter.setPen(QPen(color, kVisibilityBorderLineWidth, style));
         painter.drawPolygon(polygon);
     };
 
-    const QRectF viewportRect(-visibilityBorderResolution_.width() * 0.5,
-                              -visibilityBorderResolution_.height() * 0.5,
-                              visibilityBorderResolution_.width(),
-                              visibilityBorderResolution_.height());
-    if (visibilityBordersEnabled_) {
-        drawWorldRect(viewportRect, VisibilityViewportColor, Qt::SolidLine);
+    const QRectF viewportRect(-options_.borderResolution.width() * 0.5,
+                              -options_.borderResolution.height() * 0.5,
+                              options_.borderResolution.width(),
+                              options_.borderResolution.height());
+    if (options_.visibilityBordersEnabled) {
+        drawWorldRect(viewportRect, kVisibilityViewportColor, Qt::SolidLine);
     }
-    if (positionLimitBorderEnabled_) {
-        const double scale = static_cast<double>(visibilityBorderResolution_.height()) / 1080.0;
-        const QRectF positionLimitRect(-PositionLimitHalfWidth1080p * scale,
-                                       -PositionLimitHalfHeight1080p * scale,
-                                       PositionLimitHalfWidth1080p * 2.0 * scale,
-                                       PositionLimitHalfHeight1080p * 2.0 * scale);
-        drawWorldRect(positionLimitRect, VisibilityLooseColor, Qt::DashLine);
+    if (options_.positionLimitBorderEnabled) {
+        const double scale = static_cast<double>(options_.borderResolution.height()) / 1080.0;
+        const QRectF positionLimitRect(-kPositionLimitHalfWidth1080p * scale,
+                                       -kPositionLimitHalfHeight1080p * scale,
+                                       kPositionLimitHalfWidth1080p * 2.0 * scale,
+                                       kPositionLimitHalfHeight1080p * 2.0 * scale);
+        drawWorldRect(positionLimitRect, kVisibilityLooseColor, Qt::DashLine);
     }
 }
 
-void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
-{
+void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter) {
     if (project_ == nullptr) {
         return;
     }
@@ -436,13 +425,13 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
     painter.setRenderHint(QPainter::Antialiasing, false);
     painter.setRenderHint(QPainter::TextAntialiasing, false);
 
-    const QRectF contentRect(RulerExtent, RulerExtent,
-                             std::max(0.0, width() - RulerExtent),
-                             std::max(0.0, height() - RulerExtent));
-    if (guidelinesVisible_) {
+    const QRectF contentRect(kRulerExtent, kRulerExtent,
+                             std::max(0.0, width() - kRulerExtent),
+                             std::max(0.0, height() - kRulerExtent));
+    if (guidelines_.visible) {
         painter.save();
         painter.setClipRect(contentRect);
-        QPen guidelinePen(guidelineColor_, 1.0);
+        QPen guidelinePen(guidelines_.color, 1.0);
         guidelinePen.setCosmetic(true);
         painter.setPen(guidelinePen);
         for (double coordinate : project_->verticalGuidelines) {
@@ -460,18 +449,18 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
     const QColor rulerBackground = dark ? QColor(38, 40, 44) : QColor(229, 231, 234);
     const QColor rulerDivider = dark ? QColor(83, 87, 94) : QColor(151, 155, 162);
     const QColor rulerText = dark ? QColor(216, 219, 224) : QColor(45, 48, 53);
-    painter.fillRect(QRectF(0.0, 0.0, width(), RulerExtent), rulerBackground);
-    painter.fillRect(QRectF(0.0, RulerExtent, RulerExtent, height() - RulerExtent), rulerBackground);
+    painter.fillRect(QRectF(0.0, 0.0, width(), kRulerExtent), rulerBackground);
+    painter.fillRect(QRectF(0.0, kRulerExtent, kRulerExtent, height() - kRulerExtent), rulerBackground);
     painter.setPen(QPen(rulerDivider, 1.0));
-    painter.drawLine(QPointF(RulerExtent - 0.5, 0.0), QPointF(RulerExtent - 0.5, height()));
-    painter.drawLine(QPointF(0.0, RulerExtent - 0.5), QPointF(width(), RulerExtent - 0.5));
+    painter.drawLine(QPointF(kRulerExtent - 0.5, 0.0), QPointF(kRulerExtent - 0.5, height()));
+    painter.drawLine(QPointF(0.0, kRulerExtent - 0.5), QPointF(width(), kRulerExtent - 0.5));
 
     QFont rulerFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     rulerFont.setPixelSize(10);
     rulerFont.setHintingPreference(QFont::PreferFullHinting);
     painter.setFont(rulerFont);
     painter.setPen(rulerText);
-    const double pixelsPerWorldUnit = std::max(std::abs(worldToScreen_.m11()), 1e-12);
+    const double pixelsPerWorldUnit = std::max(std::abs(camera_.matrix().m11()), 1e-12);
     const double majorStep = rulerMajorStep(pixelsPerWorldUnit);
     const double minorStep = majorStep / 10.0;
 
@@ -486,9 +475,9 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
         const bool major = subdivision == 0;
         const bool half = subdivision == 5;
         const double tick = major ? 11.0 : (half ? 7.0 : 4.0);
-        painter.drawLine(QPointF(x, RulerExtent), QPointF(x, RulerExtent - tick));
+        painter.drawLine(QPointF(x, kRulerExtent), QPointF(x, kRulerExtent - tick));
         if (major) {
-            painter.drawText(QRectF(std::round(x) + 3.0, 1.0, 72.0, RulerExtent - 12.0),
+            painter.drawText(QRectF(std::round(x) + 3.0, 1.0, 72.0, kRulerExtent - 12.0),
                              Qt::AlignLeft | Qt::AlignVCenter, rulerLabel(coordinate, majorStep));
         }
     }
@@ -504,53 +493,52 @@ void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter)
         const bool major = subdivision == 0;
         const bool half = subdivision == 5;
         const double tick = major ? 11.0 : (half ? 7.0 : 4.0);
-        painter.drawLine(QPointF(RulerExtent, y), QPointF(RulerExtent - tick, y));
+        painter.drawLine(QPointF(kRulerExtent, y), QPointF(kRulerExtent - tick, y));
         if (major) {
             painter.save();
-            painter.translate(RulerExtent * 0.5 - 1.0, std::round(y));
+            painter.translate(kRulerExtent * 0.5 - 1.0, std::round(y));
             painter.rotate(-90.0);
-            painter.drawText(QRectF(-36.0, -RulerExtent * 0.5, 72.0, RulerExtent - 12.0),
+            painter.drawText(QRectF(-36.0, -kRulerExtent * 0.5, 72.0, kRulerExtent - 12.0),
                              Qt::AlignCenter, rulerLabel(coordinate, majorStep));
             painter.restore();
         }
     }
 
-    if (guidelinesVisible_) {
+    if (guidelines_.visible) {
         painter.setPen(Qt::NoPen);
-        painter.setBrush(guidelineColor_);
+        painter.setBrush(guidelines_.color);
         for (double coordinate : project_->verticalGuidelines) {
             const double x = worldToScreen(QPointF(coordinate, 0.0)).x();
             if (x >= contentRect.left() && x <= contentRect.right()) {
-                painter.drawPolygon(QPolygonF({QPointF(x - 4.0, RulerExtent - 7.0),
-                                               QPointF(x + 4.0, RulerExtent - 7.0),
-                                               QPointF(x, RulerExtent - 1.0)}));
+                painter.drawPolygon(QPolygonF({QPointF(x - 4.0, kRulerExtent - 7.0),
+                                               QPointF(x + 4.0, kRulerExtent - 7.0),
+                                               QPointF(x, kRulerExtent - 1.0)}));
             }
         }
         for (double coordinate : project_->horizontalGuidelines) {
             const double y = worldToScreen(QPointF(0.0, coordinate)).y();
             if (y >= contentRect.top() && y <= contentRect.bottom()) {
-                painter.drawPolygon(QPolygonF({QPointF(RulerExtent - 7.0, y - 4.0),
-                                               QPointF(RulerExtent - 7.0, y + 4.0),
-                                               QPointF(RulerExtent - 1.0, y)}));
+                painter.drawPolygon(QPolygonF({QPointF(kRulerExtent - 7.0, y - 4.0),
+                                               QPointF(kRulerExtent - 7.0, y + 4.0),
+                                               QPointF(kRulerExtent - 1.0, y)}));
             }
         }
     }
     painter.restore();
 }
 
-void ProjectCanvas::drawOverlay(QPainter &painter)
-{
+void ProjectCanvas::drawOverlay(QPainter &painter) {
     painter.save();
     painter.resetTransform();
-    painter.setClipRect(QRectF(RulerExtent, RulerExtent,
-                               std::max(0.0, width() - RulerExtent),
-                               std::max(0.0, height() - RulerExtent)));
+    painter.setClipRect(QRectF(kRulerExtent, kRulerExtent,
+                               std::max(0.0, width() - kRulerExtent),
+                               std::max(0.0, height() - kRulerExtent)));
     painter.setRenderHint(QPainter::Antialiasing, true);
 
     if (carUnwrapVisible_ && !carUnwrapOverlay_.isNull()) {
         const QTransform imageToWorld(1.0, 0.0, 0.0, 1.0, -1024.0, -512.0);
         painter.save();
-        painter.setTransform(imageToWorld * worldToScreen_, false);
+        painter.setTransform(imageToWorld * camera_.matrix(), false);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         painter.setOpacity(0.45);
         painter.drawImage(QPointF(0.0, 0.0), carUnwrapOverlay_);
@@ -563,9 +551,9 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
 
     if (!hoverPolygon_.isEmpty()) {
         painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(OverlayHaloColor, HoverHaloWidth));
+        painter.setPen(QPen(kOverlayHaloColor, kHoverHaloWidth));
         painter.drawPolygon(hoverPolygon_);
-        painter.setPen(QPen(SelectionAccentColor, HoverAccentWidth));
+        painter.setPen(QPen(kSelectionAccentColor, kHoverAccentWidth));
         painter.drawPolygon(hoverPolygon_);
     }
 
@@ -581,45 +569,44 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
 
         if (!isTransformDrag()) {
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(OverlayHaloColor, SelectionFrameHaloWidth));
+            painter.setPen(QPen(kOverlayHaloColor, kSelectionFrameHaloWidth));
             painter.drawPolygon(boxPolygon);
-            painter.setPen(QPen(SelectionFrameColor, SelectionFrameLineWidth));
+            painter.setPen(QPen(kSelectionFrameColor, kSelectionFrameLineWidth));
             painter.drawPolygon(boxPolygon);
         }
         if (tool_ == QStringLiteral("transform")
-            && (!isTransformDrag() || displayAnchorsDuringTransformDrag_)) {
+            && (!isTransformDrag() || options_.displayAnchorsDuringTransformDrag)) {
             QVector<QPointF> handles = {
                 topLeft, topRight, bottomLeft, bottomRight,
                 toScreen.map(QPointF(lr.left(), lr.center().y())),
                 toScreen.map(QPointF(lr.right(), lr.center().y())),
                 toScreen.map(QPointF(lr.center().x(), lr.top())),
                 toScreen.map(QPointF(lr.center().x(), lr.bottom())),
-            };
-            {
+            }; {
                 const QPointF topCenter = toScreen.map(QPointF(lr.center().x(), lr.top()));
                 const QPointF inward = toScreen.map(QPointF(lr.center().x(), lr.top() + 1.0));
                 QPointF up = topCenter - inward;
                 const double upLen = std::hypot(up.x(), up.y());
                 if (upLen > 1e-9) {
                     up /= upLen;
-                    handles.push_back(topCenter + up * SkewHandleOffset);
+                    handles.push_back(topCenter + up * kSkewHandleOffset);
                 }
             }
             for (const QPointF &handle : handles) {
-                QRectF rect(handle.x() - HandleHalf, handle.y() - HandleHalf, HandleHalf * 2.0, HandleHalf * 2.0);
-                painter.fillRect(rect, SelectionFrameColor);
-                painter.setPen(QPen(OverlayHaloColor, HandleBorderWidth));
+                QRectF rect(handle.x() - kHandleHalf, handle.y() - kHandleHalf, kHandleHalf * 2.0, kHandleHalf * 2.0);
+                painter.fillRect(rect, kSelectionFrameColor);
+                painter.setPen(QPen(kOverlayHaloColor, kHandleBorderWidth));
                 painter.drawRect(rect);
             }
         }
     }
 
-    if (dragMode_ == DragMode::Marquee && marqueeRect_.isValid()) {
-        QColor marqueeFill = SelectionAccentColor;
-        marqueeFill.setAlpha(MarqueeFillAlpha);
+    if (drag_.mode == DragMode::Marquee && drag_.marqueeRect.isValid()) {
+        QColor marqueeFill = kSelectionAccentColor;
+        marqueeFill.setAlpha(kMarqueeFillAlpha);
         painter.setBrush(marqueeFill);
-        painter.setPen(QPen(SelectionAccentColor, 1, Qt::DashLine));
-        painter.drawRect(marqueeRect_);
+        painter.setPen(QPen(kSelectionAccentColor, 1, Qt::DashLine));
+        painter.drawRect(drag_.marqueeRect);
     }
 
     int loadedCount = 0;
@@ -643,10 +630,10 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     for (const QString &line : countLines) {
         textWidth = std::max(textWidth, metrics.horizontalAdvance(line));
     }
-    const qreal padding = ShapeCountOutlineWidth + 1.0;
+    const qreal padding = kShapeCountOutlineWidth + 1.0;
     const QSizeF imageSize(textWidth + padding * 2.0,
                            metrics.height() * countLines.size() + padding * 2.0);
-    const qreal renderScale = devicePixelRatioF() * ShapeCountSupersampling;
+    const qreal renderScale = devicePixelRatioF() * kShapeCountSupersampling;
     QImage countImage(QSize(qCeil(imageSize.width() * renderScale),
                             qCeil(imageSize.height() * renderScale)),
                       QImage::Format_ARGB32_Premultiplied);
@@ -660,15 +647,15 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     for (const QString &line : countLines) {
         QPainterPath path;
         path.addText(QPointF(padding, baseline), countFont, line);
-        countPainter.strokePath(path, QPen(ShapeCountOutlineColor, ShapeCountOutlineWidth,
+        countPainter.strokePath(path, QPen(kShapeCountOutlineColor, kShapeCountOutlineWidth,
                                            Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        countPainter.fillPath(path, ShapeCountTextColor);
+        countPainter.fillPath(path, kShapeCountTextColor);
         baseline += metrics.height();
     }
     countPainter.end();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawImage(QPointF(RulerExtent + ShapeCountMargin - padding,
-                              RulerExtent + ShapeCountMargin - padding),
+    painter.drawImage(QPointF(kRulerExtent + kShapeCountMargin - padding,
+                              kRulerExtent + kShapeCountMargin - padding),
                       countImage);
 
     drawPenOverlay(painter);
@@ -677,9 +664,8 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     painter.restore();
 }
 
-void ProjectCanvas::updateSelectionFlashState()
-{
-    if (!selectionFlashEnabled_) {
+void ProjectCanvas::updateSelectionFlashState() {
+    if (!flash_.enabled) {
         setFlashingLayerIds({});
         return;
     }
@@ -690,60 +676,54 @@ void ProjectCanvas::updateSelectionFlashState()
     setFlashingLayerIds(selected);
 }
 
-void ProjectCanvas::setFlashingLayerIds(const QSet<QString> &ids)
-{
-    const QSet<QString> selected = selectionFlashEnabled_ ? ids : QSet<QString>{};
-    const bool selectionChanged = selected != flashingLayerIds_;
+void ProjectCanvas::setFlashingLayerIds(const QSet<QString> &ids) {
+    const QSet<QString> selected = flash_.enabled ? ids : QSet<QString>{};
+    const bool selectionChanged = selected != flash_.layerIds;
     if (selectionChanged) {
-        flashingLayerIds_ = selected;
-        selectionFlashClock_.restart();
+        flash_.layerIds = selected;
+        flash_.clock.restart();
     }
-    if (flashingLayerIds_.isEmpty()) {
-        selectionFlashTimer_.stop();
-    } else if (selectionChanged || !selectionFlashTimer_.isActive()) {
+    if (flash_.layerIds.isEmpty()) {
+        flash_.timer.stop();
+    } else if (selectionChanged || !flash_.timer.isActive()) {
         scheduleSelectionFlashTimer();
     }
 }
 
-void ProjectCanvas::scheduleSelectionFlashTimer()
-{
-    if (flashingLayerIds_.isEmpty()) {
-        selectionFlashTimer_.stop();
+void ProjectCanvas::scheduleSelectionFlashTimer() {
+    if (flash_.layerIds.isEmpty()) {
+        flash_.timer.stop();
         return;
     }
-    const qint64 elapsed = selectionFlashClock_.elapsed() % SelectionFlashPeriodMs;
-    if (elapsed < SelectionFlashDurationMs) {
-        selectionFlashTimer_.start(SelectionFlashFrameMs);
+    const qint64 elapsed = flash_.clock.elapsed() % kSelectionFlashPeriodMs;
+    if (elapsed < kSelectionFlashDurationMs) {
+        flash_.timer.start(kSelectionFlashFrameMs);
         return;
     }
-    selectionFlashTimer_.start(static_cast<int>(SelectionFlashPeriodMs - elapsed));
+    flash_.timer.start(static_cast<int>(kSelectionFlashPeriodMs - elapsed));
 }
 
-std::optional<double> ProjectCanvas::selectionFlashProgress() const
-{
-    if (flashingLayerIds_.isEmpty() || !selectionFlashClock_.isValid()) {
+std::optional<double> ProjectCanvas::selectionFlashProgress() const {
+    if (flash_.layerIds.isEmpty() || !flash_.clock.isValid()) {
         return std::nullopt;
     }
-    const qint64 elapsed = selectionFlashClock_.elapsed() % SelectionFlashPeriodMs;
-    if (elapsed >= SelectionFlashDurationMs) {
+    const qint64 elapsed = flash_.clock.elapsed() % kSelectionFlashPeriodMs;
+    if (elapsed >= kSelectionFlashDurationMs) {
         return std::nullopt;
     }
-    return static_cast<double>(elapsed) / static_cast<double>(SelectionFlashDurationMs);
+    return static_cast<double>(elapsed) / static_cast<double>(kSelectionFlashDurationMs);
 }
 
-double ProjectCanvas::selectionFlashHue() const
-{
+double ProjectCanvas::selectionFlashHue() const {
     return selectionFlashProgress().value_or(-1.0);
 }
 
-double ProjectCanvas::selectionFlashStrength() const
-{
+double ProjectCanvas::selectionFlashStrength() const {
     const std::optional<double> progress = selectionFlashProgress();
     return progress.has_value() ? 0.18 + 0.72 * std::sin(*progress * kPi) : 0.0;
 }
 
-QImage ProjectCanvas::guideImage(const fh6::scene::GuideLayer &guide) const
-{
+QImage ProjectCanvas::guideImage(const fh6::scene::GuideLayer &guide) const {
     const fh6::scene::RasterContainer *img = guide.image.get();
     const int width = img != nullptr ? img->width : 0;
     const int height = img != nullptr ? img->height : 0;
@@ -778,8 +758,7 @@ QImage ProjectCanvas::guideImage(const fh6::scene::GuideLayer &guide) const
     return image;
 }
 
-QString ProjectCanvas::sectionCanvasCacheKey() const
-{
+QString ProjectCanvas::sectionCanvasCacheKey() const {
     if (project_ == nullptr || state_ == nullptr || !project_->isLivery || state_->activeSectionId_.isEmpty() || size().isEmpty()) {
         return {};
     }
@@ -788,19 +767,18 @@ QString ProjectCanvas::sectionCanvasCacheKey() const
         .arg(width())
         .arg(height())
         .arg(QString::number(devicePixelRatioF(), 'g', 12))
-        .arg(QString::number(worldToScreen_.m11(), 'g', 17))
-        .arg(QString::number(worldToScreen_.m12(), 'g', 17))
-        .arg(QString::number(worldToScreen_.m21(), 'g', 17))
-        .arg(QString::number(worldToScreen_.m22(), 'g', 17))
-        .arg(QString::number(worldToScreen_.dx(), 'g', 17))
-        .arg(QString::number(worldToScreen_.dy(), 'g', 17))
-        .arg(canvasColor_.rgba())
-        .arg(guideLayersOnTop_ ? 1 : 0)
-        .arg(guideLayersVisible_ ? 1 : 0);
+        .arg(QString::number(camera_.matrix().m11(), 'g', 17))
+        .arg(QString::number(camera_.matrix().m12(), 'g', 17))
+        .arg(QString::number(camera_.matrix().m21(), 'g', 17))
+        .arg(QString::number(camera_.matrix().m22(), 'g', 17))
+        .arg(QString::number(camera_.matrix().dx(), 'g', 17))
+        .arg(QString::number(camera_.matrix().dy(), 'g', 17))
+        .arg(options_.canvasColor.rgba())
+        .arg(options_.guideLayersOnTop ? 1 : 0)
+        .arg(options_.guideLayersVisible ? 1 : 0);
 }
 
-void ProjectCanvas::storeSectionCanvasCache(const QString &key)
-{
+void ProjectCanvas::storeSectionCanvasCache(const QString &key) {
     if (key.isEmpty()) {
         return;
     }
@@ -815,9 +793,8 @@ void ProjectCanvas::storeSectionCanvasCache(const QString &key)
     sectionCanvasCache_.insert(key, image);
 }
 
-void ProjectCanvas::drawGuideLayers(QPainter &painter)
-{
-    if (!guideLayersVisible_ || sceneTree() == nullptr) {
+void ProjectCanvas::drawGuideLayers(QPainter &painter) {
+    if (!options_.guideLayersVisible || sceneTree() == nullptr) {
         return;
     }
     painter.save();
@@ -828,7 +805,7 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter)
         }
         const QSizeF size = sceneNodeSize(guide, geometry_);
         const QRectF localRect(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
-        if (!(world * worldToScreen_).mapRect(localRect).intersects(QRectF(rect()).adjusted(-1.0, -1.0, 1.0, 1.0))) {
+        if (!(world * camera_.matrix()).mapRect(localRect).intersects(QRectF(rect()).adjusted(-1.0, -1.0, 1.0, 1.0))) {
             return true;
         }
         const QImage image = guideImage(guide);
@@ -837,7 +814,7 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter)
         }
         painter.save();
         painter.setOpacity(std::clamp(guide.opacity, 0.0, 1.0));
-        painter.setTransform(world * worldToScreen_, true);
+        painter.setTransform(world * camera_.matrix(), true);
         painter.drawImage(localRect, image);
         painter.restore();
         return true;
@@ -846,8 +823,7 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter)
 }
 
 bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
-                                                  QString *message)
-{
+                                                  QString *message) {
     const QVector<fh6::scene::GuideLayer *> guides = selectedGuideLayers();
     if (guides.isEmpty()) {
         if (message != nullptr) {
@@ -873,7 +849,7 @@ bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
     RegionExtractionParams params;
     params.smallRegionMergeArea = std::max(0, smallRegionMergeArea);
     if (guide->preprocessColorCount > 0) {
-        params.colorCount = guide->preprocessColorCount;
+        params.maxColorCount = guide->preprocessColorCount;
     }
     const RegionExtractionResult regions = extractRegions(image, params);
     QGuiApplication::restoreOverrideCursor();
@@ -885,13 +861,13 @@ bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
         }
         return false;
     }
-    regionOverlayGuideId_ = guide->id;
-    regionOverlay_ = regions;
-    ++regionOverlayGeneration_;
-    regionFills_.clear();
-    regionFillSilhouettes_.clear();
-    showRegionFills_ = false;
-    regionOverlayHidden_ = false;
+    region_.guideId = guide->id;
+    region_.overlay = regions;
+    ++region_.generation;
+    region_.fills.clear();
+    region_.fillSilhouettes.clear();
+    region_.showFills = false;
+    region_.hidden = false;
     update();
     if (message != nullptr) {
         *message = QStringLiteral("Created %1 regions (%2 colour, %3 lineart, %4 small merged)")
@@ -903,31 +879,29 @@ bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
     return true;
 }
 
-void ProjectCanvas::clearRegionOverlay()
-{
-    if (regionOverlay_.regions.isEmpty() && regionOverlayGuideId_.isEmpty()) {
+void ProjectCanvas::clearRegionOverlay() {
+    if (region_.overlay.regions.isEmpty() && region_.guideId.isEmpty()) {
         return;
     }
-    regionOverlayGuideId_.clear();
-    regionOverlay_ = RegionExtractionResult{};
-    ++regionOverlayGeneration_;
-    regionFills_.clear();
-    regionFillSilhouettes_.clear();
-    showRegionFills_ = false;
-    regionOverlayHidden_ = false;
+    region_.guideId.clear();
+    region_.overlay = RegionExtractionResult{};
+    ++region_.generation;
+    region_.fills.clear();
+    region_.fillSilhouettes.clear();
+    region_.showFills = false;
+    region_.hidden = false;
     update();
 }
 
 bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
-                                           QString *message) const
-{
+                                           QString *message) const {
     if (request == nullptr) {
         if (message != nullptr) {
             *message = QStringLiteral("Region fill request is unavailable");
         }
         return false;
     }
-    if (regionOverlay_.regions.isEmpty()) {
+    if (region_.overlay.regions.isEmpty()) {
         if (message != nullptr) {
             *message = QStringLiteral("Create regions first");
         }
@@ -942,19 +916,18 @@ bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
     }
 
     *request = RegionFillBatchRequest{};
-    request->regions = regionOverlay_;
+    request->regions = region_.overlay;
     request->primitives = primitives;
     request->meshSources = buildPolygonMeshSources(geometry_);
-    request->overlayGuideId = regionOverlayGuideId_;
-    request->overlayGeneration = regionOverlayGeneration_;
+    request->overlayGuideId = region_.guideId;
+    request->overlayGeneration = region_.generation;
     return true;
 }
 
 RegionFillBatchResult computeRegionFills(
     const RegionFillBatchRequest &request,
     const std::function<void(int, int)> &progress,
-    const std::function<bool()> &cancelled)
-{
+    const std::function<bool()> &cancelled) {
     RegionFillBatchResult result;
     result.overlayGuideId = request.overlayGuideId;
     result.overlayGeneration = request.overlayGeneration;
@@ -969,8 +942,6 @@ RegionFillBatchResult computeRegionFills(
     for (const PenPrimitive &primitive : primitives) {
         silhouettes.insert(primitive.shapeId, primitive.silhouette);
     }
-    // Fit tolerance scales with the image so it stays a small fraction of a pixel
-    // of visible error regardless of guide resolution.
     const double tolerance = std::max(1.0,
                                       std::min(regionOverlay.imageSize.width(),
                                                regionOverlay.imageSize.height()) * 0.004);
@@ -983,15 +954,9 @@ RegionFillBatchResult computeRegionFills(
     int meshFallbacks = 0;
     int baselineRetries = 0;
     QHash<QString, int> failureReasons;
-    // Bound each fill by wall clock so a pathological outline cannot drive the
-    // fitter's boolean-union accumulation into an unbounded quadratic blow-up.
     constexpr qint64 kRegionBudgetMs = 3000;
-    // Direct-triangulation fallback sources (Square 101 / Triangle 103 hulls).
     const PolygonMeshSources &meshSources = request.meshSources;
     constexpr double kFallbackSimplifyEpsilon = 0.45;
-    // Preserve the extraction result exactly: one fill unit per non-lineart
-    // region, in extraction order. There is no same-colour union, area sorting,
-    // or growth into neighbouring/occluded pixels.
     struct FillUnit {
         QColor color;
         QPainterPath outline;
@@ -1095,9 +1060,6 @@ RegionFillBatchResult computeRegionFills(
                         work.timedOut = true;
                     }
 
-                    // Both an ordinary Pen failure and a Pen timeout continue
-                    // from the already-optimized contour. Never union, grow,
-                    // reorder, or revert to a different source outline here.
                     if (!fitSucceeded(work.fit) && !globallyCancelled()) {
                         work.penError = work.fit.error;
                         work.meshFallback = true;
@@ -1304,7 +1266,6 @@ RegionFillBatchResult computeRegionFills(
     }
     qWarning().noquote() << "Fill Regions log written to" << logPath;
 
-    // Build a "top failure reason" suffix so the cause is visible in-app.
     QString reasonSuffix;
     if (!failureReasons.isEmpty()) {
         QString topReason;
@@ -1335,16 +1296,15 @@ RegionFillBatchResult computeRegionFills(
 }
 
 bool ProjectCanvas::applyRegionFillBatch(RegionFillBatchResult result,
-                                         QString *message)
-{
+                                         QString *message) {
     if (result.cancelled) {
         if (message != nullptr) {
             *message = QStringLiteral("Region Fill cancelled");
         }
         return false;
     }
-    if (result.overlayGeneration != regionOverlayGeneration_
-        || result.overlayGuideId != regionOverlayGuideId_) {
+    if (result.overlayGeneration != region_.generation
+        || result.overlayGuideId != region_.guideId) {
         if (message != nullptr) {
             *message = QStringLiteral("Region Fill result is stale; create regions again");
         }
@@ -1357,9 +1317,9 @@ bool ProjectCanvas::applyRegionFillBatch(RegionFillBatchResult result,
         }
         return false;
     }
-    regionFills_ = std::move(result.fills);
-    regionFillSilhouettes_ = std::move(result.silhouettes);
-    showRegionFills_ = true;
+    region_.fills = std::move(result.fills);
+    region_.fillSilhouettes = std::move(result.silhouettes);
+    region_.showFills = true;
     update();
     if (message != nullptr) {
         *message = result.summary;
@@ -1367,24 +1327,22 @@ bool ProjectCanvas::applyRegionFillBatch(RegionFillBatchResult result,
     return true;
 }
 
-void ProjectCanvas::clearRegionFills()
-{
-    if (regionFills_.isEmpty() && !showRegionFills_) {
+void ProjectCanvas::clearRegionFills() {
+    if (region_.fills.isEmpty() && !region_.showFills) {
         return;
     }
-    regionFills_.clear();
-    regionFillSilhouettes_.clear();
-    showRegionFills_ = false;
+    region_.fills.clear();
+    region_.fillSilhouettes.clear();
+    region_.showFills = false;
     update();
 }
 
-QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups()
-{
+QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups() {
     QVector<GeneratedRegionGroup> result;
-    if (regionFills_.isEmpty() || regionOverlayGuideId_.isEmpty()) {
+    if (region_.fills.isEmpty() || region_.guideId.isEmpty()) {
         return result;
     }
-    const QSize imageSize = regionOverlay_.imageSize;
+    const QSize imageSize = region_.overlay.imageSize;
     if (imageSize.width() < 1 || imageSize.height() < 1) {
         return result;
     }
@@ -1395,7 +1353,7 @@ QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups()
     QSizeF guideSize;
     bool found = false;
     forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
-        if (guide.id != regionOverlayGuideId_ || !isSectionActive(sectionGroupId)) {
+        if (guide.id != region_.guideId || !isSectionActive(sectionGroupId)) {
             return true;
         }
         guideWorld = world;
@@ -1412,7 +1370,7 @@ QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups()
                        guideSize.height() / imageSize.height());
     const QTransform imageToWorld = imageToLocal * guideWorld;
 
-    for (const RegionFillLayer &fill : regionFills_) {
+    for (const RegionFillLayer &fill : region_.fills) {
         GeneratedRegionGroup group;
         group.shapes.reserve(fill.placements.size());
         // Scene shape colour is stored BGRA.
@@ -1436,29 +1394,26 @@ QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups()
     return result;
 }
 
-void ProjectCanvas::hideRegionOverlay()
-{
-    regionOverlayHidden_ = true;
-    showRegionFills_ = false;
+void ProjectCanvas::hideRegionOverlay() {
+    region_.hidden = true;
+    region_.showFills = false;
     update();
 }
 
-void ProjectCanvas::drawRegionOverlay(QPainter &painter)
-{
-    if (regionOverlay_.regions.isEmpty() || regionOverlayGuideId_.isEmpty() || regionOverlayHidden_) {
+void ProjectCanvas::drawRegionOverlay(QPainter &painter) {
+    if (region_.overlay.regions.isEmpty() || region_.guideId.isEmpty() || region_.hidden) {
         return;
     }
-    const QSize imageSize = regionOverlay_.imageSize;
+    const QSize imageSize = region_.overlay.imageSize;
     if (imageSize.width() < 1 || imageSize.height() < 1) {
         return;
     }
 
-    // Find the current world placement of the guide the overlay was built from.
     QTransform guideWorld;
     QSizeF guideSize;
     bool found = false;
     forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
-        if (guide.id != regionOverlayGuideId_ || !isSectionActive(sectionGroupId)) {
+        if (guide.id != region_.guideId || !isSectionActive(sectionGroupId)) {
             return true;
         }
         guideWorld = world;
@@ -1475,10 +1430,8 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter)
     imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
     imageToLocal.scale(guideSize.width() / imageSize.width(),
                        guideSize.height() / imageSize.height());
-    const QTransform imageToScreen = imageToLocal * guideWorld * worldToScreen_;
+    const QTransform imageToScreen = imageToLocal * guideWorld * camera_.matrix();
 
-    // Distinct debug palette; the graph coloring guarantees adjacent regions
-    // pick different entries, so neighbours never blend together.
     static const QColor kDebugPalette[] = {
         QColor(228, 87, 86), QColor(88, 163, 222), QColor(126, 194, 106),
         QColor(240, 179, 74), QColor(163, 122, 214), QColor(74, 204, 196),
@@ -1490,24 +1443,21 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter)
     painter.setTransform(imageToScreen, true);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (showRegionFills_ && !regionFills_.isEmpty()) {
-        // Filled preview: each region's primitive placements in the region colour.
+    if (region_.showFills && !region_.fills.isEmpty()) {
         painter.setPen(Qt::NoPen);
-        for (const RegionFillLayer &fill : regionFills_) {
+        for (const RegionFillLayer &fill : region_.fills) {
             painter.setBrush(fill.color);
             for (const PenPlacement &placement : fill.placements) {
-                const auto silhouette = regionFillSilhouettes_.constFind(placement.shapeId);
-                if (silhouette != regionFillSilhouettes_.constEnd()) {
+                const auto silhouette = region_.fillSilhouettes.constFind(placement.shapeId);
+                if (silhouette != region_.fillSilhouettes.constEnd()) {
                     painter.drawPath(placement.transform.map(silhouette.value()));
                 }
             }
         }
     } else {
-        // Debug region map: colour regions filled with their graph-colour so each
-        // reads as a distinct area.
         QPen outlinePen(QColor(20, 22, 26, 180), 1.0);
         outlinePen.setCosmetic(true);
-        for (const ExtractedRegion &region : regionOverlay_.regions) {
+        for (const ExtractedRegion &region : region_.overlay.regions) {
             if (region.lineart) {
                 continue;
             }
@@ -1519,9 +1469,8 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter)
         }
     }
 
-    // Lineart always draws on top, opaque in the opposite colour.
     painter.setPen(Qt::NoPen);
-    for (const ExtractedRegion &region : regionOverlay_.regions) {
+    for (const ExtractedRegion &region : region_.overlay.regions) {
         if (!region.lineart) {
             continue;
         }
@@ -1533,19 +1482,17 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter)
     painter.restore();
 }
 
-void ProjectCanvas::initializeGL()
-{
+void ProjectCanvas::initializeGL() {
     renderer_.initialize();
     rendererGeometryDirty_ = true;
 }
 
-void ProjectCanvas::paintGL()
-{
+void ProjectCanvas::paintGL() {
     if (project_ == nullptr) {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.fillRect(rect(), canvasColor_);
-        painter.setPen(EmptyCanvasTextColor);
+        painter.fillRect(rect(), options_.canvasColor);
+        painter.setPen(kEmptyCanvasTextColor);
         painter.drawText(rect().adjusted(24, 24, -24, -24), Qt::AlignCenter, QStringLiteral("Open a C_group file or folder"));
         return;
     }
@@ -1558,7 +1505,7 @@ void ProjectCanvas::paintGL()
     }
 
     const std::optional<double> flashProgress = selectionFlashProgress();
-    const bool flashActive = flashProgress.has_value() && !flashingLayerIds_.isEmpty();
+    const bool flashActive = flashProgress.has_value() && !flash_.layerIds.isEmpty();
     const QString sectionCacheKey = flashActive ? QString() : sectionCanvasCacheKey();
     if (!sectionCacheKey.isEmpty()) {
         const auto cached = sectionCanvasCache_.constFind(sectionCacheKey);
@@ -1574,27 +1521,27 @@ void ProjectCanvas::paintGL()
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), canvasColor_);
-    if (!guideLayersOnTop_) {
+    painter.fillRect(rect(), options_.canvasColor);
+    if (!options_.guideLayersOnTop) {
         drawGuideLayers(painter);
     }
 
     const qreal dpr = devicePixelRatioF();
     const QSize deviceSize(std::lround(width() * dpr), std::lround(height() * dpr));
-    QTransform deviceCamera = worldToScreen_;
+    QTransform deviceCamera = camera_.matrix();
     deviceCamera *= QTransform::fromScale(dpr, dpr);
 
     painter.beginNativePainting();
     if (state_ != nullptr) {
         renderer_.render(state_->renderEntries(), geometry_, deviceCamera, deviceSize,
-                         flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false);
+                         flash_.layerIds, selectionFlashHue(), selectionFlashStrength(), false);
     } else {
         renderer_.render(*project_, geometry_, deviceCamera, deviceSize,
-                         flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false);
+                         flash_.layerIds, selectionFlashHue(), selectionFlashStrength(), false);
     }
     painter.endNativePainting();
 
-    if (guideLayersOnTop_) {
+    if (options_.guideLayersOnTop) {
         drawGuideLayers(painter);
     }
 

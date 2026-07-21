@@ -23,8 +23,7 @@ namespace gui {
 
 using namespace mw_detail;
 
-void MainWindow::setProject(fh6::Project project)
-{
+void MainWindow::setProject(fh6::Project project) {
     state_->setProject(std::move(project));
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
@@ -48,8 +47,7 @@ void MainWindow::setProject(fh6::Project project)
     updateCarUnwrapOverlay();
 }
 
-void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel)
-{
+void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     if (carPreview_ == nullptr || state_ == nullptr || !state_->hasProject_) {
         return;
     }
@@ -117,8 +115,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel)
     statusBar()->showMessage(QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
 }
 
-QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const
-{
+QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const {
     QDir dir(folder);
     if (modelName.isEmpty() || !dir.exists()) {
         return QString();
@@ -179,8 +176,7 @@ QString MainWindow::findCarModelPath(const QString &folder, const QString &model
     return QString();
 }
 
-void MainWindow::rebuildSectionBar()
-{
+void MainWindow::rebuildSectionBar() {
     if (sectionBar_ == nullptr) {
         return;
     }
@@ -194,8 +190,7 @@ void MainWindow::rebuildSectionBar()
     sectionBar_->setSections(sections);
 }
 
-void MainWindow::setActiveSection(const QString &sectionGroupId)
-{
+void MainWindow::setActiveSection(const QString &sectionGroupId) {
     state_->setActiveSectionId(sectionGroupId);
 
     applyLiverySectionVisibility(sectionGroupId);
@@ -212,8 +207,7 @@ void MainWindow::setActiveSection(const QString &sectionGroupId)
     updateCarUnwrapOverlay();
 }
 
-void MainWindow::prebakeLiverySectionCaches()
-{
+void MainWindow::prebakeLiverySectionCaches() {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery || canvas_ == nullptr || treeModel_ == nullptr) {
         return;
     }
@@ -251,8 +245,7 @@ void MainWindow::prebakeLiverySectionCaches()
     refreshSelectionProperties();
 }
 
-QString MainWindow::activeLiverySectionId() const
-{
+QString MainWindow::activeLiverySectionId() const {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery) {
         return {};
     }
@@ -276,8 +269,7 @@ QString MainWindow::activeLiverySectionId() const
     return {};
 }
 
-int MainWindow::activeLiverySectionSlot() const
-{
+int MainWindow::activeLiverySectionSlot() const {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery) {
         return -1;
     }
@@ -293,8 +285,7 @@ int MainWindow::activeLiverySectionSlot() const
     return -1;
 }
 
-void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId)
-{
+void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId) {
     if (state_ == nullptr || !state_->hasProject_ || sectionGroupId.isEmpty()) {
         return;
     }
@@ -305,8 +296,7 @@ void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId)
     });
 }
 
-void MainWindow::updateStatus()
-{
+void MainWindow::updateStatus() {
     if (!state_->hasProject_) {
         details_->setText(QStringLiteral("No project loaded"));
         return;
@@ -350,16 +340,14 @@ void MainWindow::updateStatus()
     details_->setText(text);
 }
 
-void MainWindow::updateClipboardWidget()
-{
+void MainWindow::updateClipboardWidget() {
     if (clipboardWidget_ == nullptr) {
         return;
     }
     clipboardWidget_->setClipboard(state_->clipboard());
 }
 
-void MainWindow::updateColorPaletteWidget()
-{
+void MainWindow::updateColorPaletteWidget() {
     if (colorPalette_ == nullptr || state_ == nullptr || !state_->hasProject()) {
         if (colorPalette_ != nullptr) {
             colorPalette_->setSwatches(nullptr);
@@ -369,8 +357,7 @@ void MainWindow::updateColorPaletteWidget()
     colorPalette_->setSwatches(&state_->project_.colorSwatches);
 }
 
-void MainWindow::updateLastSelectedShapeDefaults()
-{
+void MainWindow::updateLastSelectedShapeDefaults() {
     const QVector<fh6::scene::Shape *> selected = state_->selectedLayers();
     if (selected.isEmpty() || selected.front() == nullptr) {
         return;
@@ -382,8 +369,7 @@ void MainWindow::updateLastSelectedShapeDefaults()
     haveLastSelectedShapeDefaults_ = true;
 }
 
-void MainWindow::updateSelectionFromTree()
-{
+void MainWindow::updateSelectionFromTree() {
     if (syncingSelection_) {
         return;
     }
@@ -410,8 +396,7 @@ void MainWindow::updateSelectionFromTree()
     }
 }
 
-void MainWindow::syncTreeSelectionFromIds()
-{
+void MainWindow::syncTreeSelectionFromIds() {
     if (tree_->selectionModel() == nullptr) {
         return;
     }
@@ -483,8 +468,7 @@ void MainWindow::syncTreeSelectionFromIds()
     }
 }
 
-void MainWindow::revealTreeIndex(const QModelIndex &index)
-{
+void MainWindow::revealTreeIndex(const QModelIndex &index) {
     if (!index.isValid()) {
         return;
     }
@@ -514,8 +498,7 @@ void MainWindow::revealTreeIndex(const QModelIndex &index)
     tree_->scrollTo(index, QAbstractItemView::PositionAtCenter);
 }
 
-QVector<QString> MainWindow::selectedEntryIds() const
-{
+QVector<QString> MainWindow::selectedEntryIds() const {
     QVector<QString> ids;
     QSet<QString> seen;
     if (tree_ != nullptr && tree_->selectionModel() != nullptr) {
@@ -539,8 +522,7 @@ QVector<QString> MainWindow::selectedEntryIds() const
     return ids;
 }
 
-bool MainWindow::copySelectionToClipboard()
-{
+bool MainWindow::copySelectionToClipboard() {
     if (!state_->hasProject()) {
         return false;
     }
@@ -556,8 +538,7 @@ bool MainWindow::copySelectionToClipboard()
     return true;
 }
 
-bool MainWindow::ensureProjectForInsertion()
-{
+bool MainWindow::ensureProjectForInsertion() {
     if (state_->hasProject_) {
         return true;
     }
@@ -581,13 +562,11 @@ bool MainWindow::ensureProjectForInsertion()
     return true;
 }
 
-QStringList MainWindow::idsForIndex(const QModelIndex &index) const
-{
+QStringList MainWindow::idsForIndex(const QModelIndex &index) const {
     return index.data(LayerTreeModel::LeafIdsRole).toStringList();
 }
 
-QSet<QString> MainWindow::existingLayerIds(const QSet<QString> &ids) const
-{
+QSet<QString> MainWindow::existingLayerIds(const QSet<QString> &ids) const {
     QSet<QString> existing;
     if (!state_->hasProject_) {
         return existing;
@@ -596,8 +575,7 @@ QSet<QString> MainWindow::existingLayerIds(const QSet<QString> &ids) const
     return existing;
 }
 
-void MainWindow::setTargetCarDialog()
-{
+void MainWindow::setTargetCarDialog() {
     if (!state_->hasProject_ || !state_->project_.isLivery) {
         QMessageBox::information(this, QStringLiteral("Set Target Car"),
                                  QStringLiteral("Open a livery project to change its target car."));
@@ -621,8 +599,7 @@ void MainWindow::setTargetCarDialog()
     maybeAutoLoadCarForProject(true);
 }
 
-void MainWindow::setProjectNameDialog()
-{
+void MainWindow::setProjectNameDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Project Name"),
                                  QStringLiteral("Open a project to change its name."));
@@ -657,8 +634,7 @@ void MainWindow::setProjectNameDialog()
     statusBar()->showMessage(QStringLiteral("Project name updated"), 5000);
 }
 
-void MainWindow::setCreatorNameDialog()
-{
+void MainWindow::setCreatorNameDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Creator Name"),
                                  QStringLiteral("Open a project to change its creator."));

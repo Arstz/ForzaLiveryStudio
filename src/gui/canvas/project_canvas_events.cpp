@@ -7,17 +7,16 @@ namespace gui {
 using namespace pc_detail;
 
 
-void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers modifiers)
-{
+void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers modifiers) {
     if (tool_ == QStringLiteral("pen")) {
-        if (penFillRunning_) {
+        if (pen_.fillRunning) {
             return;
         }
         refreshPenInteractionHint(point, modifiers);
         return;
     }
     if (tool_ == QStringLiteral("lining")) {
-        if (liningFillRunning_) {
+        if (lining_.fillRunning) {
             return;
         }
         refreshLiningInteractionHint(point, modifiers);
@@ -41,8 +40,7 @@ void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers mod
     update();
 }
 
-void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
-{
+void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers) {
     if (project_ == nullptr) {
         return;
     }
@@ -50,7 +48,7 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
         ? state_->selectedLayerIds()
         : QSet<QString>{};
     for (const HitEntry &entry : hitEntries()) {
-        if (marqueeRect_.contains(entry.screenBounds.center())) {
+        if (drag_.marqueeRect.contains(entry.screenBounds.center())) {
             ids.insert(entry.layerId);
         }
     }
@@ -59,7 +57,7 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
         forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &) {
             if (guide.visible) {
                 const QRectF bounds = screenQuad(world, sceneLocalRect(guide, geometry_)).boundingRect();
-                if (marqueeRect_.contains(bounds.center())) {
+                if (drag_.marqueeRect.contains(bounds.center())) {
                     guideIds.insert(guide.id);
                 }
             }
@@ -69,29 +67,27 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
     }
 }
 
-ProjectCanvas::GuidelineOrientation ProjectCanvas::rulerAt(const QPointF &point) const
-{
-    if (point.x() >= RulerExtent && point.x() < width()
-        && point.y() >= 0.0 && point.y() < RulerExtent) {
+ProjectCanvas::GuidelineOrientation ProjectCanvas::rulerAt(const QPointF &point) const {
+    if (point.x() >= kRulerExtent && point.x() < width()
+        && point.y() >= 0.0 && point.y() < kRulerExtent) {
         return GuidelineOrientation::Vertical;
     }
-    if (point.x() >= 0.0 && point.x() < RulerExtent
-        && point.y() >= RulerExtent && point.y() < height()) {
+    if (point.x() >= 0.0 && point.x() < kRulerExtent
+        && point.y() >= kRulerExtent && point.y() < height()) {
         return GuidelineOrientation::Horizontal;
     }
     return GuidelineOrientation::None;
 }
 
-int ProjectCanvas::guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const
-{
-    if (!guidelinesVisible_ || project_ == nullptr || orientation == GuidelineOrientation::None) {
+int ProjectCanvas::guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const {
+    if (!guidelines_.visible || project_ == nullptr || orientation == GuidelineOrientation::None) {
         return -1;
     }
     const QVector<double> &guidelines = orientation == GuidelineOrientation::Vertical
         ? project_->verticalGuidelines
         : project_->horizontalGuidelines;
     int closestIndex = -1;
-    double closestDistance = GuidelineHitRadius + 1.0;
+    double closestDistance = kGuidelineHitRadius + 1.0;
     for (int index = 0; index < guidelines.size(); ++index) {
         const QPointF screen = worldToScreen(QPointF(
             orientation == GuidelineOrientation::Vertical ? guidelines[index] : 0.0,
@@ -99,7 +95,7 @@ int ProjectCanvas::guidelineAtRuler(const QPointF &point, GuidelineOrientation o
         const double distance = orientation == GuidelineOrientation::Vertical
             ? std::abs(screen.x() - point.x())
             : std::abs(screen.y() - point.y());
-        if (distance <= GuidelineHitRadius && distance < closestDistance) {
+        if (distance <= kGuidelineHitRadius && distance < closestDistance) {
             closestDistance = distance;
             closestIndex = index;
         }
@@ -107,32 +103,30 @@ int ProjectCanvas::guidelineAtRuler(const QPointF &point, GuidelineOrientation o
     return closestIndex;
 }
 
-double ProjectCanvas::guidelineCoordinateAt(const QPointF &point, GuidelineOrientation orientation) const
-{
+double ProjectCanvas::guidelineCoordinateAt(const QPointF &point, GuidelineOrientation orientation) const {
     const QPointF world = screenToWorld(point);
     return orientation == GuidelineOrientation::Vertical ? world.x() : world.y();
 }
 
-bool ProjectCanvas::handleRulerPress(QMouseEvent *event)
-{
+bool ProjectCanvas::handleRulerPress(QMouseEvent *event) {
     const GuidelineOrientation orientation = rulerAt(event->position());
     if (project_ == nullptr) {
         return false;
     }
     if (orientation == GuidelineOrientation::None) {
-        const bool corner = event->position().x() >= 0.0 && event->position().x() < RulerExtent
-            && event->position().y() >= 0.0 && event->position().y() < RulerExtent;
+        const bool corner = event->position().x() >= 0.0 && event->position().x() < kRulerExtent
+            && event->position().y() >= 0.0 && event->position().y() < kRulerExtent;
         if (!corner || (event->button() != Qt::LeftButton && event->button() != Qt::RightButton)) {
             return false;
         }
-        rulerPressActive_ = event->button() == Qt::LeftButton;
+        guidelines_.rulerPressActive = event->button() == Qt::LeftButton;
         event->accept();
         return true;
     }
 
     const int guidelineIndex = guidelineAtRuler(event->position(), orientation);
     if (event->button() == Qt::RightButton) {
-        if (!guidelinesLocked_ && guidelineIndex >= 0) {
+        if (!guidelines_.locked && guidelineIndex >= 0) {
             if (state_ != nullptr) {
                 state_->beginProjectEdit();
             }
@@ -151,9 +145,9 @@ bool ProjectCanvas::handleRulerPress(QMouseEvent *event)
     if (event->button() != Qt::LeftButton) {
         return false;
     }
-    rulerPressActive_ = true;
+    guidelines_.rulerPressActive = true;
 
-    if ((event->modifiers() & Qt::AltModifier) && guidelinesVisible_ && !guidelinesLocked_) {
+    if ((event->modifiers() & Qt::AltModifier) && guidelines_.visible && !guidelines_.locked) {
         if (state_ != nullptr) {
             state_->beginProjectEdit();
         }
@@ -169,32 +163,31 @@ bool ProjectCanvas::handleRulerPress(QMouseEvent *event)
         return true;
     }
 
-    if (!guidelinesLocked_ && guidelineIndex >= 0) {
+    if (!guidelines_.locked && guidelineIndex >= 0) {
         if (state_ != nullptr) {
             state_->beginProjectEdit();
         }
-        draggedGuidelineOrientation_ = orientation;
-        draggedGuidelineIndex_ = guidelineIndex;
+        guidelines_.draggedOrientation = orientation;
+        guidelines_.draggedIndex = guidelineIndex;
         updateCursorForPoint(event->position());
     }
     event->accept();
     return true;
 }
 
-void ProjectCanvas::mousePressEvent(QMouseEvent *event)
-{
+void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
     setFocus();
     updateViewTransform();
     if (handleRulerPress(event)) {
         return;
     }
-    dragStartScreen_ = event->position();
-    dragLastScreen_ = event->position();
-    dragStartWorld_ = screenToWorld(dragStartScreen_);
-    dragStartSelectionBounds_ = selectedScreenBounds();
+    drag_.startScreen = event->position();
+    drag_.lastScreen = event->position();
+    drag_.startWorld = screenToWorld(drag_.startScreen);
+    drag_.startSelectionBounds = selectedScreenBounds();
 
     if (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && spaceDown_)) {
-        dragMode_ = DragMode::Pan;
+        drag_.mode = DragMode::Pan;
         updateCursorForPoint(event->position());
         event->accept();
         return;
@@ -235,13 +228,13 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
             } else {
                 state_->setSelectionIds({target}, {});
             }
-            dragStartSelectionBounds_ = selectedScreenBounds();
+            drag_.startSelectionBounds = selectedScreenBounds();
             return true;
         }
         const QString guideTarget = guideAtScreenPoint(event->position());
         if (!guideTarget.isEmpty()) {
             state_->setSelectionIds({}, {guideTarget});
-            dragStartSelectionBounds_ = selectedScreenBounds();
+            drag_.startSelectionBounds = selectedScreenBounds();
             return true;
         }
         state_->clearSelection();
@@ -249,7 +242,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
     };
 
     if (tool_ == QStringLiteral("move")
-        && moveToolAutoSelect_
+        && options_.moveToolAutoSelect
         && !selectedScreenBounds().contains(event->position())) {
         if (!selectMoveAutoTarget()) {
             event->accept();
@@ -258,7 +251,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
     }
 
     if (tool_ == QStringLiteral("move")
-        && !moveToolAutoSelect_
+        && !options_.moveToolAutoSelect
         && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())
         && !selectedScreenBounds().contains(event->position())) {
         event->accept();
@@ -271,7 +264,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         const QString target = selectTargetAtScreenPoint(event->position(), {});
         if (!target.isEmpty()) {
             state_->selectLayerAtPoint(target, {});
-            dragStartSelectionBounds_ = selectedScreenBounds();
+            drag_.startSelectionBounds = selectedScreenBounds();
         }
     }
 
@@ -288,24 +281,24 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         } else {
             state_->setSelectionIds({}, {guideTarget});
         }
-        dragStartSelectionBounds_ = selectedScreenBounds();
+        drag_.startSelectionBounds = selectedScreenBounds();
     }
     if (state_->selectedLayerIds().isEmpty() && state_->selectedGuideLayerIds().isEmpty()) {
         QOpenGLWidget::mousePressEvent(event);
         return;
     }
 
-    dragStartBox_ = currentSelectionBox();
-    const QPointF boxCenterWorld = dragStartBox_.valid
-        ? dragStartBox_.localToWorld.map(dragStartBox_.localRect.center())
-        : screenToWorld(dragStartSelectionBounds_.center());
+    drag_.startBox = currentSelectionBox();
+    const QPointF boxCenterWorld = drag_.startBox.valid
+        ? drag_.startBox.localToWorld.map(drag_.startBox.localRect.center())
+        : screenToWorld(drag_.startSelectionBounds.center());
     beginToolDrag(event->position(), boxCenterWorld);
 
-    if (dragMode_ != DragMode::None) {
-        dragDuplicated_ = false;
-        dragUsesProjectEdit_ = (event->modifiers() & Qt::AltModifier)
-            && (dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove);
-        if (dragUsesProjectEdit_) {
+    if (drag_.mode != DragMode::None) {
+        drag_.duplicated = false;
+        drag_.usesProjectEdit = (event->modifiers() & Qt::AltModifier)
+            && (drag_.mode == DragMode::Move || drag_.mode == DragMode::TransformMove);
+        if (drag_.usesProjectEdit) {
             state_->beginProjectEdit();
             const QVector<QString> entries = state_->selectedTransformTargetIds();
             QSet<QString> newLayerSel;
@@ -313,11 +306,11 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
             if (state_->duplicateEntriesInPlace(entries, &newLayerSel, &newGuideSel)
                 && (!newLayerSel.isEmpty() || !newGuideSel.isEmpty())) {
                 state_->setSelectionIds(newLayerSel, newGuideSel);
-                dragDuplicated_ = true;
+                drag_.duplicated = true;
             }
         }
         captureDragStarts();
-        if (!dragUsesProjectEdit_) {
+        if (!drag_.usesProjectEdit) {
             state_->beginTransformCommand(dragTransformTargetIds());
         }
         updateCursorForPoint(event->position());
@@ -327,27 +320,26 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
     QOpenGLWidget::mousePressEvent(event);
 }
 
-void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
-{
-    if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
+    if (guidelines_.draggedOrientation != GuidelineOrientation::None) {
         updateViewTransform();
-        QVector<double> &guidelines = draggedGuidelineOrientation_ == GuidelineOrientation::Vertical
+        QVector<double> &guidelines = guidelines_.draggedOrientation == GuidelineOrientation::Vertical
             ? project_->verticalGuidelines
             : project_->horizontalGuidelines;
-        if (draggedGuidelineIndex_ >= 0 && draggedGuidelineIndex_ < guidelines.size()) {
-            guidelines[draggedGuidelineIndex_] =
-                guidelineCoordinateAt(event->position(), draggedGuidelineOrientation_);
+        if (guidelines_.draggedIndex >= 0 && guidelines_.draggedIndex < guidelines.size()) {
+            guidelines[guidelines_.draggedIndex] =
+                guidelineCoordinateAt(event->position(), guidelines_.draggedOrientation);
             update();
         }
         updateCursorForPoint(event->position());
         event->accept();
         return;
     }
-    if (dragMode_ == DragMode::Marquee) {
+    if (drag_.mode == DragMode::Marquee) {
         updateCursorForPoint(event->position());
-        const QRectF nextRect = QRectF(dragStartScreen_, event->position()).normalized();
-        if (nextRect != marqueeRect_) {
-            marqueeRect_ = nextRect;
+        const QRectF nextRect = QRectF(drag_.startScreen, event->position()).normalized();
+        if (nextRect != drag_.marqueeRect) {
+            drag_.marqueeRect = nextRect;
             update();
         }
         event->accept();
@@ -355,32 +347,32 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
     }
 
     updateViewTransform();
-    if (dragMode_ == DragMode::Pan) {
+    if (drag_.mode == DragMode::Pan) {
         updateCursorForPoint(event->position());
-        const QPointF delta = event->position() - dragLastScreen_;
-        pan_ += delta;
-        dragLastScreen_ = event->position();
+        const QPointF delta = event->position() - drag_.lastScreen;
+        camera_.adjustPan(delta);
+        drag_.lastScreen = event->position();
         invalidateSceneCache();
         update();
         event->accept();
         return;
     }
-    if (dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove) {
+    if (drag_.mode == DragMode::Move || drag_.mode == DragMode::TransformMove) {
         applyMoveDrag(event->position(), event->modifiers());
         event->accept();
         return;
     }
-    if (dragMode_ == DragMode::Scale) {
+    if (drag_.mode == DragMode::Scale) {
         applyScaleDrag(event->position(), event->modifiers());
         event->accept();
         return;
     }
-    if (dragMode_ == DragMode::Skew) {
+    if (drag_.mode == DragMode::Skew) {
         applySkewDrag(event->position());
         event->accept();
         return;
     }
-    if (dragMode_ == DragMode::Rotate) {
+    if (drag_.mode == DragMode::Rotate) {
         applyRotateDrag(event->position(), event->modifiers());
         event->accept();
         return;
@@ -393,23 +385,22 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
     QOpenGLWidget::mouseMoveEvent(event);
 }
 
-void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
-{
+void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton
-        && draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        && guidelines_.draggedOrientation != GuidelineOrientation::None) {
         if (state_ != nullptr) {
             state_->commitProjectEdit();
         }
-        draggedGuidelineOrientation_ = GuidelineOrientation::None;
-        draggedGuidelineIndex_ = -1;
-        rulerPressActive_ = false;
+        guidelines_.draggedOrientation = GuidelineOrientation::None;
+        guidelines_.draggedIndex = -1;
+        guidelines_.rulerPressActive = false;
         updateCursorForPoint(event->position());
         update();
         event->accept();
         return;
     }
-    if (event->button() == Qt::LeftButton && rulerPressActive_) {
-        rulerPressActive_ = false;
+    if (event->button() == Qt::LeftButton && guidelines_.rulerPressActive) {
+        guidelines_.rulerPressActive = false;
         updateCursorForPoint(event->position());
         event->accept();
         return;
@@ -419,13 +410,13 @@ void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
     }
 
     updateViewTransform();
-    if (dragMode_ == DragMode::Pan && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
-        dragMode_ = DragMode::None;
+    if (drag_.mode == DragMode::Pan && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
+        drag_.mode = DragMode::None;
         updateCursorForPoint(event->position());
         event->accept();
         return;
     }
-    if (event->button() == Qt::LeftButton && dragMode_ != DragMode::None) {
+    if (event->button() == Qt::LeftButton && drag_.mode != DragMode::None) {
         finishDrag();
         event->accept();
         return;
@@ -433,8 +424,7 @@ void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
     QOpenGLWidget::mouseReleaseEvent(event);
 }
 
-void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event)
-{
+void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event) {
     updateViewTransform();
     if (activeTool_ != nullptr && activeTool_->handleDoubleClick(event)) {
         return;
@@ -442,8 +432,7 @@ void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event)
     QOpenGLWidget::mouseDoubleClickEvent(event);
 }
 
-void ProjectCanvas::wheelEvent(QWheelEvent *event)
-{
+void ProjectCanvas::wheelEvent(QWheelEvent *event) {
     updateViewTransform();
     const bool editToolZoom = (event->modifiers() & Qt::AltModifier)
         && (tool_ == QStringLiteral("bucket") || tool_ == QStringLiteral("lining"));
@@ -458,16 +447,15 @@ void ProjectCanvas::wheelEvent(QWheelEvent *event)
         return;
     }
     const double factor = notch > 0 ? 1.15 : 1.0 / 1.15;
-    zoom_ = std::clamp(zoom_ * factor, 0.1, 100.0);
+    camera_.setZoom(std::clamp(camera_.zoom() * factor, 0.1, 100.0));
     updateViewTransform();
-    pan_ += event->position() - worldToScreen(anchorWorld);
+    camera_.adjustPan(event->position() - worldToScreen(anchorWorld));
     invalidateSceneCache();
     update();
     event->accept();
 }
 
-void ProjectCanvas::keyPressEvent(QKeyEvent *event)
-{
+void ProjectCanvas::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         spaceDown_ = true;
         updateCursorForPoint(mapFromGlobal(QCursor::pos()));
@@ -475,11 +463,11 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (tool_ == QStringLiteral("pen") && event->key() == Qt::Key_Backspace
-        && !penFillRunning_ && !penLooped_) {
-        if (!penPoints_.isEmpty()) {
-            penPoints_.removeLast();
-            penCrossings_.clear();
-            penError_.clear();
+        && !pen_.fillRunning && !pen_.closed) {
+        if (!pen_.points.isEmpty()) {
+            pen_.points.removeLast();
+            pen_.crossings.clear();
+            pen_.error.clear();
             clearCursorHint();
             update();
         }
@@ -492,10 +480,10 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (tool_ == QStringLiteral("lining") && event->key() == Qt::Key_Backspace
-        && !liningFillRunning_ && !liningComplete_) {
-        if (!liningPoints_.isEmpty()) {
-            liningPoints_.removeLast();
-            liningError_.clear();
+        && !lining_.fillRunning && !lining_.closed) {
+        if (!lining_.points.isEmpty()) {
+            lining_.points.removeLast();
+            lining_.error.clear();
             clearCursorHint();
             update();
         }
@@ -508,13 +496,13 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         return;
     }
     if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
-        && tool_ == QStringLiteral("lining") && liningComplete_ && !liningFillRunning_) {
+        && tool_ == QStringLiteral("lining") && lining_.closed && !lining_.fillRunning) {
         requestLiningFill();
         event->accept();
         return;
     }
     if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
-        && tool_ == QStringLiteral("pen") && penLooped_ && !penFillRunning_) {
+        && tool_ == QStringLiteral("pen") && pen_.closed && !pen_.fillRunning) {
         closePenPath();
         event->accept();
         return;
@@ -536,20 +524,20 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         return;
     }
     if (event->key() == Qt::Key_Escape) {
-        if (draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        if (guidelines_.draggedOrientation != GuidelineOrientation::None) {
             if (state_ != nullptr) {
                 state_->cancelProjectEdit();
             }
-            draggedGuidelineOrientation_ = GuidelineOrientation::None;
-            draggedGuidelineIndex_ = -1;
-            rulerPressActive_ = false;
+            guidelines_.draggedOrientation = GuidelineOrientation::None;
+            guidelines_.draggedIndex = -1;
+            guidelines_.rulerPressActive = false;
             updateCursorForPoint(mapFromGlobal(QCursor::pos()));
             update();
             event->accept();
             return;
         }
-        if (rulerPressActive_) {
-            rulerPressActive_ = false;
+        if (guidelines_.rulerPressActive) {
+            guidelines_.rulerPressActive = false;
             updateCursorForPoint(mapFromGlobal(QCursor::pos()));
             event->accept();
             return;
@@ -574,9 +562,9 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         return;
     }
     const bool nudgeTool = tool_ == QStringLiteral("move") || tool_ == QStringLiteral("transform");
-    if (nudgeTool && dragMode_ == DragMode::None) {
+    if (nudgeTool && drag_.mode == DragMode::None) {
         QPointF delta;
-        const double step = (event->modifiers() & Qt::ShiftModifier) ? nudgeShiftStep_ : nudgeStep_;
+        const double step = (event->modifiers() & Qt::ShiftModifier) ? options_.nudgeShiftStep : options_.nudgeStep;
         switch (event->key()) {
         case Qt::Key_Left:
             delta = QPointF(-step, 0.0);
@@ -601,18 +589,16 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     QOpenGLWidget::keyPressEvent(event);
 }
 
-bool ProjectCanvas::focusNextPrevChild(bool next)
-{
+bool ProjectCanvas::focusNextPrevChild(bool next) {
     Q_UNUSED(next);
     return false;
 }
 
-void ProjectCanvas::keyReleaseEvent(QKeyEvent *event)
-{
+void ProjectCanvas::keyReleaseEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         spaceDown_ = false;
-        if (dragMode_ == DragMode::Pan) {
-            dragMode_ = DragMode::None;
+        if (drag_.mode == DragMode::Pan) {
+            drag_.mode = DragMode::None;
         }
         updateCursorForPoint(mapFromGlobal(QCursor::pos()));
         event->accept();
@@ -621,8 +607,7 @@ void ProjectCanvas::keyReleaseEvent(QKeyEvent *event)
     QOpenGLWidget::keyReleaseEvent(event);
 }
 
-void ProjectCanvas::leaveEvent(QEvent *event)
-{
+void ProjectCanvas::leaveEvent(QEvent *event) {
     hoverLayerId_.clear();
     hoverPolygon_ = {};
     clearCursorHint();

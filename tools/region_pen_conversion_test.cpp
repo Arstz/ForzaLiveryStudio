@@ -708,7 +708,7 @@ void smallRegionMergesIntoClosestColorNeighbor(TestContext *test)
     image.setPixelColor(4, 2, QColor(216, 82, 0));
 
     gui::RegionExtractionParams params;
-    params.colorCount = 3;
+    params.maxColorCount = 3;
     params.colorMergeDistance = 0.0;
     params.colorFrequencyFloor = 0.0;
     params.minRegionArea = 1;

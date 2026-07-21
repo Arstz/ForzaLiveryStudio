@@ -6,8 +6,7 @@
 namespace gui {
 namespace {
 
-bool matchesSeed(QRgb pixel, QRgb seed, int tolerance)
-{
+bool matchesSeed(QRgb pixel, QRgb seed, int tolerance) {
     if (qAlpha(pixel) == 0) {
         return false;
     }
@@ -21,8 +20,7 @@ bool matchesSeed(QRgb pixel, QRgb seed, int tolerance)
 
 BucketFillResult floodGuideRegion(const QImage &source,
                                   const QPoint &seed,
-                                  int tolerance)
-{
+                                  int tolerance) {
     BucketFillResult result;
     if (source.isNull()) {
         result.error = QStringLiteral("The selected guide layer has no image");
@@ -114,8 +112,7 @@ BucketFillResult floodGuideRegion(const QImage &source,
     return result;
 }
 
-QImage bucketMaskPreview(const BucketFillResult &fill, const QColor &color)
-{
+QImage bucketMaskPreview(const BucketFillResult &fill, const QColor &color) {
     if (!fill.valid()) {
         return {};
     }

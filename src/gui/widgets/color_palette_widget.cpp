@@ -13,8 +13,7 @@ namespace {
 constexpr int SwatchSize = 28;
 constexpr int SwatchesPerRow = 6;
 
-QString swatchStyle(const QColor &color)
-{
+QString swatchStyle(const QColor &color) {
     const QColor text = color.lightness() < 128 ? QColor(255, 255, 255) : QColor(32, 34, 37);
     return QStringLiteral("QPushButton { background-color: rgba(%1,%2,%3,%4); color: %5; border: 1px solid palette(mid); }")
         .arg(color.red())
@@ -30,8 +29,7 @@ public:
     std::function<void()> middleClickCallback;
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override
-    {
+    void mousePressEvent(QMouseEvent *event) override {
         if (event->button() == Qt::MiddleButton && middleClickCallback != nullptr) {
             middleClickCallback();
             event->accept();
@@ -44,8 +42,7 @@ protected:
 } // namespace
 
 ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
-    : QWidget(parent)
-{
+    : QWidget(parent) {
     grid_ = new QGridLayout(this);
     grid_->setContentsMargins(6, 6, 6, 6);
     grid_->setSpacing(6);
@@ -58,30 +55,25 @@ ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
     rebuild();
 }
 
-void ColorPaletteWidget::setSwatches(QVector<Color> *swatches)
-{
+void ColorPaletteWidget::setSwatches(QVector<Color> *swatches) {
     swatches_ = swatches;
     rebuild();
 }
 
-void ColorPaletteWidget::setCurrentColorProvider(std::function<std::optional<Color>()> provider)
-{
+void ColorPaletteWidget::setCurrentColorProvider(std::function<std::optional<Color>()> provider) {
     currentColorProvider_ = std::move(provider);
 }
 
-void ColorPaletteWidget::setApplyColorCallback(std::function<void(const Color &)> callback)
-{
+void ColorPaletteWidget::setApplyColorCallback(std::function<void(const Color &)> callback) {
     applyColorCallback_ = std::move(callback);
 }
 
-void ColorPaletteWidget::setEditCallbacks(std::function<void()> beginEdit, std::function<void()> commitEdit)
-{
+void ColorPaletteWidget::setEditCallbacks(std::function<void()> beginEdit, std::function<void()> commitEdit) {
     beginEditCallback_ = std::move(beginEdit);
     commitEditCallback_ = std::move(commitEdit);
 }
 
-bool ColorPaletteWidget::addColor(const QColor &color)
-{
+bool ColorPaletteWidget::addColor(const QColor &color) {
     if (!color.isValid() || swatches_ == nullptr) {
         return false;
     }
@@ -100,13 +92,11 @@ bool ColorPaletteWidget::addColor(const QColor &color)
     return true;
 }
 
-void ColorPaletteWidget::refreshTheme()
-{
+void ColorPaletteWidget::refreshTheme() {
     rebuild();
 }
 
-void ColorPaletteWidget::rebuild()
-{
+void ColorPaletteWidget::rebuild() {
     while (QLayoutItem *item = grid_->takeAt(0)) {
         if (QWidget *widget = item->widget()) {
             if (widget != addButton_) {
@@ -152,8 +142,7 @@ void ColorPaletteWidget::rebuild()
     grid_->setColumnStretch(SwatchesPerRow, 1);
 }
 
-void ColorPaletteWidget::addCurrentColor()
-{
+void ColorPaletteWidget::addCurrentColor() {
     if (currentColorProvider_ == nullptr) {
         return;
     }
@@ -164,8 +153,7 @@ void ColorPaletteWidget::addCurrentColor()
     addColor(toQColor(color.value()));
 }
 
-void ColorPaletteWidget::removeSwatch(int index)
-{
+void ColorPaletteWidget::removeSwatch(int index) {
     if (swatches_ == nullptr || index < 0 || index >= swatches_->size()) {
         return;
     }
@@ -179,13 +167,11 @@ void ColorPaletteWidget::removeSwatch(int index)
     rebuild();
 }
 
-QColor ColorPaletteWidget::toQColor(const Color &color)
-{
+QColor ColorPaletteWidget::toQColor(const Color &color) {
     return QColor(color[ColorByteRed], color[ColorByteGreen], color[ColorByteBlue], color[ColorByteAlpha]);
 }
 
-ColorPaletteWidget::Color ColorPaletteWidget::fromQColor(const QColor &color)
-{
+ColorPaletteWidget::Color ColorPaletteWidget::fromQColor(const QColor &color) {
     return {static_cast<quint8>(color.blue()),
             static_cast<quint8>(color.green()),
             static_cast<quint8>(color.red()),

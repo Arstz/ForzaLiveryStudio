@@ -10,8 +10,6 @@ namespace {
 constexpr double kGeometryEpsilon = 1e-9;
 constexpr int kBoundarySamplesPerCurve = 32;
 
-// One boundary op of a subpath: a straight segment to a corner (Line) or a
-// cubic bezier (Cubic, with two controls and an endpoint).
 struct Op {
     enum Kind { Line, Cubic } kind = Line;
     QPointF control1;
@@ -30,8 +28,7 @@ struct ConvertiblePoint {
     bool removable = false;
 };
 
-double signedArea(const QPolygonF &polygon)
-{
+double signedArea(const QPolygonF &polygon) {
     double result = 0.0;
     for (int i = 0; i < polygon.size(); ++i) {
         const QPointF &a = polygon[i];
@@ -41,8 +38,7 @@ double signedArea(const QPolygonF &polygon)
     return result * 0.5;
 }
 
-QPointF cubicPoint(const QPointF &p0, const QPointF &c1, const QPointF &c2, const QPointF &p3, double t)
-{
+QPointF cubicPoint(const QPointF &p0, const QPointF &c1, const QPointF &c2, const QPointF &p3, double t) {
     const double u = 1.0 - t;
     return p0 * (u * u * u)
         + c1 * (3.0 * u * u * t)
@@ -50,9 +46,7 @@ QPointF cubicPoint(const QPointF &p0, const QPointF &c1, const QPointF &c2, cons
         + p3 * (t * t * t);
 }
 
-// Split a QPainterPath into subpaths, preserving Line/Cubic element types.
-QVector<Subpath> toSubpaths(const QPainterPath &path, double closureTolerance = 1e-6)
-{
+QVector<Subpath> toSubpaths(const QPainterPath &path, double closureTolerance = 1e-6) {
     QVector<Subpath> subpaths;
     Subpath current;
     bool have = false;
@@ -97,8 +91,7 @@ QVector<Subpath> toSubpaths(const QPainterPath &path, double closureTolerance = 
     return subpaths;
 }
 
-QPolygonF flattenSubpath(const Subpath &subpath, int curveSamples = 8)
-{
+QPolygonF flattenSubpath(const Subpath &subpath, int curveSamples = 8) {
     QPolygonF polygon;
     polygon.push_back(subpath.start);
     QPointF previous = subpath.start;
@@ -119,8 +112,7 @@ QPolygonF flattenSubpath(const Subpath &subpath, int curveSamples = 8)
     return polygon;
 }
 
-double perpendicularDistance(const QPointF &point, const QPointF &a, const QPointF &b)
-{
+double perpendicularDistance(const QPointF &point, const QPointF &a, const QPointF &b) {
     const QPointF ab = b - a;
     const double lengthSquared = ab.x() * ab.x() + ab.y() * ab.y();
     if (lengthSquared <= 1e-12) {
@@ -134,8 +126,7 @@ double perpendicularDistance(const QPointF &point, const QPointF &a, const QPoin
     return QLineF(point, projection).length();
 }
 
-double pointToClosedPolylineDistance(const QPointF &point, const QPolygonF &polyline)
-{
+double pointToClosedPolylineDistance(const QPointF &point, const QPolygonF &polyline) {
     if (polyline.isEmpty()) {
         return std::numeric_limits<double>::infinity();
     }
@@ -149,8 +140,7 @@ double pointToClosedPolylineDistance(const QPointF &point, const QPolygonF &poly
     return best;
 }
 
-double boundaryDeviation(const QPolygonF &left, const QPolygonF &right)
-{
+double boundaryDeviation(const QPolygonF &left, const QPolygonF &right) {
     if (left.size() < 3 || right.size() < 3) {
         return std::numeric_limits<double>::infinity();
     }
@@ -164,8 +154,7 @@ double boundaryDeviation(const QPolygonF &left, const QPolygonF &right)
     return result;
 }
 
-QPolygonF flattenPenContour(const PenContour &contour, int curveSamples)
-{
+QPolygonF flattenPenContour(const PenContour &contour, int curveSamples) {
     QPolygonF polygon;
     if (contour.segments.isEmpty()) {
         return polygon;
@@ -198,8 +187,7 @@ struct SsimAccumulation {
 
 QImage renderContourMask(const QPolygonF &polygon,
                          const QRect &sourceRect,
-                         int supersample)
-{
+                         int supersample) {
     if (polygon.size() < 3 || sourceRect.isEmpty() || supersample < 1) {
         return {};
     }
@@ -233,8 +221,7 @@ QImage renderContourMask(const QPolygonF &polygon,
         .convertToFormat(QImage::Format_Grayscale8);
 }
 
-SsimAccumulation ssimAccumulation(const QImage &left, const QImage &right)
-{
+SsimAccumulation ssimAccumulation(const QImage &left, const QImage &right) {
     SsimAccumulation result;
     if (left.isNull() || right.isNull() || left.size() != right.size()) {
         return result;
@@ -363,8 +350,7 @@ SsimAccumulation ssimAccumulation(const QImage &left, const QImage &right)
 double contourDssim(const QPolygonF &baseline,
                     const QPolygonF &candidate,
                     const QSize &imageSize,
-                    int supersample)
-{
+                    int supersample) {
     if (baseline.size() < 3 || candidate.size() < 3
         || !imageSize.isValid() || imageSize.isEmpty()) {
         return 0.0;
@@ -394,8 +380,7 @@ double contourDssim(const QPolygonF &baseline,
     return (1.0 - std::clamp(similarity, -1.0, 1.0)) * 0.5;
 }
 
-QVector<PenPoint> penPoints(const QVector<ConvertiblePoint> &points)
-{
+QVector<PenPoint> penPoints(const QVector<ConvertiblePoint> &points) {
     QVector<PenPoint> result;
     result.reserve(points.size());
     for (const ConvertiblePoint &point : points) {
@@ -404,8 +389,7 @@ QVector<PenPoint> penPoints(const QVector<ConvertiblePoint> &points)
     return result;
 }
 
-double removalDisplacement(const QVector<ConvertiblePoint> &points, int index)
-{
+double removalDisplacement(const QVector<ConvertiblePoint> &points, int index) {
     if (points.size() < 3 || index < 0 || index >= points.size()
         || !points[index].removable
         || points[index].point.kind != PenPointKind::Hard) {
@@ -422,15 +406,13 @@ double removalDisplacement(const QVector<ConvertiblePoint> &points, int index)
     return QLineF(points[index].point.position, implied).length();
 }
 
-bool sameOrientation(double referenceArea, double candidateArea)
-{
+bool sameOrientation(double referenceArea, double candidateArea) {
     return (referenceArea > kGeometryEpsilon && candidateArea > kGeometryEpsilon)
         || (referenceArea < -kGeometryEpsilon && candidateArea < -kGeometryEpsilon);
 }
 
 QVector<ConvertiblePoint> initialPenPoints(const Subpath &subpath,
-                                           double closureTolerance)
-{
+                                           double closureTolerance) {
     QVector<ConvertiblePoint> points;
     if (subpath.ops.isEmpty()) {
         return points;
@@ -463,8 +445,7 @@ QVector<ConvertiblePoint> initialPenPoints(const Subpath &subpath,
     return points;
 }
 
-void protectCyclicSeam(QVector<ConvertiblePoint> *points)
-{
+void protectCyclicSeam(QVector<ConvertiblePoint> *points) {
     const bool hasProtectedHard = std::any_of(points->cbegin(),
                                               points->cend(),
                                               [](const ConvertiblePoint &point) {
@@ -494,8 +475,7 @@ struct OuterSelection {
 };
 
 OuterSelection selectClosedOuter(const QPainterPath &outline,
-                                 double closureTolerance)
-{
+                                 double closureTolerance) {
     OuterSelection result;
     const QVector<Subpath> subpaths = toSubpaths(outline, closureTolerance);
     if (subpaths.isEmpty()) {
@@ -546,10 +526,7 @@ OuterSelection selectClosedOuter(const QPainterPath &outline,
     return result;
 }
 
-// RDP on an open polyline [first, last] inclusive; appends kept points (except
-// the first) to `out`.
-void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QPolygonF &out)
-{
+void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QPolygonF &out) {
     double maxDistance = 0.0;
     int index = first;
     for (int i = first + 1; i < last; ++i) {
@@ -567,12 +544,9 @@ void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QP
     }
 }
 
-// Corridor RDP recursion: keep the chord when it is within epsilon OR when it
-// runs entirely through free (occluded) space, otherwise recurse.
 void rdpCorridorRecurse(const QPolygonF &points, int first, int last, double epsilon,
                         const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace,
-                        QPolygonF &out)
-{
+                        QPolygonF &out) {
     double maxDistance = 0.0;
     int index = first;
     for (int i = first + 1; i < last; ++i) {
@@ -592,10 +566,7 @@ void rdpCorridorRecurse(const QPolygonF &points, int first, int last, double eps
     }
 }
 
-// The flattened outer (largest-area) subpath of an outline, as a simple
-// polygon with any closing duplicate vertex removed. Empty on failure.
-QPolygonF largestFlattenedContour(const QPainterPath &outline)
-{
+QPolygonF largestFlattenedContour(const QPainterPath &outline) {
     const QVector<Subpath> subpaths = toSubpaths(outline);
     if (subpaths.isEmpty()) {
         return {};
@@ -624,8 +595,7 @@ QPolygonF largestFlattenedContour(const QPainterPath &outline)
 
 RegionPenConversionResult regionOutlineToPenPoints(
     const QPainterPath &outline,
-    const RegionPenConversionOptions &options)
-{
+    const RegionPenConversionOptions &options) {
     RegionPenConversionResult result;
     if (!std::isfinite(options.mergeTolerance) || options.mergeTolerance < 0.0
         || !std::isfinite(options.maximumDssim) || options.maximumDssim < 0.0
@@ -667,8 +637,6 @@ RegionPenConversionResult regionOutlineToPenPoints(
     const QPolygonF baselinePolygon =
         flattenPenContour(baseline, kBoundarySamplesPerCurve);
     const double referenceArea = signedArea(baselinePolygon);
-    // The exact Hausdorff-style diagnostic is quadratic. Keep it for ordinary
-    // contours, while DSSIM is the bounded quality gate for dense traces.
     constexpr qint64 kDeviationComparisonLimit = 2'000'000;
     const bool measureBaselineDeviation =
         static_cast<qint64>(outer.polygon.size()) * baselinePolygon.size()
@@ -702,9 +670,6 @@ RegionPenConversionResult regionOutlineToPenPoints(
             evaluated.valid = true;
             return evaluated;
         }
-        // buildPenContour rejects self-crossings. Because this model emits one
-        // closed contour, validity also preserves its one-component/no-hole
-        // topology; the signed-area check below preserves orientation.
         const PenContour contour = buildPenContour(penPoints(evaluated.points));
         if (!contour.valid()) {
             return evaluated;
@@ -733,9 +698,6 @@ RegionPenConversionResult regionOutlineToPenPoints(
 
     EvaluatedCandidate best = evaluate(options.mergeTolerance);
     if (!best.valid && options.mergeTolerance > 0.0) {
-        // Usually the recommended cap succeeds in one evaluation. If a contour
-        // would cross itself or exceed DSSIM, bisect toward the unchanged
-        // baseline and retain the strongest safe result found.
         double safeTolerance = 0.0;
         double unsafeTolerance = options.mergeTolerance;
         for (int step = 0; step < options.adaptiveSearchSteps; ++step) {
@@ -767,8 +729,7 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 QPolygonF *optimizedContour,
                                 RegionFillContourStats *contourStats,
                                 QVector<PenPoint> *optimizedPenPoints,
-                                const QSize &comparisonImageSize)
-{
+                                const QSize &comparisonImageSize) {
     PenFillResult result;
     if (optimizedContour != nullptr) {
         optimizedContour->clear();
@@ -801,10 +762,6 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
     bool usedBaselineRetry = false;
     if (!succeeded(result) && !result.cancelled
         && !(cancelled && cancelled()) && conversion.removedHardPoints > 0) {
-        // A small number of intricate contours fit poorly after adjacent cubic
-        // junctions are merged. Retry those through the same curve-aware Pen
-        // path with the unmerged Potrace controls before falling back to a dense
-        // flattened triangle mesh.
         RegionPenConversionOptions baselineOptions = conversionOptions;
         baselineOptions.mergeTolerance = 0.0;
         RegionPenConversionResult baseline =
@@ -855,13 +812,10 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
     return result;
 }
 
-QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon)
-{
+QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon) {
     if (epsilon <= 0.0 || polygon.size() <= 4) {
         return polygon;
     }
-    // Anchor the RDP at the two extreme (farthest-apart) vertices so the closed
-    // loop is split into two open chains, each simplified independently.
     int anchorA = 0;
     int anchorB = 0;
     double maxSpan = -1.0;
@@ -874,11 +828,9 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon)
     }
     Q_UNUSED(anchorA);
     QPolygonF chain = polygon;
-    // Reorder so the loop starts at vertex 0 and includes anchorB as a split.
     QPolygonF result;
     result.push_back(chain[0]);
     rdpRecurse(chain, 0, anchorB, epsilon, result);
-    // Second half: anchorB back around to the start (closing vertex == chain[0]).
     QPolygonF secondHalf;
     for (int i = anchorB; i < chain.size(); ++i) {
         secondHalf.push_back(chain[i]);
@@ -898,8 +850,7 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon)
 
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,
-    const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace)
-{
+    const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace) {
     if (polygon.size() <= 4) {
         return polygon;
     }
@@ -932,15 +883,13 @@ QPolygonF simplifyClosedPolygonCorridor(
     return result;
 }
 
-QPolygonF regionOuterContour(const QPainterPath &outline)
-{
+QPolygonF regionOuterContour(const QPainterPath &outline) {
     return largestFlattenedContour(outline);
 }
 
 PenFillResult fillPolygonMesh(const QPolygonF &polygon,
                               const PolygonMeshSources &sources,
-                              const std::function<bool()> &cancelled)
-{
+                              const std::function<bool()> &cancelled) {
     PenFillResult result;
     if (!sources.valid()) {
         result.error = QStringLiteral("Square/Triangle mesh geometry is unavailable");
@@ -975,8 +924,7 @@ PenFillResult fillPolygonMesh(const QPolygonF &polygon,
 PenFillResult fillRegionOutlineMesh(const QPainterPath &outline,
                                     const PolygonMeshSources &sources,
                                     double simplifyEpsilon,
-                                    const std::function<bool()> &cancelled)
-{
+                                    const std::function<bool()> &cancelled) {
     QPolygonF polygon = largestFlattenedContour(outline);
     if (polygon.size() >= 3) {
         polygon = simplifyClosedPolygon(polygon, simplifyEpsilon);

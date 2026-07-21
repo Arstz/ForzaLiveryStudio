@@ -13,8 +13,7 @@ namespace {
 
 constexpr int kMaxDirectChildren = 0xffff;
 
-QByteArray defaultPrefix()
-{
+QByteArray defaultPrefix() {
     static constexpr char bytes[] = {
         'g', 'y', 'v', 'l',
         '\x01', '\x00', '\x00', '\x00',
@@ -40,8 +39,7 @@ struct ExportShape {
     bool mask = false;
 };
 
-ExportShape exportShapeFromScene(const scene::Shape &shape)
-{
+ExportShape exportShapeFromScene(const scene::Shape &shape) {
     const scene::Transform2D world = decomposeTransform2D(shape.worldMatrix());
     ExportShape out;
     out.shapeId = shape.shapeId;
@@ -57,8 +55,7 @@ ExportShape exportShapeFromScene(const scene::Shape &shape)
     return out;
 }
 
-void collectVisibleShapes(const scene::Layer &node, QVector<ExportShape> &out)
-{
+void collectVisibleShapes(const scene::Layer &node, QVector<ExportShape> &out) {
     if (node.kind() == scene::LayerKind::Group) {
         const auto &group = static_cast<const scene::Group &>(node);
         if (!group.visible) {
@@ -81,8 +78,7 @@ using detail::appendLeU16;
 
 namespace {
 
-QByteArray packShape(const ExportShape &layer, bool maskRecord)
-{
+QByteArray packShape(const ExportShape &layer, bool maskRecord) {
     QByteArray out;
     out.reserve(32);
     // Mask markers apply to the preceding shape.
@@ -104,8 +100,7 @@ QByteArray packShape(const ExportShape &layer, bool maskRecord)
 
 } // namespace
 
-QByteArray buildFlatPayload(const Project &project)
-{
+QByteArray buildFlatPayload(const Project &project) {
     QVector<ExportShape> visibleLayers;
     if (project.root) {
         visibleLayers.reserve(static_cast<int>(project.root->children.size()));

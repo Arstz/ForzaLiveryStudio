@@ -7,8 +7,7 @@
 namespace gui {
 namespace {
 
-bool visualEqual(const fh6::scene::Shape &a, const fh6::scene::Shape &b)
-{
+bool visualEqual(const fh6::scene::Shape &a, const fh6::scene::Shape &b) {
     if (a.isRaster() != b.isRaster()) {
         return false;
     }
@@ -20,8 +19,7 @@ bool visualEqual(const fh6::scene::Shape &a, const fh6::scene::Shape &b)
     return a.shapeId == b.shapeId;
 }
 
-bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transform2D &b)
-{
+bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transform2D &b) {
     return a.x == b.x
         && a.y == b.y
         && a.scaleX == b.scaleX
@@ -30,8 +28,7 @@ bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transfor
         && a.skew == b.skew;
 }
 
-bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
-{
+bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
     if (a.kind() != b.kind()
         || a.id != b.id
         || a.name != b.name
@@ -100,8 +97,7 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
     return false;
 }
 
-bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
-{
+bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
     if (a.kind() != b.kind() || a.id != b.id || a.name != b.name || a.visible != b.visible || a.locked != b.locked) {
         return false;
     }
@@ -127,8 +123,7 @@ bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
     return true;
 }
 
-bool previewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
-{
+bool previewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
     if (a.kind() == fh6::scene::LayerKind::Shape) {
         const auto &sa = static_cast<const fh6::scene::Shape &>(a);
         const auto &sb = static_cast<const fh6::scene::Shape &>(b);
@@ -161,8 +156,7 @@ bool previewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b)
 
 } // namespace
 
-void EditorState::beginProjectEdit()
-{
+void EditorState::beginProjectEdit() {
     if (!hasProject_) {
         pendingEdit_.reset();
         return;
@@ -175,8 +169,7 @@ void EditorState::beginProjectEdit()
     pendingEdit_ = command;
 }
 
-void EditorState::commitProjectEdit()
-{
+void EditorState::commitProjectEdit() {
     ScopedPerf perf("EditorState::commitProjectEdit");
     if (!pendingEdit_.has_value()) {
         return;
@@ -197,8 +190,7 @@ void EditorState::commitProjectEdit()
     pendingEdit_.reset();
 }
 
-void EditorState::cancelProjectEdit()
-{
+void EditorState::cancelProjectEdit() {
     if (!pendingEdit_.has_value()) {
         return;
     }
@@ -213,13 +205,11 @@ void EditorState::cancelProjectEdit()
     noteProjectStructureChanged();
 }
 
-void EditorState::beginTransformCommand()
-{
+void EditorState::beginTransformCommand() {
     beginTransformCommand(selectedTransformTargetIds());
 }
 
-void EditorState::beginTransformCommand(const QVector<QString> &targetIds)
-{
+void EditorState::beginTransformCommand(const QVector<QString> &targetIds) {
     if (!hasProject_) {
         pendingEdit_.reset();
         return;
@@ -245,8 +235,7 @@ void EditorState::beginTransformCommand(const QVector<QString> &targetIds)
     pendingEdit_ = command;
 }
 
-void EditorState::commitTransformCommand()
-{
+void EditorState::commitTransformCommand() {
     ScopedPerf perf("EditorState::commitTransformCommand");
     if (!pendingEdit_.has_value()) {
         return;
@@ -280,8 +269,7 @@ void EditorState::commitTransformCommand()
     pendingEdit_.reset();
 }
 
-void EditorState::cancelTransformCommand()
-{
+void EditorState::cancelTransformCommand() {
     if (!pendingEdit_.has_value()) {
         return;
     }
@@ -296,8 +284,7 @@ void EditorState::cancelTransformCommand()
     noteProjectGeometryChanged(false);
 }
 
-void EditorState::undo()
-{
+void EditorState::undo() {
     if (undoStack_.isEmpty()) {
         return;
     }
@@ -323,8 +310,7 @@ void EditorState::undo()
     Q_EMIT historyChanged();
 }
 
-void EditorState::redo()
-{
+void EditorState::redo() {
     if (redoStack_.isEmpty()) {
         return;
     }
@@ -350,20 +336,17 @@ void EditorState::redo()
     Q_EMIT historyChanged();
 }
 
-void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot)
-{
+void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot) {
     project_ = snapshot.project;
     invalidateProjectIndexCache();
 }
 
-ProjectEditSnapshot EditorState::captureSnapshot() const
-{
+ProjectEditSnapshot EditorState::captureSnapshot() const {
     ScopedPerf perf("EditorState::captureSnapshot");
     return {project_};
 }
 
-bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const
-{
+bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const {
     ScopedPerf perf("EditorState::snapshotsEqual");
     if (a.project.colorSwatches != b.project.colorSwatches
         || a.project.horizontalGuidelines != b.project.horizontalGuidelines
@@ -377,8 +360,7 @@ bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEdit
     return nodeEqual(*a.project.root, *b.project.root);
 }
 
-ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const
-{
+ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const {
     ScopedPerf perf("EditorState::classifySnapshotRefresh");
     if (!a.project.root || !b.project.root || !structureEqual(*a.project.root, *b.project.root)) {
         return ProjectEditRefresh::Structure;
@@ -389,8 +371,7 @@ ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapsho
     return ProjectEditRefresh::GeometryOnly;
 }
 
-void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter)
-{
+void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter) {
     for (const ProjectTransformEdit &edit : edits) {
         if (fh6::scene::Layer *node = sceneNode(edit.nodeId)) {
             node->transform = useAfter ? edit.after : edit.before;
@@ -399,8 +380,7 @@ void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits
     invalidateSceneTree();
 }
 
-void EditorState::refreshAfterHistoryCommand(ProjectEditRefresh refresh)
-{
+void EditorState::refreshAfterHistoryCommand(ProjectEditRefresh refresh) {
     switch (refresh) {
     case ProjectEditRefresh::GeometryOnly:
         noteProjectGeometryChanged(false);

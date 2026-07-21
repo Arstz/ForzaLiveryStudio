@@ -8,8 +8,7 @@
 namespace gui {
 namespace {
 
-QPixmap tintedPixmap(const QPixmap &source, const QColor &color)
-{
+QPixmap tintedPixmap(const QPixmap &source, const QColor &color) {
     QPixmap tinted(source.size());
     tinted.setDevicePixelRatio(source.devicePixelRatio());
     tinted.fill(Qt::transparent);
@@ -23,8 +22,7 @@ QPixmap tintedPixmap(const QPixmap &source, const QColor &color)
 
 } // namespace
 
-QString assetPath(const QString &fileName)
-{
+QString assetPath(const QString &fileName) {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     QStringList candidates;
@@ -39,8 +37,7 @@ QString assetPath(const QString &fileName)
     return candidates.front();
 }
 
-QIcon assetIcon(const QString &fileName)
-{
+QIcon assetIcon(const QString &fileName) {
     const UiTheme theme = currentUiTheme();
     const QString key = QStringLiteral("%1|%2|0").arg(themeSettingsValue(theme), fileName);
     static QHash<QString, QIcon> cache;
@@ -57,8 +54,7 @@ QIcon assetIcon(const QString &fileName)
     return icon;
 }
 
-QIcon mirroredAssetIcon(const QString &fileName)
-{
+QIcon mirroredAssetIcon(const QString &fileName) {
     const UiTheme theme = currentUiTheme();
     const QString key = QStringLiteral("%1|%2|1").arg(themeSettingsValue(theme), fileName);
     static QHash<QString, QIcon> cache;

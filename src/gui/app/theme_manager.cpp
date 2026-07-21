@@ -13,33 +13,27 @@ UiTheme currentTheme = UiTheme::Dark;
 
 } // namespace
 
-QString themeSettingsValue(UiTheme theme)
-{
+QString themeSettingsValue(UiTheme theme) {
     return theme == UiTheme::Light ? QStringLiteral("light") : QStringLiteral("dark");
 }
 
-UiTheme themeFromSettingsValue(const QString &value)
-{
+UiTheme themeFromSettingsValue(const QString &value) {
     return value.compare(QStringLiteral("light"), Qt::CaseInsensitive) == 0 ? UiTheme::Light : UiTheme::Dark;
 }
 
-UiTheme loadUiTheme()
-{
+UiTheme loadUiTheme() {
     return themeFromSettingsValue(QSettings().value(QStringLiteral("ui/theme"), QStringLiteral("dark")).toString());
 }
 
-void saveUiTheme(UiTheme theme)
-{
+void saveUiTheme(UiTheme theme) {
     QSettings().setValue(QStringLiteral("ui/theme"), themeSettingsValue(theme));
 }
 
-QColor defaultCanvasColor(UiTheme theme)
-{
+QColor defaultCanvasColor(UiTheme theme) {
     return theme == UiTheme::Light ? QColor(244, 245, 247) : QColor(24, 25, 28);
 }
 
-CanvasColorSettings loadCanvasColorSettings()
-{
+CanvasColorSettings loadCanvasColorSettings() {
     QSettings settings;
     CanvasColorSettings result;
     result.darkMode = settings.value(QStringLiteral("ui/canvas/darkMode"), QStringLiteral("default")).toString() == QStringLiteral("custom")
@@ -63,8 +57,7 @@ CanvasColorSettings loadCanvasColorSettings()
     return result;
 }
 
-void saveCanvasColorSettings(const CanvasColorSettings &settings)
-{
+void saveCanvasColorSettings(const CanvasColorSettings &settings) {
     QSettings qsettings;
     qsettings.remove(QStringLiteral("ui/canvasColor"));
     qsettings.setValue(QStringLiteral("ui/canvas/darkMode"), settings.darkMode == CanvasColorMode::Custom ? QStringLiteral("custom") : QStringLiteral("default"));
@@ -75,22 +68,19 @@ void saveCanvasColorSettings(const CanvasColorSettings &settings)
                        (settings.lightCustom.isValid() ? settings.lightCustom : defaultCanvasColor(UiTheme::Light)).name(QColor::HexRgb));
 }
 
-TransformModeSettings loadTransformModeSettings()
-{
+TransformModeSettings loadTransformModeSettings() {
     TransformModeSettings result;
     result.relativeMode = QSettings().value(QStringLiteral("ui/transform/relativeModeOption"), false).toBool();
     return result;
 }
 
-void saveTransformModeSettings(const TransformModeSettings &settings)
-{
+void saveTransformModeSettings(const TransformModeSettings &settings) {
     QSettings qsettings;
     qsettings.remove(QStringLiteral("ui/transform/relativeMode"));
     qsettings.setValue(QStringLiteral("ui/transform/relativeModeOption"), settings.relativeMode);
 }
 
-BehaviorSettings loadBehaviorSettings()
-{
+BehaviorSettings loadBehaviorSettings() {
     QSettings settings;
     BehaviorSettings result;
     result.insertShapeWithLastSelectedColor = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), true).toBool();
@@ -132,8 +122,7 @@ BehaviorSettings loadBehaviorSettings()
     return result;
 }
 
-void saveBehaviorSettings(const BehaviorSettings &settings)
-{
+void saveBehaviorSettings(const BehaviorSettings &settings) {
     QSettings qsettings;
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), settings.insertShapeWithLastSelectedColor);
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), settings.insertShapeWithLastSelectedScale);
@@ -161,8 +150,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings)
     qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);
 }
 
-QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings)
-{
+QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings) {
     if (theme == UiTheme::Light) {
         return settings.lightMode == CanvasColorMode::Custom && settings.lightCustom.isValid()
             ? settings.lightCustom
@@ -173,18 +161,15 @@ QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings)
         : defaultCanvasColor(UiTheme::Dark);
 }
 
-bool isDarkTheme(UiTheme theme)
-{
+bool isDarkTheme(UiTheme theme) {
     return theme == UiTheme::Dark;
 }
 
-QColor iconColorForTheme(UiTheme theme)
-{
+QColor iconColorForTheme(UiTheme theme) {
     return isDarkTheme(theme) ? QColor(238, 241, 245) : QColor(32, 34, 37);
 }
 
-QPalette paletteForTheme(UiTheme theme)
-{
+QPalette paletteForTheme(UiTheme theme) {
     QPalette palette;
     if (theme == UiTheme::Light) {
         palette.setColor(QPalette::Window, QColor(244, 245, 247));
@@ -223,8 +208,7 @@ QPalette paletteForTheme(UiTheme theme)
     return palette;
 }
 
-void applyUiTheme(QApplication &app, UiTheme theme)
-{
+void applyUiTheme(QApplication &app, UiTheme theme) {
     currentTheme = theme;
     if (QStyleFactory::keys().contains(QStringLiteral("Fusion"))) {
         app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
@@ -232,8 +216,7 @@ void applyUiTheme(QApplication &app, UiTheme theme)
     app.setPalette(paletteForTheme(theme));
 }
 
-UiTheme currentUiTheme()
-{
+UiTheme currentUiTheme() {
     return currentTheme;
 }
 

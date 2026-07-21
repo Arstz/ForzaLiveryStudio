@@ -7,8 +7,7 @@
 namespace gui {
 namespace {
 
-std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &id)
-{
+std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &id) {
     fh6::scene::Group *parent = state.groupForId(state.parentGroupForEntry(id));
     if (parent == nullptr) {
         return nullptr;
@@ -21,8 +20,7 @@ std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &i
     return nullptr;
 }
 
-void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &out)
-{
+void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &out) {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         out.insert(node.id);
         return;
@@ -35,8 +33,7 @@ void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &out)
 }
 
 void flattenLeaves(std::unique_ptr<fh6::scene::Layer> node, const fh6::Matrix3 &ancestorFrame,
-                   std::vector<std::unique_ptr<fh6::scene::Layer>> &out)
-{
+                   std::vector<std::unique_ptr<fh6::scene::Layer>> &out) {
     if (!node) {
         return;
     }
@@ -53,8 +50,7 @@ void flattenLeaves(std::unique_ptr<fh6::scene::Layer> node, const fh6::Matrix3 &
 }
 
 template <typename Cache>
-bool isContiguous(const QVector<QString> &entries, const Cache &cache)
-{
+bool isContiguous(const QVector<QString> &entries, const Cache &cache) {
     for (int i = 1; i < entries.size(); ++i) {
         if (cache.orderByChild.value(entries[i], -1) != cache.orderByChild.value(entries[i - 1], -1) + 1) {
             return false;
@@ -65,8 +61,7 @@ bool isContiguous(const QVector<QString> &entries, const Cache &cache)
 
 } // namespace
 
-void EditorState::groupEntries(const QVector<QString> &entryIds)
-{
+void EditorState::groupEntries(const QVector<QString> &entryIds) {
     if (!hasProject_) {
         return;
     }
@@ -108,8 +103,7 @@ void EditorState::groupEntries(const QVector<QString> &entryIds)
     invalidateProjectIndexCache();
 }
 
-void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten)
-{
+void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten) {
     if (!hasProject_) {
         return;
     }
@@ -152,8 +146,7 @@ void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten)
     invalidateProjectIndexCache();
 }
 
-bool EditorState::reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow)
-{
+bool EditorState::reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow) {
     if (!hasProject_ || entryIds.isEmpty()) {
         return false;
     }
@@ -206,8 +199,7 @@ bool EditorState::reorderEntries(const QString &parentGroupId, const QVector<QSt
     return true;
 }
 
-bool EditorState::reorderGuideLayers(const QVector<QString> &guideIds, int insertRow)
-{
+bool EditorState::reorderGuideLayers(const QVector<QString> &guideIds, int insertRow) {
     if (!hasProject_ || project_.isLivery || guideIds.isEmpty() || !project_.root) {
         return false;
     }
@@ -263,8 +255,7 @@ bool EditorState::reorderGuideLayers(const QVector<QString> &guideIds, int inser
     return before != after;
 }
 
-void EditorState::pruneEmptyGroups()
-{
+void EditorState::pruneEmptyGroups() {
     if (!project_.root) {
         return;
     }

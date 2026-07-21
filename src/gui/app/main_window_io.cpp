@@ -43,13 +43,11 @@ constexpr const char *kEmptyLiverySectionNames[] = {
     "RightWindow",
 };
 
-QString generatedGroupId(int index)
-{
+QString generatedGroupId(int index) {
     return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
 }
 
-fh6::Project createNewProject(bool livery, const QString &creatorName, int carId)
-{
+fh6::Project createNewProject(bool livery, const QString &creatorName, int carId) {
     fh6::Project project;
     project.name = QStringLiteral("Untitled");
     project.isLivery = livery;
@@ -69,8 +67,7 @@ fh6::Project createNewProject(bool livery, const QString &creatorName, int carId
     return project;
 }
 
-bool containsRasterLogo(const fh6::scene::Layer &node)
-{
+bool containsRasterLogo(const fh6::scene::Layer &node) {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         return static_cast<const fh6::scene::Shape &>(node).raster;
     }
@@ -86,8 +83,7 @@ bool containsRasterLogo(const fh6::scene::Layer &node)
     return false;
 }
 
-bool projectContainsRasterLogo(const fh6::Project &project)
-{
+bool projectContainsRasterLogo(const fh6::Project &project) {
     if (!project.root) {
         return false;
     }
@@ -101,8 +97,7 @@ bool projectContainsRasterLogo(const fh6::Project &project)
 
 } // namespace
 
-MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString &path) const
-{
+MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString &path) const {
     const QFileInfo info(path);
     if (!info.exists()) {
         return ExternalDropKind::Unsupported;
@@ -131,8 +126,7 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
     return ExternalDropKind::Unsupported;
 }
 
-bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls)
-{
+bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls) {
     QStringList paths;
     for (const QUrl &url : urls) {
         if (url.isLocalFile()) {
@@ -185,8 +179,7 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls)
     return false;
 }
 
-void MainWindow::dragEnterEvent(QDragEnterEvent *event)
-{
+void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         for (const QUrl &url : event->mimeData()->urls()) {
             if (url.isLocalFile() && classifyExternalDropPath(url.toLocalFile()) != ExternalDropKind::Unsupported) {
@@ -199,8 +192,7 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
     QMainWindow::dragEnterEvent(event);
 }
 
-void MainWindow::dragMoveEvent(QDragMoveEvent *event)
-{
+void MainWindow::dragMoveEvent(QDragMoveEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         event->setDropAction(Qt::CopyAction);
         event->accept();
@@ -209,8 +201,7 @@ void MainWindow::dragMoveEvent(QDragMoveEvent *event)
     QMainWindow::dragMoveEvent(event);
 }
 
-void MainWindow::dropEvent(QDropEvent *event)
-{
+void MainWindow::dropEvent(QDropEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         if (handleExternalDropUrls(event->mimeData()->urls())) {
             event->setDropAction(Qt::CopyAction);
@@ -221,8 +212,7 @@ void MainWindow::dropEvent(QDropEvent *event)
     QMainWindow::dropEvent(event);
 }
 
-void MainWindow::closeEvent(QCloseEvent *event)
-{
+void MainWindow::closeEvent(QCloseEvent *event) {
     if (confirmDiscardUnsavedChanges()) {
         event->accept();
     } else {
@@ -230,8 +220,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 }
 
-bool MainWindow::confirmDiscardUnsavedChanges()
-{
+bool MainWindow::confirmDiscardUnsavedChanges() {
     if (state_ == nullptr || !state_->isModified()) {
         return true;
     }
@@ -259,15 +248,13 @@ bool MainWindow::confirmDiscardUnsavedChanges()
     return false;
 }
 
-void MainWindow::updateWindowTitle()
-{
+void MainWindow::updateWindowTitle() {
     const QString base = QStringLiteral("Forza Livery Studio");
     const bool dirty = state_ != nullptr && state_->isModified();
     setWindowTitle(dirty ? base + QStringLiteral(" *") : base);
 }
 
-bool MainWindow::loadProject(const QString &path, QString *error)
-{
+bool MainWindow::loadProject(const QString &path, QString *error) {
     try {
         setProject(fh6::importCGroupNested(path));
         statusBar()->showMessage(QStringLiteral("Imported %1").arg(path), 5000);
@@ -280,8 +267,7 @@ bool MainWindow::loadProject(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::loadLivery(const QString &path, QString *error)
-{
+bool MainWindow::loadLivery(const QString &path, QString *error) {
     try {
         setProject(fh6::importCLivery(path));
         statusBar()->showMessage(QStringLiteral("Imported livery %1").arg(path), 5000);
@@ -294,8 +280,7 @@ bool MainWindow::loadLivery(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
-{
+bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
     if (!state_->hasProject_) {
         if (error != nullptr) {
             *error = QStringLiteral("no project is loaded");
@@ -374,13 +359,11 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
     }
 }
 
-bool MainWindow::newProject(QString *error)
-{
+bool MainWindow::newProject(QString *error) {
     return newProject(false, error);
 }
 
-bool MainWindow::newProject(bool livery, QString *error, int carId)
-{
+bool MainWindow::newProject(bool livery, QString *error, int carId) {
     Q_UNUSED(error);
     setProject(createNewProject(livery, creatorName_, carId));
     statusBar()->showMessage(livery ? QStringLiteral("New livery project created")
@@ -389,8 +372,7 @@ bool MainWindow::newProject(bool livery, QString *error, int carId)
     return true;
 }
 
-bool MainWindow::saveProjectJson(const QString &path, QString *error)
-{
+bool MainWindow::saveProjectJson(const QString &path, QString *error) {
     if (!state_->hasProject_) {
         if (error != nullptr) {
             *error = QStringLiteral("no project is loaded");
@@ -430,8 +412,7 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::loadProjectJson(const QString &path, QString *error)
-{
+bool MainWindow::loadProjectJson(const QString &path, QString *error) {
     try {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
@@ -450,8 +431,7 @@ bool MainWindow::loadProjectJson(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::importAny(const QString &path, QString *error)
-{
+bool MainWindow::importAny(const QString &path, QString *error) {
     const QFileInfo info(path);
     bool isLivery = false;
     if (info.isDir()) {
@@ -470,8 +450,7 @@ bool MainWindow::importAny(const QString &path, QString *error)
     return loadProject(path, error);
 }
 
-void MainWindow::importFileDialog()
-{
+void MainWindow::importFileDialog() {
     const ImportAssetSelection selection = showImportAssetDialog(
         this,
         importBrowserStartDirectory(
@@ -498,8 +477,7 @@ void MainWindow::importFileDialog()
     }
 }
 
-void MainWindow::importGuideLayerDialog()
-{
+void MainWindow::importGuideLayerDialog() {
     const QString path = QFileDialog::getOpenFileName(this,
                                                       QStringLiteral("Add Guide Layer"),
                                                       importDialogStartDirectory(this, QStringLiteral("guideLayer")),
@@ -515,8 +493,7 @@ void MainWindow::importGuideLayerDialog()
     }
 }
 
-void MainWindow::preprocessSelectedGuide()
-{
+void MainWindow::preprocessSelectedGuide() {
     if (state_ == nullptr || !state_->hasProject()) {
         statusBar()->showMessage(QStringLiteral("Open or create a project first"), 3500);
         return;
@@ -632,8 +609,7 @@ void MainWindow::preprocessSelectedGuide()
                              3500);
 }
 
-void MainWindow::createRegions()
-{
+void MainWindow::createRegions() {
     if (canvas_ == nullptr) {
         return;
     }
@@ -649,8 +625,7 @@ void MainWindow::createRegions()
     }
 }
 
-void MainWindow::fillRegions()
-{
+void MainWindow::fillRegions() {
     if (canvas_ == nullptr || !state_->hasProject()) {
         statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
         return;
@@ -712,8 +687,7 @@ void MainWindow::fillRegions()
     QThreadPool::globalInstance()->start(task);
 }
 
-void MainWindow::cancelRegionFill()
-{
+void MainWindow::cancelRegionFill() {
     if (regionFillCancel_ == nullptr) {
         return;
     }
@@ -730,8 +704,7 @@ void MainWindow::cancelRegionFill()
     statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
 }
 
-void MainWindow::updateRegionFillProgress(quint64 generation, int completed, int total)
-{
+void MainWindow::updateRegionFillProgress(quint64 generation, int completed, int total) {
     if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr
         || regionFillProgress_ == nullptr) {
         return;
@@ -742,8 +715,7 @@ void MainWindow::updateRegionFillProgress(quint64 generation, int completed, int
         std::clamp(completed, 0, std::max(1, total))));
 }
 
-void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult result)
-{
+void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult result) {
     if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr) {
         return;
     }
@@ -779,8 +751,7 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
     canvas_->hideRegionOverlay();
 }
 
-bool MainWindow::importFM2023Folder(const QString &path, QString *error)
-{
+bool MainWindow::importFM2023Folder(const QString &path, QString *error) {
     try {
         rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
         fh6::Project project = fh6::importFM2023Asset(path);
@@ -793,8 +764,7 @@ bool MainWindow::importFM2023Folder(const QString &path, QString *error)
     }
 }
 
-void MainWindow::exportDialog()
-{
+void MainWindow::exportDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Export"), QStringLiteral("Open a project before exporting."));
         return;
@@ -819,8 +789,7 @@ void MainWindow::exportDialog()
     }
 }
 
-void MainWindow::newProjectDialog()
-{
+void MainWindow::newProjectDialog() {
     if (!confirmDiscardUnsavedChanges()) {
         return;
     }
@@ -851,8 +820,7 @@ void MainWindow::newProjectDialog()
     }
 }
 
-void MainWindow::saveProjectJsonDialog()
-{
+void MainWindow::saveProjectJsonDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Save Project"), QStringLiteral("Create or open a project before saving."));
         return;
@@ -869,8 +837,7 @@ void MainWindow::saveProjectJsonDialog()
     saveProjectJsonAsDialog();
 }
 
-void MainWindow::saveProjectJsonAsDialog()
-{
+void MainWindow::saveProjectJsonAsDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Save Project As"),
                                  QStringLiteral("Create or open a project before saving."));
@@ -897,8 +864,7 @@ void MainWindow::saveProjectJsonAsDialog()
     }
 }
 
-void MainWindow::autosaveProject()
-{
+void MainWindow::autosaveProject() {
     if (state_ == nullptr || !state_->hasProject() || !state_->isModified() || projectJsonPath_.isEmpty()) {
         return;
     }
@@ -909,8 +875,7 @@ void MainWindow::autosaveProject()
     }
 }
 
-void MainWindow::loadProjectJsonDialog()
-{
+void MainWindow::loadProjectJsonDialog() {
     if (!confirmDiscardUnsavedChanges()) {
         return;
     }
@@ -929,8 +894,7 @@ void MainWindow::loadProjectJsonDialog()
     }
 }
 
-void MainWindow::openRecentProjectJson(const QString &path)
-{
+void MainWindow::openRecentProjectJson(const QString &path) {
     if (!confirmDiscardUnsavedChanges()) {
         return;
     }
@@ -941,8 +905,7 @@ void MainWindow::openRecentProjectJson(const QString &path)
     }
 }
 
-void MainWindow::rememberRecentProjectJson(const QString &path)
-{
+void MainWindow::rememberRecentProjectJson(const QString &path) {
     const QFileInfo info(path);
     if (!isProjectDocumentFile(info)) {
         return;
@@ -957,8 +920,7 @@ void MainWindow::rememberRecentProjectJson(const QString &path)
     refreshRecentProjectJsonMenu();
 }
 
-void MainWindow::refreshRecentProjectJsonMenu()
-{
+void MainWindow::refreshRecentProjectJsonMenu() {
     if (recentProjectMenu_ == nullptr) {
         return;
     }
@@ -984,8 +946,7 @@ void MainWindow::refreshRecentProjectJsonMenu()
     }
 }
 
-void MainWindow::refreshHeaderMetadataWidget()
-{
+void MainWindow::refreshHeaderMetadataWidget() {
     if (headerMetadata_ == nullptr) {
         return;
     }
@@ -1017,8 +978,7 @@ void MainWindow::refreshHeaderMetadataWidget()
     headerMetadata_->setMetadata(meta, importedDraft, true);
 }
 
-void MainWindow::showHeaderMetadataDock()
-{
+void MainWindow::showHeaderMetadataDock() {
     if (headerMetadataDock_ == nullptr) {
         return;
     }
@@ -1030,8 +990,7 @@ void MainWindow::showHeaderMetadataDock()
     }
 }
 
-void MainWindow::applyHeaderMetadata()
-{
+void MainWindow::applyHeaderMetadata() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Header Metadata"), QStringLiteral("Create or open a project first."));
         return;
@@ -1058,16 +1017,14 @@ void MainWindow::applyHeaderMetadata()
     statusBar()->showMessage(QStringLiteral("Header metadata updated"), 5000);
 }
 
-void MainWindow::saveLayout()
-{
+void MainWindow::saveLayout() {
     QSettings settings;
     settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("layout/state"), saveState());
     statusBar()->showMessage(QStringLiteral("Layout saved"), 5000);
 }
 
-bool MainWindow::restoreLayout()
-{
+bool MainWindow::restoreLayout() {
     QSettings settings;
     const QByteArray state = settings.value(QStringLiteral("layout/state")).toByteArray();
     if (state.isEmpty()) {
@@ -1080,8 +1037,7 @@ bool MainWindow::restoreLayout()
     return restoreState(state);
 }
 
-void MainWindow::resetLayout()
-{
+void MainWindow::resetLayout() {
     if (!defaultLayoutState_.isEmpty()) {
         restoreState(defaultLayoutState_);
         syncDockCollapseButtons();

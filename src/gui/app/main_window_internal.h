@@ -23,16 +23,14 @@ constexpr int ToolbarIconExtent = 18;
 constexpr int DockSplitterHandleWidth = 6;
 constexpr int DetailsLabelMargin = 10;
 
-inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut)
-{
+inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut) {
     if (!id.startsWith(QStringLiteral("tool_")) || shortcut.isEmpty()) {
         return label;
     }
     return QStringLiteral("%1 (%2)").arg(label, shortcut.toString(QKeySequence::NativeText));
 }
 
-inline QString safeGroupName(QString name)
-{
+inline QString safeGroupName(QString name) {
     name = name.trimmed();
     if (name.isEmpty()) {
         name = QStringLiteral("Project");
@@ -50,8 +48,7 @@ inline QString safeGroupName(QString name)
     return name.isEmpty() ? QStringLiteral("Project") : name;
 }
 
-inline QString projectExportFolder(const QString &pickedFolder, const QString &projectName, bool livery)
-{
+inline QString projectExportFolder(const QString &pickedFolder, const QString &projectName, bool livery) {
     const QFileInfo pickedInfo(pickedFolder);
     const QString prefix = livery ? QStringLiteral("Livery_") : QStringLiteral("LayerGroup_");
     if (pickedInfo.fileName().startsWith(prefix) && pickedInfo.fileName().size() > prefix.size()) {
@@ -73,8 +70,7 @@ inline QString projectExportFolder(const QString &pickedFolder, const QString &p
 
 inline QString importDialogStartDirectoryWithFallbacks(QWidget *parent,
                                                        const QString &actionKey,
-                                                       const QStringList &fallbackActionKeys)
-{
+                                                       const QStringList &fallbackActionKeys) {
     QSettings settings;
     const auto configuredDirectory = [&](const QString &key) {
         const QString path = settings.value(QStringLiteral("import/%1Directory").arg(key)).toString();
@@ -94,16 +90,14 @@ inline QString importDialogStartDirectoryWithFallbacks(QWidget *parent,
     return importDialogStartDirectory(parent, actionKey);
 }
 
-inline bool isProjectDocumentFile(const QFileInfo &info)
-{
+inline bool isProjectDocumentFile(const QFileInfo &info) {
     const QString suffix = info.suffix();
     const bool isProjectFile = suffix.compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
         || suffix.compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
     return info.isFile() && isProjectFile;
 }
 
-inline QString entryNameForId(const fh6::Project &project, const QString &id)
-{
+inline QString entryNameForId(const fh6::Project &project, const QString &id) {
     if (!project.root) {
         return {};
     }
@@ -129,8 +123,7 @@ inline QString entryNameForId(const fh6::Project &project, const QString &id)
 }
 
 template <typename Fn>
-void forEachShape(fh6::Project &project, Fn fn)
-{
+void forEachShape(fh6::Project &project, Fn fn) {
     if (!project.root) {
         return;
     }
@@ -149,8 +142,7 @@ void forEachShape(fh6::Project &project, Fn fn)
 }
 
 template <typename Fn>
-void forEachGuide(fh6::Project &project, Fn fn)
-{
+void forEachGuide(fh6::Project &project, Fn fn) {
     if (!project.root) {
         return;
     }
@@ -168,8 +160,7 @@ void forEachGuide(fh6::Project &project, Fn fn)
     }
 }
 
-inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project)
-{
+inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project) {
     QVector<fh6::scene::Group *> sections;
     if (!project.root) {
         return sections;
@@ -185,8 +176,7 @@ inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project)
     return sections;
 }
 
-inline QRectF shapeWorldBounds(const fh6::scene::Shape &shape, const QSizeF &size)
-{
+inline QRectF shapeWorldBounds(const fh6::scene::Shape &shape, const QSizeF &size) {
     QTransform transform;
     transform.translate(shape.x, shape.y);
     transform.rotate(shape.rotation);
@@ -210,8 +200,7 @@ struct PlacedTextLine {
 inline PlacedTextLine layoutTextGlyphs(const QString &fontName,
                                        const QString &text,
                                        bool monospace,
-                                       const std::function<QRectF(int)> &inkBounds)
-{
+                                       const std::function<QRectF(int)> &inkBounds) {
     constexpr double kGlyphGap = 12.0;
     constexpr double kSpaceWidth = 64.0;
 

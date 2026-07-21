@@ -1,10 +1,12 @@
 #pragma once
 
 #include "bucket_fill.h"
+#include "canvas_camera.h"
 #include "core_types.h"
 #include "layer.h"
 #include "lining_fill.h"
 #include "native_shape_renderer.h"
+#include "path_interaction.h"
 #include "pen_fill.h"
 #include "region_extract.h"
 #include "region_fill.h"
@@ -94,24 +96,16 @@ public:
     bool hasCarUnwrap() const;
     void cycleFlipSelection();
 
-    // Runs the region-extraction draft on a selected guide layer and shows the
-    // result as a canvas overlay. Returns false with a human-readable reason.
     bool createRegionsForSelectedGuide(int smallRegionMergeArea,
                                        QString *message = nullptr);
     void clearRegionOverlay();
 
-    // Snapshot/apply boundary for asynchronous region filling. The expensive
-    // computeRegionFills() call runs without touching the canvas on a worker.
     bool prepareRegionFillBatch(RegionFillBatchRequest *request,
                                 QString *message = nullptr) const;
     bool applyRegionFillBatch(RegionFillBatchResult result,
                               QString *message = nullptr);
     void clearRegionFills();
-    // The computed fills, kept separate per region and mapped from image-pixel
-    // space into world space, ready for grouped scene insertion.
     QVector<GeneratedRegionGroup> regionFillWorldGroups();
-    // Hide the region overlay preview (e.g. once real shapes were inserted)
-    // without discarding the extracted regions, so a re-fill stays cheap.
     void hideRegionOverlay();
 
     enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom };
@@ -149,8 +143,16 @@ private:
     friend class LiningTool;
     friend class BucketTool;
 
-    static constexpr double PenCloseRadius = 8.0;
-    static constexpr double PenEditRadius = 9.0;
+    static constexpr double kPenCloseRadius = 8.0;
+    static constexpr double kPenEditRadius = 9.0;
+    static constexpr double kDefaultNudgeStep = 0.1;
+    static constexpr double kDefaultNudgeShiftStep = 1.0;
+    static constexpr double kDefaultLiningWidth = 8.0;
+    static constexpr double kMinimumLiningWidth = 0.1;
+    static constexpr double kMaximumLiningWidth = 256.0;
+    static constexpr int kDefaultBucketTolerance = 16;
+    static constexpr QSize kDefaultVisibilityBorderResolution{1920, 1080};
+    inline static const QColor kDefaultGuidelineColor{0, 170, 255};
 
     enum class DragMode {
         None,
@@ -191,12 +193,92 @@ private:
         QTransform localToWorld;
     };
 
-    struct PenCurveHit {
-        int insertIndex = -1;
-        QPointF worldPosition;
-        double screenDistance = std::numeric_limits<double>::max();
+    struct DragState {
+        SelectionBox startBox;
+        QRectF startSelectionBounds;
+        QRectF marqueeRect;
+        QPointF startScreen;
+        QPointF lastScreen;
+        QPointF startWorld;
+        QPointF rotateCenterWorld;
+        QPointF scaleHandleLocal;
+        QPointF scaleAnchorLocal;
+        QPointF scaleCenterLocal;
+        QPointF scaleAnchorWorld;
+        QPointF scaleHandleStartWorld;
+        QPointF scaleCenterWorld;
+        QSizeF scaleHintBaseExtents;
+        QString activeHandle;
+        QString scaleHintSelectionSignature;
+        QHash<QString, EntryStart> starts;
+        QHash<QString, EntryStart> guideStarts;
+        QHash<QString, QTransform> groupStartFrames;
+        QVector<fh6::scene::Shape *> layers;
+        QVector<fh6::scene::GuideLayer *> guides;
+        QVector<QString> groupIds;
+        DragMode mode = DragMode::None;
+        bool duplicated = false;
+        bool usesProjectEdit = false;
+        bool scaleHintBaseValid = false;
+        double rotateStartAngle = 0.0;
+        double scaleHintStartScaleX = 1.0;
+        double scaleHintStartScaleY = 1.0;
+    };
 
-        bool valid() const { return insertIndex >= 0; }
+    struct BucketState {
+        QString guideId;
+        QString sourceGuideId;
+        QPoint seedPixel = QPoint(-1, -1);
+        BucketFillResult fill;
+        QImage sourceImage;
+        QImage previewImage;
+        int tolerance = kDefaultBucketTolerance;
+    };
+
+    struct RegionOverlayState {
+        QString guideId;
+        RegionExtractionResult overlay;
+        QVector<RegionFillLayer> fills;
+        QHash<int, QPainterPath> fillSilhouettes;
+        quint64 generation = 0;
+        bool showFills = false;
+        bool hidden = false;
+    };
+
+    struct GuidelineState {
+        QColor color = kDefaultGuidelineColor;
+        GuidelineOrientation draggedOrientation = GuidelineOrientation::None;
+        int draggedIndex = -1;
+        bool visible = true;
+        bool locked = false;
+        bool rulerPressActive = false;
+    };
+
+    struct FlashState {
+        QSet<QString> layerIds;
+        QElapsedTimer clock;
+        QTimer timer;
+        bool enabled = true;
+    };
+
+    struct SelectionFrame {
+        QSet<QString> layerSignature;
+        QSet<QString> guideSignature;
+        double referenceRotation = 0.0;
+    };
+
+    struct CanvasOptions {
+        QColor canvasColor;
+        QSize borderResolution = kDefaultVisibilityBorderResolution;
+        bool transformRelativeMode = false;
+        bool moveToolAutoSelect = false;
+        bool displayAnchorsDuringTransformDrag = true;
+        bool guideLayersVisible = true;
+        bool guideLayersOnTop = true;
+        bool visibilityBordersEnabled = true;
+        bool positionLimitBorderEnabled = false;
+        double nudgeStep = kDefaultNudgeStep;
+        double nudgeShiftStep = kDefaultNudgeShiftStep;
     };
 
     QRectF projectBounds() const;
@@ -286,10 +368,16 @@ private:
     QImage guideImage(const fh6::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;
     void storeSectionCanvasCache(const QString &key);
+    void setPathFillRunning(PathInteraction &path, bool running, const QString &message);
+    void cancelPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback);
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
-    int penPointAtScreen(const QPointF &screenPoint) const;
+    int pointAtScreen(const QVector<PenPoint> &points, const QPointF &screenPoint) const;
+    void accumulateCurveHit(const PenBoundarySegment &segment, int insertIndex,
+                            const QPointF &screenPoint, PenCurveHit &best) const;
+    void appendPointEditHints(QStringList &lines, const QVector<PenPoint> &points,
+                              int hoverPoint, const PenCurveHit &hoverCurve) const;
     PenCurveHit penCurveAtScreen(const QPointF &screenPoint) const;
     void normalizePenPointOrder();
     void validatePenInteraction();
@@ -298,7 +386,6 @@ private:
     void requestLiningFill();
     void drawLiningOverlay(QPainter &painter);
     QPainterPath liningPreviewPath() const;
-    int liningPointAtScreen(const QPointF &screenPoint) const;
     PenCurveHit liningCurveAtScreen(const QPointF &screenPoint) const;
     void validateLiningInteraction();
     void refreshLiningInteractionHint(const QPointF &screenPoint,
@@ -324,124 +411,37 @@ private:
     QString tool_ = QStringLiteral("select");
     std::vector<std::unique_ptr<CanvasTool>> tools_;
     CanvasTool *activeTool_ = nullptr;
-    QTransform worldToScreen_;
-    QTransform screenToWorld_;
-    QRectF currentBounds_;
-    QRectF viewBounds_;
-    double baseScale_ = 1.0;
-    double zoom_ = 1.0;
-    QPointF pan_;
+    CanvasCamera camera_;
+    DragState drag_;
+    GuidelineState guidelines_;
+    CanvasOptions options_;
     bool spaceDown_ = false;
-    DragMode dragMode_ = DragMode::None;
-    QPointF dragStartScreen_;
-    QPointF dragLastScreen_;
-    QPointF dragStartWorld_;
-    QRectF dragStartSelectionBounds_;
-    SelectionBox dragStartBox_;
-    QPointF rotateCenterWorld_;
-    double rotateStartAngle_ = 0.0;
-    bool transformRelativeMode_ = false;
-    bool moveToolAutoSelect_ = false;
-    bool selectionFlashEnabled_ = true;
-    bool displayAnchorsDuringTransformDrag_ = true;
-    bool guideLayersVisible_ = true;
-    bool guideLayersOnTop_ = true;
-    bool guidelinesVisible_ = true;
-    bool guidelinesLocked_ = false;
-    QColor guidelineColor_ = QColor(0, 170, 255);
-    GuidelineOrientation draggedGuidelineOrientation_ = GuidelineOrientation::None;
-    int draggedGuidelineIndex_ = -1;
-    bool rulerPressActive_ = false;
-    bool visibilityBordersEnabled_ = true;
-    bool positionLimitBorderEnabled_ = false;
-    QSize visibilityBorderResolution_ = QSize(1920, 1080);
-    double nudgeStep_ = 0.1;
-    double nudgeShiftStep_ = 1.0;
     std::function<void(const QColor &)> pipetteColorPickedCallback_;
     std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> penFillRequestedCallback_;
     std::function<void()> penFillCancelCallback_;
-    QVector<PenPoint> penPoints_;
-    std::optional<QColor> penFillColor_;
-    QPointF penHoverWorld_;
-    bool penLooped_ = false;
-    int penHoverPoint_ = -1;
-    PenCurveHit penHoverCurve_;
-    int penDragPoint_ = -1;
-    QPointF penDragOffsetWorld_;
-    QVector<QPointF> penCrossings_;
-    QString penError_;
-    QString penFillMessage_;
-    bool penFillRunning_ = false;
     std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> liningFillRequestedCallback_;
     std::function<void()> liningFillCancelCallback_;
     std::function<void(double)> liningWidthChangedCallback_;
-    QVector<PenPoint> liningPoints_;
-    std::optional<QColor> liningFillColor_;
-    QPointF liningHoverWorld_;
-    bool liningComplete_ = false;
-    int liningHoverPoint_ = -1;
-    PenCurveHit liningHoverCurve_;
-    int liningDragPoint_ = -1;
-    QPointF liningDragOffsetWorld_;
-    QString liningError_;
-    QString liningFillMessage_;
-    bool liningFillRunning_ = false;
-    double liningWidth_ = 8.0;
-    int bucketTolerance_ = 16;
-    QString bucketGuideId_;
-    QString bucketSourceGuideId_;
-    QPoint bucketSeedPixel_ = QPoint(-1, -1);
-    BucketFillResult bucketFill_;
-    QImage bucketSourceImage_;
-    QImage bucketPreviewImage_;
-    mutable double frameReferenceRotation_ = 0.0;
-    mutable QSet<QString> frameLayerSignature_;
-    mutable QSet<QString> frameGuideSignature_;
-    QPointF scaleHandleLocal_;
-    QPointF scaleAnchorLocal_;
-    QPointF scaleCenterLocal_;
-    QPointF scaleAnchorWorld_;
-    QPointF scaleHandleStartWorld_;
-    QPointF scaleCenterWorld_;
-    QString scaleHintSelectionSignature_;
-    QSizeF scaleHintBaseExtents_;
-    bool scaleHintBaseValid_ = false;
-    double scaleHintStartScaleX_ = 1.0;
-    double scaleHintStartScaleY_ = 1.0;
-    QRectF marqueeRect_;
+    PathInteraction pen_;
+    PathInteraction lining_;
+    double liningWidth_ = kDefaultLiningWidth;
+    BucketState bucket_;
+    mutable SelectionFrame frame_;
     QPointF cursorHintPoint_;
     QStringList cursorHintLines_;
-    QString activeHandle_;
-    bool dragDuplicated_ = false;
-    bool dragUsesProjectEdit_ = false;
     QString hoverLayerId_;
     QPolygonF hoverPolygon_;
     QVector<HitEntry> hitCache_;
     bool hitCacheDirty_ = true;
     NativeShapeRenderer renderer_;
     bool rendererGeometryDirty_ = true;
-    QSet<QString> flashingLayerIds_;
-    QElapsedTimer selectionFlashClock_;
-    QTimer selectionFlashTimer_;
-    QHash<QString, EntryStart> dragStarts_;
-    QHash<QString, EntryStart> dragGuideStarts_;
-    QVector<fh6::scene::Shape *> dragLayers_;
-    QVector<fh6::scene::GuideLayer *> dragGuides_;
-    QVector<QString> dragGroupIds_;
-    QHash<QString, QTransform> dragGroupStartFrames_;
+    FlashState flash_;
     mutable QHash<QString, QImage> guideImageCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
     QImage carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;
-    QString regionOverlayGuideId_;
-    RegionExtractionResult regionOverlay_;
-    QVector<RegionFillLayer> regionFills_;
-    QHash<int, QPainterPath> regionFillSilhouettes_;
-    bool showRegionFills_ = false;
-    bool regionOverlayHidden_ = false;
-    quint64 regionOverlayGeneration_ = 0;
+    RegionOverlayState region_;
     mutable std::optional<QRectF> selectionWorldBoundsCache_;
-    QColor canvasColor_;
 };
 
 } // namespace gui

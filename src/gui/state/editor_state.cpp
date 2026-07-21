@@ -11,13 +11,11 @@
 namespace gui {
 namespace {
 
-QTransform stateToQTransform(const fh6::Matrix3 &m)
-{
+QTransform stateToQTransform(const fh6::Matrix3 &m) {
     return QTransform(m.m[0][0], m.m[1][0], m.m[0][1], m.m[1][1], m.m[0][2], m.m[1][2]);
 }
 
-fh6::Matrix3 fromQTransform(const QTransform &t)
-{
+fh6::Matrix3 fromQTransform(const QTransform &t) {
     fh6::Matrix3 m;
     m.m[0][0] = t.m11();
     m.m[0][1] = t.m21();
@@ -31,19 +29,16 @@ fh6::Matrix3 fromQTransform(const QTransform &t)
     return m;
 }
 
-QTransform frameOf(const fh6::scene::Layer &node)
-{
+QTransform frameOf(const fh6::scene::Layer &node) {
     return stateToQTransform(node.transform.matrix());
 }
 
-void storeFrame(fh6::scene::Layer &node, const QTransform &frame)
-{
+void storeFrame(fh6::scene::Layer &node, const QTransform &frame) {
     node.transform = fh6::decomposeTransform2D(fromQTransform(frame));
 }
 
 template <typename Fn>
-void walkGroup(fh6::scene::Group &group, Fn fn)
-{
+void walkGroup(fh6::scene::Group &group, Fn fn) {
     for (const auto &child : group.children) {
         fn(*child);
         if (child->kind() == fh6::scene::LayerKind::Group) {
@@ -52,8 +47,7 @@ void walkGroup(fh6::scene::Group &group, Fn fn)
     }
 }
 
-void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out)
-{
+void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out) {
     if (node.kind() == fh6::scene::LayerKind::Guide) {
         out.insert(node.id);
         return;
@@ -69,16 +63,14 @@ void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out)
 } // namespace
 
 ProjectClipboard::ProjectClipboard(const ProjectClipboard &other)
-    : rootIds(other.rootIds)
-{
+    : rootIds(other.rootIds) {
     nodes.reserve(other.nodes.size());
     for (const auto &node : other.nodes) {
         nodes.push_back(node ? node->clone() : nullptr);
     }
 }
 
-ProjectClipboard &ProjectClipboard::operator=(const ProjectClipboard &other)
-{
+ProjectClipboard &ProjectClipboard::operator=(const ProjectClipboard &other) {
     if (this == &other) {
         return *this;
     }
@@ -92,31 +84,26 @@ ProjectClipboard &ProjectClipboard::operator=(const ProjectClipboard &other)
 }
 
 EditorState::EditorState(QObject *parent)
-    : QObject(parent)
-{
+    : QObject(parent) {
 }
 
-void EditorState::invalidateProjectIndexCache() const
-{
+void EditorState::invalidateProjectIndexCache() const {
     indexCache_.reset();
     invalidateSceneTree();
 }
 
-void EditorState::invalidateSceneTree() const
-{
+void EditorState::invalidateSceneTree() const {
     sceneNodeById_.clear();
     invalidateRenderCache();
 }
 
-void EditorState::invalidateRenderCache() const
-{
+void EditorState::invalidateRenderCache() const {
     renderCacheDirty_ = true;
     renderEntries_.clear();
     renderEntryByNodeId_.clear();
 }
 
-void EditorState::ensureSceneTree() const
-{
+void EditorState::ensureSceneTree() const {
     if (!sceneNodeById_.isEmpty() || !hasProject_ || !project_.root) {
         return;
     }
@@ -124,8 +111,7 @@ void EditorState::ensureSceneTree() const
     sceneNodeById_ = cache.nodes;
 }
 
-const fh6::scene::Group *EditorState::sceneRoot() const
-{
+const fh6::scene::Group *EditorState::sceneRoot() const {
     if (!hasProject_) {
         return nullptr;
     }
@@ -133,8 +119,7 @@ const fh6::scene::Group *EditorState::sceneRoot() const
     return project_.root.get();
 }
 
-fh6::scene::Layer *EditorState::sceneNode(const QString &id) const
-{
+fh6::scene::Layer *EditorState::sceneNode(const QString &id) const {
     if (!hasProject_) {
         return nullptr;
     }
@@ -142,8 +127,7 @@ fh6::scene::Layer *EditorState::sceneNode(const QString &id) const
     return sceneNodeById_.value(id, nullptr);
 }
 
-void EditorState::ensureRenderCache() const
-{
+void EditorState::ensureRenderCache() const {
     if (!renderCacheDirty_) {
         return;
     }
@@ -195,8 +179,7 @@ void EditorState::ensureRenderCache() const
     renderCacheDirty_ = false;
 }
 
-void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds) const
-{
+void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds) const {
     if (renderCacheDirty_ || targetIds.isEmpty()) {
         return;
     }
@@ -225,14 +208,12 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
     }
 }
 
-const QVector<SceneRenderEntry> &EditorState::renderEntries() const
-{
+const QVector<SceneRenderEntry> &EditorState::renderEntries() const {
     ensureRenderCache();
     return renderEntries_;
 }
 
-const EditorState::ProjectIndexCache &EditorState::projectIndexCache() const
-{
+const EditorState::ProjectIndexCache &EditorState::projectIndexCache() const {
     if (!indexCache_.has_value()) {
         ProjectIndexCache cache;
         if (project_.root) {
@@ -271,8 +252,7 @@ const EditorState::ProjectIndexCache &EditorState::projectIndexCache() const
     return *indexCache_;
 }
 
-QVector<QString> EditorState::leafLayerIdsForEntryCached(const QString &entryId, const ProjectIndexCache &cache) const
-{
+QVector<QString> EditorState::leafLayerIdsForEntryCached(const QString &entryId, const ProjectIndexCache &cache) const {
     const auto cached = cache.leafIdsByEntry.constFind(entryId);
     if (cached != cache.leafIdsByEntry.constEnd()) {
         return cached.value();
@@ -289,8 +269,7 @@ QVector<QString> EditorState::leafLayerIdsForEntryCached(const QString &entryId,
     return ids;
 }
 
-bool EditorState::entryHasLockedLayerCached(const QString &entryId, const ProjectIndexCache &cache) const
-{
+bool EditorState::entryHasLockedLayerCached(const QString &entryId, const ProjectIndexCache &cache) const {
     if (fh6::scene::Shape *shape = cache.layers.value(entryId, nullptr)) {
         return shape->locked || lockedLayerIds().contains(entryId);
     }
@@ -307,23 +286,19 @@ bool EditorState::entryHasLockedLayerCached(const QString &entryId, const Projec
     return false;
 }
 
-fh6::Project *EditorState::project()
-{
+fh6::Project *EditorState::project() {
     return hasProject_ ? &project_ : nullptr;
 }
 
-const fh6::Project *EditorState::project() const
-{
+const fh6::Project *EditorState::project() const {
     return hasProject_ ? &project_ : nullptr;
 }
 
-bool EditorState::hasProject() const
-{
+bool EditorState::hasProject() const {
     return hasProject_;
 }
 
-void EditorState::setProject(fh6::Project project)
-{
+void EditorState::setProject(fh6::Project project) {
     project_ = std::move(project);
     fh6::scene::ensureProjectSceneRoot(project_);
     invalidateProjectIndexCache();
@@ -341,13 +316,11 @@ void EditorState::setProject(fh6::Project project)
     Q_EMIT historyChanged();
 }
 
-bool EditorState::isModified() const
-{
+bool EditorState::isModified() const {
     return modified_;
 }
 
-void EditorState::setModified(bool modified)
-{
+void EditorState::setModified(bool modified) {
     if (modified_ == modified) {
         return;
     }
@@ -355,13 +328,11 @@ void EditorState::setModified(bool modified)
     Q_EMIT modifiedChanged(modified_);
 }
 
-bool EditorState::isLayerLocked(const QString &layerId) const
-{
+bool EditorState::isLayerLocked(const QString &layerId) const {
     return lockedLayerIds().contains(layerId);
 }
 
-QSet<QString> EditorState::lockedLayerIds() const
-{
+QSet<QString> EditorState::lockedLayerIds() const {
     if (!hasProject_) {
         return {};
     }
@@ -389,31 +360,26 @@ QSet<QString> EditorState::lockedLayerIds() const
     return locked;
 }
 
-QVector<QString> EditorState::leafLayerIdsForEntry(const QString &entryId) const
-{
+QVector<QString> EditorState::leafLayerIdsForEntry(const QString &entryId) const {
     if (!hasProject_) {
         return {};
     }
     return leafLayerIdsForEntryCached(entryId, projectIndexCache());
 }
 
-bool EditorState::entryHasLockedLayer(const QString &entryId) const
-{
+bool EditorState::entryHasLockedLayer(const QString &entryId) const {
     return hasProject_ && entryHasLockedLayerCached(entryId, projectIndexCache());
 }
 
-bool EditorState::entryIsGroup(const QString &entryId) const
-{
+bool EditorState::entryIsGroup(const QString &entryId) const {
     return hasProject_ && projectIndexCache().groups.contains(entryId);
 }
 
-bool EditorState::entryIsGuide(const QString &entryId) const
-{
+bool EditorState::entryIsGuide(const QString &entryId) const {
     return hasProject_ && projectIndexCache().guides.contains(entryId);
 }
 
-void EditorState::setGroupAndDescendantLocked(const QString &groupId, bool locked)
-{
+void EditorState::setGroupAndDescendantLocked(const QString &groupId, bool locked) {
     fh6::scene::Group *group = groupForId(groupId);
     if (group == nullptr) {
         return;
@@ -425,8 +391,7 @@ void EditorState::setGroupAndDescendantLocked(const QString &groupId, bool locke
     invalidateProjectIndexCache();
 }
 
-void EditorState::setLayerLockScope(const QString &layerId, bool locked)
-{
+void EditorState::setLayerLockScope(const QString &layerId, bool locked) {
     const QString parentGroupId = parentGroupForEntry(layerId);
     if (!parentGroupId.isEmpty()) {
         setGroupAndDescendantLocked(parentGroupId, locked);
@@ -438,37 +403,32 @@ void EditorState::setLayerLockScope(const QString &layerId, bool locked)
     }
 }
 
-void EditorState::setLayerVisible(const QString &layerId, bool visible)
-{
+void EditorState::setLayerVisible(const QString &layerId, bool visible) {
     if (fh6::scene::Shape *shape = projectIndexCache().layers.value(layerId, nullptr)) {
         shape->visible = visible;
     }
 }
 
-void EditorState::setLayerMask(const QString &layerId, bool mask)
-{
+void EditorState::setLayerMask(const QString &layerId, bool mask) {
     if (fh6::scene::Shape *shape = projectIndexCache().layers.value(layerId, nullptr)) {
         shape->mask = mask;
     }
 }
 
-void EditorState::setGuideLayerVisible(const QString &guideId, bool visible)
-{
+void EditorState::setGuideLayerVisible(const QString &guideId, bool visible) {
     if (fh6::scene::GuideLayer *guide = projectIndexCache().guides.value(guideId, nullptr)) {
         guide->visible = visible;
     }
 }
 
-void EditorState::setGuideLayerLocked(const QString &guideId, bool locked)
-{
+void EditorState::setGuideLayerLocked(const QString &guideId, bool locked) {
     if (fh6::scene::GuideLayer *guide = projectIndexCache().guides.value(guideId, nullptr)) {
         guide->locked = locked;
         invalidateProjectIndexCache();
     }
 }
 
-void EditorState::setGroupDescendantVisible(const QString &groupId, bool visible)
-{
+void EditorState::setGroupDescendantVisible(const QString &groupId, bool visible) {
     if (fh6::scene::Group *group = groupForId(groupId)) {
         walkGroup(*group, [&](fh6::scene::Layer &node) {
             if (node.kind() == fh6::scene::LayerKind::Shape) {
@@ -478,8 +438,7 @@ void EditorState::setGroupDescendantVisible(const QString &groupId, bool visible
     }
 }
 
-void EditorState::setGroupDescendantMask(const QString &groupId, bool mask)
-{
+void EditorState::setGroupDescendantMask(const QString &groupId, bool mask) {
     if (fh6::scene::Group *group = groupForId(groupId)) {
         walkGroup(*group, [&](fh6::scene::Layer &node) {
             if (node.kind() == fh6::scene::LayerKind::Shape) {
@@ -489,8 +448,7 @@ void EditorState::setGroupDescendantMask(const QString &groupId, bool mask)
     }
 }
 
-void EditorState::setGroupDescendantColor(const QString &groupId, const std::array<quint8, 4> &color)
-{
+void EditorState::setGroupDescendantColor(const QString &groupId, const std::array<quint8, 4> &color) {
     if (fh6::scene::Group *group = groupForId(groupId)) {
         walkGroup(*group, [&](fh6::scene::Layer &node) {
             if (node.kind() == fh6::scene::LayerKind::Shape) {
@@ -503,8 +461,7 @@ void EditorState::setGroupDescendantColor(const QString &groupId, const std::arr
     }
 }
 
-void EditorState::setGroupDescendantOpacity(const QString &groupId, double opacity)
-{
+void EditorState::setGroupDescendantOpacity(const QString &groupId, double opacity) {
     const double clamped = std::clamp(opacity, 0.0, 1.0);
     const quint8 alpha = static_cast<quint8>(std::clamp(static_cast<int>(std::round(clamped * 255.0)), 0, 255));
     if (fh6::scene::Group *group = groupForId(groupId)) {
@@ -518,14 +475,12 @@ void EditorState::setGroupDescendantOpacity(const QString &groupId, double opaci
     }
 }
 
-QTransform EditorState::groupLocalFrame(const QString &groupId) const
-{
+QTransform EditorState::groupLocalFrame(const QString &groupId) const {
     const fh6::scene::Group *group = groupForId(groupId);
     return group != nullptr ? frameOf(*group) : QTransform();
 }
 
-QTransform EditorState::groupParentWorld(const QString &groupId) const
-{
+QTransform EditorState::groupParentWorld(const QString &groupId) const {
     const fh6::scene::Group *group = groupForId(groupId);
     if (group == nullptr || group->parent() == nullptr) {
         return {};
@@ -533,8 +488,7 @@ QTransform EditorState::groupParentWorld(const QString &groupId) const
     return stateToQTransform(group->parent()->worldMatrix());
 }
 
-void EditorState::transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT)
-{
+void EditorState::transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT) {
     if (worldT.isIdentity()) {
         return;
     }
@@ -550,8 +504,7 @@ void EditorState::transformGroupFrames(const QVector<QString> &groupIds, const Q
 }
 
 void EditorState::setGroupFramesFromStart(const QHash<QString, QTransform> &startLocalFrames,
-                                          const QTransform &worldT)
-{
+                                          const QTransform &worldT) {
     for (auto it = startLocalFrames.constBegin(); it != startLocalFrames.constEnd(); ++it) {
         fh6::scene::Group *group = groupForId(it.key());
         if (group == nullptr) {
@@ -563,8 +516,7 @@ void EditorState::setGroupFramesFromStart(const QHash<QString, QTransform> &star
     }
 }
 
-QVector<QString> EditorState::fullySelectedTopGroupIds() const
-{
+QVector<QString> EditorState::fullySelectedTopGroupIds() const {
     if (!hasProject_) {
         return {};
     }
@@ -611,8 +563,7 @@ QVector<QString> EditorState::fullySelectedTopGroupIds() const
     return result;
 }
 
-QVector<QString> EditorState::selectedTransformTargetIds() const
-{
+QVector<QString> EditorState::selectedTransformTargetIds() const {
     if (!hasProject_) {
         return {};
     }
@@ -649,25 +600,21 @@ QVector<QString> EditorState::selectedTransformTargetIds() const
     return result;
 }
 
-void EditorState::noteProjectGeometryChanged(bool refreshPreviews, const QVector<QString> &changedNodeIds)
-{
+void EditorState::noteProjectGeometryChanged(bool refreshPreviews, const QVector<QString> &changedNodeIds) {
     invalidateSceneTree();
     Q_EMIT projectGeometryChanged(refreshPreviews, changedNodeIds);
 }
 
-void EditorState::noteTransformLiveChanged(const QVector<QString> &targetIds)
-{
+void EditorState::noteTransformLiveChanged(const QVector<QString> &targetIds) {
     updateRenderCacheTransforms(targetIds);
     Q_EMIT transformLiveChanged(targetIds);
 }
 
-void EditorState::noteCanvasRepaint()
-{
+void EditorState::noteCanvasRepaint() {
     Q_EMIT canvasRepaintRequested();
 }
 
-void EditorState::noteProjectStructureChanged()
-{
+void EditorState::noteProjectStructureChanged() {
     invalidateProjectIndexCache();
     selectedLayerIds_ = existingLayerIds(selectedLayerIds_);
     selectedGuideLayerIds_ = existingGuideLayerIds(selectedGuideLayerIds_);
@@ -683,13 +630,11 @@ void EditorState::noteProjectStructureChanged()
     Q_EMIT selectionChanged();
 }
 
-void EditorState::noteClipboardChanged()
-{
+void EditorState::noteClipboardChanged() {
     Q_EMIT clipboardChanged();
 }
 
-void EditorState::setActiveSectionId(const QString &sectionGroupId)
-{
+void EditorState::setActiveSectionId(const QString &sectionGroupId) {
     if (activeSectionId_ == sectionGroupId) {
         return;
     }
@@ -697,13 +642,11 @@ void EditorState::setActiveSectionId(const QString &sectionGroupId)
     Q_EMIT activeSectionChanged(sectionGroupId);
 }
 
-void EditorState::setToolName(const QString &name)
-{
+void EditorState::setToolName(const QString &name) {
     Q_EMIT toolNameChanged(name);
 }
 
-QSet<QString> EditorState::sectionIdsForNodes(const QVector<QString> &nodeIds) const
-{
+QSet<QString> EditorState::sectionIdsForNodes(const QVector<QString> &nodeIds) const {
     QSet<QString> sections;
     if (!hasProject_ || !project_.isLivery) {
         return sections;
@@ -721,8 +664,7 @@ QSet<QString> EditorState::sectionIdsForNodes(const QVector<QString> &nodeIds) c
     return sections;
 }
 
-QSet<QString> EditorState::existingLayerIds(const QSet<QString> &ids) const
-{
+QSet<QString> EditorState::existingLayerIds(const QSet<QString> &ids) const {
     QSet<QString> existing;
     if (!hasProject_) {
         return existing;
@@ -736,8 +678,7 @@ QSet<QString> EditorState::existingLayerIds(const QSet<QString> &ids) const
     return existing;
 }
 
-QSet<QString> EditorState::existingGuideLayerIds(const QSet<QString> &ids) const
-{
+QSet<QString> EditorState::existingGuideLayerIds(const QSet<QString> &ids) const {
     QSet<QString> existing;
     if (!hasProject_) {
         return existing;
@@ -751,13 +692,11 @@ QSet<QString> EditorState::existingGuideLayerIds(const QSet<QString> &ids) const
     return existing;
 }
 
-QString EditorState::parentGroupForEntry(const QString &entryId) const
-{
+QString EditorState::parentGroupForEntry(const QString &entryId) const {
     return hasProject_ ? projectIndexCache().parentByChild.value(entryId) : QString();
 }
 
-QString EditorState::topmostGroupForEntry(const QString &entryId) const
-{
+QString EditorState::topmostGroupForEntry(const QString &entryId) const {
     if (!hasProject_) {
         return {};
     }
@@ -769,8 +708,7 @@ QString EditorState::topmostGroupForEntry(const QString &entryId) const
     return topmost;
 }
 
-fh6::scene::Group *EditorState::groupForId(const QString &groupId)
-{
+fh6::scene::Group *EditorState::groupForId(const QString &groupId) {
     if (!hasProject_) {
         return nullptr;
     }
@@ -780,8 +718,7 @@ fh6::scene::Group *EditorState::groupForId(const QString &groupId)
     return projectIndexCache().groups.value(groupId, nullptr);
 }
 
-const fh6::scene::Group *EditorState::groupForId(const QString &groupId) const
-{
+const fh6::scene::Group *EditorState::groupForId(const QString &groupId) const {
     if (!hasProject_) {
         return nullptr;
     }
@@ -791,8 +728,7 @@ const fh6::scene::Group *EditorState::groupForId(const QString &groupId) const
     return projectIndexCache().groups.value(groupId, nullptr);
 }
 
-QString EditorState::uniqueLayerId() const
-{
+QString EditorState::uniqueLayerId() const {
     const auto &cache = projectIndexCache();
     int index = cache.layers.size() + 1;
     QString id;
@@ -802,8 +738,7 @@ QString EditorState::uniqueLayerId() const
     return id;
 }
 
-QString EditorState::uniqueGuideLayerId() const
-{
+QString EditorState::uniqueGuideLayerId() const {
     const auto &cache = projectIndexCache();
     int index = cache.guides.size() + 1;
     QString id;
@@ -813,8 +748,7 @@ QString EditorState::uniqueGuideLayerId() const
     return id;
 }
 
-QString EditorState::uniqueGroupId() const
-{
+QString EditorState::uniqueGroupId() const {
     const auto &cache = projectIndexCache();
     int index = cache.groups.size() + 1;
     QString id;

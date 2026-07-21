@@ -18,8 +18,7 @@
 namespace gui {
 namespace {
 
-QStringList candidateAssetPaths()
-{
+QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     return {
@@ -31,8 +30,7 @@ QStringList candidateAssetPaths()
 
 } // namespace
 
-bool CarRegistry::loadDefault(QString *error)
-{
+bool CarRegistry::loadDefault(QString *error) {
     for (const QString &path : candidateAssetPaths()) {
         if (QFile::exists(path)) {
             return loadFromFile(path, error);
@@ -44,8 +42,7 @@ bool CarRegistry::loadDefault(QString *error)
     return false;
 }
 
-bool CarRegistry::loadFromFile(const QString &path, QString *error)
-{
+bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error != nullptr) {
@@ -105,19 +102,16 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error)
     return true;
 }
 
-QString CarRegistry::name(int id) const
-{
+QString CarRegistry::name(int id) const {
     return names_.value(id);
 }
 
-QString CarRegistry::modelCode(int id) const
-{
+QString CarRegistry::modelCode(int id) const {
     const QString code = models_.value(id);
     return code.isEmpty() ? names_.value(id) : code;
 }
 
-QString CarRegistry::displayName(int id) const
-{
+QString CarRegistry::displayName(int id) const {
     if (id == 0) {
         return QString();
     }
@@ -125,8 +119,7 @@ QString CarRegistry::displayName(int id) const
     return found.isEmpty() ? QStringLiteral("Unknown car (#%1)").arg(id) : found;
 }
 
-const CarRegistry &sharedCarRegistry()
-{
+const CarRegistry &sharedCarRegistry() {
     static const CarRegistry registry = [] {
         CarRegistry r;
         r.loadDefault(nullptr);
@@ -135,8 +128,7 @@ const CarRegistry &sharedCarRegistry()
     return registry;
 }
 
-bool chooseCarModel(QWidget *parent, int currentId, int *outId)
-{
+bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     const CarRegistry &registry = sharedCarRegistry();
 
     QDialog dialog(parent);

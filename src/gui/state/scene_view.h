@@ -23,23 +23,19 @@ struct SceneRenderEntry {
 
 // Matrix3 is column-vector (m[row][col]); QTransform is row-vector. Element mapping:
 // m11=m[0][0], m12=m[1][0], m21=m[0][1], m22=m[1][1], dx=m[0][2], dy=m[1][2].
-inline QTransform toQTransform(const fh6::Matrix3 &m)
-{
+inline QTransform toQTransform(const fh6::Matrix3 &m) {
     return QTransform(m.m[0][0], m.m[1][0], m.m[0][1], m.m[1][1], m.m[0][2], m.m[1][2]);
 }
 
-inline QTransform sceneWorldTransform(const fh6::scene::Layer &node)
-{
+inline QTransform sceneWorldTransform(const fh6::scene::Layer &node) {
     return toQTransform(node.worldMatrix());
 }
 
-inline QTransform sceneLocalTransform(const fh6::scene::Layer &node)
-{
+inline QTransform sceneLocalTransform(const fh6::scene::Layer &node) {
     return toQTransform(node.transform.matrix());
 }
 
-inline QSizeF sceneNodeSize(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry)
-{
+inline QSizeF sceneNodeSize(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry) {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         const auto &shape = static_cast<const fh6::scene::Shape &>(node);
         if (shape.raster) {
@@ -54,20 +50,17 @@ inline QSizeF sceneNodeSize(const fh6::scene::Layer &node, const ShapeGeometrySt
     return QSizeF();
 }
 
-inline QRectF sceneLocalRect(const QSizeF &size)
-{
+inline QRectF sceneLocalRect(const QSizeF &size) {
     return QRectF(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
 }
 
-inline QRectF sceneLocalRect(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry)
-{
+inline QRectF sceneLocalRect(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry) {
     return sceneLocalRect(sceneNodeSize(node, geometry));
 }
 
 class BoundsAccumulator {
 public:
-    void add(const QTransform &transform, const QRectF &localRect)
-    {
+    void add(const QTransform &transform, const QRectF &localRect) {
         const QRectF mapped = transform.mapRect(localRect);
         bounds_ = hasBounds_ ? bounds_.united(mapped) : mapped;
         hasBounds_ = true;
@@ -81,13 +74,11 @@ private:
     bool hasBounds_ = false;
 };
 
-inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Group &root)
-{
+inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Group &root) {
     QVector<const fh6::scene::Shape *> leaves;
     struct Walker {
         QVector<const fh6::scene::Shape *> &out;
-        void walk(const fh6::scene::Layer &node)
-        {
+        void walk(const fh6::scene::Layer &node) {
             if (node.kind() == fh6::scene::LayerKind::Group) {
                 for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
                     walk(*child);
@@ -103,13 +94,11 @@ inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Gro
     return leaves;
 }
 
-inline QVector<const fh6::scene::GuideLayer *> sceneGuideLeaves(const fh6::scene::Group &root)
-{
+inline QVector<const fh6::scene::GuideLayer *> sceneGuideLeaves(const fh6::scene::Group &root) {
     QVector<const fh6::scene::GuideLayer *> leaves;
     struct Walker {
         QVector<const fh6::scene::GuideLayer *> &out;
-        void walk(const fh6::scene::Layer &node)
-        {
+        void walk(const fh6::scene::Layer &node) {
             if (node.kind() == fh6::scene::LayerKind::Group) {
                 for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
                     walk(*child);

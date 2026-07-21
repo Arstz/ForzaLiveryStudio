@@ -43,8 +43,6 @@ struct PolygonMeshResult {
     QString error;
 };
 
-// tolerance is used only to remove duplicate and visually redundant input points;
-// topology checks use an independent floating-point precision threshold.
 PolygonContour buildPolygonContour(const QVector<QPointF> &points,
                                    double tolerance = 1e-7);
 PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry);

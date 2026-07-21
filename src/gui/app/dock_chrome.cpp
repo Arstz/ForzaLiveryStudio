@@ -15,8 +15,7 @@ constexpr const char *DockTitleLayoutProperty = "fh6DockTitleLayout";
 
 } // namespace
 
-void setDockTitleIcon(QDockWidget *dock, const QString &iconName)
-{
+void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
     if (dock == nullptr) {
         return;
     }
@@ -63,8 +62,7 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName)
     dock->setTitleBarWidget(titleBar);
 }
 
-QToolButton *addDockAreaCollapseButton(QDockWidget *dock)
-{
+QToolButton *addDockAreaCollapseButton(QDockWidget *dock) {
     if (dock == nullptr || dock->titleBarWidget() == nullptr) {
         return nullptr;
     }
@@ -96,8 +94,7 @@ QToolButton *addDockAreaCollapseButton(QDockWidget *dock)
     return button;
 }
 
-QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed)
-{
+QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed) {
     switch (area) {
     case Qt::LeftDockWidgetArea:
         return collapsed ? QStringLiteral(">") : QStringLiteral("<");
@@ -112,8 +109,7 @@ QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed)
     }
 }
 
-void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea area, bool collapsed)
-{
+void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea area, bool collapsed) {
     if (button == nullptr) {
         return;
     }
@@ -122,8 +118,7 @@ void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea are
     button->setToolTip(collapsed ? QStringLiteral("Restore dock area") : QStringLiteral("Collapse dock area"));
 }
 
-void refreshDockTitleIcon(QDockWidget *dock)
-{
+void refreshDockTitleIcon(QDockWidget *dock) {
     if (dock == nullptr) {
         return;
     }
@@ -149,18 +144,15 @@ class SplitterResizeCursorFilter final : public QObject {
 public:
     explicit SplitterResizeCursorFilter(Qt::Orientation orientation, QObject *parent = nullptr)
         : QObject(parent)
-        , cursorShape_(orientation == Qt::Horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor)
-    {
+        , cursorShape_(orientation == Qt::Horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor) {
     }
 
-    ~SplitterResizeCursorFilter() override
-    {
+    ~SplitterResizeCursorFilter() override {
         clearOverrideCursor();
     }
 
 protected:
-    bool eventFilter(QObject *watched, QEvent *event) override
-    {
+    bool eventFilter(QObject *watched, QEvent *event) override {
         switch (event->type()) {
         case QEvent::Enter:
         case QEvent::HoverEnter:
@@ -180,8 +172,7 @@ protected:
     }
 
 private:
-    void setOverrideCursor()
-    {
+    void setOverrideCursor() {
         const QCursor cursor(cursorShape_);
         if (active_) {
             QApplication::changeOverrideCursor(cursor);
@@ -191,8 +182,7 @@ private:
         }
     }
 
-    void clearOverrideCursor()
-    {
+    void clearOverrideCursor() {
         if (!active_) {
             return;
         }
@@ -206,8 +196,7 @@ private:
 
 } // namespace
 
-void installSplitterResizeCursor(QSplitter *splitter)
-{
+void installSplitterResizeCursor(QSplitter *splitter) {
     if (splitter == nullptr || splitter->count() < 2) {
         return;
     }

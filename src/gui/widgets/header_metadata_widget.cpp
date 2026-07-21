@@ -8,8 +8,7 @@
 namespace gui {
 
 HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
-    : QWidget(parent)
-{
+    : QWidget(parent) {
     auto *outer = new QVBoxLayout(this);
 
     auto *form = new QFormLayout();
@@ -53,8 +52,7 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     setMetadata({}, false, false);
 }
 
-void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool importedDraft, bool hasProject)
-{
+void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool importedDraft, bool hasProject) {
     seed_ = seed;
     importedDraft_ = importedDraft;
 
@@ -75,8 +73,7 @@ void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool imp
     hint_->setVisible(!hasProject);
 }
 
-fh6::HeaderMetadata HeaderMetadataWidget::metadata() const
-{
+fh6::HeaderMetadata HeaderMetadataWidget::metadata() const {
     fh6::HeaderMetadata meta = seed_;
     meta.name = nameEdit_->text();
     meta.creatorName = creatorEdit_->text();
@@ -86,13 +83,11 @@ fh6::HeaderMetadata HeaderMetadataWidget::metadata() const
     return meta;
 }
 
-bool HeaderMetadataWidget::rebuildRequested() const
-{
+bool HeaderMetadataWidget::rebuildRequested() const {
     return importedDraft_ && rebuildCheck_->isChecked();
 }
 
-void HeaderMetadataWidget::setApplyCallback(std::function<void()> callback)
-{
+void HeaderMetadataWidget::setApplyCallback(std::function<void()> callback) {
     applyCallback_ = std::move(callback);
 }
 

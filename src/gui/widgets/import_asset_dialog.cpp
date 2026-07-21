@@ -31,14 +31,12 @@ struct AssetInfo {
     QString thumbnailPath;
 
     bool valid() const { return kind != AssetKind::None; }
-    bool motorsport() const
-    {
+    bool motorsport() const {
         return kind == AssetKind::MotorsportGroup || kind == AssetKind::MotorsportLivery;
     }
 };
 
-QString findFile(const QDir &directory, const QString &name)
-{
+QString findFile(const QDir &directory, const QString &name) {
     const QFileInfoList files = directory.entryInfoList(QDir::Files | QDir::Hidden | QDir::System);
     for (const QFileInfo &file : files) {
         if (file.fileName().compare(name, Qt::CaseInsensitive) == 0) {
@@ -48,8 +46,7 @@ QString findFile(const QDir &directory, const QString &name)
     return {};
 }
 
-QString findThumbnail(const QDir &directory)
-{
+QString findThumbnail(const QDir &directory) {
     const QStringList preferredNames = {
         QStringLiteral("bigThumb.webp"),
         QStringLiteral("thumb.webp"),
@@ -73,8 +70,7 @@ QString findThumbnail(const QDir &directory)
     return {};
 }
 
-QString liveryCarName(AssetKind kind, const QString &path)
-{
+QString liveryCarName(AssetKind kind, const QString &path) {
     try {
         if (kind == AssetKind::HorizonLivery) {
             return sharedCarRegistry().displayName(fh6::readLiveryPayload(path).carId);
@@ -87,8 +83,7 @@ QString liveryCarName(AssetKind kind, const QString &path)
     return {};
 }
 
-void readHeaderMetadata(const QString &headerPath, AssetInfo &asset)
-{
+void readHeaderMetadata(const QString &headerPath, AssetInfo &asset) {
     if (headerPath.isEmpty()) {
         return;
     }
@@ -112,8 +107,7 @@ void readHeaderMetadata(const QString &headerPath, AssetInfo &asset)
     }
 }
 
-AssetInfo inspectAsset(const QString &path)
-{
+AssetInfo inspectAsset(const QString &path) {
     AssetInfo asset;
     const QFileInfo directoryInfo(path);
     if (!directoryInfo.isDir()) {
@@ -150,8 +144,7 @@ AssetInfo inspectAsset(const QString &path)
     return asset;
 }
 
-QString assetKindLabel(AssetKind kind)
-{
+QString assetKindLabel(AssetKind kind) {
     switch (kind) {
     case AssetKind::HorizonGroup:
         return QStringLiteral("Horizon group");
@@ -167,8 +160,7 @@ QString assetKindLabel(AssetKind kind)
     return {};
 }
 
-QImage readThumbnail(const QString &path)
-{
+QImage readThumbnail(const QString &path) {
     if (path.isEmpty()) {
         return {};
     }
@@ -181,8 +173,7 @@ QImage readThumbnail(const QString &path)
 class ImportAssetDialog final : public QDialog {
 public:
     ImportAssetDialog(QWidget *parent, QString startDirectory)
-        : QDialog(parent)
-    {
+        : QDialog(parent) {
         setWindowTitle(QStringLiteral("Import"));
         setModal(true);
         resize(760, 520);
@@ -287,8 +278,7 @@ public:
         navigate(startDirectory);
     }
 
-    ImportAssetSelection selection() const
-    {
+    ImportAssetSelection selection() const {
         ImportAssetSelection result;
         result.path = selectedPath_;
         result.directory = currentDirectory_;
@@ -310,8 +300,7 @@ private:
         AssetKind kind = AssetKind::None;
     };
 
-    void navigate(const QString &path, bool recordHistory = true)
-    {
+    void navigate(const QString &path, bool recordHistory = true) {
         const QFileInfo info(path);
         if (!info.isDir()) {
             return;
@@ -330,8 +319,7 @@ private:
         refresh();
     }
 
-    void refresh()
-    {
+    void refresh() {
         const quint64 generation = ++thumbnailGeneration_;
         list_->clear();
         selectedPath_.clear();
@@ -404,8 +392,7 @@ private:
         }
     }
 
-    void applyFilters()
-    {
+    void applyFilters() {
         if (list_ == nullptr || searchEdit_ == nullptr || typeFilter_ == nullptr) {
             return;
         }
@@ -437,8 +424,7 @@ private:
         }
     }
 
-    void loadAssetDetails(const AssetDetailsRequest &request, quint64 generation)
-    {
+    void loadAssetDetails(const AssetDetailsRequest &request, quint64 generation) {
         const QPointer<ImportAssetDialog> dialog(this);
         if (!request.thumbnailPath.isEmpty()) {
             QThreadPool::globalInstance()->start([dialog, request, generation]() {
@@ -476,8 +462,7 @@ private:
     }
 
     void applyAssetDetails(const QString &assetPath, quint64 generation,
-                           const QImage &image, const QString &car)
-    {
+                           const QImage &image, const QString &car) {
         if (generation != thumbnailGeneration_) {
             return;
         }
@@ -496,8 +481,7 @@ private:
         }
     }
 
-    void goBack()
-    {
+    void goBack() {
         if (historyIndex_ <= 0) {
             return;
         }
@@ -505,16 +489,14 @@ private:
         navigate(history_.at(historyIndex_), false);
     }
 
-    void goUp()
-    {
+    void goUp() {
         const QString parent = QFileInfo(currentDirectory_).absolutePath();
         if (QDir::cleanPath(parent) != QDir::cleanPath(currentDirectory_)) {
             navigate(parent);
         }
     }
 
-    void updateSelection(QListWidgetItem *item)
-    {
+    void updateSelection(QListWidgetItem *item) {
         const bool asset = item != nullptr && item->data(AssetRole).toBool();
         buttons_->button(QDialogButtonBox::Open)->setEnabled(asset);
         if (!asset) {
@@ -526,8 +508,7 @@ private:
         hint_->setText(QDir::toNativeSeparators(item->data(PathRole).toString()));
     }
 
-    void acceptSelection()
-    {
+    void acceptSelection() {
         QListWidgetItem *item = list_->currentItem();
         if (item == nullptr || !item->data(AssetRole).toBool()) {
             return;
@@ -556,8 +537,7 @@ private:
 
 } // namespace
 
-ImportAssetSelection showImportAssetDialog(QWidget *parent, const QString &startDirectory)
-{
+ImportAssetSelection showImportAssetDialog(QWidget *parent, const QString &startDirectory) {
     ImportAssetDialog dialog(parent, startDirectory);
     dialog.exec();
     return dialog.selection();

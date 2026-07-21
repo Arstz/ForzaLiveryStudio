@@ -26,8 +26,7 @@ public:
 
     VisualKind kind() const override { return VisualKind::Vector; }
     QSizeF size() const override { return QSizeF(1.0, 1.0); }
-    std::unique_ptr<VisualContainer> clone() const override
-    {
+    std::unique_ptr<VisualContainer> clone() const override {
         return std::make_unique<VectorContainer>(*this);
     }
 };
@@ -42,12 +41,10 @@ public:
     QString format;
 
     VisualKind kind() const override { return VisualKind::Raster; }
-    QSizeF size() const override
-    {
+    QSizeF size() const override {
         return QSizeF(static_cast<double>(width), static_cast<double>(height));
     }
-    std::unique_ptr<VisualContainer> clone() const override
-    {
+    std::unique_ptr<VisualContainer> clone() const override {
         return std::make_unique<RasterContainer>(*this);
     }
 };

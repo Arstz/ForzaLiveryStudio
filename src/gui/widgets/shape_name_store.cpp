@@ -5,8 +5,7 @@
 namespace gui {
 namespace {
 
-QStringList candidateAssetPaths()
-{
+QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     return {
@@ -18,8 +17,7 @@ QStringList candidateAssetPaths()
 
 } // namespace
 
-bool ShapeNameStore::loadDefault(QString *error)
-{
+bool ShapeNameStore::loadDefault(QString *error) {
     for (const QString &path : candidateAssetPaths()) {
         if (QFile::exists(path)) {
             return loadFromFile(path, error);
@@ -31,8 +29,7 @@ bool ShapeNameStore::loadDefault(QString *error)
     return false;
 }
 
-bool ShapeNameStore::loadFromFile(const QString &path, QString *error)
-{
+bool ShapeNameStore::loadFromFile(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error != nullptr) {
@@ -68,13 +65,11 @@ bool ShapeNameStore::loadFromFile(const QString &path, QString *error)
     return true;
 }
 
-QString ShapeNameStore::name(int shapeId) const
-{
+QString ShapeNameStore::name(int shapeId) const {
     return names_.value(shapeId);
 }
 
-bool ShapeNameStore::contains(int shapeId) const
-{
+bool ShapeNameStore::contains(int shapeId) const {
     return names_.contains(shapeId);
 }
 

@@ -31,8 +31,7 @@ struct QuantizeResult {
 
 constexpr double kEpsilon = 1e-9;
 
-HsvColor rgbToHsv(int red, int green, int blue)
-{
+HsvColor rgbToHsv(int red, int green, int blue) {
     QColor color(red, green, blue);
     float hue = 0.0F;
     float saturation = 0.0F;
@@ -41,15 +40,13 @@ HsvColor rgbToHsv(int red, int green, int blue)
     return {hue < 0.0 ? 0.0 : hue, saturation, value};
 }
 
-QRgb hsvToRgb(const HsvColor &hsv)
-{
+QRgb hsvToRgb(const HsvColor &hsv) {
     return QColor::fromHsvF(hsv.h - std::floor(hsv.h),
                             std::clamp(hsv.s, 0.0, 1.0),
                             std::clamp(hsv.v, 0.0, 1.0)).rgb();
 }
 
-double hsvDistanceSquared(const HsvColor &left, const HsvColor &right)
-{
+double hsvDistanceSquared(const HsvColor &left, const HsvColor &right) {
     double hueDistance = std::abs(left.h - right.h);
     hueDistance = std::min(hueDistance, 1.0 - hueDistance);
     const double hueGate = std::sqrt(std::max(0.0, left.s * right.s));
@@ -60,13 +57,11 @@ double hsvDistanceSquared(const HsvColor &left, const HsvColor &right)
         + 0.65 * dv * dv;
 }
 
-int colorBin(QRgb pixel)
-{
+int colorBin(QRgb pixel) {
     return ((qRed(pixel) >> 3) << 10) | ((qGreen(pixel) >> 3) << 5) | (qBlue(pixel) >> 3);
 }
 
-QImage normalizeBinaryAlpha(const QImage &source)
-{
+QImage normalizeBinaryAlpha(const QImage &source) {
     QImage result = source.convertToFormat(QImage::Format_ARGB32);
     for (int y = 0; y < result.height(); ++y) {
         auto *line = reinterpret_cast<QRgb *>(result.scanLine(y));
@@ -81,8 +76,7 @@ QImage normalizeBinaryAlpha(const QImage &source)
     return result;
 }
 
-QVector<QColor> normalizedPalette(const QVector<QColor> &colors)
-{
+QVector<QColor> normalizedPalette(const QVector<QColor> &colors) {
     QVector<QColor> result;
     result.reserve(std::min(256, static_cast<int>(colors.size())));
     for (const QColor &input : colors) {
@@ -103,8 +97,7 @@ QVector<QColor> normalizedPalette(const QVector<QColor> &colors)
     return result;
 }
 
-QuantizeResult quantizeToFixedPalette(const QImage &source, const QVector<QColor> &inputPalette)
-{
+QuantizeResult quantizeToFixedPalette(const QImage &source, const QVector<QColor> &inputPalette) {
     constexpr int histogramSize = 32 * 32 * 32;
     const QVector<QColor> palette = normalizedPalette(inputPalette);
     if (palette.isEmpty()) {
@@ -147,8 +140,7 @@ QuantizeResult quantizeToFixedPalette(const QImage &source, const QVector<QColor
 }
 
 QImage bilateralOneDimension(const QImage &source, int radius, double sigmaColor,
-                             double sigmaSpace, bool horizontal)
-{
+                             double sigmaSpace, bool horizontal) {
     if (radius <= 0 || source.isNull()) {
         return source;
     }
@@ -204,8 +196,7 @@ QImage bilateralOneDimension(const QImage &source, int radius, double sigmaColor
     return result;
 }
 
-QImage bilateralSmooth(const QImage &source, const ImagePreprocessSettings &settings)
-{
+QImage bilateralSmooth(const QImage &source, const ImagePreprocessSettings &settings) {
     QImage result = source;
     const int radius = std::max(0, settings.smoothingDiameter / 2);
     for (int pass = 0; pass < std::max(0, settings.smoothingPasses); ++pass) {
@@ -215,8 +206,7 @@ QImage bilateralSmooth(const QImage &source, const ImagePreprocessSettings &sett
     return result;
 }
 
-QImage medianBlur(const QImage &source, int radius)
-{
+QImage medianBlur(const QImage &source, int radius) {
     if (radius <= 0 || source.isNull()) {
         return source;
     }
@@ -260,8 +250,7 @@ QImage medianBlur(const QImage &source, int radius)
     return result;
 }
 
-QImage blendImages(const QImage &left, const QImage &right, double amount)
-{
+QImage blendImages(const QImage &left, const QImage &right, double amount) {
     const double alpha = std::clamp(amount, 0.0, 1.0);
     QImage result(left.size(), QImage::Format_ARGB32);
     for (int y = 0; y < left.height(); ++y) {
@@ -278,8 +267,7 @@ QImage blendImages(const QImage &left, const QImage &right, double amount)
     return result;
 }
 
-QImage boxBlur(const QImage &source, int radius)
-{
+QImage boxBlur(const QImage &source, int radius) {
     if (radius <= 0 || source.isNull()) {
         return source;
     }
@@ -344,8 +332,7 @@ QImage boxBlur(const QImage &source, int radius)
 }
 
 QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximumIterations,
-                           double minimumColorFraction, const QVector<QColor> &lockedInput)
-{
+                           double minimumColorFraction, const QVector<QColor> &lockedInput) {
     constexpr int histogramSize = 32 * 32 * 32;
     struct Accumulator {
         quint64 red = 0;
@@ -579,8 +566,7 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
     return {result, static_cast<int>(palette.size()), retainedPalette};
 }
 
-double saturationOf(QRgb pixel)
-{
+double saturationOf(QRgb pixel) {
     const int maximum = std::max({qRed(pixel), qGreen(pixel), qBlue(pixel)});
     const int minimum = std::min({qRed(pixel), qGreen(pixel), qBlue(pixel)});
     return maximum == 0 ? 0.0 : 255.0 * static_cast<double>(maximum - minimum) / maximum;
@@ -588,13 +574,11 @@ double saturationOf(QRgb pixel)
 
 constexpr quint16 kTransparentLabel = std::numeric_limits<quint16>::max();
 
-quint16 labelAt(const QImage &image, int x, int y)
-{
+quint16 labelAt(const QImage &image, int x, int y) {
     return reinterpret_cast<const quint16 *>(image.constScanLine(y))[x];
 }
 
-int nearestPaletteLabel(QRgb pixel, const QVector<QColor> &palette)
-{
+int nearestPaletteLabel(QRgb pixel, const QVector<QColor> &palette) {
     const HsvColor hsv = rgbToHsv(qRed(pixel), qGreen(pixel), qBlue(pixel));
     double nearest = std::numeric_limits<double>::max();
     int nearestIndex = 0;
@@ -610,8 +594,7 @@ int nearestPaletteLabel(QRgb pixel, const QVector<QColor> &palette)
     return nearestIndex;
 }
 
-QImage buildIndexImage(const QImage &quantized, const QVector<QColor> &palette)
-{
+QImage buildIndexImage(const QImage &quantized, const QVector<QColor> &palette) {
     QImage result(quantized.size(), QImage::Format_Grayscale16);
     QHash<QRgb, int> paletteIndices;
     for (int index = 0; index < palette.size(); ++index) {
@@ -633,8 +616,7 @@ QImage buildIndexImage(const QImage &quantized, const QVector<QColor> &palette)
     return result;
 }
 
-QImage renderIndexImage(const QImage &indexImage, const QVector<QColor> &palette)
-{
+QImage renderIndexImage(const QImage &indexImage, const QVector<QColor> &palette) {
     QImage result(indexImage.size(), QImage::Format_ARGB32);
     for (int y = 0; y < indexImage.height(); ++y) {
         const auto *labels = reinterpret_cast<const quint16 *>(indexImage.constScanLine(y));
@@ -658,13 +640,11 @@ struct EdgeData {
     std::vector<double> distance;
 };
 
-double pixelLuminance(QRgb pixel)
-{
+double pixelLuminance(QRgb pixel) {
     return 0.2126 * qRed(pixel) + 0.7152 * qGreen(pixel) + 0.0722 * qBlue(pixel);
 }
 
-EdgeData detectEdges(const QImage &source)
-{
+EdgeData detectEdges(const QImage &source) {
     const int width = source.width();
     const int height = source.height();
     const size_t count = static_cast<size_t>(width) * height;
@@ -761,8 +741,7 @@ struct LineData {
     QColor derivedColor;
 };
 
-LineData detectLines(const QImage &source, const EdgeData &edges)
-{
+LineData detectLines(const QImage &source, const EdgeData &edges) {
     const int width = source.width();
     const int height = source.height();
     const size_t count = static_cast<size_t>(width) * height;
@@ -832,8 +811,7 @@ LineData detectLines(const QImage &source, const EdgeData &edges)
 
 QImage restoreLabelsWithDetail(const QImage &indexImage, const QVector<QColor> &palette,
                                const QImage &flattened, const ImagePreprocessSettings &settings,
-                               const EdgeData &edges, const std::vector<quint8> &lineMask)
-{
+                               const EdgeData &edges, const std::vector<quint8> &lineMask) {
     const QImage detailBlur = boxBlur(flattened, std::max(1, settings.detailRadius));
     QImage result = indexImage.copy();
     const double saturationAmount = std::clamp(settings.saturationRestore, 0.0, 1.0);
@@ -878,8 +856,7 @@ QImage restoreLabelsWithDetail(const QImage &indexImage, const QVector<QColor> &
     return result;
 }
 
-std::vector<int> componentSizes(const QImage &indexImage)
-{
+std::vector<int> componentSizes(const QImage &indexImage) {
     const int width = indexImage.width();
     const int height = indexImage.height();
     const int count = width * height;
@@ -929,8 +906,7 @@ std::vector<int> componentSizes(const QImage &indexImage)
 }
 
 QImage majorityCleanup(const QImage &input, const ImagePreprocessSettings &settings,
-                       const std::vector<quint8> &lineMask, int lineLabel)
-{
+                       const std::vector<quint8> &lineMask, int lineLabel) {
     QImage result = input;
     const int width = result.width();
     const int height = result.height();
@@ -987,8 +963,7 @@ QImage majorityCleanup(const QImage &input, const ImagePreprocessSettings &setti
 
 void flattenEdgeBoundedRegions(QImage &indexImage, const ImagePreprocessSettings &settings,
                                const EdgeData &edges, const std::vector<quint8> &lineMask,
-                               int lineLabel)
-{
+                               int lineLabel) {
     if (!settings.forceFlatFills) {
         return;
     }
@@ -1054,14 +1029,12 @@ void flattenEdgeBoundedRegions(QImage &indexImage, const ImagePreprocessSettings
 
 } // namespace
 
-ImagePreprocessSettings ImagePreprocessSettings::animeDetail()
-{
+ImagePreprocessSettings ImagePreprocessSettings::animeDetail() {
     return {};
 }
 
 ImagePreprocessResult preprocessImageDetailed(const QImage &source,
-                                              const ImagePreprocessSettings &settings)
-{
+                                              const ImagePreprocessSettings &settings) {
     if (source.isNull()) {
         return {};
     }
@@ -1137,8 +1110,7 @@ ImagePreprocessResult preprocessImageDetailed(const QImage &source,
     };
 }
 
-QImage preprocessImage(const QImage &source, const ImagePreprocessSettings &settings)
-{
+QImage preprocessImage(const QImage &source, const ImagePreprocessSettings &settings) {
     return preprocessImageDetailed(source, settings).image;
 }
 

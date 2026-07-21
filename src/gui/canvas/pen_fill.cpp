@@ -16,11 +16,11 @@ constexpr int kSquareShapeId = 101;
 constexpr int kCircleShapeId = 102;
 constexpr int kTriangleShapeId = 103;
 constexpr int kHalfCircleShapeId = 109;
-constexpr int kFangShapeId = 0x007f;
+constexpr int kFangShapeId = 127;
 constexpr int kConcaveArcShapeId = 129;
 constexpr int kQuarterCircleShapeId = 130;
-constexpr int kGarlicShapeId = 0x008b;
-constexpr int kToothShapeId = 0x084b;
+constexpr int kGarlicShapeId = 139;
+constexpr int kToothShapeId = 2123;
 constexpr double kConcaveArcInnerRadiusRatio = 0.65;
 constexpr double kMaximumCurveOutsideRatio = 1e-5;
 constexpr double kMaximumTangentJump = 0.35;
@@ -29,8 +29,7 @@ constexpr double kMaximumSpanErrorRatio = 0.05;
 constexpr int kSpanSamples = 64;
 constexpr int kMaximumSpanEvaluations = 2048;
 
-int curveEvaluationBudget(int segmentCount)
-{
+int curveEvaluationBudget(int segmentCount) {
     if (segmentCount > 384) {
         return 4;
     }
@@ -46,8 +45,7 @@ int curveEvaluationBudget(int segmentCount)
     return kMaximumSpanEvaluations;
 }
 
-bool isAllowedPenShape(int shapeId)
-{
+bool isAllowedPenShape(int shapeId) {
     return shapeId == kSquareShapeId
         || shapeId == kCircleShapeId
         || shapeId == kTriangleShapeId
@@ -59,8 +57,7 @@ bool isAllowedPenShape(int shapeId)
         || shapeId == kToothShapeId;
 }
 
-bool isCurveShape(int shapeId)
-{
+bool isCurveShape(int shapeId) {
     return shapeId == kCircleShapeId
         || shapeId == kHalfCircleShapeId
         || shapeId == kFangShapeId
@@ -70,13 +67,11 @@ bool isCurveShape(int shapeId)
         || shapeId == kToothShapeId;
 }
 
-double cross(const QPointF &a, const QPointF &b)
-{
+double cross(const QPointF &a, const QPointF &b) {
     return a.x() * b.y() - a.y() * b.x();
 }
 
-double signedArea(const QPolygonF &polygon)
-{
+double signedArea(const QPolygonF &polygon) {
     double result = 0.0;
     for (int i = 0; i < polygon.size(); ++i) {
         result += cross(polygon[i], polygon[(i + 1) % polygon.size()]);
@@ -84,8 +79,7 @@ double signedArea(const QPolygonF &polygon)
     return result * 0.5;
 }
 
-double pathArea(const QPainterPath &path)
-{
+double pathArea(const QPainterPath &path) {
     double result = 0.0;
     for (const QPolygonF &polygon : path.simplified().toSubpathPolygons()) {
         result += signedArea(polygon);
@@ -93,8 +87,7 @@ double pathArea(const QPainterPath &path)
     return std::abs(result);
 }
 
-QPointF segmentPoint(const PenBoundarySegment &segment, double t)
-{
+QPointF segmentPoint(const PenBoundarySegment &segment, double t) {
     if (!segment.curved) {
         return segment.start * (1.0 - t) + segment.end * t;
     }
@@ -104,8 +97,7 @@ QPointF segmentPoint(const PenBoundarySegment &segment, double t)
         + segment.end * (t * t);
 }
 
-QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples)
-{
+QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples) {
     QVector<QPointF> result;
     result.reserve(samples + 1);
     for (int i = 0; i <= samples; ++i) {
@@ -114,8 +106,7 @@ QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples)
     return result;
 }
 
-QPointF segmentDerivative(const PenBoundarySegment &segment, double t)
-{
+QPointF segmentDerivative(const PenBoundarySegment &segment, double t) {
     if (!segment.curved) {
         return segment.end - segment.start;
     }
@@ -123,8 +114,7 @@ QPointF segmentDerivative(const PenBoundarySegment &segment, double t)
         + (segment.end - segment.control) * (2.0 * t);
 }
 
-double segmentCurvature(const PenBoundarySegment &segment, double t)
-{
+double segmentCurvature(const PenBoundarySegment &segment, double t) {
     if (!segment.curved) {
         return 0.0;
     }
@@ -137,8 +127,7 @@ double segmentCurvature(const PenBoundarySegment &segment, double t)
     return cross(derivative, second) / (speed * speed * speed);
 }
 
-bool isOutwardCurve(const PenBoundarySegment &segment, double orientationSign)
-{
+bool isOutwardCurve(const PenBoundarySegment &segment, double orientationSign) {
     if (!segment.curved) {
         return false;
     }
@@ -149,8 +138,7 @@ bool isOutwardCurve(const PenBoundarySegment &segment, double orientationSign)
 }
 
 double junctionSeparation(const PenBoundarySegment &left,
-                          const PenBoundarySegment &right)
-{
+                          const PenBoundarySegment &right) {
     const QPointF incoming = segmentDerivative(left, 1.0);
     const QPointF outgoing = segmentDerivative(right, 0.0);
     const double incomingLength = std::hypot(incoming.x(), incoming.y());
@@ -174,8 +162,7 @@ double junctionSeparation(const PenBoundarySegment &left,
 }
 
 bool curvatureBreak(const PenBoundarySegment &left,
-                    const PenBoundarySegment &right)
-{
+                    const PenBoundarySegment &right) {
     const QPointF incoming = segmentDerivative(left, 1.0);
     const QPointF outgoing = segmentDerivative(right, 0.0);
     const double incomingLength = std::hypot(incoming.x(), incoming.y());
@@ -205,8 +192,7 @@ bool curvatureBreak(const PenBoundarySegment &left,
 
 QVector<QPointF> sampleSegmentSpan(const QVector<PenBoundarySegment> &segments,
                                    int first,
-                                   int last)
-{
+                                   int last) {
     const int segmentCount = last - first + 1;
     const int samplesPerSegment = std::clamp(kSpanSamples / std::max(1, segmentCount), 2, 8);
     QVector<QPointF> result;
@@ -221,8 +207,7 @@ QVector<QPointF> sampleSegmentSpan(const QVector<PenBoundarySegment> &segments,
     return result;
 }
 
-QPolygonF flattenedContour(const PenContour &contour, int curvedSamples)
-{
+QPolygonF flattenedContour(const PenContour &contour, int curvedSamples) {
     QPolygonF result;
     if (contour.segments.isEmpty()) {
         return result;
@@ -240,8 +225,7 @@ QPolygonF flattenedContour(const PenContour &contour, int curvedSamples)
     return result;
 }
 
-double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QPointF &b)
-{
+double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QPointF &b) {
     const QPointF ab = b - a;
     const double length2 = QPointF::dotProduct(ab, ab);
     if (length2 <= kEpsilon) {
@@ -252,8 +236,7 @@ double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QP
     return QPointF::dotProduct(delta, delta);
 }
 
-double distanceToPolygons(const QPointF &point, const QVector<QPolygonF> &polygons)
-{
+double distanceToPolygons(const QPointF &point, const QVector<QPolygonF> &polygons) {
     double best = std::numeric_limits<double>::max();
     for (const QPolygonF &polygon : polygons) {
         for (int i = 0; i < polygon.size(); ++i) {
@@ -266,8 +249,7 @@ double distanceToPolygons(const QPointF &point, const QVector<QPolygonF> &polygo
     return best == std::numeric_limits<double>::max() ? best : std::sqrt(best);
 }
 
-int orientation(const QPointF &a, const QPointF &b, const QPointF &c, double epsilon)
-{
+int orientation(const QPointF &a, const QPointF &b, const QPointF &c, double epsilon) {
     const double value = cross(b - a, c - a);
     if (std::abs(value) <= epsilon) {
         return 0;
@@ -275,8 +257,7 @@ int orientation(const QPointF &a, const QPointF &b, const QPointF &c, double eps
     return value > 0.0 ? 1 : -1;
 }
 
-bool pointOnSegment(const QPointF &point, const QPointF &a, const QPointF &b, double epsilon)
-{
+bool pointOnSegment(const QPointF &point, const QPointF &a, const QPointF &b, double epsilon) {
     return orientation(a, b, point, epsilon) == 0
         && point.x() >= std::min(a.x(), b.x()) - epsilon
         && point.x() <= std::max(a.x(), b.x()) + epsilon
@@ -289,8 +270,7 @@ bool lineIntersection(const QPointF &a,
                       const QPointF &c,
                       const QPointF &d,
                       double epsilon,
-                      QPointF *intersection)
-{
+                      QPointF *intersection) {
     const int o1 = orientation(a, b, c, epsilon);
     const int o2 = orientation(a, b, d, epsilon);
     const int o3 = orientation(c, d, a, epsilon);
@@ -328,8 +308,7 @@ bool lineIntersection(const QPointF &a,
     return true;
 }
 
-QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, double tolerance)
-{
+QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, double tolerance) {
     struct FlatEdge {
         QPointF a;
         QPointF b;
@@ -396,8 +375,7 @@ QTransform affineFromTriangles(const QPointF &a,
                                const QPointF &p,
                                const QPointF &q,
                                const QPointF &r,
-                               bool *ok)
-{
+                               bool *ok) {
     const QPointF d1 = b - a;
     const QPointF d2 = c - a;
     const QPointF e1 = q - p;
@@ -425,8 +403,7 @@ QTransform affineFromTriangles(const QPointF &a,
 QTransform centeredTransform(const QRectF &bounds,
                              const QPointF &center,
                              double scaleX,
-                             double scaleY)
-{
+                             double scaleY) {
     QTransform result;
     result.translate(center.x(), center.y());
     result.scale(scaleX, scaleY);
@@ -434,8 +411,7 @@ QTransform centeredTransform(const QRectF &bounds,
     return result;
 }
 
-QPolygonF primitiveHull(const PenPrimitive &primitive)
-{
+QPolygonF primitiveHull(const PenPrimitive &primitive) {
     QVector<QPointF> points;
     for (const QPolygonF &contour : primitive.contours) {
         for (const QPointF &point : contour) {
@@ -476,8 +452,7 @@ QPolygonF primitiveHull(const PenPrimitive &primitive)
     return QPolygonF(hull);
 }
 
-PolygonMeshSources penMeshSources(const QVector<PenPrimitive> &primitives)
-{
+PolygonMeshSources penMeshSources(const QVector<PenPrimitive> &primitives) {
     PolygonMeshSources sources;
     for (const PenPrimitive &primitive : primitives) {
         if (primitive.shapeId == kSquareShapeId) {
@@ -489,8 +464,7 @@ PolygonMeshSources penMeshSources(const QVector<PenPrimitive> &primitives)
     return sources;
 }
 
-const PenPrimitive *primitiveForId(const QVector<PenPrimitive> &primitives, int shapeId)
-{
+const PenPrimitive *primitiveForId(const QVector<PenPrimitive> &primitives, int shapeId) {
     for (const PenPrimitive &primitive : primitives) {
         if (primitive.shapeId == shapeId) {
             return &primitive;
@@ -519,8 +493,7 @@ struct CurvePrimitive {
     QVector<ArcProfile> profiles;
 };
 
-QPointF supportPoint(const PenPrimitive &primitive, const QPointF &direction)
-{
+QPointF supportPoint(const PenPrimitive &primitive, const QPointF &direction) {
     QPointF result;
     double bestProjection = std::numeric_limits<double>::lowest();
     for (const QPolygonF &contour : primitive.contours) {
@@ -535,8 +508,7 @@ QPointF supportPoint(const PenPrimitive &primitive, const QPointF &direction)
     return result;
 }
 
-QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive)
-{
+QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive) {
     QVector<ArcProfile> result;
     const QRectF bounds = primitive.bounds;
     if (primitive.shapeId == kHalfCircleShapeId) {
@@ -612,8 +584,7 @@ QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive)
 std::optional<QTransform> arcThroughPoints(const ArcProfile &profile,
                                            const QPointF &start,
                                            const QPointF &middle,
-                                           const QPointF &end)
-{
+                                           const QPointF &end) {
     bool ok = false;
     const QTransform transform = affineFromTriangles(profile.start,
                                                       profile.middle,
@@ -629,8 +600,7 @@ QVector<QTransform> arcTransforms(const ArcProfile &profile,
                                   const QPointF &start,
                                   const QPointF &middle,
                                   const QPointF &end,
-                                  double maximumInset)
-{
+                                  double maximumInset) {
     const auto base = arcThroughPoints(profile, start, middle, end);
     if (!base) {
         return {};
@@ -657,8 +627,7 @@ QVector<QTransform> arcTransforms(const ArcProfile &profile,
 std::optional<QTransform> circleThroughPoints(const PenPrimitive &primitive,
                                               const QPointF &a,
                                               const QPointF &b,
-                                              const QPointF &c)
-{
+                                              const QPointF &c) {
     const double determinant = 2.0 * (a.x() * (b.y() - c.y())
                                       + b.x() * (c.y() - a.y())
                                       + c.x() * (a.y() - b.y()));
@@ -686,8 +655,7 @@ std::optional<QTransform> ellipseThroughCurve(const PenPrimitive &primitive,
                                               const QPointF &start,
                                               const QPointF &middle,
                                               const QPointF &end,
-                                              bool lowerHalf)
-{
+                                              bool lowerHalf) {
     const QPointF sourceStart(primitive.bounds.left(), primitive.bounds.center().y());
     const QPointF sourceMiddle(primitive.bounds.center().x(),
                                lowerHalf ? primitive.bounds.bottom() : primitive.bounds.top());
@@ -704,8 +672,7 @@ std::optional<QTransform> ellipseThroughCurve(const PenPrimitive &primitive,
 }
 
 std::optional<QTransform> ellipseLeastSquares(const PenPrimitive &primitive,
-                                              const QVector<QPointF> &samples)
-{
+                                              const QVector<QPointF> &samples) {
     if (samples.size() < 3) {
         return std::nullopt;
     }
@@ -756,8 +723,7 @@ std::optional<CurvePlacement> evaluateCurvePlacement(const PenPrimitive &primiti
                                                      const QTransform &transform,
                                                      const QPainterPath &target,
                                                      double targetArea,
-                                                     double maximumBoundaryError = std::numeric_limits<double>::max())
-{
+                                                     double maximumBoundaryError = std::numeric_limits<double>::max()) {
     if (!transform.isAffine() || std::abs(transform.determinant()) <= kEpsilon) {
         return std::nullopt;
     }
@@ -787,8 +753,7 @@ std::optional<CurvePlacement> evaluateCurvePlacement(const PenPrimitive &primiti
     return result;
 }
 
-bool betterCurvePlacement(const CurvePlacement &candidate, const CurvePlacement &best)
-{
+bool betterCurvePlacement(const CurvePlacement &candidate, const CurvePlacement &best) {
     if (std::abs(candidate.insideArea - best.insideArea) > kEpsilon) {
         return candidate.insideArea > best.insideArea;
     }
@@ -805,8 +770,7 @@ std::optional<CurvePlacement> outwardCurvePlacement(const QVector<CurvePrimitive
                                                      const PenBoundarySegment &segment,
                                                      const QPainterPath &target,
                                                      double targetArea,
-                                                     double maximumBoundaryError)
-{
+                                                     double maximumBoundaryError) {
     const QVector<QPointF> samples = sampleSegment(segment, kCurveSamples);
     const QPointF middle = segmentPoint(segment, 0.5);
     std::optional<CurvePlacement> best;
@@ -855,8 +819,7 @@ std::optional<CurvePlacement> outwardCurvePlacement(const QVector<CurvePrimitive
 
 bool chordInsideTarget(const QPointF &start,
                        const QPointF &end,
-                       const QPainterPath &target)
-{
+                       const QPainterPath &target) {
     for (int i = 1; i < 8; ++i) {
         const QPointF point = start * (1.0 - static_cast<double>(i) / 8.0)
             + end * (static_cast<double>(i) / 8.0);
@@ -877,8 +840,7 @@ std::optional<InwardCurvePlacement> inwardCurvePlacement(
     const PenBoundarySegment &segment,
     const QPainterPath &target,
     double targetArea,
-    double boundaryTolerance)
-{
+    double boundaryTolerance) {
     const QPointF middle = segmentPoint(segment, 0.5);
     QPolygonF controlPoints({segment.start, segment.control, segment.end});
     const QRectF bounds = controlPoints.boundingRect();
@@ -925,8 +887,7 @@ std::optional<CurvePlacement> outwardSpanPlacement(const QVector<CurvePrimitive>
                                                    int last,
                                                    const QPainterPath &target,
                                                    double targetArea,
-                                                   double maximumBoundaryError)
-{
+                                                   double maximumBoundaryError) {
     const QVector<QPointF> samples = sampleSegmentSpan(segments, first, last);
     if (!chordInsideTarget(samples.front(), samples.back(), target)) {
         return std::nullopt;
@@ -982,8 +943,7 @@ std::optional<CurvePlacement> outwardSpanPlacement(const QVector<CurvePrimitive>
 }
 
 QVector<PenBoundarySegment> curvatureOrderedSegments(const QVector<PenBoundarySegment> &segments,
-                                                     double orientationSign)
-{
+                                                     double orientationSign) {
     if (segments.size() < 2) {
         return segments;
     }
@@ -1037,8 +997,7 @@ struct SpanSelectionCost {
 };
 
 bool betterSpanSelection(const SpanSelectionCost &candidate,
-                         const SpanSelectionCost &best)
-{
+                         const SpanSelectionCost &best) {
     if (!best.valid) {
         return true;
     }
@@ -1061,8 +1020,7 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                                              double orientationSign,
                                              double boundaryTolerance,
                                              const std::function<bool()> &cancelled,
-                                             bool *wasCancelled)
-{
+                                             bool *wasCancelled) {
     const int count = segments.size();
     QVector<bool> outward(count, false);
     QVector<CurveSpanPlacement> candidates;
@@ -1215,8 +1173,7 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
 
 } // namespace
 
-PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessTolerance)
-{
+PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessTolerance) {
     PenContour result;
     if (points.size() < 3) {
         result.error = QStringLiteral("A Pen path needs at least three points");
@@ -1285,8 +1242,7 @@ PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessToler
     return result;
 }
 
-PenPrimitive buildPenPrimitive(int shapeId, const ShapeGeometry &geometry)
-{
+PenPrimitive buildPenPrimitive(int shapeId, const ShapeGeometry &geometry) {
     PenPrimitive result;
     result.shapeId = shapeId;
     result.silhouette.setFillRule(Qt::WindingFill);
@@ -1317,8 +1273,7 @@ PenPrimitive buildPenPrimitive(int shapeId, const ShapeGeometry &geometry)
 
 QVector<PenPrimitive> buildPenPrimitiveCatalog(const ShapeGeometryStore &geometry,
                                                int firstShapeId,
-                                               int lastShapeId)
-{
+                                               int lastShapeId) {
     QVector<PenPrimitive> result;
     for (int shapeId = firstShapeId; shapeId <= lastShapeId; ++shapeId) {
         if (!isAllowedPenShape(shapeId)) {
@@ -1337,8 +1292,7 @@ QVector<PenPrimitive> buildPenPrimitiveCatalog(const ShapeGeometryStore &geometr
 }
 
 PenFillResult fillPenPath(const PenFillRequest &request,
-                         const std::function<bool()> &cancelled)
-{
+                         const std::function<bool()> &cancelled) {
     PenFillResult result;
     if (request.boundaryTolerance <= 0.0 || !std::isfinite(request.boundaryTolerance)) {
         result.error = QStringLiteral("Pen boundary tolerance must be positive");

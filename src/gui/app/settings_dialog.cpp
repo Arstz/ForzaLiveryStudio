@@ -16,8 +16,7 @@ public:
     using QKeySequenceEdit::QKeySequenceEdit;
 
 protected:
-    bool event(QEvent *event) override
-    {
+    bool event(QEvent *event) override {
         if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);
             if (keyEvent->key() == Qt::Key_Tab || keyEvent->key() == Qt::Key_Backtab) {
@@ -47,8 +46,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     , initialTheme_(theme)
     , canvasSettings_(canvasSettings)
     , behaviorSettings_(behaviorSettings)
-    , shortcuts_(shortcuts)
-{
+    , shortcuts_(shortcuts) {
     setWindowTitle(QStringLiteral("Settings"));
     resize(620, 420);
 
@@ -223,13 +221,11 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     layout->addWidget(buttons);
 }
 
-UiTheme SettingsDialog::selectedTheme() const
-{
+UiTheme SettingsDialog::selectedTheme() const {
     return themeFromSettingsValue(themeCombo_->currentData().toString());
 }
 
-CanvasColorSettings SettingsDialog::selectedCanvasSettings() const
-{
+CanvasColorSettings SettingsDialog::selectedCanvasSettings() const {
     CanvasColorSettings result = canvasSettings_;
     result.darkMode = darkCanvasMode_->currentData().toString() == QStringLiteral("custom")
         ? CanvasColorMode::Custom
@@ -246,8 +242,7 @@ CanvasColorSettings SettingsDialog::selectedCanvasSettings() const
     return result;
 }
 
-BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
-{
+BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     BehaviorSettings result = behaviorSettings_;
     result.visibilityBordersEnabled = visibilityBordersCheck_ != nullptr && visibilityBordersCheck_->isChecked();
     result.positionLimitBorderEnabled = positionLimitBorderCheck_ != nullptr && positionLimitBorderCheck_->isChecked();
@@ -284,8 +279,7 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
     return result;
 }
 
-QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const
-{
+QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const {
     QVector<ShortcutSettingsItem> result = shortcuts_;
     for (int row = 0; row < result.size(); ++row) {
         auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
@@ -296,28 +290,24 @@ QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const
     return result;
 }
 
-void SettingsDialog::setThemeChangedCallback(std::function<void(UiTheme)> callback)
-{
+void SettingsDialog::setThemeChangedCallback(std::function<void(UiTheme)> callback) {
     themeChangedCallback_ = std::move(callback);
 }
 
-void SettingsDialog::resetShortcutRow(int row)
-{
+void SettingsDialog::resetShortcutRow(int row) {
     auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
     if (edit != nullptr && row >= 0 && row < shortcuts_.size()) {
         edit->setKeySequence(shortcuts_[row].defaultSequence);
     }
 }
 
-void SettingsDialog::resetAllShortcuts()
-{
+void SettingsDialog::resetAllShortcuts() {
     for (int row = 0; row < shortcuts_.size(); ++row) {
         resetShortcutRow(row);
     }
 }
 
-void SettingsDialog::chooseCanvasColor(UiTheme theme)
-{
+void SettingsDialog::chooseCanvasColor(UiTheme theme) {
     const QColor current = theme == UiTheme::Light
         ? (canvasSettings_.lightCustom.isValid() ? canvasSettings_.lightCustom : defaultCanvasColor(UiTheme::Light))
         : (canvasSettings_.darkCustom.isValid() ? canvasSettings_.darkCustom : defaultCanvasColor(UiTheme::Dark));
@@ -335,8 +325,7 @@ void SettingsDialog::chooseCanvasColor(UiTheme theme)
     updateCanvasColorControls();
 }
 
-void SettingsDialog::chooseGuidelineColor()
-{
+void SettingsDialog::chooseGuidelineColor() {
     const QColor current = behaviorSettings_.guidelineColor.isValid()
         ? behaviorSettings_.guidelineColor
         : QColor(0, 170, 255);
@@ -349,8 +338,7 @@ void SettingsDialog::chooseGuidelineColor()
     updateCanvasColorControls();
 }
 
-void SettingsDialog::updateCanvasColorControls()
-{
+void SettingsDialog::updateCanvasColorControls() {
     const auto updateButton = [](QPushButton *button, const QColor &color, bool customEnabled) {
         if (button == nullptr) {
             return;
@@ -373,8 +361,7 @@ void SettingsDialog::updateCanvasColorControls()
                  true);
 }
 
-bool SettingsDialog::shortcutsAreValid()
-{
+bool SettingsDialog::shortcutsAreValid() {
     validationLabel_->clear();
     QHash<QString, QString> seen;
     for (const ShortcutSettingsItem &item : shortcutItems()) {
@@ -393,8 +380,7 @@ bool SettingsDialog::shortcutsAreValid()
     return true;
 }
 
-void SettingsDialog::accept()
-{
+void SettingsDialog::accept() {
     if (!shortcutsAreValid()) {
         return;
     }

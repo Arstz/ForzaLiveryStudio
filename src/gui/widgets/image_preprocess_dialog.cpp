@@ -19,37 +19,32 @@ public:
                                 QWidget *parent = nullptr)
         : QWidget(parent)
         , viewChanged_(std::move(viewChanged))
-        , colorPicked_(std::move(colorPicked))
-    {
+        , colorPicked_(std::move(colorPicked)) {
         setMinimumSize(280, 240);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         setMouseTracking(true);
         setToolTip(QStringLiteral("Mouse wheel: zoom · Left/middle drag: pan · Double-click: fit"));
     }
 
-    void setImage(const QImage &image)
-    {
+    void setImage(const QImage &image) {
         image_ = image;
         update();
     }
 
-    void setSharedView(double scale, const QPointF &center, bool centerValid)
-    {
+    void setSharedView(double scale, const QPointF &center, bool centerValid) {
         scale_ = scale;
         center_ = center;
         centerValid_ = centerValid;
         update();
     }
 
-    void setEyedropperActive(bool active)
-    {
+    void setEyedropperActive(bool active) {
         eyedropperActive_ = active;
         setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
     }
 
 protected:
-    void paintEvent(QPaintEvent *) override
-    {
+    void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
         painter.fillRect(rect(), palette().brush(QPalette::Base));
         constexpr int tile = 12;
@@ -77,8 +72,7 @@ protected:
         painter.drawRect(target.adjusted(0, 0, -1, -1));
     }
 
-    void wheelEvent(QWheelEvent *event) override
-    {
+    void wheelEvent(QWheelEvent *event) override {
         if (image_.isNull()) {
             return;
         }
@@ -93,8 +87,7 @@ protected:
         event->accept();
     }
 
-    void mousePressEvent(QMouseEvent *event) override
-    {
+    void mousePressEvent(QMouseEvent *event) override {
         if (eyedropperActive_ && event->button() == Qt::LeftButton && !image_.isNull()) {
             const double scale = effectiveScale();
             const QPointF imagePoint = effectiveCenter()
@@ -116,8 +109,7 @@ protected:
         QWidget::mousePressEvent(event);
     }
 
-    void mouseMoveEvent(QMouseEvent *event) override
-    {
+    void mouseMoveEvent(QMouseEvent *event) override {
         if (panning_) {
             const double scale = effectiveScale();
             const QPointF center = effectiveCenter() - (event->position() - panLast_) / scale;
@@ -129,8 +121,7 @@ protected:
         QWidget::mouseMoveEvent(event);
     }
 
-    void mouseReleaseEvent(QMouseEvent *event) override
-    {
+    void mouseReleaseEvent(QMouseEvent *event) override {
         if (panning_ && (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton)) {
             panning_ = false;
             setCursor(eyedropperActive_ ? Qt::CrossCursor : Qt::ArrowCursor);
@@ -140,8 +131,7 @@ protected:
         QWidget::mouseReleaseEvent(event);
     }
 
-    void mouseDoubleClickEvent(QMouseEvent *event) override
-    {
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
         if (event->button() == Qt::LeftButton) {
             viewChanged_(0.0, {}, false);
             event->accept();
@@ -151,8 +141,7 @@ protected:
     }
 
 private:
-    double fitScale() const
-    {
+    double fitScale() const {
         if (image_.isNull()) {
             return 1.0;
         }
@@ -160,13 +149,11 @@ private:
                                        std::max(1, height() - 16) / static_cast<double>(image_.height())));
     }
 
-    double effectiveScale() const
-    {
+    double effectiveScale() const {
         return scale_ > 0.0 ? scale_ : fitScale();
     }
 
-    QPointF effectiveCenter() const
-    {
+    QPointF effectiveCenter() const {
         return centerValid_ ? center_ : QPointF(image_.width() * 0.5, image_.height() * 0.5);
     }
 
@@ -184,8 +171,7 @@ private:
 namespace {
 
 QSlider *addSlider(QFormLayout *form, const QString &label, int minimum, int maximum, int value,
-                   const std::function<QString(int)> &format, const std::function<void()> &changed)
-{
+                   const std::function<QString(int)> &format, const std::function<void()> &changed) {
     auto *row = new QWidget(form->parentWidget());
     auto *layout = new QHBoxLayout(row);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -206,13 +192,11 @@ QSlider *addSlider(QFormLayout *form, const QString &label, int minimum, int max
     return slider;
 }
 
-QString percentValue(int value)
-{
+QString percentValue(int value) {
     return QStringLiteral("%1%").arg(value);
 }
 
-ImagePreprocessResult preprocessSafely(const QImage &input, const ImagePreprocessSettings &settings)
-{
+ImagePreprocessResult preprocessSafely(const QImage &input, const ImagePreprocessSettings &settings) {
     try {
         return preprocessImageDetailed(input, settings);
     } catch (...) {
@@ -220,8 +204,7 @@ ImagePreprocessResult preprocessSafely(const QImage &input, const ImagePreproces
     }
 }
 
-QVector<QColor> uniqueOpaqueColors(const QVector<QColor> &colors)
-{
+QVector<QColor> uniqueOpaqueColors(const QVector<QColor> &colors) {
     QVector<QColor> result;
     result.reserve(std::min(256, static_cast<int>(colors.size())));
     for (const QColor &input : colors) {
@@ -249,8 +232,7 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
                                              QWidget *parent)
     : QDialog(parent)
     , source_(source.convertToFormat(QImage::Format_ARGB32_Premultiplied))
-    , projectSwatches_(uniqueOpaqueColors(projectSwatches))
-{
+    , projectSwatches_(uniqueOpaqueColors(projectSwatches)) {
     setWindowTitle(QStringLiteral("Preprocess Image"));
     resize(1100, 680);
     setMinimumSize(820, 560);
@@ -487,23 +469,19 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
     schedulePreview();
 }
 
-QImage ImagePreprocessDialog::resultImage() const
-{
+QImage ImagePreprocessDialog::resultImage() const {
     return result_;
 }
 
-int ImagePreprocessDialog::retainedColorCount() const
-{
+int ImagePreprocessDialog::retainedColorCount() const {
     return retainedColorCount_;
 }
 
-QVector<QColor> ImagePreprocessDialog::retainedPalette() const
-{
+QVector<QColor> ImagePreprocessDialog::retainedPalette() const {
     return retainedPalette_;
 }
 
-ImagePreprocessSettings ImagePreprocessDialog::selectedSettings() const
-{
+ImagePreprocessSettings ImagePreprocessDialog::selectedSettings() const {
     ImagePreprocessSettings settings;
     settings.colors = colors_->value();
     settings.flattenStrength = flattenStrength_->value() / 100.0;
@@ -531,15 +509,13 @@ ImagePreprocessSettings ImagePreprocessDialog::selectedSettings() const
     return settings;
 }
 
-void ImagePreprocessDialog::reject()
-{
+void ImagePreprocessDialog::reject() {
     if (!fullResolutionRunning_) {
         QDialog::reject();
     }
 }
 
-void ImagePreprocessDialog::schedulePreview()
-{
+void ImagePreprocessDialog::schedulePreview() {
     ++requestedGeneration_;
     if (previewTimer_ != nullptr) {
         previewTimer_->start();
@@ -549,8 +525,7 @@ void ImagePreprocessDialog::schedulePreview()
     }
 }
 
-void ImagePreprocessDialog::startPreview()
-{
+void ImagePreprocessDialog::startPreview() {
     if (fullResolutionRunning_ || previewRunning_) {
         return;
     }
@@ -573,8 +548,7 @@ void ImagePreprocessDialog::startPreview()
     });
 }
 
-void ImagePreprocessDialog::finishPreview(quint64 generation, const ImagePreprocessResult &result)
-{
+void ImagePreprocessDialog::finishPreview(quint64 generation, const ImagePreprocessResult &result) {
     previewRunning_ = false;
     if (fullResolutionRunning_) {
         return;
@@ -594,8 +568,7 @@ void ImagePreprocessDialog::finishPreview(quint64 generation, const ImagePreproc
     startPreview();
 }
 
-void ImagePreprocessDialog::beginFullResolutionProcessing()
-{
+void ImagePreprocessDialog::beginFullResolutionProcessing() {
     if (fullResolutionRunning_) {
         return;
     }
@@ -618,8 +591,7 @@ void ImagePreprocessDialog::beginFullResolutionProcessing()
     });
 }
 
-void ImagePreprocessDialog::finishFullResolutionProcessing(const ImagePreprocessResult &result)
-{
+void ImagePreprocessDialog::finishFullResolutionProcessing(const ImagePreprocessResult &result) {
     result_ = result.image.mirrored(false, true);
     retainedColorCount_ = result.retainedColorCount;
     retainedPalette_ = result.retainedPalette;
@@ -633,8 +605,7 @@ void ImagePreprocessDialog::finishFullResolutionProcessing(const ImagePreprocess
     QDialog::accept();
 }
 
-void ImagePreprocessDialog::setControlsEnabled(bool enabled)
-{
+void ImagePreprocessDialog::setControlsEnabled(bool enabled) {
     settingsPanel_->setEnabled(enabled);
     if (QPushButton *ok = buttons_->button(QDialogButtonBox::Ok)) {
         ok->setEnabled(enabled);
@@ -644,8 +615,7 @@ void ImagePreprocessDialog::setControlsEnabled(bool enabled)
     }
 }
 
-void ImagePreprocessDialog::applySharedView(double scale, const QPointF &center, bool centerValid)
-{
+void ImagePreprocessDialog::applySharedView(double scale, const QPointF &center, bool centerValid) {
     viewScale_ = scale;
     viewCenter_ = center;
     viewCenterValid_ = centerValid;
@@ -662,8 +632,7 @@ void ImagePreprocessDialog::applySharedView(double scale, const QPointF &center,
     }
 }
 
-void ImagePreprocessDialog::importProjectSwatches()
-{
+void ImagePreprocessDialog::importProjectSwatches() {
     if (projectSwatches_.isEmpty()) {
         statusLabel_->setText(QStringLiteral("This project has no swatches to import."));
         return;
@@ -677,8 +646,7 @@ void ImagePreprocessDialog::importProjectSwatches()
     schedulePreview();
 }
 
-void ImagePreprocessDialog::choosePaletteColor()
-{
+void ImagePreprocessDialog::choosePaletteColor() {
     QColor initial = Qt::white;
     if (paletteList_ != nullptr && paletteList_->currentItem() != nullptr) {
         initial = paletteList_->currentItem()->data(Qt::UserRole).value<QColor>();
@@ -689,8 +657,7 @@ void ImagePreprocessDialog::choosePaletteColor()
     }
 }
 
-void ImagePreprocessDialog::beginEyedropper()
-{
+void ImagePreprocessDialog::beginEyedropper() {
     const bool active = eyedropperButton_ != nullptr && eyedropperButton_->isChecked();
     setEyedropperActive(active);
     if (active) {
@@ -698,8 +665,7 @@ void ImagePreprocessDialog::beginEyedropper()
     }
 }
 
-void ImagePreprocessDialog::addPaletteColor(const QColor &input)
-{
+void ImagePreprocessDialog::addPaletteColor(const QColor &input) {
     if (!input.isValid()) {
         return;
     }
@@ -722,8 +688,7 @@ void ImagePreprocessDialog::addPaletteColor(const QColor &input)
     schedulePreview();
 }
 
-void ImagePreprocessDialog::removeSelectedPaletteColor()
-{
+void ImagePreprocessDialog::removeSelectedPaletteColor() {
     if (paletteList_ == nullptr || paletteList_->currentRow() < 0) {
         statusLabel_->setText(QStringLiteral("Select a palette color to remove."));
         return;
@@ -737,8 +702,7 @@ void ImagePreprocessDialog::removeSelectedPaletteColor()
     schedulePreview();
 }
 
-void ImagePreprocessDialog::chooseLineColor()
-{
+void ImagePreprocessDialog::chooseLineColor() {
     const QColor initial = lineColor_.isValid() ? lineColor_ : QColor(24, 24, 24);
     const QColor chosen = QColorDialog::getColor(initial, this, QStringLiteral("Choose Line Color"));
     if (!chosen.isValid()) {
@@ -761,8 +725,7 @@ void ImagePreprocessDialog::chooseLineColor()
     schedulePreview();
 }
 
-void ImagePreprocessDialog::updateLineColorButton()
-{
+void ImagePreprocessDialog::updateLineColorButton() {
     if (lineColorButton_ == nullptr) {
         return;
     }
@@ -778,8 +741,7 @@ void ImagePreprocessDialog::updateLineColorButton()
             .arg(lineColor_.name(QColor::HexRgb), foreground.name(QColor::HexRgb)));
 }
 
-void ImagePreprocessDialog::rebuildPaletteList()
-{
+void ImagePreprocessDialog::rebuildPaletteList() {
     if (paletteList_ == nullptr || colors_ == nullptr) {
         return;
     }
@@ -808,8 +770,7 @@ void ImagePreprocessDialog::rebuildPaletteList()
     }
 }
 
-void ImagePreprocessDialog::setEyedropperActive(bool active)
-{
+void ImagePreprocessDialog::setEyedropperActive(bool active) {
     if (eyedropperButton_ != nullptr) {
         eyedropperButton_->setChecked(active);
     }

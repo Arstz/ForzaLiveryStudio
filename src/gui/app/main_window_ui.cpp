@@ -23,8 +23,7 @@ namespace gui {
 
 using namespace mw_detail;
 
-void MainWindow::setupCanvas()
-{
+void MainWindow::setupCanvas() {
     canvas_ = new ProjectCanvas(this);
     canvas_->setEditorState(state_);
     canvas_->setTransformRelativeMode(loadTransformModeSettings().relativeMode);
@@ -60,8 +59,7 @@ void MainWindow::setupCanvas()
     setCentralWidget(canvas_);
 }
 
-void MainWindow::setupTreeView()
-{
+void MainWindow::setupTreeView() {
     treeModel_ = new LayerTreeModel(this);
     treeModel_->setEditorState(state_);
     tree_ = new LayerTreeView(this);
@@ -89,8 +87,7 @@ void MainWindow::setupTreeView()
 
 QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objectName,
                                       const QString &iconName, Qt::DockWidgetArea area, QWidget *content,
-                                      bool scrollable)
-{
+                                      bool scrollable) {
     auto *dock = new QDockWidget(title, this);
     dock->setObjectName(objectName);
     setDockTitleIcon(dock, iconName);
@@ -109,8 +106,7 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
     return dock;
 }
 
-void MainWindow::setupDocks()
-{
+void MainWindow::setupDocks() {
     auto *layersContainer = new QSplitter(Qt::Vertical, this);
     layersContainer->setChildrenCollapsible(false);
     layersContainer->setHandleWidth(DockSplitterHandleWidth);
@@ -214,8 +210,7 @@ void MainWindow::setupDocks()
     carPreviewDock_->hide();
 }
 
-void MainWindow::connectEditorStateSignals()
-{
+void MainWindow::connectEditorStateSignals() {
     connect(state_, &EditorState::selectionChanged, this, [this]() {
         updateLastSelectedShapeDefaults();
         syncTreeSelectionFromIds();
@@ -277,8 +272,7 @@ void MainWindow::connectEditorStateSignals()
     });
 }
 
-void MainWindow::setupFileMenu()
-{
+void MainWindow::setupFileMenu() {
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     auto addShortcutEntry = [this, fileMenu](const QString &text, const QString &id, const QString &label,
                                              const QKeySequence &shortcut, auto slot) {
@@ -322,8 +316,7 @@ void MainWindow::setupFileMenu()
                  QStringLiteral("exit"), QStringLiteral("Exit"), &QWidget::close);
 }
 
-void MainWindow::setupEditMenu()
-{
+void MainWindow::setupEditMenu() {
     auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
     auto addEditEntry = [this, editMenu](const QString &text, const QString &id, const QString &label,
                                          const QKeySequence &shortcut, const QString &iconName, auto slot,
@@ -411,22 +404,19 @@ void MainWindow::setupEditMenu()
                        QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H), ProjectCanvas::DistributeAxis::Horizontal);
 }
 
-void MainWindow::alignSelection(ProjectCanvas::AlignEdge edge)
-{
+void MainWindow::alignSelection(ProjectCanvas::AlignEdge edge) {
     if (canvas_ == nullptr || !canvas_->alignSelection(edge)) {
         statusBar()->showMessage(QStringLiteral("Select two or more layers or groups to align"), 2500);
     }
 }
 
-void MainWindow::distributeSelection(ProjectCanvas::DistributeAxis axis)
-{
+void MainWindow::distributeSelection(ProjectCanvas::DistributeAxis axis) {
     if (canvas_ == nullptr || !canvas_->distributeSelection(axis)) {
         statusBar()->showMessage(QStringLiteral("Select three or more layers or groups to distribute"), 2500);
     }
 }
 
-void MainWindow::setupProjectMenu()
-{
+void MainWindow::setupProjectMenu() {
     auto *projectMenu = menuBar()->addMenu(QStringLiteral("&Project"));
     auto addProjectEntry = [this, projectMenu](const QString &text, const QString &id, const QString &iconName,
                                                auto slot) {
@@ -445,8 +435,7 @@ void MainWindow::setupProjectMenu()
                     QString(), &MainWindow::setCreatorNameDialog);
 }
 
-void MainWindow::setupImgGenMenu()
-{
+void MainWindow::setupImgGenMenu() {
     auto *imgGenMenu = menuBar()->addMenu(QStringLiteral("&ImgGen"));
     auto addEntry = [this, imgGenMenu](const QString &text, const QString &id,
                                        const QString &label, auto slot) {
@@ -491,8 +480,7 @@ void MainWindow::setupImgGenMenu()
              QStringLiteral("Fill Regions"), &MainWindow::fillRegions);
 }
 
-void MainWindow::setupOptionsMenu()
-{
+void MainWindow::setupOptionsMenu() {
     auto *optionsMenu = menuBar()->addMenu(QStringLiteral("&Options"));
     auto addBehaviorOption = [this](QMenu *menu, const QString &text, const QString &id, bool BehaviorSettings::*member,
                                     const QKeySequence &shortcut = QKeySequence()) {
@@ -565,8 +553,7 @@ void MainWindow::setupOptionsMenu()
     });
 }
 
-void MainWindow::setupToolbar()
-{
+void MainWindow::setupToolbar() {
     auto *toolBar = addToolBar(QStringLiteral("Tools"));
     toolBar->setObjectName(QStringLiteral("MainToolBar"));
     toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -623,8 +610,7 @@ void MainWindow::setupToolbar()
     connect(placeTextAction, &QAction::triggered, this, [this]() { placeTextDialog(); });
 }
 
-void MainWindow::importCarModel()
-{
+void MainWindow::importCarModel() {
     if (carPreview_ == nullptr) {
         return;
     }
@@ -647,8 +633,7 @@ void MainWindow::importCarModel()
     statusBar()->showMessage(QStringLiteral("Loaded car model: %1").arg(QFileInfo(path).fileName()));
 }
 
-void MainWindow::updateCarUnwrapOverlay()
-{
+void MainWindow::updateCarUnwrapOverlay() {
     if (canvas_ == nullptr) {
         return;
     }
@@ -670,8 +655,7 @@ void MainWindow::updateCarUnwrapOverlay()
     }
 }
 
-void MainWindow::setupWindowMenu()
-{
+void MainWindow::setupWindowMenu() {
     auto *windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
     for (QDockWidget *dock : dockWidgets_) {
         windowMenu->addAction(dock->toggleViewAction());
@@ -693,8 +677,7 @@ void MainWindow::setupWindowMenu()
     connect(settingsAction, &QAction::triggered, this, [this]() { showSettingsDialog(); });
 }
 
-QAction *MainWindow::trackIconAction(QAction *action, const QString &iconName, bool mirroredIcon)
-{
+QAction *MainWindow::trackIconAction(QAction *action, const QString &iconName, bool mirroredIcon) {
     if (action == nullptr || iconName.isEmpty()) {
         return action;
     }
@@ -709,8 +692,7 @@ QAction *MainWindow::registerShortcutAction(QAction *action,
                                             const QKeySequence &defaultShortcut,
                                             const QString &iconName,
                                             bool mirroredIcon,
-                                            Qt::ShortcutContext context)
-{
+                                            Qt::ShortcutContext context) {
     if (action == nullptr) {
         return nullptr;
     }
@@ -726,8 +708,7 @@ QAction *MainWindow::registerShortcutAction(QAction *action,
     return action;
 }
 
-QVector<ShortcutSettingsItem> MainWindow::shortcutSettingsItems() const
-{
+QVector<ShortcutSettingsItem> MainWindow::shortcutSettingsItems() const {
     QVector<ShortcutSettingsItem> items;
     items.reserve(shortcutActions_.size());
     for (const ShortcutAction &binding : shortcutActions_) {
@@ -739,8 +720,7 @@ QVector<ShortcutSettingsItem> MainWindow::shortcutSettingsItems() const
     return items;
 }
 
-void MainWindow::applyShortcutSettings(const QVector<ShortcutSettingsItem> &items)
-{
+void MainWindow::applyShortcutSettings(const QVector<ShortcutSettingsItem> &items) {
     QHash<QString, QKeySequence> byId;
     for (const ShortcutSettingsItem &item : items) {
         byId.insert(item.id, item.currentSequence);
@@ -761,8 +741,7 @@ void MainWindow::applyShortcutSettings(const QVector<ShortcutSettingsItem> &item
     }
 }
 
-void MainWindow::applyTheme(UiTheme theme, bool save)
-{
+void MainWindow::applyTheme(UiTheme theme, bool save) {
     theme_ = theme;
     if (auto *app = qobject_cast<QApplication *>(QCoreApplication::instance())) {
         applyUiTheme(*app, theme);
@@ -794,8 +773,7 @@ void MainWindow::applyTheme(UiTheme theme, bool save)
     }
 }
 
-void MainWindow::refreshThemedIcons()
-{
+void MainWindow::refreshThemedIcons() {
     for (const IconAction &binding : iconActions_) {
         if (binding.action != nullptr) {
             binding.action->setIcon(binding.mirrored ? mirroredAssetIcon(binding.iconName) : assetIcon(binding.iconName));
@@ -803,8 +781,7 @@ void MainWindow::refreshThemedIcons()
     }
 }
 
-void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool save)
-{
+void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool save) {
     if (treeModel_ != nullptr) {
         const bool previewSettingChanged = treeModel_->generatePreviewsWithTransformations()
             != settings.generatePreviewsWithTransformations;
@@ -841,8 +818,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     }
 }
 
-void MainWindow::configureAutosaveTimer(const BehaviorSettings &settings)
-{
+void MainWindow::configureAutosaveTimer(const BehaviorSettings &settings) {
     if (autosaveTimer_ == nullptr) {
         return;
     }
@@ -856,16 +832,14 @@ void MainWindow::configureAutosaveTimer(const BehaviorSettings &settings)
     }
 }
 
-void MainWindow::refreshShortcutActionText(QAction *action, const QString &id, const QString &label) const
-{
+void MainWindow::refreshShortcutActionText(QAction *action, const QString &id, const QString &label) const {
     if (action == nullptr) {
         return;
     }
     action->setText(shortcutActionText(id, label, action->shortcut()));
 }
 
-void MainWindow::showSettingsDialog()
-{
+void MainWindow::showSettingsDialog() {
     const UiTheme originalTheme = theme_;
     SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadBehaviorSettings(), shortcutSettingsItems(), this);
     dialog.setThemeChangedCallback([this](UiTheme theme) {
@@ -881,8 +855,7 @@ void MainWindow::showSettingsDialog()
     applyTheme(dialog.selectedTheme());
 }
 
-QVector<QDockWidget *> MainWindow::dockWidgetsInArea(Qt::DockWidgetArea area) const
-{
+QVector<QDockWidget *> MainWindow::dockWidgetsInArea(Qt::DockWidgetArea area) const {
     QVector<QDockWidget *> docks;
     for (QDockWidget *dock : findChildren<QDockWidget *>()) {
         if (dock != nullptr
@@ -908,8 +881,7 @@ QVector<QDockWidget *> MainWindow::dockWidgetsInArea(Qt::DockWidgetArea area) co
     return docks;
 }
 
-void MainWindow::installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidgetArea fallbackArea)
-{
+void MainWindow::installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidgetArea fallbackArea) {
     QToolButton *button = addDockAreaCollapseButton(dock);
     if (button == nullptr) {
         return;
@@ -939,8 +911,7 @@ void MainWindow::installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidget
     }
 }
 
-void MainWindow::updateDockCollapseButtonVisibility()
-{
+void MainWindow::updateDockCollapseButtonVisibility() {
     QHash<QDockWidget *, QToolButton *> buttonFor;
     for (const DockCollapseButton &entry : dockCollapseButtons_) {
         if (entry.button != nullptr) {
@@ -973,8 +944,7 @@ void MainWindow::updateDockCollapseButtonVisibility()
     }
 }
 
-void MainWindow::updateDockCollapseButton(QDockWidget *dock, Qt::DockWidgetArea area)
-{
+void MainWindow::updateDockCollapseButton(QDockWidget *dock, Qt::DockWidgetArea area) {
     for (const DockCollapseButton &entry : dockCollapseButtons_) {
         if (entry.dock != dock || entry.button == nullptr) {
             continue;
@@ -1000,16 +970,14 @@ void MainWindow::updateDockCollapseButton(QDockWidget *dock, Qt::DockWidgetArea 
     }
 }
 
-void MainWindow::syncDockCollapseButtons()
-{
+void MainWindow::syncDockCollapseButtons() {
     for (const DockCollapseButton &entry : dockCollapseButtons_) {
         updateDockCollapseButton(entry.dock, Qt::NoDockWidgetArea);
     }
     updateDockCollapseButtonVisibility();
 }
 
-void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *anchorDock, QToolButton *anchorButton)
-{
+void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *anchorDock, QToolButton *anchorButton) {
     for (DockAreaCollapseState &control : dockAreaCollapseStates_) {
         if (control.area != area) {
             continue;
@@ -1087,8 +1055,7 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
     toggleDockAreaCollapsed(area, anchorDock, anchorButton);
 }
 
-bool MainWindow::event(QEvent *event)
-{
+bool MainWindow::event(QEvent *event) {
     if (event != nullptr && (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
         const Qt::KeyboardModifiers shortcutModifiers =
@@ -1139,8 +1106,7 @@ bool MainWindow::event(QEvent *event)
     return result;
 }
 
-void MainWindow::normalizeDockResizeCursor()
-{
+void MainWindow::normalizeDockResizeCursor() {
     Qt::CursorShape shape;
     switch (cursor().shape()) {
     case Qt::SplitHCursor:
@@ -1163,8 +1129,7 @@ void MainWindow::normalizeDockResizeCursor()
     }
 }
 
-void MainWindow::clearDockResizeCursorOverride()
-{
+void MainWindow::clearDockResizeCursorOverride() {
     if (!dockResizeCursorOverrideActive_) {
         return;
     }

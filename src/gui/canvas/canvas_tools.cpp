@@ -11,71 +11,60 @@
 
 namespace gui {
 
-bool CanvasTool::handlePress(QMouseEvent *event)
-{
+bool CanvasTool::handlePress(QMouseEvent *event) {
     Q_UNUSED(event);
     return false;
 }
 
-bool CanvasTool::handleMove(QMouseEvent *event)
-{
+bool CanvasTool::handleMove(QMouseEvent *event) {
     Q_UNUSED(event);
     return false;
 }
 
-bool CanvasTool::handleWheel(QWheelEvent *event)
-{
+bool CanvasTool::handleWheel(QWheelEvent *event) {
     Q_UNUSED(event);
     return false;
 }
 
-void CanvasTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld)
-{
+void CanvasTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
     Q_UNUSED(screenPos);
     Q_UNUSED(boxCenterWorld);
 }
 
-bool CanvasTool::handleRelease(QMouseEvent *event)
-{
+bool CanvasTool::handleRelease(QMouseEvent *event) {
     Q_UNUSED(event);
     return false;
 }
 
-bool CanvasTool::handleDoubleClick(QMouseEvent *event)
-{
+bool CanvasTool::handleDoubleClick(QMouseEvent *event) {
     Q_UNUSED(event);
     return false;
 }
 
-bool CanvasTool::hoverCursor(const QPointF &point, QCursor *cursor) const
-{
+bool CanvasTool::hoverCursor(const QPointF &point, QCursor *cursor) const {
     Q_UNUSED(point);
     Q_UNUSED(cursor);
     return false;
 }
 
-Qt::CursorShape CanvasTool::idleCursorShape(const QPointF &point) const
-{
+Qt::CursorShape CanvasTool::idleCursorShape(const QPointF &point) const {
     Q_UNUSED(point);
     return Qt::ArrowCursor;
 }
 
 
-QString SelectTool::name() const
-{
+QString SelectTool::name() const {
     return QStringLiteral("select");
 }
 
-bool SelectTool::handlePress(QMouseEvent *event)
-{
+bool SelectTool::handlePress(QMouseEvent *event) {
     event->accept();
     return true;
 }
 
-bool SelectTool::handleRelease(QMouseEvent *event)
-{
+bool SelectTool::handleRelease(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    if (event->button() != Qt::LeftButton || c.dragMode_ != ProjectCanvas::DragMode::None) {
+    if (event->button() != Qt::LeftButton || c.drag_.mode != ProjectCanvas::DragMode::None) {
         return false;
     }
     if (c.movedPastClickThreshold(event->position())) {
@@ -112,44 +101,38 @@ bool SelectTool::handleRelease(QMouseEvent *event)
 }
 
 
-QString MoveTool::name() const
-{
+QString MoveTool::name() const {
     return QStringLiteral("move");
 }
 
-void MoveTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld)
-{
+void MoveTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
     Q_UNUSED(screenPos);
     Q_UNUSED(boxCenterWorld);
-    canvas_.dragMode_ = ProjectCanvas::DragMode::Move;
+    canvas_.drag_.mode = ProjectCanvas::DragMode::Move;
 }
 
-Qt::CursorShape MoveTool::idleCursorShape(const QPointF &point) const
-{
+Qt::CursorShape MoveTool::idleCursorShape(const QPointF &point) const {
     Q_UNUSED(point);
     return Qt::SizeAllCursor;
 }
 
 
-QString MarqueeTool::name() const
-{
+QString MarqueeTool::name() const {
     return QStringLiteral("marquee");
 }
 
-bool MarqueeTool::handlePress(QMouseEvent *event)
-{
+bool MarqueeTool::handlePress(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    c.dragMode_ = ProjectCanvas::DragMode::Marquee;
-    c.marqueeRect_ = QRectF(c.dragStartScreen_, c.dragStartScreen_).normalized();
+    c.drag_.mode = ProjectCanvas::DragMode::Marquee;
+    c.drag_.marqueeRect = QRectF(c.drag_.startScreen, c.drag_.startScreen).normalized();
     c.updateCursorForPoint(event->position());
     event->accept();
     return true;
 }
 
-bool MarqueeTool::handleRelease(QMouseEvent *event)
-{
+bool MarqueeTool::handleRelease(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    if (c.dragMode_ != ProjectCanvas::DragMode::Marquee || event->button() != Qt::LeftButton) {
+    if (c.drag_.mode != ProjectCanvas::DragMode::Marquee || event->button() != Qt::LeftButton) {
         return false;
     }
     if (c.movedPastClickThreshold(event->position())) {
@@ -163,36 +146,32 @@ bool MarqueeTool::handleRelease(QMouseEvent *event)
     return true;
 }
 
-Qt::CursorShape MarqueeTool::idleCursorShape(const QPointF &point) const
-{
+Qt::CursorShape MarqueeTool::idleCursorShape(const QPointF &point) const {
     Q_UNUSED(point);
     return Qt::CrossCursor;
 }
 
 
-QString TransformTool::name() const
-{
+QString TransformTool::name() const {
     return QStringLiteral("transform");
 }
 
-void TransformTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld)
-{
+void TransformTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
     ProjectCanvas &c = canvas_;
-    c.activeHandle_ = c.transformHandleAt(screenPos, c.dragStartBox_);
-    if (c.activeHandle_ == QStringLiteral("skew")) {
-        c.dragMode_ = ProjectCanvas::DragMode::Skew;
-    } else if (!c.activeHandle_.isEmpty()) {
-        c.dragMode_ = ProjectCanvas::DragMode::Scale;
+    c.drag_.activeHandle = c.transformHandleAt(screenPos, c.drag_.startBox);
+    if (c.drag_.activeHandle == QStringLiteral("skew")) {
+        c.drag_.mode = ProjectCanvas::DragMode::Skew;
+    } else if (!c.drag_.activeHandle.isEmpty()) {
+        c.drag_.mode = ProjectCanvas::DragMode::Scale;
         c.captureScaleReference();
-    } else if (c.rotateZoneAt(screenPos, c.dragStartBox_)) {
+    } else if (c.rotateZoneAt(screenPos, c.drag_.startBox)) {
         c.beginRotateDrag(boxCenterWorld);
-    } else if (c.boxContainsScreenPoint(c.dragStartBox_, screenPos)) {
-        c.dragMode_ = ProjectCanvas::DragMode::TransformMove;
+    } else if (c.boxContainsScreenPoint(c.drag_.startBox, screenPos)) {
+        c.drag_.mode = ProjectCanvas::DragMode::TransformMove;
     }
 }
 
-bool TransformTool::hoverCursor(const QPointF &point, QCursor *cursor) const
-{
+bool TransformTool::hoverCursor(const QPointF &point, QCursor *cursor) const {
     ProjectCanvas &c = canvas_;
     if (c.state_ == nullptr
         || (c.state_->selectedLayerIds().isEmpty() && c.state_->selectedGuideLayerIds().isEmpty())) {
@@ -212,8 +191,7 @@ bool TransformTool::hoverCursor(const QPointF &point, QCursor *cursor) const
     return false;
 }
 
-Qt::CursorShape TransformTool::idleCursorShape(const QPointF &point) const
-{
+Qt::CursorShape TransformTool::idleCursorShape(const QPointF &point) const {
     ProjectCanvas &c = canvas_;
     if (c.state_ != nullptr
         && (!c.state_->selectedLayerIds().isEmpty() || !c.state_->selectedGuideLayerIds().isEmpty())) {
@@ -234,19 +212,16 @@ Qt::CursorShape TransformTool::idleCursorShape(const QPointF &point) const
 }
 
 
-QString RotateTool::name() const
-{
+QString RotateTool::name() const {
     return QStringLiteral("rotate");
 }
 
-void RotateTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld)
-{
+void RotateTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
     Q_UNUSED(screenPos);
     canvas_.beginRotateDrag(boxCenterWorld);
 }
 
-bool RotateTool::hoverCursor(const QPointF &point, QCursor *cursor) const
-{
+bool RotateTool::hoverCursor(const QPointF &point, QCursor *cursor) const {
     ProjectCanvas &c = canvas_;
     if (c.state_ != nullptr
         && (!c.state_->selectedLayerIds().isEmpty() || !c.state_->selectedGuideLayerIds().isEmpty())) {
@@ -262,13 +237,11 @@ bool RotateTool::hoverCursor(const QPointF &point, QCursor *cursor) const
 }
 
 
-QString PipetteTool::name() const
-{
+QString PipetteTool::name() const {
     return QStringLiteral("pipette");
 }
 
-bool PipetteTool::handlePress(QMouseEvent *event)
-{
+bool PipetteTool::handlePress(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) {
         return false;
     }
@@ -280,8 +253,7 @@ bool PipetteTool::handlePress(QMouseEvent *event)
     return true;
 }
 
-bool PipetteTool::hoverCursor(const QPointF &point, QCursor *cursor) const
-{
+bool PipetteTool::hoverCursor(const QPointF &point, QCursor *cursor) const {
     Q_UNUSED(point);
     if (cursor == nullptr) {
         return false;
@@ -290,42 +262,39 @@ bool PipetteTool::hoverCursor(const QPointF &point, QCursor *cursor) const
     return true;
 }
 
-Qt::CursorShape PipetteTool::idleCursorShape(const QPointF &point) const
-{
+Qt::CursorShape PipetteTool::idleCursorShape(const QPointF &point) const {
     Q_UNUSED(point);
     return Qt::ArrowCursor;
 }
 
 
-QString PenTool::name() const
-{
+QString PenTool::name() const {
     return QStringLiteral("pen");
 }
 
-bool PenTool::handlePress(QMouseEvent *event)
-{
+bool PenTool::handlePress(QMouseEvent *event) {
     if ((event->button() != Qt::LeftButton && event->button() != Qt::RightButton)
-        || canvas_.penFillRunning_) {
+        || canvas_.pen_.fillRunning) {
         return false;
     }
     ProjectCanvas &c = canvas_;
     const QPointF world = c.screenToWorld(event->position());
 
-    if (c.penLooped_) {
+    if (c.pen_.closed) {
         c.refreshPenInteractionHint(event->position(), event->modifiers());
-        const int pointIndex = c.penHoverPoint_;
+        const int pointIndex = c.pen_.hoverPoint;
 
         if (event->button() == Qt::RightButton) {
             if (pointIndex >= 0) {
                 const bool removingOnlyHard =
-                    c.penPoints_[pointIndex].kind == PenPointKind::Hard
-                    && std::count_if(c.penPoints_.cbegin(),
-                                     c.penPoints_.cend(),
+                    c.pen_.points[pointIndex].kind == PenPointKind::Hard
+                    && std::count_if(c.pen_.points.cbegin(),
+                                     c.pen_.points.cend(),
                                      [](const PenPoint &point) {
                     return point.kind == PenPointKind::Hard;
                 }) == 1;
-                if (c.penPoints_.size() <= 3 || removingOnlyHard) {
-                    const QString removalMessage = c.penPoints_.size() <= 3
+                if (c.pen_.points.size() <= 3 || removingOnlyHard) {
+                    const QString removalMessage = c.pen_.points.size() <= 3
                         ? QStringLiteral("A closed Pen path needs at least three points")
                         : QStringLiteral("A closed Pen path needs at least one hard point");
                     c.validatePenInteraction();
@@ -337,7 +306,7 @@ bool PenTool::handlePress(QMouseEvent *event)
                     lines.push_back(removalMessage);
                     c.setCursorHint(event->position(), lines);
                 } else {
-                    c.penPoints_.removeAt(pointIndex);
+                    c.pen_.points.removeAt(pointIndex);
                     c.normalizePenPointOrder();
                     c.validatePenInteraction();
                     c.refreshPenInteractionHint(event->position(), event->modifiers());
@@ -348,8 +317,8 @@ bool PenTool::handlePress(QMouseEvent *event)
         }
 
         if ((event->modifiers() & Qt::AltModifier) && pointIndex >= 0) {
-            c.penDragPoint_ = pointIndex;
-            c.penDragOffsetWorld_ = c.penPoints_[pointIndex].position - world;
+            c.pen_.dragPoint = pointIndex;
+            c.pen_.dragOffsetWorld = c.pen_.points[pointIndex].position - world;
             c.updateCursorForPoint(event->position());
             event->accept();
             return true;
@@ -357,14 +326,14 @@ bool PenTool::handlePress(QMouseEvent *event)
 
         if (event->modifiers() & Qt::ControlModifier) {
             if (pointIndex >= 0) {
-                if (c.penPoints_[pointIndex].kind == PenPointKind::Soft) {
-                    c.penPoints_[pointIndex].kind = PenPointKind::Hard;
+                if (c.pen_.points[pointIndex].kind == PenPointKind::Soft) {
+                    c.pen_.points[pointIndex].kind = PenPointKind::Hard;
                     c.normalizePenPointOrder();
                     c.validatePenInteraction();
                 }
-            } else if (c.penHoverCurve_.valid()) {
-                c.penPoints_.insert(c.penHoverCurve_.insertIndex,
-                                    {c.penHoverCurve_.worldPosition, PenPointKind::Soft});
+            } else if (c.pen_.hoverCurve.valid()) {
+                c.pen_.points.insert(c.pen_.hoverCurve.insertIndex,
+                                    {c.pen_.hoverCurve.worldPosition, PenPointKind::Soft});
                 c.validatePenInteraction();
             }
             c.refreshPenInteractionHint(event->position(), event->modifiers());
@@ -376,38 +345,37 @@ bool PenTool::handlePress(QMouseEvent *event)
     if (event->button() != Qt::LeftButton) {
         return false;
     }
-    if (c.penPoints_.size() >= 3
-        && QLineF(event->position(), c.worldToScreen(c.penPoints_.front().position)).length()
-               <= ProjectCanvas::PenCloseRadius) {
-        c.penLooped_ = true;
+    if (c.pen_.points.size() >= 3
+        && QLineF(event->position(), c.worldToScreen(c.pen_.points.front().position)).length()
+               <= ProjectCanvas::kPenCloseRadius) {
+        c.pen_.closed = true;
         c.validatePenInteraction();
         c.refreshPenInteractionHint(event->position(), event->modifiers());
         event->accept();
         return true;
     }
-    if (!c.penPoints_.isEmpty()
-        && QLineF(world, c.penPoints_.back().position).length() <= 1e-8) {
+    if (!c.pen_.points.isEmpty()
+        && QLineF(world, c.pen_.points.back().position).length() <= 1e-8) {
         event->accept();
         return true;
     }
-    c.penPoints_.push_back({world,
-                            c.penPoints_.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
-    c.penHoverWorld_ = world;
-    c.penError_.clear();
-    c.penCrossings_.clear();
+    c.pen_.points.push_back({world,
+                            c.pen_.points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
+    c.pen_.hoverWorld = world;
+    c.pen_.error.clear();
+    c.pen_.crossings.clear();
     c.update();
     event->accept();
     return true;
 }
 
-bool PenTool::handleMove(QMouseEvent *event)
-{
+bool PenTool::handleMove(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    if (c.penDragPoint_ < 0 || c.penDragPoint_ >= c.penPoints_.size()) {
+    if (c.pen_.dragPoint < 0 || c.pen_.dragPoint >= c.pen_.points.size()) {
         return false;
     }
-    c.penPoints_[c.penDragPoint_].position =
-        c.screenToWorld(event->position()) + c.penDragOffsetWorld_;
+    c.pen_.points[c.pen_.dragPoint].position =
+        c.screenToWorld(event->position()) + c.pen_.dragOffsetWorld;
     c.validatePenInteraction();
     c.refreshPenInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
@@ -415,13 +383,12 @@ bool PenTool::handleMove(QMouseEvent *event)
     return true;
 }
 
-bool PenTool::handleRelease(QMouseEvent *event)
-{
+bool PenTool::handleRelease(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    if (event->button() != Qt::LeftButton || c.penDragPoint_ < 0) {
+    if (event->button() != Qt::LeftButton || c.pen_.dragPoint < 0) {
         return false;
     }
-    c.penDragPoint_ = -1;
+    c.pen_.dragPoint = -1;
     c.validatePenInteraction();
     c.refreshPenInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
@@ -429,68 +396,64 @@ bool PenTool::handleRelease(QMouseEvent *event)
     return true;
 }
 
-bool PenTool::handleDoubleClick(QMouseEvent *event)
-{
-    if (event->button() != Qt::LeftButton || canvas_.penFillRunning_) {
+bool PenTool::handleDoubleClick(QMouseEvent *event) {
+    if (event->button() != Qt::LeftButton || canvas_.pen_.fillRunning) {
         return false;
     }
     ProjectCanvas &c = canvas_;
-    if (c.penLooped_) {
+    if (c.pen_.closed) {
         event->accept();
         return true;
     }
     const QPointF world = c.screenToWorld(event->position());
-    if (!c.penPoints_.isEmpty()
-        && QLineF(world, c.penPoints_.back().position).length()
-               <= std::max(1e-8, ProjectCanvas::PenCloseRadius / std::max(c.baseScale_ * c.zoom_, 1e-8))) {
-        c.penPoints_.back().position = world;
-        c.penPoints_.back().kind = PenPointKind::Hard;
+    if (!c.pen_.points.isEmpty()
+        && QLineF(world, c.pen_.points.back().position).length()
+               <= std::max(1e-8, ProjectCanvas::kPenCloseRadius / std::max(c.camera_.scale(), 1e-8))) {
+        c.pen_.points.back().position = world;
+        c.pen_.points.back().kind = PenPointKind::Hard;
     } else {
-        c.penPoints_.push_back({world, PenPointKind::Hard});
+        c.pen_.points.push_back({world, PenPointKind::Hard});
     }
-    c.penHoverWorld_ = world;
-    c.penError_.clear();
-    c.penCrossings_.clear();
+    c.pen_.hoverWorld = world;
+    c.pen_.error.clear();
+    c.pen_.crossings.clear();
     c.update();
     event->accept();
     return true;
 }
 
-Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const
-{
-    if (canvas_.penLooped_
+Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const {
+    if (canvas_.pen_.closed
         && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)
-        && canvas_.penPointAtScreen(point) >= 0) {
+        && canvas_.pointAtScreen(canvas_.pen_.points, point) >= 0) {
         return Qt::SizeAllCursor;
     }
     return Qt::CrossCursor;
 }
 
-QString LiningTool::name() const
-{
+QString LiningTool::name() const {
     return QStringLiteral("lining");
 }
 
-bool LiningTool::handlePress(QMouseEvent *event)
-{
+bool LiningTool::handlePress(QMouseEvent *event) {
     if ((event->button() != Qt::LeftButton && event->button() != Qt::RightButton)
-        || canvas_.liningFillRunning_) {
+        || canvas_.lining_.fillRunning) {
         return false;
     }
     ProjectCanvas &c = canvas_;
     const QPointF world = c.screenToWorld(event->position());
 
-    if (c.liningComplete_) {
+    if (c.lining_.closed) {
         c.refreshLiningInteractionHint(event->position(), event->modifiers());
-        const int pointIndex = c.liningHoverPoint_;
+        const int pointIndex = c.lining_.hoverPoint;
         if (event->button() == Qt::RightButton) {
             if (pointIndex >= 0) {
-                if (c.liningPoints_.size() <= 2) {
-                    c.liningError_ = QStringLiteral("A lining path needs at least two points");
+                if (c.lining_.points.size() <= 2) {
+                    c.lining_.error = QStringLiteral("A lining path needs at least two points");
                 } else {
-                    c.liningPoints_.removeAt(pointIndex);
-                    c.liningPoints_.front().kind = PenPointKind::Hard;
-                    c.liningPoints_.back().kind = PenPointKind::Hard;
+                    c.lining_.points.removeAt(pointIndex);
+                    c.lining_.points.front().kind = PenPointKind::Hard;
+                    c.lining_.points.back().kind = PenPointKind::Hard;
                     c.validateLiningInteraction();
                 }
                 c.refreshLiningInteractionHint(event->position(), event->modifiers());
@@ -499,21 +462,21 @@ bool LiningTool::handlePress(QMouseEvent *event)
             return true;
         }
         if ((event->modifiers() & Qt::AltModifier) && pointIndex >= 0) {
-            c.liningDragPoint_ = pointIndex;
-            c.liningDragOffsetWorld_ = c.liningPoints_[pointIndex].position - world;
+            c.lining_.dragPoint = pointIndex;
+            c.lining_.dragOffsetWorld = c.lining_.points[pointIndex].position - world;
             c.updateCursorForPoint(event->position());
             event->accept();
             return true;
         }
         if (event->modifiers() & Qt::ControlModifier) {
             if (pointIndex >= 0) {
-                if (c.liningPoints_[pointIndex].kind == PenPointKind::Soft) {
-                    c.liningPoints_[pointIndex].kind = PenPointKind::Hard;
+                if (c.lining_.points[pointIndex].kind == PenPointKind::Soft) {
+                    c.lining_.points[pointIndex].kind = PenPointKind::Hard;
                     c.validateLiningInteraction();
                 }
-            } else if (c.liningHoverCurve_.valid()) {
-                c.liningPoints_.insert(c.liningHoverCurve_.insertIndex,
-                                       {c.liningHoverCurve_.worldPosition, PenPointKind::Soft});
+            } else if (c.lining_.hoverCurve.valid()) {
+                c.lining_.points.insert(c.lining_.hoverCurve.insertIndex,
+                                       {c.lining_.hoverCurve.worldPosition, PenPointKind::Soft});
                 c.validateLiningInteraction();
             }
             c.refreshLiningInteractionHint(event->position(), event->modifiers());
@@ -523,12 +486,12 @@ bool LiningTool::handlePress(QMouseEvent *event)
     }
 
     if (event->button() == Qt::RightButton) {
-        if (c.liningPoints_.size() < 2) {
-            c.liningError_ = QStringLiteral("A lining path needs at least two points");
+        if (c.lining_.points.size() < 2) {
+            c.lining_.error = QStringLiteral("A lining path needs at least two points");
         } else {
-            c.liningPoints_.front().kind = PenPointKind::Hard;
-            c.liningPoints_.back().kind = PenPointKind::Hard;
-            c.liningComplete_ = true;
+            c.lining_.points.front().kind = PenPointKind::Hard;
+            c.lining_.points.back().kind = PenPointKind::Hard;
+            c.lining_.closed = true;
             c.validateLiningInteraction();
         }
         c.refreshLiningInteractionHint(event->position(), event->modifiers());
@@ -536,28 +499,27 @@ bool LiningTool::handlePress(QMouseEvent *event)
         return true;
     }
 
-    if (!c.liningPoints_.isEmpty()
-        && QLineF(world, c.liningPoints_.back().position).length() <= 1e-8) {
+    if (!c.lining_.points.isEmpty()
+        && QLineF(world, c.lining_.points.back().position).length() <= 1e-8) {
         event->accept();
         return true;
     }
-    c.liningPoints_.push_back({world,
-                               c.liningPoints_.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
-    c.liningHoverWorld_ = world;
-    c.liningError_.clear();
+    c.lining_.points.push_back({world,
+                               c.lining_.points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
+    c.lining_.hoverWorld = world;
+    c.lining_.error.clear();
     c.update();
     event->accept();
     return true;
 }
 
-bool LiningTool::handleMove(QMouseEvent *event)
-{
+bool LiningTool::handleMove(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    if (c.liningDragPoint_ < 0 || c.liningDragPoint_ >= c.liningPoints_.size()) {
+    if (c.lining_.dragPoint < 0 || c.lining_.dragPoint >= c.lining_.points.size()) {
         return false;
     }
-    c.liningPoints_[c.liningDragPoint_].position =
-        c.screenToWorld(event->position()) + c.liningDragOffsetWorld_;
+    c.lining_.points[c.lining_.dragPoint].position =
+        c.screenToWorld(event->position()) + c.lining_.dragOffsetWorld;
     c.validateLiningInteraction();
     c.refreshLiningInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
@@ -565,15 +527,14 @@ bool LiningTool::handleMove(QMouseEvent *event)
     return true;
 }
 
-bool LiningTool::handleWheel(QWheelEvent *event)
-{
+bool LiningTool::handleWheel(QWheelEvent *event) {
     const QPoint angle = event->angleDelta();
     const QPoint pixels = event->pixelDelta();
     const int raw = angle.y() != 0 ? angle.y()
         : angle.x() != 0 ? angle.x()
         : pixels.y() != 0 ? pixels.y()
         : pixels.x();
-    if (raw == 0 || canvas_.liningFillRunning_) {
+    if (raw == 0 || canvas_.lining_.fillRunning) {
         event->accept();
         return true;
     }
@@ -589,13 +550,12 @@ bool LiningTool::handleWheel(QWheelEvent *event)
     return true;
 }
 
-bool LiningTool::handleRelease(QMouseEvent *event)
-{
+bool LiningTool::handleRelease(QMouseEvent *event) {
     ProjectCanvas &c = canvas_;
-    if (event->button() != Qt::LeftButton || c.liningDragPoint_ < 0) {
+    if (event->button() != Qt::LeftButton || c.lining_.dragPoint < 0) {
         return false;
     }
-    c.liningDragPoint_ = -1;
+    c.lining_.dragPoint = -1;
     c.validateLiningInteraction();
     c.refreshLiningInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
@@ -603,49 +563,45 @@ bool LiningTool::handleRelease(QMouseEvent *event)
     return true;
 }
 
-bool LiningTool::handleDoubleClick(QMouseEvent *event)
-{
-    if (event->button() != Qt::LeftButton || canvas_.liningFillRunning_) {
+bool LiningTool::handleDoubleClick(QMouseEvent *event) {
+    if (event->button() != Qt::LeftButton || canvas_.lining_.fillRunning) {
         return false;
     }
     ProjectCanvas &c = canvas_;
-    if (c.liningComplete_) {
+    if (c.lining_.closed) {
         event->accept();
         return true;
     }
     const QPointF world = c.screenToWorld(event->position());
-    if (!c.liningPoints_.isEmpty()
-        && QLineF(world, c.liningPoints_.back().position).length()
-               <= std::max(1e-8, ProjectCanvas::PenEditRadius / std::max(c.baseScale_ * c.zoom_, 1e-8))) {
-        c.liningPoints_.back().position = world;
-        c.liningPoints_.back().kind = PenPointKind::Hard;
+    if (!c.lining_.points.isEmpty()
+        && QLineF(world, c.lining_.points.back().position).length()
+               <= std::max(1e-8, ProjectCanvas::kPenEditRadius / std::max(c.camera_.scale(), 1e-8))) {
+        c.lining_.points.back().position = world;
+        c.lining_.points.back().kind = PenPointKind::Hard;
     } else {
-        c.liningPoints_.push_back({world, PenPointKind::Hard});
+        c.lining_.points.push_back({world, PenPointKind::Hard});
     }
-    c.liningHoverWorld_ = world;
-    c.liningError_.clear();
+    c.lining_.hoverWorld = world;
+    c.lining_.error.clear();
     c.update();
     event->accept();
     return true;
 }
 
-Qt::CursorShape LiningTool::idleCursorShape(const QPointF &point) const
-{
-    if (canvas_.liningComplete_
+Qt::CursorShape LiningTool::idleCursorShape(const QPointF &point) const {
+    if (canvas_.lining_.closed
         && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)
-        && canvas_.liningPointAtScreen(point) >= 0) {
+        && canvas_.pointAtScreen(canvas_.lining_.points, point) >= 0) {
         return Qt::SizeAllCursor;
     }
     return Qt::CrossCursor;
 }
 
-QString BucketTool::name() const
-{
+QString BucketTool::name() const {
     return QStringLiteral("bucket");
 }
 
-bool BucketTool::handlePress(QMouseEvent *event)
-{
+bool BucketTool::handlePress(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) {
         return false;
     }
@@ -654,16 +610,14 @@ bool BucketTool::handlePress(QMouseEvent *event)
     return true;
 }
 
-bool BucketTool::handleMove(QMouseEvent *event)
-{
+bool BucketTool::handleMove(QMouseEvent *event) {
     canvas_.updateBucketPreview(event->position());
     canvas_.updateCursorForPoint(event->position());
     event->accept();
     return true;
 }
 
-bool BucketTool::handleWheel(QWheelEvent *event)
-{
+bool BucketTool::handleWheel(QWheelEvent *event) {
     const QPoint angle = event->angleDelta();
     const QPoint pixels = event->pixelDelta();
     const int raw = angle.y() != 0 ? angle.y()
@@ -686,8 +640,7 @@ bool BucketTool::handleWheel(QWheelEvent *event)
     return true;
 }
 
-Qt::CursorShape BucketTool::idleCursorShape(const QPointF &point) const
-{
+Qt::CursorShape BucketTool::idleCursorShape(const QPointF &point) const {
     Q_UNUSED(point);
     return Qt::CrossCursor;
 }

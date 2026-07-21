@@ -91,8 +91,7 @@ public:
 
 class GuideLayer : public Layer {
 public:
-    GuideLayer()
-    {
+    GuideLayer() {
         name = QStringLiteral("Guide");
         opacity = 0.5;
     }
