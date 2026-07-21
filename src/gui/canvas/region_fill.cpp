@@ -417,6 +417,114 @@ double removalDisplacement(const QVector<ConvertiblePoint> &points, int index) {
     return QLineF(points[index].point.position, implied).length();
 }
 
+double quadraticMaximumAbsolute(double start, double control, double end) {
+    double result = std::max(std::abs(start), std::abs(end));
+    const double denominator = start - 2.0 * control + end;
+    if (std::abs(denominator) <= kGeometryEpsilon) {
+        return result;
+    }
+    const double at = (start - control) / denominator;
+    if (at <= 0.0 || at >= 1.0) {
+        return result;
+    }
+    const double remaining = 1.0 - at;
+    const double value = remaining * remaining * start
+        + 2.0 * remaining * at * control + at * at * end;
+
+    return std::max(result, std::abs(value));
+}
+
+double softRunDeviation(const QPointF &start,
+                        const QVector<QPointF> &controls,
+                        const QPointF &end) {
+    const QPointF chord = end - start;
+    const double chordLength = std::hypot(chord.x(), chord.y());
+    if (controls.isEmpty()) {
+        return 0.0;
+    }
+    if (chordLength <= kGeometryEpsilon) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double chordLengthSquared = chordLength * chordLength;
+    const auto signedOffset = [&](const QPointF &point) {
+        return (chord.x() * (point.y() - start.y())
+                - chord.y() * (point.x() - start.x())) / chordLength;
+    };
+    const auto chordPosition = [&](const QPointF &point) {
+        return QPointF::dotProduct(point - start, chord) / chordLengthSquared;
+    };
+
+    double result = 0.0;
+    QPointF segmentStart = start;
+    for (int i = 0; i < controls.size(); ++i) {
+        const QPointF &control = controls[i];
+        const QPointF segmentEnd = i + 1 == controls.size()
+            ? end : (control + controls[i + 1]) * 0.5;
+        if (chordPosition(control) < -kGeometryEpsilon
+            || chordPosition(control) > 1.0 + kGeometryEpsilon) {
+            return std::numeric_limits<double>::infinity();
+        }
+        result = std::max(result,
+                          quadraticMaximumAbsolute(signedOffset(segmentStart),
+                                                   signedOffset(control),
+                                                   signedOffset(segmentEnd)));
+        segmentStart = segmentEnd;
+    }
+
+    return result;
+}
+
+struct SoftRunCollapseResult {
+    QVector<ConvertiblePoint> points;
+    int removedSoftPoints = 0;
+};
+
+SoftRunCollapseResult collapseNegligibleSoftRuns(
+    const QVector<ConvertiblePoint> &points,
+    double tolerance) {
+    SoftRunCollapseResult result;
+    const int hardPointCount = static_cast<int>(std::count_if(
+        points.cbegin(), points.cend(), [](const ConvertiblePoint &point) {
+            return point.point.kind == PenPointKind::Hard;
+        }));
+    if (tolerance <= 0.0 || hardPointCount < 2) {
+        result.points = points;
+        return result;
+    }
+
+    int firstHard = 0;
+    while (points[firstHard].point.kind != PenPointKind::Hard) {
+        ++firstHard;
+    }
+    result.points.reserve(points.size());
+    int hard = firstHard;
+    do {
+        result.points.push_back(points[hard]);
+        QVector<QPointF> controls;
+        QVector<int> softIndices;
+        int next = (hard + 1) % points.size();
+        while (points[next].point.kind == PenPointKind::Soft) {
+            controls.push_back(points[next].point.position);
+            softIndices.push_back(next);
+            next = (next + 1) % points.size();
+        }
+        if (!controls.isEmpty()
+            && softRunDeviation(points[hard].point.position,
+                                controls,
+                                points[next].point.position)
+                <= tolerance + kGeometryEpsilon) {
+            result.removedSoftPoints += static_cast<int>(controls.size());
+        } else {
+            for (const int index : softIndices) {
+                result.points.push_back(points[index]);
+            }
+        }
+        hard = next;
+    } while (hard != firstHard);
+
+    return result;
+}
+
 bool sameOrientation(double referenceArea, double candidateArea) {
     return (referenceArea > kGeometryEpsilon && candidateArea > kGeometryEpsilon)
         || (referenceArea < -kGeometryEpsilon && candidateArea < -kGeometryEpsilon);
@@ -660,6 +768,8 @@ RegionPenConversionResult regionOutlineToPenPoints(
     struct EvaluatedCandidate {
         QVector<ConvertiblePoint> points;
         QPolygonF polygon;
+        int removedHardPoints = 0;
+        int removedSoftPoints = 0;
         double dssim = 0.0;
         double deviation = 0.0;
         bool valid = false;
@@ -671,9 +781,16 @@ RegionPenConversionResult regionOutlineToPenPoints(
             const double displacement = removalDisplacement(working, i);
             if (std::isfinite(displacement)
                 && displacement <= tolerance + kGeometryEpsilon) {
+                ++evaluated.removedHardPoints;
                 continue;
             }
             evaluated.points.push_back(working[i]);
+        }
+        if (options.straightenSoftRuns) {
+            SoftRunCollapseResult collapsed =
+                collapseNegligibleSoftRuns(evaluated.points, tolerance);
+            evaluated.removedSoftPoints = collapsed.removedSoftPoints;
+            evaluated.points = std::move(collapsed.points);
         }
         if (evaluated.points.size() == working.size()) {
             evaluated.polygon = baselinePolygon;
@@ -723,7 +840,8 @@ RegionPenConversionResult regionOutlineToPenPoints(
         }
     }
     if (best.valid) {
-        result.removedHardPoints = working.size() - best.points.size();
+        result.removedHardPoints = best.removedHardPoints;
+        result.removedSoftPoints = best.removedSoftPoints;
         result.maximumDeviation = best.deviation;
         result.dssim = best.dssim;
         working = std::move(best.points);
@@ -770,11 +888,50 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
     const auto succeeded = [](const PenFillResult &fill) {
         return fill.error.isEmpty() && !fill.placements.isEmpty() && !fill.cancelled;
     };
+    const auto canRetry = [&]() {
+        return !succeeded(result) && !result.cancelled
+            && !(cancelled && cancelled());
+    };
+    const auto appendRetryError = [&result](const QString &stage, const QString &error) {
+        if (error.isEmpty()) {
+            return;
+        }
+        const QString retryError = QStringLiteral("%1 retry: %2").arg(stage, error);
+        result.error = result.error.isEmpty()
+            ? retryError : result.error + QStringLiteral("; ") + retryError;
+    };
+    RegionPenConversionResult hardOnlyFallback;
+    bool usedSoftRunRetry = false;
     bool usedBaselineRetry = false;
-    if (!succeeded(result) && !result.cancelled
-        && !(cancelled && cancelled()) && conversion.removedHardPoints > 0) {
+    bool haveHardOnlyFallback = false;
+    if (canRetry() && conversion.removedSoftPoints > 0) {
+        RegionPenConversionOptions hardOnlyOptions = conversionOptions;
+        hardOnlyOptions.straightenSoftRuns = false;
+        RegionPenConversionResult hardOnly =
+            regionOutlineToPenPoints(outline, hardOnlyOptions);
+        if (hardOnly.valid()) {
+            hardOnlyFallback = hardOnly;
+            haveHardOnlyFallback = true;
+        }
+        if (hardOnly.valid() && hardOnly.points.size() != conversion.points.size()) {
+            request.points = hardOnly.points;
+            PenFillResult retry = fillPenPath(request, cancelled);
+            if (succeeded(retry)) {
+                result = std::move(retry);
+                conversion = std::move(hardOnly);
+                usedSoftRunRetry = true;
+            } else if (retry.cancelled) {
+                result = std::move(retry);
+            } else {
+                appendRetryError(QStringLiteral("hard-only"), retry.error);
+            }
+        }
+    }
+    if (canRetry()
+        && conversion.removedHardPoints + conversion.removedSoftPoints > 0) {
         RegionPenConversionOptions baselineOptions = conversionOptions;
         baselineOptions.mergeTolerance = 0.0;
+        baselineOptions.straightenSoftRuns = false;
         RegionPenConversionResult baseline =
             regionOutlineToPenPoints(outline, baselineOptions);
         if (baseline.valid() && baseline.points.size() != conversion.points.size()) {
@@ -786,21 +943,22 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
                 usedBaselineRetry = true;
             } else if (retry.cancelled) {
                 result = std::move(retry);
-            } else if (!retry.error.isEmpty()) {
-                const QString retryError =
-                    QStringLiteral("baseline retry: %1").arg(retry.error);
-                result.error = result.error.isEmpty()
-                    ? retryError
-                    : result.error + QStringLiteral("; ") + retryError;
+            } else {
+                appendRetryError(QStringLiteral("baseline"), retry.error);
             }
         }
+    }
+    if (!succeeded(result) && haveHardOnlyFallback) {
+        conversion = std::move(hardOnlyFallback);
     }
 
     if (contourStats != nullptr) {
         contourStats->originalPointCount = conversion.originalPointCount;
         contourStats->optimizedPointCount = conversion.points.size();
         contourStats->removedHardPoints = conversion.removedHardPoints;
+        contourStats->removedSoftPoints = conversion.removedSoftPoints;
         contourStats->optimizationSkipped = conversion.optimizationSkipped;
+        contourStats->softRunRetry = usedSoftRunRetry;
         contourStats->baselineRetry = usedBaselineRetry;
         contourStats->dssim = conversion.dssim;
     }

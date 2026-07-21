@@ -64,6 +64,7 @@ struct RegionPenConversionOptions {
     double closureTolerance = 1e-6;
     int maxOptimizedPointCount = 0;
     int adaptiveSearchSteps = 8;
+    bool straightenSoftRuns = true;
 };
 
 struct RegionPenConversionResult {
@@ -71,6 +72,7 @@ struct RegionPenConversionResult {
     QString error;
     int originalPointCount = 0;
     int removedHardPoints = 0;
+    int removedSoftPoints = 0;
     bool optimizationSkipped = false;
     double baselineDeviation = 0.0;
     double maximumDeviation = 0.0;
@@ -84,7 +86,9 @@ struct RegionFillContourStats {
     int optimizedPointCount = 0;
     int flattenedPointCount = 0;
     int removedHardPoints = 0;
+    int removedSoftPoints = 0;
     bool optimizationSkipped = false;
+    bool softRunRetry = false;
     bool baselineRetry = false;
     double dssim = 0.0;
 };

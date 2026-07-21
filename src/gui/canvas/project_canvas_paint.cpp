@@ -953,7 +953,9 @@ RegionFillBatchResult computeRegionFills(
     int timedOut = 0;
     int placementCount = 0;
     int meshFallbacks = 0;
+    int softRunRetries = 0;
     int baselineRetries = 0;
+    int removedSoftPoints = 0;
     QHash<QString, int> failureReasons;
     constexpr qint64 kRegionBudgetMs = 3000;
     const PolygonMeshSources &meshSources = request.meshSources;
@@ -1109,7 +1111,9 @@ RegionFillBatchResult computeRegionFills(
                     if (i == biggestUnitIndex) {
                         work.optimizedContour = optimizedContour;
                     }
-                    if (work.contourStats.baselineRetry && fitSucceeded(work.fit)) {
+                    if (work.contourStats.softRunRetry && fitSucceeded(work.fit)) {
+                        work.via = QStringLiteral("hard-only-pen-retry");
+                    } else if (work.contourStats.baselineRetry && fitSucceeded(work.fit)) {
                         work.via = QStringLiteral("baseline-pen-retry");
                     }
                     if (work.fit.cancelled && !globallyCancelled()) {
@@ -1168,7 +1172,8 @@ RegionFillBatchResult computeRegionFills(
         workResults[static_cast<size_t>(biggestUnitIndex)];
     log << QStringLiteral("Biggest region points: region #%1 (sources %2) %3 area=%4, "
                           "original=%5 optimized=%6 flattened=%7 removed-hard=%8, "
-                          "optimization-skipped=%9, DSSIM=%10")
+                          "removed-soft=%9, hard-only-retry=%10, "
+                          "optimization-skipped=%11, DSSIM=%12")
                .arg(biggestUnitIndex)
                .arg(unitSourcesText(biggestUnit))
                .arg(biggestUnit.color.name())
@@ -1177,6 +1182,9 @@ RegionFillBatchResult computeRegionFills(
                .arg(biggestWork.contourStats.optimizedPointCount)
                .arg(biggestWork.contourStats.flattenedPointCount)
                .arg(biggestWork.contourStats.removedHardPoints)
+               .arg(biggestWork.contourStats.removedSoftPoints)
+               .arg(biggestWork.contourStats.softRunRetry
+                        ? QStringLiteral("yes") : QStringLiteral("no"))
                .arg(biggestWork.contourStats.optimizationSkipped
                         ? QStringLiteral("yes") : QStringLiteral("no"))
                .arg(biggestWork.contourStats.dssim, 0, 'g', 8);
@@ -1197,6 +1205,12 @@ RegionFillBatchResult computeRegionFills(
                << biggestWork.contourStats.originalPointCount << '\n'
                << "optimized_pen_point_count="
                << biggestWork.contourStats.optimizedPointCount << '\n'
+               << "removed_hard_point_count="
+               << biggestWork.contourStats.removedHardPoints << '\n'
+               << "removed_soft_point_count="
+               << biggestWork.contourStats.removedSoftPoints << '\n'
+               << "hard_only_retry="
+               << (biggestWork.contourStats.softRunRetry ? "yes" : "no") << '\n'
                << "flattened_point_count="
                << biggestWork.contourStats.flattenedPointCount << '\n'
                << "dssim=" << biggestWork.contourStats.dssim << "\n\n";
@@ -1258,6 +1272,9 @@ RegionFillBatchResult computeRegionFills(
         if (work.meshFallback && fitSucceeded(work.fit)) {
             ++meshFallbacks;
         }
+        if (work.contourStats.softRunRetry && fitSucceeded(work.fit)) {
+            ++softRunRetries;
+        }
         if (work.contourStats.baselineRetry && fitSucceeded(work.fit)) {
             ++baselineRetries;
         }
@@ -1268,6 +1285,7 @@ RegionFillBatchResult computeRegionFills(
             layer.placements = std::move(work.fit.placements);
             layer.drawOrder = i;
             placementCount += layer.placements.size();
+            removedSoftPoints += work.contourStats.removedSoftPoints;
             ++filled;
         } else {
             ++failed;
@@ -1287,6 +1305,12 @@ RegionFillBatchResult computeRegionFills(
                           .arg(work.fallbackInputPoints)
                           .arg(work.fallbackMeshPoints);
         }
+        detail += QStringLiteral(" [points: %1 -> %2, hard -%3, soft -%4, DSSIM %5]")
+                      .arg(work.contourStats.originalPointCount)
+                      .arg(work.contourStats.optimizedPointCount)
+                      .arg(work.contourStats.removedHardPoints)
+                      .arg(work.contourStats.removedSoftPoints)
+                      .arg(work.contourStats.dssim, 0, 'g', 8);
         log << QStringLiteral("region #%1 (sources %2) %3 %4: area=%5 -> %6 shapes, %7 ms%8")
                    .arg(i)
                    .arg(unitSourcesText(unit))
@@ -1311,13 +1335,15 @@ RegionFillBatchResult computeRegionFills(
         });
     log << QStringLiteral("Parallel draw order preserved: %1")
                .arg(drawOrderPreserved ? QStringLiteral("yes") : QStringLiteral("no"));
-    log << QStringLiteral("Summary: %1 planned units filled (%2 baseline Pen retries, "
-                          "%3 optimized-contour mesh fallbacks), %4 shapes, %5 failed, "
-                          "%6 timed out")
+    log << QStringLiteral("Summary: %1 planned units filled (%2 hard-only Pen retries, "
+                          "%3 baseline Pen retries, %4 optimized-contour mesh fallbacks), "
+                          "%5 shapes, %6 soft controls removed, %7 failed, %8 timed out")
                .arg(filled)
+               .arg(softRunRetries)
                .arg(baselineRetries)
                .arg(meshFallbacks)
                .arg(placementCount)
+               .arg(removedSoftPoints)
                .arg(failed)
                .arg(timedOut);
     const QString logPath = QCoreApplication::applicationDirPath()

@@ -381,6 +381,88 @@ void excessiveDisplacementDoesNotMerge(TestContext *test)
                  "a hard junction beyond the merge tolerance should remain");
 }
 
+void negligibleSoftRunBecomesLine(TestContext *test)
+{
+    QPainterPath path;
+    path.moveTo(0.0, 0.0);
+    path.lineTo(0.0, 20.0);
+    quadraticTo(&path, QPointF(5.0, 20.4), QPointF(10.0, 20.0));
+    quadraticTo(&path, QPointF(15.0, 19.6), QPointF(20.0, 20.0));
+    path.lineTo(20.0, 0.0);
+    path.lineTo(0.0, 0.0);
+    path.closeSubpath();
+
+    const gui::RegionPenConversionResult result = gui::regionOutlineToPenPoints(path);
+    test->expect(result.valid() && result.points.size() == 4,
+                 "a negligible soft run should reduce to its hardpoint chord");
+    test->expect(result.removedHardPoints == 1 && result.removedSoftPoints == 2,
+                 "soft-run reduction should report hard and soft removals separately");
+    test->expect(gui::buildPenContour(result.points).valid(),
+                 "a straightened soft run should retain a valid contour");
+
+    gui::RegionPenConversionOptions hardOnlyOptions;
+    hardOnlyOptions.straightenSoftRuns = false;
+    const gui::RegionPenConversionResult hardOnly =
+        gui::regionOutlineToPenPoints(path, hardOnlyOptions);
+    test->expect(hardOnly.valid() && hardOnly.removedHardPoints == 1
+                     && hardOnly.removedSoftPoints == 0 && hardOnly.points.size() == 6,
+                 "hard-only reduction should retain a recoverable curved contour");
+
+    gui::RegionFillContourStats fallbackStats;
+    QVector<gui::PenPoint> fallbackPoints;
+    const gui::PenFillResult unavailableFill = gui::fillRegionOutline(
+        path, {}, 0.5, {}, nullptr, &fallbackStats, &fallbackPoints);
+    test->expect(!unavailableFill.error.isEmpty()
+                     && fallbackStats.removedSoftPoints == 0
+                     && fallbackPoints.size() == hardOnly.points.size(),
+                 "a failed soft-run fit should expose hard-only geometry to fallback");
+}
+
+void visibleSoftRunRemainsCurved(TestContext *test)
+{
+    QPainterPath path;
+    path.moveTo(0.0, 0.0);
+    path.lineTo(0.0, 20.0);
+    quadraticTo(&path, QPointF(5.0, 24.0), QPointF(10.0, 20.0));
+    quadraticTo(&path, QPointF(15.0, 16.0), QPointF(20.0, 20.0));
+    path.lineTo(20.0, 0.0);
+    path.lineTo(0.0, 0.0);
+    path.closeSubpath();
+
+    const gui::RegionPenConversionResult result = gui::regionOutlineToPenPoints(path);
+    test->expect(result.valid() && result.removedSoftPoints == 0,
+                 "a visible soft run should remain curved");
+    test->expect(hasConsecutiveSoftPoints(result.points),
+                 "retained curvature should preserve the intermediate soft controls");
+}
+
+void rasterDssimGuardsSoftRunReduction(TestContext *test)
+{
+    QPainterPath path;
+    path.moveTo(5.0, 5.0);
+    path.lineTo(5.0, 25.0);
+    quadraticTo(&path, QPointF(10.0, 25.8), QPointF(15.0, 25.0));
+    quadraticTo(&path, QPointF(20.0, 24.2), QPointF(25.0, 25.0));
+    path.lineTo(25.0, 5.0);
+    path.lineTo(5.0, 5.0);
+    path.closeSubpath();
+
+    gui::RegionPenConversionOptions permissive;
+    permissive.comparisonImageSize = QSize(32, 32);
+    permissive.maximumDssim = 1.0;
+    const gui::RegionPenConversionResult reduced =
+        gui::regionOutlineToPenPoints(path, permissive);
+    gui::RegionPenConversionOptions exact = permissive;
+    exact.maximumDssim = 0.0;
+    const gui::RegionPenConversionResult retained =
+        gui::regionOutlineToPenPoints(path, exact);
+
+    test->expect(reduced.valid() && reduced.removedSoftPoints == 2,
+                 "a permissive raster guard should accept a negligible soft run");
+    test->expect(retained.valid() && retained.removedSoftPoints == 0,
+                 "an exact raster guard should retain a raster-visible soft run");
+}
+
 void containedHoleIsIgnored(TestContext *test)
 {
     QPainterPath path;
@@ -1494,7 +1576,8 @@ int checkLoggedRegion(const QString &path, const QSize &imageSize)
     std::cout << "valid=" << (result.valid() ? "yes" : "no")
               << " original=" << result.originalPointCount
               << " optimized=" << result.points.size()
-              << " removed=" << result.removedHardPoints
+              << " removed_hard=" << result.removedHardPoints
+              << " removed_soft=" << result.removedSoftPoints
               << " dssim=" << result.dssim
               << " elapsed_ms=" << timer.elapsed() << '\n';
     if (!result.error.isEmpty()) {
@@ -1573,6 +1656,9 @@ int main(int argc, char **argv)
     alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);
     excessiveDisplacementDoesNotMerge(&test);
+    negligibleSoftRunBecomesLine(&test);
+    visibleSoftRunRemainsCurved(&test);
+    rasterDssimGuardsSoftRunReduction(&test);
     containedHoleIsIgnored(&test);
     invalidContoursAreRejected(&test);
     conversionIsDeterministic(&test);

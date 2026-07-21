@@ -104,13 +104,16 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   a fixed point-count cutoff: removable cubic junctions use a 1.1-pixel cap,
   preserve orientation and non-crossing single-contour topology, and are
   accepted only when a native-size, 4x-supersampled raster comparison remains
-  at or below DSSIM 0.001. An unsafe candidate is backed off through a bounded
-  adaptive search. Curve candidates on dense contours are ranked by visual
+  at or below DSSIM 0.001. Soft runs whose exact maximum offset remains within
+  the same cap are reduced to the chord between their hard endpoints. An unsafe
+  candidate is backed off through a bounded adaptive search. Curve candidates on
+  dense contours are ranked by visual
   importance and evaluated under a point-count-scaled budget, preventing the
-  curve search from consuming the whole per-region deadline. If an optimized
-  Pen contour fails normally, the fitter retries once with the unmerged Potrace
-  controls before using a mesh fallback. Unavoidable fallbacks simplify the
-  current optimized contour with a 0.45-pixel RDP pass, accept it only when the
+  curve search from consuming the whole per-region deadline. If a soft-run
+  reduction cannot be fitted, the fitter retries the hard-only reduction before
+  retrying the unmerged Potrace controls and using a mesh fallback. Unavoidable
+  fallbacks retain the hard-only contour for the mesh simplification stage. They
+  apply a 0.45-pixel RDP pass, accept it only when the
   result remains a valid non-crossing polygon, and retry the original contour if
   simplified triangulation fails. Scene insertion keeps the
   result in one **Region Fill** container with one child group per filled unit.
@@ -122,8 +125,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   that mask.
   `region_layer.log` records source-to-unit mappings, absorptions, dependency
   counts, validation, and fallback state. `region_fill.log` records every planned
-  unit result, its source labels, and the largest unit's original, optimized, and
-  flattened contour point counts plus DSSIM. `region_points.log`
+  unit result, its source labels, hard and soft point reductions, and the largest
+  unit's original, optimized, and flattened contour point counts plus DSSIM.
+  `region_points.log`
   records every raw path element, optimized Hard/Soft Pen point, and flattened
   optimized-contour point for that largest region. `region_extract.log` records
   progressive segmentation counts, line-vote persistence, cleanup decisions,
