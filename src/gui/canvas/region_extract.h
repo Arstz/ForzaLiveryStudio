@@ -39,6 +39,7 @@ struct ExtractedRegion {
 
 struct RegionRasterData {
     std::vector<int> labels;
+    std::vector<std::uint8_t> foreground;
     RegionExtractionParams traceParams;
 };
 

@@ -91,11 +91,17 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   persistent ImgGen area slider into the adjacent component with the closest RGB
   colour before tracing. Region filling runs without blocking the main window.
   The cleaned label raster produces a conservative back-to-front layer plan:
-  connected exact-colour regions are combined, enclosed exact-colour regions can
-  share a unit, and small enclosed regions are incorporated into their surrounding
-  backdrop while remaining as later overlay units. The plan is raster-validated
-  against every owned colour pixel before fitting. A rejected plan retains the
-  original unit geometry with containment ordering. Fitting runs in parallel on
+  connected exact-colour regions are combined, nearby exact-colour regions can
+  be joined through a bounded foreground-only bridge, enclosed exact-colour regions
+  can share a unit, and small enclosed regions are incorporated into their surrounding
+  backdrop while remaining as later overlay units. Rasterized coverage establishes
+  the draw dependencies needed to restore differently coloured ownership above an
+  expanded backdrop. Nearby unions responsible for a dependency cycle are suppressed
+  and the remaining plan is rebuilt. Sources in a residual cycle or a failed raster
+  comparison retain their original geometry without disabling independent unions.
+  The complete plan is compared pixel-for-pixel with the existing vector-rendered
+  baseline before fitting. A rejected plan retains the original unit geometry with
+  containment ordering. Fitting runs in parallel on
   half of the available CPU threads, writes results into fixed plan-index slots,
   restores draw order before insertion, reports completed/total regions in a
   status-bar progress bar, and remains cancellable with **Esc**. Potrace curves
@@ -123,8 +129,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   and persistent historical evidence can classify a component independently of
   final-mask adjacency. A chain enclosed by recognized lineart is incorporated into
   that mask.
-  `region_layer.log` records source-to-unit mappings, absorptions, dependency
-  counts, validation, and fallback state. `region_fill.log` records every planned
+  `region_layer.log` records source-to-unit mappings, adjacent and nearby unions,
+  absorptions, dependency counts, validation, and fallback state. `region_fill.log`
+  records every planned
   unit result, its source labels, hard and soft point reductions, and the largest
   unit's original, optimized, and flattened contour point counts plus DSSIM.
   `region_points.log`

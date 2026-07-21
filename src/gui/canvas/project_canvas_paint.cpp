@@ -990,6 +990,12 @@ RegionFillBatchResult computeRegionFills(
                << "input_regions=" << layerPlan.inputRegionCount << '\n'
                << "planned_units=" << layerPlan.units.size() << '\n'
                << "same_color_merges=" << layerPlan.sameColorMergeCount << '\n'
+               << "nearby_same_color_merges="
+               << layerPlan.nearbySameColorMergeCount << '\n'
+               << "nearby_conflict_rejections="
+               << layerPlan.nearbyConflictRejectCount << '\n'
+               << "conflict_isolated_sources="
+               << layerPlan.conflictIsolatedSourceCount << '\n'
                << "absorbed_regions=" << layerPlan.absorbedRegionCount << '\n'
                << "ordering_edges=" << layerPlan.orderingEdgeCount << '\n'
                << "validation_mismatch_pixels="

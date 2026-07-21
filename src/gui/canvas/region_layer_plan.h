@@ -20,6 +20,9 @@ struct RegionLayerPlan {
     QString fallbackReason;
     int inputRegionCount = 0;
     int sameColorMergeCount = 0;
+    int nearbySameColorMergeCount = 0;
+    int nearbyConflictRejectCount = 0;
+    int conflictIsolatedSourceCount = 0;
     int absorbedRegionCount = 0;
     int orderingEdgeCount = 0;
     int validationMismatchPixels = 0;

@@ -140,6 +140,10 @@ gui::RegionExtractionResult rasterExtraction(const std::vector<int> &labels,
 {
     auto raster = QSharedPointer<gui::RegionRasterData>::create();
     raster->labels = labels;
+    raster->foreground.resize(labels.size(), 0);
+    for (size_t pixel = 0; pixel < labels.size(); ++pixel) {
+        raster->foreground[pixel] = labels[pixel] >= 0 ? 1 : 0;
+    }
     raster->traceParams.traceSpeckle = 0;
     gui::RegionExtractionResult result;
     result.imageSize = size;
@@ -1066,6 +1070,192 @@ void regionLayerPlanMergesAdjacentExactColors(TestContext *test)
                  "a same-color unit should retain both source mappings");
 }
 
+void regionLayerPlanBridgesNearbyExactColors(TestContext *test)
+{
+    const QSize size(14, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 2);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 5; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        for (int x = 7; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor backdrop(180, 70, 50);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, backdrop));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, backdrop));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, QColor(40, 100, 190)));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    if (plan.fallback || plan.units.size() != 2) {
+        std::cerr << "nearby-plan: "
+                  << plan.diagnostics.join(QStringLiteral(" | ")).toStdString() << '\n';
+    }
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "a nearby-color bridge should preserve the baseline rendering");
+    test->expect(plan.units.size() == 2 && plan.nearbySameColorMergeCount == 1,
+                 "nearby exact colors should share one bridged backdrop unit");
+    if (plan.units.size() == 2) {
+        test->expect(plan.units[0].sourceRegionIndices == QVector<int>{0, 1}
+                         && plan.units[1].sourceRegionIndices == QVector<int>{2},
+                     "intervening color should remain above the bridged backdrop");
+    }
+}
+
+void regionLayerPlanDoesNotBridgeBackground(TestContext *test)
+{
+    const QSize size(12, 6);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), -1);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 5; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        for (int x = 7; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor color(180, 70, 50);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, color));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, color));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    if (plan.fallback || plan.units.size() != 2) {
+        std::cerr << "background-plan: "
+                  << plan.diagnostics.join(QStringLiteral(" | ")).toStdString() << '\n';
+    }
+    test->expect(!plan.fallback && plan.units.size() == 2
+                     && plan.nearbySameColorMergeCount == 0,
+                 "nearby colors should remain separate across image background");
+}
+
+void regionLayerPlanUsesBaselineOverlapOrder(TestContext *test)
+{
+    const QSize size(10, 6);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = size.width() / 2; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, QColor(190, 70, 40)));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, QColor(40, 90, 190)));
+    QPainterPath sharedOutline;
+    sharedOutline.addRect(QRectF(QPointF(0.0, 0.0), QSizeF(size)));
+    sourceRegions[0].outline = sharedOutline;
+    sourceRegions[1].outline = sharedOutline;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "overlapping source contours should preserve baseline rendering");
+    test->expect(plan.units.size() == 2 && plan.orderingEdgeCount == 1
+                     && plan.units[0].sourceRegionIndices == QVector<int>{0}
+                     && plan.units[1].sourceRegionIndices == QVector<int>{1},
+                 "overlap dependencies should follow the baseline top owner");
+}
+
+void regionLayerPlanRejectsOnlyCyclicNearbyBridge(TestContext *test)
+{
+    const QSize size(14, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 1);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 5; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        for (int x = 7; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, QColor(40, 90, 190)));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, repeatedColor));
+    QPainterPath overlappingMiddle;
+    overlappingMiddle.addRect(QRectF(5.0, 0.0, 5.0, size.height()));
+    sourceRegions[1].outline = overlappingMiddle;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "a cyclic nearby merge should retain a valid layer plan");
+    test->expect(plan.units.size() == 3 && plan.nearbySameColorMergeCount == 0
+                     && plan.nearbyConflictRejectCount == 1,
+                 "only the nearby bridge responsible for a dependency cycle should be rejected");
+}
+
+void regionLayerPlanIsolatesResidualCycle(TestContext *test)
+{
+    const QSize size(20, 20);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = size.height() / 2; y < size.height(); ++y) {
+        for (int x = 0; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+    }
+    for (int y = 8; y < 12; ++y) {
+        for (int x = 8; x < 12; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, QColor(40, 90, 190)));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, repeatedColor));
+    QPainterPath overlappingCenter;
+    overlappingCenter.addRect(QRectF(8.0, 8.0, 4.0, 6.0));
+    sourceRegions[1].outline = overlappingCenter;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "a residual dependency cycle should retain a valid source plan");
+    test->expect(plan.units.size() == 3 && plan.conflictIsolatedSourceCount == 2,
+                 "only sources participating in the residual cycle should be isolated");
+}
+
+void regionLayerPlanIsolatesValidationMismatch(TestContext *test)
+{
+    const QSize size(16, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = size.width() / 2; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor color(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, color));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, color));
+    QPainterPath leftOutline;
+    leftOutline.addRect(QRectF(1.0, 0.0, 7.0, size.height()));
+    QPainterPath rightOutline;
+    rightOutline.addRect(QRectF(8.0, 0.0, 7.0, size.height()));
+    sourceRegions[0].outline = leftOutline;
+    sourceRegions[1].outline = rightOutline;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "a changed merged contour should retain the baseline rendering");
+    test->expect(plan.units.size() == 2 && plan.sameColorMergeCount == 0
+                     && plan.conflictIsolatedSourceCount == 2,
+                 "only sources participating in a validation mismatch should be isolated");
+}
+
 void completedRegionLayersUsePlannedDrawOrder(TestContext *test)
 {
     QVector<gui::RegionFillLayer> layers(3);
@@ -1673,6 +1863,12 @@ int main(int argc, char **argv)
     residualLineHistoryMergesMissedComponent(&test);
     regionLayerPlanAbsorbsBehindEnclosedRegion(&test);
     regionLayerPlanMergesAdjacentExactColors(&test);
+    regionLayerPlanBridgesNearbyExactColors(&test);
+    regionLayerPlanDoesNotBridgeBackground(&test);
+    regionLayerPlanUsesBaselineOverlapOrder(&test);
+    regionLayerPlanRejectsOnlyCyclicNearbyBridge(&test);
+    regionLayerPlanIsolatesResidualCycle(&test);
+    regionLayerPlanIsolatesValidationMismatch(&test);
     completedRegionLayersUsePlannedDrawOrder(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);
