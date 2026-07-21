@@ -6,6 +6,8 @@
 #include <QtCore>
 #include <QtGui>
 
+#include <functional>
+
 namespace gui {
 
 struct SceneRenderEntry {
@@ -74,44 +76,34 @@ private:
     bool hasBounds_ = false;
 };
 
-inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Group &root) {
-    QVector<const fh6::scene::Shape *> leaves;
-    struct Walker {
-        QVector<const fh6::scene::Shape *> &out;
-        void walk(const fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Group) {
-                for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
-                    walk(*child);
-                }
-            } else if (node.kind() == fh6::scene::LayerKind::Shape) {
-                out.push_back(static_cast<const fh6::scene::Shape *>(&node));
-            }
+template <typename LayerType, fh6::scene::LayerKind Kind>
+QVector<const LayerType *> sceneLeaves(const fh6::scene::Group &root) {
+    QVector<const LayerType *> leaves;
+    std::function<void(const fh6::scene::Layer &)> collect = [&](const fh6::scene::Layer &node) {
+        if (node.kind() == Kind) {
+            leaves.push_back(static_cast<const LayerType *>(&node));
+            return;
         }
-    } walker{leaves};
+        if (node.kind() != fh6::scene::LayerKind::Group) {
+            return;
+        }
+        for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+            collect(*child);
+        }
+    };
     for (const auto &child : root.children) {
-        walker.walk(*child);
+        collect(*child);
     }
+
     return leaves;
 }
 
+inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Group &root) {
+    return sceneLeaves<fh6::scene::Shape, fh6::scene::LayerKind::Shape>(root);
+}
+
 inline QVector<const fh6::scene::GuideLayer *> sceneGuideLeaves(const fh6::scene::Group &root) {
-    QVector<const fh6::scene::GuideLayer *> leaves;
-    struct Walker {
-        QVector<const fh6::scene::GuideLayer *> &out;
-        void walk(const fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Group) {
-                for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
-                    walk(*child);
-                }
-            } else if (node.kind() == fh6::scene::LayerKind::Guide) {
-                out.push_back(static_cast<const fh6::scene::GuideLayer *>(&node));
-            }
-        }
-    } walker{leaves};
-    for (const auto &child : root.children) {
-        walker.walk(*child);
-    }
-    return leaves;
+    return sceneLeaves<fh6::scene::GuideLayer, fh6::scene::LayerKind::Guide>(root);
 }
 
 } // namespace gui

@@ -11,10 +11,6 @@
 namespace gui {
 namespace {
 
-QTransform stateToQTransform(const fh6::Matrix3 &m) {
-    return QTransform(m.m[0][0], m.m[1][0], m.m[0][1], m.m[1][1], m.m[0][2], m.m[1][2]);
-}
-
 fh6::Matrix3 fromQTransform(const QTransform &t) {
     fh6::Matrix3 m;
     m.m[0][0] = t.m11();
@@ -30,7 +26,7 @@ fh6::Matrix3 fromQTransform(const QTransform &t) {
 }
 
 QTransform frameOf(const fh6::scene::Layer &node) {
-    return stateToQTransform(node.transform.matrix());
+    return sceneLocalTransform(node);
 }
 
 void storeFrame(fh6::scene::Layer &node, const QTransform &frame) {
@@ -45,6 +41,38 @@ void walkGroup(fh6::scene::Group &group, Fn fn) {
             walkGroup(static_cast<fh6::scene::Group &>(*child), fn);
         }
     }
+}
+
+template <typename Fn>
+void walkShapes(fh6::scene::Group &group, Fn fn) {
+    walkGroup(group, [&](fh6::scene::Layer &node) {
+        if (node.kind() == fh6::scene::LayerKind::Shape) {
+            fn(static_cast<fh6::scene::Shape &>(node));
+        }
+    });
+}
+
+template <typename LayerType>
+QSet<QString> existingIds(const QSet<QString> &ids, const QHash<QString, LayerType *> &nodes) {
+    QSet<QString> existing;
+    for (const QString &id : ids) {
+        if (nodes.contains(id)) {
+            existing.insert(id);
+        }
+    }
+
+    return existing;
+}
+
+std::vector<std::unique_ptr<fh6::scene::Layer>> cloneNodes(
+    const std::vector<std::unique_ptr<fh6::scene::Layer>> &nodes) {
+    std::vector<std::unique_ptr<fh6::scene::Layer>> copies;
+    copies.reserve(nodes.size());
+    for (const auto &node : nodes) {
+        copies.push_back(node ? node->clone() : nullptr);
+    }
+
+    return copies;
 }
 
 void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out) {
@@ -63,11 +91,8 @@ void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out) {
 } // namespace
 
 ProjectClipboard::ProjectClipboard(const ProjectClipboard &other)
-    : rootIds(other.rootIds) {
-    nodes.reserve(other.nodes.size());
-    for (const auto &node : other.nodes) {
-        nodes.push_back(node ? node->clone() : nullptr);
-    }
+    : rootIds(other.rootIds),
+      nodes(cloneNodes(other.nodes)) {
 }
 
 ProjectClipboard &ProjectClipboard::operator=(const ProjectClipboard &other) {
@@ -75,11 +100,8 @@ ProjectClipboard &ProjectClipboard::operator=(const ProjectClipboard &other) {
         return *this;
     }
     rootIds = other.rootIds;
-    nodes.clear();
-    nodes.reserve(other.nodes.size());
-    for (const auto &node : other.nodes) {
-        nodes.push_back(node ? node->clone() : nullptr);
-    }
+    nodes = cloneNodes(other.nodes);
+
     return *this;
 }
 
@@ -141,7 +163,7 @@ void EditorState::ensureRenderCache() const {
     int drawOrder = 0;
     std::function<void(const fh6::scene::Layer &, const QTransform &, QVector<QString>, QString)> walk =
         [&](const fh6::scene::Layer &node, const QTransform &parentWorld, QVector<QString> ancestors, QString sectionId) {
-            const QTransform world = stateToQTransform(node.transform.matrix()) * parentWorld;
+            const QTransform world = sceneLocalTransform(node) * parentWorld;
             if (node.kind() == fh6::scene::LayerKind::Group) {
                 const auto &group = static_cast<const fh6::scene::Group &>(node);
                 if (group.isLiverySection) {
@@ -186,7 +208,7 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
     ensureSceneTree();
     std::function<void(const fh6::scene::Layer &, const QTransform &)> apply =
         [&](const fh6::scene::Layer &node, const QTransform &parentWorld) {
-            const QTransform world = stateToQTransform(node.transform.matrix()) * parentWorld;
+            const QTransform world = sceneLocalTransform(node) * parentWorld;
             const int idx = renderEntryByNodeId_.value(node.id, -1);
             if (idx >= 0) {
                 renderEntries_[idx].worldTransform = world;
@@ -203,7 +225,7 @@ void EditorState::updateRenderCacheTransforms(const QVector<QString> &targetIds)
             continue;
         }
         const QTransform parentWorld =
-            node->parent() != nullptr ? stateToQTransform(node->parent()->worldMatrix()) : QTransform();
+            node->parent() != nullptr ? toQTransform(node->parent()->worldMatrix()) : QTransform();
         apply(*node, parentWorld);
     }
 }
@@ -430,32 +452,25 @@ void EditorState::setGuideLayerLocked(const QString &guideId, bool locked) {
 
 void EditorState::setGroupDescendantVisible(const QString &groupId, bool visible) {
     if (fh6::scene::Group *group = groupForId(groupId)) {
-        walkGroup(*group, [&](fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Shape) {
-                node.visible = visible;
-            }
+        walkShapes(*group, [&](fh6::scene::Shape &shape) {
+            shape.visible = visible;
         });
     }
 }
 
 void EditorState::setGroupDescendantMask(const QString &groupId, bool mask) {
     if (fh6::scene::Group *group = groupForId(groupId)) {
-        walkGroup(*group, [&](fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Shape) {
-                static_cast<fh6::scene::Shape &>(node).mask = mask;
-            }
+        walkShapes(*group, [&](fh6::scene::Shape &shape) {
+            shape.mask = mask;
         });
     }
 }
 
 void EditorState::setGroupDescendantColor(const QString &groupId, const std::array<quint8, 4> &color) {
     if (fh6::scene::Group *group = groupForId(groupId)) {
-        walkGroup(*group, [&](fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Shape) {
-                auto &shape = static_cast<fh6::scene::Shape &>(node);
-                if (!shape.raster) {
-                    shape.color = color;
-                }
+        walkShapes(*group, [&](fh6::scene::Shape &shape) {
+            if (!shape.raster) {
+                shape.color = color;
             }
         });
     }
@@ -465,12 +480,9 @@ void EditorState::setGroupDescendantOpacity(const QString &groupId, double opaci
     const double clamped = std::clamp(opacity, 0.0, 1.0);
     const quint8 alpha = static_cast<quint8>(std::clamp(static_cast<int>(std::round(clamped * 255.0)), 0, 255));
     if (fh6::scene::Group *group = groupForId(groupId)) {
-        walkGroup(*group, [&](fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Shape) {
-                auto &shape = static_cast<fh6::scene::Shape &>(node);
-                shape.opacity = clamped;
-                shape.color[3] = alpha;
-            }
+        walkShapes(*group, [&](fh6::scene::Shape &shape) {
+            shape.opacity = clamped;
+            shape.color[3] = alpha;
         });
     }
 }
@@ -485,7 +497,7 @@ QTransform EditorState::groupParentWorld(const QString &groupId) const {
     if (group == nullptr || group->parent() == nullptr) {
         return {};
     }
-    return stateToQTransform(group->parent()->worldMatrix());
+    return toQTransform(group->parent()->worldMatrix());
 }
 
 void EditorState::transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT) {
@@ -618,14 +630,7 @@ void EditorState::noteProjectStructureChanged() {
     invalidateProjectIndexCache();
     selectedLayerIds_ = existingLayerIds(selectedLayerIds_);
     selectedGuideLayerIds_ = existingGuideLayerIds(selectedGuideLayerIds_);
-    QVector<QString> existingEntries;
-    const ProjectIndexCache &cache = projectIndexCache();
-    for (const QString &id : selectedEntryIds_) {
-        if (cache.nodes.contains(id)) {
-            existingEntries.push_back(id);
-        }
-    }
-    selectedEntryIds_ = normalizeEntrySelection(existingEntries);
+    selectedEntryIds_ = existingEntryIds(selectedEntryIds_);
     Q_EMIT projectStructureChanged();
     Q_EMIT selectionChanged();
 }
@@ -665,31 +670,37 @@ QSet<QString> EditorState::sectionIdsForNodes(const QVector<QString> &nodeIds) c
 }
 
 QSet<QString> EditorState::existingLayerIds(const QSet<QString> &ids) const {
-    QSet<QString> existing;
     if (!hasProject_) {
-        return existing;
+        return {};
     }
-    const auto &layers = projectIndexCache().layers;
-    for (const QString &id : ids) {
-        if (layers.contains(id)) {
-            existing.insert(id);
-        }
-    }
-    return existing;
+
+    return existingIds(ids, projectIndexCache().layers);
 }
 
 QSet<QString> EditorState::existingGuideLayerIds(const QSet<QString> &ids) const {
-    QSet<QString> existing;
     if (!hasProject_) {
-        return existing;
+        return {};
     }
-    const auto &guides = projectIndexCache().guides;
-    for (const QString &id : ids) {
-        if (guides.contains(id)) {
-            existing.insert(id);
+
+    return existingIds(ids, projectIndexCache().guides);
+}
+
+QVector<QString> EditorState::existingEntryIds(const QVector<QString> &entryIds) const {
+    if (!hasProject_) {
+        return {};
+    }
+    QVector<QString> existing;
+    QSet<QString> seen;
+    const ProjectIndexCache &cache = projectIndexCache();
+    existing.reserve(entryIds.size());
+    for (const QString &id : entryIds) {
+        if (!id.isEmpty() && !seen.contains(id) && cache.nodes.contains(id)) {
+            existing.push_back(id);
+            seen.insert(id);
         }
     }
-    return existing;
+
+    return normalizeEntrySelection(existing);
 }
 
 QString EditorState::parentGroupForEntry(const QString &entryId) const {
@@ -729,32 +740,24 @@ const fh6::scene::Group *EditorState::groupForId(const QString &groupId) const {
 }
 
 QString EditorState::uniqueLayerId() const {
-    const auto &cache = projectIndexCache();
-    int index = cache.layers.size() + 1;
-    QString id;
-    do {
-        id = QStringLiteral("layer_%1").arg(index++);
-    } while (cache.nodes.contains(id));
-    return id;
+    return uniqueId(QStringLiteral("layer"), projectIndexCache().layers.size() + 1);
 }
 
 QString EditorState::uniqueGuideLayerId() const {
-    const auto &cache = projectIndexCache();
-    int index = cache.guides.size() + 1;
-    QString id;
-    do {
-        id = QStringLiteral("guide_%1").arg(index++);
-    } while (cache.nodes.contains(id));
-    return id;
+    return uniqueId(QStringLiteral("guide"), projectIndexCache().guides.size() + 1);
 }
 
 QString EditorState::uniqueGroupId() const {
+    return uniqueId(QStringLiteral("group"), projectIndexCache().groups.size() + 1);
+}
+
+QString EditorState::uniqueId(const QString &prefix, int startingIndex) const {
     const auto &cache = projectIndexCache();
-    int index = cache.groups.size() + 1;
     QString id;
     do {
-        id = QStringLiteral("group_%1").arg(index++);
+        id = QStringLiteral("%1_%2").arg(prefix).arg(startingIndex++);
     } while (cache.nodes.contains(id));
+
     return id;
 }
 

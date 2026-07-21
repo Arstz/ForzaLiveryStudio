@@ -49,9 +49,10 @@ public:
 
 private:
     QStandardItem *itemForId(const ProjectLookup &lookup, const QString &id, bool ancestorLocked = false) const;
-    QIcon previewIconForId(const ProjectLookup &lookup, const QString &id) const;
     QIcon previewIconForNode(const fh6::scene::Layer &node) const;
-    void cacheDisplayedSectionRows();
+    void populateGroup(const ProjectLookup &lookup, const fh6::scene::Group &group);
+    bool updateItemState(QStandardItem &item, const fh6::scene::Layer &node, bool ancestorLocked) const;
+    void updateItemPreview(QStandardItem &item, const fh6::scene::Layer &node) const;
     void refreshStateRolesForParent(const ProjectLookup &lookup, const QModelIndex &parent, bool ancestorLocked);
     void refreshPreviewsForParent(const ProjectLookup &lookup, const QModelIndex &parent);
 

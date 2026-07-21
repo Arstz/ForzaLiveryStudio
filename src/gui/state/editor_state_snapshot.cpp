@@ -28,6 +28,19 @@ bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transfor
         && a.skew == b.skew;
 }
 
+bool rasterContentEqual(const fh6::scene::RasterContainer *a,
+                        const fh6::scene::RasterContainer *b) {
+    if (a == nullptr || b == nullptr) {
+        return a == b;
+    }
+
+    return a->width == b->width
+        && a->height == b->height
+        && a->pixels == b->pixels
+        && a->encoded == b->encoded
+        && a->format == b->format;
+}
+
 bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
     if (a.kind() != b.kind()
         || a.id != b.id
@@ -56,17 +69,11 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
         const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
         if (ga.sourcePath != gb.sourcePath
             || ga.preprocessColorCount != gb.preprocessColorCount
-            || static_cast<bool>(ga.image) != static_cast<bool>(gb.image)) {
+            || !rasterContentEqual(ga.image.get(), gb.image.get())) {
             return false;
         }
-        if (!ga.image) {
-            return true;
-        }
-        return ga.image->width == gb.image->width
-            && ga.image->height == gb.image->height
-            && ga.image->pixels == gb.image->pixels
-            && ga.image->encoded == gb.image->encoded
-            && ga.image->format == gb.image->format;
+
+        return true;
     }
     case fh6::scene::LayerKind::Group: {
         const auto &ga = static_cast<const fh6::scene::Group &>(a);
@@ -132,15 +139,8 @@ bool previewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
     if (a.kind() == fh6::scene::LayerKind::Guide) {
         const auto &ga = static_cast<const fh6::scene::GuideLayer &>(a);
         const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
-        if (static_cast<bool>(ga.image) != static_cast<bool>(gb.image)) {
-            return true;
-        }
         return ga.preprocessColorCount != gb.preprocessColorCount
-            || (ga.image && (ga.image->width != gb.image->width
-            || ga.image->height != gb.image->height
-            || ga.image->pixels != gb.image->pixels
-            || ga.image->encoded != gb.image->encoded
-            || ga.image->format != gb.image->format));
+            || !rasterContentEqual(ga.image.get(), gb.image.get());
     }
     if (a.kind() == fh6::scene::LayerKind::Group) {
         const auto &ga = static_cast<const fh6::scene::Group &>(a);
@@ -164,8 +164,8 @@ void EditorState::beginProjectEdit() {
     ProjectEditCommand command;
     command.kind = ProjectEditCommandKind::Snapshot;
     command.before = captureSnapshot();
-    command.undoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
-    command.redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    command.undoSelection = captureSelection();
+    command.redoSelection = command.undoSelection;
     pendingEdit_ = command;
 }
 
@@ -179,7 +179,7 @@ void EditorState::commitProjectEdit() {
         return;
     }
     pendingEdit_->after = captureSnapshot();
-    pendingEdit_->redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    pendingEdit_->redoSelection = captureSelection();
     if (!snapshotsEqual(pendingEdit_->before, pendingEdit_->after)) {
         pendingEdit_->refresh = classifySnapshotRefresh(pendingEdit_->before, pendingEdit_->after);
         undoStack_.push_back(*pendingEdit_);
@@ -217,8 +217,8 @@ void EditorState::beginTransformCommand(const QVector<QString> &targetIds) {
     ProjectEditCommand command;
     command.kind = ProjectEditCommandKind::Transform;
     command.refresh = ProjectEditRefresh::GeometryOnly;
-    command.undoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
-    command.redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    command.undoSelection = captureSelection();
+    command.redoSelection = command.undoSelection;
     QSet<QString> seen;
     command.transforms.reserve(targetIds.size());
     for (const QString &id : targetIds) {
@@ -259,7 +259,7 @@ void EditorState::commitTransformCommand() {
         }
     }
     pendingEdit_->transforms = std::move(changed);
-    pendingEdit_->redoSelection = {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
+    pendingEdit_->redoSelection = captureSelection();
     if (!pendingEdit_->transforms.isEmpty()) {
         undoStack_.push_back(*pendingEdit_);
         redoStack_.clear();
@@ -285,55 +285,11 @@ void EditorState::cancelTransformCommand() {
 }
 
 void EditorState::undo() {
-    if (undoStack_.isEmpty()) {
-        return;
-    }
-    const QSet<QString> previousLayerIds = selectedLayerIds_;
-    const QSet<QString> previousGuideIds = selectedGuideLayerIds_;
-    const QVector<QString> previousEntryIds = selectedEntryIds_;
-    const ProjectEditCommand command = undoStack_.takeLast();
-    if (command.kind == ProjectEditCommandKind::Transform) {
-        applyTransformEdits(command.transforms, false);
-    } else {
-        applySnapshot(command.before);
-    }
-    redoStack_.push_back(command);
-    setModified(true);
-    selectedLayerIds_ = existingLayerIds(command.undoSelection.layerIds);
-    selectedGuideLayerIds_ = existingGuideLayerIds(command.undoSelection.guideLayerIds);
-    selectedEntryIds_ = normalizeEntrySelection(command.undoSelection.entryIds);
-    refreshAfterHistoryCommand(command.refresh);
-    if (selectedLayerIds_ != previousLayerIds || selectedGuideLayerIds_ != previousGuideIds
-        || selectedEntryIds_ != previousEntryIds) {
-        Q_EMIT selectionChanged();
-    }
-    Q_EMIT historyChanged();
+    applyHistoryCommand(HistoryDirection::Undo);
 }
 
 void EditorState::redo() {
-    if (redoStack_.isEmpty()) {
-        return;
-    }
-    const QSet<QString> previousLayerIds = selectedLayerIds_;
-    const QSet<QString> previousGuideIds = selectedGuideLayerIds_;
-    const QVector<QString> previousEntryIds = selectedEntryIds_;
-    const ProjectEditCommand command = redoStack_.takeLast();
-    if (command.kind == ProjectEditCommandKind::Transform) {
-        applyTransformEdits(command.transforms, true);
-    } else {
-        applySnapshot(command.after);
-    }
-    undoStack_.push_back(command);
-    setModified(true);
-    selectedLayerIds_ = existingLayerIds(command.redoSelection.layerIds);
-    selectedGuideLayerIds_ = existingGuideLayerIds(command.redoSelection.guideLayerIds);
-    selectedEntryIds_ = normalizeEntrySelection(command.redoSelection.entryIds);
-    refreshAfterHistoryCommand(command.refresh);
-    if (selectedLayerIds_ != previousLayerIds || selectedGuideLayerIds_ != previousGuideIds
-        || selectedEntryIds_ != previousEntryIds) {
-        Q_EMIT selectionChanged();
-    }
-    Q_EMIT historyChanged();
+    applyHistoryCommand(HistoryDirection::Redo);
 }
 
 void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot) {
@@ -344,6 +300,10 @@ void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot) {
 ProjectEditSnapshot EditorState::captureSnapshot() const {
     ScopedPerf perf("EditorState::captureSnapshot");
     return {project_};
+}
+
+ProjectSelectionSnapshot EditorState::captureSelection() const {
+    return {selectedLayerIds_, selectedGuideLayerIds_, selectedEntryIds_};
 }
 
 bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const {
@@ -378,6 +338,39 @@ void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits
         }
     }
     invalidateSceneTree();
+}
+
+void EditorState::applyHistoryCommand(HistoryDirection direction) {
+    const bool isRedo = direction == HistoryDirection::Redo;
+    QVector<ProjectEditCommand> &source = isRedo ? redoStack_ : undoStack_;
+    QVector<ProjectEditCommand> &destination = isRedo ? undoStack_ : redoStack_;
+    if (source.isEmpty()) {
+        return;
+    }
+    const ProjectSelectionSnapshot previousSelection = captureSelection();
+    const ProjectEditCommand command = source.takeLast();
+    if (command.kind == ProjectEditCommandKind::Transform) {
+        applyTransformEdits(command.transforms, isRedo);
+    } else {
+        applySnapshot(isRedo ? command.after : command.before);
+    }
+    destination.push_back(command);
+    setModified(true);
+    restoreSelection(isRedo ? command.redoSelection : command.undoSelection);
+    refreshAfterHistoryCommand(command.refresh);
+    const ProjectSelectionSnapshot restoredSelection = captureSelection();
+    if (restoredSelection.layerIds != previousSelection.layerIds
+        || restoredSelection.guideLayerIds != previousSelection.guideLayerIds
+        || restoredSelection.entryIds != previousSelection.entryIds) {
+        Q_EMIT selectionChanged();
+    }
+    Q_EMIT historyChanged();
+}
+
+void EditorState::restoreSelection(const ProjectSelectionSnapshot &selection) {
+    selectedLayerIds_ = existingLayerIds(selection.layerIds);
+    selectedGuideLayerIds_ = existingGuideLayerIds(selection.guideLayerIds);
+    selectedEntryIds_ = normalizeEntrySelection(selection.entryIds);
 }
 
 void EditorState::refreshAfterHistoryCommand(ProjectEditRefresh refresh) {

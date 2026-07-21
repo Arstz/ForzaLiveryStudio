@@ -3,29 +3,21 @@
 #include "perf_utils.h"
 
 #include <algorithm>
-#include <functional>
+#include <type_traits>
 
 namespace gui {
 namespace {
 
-std::unique_ptr<fh6::scene::Layer> takeNode(EditorState &state, const QString &id) {
-    fh6::scene::Group *parent = state.groupForId(state.parentGroupForEntry(id));
-    if (parent == nullptr) {
-        return nullptr;
-    }
-    for (int i = 0; i < static_cast<int>(parent->children.size()); ++i) {
-        if (parent->children[i]->id == id) {
-            return parent->takeAt(i);
-        }
-    }
-    return nullptr;
-}
-
-void walkNode(fh6::scene::Layer &node, const std::function<void(fh6::scene::Layer &)> &fn) {
+template <typename LayerType, typename Fn>
+void walkNode(LayerType &node, const Fn &fn) {
     fn(node);
     if (node.kind() == fh6::scene::LayerKind::Group) {
-        for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
-            walkNode(*child, fn);
+        using GroupType = std::conditional_t<std::is_const_v<LayerType>,
+                                             const fh6::scene::Group,
+                                             fh6::scene::Group>;
+        for (const auto &child : static_cast<GroupType &>(node).children) {
+            LayerType &childNode = *child;
+            walkNode(childNode, fn);
         }
     }
 }
@@ -78,7 +70,7 @@ bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectCl
         }
         copied.nodes.push_back(node->clone());
     }
-    out = copied;
+    out = std::move(copied);
     return true;
 }
 
@@ -87,7 +79,7 @@ bool EditorState::copyEntriesToClipboard(const QVector<QString> &entries) {
     if (!buildEntryClipboard(entries, copied)) {
         return false;
     }
-    clipboard_ = copied;
+    clipboard_ = std::move(copied);
     Q_EMIT clipboardChanged();
     return true;
 }
@@ -149,7 +141,7 @@ void EditorState::removeEntries(const QVector<QString> &entryIds) {
         if (fh6::scene::Group *group = groupForId(entryId); group != nullptr && group->isLiverySection) {
             continue;
         }
-        takeNode(*this, entryId);
+        takeEntry(entryId);
     }
     pruneEmptyGroups();
     invalidateProjectIndexCache();
@@ -176,8 +168,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         if (!root) {
             continue;
         }
-        std::unique_ptr<fh6::scene::Layer> temp = root->clone();
-        walkNode(*temp, [&](fh6::scene::Layer &node) {
+        walkNode(static_cast<const fh6::scene::Layer &>(*root), [&](const fh6::scene::Layer &node) {
             QString prefix;
             int *counter = nullptr;
             switch (node.kind()) {
@@ -258,30 +249,15 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                                                 QSet<QString> *newGuideLayerSelection,
                                                 bool renameCopies,
                                                 QVector<QString> *newRootEntryIds) {
+    const EntryInsertionPoint insertionPoint = insertionPointAboveSelection(selectedEntries);
     const ProjectIndexCache &cache = projectIndexCache();
-    const QVector<QString> normalizedSelection = normalizeEntrySelection(selectedEntries);
-    QString parentId;
-    int insertAt = 0;
-    bool haveTarget = false;
-    for (const QString &entryId : normalizedSelection) {
-        const QString candidateParent = cache.parentByChild.value(entryId);
-        const int order = cache.orderByChild.value(entryId, -1);
-        if (order < 0) {
-            continue;
-        }
-        if (!haveTarget || candidateParent != parentId || order + 1 > insertAt) {
-            parentId = candidateParent;
-            insertAt = order + 1;
-            haveTarget = true;
-        }
-    }
     int guideInsertAt = -1;
-    for (const QString &entryId : normalizedSelection) {
+    for (const QString &entryId : insertionPoint.entries) {
         if (cache.guides.contains(entryId)) {
             guideInsertAt = std::max(guideInsertAt, cache.orderByChild.value(entryId, -1) + 1);
         }
     }
-    insertClipboardAt(clipboard, parentId, insertAt, haveTarget, guideInsertAt,
+    insertClipboardAt(clipboard, insertionPoint.parentId, insertionPoint.row, insertionPoint.hasTarget, guideInsertAt,
                       newLayerSelection, newGuideLayerSelection, renameCopies, newRootEntryIds);
 }
 
@@ -289,32 +265,37 @@ void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> l
     if (!layer || !project_.root) {
         return;
     }
-    const ProjectIndexCache &cache = projectIndexCache();
-    const QVector<QString> normalizedSelection = normalizeEntrySelection(selectedEntries);
-    QString parentId;
-    int insertAt = 0;
-    bool haveTarget = false;
-    for (const QString &entryId : normalizedSelection) {
-        const QString candidateParent = cache.parentByChild.value(entryId);
-        const int order = cache.orderByChild.value(entryId, -1);
-        if (order < 0) {
-            continue;
-        }
-        if (!haveTarget || candidateParent != parentId || order + 1 > insertAt) {
-            parentId = candidateParent;
-            insertAt = order + 1;
-            haveTarget = true;
-        }
-    }
-    fh6::scene::Group *target = haveTarget ? groupForId(parentId) : defaultInsertionTarget(*this);
+    const EntryInsertionPoint insertionPoint = insertionPointAboveSelection(selectedEntries);
+    fh6::scene::Group *target = insertionPoint.hasTarget ? groupForId(insertionPoint.parentId)
+                                                        : defaultInsertionTarget(*this);
     if (target == nullptr) {
         target = project_.root.get();
     }
-    if (!haveTarget) {
-        insertAt = static_cast<int>(target->children.size());
-    }
+    const int insertAt = insertionPoint.hasTarget ? insertionPoint.row
+                                                  : static_cast<int>(target->children.size());
     target->insert(std::clamp(insertAt, 0, static_cast<int>(target->children.size())), std::move(layer));
     invalidateProjectIndexCache();
+}
+
+EditorState::EntryInsertionPoint EditorState::insertionPointAboveSelection(
+    const QVector<QString> &selectedEntries) const {
+    EntryInsertionPoint result;
+    result.entries = normalizeEntrySelection(selectedEntries);
+    const ProjectIndexCache &cache = projectIndexCache();
+    for (const QString &entryId : result.entries) {
+        const QString candidateParent = cache.parentByChild.value(entryId);
+        const int candidateRow = cache.orderByChild.value(entryId, -1) + 1;
+        if (candidateRow <= 0) {
+            continue;
+        }
+        if (!result.hasTarget || candidateParent != result.parentId || candidateRow > result.row) {
+            result.parentId = candidateParent;
+            result.row = candidateRow;
+            result.hasTarget = true;
+        }
+    }
+
+    return result;
 }
 
 QString EditorState::copyName(const QString &name) const {

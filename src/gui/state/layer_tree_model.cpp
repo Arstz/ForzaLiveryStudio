@@ -9,9 +9,10 @@
 namespace gui {
 namespace {
 
-constexpr int ShapePreviewSize = 64;
-constexpr int GroupPreviewSize = 64;
-constexpr char LayerEntryMimeType[] = "application/x-fh6-layer-entries";
+constexpr int kShapePreviewSize = 64;
+constexpr int kGroupPreviewSize = 64;
+constexpr int kPreviewPadding = 8;
+constexpr char kLayerEntryMimeType[] = "application/x-fh6-layer-entries";
 
 quint64 mixHash(quint64 seed, quint64 value) {
     return seed ^ (value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
@@ -172,10 +173,6 @@ bool allShapeMask(const fh6::scene::Layer &node) {
     return true;
 }
 
-QTransform previewNodeTransform(const fh6::scene::Layer &node) {
-    return sceneLocalTransform(node);
-}
-
 QRectF previewShapeLocalRect(const fh6::scene::Shape &shape, const ShapeGeometryStore &geometry) {
     if (shape.raster) {
         return sceneLocalRect(QSizeF(shape.rasterWidth, shape.rasterHeight));
@@ -187,24 +184,23 @@ QRectF previewNodeBounds(const fh6::scene::Layer &node,
                         const ShapeGeometryStore &geometry,
                         const QTransform &parentWorld,
                         bool includeNodeTransform) {
-    const QTransform world = includeNodeTransform ? (previewNodeTransform(node) * parentWorld) : parentWorld;
+    const QTransform world = includeNodeTransform ? (sceneLocalTransform(node) * parentWorld) : parentWorld;
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         return world.mapRect(previewShapeLocalRect(static_cast<const fh6::scene::Shape &>(node), geometry));
     }
     if (node.kind() != fh6::scene::LayerKind::Group) {
         return {};
     }
-    QRectF bounds;
-    bool hasBounds = false;
+    BoundsAccumulator bounds;
     for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
         const QRectF childBounds = previewNodeBounds(*child, geometry, world, true);
         if (!childBounds.isValid() || childBounds.isEmpty()) {
             continue;
         }
-        bounds = hasBounds ? bounds.united(childBounds) : childBounds;
-        hasBounds = true;
+        bounds.add(QTransform(), childBounds);
     }
-    return bounds;
+
+    return bounds.hasBounds() ? bounds.bounds() : QRectF();
 }
 
 QColor shapePreviewColor(const fh6::scene::Shape &shape, double alphaScale = 1.0) {
@@ -270,7 +266,7 @@ void paintPreviewShape(QImage &image,
     if (!shape.visible || shape.opacity <= 0.0) {
         return;
     }
-    const QTransform localToPreview = (includeNodeTransform ? (previewNodeTransform(shape) * parentWorld) : parentWorld) * worldToPreview;
+    const QTransform localToPreview = (includeNodeTransform ? (sceneLocalTransform(shape) * parentWorld) : parentWorld) * worldToPreview;
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
@@ -337,7 +333,7 @@ void paintPreviewNode(QImage &image,
     if (node.kind() != fh6::scene::LayerKind::Group || !node.visible) {
         return;
     }
-    const QTransform world = includeNodeTransform ? (previewNodeTransform(node) * parentWorld) : parentWorld;
+    const QTransform world = includeNodeTransform ? (sceneLocalTransform(node) * parentWorld) : parentWorld;
     for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
         paintPreviewNode(image, *child, geometry, worldToPreview, world, true);
     }
@@ -346,16 +342,16 @@ void paintPreviewNode(QImage &image,
 QIcon shapeIcon(const fh6::scene::Layer &node,
                 const ShapeGeometryStore &geometry,
                 bool includeRootTransform) {
-    QImage image(ShapePreviewSize, ShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
+    QImage image(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
     image.fill(QColor(42, 42, 42));
     QRectF bounds = previewNodeBounds(node, geometry, QTransform(), includeRootTransform);
     if (!bounds.isValid() || bounds.isEmpty()) {
         bounds = QRectF(-32, -32, 64, 64);
     }
     QTransform worldToPreview;
-    worldToPreview.translate(ShapePreviewSize / 2.0, ShapePreviewSize / 2.0);
-    const double scale = std::min((ShapePreviewSize - 10.0) / std::max(1.0, bounds.width()),
-                                  (ShapePreviewSize - 10.0) / std::max(1.0, bounds.height()));
+    worldToPreview.translate(kShapePreviewSize / 2.0, kShapePreviewSize / 2.0);
+    const double scale = std::min((kShapePreviewSize - 10.0) / std::max(1.0, bounds.width()),
+                                  (kShapePreviewSize - 10.0) / std::max(1.0, bounds.height()));
     worldToPreview.scale(scale, -scale);
     worldToPreview.translate(-bounds.center().x(), -bounds.center().y());
     paintPreviewNode(image, node, geometry, worldToPreview, QTransform(), includeRootTransform);
@@ -376,12 +372,12 @@ QIcon guideIcon(const fh6::scene::GuideLayer &guide) {
         }
     }
     if (image.isNull()) {
-        image = QImage(ShapePreviewSize, ShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
+        image = QImage(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
         image.fill(QColor(70, 70, 70, 180));
     } else {
         image = image.mirrored(false, true);
     }
-    return QIcon(QPixmap::fromImage(image.scaled(ShapePreviewSize, ShapePreviewSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+    return QIcon(QPixmap::fromImage(image.scaled(kShapePreviewSize, kShapePreviewSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
 }
 
 quint64 contentSignature(const fh6::scene::Layer &node, QHash<QString, quint64> &cache);
@@ -472,24 +468,9 @@ QStandardItem *LayerTreeModel::itemForId(const ProjectLookup &lookup, const QStr
     item->setData(leafIdsForNode(*node), LeafIdsRole);
     item->setData(guideIdsForNode(*node), GuideIdsRole);
     const bool isGroup = node->kind() == fh6::scene::LayerKind::Group;
-    const bool isGuide = node->kind() == fh6::scene::LayerKind::Guide;
-    const bool effectiveLocked = ancestorLocked || node->locked;
-    item->setData(isGroup, IsGroupRole);
-    item->setData(isGuide, IsGuideRole);
-    item->setData(isGuide ? node->visible : allShapeVisible(*node), VisibleRole);
-    item->setData(!isGuide && allShapeMask(*node), MaskRole);
-    item->setData(node->locked, OwnLockedRole);
-    item->setData(effectiveLocked, EffectiveLockedRole);
+    const bool effectiveLocked = updateItemState(*item, *node, ancestorLocked);
     item->setData(positionLabel(leafPositions_, item->data(LeafIdsRole).toStringList()), PositionTextRole);
-    if (isGuide) {
-        item->setIcon(guideIcon(static_cast<const fh6::scene::GuideLayer &>(*node)));
-    } else if (geometryLoaded_) {
-        item->setIcon(previewIconForNode(*node));
-    }
-    item->setSizeHint(QSize((isGroup ? GroupPreviewSize : ShapePreviewSize) + 8, ShapePreviewSize + 8));
-    if (!node->visible || effectiveLocked) {
-        item->setForeground(QBrush(QColor(isGroup ? 150 : 130, isGroup ? 150 : 130, isGroup ? 150 : 130)));
-    }
+    updateItemPreview(*item, *node);
     if (isGroup) {
         const auto &group = static_cast<const fh6::scene::Group &>(*node);
         for (int i = static_cast<int>(group.children.size()) - 1; i >= 0; --i) {
@@ -497,6 +478,42 @@ QStandardItem *LayerTreeModel::itemForId(const ProjectLookup &lookup, const QStr
         }
     }
     return item;
+}
+
+bool LayerTreeModel::updateItemState(QStandardItem &item,
+                                     const fh6::scene::Layer &node,
+                                     bool ancestorLocked) const {
+    const bool isGroup = node.kind() == fh6::scene::LayerKind::Group;
+    const bool isGuide = node.kind() == fh6::scene::LayerKind::Guide;
+    const bool effectiveLocked = ancestorLocked || node.locked;
+
+    item.setText(node.name);
+    item.setData(isGroup, IsGroupRole);
+    item.setData(isGuide, IsGuideRole);
+    item.setData(isGuide ? node.visible : allShapeVisible(node), VisibleRole);
+    item.setData(!isGuide && allShapeMask(node), MaskRole);
+    item.setData(node.locked, OwnLockedRole);
+    item.setData(effectiveLocked, EffectiveLockedRole);
+    if (!node.visible || effectiveLocked) {
+        const int shade = isGroup ? 150 : 130;
+        item.setForeground(QBrush(QColor(shade, shade, shade)));
+    } else {
+        item.setData(QVariant(), Qt::ForegroundRole);
+    }
+
+    return effectiveLocked;
+}
+
+void LayerTreeModel::updateItemPreview(QStandardItem &item, const fh6::scene::Layer &node) const {
+    const bool isGroup = node.kind() == fh6::scene::LayerKind::Group;
+
+    if (node.kind() == fh6::scene::LayerKind::Guide) {
+        item.setIcon(guideIcon(static_cast<const fh6::scene::GuideLayer &>(node)));
+    } else if (geometryLoaded_) {
+        item.setIcon(previewIconForNode(node));
+    }
+    item.setSizeHint(QSize((isGroup ? kGroupPreviewSize : kShapePreviewSize) + kPreviewPadding,
+                           kShapePreviewSize + kPreviewPadding));
 }
 
 void LayerTreeModel::setProject(const fh6::Project *project) {
@@ -509,17 +526,7 @@ void LayerTreeModel::setProject(const fh6::Project *project) {
         return;
     }
     const ProjectLookup lookup = buildLookup(*project);
-    leafPositions_.clear();
-    QStringList order;
-    for (int i = static_cast<int>(project->root->children.size()) - 1; i >= 0; --i) {
-        collectVisualLeafOrder(*project->root->children[i], order);
-    }
-    for (int i = 0; i < order.size(); ++i) {
-        leafPositions_.insert(order[i], order.size() - i);
-    }
-    for (int i = static_cast<int>(project->root->children.size()) - 1; i >= 0; --i) {
-        appendRow(itemForId(lookup, project->root->children[i]->id));
-    }
+    populateGroup(lookup, *project->root);
 }
 
 void LayerTreeModel::setProjectSection(const fh6::Project *project, const QString &sectionGroupId) {
@@ -535,24 +542,26 @@ void LayerTreeModel::setProjectSection(const fh6::Project *project, const QStrin
     if (section == nullptr) {
         return;
     }
+    populateGroup(lookup, *section);
+}
+
+void LayerTreeModel::populateGroup(const ProjectLookup &lookup, const fh6::scene::Group &group) {
     leafPositions_.clear();
     QStringList order;
-    for (int i = static_cast<int>(section->children.size()) - 1; i >= 0; --i) {
-        collectVisualLeafOrder(*section->children[i], order);
+    for (int i = static_cast<int>(group.children.size()) - 1; i >= 0; --i) {
+        collectVisualLeafOrder(*group.children[i], order);
     }
     for (int i = 0; i < order.size(); ++i) {
         leafPositions_.insert(order[i], order.size() - i);
     }
-    for (int i = static_cast<int>(section->children.size()) - 1; i >= 0; --i) {
-        appendRow(itemForId(lookup, section->children[i]->id));
+    for (int i = static_cast<int>(group.children.size()) - 1; i >= 0; --i) {
+        appendRow(itemForId(lookup, group.children[i]->id));
     }
 }
 
 void LayerTreeModel::clearSectionCache() {
     sectionRowsCache_.clear();
 }
-
-void LayerTreeModel::cacheDisplayedSectionRows() {}
 
 Qt::ItemFlags LayerTreeModel::flags(const QModelIndex &index) const {
     Qt::ItemFlags itemFlags = QStandardItemModel::flags(index);
@@ -565,7 +574,7 @@ Qt::ItemFlags LayerTreeModel::flags(const QModelIndex &index) const {
 
 Qt::DropActions LayerTreeModel::supportedDragActions() const { return Qt::MoveAction; }
 Qt::DropActions LayerTreeModel::supportedDropActions() const { return Qt::MoveAction; }
-QStringList LayerTreeModel::mimeTypes() const { return {QString::fromLatin1(LayerEntryMimeType)}; }
+QStringList LayerTreeModel::mimeTypes() const { return {QString::fromLatin1(kLayerEntryMimeType)}; }
 
 QMimeData *LayerTreeModel::mimeData(const QModelIndexList &indexes) const {
     auto *mime = new QMimeData();
@@ -600,7 +609,7 @@ QMimeData *LayerTreeModel::mimeData(const QModelIndexList &indexes) const {
     QByteArray payload;
     QDataStream stream(&payload, QIODevice::WriteOnly);
     stream << parentGroupId << entryIds;
-    mime->setData(QString::fromLatin1(LayerEntryMimeType), payload);
+    mime->setData(QString::fromLatin1(kLayerEntryMimeType), payload);
     return mime;
 }
 
@@ -608,7 +617,7 @@ bool LayerTreeModel::dropMimeData(const QMimeData *data, Qt::DropAction action, 
     if (state_ == nullptr || data == nullptr || action != Qt::MoveAction || column > 0) {
         return false;
     }
-    QByteArray payload = data->data(QString::fromLatin1(LayerEntryMimeType));
+    QByteArray payload = data->data(QString::fromLatin1(kLayerEntryMimeType));
     if (payload.isEmpty()) {
         return false;
     }
@@ -661,11 +670,6 @@ void LayerTreeModel::refreshPreviews(const fh6::Project *project) {
     previewSignatureCache_.clear();
     const ProjectLookup lookup = buildLookup(*project);
     refreshPreviewsForParent(lookup, QModelIndex());
-}
-
-QIcon LayerTreeModel::previewIconForId(const ProjectLookup &lookup, const QString &id) const {
-    const fh6::scene::Layer *node = nodeForId(lookup, id);
-    return node != nullptr && geometryLoaded_ ? previewIconForNode(*node) : QIcon();
 }
 
 QIcon LayerTreeModel::previewIconForNode(const fh6::scene::Layer &node) const {
@@ -726,21 +730,7 @@ void LayerTreeModel::refreshStateRolesForParent(const ProjectLookup &lookup, con
         if (node == nullptr) {
             continue;
         }
-        const bool isGroup = node->kind() == fh6::scene::LayerKind::Group;
-        const bool isGuide = node->kind() == fh6::scene::LayerKind::Guide;
-        const bool effectiveLocked = ancestorLocked || node->locked;
-        entry->setText(node->name);
-        entry->setData(isGroup, IsGroupRole);
-        entry->setData(isGuide, IsGuideRole);
-        entry->setData(isGuide ? node->visible : allShapeVisible(*node), VisibleRole);
-        entry->setData(!isGuide && allShapeMask(*node), MaskRole);
-        entry->setData(node->locked, OwnLockedRole);
-        entry->setData(effectiveLocked, EffectiveLockedRole);
-        if (!node->visible || effectiveLocked) {
-            entry->setForeground(QBrush(QColor(isGroup ? 150 : 130, isGroup ? 150 : 130, isGroup ? 150 : 130)));
-        } else {
-            entry->setData(QVariant(), Qt::ForegroundRole);
-        }
+        const bool effectiveLocked = updateItemState(*entry, *node, ancestorLocked);
         refreshStateRolesForParent(lookup, index, effectiveLocked);
     }
 }
@@ -757,13 +747,7 @@ void LayerTreeModel::refreshPreviewsForParent(const ProjectLookup &lookup, const
         if (node == nullptr) {
             continue;
         }
-        const bool isGroup = node->kind() == fh6::scene::LayerKind::Group;
-        if (node->kind() == fh6::scene::LayerKind::Guide) {
-            entry->setIcon(guideIcon(static_cast<const fh6::scene::GuideLayer &>(*node)));
-        } else if (geometryLoaded_) {
-            entry->setIcon(previewIconForNode(*node));
-        }
-        entry->setSizeHint(QSize((isGroup ? GroupPreviewSize : ShapePreviewSize) + 8, ShapePreviewSize + 8));
+        updateItemPreview(*entry, *node);
         refreshPreviewsForParent(lookup, index);
     }
 }
