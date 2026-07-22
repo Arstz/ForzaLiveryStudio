@@ -609,12 +609,21 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
                                                      fill.bounds,
                                                      traceOptions);
     test->expect(!traced.isEmpty(), "Potrace should vectorize the bucket mask");
-    const gui::RegionPenConversionResult conversion =
-        gui::regionOutlineToPenPoints(traced);
-    test->expect(conversion.valid(),
-                 "the traced bucket mask should become a valid optimized Pen contour");
-    test->expect(gui::buildPenContour(conversion.points).valid(),
-                 "the end-to-end bucket result should be directly consumable by Pen");
+    constexpr double kBucketRdpEpsilon = 1.9;
+    constexpr int kBucketRdpCurveSamples = 32;
+    const QPolygonF sourceContour =
+        gui::regionOuterContour(traced, kBucketRdpCurveSamples);
+    const QPolygonF simplifiedContour =
+        gui::simplifyClosedPolygonCyclic(sourceContour, kBucketRdpEpsilon);
+    QVector<gui::PenPoint> points;
+    points.reserve(simplifiedContour.size());
+    for (const QPointF &point : simplifiedContour) {
+        points.push_back(gui::PenPoint{point, gui::PenPointKind::Hard});
+    }
+    test->expect(simplifiedContour.size() <= sourceContour.size(),
+                 "Bucket cyclic RDP should not increase the contour point count");
+    test->expect(gui::buildPenContour(points).valid(),
+                 "the simplified Bucket contour should be directly consumable by Pen");
 }
 
 QPainterPath smoothCircularPath(int curveCount)

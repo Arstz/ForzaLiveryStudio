@@ -34,6 +34,12 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   to its curve coverage and derives asymmetric placement orientation
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
+- Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
+  selected mask, and simplifies the closed contour with 32-sample cyclic RDP at
+  epsilon 1.9 in source-image pixels. The resulting vertices become editable Hard
+  Pen points. Invalid simplified contours fall back to the conservative Pen conversion;
+  the later Pen boundary-fitting tolerance remains independent of both color tolerance
+  and RDP epsilon.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
   drag the current selection from outside its bounds and giving that selection

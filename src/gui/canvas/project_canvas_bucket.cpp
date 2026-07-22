@@ -7,6 +7,12 @@
 #include <cmath>
 
 namespace gui {
+namespace {
+
+constexpr double kBucketRdpEpsilon = 1.9;
+constexpr int kBucketRdpCurveSamples = 32;
+
+} // namespace
 
 using namespace pc_detail;
 
@@ -218,18 +224,29 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
         return false;
     }
 
-    RegionPenConversionOptions conversionOptions;
-    conversionOptions.comparisonImageSize = image.size();
-    const RegionPenConversionResult conversion =
-        regionOutlineToPenPoints(traced, conversionOptions);
-    if (!conversion.valid()) {
-        setCursorHint(screenPoint,
-                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
-                       conversion.error.isEmpty()
-                           ? QStringLiteral("The traced region is not a valid Pen contour")
-                           : conversion.error});
-        update();
-        return false;
+    const QPolygonF sourceContour = regionOuterContour(traced, kBucketRdpCurveSamples);
+    const QPolygonF simplifiedContour = simplifyClosedPolygonCyclic(
+        sourceContour, kBucketRdpEpsilon);
+    QVector<PenPoint> imagePoints;
+    imagePoints.reserve(simplifiedContour.size());
+    for (const QPointF &point : simplifiedContour) {
+        imagePoints.push_back(PenPoint{point, PenPointKind::Hard});
+    }
+    if (!buildPenContour(imagePoints).valid()) {
+        RegionPenConversionOptions conversionOptions;
+        conversionOptions.comparisonImageSize = image.size();
+        const RegionPenConversionResult conversion =
+            regionOutlineToPenPoints(traced, conversionOptions);
+        if (!conversion.valid()) {
+            setCursorHint(screenPoint,
+                          {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
+                           conversion.error.isEmpty()
+                               ? QStringLiteral("The traced region is not a valid Pen contour")
+                               : conversion.error});
+            update();
+            return false;
+        }
+        imagePoints = conversion.points;
     }
 
     const QSizeF guideSize = sceneNodeSize(*guide, geometry_);
@@ -239,7 +256,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
                        guideSize.height() / image.height());
     const QTransform imageToWorld = imageToLocal * guideWorld;
 
-    QVector<PenPoint> worldPoints = conversion.points;
+    QVector<PenPoint> worldPoints = std::move(imagePoints);
     for (PenPoint &point : worldPoints) {
         point.position = imageToWorld.map(point.position);
     }
