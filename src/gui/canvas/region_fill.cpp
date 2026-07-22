@@ -10,10 +10,22 @@ void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers) {
     if (layers == nullptr) {
         return;
     }
+    const auto variantRank = [](RegionFillVariant variant) {
+        switch (variant) {
+        case RegionFillVariant::Safe:
+            return 0;
+        case RegionFillVariant::Dangerous:
+            return 1;
+        case RegionFillVariant::AdvancingFront:
+            return 2;
+        }
+        return 3;
+    };
     std::stable_sort(layers->begin(), layers->end(),
-                     [](const RegionFillLayer &left, const RegionFillLayer &right) {
+                     [variantRank](const RegionFillLayer &left,
+                                   const RegionFillLayer &right) {
                          if (left.variant != right.variant) {
-                             return left.variant == RegionFillVariant::Safe;
+                             return variantRank(left.variant) < variantRank(right.variant);
                          }
                          return left.drawOrder < right.drawOrder;
                      });

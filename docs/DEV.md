@@ -149,7 +149,7 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   enclosed-region absorption. The
   enclosing backdrop fills through an absorbed region and that region remains a
   later, topmost overlay unit.
-  Both variants are inserted under one
+  The Safe and Dangerous variants are inserted under one
   **Region Fill** container and can be compared by toggling their visibility. If no
   validation difference exists, both variants contain the same plan. The fitted
   output comparison is also saved as a visible **Dangerous Differences** guide at
@@ -207,6 +207,26 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   optimized-contour point for that largest region. `region_extract.log` records
   progressive segmentation counts, line-vote persistence, cleanup decisions,
   output ordinals, and per-component topology and colour metrics.
+  Fill Regions also creates an initially hidden **Advancing Front** comparison
+  variant from the Safe layer plan. It maintains the exact vector residual while
+  fitting affinely transformed catalog primitives to deterministic boundary spans,
+  ranks them by contour parity and newly covered area, permits independently bounded
+  DSSIM leakage and omission, and sends stalled or budget-exhausted residuals through
+  the existing Triangle/Square/Circle mesh fallback. Candidate seeds use a bounded
+  curvature-keypoint guide, but fitting samples the dense residual boundary so Safe's
+  aggressive mesh RDP cannot flatten away fitting curvature. A 256-job preflight tests
+  only curvature-compatible primitive families and must consolidate at least two Safe
+  placements before the full search continues; a failed preflight copies Safe without
+  remeshing. Candidate fitting uses all but one available CPU thread with deterministic
+  result ordering and point-scaled work budgets. The progress display reports the current region, residual percentage, and
+  evaluated candidate count. `advFront.log` is overwritten for every run and records
+  the complete tuning configuration plus per-region fitting, fallback, timing,
+  final-guard diagnostics, and aggregate candidate rejection reasons. Each unit keeps
+  its already generated Safe placements as a baseline. Advancing Front replaces that
+  baseline only when its structurally complete result passes explicit raster coverage
+  and leakage limits and uses fewer shapes; otherwise that comparison unit copies Safe.
+  A failed final DSSIM guard remains diagnostic and does not by itself discard an
+  otherwise complete reduction.
 - Store project-specific color swatches in the `.3so` project document.
 - Manage layer/group trees with thumbnails, visibility/mask/lock badges,
   grouping, ungrouping, deletion, sibling reordering, copy/cut/paste, duplicate,

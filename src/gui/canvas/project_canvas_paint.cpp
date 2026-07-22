@@ -1,8 +1,10 @@
 #include "project_canvas.h"
 
+#include "advancing_front.h"
 #include "project_canvas_internal.h"
 #include "region_layer_plan.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QTextStream>
@@ -1038,6 +1040,11 @@ RegionFillBatchResult computeRegionFills(
     int coreEllipseCount = 0;
     int safeRdpFills = 0;
     int dangerousRdpFills = 0;
+    int advancingFilled = 0;
+    int advancingFailed = 0;
+    int advancingPlacementCount = 0;
+    int advancingOptimized = 0;
+    int advancingSafeFallbacks = 0;
     QHash<QString, int> failureReasons;
     constexpr qint64 kRegionBudgetMs = 3000;
     const PolygonMeshSources &meshSources = request.meshSources;
@@ -1047,6 +1054,24 @@ RegionFillBatchResult computeRegionFills(
     const auto globallyCancelled = [&cancelled]() {
         return cancelled && cancelled();
     };
+    const AdvancingFrontOptions advancingOptions = defaultAdvancingFrontOptions();
+    const QString advancingLogPath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/advFront.log");
+    QFile advancingLogFile(advancingLogPath);
+    if (advancingLogFile.open(QIODevice::WriteOnly | QIODevice::Text
+                              | QIODevice::Truncate)) {
+        QTextStream stream(&advancingLogFile);
+        stream << "Advancing Front region fill diagnostic\n"
+               << "started="
+               << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << '\n'
+               << "image_width=" << regionOverlay.imageSize.width() << '\n'
+               << "image_height=" << regionOverlay.imageSize.height() << '\n'
+               << advancingFrontOptionsLog(advancingOptions) << "\n\n";
+        advancingLogFile.close();
+    } else {
+        qWarning().noquote() << "Could not initialize Advancing Front log at"
+                             << advancingLogPath;
+    }
     struct FillUnit {
         QColor color;
         QPainterPath outline;
@@ -1192,7 +1217,7 @@ RegionFillBatchResult computeRegionFills(
                    .arg(absorbedSourcesText(units[i]))
                    .arg(units[i].area, 0, 'f', 0);
     }
-    result.totalRegions = units.size();
+    result.totalRegions = units.size() + layerPlans.safe.units.size();
     if (progress) {
         progress(QStringLiteral("Filling regions"), 0, result.totalRegions);
     }
@@ -1353,11 +1378,195 @@ RegionFillBatchResult computeRegionFills(
         });
     }
     fillPool.waitForDone();
-    result.completedRegions = completedUnits.load(std::memory_order_relaxed);
     if (globallyCancelled()) {
         result.cancelled = true;
         return result;
     }
+
+    QVector<RegionFillLayer> advancingFills;
+    advancingFills.reserve(layerPlans.safe.units.size());
+    for (int advancingIndex = 0;
+         advancingIndex < layerPlans.safe.units.size();
+         ++advancingIndex) {
+        if (globallyCancelled()) {
+            result.cancelled = true;
+            return result;
+        }
+        const RegionLayerUnit &unit = layerPlans.safe.units[advancingIndex];
+        const UnitWorkResult &safeWork =
+            workResults[static_cast<size_t>(advancingIndex)];
+        const bool safeAvailable = fitSucceeded(safeWork.fit);
+        const int safeShapeCount = safeAvailable
+            ? static_cast<int>(safeWork.fit.placements.size()) : -1;
+        const int baseCompleted = units.size() + advancingIndex;
+        const auto advancingProgress = [&](double residualFraction,
+                                           int candidatesTested) {
+            if (!progress) {
+                return;
+            }
+            const int residualPercent = std::clamp(
+                static_cast<int>(std::lround(residualFraction * 100.0)), 0, 100);
+            progress(QStringLiteral(
+                         "Advancing Front region %1/%2 - %3% residual - %4 candidates")
+                         .arg(advancingIndex + 1)
+                         .arg(layerPlans.safe.units.size())
+                         .arg(residualPercent)
+                         .arg(candidatesTested),
+                     baseCompleted,
+                     result.totalRegions);
+        };
+        AdvancingFrontOptions unitAdvancingOptions = advancingOptions;
+        unitAdvancingOptions.baselinePlacements = safeAvailable
+            ? safeWork.fit.placements : QVector<PenPlacement>{};
+        unitAdvancingOptions.maximumOutputShapes = safeAvailable
+            ? std::max(0, safeShapeCount - 1) : -1;
+        const AdvancingFrontResult advancing = fillRegionAdvancingFront(
+            unit.outline, primitives, meshSources, regionOverlay.imageSize,
+            unitAdvancingOptions, advancingProgress, globallyCancelled);
+        if (advancing.cancelled || globallyCancelled()) {
+            result.cancelled = true;
+            return result;
+        }
+        QVector<PenPlacement> selectedPlacements;
+        QString selection;
+        QString selectionReason;
+        if (advancing.valid()
+            && (!safeAvailable || advancing.placements.size() < safeShapeCount)) {
+            selectedPlacements = advancing.placements;
+            selection = QStringLiteral("advancing-front");
+            selectionReason = QStringLiteral("complete and fewer shapes than Safe");
+            ++advancingOptimized;
+        } else if (safeAvailable) {
+            selectedPlacements = safeWork.fit.placements;
+            selection = QStringLiteral("safe-baseline");
+            if (!advancing.valid()) {
+                selectionReason = advancing.error.isEmpty()
+                    ? QStringLiteral("advancing-front result was structurally incomplete")
+                    : advancing.error;
+            } else {
+                selectionReason = QStringLiteral(
+                    "advancing-front result did not reduce shape count");
+            }
+            ++advancingSafeFallbacks;
+        }
+        QStringList sourceValues;
+        for (const int sourceIndex : unit.sourceRegionIndices) {
+            if (sourceIndex >= 0 && sourceIndex < regionOverlay.regions.size()) {
+                sourceValues.push_back(QStringLiteral("%1/label-%2")
+                                           .arg(sourceIndex)
+                                           .arg(regionOverlay.regions[sourceIndex].id));
+            }
+        }
+        QFile logFile(advancingLogPath);
+        if (logFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Append)) {
+            QTextStream stream(&logFile);
+            stream << "[region " << advancingIndex << "]\n"
+                   << "sources=" << sourceValues.join(',') << '\n'
+                   << "color=" << unit.color.name(QColor::HexRgb) << '\n'
+                   << "area=" << unit.area << '\n'
+                   << "safe_shapes=" << safeShapeCount << '\n'
+                   << "shape_limit=" << unitAdvancingOptions.maximumOutputShapes << '\n'
+                   << "original_points=" << advancing.stats.originalPointCount << '\n'
+                   << "guide_points=" << advancing.stats.guidePointCount << '\n'
+                   << "cheap_candidates=" << advancing.stats.cheapCandidates << '\n'
+                   << "pruned_candidates=" << advancing.stats.prunedCandidates << '\n'
+                   << "refined_candidates=" << advancing.stats.refinedCandidates << '\n'
+                   << "accepted_candidates=" << advancing.stats.acceptedCandidates << '\n'
+                   << "preflight_candidates=" << advancing.stats.preflightCandidates << '\n'
+                   << "preflight_rejected="
+                   << (advancing.stats.preflightRejected ? "yes" : "no") << '\n'
+                   << "baseline_shapes_replaced="
+                   << advancing.stats.baselineShapesReplaced << '\n'
+                   << "component_splits=" << advancing.stats.componentSplits << '\n'
+                   << "backtracks=" << advancing.stats.backtracks << '\n'
+                   << "fallback_shapes=" << advancing.stats.fallbackShapes << '\n'
+                   << "discarded_area=" << advancing.stats.discardedArea << '\n'
+                   << "residual_area=" << advancing.stats.residualArea << '\n'
+                   << "leakage_dssim=" << advancing.stats.leakageDssim << '\n'
+                   << "omission_dssim=" << advancing.stats.omissionDssim << '\n'
+                   << "final_dssim=" << advancing.stats.finalDssim << '\n'
+                   << "target_coverage=" << advancing.stats.targetCoverage << '\n'
+                   << "leakage_fraction=" << advancing.stats.leakageFraction << '\n'
+                   << "structurally_complete="
+                   << (advancing.structurallyComplete ? "yes" : "no") << '\n'
+                   << "final_guard_failed="
+                   << (advancing.stats.finalGuardFailed ? "yes" : "no") << '\n'
+                   << "cheap_budget_exhausted="
+                   << (advancing.stats.cheapBudgetExhausted ? "yes" : "no") << '\n'
+                   << "dssim_budget_exhausted="
+                   << (advancing.stats.dssimBudgetExhausted ? "yes" : "no") << '\n'
+                   << "count_limit_reached="
+                   << (advancing.stats.countLimitReached ? "yes" : "no") << '\n'
+                   << "candidate_ms=" << advancing.stats.candidateElapsedMs << '\n'
+                   << "dssim_ms=" << advancing.stats.dssimElapsedMs << '\n'
+                   << "fallback_ms=" << advancing.stats.fallbackElapsedMs << '\n'
+                   << "total_ms=" << advancing.stats.totalElapsedMs << '\n'
+                   << "candidate_placements=" << advancing.placements.size() << '\n'
+                   << "selection=" << selection << '\n'
+                   << "selection_reason=" << selectionReason << '\n'
+                   << "selected_placements=" << selectedPlacements.size() << '\n';
+            QVector<int> primitiveIds = advancing.stats.acceptedPrimitiveCounts.keys();
+            std::sort(primitiveIds.begin(), primitiveIds.end());
+            for (const int shapeId : primitiveIds) {
+                stream << "accepted_shape_" << shapeId << '='
+                       << advancing.stats.acceptedPrimitiveCounts.value(shapeId) << '\n';
+            }
+            QStringList rejectionNames =
+                advancing.stats.rejectedCandidateCounts.keys();
+            std::sort(rejectionNames.begin(), rejectionNames.end());
+            for (const QString &name : rejectionNames) {
+                stream << "rejected_" << name << '='
+                       << advancing.stats.rejectedCandidateCounts.value(name) << '\n';
+            }
+            if (!advancing.error.isEmpty()) {
+                stream << "error=" << advancing.error << '\n';
+            }
+            if (!advancing.stats.diagnostics.isEmpty()) {
+                stream << advancing.stats.diagnostics.join(QLatin1Char('\n')) << '\n';
+            }
+            stream << '\n';
+        }
+        if (!selectedPlacements.isEmpty()) {
+            RegionFillLayer layer;
+            layer.color = unit.color;
+            layer.area = unit.area;
+            layer.placements = std::move(selectedPlacements);
+            layer.drawOrder = advancingIndex;
+            layer.variant = RegionFillVariant::AdvancingFront;
+            advancingPlacementCount += layer.placements.size();
+            placementCount += layer.placements.size();
+            advancingFills.push_back(std::move(layer));
+            ++advancingFilled;
+            ++filled;
+        } else {
+            ++advancingFailed;
+            ++failed;
+            const QString reason = advancing.error.isEmpty()
+                ? QStringLiteral("Advancing Front produced no placements")
+                : advancing.error;
+            failureReasons[reason] += 1;
+        }
+        completedUnits.fetch_add(1, std::memory_order_relaxed);
+        if (progress) {
+            progress(QStringLiteral("Advancing Front regions"),
+                     baseCompleted + 1,
+                     result.totalRegions);
+        }
+    }
+    result.completedRegions = completedUnits.load(std::memory_order_relaxed);
+    QFile advancingSummaryFile(advancingLogPath);
+    if (advancingSummaryFile.open(QIODevice::WriteOnly | QIODevice::Text
+                                  | QIODevice::Append)) {
+        QTextStream stream(&advancingSummaryFile);
+        stream << "[summary]\n"
+               << "planned_regions=" << layerPlans.safe.units.size() << '\n'
+               << "filled_regions=" << advancingFilled << '\n'
+               << "failed_regions=" << advancingFailed << '\n'
+               << "optimized_regions=" << advancingOptimized << '\n'
+               << "safe_baseline_regions=" << advancingSafeFallbacks << '\n'
+               << "placements=" << advancingPlacementCount << '\n';
+    }
+    qWarning().noquote() << "Advancing Front log written to" << advancingLogPath;
 
     const FillUnit &biggestUnit = units[biggestUnitIndex];
     const UnitWorkResult &biggestWork =
@@ -1562,12 +1771,27 @@ RegionFillBatchResult computeRegionFills(
             fills.push_back(std::move(layer));
         }
     }
+    for (RegionFillLayer &layer : advancingFills) {
+        fills.push_back(std::move(layer));
+    }
     sortRegionFillLayersByDrawOrder(&fills);
+    const auto fillVariantRank = [](RegionFillVariant variant) {
+        switch (variant) {
+        case RegionFillVariant::Safe:
+            return 0;
+        case RegionFillVariant::Dangerous:
+            return 1;
+        case RegionFillVariant::AdvancingFront:
+            return 2;
+        }
+        return 3;
+    };
     const bool drawOrderPreserved = std::is_sorted(
         fills.cbegin(), fills.cend(),
-        [](const RegionFillLayer &left, const RegionFillLayer &right) {
+        [fillVariantRank](const RegionFillLayer &left,
+                          const RegionFillLayer &right) {
             if (left.variant != right.variant) {
-                return left.variant == RegionFillVariant::Safe;
+                return fillVariantRank(left.variant) < fillVariantRank(right.variant);
             }
             return left.drawOrder < right.drawOrder;
         });
@@ -1582,13 +1806,14 @@ RegionFillBatchResult computeRegionFills(
     log << QStringLiteral("Safe/Dangerous heatmap difference pixels: %1")
                .arg(result.differencePixelCount);
     log << QStringLiteral("Summary: %1 planned units filled (%2 Safe and %3 Dangerous "
-                          "cyclic-RDP meshes, %4 hard-only Pen retries, %5 baseline "
-                          "Pen retries, %6 mesh fallbacks including %7 source-outline "
-                          "recoveries), %8 shapes including %9 core ellipses, %10 soft "
-                          "controls removed, %11 failed, %12 timed out")
+                          "cyclic-RDP meshes, %4 Advancing Front, %5 hard-only Pen "
+                          "retries, %6 baseline Pen retries, %7 mesh fallbacks including "
+                          "%8 source-outline recoveries), %9 shapes including %10 core "
+                          "ellipses, %11 soft controls removed, %12 failed, %13 timed out")
                .arg(filled)
                .arg(safeRdpFills)
                .arg(dangerousRdpFills)
+               .arg(advancingFilled)
                .arg(softRunRetries)
                .arg(baselineRetries)
                .arg(meshFallbacks)
@@ -1629,11 +1854,17 @@ RegionFillBatchResult computeRegionFills(
         fills.cbegin(), fills.cend(), [](const RegionFillLayer &fill) {
             return fill.variant == RegionFillVariant::Safe;
         }));
-    const int dangerousFillCount = fills.size() - safeFillCount;
-    result.summary = QStringLiteral("Filled %1 safe and %2 dangerous layer units "
-                                    "with %3 shapes (%4 failed, %5 timed out)%6")
+    const int dangerousFillCount = static_cast<int>(std::count_if(
+        fills.cbegin(), fills.cend(), [](const RegionFillLayer &fill) {
+            return fill.variant == RegionFillVariant::Dangerous;
+        }));
+    const int advancingFillCount = fills.size() - safeFillCount - dangerousFillCount;
+    result.summary = QStringLiteral(
+        "Filled %1 safe, %2 dangerous, and %3 advancing-front layer units "
+        "with %4 shapes (%5 failed, %6 timed out)%7")
         .arg(safeFillCount)
         .arg(dangerousFillCount)
+        .arg(advancingFillCount)
         .arg(placementCount)
         .arg(failed)
         .arg(timedOut)
@@ -1719,10 +1950,16 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
     const QTransform imageToWorld = imageToLocal * guideWorld;
     result.push_back({QStringLiteral("Safe"), {}, true});
     result.push_back({QStringLiteral("Dangerous"), {}, false});
+    result.push_back({QStringLiteral("Advancing Front"), {}, false});
 
     for (const RegionFillLayer &fill : region_.fills) {
-        GeneratedRegionVariant &variant = fill.variant == RegionFillVariant::Safe
-            ? result[0] : result[1];
+        int variantIndex = 0;
+        if (fill.variant == RegionFillVariant::Dangerous) {
+            variantIndex = 1;
+        } else if (fill.variant == RegionFillVariant::AdvancingFront) {
+            variantIndex = 2;
+        }
+        GeneratedRegionVariant &variant = result[variantIndex];
         GeneratedRegionGroup group;
         group.shapes.reserve(fill.placements.size());
         // Scene shape colour is stored BGRA.

@@ -1,3 +1,4 @@
+#include "advancing_front.h"
 #include "bucket_fill.h"
 #include "lining_fill.h"
 #include "region_extract.h"
@@ -662,6 +663,97 @@ void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
                                         return point.kind == gui::PenPointKind::Hard;
                                     }),
                  "the bow threshold should retain the same anchors as straight spans");
+}
+
+void advancingFrontFillsSimpleEllipse(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error),
+                 "Advancing Front Primitive geometry should load");
+    const QVector<gui::PenPrimitive> primitives =
+        gui::buildPenPrimitiveCatalog(geometry);
+    const gui::PolygonMeshSources meshSources =
+        gui::buildPolygonMeshSources(geometry);
+    QPainterPath target;
+    target.addEllipse(QRectF(8.0, 12.0, 48.0, 24.0));
+    gui::AdvancingFrontOptions options = gui::defaultAdvancingFrontOptions();
+    options.workerCount = 2;
+    options.seedEdgeCount = 4;
+    options.finalistCount = 8;
+    options.cheapBudgetCap = 4096;
+    options.dssimBudgetCap = 256;
+    const gui::AdvancingFrontResult result = gui::fillRegionAdvancingFront(
+        target, primitives, meshSources, QSize(64, 48), options);
+    test->expect(result.valid(),
+                 "Advancing Front should fill a simple ellipse");
+    test->expect(!result.placements.isEmpty(),
+                 "Advancing Front should emit at least one placement");
+    test->expect(std::isfinite(result.stats.finalDssim),
+                 "Advancing Front should report a finite final DSSIM");
+    test->expect(result.structurallyComplete
+                     && result.stats.targetCoverage
+                         >= options.minimumTargetCoverage,
+                 "Advancing Front should verify explicit target coverage");
+}
+
+void advancingFrontHonorsSafeShapeCeiling(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error),
+                 "Advancing Front Primitive geometry should load for shape ceiling");
+    const QVector<gui::PenPrimitive> primitives =
+        gui::buildPenPrimitiveCatalog(geometry);
+    const gui::PolygonMeshSources meshSources =
+        gui::buildPolygonMeshSources(geometry);
+    QPainterPath target;
+    target.addEllipse(QRectF(8.0, 12.0, 48.0, 24.0));
+    gui::AdvancingFrontOptions options = gui::defaultAdvancingFrontOptions();
+    test->expect(options.fallbackContourEpsilon
+                     == options.originalContourEpsilon,
+                 "Advancing Front fallback should use the Safe contour epsilon");
+    options.maximumOutputShapes = 0;
+    const gui::AdvancingFrontResult result = gui::fillRegionAdvancingFront(
+        target, primitives, meshSources, QSize(64, 48), options);
+    test->expect(!result.valid() && result.placements.isEmpty(),
+                 "Advancing Front should not replace a one-shape Safe result");
+    test->expect(result.stats.countLimitReached,
+                 "Advancing Front should report the Safe shape ceiling");
+}
+
+void advancingFrontPreflightRejectsUnprofitableSearch(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error),
+                 "Advancing Front Primitive geometry should load for preflight");
+    const QVector<gui::PenPrimitive> primitives =
+        gui::buildPenPrimitiveCatalog(geometry);
+    const gui::PolygonMeshSources meshSources =
+        gui::buildPolygonMeshSources(geometry);
+    const QPolygonF polygon{{8.0, 8.0}, {42.0, 6.0}, {58.0, 22.0},
+                            {48.0, 42.0}, {24.0, 38.0}, {6.0, 24.0}};
+    const gui::PenFillResult baseline = gui::fillPolygonMesh(polygon, meshSources);
+    test->expect(baseline.error.isEmpty() && baseline.placements.size() > 1,
+                 "Advancing Front preflight fixture should have multiple Safe shapes");
+    QPainterPath target;
+    target.addPolygon(polygon);
+    target.closeSubpath();
+    gui::AdvancingFrontOptions options = gui::defaultAdvancingFrontOptions();
+    options.baselinePlacements = baseline.placements;
+    options.maximumOutputShapes = baseline.placements.size() - 1;
+    options.preflightCandidateBudget = 1;
+    options.minimumBaselineShapesReplaced = baseline.placements.size() + 1;
+    const gui::AdvancingFrontResult result = gui::fillRegionAdvancingFront(
+        target, primitives, meshSources, QSize(64, 48), options);
+    test->expect(!result.valid() && result.placements.isEmpty(),
+                 "An unprofitable preflight should reuse Safe without remeshing");
+    test->expect(result.stats.preflightRejected
+                     && result.stats.preflightCandidates <= 1,
+                 "Advancing Front preflight should honor its detached work budget");
+    test->expect(result.error.contains(QStringLiteral("Preflight")),
+                 "Advancing Front should preserve the preflight rejection reason");
 }
 
 QPainterPath smoothCircularPath(int curveCount)
@@ -2393,6 +2485,9 @@ int main(int argc, char **argv)
         return checkLoggedRegion(QString::fromLocal8Bit(argv[2]), QSize(width, height));
     }
     TestContext test;
+    advancingFrontFillsSimpleEllipse(&test);
+    advancingFrontHonorsSafeShapeCeiling(&test);
+    advancingFrontPreflightRejectsUnprofitableSearch(&test);
     alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);
     excessiveDisplacementDoesNotMerge(&test);

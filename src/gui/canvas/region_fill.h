@@ -15,6 +15,7 @@ namespace gui {
 enum class RegionFillVariant {
     Safe,
     Dangerous,
+    AdvancingFront,
 };
 
 struct RegionFillLayer {
