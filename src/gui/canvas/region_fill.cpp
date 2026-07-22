@@ -675,6 +675,124 @@ void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QP
     }
 }
 
+QSet<int> simplifyIndexChain(const QPolygonF &points,
+                             const QVector<int> &chain,
+                             double epsilon) {
+    QSet<int> keep = {chain.front(), chain.back()};
+    QVector<QPair<int, int>> stack = {{0, chain.size() - 1}};
+    while (!stack.isEmpty()) {
+        const QPair<int, int> slice = stack.takeLast();
+        if (slice.second - slice.first <= 1) {
+            continue;
+        }
+        double maximumError = -1.0;
+        int splitPosition = -1;
+        for (int position = slice.first + 1; position < slice.second; ++position) {
+            const int index = chain[position];
+            const double distance = perpendicularDistance(
+                points[index], points[chain[slice.first]], points[chain[slice.second]]);
+            if (distance > maximumError) {
+                maximumError = distance;
+                splitPosition = position;
+            }
+        }
+        if (maximumError > epsilon) {
+            if (splitPosition <= slice.first || splitPosition >= slice.second) {
+                splitPosition = (slice.first + slice.second) / 2;
+            }
+            keep.insert(chain[splitPosition]);
+            stack.push_back({slice.first, splitPosition});
+            stack.push_back({splitPosition, slice.second});
+        }
+    }
+
+    return keep;
+}
+
+QVector<int> cyclicRdpIndices(const QPolygonF &points, double epsilon) {
+    const int count = points.size();
+    if (count <= 3) {
+        QVector<int> result;
+        result.reserve(count);
+        for (int index = 0; index < count; ++index) {
+            result.push_back(index);
+        }
+        return result;
+    }
+    int anchor = 1;
+    double maximumDistance = QLineF(points.front(), points[anchor]).length();
+    for (int index = 2; index < count; ++index) {
+        const double distance = QLineF(points.front(), points[index]).length();
+        if (distance > maximumDistance) {
+            maximumDistance = distance;
+            anchor = index;
+        }
+    }
+    QVector<int> firstChain;
+    firstChain.reserve(anchor + 1);
+    for (int index = 0; index <= anchor; ++index) {
+        firstChain.push_back(index);
+    }
+    QVector<int> secondChain;
+    secondChain.reserve(count - anchor + 1);
+    for (int index = anchor; index < count; ++index) {
+        secondChain.push_back(index);
+    }
+    secondChain.push_back(0);
+    QSet<int> keep = simplifyIndexChain(points, firstChain, epsilon);
+    keep.unite(simplifyIndexChain(points, secondChain, epsilon));
+    QVector<int> result;
+    result.reserve(keep.size());
+    for (const int index : keep) {
+        result.push_back(index);
+    }
+    std::sort(result.begin(), result.end());
+
+    return result;
+}
+
+QVector<int> cyclicArcIndices(int count, int start, int end) {
+    QVector<int> result = {start};
+    int index = start;
+    while (index != end && result.size() <= count) {
+        index = (index + 1) % count;
+        result.push_back(index);
+    }
+
+    return result;
+}
+
+QPointF quadraticReconstructionControl(const QPolygonF &points,
+                                        const QVector<int> &arcIndices) {
+    QVector<double> distances(arcIndices.size(), 0.0);
+    for (int position = 1; position < arcIndices.size(); ++position) {
+        distances[position] = distances[position - 1]
+            + QLineF(points[arcIndices[position - 1]],
+                     points[arcIndices[position]]).length();
+    }
+    const QPointF start = points[arcIndices.front()];
+    const QPointF end = points[arcIndices.back()];
+    const double total = distances.back();
+    QPointF numerator;
+    double denominator = 0.0;
+    for (int position = 0; position < arcIndices.size(); ++position) {
+        const double parameter = total > 1e-9
+            ? distances[position] / total
+            : static_cast<double>(position) / (arcIndices.size() - 1);
+        const double remaining = 1.0 - parameter;
+        const double weight = 2.0 * remaining * parameter;
+        const QPointF fixed = start * (remaining * remaining)
+            + end * (parameter * parameter);
+        numerator += (points[arcIndices[position]] - fixed) * weight;
+        denominator += weight * weight;
+    }
+    if (denominator <= 1e-12) {
+        return (start + end) * 0.5;
+    }
+
+    return numerator / denominator;
+}
+
 struct CyclicRdpSlice {
     int start = 0;
     int end = 0;
@@ -1373,6 +1491,43 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon) {
 
 QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon) {
     return approximateClosedPolygon(polygon, epsilon);
+}
+
+QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
+    const QPolygonF &polygon,
+    double epsilon,
+    double minimumCurveBow) {
+    QVector<PenPoint> result;
+    if (polygon.size() < 3 || !std::isfinite(epsilon) || epsilon <= 0.0
+        || !std::isfinite(minimumCurveBow) || minimumCurveBow < 0.0) {
+        return result;
+    }
+    const QVector<int> anchors = cyclicRdpIndices(polygon, epsilon);
+    if (anchors.size() < 3) {
+        return result;
+    }
+    result.reserve(anchors.size() * 2);
+    for (int anchorPosition = 0; anchorPosition < anchors.size(); ++anchorPosition) {
+        const int startIndex = anchors[anchorPosition];
+        const int endIndex = anchors[(anchorPosition + 1) % anchors.size()];
+        const QVector<int> arcIndices = cyclicArcIndices(
+            polygon.size(), startIndex, endIndex);
+        const QPointF start = polygon[startIndex];
+        const QPointF end = polygon[endIndex];
+        const QPointF control = quadraticReconstructionControl(polygon, arcIndices);
+        const double curveBow = perpendicularDistance(control, start, end) * 0.5;
+        if (anchorPosition == 0) {
+            result.push_back({start, PenPointKind::Hard});
+        }
+        if (curveBow >= minimumCurveBow) {
+            result.push_back({control, PenPointKind::Soft});
+        }
+        if (anchorPosition + 1 < anchors.size()) {
+            result.push_back({end, PenPointKind::Hard});
+        }
+    }
+
+    return result;
 }
 
 QPolygonF simplifyClosedPolygonCorridor(

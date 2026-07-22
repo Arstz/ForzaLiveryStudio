@@ -231,6 +231,159 @@ def rdp_closed(points, epsilon):
     return [(float(point[0]), float(point[1])) for point in simplified]
 
 
+def point_segment_distance(point, start, end):
+    point = np.asarray(point, dtype=np.float64)
+    start = np.asarray(start, dtype=np.float64)
+    end = np.asarray(end, dtype=np.float64)
+    edge = end - start
+    length_squared = float(np.dot(edge, edge))
+    if length_squared <= 1e-18:
+        return float(np.linalg.norm(point - start))
+    at = float(np.clip(np.dot(point - start, edge) / length_squared, 0.0, 1.0))
+    return float(np.linalg.norm(point - (start + edge * at)))
+
+
+def turn_signal(points, radius=4):
+    count = len(points)
+    result = np.zeros(count, dtype=np.float64)
+    for index in range(count):
+        previous = np.asarray(points[(index - radius) % count], dtype=np.float64)
+        current = np.asarray(points[index], dtype=np.float64)
+        following = np.asarray(points[(index + radius) % count], dtype=np.float64)
+        incoming = current - previous
+        outgoing = following - current
+        incoming_length = np.linalg.norm(incoming)
+        outgoing_length = np.linalg.norm(outgoing)
+        if incoming_length <= 1e-9 or outgoing_length <= 1e-9:
+            continue
+        cosine = np.clip(np.dot(incoming, outgoing)
+                         / (incoming_length * outgoing_length), -1.0, 1.0)
+        result[index] = math.acos(float(cosine))
+    scale = float(np.percentile(result, 90))
+    return np.clip(result / max(scale, 1e-9), 0.0, 3.0)
+
+
+def vector_angle(left, right):
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    denominator = np.linalg.norm(left) * np.linalg.norm(right)
+    if denominator <= 1e-18:
+        return 0.0
+    cosine = np.clip(np.dot(left, right) / denominator, -1.0, 1.0)
+    return math.acos(float(cosine))
+
+
+def simplify_index_chain(points, chain, epsilon, curvature,
+                         curvature_weight=0.0, tangent_limit=None):
+    keep = {chain[0], chain[-1]}
+    stack = [(0, len(chain) - 1)]
+    while stack:
+        first_position, last_position = stack.pop()
+        if last_position - first_position <= 1:
+            continue
+        first = chain[first_position]
+        last = chain[last_position]
+        maximum_error = -1.0
+        split_position = -1
+        for position in range(first_position + 1, last_position):
+            index = chain[position]
+            distance = point_segment_distance(points[index], points[first], points[last])
+            weighted = distance * (1.0 + curvature_weight * curvature[index])
+            if weighted > maximum_error:
+                maximum_error = weighted
+                split_position = position
+        tangent_failed = False
+        if tangent_limit is not None and last_position - first_position > 1:
+            chord = np.subtract(points[last], points[first])
+            start_tangent = np.subtract(points[chain[first_position + 1]], points[first])
+            end_tangent = np.subtract(points[last], points[chain[last_position - 1]])
+            tangent_failed = (vector_angle(chord, start_tangent) > tangent_limit
+                              or vector_angle(chord, end_tangent) > tangent_limit)
+        if maximum_error > epsilon or tangent_failed:
+            if split_position <= first_position or split_position >= last_position:
+                split_position = (first_position + last_position) // 2
+            split = chain[split_position]
+            keep.add(split)
+            stack.append((first_position, split_position))
+            stack.append((split_position, last_position))
+    return keep
+
+
+def cyclic_rdp_indices(points, epsilon, curvature_weight=0.0,
+                       tangent_limit_degrees=None):
+    count = len(points)
+    if count <= 3:
+        return list(range(count))
+    anchor = max(range(1, count),
+                 key=lambda index: math.dist(points[0], points[index]))
+    curvature = turn_signal(points)
+    tangent_limit = (math.radians(tangent_limit_degrees)
+                     if tangent_limit_degrees is not None else None)
+    first_chain = list(range(0, anchor + 1))
+    second_chain = list(range(anchor, count)) + [0]
+    keep = simplify_index_chain(points, first_chain, epsilon, curvature,
+                                curvature_weight, tangent_limit)
+    keep.update(simplify_index_chain(points, second_chain, epsilon, curvature,
+                                     curvature_weight, tangent_limit))
+    return sorted(keep)
+
+
+def points_at_indices(points, indices):
+    return [points[index] for index in indices]
+
+
+def cyclic_arc_indices(count, start, end):
+    result = [start]
+    index = start
+    while index != end and len(result) <= count:
+        index = (index + 1) % count
+        result.append(index)
+    return result
+
+
+def quadratic_reconstruction(points, anchor_indices, samples=12,
+                             minimum_curve_bow=None):
+    if len(anchor_indices) < 3:
+        return [], []
+    reconstructed = []
+    controls = []
+    count = len(points)
+    for anchor_position, start_index in enumerate(anchor_indices):
+        end_index = anchor_indices[(anchor_position + 1) % len(anchor_indices)]
+        arc_indices = cyclic_arc_indices(count, start_index, end_index)
+        arc = np.asarray([points[index] for index in arc_indices], dtype=np.float64)
+        distances = np.zeros(len(arc), dtype=np.float64)
+        if len(arc) > 1:
+            distances[1:] = np.cumsum(np.linalg.norm(np.diff(arc, axis=0), axis=1))
+        total = distances[-1]
+        parameters = (distances / total if total > 1e-9
+                      else np.linspace(0.0, 1.0, len(arc)))
+        start = arc[0]
+        end = arc[-1]
+        weights = 2.0 * (1.0 - parameters) * parameters
+        fixed = ((1.0 - parameters)[:, None] ** 2 * start
+                 + parameters[:, None] ** 2 * end)
+        denominator = float(np.dot(weights, weights))
+        control = ((weights[:, None] * (arc - fixed)).sum(axis=0) / denominator
+                   if denominator > 1e-12 else (start + end) * 0.5)
+        curve_bow = point_segment_distance(control, start, end) * 0.5
+        curved = minimum_curve_bow is None or curve_bow >= minimum_curve_bow
+        if not curved:
+            control = (start + end) * 0.5
+        if anchor_position == 0:
+            controls.append(("hard", float(start[0]), float(start[1])))
+        if curved:
+            controls.append(("soft", float(control[0]), float(control[1])))
+        if anchor_position + 1 < len(anchor_indices):
+            controls.append(("hard", float(end[0]), float(end[1])))
+        for step in range(samples):
+            t = step / samples
+            u = 1.0 - t
+            value = start * (u * u) + control * (2.0 * u * t) + end * (t * t)
+            reconstructed.append((float(value[0]), float(value[1])))
+    return reconstructed, controls
+
+
 def triangle_area(a, b, c):
     return abs((b[0] - a[0]) * (c[1] - a[1])
                - (b[1] - a[1]) * (c[0] - a[0])) * 0.5
@@ -399,6 +552,63 @@ def write_tradeoff_chart(path, candidates, best_rows):
     plt.close(fig)
 
 
+def best_candidates_by_family(candidates, limits, base_components,
+                              base_holes, baseline_points):
+    del base_holes
+    rows = []
+    families = sorted({candidate.family for candidate in candidates})
+    for limit in limits:
+        for family in families:
+            eligible = [candidate for candidate in candidates
+                        if candidate.family == family
+                        and candidate.dssim <= limit
+                        and candidate.components == base_components
+                        and effective_points(candidate) < baseline_points]
+            if eligible:
+                best = min(eligible, key=lambda candidate: (
+                    effective_points(candidate), candidate.dssim,
+                    len(candidate.points)))
+                rows.append((limit, family, best))
+    return rows
+
+
+def write_family_best_csv(path, rows, baseline_points):
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["dssim_limit", "family", "setting", "effective_points",
+                         "raster_points", "point_reduction_percent",
+                         "actual_dssim", "iou", "binary_area_delta_percent",
+                         "components", "holes"])
+        for limit, family, candidate in rows:
+            points = effective_points(candidate)
+            reduction = (baseline_points - points) * 100.0 / baseline_points
+            writer.writerow([f"{limit:.12g}", family, candidate.setting,
+                             points, len(candidate.points), f"{reduction:.12g}",
+                             f"{candidate.dssim:.12g}", f"{candidate.iou:.12g}",
+                             f"{candidate.area_delta_percent:.12g}",
+                             candidate.components, candidate.holes])
+
+
+def write_family_tradeoff_chart(path, candidates):
+    families = sorted({candidate.family for candidate in candidates})
+    colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(families))))
+    fig, axis = plt.subplots(figsize=(13, 8), constrained_layout=True)
+    for family, color in zip(families, colors):
+        values = [candidate for candidate in candidates
+                  if candidate.family == family and math.isfinite(candidate.dssim)]
+        axis.scatter([max(candidate.dssim, 1e-9) for candidate in values],
+                     [effective_points(candidate) for candidate in values],
+                     s=28, alpha=0.72, label=family, color=color)
+    axis.set_xscale("log")
+    axis.set_xlabel("Actual DSSIM (log scale)")
+    axis.set_ylabel("Effective hard/soft contour points")
+    axis.set_title("Curve-preserving cyclic RDP variants")
+    axis.grid(True, which="both", alpha=0.25)
+    axis.legend()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def difference_preview(base, candidate):
     base_fill = base >= 128
     candidate_fill = candidate >= 128
@@ -437,7 +647,8 @@ def write_preview_chart(path, base, best_rows, preview_limits,
     plt.close(fig)
 
 
-def write_interactive_viewer(path, source_points, best_rows):
+def write_interactive_viewer(path, source_points, best_rows,
+                             comparison_candidates=None):
     """Write an offline canvas viewer for the unique recommended contours."""
     palette = {
         "source": "#ffffff",
@@ -453,29 +664,56 @@ def write_interactive_viewer(path, source_points, best_rows):
         "visible": True,
         "points": [[round(x, 4), round(y, 4)] for x, y in source_points],
     }]
-    unique = {}
-    for limit, tier, candidate in best_rows:
-        key = (tier, candidate.family, candidate.setting)
-        if key not in unique:
-            unique[key] = {"candidate": candidate, "limits": []}
-        unique[key]["limits"].append(limit)
+    if comparison_candidates is None:
+        unique = {}
+        for limit, tier, candidate in best_rows:
+            key = (tier, candidate.family, candidate.setting)
+            if key not in unique:
+                unique[key] = {"candidate": candidate, "limits": []}
+            unique[key]["limits"].append(limit)
 
-    first_in_tier = set()
-    for (tier, family, setting), entry in unique.items():
-        candidate = entry["candidate"]
-        limits = ", ".join(f"{value:g}" for value in entry["limits"])
-        visible = tier not in first_in_tier
-        first_in_tier.add(tier)
-        layers.append({
-            "name": f"{tier} · {effective_points(candidate)} points",
-            "details": (f"DSSIM {candidate.dssim:.8g} · limits {limits} · "
-                        f"{family} {setting}"),
-            "tier": tier,
-            "color": palette[tier],
-            "visible": visible,
-            "points": [[round(x, 4), round(y, 4)]
-                       for x, y in candidate.points],
-        })
+        first_in_tier = set()
+        for (tier, family, setting), entry in unique.items():
+            candidate = entry["candidate"]
+            limits = ", ".join(f"{value:g}" for value in entry["limits"])
+            visible = tier not in first_in_tier
+            first_in_tier.add(tier)
+            layers.append({
+                "name": f"{tier} · {effective_points(candidate)} points",
+                "details": (f"DSSIM {candidate.dssim:.8g} · limits {limits} · "
+                            f"{family} {setting}"),
+                "tier": tier,
+                "color": palette[tier],
+                "visible": visible,
+                "points": [[round(x, 4), round(y, 4)]
+                           for x, y in candidate.points],
+            })
+    else:
+        colors = ("#60a5fa", "#4ade80", "#facc15", "#fb923c",
+                  "#fb7185", "#c084fc", "#2dd4bf")
+        families = sorted({candidate.family for candidate in comparison_candidates})
+        family_colors = {family: colors[index % len(colors)]
+                         for index, family in enumerate(families)}
+        first_in_family = set()
+        ordered = sorted(comparison_candidates,
+                         key=lambda candidate: (candidate.family,
+                                                effective_points(candidate),
+                                                candidate.dssim,
+                                                candidate.setting))
+        for candidate in ordered:
+            visible = candidate.family not in first_in_family
+            first_in_family.add(candidate.family)
+            layers.append({
+                "name": (f"{candidate.family} · "
+                         f"{effective_points(candidate)} points"),
+                "details": (f"DSSIM {candidate.dssim:.8g} · "
+                            f"IoU {candidate.iou:.8g} · {candidate.setting}"),
+                "tier": candidate.family,
+                "color": family_colors[candidate.family],
+                "visible": visible,
+                "points": [[round(x, 4), round(y, 4)]
+                           for x, y in candidate.points],
+            })
 
     layer_json = json.dumps(layers, separators=(",", ":"))
     template = r"""<!doctype html>
@@ -723,6 +961,8 @@ def main():
     parser.add_argument("--height", type=int, default=1434)
     parser.add_argument("--supersample", type=int, default=4)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--curve-focus", action="store_true",
+                        help="test curve-preserving cyclic RDP variants near epsilon 1.9")
     args = parser.parse_args()
     output = args.output or Path(__file__).resolve().parent / "region_path_optimization_results.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -743,40 +983,88 @@ def main():
                     0.01, 0.02, 0.05)
     preview_limits = (0.001, 0.005, 0.01)
 
-    pen_tolerances = sorted(set(
-        (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5,
-         2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0,
-         24.0, 32.0, 48.0, 64.0, 96.0, 128.0, 256.0, 1024.0)
-        + tuple(round(value, 3) for value in np.arange(1.0, 1.501, 0.01))
-        + tuple(round(value, 2) for value in np.arange(8.0, 12.001, 0.1))))
-    for tolerance in pen_tolerances:
-        reduced_pen = merge_pen_junctions(pen, tolerance)
-        candidates.append(Candidate("safe", "pen-junction",
-                                    f"tolerance={tolerance:g}",
-                                    flatten_pen(reduced_pen), len(reduced_pen), reduced_pen))
+    if args.curve_focus:
+        focus_epsilons = tuple(round(value, 2)
+                               for value in np.arange(1.6, 2.201, 0.05))
+        for epsilon in focus_epsilons:
+            candidates.append(Candidate("semi-aggressive", "closed-rdp-opencv",
+                                        f"epsilon={epsilon:g}",
+                                        rdp_closed(source_outer, epsilon)))
+            indices = cyclic_rdp_indices(source_outer, epsilon)
+            candidates.append(Candidate("semi-aggressive", "cyclic-rdp",
+                                        f"epsilon={epsilon:g}",
+                                        points_at_indices(source_outer, indices)))
+            reconstructed, controls = quadratic_reconstruction(source_outer, indices)
+            candidates.append(Candidate("semi-aggressive", "rdp-quadratic",
+                                        f"epsilon={epsilon:g}", reconstructed,
+                                        len(controls), controls))
+        for epsilon in (1.8, 1.9, 2.0):
+            for weight in (0.5, 1.0, 2.0, 4.0):
+                indices = cyclic_rdp_indices(source_outer, epsilon,
+                                             curvature_weight=weight)
+                candidates.append(Candidate(
+                    "semi-aggressive", "curvature-weighted-rdp",
+                    f"epsilon={epsilon:g},weight={weight:g}",
+                    points_at_indices(source_outer, indices)))
+        for epsilon in (1.8, 1.9, 2.0):
+            indices = cyclic_rdp_indices(source_outer, epsilon)
+            for minimum_bow in (0.25, 0.5, 0.75, 1.0):
+                reconstructed, controls = quadratic_reconstruction(
+                    source_outer, indices, minimum_curve_bow=minimum_bow)
+                candidates.append(Candidate(
+                    "semi-aggressive", "rdp-hybrid-quadratic",
+                    f"epsilon={epsilon:g},minimum_bow={minimum_bow:g}",
+                    reconstructed, len(controls), controls))
+        for epsilon in (1.8, 1.9, 2.0):
+            for angle in (8.0, 12.0, 16.0, 20.0, 30.0):
+                indices = cyclic_rdp_indices(source_outer, epsilon,
+                                             tangent_limit_degrees=angle)
+                candidates.append(Candidate(
+                    "semi-aggressive", "tangent-guarded-rdp",
+                    f"epsilon={epsilon:g},angle={angle:g}",
+                    points_at_indices(source_outer, indices)))
+                if epsilon == 1.9 and angle in (12.0, 20.0, 30.0):
+                    reconstructed, controls = quadratic_reconstruction(
+                        source_outer, indices)
+                    candidates.append(Candidate(
+                        "semi-aggressive", "tangent-rdp-quadratic",
+                        f"epsilon={epsilon:g},angle={angle:g}", reconstructed,
+                        len(controls), controls))
+    else:
+        pen_tolerances = sorted(set(
+            (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5,
+             2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0,
+             24.0, 32.0, 48.0, 64.0, 96.0, 128.0, 256.0, 1024.0)
+            + tuple(round(value, 3) for value in np.arange(1.0, 1.501, 0.01))
+            + tuple(round(value, 2) for value in np.arange(8.0, 12.001, 0.1))))
+        for tolerance in pen_tolerances:
+            reduced_pen = merge_pen_junctions(pen, tolerance)
+            candidates.append(Candidate(
+                "safe", "pen-junction", f"tolerance={tolerance:g}",
+                flatten_pen(reduced_pen), len(reduced_pen), reduced_pen))
 
-    rdp_epsilons = sorted(set(
-        (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5,
-         2.0, 3.0, 4.0, 6.0, 8.0, 12.0)
-        + tuple(round(value, 3) for value in np.arange(0.36, 0.551, 0.01))
-        + tuple(round(value, 4) for value in np.arange(0.48, 0.501, 0.001))
-        + tuple(round(value, 3) for value in np.arange(0.75, 1.001, 0.005))
-        + tuple(round(value, 3) for value in np.arange(1.55, 2.101, 0.05))
-        + tuple(round(value, 3) for value in np.arange(4.1, 6.101, 0.1))))
-    for epsilon in rdp_epsilons:
-        candidates.append(Candidate("semi-aggressive", "closed-rdp",
-                                    f"epsilon={epsilon:g}",
-                                    rdp_closed(source_outer, epsilon)))
+        rdp_epsilons = sorted(set(
+            (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5,
+             2.0, 3.0, 4.0, 6.0, 8.0, 12.0)
+            + tuple(round(value, 3) for value in np.arange(0.36, 0.551, 0.01))
+            + tuple(round(value, 4) for value in np.arange(0.48, 0.501, 0.001))
+            + tuple(round(value, 3) for value in np.arange(0.75, 1.001, 0.005))
+            + tuple(round(value, 3) for value in np.arange(1.55, 2.101, 0.05))
+            + tuple(round(value, 3) for value in np.arange(4.1, 6.101, 0.1))))
+        for epsilon in rdp_epsilons:
+            candidates.append(Candidate("semi-aggressive", "closed-rdp",
+                                        f"epsilon={epsilon:g}",
+                                        rdp_closed(source_outer, epsilon)))
 
-    vis_targets = sorted(set(
-        (1200, 900, 700, 500, 350, 250, 175, 125, 90, 64, 48, 32)
-        + tuple(range(350, 501, 10)) + tuple(range(350, 411))
-        + tuple(range(125, 176, 5))
-        + tuple(range(64, 91, 2))), reverse=True)
-    for target in vis_targets:
-        candidates.append(Candidate("aggressive", "visvalingam",
-                                    f"target={target}",
-                                    visvalingam(source_outer, target)))
+        vis_targets = sorted(set(
+            (1200, 900, 700, 500, 350, 250, 175, 125, 90, 64, 48, 32)
+            + tuple(range(350, 501, 10)) + tuple(range(350, 411))
+            + tuple(range(125, 176, 5))
+            + tuple(range(64, 91, 2))), reverse=True)
+        for target in vis_targets:
+            candidates.append(Candidate("aggressive", "visvalingam",
+                                        f"target={target}",
+                                        visvalingam(source_outer, target)))
 
     for index, candidate in enumerate(candidates, 1):
         mask = render(candidate.points, args.width, args.height, args.supersample)
@@ -811,43 +1099,59 @@ def main():
                              int(candidate.components == base_components
                                  and candidate.holes == base_holes)])
 
-    best_rows = best_candidates(candidates, dssim_limits,
-                                base_components, baseline_points)
     best_output = output.with_name(f"{output.stem}_best_by_dssim.csv")
     tradeoff_chart = output.with_name(f"{output.stem}_tradeoff.png")
     preview_chart = output.with_name(f"{output.stem}_previews.png")
     viewer = output.with_name(f"{output.stem}_viewer.html")
-    write_best_csv(best_output, best_rows, baseline_points)
-    write_tradeoff_chart(tradeoff_chart, candidates, best_rows)
-    write_preview_chart(preview_chart, base, best_rows, preview_limits,
-                        args.width, args.height, args.supersample)
-    write_interactive_viewer(viewer, source_outer, best_rows)
-
     print(f"\nInput: region #{metadata.get('region_index', '?')}, "
           f"source outer={len(source_outer)}, Pen={len(pen)}, flattened={len(flattened)}")
-    for limit in preview_limits:
-        print(f"\nBest at DSSIM <= {limit:g}:")
-        for aggression in ("safe", "semi-aggressive", "aggressive"):
-            matching = [candidate for row_limit, tier, candidate in best_rows
-                        if row_limit == limit and tier == aggression]
-            if not matching:
-                print(f"  {aggression:15s}: none")
-                continue
-            best = matching[0]
-            effective = effective_points(best)
-            print(f"  {aggression:15s}: {effective} control/path points, "
-                  f"{len(best.points)} raster points, DSSIM={best.dssim:.8f}, "
-                  f"IoU={best.iou:.8f}, area={best.area_delta_percent:+.5f}%, "
-                  f"topology={best.components} components/{best.holes} holes "
-                  f"({best.setting})")
-            safe_limit = str(limit).replace(".", "p")
-            write_points(output.with_name(
-                f"region_path_best_{aggression}_{safe_limit}.csv"), best,
-                base_components, base_holes)
+    if args.curve_focus:
+        family_rows = best_candidates_by_family(
+            candidates, dssim_limits, base_components, base_holes, baseline_points)
+        write_family_best_csv(best_output, family_rows, baseline_points)
+        write_family_tradeoff_chart(tradeoff_chart, candidates)
+        write_interactive_viewer(viewer, source_outer, [], candidates)
+        for limit in preview_limits:
+            print(f"\nBest curve-preserving variants at DSSIM <= {limit:g}:")
+            matching = [(family, candidate)
+                        for row_limit, family, candidate in family_rows
+                        if row_limit == limit]
+            for family, best in matching:
+                print(f"  {family:24s}: {effective_points(best):4d} effective, "
+                      f"DSSIM={best.dssim:.8f}, IoU={best.iou:.8f}, "
+                      f"area={best.area_delta_percent:+.5f}% ({best.setting})")
+    else:
+        best_rows = best_candidates(candidates, dssim_limits,
+                                    base_components, baseline_points)
+        write_best_csv(best_output, best_rows, baseline_points)
+        write_tradeoff_chart(tradeoff_chart, candidates, best_rows)
+        write_preview_chart(preview_chart, base, best_rows, preview_limits,
+                            args.width, args.height, args.supersample)
+        write_interactive_viewer(viewer, source_outer, best_rows)
+        for limit in preview_limits:
+            print(f"\nBest at DSSIM <= {limit:g}:")
+            for aggression in ("safe", "semi-aggressive", "aggressive"):
+                matching = [candidate for row_limit, tier, candidate in best_rows
+                            if row_limit == limit and tier == aggression]
+                if not matching:
+                    print(f"  {aggression:15s}: none")
+                    continue
+                best = matching[0]
+                effective = effective_points(best)
+                print(f"  {aggression:15s}: {effective} control/path points, "
+                      f"{len(best.points)} raster points, DSSIM={best.dssim:.8f}, "
+                      f"IoU={best.iou:.8f}, area={best.area_delta_percent:+.5f}%, "
+                      f"topology={best.components} components/{best.holes} holes "
+                      f"({best.setting})")
+                safe_limit = str(limit).replace(".", "p")
+                write_points(output.with_name(
+                    f"region_path_best_{aggression}_{safe_limit}.csv"), best,
+                    base_components, base_holes)
     print(f"\nFull results: {output}")
     print(f"Best by DSSIM: {best_output}")
     print(f"Trade-off chart: {tradeoff_chart}")
-    print(f"Visual previews: {preview_chart}")
+    if not args.curve_focus:
+        print(f"Visual previews: {preview_chart}")
     print(f"Interactive viewer: {viewer}")
 
 

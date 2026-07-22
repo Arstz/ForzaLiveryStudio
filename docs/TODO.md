@@ -6,6 +6,7 @@ Medium changes:
     -Handle files that were passed as params on application launch, if 3so -> open project if image pass the image as a Guidelayer to a new project
     -Add a checkbox to allow Opacity and Skew tools to be separate (use ToolOpacity and ToolbarSkew), if checked no skew anchor should appear in Transform tool, off by default.
     -Add dragging layer in Layers widget to scroll the list if near upper or lower borders
+    -Add contorols for internal contour fill params (epsilon, time...) 
 
 Big changes:
     -Add proper scaffolding and header generation from scratch for liveries

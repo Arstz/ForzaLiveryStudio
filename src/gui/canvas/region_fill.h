@@ -126,6 +126,11 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon);
 
 QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon);
 
+QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
+    const QPolygonF &polygon,
+    double epsilon,
+    double minimumCurveBow);
+
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,
     const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace);

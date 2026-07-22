@@ -9,7 +9,8 @@
 namespace gui {
 namespace {
 
-constexpr double kBucketRdpEpsilon = 1.9;
+constexpr double kBucketRdpEpsilon = 2.0;
+constexpr double kBucketMinimumCurveBow = 0.75;
 constexpr int kBucketRdpCurveSamples = 32;
 
 } // namespace
@@ -225,13 +226,8 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
     }
 
     const QPolygonF sourceContour = regionOuterContour(traced, kBucketRdpCurveSamples);
-    const QPolygonF simplifiedContour = simplifyClosedPolygonCyclic(
-        sourceContour, kBucketRdpEpsilon);
-    QVector<PenPoint> imagePoints;
-    imagePoints.reserve(simplifiedContour.size());
-    for (const QPointF &point : simplifiedContour) {
-        imagePoints.push_back(PenPoint{point, PenPointKind::Hard});
-    }
+    QVector<PenPoint> imagePoints = simplifyClosedPolygonRdpHybridQuadratic(
+        sourceContour, kBucketRdpEpsilon, kBucketMinimumCurveBow);
     if (!buildPenContour(imagePoints).valid()) {
         RegionPenConversionOptions conversionOptions;
         conversionOptions.comparisonImageSize = image.size();

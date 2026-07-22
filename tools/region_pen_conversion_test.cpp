@@ -609,21 +609,59 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
                                                      fill.bounds,
                                                      traceOptions);
     test->expect(!traced.isEmpty(), "Potrace should vectorize the bucket mask");
-    constexpr double kBucketRdpEpsilon = 1.9;
+    constexpr double kBucketRdpEpsilon = 2.0;
+    constexpr double kBucketMinimumCurveBow = 0.75;
     constexpr int kBucketRdpCurveSamples = 32;
     const QPolygonF sourceContour =
         gui::regionOuterContour(traced, kBucketRdpCurveSamples);
-    const QPolygonF simplifiedContour =
-        gui::simplifyClosedPolygonCyclic(sourceContour, kBucketRdpEpsilon);
-    QVector<gui::PenPoint> points;
-    points.reserve(simplifiedContour.size());
-    for (const QPointF &point : simplifiedContour) {
-        points.push_back(gui::PenPoint{point, gui::PenPointKind::Hard});
-    }
-    test->expect(simplifiedContour.size() <= sourceContour.size(),
-                 "Bucket cyclic RDP should not increase the contour point count");
+    const QVector<gui::PenPoint> points =
+        gui::simplifyClosedPolygonRdpHybridQuadratic(
+            sourceContour, kBucketRdpEpsilon, kBucketMinimumCurveBow);
+    test->expect(points.size() < sourceContour.size(),
+                 "Bucket hybrid quadratic RDP should reduce the traced contour");
     test->expect(gui::buildPenContour(points).valid(),
-                 "the simplified Bucket contour should be directly consumable by Pen");
+                 "the hybrid quadratic Bucket contour should be consumable by Pen");
+}
+
+void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
+    QPolygonF circle;
+    constexpr int kPointCount = 64;
+    constexpr double kRadius = 20.0;
+    constexpr double kEpsilon = 2.0;
+    constexpr double kMinimumCurveBow = 0.75;
+
+    circle.reserve(kPointCount);
+    for (int index = 0; index < kPointCount; ++index) {
+        const double angle = 2.0 * std::acos(-1.0) * index / kPointCount;
+        circle.push_back({kRadius * std::cos(angle), kRadius * std::sin(angle)});
+    }
+
+    const QVector<gui::PenPoint> hybrid =
+        gui::simplifyClosedPolygonRdpHybridQuadratic(
+            circle, kEpsilon, kMinimumCurveBow);
+    test->expect(hybrid.size() == 16,
+                 "the hybrid quadratic port should match the analyzer point count");
+    test->expect(!hybrid.isEmpty()
+                     && hybrid.front().kind == gui::PenPointKind::Hard
+                     && QLineF(hybrid.front().position, QPointF(20.0, 0.0)).length() <= 1e-9,
+                 "the hybrid quadratic port should retain the analyzer seam anchor");
+    test->expect(hybrid.size() > 1
+                     && hybrid[1].kind == gui::PenPointKind::Soft
+                     && QLineF(hybrid[1].position,
+                               QPointF(19.878942791656183,
+                                       8.234127709942868)).length() <= 1e-9,
+                 "the hybrid quadratic port should match the analyzer control fit");
+    test->expect(gui::buildPenContour(hybrid).valid(),
+                 "the analyzer-matched hybrid contour should remain valid for Pen");
+
+    const QVector<gui::PenPoint> straight =
+        gui::simplifyClosedPolygonRdpHybridQuadratic(circle, kEpsilon, kRadius);
+    test->expect(straight.size() == 8
+                     && std::all_of(straight.cbegin(), straight.cend(),
+                                    [](const gui::PenPoint &point) {
+                                        return point.kind == gui::PenPointKind::Hard;
+                                    }),
+                 "the bow threshold should retain the same anchors as straight spans");
 }
 
 QPainterPath smoothCircularPath(int curveCount)
@@ -2404,6 +2442,7 @@ int main(int argc, char **argv)
     longSoftRunUsesOverlappingArcs(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
+    rdpHybridQuadraticMatchesAnalyzer(&test);
     if (test.failures() == 0) {
         std::cout << "All region Pen conversion tests passed\n";
     }
