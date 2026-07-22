@@ -167,15 +167,19 @@ private:
     void cancelGeneratedFill();
     void finishGeneratedFill(quint64 generation, PenFillResult result);
     void cancelRegionFill();
-    void updateRegionFillProgress(quint64 generation, int completed, int total);
+    void updateRegionFillProgress(quint64 generation, const QString &phase,
+                                  int completed, int total);
     void finishRegionFill(quint64 generation, RegionFillBatchResult result);
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);
-    void insertGeneratedRegionGroups(const QString &groupName,
-                                     const QString &displayName,
-                                     const QVector<GeneratedRegionGroup> &regions,
-                                     const QVector<QString> &insertionEntries);
+    void insertGeneratedRegionVariants(
+        const QString &groupName,
+        const QString &displayName,
+        const QVector<GeneratedRegionVariant> &variants,
+        const QVector<QString> &insertionEntries,
+        const QImage &differenceHeatmap,
+        const QString &sourceGuideId);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
     bool loadImportedProject(const std::function<fh6::Project()> &load,

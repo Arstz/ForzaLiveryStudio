@@ -19,6 +19,7 @@ struct PolygonContour {
 };
 
 struct PolygonMeshSources {
+    QPolygonF circle;
     QPolygonF square;
     QPolygonF triangle;
 
@@ -48,5 +49,10 @@ PolygonContour buildPolygonContour(const QVector<QPointF> &points,
 PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry);
 PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
                               const std::function<bool()> &cancelled = {});
+QVector<PolygonMeshPlacement> optimizePolygonMeshWithEllipses(
+    const QVector<PolygonMeshPlacement> &placements,
+    const PolygonMeshSources &sources,
+    const QPainterPath &corePath,
+    const std::function<bool()> &cancelled = {});
 
 } // namespace gui

@@ -587,7 +587,8 @@ PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolera
 }
 
 PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry) {
-    return {geometryHull(geometry.shape(101)),
+    return {geometryHull(geometry.shape(102)),
+            geometryHull(geometry.shape(101)),
             geometryHull(geometry.shape(103))};
 }
 

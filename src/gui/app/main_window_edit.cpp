@@ -269,12 +269,14 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
                              3500);
 }
 
-void MainWindow::insertGeneratedRegionGroups(
+void MainWindow::insertGeneratedRegionVariants(
     const QString &groupName,
     const QString &displayName,
-    const QVector<GeneratedRegionGroup> &regions,
-    const QVector<QString> &insertionEntries) {
-    if (regions.isEmpty() || !state_->hasProject()) {
+    const QVector<GeneratedRegionVariant> &variants,
+    const QVector<QString> &insertionEntries,
+    const QImage &differenceHeatmap,
+    const QString &sourceGuideId) {
+    if (variants.isEmpty() || !state_->hasProject()) {
         return;
     }
 
@@ -284,36 +286,85 @@ void MainWindow::insertGeneratedRegionGroups(
     group->name = groupName;
     QSet<QString> generatedIds;
     int shapeCount = 0;
-    for (const GeneratedRegionGroup &region : regions) {
-        shapeCount += region.shapes.size();
-    }
-    generatedIds.reserve(shapeCount);
     int regionCount = 0;
-    for (const GeneratedRegionGroup &region : regions) {
-        if (region.shapes.isEmpty()) {
-            continue;
+    for (const GeneratedRegionVariant &variant : variants) {
+        regionCount += variant.regions.size();
+        for (const GeneratedRegionGroup &region : variant.regions) {
+            shapeCount += region.shapes.size();
         }
-        auto regionGroup = std::make_unique<fh6::scene::Group>();
-        regionGroup->id = QStringLiteral("group_%1").arg(
-            QUuid::createUuid().toString(QUuid::WithoutBraces));
-        regionGroup->name = QStringLiteral("Region %1").arg(++regionCount);
-        for (const GeneratedRegionShape &placement : region.shapes) {
-            auto shape = std::make_unique<fh6::scene::Shape>();
-            shape->id = QStringLiteral("layer_%1").arg(
-                QUuid::createUuid().toString(QUuid::WithoutBraces));
-            shape->name = fh6::detail::shapeName(static_cast<quint16>(placement.shapeId));
-            shape->setVectorShape(static_cast<quint16>(placement.shapeId));
-            shape->transform = fh6::decomposeTransform2D(
-                generatedShapeMatrix(placement.transform));
-            shape->color = {placement.color[0], placement.color[1],
-                            placement.color[2], placement.color[3]};
-            generatedIds.insert(shape->id);
-            regionGroup->append(std::move(shape));
-        }
-        group->append(std::move(regionGroup));
     }
-    if (regionCount == 0) {
+    if (shapeCount == 0) {
         return;
+    }
+    std::unique_ptr<fh6::scene::GuideLayer> differenceGuide;
+    QString differenceGuideParentId;
+    if (!differenceHeatmap.isNull()) {
+        const fh6::scene::Layer *sourceNode = state_->sceneNode(sourceGuideId);
+        if (sourceNode != nullptr
+            && sourceNode->kind() == fh6::scene::LayerKind::Guide) {
+            const auto *sourceGuide =
+                static_cast<const fh6::scene::GuideLayer *>(sourceNode);
+            const QImage storedHeatmap = differenceHeatmap.convertToFormat(
+                QImage::Format_ARGB32_Premultiplied);
+            QString heatmapFormat;
+            const QByteArray encodedHeatmap =
+                encodeGuideImage(storedHeatmap, &heatmapFormat);
+            if (!encodedHeatmap.isEmpty()) {
+                differenceGuide = std::make_unique<fh6::scene::GuideLayer>();
+                differenceGuide->id = state_->uniqueGuideLayerId();
+                differenceGuide->name = QStringLiteral("Dangerous Differences");
+                differenceGuide->transform = sourceGuide->transform;
+                differenceGuide->opacity = 1.0;
+                differenceGuide->image =
+                    std::make_unique<fh6::scene::RasterContainer>();
+                differenceGuide->image->encoded = encodedHeatmap;
+                differenceGuide->image->pixels = QByteArray(
+                    reinterpret_cast<const char *>(storedHeatmap.constBits()),
+                    storedHeatmap.sizeInBytes());
+                differenceGuide->image->format = heatmapFormat;
+                differenceGuide->image->width = storedHeatmap.width();
+                differenceGuide->image->height = storedHeatmap.height();
+                differenceGuideParentId =
+                    state_->parentGroupForEntry(sourceGuideId);
+            }
+        }
+    }
+    const bool differenceGuideCreated = differenceGuide != nullptr;
+    generatedIds.reserve(shapeCount);
+    for (const GeneratedRegionVariant &variant : variants) {
+        auto variantGroup = std::make_unique<fh6::scene::Group>();
+        variantGroup->id = QStringLiteral("group_%1").arg(
+            QUuid::createUuid().toString(QUuid::WithoutBraces));
+        variantGroup->name = variant.name;
+        variantGroup->visible = variant.visible;
+        int variantRegionCount = 0;
+        for (const GeneratedRegionGroup &region : variant.regions) {
+            if (region.shapes.isEmpty()) {
+                continue;
+            }
+            auto regionGroup = std::make_unique<fh6::scene::Group>();
+            regionGroup->id = QStringLiteral("group_%1").arg(
+                QUuid::createUuid().toString(QUuid::WithoutBraces));
+            regionGroup->name = QStringLiteral("Region %1").arg(++variantRegionCount);
+            for (const GeneratedRegionShape &placement : region.shapes) {
+                auto shape = std::make_unique<fh6::scene::Shape>();
+                shape->id = QStringLiteral("layer_%1").arg(
+                    QUuid::createUuid().toString(QUuid::WithoutBraces));
+                shape->name = fh6::detail::shapeName(
+                    static_cast<quint16>(placement.shapeId));
+                shape->setVectorShape(static_cast<quint16>(placement.shapeId));
+                shape->transform = fh6::decomposeTransform2D(
+                    generatedShapeMatrix(placement.transform));
+                shape->color = {placement.color[0], placement.color[1],
+                                placement.color[2], placement.color[3]};
+                if (variant.visible) {
+                    generatedIds.insert(shape->id);
+                }
+                regionGroup->append(std::move(shape));
+            }
+            variantGroup->append(std::move(regionGroup));
+        }
+        group->append(std::move(variantGroup));
     }
 
     state_->beginProjectEdit();
@@ -322,17 +373,33 @@ void MainWindow::insertGeneratedRegionGroups(
         const QString parentId = state_->parentGroupForEntry(groupId);
         if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
             const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
-            for (const auto &regionNode : inserted->children) {
-                if (regionNode->kind() != fh6::scene::LayerKind::Group) {
+            for (const auto &variantNode : inserted->children) {
+                if (variantNode->kind() != fh6::scene::LayerKind::Group) {
                     continue;
                 }
-                auto *regionGroup = static_cast<fh6::scene::Group *>(regionNode.get());
-                for (const auto &shape : regionGroup->children) {
-                    shape->transform = fh6::decomposeTransform2D(
-                        fh6::detail::multiply(parentInverse, shape->transform.matrix()));
+                auto *variantGroup = static_cast<fh6::scene::Group *>(variantNode.get());
+                for (const auto &regionNode : variantGroup->children) {
+                    if (regionNode->kind() != fh6::scene::LayerKind::Group) {
+                        continue;
+                    }
+                    auto *regionGroup = static_cast<fh6::scene::Group *>(regionNode.get());
+                    for (const auto &shape : regionGroup->children) {
+                        shape->transform = fh6::decomposeTransform2D(
+                            fh6::detail::multiply(parentInverse,
+                                                  shape->transform.matrix()));
+                    }
                 }
             }
         }
+    }
+    if (differenceGuide != nullptr) {
+        fh6::scene::Group *differenceParent = differenceGuideParentId.isEmpty()
+            ? state_->project_.root.get()
+            : state_->groupForId(differenceGuideParentId);
+        if (differenceParent == nullptr) {
+            differenceParent = state_->project_.root.get();
+        }
+        differenceParent->append(std::move(differenceGuide));
     }
     state_->selectedLayerIds_ = generatedIds;
     state_->selectedGuideLayerIds_.clear();
@@ -342,10 +409,15 @@ void MainWindow::insertGeneratedRegionGroups(
     if (canvas_ != nullptr) {
         canvas_->setFocus();
     }
-    statusBar()->showMessage(QStringLiteral("Created %1 with %2 region groups and %3 shapes")
+    const QString differenceText = differenceGuideCreated
+        ? QStringLiteral(", and a difference heatmap") : QString();
+    statusBar()->showMessage(QStringLiteral(
+                                 "Created %1 with %2 variants, %3 region groups, %4 shapes%5")
                                  .arg(displayName)
+                                 .arg(variants.size())
                                  .arg(regionCount)
-                                 .arg(shapeCount),
+                                 .arg(shapeCount)
+                                 .arg(differenceText),
                              3500);
 }
 

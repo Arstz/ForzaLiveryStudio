@@ -649,8 +649,8 @@ void MainWindow::fillRegions() {
     const auto token = std::make_shared<std::atomic_bool>(false);
     regionFillCancel_ = token;
     regionFillInsertionEntries_ = selectedEntryIds();
-    regionFillProgress_->setRange(0, std::max(1, request.regions.colorRegionCount));
-    regionFillProgress_->setValue(0);
+    regionFillProgress_->setRange(0, 0);
+    regionFillProgress_->setFormat(QStringLiteral("Planning regions…"));
     regionFillProgress_->show();
     statusBar()->showMessage(QStringLiteral("Filling regions… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CancelActiveFill)));
@@ -660,15 +660,16 @@ void MainWindow::fillRegions() {
         [guard, generation, request = std::move(request), token]() mutable {
             RegionFillBatchResult result = computeRegionFills(
                 request,
-                [guard, generation](int completed, int total) {
+                [guard, generation](const QString &phase, int completed, int total) {
                     if (guard.isNull()) {
                         return;
                     }
                     QMetaObject::invokeMethod(
                         guard.data(),
-                        [guard, generation, completed, total]() {
+                        [guard, generation, phase, completed, total]() {
                             if (!guard.isNull()) {
-                                guard->updateRegionFillProgress(generation, completed, total);
+                                guard->updateRegionFillProgress(
+                                    generation, phase, completed, total);
                             }
                         },
                         Qt::QueuedConnection);
@@ -704,15 +705,28 @@ void MainWindow::cancelRegionFill() {
     statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
 }
 
-void MainWindow::updateRegionFillProgress(quint64 generation, int completed, int total) {
+void MainWindow::updateRegionFillProgress(quint64 generation,
+                                          const QString &phase,
+                                          int completed,
+                                          int total) {
     if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr
         || regionFillProgress_ == nullptr) {
         return;
     }
-    regionFillProgress_->setRange(0, std::max(1, total));
-    regionFillProgress_->setValue(std::max(
-        regionFillProgress_->value(),
-        std::clamp(completed, 0, std::max(1, total))));
+    if (total <= 0) {
+        regionFillProgress_->setRange(0, 0);
+        regionFillProgress_->setFormat(phase);
+        return;
+    }
+    const int maximum = std::max(1, total);
+    const QString format = QStringLiteral("%1 %v/%m").arg(phase);
+    const bool samePhase = regionFillProgress_->format() == format;
+    const int value = std::clamp(completed, 0, maximum);
+
+    regionFillProgress_->setRange(0, maximum);
+    regionFillProgress_->setFormat(format);
+    regionFillProgress_->setValue(
+        samePhase ? std::max(regionFillProgress_->value(), value) : value);
 }
 
 void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult result) {
@@ -726,6 +740,8 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
         statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
         return;
     }
+    const QImage differenceHeatmap = result.differenceHeatmap;
+    const QString sourceGuideId = result.overlayGuideId;
     QString message;
     if (canvas_ == nullptr || !state_->hasProject()
         || !canvas_->applyRegionFillBatch(std::move(result), &message)) {
@@ -735,16 +751,18 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
                                  5000);
         return;
     }
-    const QVector<GeneratedRegionGroup> regions = canvas_->regionFillWorldGroups();
-    if (regions.isEmpty()) {
+    const QVector<GeneratedRegionVariant> variants =
+        canvas_->regionFillWorldVariants();
+    if (variants.isEmpty()) {
         regionFillInsertionEntries_.clear();
         statusBar()->showMessage(QStringLiteral("Region fill produced no shapes"), 4000);
         return;
     }
     const QVector<QString> insertionEntries = regionFillInsertionEntries_;
     regionFillInsertionEntries_.clear();
-    insertGeneratedRegionGroups(QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
-                                regions, insertionEntries);
+    insertGeneratedRegionVariants(
+        QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
+        variants, insertionEntries, differenceHeatmap, sourceGuideId);
     canvas_->hideRegionOverlay();
 }
 

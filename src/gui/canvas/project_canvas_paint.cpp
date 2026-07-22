@@ -925,9 +925,86 @@ bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
     return true;
 }
 
+namespace {
+
+constexpr QRgb kSafeOnlyDifferenceColor = qRgba(255, 55, 55, 230);
+constexpr QRgb kDangerousOnlyDifferenceColor = qRgba(30, 220, 255, 230);
+constexpr QRgb kChangedColorDifferenceColor = qRgba(255, 215, 35, 230);
+
+QImage renderRegionFillVariant(
+    const QSize &imageSize,
+    const QVector<RegionFillLayer> &fills,
+    const QHash<int, QPainterPath> &silhouettes,
+    RegionFillVariant variant) {
+    QImage image(imageSize, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    for (const RegionFillLayer &fill : fills) {
+        if (fill.variant != variant) {
+            continue;
+        }
+        painter.setBrush(fill.color);
+        for (const PenPlacement &placement : fill.placements) {
+            const auto silhouette = silhouettes.constFind(placement.shapeId);
+            if (silhouette != silhouettes.constEnd()) {
+                painter.drawPath(placement.transform.map(silhouette.value()));
+            }
+        }
+    }
+    painter.end();
+
+    return image;
+}
+
+QImage regionFillDifferenceHeatmap(
+    const QImage &safe,
+    const QImage &dangerous,
+    int *differencePixelCount) {
+    if (differencePixelCount != nullptr) {
+        *differencePixelCount = 0;
+    }
+    if (safe.isNull() || dangerous.isNull() || safe.size() != dangerous.size()) {
+        return {};
+    }
+    QImage heatmap(safe.size(), QImage::Format_ARGB32);
+    heatmap.fill(Qt::transparent);
+    int differences = 0;
+    for (int y = 0; y < safe.height(); ++y) {
+        const QRgb *safeRow =
+            reinterpret_cast<const QRgb *>(safe.constScanLine(y));
+        const QRgb *dangerousRow =
+            reinterpret_cast<const QRgb *>(dangerous.constScanLine(y));
+        QRgb *heatmapRow = reinterpret_cast<QRgb *>(heatmap.scanLine(y));
+        for (int x = 0; x < safe.width(); ++x) {
+            if (safeRow[x] == dangerousRow[x]) {
+                continue;
+            }
+            ++differences;
+            const bool safeVisible = qAlpha(safeRow[x]) > 0;
+            const bool dangerousVisible = qAlpha(dangerousRow[x]) > 0;
+            if (safeVisible && !dangerousVisible) {
+                heatmapRow[x] = kSafeOnlyDifferenceColor;
+            } else if (!safeVisible && dangerousVisible) {
+                heatmapRow[x] = kDangerousOnlyDifferenceColor;
+            } else {
+                heatmapRow[x] = kChangedColorDifferenceColor;
+            }
+        }
+    }
+    if (differencePixelCount != nullptr) {
+        *differencePixelCount = differences;
+    }
+
+    return heatmap;
+}
+
+} // namespace
+
 RegionFillBatchResult computeRegionFills(
     const RegionFillBatchRequest &request,
-    const std::function<void(int, int)> &progress,
+    const std::function<void(const QString &, int, int)> &progress,
     const std::function<bool()> &cancelled) {
     RegionFillBatchResult result;
     result.overlayGuideId = request.overlayGuideId;
@@ -953,58 +1030,116 @@ RegionFillBatchResult computeRegionFills(
     int timedOut = 0;
     int placementCount = 0;
     int meshFallbacks = 0;
+    int sourceOutlineFallbacks = 0;
     int softRunRetries = 0;
     int baselineRetries = 0;
     int removedSoftPoints = 0;
+    int coreEllipseCount = 0;
     QHash<QString, int> failureReasons;
     constexpr qint64 kRegionBudgetMs = 3000;
     const PolygonMeshSources &meshSources = request.meshSources;
     constexpr double kFallbackSimplifyEpsilon = 0.45;
+    const auto globallyCancelled = [&cancelled]() {
+        return cancelled && cancelled();
+    };
     struct FillUnit {
         QColor color;
         QPainterPath outline;
         QVector<int> sourceIndices;
         QVector<int> absorbedIndices;
         double area = 0.0;
+        int drawOrder = -1;
+        RegionFillVariant variant = RegionFillVariant::Safe;
     };
-    const RegionLayerPlan layerPlan = buildRegionLayerPlan(regionOverlay);
-    QVector<FillUnit> units;
-    units.reserve(layerPlan.units.size());
-    for (const RegionLayerUnit &unit : layerPlan.units) {
-        units.push_back(FillUnit{unit.color, unit.outline, unit.sourceRegionIndices,
-                                 unit.absorbedRegionIndices, unit.area});
+    QElapsedTimer planningClock;
+    planningClock.start();
+    const RegionLayerPlanVariants layerPlans =
+        buildRegionLayerPlanVariants(regionOverlay, progress, globallyCancelled);
+    const qint64 planningElapsedMs = planningClock.elapsed();
+    if (layerPlans.safe.cancelled || layerPlans.dangerous.cancelled
+        || globallyCancelled()) {
+        result.cancelled = true;
+        return result;
     }
+    QVector<FillUnit> units;
+    units.reserve(layerPlans.safe.units.size() + layerPlans.dangerous.units.size());
+    const auto appendPlanUnits = [&units](const RegionLayerPlan &plan,
+                                          RegionFillVariant variant) {
+        for (int drawOrder = 0; drawOrder < plan.units.size(); ++drawOrder) {
+            const RegionLayerUnit &unit = plan.units[drawOrder];
+            units.push_back(FillUnit{unit.color, unit.outline,
+                                     unit.sourceRegionIndices,
+                                     unit.absorbedRegionIndices, unit.area,
+                                     drawOrder, variant});
+        }
+    };
+    appendPlanUnits(layerPlans.safe, RegionFillVariant::Safe);
+    appendPlanUnits(layerPlans.dangerous, RegionFillVariant::Dangerous);
     QStringList log;
     log << QStringLiteral("Fill Regions diagnostic - image %1x%2, tolerance %3, "
-                          "%4 planned units (back-to-front order)")
+                          "%4 safe + %5 dangerous planned units, planning %6 ms")
                .arg(regionOverlay.imageSize.width())
                .arg(regionOverlay.imageSize.height())
                .arg(tolerance, 0, 'f', 3)
-               .arg(units.size());
+               .arg(layerPlans.safe.units.size())
+               .arg(layerPlans.dangerous.units.size())
+               .arg(planningElapsedMs);
     const QString layerLogPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/region_layer.log");
     QFile layerLogFile(layerLogPath);
     if (layerLogFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         QTextStream stream(&layerLogFile);
-        stream << "Region layer plan diagnostic\n"
-               << "input_regions=" << layerPlan.inputRegionCount << '\n'
-               << "planned_units=" << layerPlan.units.size() << '\n'
-               << "same_color_merges=" << layerPlan.sameColorMergeCount << '\n'
-               << "nearby_same_color_merges="
-               << layerPlan.nearbySameColorMergeCount << '\n'
-               << "nearby_conflict_rejections="
-               << layerPlan.nearbyConflictRejectCount << '\n'
-               << "conflict_isolated_sources="
-               << layerPlan.conflictIsolatedSourceCount << '\n'
-               << "absorbed_regions=" << layerPlan.absorbedRegionCount << '\n'
-               << "ordering_edges=" << layerPlan.orderingEdgeCount << '\n'
-               << "validation_mismatch_pixels="
-               << layerPlan.validationMismatchPixels << '\n'
-               << "fallback=" << (layerPlan.fallback ? "yes" : "no") << '\n';
-        if (!layerPlan.fallbackReason.isEmpty()) {
-            stream << "fallback_reason=" << layerPlan.fallbackReason << '\n';
-        }
-        stream << '\n' << layerPlan.diagnostics.join(QLatin1Char('\n')) << '\n';
+        const auto writePlan = [&stream](const char *name,
+                                         const RegionLayerPlan &plan) {
+            stream << '[' << name << "]\n"
+                   << "input_regions=" << plan.inputRegionCount << '\n'
+                   << "planned_units=" << plan.units.size() << '\n'
+                   << "same_color_merges=" << plan.sameColorMergeCount << '\n'
+                   << "nearby_same_color_merges="
+                   << plan.nearbySameColorMergeCount << '\n'
+                   << "edge_component_merges="
+                   << plan.edgeComponentMergeCount << '\n'
+                   << "hierarchical_contour_merges="
+                   << plan.hierarchicalContourMergeCount << '\n'
+                   << "nearby_conflict_rejections="
+                   << plan.nearbyConflictRejectCount << '\n'
+                   << "nearby_foreign_owner_rejections="
+                   << plan.nearbyForeignOwnerRejectCount << '\n'
+                   << "adjacent_conflict_rejections="
+                   << plan.adjacentConflictRejectCount << '\n'
+                   << "containment_conflict_rejections="
+                   << plan.containmentConflictRejectCount << '\n'
+                   << "absorption_conflict_rejections="
+                   << plan.absorptionConflictRejectCount << '\n'
+                   << "suppressed_operations="
+                   << plan.suppressedOperationCount << '\n'
+                   << "dependency_cycle_rebuilds="
+                   << plan.dependencyCycleRebuildCount << '\n'
+                   << "conflict_isolated_sources="
+                   << plan.conflictIsolatedSourceCount << '\n'
+                   << "absorbed_regions=" << plan.absorbedRegionCount << '\n'
+                   << "large_contained_absorptions="
+                   << plan.largeContainedAbsorptionCount << '\n'
+                   << "morphological_closings="
+                   << plan.morphologicalClosingCount << '\n'
+                   << "convex_simplifications="
+                   << plan.convexSimplificationCount << '\n'
+                   << "geometry_point_reductions="
+                   << plan.geometryPointReductionCount << '\n'
+                   << "dangerous_cycle_breaks="
+                   << plan.dangerousCycleBreakCount << '\n'
+                   << "ordering_edges=" << plan.orderingEdgeCount << '\n'
+                   << "validation_mismatch_pixels="
+                   << plan.validationMismatchPixels << '\n'
+                   << "fallback=" << (plan.fallback ? "yes" : "no") << '\n';
+            if (!plan.fallbackReason.isEmpty()) {
+                stream << "fallback_reason=" << plan.fallbackReason << '\n';
+            }
+            stream << '\n' << plan.diagnostics.join(QLatin1Char('\n')) << "\n\n";
+        };
+        stream << "Region layer plan variants diagnostic\n\n";
+        writePlan("safe", layerPlans.safe);
+        writePlan("dangerous", layerPlans.dangerous);
         layerLogFile.close();
         qWarning().noquote() << "Region layer log written to" << layerLogPath;
     } else {
@@ -1037,8 +1172,11 @@ RegionFillBatchResult computeRegionFills(
         return values.join(QLatin1Char(','));
     };
     for (int i = 0; i < units.size(); ++i) {
-        log << QStringLiteral("plan #%1 color=%2 sources=%3 absorbed=%4 area=%5")
-                   .arg(i)
+        const QString variantName = units[i].variant == RegionFillVariant::Safe
+            ? QStringLiteral("safe") : QStringLiteral("dangerous");
+        log << QStringLiteral("%1 plan #%2 color=%3 sources=%4 absorbed=%5 area=%6")
+                   .arg(variantName)
+                   .arg(units[i].drawOrder)
                    .arg(units[i].color.name(QColor::HexRgb))
                    .arg(unitSourcesText(units[i]))
                    .arg(absorbedSourcesText(units[i]))
@@ -1046,7 +1184,7 @@ RegionFillBatchResult computeRegionFills(
     }
     result.totalRegions = units.size();
     if (progress) {
-        progress(0, result.totalRegions);
+        progress(QStringLiteral("Filling regions"), 0, result.totalRegions);
     }
     if (units.isEmpty()) {
         result.error = QStringLiteral("No colour regions are available to fill");
@@ -1073,9 +1211,6 @@ RegionFillBatchResult computeRegionFills(
         QPolygonF optimizedContour;
     };
     std::vector<UnitWorkResult> workResults(static_cast<size_t>(units.size()));
-    const auto globallyCancelled = [&cancelled]() {
-        return cancelled && cancelled();
-    };
     const auto fitSucceeded = [](const PenFillResult &fit) {
         return fit.error.isEmpty() && !fit.placements.isEmpty() && !fit.cancelled;
     };
@@ -1132,22 +1267,27 @@ RegionFillBatchResult computeRegionFills(
                         work.via = work.timedOut
                             ? QStringLiteral("optimized-mesh-timeout")
                             : QStringLiteral("optimized-mesh-fallback");
-                        if (optimizedContour.size() >= 3) {
-                            work.fallbackInputPoints = optimizedContour.size();
+                        QPolygonF fallbackContour = optimizedContour.size() >= 3
+                            ? optimizedContour : regionOuterContour(unit.outline);
+                        if (fallbackContour.size() >= 3) {
+                            if (optimizedContour.size() < 3) {
+                                work.via = QStringLiteral("source-outline-mesh-fallback");
+                            }
+                            work.fallbackInputPoints = fallbackContour.size();
                             QPolygonF meshContour = simplifyClosedPolygon(
-                                optimizedContour, kFallbackSimplifyEpsilon);
+                                fallbackContour, kFallbackSimplifyEpsilon);
                             if (!buildPolygonContour(meshContour).valid()) {
-                                meshContour = optimizedContour;
+                                meshContour = fallbackContour;
                             }
                             work.fallbackMeshPoints = meshContour.size();
                             work.fit = fillPolygonMesh(meshContour, meshSources,
                                                        globallyCancelled);
                             if (!fitSucceeded(work.fit)
-                                && meshContour.size() != optimizedContour.size()
+                                && meshContour.size() != fallbackContour.size()
                                 && !globallyCancelled()) {
-                                work.fallbackMeshPoints = optimizedContour.size();
-                                work.fit = fillPolygonMesh(optimizedContour, meshSources,
-                                                           globallyCancelled);
+                                work.fallbackMeshPoints = fallbackContour.size();
+                                work.fit = fillPolygonMesh(fallbackContour, meshSources,
+                                                            globallyCancelled);
                             }
                         } else if (work.fit.error.isEmpty()) {
                             work.fit = PenFillResult{};
@@ -1161,7 +1301,8 @@ RegionFillBatchResult computeRegionFills(
                 }
                 const int done = completedUnits.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (progress) {
-                    progress(done, result.totalRegions);
+                    progress(QStringLiteral("Filling regions"),
+                             done, result.totalRegions);
                 }
             }
         });
@@ -1272,11 +1413,20 @@ RegionFillBatchResult computeRegionFills(
     for (int i = 0; i < units.size(); ++i) {
         const FillUnit &unit = units[i];
         UnitWorkResult &work = workResults[static_cast<size_t>(i)];
+        const int unitCoreEllipseCount = static_cast<int>(std::count_if(
+            work.fit.placements.cbegin(), work.fit.placements.cend(),
+            [](const PenPlacement &placement) {
+                return placement.coreEllipse;
+            }));
+        coreEllipseCount += unitCoreEllipseCount;
         if (work.timedOut) {
             ++timedOut;
         }
         if (work.meshFallback && fitSucceeded(work.fit)) {
             ++meshFallbacks;
+            if (work.via == QStringLiteral("source-outline-mesh-fallback")) {
+                ++sourceOutlineFallbacks;
+            }
         }
         if (work.contourStats.softRunRetry && fitSucceeded(work.fit)) {
             ++softRunRetries;
@@ -1289,7 +1439,8 @@ RegionFillBatchResult computeRegionFills(
             layer.color = unit.color;
             layer.area = unit.area;
             layer.placements = std::move(work.fit.placements);
-            layer.drawOrder = i;
+            layer.drawOrder = unit.drawOrder;
+            layer.variant = unit.variant;
             placementCount += layer.placements.size();
             removedSoftPoints += work.contourStats.removedSoftPoints;
             ++filled;
@@ -1311,14 +1462,21 @@ RegionFillBatchResult computeRegionFills(
                           .arg(work.fallbackInputPoints)
                           .arg(work.fallbackMeshPoints);
         }
+        if (unitCoreEllipseCount > 0) {
+            detail += QStringLiteral(" [core ellipses: %1]").arg(unitCoreEllipseCount);
+        }
         detail += QStringLiteral(" [points: %1 -> %2, hard -%3, soft -%4, DSSIM %5]")
                       .arg(work.contourStats.originalPointCount)
                       .arg(work.contourStats.optimizedPointCount)
                       .arg(work.contourStats.removedHardPoints)
                       .arg(work.contourStats.removedSoftPoints)
                       .arg(work.contourStats.dssim, 0, 'g', 8);
-        log << QStringLiteral("region #%1 (sources %2) %3 %4: area=%5 -> %6 shapes, %7 ms%8")
-                   .arg(i)
+        const QString variantName = unit.variant == RegionFillVariant::Safe
+            ? QStringLiteral("safe") : QStringLiteral("dangerous");
+        log << QStringLiteral("%1 region #%2 (sources %3) %4 %5: "
+                              "area=%6 -> %7 shapes, %8 ms%9")
+                   .arg(variantName)
+                   .arg(unit.drawOrder)
                    .arg(unitSourcesText(unit))
                    .arg(unit.color.name())
                    .arg(work.via)
@@ -1337,18 +1495,33 @@ RegionFillBatchResult computeRegionFills(
     const bool drawOrderPreserved = std::is_sorted(
         fills.cbegin(), fills.cend(),
         [](const RegionFillLayer &left, const RegionFillLayer &right) {
+            if (left.variant != right.variant) {
+                return left.variant == RegionFillVariant::Safe;
+            }
             return left.drawOrder < right.drawOrder;
         });
     log << QStringLiteral("Parallel draw order preserved: %1")
                .arg(drawOrderPreserved ? QStringLiteral("yes") : QStringLiteral("no"));
+    const QImage safeRendered = renderRegionFillVariant(
+        regionOverlay.imageSize, fills, silhouettes, RegionFillVariant::Safe);
+    const QImage dangerousRendered = renderRegionFillVariant(
+        regionOverlay.imageSize, fills, silhouettes, RegionFillVariant::Dangerous);
+    result.differenceHeatmap = regionFillDifferenceHeatmap(
+        safeRendered, dangerousRendered, &result.differencePixelCount);
+    log << QStringLiteral("Safe/Dangerous heatmap difference pixels: %1")
+               .arg(result.differencePixelCount);
     log << QStringLiteral("Summary: %1 planned units filled (%2 hard-only Pen retries, "
-                          "%3 baseline Pen retries, %4 optimized-contour mesh fallbacks), "
-                          "%5 shapes, %6 soft controls removed, %7 failed, %8 timed out")
+                          "%3 baseline Pen retries, %4 mesh fallbacks including "
+                          "%5 source-outline recoveries), %6 shapes including "
+                          "%7 core ellipses, %8 soft controls removed, "
+                          "%9 failed, %10 timed out")
                .arg(filled)
                .arg(softRunRetries)
                .arg(baselineRetries)
                .arg(meshFallbacks)
+               .arg(sourceOutlineFallbacks)
                .arg(placementCount)
+               .arg(coreEllipseCount)
                .arg(removedSoftPoints)
                .arg(failed)
                .arg(timedOut);
@@ -1379,9 +1552,15 @@ RegionFillBatchResult computeRegionFills(
         result.error = QStringLiteral("No regions could be filled%1").arg(reasonSuffix);
         return result;
     }
-    result.summary = QStringLiteral("Filled %1 layer units with %2 shapes "
-                                    "(%3 failed, %4 timed out)%5")
-        .arg(fills.size())
+    const int safeFillCount = static_cast<int>(std::count_if(
+        fills.cbegin(), fills.cend(), [](const RegionFillLayer &fill) {
+            return fill.variant == RegionFillVariant::Safe;
+        }));
+    const int dangerousFillCount = fills.size() - safeFillCount;
+    result.summary = QStringLiteral("Filled %1 safe and %2 dangerous layer units "
+                                    "with %3 shapes (%4 failed, %5 timed out)%6")
+        .arg(safeFillCount)
+        .arg(dangerousFillCount)
         .arg(placementCount)
         .arg(failed)
         .arg(timedOut)
@@ -1433,8 +1612,8 @@ void ProjectCanvas::clearRegionFills() {
     update();
 }
 
-QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups() {
-    QVector<GeneratedRegionGroup> result;
+QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
+    QVector<GeneratedRegionVariant> result;
     if (region_.fills.isEmpty() || region_.guideId.isEmpty()) {
         return result;
     }
@@ -1465,8 +1644,12 @@ QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups() {
     imageToLocal.scale(guideSize.width() / imageSize.width(),
                        guideSize.height() / imageSize.height());
     const QTransform imageToWorld = imageToLocal * guideWorld;
+    result.push_back({QStringLiteral("Safe"), {}, true});
+    result.push_back({QStringLiteral("Dangerous"), {}, false});
 
     for (const RegionFillLayer &fill : region_.fills) {
+        GeneratedRegionVariant &variant = fill.variant == RegionFillVariant::Safe
+            ? result[0] : result[1];
         GeneratedRegionGroup group;
         group.shapes.reserve(fill.placements.size());
         // Scene shape colour is stored BGRA.
@@ -1484,7 +1667,7 @@ QVector<GeneratedRegionGroup> ProjectCanvas::regionFillWorldGroups() {
             group.shapes.push_back(shape);
         }
         if (!group.shapes.isEmpty()) {
-            result.push_back(std::move(group));
+            variant.regions.push_back(std::move(group));
         }
     }
     return result;
@@ -1542,6 +1725,9 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter) {
     if (region_.showFills && !region_.fills.isEmpty()) {
         painter.setPen(Qt::NoPen);
         for (const RegionFillLayer &fill : region_.fills) {
+            if (fill.variant != RegionFillVariant::Safe) {
+                continue;
+            }
             painter.setBrush(fill.color);
             for (const PenPlacement &placement : fill.placements) {
                 const auto silhouette = region_.fillSilhouettes.constFind(placement.shapeId);

@@ -100,15 +100,57 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   can share a unit, and small enclosed regions are incorporated into their surrounding
   backdrop while remaining as later overlay units. Rasterized coverage establishes
   the draw dependencies needed to restore differently coloured ownership above an
-  expanded backdrop. Nearby unions responsible for a dependency cycle are suppressed
-  and the remaining plan is rebuilt. Sources in a residual cycle or a failed raster
-  comparison retain their original geometry without disabling independent unions.
+  expanded backdrop. A dependency cycle or failed raster comparison rolls back one
+  contributing nearby, adjacent, containment, or absorption operation and rebuilds
+  the plan, preserving independent unions. Nearby bridges prefer simple ownership:
+  paths crossing more than one differently coloured source are rejected, while a
+  directly adjacent pair cannot reconnect through the nearby-merge path after its
+  adjacent operation is suppressed.
   The complete plan is compared pixel-for-pixel with the existing vector-rendered
-  baseline before fitting. A rejected plan retains the original unit geometry with
-  containment ordering. Fitting runs in parallel on
+  baseline before fitting. Fill Regions retains two comparison variants: the
+  visible **Safe** group rolls back operations until that comparison is exact, while
+  the hidden **Dangerous** group keeps the first plan that differs from the baseline
+  so its optimizations can be inspected manually. Dangerous additionally joins
+  same-colour closed contours through a hierarchical straight-corridor graph. A
+  candidate exists only when outer-boundary contact pixels have direct straight-line
+  visibility entirely through one connected foreground lineart component. Winding
+  routes, differently coloured regions, and transparent background are impassable.
+  Progressive corridor widths are clipped to eligible lineart pixels and ranked by
+  traced contour-point cost before estimated shape count. Spatially separated straight
+  contacts can be bundled when their combined expansion further simplifies the merged
+  contour. Each accepted bridge is re-evaluated against the currently expanded groups;
+  additional contacts must lower that group's current fitting cost, and a bridge cannot
+  overlap pixels claimed by another expanded group. Deterministic Kruskal levels then
+  produce successively larger merged contours. The log records straight visibility,
+  attachment count, expanded-group cost, corridor width, and hierarchy level. Dangerous also tries
+  square morphological closing at several radii and a convex contour. A geometry
+  candidate is eligible only when every filled pixel was already the exact same
+  colour or classified lineart; candidates entering another colour or transparent
+  background are rejected. The candidate with the fewest traced path elements is
+  retained. Connector candidates are rasterized in their local bounds and cached across
+  dependency-cycle rebuilds; morphological and convex trials run only after dependency
+  recovery reaches its final plan. Dangerous disables optimization safety: it retains
+  every bridge, containment, absorption, morphology, and convex operation even when
+  validation reports changed pixels or their layer dependencies contain cycles. Cycles
+  are completed with a deterministic forced draw order, preferring enclosing backdrops
+  before their absorbed overlay regions when possible. The log marks this policy with
+  an explicit warning because the resulting output may overlap other colours, hide
+  regions, or have broken ordering. Dangerous removes the area limit for
+  enclosed-region absorption. The
+  enclosing backdrop fills through an absorbed region and that region remains a
+  later, topmost overlay unit.
+  Both variants are inserted under one
+  **Region Fill** container and can be compared by toggling their visibility. If no
+  validation difference exists, both variants contain the same plan. The fitted
+  output comparison is also saved as a visible **Dangerous Differences** guide at
+  the top of the source guide's parent: red is Safe-only coverage, cyan is
+  Dangerous-only coverage, and yellow means both variants cover the pixel but render
+  different colours. Fitting runs in parallel on
   half of the available CPU threads, writes results into fixed plan-index slots,
-  restores draw order before insertion, reports completed/total regions in a
-  status-bar progress bar, and remains cancellable with **Esc**. Potrace curves
+  restores draw order before insertion, reports planning, bridge scoring, dependency
+  recovery, simplification, and completed/total fitting phases in the status-bar
+  progress bar, and remains cancellable with **Esc** during planning and fitting.
+  Potrace curves
   use the same optimized Pen-point and
   curve-Primitive fitter as Bucket Fill. Dense traces are no longer skipped at
   a fixed point-count cutoff: removable cubic junctions use a 1.1-pixel cap,
@@ -122,10 +164,16 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   curve search from consuming the whole per-region deadline. If a soft-run
   reduction cannot be fitted, the fitter retries the hard-only reduction before
   retrying the unmerged Potrace controls and using a mesh fallback. Unavoidable
-  fallbacks retain the hard-only contour for the mesh simplification stage. They
-  apply a 0.45-pixel RDP pass, accept it only when the
+  fallbacks retain the hard-only contour for the mesh simplification stage. If Pen
+  rejects a contour before producing optimized points, the original traced outer
+  contour is recovered and meshed instead of dropping the unit. Fallbacks apply a
+  0.45-pixel RDP pass, accept it only when the
   result remains a valid non-crossing polygon, and retry the original contour if
-  simplified triangulation fails. Scene insertion keeps the
+  simplified triangulation fails. Large polygonal cores evaluate transformed Circle
+  primitives as ellipses. A core within 0.5 percent symmetric-difference of an ellipse
+  is replaced by that single shape; fully contained ellipses can also replace multiple
+  mesh primitives they cover. Per-unit and summary logs report the selected core
+  ellipse count. Scene insertion keeps the
   result in one **Region Fill** container with one child group per filled unit.
   Before tracing, progressive line-classification votes identify narrow connected
   fringe components and absorb each chain into its strongest shared-boundary color
@@ -133,10 +181,17 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   and persistent historical evidence can classify a component independently of
   final-mask adjacency. A chain enclosed by recognized lineart is incorporated into
   that mask.
-  `region_layer.log` records source-to-unit mappings, adjacent and nearby unions,
-  absorptions, dependency counts, validation, and fallback state. `region_fill.log`
+  `region_layer.log` records separate Safe and Dangerous sections with source-to-unit
+  mappings, adjacent and nearby unions, hierarchical contour connectors and levels,
+  absorptions, per-rebuild rollback reasons, operation-specific suppression counts,
+  foreign-owner bridge rejections, bridge widths and path-element scores,
+  morphological/convex selections, selective geometry suppressions, point reductions,
+  Dangerous cycle breaks, dependency counts,
+  validation, and fallback state.
+  `region_fill.log`
   records every planned
-  unit result, its source labels, hard and soft point reductions, and the largest
+  unit result, its source labels, hard and soft point reductions, the fitted Safe vs.
+  Dangerous heatmap difference count, and the largest
   unit's original, optimized, and flattened contour point counts plus DSSIM.
   `region_points.log`
   records every raw path element, optimized Hard/Soft Pen point, and flattened

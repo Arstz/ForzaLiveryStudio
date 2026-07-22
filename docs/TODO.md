@@ -1,5 +1,5 @@
 Small changes:
-    -
+    - Move tool does not consider guide layer as selection and tries to override it
 
 Medium changes:
     -Itegrate contour created via pen/lining/bucket actions: point created, moved, deleted. etc... as proper history actions

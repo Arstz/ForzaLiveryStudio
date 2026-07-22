@@ -138,11 +138,19 @@ gui::RegionExtractionResult rasterExtraction(const std::vector<int> &labels,
                                               const QSize &size,
                                               QVector<gui::ExtractedRegion> regions)
 {
+    QSet<int> lineartLabels;
+    for (const gui::ExtractedRegion &region : regions) {
+        if (region.lineart) {
+            lineartLabels.insert(region.id);
+        }
+    }
     auto raster = QSharedPointer<gui::RegionRasterData>::create();
     raster->labels = labels;
     raster->foreground.resize(labels.size(), 0);
+    raster->lineart.resize(labels.size(), 0);
     for (size_t pixel = 0; pixel < labels.size(); ++pixel) {
         raster->foreground[pixel] = labels[pixel] >= 0 ? 1 : 0;
+        raster->lineart[pixel] = lineartLabels.contains(labels[pixel]) ? 1 : 0;
     }
     raster->traceParams.traceSpeckle = 0;
     gui::RegionExtractionResult result;
@@ -1125,7 +1133,9 @@ void regionLayerPlanDoesNotBridgeBackground(TestContext *test)
     const gui::RegionExtractionResult extraction =
         rasterExtraction(labels, size, std::move(sourceRegions));
 
-    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    const gui::RegionLayerPlan &plan = variants.safe;
     if (plan.fallback || plan.units.size() != 2) {
         std::cerr << "background-plan: "
                   << plan.diagnostics.join(QStringLiteral(" | ")).toStdString() << '\n';
@@ -1133,6 +1143,9 @@ void regionLayerPlanDoesNotBridgeBackground(TestContext *test)
     test->expect(!plan.fallback && plan.units.size() == 2
                      && plan.nearbySameColorMergeCount == 0,
                  "nearby colors should remain separate across image background");
+    test->expect(variants.dangerous.units.size() == 2
+                     && variants.dangerous.hierarchicalContourMergeCount == 0,
+                 "dangerous contour bridges should never cross transparent background");
 }
 
 void regionLayerPlanUsesBaselineOverlapOrder(TestContext *test)
@@ -1190,11 +1203,127 @@ void regionLayerPlanRejectsOnlyCyclicNearbyBridge(TestContext *test)
     test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
                  "a cyclic nearby merge should retain a valid layer plan");
     test->expect(plan.units.size() == 3 && plan.nearbySameColorMergeCount == 0
-                     && plan.nearbyConflictRejectCount == 1,
+                     && plan.nearbyConflictRejectCount == 1
+                     && plan.suppressedOperationCount == 1
+                     && plan.conflictIsolatedSourceCount == 0,
                  "only the nearby bridge responsible for a dependency cycle should be rejected");
+    test->expect(plan.diagnostics.join(QLatin1Char('\n')).contains(
+                     QStringLiteral("action=suppress-nearby-merge")),
+                 "cycle diagnostics should identify the suppressed nearby operation");
 }
 
-void regionLayerPlanIsolatesResidualCycle(TestContext *test)
+void ellipseLikeCoreUsesOneCircle(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error),
+                 "ellipse core Primitive geometry should load");
+    const gui::PolygonMeshSources sources = gui::buildPolygonMeshSources(geometry);
+    QPainterPath corePath;
+    corePath.addPolygon(sources.circle);
+    corePath.closeSubpath();
+    QVector<gui::PolygonMeshPlacement> placements;
+    for (int i = 0; i < 12; ++i) {
+        placements.push_back({103, QTransform()});
+    }
+    const QVector<gui::PolygonMeshPlacement> optimized =
+        gui::optimizePolygonMeshWithEllipses(
+            placements, sources, corePath);
+
+    test->expect(optimized.size() == 1 && optimized.front().shapeId == 102,
+                 "an ellipse-like large core should replace its mesh with one Circle");
+}
+
+void regionLayerPlanRetainsUnrelatedSafeBridge(TestContext *test)
+{
+    const QSize size(40, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), -1);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 5; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        for (int x = 5; x < 7; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+        for (int x = 7; x < 12; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+        for (int x = 20; x < 25; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 3;
+        }
+        for (int x = 25; x < 27; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 4;
+        }
+        for (int x = 27; x < 34; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 5;
+        }
+    }
+    const QColor cyclicColor(190, 70, 40);
+    const QColor safeColor(70, 180, 90);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, cyclicColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, QColor(40, 90, 190)));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, cyclicColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 3, safeColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 4, QColor(170, 80, 180)));
+    sourceRegions.push_back(rasterRegion(labels, size, 5, safeColor));
+    QPainterPath overlappingMiddle;
+    overlappingMiddle.addRect(QRectF(5.0, 0.0, 5.0, size.height()));
+    sourceRegions[1].outline = overlappingMiddle;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    if (plan.units.size() != 5 || plan.nearbySameColorMergeCount != 1
+        || plan.nearbyConflictRejectCount != 1) {
+        std::cerr << "independent-bridge-plan: "
+                  << plan.diagnostics.join(QStringLiteral(" | ")).toStdString() << '\n';
+    }
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "independent safe and cyclic bridges should retain an exact plan");
+    test->expect(plan.units.size() == 5 && plan.nearbySameColorMergeCount == 1
+                     && plan.nearbyConflictRejectCount == 1
+                     && plan.suppressedOperationCount == 1
+                     && plan.conflictIsolatedSourceCount == 0,
+                 "cycle rollback should preserve an unrelated safe nearby merge");
+}
+
+void regionLayerPlanRejectsComplexForeignBridge(TestContext *test)
+{
+    const QSize size(14, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 5; x < 6; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+        for (int x = 6; x < 8; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 3;
+        }
+        for (int x = 8; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, QColor(40, 90, 190)));
+    sourceRegions.push_back(rasterRegion(labels, size, 3, QColor(80, 170, 100)));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    const gui::RegionLayerPlan &plan = variants.safe;
+    test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
+                 "a complex foreign-owner bridge should retain the source plan");
+    test->expect(plan.units.size() == 4 && plan.nearbySameColorMergeCount == 0
+                     && plan.nearbyConflictRejectCount == 1
+                     && plan.nearbyForeignOwnerRejectCount == 1,
+                 "nearby bridging should reject paths crossing multiple foreign owners");
+}
+
+void regionLayerPlanSuppressesResidualCycleMerge(TestContext *test)
 {
     const QSize size(20, 20);
     std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
@@ -1219,14 +1348,40 @@ void regionLayerPlanIsolatesResidualCycle(TestContext *test)
     const gui::RegionExtractionResult extraction =
         rasterExtraction(labels, size, std::move(sourceRegions));
 
-    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    const gui::RegionLayerPlan &plan = variants.safe;
+    if (plan.adjacentConflictRejectCount != 1
+        || plan.suppressedOperationCount != 2) {
+        std::cerr << "residual-cycle-plan: "
+                  << plan.diagnostics.join(QStringLiteral(" | ")).toStdString() << '\n';
+    }
     test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
                  "a residual dependency cycle should retain a valid source plan");
-    test->expect(plan.units.size() == 3 && plan.conflictIsolatedSourceCount == 2,
-                 "only sources participating in the residual cycle should be isolated");
+    test->expect(plan.units.size() == 3 && plan.sameColorMergeCount == 0
+                     && plan.adjacentConflictRejectCount == 1
+                     && plan.suppressedOperationCount == 2
+                     && plan.conflictIsolatedSourceCount == 0,
+                 "a residual cycle should suppress only its absorption and adjacent operations");
+    const QString diagnostics = plan.diagnostics.join(QLatin1Char('\n'));
+    test->expect(diagnostics.contains(QStringLiteral("action=suppress-absorption"))
+                     && diagnostics.contains(
+                         QStringLiteral("action=suppress-adjacent-merge")),
+                 "residual-cycle diagnostics should identify both suppressed operations");
+    test->expect(!variants.dangerous.fallback
+                     && variants.dangerous.dangerousCycleBreakCount > 0
+                     && variants.dangerous.suppressedOperationCount == 0,
+                 "dangerous cycle recovery should force an order without suppressing operations");
+    const QString dangerousDiagnostics =
+        variants.dangerous.diagnostics.join(QLatin1Char('\n'));
+    test->expect(dangerousDiagnostics.contains(QStringLiteral(
+                     "dangerous_safety_policy=accept-any-output"))
+                     && dangerousDiagnostics.contains(QStringLiteral(
+                         "WARNING=Dangerous safety checks are disabled")),
+                 "dangerous cycle recovery should log its unsafe acceptance policy");
 }
 
-void regionLayerPlanIsolatesValidationMismatch(TestContext *test)
+void regionLayerPlanSuppressesValidationMismatchMerge(TestContext *test)
 {
     const QSize size(16, 8);
     std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
@@ -1248,25 +1403,349 @@ void regionLayerPlanIsolatesValidationMismatch(TestContext *test)
     const gui::RegionExtractionResult extraction =
         rasterExtraction(labels, size, std::move(sourceRegions));
 
-    const gui::RegionLayerPlan plan = gui::buildRegionLayerPlan(extraction);
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    const gui::RegionLayerPlan &plan = variants.safe;
+    if (plan.adjacentConflictRejectCount != 1
+        || plan.suppressedOperationCount != 1) {
+        std::cerr << "validation-mismatch-plan: "
+                  << plan.diagnostics.join(QStringLiteral(" | ")).toStdString() << '\n';
+    }
     test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
                  "a changed merged contour should retain the baseline rendering");
     test->expect(plan.units.size() == 2 && plan.sameColorMergeCount == 0
-                     && plan.conflictIsolatedSourceCount == 2,
-                 "only sources participating in a validation mismatch should be isolated");
+                     && plan.adjacentConflictRejectCount == 1
+                     && plan.suppressedOperationCount == 1
+                     && plan.conflictIsolatedSourceCount == 0,
+                 "a validation mismatch should suppress only its adjacent merge operation");
+    test->expect(variants.dangerous.units.size() == 1
+                     && variants.dangerous.sameColorMergeCount == 1
+                     && variants.dangerous.validationMismatchPixels > 0
+                     && variants.dangerous.suppressedOperationCount == 0
+                     && variants.dangerous.diagnostics.join(QLatin1Char('\n')).contains(
+                         QStringLiteral("dangerous_variant=unsafe-output-accepted")),
+                 "the dangerous variant should retain validation-mismatching optimization");
+}
+
+void dangerousRegionLayerPlanBuildsHierarchicalContourBridge(TestContext *test)
+{
+    const QSize size(30, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 2);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 5; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        for (int x = 20; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, QColor(30, 30, 35)));
+    sourceRegions.back().lineart = true;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    test->expect(variants.safe.units.size() == 2
+                     && variants.safe.sameColorMergeCount == 0,
+                 "the safe plan should retain regions separated by a wide edge region");
+    test->expect(variants.dangerous.units.size() == 1
+                     && variants.dangerous.nearbySameColorMergeCount == 1
+                     && variants.dangerous.edgeComponentMergeCount == 0
+                     && variants.dangerous.hierarchicalContourMergeCount == 1
+                     && variants.dangerous.validationMismatchPixels > 0,
+                 "the dangerous plan should bridge same-colour regions across edge-only pixels");
+    const QString diagnostics =
+        variants.dangerous.diagnostics.join(QLatin1Char('\n'));
+    const bool hierarchyDiagnostics = diagnostics.contains(QStringLiteral(
+        "bridge_kind=hierarchical-contour"))
+        && diagnostics.contains(QStringLiteral(
+            "bridge_fill=straight-edge-corridor"))
+        && diagnostics.contains(QStringLiteral("hierarchy_level=1"))
+        && diagnostics.contains(QStringLiteral(
+            "hierarchical_route_policy=outer-boundary edge-only"))
+        && diagnostics.contains(QStringLiteral("straight_visibility=yes"))
+        && diagnostics.contains(QStringLiteral("estimated_shapes="));
+    if (!hierarchyDiagnostics) {
+        std::cerr << "hierarchical-bridge-plan: "
+                  << diagnostics.toStdString() << '\n';
+    }
+    test->expect(hierarchyDiagnostics,
+                 "dangerous bridge diagnostics should identify its contour hierarchy");
+    test->expect(variants.dangerous.diagnostics.join(QLatin1Char('\n')).contains(
+                     QStringLiteral("nearby_candidate_cache=hit")),
+                 "dangerous finalization should reuse its scored bridge candidates");
+
+    bool cancelRequested = false;
+    const gui::RegionLayerPlanVariants cancelledVariants =
+        gui::buildRegionLayerPlanVariants(
+            extraction,
+            [&](const QString &phase, int completed, int) {
+                if (phase == QStringLiteral("Planning Dangerous contour hierarchy")
+                    && completed > 0) {
+                    cancelRequested = true;
+                }
+            },
+            [&]() { return cancelRequested; });
+    test->expect(cancelRequested && cancelledVariants.dangerous.cancelled,
+                 "dangerous bridge planning should honor cancellation");
+}
+
+void dangerousRegionLayerPlanDoesNotCrossColor(TestContext *test)
+{
+    const QSize size(30, 8);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 2);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 5; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        labels[static_cast<size_t>(y) * size.width() + 14] = 3;
+        for (int x = 25; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, QColor(30, 30, 35)));
+    sourceRegions.back().lineart = true;
+    sourceRegions.push_back(rasterRegion(labels, size, 3, QColor(40, 100, 190)));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    test->expect(variants.dangerous.units.size() == 3
+                     && variants.dangerous.hierarchicalContourMergeCount == 0,
+                 "dangerous contour bridges should not cross a colored barrier");
+}
+
+void dangerousRegionLayerPlanRequiresStraightEdgeVisibility(TestContext *test)
+{
+    const QSize size(30, 20);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), -1);
+    for (int y = 1; y < 6; ++y) {
+        for (int x = 1; x < 6; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+    }
+    for (int y = 14; y < 19; ++y) {
+        for (int x = 24; x < 29; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    for (int y = 2; y < 5; ++y) {
+        for (int x = 5; x < 16; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+    }
+    for (int y = 2; y < 17; ++y) {
+        for (int x = 13; x < 16; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+    }
+    for (int y = 14; y < 17; ++y) {
+        for (int x = 14; x < 25; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 2;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, QColor(30, 30, 35)));
+    sourceRegions.back().lineart = true;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    test->expect(variants.dangerous.units.size() == 2
+                     && variants.dangerous.hierarchicalContourMergeCount == 0,
+                 "a winding edge component should not substitute for straight visibility");
+}
+
+void dangerousRegionLayerPlanUsesMultipleStraightAttachments(TestContext *test)
+{
+    const QSize size(30, 32);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 2);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < 8; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 0;
+        }
+        for (int x = 18; x < size.width(); ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    const QColor repeatedColor(190, 70, 40);
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, repeatedColor));
+    sourceRegions.push_back(rasterRegion(labels, size, 2, QColor(30, 30, 35)));
+    sourceRegions.back().lineart = true;
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    const QString diagnostics =
+        variants.dangerous.diagnostics.join(QLatin1Char('\n'));
+    bool multipleAttachments = false;
+    for (int count = 2; count <= 8; ++count) {
+        multipleAttachments = multipleAttachments
+            || diagnostics.contains(QStringLiteral("straight_attachments=%1").arg(count));
+    }
+    if (variants.dangerous.units.size() != 1 || !multipleAttachments) {
+        std::cerr << "multiple-straight-attachments-plan: "
+                  << diagnostics.toStdString() << '\n';
+    }
+    test->expect(variants.dangerous.units.size() == 1 && multipleAttachments,
+                 "facing outer boundaries should use multiple simplifying attachments");
+}
+
+void dangerousRegionLayerPlanAbsorbsLargeContainedRegion(TestContext *test)
+{
+    const QSize size(20, 20);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), 0);
+    for (int y = 5; y < 15; ++y) {
+        for (int x = 5; x < 15; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] = 1;
+        }
+    }
+    QVector<gui::ExtractedRegion> sourceRegions;
+    sourceRegions.push_back(rasterRegion(labels, size, 0, QColor(190, 70, 40)));
+    sourceRegions.push_back(rasterRegion(labels, size, 1, QColor(40, 90, 190)));
+    const gui::RegionExtractionResult extraction =
+        rasterExtraction(labels, size, std::move(sourceRegions));
+
+    const gui::RegionLayerPlanVariants variants =
+        gui::buildRegionLayerPlanVariants(extraction);
+    test->expect(variants.safe.absorbedRegionCount == 0,
+                 "the safe plan should retain the area limit for containment absorption");
+    test->expect(variants.dangerous.absorbedRegionCount == 1
+                     && variants.dangerous.largeContainedAbsorptionCount == 1
+                     && variants.dangerous.units.size() == 2
+                     && variants.dangerous.units.front().absorbedRegionIndices.contains(1)
+                     && variants.dangerous.units.back().sourceRegionIndices.contains(1),
+                 "the dangerous plan should fill through a large enclosed region and redraw it");
+}
+
+void dangerousGeometryUsesOnlySameColorOrLineart(TestContext *test)
+{
+    const QSize size(18, 14);
+    const QColor sourceColor(190, 70, 40);
+    const QPointF notchCenter(8.5, 4.5);
+    const auto labelsWithNotch = [&](int notchLabel) {
+        std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), -1);
+        for (int y = 2; y <= 11; ++y) {
+            for (int x = 2; x <= 15; ++x) {
+                labels[static_cast<size_t>(y) * size.width() + x] = 0;
+            }
+        }
+        for (int y = 2; y <= 7; ++y) {
+            for (int x = 7; x <= 10; ++x) {
+                labels[static_cast<size_t>(y) * size.width() + x] = notchLabel;
+            }
+        }
+
+        return labels;
+    };
+
+    std::vector<int> lineartLabels = labelsWithNotch(1);
+    QVector<gui::ExtractedRegion> lineartRegions;
+    lineartRegions.push_back(rasterRegion(lineartLabels, size, 0, sourceColor));
+    lineartRegions.push_back(
+        rasterRegion(lineartLabels, size, 1, QColor(30, 30, 35)));
+    lineartRegions.back().lineart = true;
+    const gui::RegionLayerPlanVariants lineartVariants =
+        gui::buildRegionLayerPlanVariants(
+            rasterExtraction(lineartLabels, size, std::move(lineartRegions)));
+    const bool lineartNotchFilled = lineartVariants.dangerous.units.size() == 1
+        && lineartVariants.dangerous.units.front().outline.contains(notchCenter);
+    if (lineartVariants.dangerous.geometryPointReductionCount <= 0
+        || (lineartVariants.dangerous.morphologicalClosingCount
+            + lineartVariants.dangerous.convexSimplificationCount) != 1
+        || lineartVariants.dangerous.units.size() != 1
+        || !lineartNotchFilled) {
+        std::cerr << "dangerous-geometry-lineart: "
+                  << "reduction="
+                  << lineartVariants.dangerous.geometryPointReductionCount
+                  << " closing="
+                  << lineartVariants.dangerous.morphologicalClosingCount
+                  << " convex="
+                  << lineartVariants.dangerous.convexSimplificationCount
+                  << " units=" << lineartVariants.dangerous.units.size()
+                  << " contains=" << lineartNotchFilled
+                  << " | "
+                  << lineartVariants.dangerous.diagnostics.join(
+                         QStringLiteral(" | ")).toStdString()
+                  << '\n';
+    }
+    test->expect(lineartVariants.dangerous.geometryPointReductionCount > 0
+                     && (lineartVariants.dangerous.morphologicalClosingCount
+                         + lineartVariants.dangerous.convexSimplificationCount) == 1
+                     && lineartVariants.dangerous.units.size() == 1
+                     && lineartNotchFilled && !lineartVariants.dangerous.fallback,
+                 "dangerous geometry should simplify a concavity made only of lineart pixels");
+
+    std::vector<int> foreignColorLabels = labelsWithNotch(1);
+    QVector<gui::ExtractedRegion> foreignColorRegions;
+    foreignColorRegions.push_back(
+        rasterRegion(foreignColorLabels, size, 0, sourceColor));
+    foreignColorRegions.push_back(
+        rasterRegion(foreignColorLabels, size, 1, QColor(40, 90, 190)));
+    const gui::RegionLayerPlanVariants foreignColorVariants =
+        gui::buildRegionLayerPlanVariants(rasterExtraction(
+            foreignColorLabels, size, std::move(foreignColorRegions)));
+    const auto sourceUnit = std::find_if(
+        foreignColorVariants.dangerous.units.cbegin(),
+        foreignColorVariants.dangerous.units.cend(),
+        [](const gui::RegionLayerUnit &unit) {
+            return unit.sourceRegionIndices.contains(0);
+        });
+    test->expect(foreignColorVariants.dangerous.morphologicalClosingCount == 0
+                     && foreignColorVariants.dangerous.convexSimplificationCount == 0
+                     && sourceUnit != foreignColorVariants.dangerous.units.cend()
+                     && !sourceUnit->outline.contains(notchCenter),
+                 "dangerous geometry should not simplify through another colour");
+
+    std::vector<int> transparentLabels = labelsWithNotch(-1);
+    QVector<gui::ExtractedRegion> transparentRegions;
+    transparentRegions.push_back(
+        rasterRegion(transparentLabels, size, 0, sourceColor));
+    const gui::RegionLayerPlanVariants transparentVariants =
+        gui::buildRegionLayerPlanVariants(
+            rasterExtraction(transparentLabels, size, std::move(transparentRegions)));
+    test->expect(transparentVariants.dangerous.morphologicalClosingCount == 0
+                     && transparentVariants.dangerous.convexSimplificationCount == 0
+                     && transparentVariants.dangerous.units.size() == 1
+                     && !transparentVariants.dangerous.units.front().outline.contains(
+                         notchCenter),
+                 "dangerous geometry should not simplify through transparent background");
 }
 
 void completedRegionLayersUsePlannedDrawOrder(TestContext *test)
 {
-    QVector<gui::RegionFillLayer> layers(3);
+    QVector<gui::RegionFillLayer> layers(5);
     layers[0].drawOrder = 2;
-    layers[1].drawOrder = 0;
+    layers[1].drawOrder = 1;
+    layers[1].variant = gui::RegionFillVariant::Dangerous;
     layers[2].drawOrder = 1;
+    layers[3].drawOrder = 0;
+    layers[3].variant = gui::RegionFillVariant::Dangerous;
+    layers[4].drawOrder = 0;
     gui::sortRegionFillLayersByDrawOrder(&layers);
 
     test->expect(layers[0].drawOrder == 0 && layers[1].drawOrder == 1
-                     && layers[2].drawOrder == 2,
-                 "completed parallel layers should return to planned draw order");
+                     && layers[2].drawOrder == 2
+                     && layers[3].variant == gui::RegionFillVariant::Dangerous
+                     && layers[3].drawOrder == 0 && layers[4].drawOrder == 1,
+                 "completed parallel layers should return to each variant's draw order");
 }
 
 void crossedCoreRetainsValidFits(TestContext *test)
@@ -1855,6 +2334,7 @@ int main(int argc, char **argv)
     conversionOptimizationIsBounded(&test);
     rasterDssimGuardsCurveSimplification(&test);
     denseValidPolygonTriangulates(&test);
+    ellipseLikeCoreUsesOneCircle(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);
     smallRegionMergesIntoClosestColorNeighbor(&test);
@@ -1867,8 +2347,16 @@ int main(int argc, char **argv)
     regionLayerPlanDoesNotBridgeBackground(&test);
     regionLayerPlanUsesBaselineOverlapOrder(&test);
     regionLayerPlanRejectsOnlyCyclicNearbyBridge(&test);
-    regionLayerPlanIsolatesResidualCycle(&test);
-    regionLayerPlanIsolatesValidationMismatch(&test);
+    regionLayerPlanRetainsUnrelatedSafeBridge(&test);
+    regionLayerPlanRejectsComplexForeignBridge(&test);
+    regionLayerPlanSuppressesResidualCycleMerge(&test);
+    regionLayerPlanSuppressesValidationMismatchMerge(&test);
+    dangerousRegionLayerPlanBuildsHierarchicalContourBridge(&test);
+    dangerousRegionLayerPlanDoesNotCrossColor(&test);
+    dangerousRegionLayerPlanRequiresStraightEdgeVisibility(&test);
+    dangerousRegionLayerPlanUsesMultipleStraightAttachments(&test);
+    dangerousRegionLayerPlanAbsorbsLargeContainedRegion(&test);
+    dangerousGeometryUsesOnlySameColorOrLineart(&test);
     completedRegionLayersUsePlannedDrawOrder(&test);
     crossedCoreRetainsValidFits(&test);
     pointedCurveUsesContainedPrimitive(&test);

@@ -457,6 +457,8 @@ PolygonMeshSources penMeshSources(const QVector<PenPrimitive> &primitives) {
     for (const PenPrimitive &primitive : primitives) {
         if (primitive.shapeId == kSquareShapeId) {
             sources.square = primitiveHull(primitive);
+        } else if (primitive.shapeId == kCircleShapeId) {
+            sources.circle = primitiveHull(primitive);
         } else if (primitive.shapeId == kTriangleShapeId) {
             sources.triangle = primitiveHull(primitive);
         }
@@ -1584,7 +1586,15 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.error = QStringLiteral("Could not fill the Pen core: %1").arg(mesh.error);
         return result;
     }
-    for (const PolygonMeshPlacement &placement : mesh.placements) {
+    const QVector<PolygonMeshPlacement> corePlacements = optimizePolygonMeshWithEllipses(
+        mesh.placements, meshSources, mesh.contour, cancelled);
+    if (cancelled && cancelled()) {
+        result.placements.clear();
+        result.cancelled = true;
+        result.error = QStringLiteral("Pen core ellipse selection timed out");
+        return result;
+    }
+    for (const PolygonMeshPlacement &placement : corePlacements) {
         const PenPrimitive *primitive = primitiveForId(primitives, placement.shapeId);
         if (primitive == nullptr) {
             result.error = QStringLiteral("Pen core selected unavailable Primitive %1").arg(placement.shapeId);
@@ -1594,6 +1604,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         penPlacement.shapeId = placement.shapeId;
         penPlacement.transform = placement.transform;
         penPlacement.area = primitive->area * std::abs(placement.transform.determinant());
+        penPlacement.coreEllipse = placement.shapeId == kCircleShapeId;
         result.placements.push_back(penPlacement);
         coverage = coverage.united(placement.transform.map(primitive->silhouette));
     }

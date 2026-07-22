@@ -12,6 +12,9 @@ void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers) {
     }
     std::stable_sort(layers->begin(), layers->end(),
                      [](const RegionFillLayer &left, const RegionFillLayer &right) {
+                         if (left.variant != right.variant) {
+                             return left.variant == RegionFillVariant::Safe;
+                         }
                          return left.drawOrder < right.drawOrder;
                      });
 }
@@ -20,6 +23,15 @@ namespace {
 
 constexpr double kGeometryEpsilon = 1e-9;
 constexpr int kBoundarySamplesPerCurve = 32;
+constexpr int kCircleShapeId = 102;
+constexpr int kEllipseFitIterations = 8;
+constexpr int kEllipseGridSize = 3;
+constexpr int kMaximumCoreEllipses = 8;
+constexpr int kMinimumEllipseMeshPlacements = 12;
+constexpr double kMinimumEllipseScale = 0.1;
+constexpr double kMaximumCoreEllipseMismatchFraction = 0.005;
+constexpr std::array<double, 2> kEllipseAngles = {0.0, 45.0};
+constexpr std::array<double, 5> kEllipseScales = {0.8, 0.9, 1.0, 1.1, 1.2};
 
 struct Op {
     enum Kind { Line, Cubic } kind = Line;
@@ -710,7 +722,194 @@ QPolygonF largestFlattenedContour(const QPainterPath &outline) {
     return outerPolygon;
 }
 
+QPainterPath closedPolygonPath(const QPolygonF &polygon) {
+    QPainterPath path;
+    if (polygon.size() >= 3) {
+        path.addPolygon(polygon);
+        path.closeSubpath();
+    }
+
+    return path;
+}
+
+double filledPathArea(const QPainterPath &path) {
+    double result = 0.0;
+    for (const QPolygonF &polygon : path.toFillPolygons()) {
+        result += std::abs(signedArea(polygon));
+    }
+
+    return result;
+}
+
+QTransform ellipseTransform(const QRectF &sourceBounds,
+                            const QPointF &center,
+                            const QSizeF &size,
+                            double angle,
+                            double scale) {
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(angle);
+    transform.scale(size.width() * scale / sourceBounds.width(),
+                    size.height() * scale / sourceBounds.height());
+    transform.translate(-sourceBounds.center().x(), -sourceBounds.center().y());
+
+    return transform;
+}
+
 } // namespace
+
+QVector<PolygonMeshPlacement> optimizePolygonMeshWithEllipses(
+    const QVector<PolygonMeshPlacement> &placements,
+    const PolygonMeshSources &sources,
+    const QPainterPath &corePath,
+    const std::function<bool()> &cancelled) {
+    struct EllipseCandidate {
+        QPainterPath path;
+        QTransform transform;
+        QVector<int> coveredPlacements;
+        double area = 0.0;
+    };
+
+    if (placements.size() < kMinimumEllipseMeshPlacements
+        || sources.circle.size() < 3 || corePath.isEmpty()) {
+        return placements;
+    }
+    const QPainterPath circlePath = closedPolygonPath(sources.circle);
+    const QRectF circleBounds = circlePath.boundingRect();
+    const QRectF coreBounds = corePath.boundingRect();
+    if (circleBounds.isEmpty() || coreBounds.isEmpty()) {
+        return placements;
+    }
+    const double minimumCoreSide = std::min(coreBounds.width(), coreBounds.height());
+    const QVector<QSizeF> sizes = {
+        coreBounds.size(),
+        QSizeF(minimumCoreSide, minimumCoreSide),
+        QSizeF(coreBounds.width(),
+               std::min(coreBounds.height(), coreBounds.width() * 0.5)),
+        QSizeF(std::min(coreBounds.width(), coreBounds.height() * 0.5),
+               coreBounds.height()),
+    };
+    const double coreArea = filledPathArea(corePath);
+    double bestWholeCoreMismatch = std::numeric_limits<double>::max();
+    QTransform bestWholeCoreTransform;
+    QVector<QPainterPath> placementPaths;
+    placementPaths.reserve(placements.size());
+    for (const PolygonMeshPlacement &placement : placements) {
+        const QPolygonF &source = placement.shapeId == 101
+            ? sources.square : sources.triangle;
+        placementPaths.push_back(
+            placement.transform.map(closedPolygonPath(source)));
+    }
+    QVector<EllipseCandidate> candidates;
+    for (int gridY = 0; gridY < kEllipseGridSize; ++gridY) {
+        for (int gridX = 0; gridX < kEllipseGridSize; ++gridX) {
+            if (cancelled && cancelled()) {
+                return placements;
+            }
+            const QPointF center(
+                coreBounds.left() + coreBounds.width()
+                    * (static_cast<double>(gridX) + 0.5) / kEllipseGridSize,
+                coreBounds.top() + coreBounds.height()
+                    * (static_cast<double>(gridY) + 0.5) / kEllipseGridSize);
+            if (!corePath.contains(center)) {
+                continue;
+            }
+            for (const QSizeF &size : sizes) {
+                for (const double angle : kEllipseAngles) {
+                    for (const double scale : kEllipseScales) {
+                        const QTransform transform = ellipseTransform(
+                            circleBounds, center, size, angle, scale);
+                        const QPainterPath ellipse = transform.map(circlePath);
+                        const double mismatch = filledPathArea(
+                            corePath.subtracted(ellipse))
+                            + filledPathArea(ellipse.subtracted(corePath));
+                        if (mismatch < bestWholeCoreMismatch) {
+                            bestWholeCoreMismatch = mismatch;
+                            bestWholeCoreTransform = transform;
+                        }
+                    }
+                    double lowerScale = 0.0;
+                    double upperScale = 1.0;
+                    for (int iteration = 0; iteration < kEllipseFitIterations; ++iteration) {
+                        const double scale = (lowerScale + upperScale) * 0.5;
+                        const QPainterPath ellipse = ellipseTransform(
+                            circleBounds, center, size, angle, scale).map(circlePath);
+                        if (corePath.contains(ellipse)) {
+                            lowerScale = scale;
+                        } else {
+                            upperScale = scale;
+                        }
+                    }
+                    if (lowerScale < kMinimumEllipseScale) {
+                        continue;
+                    }
+                    EllipseCandidate candidate;
+                    candidate.transform = ellipseTransform(
+                        circleBounds, center, size, angle, lowerScale);
+                    candidate.path = candidate.transform.map(circlePath);
+                    candidate.area = candidate.path.boundingRect().width()
+                        * candidate.path.boundingRect().height();
+                    for (int placementIndex = 0;
+                         placementIndex < placementPaths.size(); ++placementIndex) {
+                        if (candidate.path.contains(placementPaths[placementIndex])) {
+                            candidate.coveredPlacements.push_back(placementIndex);
+                        }
+                    }
+                    if (candidate.coveredPlacements.size() > 1) {
+                        candidates.push_back(std::move(candidate));
+                    }
+                }
+            }
+        }
+    }
+    if (coreArea > kGeometryEpsilon
+        && bestWholeCoreMismatch / coreArea
+            <= kMaximumCoreEllipseMismatchFraction) {
+        return {{kCircleShapeId, bestWholeCoreTransform}};
+    }
+    QVector<bool> covered(placements.size(), false);
+    QVector<PolygonMeshPlacement> ellipses;
+    for (int ellipseIndex = 0;
+         ellipseIndex < kMaximumCoreEllipses; ++ellipseIndex) {
+        int bestCandidate = -1;
+        int bestSavings = 0;
+        double bestArea = 0.0;
+        for (int candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
+            int newlyCovered = 0;
+            for (const int placementIndex : candidates[candidateIndex].coveredPlacements) {
+                newlyCovered += covered[placementIndex] ? 0 : 1;
+            }
+            const int savings = newlyCovered - 1;
+            if (savings > bestSavings
+                || (savings == bestSavings
+                    && candidates[candidateIndex].area > bestArea)) {
+                bestCandidate = candidateIndex;
+                bestSavings = savings;
+                bestArea = candidates[candidateIndex].area;
+            }
+        }
+        if (bestCandidate < 0 || bestSavings <= 0) {
+            break;
+        }
+        const EllipseCandidate &selected = candidates[bestCandidate];
+        ellipses.push_back({kCircleShapeId, selected.transform});
+        for (const int placementIndex : selected.coveredPlacements) {
+            covered[placementIndex] = true;
+        }
+    }
+    if (ellipses.isEmpty()) {
+        return placements;
+    }
+    QVector<PolygonMeshPlacement> result = std::move(ellipses);
+    result.reserve(result.size() + placements.size());
+    for (int placementIndex = 0; placementIndex < placements.size(); ++placementIndex) {
+        if (!covered[placementIndex]) {
+            result.push_back(placements[placementIndex]);
+        }
+    }
+
+    return result;
+}
 
 RegionPenConversionResult regionOutlineToPenPoints(
     const QPainterPath &outline,
@@ -1081,10 +1280,17 @@ PenFillResult fillPolygonMesh(const QPolygonF &polygon,
         result.error = mesh.error;
         return result;
     }
-    for (const PolygonMeshPlacement &placement : mesh.placements) {
+    const QVector<PolygonMeshPlacement> placements = optimizePolygonMeshWithEllipses(
+        mesh.placements, sources, mesh.contour, cancelled);
+    if (cancelled && cancelled()) {
+        result.cancelled = true;
+        return result;
+    }
+    for (const PolygonMeshPlacement &placement : placements) {
         PenPlacement penPlacement;
         penPlacement.shapeId = placement.shapeId;
         penPlacement.transform = placement.transform;
+        penPlacement.coreEllipse = placement.shapeId == kCircleShapeId;
         result.placements.push_back(penPlacement);
     }
     return result;

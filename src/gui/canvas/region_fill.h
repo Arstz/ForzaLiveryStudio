@@ -12,11 +12,17 @@
 
 namespace gui {
 
+enum class RegionFillVariant {
+    Safe,
+    Dangerous,
+};
+
 struct RegionFillLayer {
     QColor color;
-    double area = 0.0;
     QVector<PenPlacement> placements;
+    double area = 0.0;
     int drawOrder = -1;
+    RegionFillVariant variant = RegionFillVariant::Safe;
 };
 
 struct GeneratedRegionShape {
@@ -27,6 +33,12 @@ struct GeneratedRegionShape {
 
 struct GeneratedRegionGroup {
     QVector<GeneratedRegionShape> shapes;
+};
+
+struct GeneratedRegionVariant {
+    QString name;
+    QVector<GeneratedRegionGroup> regions;
+    bool visible = true;
 };
 
 struct RegionFillBatchRequest {
@@ -40,6 +52,7 @@ struct RegionFillBatchRequest {
 struct RegionFillBatchResult {
     QVector<RegionFillLayer> fills;
     QHash<int, QPainterPath> silhouettes;
+    QImage differenceHeatmap;
     QString overlayGuideId;
     quint64 overlayGeneration = 0;
     QString summary;
@@ -47,11 +60,12 @@ struct RegionFillBatchResult {
     bool cancelled = false;
     int completedRegions = 0;
     int totalRegions = 0;
+    int differencePixelCount = 0;
 };
 
 RegionFillBatchResult computeRegionFills(
     const RegionFillBatchRequest &request,
-    const std::function<void(int completed, int total)> &progress = {},
+    const std::function<void(const QString &phase, int completed, int total)> &progress = {},
     const std::function<bool()> &cancelled = {});
 
 void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers);

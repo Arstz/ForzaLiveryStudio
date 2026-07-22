@@ -1939,11 +1939,14 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     auto raster = QSharedPointer<RegionRasterData>::create();
     raster->labels = finalSeg.labels;
     raster->foreground.resize(pixelCount, 0);
+    raster->lineart.resize(pixelCount, 0);
     for (int y = 0; y < height; ++y) {
         const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
         for (int x = 0; x < width; ++x) {
             raster->foreground[static_cast<size_t>(y) * width + x] =
                 qAlpha(row[x]) >= alpha ? 1 : 0;
+            raster->lineart[static_cast<size_t>(y) * width + x] =
+                lineartMask[static_cast<size_t>(y) * width + x] ? 1 : 0;
         }
     }
     raster->traceParams = params;

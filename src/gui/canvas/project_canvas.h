@@ -106,7 +106,7 @@ public:
     bool applyRegionFillBatch(RegionFillBatchResult result,
                               QString *message = nullptr);
     void clearRegionFills();
-    QVector<GeneratedRegionGroup> regionFillWorldGroups();
+    QVector<GeneratedRegionVariant> regionFillWorldVariants();
     void hideRegionOverlay();
 
     enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom };

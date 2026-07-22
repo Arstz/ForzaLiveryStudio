@@ -47,6 +47,7 @@ struct PenPlacement {
     int shapeId = 0;
     QTransform transform;
     double area = 0.0;
+    bool coreEllipse = false;
 };
 
 struct PenFillRequest {
