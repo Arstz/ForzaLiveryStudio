@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace gui {
@@ -1035,10 +1036,14 @@ RegionFillBatchResult computeRegionFills(
     int baselineRetries = 0;
     int removedSoftPoints = 0;
     int coreEllipseCount = 0;
+    int safeRdpFills = 0;
+    int dangerousRdpFills = 0;
     QHash<QString, int> failureReasons;
     constexpr qint64 kRegionBudgetMs = 3000;
     const PolygonMeshSources &meshSources = request.meshSources;
     constexpr double kFallbackSimplifyEpsilon = 0.45;
+    constexpr double kCyclicRdpEpsilon = 1.9;
+    constexpr int kCyclicRdpCurveSamples = 32;
     const auto globallyCancelled = [&cancelled]() {
         return cancelled && cancelled();
     };
@@ -1084,6 +1089,11 @@ RegionFillBatchResult computeRegionFills(
                .arg(layerPlans.safe.units.size())
                .arg(layerPlans.dangerous.units.size())
                .arg(planningElapsedMs);
+    log << QStringLiteral("Safe/Dangerous contour mode: cyclic closed RDP epsilon=%1, "
+                          "%2 curve samples, direct polygon mesh; Pen fitting is "
+                          "retained as recovery")
+               .arg(kCyclicRdpEpsilon, 0, 'f', 1)
+               .arg(kCyclicRdpCurveSamples);
     const QString layerLogPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/region_layer.log");
     QFile layerLogFile(layerLogPath);
@@ -1200,15 +1210,18 @@ RegionFillBatchResult computeRegionFills(
     struct UnitWorkResult {
         PenFillResult fit;
         QString via = QStringLiteral("failed");
-        qint64 elapsedMs = 0;
-        bool timedOut = false;
-        bool meshFallback = false;
+        QString cyclicRdpError;
         QString penError;
-        int fallbackInputPoints = 0;
-        int fallbackMeshPoints = 0;
         RegionFillContourStats contourStats;
         QVector<PenPoint> optimizedPenPoints;
         QPolygonF optimizedContour;
+        qint64 elapsedMs = 0;
+        int fallbackInputPoints = 0;
+        int fallbackMeshPoints = 0;
+        int cyclicRdpInputPoints = 0;
+        int cyclicRdpOutputPoints = 0;
+        bool timedOut = false;
+        bool meshFallback = false;
     };
     std::vector<UnitWorkResult> workResults(static_cast<size_t>(units.size()));
     const auto fitSucceeded = [](const PenFillResult &fit) {
@@ -1242,20 +1255,52 @@ RegionFillBatchResult computeRegionFills(
                         return globallyCancelled() || clock.elapsed() > kRegionBudgetMs;
                     };
                     QPolygonF optimizedContour;
-                    work.via = QStringLiteral("optimized-pen");
-                    work.fit = fillRegionOutline(unit.outline, primitives, tolerance,
-                                                 unitCancelled, &optimizedContour,
-                                                 &work.contourStats,
-                                                 i == biggestUnitIndex
-                                                     ? &work.optimizedPenPoints : nullptr,
-                                                 regionOverlay.imageSize);
+                    const QPolygonF sourceContour = regionOuterContour(
+                        unit.outline, kCyclicRdpCurveSamples);
+                    const QPolygonF simplifiedContour = simplifyClosedPolygonCyclic(
+                        sourceContour, kCyclicRdpEpsilon);
+                    work.cyclicRdpInputPoints = sourceContour.size();
+                    work.cyclicRdpOutputPoints = simplifiedContour.size();
+                    work.contourStats.originalPointCount =
+                        regionOutlinePenPointCount(unit.outline);
+                    work.contourStats.optimizedPointCount = simplifiedContour.size();
+                    work.contourStats.flattenedPointCount = simplifiedContour.size();
+                    work.contourStats.dssim =
+                        std::numeric_limits<double>::quiet_NaN();
+                    work.via = unit.variant == RegionFillVariant::Safe
+                        ? QStringLiteral("safe-rdp-mesh")
+                        : QStringLiteral("dangerous-rdp-mesh");
+                    work.fit = fillPolygonMesh(simplifiedContour, meshSources,
+                                               unitCancelled);
                     if (i == biggestUnitIndex) {
-                        work.optimizedContour = optimizedContour;
+                        work.optimizedContour = simplifiedContour;
+                        work.optimizedPenPoints.reserve(simplifiedContour.size());
+                        for (const QPointF &point : simplifiedContour) {
+                            work.optimizedPenPoints.push_back(
+                                PenPoint{point, PenPointKind::Hard});
+                        }
                     }
-                    if (work.contourStats.softRunRetry && fitSucceeded(work.fit)) {
-                        work.via = QStringLiteral("hard-only-pen-retry");
-                    } else if (work.contourStats.baselineRetry && fitSucceeded(work.fit)) {
-                        work.via = QStringLiteral("baseline-pen-retry");
+                    if (!fitSucceeded(work.fit)) {
+                        work.cyclicRdpError = work.fit.error;
+                    }
+                    if (!fitSucceeded(work.fit) && !globallyCancelled()) {
+                        work.via = unit.variant == RegionFillVariant::Dangerous
+                            ? QStringLiteral("dangerous-rdp-pen-fallback")
+                            : QStringLiteral("safe-rdp-pen-fallback");
+                        work.fit = fillRegionOutline(
+                            unit.outline, primitives, tolerance, unitCancelled,
+                            &optimizedContour, &work.contourStats,
+                            i == biggestUnitIndex ? &work.optimizedPenPoints : nullptr,
+                            regionOverlay.imageSize);
+                        if (i == biggestUnitIndex) {
+                            work.optimizedContour = optimizedContour;
+                        }
+                        if (work.contourStats.softRunRetry && fitSucceeded(work.fit)) {
+                            work.via = QStringLiteral("hard-only-pen-retry");
+                        } else if (work.contourStats.baselineRetry
+                                   && fitSucceeded(work.fit)) {
+                            work.via = QStringLiteral("baseline-pen-retry");
+                        }
                     }
                     if (work.fit.cancelled && !globallyCancelled()) {
                         work.timedOut = true;
@@ -1435,6 +1480,13 @@ RegionFillBatchResult computeRegionFills(
             ++baselineRetries;
         }
         if (fitSucceeded(work.fit)) {
+            if (work.via == QStringLiteral("safe-rdp-mesh")) {
+                ++safeRdpFills;
+            } else if (work.via == QStringLiteral("dangerous-rdp-mesh")) {
+                ++dangerousRdpFills;
+            }
+        }
+        if (fitSucceeded(work.fit)) {
             RegionFillLayer &layer = unitFills[i];
             layer.color = unit.color;
             layer.area = unit.area;
@@ -1454,6 +1506,10 @@ RegionFillBatchResult computeRegionFills(
         if (!work.penError.isEmpty()) {
             detail += QStringLiteral(" [Pen: %1]").arg(work.penError);
         }
+        if (!work.cyclicRdpError.isEmpty()) {
+            detail += QStringLiteral(" [cyclic RDP: %1]")
+                          .arg(work.cyclicRdpError);
+        }
         if (!work.fit.error.isEmpty() && work.fit.error != work.penError) {
             detail += QStringLiteral(" [error: %1]").arg(work.fit.error);
         }
@@ -1462,15 +1518,30 @@ RegionFillBatchResult computeRegionFills(
                           .arg(work.fallbackInputPoints)
                           .arg(work.fallbackMeshPoints);
         }
+        if (work.cyclicRdpInputPoints > 0) {
+            detail += QStringLiteral(" [cyclic RDP %1: %2 -> %3]")
+                          .arg(kCyclicRdpEpsilon, 0, 'f', 1)
+                          .arg(work.cyclicRdpInputPoints)
+                          .arg(work.cyclicRdpOutputPoints);
+        }
         if (unitCoreEllipseCount > 0) {
             detail += QStringLiteral(" [core ellipses: %1]").arg(unitCoreEllipseCount);
         }
-        detail += QStringLiteral(" [points: %1 -> %2, hard -%3, soft -%4, DSSIM %5]")
-                      .arg(work.contourStats.originalPointCount)
-                      .arg(work.contourStats.optimizedPointCount)
-                      .arg(work.contourStats.removedHardPoints)
-                      .arg(work.contourStats.removedSoftPoints)
-                      .arg(work.contourStats.dssim, 0, 'g', 8);
+        if (work.via == QStringLiteral("safe-rdp-mesh")
+            || work.via == QStringLiteral("dangerous-rdp-mesh")) {
+            detail += QStringLiteral(" [points: %1 Pen controls -> %2 polygon vertices, "
+                                     "DSSIM not evaluated during fill]")
+                          .arg(work.contourStats.originalPointCount)
+                          .arg(work.contourStats.optimizedPointCount);
+        } else {
+            detail += QStringLiteral(
+                          " [points: %1 -> %2, hard -%3, soft -%4, DSSIM %5]")
+                          .arg(work.contourStats.originalPointCount)
+                          .arg(work.contourStats.optimizedPointCount)
+                          .arg(work.contourStats.removedHardPoints)
+                          .arg(work.contourStats.removedSoftPoints)
+                          .arg(work.contourStats.dssim, 0, 'g', 8);
+        }
         const QString variantName = unit.variant == RegionFillVariant::Safe
             ? QStringLiteral("safe") : QStringLiteral("dangerous");
         log << QStringLiteral("%1 region #%2 (sources %3) %4 %5: "
@@ -1510,12 +1581,14 @@ RegionFillBatchResult computeRegionFills(
         safeRendered, dangerousRendered, &result.differencePixelCount);
     log << QStringLiteral("Safe/Dangerous heatmap difference pixels: %1")
                .arg(result.differencePixelCount);
-    log << QStringLiteral("Summary: %1 planned units filled (%2 hard-only Pen retries, "
-                          "%3 baseline Pen retries, %4 mesh fallbacks including "
-                          "%5 source-outline recoveries), %6 shapes including "
-                          "%7 core ellipses, %8 soft controls removed, "
-                          "%9 failed, %10 timed out")
+    log << QStringLiteral("Summary: %1 planned units filled (%2 Safe and %3 Dangerous "
+                          "cyclic-RDP meshes, %4 hard-only Pen retries, %5 baseline "
+                          "Pen retries, %6 mesh fallbacks including %7 source-outline "
+                          "recoveries), %8 shapes including %9 core ellipses, %10 soft "
+                          "controls removed, %11 failed, %12 timed out")
                .arg(filled)
+               .arg(safeRdpFills)
+               .arg(dangerousRdpFills)
                .arg(softRunRetries)
                .arg(baselineRetries)
                .arg(meshFallbacks)

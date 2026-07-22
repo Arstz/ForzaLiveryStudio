@@ -121,7 +121,10 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   contour. Each accepted bridge is re-evaluated against the currently expanded groups;
   additional contacts must lower that group's current fitting cost, and a bridge cannot
   overlap pixels claimed by another expanded group. Deterministic Kruskal levels then
-  produce successively larger merged contours. The log records straight visibility,
+  produce successively larger merged contours. During fitting, every Safe and Dangerous
+  unit sends a 32-sample cyclic closed-RDP contour at epsilon 1.9 directly to the polygon
+  mesh; failures retain the existing Pen and mesh recovery path. The log records each
+  variant's RDP input/output counts, straight visibility,
   attachment count, expanded-group cost, corridor width, and hierarchy level. Dangerous also tries
   square morphological closing at several radii and a convex contour. A geometry
   candidate is eligible only when every filled pixel was already the exact same
@@ -150,9 +153,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   restores draw order before insertion, reports planning, bridge scoring, dependency
   recovery, simplification, and completed/total fitting phases in the status-bar
   progress bar, and remains cancellable with **Esc** during planning and fitting.
-  Potrace curves
-  use the same optimized Pen-point and
-  curve-Primitive fitter as Bucket Fill. Dense traces are no longer skipped at
+  Pen recovery uses the same optimized Pen-point and curve-Primitive fitter as Bucket
+  Fill. Dense traces are no longer skipped at
   a fixed point-count cutoff: removable cubic junctions use a 1.1-pixel cap,
   preserve orientation and non-crossing single-contour topology, and are
   accepted only when a native-size, 4x-supersampled raster comparison remains

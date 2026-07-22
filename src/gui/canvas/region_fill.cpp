@@ -675,6 +675,151 @@ void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QP
     }
 }
 
+struct CyclicRdpSlice {
+    int start = 0;
+    int end = 0;
+};
+
+QPolygonF approximateClosedPolygon(const QPolygonF &polygon, double epsilon) {
+    constexpr int kFarthestPointPasses = 3;
+    if (!std::isfinite(epsilon) || epsilon <= 0.0 || polygon.size() <= 4) {
+        return polygon;
+    }
+    QPolygonF source;
+    source.reserve(polygon.size());
+    for (const QPointF &point : polygon) {
+        source.push_back(QPointF(static_cast<float>(point.x()),
+                                 static_cast<float>(point.y())));
+    }
+    QVector<CyclicRdpSlice> stack;
+    QPolygonF result;
+    const int sourceCount = source.size();
+    const double epsilonSquared = epsilon * epsilon;
+    int position = 0;
+    int rightStart = 0;
+    QPointF startPoint;
+    bool withinEpsilon = false;
+
+    for (int pass = 0; pass < kFarthestPointPasses; ++pass) {
+        position = (position + rightStart) % sourceCount;
+        startPoint = source[position];
+        position = (position + 1) % sourceCount;
+        double maximumDistanceSquared = 0.0;
+        rightStart = 0;
+        for (int offset = 1; offset < sourceCount; ++offset) {
+            const QPointF point = source[position];
+            position = (position + 1) % sourceCount;
+            const QPointF delta = point - startPoint;
+            const double distanceSquared = QPointF::dotProduct(delta, delta);
+            if (distanceSquared > maximumDistanceSquared) {
+                maximumDistanceSquared = distanceSquared;
+                rightStart = offset;
+            }
+        }
+        withinEpsilon = maximumDistanceSquared <= epsilonSquared;
+    }
+    if (!withinEpsilon) {
+        const int seam = position % sourceCount;
+        const int opposite = (rightStart + seam) % sourceCount;
+        stack.push_back(CyclicRdpSlice{opposite, seam});
+        stack.push_back(CyclicRdpSlice{seam, opposite});
+    } else {
+        result.push_back(startPoint);
+    }
+
+    while (!stack.isEmpty()) {
+        const CyclicRdpSlice slice = stack.takeLast();
+        const QPointF endPoint = source[slice.end];
+        position = slice.start;
+        startPoint = source[position];
+        position = (position + 1) % sourceCount;
+        int split = slice.start;
+        if (position != slice.end) {
+            const QPointF segment = endPoint - startPoint;
+            const double segmentLengthSquared = QPointF::dotProduct(segment, segment);
+            double maximumScaledDistance = 0.0;
+            if (segmentLengthSquared > 0.0) {
+                while (position != slice.end) {
+                    const QPointF point = source[position];
+                    position = (position + 1) % sourceCount;
+                    const QPointF fromStart = point - startPoint;
+                    const double projection = QPointF::dotProduct(fromStart, segment);
+                    double scaledDistance = 0.0;
+                    if (projection < 0.0) {
+                        scaledDistance = QPointF::dotProduct(fromStart, fromStart)
+                            * segmentLengthSquared;
+                    } else if (projection > segmentLengthSquared) {
+                        const QPointF fromEnd = point - endPoint;
+                        scaledDistance = QPointF::dotProduct(fromEnd, fromEnd)
+                            * segmentLengthSquared;
+                    } else {
+                        const double cross = fromStart.y() * segment.x()
+                            - fromStart.x() * segment.y();
+                        scaledDistance = cross * cross;
+                    }
+                    if (scaledDistance > maximumScaledDistance) {
+                        maximumScaledDistance = scaledDistance;
+                        split = (position + sourceCount - 1) % sourceCount;
+                    }
+                }
+            }
+            withinEpsilon = segmentLengthSquared <= 0.0
+                || maximumScaledDistance <= epsilonSquared * segmentLengthSquared;
+        } else {
+            withinEpsilon = true;
+        }
+        if (withinEpsilon) {
+            result.push_back(startPoint);
+        } else {
+            stack.push_back(CyclicRdpSlice{split, slice.end});
+            stack.push_back(CyclicRdpSlice{slice.start, split});
+        }
+    }
+
+    const int cleanupCount = result.size();
+    int resultCount = cleanupCount;
+    if (cleanupCount <= 2) {
+        return polygon;
+    }
+    position = cleanupCount - 1;
+    const auto readPoint = [&]() {
+        const QPointF point = result[position];
+        position = (position + 1) % cleanupCount;
+        return point;
+    };
+    startPoint = readPoint();
+    int writePosition = position;
+    QPointF point = readPoint();
+    for (int pass = 0; pass < cleanupCount && resultCount > 2; ++pass) {
+        const QPointF endPoint = readPoint();
+        const double dx = endPoint.x() - startPoint.x();
+        const double dy = endPoint.y() - startPoint.y();
+        const double distance = std::abs((point.x() - startPoint.x()) * dy
+                                         - (point.y() - startPoint.y()) * dx);
+        const double successiveInnerProduct =
+            (point.x() - startPoint.x()) * (endPoint.x() - point.x())
+            + (point.y() - startPoint.y()) * (endPoint.y() - point.y());
+        if (distance * distance
+                <= 0.5 * epsilonSquared * (dx * dx + dy * dy)
+            && dx != 0.0 && dy != 0.0 && successiveInnerProduct >= 0.0) {
+            --resultCount;
+            startPoint = endPoint;
+            result[writePosition] = startPoint;
+            writePosition = (writePosition + 1) % cleanupCount;
+            point = readPoint();
+            ++pass;
+            continue;
+        }
+        result[writePosition] = point;
+        startPoint = point;
+        writePosition = (writePosition + 1) % cleanupCount;
+        point = endPoint;
+    }
+    result.resize(resultCount);
+
+    return result.size() >= 3 ? result : polygon;
+}
+
 void rdpCorridorRecurse(const QPolygonF &points, int first, int last, double epsilon,
                         const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace,
                         QPolygonF &out) {
@@ -697,7 +842,7 @@ void rdpCorridorRecurse(const QPolygonF &points, int first, int last, double eps
     }
 }
 
-QPolygonF largestFlattenedContour(const QPainterPath &outline) {
+QPolygonF largestFlattenedContour(const QPainterPath &outline, int curveSamples = 8) {
     const QVector<Subpath> subpaths = toSubpaths(outline);
     if (subpaths.isEmpty()) {
         return {};
@@ -706,7 +851,7 @@ QPolygonF largestFlattenedContour(const QPainterPath &outline) {
     double outerArea = -1.0;
     QPolygonF outerPolygon;
     for (int i = 0; i < subpaths.size(); ++i) {
-        const QPolygonF polygon = flattenSubpath(subpaths[i]);
+        const QPolygonF polygon = flattenSubpath(subpaths[i], curveSamples);
         const double area = std::abs(signedArea(polygon));
         if (area > outerArea) {
             outerArea = area;
@@ -1050,6 +1195,16 @@ RegionPenConversionResult regionOutlineToPenPoints(
     return result;
 }
 
+int regionOutlinePenPointCount(const QPainterPath &outline) {
+    constexpr double kClosureTolerance = 1e-6;
+    const OuterSelection outer = selectClosedOuter(outline, kClosureTolerance);
+    if (!outer.error.isEmpty()) {
+        return 0;
+    }
+
+    return initialPenPoints(outer.subpath, kClosureTolerance).size();
+}
+
 PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const QVector<PenPrimitive> &primitives,
                                 double boundaryTolerance,
@@ -1216,6 +1371,10 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon) {
     return result;
 }
 
+QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon) {
+    return approximateClosedPolygon(polygon, epsilon);
+}
+
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,
     const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace) {
@@ -1253,6 +1412,14 @@ QPolygonF simplifyClosedPolygonCorridor(
 
 QPolygonF regionOuterContour(const QPainterPath &outline) {
     return largestFlattenedContour(outline);
+}
+
+QPolygonF regionOuterContour(const QPainterPath &outline, int curveSamples) {
+    if (curveSamples < 1) {
+        return {};
+    }
+
+    return largestFlattenedContour(outline, curveSamples);
 }
 
 PenFillResult fillPolygonMesh(const QPolygonF &polygon,

@@ -2255,6 +2255,17 @@ int checkLoggedRegion(const QString &path, const QSize &imageSize)
     if (!result.valid()) {
         return 1;
     }
+    constexpr double kDangerousRdpEpsilon = 1.9;
+    constexpr int kDangerousRdpCurveSamples = 32;
+    const QPolygonF dangerousSource =
+        gui::regionOuterContour(outline, kDangerousRdpCurveSamples);
+    const QPolygonF dangerousContour =
+        gui::simplifyClosedPolygonCyclic(dangerousSource, kDangerousRdpEpsilon);
+    std::cout << "dangerous_rdp_input=" << dangerousSource.size()
+              << " dangerous_rdp_output=" << dangerousContour.size()
+              << " polygon_valid="
+              << (gui::buildPolygonContour(dangerousContour).valid() ? "yes" : "no")
+              << '\n';
 
     gui::ShapeGeometryStore geometry;
     QString geometryError;
@@ -2263,6 +2274,20 @@ int checkLoggedRegion(const QString &path, const QSize &imageSize)
         return 2;
     }
     const QVector<gui::PenPrimitive> primitives = gui::buildPenPrimitiveCatalog(geometry);
+    const gui::PolygonMeshSources meshSources = gui::buildPolygonMeshSources(geometry);
+    QElapsedTimer dangerousMeshTimer;
+    dangerousMeshTimer.start();
+    const gui::PenFillResult dangerousMesh =
+        gui::fillPolygonMesh(dangerousContour, meshSources);
+    std::cout << "dangerous_mesh_placements=" << dangerousMesh.placements.size()
+              << " dangerous_mesh_elapsed_ms=" << dangerousMeshTimer.elapsed();
+    if (!dangerousMesh.error.isEmpty()) {
+        std::cout << " error=" << dangerousMesh.error.toStdString();
+    }
+    std::cout << '\n';
+    if (!dangerousMesh.error.isEmpty() || dangerousMesh.placements.isEmpty()) {
+        return 1;
+    }
     QElapsedTimer fillTimer;
     fillTimer.start();
     const auto timedOut = [&fillTimer]() { return fillTimer.elapsed() > 3000; };
@@ -2285,7 +2310,6 @@ int checkLoggedRegion(const QString &path, const QSize &imageSize)
     }
     std::cout << '\n';
 
-    const gui::PolygonMeshSources meshSources = gui::buildPolygonMeshSources(geometry);
     QPolygonF simplifiedMesh = gui::simplifyClosedPolygon(optimizedContour, 0.45);
     if (!gui::buildPolygonContour(simplifiedMesh).valid()) {
         simplifiedMesh = optimizedContour;

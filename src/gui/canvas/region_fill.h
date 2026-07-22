@@ -111,6 +111,8 @@ RegionPenConversionResult regionOutlineToPenPoints(
     const QPainterPath &outline,
     const RegionPenConversionOptions &options = {});
 
+int regionOutlinePenPointCount(const QPainterPath &outline);
+
 PenFillResult fillRegionOutline(const QPainterPath &outline,
                                 const QVector<PenPrimitive> &primitives,
                                 double boundaryTolerance,
@@ -122,11 +124,15 @@ PenFillResult fillRegionOutline(const QPainterPath &outline,
 
 QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon);
 
+QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon);
+
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,
     const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace);
 
 QPolygonF regionOuterContour(const QPainterPath &outline);
+
+QPolygonF regionOuterContour(const QPainterPath &outline, int curveSamples);
 
 PenFillResult fillPolygonMesh(const QPolygonF &polygon,
                               const PolygonMeshSources &sources,

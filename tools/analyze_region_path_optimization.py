@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Benchmark largest-region path simplifiers using supersampled-mask DSSIM."""
+"""Benchmark logged region paths and write CSV plus visual DSSIM comparisons.
+
+Safe candidates simplify existing Pen junctions, semi-aggressive candidates use
+closed RDP, and aggressive candidates use Visvalingam area removal.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import heapq
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image, ImageDraw
 from skimage.metrics import structural_similarity
@@ -18,6 +24,7 @@ from skimage.metrics import structural_similarity
 
 @dataclass
 class Candidate:
+    aggression: str
     family: str
     setting: str
     points: list[tuple[float, float]]
@@ -50,11 +57,120 @@ def parse_log(path: Path):
             key, value = line.split("=", 1)
             metadata[key] = value
 
+    source = [(row[1], float(row[2]), float(row[3]))
+              for row in sections["source_qpainter_path"]]
     pen = [(row[1], float(row[2]), float(row[3]))
            for row in sections["optimized_pen_points"]]
     flattened = [(float(row[1]), float(row[2]))
                  for row in sections["flattened_optimized_contour"]]
-    return metadata, pen, flattened
+    return metadata, source, pen, flattened
+
+
+def signed_area(points):
+    return sum(points[i][0] * points[(i + 1) % len(points)][1]
+               - points[i][1] * points[(i + 1) % len(points)][0]
+               for i in range(len(points))) * 0.5
+
+
+def flatten_qpainter_path(elements, samples=32):
+    subpaths = []
+    current = []
+    index = 0
+    while index < len(elements):
+        kind, x, y = elements[index]
+        point = np.array((x, y), dtype=np.float64)
+        if kind == "move":
+            if len(current) >= 3:
+                subpaths.append(current)
+            current = [(x, y)]
+            index += 1
+            continue
+        if not current:
+            index += 1
+            continue
+        if kind == "line":
+            current.append((x, y))
+            index += 1
+            continue
+        if kind == "curve-control-1" and index + 2 < len(elements):
+            second_kind, second_x, second_y = elements[index + 1]
+            end_kind, end_x, end_y = elements[index + 2]
+            if second_kind == "curve-data" and end_kind == "curve-data":
+                start = np.array(current[-1], dtype=np.float64)
+                control1 = point
+                control2 = np.array((second_x, second_y), dtype=np.float64)
+                end = np.array((end_x, end_y), dtype=np.float64)
+                for step in range(1, samples + 1):
+                    t = step / samples
+                    u = 1.0 - t
+                    value = (start * (u ** 3)
+                             + control1 * (3.0 * u * u * t)
+                             + control2 * (3.0 * u * t * t)
+                             + end * (t ** 3))
+                    current.append((float(value[0]), float(value[1])))
+                index += 3
+                continue
+        index += 1
+    if len(current) >= 3:
+        subpaths.append(current)
+    for subpath in subpaths:
+        if np.linalg.norm(np.subtract(subpath[0], subpath[-1])) <= 1e-9:
+            subpath.pop()
+    valid = [subpath for subpath in subpaths if len(subpath) >= 3]
+    return max(valid, key=lambda points: abs(signed_area(points))) if valid else []
+
+
+def select_qpainter_subpath(elements):
+    subpaths = []
+    current = []
+    for element in elements:
+        if element[0] == "move" and current:
+            subpaths.append(current)
+            current = []
+        current.append(element)
+    if current:
+        subpaths.append(current)
+    valid = [(subpath, flatten_qpainter_path(subpath)) for subpath in subpaths]
+    valid = [(subpath, polygon) for subpath, polygon in valid if len(polygon) >= 3]
+    return max(valid, key=lambda item: abs(signed_area(item[1]))) if valid else ([], [])
+
+
+def initial_pen_from_qpainter(elements, closure_tolerance=1e-6):
+    if not elements or elements[0][0] != "move":
+        return []
+    start = np.array(elements[0][1:], dtype=np.float64)
+    current = start.copy()
+    points = [("hard", float(start[0]), float(start[1]))]
+    index = 1
+    while index < len(elements):
+        kind, x, y = elements[index]
+        end = np.array((x, y), dtype=np.float64)
+        if kind == "line":
+            closes = index == len(elements) - 1 and np.linalg.norm(end - start) <= closure_tolerance
+            if not closes:
+                points.append(("hard", x, y))
+            current = end
+            index += 1
+            continue
+        if kind == "curve-control-1" and index + 2 < len(elements):
+            second_kind, second_x, second_y = elements[index + 1]
+            end_kind, end_x, end_y = elements[index + 2]
+            if second_kind == "curve-data" and end_kind == "curve-data":
+                control1 = end
+                control2 = np.array((second_x, second_y), dtype=np.float64)
+                curve_end = np.array((end_x, end_y), dtype=np.float64)
+                control = (control1 * 3.0 + control2 * 3.0
+                           - current - curve_end) * 0.25
+                points.append(("soft", float(control[0]), float(control[1])))
+                closes = (index + 2 == len(elements) - 1
+                          and np.linalg.norm(curve_end - start) <= closure_tolerance)
+                if not closes:
+                    points.append(("hard", end_x, end_y))
+                current = curve_end
+                index += 3
+                continue
+        index += 1
+    return points
 
 
 def flatten_pen(points, samples=32):
@@ -181,6 +297,7 @@ def raster_topology(mask):
 def write_points(path, candidate, base_components, base_holes):
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
+        writer.writerow(["aggression", candidate.aggression])
         writer.writerow(["family", candidate.family])
         writer.writerow(["setting", candidate.setting])
         writer.writerow(["points", len(candidate.points)])
@@ -207,6 +324,398 @@ def write_points(path, candidate, base_components, base_holes):
                 writer.writerow([i, f"{x:.17g}", f"{y:.17g}"])
 
 
+def effective_points(candidate):
+    return candidate.pen_points or len(candidate.points)
+
+
+def topology_matches(candidate, components, holes):
+    return candidate.components == components and candidate.holes == holes
+
+
+def best_candidates(candidates, limits, base_components, baseline_points):
+    rows = []
+    for limit in limits:
+        for aggression in ("safe", "semi-aggressive", "aggressive"):
+            eligible = [candidate for candidate in candidates
+                        if candidate.aggression == aggression
+                        and candidate.dssim <= limit
+                        and candidate.components == base_components
+                        and effective_points(candidate) < baseline_points]
+            if eligible:
+                best = min(eligible, key=lambda candidate: (
+                    effective_points(candidate), candidate.dssim,
+                    len(candidate.points)))
+                rows.append((limit, aggression, best))
+    return rows
+
+
+def write_best_csv(path, rows, baseline_points):
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["dssim_limit", "aggression", "family", "setting",
+                         "effective_points", "raster_points", "point_reduction_percent",
+                         "actual_dssim", "iou", "binary_area_delta_percent",
+                         "components", "holes"])
+        for limit, aggression, candidate in rows:
+            points = effective_points(candidate)
+            reduction = (baseline_points - points) * 100.0 / baseline_points
+            writer.writerow([f"{limit:.12g}", aggression, candidate.family,
+                             candidate.setting, points, len(candidate.points),
+                             f"{reduction:.12g}", f"{candidate.dssim:.12g}",
+                             f"{candidate.iou:.12g}",
+                             f"{candidate.area_delta_percent:.12g}",
+                             candidate.components, candidate.holes])
+
+
+def write_tradeoff_chart(path, candidates, best_rows):
+    colors = {"safe": "#2ca02c", "semi-aggressive": "#ff9800",
+              "aggressive": "#d62728"}
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6), constrained_layout=True)
+    for aggression, color in colors.items():
+        values = [candidate for candidate in candidates
+                  if candidate.aggression == aggression and math.isfinite(candidate.dssim)]
+        axes[0].scatter([max(candidate.dssim, 1e-9) for candidate in values],
+                        [effective_points(candidate) for candidate in values],
+                        s=16, alpha=0.55, label=aggression, color=color)
+        tier_rows = [(limit, candidate) for limit, tier, candidate in best_rows
+                     if tier == aggression]
+        axes[1].plot([limit for limit, _ in tier_rows],
+                     [effective_points(candidate) for _, candidate in tier_rows],
+                     marker="o", linewidth=2, label=aggression, color=color)
+    axes[0].set_xscale("log")
+    axes[0].set_xlabel("Actual DSSIM (log scale)")
+    axes[0].set_ylabel("Effective contour / Pen points")
+    axes[0].set_title("All optimization candidates")
+    axes[0].grid(True, which="both", alpha=0.25)
+    axes[0].legend()
+    axes[1].set_xscale("log")
+    axes[1].set_xlabel("Allowed DSSIM (log scale)")
+    axes[1].set_ylabel("Lowest eligible point count")
+    axes[1].set_title("Best result at each DSSIM limit")
+    axes[1].grid(True, which="both", alpha=0.25)
+    axes[1].legend()
+    fig.suptitle("Region path optimization: quality / complexity trade-off")
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def difference_preview(base, candidate):
+    base_fill = base >= 128
+    candidate_fill = candidate >= 128
+    image = np.full((*base.shape, 3), 245, dtype=np.uint8)
+    image[base_fill & candidate_fill] = (45, 45, 45)
+    image[base_fill & ~candidate_fill] = (230, 65, 65)
+    image[~base_fill & candidate_fill] = (40, 170, 220)
+    return image
+
+
+def write_preview_chart(path, base, best_rows, preview_limits,
+                        width, height, supersample):
+    tiers = ("safe", "semi-aggressive", "aggressive")
+    fig, axes = plt.subplots(len(tiers), len(preview_limits),
+                             figsize=(5 * len(preview_limits), 5 * len(tiers)),
+                             constrained_layout=True)
+    row_lookup = {(limit, tier): candidate
+                  for limit, tier, candidate in best_rows}
+    for row, tier in enumerate(tiers):
+        for column, limit in enumerate(preview_limits):
+            axis = axes[row, column]
+            candidate = row_lookup.get((limit, tier))
+            if candidate is None:
+                axis.text(0.5, 0.5, "No connected point-reducing candidate",
+                          ha="center", va="center")
+                axis.set_axis_off()
+                continue
+            mask = render(candidate.points, width, height, supersample)
+            axis.imshow(difference_preview(base, mask))
+            axis.set_title(f"{tier}, limit {limit:g}\n"
+                           f"{effective_points(candidate)} points, "
+                           f"DSSIM {candidate.dssim:.6g}")
+            axis.set_axis_off()
+    fig.suptitle("Black: matching fill, red: removed, cyan: added")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def write_interactive_viewer(path, source_points, best_rows):
+    """Write an offline canvas viewer for the unique recommended contours."""
+    palette = {
+        "source": "#ffffff",
+        "safe": "#4ade80",
+        "semi-aggressive": "#facc15",
+        "aggressive": "#fb7185",
+    }
+    layers = [{
+        "name": "Source contour",
+        "details": f"Reference · {len(source_points)} raster points",
+        "tier": "source",
+        "color": palette["source"],
+        "visible": True,
+        "points": [[round(x, 4), round(y, 4)] for x, y in source_points],
+    }]
+    unique = {}
+    for limit, tier, candidate in best_rows:
+        key = (tier, candidate.family, candidate.setting)
+        if key not in unique:
+            unique[key] = {"candidate": candidate, "limits": []}
+        unique[key]["limits"].append(limit)
+
+    first_in_tier = set()
+    for (tier, family, setting), entry in unique.items():
+        candidate = entry["candidate"]
+        limits = ", ".join(f"{value:g}" for value in entry["limits"])
+        visible = tier not in first_in_tier
+        first_in_tier.add(tier)
+        layers.append({
+            "name": f"{tier} · {effective_points(candidate)} points",
+            "details": (f"DSSIM {candidate.dssim:.8g} · limits {limits} · "
+                        f"{family} {setting}"),
+            "tier": tier,
+            "color": palette[tier],
+            "visible": visible,
+            "points": [[round(x, 4), round(y, 4)]
+                       for x, y in candidate.points],
+        })
+
+    layer_json = json.dumps(layers, separators=(",", ":"))
+    template = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Region path optimization viewer</title>
+<style>
+  :root { color-scheme: dark; font-family: Inter, Segoe UI, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111318; color: #e8eaf0; overflow: hidden; }
+  #app { display: grid; grid-template-columns: minmax(270px, 360px) 1fr;
+         height: 100vh; }
+  aside { padding: 16px; background: #191c23; border-right: 1px solid #343946;
+          overflow: auto; }
+  h1 { margin: 0 0 5px; font-size: 18px; }
+  .hint { margin: 0 0 14px; color: #aab0bd; font-size: 12px; line-height: 1.45; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 13px; }
+  button { border: 1px solid #424958; border-radius: 6px; padding: 6px 10px;
+           background: #292e39; color: #f3f4f7; cursor: pointer; }
+  button:hover { background: #363d4b; }
+  .control { display: grid; grid-template-columns: 72px 1fr 52px; gap: 8px;
+             align-items: center; margin: 9px 0; font-size: 12px; }
+  input[type="range"] { min-width: 0; accent-color: #70a5ff; }
+  output { color: #c7cbd5; text-align: right; font-variant-numeric: tabular-nums; }
+  .layers-title { margin: 16px 0 7px; font-size: 13px; color: #cfd3dc; }
+  #layers { display: grid; gap: 6px; }
+  .layer { display: grid; grid-template-columns: 20px 12px 1fr; gap: 7px;
+           align-items: start; padding: 8px; border: 1px solid #303541;
+           border-radius: 6px; background: #20242c; cursor: pointer; }
+  .swatch { width: 10px; height: 10px; border-radius: 50%; margin-top: 3px; }
+  .name { font-size: 12px; line-height: 1.3; text-transform: capitalize; }
+  .details { color: #969dab; font-size: 10px; line-height: 1.35; margin-top: 2px; }
+  main { position: relative; min-width: 0; background: #0b0d11; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #status { position: absolute; right: 12px; bottom: 10px; padding: 5px 8px;
+            border-radius: 5px; background: #151922cc; color: #bcc2ce;
+            font-size: 11px; pointer-events: none; }
+  @media (max-width: 720px) {
+    #app { grid-template-columns: 250px 1fr; }
+    aside { padding: 10px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>Contour comparison</h1>
+    <p class="hint">Wheel to zoom · drag to pan · rotate applies to all visible
+      contours. Each recommendation is embedded, so this file works offline.</p>
+    <div class="buttons">
+      <button id="fit">Fit</button><button id="reset">Reset view</button>
+      <button id="showAll">Show all</button><button id="hideAll">Hide all</button>
+    </div>
+    <label class="control"><span>Rotation</span><input id="rotation" type="range"
+      min="-180" max="180" step="1" value="0"><output id="rotationValue">0°</output></label>
+    <label class="control"><span>Opacity</span><input id="opacity" type="range"
+      min="0.05" max="1" step="0.05" value="0.85"><output id="opacityValue">85%</output></label>
+    <label class="control"><span>Line width</span><input id="lineWidth" type="range"
+      min="0.5" max="6" step="0.5" value="2"><output id="lineWidthValue">2 px</output></label>
+    <label class="control"><span>Fill</span><input id="fill" type="checkbox"><output></output></label>
+    <div class="layers-title">Results</div>
+    <div id="layers"></div>
+  </aside>
+  <main><canvas id="canvas"></canvas><div id="status"></div></main>
+</div>
+<script>
+const layers = __LAYER_DATA__;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const layerPanel = document.getElementById('layers');
+const rotation = document.getElementById('rotation');
+const opacity = document.getElementById('opacity');
+const lineWidth = document.getElementById('lineWidth');
+const fill = document.getElementById('fill');
+const status = document.getElementById('status');
+const view = { scale: 1, panX: 0, panY: 0, rotation: 0 };
+let width = 1, height = 1, dragging = false, lastX = 0, lastY = 0;
+
+for (const layer of layers) {
+  const path = new Path2D();
+  if (layer.points.length) {
+    path.moveTo(layer.points[0][0], layer.points[0][1]);
+    for (let index = 1; index < layer.points.length; ++index)
+      path.lineTo(layer.points[index][0], layer.points[index][1]);
+    path.closePath();
+  }
+  layer.path = path;
+}
+
+const bounds = { minX: Infinity, maxX: -Infinity,
+                 minY: Infinity, maxY: -Infinity };
+for (const layer of layers) for (const point of layer.points) {
+  bounds.minX = Math.min(bounds.minX, point[0]);
+  bounds.maxX = Math.max(bounds.maxX, point[0]);
+  bounds.minY = Math.min(bounds.minY, point[1]);
+  bounds.maxY = Math.max(bounds.maxY, point[1]);
+}
+const centerX = (bounds.minX + bounds.maxX) / 2;
+const centerY = (bounds.minY + bounds.maxY) / 2;
+
+function buildLayerPanel() {
+  layerPanel.replaceChildren();
+  layers.forEach((layer, index) => {
+    const label = document.createElement('label');
+    label.className = 'layer';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = layer.visible;
+    checkbox.addEventListener('change', () => { layer.visible = checkbox.checked; draw(); });
+    const swatch = document.createElement('span');
+    swatch.className = 'swatch';
+    swatch.style.background = layer.color;
+    const text = document.createElement('span');
+    text.innerHTML = `<div class="name">${layer.name}</div><div class="details">${layer.details}</div>`;
+    label.append(checkbox, swatch, text);
+    layer.checkbox = checkbox;
+    layerPanel.append(label);
+  });
+}
+
+function fitView() {
+  const angle = Math.abs(view.rotation * Math.PI / 180);
+  const cosine = Math.abs(Math.cos(angle));
+  const sine = Math.abs(Math.sin(angle));
+  const shapeWidth = Math.max(1, bounds.maxX - bounds.minX);
+  const shapeHeight = Math.max(1, bounds.maxY - bounds.minY);
+  const rotatedWidth = shapeWidth * cosine + shapeHeight * sine;
+  const rotatedHeight = shapeWidth * sine + shapeHeight * cosine;
+  view.scale = 0.9 * Math.min(width / rotatedWidth, height / rotatedHeight);
+  view.panX = 0;
+  view.panY = 0;
+  draw();
+}
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  width = Math.max(1, rect.width);
+  height = Math.max(1, rect.height);
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  draw();
+}
+
+function draw() {
+  const ratio = window.devicePixelRatio || 1;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.save();
+  ctx.translate(width / 2 + view.panX, height / 2 + view.panY);
+  ctx.scale(view.scale, view.scale);
+  ctx.rotate(view.rotation * Math.PI / 180);
+  ctx.translate(-centerX, -centerY);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  for (const layer of layers) {
+    if (!layer.visible) continue;
+    ctx.strokeStyle = layer.color;
+    ctx.fillStyle = layer.color;
+    ctx.globalAlpha = Number(opacity.value);
+    ctx.lineWidth = Number(lineWidth.value) / view.scale;
+    if (fill.checked) {
+      ctx.globalAlpha = Number(opacity.value) * 0.12;
+      ctx.fill(layer.path);
+      ctx.globalAlpha = Number(opacity.value);
+    }
+    ctx.stroke(layer.path);
+  }
+  ctx.restore();
+  const visible = layers.filter(layer => layer.visible).length;
+  status.textContent = `${visible}/${layers.length} visible · ${view.scale.toFixed(3)}× · ${view.rotation}°`;
+}
+
+canvas.addEventListener('wheel', event => {
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = event.clientX - rect.left;
+  const mouseY = event.clientY - rect.top;
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  const nextScale = Math.min(1000, Math.max(0.001, view.scale * factor));
+  const applied = nextScale / view.scale;
+  view.panX = mouseX - width / 2 - (mouseX - width / 2 - view.panX) * applied;
+  view.panY = mouseY - height / 2 - (mouseY - height / 2 - view.panY) * applied;
+  view.scale = nextScale;
+  draw();
+}, { passive: false });
+canvas.addEventListener('pointerdown', event => {
+  dragging = true; lastX = event.clientX; lastY = event.clientY;
+  canvas.setPointerCapture(event.pointerId); canvas.classList.add('dragging');
+});
+canvas.addEventListener('pointermove', event => {
+  if (!dragging) return;
+  view.panX += event.clientX - lastX; view.panY += event.clientY - lastY;
+  lastX = event.clientX; lastY = event.clientY; draw();
+});
+canvas.addEventListener('pointerup', event => {
+  dragging = false; canvas.releasePointerCapture(event.pointerId);
+  canvas.classList.remove('dragging');
+});
+
+rotation.addEventListener('input', () => {
+  view.rotation = Number(rotation.value);
+  document.getElementById('rotationValue').value = `${view.rotation}°`;
+  draw();
+});
+opacity.addEventListener('input', () => {
+  document.getElementById('opacityValue').value = `${Math.round(opacity.value * 100)}%`;
+  draw();
+});
+lineWidth.addEventListener('input', () => {
+  document.getElementById('lineWidthValue').value = `${lineWidth.value} px`;
+  draw();
+});
+fill.addEventListener('change', draw);
+document.getElementById('fit').addEventListener('click', fitView);
+document.getElementById('reset').addEventListener('click', () => {
+  view.rotation = 0; rotation.value = 0;
+  document.getElementById('rotationValue').value = '0°'; fitView();
+});
+document.getElementById('showAll').addEventListener('click', () => {
+  layers.forEach(layer => { layer.visible = true; layer.checkbox.checked = true; }); draw();
+});
+document.getElementById('hideAll').addEventListener('click', () => {
+  layers.forEach(layer => { layer.visible = false; layer.checkbox.checked = false; }); draw();
+});
+window.addEventListener('resize', resize);
+buildLayerPanel();
+resize();
+fitView();
+</script>
+</body>
+</html>
+"""
+    path.write_text(template.replace("__LAYER_DATA__", layer_json),
+                    encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("log", type=Path)
@@ -215,12 +724,24 @@ def main():
     parser.add_argument("--supersample", type=int, default=4)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    output = args.output or args.log.with_name("region_path_optimization.csv")
+    output = args.output or Path(__file__).resolve().parent / "region_path_optimization_results.csv"
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    metadata, pen, flattened = parse_log(args.log)
-    base = render(flattened, args.width, args.height, args.supersample)
+    metadata, source, pen, flattened = parse_log(args.log)
+    source_subpath, raw_source_outer = select_qpainter_subpath(source)
+    source_pen = initial_pen_from_qpainter(source_subpath)
+    source_outer = flatten_pen(source_pen)
+    if len(source_outer) < 3 or len(raw_source_outer) < 3:
+        raise ValueError("The log does not contain a valid source outer contour")
+    base = render(source_outer, args.width, args.height, args.supersample)
     base_area, base_components, base_holes = raster_topology(base)
-    candidates: list[Candidate] = []
+    candidates: list[Candidate] = [
+        Candidate("safe", "logged-optimized", "current-fill-result",
+                  flatten_pen(pen), len(pen), pen)
+    ]
+    dssim_limits = (0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005,
+                    0.01, 0.02, 0.05)
+    preview_limits = (0.001, 0.005, 0.01)
 
     pen_tolerances = sorted(set(
         (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5,
@@ -230,9 +751,9 @@ def main():
         + tuple(round(value, 2) for value in np.arange(8.0, 12.001, 0.1))))
     for tolerance in pen_tolerances:
         reduced_pen = merge_pen_junctions(pen, tolerance)
-        candidates.append(Candidate("pen-junction", f"tolerance={tolerance:g}",
-                                    flatten_pen(reduced_pen), len(reduced_pen),
-                                    reduced_pen))
+        candidates.append(Candidate("safe", "pen-junction",
+                                    f"tolerance={tolerance:g}",
+                                    flatten_pen(reduced_pen), len(reduced_pen), reduced_pen))
 
     rdp_epsilons = sorted(set(
         (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5,
@@ -243,8 +764,9 @@ def main():
         + tuple(round(value, 3) for value in np.arange(1.55, 2.101, 0.05))
         + tuple(round(value, 3) for value in np.arange(4.1, 6.101, 0.1))))
     for epsilon in rdp_epsilons:
-        candidates.append(Candidate("closed-rdp", f"epsilon={epsilon:g}",
-                                    rdp_closed(flattened, epsilon)))
+        candidates.append(Candidate("semi-aggressive", "closed-rdp",
+                                    f"epsilon={epsilon:g}",
+                                    rdp_closed(source_outer, epsilon)))
 
     vis_targets = sorted(set(
         (1200, 900, 700, 500, 350, 250, 175, 125, 90, 64, 48, 32)
@@ -252,8 +774,9 @@ def main():
         + tuple(range(125, 176, 5))
         + tuple(range(64, 91, 2))), reverse=True)
     for target in vis_targets:
-        candidates.append(Candidate("visvalingam", f"target={target}",
-                                    visvalingam(flattened, target)))
+        candidates.append(Candidate("aggressive", "visvalingam",
+                                    f"target={target}",
+                                    visvalingam(source_outer, target)))
 
     for index, candidate in enumerate(candidates, 1):
         mask = render(candidate.points, args.width, args.height, args.supersample)
@@ -261,51 +784,71 @@ def main():
         area, candidate.components, candidate.holes = raster_topology(mask)
         candidate.area_delta_percent = ((area - base_area) * 100.0 / base_area
                                         if base_area else 0.0)
-        print(f"[{index:02d}/{len(candidates)}] {candidate.family:13s} "
+        print(f"[{index:03d}/{len(candidates)}] {candidate.aggression:15s} "
+              f"{candidate.family:16s} "
               f"{candidate.setting:18s} points={len(candidate.points):5d} "
               f"pen={candidate.pen_points:4d} DSSIM={candidate.dssim:.8f} "
               f"IoU={candidate.iou:.8f}", flush=True)
 
-    candidates.sort(key=lambda item: (item.family, len(item.points), item.dssim))
+    baseline_points = int(metadata.get("original_pen_point_count", len(source_outer)))
+    candidates.sort(key=lambda item: (item.aggression, item.family,
+                                      effective_points(item), item.dssim))
     with output.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["family", "setting", "points", "pen_points", "dssim", "iou",
-                         "binary_area_delta_percent", "components", "holes",
-                         "topology_matches"])
+        writer.writerow(["aggression", "family", "setting", "effective_points",
+                         "raster_points", "pen_points", "point_reduction_percent",
+                         "dssim", "iou", "binary_area_delta_percent", "components",
+                         "holes", "topology_matches"])
         for candidate in candidates:
-            writer.writerow([candidate.family, candidate.setting, len(candidate.points),
-                             candidate.pen_points, f"{candidate.dssim:.12g}",
+            points = effective_points(candidate)
+            reduction = (baseline_points - points) * 100.0 / baseline_points
+            writer.writerow([candidate.aggression, candidate.family, candidate.setting,
+                             points, len(candidate.points), candidate.pen_points,
+                             f"{reduction:.12g}", f"{candidate.dssim:.12g}",
                              f"{candidate.iou:.12g}",
                              f"{candidate.area_delta_percent:.12g}",
                              candidate.components, candidate.holes,
                              int(candidate.components == base_components
                                  and candidate.holes == base_holes)])
 
-    print(f"\nInput: source #{metadata.get('source_index', '?')}, "
-          f"Pen={len(pen)}, flattened={len(flattened)}")
-    for limit in (0.001, 0.005, 0.01):
+    best_rows = best_candidates(candidates, dssim_limits,
+                                base_components, baseline_points)
+    best_output = output.with_name(f"{output.stem}_best_by_dssim.csv")
+    tradeoff_chart = output.with_name(f"{output.stem}_tradeoff.png")
+    preview_chart = output.with_name(f"{output.stem}_previews.png")
+    viewer = output.with_name(f"{output.stem}_viewer.html")
+    write_best_csv(best_output, best_rows, baseline_points)
+    write_tradeoff_chart(tradeoff_chart, candidates, best_rows)
+    write_preview_chart(preview_chart, base, best_rows, preview_limits,
+                        args.width, args.height, args.supersample)
+    write_interactive_viewer(viewer, source_outer, best_rows)
+
+    print(f"\nInput: region #{metadata.get('region_index', '?')}, "
+          f"source outer={len(source_outer)}, Pen={len(pen)}, flattened={len(flattened)}")
+    for limit in preview_limits:
         print(f"\nBest at DSSIM <= {limit:g}:")
-        for family in ("pen-junction", "closed-rdp", "visvalingam"):
-            eligible = [item for item in candidates
-                        if item.family == family and item.dssim <= limit
-                        and item.components == base_components
-                        and item.holes == base_holes]
-            if not eligible:
-                print(f"  {family:13s}: none")
+        for aggression in ("safe", "semi-aggressive", "aggressive"):
+            matching = [candidate for row_limit, tier, candidate in best_rows
+                        if row_limit == limit and tier == aggression]
+            if not matching:
+                print(f"  {aggression:15s}: none")
                 continue
-            best = min(eligible, key=lambda item: (item.pen_points or len(item.points),
-                                                   len(item.points), item.dssim))
-            effective = best.pen_points or len(best.points)
-            print(f"  {family:13s}: {effective} control/path points, "
+            best = matching[0]
+            effective = effective_points(best)
+            print(f"  {aggression:15s}: {effective} control/path points, "
                   f"{len(best.points)} raster points, DSSIM={best.dssim:.8f}, "
                   f"IoU={best.iou:.8f}, area={best.area_delta_percent:+.5f}%, "
                   f"topology={best.components} components/{best.holes} holes "
                   f"({best.setting})")
             safe_limit = str(limit).replace(".", "p")
             write_points(output.with_name(
-                f"region_path_best_{family}_{safe_limit}.csv"), best,
+                f"region_path_best_{aggression}_{safe_limit}.csv"), best,
                 base_components, base_holes)
     print(f"\nFull results: {output}")
+    print(f"Best by DSSIM: {best_output}")
+    print(f"Trade-off chart: {tradeoff_chart}")
+    print(f"Visual previews: {preview_chart}")
+    print(f"Interactive viewer: {viewer}")
 
 
 if __name__ == "__main__":
