@@ -198,6 +198,11 @@ Q_SIGNALS:
     void modifiedChanged(bool modified);
 
 private:
+    enum class HistoryDirection {
+        Undo,
+        Redo,
+    };
+
     struct ProjectIndexCache {
         QHash<QString, fh6::scene::Shape *> layers;
         QHash<QString, fh6::scene::GuideLayer *> guides;
@@ -210,6 +215,13 @@ private:
         mutable std::optional<QSet<QString>> lockedLayerIds;
     };
 
+    struct EntryInsertionPoint {
+        QVector<QString> entries;
+        QString parentId;
+        int row = 0;
+        bool hasTarget = false;
+    };
+
     void invalidateProjectIndexCache() const;
     const ProjectIndexCache &projectIndexCache() const;
     void ensureSceneTree() const;
@@ -217,15 +229,22 @@ private:
     void invalidateRenderCache() const;
     void ensureRenderCache() const;
     void updateRenderCacheTransforms(const QVector<QString> &targetIds) const;
+    QVector<QString> existingEntryIds(const QVector<QString> &entryIds) const;
     QVector<QString> leafLayerIdsForEntryCached(const QString &entryId, const ProjectIndexCache &cache) const;
     bool entryHasLockedLayerCached(const QString &entryId, const ProjectIndexCache &cache) const;
 
     void applySnapshot(const ProjectEditSnapshot &snapshot);
     ProjectEditSnapshot captureSnapshot() const;
+    ProjectSelectionSnapshot captureSelection() const;
     bool snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const;
     ProjectEditRefresh classifySnapshotRefresh(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const;
     void applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter);
+    void applyHistoryCommand(HistoryDirection direction);
+    void restoreSelection(const ProjectSelectionSnapshot &selection);
     void refreshAfterHistoryCommand(ProjectEditRefresh refresh);
+    EntryInsertionPoint insertionPointAboveSelection(const QVector<QString> &selectedEntries) const;
+    std::unique_ptr<fh6::scene::Layer> takeEntry(const QString &entryId);
+    QString uniqueId(const QString &prefix, int startingIndex) const;
 
     mutable std::optional<ProjectIndexCache> indexCache_;
 

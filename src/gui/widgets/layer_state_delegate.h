@@ -7,6 +7,10 @@ namespace gui {
 
 class EditorState;
 
+inline constexpr int kLayerBadgeSize = 18;
+inline constexpr int kLayerBadgeGap = 5;
+inline constexpr int kLayerBadgeRightMargin = 8;
+
 class LayerStateDelegate final : public QStyledItemDelegate {
 public:
     explicit LayerStateDelegate(EditorState *state, QObject *parent = nullptr);

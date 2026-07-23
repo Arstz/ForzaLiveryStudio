@@ -20,16 +20,13 @@ using fh6::detail::readLeU32;
 
 namespace {
 
-quint16 readLeU16Raw(const char *p, int offset)
-{
+quint16 readLeU16Raw(const char *p, int offset) {
     return qFromLittleEndian<quint16>(reinterpret_cast<const uchar *>(p + offset));
 }
-quint32 readLeU32Raw(const char *p, int offset)
-{
+quint32 readLeU32Raw(const char *p, int offset) {
     return qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(p + offset));
 }
-float readLeFloatRaw(const char *p, int offset)
-{
+float readLeFloatRaw(const char *p, int offset) {
     quint32 raw = readLeU32Raw(p, offset);
     float value = 0.0f;
     std::memcpy(&value, &raw, sizeof(float));
@@ -51,8 +48,7 @@ struct Cursor {
     float f32() { float v = has(4) ? readLeFloat(bytes, pos) : 0.0f; pos += 4; return v; }
     void skip(int n) { pos += n; }
 
-    QString stringInt32()
-    {
+    QString stringInt32() {
         const int n = i32();
         if (n < 0 || !has(n)) {
             pos = bytes.size();
@@ -75,8 +71,7 @@ struct VertexLayout {
     QStringList semanticNames;
     std::vector<VertexElement> elements;
 
-    QString semanticFor(const VertexElement &e) const
-    {
+    QString semanticFor(const VertexElement &e) const {
         if (e.semanticNameIndex >= 0 && e.semanticNameIndex < semanticNames.size()) {
             return semanticNames[e.semanticNameIndex];
         }
@@ -112,8 +107,7 @@ struct BufferData {
     QByteArray raw;
 };
 
-int formatSize(int fmt)
-{
+int formatSize(int fmt) {
     switch (fmt) {
     case 6:  return 12; // R32G32B32_FLOAT
     case 10: return 8;  // R16G16B16A16_FLOAT
@@ -129,8 +123,7 @@ int formatSize(int fmt)
 
 float snorm16(qint16 v) { return std::clamp(static_cast<float>(v) / 32767.0f, -1.0f, 1.0f); }
 
-ModelVec3 normalize(ModelVec3 v)
-{
+ModelVec3 normalize(ModelVec3 v) {
     const float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     if (len > 1e-8f) {
         v.x /= len;
@@ -140,8 +133,7 @@ ModelVec3 normalize(ModelVec3 v)
     return v;
 }
 
-float halfToFloat(quint16 h)
-{
+float halfToFloat(quint16 h) {
     const int exp = (h >> 10) & 0x1F;
     const int mant = h & 0x3FF;
     const int sign = h >> 15;
@@ -161,8 +153,7 @@ struct PositionSample {
     float w = 0.0f;
 };
 
-PositionSample readPosition(const char *p, int format, const MeshInfo &mesh)
-{
+PositionSample readPosition(const char *p, int format, const MeshInfo &mesh) {
     PositionSample out;
     if (format == 13) { // R16G16B16A16_SNORM
         const float rx = snorm16(static_cast<qint16>(readLeU16Raw(p, 0)));
@@ -186,8 +177,7 @@ PositionSample readPosition(const char *p, int format, const MeshInfo &mesh)
     return out;
 }
 
-ModelVec3 readNormal(const char *p, int format, float wFromPos)
-{
+ModelVec3 readNormal(const char *p, int format, float wFromPos) {
     if (format == 6) {
         return normalize({readLeFloatRaw(p, 0), readLeFloatRaw(p, 4), readLeFloatRaw(p, 8)});
     }
@@ -210,8 +200,7 @@ ModelVec3 readNormal(const char *p, int format, float wFromPos)
     return {0.0f, 1.0f, 0.0f};
 }
 
-ModelVec2 readUv(const char *p, int format)
-{
+ModelVec2 readUv(const char *p, int format) {
     if (format == 35) { // R16G16_UNORM
         return {readLeU16Raw(p, 0) / 65535.0f, readLeU16Raw(p, 2) / 65535.0f};
     }
@@ -221,8 +210,7 @@ ModelVec2 readUv(const char *p, int format)
     return {0.0f, 0.0f};
 }
 
-VertexLayout decodeLayout(const BundleBlobRecord &blob)
-{
+VertexLayout decodeLayout(const BundleBlobRecord &blob) {
     Cursor c(blob.data);
     VertexLayout layout;
     const quint16 semanticCount = c.u16();
@@ -245,8 +233,7 @@ VertexLayout decodeLayout(const BundleBlobRecord &blob)
     return layout;
 }
 
-MeshInfo decodeMesh(const BundleBlobRecord &blob)
-{
+MeshInfo decodeMesh(const BundleBlobRecord &blob) {
     Cursor c(blob.data);
     MeshInfo mesh;
     mesh.name = blob.name;
@@ -355,8 +342,7 @@ MeshInfo decodeMesh(const BundleBlobRecord &blob)
     return mesh;
 }
 
-BufferData decodeBuffer(const BundleBlobRecord &blob)
-{
+BufferData decodeBuffer(const BundleBlobRecord &blob) {
     Cursor c(blob.data);
     const qint32 length = c.i32();
     const qint32 size = c.i32();
@@ -375,8 +361,7 @@ BufferData decodeBuffer(const BundleBlobRecord &blob)
     return out;
 }
 
-std::vector<SkeletonBone> decodeSkeletonBones(const BundleBlobRecord &blob)
-{
+std::vector<SkeletonBone> decodeSkeletonBones(const BundleBlobRecord &blob) {
     Cursor c(blob.data);
     const quint16 boneCount = c.u16();
 
@@ -406,8 +391,7 @@ std::vector<SkeletonBone> decodeSkeletonBones(const BundleBlobRecord &blob)
 
 } // namespace
 
-ModelMat4 matMul(const ModelMat4 &a, const ModelMat4 &b)
-{
+ModelMat4 matMul(const ModelMat4 &a, const ModelMat4 &b) {
     ModelMat4 out;
     for (int r = 0; r < 4; ++r) {
         for (int col = 0; col < 4; ++col) {
@@ -421,8 +405,7 @@ ModelMat4 matMul(const ModelMat4 &a, const ModelMat4 &b)
     return out;
 }
 
-std::vector<SkeletonBone> loadSkeletonBones(const ModelBundle &bundle)
-{
+std::vector<SkeletonBone> loadSkeletonBones(const ModelBundle &bundle) {
     const auto skeletonBlobs = bundle.blobsWithTag(bundle_tags::Skeleton);
     if (skeletonBlobs.empty()) {
         return {};
@@ -430,22 +413,19 @@ std::vector<SkeletonBone> loadSkeletonBones(const ModelBundle &bundle)
     return decodeSkeletonBones(*skeletonBlobs.front());
 }
 
-ModelVec3 ModelMat4::transformPoint(const ModelVec3 &p) const
-{
+ModelVec3 ModelMat4::transformPoint(const ModelVec3 &p) const {
     return {p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12],
             p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13],
             p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14]};
 }
 
-ModelVec3 ModelMat4::transformVector(const ModelVec3 &v) const
-{
+ModelVec3 ModelMat4::transformVector(const ModelVec3 &v) const {
     return {v.x * m[0] + v.y * m[4] + v.z * m[8],
             v.x * m[1] + v.y * m[5] + v.z * m[9],
             v.x * m[2] + v.y * m[6] + v.z * m[10]};
 }
 
-long long CarModel::totalVertices() const
-{
+long long CarModel::totalVertices() const {
     long long n = 0;
     for (const CarMesh &mesh : meshes) {
         n += static_cast<long long>(mesh.positions.size());
@@ -453,8 +433,7 @@ long long CarModel::totalVertices() const
     return n;
 }
 
-long long CarModel::totalIndices() const
-{
+long long CarModel::totalIndices() const {
     long long n = 0;
     for (const CarMesh &mesh : meshes) {
         n += static_cast<long long>(mesh.indices.size());
@@ -462,8 +441,7 @@ long long CarModel::totalIndices() const
     return n;
 }
 
-CarModel decodeModel(const ModelBundle &bundle, QString *error)
-{
+CarModel decodeModel(const ModelBundle &bundle, QString *error) {
     CarModel model;
 
     const auto meshBlobs = bundle.blobsWithTag(bundle_tags::Mesh);
@@ -729,8 +707,7 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error)
     return model;
 }
 
-CarModel loadModelBin(const QString &path, QString *error)
-{
+CarModel loadModelBin(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) {

@@ -25,13 +25,11 @@ constexpr quint16 kMethodDeflated = 8;
 constexpr quint16 kFlagEncrypted = 1 << 0;
 constexpr quint16 kFlagUtf8Name = 1 << 11;
 
-bool hasBytes(const QByteArray &bytes, qsizetype offset, qsizetype count)
-{
+bool hasBytes(const QByteArray &bytes, qsizetype offset, qsizetype count) {
     return offset >= 0 && count >= 0 && offset + count <= bytes.size();
 }
 
-int findEndOfCentralDirectory(const QByteArray &bytes)
-{
+int findEndOfCentralDirectory(const QByteArray &bytes) {
     const qsizetype maxComment = 0xffff;
     const qsizetype minSize = 22;
     const qsizetype start = std::max<qsizetype>(0, bytes.size() - (maxComment + minSize));
@@ -43,13 +41,11 @@ int findEndOfCentralDirectory(const QByteArray &bytes)
     return -1;
 }
 
-QString decodeEntryName(const QByteArray &raw, quint16 flags)
-{
+QString decodeEntryName(const QByteArray &raw, quint16 flags) {
     return (flags & kFlagUtf8Name) != 0 ? QString::fromUtf8(raw) : QString::fromLatin1(raw);
 }
 
-bool isSafeEntryPath(QString path)
-{
+bool isSafeEntryPath(QString path) {
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     if (path.isEmpty() || path.startsWith(QLatin1Char('/')) || QDir::isAbsolutePath(path)) {
         return false;
@@ -66,8 +62,7 @@ bool isSafeEntryPath(QString path)
     return true;
 }
 
-bool inflateRaw(const QByteArray &input, quint32 uncompressedSize, QByteArray &output, QString *error)
-{
+bool inflateRaw(const QByteArray &input, quint32 uncompressedSize, QByteArray &output, QString *error) {
     if (uncompressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
         if (error != nullptr) {
             *error = QStringLiteral("zip entry is too large to extract");
@@ -99,8 +94,7 @@ bool inflateRaw(const QByteArray &input, quint32 uncompressedSize, QByteArray &o
     return true;
 }
 
-bool writeEntry(const QString &path, const QByteArray &data, QString *error)
-{
+bool writeEntry(const QString &path, const QByteArray &data, QString *error) {
     const QFileInfo info(path);
     QDir dir;
     if (!dir.mkpath(info.absolutePath())) {
@@ -125,8 +119,7 @@ bool writeEntry(const QString &path, const QByteArray &data, QString *error)
     return true;
 }
 
-QByteArray readRange(QFile &file, quint64 offset, quint64 size)
-{
+QByteArray readRange(QFile &file, quint64 offset, quint64 size) {
     if (offset > static_cast<quint64>(file.size())
         || size > static_cast<quint64>(std::numeric_limits<int>::max())
         || offset + size > static_cast<quint64>(file.size())
@@ -138,8 +131,7 @@ QByteArray readRange(QFile &file, quint64 offset, quint64 size)
 
 } // namespace
 
-bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QString *error)
-{
+bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QString *error) {
     QFile file(zipPath);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error != nullptr) {
@@ -294,8 +286,7 @@ bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QS
 }
 
 QHash<QString, QByteArray> readZipEntries(
-    const QString &zipPath, const QStringList &entryPaths, QString *error)
-{
+    const QString &zipPath, const QStringList &entryPaths, QString *error) {
     QHash<QString, QString> wanted;
     for (QString path : entryPaths) {
         path.replace(QLatin1Char('\\'), QLatin1Char('/'));
@@ -431,8 +422,7 @@ QHash<QString, QByteArray> readZipEntries(
     return result;
 }
 
-QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QString *error)
-{
+QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QString *error) {
     QString key = entryPath;
     key.replace(QLatin1Char('\\'), QLatin1Char('/'));
     while (key.startsWith(QLatin1Char('/'))) {

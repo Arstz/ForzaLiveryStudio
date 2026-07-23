@@ -24,8 +24,7 @@ public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
+               const QModelIndex &index) const override {
         QStyleOptionViewItem itemOption(option);
         initStyleOption(&itemOption, index);
         const QString name = index.data(kSectionNameRole).toString();
@@ -63,8 +62,7 @@ public:
 } // namespace
 
 LiverySectionBar::LiverySectionBar(QWidget *parent)
-    : QListWidget(parent)
-{
+    : QListWidget(parent) {
     setObjectName(QStringLiteral("LiverySectionBar"));
     setItemDelegate(new SectionCountDelegate(this));
     setVisible(false);
@@ -78,15 +76,13 @@ LiverySectionBar::LiverySectionBar(QWidget *parent)
             });
 }
 
-void LiverySectionBar::refreshTheme()
-{
+void LiverySectionBar::refreshTheme() {
     const QPalette pal = paletteForTheme(currentUiTheme());
     setStyleSheet(QStringLiteral("QListWidget { background: %1; color: %2; }")
                       .arg(pal.color(QPalette::Base).name(), pal.color(QPalette::Text).name()));
 }
 
-void LiverySectionBar::setSections(const QVector<SectionInfo> &sections)
-{
+void LiverySectionBar::setSections(const QVector<SectionInfo> &sections) {
     const QString previousSectionId = currentItem() != nullptr
         ? currentItem()->data(Qt::UserRole).toString()
         : QString();

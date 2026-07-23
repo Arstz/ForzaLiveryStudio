@@ -9,26 +9,35 @@
 namespace gui {
 namespace {
 
-constexpr const char *DockIconNameProperty = "fh6DockIconName";
-constexpr const char *DockIconLabelProperty = "fh6DockIconLabel";
-constexpr const char *DockTitleLayoutProperty = "fh6DockTitleLayout";
+constexpr const char *kDockIconNameProperty = "fh6DockIconName";
+constexpr const char *kDockIconLabelProperty = "fh6DockIconLabel";
+constexpr const char *kDockTitleLayoutProperty = "fh6DockTitleLayout";
+
+QToolButton *dockTitleButton(QWidget *parent, QStyle::StandardPixmap icon, const QString &toolTip) {
+    auto *button = new QToolButton(parent);
+    button->setAutoRaise(true);
+    button->setFixedSize(18, 18);
+    button->setIcon(parent->style()->standardIcon(icon));
+    button->setToolTip(toolTip);
+
+    return button;
+}
 
 } // namespace
 
-void setDockTitleIcon(QDockWidget *dock, const QString &iconName)
-{
+void setDockTitleIcon(QDockWidget *dock, const QString &iconName) {
     if (dock == nullptr) {
         return;
     }
     const QIcon icon = assetIcon(iconName);
     dock->setWindowIcon(icon);
-    dock->setProperty(DockIconNameProperty, iconName);
+    dock->setProperty(kDockIconNameProperty, iconName);
 
     auto *titleBar = new QWidget(dock);
     auto *layout = new QHBoxLayout(titleBar);
     layout->setContentsMargins(6, 2, 4, 2);
     layout->setSpacing(5);
-    titleBar->setProperty(DockTitleLayoutProperty, QVariant::fromValue<QObject *>(layout));
+    titleBar->setProperty(kDockTitleLayoutProperty, QVariant::fromValue<QObject *>(layout));
 
     auto *iconLabel = new QLabel(titleBar);
     iconLabel->setFixedSize(18, 18);
@@ -36,40 +45,31 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName)
     iconLabel->setObjectName(QStringLiteral("DockTitleIconLabel"));
     iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     layout->addWidget(iconLabel);
-    dock->setProperty(DockIconLabelProperty, QVariant::fromValue<QObject *>(iconLabel));
+    dock->setProperty(kDockIconLabelProperty, QVariant::fromValue<QObject *>(iconLabel));
 
     auto *titleLabel = new QLabel(dock->windowTitle(), titleBar);
     titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
     layout->addWidget(titleLabel, 1);
 
-    auto *floatButton = new QToolButton(titleBar);
-    floatButton->setAutoRaise(true);
-    floatButton->setFixedSize(18, 18);
-    floatButton->setIcon(dock->style()->standardIcon(QStyle::SP_TitleBarNormalButton));
-    floatButton->setToolTip(QStringLiteral("Float"));
+    auto *floatButton = dockTitleButton(titleBar, QStyle::SP_TitleBarNormalButton, QStringLiteral("Float"));
     QObject::connect(floatButton, &QToolButton::clicked, dock, [dock]() {
         dock->setFloating(!dock->isFloating());
     });
     layout->addWidget(floatButton);
 
-    auto *closeButton = new QToolButton(titleBar);
-    closeButton->setAutoRaise(true);
-    closeButton->setFixedSize(18, 18);
-    closeButton->setIcon(dock->style()->standardIcon(QStyle::SP_TitleBarCloseButton));
-    closeButton->setToolTip(QStringLiteral("Close"));
+    auto *closeButton = dockTitleButton(titleBar, QStyle::SP_TitleBarCloseButton, QStringLiteral("Close"));
     QObject::connect(closeButton, &QToolButton::clicked, dock, &QDockWidget::hide);
     layout->addWidget(closeButton);
 
     dock->setTitleBarWidget(titleBar);
 }
 
-QToolButton *addDockAreaCollapseButton(QDockWidget *dock)
-{
+QToolButton *addDockAreaCollapseButton(QDockWidget *dock) {
     if (dock == nullptr || dock->titleBarWidget() == nullptr) {
         return nullptr;
     }
     auto *titleBar = dock->titleBarWidget();
-    auto *layout = qobject_cast<QHBoxLayout *>(titleBar->property(DockTitleLayoutProperty).value<QObject *>());
+    auto *layout = qobject_cast<QHBoxLayout *>(titleBar->property(kDockTitleLayoutProperty).value<QObject *>());
     if (layout == nullptr) {
         layout = qobject_cast<QHBoxLayout *>(titleBar->layout());
     }
@@ -96,8 +96,7 @@ QToolButton *addDockAreaCollapseButton(QDockWidget *dock)
     return button;
 }
 
-QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed)
-{
+QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed) {
     switch (area) {
     case Qt::LeftDockWidgetArea:
         return collapsed ? QStringLiteral(">") : QStringLiteral("<");
@@ -112,8 +111,7 @@ QString dockAreaCollapseText(Qt::DockWidgetArea area, bool collapsed)
     }
 }
 
-void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea area, bool collapsed)
-{
+void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea area, bool collapsed) {
     if (button == nullptr) {
         return;
     }
@@ -122,18 +120,17 @@ void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea are
     button->setToolTip(collapsed ? QStringLiteral("Restore dock area") : QStringLiteral("Collapse dock area"));
 }
 
-void refreshDockTitleIcon(QDockWidget *dock)
-{
+void refreshDockTitleIcon(QDockWidget *dock) {
     if (dock == nullptr) {
         return;
     }
-    const QString iconName = dock->property(DockIconNameProperty).toString();
+    const QString iconName = dock->property(kDockIconNameProperty).toString();
     if (iconName.isEmpty()) {
         return;
     }
     const QIcon icon = assetIcon(iconName);
     dock->setWindowIcon(icon);
-    QObject *stored = dock->property(DockIconLabelProperty).value<QObject *>();
+    QObject *stored = dock->property(kDockIconLabelProperty).value<QObject *>();
     auto *label = qobject_cast<QLabel *>(stored);
     if (label == nullptr && dock->titleBarWidget() != nullptr) {
         label = dock->titleBarWidget()->findChild<QLabel *>(QStringLiteral("DockTitleIconLabel"));
@@ -149,18 +146,15 @@ class SplitterResizeCursorFilter final : public QObject {
 public:
     explicit SplitterResizeCursorFilter(Qt::Orientation orientation, QObject *parent = nullptr)
         : QObject(parent)
-        , cursorShape_(orientation == Qt::Horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor)
-    {
+        , cursorShape_(orientation == Qt::Horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor) {
     }
 
-    ~SplitterResizeCursorFilter() override
-    {
+    ~SplitterResizeCursorFilter() override {
         clearOverrideCursor();
     }
 
 protected:
-    bool eventFilter(QObject *watched, QEvent *event) override
-    {
+    bool eventFilter(QObject *watched, QEvent *event) override {
         switch (event->type()) {
         case QEvent::Enter:
         case QEvent::HoverEnter:
@@ -180,8 +174,7 @@ protected:
     }
 
 private:
-    void setOverrideCursor()
-    {
+    void setOverrideCursor() {
         const QCursor cursor(cursorShape_);
         if (active_) {
             QApplication::changeOverrideCursor(cursor);
@@ -191,8 +184,7 @@ private:
         }
     }
 
-    void clearOverrideCursor()
-    {
+    void clearOverrideCursor() {
         if (!active_) {
             return;
         }
@@ -206,8 +198,7 @@ private:
 
 } // namespace
 
-void installSplitterResizeCursor(QSplitter *splitter)
-{
+void installSplitterResizeCursor(QSplitter *splitter) {
     if (splitter == nullptr || splitter->count() < 2) {
         return;
     }

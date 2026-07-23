@@ -19,6 +19,7 @@ struct PolygonContour {
 };
 
 struct PolygonMeshSources {
+    QPolygonF circle;
     QPolygonF square;
     QPolygonF triangle;
 
@@ -43,12 +44,15 @@ struct PolygonMeshResult {
     QString error;
 };
 
-// tolerance is used only to remove duplicate and visually redundant input points;
-// topology checks use an independent floating-point precision threshold.
 PolygonContour buildPolygonContour(const QVector<QPointF> &points,
                                    double tolerance = 1e-7);
 PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry);
 PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
                               const std::function<bool()> &cancelled = {});
+QVector<PolygonMeshPlacement> optimizePolygonMeshWithEllipses(
+    const QVector<PolygonMeshPlacement> &placements,
+    const PolygonMeshSources &sources,
+    const QPainterPath &corePath,
+    const std::function<bool()> &cancelled = {});
 
 } // namespace gui

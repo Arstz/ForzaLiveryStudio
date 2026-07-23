@@ -13,8 +13,7 @@
 namespace fh6 {
 namespace {
 
-QString resolveCGroupPath(const QString &folderOrFile)
-{
+QString resolveCGroupPath(const QString &folderOrFile) {
     QFileInfo info(folderOrFile);
     if (info.isDir()) {
         return QDir(folderOrFile).filePath(QStringLiteral("C_group"));
@@ -27,8 +26,7 @@ QString resolveCGroupPath(const QString &folderOrFile)
 using detail::appendLeU32;
 using detail::readLeU32;
 
-QByteArray inflateFirstContainer(const QByteArray &wrapped)
-{
+QByteArray inflateFirstContainer(const QByteArray &wrapped) {
     if (wrapped.size() < 8) {
         throw std::runtime_error("container is shorter than wrapper header");
     }
@@ -50,8 +48,7 @@ QByteArray inflateFirstContainer(const QByteArray &wrapped)
     return output;
 }
 
-QByteArray inflateContainer(const QByteArray &wrapped)
-{
+QByteArray inflateContainer(const QByteArray &wrapped) {
     if (wrapped.size() < 8) {
         throw std::runtime_error("container is shorter than wrapper header");
     }
@@ -62,8 +59,7 @@ QByteArray inflateContainer(const QByteArray &wrapped)
     return inflateFirstContainer(wrapped);
 }
 
-QByteArray readCGroupPayload(const QString &folderOrFile)
-{
+QByteArray readCGroupPayload(const QString &folderOrFile) {
     QFile file(resolveCGroupPath(folderOrFile));
     if (!file.open(QIODevice::ReadOnly)) {
         throw std::runtime_error(("could not open C_group: " + file.fileName()).toStdString());
@@ -71,8 +67,7 @@ QByteArray readCGroupPayload(const QString &folderOrFile)
     return inflateContainer(file.readAll());
 }
 
-void writeCGroupFile(const QString &path, const QByteArray &payload)
-{
+void writeCGroupFile(const QString &path, const QByteArray &payload) {
     uLongf bound = compressBound(static_cast<uLong>(payload.size()));
     QByteArray compressed;
     compressed.resize(static_cast<int>(bound));

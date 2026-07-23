@@ -10,11 +10,10 @@
 namespace gui {
 namespace {
 
-constexpr int SwatchSize = 28;
-constexpr int SwatchesPerRow = 6;
+constexpr int kSwatchSize = 28;
+constexpr int kSwatchesPerRow = 6;
 
-QString swatchStyle(const QColor &color)
-{
+QString swatchStyle(const QColor &color) {
     const QColor text = color.lightness() < 128 ? QColor(255, 255, 255) : QColor(32, 34, 37);
     return QStringLiteral("QPushButton { background-color: rgba(%1,%2,%3,%4); color: %5; border: 1px solid palette(mid); }")
         .arg(color.red())
@@ -30,8 +29,7 @@ public:
     std::function<void()> middleClickCallback;
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override
-    {
+    void mousePressEvent(QMouseEvent *event) override {
         if (event->button() == Qt::MiddleButton && middleClickCallback != nullptr) {
             middleClickCallback();
             event->accept();
@@ -44,44 +42,38 @@ protected:
 } // namespace
 
 ColorPaletteWidget::ColorPaletteWidget(QWidget *parent)
-    : QWidget(parent)
-{
+    : QWidget(parent) {
     grid_ = new QGridLayout(this);
     grid_->setContentsMargins(6, 6, 6, 6);
     grid_->setSpacing(6);
 
     addButton_ = new QPushButton(QStringLiteral("+"), this);
-    addButton_->setFixedSize(SwatchSize, SwatchSize);
+    addButton_->setFixedSize(kSwatchSize, kSwatchSize);
     addButton_->setToolTip(QStringLiteral("Save selected color"));
     connect(addButton_, &QPushButton::clicked, this, [this]() { addCurrentColor(); });
 
     rebuild();
 }
 
-void ColorPaletteWidget::setSwatches(QVector<Color> *swatches)
-{
+void ColorPaletteWidget::setSwatches(QVector<Color> *swatches) {
     swatches_ = swatches;
     rebuild();
 }
 
-void ColorPaletteWidget::setCurrentColorProvider(std::function<std::optional<Color>()> provider)
-{
+void ColorPaletteWidget::setCurrentColorProvider(std::function<std::optional<Color>()> provider) {
     currentColorProvider_ = std::move(provider);
 }
 
-void ColorPaletteWidget::setApplyColorCallback(std::function<void(const Color &)> callback)
-{
+void ColorPaletteWidget::setApplyColorCallback(std::function<void(const Color &)> callback) {
     applyColorCallback_ = std::move(callback);
 }
 
-void ColorPaletteWidget::setEditCallbacks(std::function<void()> beginEdit, std::function<void()> commitEdit)
-{
+void ColorPaletteWidget::setEditCallbacks(std::function<void()> beginEdit, std::function<void()> commitEdit) {
     beginEditCallback_ = std::move(beginEdit);
     commitEditCallback_ = std::move(commitEdit);
 }
 
-bool ColorPaletteWidget::addColor(const QColor &color)
-{
+bool ColorPaletteWidget::addColor(const QColor &color) {
     if (!color.isValid() || swatches_ == nullptr) {
         return false;
     }
@@ -89,24 +81,15 @@ bool ColorPaletteWidget::addColor(const QColor &color)
     if (std::find(swatches_->begin(), swatches_->end(), swatch) != swatches_->end()) {
         return false;
     }
-    if (beginEditCallback_ != nullptr) {
-        beginEditCallback_();
-    }
-    swatches_->push_back(swatch);
-    if (commitEditCallback_ != nullptr) {
-        commitEditCallback_();
-    }
-    rebuild();
+    editSwatches([this, swatch]() { swatches_->push_back(swatch); });
     return true;
 }
 
-void ColorPaletteWidget::refreshTheme()
-{
+void ColorPaletteWidget::refreshTheme() {
     rebuild();
 }
 
-void ColorPaletteWidget::rebuild()
-{
+void ColorPaletteWidget::rebuild() {
     while (QLayoutItem *item = grid_->takeAt(0)) {
         if (QWidget *widget = item->widget()) {
             if (widget != addButton_) {
@@ -122,7 +105,7 @@ void ColorPaletteWidget::rebuild()
     for (int i = 0; i < swatchCount; ++i) {
         const Color color = swatches_->at(i);
         auto *button = new SwatchButton(this);
-        button->setFixedSize(SwatchSize, SwatchSize);
+        button->setFixedSize(kSwatchSize, kSwatchSize);
         button->setToolTip(toQColor(color).name(QColor::HexArgb).toUpper());
         button->setStyleSheet(swatchStyle(toQColor(color)));
         button->middleClickCallback = [this, i]() { removeSwatch(i); };
@@ -140,7 +123,7 @@ void ColorPaletteWidget::rebuild()
             }
         });
         grid_->addWidget(button, row, column);
-        if (++column >= SwatchesPerRow) {
+        if (++column >= kSwatchesPerRow) {
             column = 0;
             ++row;
         }
@@ -149,11 +132,21 @@ void ColorPaletteWidget::rebuild()
     addButton_->setEnabled(swatches_ != nullptr);
     grid_->addWidget(addButton_, row, column);
     grid_->setRowStretch(row + 1, 1);
-    grid_->setColumnStretch(SwatchesPerRow, 1);
+    grid_->setColumnStretch(kSwatchesPerRow, 1);
 }
 
-void ColorPaletteWidget::addCurrentColor()
-{
+void ColorPaletteWidget::editSwatches(const std::function<void()> &edit) {
+    if (beginEditCallback_ != nullptr) {
+        beginEditCallback_();
+    }
+    edit();
+    if (commitEditCallback_ != nullptr) {
+        commitEditCallback_();
+    }
+    rebuild();
+}
+
+void ColorPaletteWidget::addCurrentColor() {
     if (currentColorProvider_ == nullptr) {
         return;
     }
@@ -164,28 +157,18 @@ void ColorPaletteWidget::addCurrentColor()
     addColor(toQColor(color.value()));
 }
 
-void ColorPaletteWidget::removeSwatch(int index)
-{
+void ColorPaletteWidget::removeSwatch(int index) {
     if (swatches_ == nullptr || index < 0 || index >= swatches_->size()) {
         return;
     }
-    if (beginEditCallback_ != nullptr) {
-        beginEditCallback_();
-    }
-    swatches_->removeAt(index);
-    if (commitEditCallback_ != nullptr) {
-        commitEditCallback_();
-    }
-    rebuild();
+    editSwatches([this, index]() { swatches_->removeAt(index); });
 }
 
-QColor ColorPaletteWidget::toQColor(const Color &color)
-{
+QColor ColorPaletteWidget::toQColor(const Color &color) {
     return QColor(color[ColorByteRed], color[ColorByteGreen], color[ColorByteBlue], color[ColorByteAlpha]);
 }
 
-ColorPaletteWidget::Color ColorPaletteWidget::fromQColor(const QColor &color)
-{
+ColorPaletteWidget::Color ColorPaletteWidget::fromQColor(const QColor &color) {
     return {static_cast<quint8>(color.blue()),
             static_cast<quint8>(color.green()),
             static_cast<quint8>(color.red()),

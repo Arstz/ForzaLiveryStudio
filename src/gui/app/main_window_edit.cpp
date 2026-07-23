@@ -25,8 +25,7 @@ using namespace mw_detail;
 
 namespace {
 
-fh6::Matrix3 generatedShapeMatrix(const QTransform &transform)
-{
+fh6::Matrix3 generatedShapeMatrix(const QTransform &transform) {
     fh6::Matrix3 matrix;
     matrix.m[0][0] = transform.m11();
     matrix.m[0][1] = transform.m21();
@@ -37,45 +36,100 @@ fh6::Matrix3 generatedShapeMatrix(const QTransform &transform)
     return matrix;
 }
 
+std::array<quint8, 4> colorBytes(const QColor &color) {
+    return {
+        static_cast<quint8>(color.blue()),
+        static_cast<quint8>(color.green()),
+        static_cast<quint8>(color.red()),
+        static_cast<quint8>(color.alpha()),
+    };
+}
+
 } // namespace
 
-void MainWindow::startPenFill(const QVector<PenPoint> &points)
-{
+void MainWindow::startPenFill(const QVector<PenPoint> &points,
+                              const std::optional<QColor> &fillColor) {
     if (!ensureProjectForInsertion() || canvas_ == nullptr) {
         if (canvas_ != nullptr) {
             canvas_->setPenFillRunning(false);
         }
         return;
     }
-    cancelGeneratedFill();
-    updateLastSelectedShapeDefaults();
-    const BehaviorSettings behavior = loadBehaviorSettings();
-    generatedFillColor_ = behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_
-        ? lastSelectedShapeColor_
-        : std::array<quint8, 4>{255, 255, 255, 255};
-    generatedFillInsertionEntries_ = selectedEntryIds();
-    generatedFillLabel_ = QStringLiteral("Pen fill");
+    prepareGeneratedFill(fillColor, QStringLiteral("Pen fill"), QStringLiteral("pen"));
 
     PenFillRequest request;
     request.points = points;
     request.primitives = canvas_->penPrimitiveCatalog();
     if (request.primitives.isEmpty()) {
         canvas_->setPenFillRunning(false);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
+        clearGeneratedFillState();
         statusBar()->showMessage(QStringLiteral("Pen fill failed: Primitive geometry is unavailable"), 4000);
         return;
     }
 
+    canvas_->setPenFillRunning(true, QStringLiteral("Filling Pen path…"));
+    statusBar()->showMessage(QStringLiteral("Filling Pen path… Press %1 to cancel")
+                                 .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
+
+    startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
+        return fillPenPath(request, cancelled);
+    });
+}
+
+void MainWindow::startLiningFill(const QVector<PenPoint> &points,
+                                 double width,
+                                 const std::optional<QColor> &fillColor) {
+    if (!ensureProjectForInsertion() || canvas_ == nullptr) {
+        if (canvas_ != nullptr) {
+            canvas_->setLiningFillRunning(false);
+        }
+        return;
+    }
+    prepareGeneratedFill(fillColor, QStringLiteral("Lining fill"), QStringLiteral("lining"));
+
+    LiningFillRequest request;
+    request.points = points;
+    request.width = width;
+    request.primitives = canvas_->liningPrimitiveCatalog();
+    if (request.primitives.isEmpty()) {
+        canvas_->setLiningFillRunning(false);
+        clearGeneratedFillState();
+        statusBar()->showMessage(QStringLiteral("Lining fill failed: Primitive geometry is unavailable"), 4000);
+        return;
+    }
+
+    canvas_->setLiningFillRunning(true, QStringLiteral("Filling lining path…"));
+    statusBar()->showMessage(QStringLiteral("Filling lining path… Press %1 to cancel")
+                                 .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
+
+    startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
+        return fillLiningPath(request, cancelled);
+    });
+}
+
+void MainWindow::prepareGeneratedFill(const std::optional<QColor> &fillColor,
+                                      const QString &label,
+                                      const QString &tool) {
+    cancelActiveFills();
+    updateLastSelectedShapeDefaults();
+    generatedFillColor_ = fillColor.has_value() && fillColor->isValid()
+        ? colorBytes(*fillColor)
+        : (haveLastSelectedShapeDefaults_
+               ? lastSelectedShapeColor_
+               : std::array<quint8, 4>{255, 255, 255, 255});
+    generatedFillInsertionEntries_ = selectedEntryIds();
+    generatedFillLabel_ = label;
+    generatedFillTool_ = tool;
+}
+
+void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
     const quint64 generation = ++generatedFillGeneration_;
     const auto token = std::make_shared<std::atomic_bool>(false);
     generatedFillCancel_ = token;
-    canvas_->setPenFillRunning(true, QStringLiteral("Filling Pen path…"));
-    statusBar()->showMessage(QStringLiteral("Filling Pen path… Press Esc to cancel"));
 
     QPointer<MainWindow> guard(this);
-    auto *task = QRunnable::create([guard, generation, request = std::move(request), token]() mutable {
-        PenFillResult result = fillPenPath(request, [token]() {
+    auto *task = QRunnable::create([guard, generation, fill = std::move(fill), token]() mutable {
+        PenFillResult result = fill([token]() {
             return token->load(std::memory_order_relaxed);
         });
         if (guard.isNull()) {
@@ -84,7 +138,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points)
         QMetaObject::invokeMethod(guard.data(),
                                   [guard, generation, result = std::move(result)]() mutable {
                                       if (!guard.isNull()) {
-                                          guard->finishPenFill(generation, std::move(result));
+                                          guard->finishGeneratedFill(generation, std::move(result));
                                       }
                                   },
                                   Qt::QueuedConnection);
@@ -93,43 +147,55 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points)
     QThreadPool::globalInstance()->start(task);
 }
 
-void MainWindow::cancelGeneratedFill()
-{
+void MainWindow::clearGeneratedFillState() {
+    generatedFillInsertionEntries_.clear();
+    generatedFillLabel_.clear();
+    generatedFillTool_.clear();
+}
+
+void MainWindow::cancelActiveFills() {
+    cancelGeneratedFill();
+    cancelRegionFill();
+}
+
+void MainWindow::cancelGeneratedFill() {
     if (generatedFillCancel_ == nullptr) {
         return;
     }
     generatedFillCancel_->store(true, std::memory_order_relaxed);
     generatedFillCancel_.reset();
     ++generatedFillGeneration_;
-    generatedFillInsertionEntries_.clear();
     if (canvas_ != nullptr) {
         canvas_->setPenFillRunning(false);
+        canvas_->setLiningFillRunning(false);
     }
     statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
-    generatedFillLabel_.clear();
+    clearGeneratedFillState();
 }
 
-void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
-{
+void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
     if (generation != generatedFillGeneration_ || generatedFillCancel_ == nullptr) {
         return;
     }
     generatedFillCancel_.reset();
     if (canvas_ != nullptr) {
-        canvas_->setPenFillRunning(false);
+        if (generatedFillTool_ == QStringLiteral("lining")) {
+            canvas_->setLiningFillRunning(false);
+        } else {
+            canvas_->setPenFillRunning(false);
+        }
     }
     if (result.cancelled) {
-        statusBar()->showMessage(QStringLiteral("Pen fill cancelled"), 1500);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
+        statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
+        clearGeneratedFillState();
         return;
     }
     if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
-        statusBar()->showMessage(QStringLiteral("Pen fill failed: %1")
+        statusBar()->showMessage(QStringLiteral("%1 failed: %2")
+                                     .arg(generatedFillLabel_)
                                      .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
                                  5000);
-        generatedFillInsertionEntries_.clear();
-        generatedFillLabel_.clear();
+        clearGeneratedFillState();
         return;
     }
 
@@ -138,13 +204,22 @@ void MainWindow::finishPenFill(quint64 generation, PenFillResult result)
     for (const PenPlacement &placement : result.placements) {
         placements.push_back({placement.shapeId, placement.transform});
     }
-    insertGeneratedFill(QStringLiteral("Pen Fill"), QStringLiteral("Pen Fill"), placements);
+    const bool lining = generatedFillTool_ == QStringLiteral("lining");
+    const QString groupName = lining ? QStringLiteral("Lining") : QStringLiteral("Pen Fill");
+    insertGeneratedFill(groupName, groupName, placements);
+    if (canvas_ != nullptr) {
+        if (lining) {
+            canvas_->cancelLiningInteraction();
+        } else {
+            canvas_->cancelPenInteraction();
+        }
+    }
+    clearGeneratedFillState();
 }
 
 void MainWindow::insertGeneratedFill(const QString &groupName,
                                      const QString &displayName,
-                                     const QVector<QPair<int, QTransform>> &placements)
-{
+                                     const QVector<QPair<int, QTransform>> &placements) {
     if (placements.isEmpty() || !state_->hasProject()) {
         generatedFillInsertionEntries_.clear();
         return;
@@ -184,7 +259,6 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
     generatedFillInsertionEntries_.clear();
-    generatedFillLabel_.clear();
     state_->noteProjectStructureChanged();
     if (canvas_ != nullptr) {
         canvas_->setFocus();
@@ -195,18 +269,167 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
                              3500);
 }
 
-fh6::Project *MainWindow::project()
-{
+void MainWindow::insertGeneratedRegionVariants(
+    const QString &groupName,
+    const QString &displayName,
+    const QVector<GeneratedRegionVariant> &variants,
+    const QVector<QString> &insertionEntries,
+    const QImage &differenceHeatmap,
+    const QString &sourceGuideId) {
+    if (variants.isEmpty() || !state_->hasProject()) {
+        return;
+    }
+
+    auto group = std::make_unique<fh6::scene::Group>();
+    group->id = state_->uniqueGroupId();
+    const QString groupId = group->id;
+    group->name = groupName;
+    QSet<QString> generatedIds;
+    int shapeCount = 0;
+    int regionCount = 0;
+    for (const GeneratedRegionVariant &variant : variants) {
+        regionCount += variant.regions.size();
+        for (const GeneratedRegionGroup &region : variant.regions) {
+            shapeCount += region.shapes.size();
+        }
+    }
+    if (shapeCount == 0) {
+        return;
+    }
+    std::unique_ptr<fh6::scene::GuideLayer> differenceGuide;
+    QString differenceGuideParentId;
+    if (!differenceHeatmap.isNull()) {
+        const fh6::scene::Layer *sourceNode = state_->sceneNode(sourceGuideId);
+        if (sourceNode != nullptr
+            && sourceNode->kind() == fh6::scene::LayerKind::Guide) {
+            const auto *sourceGuide =
+                static_cast<const fh6::scene::GuideLayer *>(sourceNode);
+            const QImage storedHeatmap = differenceHeatmap.convertToFormat(
+                QImage::Format_ARGB32_Premultiplied);
+            QString heatmapFormat;
+            const QByteArray encodedHeatmap =
+                encodeGuideImage(storedHeatmap, &heatmapFormat);
+            if (!encodedHeatmap.isEmpty()) {
+                differenceGuide = std::make_unique<fh6::scene::GuideLayer>();
+                differenceGuide->id = state_->uniqueGuideLayerId();
+                differenceGuide->name = QStringLiteral("Dangerous Differences");
+                differenceGuide->transform = sourceGuide->transform;
+                differenceGuide->opacity = 1.0;
+                differenceGuide->image =
+                    std::make_unique<fh6::scene::RasterContainer>();
+                differenceGuide->image->encoded = encodedHeatmap;
+                differenceGuide->image->pixels = QByteArray(
+                    reinterpret_cast<const char *>(storedHeatmap.constBits()),
+                    storedHeatmap.sizeInBytes());
+                differenceGuide->image->format = heatmapFormat;
+                differenceGuide->image->width = storedHeatmap.width();
+                differenceGuide->image->height = storedHeatmap.height();
+                differenceGuideParentId =
+                    state_->parentGroupForEntry(sourceGuideId);
+            }
+        }
+    }
+    const bool differenceGuideCreated = differenceGuide != nullptr;
+    generatedIds.reserve(shapeCount);
+    for (const GeneratedRegionVariant &variant : variants) {
+        auto variantGroup = std::make_unique<fh6::scene::Group>();
+        variantGroup->id = QStringLiteral("group_%1").arg(
+            QUuid::createUuid().toString(QUuid::WithoutBraces));
+        variantGroup->name = variant.name;
+        variantGroup->visible = variant.visible;
+        int variantRegionCount = 0;
+        for (const GeneratedRegionGroup &region : variant.regions) {
+            if (region.shapes.isEmpty()) {
+                continue;
+            }
+            auto regionGroup = std::make_unique<fh6::scene::Group>();
+            regionGroup->id = QStringLiteral("group_%1").arg(
+                QUuid::createUuid().toString(QUuid::WithoutBraces));
+            regionGroup->name = QStringLiteral("Region %1").arg(++variantRegionCount);
+            for (const GeneratedRegionShape &placement : region.shapes) {
+                auto shape = std::make_unique<fh6::scene::Shape>();
+                shape->id = QStringLiteral("layer_%1").arg(
+                    QUuid::createUuid().toString(QUuid::WithoutBraces));
+                shape->name = fh6::detail::shapeName(
+                    static_cast<quint16>(placement.shapeId));
+                shape->setVectorShape(static_cast<quint16>(placement.shapeId));
+                shape->transform = fh6::decomposeTransform2D(
+                    generatedShapeMatrix(placement.transform));
+                shape->color = {placement.color[0], placement.color[1],
+                                placement.color[2], placement.color[3]};
+                if (variant.visible) {
+                    generatedIds.insert(shape->id);
+                }
+                regionGroup->append(std::move(shape));
+            }
+            variantGroup->append(std::move(regionGroup));
+        }
+        group->append(std::move(variantGroup));
+    }
+
+    state_->beginProjectEdit();
+    state_->insertLayerAboveSelection(std::move(group), insertionEntries);
+    if (fh6::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
+        const QString parentId = state_->parentGroupForEntry(groupId);
+        if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
+            const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
+            for (const auto &variantNode : inserted->children) {
+                if (variantNode->kind() != fh6::scene::LayerKind::Group) {
+                    continue;
+                }
+                auto *variantGroup = static_cast<fh6::scene::Group *>(variantNode.get());
+                for (const auto &regionNode : variantGroup->children) {
+                    if (regionNode->kind() != fh6::scene::LayerKind::Group) {
+                        continue;
+                    }
+                    auto *regionGroup = static_cast<fh6::scene::Group *>(regionNode.get());
+                    for (const auto &shape : regionGroup->children) {
+                        shape->transform = fh6::decomposeTransform2D(
+                            fh6::detail::multiply(parentInverse,
+                                                  shape->transform.matrix()));
+                    }
+                }
+            }
+        }
+    }
+    if (differenceGuide != nullptr) {
+        fh6::scene::Group *differenceParent = differenceGuideParentId.isEmpty()
+            ? state_->project_.root.get()
+            : state_->groupForId(differenceGuideParentId);
+        if (differenceParent == nullptr) {
+            differenceParent = state_->project_.root.get();
+        }
+        differenceParent->append(std::move(differenceGuide));
+    }
+    state_->selectedLayerIds_ = generatedIds;
+    state_->selectedGuideLayerIds_.clear();
+    state_->selectedEntryIds_.clear();
+    state_->commitProjectEdit();
+    state_->noteProjectStructureChanged();
+    if (canvas_ != nullptr) {
+        canvas_->setFocus();
+    }
+    const QString differenceText = differenceGuideCreated
+        ? QStringLiteral(", and a difference heatmap") : QString();
+    statusBar()->showMessage(QStringLiteral(
+                                 "Created %1 with %2 variants, %3 region groups, %4 shapes%5")
+                                 .arg(displayName)
+                                 .arg(variants.size())
+                                 .arg(regionCount)
+                                 .arg(shapeCount)
+                                 .arg(differenceText),
+                             3500);
+}
+
+fh6::Project *MainWindow::project() {
     return state_->project();
 }
 
-QVector<fh6::scene::Group *> MainWindow::selectedGroups()
-{
+QVector<fh6::scene::Group *> MainWindow::selectedGroups() {
     return state_->selectedGroups(state_->fullySelectedTopGroupIds());
 }
 
-void MainWindow::refreshSelectionProperties()
-{
+void MainWindow::refreshSelectionProperties() {
     if (properties_ == nullptr) {
         return;
     }
@@ -215,8 +438,7 @@ void MainWindow::refreshSelectionProperties()
     refreshPropertyBoxFieldsFromCanvas();
 }
 
-void MainWindow::refreshPropertyBoxFieldsFromCanvas()
-{
+void MainWindow::refreshPropertyBoxFieldsFromCanvas() {
     if (properties_ == nullptr || canvas_ == nullptr) {
         return;
     }
@@ -228,8 +450,7 @@ void MainWindow::refreshPropertyBoxFieldsFromCanvas()
     properties_->refreshTransformFieldsFromBox(center, width, height, boxFrame, valid);
 }
 
-void MainWindow::deleteSelectedLayers()
-{
+void MainWindow::deleteSelectedLayers() {
     if (!state_->hasProject() || (state_->selectedLayerIds().isEmpty() && state_->selectedGuideLayerIds().isEmpty())) {
         return;
     }
@@ -256,15 +477,13 @@ void MainWindow::deleteSelectedLayers()
     state_->noteProjectStructureChanged();
 }
 
-void MainWindow::copySelection()
-{
+void MainWindow::copySelection() {
     if (copySelectionToClipboard()) {
         statusBar()->showMessage(QStringLiteral("Copied selection"), 1500);
     }
 }
 
-void MainWindow::cutSelection()
-{
+void MainWindow::cutSelection() {
     if (!state_->hasProject()) {
         return;
     }
@@ -287,8 +506,7 @@ void MainWindow::cutSelection()
     statusBar()->showMessage(QStringLiteral("Cut selection"), 1500);
 }
 
-void MainWindow::pasteClipboard()
-{
+void MainWindow::pasteClipboard() {
     if (!state_->hasProject() || state_->clipboard() == nullptr) {
         statusBar()->showMessage(QStringLiteral("Clipboard is empty"), 2500);
         return;
@@ -306,8 +524,7 @@ void MainWindow::pasteClipboard()
     statusBar()->showMessage(QStringLiteral("Pasted selection"), 1500);
 }
 
-void MainWindow::stampSelection()
-{
+void MainWindow::stampSelection() {
     if (!state_->hasProject()) {
         return;
     }
@@ -327,8 +544,7 @@ void MainWindow::stampSelection()
     statusBar()->showMessage(QStringLiteral("Stamped selection"), 1500);
 }
 
-void MainWindow::sampleGuideColorToSelection()
-{
+void MainWindow::sampleGuideColorToSelection() {
     if (properties_ == nullptr || !properties_->sampleGuideColorToSelection()) {
         statusBar()->showMessage(QStringLiteral("No guide color under cursor or no colorable selection"), 2500);
         return;
@@ -336,8 +552,7 @@ void MainWindow::sampleGuideColorToSelection()
     statusBar()->showMessage(QStringLiteral("Picked guide color"), 1500);
 }
 
-void MainWindow::insertShape(int shapeId)
-{
+void MainWindow::insertShape(int shapeId) {
     if (!ensureProjectForInsertion()) {
         return;
     }
@@ -373,8 +588,7 @@ void MainWindow::insertShape(int shapeId)
     statusBar()->showMessage(QStringLiteral("Inserted %1").arg(insertedName), 1500);
 }
 
-void MainWindow::replaceSelectedShape(int shapeId)
-{
+void MainWindow::replaceSelectedShape(int shapeId) {
     const QVector<fh6::scene::Shape *> selected = state_->selectedLayers();
     if (selected.size() != 1 || !state_->selectedGuideLayerIds().isEmpty()
         || selected.front() == nullptr) {
@@ -399,8 +613,7 @@ void MainWindow::replaceSelectedShape(int shapeId)
     statusBar()->showMessage(QStringLiteral("Replaced selected shape"), 1500);
 }
 
-void MainWindow::insertLogo(quint32 rasterId, int width, int height)
-{
+void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
     if (!ensureProjectForInsertion()) {
         return;
     }
@@ -437,8 +650,7 @@ void MainWindow::insertLogo(quint32 rasterId, int width, int height)
     statusBar()->showMessage(QStringLiteral("Inserted %1").arg(insertedName), 1500);
 }
 
-void MainWindow::placeTextDialog()
-{
+void MainWindow::placeTextDialog() {
     if (!ensureProjectForInsertion()) {
         return;
     }
@@ -542,8 +754,7 @@ void MainWindow::placeTextDialog()
     }
 }
 
-void MainWindow::saveCurrentSelectionAsCustomGroup()
-{
+void MainWindow::saveCurrentSelectionAsCustomGroup() {
     if (!state_->hasProject()) {
         QMessageBox::information(this, QStringLiteral("Custom Group"), QStringLiteral("Open a project before saving a custom group."));
         return;
@@ -584,8 +795,7 @@ void MainWindow::saveCurrentSelectionAsCustomGroup()
     statusBar()->showMessage(QStringLiteral("Saved custom group %1").arg(name), 2000);
 }
 
-void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &clipboard)
-{
+void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &clipboard) {
     if (!ensureProjectForInsertion()) {
         return;
     }
@@ -648,8 +858,7 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     statusBar()->showMessage(QStringLiteral("Inserted custom group"), 1500);
 }
 
-bool MainWindow::importGuideLayer(const QString &path, QString *error)
-{
+bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     if (!ensureProjectForInsertion()) {
         if (error != nullptr) {
             *error = QStringLiteral("no project is loaded");
@@ -713,15 +922,11 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error)
     const QString guideId = guide->id;
     const QString guideName = guide->name;
     const QString sectionId = state_->project_.isLivery ? activeLiverySectionId() : QString();
-    if (!sectionId.isEmpty()) {
-        if (fh6::scene::Group *section = state_->groupForId(sectionId)) {
-            section->append(std::move(guide));
-        } else {
-            state_->project_.root->append(std::move(guide));
-        }
-    } else {
-        state_->project_.root->append(std::move(guide));
+    fh6::scene::Group *parent = sectionId.isEmpty() ? nullptr : state_->groupForId(sectionId);
+    if (parent == nullptr) {
+        parent = state_->project_.root.get();
     }
+    parent->append(std::move(guide));
     state_->selectedLayerIds_.clear();
     state_->selectedGuideLayerIds_ = {guideId};
     state_->commitProjectEdit();
@@ -734,8 +939,7 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error)
     return true;
 }
 
-void MainWindow::groupOrUngroupSelection()
-{
+void MainWindow::groupOrUngroupSelection() {
     if (!state_->hasProject()) {
         return;
     }
@@ -811,8 +1015,7 @@ void MainWindow::groupOrUngroupSelection()
     statusBar()->showMessage(QStringLiteral("Grouped selection"), 1500);
 }
 
-void MainWindow::ungroupSelectionFlat()
-{
+void MainWindow::ungroupSelectionFlat() {
     if (!state_->hasProject()) {
         return;
     }
@@ -836,8 +1039,7 @@ void MainWindow::ungroupSelectionFlat()
     statusBar()->showMessage(QStringLiteral("Flat ungrouped selection"), 1500);
 }
 
-void MainWindow::collapseAllGroups()
-{
+void MainWindow::collapseAllGroups() {
     if (tree_ == nullptr) {
         return;
     }
@@ -846,20 +1048,23 @@ void MainWindow::collapseAllGroups()
     tree_->collapseAll();
 }
 
-void MainWindow::undo()
-{
+void MainWindow::undo() {
+    if (canvas_ != nullptr && canvas_->undoContourEdit()) {
+        return;
+    }
     state_->undo();
     canvas_->resetRelativeSelectionFrame();
 }
 
-void MainWindow::redo()
-{
+void MainWindow::redo() {
+    if (canvas_ != nullptr && canvas_->redoContourEdit()) {
+        return;
+    }
     state_->redo();
     canvas_->resetRelativeSelectionFrame();
 }
 
-void MainWindow::centerViewOnSelection()
-{
+void MainWindow::centerViewOnSelection() {
     if (canvas_ == nullptr || !canvas_->centerViewOnSelection()) {
         statusBar()->showMessage(QStringLiteral("No selection to center"), 1500);
         return;
@@ -867,15 +1072,20 @@ void MainWindow::centerViewOnSelection()
     statusBar()->showMessage(QStringLiteral("Centered view on selection"), 1500);
 }
 
-void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
-{
-    ScopedPerf perf(refreshPreviews ? "noteProjectGeometryChanged(previews)" : "noteProjectGeometryChanged");
+void MainWindow::noteProjectGeometryChanged(bool refreshPreviews) {
+    const bool updateLayerPreviews = refreshPreviews
+        || (treeModel_ != nullptr && treeModel_->generatePreviewsWithTransformations());
+    ScopedPerf perf(updateLayerPreviews ? "noteProjectGeometryChanged(previews)" : "noteProjectGeometryChanged");
     if (canvas_ != nullptr) {
+        if (refreshPreviews) {
+            canvas_->clearRegionOverlay();
+            canvas_->invalidateGuideImageCache();
+        }
         canvas_->invalidateSelectionCache();
         canvas_->invalidateSceneCache();
         canvas_->update();
     }
-    if (refreshPreviews) {
+    if (updateLayerPreviews && treeModel_ != nullptr) {
         ScopedPerf perfPrev("  refreshPreviews");
         treeModel_->refreshStateRoles(&state_->project_);
         treeModel_->refreshPreviews(&state_->project_);
@@ -885,10 +1095,9 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews)
     updateStatus();
 }
 
-void MainWindow::noteProjectStructureChanged()
-{
+void MainWindow::noteProjectStructureChanged() {
     ScopedPerf perf("noteProjectStructureChanged");
-    state_->selectedLayerIds_ = existingLayerIds(state_->selectedLayerIds_);
+    state_->selectedLayerIds_ = state_->existingLayerIds(state_->selectedLayerIds_);
     state_->selectedGuideLayerIds_ = state_->existingGuideLayerIds(state_->selectedGuideLayerIds_);
     autoExpandedTreeIndexes_.clear();
     autoExpandedGroupIds_.clear();
@@ -898,29 +1107,35 @@ void MainWindow::noteProjectStructureChanged()
             applyLiverySectionVisibility(sectionId);
             treeModel_->clearSectionCache();
             treeModel_->clear();
-            {
-                ScopedPerf perfTree("  treeModel_->setProjectSection");
-                treeModel_->setProjectSection(&state_->project_, sectionId);
-            }
+            ScopedPerf perfTree("  treeModel_->setProjectSection");
+            treeModel_->setProjectSection(&state_->project_, sectionId);
         } else {
             treeModel_->setProject(&state_->project_);
         }
-    } else {
-        {
-            ScopedPerf perfTree("  treeModel_->setProject");
-            treeModel_->setProject(&state_->project_);
-        }
-    }
-    if (state_->project_.isLivery) {
         rebuildSectionBar();
+    } else {
+        ScopedPerf perfTree("  treeModel_->setProject");
+        treeModel_->setProject(&state_->project_);
     }
     syncTreeSelectionFromIds();
     noteProjectGeometryChanged();
-    refreshSelectionProperties();
 }
 
-void MainWindow::setToolName(const QString &name)
-{
+void MainWindow::setToolName(const QString &name) {
+    for (QAction *action : actions()) {
+        const QVariant toolName = action->property("canvasToolName");
+        if (toolName.isValid()) {
+            action->setChecked(toolName.toString() == name);
+        }
+    }
+    const bool lining = name == QStringLiteral("lining");
+    const bool verticalToolbar = toolBar_ != nullptr && toolBar_->orientation() == Qt::Vertical;
+    if (liningWidthLabel_ != nullptr) {
+        liningWidthLabel_->setVisible(lining && !verticalToolbar);
+    }
+    if (liningWidthSpin_ != nullptr) {
+        liningWidthSpin_->setVisible(lining);
+    }
     statusBar()->showMessage(QStringLiteral("Tool: %1").arg(name), 1500);
 }
 

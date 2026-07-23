@@ -25,8 +25,7 @@ constexpr SideDef kSideDefs[kLiverySideCount] = {
     {"Glass_Right", "glass_Right"},
 };
 
-void parseAxis(const QString &token, int &axis, float &sign)
-{
+void parseAxis(const QString &token, int &axis, float &sign) {
     sign = 1.0f;
     int i = 0;
     if (i < token.size() && (token[i] == QLatin1Char('+') || token[i] == QLatin1Char('-'))) {
@@ -37,8 +36,7 @@ void parseAxis(const QString &token, int &axis, float &sign)
     axis = c == QLatin1Char('y') ? 1 : (c == QLatin1Char('z') ? 2 : 0);
 }
 
-void applyAttributes(const QXmlStreamAttributes &attrs, LiverySide &side)
-{
+void applyAttributes(const QXmlStreamAttributes &attrs, LiverySide &side) {
     const auto f = [&](const char *name, float def) {
         return attrs.hasAttribute(QLatin1String(name))
             ? attrs.value(QLatin1String(name)).toFloat()
@@ -61,8 +59,7 @@ void applyAttributes(const QXmlStreamAttributes &attrs, LiverySide &side)
 
 } // namespace
 
-LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error)
-{
+LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error) {
     LiveryMaskSet set;
     for (int i = 0; i < kLiverySideCount; ++i) {
         set.sides[i].slot = i;

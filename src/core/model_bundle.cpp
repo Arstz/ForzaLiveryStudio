@@ -19,8 +19,7 @@ constexpr int BlobInfoSize = 0x18;     // per-blob header record size
 constexpr int MetadataInfoSize = 0x08; // per-metadata header record size
 
 void readBlobMetadata(const QByteArray &bytes, quint32 metadataOffset, quint32 metadataCount,
-                      BundleBlobRecord &blob)
-{
+                      BundleBlobRecord &blob) {
     for (quint32 i = 0; i < metadataCount; ++i) {
         const int recordBase = static_cast<int>(metadataOffset) + static_cast<int>(i) * MetadataInfoSize;
         if (recordBase < 0 || recordBase + MetadataInfoSize > bytes.size()) {
@@ -61,8 +60,7 @@ void readBlobMetadata(const QByteArray &bytes, quint32 metadataOffset, quint32 m
 
 } // namespace
 
-std::vector<const BundleBlobRecord *> ModelBundle::blobsWithTag(quint32 tag) const
-{
+std::vector<const BundleBlobRecord *> ModelBundle::blobsWithTag(quint32 tag) const {
     std::vector<const BundleBlobRecord *> out;
     for (const BundleBlobRecord &blob : blobs) {
         if (blob.tag == tag) {
@@ -72,8 +70,7 @@ std::vector<const BundleBlobRecord *> ModelBundle::blobsWithTag(quint32 tag) con
     return out;
 }
 
-ModelBundle parseModelBundle(const QByteArray &bytes)
-{
+ModelBundle parseModelBundle(const QByteArray &bytes) {
     if (bytes.size() < 8) {
         throw std::runtime_error("modelbin too small to be a bundle");
     }

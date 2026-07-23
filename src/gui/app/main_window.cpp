@@ -7,13 +7,13 @@ namespace gui {
 using namespace mw_detail;
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-{
+    : QMainWindow(parent) {
     theme_ = loadUiTheme();
     setWindowTitle(QStringLiteral("Forza Livery Studio"));
-    resize(InitialWindowWidth, InitialWindowHeight);
+    resize(kInitialWindowWidth, kInitialWindowHeight);
     setAcceptDrops(true);
 
+    keyBindings_ = new KeyBindingRouter(this, this);
     state_ = new EditorState(this);
     autosaveTimer_ = new QTimer(this);
     connect(autosaveTimer_, &QTimer::timeout, this, &MainWindow::autosaveProject);
@@ -28,6 +28,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupFileMenu();
     setupEditMenu();
     setupProjectMenu();
+    setupImgGenMenu();
     setupOptionsMenu();
     setupToolbar();
     setupWindowMenu();
@@ -39,8 +40,7 @@ MainWindow::MainWindow(QWidget *parent)
     updateStatus();
 }
 
-MainWindow::~MainWindow()
-{
-    cancelGeneratedFill();
+MainWindow::~MainWindow() {
+    cancelActiveFills();
 }
 } // namespace gui

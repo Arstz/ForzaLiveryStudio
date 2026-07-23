@@ -65,6 +65,7 @@ build and developer notes see
 | Rotate | `R` | Rotate the selection about its centre. |
 | Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
 | Pen | `P` | Draw a closed quadratic path and fill it with contained Primitive shapes. |
+| Lining | `L` | Draw an open centreline and fit lining Primitive shapes to its width. |
 
 ### Options & Window
 
@@ -81,7 +82,8 @@ build and developer notes see
 ## Tools & Behaviours
 
 - **Select (`S`)** — primary editing tool. Click a shape or group to select it,
-  drag to move. Works together with the layer tree selection.
+  drag to move. Works together with the layer tree selection. Press `Escape` to
+  clear the current layer, guide, or group selection.
 - **Move (`V`)** — dedicated move tool. Enable **Options → Move Tool
   Auto-Select** to select the layer group you click. When auto-select is off,
   clicking outside the current selection preserves it unless nothing is selected.
@@ -102,24 +104,46 @@ build and developer notes see
   stacking, applies the picked color to the current selection, and adds it to the
   project swatches. Guide colors are sampled from original guide pixels, ignoring
   guide opacity.
+- **Bucket (`B`)** — select one visible guide layer, then hover its image to
+  preview the contiguous color region under the cursor. Use the mouse wheel to
+  change the `0–255` RGBA tolerance (`Shift` changes it in steps of five). Click
+  to trace the preview with Potrace and load the resulting optimized closed
+  contour into Pen. Press `Enter` to run the normal Pen fill; every
+  generated shape uses the average RGBA color of the selected bucket region.
 - **Pen (`P`)** — place a closed vector contour which is converted into ordinary
   Forza Primitive layers. The first point is a hard corner. Single-click places a
   soft quadratic control and double-click places a hard point; click the first
-  point again to close and fill the path. Adjacent hard points form a line,
-  hard–soft–hard forms a quadratic curve, and consecutive soft points share an
-  implied midpoint. `Backspace` removes the latest point and `Escape` cancels the
-  path or a running fill. Self-intersecting contours are highlighted and must be
-  corrected before closing.
+  point again to loop the path. Once looped, `Ctrl`+left-click a curve to add a
+  soft point, `Ctrl`+left-click a soft point to make it hard, `Alt`+left-drag a
+  point to move it, or right-click a point to remove it. Press `Enter` to fill.
+  Contextual reminders appear beside the cursor while editing. Adjacent hard
+  points form a line, hard–soft–hard forms a quadratic curve, and consecutive
+  soft points share an implied midpoint. Before looping, `Backspace` removes the
+  latest point. `Escape` cancels the path or a running fill. Self-intersecting
+  contours are highlighted and must be corrected before filling. Open and
+  looped Pen paths remain intact when another tool is selected and reappear
+  when returning to Pen; only `Escape` or a completed fill clears that
+  progress. Finish or cancel an existing Pen path before tracing a new one with
+  Bucket.
 
-  Pen uses only **Square** (`101`), **Circle** (`102`), and **Triangle** (`103`),
-  including affine rectangle and ellipse forms. It follows the contour inward:
-  outward curved boundaries receive fitted Circle or Ellipse placements and become
-  chords, then the remaining core is deterministically meshed with Triangle and
-  compatible Square placements. Overlap is allowed, curve fits use a bounded spill
-  tolerance, and generated shape count is capped at twice the Pen point count. The
-  generated layers share the last selected shape color when the corresponding
-  new-shape behavior is enabled (otherwise white) and are placed in one **Pen Fill**
-  group as a single undoable operation. Filling runs in the background.
+  Pen uses a bounded catalog of compatible vector primitives and follows the contour
+  inward. Curved boundaries receive fitted affine placements, then the remaining
+  core is deterministically meshed. Overlap is allowed, curve fits use a bounded
+  spill tolerance, and generated shape count is capped at twice the Pen point count.
+  The generated layers share the last selected shape color when the corresponding
+  new-shape behavior is enabled (otherwise white) and are placed in one **Pen
+  Fill** group as a single undoable operation. Filling runs in the background.
+- **Lining (`L`)** — draw an open hard/soft quadratic centreline and set its
+  universal width in the toolbar. The mouse wheel changes the width in `0.5`
+  steps and `Shift` changes it five times faster. Right-click completes the path
+  without generating shapes. The completed path remains editable with the Pen
+  point controls until `Enter` fits lining Primitives and creates a
+  single **Lining** group. The hard/soft point structure guides the fit, curve
+  agreement is prioritized ahead of width coverage, placement widths are
+  normalized to the generated curve coverage, path direction controls asymmetric
+  shape orientation, and neighboring placements must overlap. Each authored span
+  receives one primary placement. `Escape` clears the path or cancels a running fit.
+  The latest fit trace is written to `lining_fill.log` beside the executable.
 - **Place Text** (toolbar) — build a line of text from the vector font glyphs.
   Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
   Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,

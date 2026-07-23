@@ -2,7 +2,6 @@
 
 #include "main_window.h"
 
-#include "import_locations.h"
 #include "font_glyphs.h"
 #include "import_locations.h"
 
@@ -16,23 +15,25 @@
 
 namespace gui::mw_detail {
 
-constexpr int InitialWindowWidth = 1200;
-constexpr int InitialWindowHeight = 780;
-constexpr int TreeIconExtent = 64;
-constexpr int ToolbarIconExtent = 18;
-constexpr int DockSplitterHandleWidth = 6;
-constexpr int DetailsLabelMargin = 10;
+constexpr int kInitialWindowWidth = 1200;
+constexpr int kInitialWindowHeight = 780;
+constexpr int kTreeIconExtent = 64;
+constexpr int kToolbarIconExtent = 18;
+constexpr int kDockSplitterHandleWidth = 6;
+constexpr int kDetailsLabelMargin = 10;
 
-inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut)
-{
-    if (!id.startsWith(QStringLiteral("tool_")) || shortcut.isEmpty()) {
+inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut) {
+    if (shortcut.isEmpty()) {
         return label;
     }
-    return QStringLiteral("%1 (%2)").arg(label, shortcut.toString(QKeySequence::NativeText));
+    const QString sequence = shortcut.toString(QKeySequence::NativeText);
+
+    return id.startsWith(QStringLiteral("tool_"))
+        ? QStringLiteral("%1 (%2)").arg(label, sequence)
+        : QStringLiteral("%1\t%2").arg(label, sequence);
 }
 
-inline QString safeGroupName(QString name)
-{
+inline QString safeGroupName(QString name) {
     name = name.trimmed();
     if (name.isEmpty()) {
         name = QStringLiteral("Project");
@@ -50,8 +51,7 @@ inline QString safeGroupName(QString name)
     return name.isEmpty() ? QStringLiteral("Project") : name;
 }
 
-inline QString projectExportFolder(const QString &pickedFolder, const QString &projectName, bool livery)
-{
+inline QString projectExportFolder(const QString &pickedFolder, const QString &projectName, bool livery) {
     const QFileInfo pickedInfo(pickedFolder);
     const QString prefix = livery ? QStringLiteral("Livery_") : QStringLiteral("LayerGroup_");
     if (pickedInfo.fileName().startsWith(prefix) && pickedInfo.fileName().size() > prefix.size()) {
@@ -73,8 +73,7 @@ inline QString projectExportFolder(const QString &pickedFolder, const QString &p
 
 inline QString importDialogStartDirectoryWithFallbacks(QWidget *parent,
                                                        const QString &actionKey,
-                                                       const QStringList &fallbackActionKeys)
-{
+                                                       const QStringList &fallbackActionKeys) {
     QSettings settings;
     const auto configuredDirectory = [&](const QString &key) {
         const QString path = settings.value(QStringLiteral("import/%1Directory").arg(key)).toString();
@@ -94,16 +93,14 @@ inline QString importDialogStartDirectoryWithFallbacks(QWidget *parent,
     return importDialogStartDirectory(parent, actionKey);
 }
 
-inline bool isProjectDocumentFile(const QFileInfo &info)
-{
+inline bool isProjectDocumentFile(const QFileInfo &info) {
     const QString suffix = info.suffix();
     const bool isProjectFile = suffix.compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
         || suffix.compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
     return info.isFile() && isProjectFile;
 }
 
-inline QString entryNameForId(const fh6::Project &project, const QString &id)
-{
+inline QString entryNameForId(const fh6::Project &project, const QString &id) {
     if (!project.root) {
         return {};
     }
@@ -129,15 +126,13 @@ inline QString entryNameForId(const fh6::Project &project, const QString &id)
 }
 
 template <typename Fn>
-void forEachShape(fh6::Project &project, Fn fn)
-{
+void forEachLayer(fh6::Project &project, Fn fn) {
     if (!project.root) {
         return;
     }
     std::function<void(fh6::scene::Layer &)> walk = [&](fh6::scene::Layer &node) {
-        if (node.kind() == fh6::scene::LayerKind::Shape) {
-            fn(static_cast<fh6::scene::Shape &>(node));
-        } else if (node.kind() == fh6::scene::LayerKind::Group) {
+        fn(node);
+        if (node.kind() == fh6::scene::LayerKind::Group) {
             for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
                 walk(*child);
             }
@@ -149,27 +144,24 @@ void forEachShape(fh6::Project &project, Fn fn)
 }
 
 template <typename Fn>
-void forEachGuide(fh6::Project &project, Fn fn)
-{
-    if (!project.root) {
-        return;
-    }
-    std::function<void(fh6::scene::Layer &)> walk = [&](fh6::scene::Layer &node) {
-        if (node.kind() == fh6::scene::LayerKind::Guide) {
-            fn(static_cast<fh6::scene::GuideLayer &>(node));
-        } else if (node.kind() == fh6::scene::LayerKind::Group) {
-            for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
-                walk(*child);
-            }
+void forEachShape(fh6::Project &project, Fn fn) {
+    forEachLayer(project, [&](fh6::scene::Layer &node) {
+        if (node.kind() == fh6::scene::LayerKind::Shape) {
+            fn(static_cast<fh6::scene::Shape &>(node));
         }
-    };
-    for (const auto &child : project.root->children) {
-        walk(*child);
-    }
+    });
 }
 
-inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project)
-{
+template <typename Fn>
+void forEachGuide(fh6::Project &project, Fn fn) {
+    forEachLayer(project, [&](fh6::scene::Layer &node) {
+        if (node.kind() == fh6::scene::LayerKind::Guide) {
+            fn(static_cast<fh6::scene::GuideLayer &>(node));
+        }
+    });
+}
+
+inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project) {
     QVector<fh6::scene::Group *> sections;
     if (!project.root) {
         return sections;
@@ -185,8 +177,7 @@ inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project)
     return sections;
 }
 
-inline QRectF shapeWorldBounds(const fh6::scene::Shape &shape, const QSizeF &size)
-{
+inline QRectF shapeWorldBounds(const fh6::scene::Shape &shape, const QSizeF &size) {
     QTransform transform;
     transform.translate(shape.x, shape.y);
     transform.rotate(shape.rotation);
@@ -210,8 +201,7 @@ struct PlacedTextLine {
 inline PlacedTextLine layoutTextGlyphs(const QString &fontName,
                                        const QString &text,
                                        bool monospace,
-                                       const std::function<QRectF(int)> &inkBounds)
-{
+                                       const std::function<QRectF(int)> &inkBounds) {
     constexpr double kGlyphGap = 12.0;
     constexpr double kSpaceWidth = 64.0;
 

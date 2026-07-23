@@ -11,8 +11,7 @@ namespace {
 constexpr double Pi = 3.14159265358979323846;
 }
 
-Matrix3 Transform2D::matrix() const
-{
+Matrix3 Transform2D::matrix() const {
     const double radians = rotation * Pi / 180.0;
     const double c = std::cos(radians);
     const double s = std::sin(radians);
@@ -23,8 +22,7 @@ Matrix3 Transform2D::matrix() const
     return result;
 }
 
-void Layer::copyBaseTo(Layer &dst) const
-{
+void Layer::copyBaseTo(Layer &dst) const {
     dst.id = id;
     dst.name = name;
     dst.transform = transform;
@@ -33,8 +31,7 @@ void Layer::copyBaseTo(Layer &dst) const
     dst.locked = locked;
 }
 
-Matrix3 Layer::worldMatrix() const
-{
+Matrix3 Layer::worldMatrix() const {
     const Matrix3 local = transform.matrix();
     if (parent_ != nullptr) {
         return detail::multiply(parent_->worldMatrix(), local);
@@ -42,8 +39,7 @@ Matrix3 Layer::worldMatrix() const
     return local;
 }
 
-std::unique_ptr<Layer> Shape::clone() const
-{
+std::unique_ptr<Layer> Shape::clone() const {
     auto copy = std::make_unique<Shape>();
     copyBaseTo(*copy);
     copy->visual = visual ? visual->clone() : nullptr;
@@ -64,13 +60,11 @@ std::unique_ptr<Layer> Shape::clone() const
     return copy;
 }
 
-bool Shape::isRaster() const
-{
+bool Shape::isRaster() const {
     return raster;
 }
 
-void Shape::setVectorShape(quint16 id)
-{
+void Shape::setVectorShape(quint16 id) {
     shapeId = id;
     raster = false;
     rasterId = 0;
@@ -79,8 +73,7 @@ void Shape::setVectorShape(quint16 id)
     visual = std::move(vector);
 }
 
-void Shape::setRasterShape(quint32 id, int width, int height)
-{
+void Shape::setRasterShape(quint32 id, int width, int height) {
     raster = true;
     rasterId = id;
     rasterWidth = width > 0 ? width : 256;
@@ -92,17 +85,16 @@ void Shape::setRasterShape(quint32 id, int width, int height)
     visual = std::move(raster);
 }
 
-std::unique_ptr<Layer> GuideLayer::clone() const
-{
+std::unique_ptr<Layer> GuideLayer::clone() const {
     auto copy = std::make_unique<GuideLayer>();
     copyBaseTo(*copy);
     copy->image = image ? std::make_unique<RasterContainer>(*image) : nullptr;
     copy->sourcePath = sourcePath;
+    copy->preprocessColorCount = preprocessColorCount;
     return copy;
 }
 
-std::unique_ptr<Layer> Group::clone() const
-{
+std::unique_ptr<Layer> Group::clone() const {
     auto copy = std::make_unique<Group>();
     copyBaseTo(*copy);
     copy->isLiverySection = isLiverySection;
@@ -124,8 +116,7 @@ std::unique_ptr<Layer> Group::clone() const
     return copy;
 }
 
-Layer *Group::append(std::unique_ptr<Layer> child)
-{
+Layer *Group::append(std::unique_ptr<Layer> child) {
     if (!child) {
         return nullptr;
     }
@@ -135,8 +126,7 @@ Layer *Group::append(std::unique_ptr<Layer> child)
     return raw;
 }
 
-Layer *Group::insert(int index, std::unique_ptr<Layer> child)
-{
+Layer *Group::insert(int index, std::unique_ptr<Layer> child) {
     if (!child) {
         return nullptr;
     }
@@ -150,8 +140,7 @@ Layer *Group::insert(int index, std::unique_ptr<Layer> child)
     return raw;
 }
 
-std::unique_ptr<Layer> Group::takeAt(int index)
-{
+std::unique_ptr<Layer> Group::takeAt(int index) {
     if (index < 0 || index >= static_cast<int>(children.size())) {
         return nullptr;
     }

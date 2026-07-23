@@ -44,8 +44,7 @@ enum class Encoding : int {
     Procedural = 18, R8 = 19, A8 = 20, R8G8 = 21, Bc7HighQuality = 22,
 };
 
-void setError(QString *error, const QString &message)
-{
+void setError(QString *error, const QString &message) {
     if (error != nullptr) {
         *error = message;
     }
@@ -53,8 +52,7 @@ void setError(QString *error, const QString &message)
 
 // Decodes one BC4 (single-channel) 8-byte block into a 4x4 tile of bytes.
 // Layout: red0, red1, then 16 x 3-bit palette indices packed little-endian.
-void decodeBc4Block(const uint8_t *block, uint8_t out[16])
-{
+void decodeBc4Block(const uint8_t *block, uint8_t out[16]) {
     const int r0 = block[0];
     const int r1 = block[1];
     int red[8];
@@ -83,8 +81,7 @@ void decodeBc4Block(const uint8_t *block, uint8_t out[16])
     }
 }
 
-SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QString *error)
-{
+SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
     const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 8;
@@ -122,8 +119,7 @@ SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QStri
     return mask;
 }
 
-SwatchMask decodeR8Surface(const QByteArray &data, int width, int height, QString *error)
-{
+SwatchMask decodeR8Surface(const QByteArray &data, int width, int height, QString *error) {
     const qint64 needed = static_cast<qint64>(width) * height;
     if (data.size() < needed) {
         setError(error, QStringLiteral("swatchbin R8 data truncated"));
@@ -137,8 +133,7 @@ SwatchMask decodeR8Surface(const QByteArray &data, int width, int height, QStrin
     return mask;
 }
 
-SwatchImage decodeRgba8Surface(const QByteArray &data, int width, int height, QString *error)
-{
+SwatchImage decodeRgba8Surface(const QByteArray &data, int width, int height, QString *error) {
     const qint64 needed = static_cast<qint64>(width) * height * 4;
     if (data.size() < needed) {
         setError(error, QStringLiteral("swatchbin RGBA8 data truncated"));
@@ -152,8 +147,7 @@ SwatchImage decodeRgba8Surface(const QByteArray &data, int width, int height, QS
     return image;
 }
 
-std::array<uint8_t, 4> color565(quint16 value)
-{
+std::array<uint8_t, 4> color565(quint16 value) {
     const int r = (value >> 11) & 0x1f;
     const int g = (value >> 5) & 0x3f;
     const int b = value & 0x1f;
@@ -162,8 +156,7 @@ std::array<uint8_t, 4> color565(quint16 value)
             static_cast<uint8_t>((b * 255 + 15) / 31), 255};
 }
 
-void decodeBc1Colors(const uint8_t *block, bool opaque, uint8_t out[64])
-{
+void decodeBc1Colors(const uint8_t *block, bool opaque, uint8_t out[64]) {
     const quint16 c0 = static_cast<quint16>(block[0] | (block[1] << 8));
     const quint16 c1 = static_cast<quint16>(block[2] | (block[3] << 8));
     std::array<std::array<uint8_t, 4>, 4> colors{};
@@ -193,8 +186,7 @@ void decodeBc1Colors(const uint8_t *block, bool opaque, uint8_t out[64])
     }
 }
 
-SwatchImage decodeBcSurface(const QByteArray &data, int width, int height, Encoding encoding, QString *error)
-{
+SwatchImage decodeBcSurface(const QByteArray &data, int width, int height, Encoding encoding, QString *error) {
     const int blockBytes = encoding == Encoding::Bc1 ? 8 : 16;
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
@@ -249,8 +241,7 @@ SwatchImage decodeBcSurface(const QByteArray &data, int width, int height, Encod
     return image;
 }
 
-SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QString *error)
-{
+SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
     const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 16;
@@ -292,8 +283,7 @@ SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QStr
     return image;
 }
 
-SwatchImage decodeChannelSurface(const QByteArray &data, int width, int height, int channels, QString *error)
-{
+SwatchImage decodeChannelSurface(const QByteArray &data, int width, int height, int channels, QString *error) {
     const qint64 needed = static_cast<qint64>(width) * height * channels;
     if (data.size() < needed) {
         setError(error, QStringLiteral("swatchbin channel data truncated"));
@@ -314,15 +304,13 @@ SwatchImage decodeChannelSurface(const QByteArray &data, int width, int height, 
 }
 
 #ifdef Q_OS_WIN
-QString hresultString(const char *step, HRESULT hr)
-{
+QString hresultString(const char *step, HRESULT hr) {
     return QStringLiteral("%1 failed (HRESULT 0x%2)")
         .arg(QString::fromLatin1(step))
         .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
 }
 
-SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QString *error)
-{
+SwatchImage decodeBc7Surface(const QByteArray &data, int width, int height, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
     const qint64 needed = static_cast<qint64>(blocksWide) * blocksHigh * 16;
@@ -525,15 +513,13 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_Target {
     return image;
 }
 #else
-SwatchImage decodeBc7Surface(const QByteArray &, int, int, QString *error)
-{
+SwatchImage decodeBc7Surface(const QByteArray &, int, int, QString *error) {
     setError(error, QStringLiteral("BC7 swatchbin decode is only supported on Windows"));
     return {};
 }
 #endif
 
-std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error)
-{
+std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error) {
     if (bytes.size() < 8 || readLeU32(bytes, 0) != kBundleMagic) {
         setError(error, QStringLiteral("not a Grub bundle (bad magic)"));
         return std::nullopt;
@@ -627,8 +613,7 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
 
 } // namespace
 
-SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error)
-{
+SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error) {
     const auto surface = readTextureSurface(bytes, error);
     if (!surface) {
         return {};
@@ -648,8 +633,7 @@ SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error)
     }
 }
 
-SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error)
-{
+SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error) {
     const auto surface = readTextureSurface(bytes, error);
     if (!surface) {
         return {};
@@ -681,8 +665,7 @@ SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error)
     }
 }
 
-SwatchMask loadSwatchMask(const QString &path, QString *error)
-{
+SwatchMask loadSwatchMask(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         setError(error, QStringLiteral("cannot open %1").arg(path));
@@ -691,8 +674,7 @@ SwatchMask loadSwatchMask(const QString &path, QString *error)
     return decodeSwatchMask(file.readAll(), error);
 }
 
-SwatchImage loadSwatchImage(const QString &path, QString *error)
-{
+SwatchImage loadSwatchImage(const QString &path, QString *error) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         setError(error, QStringLiteral("cannot open %1").arg(path));

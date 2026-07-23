@@ -8,8 +8,7 @@ using namespace pc_detail;
 
 namespace {
 
-QString assetPath(const QString &fileName)
-{
+QString assetPath(const QString &fileName) {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     QStringList candidates;
@@ -24,10 +23,9 @@ QString assetPath(const QString &fileName)
     return candidates.front();
 }
 
-constexpr int LogicalCursorSize = 21;
+constexpr int kLogicalCursorSize = 21;
 
-double cursorScaleFactor()
-{
+double cursorScaleFactor() {
     double scale = 1.0;
     if (const QScreen *screen = QGuiApplication::primaryScreen()) {
         scale = std::max(screen->devicePixelRatio(), 1.0);
@@ -35,8 +33,7 @@ double cursorScaleFactor()
     return scale;
 }
 
-QCursor assetCursor(const QString &fileName)
-{
+QCursor assetCursor(const QString &fileName) {
     static QHash<QString, QCursor> cache;
     const auto cached = cache.constFind(fileName);
     if (cached != cache.constEnd()) {
@@ -52,7 +49,7 @@ QCursor assetCursor(const QString &fileName)
     }
 
     const double scale = cursorScaleFactor();
-    const double logical = LogicalCursorSize * (fileName == QStringLiteral("Cursor.xpm") ? 0.5 : 1.0);
+    const double logical = kLogicalCursorSize * (fileName == QStringLiteral("Cursor.xpm") ? 0.5 : 1.0);
     const int target = std::max(1, qRound(logical * scale));
     if (pixmap.width() != target || pixmap.height() != target) {
         pixmap = pixmap.scaled(target, target, Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -73,8 +70,7 @@ struct HandleCursorSpec {
     const char *icon;
 };
 
-const QHash<QString, HandleCursorSpec> &handleCursorSpecs()
-{
+const QHash<QString, HandleCursorSpec> &handleCursorSpecs() {
     static const QHash<QString, HandleCursorSpec> specs = {
         {QStringLiteral("left"), {Qt::SizeHorCursor, "ToolScaleX.xpm"}},
         {QStringLiteral("right"), {Qt::SizeHorCursor, "ToolScaleX.xpm"}},
@@ -89,8 +85,7 @@ const QHash<QString, HandleCursorSpec> &handleCursorSpecs()
     return specs;
 }
 
-QString rotateHandleForLocalPoint(const QPointF &local, const QRectF &rect)
-{
+QString rotateHandleForLocalPoint(const QPointF &local, const QRectF &rect) {
     const bool west = local.x() < rect.left();
     const bool east = local.x() > rect.right();
     const bool north = local.y() < rect.top();
@@ -122,8 +117,7 @@ QString rotateHandleForLocalPoint(const QPointF &local, const QRectF &rect)
     return {};
 }
 
-QString rotateCursorSuffixForScreenDelta(const QPointF &delta)
-{
+QString rotateCursorSuffixForScreenDelta(const QPointF &delta) {
     if (std::hypot(delta.x(), delta.y()) < 1e-6) {
         return {};
     }
@@ -154,8 +148,7 @@ QString rotateCursorSuffixForScreenDelta(const QPointF &delta)
     }
 }
 
-HandleCursorSpec scaleCursorSpecForScreenDelta(const QPointF &delta)
-{
+HandleCursorSpec scaleCursorSpecForScreenDelta(const QPointF &delta) {
     const QString suffix = rotateCursorSuffixForScreenDelta(delta);
     if (suffix.isEmpty()) {
         return {Qt::ArrowCursor, "ToolbarScale.xpm"};
@@ -176,8 +169,7 @@ HandleCursorSpec scaleCursorSpecForScreenDelta(const QPointF &delta)
 
 
 void ProjectCanvas::resolveHandleCursor(const QString &handle, const SelectionBox *box,
-                                        Qt::CursorShape *shape, QString *iconFile) const
-{
+                                        Qt::CursorShape *shape, QString *iconFile) const {
     const auto assign = [&](Qt::CursorShape cursorShape, const QString &icon) {
         if (shape != nullptr) {
             *shape = cursorShape;
@@ -193,7 +185,7 @@ void ProjectCanvas::resolveHandleCursor(const QString &handle, const SelectionBo
             const QPointF handleWorld = box->localToWorld.map(handleLocal);
             const QPointF anchorWorld = box->localToWorld.map(anchorLocal);
             const HandleCursorSpec spec = scaleCursorSpecForScreenDelta(
-                worldToScreen_.map(anchorWorld) - worldToScreen_.map(handleWorld));
+                camera_.matrix().map(anchorWorld) - camera_.matrix().map(handleWorld));
             assign(spec.shape, QLatin1String(spec.icon));
             return;
         }
@@ -206,29 +198,26 @@ void ProjectCanvas::resolveHandleCursor(const QString &handle, const SelectionBo
     }
 }
 
-Qt::CursorShape ProjectCanvas::cursorForScaleHandle(const QString &handle, const SelectionBox *box) const
-{
+Qt::CursorShape ProjectCanvas::cursorForScaleHandle(const QString &handle, const SelectionBox *box) const {
     Qt::CursorShape shape = Qt::ArrowCursor;
     resolveHandleCursor(handle, box, &shape, nullptr);
     return shape;
 }
 
-QCursor ProjectCanvas::cursorForTransformHandle(const QString &handle, const SelectionBox *box) const
-{
+QCursor ProjectCanvas::cursorForTransformHandle(const QString &handle, const SelectionBox *box) const {
     QString iconFile;
     resolveHandleCursor(handle, box, nullptr, &iconFile);
     return assetCursor(iconFile);
 }
 
-Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point)
-{
-    if (draggedGuidelineOrientation_ == GuidelineOrientation::Vertical) {
+Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point) {
+    if (guidelines_.draggedOrientation == GuidelineOrientation::Vertical) {
         return Qt::SizeHorCursor;
     }
-    if (draggedGuidelineOrientation_ == GuidelineOrientation::Horizontal) {
+    if (guidelines_.draggedOrientation == GuidelineOrientation::Horizontal) {
         return Qt::SizeVerCursor;
     }
-    switch (dragMode_) {
+    switch (drag_.mode) {
     case DragMode::Pan:
         return Qt::ClosedHandCursor;
     case DragMode::Move:
@@ -237,8 +226,13 @@ Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point)
     case DragMode::Marquee:
         return Qt::CrossCursor;
     case DragMode::Scale:
+        return cursorForScaleHandle(drag_.activeHandle, &drag_.startBox);
     case DragMode::Skew:
-        return cursorForScaleHandle(activeHandle_, &dragStartBox_);
+        return drag_.activeHandle.isEmpty()
+            ? Qt::SizeHorCursor
+            : cursorForScaleHandle(drag_.activeHandle, &drag_.startBox);
+    case DragMode::Opacity:
+        return Qt::SizeHorCursor;
     case DragMode::Rotate:
         return Qt::ArrowCursor;
     case DragMode::None:
@@ -254,37 +248,45 @@ Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point)
     return Qt::ArrowCursor;
 }
 
-void ProjectCanvas::updateCursorForPoint(const QPointF &point)
-{
-    if (dragMode_ == DragMode::None && !rect().contains(point.toPoint())) {
+void ProjectCanvas::updateCursorForPoint(const QPointF &point) {
+    if (drag_.mode == DragMode::None && !rect().contains(point.toPoint())) {
         unsetCursor();
         return;
     }
 
-    if (dragMode_ == DragMode::Rotate) {
-        const SelectionBox box = dragStartBox_.valid ? dragStartBox_ : currentSelectionBox();
+    if (drag_.mode == DragMode::Rotate) {
+        const SelectionBox box = drag_.startBox.valid ? drag_.startBox : currentSelectionBox();
         setCursor(box.valid ? rotateCursorForPoint(point, box) : rotateCursor());
         return;
     }
-    if (dragMode_ == DragMode::Scale || dragMode_ == DragMode::Skew) {
-        setCursor(cursorForTransformHandle(activeHandle_, &dragStartBox_));
+    if (drag_.mode == DragMode::Scale
+        || (drag_.mode == DragMode::Skew && !drag_.activeHandle.isEmpty())) {
+        setCursor(cursorForTransformHandle(drag_.activeHandle, &drag_.startBox));
+        return;
+    }
+    if (drag_.mode == DragMode::Skew) {
+        setCursor(Qt::SizeHorCursor);
+        return;
+    }
+    if (drag_.mode == DragMode::Opacity) {
+        setCursor(Qt::SizeHorCursor);
         return;
     }
     const GuidelineOrientation ruler = rulerAt(point);
     const bool rulerArea = project_ != nullptr && point.x() >= 0.0 && point.y() >= 0.0
         && point.x() < width() && point.y() < height()
-        && (point.x() < RulerExtent || point.y() < RulerExtent);
-    if (draggedGuidelineOrientation_ != GuidelineOrientation::None || rulerArea) {
+        && (point.x() < kRulerExtent || point.y() < kRulerExtent);
+    if (guidelines_.draggedOrientation != GuidelineOrientation::None || rulerArea) {
         Qt::CursorShape shape = Qt::ArrowCursor;
-        const GuidelineOrientation orientation = draggedGuidelineOrientation_ != GuidelineOrientation::None
-            ? draggedGuidelineOrientation_
+        const GuidelineOrientation orientation = guidelines_.draggedOrientation != GuidelineOrientation::None
+            ? guidelines_.draggedOrientation
             : ruler;
-        if (!guidelinesLocked_ && draggedGuidelineOrientation_ != GuidelineOrientation::None) {
+        if (!guidelines_.locked && guidelines_.draggedOrientation != GuidelineOrientation::None) {
             shape = orientation == GuidelineOrientation::Vertical ? Qt::SizeHorCursor : Qt::SizeVerCursor;
         } else if (orientation != GuidelineOrientation::None
-                   && !guidelinesLocked_ && guidelineAtRuler(point, orientation) >= 0) {
+                   && !guidelines_.locked && guidelineAtRuler(point, orientation) >= 0) {
             shape = orientation == GuidelineOrientation::Vertical ? Qt::SizeHorCursor : Qt::SizeVerCursor;
-        } else if (!guidelinesLocked_ && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)) {
+        } else if (!guidelines_.locked && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)) {
             shape = Qt::CrossCursor;
         }
         setCursor(QCursor(shape));
@@ -301,20 +303,17 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point)
     setCursor(nativeCursor == Qt::ArrowCursor ? assetCursor(QStringLiteral("Cursor.xpm")) : QCursor(nativeCursor));
 }
 
-QCursor ProjectCanvas::rotateCursor() const
-{
+QCursor ProjectCanvas::rotateCursor() const {
     static const QCursor cursor = assetCursor(QStringLiteral("Cursor.xpm"));
     return cursor;
 }
 
-QCursor ProjectCanvas::pipetteCursor() const
-{
+QCursor ProjectCanvas::pipetteCursor() const {
     static const QCursor cursor = assetCursor(QStringLiteral("CursorPipette.xpm"));
     return cursor;
 }
 
-QCursor ProjectCanvas::rotateCursorForPoint(const QPointF &point, const SelectionBox &box) const
-{
+QCursor ProjectCanvas::rotateCursorForPoint(const QPointF &point, const SelectionBox &box) const {
     if (!box.valid) {
         return rotateCursor();
     }
@@ -332,7 +331,7 @@ QCursor ProjectCanvas::rotateCursorForPoint(const QPointF &point, const Selectio
     }
     const QPointF handleWorld = box.localToWorld.map(handleLocal);
     const QPointF anchorWorld = box.localToWorld.map(anchorLocal);
-    const QPointF screenDelta = worldToScreen_.map(anchorWorld) - worldToScreen_.map(handleWorld);
+    const QPointF screenDelta = camera_.matrix().map(anchorWorld) - camera_.matrix().map(handleWorld);
     const QString suffix = rotateCursorSuffixForScreenDelta(screenDelta);
     return suffix.isEmpty() ? rotateCursor() : assetCursor(QStringLiteral("ToolRotate%1.xpm").arg(suffix));
 }

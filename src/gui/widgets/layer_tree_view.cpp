@@ -1,6 +1,7 @@
 #include "layer_tree_view.h"
 
 #include "drag_cursors.h"
+#include "layer_state_delegate.h"
 #include "layer_tree_model.h"
 
 #include <algorithm>
@@ -8,24 +9,42 @@
 namespace gui {
 
 namespace {
-constexpr int DragHotspotClamp = 24;
-constexpr int BadgeSize = 18;
-constexpr int BadgeGap = 5;
-constexpr int BadgeRightMargin = 8;
+constexpr int kDragHotspotClamp = 24;
+constexpr int kDragScrollMargin = 32;
+constexpr int kDragScrollIntervalMs = 40;
 
-bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide)
-{
+bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide) {
     const int badgeCount = guide ? 2 : 3;
-    const int left = rowRect.right() - BadgeRightMargin - badgeCount * BadgeSize - (badgeCount - 1) * BadgeGap + 1;
-    const QRect badgesRect(left, rowRect.center().y() - BadgeSize / 2,
-                           badgeCount * BadgeSize + (badgeCount - 1) * BadgeGap,
-                           BadgeSize);
+    const int left = rowRect.right() - kLayerBadgeRightMargin - badgeCount * kLayerBadgeSize
+        - (badgeCount - 1) * kLayerBadgeGap + 1;
+    const QRect badgesRect(left, rowRect.center().y() - kLayerBadgeSize / 2,
+                           badgeCount * kLayerBadgeSize + (badgeCount - 1) * kLayerBadgeGap,
+                           kLayerBadgeSize);
     return badgesRect.contains(point);
 }
 } // namespace
 
-void LayerTreeView::paintEvent(QPaintEvent *event)
-{
+LayerTreeView::LayerTreeView(QWidget *parent)
+    : QTreeView(parent) {
+    dragScrollTimer_.setInterval(kDragScrollIntervalMs);
+    connect(&dragScrollTimer_, &QTimer::timeout, this, [this]() {
+        QScrollBar *scrollBar = verticalScrollBar();
+        if (scrollBar == nullptr || dragScrollDirection_ == 0) {
+            stopDragAutoScroll();
+            return;
+        }
+        const int delta = std::max(1, scrollBar->singleStep()) * dragScrollDirection_;
+        scrollBar->setValue(scrollBar->value() + delta);
+        QModelIndex parent;
+        int row = -1;
+        int indicatorY = -1;
+        setDropIndicatorY(dropTargetForPosition(lastDragPosition_, &parent, &row, &indicatorY)
+                              ? indicatorY
+                              : -1);
+    });
+}
+
+void LayerTreeView::paintEvent(QPaintEvent *event) {
     QTreeView::paintEvent(event);
     QPainter painter(viewport());
     const QColor text = palette().color(QPalette::Text);
@@ -59,8 +78,7 @@ void LayerTreeView::paintEvent(QPaintEvent *event)
     painter.drawLine(QPoint(0, dropIndicatorY_), QPoint(viewport()->width(), dropIndicatorY_));
 }
 
-void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event)
-{
+void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event) {
     if (event != nullptr) {
         const QModelIndex index = indexAt(event->position().toPoint());
         if (index.isValid()
@@ -72,8 +90,7 @@ void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event)
     QTreeView::mouseDoubleClickEvent(event);
 }
 
-void LayerTreeView::dragEnterEvent(QDragEnterEvent *event)
-{
+void LayerTreeView::dragEnterEvent(QDragEnterEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         event->ignore();
         return;
@@ -84,16 +101,17 @@ void LayerTreeView::dragEnterEvent(QDragEnterEvent *event)
     }
 }
 
-void LayerTreeView::dragMoveEvent(QDragMoveEvent *event)
-{
+void LayerTreeView::dragMoveEvent(QDragMoveEvent *event) {
     if (event == nullptr) {
         return;
     }
     if (event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
+        stopDragAutoScroll();
         setDropIndicatorY(-1);
         event->ignore();
         return;
     }
+    updateDragAutoScroll(event->position().toPoint());
     QModelIndex parent;
     int row = -1;
     int indicatorY = -1;
@@ -108,14 +126,14 @@ void LayerTreeView::dragMoveEvent(QDragMoveEvent *event)
     event->ignore();
 }
 
-void LayerTreeView::dragLeaveEvent(QDragLeaveEvent *event)
-{
+void LayerTreeView::dragLeaveEvent(QDragLeaveEvent *event) {
+    stopDragAutoScroll();
     setDropIndicatorY(-1);
     QTreeView::dragLeaveEvent(event);
 }
 
-void LayerTreeView::dropEvent(QDropEvent *event)
-{
+void LayerTreeView::dropEvent(QDropEvent *event) {
+    stopDragAutoScroll();
     if (event == nullptr || model() == nullptr) {
         return;
     }
@@ -143,8 +161,7 @@ void LayerTreeView::dropEvent(QDropEvent *event)
     event->ignore();
 }
 
-void LayerTreeView::startDrag(Qt::DropActions supportedActions)
-{
+void LayerTreeView::startDrag(Qt::DropActions supportedActions) {
     if (model() == nullptr) {
         return;
     }
@@ -166,8 +183,8 @@ void LayerTreeView::startDrag(Qt::DropActions supportedActions)
     if (rowRect.isValid() && !rowRect.isEmpty()) {
         rowPixmap = viewport()->grab(rowRect);
         drag->setPixmap(rowPixmap);
-        drag->setHotSpot(QPoint(std::min(rowPixmap.width() / 2, DragHotspotClamp),
-                                std::min(rowPixmap.height() / 2, DragHotspotClamp)));
+        drag->setHotSpot(QPoint(std::min(rowPixmap.width() / 2, kDragHotspotClamp),
+                                std::min(rowPixmap.height() / 2, kDragHotspotClamp)));
     }
 
     const QPixmap cursorPixmap = dropAllowedCursorPixmap();
@@ -178,10 +195,31 @@ void LayerTreeView::startDrag(Qt::DropActions supportedActions)
     drag->setDragCursor(cursorPixmap, Qt::LinkAction);
     drag->setDragCursor(noCursorPixmap, Qt::IgnoreAction);
     drag->exec(supportedActions & Qt::MoveAction ? Qt::MoveAction : supportedActions, Qt::MoveAction);
+    stopDragAutoScroll();
 }
 
-QModelIndexList LayerTreeView::normalizedSelectedRows() const
-{
+void LayerTreeView::updateDragAutoScroll(const QPoint &position) {
+    lastDragPosition_ = position;
+    const int height = viewport()->height();
+    if (position.y() < kDragScrollMargin) {
+        dragScrollDirection_ = -1;
+    } else if (position.y() >= height - kDragScrollMargin) {
+        dragScrollDirection_ = 1;
+    } else {
+        stopDragAutoScroll();
+        return;
+    }
+    if (!dragScrollTimer_.isActive()) {
+        dragScrollTimer_.start();
+    }
+}
+
+void LayerTreeView::stopDragAutoScroll() {
+    dragScrollDirection_ = 0;
+    dragScrollTimer_.stop();
+}
+
+QModelIndexList LayerTreeView::normalizedSelectedRows() const {
     const QModelIndexList selected = selectionModel() == nullptr ? QModelIndexList{} : selectionModel()->selectedRows();
     QSet<QString> selectedIds;
     for (const QModelIndex &index : selected) {
@@ -211,15 +249,13 @@ QModelIndexList LayerTreeView::normalizedSelectedRows() const
     return normalized;
 }
 
-QString LayerTreeView::parentIdForIndex(const QModelIndex &index) const
-{
+QString LayerTreeView::parentIdForIndex(const QModelIndex &index) const {
     return index.parent().isValid()
         ? index.parent().data(LayerTreeModel::EntryIdRole).toString()
         : QString();
 }
 
-QRect LayerTreeView::visualSubtreeRect(const QModelIndex &index) const
-{
+QRect LayerTreeView::visualSubtreeRect(const QModelIndex &index) const {
     QRect rect = visualRect(index);
     if (!index.isValid() || !isExpanded(index)) {
         return rect;
@@ -234,8 +270,7 @@ QRect LayerTreeView::visualSubtreeRect(const QModelIndex &index) const
     return rect;
 }
 
-void LayerTreeView::setDropIndicatorY(int y)
-{
+void LayerTreeView::setDropIndicatorY(int y) {
     if (dropIndicatorY_ == y) {
         return;
     }
@@ -243,8 +278,7 @@ void LayerTreeView::setDropIndicatorY(int y)
     viewport()->update();
 }
 
-bool LayerTreeView::dropTargetForPosition(const QPoint &position, QModelIndex *dropParent, int *dropRow, int *indicatorY) const
-{
+bool LayerTreeView::dropTargetForPosition(const QPoint &position, QModelIndex *dropParent, int *dropRow, int *indicatorY) const {
     if (model() == nullptr || selectionModel() == nullptr || dropParent == nullptr || dropRow == nullptr || indicatorY == nullptr) {
         return false;
     }

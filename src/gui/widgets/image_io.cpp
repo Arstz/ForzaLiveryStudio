@@ -14,8 +14,7 @@
 namespace gui {
 namespace {
 
-QString supportedImageFormatsText()
-{
+QString supportedImageFormatsText() {
     QStringList formats;
     for (const QByteArray &format : QImageReader::supportedImageFormats()) {
         formats.push_back(QString::fromLatin1(format));
@@ -26,15 +25,13 @@ QString supportedImageFormatsText()
 
 #ifdef Q_OS_WIN
 template <typename T>
-void releaseCom(T *object)
-{
+void releaseCom(T *object) {
     if (object != nullptr) {
         object->Release();
     }
 }
 
-QImage readImageWithWic(const QString &path, QString *error)
-{
+QImage readImageWithWic(const QString &path, QString *error) {
     const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool uninitialize = SUCCEEDED(init);
     if (FAILED(init) && init != RPC_E_CHANGED_MODE) {
@@ -110,8 +107,7 @@ QImage readImageWithWic(const QString &path, QString *error)
 
 } // namespace
 
-QStringList supportedImageSuffixes()
-{
+QStringList supportedImageSuffixes() {
     QStringList suffixes;
     for (const QByteArray &format : QImageReader::supportedImageFormats()) {
         const QString suffix = QString::fromLatin1(format).toLower();
@@ -146,8 +142,7 @@ QStringList supportedImageSuffixes()
     return suffixes;
 }
 
-QString imageDialogFilter()
-{
+QString imageDialogFilter() {
     QStringList suffixes = supportedImageSuffixes();
     suffixes.sort();
     QStringList patterns;
@@ -157,8 +152,7 @@ QString imageDialogFilter()
     return QStringLiteral("Images (%1);;All files (*)").arg(patterns.join(QLatin1Char(' ')));
 }
 
-QImage readGuideImage(const QString &path, QByteArray *format, QString *error)
-{
+QImage readGuideImage(const QString &path, QByteArray *format, QString *error) {
     QImageReader reader(path);
     reader.setAutoTransform(true);
     QImage image = reader.read();
@@ -190,8 +184,7 @@ QImage readGuideImage(const QString &path, QByteArray *format, QString *error)
     return {};
 }
 
-QImage readThumbnailImage(const QString &path, QString *error)
-{
+QImage readThumbnailImage(const QString &path, QString *error) {
     QImageReader reader(path);
     reader.setAutoTransform(true);
     QImage image = reader.read();
@@ -212,8 +205,7 @@ QImage readThumbnailImage(const QString &path, QString *error)
     return {};
 }
 
-QByteArray encodeGuideImage(const QImage &image, QString *formatOut)
-{
+QByteArray encodeGuideImage(const QImage &image, QString *formatOut) {
     if (image.isNull()) {
         return {};
     }

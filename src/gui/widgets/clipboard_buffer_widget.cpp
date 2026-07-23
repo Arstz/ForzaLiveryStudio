@@ -1,124 +1,109 @@
 #include "clipboard_buffer_widget.h"
 
-#include "main_window.h"
-
+#include "editor_state.h"
 #include "raster_decals.h"
+#include "scene_view.h"
 
 #include <QPainter>
 #include <QPaintEvent>
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 
 namespace gui {
 namespace {
 
-QColor layerColor(const fh6::scene::Shape &layer)
-{
+QColor layerColor(const fh6::scene::Shape &layer) {
     return QColor(layer.color[2], layer.color[1], layer.color[0], std::clamp<int>(layer.color[3], 0, 255));
 }
 
-QTransform nodeTransform(const fh6::scene::Layer &node)
-{
-    QTransform transform;
-    transform.translate(node.transform.x, node.transform.y);
-    transform.rotate(node.transform.rotation);
-    transform.shear(node.transform.skew, 0.0);
-    transform.scale(node.transform.scaleX, node.transform.scaleY);
-    return transform;
-}
-
-int shapeCount(const ProjectClipboard &clipboard)
-{
-    int count = 0;
-    std::function<void(const fh6::scene::Layer &)> walk = [&](const fh6::scene::Layer &node) {
+template <typename Fn>
+void forEachClipboardShape(const ProjectClipboard &clipboard, const Fn &fn) {
+    auto walk = [&](auto &self, const fh6::scene::Layer &node, const QTransform &parentWorld) -> void {
+        const QTransform world = sceneLocalTransform(node) * parentWorld;
         if (node.kind() == fh6::scene::LayerKind::Shape) {
-            ++count;
+            fn(static_cast<const fh6::scene::Shape &>(node), world);
             return;
         }
         if (node.kind() == fh6::scene::LayerKind::Group) {
             for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
-                walk(*child);
+                self(self, *child, world);
             }
         }
     };
     for (const auto &node : clipboard.nodes) {
         if (node) {
-            walk(*node);
+            walk(walk, *node, QTransform());
         }
     }
+
+}
+
+int shapeCount(const ProjectClipboard &clipboard) {
+    int count = 0;
+    forEachClipboardShape(clipboard, [&](const fh6::scene::Shape &, const QTransform &) {
+        ++count;
+    });
+
     return count;
 }
 
 } // namespace
 
 ClipboardBufferWidget::ClipboardBufferWidget(QWidget *parent)
-    : QWidget(parent)
-{
+    : QWidget(parent) {
     setMinimumSize(180, 150);
     geometryLoaded_ = geometry_.loadDefault();
 }
 
-void ClipboardBufferWidget::setClipboard(const ProjectClipboard *clipboard)
-{
+void ClipboardBufferWidget::setClipboard(const ProjectClipboard *clipboard) {
     clipboard_ = clipboard;
     update();
 }
 
-void ClipboardBufferWidget::paintEvent(QPaintEvent *event)
-{
+void ClipboardBufferWidget::setPreviewBackground(const PreviewBackground &background, UiTheme theme) {
+    if (previewBackground_.mode == background.mode
+        && previewBackground_.custom == background.custom && theme_ == theme) {
+        return;
+    }
+    previewBackground_ = background;
+    theme_ = theme;
+    update();
+}
+
+void ClipboardBufferWidget::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), QColor(24, 24, 24));
+    painter.fillRect(rect(), palette().color(QPalette::Window));
 
     if (clipboard_ == nullptr || clipboard_->nodes.empty()) {
-        painter.setPen(QColor(200, 200, 200));
+        painter.setPen(palette().color(QPalette::WindowText));
         painter.drawText(rect(), Qt::AlignCenter, QStringLiteral("Buffer empty"));
         return;
     }
 
     const QString countText = QString::number(shapeCount(*clipboard_));
-    painter.setPen(QColor(240, 240, 240));
+    painter.setPen(palette().color(QPalette::WindowText));
     painter.drawText(QRect(width() - 76, 8, 66, 22), Qt::AlignRight | Qt::AlignVCenter, countText);
 
     const QRect previewRect = rect().adjusted(12, 34, -12, -12);
     if (previewRect.width() <= 0 || previewRect.height() <= 0) {
         return;
     }
-    painter.fillRect(previewRect, QColor(16, 16, 16));
-    painter.setPen(QPen(QColor(60, 60, 60), 1));
+    painter.fillRect(previewRect, previewBackgroundBrush(theme_, previewBackground_));
+    painter.setPen(QPen(palette().color(QPalette::Mid), 1));
     painter.drawRect(previewRect.adjusted(0, 0, -1, -1));
 
-    QRectF bounds;
-    bool hasBounds = false;
-    std::function<void(const fh6::scene::Layer &, const QTransform &)> accumulate =
-        [&](const fh6::scene::Layer &node, const QTransform &parentWorld) {
-            const QTransform world = nodeTransform(node) * parentWorld;
-            if (node.kind() == fh6::scene::LayerKind::Shape) {
-                const auto &shape = static_cast<const fh6::scene::Shape &>(node);
-                if (!shape.visible) {
-                    return;
-                }
-                const QRectF layerRect = layerBounds(shape, parentWorld);
-                bounds = hasBounds ? bounds.united(layerRect) : layerRect;
-                hasBounds = true;
-                return;
-            }
-            if (node.kind() == fh6::scene::LayerKind::Group) {
-                for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
-                    accumulate(*child, world);
-                }
-            }
-        };
-    for (const auto &node : clipboard_->nodes) {
-        if (node) {
-            accumulate(*node, QTransform());
+    BoundsAccumulator boundsAccumulator;
+    forEachClipboardShape(*clipboard_, [&](const fh6::scene::Shape &shape, const QTransform &world) {
+        if (shape.visible) {
+            boundsAccumulator.add(world, sceneLocalRect(sceneNodeSize(shape, geometry_)));
         }
-    }
-    if (!hasBounds || bounds.isEmpty()) {
+    });
+    QRectF bounds = boundsAccumulator.hasBounds() ? boundsAccumulator.bounds() : QRectF();
+    if (bounds.isEmpty()) {
         bounds = QRectF(-64.0, -64.0, 128.0, 128.0);
     }
 
@@ -130,42 +115,19 @@ void ClipboardBufferWidget::paintEvent(QPaintEvent *event)
     painter.scale(scale, -scale);
     painter.translate(-bounds.center());
     painter.setPen(Qt::NoPen);
-    std::function<void(const fh6::scene::Layer &, const QTransform &)> paintNode =
-        [&](const fh6::scene::Layer &node, const QTransform &parentWorld) {
-            const QTransform world = nodeTransform(node) * parentWorld;
-            if (node.kind() == fh6::scene::LayerKind::Shape) {
-                const auto &shape = static_cast<const fh6::scene::Shape &>(node);
-                if (shape.visible) {
-                    paintLayer(painter, shape, parentWorld);
-                }
-                return;
-            }
-            if (node.kind() == fh6::scene::LayerKind::Group) {
-                for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
-                    paintNode(*child, world);
-                }
-            }
-        };
-    for (const auto &node : clipboard_->nodes) {
-        if (node) {
-            paintNode(*node, QTransform());
+    forEachClipboardShape(*clipboard_, [&](const fh6::scene::Shape &shape, const QTransform &world) {
+        if (shape.visible) {
+            paintLayer(painter, shape, world);
         }
-    }
+    });
     painter.restore();
 }
 
-QRectF ClipboardBufferWidget::layerBounds(const fh6::scene::Shape &layer, const QTransform &parentWorld) const
-{
-    const QSizeF size = layer.raster ? QSizeF(layer.rasterWidth, layer.rasterHeight)
-                                     : geometry_.shapeSize(layer.shapeId);
-    const QRectF local(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
-    return (nodeTransform(layer) * parentWorld).mapRect(local);
-}
-
-void ClipboardBufferWidget::paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &parentWorld) const
-{
+void ClipboardBufferWidget::paintLayer(QPainter &painter,
+                                       const fh6::scene::Shape &layer,
+                                       const QTransform &world) const {
     painter.save();
-    painter.setTransform(nodeTransform(layer) * parentWorld, true);
+    painter.setTransform(world, true);
     painter.setPen(Qt::NoPen);
     painter.setCompositionMode(layer.mask ? QPainter::CompositionMode_DestinationOut : QPainter::CompositionMode_SourceOver);
 
@@ -176,11 +138,10 @@ void ClipboardBufferWidget::paintLayer(QPainter &painter, const fh6::scene::Shap
                                     decal.width,
                                     decal.height,
                                     QImage::Format_RGBA8888);
-            const QRectF local(-decal.width * 0.5, -decal.height * 0.5, decal.width, decal.height);
             painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
             painter.setOpacity(static_cast<double>(layer.color[3]) / 255.0);
             // Mirror vertically to match the GL raster orientation under the Y-flip.
-            painter.drawImage(local, decalImage.mirrored(false, true));
+            painter.drawImage(sceneLocalRect(QSizeF(decal.width, decal.height)), decalImage.mirrored(false, true));
             painter.restore();
             return;
         }
@@ -191,7 +152,7 @@ void ClipboardBufferWidget::paintLayer(QPainter &painter, const fh6::scene::Shap
         const QSizeF size = layer.raster ? QSizeF(layer.rasterWidth, layer.rasterHeight)
                                          : geometry_.shapeSize(layer.shapeId);
         painter.setBrush(layer.mask ? QColor(0, 0, 0, layer.color[3]) : layerColor(layer));
-        painter.drawRect(QRectF(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height()));
+        painter.drawRect(sceneLocalRect(size));
         painter.restore();
         return;
     }

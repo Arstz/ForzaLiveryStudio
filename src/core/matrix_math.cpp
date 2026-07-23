@@ -7,8 +7,7 @@
 namespace fh6 {
 
 namespace detail {
-Matrix3 multiply(const Matrix3 &left, const Matrix3 &right)
-{
+Matrix3 multiply(const Matrix3 &left, const Matrix3 &right) {
     Matrix3 out;
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
@@ -27,8 +26,7 @@ namespace {
 constexpr double Pi = 3.14159265358979323846;
 }
 
-double normalizeRotation(double value)
-{
+double normalizeRotation(double value) {
     if (!std::isfinite(value)) {
         return 0.0;
     }
@@ -42,8 +40,7 @@ double normalizeRotation(double value)
     return normalized == 0.0 ? 0.0 : normalized;
 }
 
-Matrix3 affine(double a, double b, double c, double d, double e, double f)
-{
+Matrix3 affine(double a, double b, double c, double d, double e, double f) {
     Matrix3 matrix;
     matrix.m[0][0] = a;
     matrix.m[0][1] = b;
@@ -57,13 +54,11 @@ Matrix3 affine(double a, double b, double c, double d, double e, double f)
     return matrix;
 }
 
-bool hasColorData(const std::array<quint8, 4> &color)
-{
+bool hasColorData(const std::array<quint8, 4> &color) {
     return color[0] != color[1] || color[1] != color[2];
 }
 
-Matrix3 shapeMatrix(const FlattenedLayer &layer)
-{
+Matrix3 shapeMatrix(const FlattenedLayer &layer) {
     const double radians = layer.rotation * Pi / 180.0;
     const double c = std::cos(radians);
     const double s = std::sin(radians);
@@ -74,8 +69,7 @@ Matrix3 shapeMatrix(const FlattenedLayer &layer)
     return result;
 }
 
-Matrix3 invertAffine(const Matrix3 &matrix)
-{
+Matrix3 invertAffine(const Matrix3 &matrix) {
     const double a = matrix.m[0][0];
     const double b = matrix.m[0][1];
     const double c = matrix.m[1][0];
@@ -101,8 +95,7 @@ Matrix3 invertAffine(const Matrix3 &matrix)
     return out;
 }
 
-scene::Transform2D decomposeTransform2D(const Matrix3 &matrix)
-{
+scene::Transform2D decomposeTransform2D(const Matrix3 &matrix) {
     scene::Transform2D transform;
     transform.x = matrix.m[0][2];
     transform.y = matrix.m[1][2];

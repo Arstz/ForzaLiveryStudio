@@ -1,6 +1,7 @@
 #include "layer_state_delegate.h"
 
 #include "editor_state.h"
+#include "gui_assets.h"
 #include "layer_tree_model.h"
 
 #include <QtCore>
@@ -13,38 +14,17 @@
 namespace gui {
 namespace {
 
-constexpr int BadgeSize = 18;
-constexpr int BadgeGap = 5;
-constexpr int BadgeRightMargin = 8;
-constexpr int PositionGap = 6;
+constexpr int kPositionGap = 6;
 
-QString assetPath(const QString &fileName)
-{
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QString cwd = QDir::currentPath();
-    QStringList candidates;
-    candidates << QDir(appDir).filePath(QStringLiteral("assets/%1").arg(fileName))
-               << QDir(cwd).filePath(QStringLiteral("assets/%1").arg(fileName))
-               << QDir(cwd).filePath(QStringLiteral("cpp-port/assets/%1").arg(fileName));
-    for (const QString &path : candidates) {
-        if (QFileInfo::exists(path)) {
-            return path;
-        }
-    }
-    return candidates.front();
-}
-
-QPixmap badgePixmap(const QString &fileName)
-{
+QPixmap badgePixmap(const QString &fileName) {
     QPixmap pixmap(assetPath(fileName));
     if (pixmap.isNull()) {
         return {};
     }
-    return pixmap.scaled(BadgeSize, BadgeSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return pixmap.scaled(kLayerBadgeSize, kLayerBadgeSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 }
 
-QPixmap tinted(const QPixmap &source, const QColor &color)
-{
+QPixmap tinted(const QPixmap &source, const QColor &color) {
     if (source.isNull()) {
         return {};
     }
@@ -59,8 +39,7 @@ QPixmap tinted(const QPixmap &source, const QColor &color)
     return out;
 }
 
-double relativeLuminance(const QColor &color)
-{
+double relativeLuminance(const QColor &color) {
     const auto channel = [](int value) {
         const double v = value / 255.0;
         return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
@@ -68,15 +47,13 @@ double relativeLuminance(const QColor &color)
     return 0.2126 * channel(color.red()) + 0.7152 * channel(color.green()) + 0.0722 * channel(color.blue());
 }
 
-double contrastRatio(const QColor &a, const QColor &b)
-{
+double contrastRatio(const QColor &a, const QColor &b) {
     const double l1 = relativeLuminance(a);
     const double l2 = relativeLuminance(b);
     return (std::max(l1, l2) + 0.05) / (std::min(l1, l2) + 0.05);
 }
 
-QColor badgeForeground(const QStyleOptionViewItem &option)
-{
+QColor badgeForeground(const QStyleOptionViewItem &option) {
     if (!(option.state & QStyle::State_Selected)) {
         return option.palette.color(QPalette::Text);
     }
@@ -97,23 +74,22 @@ LayerStateDelegate::LayerStateDelegate(EditorState *state, QObject *parent)
     , invisible_(badgePixmap(QStringLiteral("PropertyInvisible.xpm")))
     , maskOn_(badgePixmap(QStringLiteral("PropertyMask.xpm")))
     , locked_(badgePixmap(QStringLiteral("PropertyLocked.xpm")))
-    , unlocked_(badgePixmap(QStringLiteral("PropertyUnlocked.xpm")))
-{
+    , unlocked_(badgePixmap(QStringLiteral("PropertyUnlocked.xpm"))) {
 }
 
-void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
-{
+void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
     const bool isGuide = index.data(LayerTreeModel::IsGuideRole).toBool();
     if (isGuide && !(option.state & QStyle::State_Selected)) {
         painter->fillRect(option.rect, QColor(0x9c, 0x85, 0x5a));
     }
     QStyleOptionViewItem itemOption(option);
     const int badgeCount = isGuide ? 2 : 3;
-    const int badgesBlock = BadgeRightMargin + BadgeSize * badgeCount + BadgeGap * (badgeCount - 1);
+    const int badgesBlock = kLayerBadgeRightMargin + kLayerBadgeSize * badgeCount
+        + kLayerBadgeGap * (badgeCount - 1);
     const QString positionText = index.data(LayerTreeModel::PositionTextRole).toString();
     const int positionWidth = positionText.isEmpty()
         ? 0
-        : option.fontMetrics.horizontalAdvance(positionText) + PositionGap * 2;
+        : option.fontMetrics.horizontalAdvance(positionText) + kPositionGap * 2;
     itemOption.rect.adjust(0, 0, -(badgesBlock + positionWidth), 0);
     QStyledItemDelegate::paint(painter, itemOption, index);
 
@@ -143,7 +119,7 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
     painter->restore();
 
     if (!positionText.isEmpty()) {
-        const int right = option.rect.right() - badgesBlock - PositionGap;
+        const int right = option.rect.right() - badgesBlock - kPositionGap;
         const QRect positionRect(right - positionWidth, option.rect.top(), positionWidth, option.rect.height());
         QColor positionColor = fg;
         positionColor.setAlpha(150);
@@ -157,8 +133,7 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
 bool LayerStateDelegate::editorEvent(QEvent *event,
                                      QAbstractItemModel *model,
                                      const QStyleOptionViewItem &option,
-                                     const QModelIndex &index)
-{
+                                     const QModelIndex &index) {
     if ((event->type() != QEvent::MouseButtonPress && event->type() != QEvent::MouseButtonRelease)
         || state_ == nullptr || !index.isValid()) {
         return QStyledItemDelegate::editorEvent(event, model, option, index);
@@ -181,8 +156,7 @@ bool LayerStateDelegate::editorEvent(QEvent *event,
     return true;
 }
 
-QRect LayerStateDelegate::badgeRect(const QRect &rowRect, Badge badge) const
-{
+QRect LayerStateDelegate::badgeRect(const QRect &rowRect, Badge badge) const {
     int slot = 0;
     switch (badge) {
     case Badge::Visible:
@@ -197,13 +171,13 @@ QRect LayerStateDelegate::badgeRect(const QRect &rowRect, Badge badge) const
     case Badge::None:
         return {};
     }
-    const int right = rowRect.right() - BadgeRightMargin - slot * (BadgeSize + BadgeGap);
-    const int top = rowRect.center().y() - BadgeSize / 2;
-    return QRect(right - BadgeSize + 1, top, BadgeSize, BadgeSize);
+    const int right = rowRect.right() - kLayerBadgeRightMargin
+        - slot * (kLayerBadgeSize + kLayerBadgeGap);
+    const int top = rowRect.center().y() - kLayerBadgeSize / 2;
+    return QRect(right - kLayerBadgeSize + 1, top, kLayerBadgeSize, kLayerBadgeSize);
 }
 
-LayerStateDelegate::Badge LayerStateDelegate::badgeAt(const QRect &rowRect, const QPoint &point) const
-{
+LayerStateDelegate::Badge LayerStateDelegate::badgeAt(const QRect &rowRect, const QPoint &point) const {
     for (Badge badge : {Badge::Visible, Badge::Mask, Badge::Locked}) {
         if (badgeRect(rowRect, badge).contains(point)) {
             return badge;
@@ -212,8 +186,7 @@ LayerStateDelegate::Badge LayerStateDelegate::badgeAt(const QRect &rowRect, cons
     return Badge::None;
 }
 
-void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge)
-{
+void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge) {
     const QString entryId = index.data(LayerTreeModel::EntryIdRole).toString();
     if (entryId.isEmpty() || state_->project() == nullptr) {
         return;
@@ -225,7 +198,8 @@ void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge)
     const bool nextLocked = !index.data(LayerTreeModel::EffectiveLockedRole).toBool();
 
     state_->beginProjectEdit();
-    if (badge == Badge::Visible) {
+    switch (badge) {
+    case Badge::Visible:
         if (isGuide) {
             state_->setGuideLayerVisible(entryId, nextVisible);
         } else if (isGroup) {
@@ -233,11 +207,8 @@ void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge)
         } else {
             state_->setLayerVisible(entryId, nextVisible);
         }
-        state_->commitProjectEdit();
-        state_->noteProjectGeometryChanged(true, {entryId});
-        return;
-    }
-    if (badge == Badge::Mask) {
+        break;
+    case Badge::Mask:
         if (isGuide) {
             state_->cancelProjectEdit();
             return;
@@ -247,20 +218,26 @@ void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge)
         } else {
             state_->setLayerMask(entryId, nextMask);
         }
-        state_->commitProjectEdit();
-        state_->noteProjectGeometryChanged(true, {entryId});
+        break;
+    case Badge::Locked:
+        if (isGuide) {
+            state_->setGuideLayerLocked(entryId, nextLocked);
+        } else if (isGroup) {
+            state_->setGroupAndDescendantLocked(entryId, nextLocked);
+        } else {
+            state_->setLayerLockScope(entryId, nextLocked);
+        }
+        break;
+    case Badge::None:
+        state_->cancelProjectEdit();
         return;
     }
-
-    if (isGuide) {
-        state_->setGuideLayerLocked(entryId, nextLocked);
-    } else if (isGroup) {
-        state_->setGroupAndDescendantLocked(entryId, nextLocked);
-    } else {
-        state_->setLayerLockScope(entryId, nextLocked);
-    }
     state_->commitProjectEdit();
-    state_->noteProjectStructureChanged();
+    if (badge == Badge::Locked) {
+        state_->noteProjectStructureChanged();
+    } else {
+        state_->noteProjectGeometryChanged(true, {entryId});
+    }
 }
 
 } // namespace gui

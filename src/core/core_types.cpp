@@ -4,8 +4,7 @@
 
 namespace fh6 {
 
-const LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) const
-{
+const LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) const {
     for (const LiveryPaintMaterial &material : materials) {
         if (material.materialHash == materialHash) {
             return &material;
@@ -15,8 +14,7 @@ const LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) const
 }
 
 Project::Project()
-    : root(std::make_unique<scene::Group>())
-{
+    : root(std::make_unique<scene::Group>()) {
     root->id = QStringLiteral("__root__");
     root->name = QStringLiteral("Project");
 }
@@ -39,15 +37,13 @@ Project::Project(const Project &other)
     , isLivery(other.isLivery)
     , carId(other.carId)
     , liverySource(other.liverySource)
-    , liveryPaint(other.liveryPaint)
-{
+    , liveryPaint(other.liveryPaint) {
     if (root && root->id.isEmpty()) {
         root->id = QStringLiteral("__root__");
     }
 }
 
-Project &Project::operator=(const Project &other)
-{
+Project &Project::operator=(const Project &other) {
     if (this == &other) {
         return *this;
     }

@@ -6,8 +6,10 @@
 #include "car_registry.h"
 #include "fh6_core.h"
 #include "fm_codec.h"
+#include "gui_constants.h"
 #include "header_metadata_widget.h"
 #include "image_io.h"
+#include "image_preprocess_dialog.h"
 #include "import_asset_dialog.h"
 #include "layer.h"
 #include "project_codec.h"
@@ -15,6 +17,7 @@
 
 #include <QtGui>
 
+#include <algorithm>
 #include <exception>
 #include <iterator>
 #include <memory>
@@ -40,13 +43,11 @@ constexpr const char *kEmptyLiverySectionNames[] = {
     "RightWindow",
 };
 
-QString generatedGroupId(int index)
-{
+QString generatedGroupId(int index) {
     return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
 }
 
-fh6::Project createNewProject(bool livery, const QString &creatorName, int carId)
-{
+fh6::Project createNewProject(bool livery, const QString &creatorName, int carId) {
     fh6::Project project;
     project.name = QStringLiteral("Untitled");
     project.isLivery = livery;
@@ -66,8 +67,7 @@ fh6::Project createNewProject(bool livery, const QString &creatorName, int carId
     return project;
 }
 
-bool containsRasterLogo(const fh6::scene::Layer &node)
-{
+bool containsRasterLogo(const fh6::scene::Layer &node) {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         return static_cast<const fh6::scene::Shape &>(node).raster;
     }
@@ -83,8 +83,7 @@ bool containsRasterLogo(const fh6::scene::Layer &node)
     return false;
 }
 
-bool projectContainsRasterLogo(const fh6::Project &project)
-{
+bool projectContainsRasterLogo(const fh6::Project &project) {
     if (!project.root) {
         return false;
     }
@@ -96,10 +95,25 @@ bool projectContainsRasterLogo(const fh6::Project &project)
     return false;
 }
 
+fh6::HeaderMetadata effectiveHeaderMetadata(const fh6::Project &project,
+                                            const QString &creatorName) {
+    if (project.headerMetadata) {
+        return *project.headerMetadata;
+    }
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            return fh6::parseHeader(project.sourceHeader);
+        } catch (const std::exception &) {
+        }
+    }
+
+    return fh6::defaultDraftHeader(project.name, creatorName,
+                                   static_cast<quint32>(project.carId));
+}
+
 } // namespace
 
-MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString &path) const
-{
+MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString &path) const {
     const QFileInfo info(path);
     if (!info.exists()) {
         return ExternalDropKind::Unsupported;
@@ -113,8 +127,7 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
         return ExternalDropKind::Unsupported;
     }
 
-    if (info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || info.suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0) {
+    if (isProjectDocumentFile(info)) {
         return ExternalDropKind::ProjectJson;
     }
     if (info.fileName().compare(QStringLiteral("C_group"), Qt::CaseInsensitive) == 0
@@ -128,8 +141,7 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
     return ExternalDropKind::Unsupported;
 }
 
-bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls)
-{
+bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls) {
     QStringList paths;
     for (const QUrl &url : urls) {
         if (url.isLocalFile()) {
@@ -147,13 +159,13 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls)
         statusBar()->showMessage(QStringLiteral("Unsupported dropped file: %1").arg(QFileInfo(path).fileName()), 4000);
         return false;
     }
+    if (kind != ExternalDropKind::Image && !confirmDiscardUnsavedChanges()) {
+        return false;
+    }
 
     QString error;
     switch (kind) {
     case ExternalDropKind::ProjectJson:
-        if (!confirmDiscardUnsavedChanges()) {
-            return false;
-        }
         rememberImportDirectory(path, QStringLiteral("projectJson"));
         if (!loadProjectJson(path, &error)) {
             QMessageBox::critical(this, QStringLiteral("Open failed"), error);
@@ -161,9 +173,6 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls)
         }
         return true;
     case ExternalDropKind::CGroup:
-        if (!confirmDiscardUnsavedChanges()) {
-            return false;
-        }
         if (!importAny(path, &error)) {
             QMessageBox::critical(this, QStringLiteral("Import failed"), error);
             return false;
@@ -182,8 +191,7 @@ bool MainWindow::handleExternalDropUrls(const QList<QUrl> &urls)
     return false;
 }
 
-void MainWindow::dragEnterEvent(QDragEnterEvent *event)
-{
+void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         for (const QUrl &url : event->mimeData()->urls()) {
             if (url.isLocalFile() && classifyExternalDropPath(url.toLocalFile()) != ExternalDropKind::Unsupported) {
@@ -196,8 +204,7 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
     QMainWindow::dragEnterEvent(event);
 }
 
-void MainWindow::dragMoveEvent(QDragMoveEvent *event)
-{
+void MainWindow::dragMoveEvent(QDragMoveEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         event->setDropAction(Qt::CopyAction);
         event->accept();
@@ -206,8 +213,7 @@ void MainWindow::dragMoveEvent(QDragMoveEvent *event)
     QMainWindow::dragMoveEvent(event);
 }
 
-void MainWindow::dropEvent(QDropEvent *event)
-{
+void MainWindow::dropEvent(QDropEvent *event) {
     if (event != nullptr && event->mimeData() != nullptr && event->mimeData()->hasUrls()) {
         if (handleExternalDropUrls(event->mimeData()->urls())) {
             event->setDropAction(Qt::CopyAction);
@@ -218,8 +224,7 @@ void MainWindow::dropEvent(QDropEvent *event)
     QMainWindow::dropEvent(event);
 }
 
-void MainWindow::closeEvent(QCloseEvent *event)
-{
+void MainWindow::closeEvent(QCloseEvent *event) {
     if (confirmDiscardUnsavedChanges()) {
         event->accept();
     } else {
@@ -227,8 +232,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
 }
 
-bool MainWindow::confirmDiscardUnsavedChanges()
-{
+bool MainWindow::confirmDiscardUnsavedChanges() {
     if (state_ == nullptr || !state_->isModified()) {
         return true;
     }
@@ -256,18 +260,28 @@ bool MainWindow::confirmDiscardUnsavedChanges()
     return false;
 }
 
-void MainWindow::updateWindowTitle()
-{
+void MainWindow::updateWindowTitle() {
     const QString base = QStringLiteral("Forza Livery Studio");
     const bool dirty = state_ != nullptr && state_->isModified();
     setWindowTitle(dirty ? base + QStringLiteral(" *") : base);
 }
 
-bool MainWindow::loadProject(const QString &path, QString *error)
-{
+bool MainWindow::loadProject(const QString &path, QString *error) {
+    return loadImportedProject([&path]() { return fh6::importCGroupNested(path); },
+                               QStringLiteral("Imported %1").arg(path), error);
+}
+
+bool MainWindow::loadLivery(const QString &path, QString *error) {
+    return loadImportedProject([&path]() { return fh6::importCLivery(path); },
+                               QStringLiteral("Imported livery %1").arg(path), error);
+}
+
+bool MainWindow::loadImportedProject(const std::function<fh6::Project()> &load,
+                                     const QString &statusMessage,
+                                     QString *error) {
     try {
-        setProject(fh6::importCGroupNested(path));
-        statusBar()->showMessage(QStringLiteral("Imported %1").arg(path), 5000);
+        setProject(load());
+        statusBar()->showMessage(statusMessage, 5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -277,22 +291,7 @@ bool MainWindow::loadProject(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::loadLivery(const QString &path, QString *error)
-{
-    try {
-        setProject(fh6::importCLivery(path));
-        statusBar()->showMessage(QStringLiteral("Imported livery %1").arg(path), 5000);
-        return true;
-    } catch (const std::exception &ex) {
-        if (error != nullptr) {
-            *error = QString::fromUtf8(ex.what());
-        }
-        return false;
-    }
-}
-
-bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
-{
+bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
     if (!state_->hasProject_) {
         if (error != nullptr) {
             *error = QStringLiteral("no project is loaded");
@@ -326,22 +325,13 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
         if (projectContainsRasterLogo(exportProject)) {
             throw std::runtime_error("logo layers can only be exported from livery projects");
         }
-        fh6::HeaderMetadata meta;
-        if (exportProject.headerMetadata) {
-            meta = *exportProject.headerMetadata;
-        } else if (!exportProject.sourceHeader.isEmpty()) {
-            try {
-                meta = fh6::parseHeader(exportProject.sourceHeader);
-            } catch (const std::exception &) {
-                meta = fh6::defaultDraftHeader(exportProject.name, creatorName_);
-            }
-            if (meta.published) {
-                fh6::HeaderMetadata draft = fh6::defaultDraftHeader(exportProject.name, creatorName_);
-                draft.name = meta.name;
-                meta = draft;
-            }
-        } else {
-            meta = fh6::defaultDraftHeader(exportProject.name, creatorName_);
+        const bool parsedSourceHeader = !exportProject.headerMetadata
+            && !exportProject.sourceHeader.isEmpty();
+        fh6::HeaderMetadata meta = effectiveHeaderMetadata(exportProject, creatorName_);
+        if (parsedSourceHeader && meta.published) {
+            fh6::HeaderMetadata draft = fh6::defaultDraftHeader(exportProject.name, creatorName_);
+            draft.name = meta.name;
+            meta = draft;
         }
         meta.published = false;
         meta.description.clear();
@@ -358,7 +348,8 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
         const QImage thumb = renderProjectPreviewImage(exportProject, QSize(256, 256));
         if (!QImageWriter::supportedImageFormats().contains("webp")) {
             throw std::runtime_error("Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
-        } else if (!thumb.isNull() && !thumb.save(QDir(targetFolder).filePath(QStringLiteral("thumb.webp")), "WEBP")) {
+        }
+        if (!thumb.isNull() && !thumb.save(QDir(targetFolder).filePath(QStringLiteral("thumb.webp")), "WEBP")) {
             throw std::runtime_error("could not write thumb.webp");
         }
         statusBar()->showMessage(QStringLiteral("Exported %1").arg(targetFolder), 5000);
@@ -371,13 +362,11 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error)
     }
 }
 
-bool MainWindow::newProject(QString *error)
-{
+bool MainWindow::newProject(QString *error) {
     return newProject(false, error);
 }
 
-bool MainWindow::newProject(bool livery, QString *error, int carId)
-{
+bool MainWindow::newProject(bool livery, QString *error, int carId) {
     Q_UNUSED(error);
     setProject(createNewProject(livery, creatorName_, carId));
     statusBar()->showMessage(livery ? QStringLiteral("New livery project created")
@@ -386,8 +375,7 @@ bool MainWindow::newProject(bool livery, QString *error, int carId)
     return true;
 }
 
-bool MainWindow::saveProjectJson(const QString &path, QString *error)
-{
+bool MainWindow::saveProjectJson(const QString &path, QString *error) {
     if (!state_->hasProject_) {
         if (error != nullptr) {
             *error = QStringLiteral("no project is loaded");
@@ -427,8 +415,7 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::loadProjectJson(const QString &path, QString *error)
-{
+bool MainWindow::loadProjectJson(const QString &path, QString *error) {
     try {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
@@ -447,8 +434,7 @@ bool MainWindow::loadProjectJson(const QString &path, QString *error)
     }
 }
 
-bool MainWindow::importAny(const QString &path, QString *error)
-{
+bool MainWindow::importAny(const QString &path, QString *error) {
     const QFileInfo info(path);
     bool isLivery = false;
     if (info.isDir()) {
@@ -467,8 +453,7 @@ bool MainWindow::importAny(const QString &path, QString *error)
     return loadProject(path, error);
 }
 
-void MainWindow::importFileDialog()
-{
+void MainWindow::importFileDialog() {
     const ImportAssetSelection selection = showImportAssetDialog(
         this,
         importBrowserStartDirectory(
@@ -495,8 +480,7 @@ void MainWindow::importFileDialog()
     }
 }
 
-void MainWindow::importGuideLayerDialog()
-{
+void MainWindow::importGuideLayerDialog() {
     const QString path = QFileDialog::getOpenFileName(this,
                                                       QStringLiteral("Add Guide Layer"),
                                                       importDialogStartDirectory(this, QStringLiteral("guideLayer")),
@@ -512,22 +496,283 @@ void MainWindow::importGuideLayerDialog()
     }
 }
 
-bool MainWindow::importFM2023Folder(const QString &path, QString *error)
-{
-    try {
-        rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
-        fh6::Project project = fh6::importFM2023Asset(path);
-        setProject(std::move(project));
-        statusBar()->showMessage(QStringLiteral("Imported %1").arg(path), 5000);
-        return true;
-    } catch (const std::exception &e) {
-        if (error) *error = QString::fromStdString(e.what());
-        return false;
+void MainWindow::preprocessSelectedGuide() {
+    if (state_ == nullptr || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 3500);
+        return;
+    }
+    const QVector<fh6::scene::GuideLayer *> guides = state_->selectedGuideLayers();
+    if (guides.size() != 1) {
+        statusBar()->showMessage(guides.isEmpty()
+                                     ? QStringLiteral("Select a guide layer first")
+                                     : QStringLiteral("Select exactly one guide layer"),
+                                 3500);
+        return;
+    }
+    fh6::scene::GuideLayer *guide = guides.front();
+    if (guide == nullptr || guide->locked) {
+        statusBar()->showMessage(QStringLiteral("Unlock the selected guide layer first"), 3500);
+        return;
+    }
+    if (!guide->image) {
+        statusBar()->showMessage(QStringLiteral("The selected guide layer has no image"), 3500);
+        return;
+    }
+
+    QImage source;
+    if (!guide->image->pixels.isEmpty() && guide->image->width > 0 && guide->image->height > 0) {
+        source = QImage(reinterpret_cast<const uchar *>(guide->image->pixels.constData()),
+                        guide->image->width,
+                        guide->image->height,
+                        guide->image->width * 4,
+                        QImage::Format_ARGB32_Premultiplied).copy();
+    } else if (!guide->image->encoded.isEmpty()) {
+        source.loadFromData(guide->image->encoded, guide->image->format.toLatin1().constData());
+        source = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+    if (source.isNull()) {
+        statusBar()->showMessage(QStringLiteral("Could not decode the selected guide image"), 4000);
+        return;
+    }
+
+    const QString guideId = guide->id;
+    const QString guideName = guide->name;
+    QVector<QColor> projectSwatches;
+    projectSwatches.reserve(state_->project_.colorSwatches.size());
+    for (const std::array<quint8, 4> &swatch : std::as_const(state_->project_.colorSwatches)) {
+        projectSwatches.push_back(QColor(swatch[ColorByteRed], swatch[ColorByteGreen],
+                                        swatch[ColorByteBlue], swatch[ColorByteAlpha]));
+    }
+    ImagePreprocessDialog dialog(source, projectSwatches, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QImage processed = dialog.resultImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (processed.isNull() || processed.size() != source.size()) {
+        QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
+                              QStringLiteral("Full-resolution image preprocessing failed."));
+        return;
+    }
+
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    QString embedFormat;
+    const QByteArray encoded = encodeGuideImage(processed, &embedFormat);
+    QGuiApplication::restoreOverrideCursor();
+    if (encoded.isEmpty()) {
+        QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
+                              QStringLiteral("Could not encode the processed guide image."));
+        return;
+    }
+
+    fh6::scene::Layer *node = state_->sceneNode(guideId);
+    if (node == nullptr || node->kind() != fh6::scene::LayerKind::Guide) {
+        QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
+                              QStringLiteral("The selected guide layer is no longer available."));
+        return;
+    }
+    guide = static_cast<fh6::scene::GuideLayer *>(node);
+    if (guide->locked) {
+        statusBar()->showMessage(QStringLiteral("The selected guide layer is locked"), 3500);
+        return;
+    }
+
+    state_->beginProjectEdit();
+    if (!guide->image) {
+        guide->image = std::make_unique<fh6::scene::RasterContainer>();
+    }
+    guide->image->width = processed.width();
+    guide->image->height = processed.height();
+    guide->image->format = embedFormat;
+    guide->image->encoded = encoded;
+    guide->image->pixels = QByteArray(reinterpret_cast<const char *>(processed.constBits()),
+                                      processed.sizeInBytes());
+    guide->preprocessColorCount = std::clamp(dialog.retainedColorCount(), 0, 256);
+    const int retainedColors = guide->preprocessColorCount;
+    int addedSwatches = 0;
+    for (const QColor &color : dialog.retainedPalette()) {
+        const bool exists = std::any_of(
+            state_->project_.colorSwatches.cbegin(), state_->project_.colorSwatches.cend(),
+            [&](const std::array<quint8, 4> &swatch) {
+                return swatch[ColorByteRed] == color.red()
+                    && swatch[ColorByteGreen] == color.green()
+                    && swatch[ColorByteBlue] == color.blue();
+            });
+        if (!exists) {
+            state_->project_.colorSwatches.push_back({static_cast<quint8>(color.blue()),
+                                                      static_cast<quint8>(color.green()),
+                                                      static_cast<quint8>(color.red()),
+                                                      255});
+            ++addedSwatches;
+        }
+    }
+    state_->commitProjectEdit();
+    state_->noteProjectGeometryChanged(true, {guideId});
+    statusBar()->showMessage(QStringLiteral("Preprocessed guide layer %1 (%2 retained colors, %3 new swatches)")
+                                 .arg(guideName).arg(retainedColors).arg(addedSwatches),
+                             3500);
+}
+
+void MainWindow::createRegions() {
+    if (canvas_ == nullptr) {
+        return;
+    }
+    cancelRegionFill();
+    QString message;
+    if (canvas_->createRegionsForSelectedGuide(regionMergeAreaThreshold_, &message)) {
+        statusBar()->showMessage(message, 5000);
+    } else {
+        statusBar()->showMessage(message.isEmpty()
+                                     ? QStringLiteral("Could not create regions")
+                                     : message,
+                                 5000);
     }
 }
 
-void MainWindow::exportDialog()
-{
+void MainWindow::fillRegions() {
+    if (canvas_ == nullptr || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
+        return;
+    }
+    cancelGeneratedFill();
+    cancelRegionFill();
+    RegionFillBatchRequest request;
+    QString message;
+    if (!canvas_->prepareRegionFillBatch(&request, &message)) {
+        statusBar()->showMessage(message.isEmpty()
+                                     ? QStringLiteral("Could not fill regions")
+                                     : message,
+                                 5000);
+        return;
+    }
+
+    const quint64 generation = ++regionFillGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    regionFillCancel_ = token;
+    regionFillInsertionEntries_ = selectedEntryIds();
+    regionFillProgress_->setRange(0, 0);
+    regionFillProgress_->setFormat(QStringLiteral("Planning regions…"));
+    regionFillProgress_->show();
+    statusBar()->showMessage(QStringLiteral("Filling regions… Press %1 to cancel")
+                                 .arg(interactionShortcutText(KeyInteraction::CancelActiveFill)));
+
+    QPointer<MainWindow> guard(this);
+    auto *task = QRunnable::create(
+        [guard, generation, request = std::move(request), token]() mutable {
+            RegionFillBatchResult result = computeRegionFills(
+                request,
+                [guard, generation](const QString &phase, int completed, int total) {
+                    if (guard.isNull()) {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        guard.data(),
+                        [guard, generation, phase, completed, total]() {
+                            if (!guard.isNull()) {
+                                guard->updateRegionFillProgress(
+                                    generation, phase, completed, total);
+                            }
+                        },
+                        Qt::QueuedConnection);
+                },
+                [token]() { return token->load(std::memory_order_relaxed); });
+            if (guard.isNull()) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                guard.data(),
+                [guard, generation, result = std::move(result)]() mutable {
+                    if (!guard.isNull()) {
+                        guard->finishRegionFill(generation, std::move(result));
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+}
+
+void MainWindow::cancelRegionFill() {
+    if (regionFillCancel_ == nullptr) {
+        return;
+    }
+    regionFillCancel_->store(true, std::memory_order_relaxed);
+    regionFillCancel_.reset();
+    ++regionFillGeneration_;
+    regionFillInsertionEntries_.clear();
+    if (regionFillProgress_ != nullptr) {
+        regionFillProgress_->hide();
+    }
+    statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
+}
+
+void MainWindow::updateRegionFillProgress(quint64 generation,
+                                          const QString &phase,
+                                          int completed,
+                                          int total) {
+    if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr
+        || regionFillProgress_ == nullptr) {
+        return;
+    }
+    if (total <= 0) {
+        regionFillProgress_->setRange(0, 0);
+        regionFillProgress_->setFormat(phase);
+        return;
+    }
+    const int maximum = std::max(1, total);
+    const QString format = QStringLiteral("%1 %v/%m").arg(phase);
+    const bool samePhase = regionFillProgress_->format() == format;
+    const int value = std::clamp(completed, 0, maximum);
+
+    regionFillProgress_->setRange(0, maximum);
+    regionFillProgress_->setFormat(format);
+    regionFillProgress_->setValue(
+        samePhase ? std::max(regionFillProgress_->value(), value) : value);
+}
+
+void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult result) {
+    if (generation != regionFillGeneration_ || regionFillCancel_ == nullptr) {
+        return;
+    }
+    regionFillCancel_.reset();
+    regionFillProgress_->hide();
+    if (result.cancelled) {
+        regionFillInsertionEntries_.clear();
+        statusBar()->showMessage(QStringLiteral("Region Fill cancelled"), 1500);
+        return;
+    }
+    const QImage differenceHeatmap = result.differenceHeatmap;
+    const QString sourceGuideId = result.overlayGuideId;
+    QString message;
+    if (canvas_ == nullptr || !state_->hasProject()
+        || !canvas_->applyRegionFillBatch(std::move(result), &message)) {
+        regionFillInsertionEntries_.clear();
+        statusBar()->showMessage(message.isEmpty()
+                                     ? QStringLiteral("Could not fill regions") : message,
+                                 5000);
+        return;
+    }
+    const QVector<GeneratedRegionVariant> variants =
+        canvas_->regionFillWorldVariants();
+    if (variants.isEmpty()) {
+        regionFillInsertionEntries_.clear();
+        statusBar()->showMessage(QStringLiteral("Region fill produced no shapes"), 4000);
+        return;
+    }
+    const QVector<QString> insertionEntries = regionFillInsertionEntries_;
+    regionFillInsertionEntries_.clear();
+    insertGeneratedRegionVariants(
+        QStringLiteral("Region Fill"), QStringLiteral("Region Fill"),
+        variants, insertionEntries, differenceHeatmap, sourceGuideId);
+    canvas_->hideRegionOverlay();
+}
+
+bool MainWindow::importFM2023Folder(const QString &path, QString *error) {
+    rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
+    return loadImportedProject([&path]() { return fh6::importFM2023Asset(path); },
+                               QStringLiteral("Imported %1").arg(path), error);
+}
+
+void MainWindow::exportDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Export"), QStringLiteral("Open a project before exporting."));
         return;
@@ -552,8 +797,7 @@ void MainWindow::exportDialog()
     }
 }
 
-void MainWindow::newProjectDialog()
-{
+void MainWindow::newProjectDialog() {
     if (!confirmDiscardUnsavedChanges()) {
         return;
     }
@@ -572,10 +816,8 @@ void MainWindow::newProjectDialog()
 
     const bool livery = box.clickedButton() == liveryButton;
     int carId = 0;
-    if (livery) {
-        if (!chooseCarModel(this, 0, &carId)) {
-            return;
-        }
+    if (livery && !chooseCarModel(this, 0, &carId)) {
+        return;
     }
 
     QString error;
@@ -584,8 +826,7 @@ void MainWindow::newProjectDialog()
     }
 }
 
-void MainWindow::saveProjectJsonDialog()
-{
+void MainWindow::saveProjectJsonDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Save Project"), QStringLiteral("Create or open a project before saving."));
         return;
@@ -602,8 +843,7 @@ void MainWindow::saveProjectJsonDialog()
     saveProjectJsonAsDialog();
 }
 
-void MainWindow::saveProjectJsonAsDialog()
-{
+void MainWindow::saveProjectJsonAsDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Save Project As"),
                                  QStringLiteral("Create or open a project before saving."));
@@ -630,8 +870,7 @@ void MainWindow::saveProjectJsonAsDialog()
     }
 }
 
-void MainWindow::autosaveProject()
-{
+void MainWindow::autosaveProject() {
     if (state_ == nullptr || !state_->hasProject() || !state_->isModified() || projectJsonPath_.isEmpty()) {
         return;
     }
@@ -642,8 +881,7 @@ void MainWindow::autosaveProject()
     }
 }
 
-void MainWindow::loadProjectJsonDialog()
-{
+void MainWindow::loadProjectJsonDialog() {
     if (!confirmDiscardUnsavedChanges()) {
         return;
     }
@@ -662,8 +900,7 @@ void MainWindow::loadProjectJsonDialog()
     }
 }
 
-void MainWindow::openRecentProjectJson(const QString &path)
-{
+void MainWindow::openRecentProjectJson(const QString &path) {
     if (!confirmDiscardUnsavedChanges()) {
         return;
     }
@@ -674,8 +911,7 @@ void MainWindow::openRecentProjectJson(const QString &path)
     }
 }
 
-void MainWindow::rememberRecentProjectJson(const QString &path)
-{
+void MainWindow::rememberRecentProjectJson(const QString &path) {
     const QFileInfo info(path);
     if (!isProjectDocumentFile(info)) {
         return;
@@ -690,8 +926,7 @@ void MainWindow::rememberRecentProjectJson(const QString &path)
     refreshRecentProjectJsonMenu();
 }
 
-void MainWindow::refreshRecentProjectJsonMenu()
-{
+void MainWindow::refreshRecentProjectJsonMenu() {
     if (recentProjectMenu_ == nullptr) {
         return;
     }
@@ -717,8 +952,7 @@ void MainWindow::refreshRecentProjectJsonMenu()
     }
 }
 
-void MainWindow::refreshHeaderMetadataWidget()
-{
+void MainWindow::refreshHeaderMetadataWidget() {
     if (headerMetadata_ == nullptr) {
         return;
     }
@@ -728,20 +962,7 @@ void MainWindow::refreshHeaderMetadataWidget()
         return;
     }
 
-    fh6::HeaderMetadata meta;
-    if (state_->project_.headerMetadata) {
-        meta = *state_->project_.headerMetadata;
-    } else if (!state_->project_.sourceHeader.isEmpty()) {
-        try {
-            meta = fh6::parseHeader(state_->project_.sourceHeader);
-        } catch (const std::exception &) {
-            meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_,
-                                           static_cast<quint32>(state_->project_.carId));
-        }
-    } else {
-        meta = fh6::defaultDraftHeader(state_->project_.name, creatorName_,
-                                       static_cast<quint32>(state_->project_.carId));
-    }
+    fh6::HeaderMetadata meta = effectiveHeaderMetadata(state_->project_, creatorName_);
     if (meta.name.isEmpty()) {
         meta.name = state_->project_.name;
     }
@@ -750,8 +971,7 @@ void MainWindow::refreshHeaderMetadataWidget()
     headerMetadata_->setMetadata(meta, importedDraft, true);
 }
 
-void MainWindow::showHeaderMetadataDock()
-{
+void MainWindow::showHeaderMetadataDock() {
     if (headerMetadataDock_ == nullptr) {
         return;
     }
@@ -763,8 +983,7 @@ void MainWindow::showHeaderMetadataDock()
     }
 }
 
-void MainWindow::applyHeaderMetadata()
-{
+void MainWindow::applyHeaderMetadata() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Header Metadata"), QStringLiteral("Create or open a project first."));
         return;
@@ -779,28 +998,24 @@ void MainWindow::applyHeaderMetadata()
     creatorName_ = meta.creatorName;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
 
-    if (importedDraft && !rebuild) {
-        state_->project_.headerMetadata = meta;
-    } else {
+    if (!importedDraft || rebuild) {
         state_->project_.sourceHeader.clear();
-        state_->project_.headerMetadata = meta;
     }
+    state_->project_.headerMetadata = meta;
     state_->setModified(true);
     updateStatus();
     refreshHeaderMetadataWidget();
     statusBar()->showMessage(QStringLiteral("Header metadata updated"), 5000);
 }
 
-void MainWindow::saveLayout()
-{
+void MainWindow::saveLayout() {
     QSettings settings;
     settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("layout/state"), saveState());
     statusBar()->showMessage(QStringLiteral("Layout saved"), 5000);
 }
 
-bool MainWindow::restoreLayout()
-{
+bool MainWindow::restoreLayout() {
     QSettings settings;
     const QByteArray state = settings.value(QStringLiteral("layout/state")).toByteArray();
     if (state.isEmpty()) {
@@ -813,8 +1028,7 @@ bool MainWindow::restoreLayout()
     return restoreState(state);
 }
 
-void MainWindow::resetLayout()
-{
+void MainWindow::resetLayout() {
     if (!defaultLayoutState_.isEmpty()) {
         restoreState(defaultLayoutState_);
         syncDockCollapseButtons();

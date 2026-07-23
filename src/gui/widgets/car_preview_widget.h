@@ -45,6 +45,7 @@ public:
     int liveryTextureScale() const;
     void setLiveryTextureScale(int scale);
     void setLoadCarTextures(bool enabled);
+    void cycleDebugMode();
 
 public Q_SLOTS:
     void markLiveryDirty();
@@ -59,7 +60,6 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
-    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     struct CachedProjectedLiverySection {
@@ -72,6 +72,7 @@ private:
     QSize liveryTextureSize() const;
     QTransform liveryWorldToScreen(const QSize &textureSize) const;
     void fitCameraToModel();
+    void invalidateCachedLivery();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;

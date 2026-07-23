@@ -91,14 +91,14 @@ public:
 
 class GuideLayer : public Layer {
 public:
-    GuideLayer()
-    {
+    GuideLayer() {
         name = QStringLiteral("Guide");
         opacity = 0.5;
     }
 
     std::unique_ptr<RasterContainer> image;
     QString sourcePath;
+    int preprocessColorCount = 0;
 
     LayerKind kind() const override { return LayerKind::Guide; }
     std::unique_ptr<Layer> clone() const override;

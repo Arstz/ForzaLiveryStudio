@@ -7,8 +7,7 @@ namespace gui {
 using namespace pc_detail;
 
 
-QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries()
-{
+QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries() {
     if (!hitCacheDirty_) {
         return hitCache_;
     }
@@ -25,9 +24,8 @@ QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries()
     return hitCache_;
 }
 
-QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
-{
-    if (!guideLayersVisible_ || sceneTree() == nullptr) {
+QString ProjectCanvas::guideAtScreenPoint(const QPointF &point) {
+    if (!options_.guideLayersVisible || sceneTree() == nullptr) {
         return {};
     }
     updateViewTransform();
@@ -46,9 +44,8 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
     return hit;
 }
 
-std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &point) const
-{
-    if (!guideLayersVisible_ || project_ == nullptr || sceneTree() == nullptr) {
+std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &point) const {
+    if (!options_.guideLayersVisible || project_ == nullptr || sceneTree() == nullptr) {
         return std::nullopt;
     }
     const_cast<ProjectCanvas *>(this)->updateViewTransform();
@@ -65,7 +62,7 @@ std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &poin
         if (image.isNull()) {
             return true;
         }
-        const QTransform localToScreen = world * worldToScreen_;
+        const QTransform localToScreen = world * camera_.matrix();
         bool invertible = false;
         const QTransform screenToLocal = localToScreen.inverted(&invertible);
         if (!invertible) {
@@ -88,8 +85,7 @@ std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &poin
     return result;
 }
 
-std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &point) const
-{
+std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &point) const {
     if (project_ == nullptr) {
         return std::nullopt;
     }
@@ -122,9 +118,8 @@ std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &poin
     return std::nullopt;
 }
 
-std::optional<QColor> ProjectCanvas::colorAtScreenPoint(const QPointF &point) const
-{
-    if (guideLayersOnTop_) {
+std::optional<QColor> ProjectCanvas::colorAtScreenPoint(const QPointF &point) const {
+    if (options_.guideLayersOnTop) {
         if (const std::optional<QColor> guide = guideColorAtScreenPoint(point)) {
             return guide;
         }
@@ -136,8 +131,7 @@ std::optional<QColor> ProjectCanvas::colorAtScreenPoint(const QPointF &point) co
     return guideColorAtScreenPoint(point);
 }
 
-QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point)
-{
+QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point) {
     QVector<QString> ids;
     for (const HitEntry &entry : hitEntries()) {
         if (entry.screenBounds.contains(point) && pointInPolygon(point, entry.screenPolygon)) {
@@ -147,8 +141,7 @@ QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point)
     return ids;
 }
 
-QString ProjectCanvas::selectTargetAtScreenPoint(const QPointF &point, Qt::KeyboardModifiers modifiers)
-{
+QString ProjectCanvas::selectTargetAtScreenPoint(const QPointF &point, Qt::KeyboardModifiers modifiers) {
     const QVector<QString> hits = layersAtScreenPoint(point);
     if (hits.isEmpty()) {
         return {};
@@ -170,8 +163,7 @@ QString ProjectCanvas::selectTargetAtScreenPoint(const QPointF &point, Qt::Keybo
     return target;
 }
 
-const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const
-{
+const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const {
     if (!selectionWorldBoundsCache_.has_value()) {
         BoundsAccumulator acc;
         if (project_ != nullptr && state_ != nullptr) {
@@ -199,8 +191,7 @@ const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const
     return *selectionWorldBoundsCache_;
 }
 
-QRectF ProjectCanvas::selectedScreenBounds() const
-{
+QRectF ProjectCanvas::selectedScreenBounds() const {
     if (project_ == nullptr || state_ == nullptr) {
         return {};
     }
@@ -208,11 +199,10 @@ QRectF ProjectCanvas::selectedScreenBounds() const
     if (!worldBounds.isValid()) {
         return {};
     }
-    return worldToScreen_.mapRect(worldBounds);
+    return camera_.matrix().mapRect(worldBounds);
 }
 
-ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
-{
+ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
     SelectionBox box;
     if (project_ == nullptr || state_ == nullptr) {
         return box;
@@ -242,13 +232,13 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
         return box;
     }
 
-    const bool signatureChanged = selLayers != frameLayerSignature_ || selGuides != frameGuideSignature_;
+    const bool signatureChanged = selLayers != frame_.layerSignature || selGuides != frame_.guideSignature;
     if (signatureChanged) {
-        frameLayerSignature_ = selLayers;
-        frameGuideSignature_ = selGuides;
+        frame_.layerSignature = selLayers;
+        frame_.guideSignature = selGuides;
     }
 
-    if (!transformRelativeMode_) {
+    if (!options_.transformRelativeMode) {
         const QRectF worldBounds = cachedSelectionWorldBounds();
         if (!worldBounds.isValid()) {
             return box;
@@ -337,15 +327,15 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
         }
     }
     if (signatureChanged) {
-        frameReferenceRotation_ = primaryRotation;
+        frame_.referenceRotation = primaryRotation;
     }
-    double frameAngle = normalizeRotation(primaryRotation - frameReferenceRotation_);
+    double frameAngle = normalizeRotation(primaryRotation - frame_.referenceRotation);
     // Affine decomposition changes child rotations, so active drags pin the box orientation.
-    if ((dragMode_ == DragMode::Scale || dragMode_ == DragMode::Skew) && dragStartBox_.valid) {
-        frameAngle = normalizeRotation(std::atan2(dragStartBox_.localToWorld.m12(),
-                                                  dragStartBox_.localToWorld.m11())
+    if ((drag_.mode == DragMode::Scale || drag_.mode == DragMode::Skew) && drag_.startBox.valid) {
+        frameAngle = normalizeRotation(std::atan2(drag_.startBox.localToWorld.m12(),
+                                                  drag_.startBox.localToWorld.m11())
                                        * 180.0 / kPi);
-        frameReferenceRotation_ = normalizeRotation(primaryRotation - frameAngle);
+        frame_.referenceRotation = normalizeRotation(primaryRotation - frameAngle);
     }
     const QPointF center = worldBounds.center();
     const double theta = frameAngle * kPi / 180.0;
@@ -403,16 +393,14 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const
     return box;
 }
 
-QTransform ProjectCanvas::boxToScreen(const SelectionBox &box) const
-{
-    return box.localToWorld * worldToScreen_;
+QTransform ProjectCanvas::boxToScreen(const SelectionBox &box) const {
+    return box.localToWorld * camera_.matrix();
 }
 
 bool ProjectCanvas::currentTransformBox(QPointF *center,
                                         double *width,
                                         double *height,
-                                        QTransform *boxFrame) const
-{
+                                        QTransform *boxFrame) const {
     const SelectionBox box = currentSelectionBox();
     if (!box.valid || box.localRect.isEmpty()) {
         return false;
@@ -432,8 +420,7 @@ bool ProjectCanvas::currentTransformBox(QPointF *center,
     return true;
 }
 
-bool ProjectCanvas::boxContainsScreenPoint(const SelectionBox &box, const QPointF &screenPoint) const
-{
+bool ProjectCanvas::boxContainsScreenPoint(const SelectionBox &box, const QPointF &screenPoint) const {
     if (!box.valid) {
         return false;
     }
@@ -445,8 +432,7 @@ bool ProjectCanvas::boxContainsScreenPoint(const SelectionBox &box, const QPoint
     return box.localRect.contains(inv.map(screenPoint));
 }
 
-QRectF ProjectCanvas::selectedWorldBounds() const
-{
+QRectF ProjectCanvas::selectedWorldBounds() const {
     BoundsAccumulator acc;
     for (const fh6::scene::Shape *layer : selectedLayers()) {
         acc.add(flatEntryTransform(*layer), flatEntryVisualRect(*layer, geometry_));
@@ -457,8 +443,7 @@ QRectF ProjectCanvas::selectedWorldBounds() const
     return acc.bounds();
 }
 
-QVector<fh6::scene::Shape *> ProjectCanvas::selectedLayers() const
-{
+QVector<fh6::scene::Shape *> ProjectCanvas::selectedLayers() const {
     if (state_ == nullptr) {
         return {};
     }
@@ -477,8 +462,7 @@ QVector<fh6::scene::Shape *> ProjectCanvas::selectedLayers() const
     return result;
 }
 
-QVector<fh6::scene::GuideLayer *> ProjectCanvas::selectedGuideLayers() const
-{
+QVector<fh6::scene::GuideLayer *> ProjectCanvas::selectedGuideLayers() const {
     if (state_ == nullptr) {
         return {};
     }
@@ -490,8 +474,7 @@ QVector<fh6::scene::GuideLayer *> ProjectCanvas::selectedGuideLayers() const
     return state_->selectedGuideLayers();
 }
 
-QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBox &box) const
-{
+QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBox &box) const {
     if (!box.valid) {
         return {};
     }
@@ -508,15 +491,15 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     if (lenX < 1e-9 || lenY < 1e-9) {
         return {};
     }
-    const double insideX = ScaleGrabInside / lenX;
-    const double outsideX = ScaleGrabOutside / lenX;
-    const double insideY = ScaleGrabInside / lenY;
-    const double outsideY = ScaleGrabOutside / lenY;
-    const double handleHalfX = HandleHalf / lenX;
-    const double handleHalfY = HandleHalf / lenY;
+    const double insideX = kScaleGrabInside / lenX;
+    const double outsideX = kScaleGrabOutside / lenX;
+    const double insideY = kScaleGrabInside / lenY;
+    const double outsideY = kScaleGrabOutside / lenY;
+    const double handleHalfX = kHandleHalf / lenX;
+    const double handleHalfY = kHandleHalf / lenY;
 
-    {
-        const QPointF skew(box.localRect.center().x(), box.localRect.top() - SkewHandleOffset / lenY);
+    if (!options_.separateOpacityAndSkewTools) {
+        const QPointF skew(box.localRect.center().x(), box.localRect.top() - kSkewHandleOffset / lenY);
         if (std::abs(local.x() - skew.x()) <= handleHalfX && std::abs(local.y() - skew.y()) <= handleHalfY) {
             return QStringLiteral("skew");
         }
@@ -560,8 +543,7 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     return {};
 }
 
-bool ProjectCanvas::rotateZoneAt(const QPointF &point, const SelectionBox &box) const
-{
+bool ProjectCanvas::rotateZoneAt(const QPointF &point, const SelectionBox &box) const {
     if (!box.valid) {
         return false;
     }
@@ -581,7 +563,7 @@ bool ProjectCanvas::rotateZoneAt(const QPointF &point, const SelectionBox &box) 
     };
     for (const QPointF &cornerLocal : cornersLocal) {
         const double dist = QLineF(point, toScreen.map(cornerLocal)).length();
-        if (dist > RotateCornerReach) {
+        if (dist > kRotateCornerReach) {
             continue;
         }
         const bool outwardX = (cornerLocal.x() < centerLocal.x()) ? (local.x() < cornerLocal.x()) : (local.x() > cornerLocal.x());
@@ -593,16 +575,14 @@ bool ProjectCanvas::rotateZoneAt(const QPointF &point, const SelectionBox &box) 
     return false;
 }
 
-bool ProjectCanvas::selectionIsGroupLike() const
-{
+bool ProjectCanvas::selectionIsGroupLike() const {
     if (state_ == nullptr) {
         return false;
     }
     return state_->selectedLayerIds().size() + state_->selectedGuideLayerIds().size() > 1;
 }
 
-bool ProjectCanvas::pointInPolygon(const QPointF &point, const QPolygonF &polygon) const
-{
+bool ProjectCanvas::pointInPolygon(const QPointF &point, const QPolygonF &polygon) const {
     if (polygon.size() < 3) {
         return false;
     }
@@ -626,10 +606,9 @@ bool ProjectCanvas::pointInPolygon(const QPointF &point, const QPolygonF &polygo
     return true;
 }
 
-bool ProjectCanvas::movedPastClickThreshold(const QPointF &point) const
-{
-    const QPointF delta = point - dragStartScreen_;
-    return delta.x() * delta.x() + delta.y() * delta.y() > ClickDragThreshold * ClickDragThreshold;
+bool ProjectCanvas::movedPastClickThreshold(const QPointF &point) const {
+    const QPointF delta = point - drag_.startScreen;
+    return delta.x() * delta.x() + delta.y() * delta.y() > kClickDragThreshold * kClickDragThreshold;
 }
 
 } // namespace gui

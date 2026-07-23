@@ -47,12 +47,14 @@ struct PenPlacement {
     int shapeId = 0;
     QTransform transform;
     double area = 0.0;
+    bool coreEllipse = false;
 };
 
 struct PenFillRequest {
     QVector<PenPoint> points;
     QVector<PenPrimitive> primitives;
     double boundaryTolerance = 0.1;
+    bool discardNegligiblePlacements = true;
 };
 
 struct PenFillResult {
@@ -70,7 +72,7 @@ PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessToler
 PenPrimitive buildPenPrimitive(int shapeId, const ShapeGeometry &geometry);
 QVector<PenPrimitive> buildPenPrimitiveCatalog(const ShapeGeometryStore &geometry,
                                                int firstShapeId = 101,
-                                               int lastShapeId = 103);
+                                               int lastShapeId = 0x084b);
 PenFillResult fillPenPath(const PenFillRequest &request,
                          const std::function<bool()> &cancelled = {});
 

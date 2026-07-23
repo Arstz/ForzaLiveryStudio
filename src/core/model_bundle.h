@@ -40,8 +40,7 @@ struct BundleBlobRecord {
     QString name;
     std::optional<std::array<float, 6>> bbox;
 
-    bool isAtLeastVersion(quint8 major, quint8 minor) const
-    {
+    bool isAtLeastVersion(quint8 major, quint8 minor) const {
         return versionMajor > major || (versionMajor == major && versionMinor >= minor);
     }
 };

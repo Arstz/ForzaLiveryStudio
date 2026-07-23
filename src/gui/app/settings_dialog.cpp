@@ -1,5 +1,7 @@
 #include "settings_dialog.h"
 
+#include "gui/key_bindings.h"
+
 #include <QtCore>
 #include <QtGui>
 #include <QtWidgets>
@@ -9,24 +11,18 @@
 namespace gui {
 namespace {
 
-constexpr int ShortcutEditRole = Qt::UserRole + 10;
-
 class ShortcutSequenceEdit final : public QKeySequenceEdit {
 public:
     using QKeySequenceEdit::QKeySequenceEdit;
 
 protected:
-    bool event(QEvent *event) override
-    {
+    bool event(QEvent *event) override {
         if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);
-            if (keyEvent->key() == Qt::Key_Tab || keyEvent->key() == Qt::Key_Backtab) {
+            const std::optional<QKeySequence> captured = capturedTabShortcut(*keyEvent);
+            if (captured.has_value()) {
                 if (event->type() == QEvent::KeyPress) {
-                    Qt::KeyboardModifiers modifiers = keyEvent->modifiers();
-                    if (keyEvent->key() == Qt::Key_Backtab) {
-                        modifiers |= Qt::ShiftModifier;
-                    }
-                    setKeySequence(QKeySequence(modifiers | Qt::Key_Tab));
+                    setKeySequence(captured.value());
                 }
                 event->accept();
                 return true;
@@ -40,15 +36,15 @@ protected:
 
 SettingsDialog::SettingsDialog(UiTheme theme,
                                const CanvasColorSettings &canvasSettings,
+                               const PreviewBackgroundSettings &previewBackgroundSettings,
                                const BehaviorSettings &behaviorSettings,
                                const QVector<ShortcutSettingsItem> &shortcuts,
                                QWidget *parent)
     : QDialog(parent)
-    , initialTheme_(theme)
     , canvasSettings_(canvasSettings)
+    , previewBackgroundSettings_(previewBackgroundSettings)
     , behaviorSettings_(behaviorSettings)
-    , shortcuts_(shortcuts)
-{
+    , shortcuts_(shortcuts) {
     setWindowTitle(QStringLiteral("Settings"));
     resize(620, 420);
 
@@ -66,6 +62,8 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         if (themeChangedCallback_) {
             themeChangedCallback_(selectedTheme());
         }
+        updateCanvasColorControls();
+        updatePreviewBackgroundControls();
     });
     generalLayout->addRow(QStringLiteral("Theme"), themeCombo_);
 
@@ -90,12 +88,45 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     generalLayout->addRow(QStringLiteral("Light canvas"), makeCanvasRow(UiTheme::Light, &lightCanvasMode_, &lightCanvasColorButton_));
     darkCanvasMode_->setCurrentIndex(canvasSettings_.darkMode == CanvasColorMode::Custom ? 1 : 0);
     lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
-    updateCanvasColorControls();
+
+    auto makePreviewBackgroundRow = [&](bool buffer, QComboBox **modeOut, QPushButton **buttonOut) {
+        auto *row = new QWidget(general);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+        auto *mode = new QComboBox(row);
+        mode->addItem(QStringLiteral("Theme default"), QStringLiteral("default"));
+        mode->addItem(QStringLiteral("Checkerboard"), QStringLiteral("checkerboard"));
+        mode->addItem(QStringLiteral("Custom"), QStringLiteral("custom"));
+        auto *button = new QPushButton(row);
+        QObject::connect(mode, &QComboBox::currentIndexChanged,
+                         this, [this]() { updatePreviewBackgroundControls(); });
+        QObject::connect(button, &QPushButton::clicked,
+                         this, [this, buffer]() { choosePreviewBackgroundColor(buffer); });
+        rowLayout->addWidget(mode, 1);
+        rowLayout->addWidget(button);
+        *modeOut = mode;
+        *buttonOut = button;
+        return row;
+    };
+    generalLayout->addRow(QStringLiteral("Buffer background"),
+                          makePreviewBackgroundRow(true, &bufferBackgroundMode_,
+                                                   &bufferBackgroundColorButton_));
+    generalLayout->addRow(QStringLiteral("Layer background"),
+                          makePreviewBackgroundRow(false, &layersBackgroundMode_,
+                                                   &layersBackgroundColorButton_));
+    const auto backgroundModeIndex = [](PreviewBackgroundMode mode) {
+        return mode == PreviewBackgroundMode::Checkerboard ? 1
+            : mode == PreviewBackgroundMode::Custom ? 2 : 0;
+    };
+    bufferBackgroundMode_->setCurrentIndex(backgroundModeIndex(previewBackgroundSettings_.buffer.mode));
+    layersBackgroundMode_->setCurrentIndex(backgroundModeIndex(previewBackgroundSettings_.layers.mode));
 
     guidelineColorButton_ = new QPushButton(general);
     QObject::connect(guidelineColorButton_, &QPushButton::clicked, this, &SettingsDialog::chooseGuidelineColor);
     generalLayout->addRow(QStringLiteral("Guideline color"), guidelineColorButton_);
     updateCanvasColorControls();
+    updatePreviewBackgroundControls();
 
     visibilityBordersCheck_ = new QCheckBox(general);
     visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
@@ -108,6 +139,10 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     displayAnchorsDuringTransformDrag_ = new QCheckBox(general);
     displayAnchorsDuringTransformDrag_->setChecked(behaviorSettings_.displayAnchorsDuringTransformDrag);
     generalLayout->addRow(QStringLiteral("Display anchors during transform drag"), displayAnchorsDuringTransformDrag_);
+
+    generatePreviewsWithTransformations_ = new QCheckBox(general);
+    generatePreviewsWithTransformations_->setChecked(behaviorSettings_.generatePreviewsWithTransformations);
+    generalLayout->addRow(QStringLiteral("Generate previews with transformations applied"), generatePreviewsWithTransformations_);
 
     visibilityBorderResolution_ = new QComboBox(general);
     const QVector<QSize> visibilityResolutions = {QSize(1920, 1080), QSize(2560, 1440), QSize(3840, 2160)};
@@ -155,6 +190,15 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     valueEditingWheelCheck_ = new QCheckBox(general);
     valueEditingWheelCheck_->setChecked(behaviorSettings_.valueEditingWheelEnabled);
     generalLayout->addRow(QStringLiteral("Edit values with mouse wheel"), valueEditingWheelCheck_);
+
+    verticalToolbarCheck_ = new QCheckBox(general);
+    verticalToolbarCheck_->setChecked(behaviorSettings_.verticalToolbar);
+    generalLayout->addRow(QStringLiteral("Vertical icon-only toolbar"), verticalToolbarCheck_);
+
+    separateOpacityAndSkewToolsCheck_ = new QCheckBox(general);
+    separateOpacityAndSkewToolsCheck_->setChecked(behaviorSettings_.separateOpacityAndSkewTools);
+    generalLayout->addRow(QStringLiteral("Separate opacity and skew tools"),
+                          separateOpacityAndSkewToolsCheck_);
 
     {
         auto *row = new QWidget(general);
@@ -226,13 +270,11 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     layout->addWidget(buttons);
 }
 
-UiTheme SettingsDialog::selectedTheme() const
-{
+UiTheme SettingsDialog::selectedTheme() const {
     return themeFromSettingsValue(themeCombo_->currentData().toString());
 }
 
-CanvasColorSettings SettingsDialog::selectedCanvasSettings() const
-{
+CanvasColorSettings SettingsDialog::selectedCanvasSettings() const {
     CanvasColorSettings result = canvasSettings_;
     result.darkMode = darkCanvasMode_->currentData().toString() == QStringLiteral("custom")
         ? CanvasColorMode::Custom
@@ -249,45 +291,57 @@ CanvasColorSettings SettingsDialog::selectedCanvasSettings() const
     return result;
 }
 
-BehaviorSettings SettingsDialog::selectedBehaviorSettings() const
-{
-    BehaviorSettings result = behaviorSettings_;
-    result.visibilityBordersEnabled = visibilityBordersCheck_ != nullptr && visibilityBordersCheck_->isChecked();
-    result.positionLimitBorderEnabled = positionLimitBorderCheck_ != nullptr && positionLimitBorderCheck_->isChecked();
-    result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_ != nullptr
-        && displayAnchorsDuringTransformDrag_->isChecked();
-    if (visibilityBorderResolution_ != nullptr) {
-        const QSize resolution = visibilityBorderResolution_->currentData().toSize();
-        result.visibilityBorderResolution = resolution.isValid() ? resolution : QSize(1920, 1080);
+PreviewBackgroundSettings SettingsDialog::selectedPreviewBackgroundSettings() const {
+    PreviewBackgroundSettings result = previewBackgroundSettings_;
+    const auto selectedMode = [](const QComboBox *mode) {
+        const QString value = mode->currentData().toString();
+        if (value == QStringLiteral("checkerboard")) {
+            return PreviewBackgroundMode::Checkerboard;
+        }
+        if (value == QStringLiteral("custom")) {
+            return PreviewBackgroundMode::Custom;
+        }
+        return PreviewBackgroundMode::ThemeDefault;
+    };
+    result.buffer.mode = selectedMode(bufferBackgroundMode_);
+    result.layers.mode = selectedMode(layersBackgroundMode_);
+    if (!result.buffer.custom.isValid()) {
+        result.buffer.custom = defaultPreviewBackgroundColor(selectedTheme());
     }
-    if (nudgeStep_ != nullptr) {
-        result.nudgeStep = nudgeStep_->value();
+    if (!result.layers.custom.isValid()) {
+        result.layers.custom = defaultPreviewBackgroundColor(selectedTheme());
     }
-    if (nudgeShiftStep_ != nullptr) {
-        result.nudgeShiftStep = nudgeShiftStep_->value();
-    }
-    if (liveryTextureScale_ != nullptr) {
-        result.liveryTextureScale = liveryTextureScale_->value();
-    }
-    result.autosaveEnabled = autosaveEnabledCheck_ != nullptr && autosaveEnabledCheck_->isChecked();
-    if (autosaveIntervalMinutes_ != nullptr) {
-        result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
-    }
-    result.valueEditingWheelEnabled = valueEditingWheelCheck_ != nullptr && valueEditingWheelCheck_->isChecked();
-    if (carModelsFolder_ != nullptr) {
-        result.carModelsFolder = carModelsFolder_->text().trimmed();
-    }
-    if (discardModelOnLiveryOpen_ != nullptr) {
-        result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
-    }
-    if (loadCarTextures_ != nullptr) {
-        result.loadCarTextures = loadCarTextures_->isChecked();
-    }
+
     return result;
 }
 
-QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const
-{
+BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
+    const BehaviorSettings defaults;
+    BehaviorSettings result = behaviorSettings_;
+    const QSize resolution = visibilityBorderResolution_->currentData().toSize();
+
+    result.visibilityBordersEnabled = visibilityBordersCheck_->isChecked();
+    result.positionLimitBorderEnabled = positionLimitBorderCheck_->isChecked();
+    result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_->isChecked();
+    result.generatePreviewsWithTransformations = generatePreviewsWithTransformations_->isChecked();
+    result.visibilityBorderResolution = resolution.isValid()
+        ? resolution
+        : defaults.visibilityBorderResolution;
+    result.nudgeStep = nudgeStep_->value();
+    result.nudgeShiftStep = nudgeShiftStep_->value();
+    result.liveryTextureScale = liveryTextureScale_->value();
+    result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
+    result.valueEditingWheelEnabled = valueEditingWheelCheck_->isChecked();
+    result.verticalToolbar = verticalToolbarCheck_->isChecked();
+    result.separateOpacityAndSkewTools = separateOpacityAndSkewToolsCheck_->isChecked();
+    result.carModelsFolder = carModelsFolder_->text().trimmed();
+    result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
+    result.loadCarTextures = loadCarTextures_->isChecked();
+
+    return result;
+}
+
+QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const {
     QVector<ShortcutSettingsItem> result = shortcuts_;
     for (int row = 0; row < result.size(); ++row) {
         auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
@@ -298,28 +352,27 @@ QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const
     return result;
 }
 
-void SettingsDialog::setThemeChangedCallback(std::function<void(UiTheme)> callback)
-{
+void SettingsDialog::setThemeChangedCallback(std::function<void(UiTheme)> callback) {
     themeChangedCallback_ = std::move(callback);
 }
 
-void SettingsDialog::resetShortcutRow(int row)
-{
+void SettingsDialog::resetShortcutRow(int row) {
+    if (row < 0 || row >= shortcuts_.size()) {
+        return;
+    }
     auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
-    if (edit != nullptr && row >= 0 && row < shortcuts_.size()) {
+    if (edit != nullptr) {
         edit->setKeySequence(shortcuts_[row].defaultSequence);
     }
 }
 
-void SettingsDialog::resetAllShortcuts()
-{
+void SettingsDialog::resetAllShortcuts() {
     for (int row = 0; row < shortcuts_.size(); ++row) {
         resetShortcutRow(row);
     }
 }
 
-void SettingsDialog::chooseCanvasColor(UiTheme theme)
-{
+void SettingsDialog::chooseCanvasColor(UiTheme theme) {
     const QColor current = theme == UiTheme::Light
         ? (canvasSettings_.lightCustom.isValid() ? canvasSettings_.lightCustom : defaultCanvasColor(UiTheme::Light))
         : (canvasSettings_.darkCustom.isValid() ? canvasSettings_.darkCustom : defaultCanvasColor(UiTheme::Dark));
@@ -337,8 +390,24 @@ void SettingsDialog::chooseCanvasColor(UiTheme theme)
     updateCanvasColorControls();
 }
 
-void SettingsDialog::chooseGuidelineColor()
-{
+void SettingsDialog::choosePreviewBackgroundColor(bool buffer) {
+    PreviewBackground &background = buffer
+        ? previewBackgroundSettings_.buffer : previewBackgroundSettings_.layers;
+    const QColor current = background.custom.isValid()
+        ? background.custom : defaultPreviewBackgroundColor(selectedTheme());
+    const QColor picked = QColorDialog::getColor(
+        current, this, buffer ? QStringLiteral("Buffer Background Color")
+                              : QStringLiteral("Layer Background Color"));
+    if (!picked.isValid()) {
+        return;
+    }
+    background.custom = picked;
+    QComboBox *mode = buffer ? bufferBackgroundMode_ : layersBackgroundMode_;
+    mode->setCurrentIndex(mode->findData(QStringLiteral("custom")));
+    updatePreviewBackgroundControls();
+}
+
+void SettingsDialog::chooseGuidelineColor() {
     const QColor current = behaviorSettings_.guidelineColor.isValid()
         ? behaviorSettings_.guidelineColor
         : QColor(0, 170, 255);
@@ -351,8 +420,7 @@ void SettingsDialog::chooseGuidelineColor()
     updateCanvasColorControls();
 }
 
-void SettingsDialog::updateCanvasColorControls()
-{
+void SettingsDialog::updateCanvasColorControls() {
     const auto updateButton = [](QPushButton *button, const QColor &color, bool customEnabled) {
         if (button == nullptr) {
             return;
@@ -375,8 +443,27 @@ void SettingsDialog::updateCanvasColorControls()
                  true);
 }
 
-bool SettingsDialog::shortcutsAreValid()
-{
+void SettingsDialog::updatePreviewBackgroundControls() {
+    const auto updateButton = [this](QPushButton *button, const PreviewBackground &background) {
+        if (button == nullptr) {
+            return;
+        }
+        const bool custom = background.mode == PreviewBackgroundMode::Custom;
+        const QColor color = custom && background.custom.isValid()
+            ? background.custom : defaultPreviewBackgroundColor(selectedTheme());
+        button->setEnabled(custom);
+        button->setText(color.name(QColor::HexRgb).toUpper());
+        button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
+                                  .arg(color.name(QColor::HexRgb),
+                                       color.lightness() < 128 ? QStringLiteral("#ffffff")
+                                                               : QStringLiteral("#202225")));
+    };
+    const PreviewBackgroundSettings settings = selectedPreviewBackgroundSettings();
+    updateButton(bufferBackgroundColorButton_, settings.buffer);
+    updateButton(layersBackgroundColorButton_, settings.layers);
+}
+
+bool SettingsDialog::shortcutsAreValid() {
     validationLabel_->clear();
     QHash<QString, QString> seen;
     for (const ShortcutSettingsItem &item : shortcutItems()) {
@@ -395,8 +482,7 @@ bool SettingsDialog::shortcutsAreValid()
     return true;
 }
 
-void SettingsDialog::accept()
-{
+void SettingsDialog::accept() {
     if (!shortcutsAreValid()) {
         return;
     }

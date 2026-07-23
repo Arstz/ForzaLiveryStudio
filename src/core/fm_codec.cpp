@@ -27,8 +27,7 @@ using detail::readLeFloat;
 using detail::readLeU16;
 using detail::readLeU32;
 
-bool isFM2023LiveryImpl(const QByteArray &fileData)
-{
+bool isFM2023LiveryImpl(const QByteArray &fileData) {
     if (fileData.size() < 16)
         return false;
     const quint32 compSize = readLeU32(fileData, 0);
@@ -47,23 +46,20 @@ bool isFM2023LiveryImpl(const QByteArray &fileData)
     return true;
 }
 
-bool isRawGyvlImpl(const QByteArray &fileData)
-{
+bool isRawGyvlImpl(const QByteArray &fileData) {
     return fileData.size() >= 4
         && fileData[0] == 'g' && fileData[1] == 'y'
         && fileData[2] == 'v' && fileData[3] == 'l';
 }
 
-QByteArray readOptionalFile(const QString &path)
-{
+QByteArray readOptionalFile(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return {};
     return file.readAll();
 }
 
-QByteArray inflateFM2023Blocks(const QByteArray &fileData)
-{
+QByteArray inflateFM2023Blocks(const QByteArray &fileData) {
     QByteArray raw;
     int pos = 0;
     while (pos < fileData.size()) {
@@ -81,8 +77,7 @@ QByteArray inflateFM2023Blocks(const QByteArray &fileData)
     return raw;
 }
 
-Matrix3 shapeMatrixForShape(const VinylShape &shape)
-{
+Matrix3 shapeMatrixForShape(const VinylShape &shape) {
     FlattenedLayer layer;
     layer.rotation = shape.rotation;
     layer.posX = shape.posX;
@@ -93,8 +88,7 @@ Matrix3 shapeMatrixForShape(const VinylShape &shape)
     return shapeMatrix(layer);
 }
 
-bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos, int endPos)
-{
+bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos, int endPos) {
     if (idPos < 0 || endPos > data.size())
         return false;
     const quint16 encodedShapeId = readLeU16(data, idPos);
@@ -115,8 +109,7 @@ bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos,
         && std::isfinite(skew) && std::abs(skew) < 200.0;
 }
 
-bool isFM2023BareShapeAt(const QByteArray &data, int pos)
-{
+bool isFM2023BareShapeAt(const QByteArray &data, int pos) {
     if (pos < 0 || pos + 31 > data.size())
         return false;
     const quint8 marker = static_cast<quint8>(data[pos]);
@@ -124,8 +117,7 @@ bool isFM2023BareShapeAt(const QByteArray &data, int pos)
         && isFM2023ShapePayloadAt(data, pos + 1, pos + 3, pos + 31);
 }
 
-bool isFM2023GroupAt(const QByteArray &data, int pos, bool counted)
-{
+bool isFM2023GroupAt(const QByteArray &data, int pos, bool counted) {
     const int headerSize = counted ? 4 : 3;
     if (pos < 0 || pos + headerSize > data.size())
         return false;
@@ -140,8 +132,7 @@ bool isFM2023GroupAt(const QByteArray &data, int pos, bool counted)
         && pos + headerSize + childBlocks + 2 <= data.size();
 }
 
-int fm2023TransformSizeAt(const QByteArray &data, int pos)
-{
+int fm2023TransformSizeAt(const QByteArray &data, int pos) {
     if (pos < 0 || pos + 17 > data.size())
         return 0;
     const quint8 marker = static_cast<quint8>(data[pos]);
@@ -174,8 +165,7 @@ int fm2023TransformSizeAt(const QByteArray &data, int pos)
     return groupFollows ? size : 0;
 }
 
-QByteArray normalizeFM2023Records(QByteArray data)
-{
+QByteArray normalizeFM2023Records(QByteArray data) {
     int pos = 0;
     while (pos + 31 <= data.size()) {
         if (pos + 32 <= data.size()
@@ -214,14 +204,12 @@ QByteArray normalizeFM2023Records(QByteArray data)
 VinylDecoderOptions fm2023DecoderOptions();
 
 QVector<LiverySection> buildFM2023LiverySections(const QByteArray &body,
-                                                 const QVector<int> &sectionCounts)
-{
+                                                 const QVector<int> &sectionCounts) {
     return VinylTreeDecoder{fm2023DecoderOptions()}.buildLiverySections(
         body, sectionCounts, kFM2023LiverySlots, kFM2023SectionCount);
 }
 
-void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool root)
-{
+void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool root) {
     VinylShape *previousShape = nullptr;
     for (VinylItem &item : group.items) {
         if (item.isShape()) {
@@ -246,8 +234,7 @@ void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool 
 }
 
 void finalizeFM2023Group(VinylGroup &root, const QByteArray &payload,
-                         const LayerData &layerData)
-{
+                         const LayerData &layerData) {
     if (payload.size() >= 0x22
         && (static_cast<quint8>(payload[0x1d]) & ~0x40) == 0x30) {
         const double sy = readLeFloat(payload, 0x1e);
@@ -257,8 +244,7 @@ void finalizeFM2023Group(VinylGroup &root, const QByteArray &payload,
     applyFM2023ShapeMasks(root, layerData.data, true);
 }
 
-VinylDecoderOptions fm2023DecoderOptions()
-{
+VinylDecoderOptions fm2023DecoderOptions() {
     VinylDecoderOptions options;
     options.markerlessRootHeader = true;
     options.appendLiveryTailPadding = true;
@@ -267,13 +253,11 @@ VinylDecoderOptions fm2023DecoderOptions()
     return options;
 }
 
-VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decodedLayerData)
-{
+VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decodedLayerData) {
     return VinylTreeDecoder{fm2023DecoderOptions()}.decodeGroup(payload, decodedLayerData);
 }
 
-FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
-{
+FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile) {
     const QFileInfo info(folderOrFile);
     QString dataPath;
     if (info.isDir()) {
@@ -332,8 +316,7 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile)
     return payload;
 }
 
-Matrix3 groupNodeMatrix(const VinylGroup &node)
-{
+Matrix3 groupNodeMatrix(const VinylGroup &node) {
     constexpr double Pi = 3.14159265358979323846;
     const double radians = node.rot * Pi / 180.0;
     const double c = std::cos(radians);
@@ -342,8 +325,7 @@ Matrix3 groupNodeMatrix(const VinylGroup &node)
                   s * node.sx, c * node.sy, node.py);
 }
 
-Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileData)
-{
+Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileData) {
     Q_UNUSED(fileData);
     const FM2023LiveryPayload payload = readFM2023LiveryPayloadImpl(folderOrFile);
 
@@ -482,8 +464,7 @@ Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileDa
     return project;
 }
 
-Project importFM2023RawGroup(const QString &folderOrFile, const QByteArray &fileData)
-{
+Project importFM2023RawGroup(const QString &folderOrFile, const QByteArray &fileData) {
     const QByteArray &payload = fileData;
     LayerData layerData;
     VinylGroup root = decodeFM2023RawGroupImpl(payload, &layerData);
@@ -592,33 +573,27 @@ const LiverySlotDef kFM2023LiverySlots[7] = {
 
 } // namespace fh6
 
-bool fh6::isFM2023Livery(const QByteArray &fileData)
-{
+bool fh6::isFM2023Livery(const QByteArray &fileData) {
     return isFM2023LiveryImpl(fileData);
 }
 
-bool fh6::isRawGyvl(const QByteArray &fileData)
-{
+bool fh6::isRawGyvl(const QByteArray &fileData) {
     return isRawGyvlImpl(fileData);
 }
 
-fh6::FM2023LiveryPayload fh6::readFM2023LiveryPayload(const QString &folderOrFile)
-{
+fh6::FM2023LiveryPayload fh6::readFM2023LiveryPayload(const QString &folderOrFile) {
     return readFM2023LiveryPayloadImpl(folderOrFile);
 }
 
-QVector<fh6::LiverySection> fh6::decodeFM2023LiverySections(const FM2023LiveryPayload &payload)
-{
+QVector<fh6::LiverySection> fh6::decodeFM2023LiverySections(const FM2023LiveryPayload &payload) {
     return buildFM2023LiverySections(payload.gyvlBody, payload.sectionCounts);
 }
 
-fh6::VinylGroup fh6::decodeFM2023RawGroup(const QByteArray &payload)
-{
+fh6::VinylGroup fh6::decodeFM2023RawGroup(const QByteArray &payload) {
     return decodeFM2023RawGroupImpl(payload, nullptr);
 }
 
-fh6::Project fh6::importFM2023Asset(const QString &folderOrFile)
-{
+fh6::Project fh6::importFM2023Asset(const QString &folderOrFile) {
     const QFileInfo info(folderOrFile);
     QString dataPath;
     if (info.isDir()) {

@@ -5,6 +5,7 @@
 #include <QString>
 
 class QMouseEvent;
+class QWheelEvent;
 
 namespace gui {
 
@@ -13,8 +14,7 @@ class ProjectCanvas;
 class CanvasTool {
 public:
     explicit CanvasTool(ProjectCanvas &canvas)
-        : canvas_(canvas)
-    {
+        : canvas_(canvas) {
     }
     virtual ~CanvasTool() = default;
 
@@ -23,6 +23,10 @@ public:
     virtual bool picksUnderCursor() const { return false; }
 
     virtual bool handlePress(QMouseEvent *event);
+
+    virtual bool handleMove(QMouseEvent *event);
+
+    virtual bool handleWheel(QWheelEvent *event);
 
     virtual void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld);
 
@@ -83,6 +87,24 @@ public:
     bool hoverCursor(const QPointF &point, QCursor *cursor) const override;
 };
 
+class SkewTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool picksUnderCursor() const override { return true; }
+    void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class OpacityTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool picksUnderCursor() const override { return true; }
+    void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
 class PipetteTool final : public CanvasTool {
 public:
     using CanvasTool::CanvasTool;
@@ -97,7 +119,31 @@ public:
     using CanvasTool::CanvasTool;
     QString name() const override;
     bool handlePress(QMouseEvent *event) override;
+    bool handleMove(QMouseEvent *event) override;
+    bool handleRelease(QMouseEvent *event) override;
     bool handleDoubleClick(QMouseEvent *event) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class LiningTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    bool handleMove(QMouseEvent *event) override;
+    bool handleWheel(QWheelEvent *event) override;
+    bool handleRelease(QMouseEvent *event) override;
+    bool handleDoubleClick(QMouseEvent *event) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class BucketTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool handlePress(QMouseEvent *event) override;
+    bool handleMove(QMouseEvent *event) override;
+    bool handleWheel(QWheelEvent *event) override;
     Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 

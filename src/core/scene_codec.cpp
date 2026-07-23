@@ -11,28 +11,23 @@
 namespace fh6::scene {
 namespace {
 
-QString hex(const QByteArray &bytes)
-{
+QString hex(const QByteArray &bytes) {
     return QString::fromLatin1(bytes.toHex());
 }
 
-QByteArray unhex(const QJsonValue &value)
-{
+QByteArray unhex(const QJsonValue &value) {
     return QByteArray::fromHex(value.toString().toLatin1());
 }
 
-QString b64(const QByteArray &bytes)
-{
+QString b64(const QByteArray &bytes) {
     return QString::fromLatin1(bytes.toBase64());
 }
 
-QByteArray unb64(const QJsonValue &value)
-{
+QByteArray unb64(const QJsonValue &value) {
     return QByteArray::fromBase64(value.toString().toLatin1());
 }
 
-QJsonObject transformToJson(const Transform2D &t)
-{
+QJsonObject transformToJson(const Transform2D &t) {
     QJsonObject o;
     o.insert(QStringLiteral("x"), t.x);
     o.insert(QStringLiteral("y"), t.y);
@@ -43,8 +38,7 @@ QJsonObject transformToJson(const Transform2D &t)
     return o;
 }
 
-Transform2D transformFromJson(const QJsonObject &o)
-{
+Transform2D transformFromJson(const QJsonObject &o) {
     Transform2D t;
     t.x = o.value(QStringLiteral("x")).toDouble(0.0);
     t.y = o.value(QStringLiteral("y")).toDouble(0.0);
@@ -55,8 +49,7 @@ Transform2D transformFromJson(const QJsonObject &o)
     return t;
 }
 
-void writeBase(QJsonObject &o, const Layer &l)
-{
+void writeBase(QJsonObject &o, const Layer &l) {
     o.insert(QStringLiteral("id"), l.id);
     o.insert(QStringLiteral("name"), l.name);
     o.insert(QStringLiteral("transform"), transformToJson(l.transform));
@@ -65,8 +58,7 @@ void writeBase(QJsonObject &o, const Layer &l)
     o.insert(QStringLiteral("locked"), l.locked);
 }
 
-void readBase(const QJsonObject &o, Layer &l)
-{
+void readBase(const QJsonObject &o, Layer &l) {
     l.id = o.value(QStringLiteral("id")).toString();
     l.name = o.value(QStringLiteral("name")).toString(l.name);
     l.transform = transformFromJson(o.value(QStringLiteral("transform")).toObject());
@@ -77,8 +69,7 @@ void readBase(const QJsonObject &o, Layer &l)
 
 QJsonObject nodeToJson(const Layer &node);
 
-QJsonObject shapeToJson(const Shape &s)
-{
+QJsonObject shapeToJson(const Shape &s) {
     QJsonObject o;
     o.insert(QStringLiteral("kind"), QStringLiteral("shape"));
     writeBase(o, s);
@@ -116,12 +107,14 @@ QJsonObject shapeToJson(const Shape &s)
     return o;
 }
 
-QJsonObject guideToJson(const GuideLayer &g)
-{
+QJsonObject guideToJson(const GuideLayer &g) {
     QJsonObject o;
     o.insert(QStringLiteral("kind"), QStringLiteral("guide"));
     writeBase(o, g);
     o.insert(QStringLiteral("source_path"), g.sourcePath);
+    if (g.preprocessColorCount > 0) {
+        o.insert(QStringLiteral("preprocess_color_count"), g.preprocessColorCount);
+    }
     QJsonObject image;
     if (g.image) {
         image.insert(QStringLiteral("format"), g.image->format);
@@ -133,8 +126,7 @@ QJsonObject guideToJson(const GuideLayer &g)
     return o;
 }
 
-QJsonObject groupToJson(const Group &g)
-{
+QJsonObject groupToJson(const Group &g) {
     QJsonObject o;
     o.insert(QStringLiteral("kind"), QStringLiteral("group"));
     writeBase(o, g);
@@ -166,8 +158,7 @@ QJsonObject groupToJson(const Group &g)
     return o;
 }
 
-QJsonObject nodeToJson(const Layer &node)
-{
+QJsonObject nodeToJson(const Layer &node) {
     switch (node.kind()) {
     case LayerKind::Shape:
         return shapeToJson(static_cast<const Shape &>(node));
@@ -181,8 +172,7 @@ QJsonObject nodeToJson(const Layer &node)
 
 std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o);
 
-std::unique_ptr<Shape> shapeFromJson(const QJsonObject &o)
-{
+std::unique_ptr<Shape> shapeFromJson(const QJsonObject &o) {
     auto shape = std::make_unique<Shape>();
     readBase(o, *shape);
     shape->mask = o.value(QStringLiteral("mask")).toBool(false);
@@ -213,11 +203,12 @@ std::unique_ptr<Shape> shapeFromJson(const QJsonObject &o)
     return shape;
 }
 
-std::unique_ptr<GuideLayer> guideFromJson(const QJsonObject &o)
-{
+std::unique_ptr<GuideLayer> guideFromJson(const QJsonObject &o) {
     auto guide = std::make_unique<GuideLayer>();
     readBase(o, *guide);
     guide->sourcePath = o.value(QStringLiteral("source_path")).toString();
+    guide->preprocessColorCount = std::clamp(
+        o.value(QStringLiteral("preprocess_color_count")).toInt(0), 0, 256);
     auto raster = std::make_unique<RasterContainer>();
     const QJsonObject image = o.value(QStringLiteral("image")).toObject();
     raster->rasterId = 0;
@@ -229,8 +220,7 @@ std::unique_ptr<GuideLayer> guideFromJson(const QJsonObject &o)
     return guide;
 }
 
-std::unique_ptr<Group> groupFromJson(const QJsonObject &o)
-{
+std::unique_ptr<Group> groupFromJson(const QJsonObject &o) {
     auto group = std::make_unique<Group>();
     readBase(o, *group);
     group->isLiverySection = o.value(QStringLiteral("is_livery_section")).toBool(false);
@@ -258,8 +248,7 @@ std::unique_ptr<Group> groupFromJson(const QJsonObject &o)
     return group;
 }
 
-std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o)
-{
+std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o) {
     const QString kind = o.value(QStringLiteral("kind")).toString();
     if (kind == QLatin1String("group")) {
         return groupFromJson(o);
@@ -272,8 +261,7 @@ std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o)
 
 } // namespace
 
-void ensureProjectSceneRoot(fh6::Project &project)
-{
+void ensureProjectSceneRoot(fh6::Project &project) {
     if (!project.root) {
         project.root = std::make_unique<Group>();
     }
@@ -285,8 +273,7 @@ void ensureProjectSceneRoot(fh6::Project &project)
     }
 }
 
-QJsonObject sceneTreeToJson(const Group &root)
-{
+QJsonObject sceneTreeToJson(const Group &root) {
     QJsonObject object;
     QJsonArray children;
     for (const auto &child : root.children) {
@@ -296,8 +283,7 @@ QJsonObject sceneTreeToJson(const Group &root)
     return object;
 }
 
-std::unique_ptr<Group> sceneTreeFromJson(const QJsonObject &object)
-{
+std::unique_ptr<Group> sceneTreeFromJson(const QJsonObject &object) {
     auto root = std::make_unique<Group>();
     root->id = QStringLiteral("__root__");
     root->name = QStringLiteral("Project");

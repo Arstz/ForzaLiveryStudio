@@ -48,8 +48,7 @@ constexpr ShapeRange kShapeRanges[] = {
     {0x0ed9, 0x0f00, "Lower_Letters_11"},
 };
 
-const ShapeRange *rangeForShape(quint16 shapeId)
-{
+const ShapeRange *rangeForShape(quint16 shapeId) {
     for (const ShapeRange &range : kShapeRanges) {
         if (shapeId >= range.start && shapeId <= range.end) {
             return &range;
@@ -62,19 +61,16 @@ const ShapeRange *rangeForShape(quint16 shapeId)
 
 namespace fh6::detail {
 
-quint16 canonicalShapeId(quint16 encodedShapeId)
-{
+quint16 canonicalShapeId(quint16 encodedShapeId) {
     // Wire aliases are normalized to the shared asset registry.
     return encodedShapeId == 0x07d0 ? 0x07d1 : encodedShapeId;
 }
 
-bool isKnownShapeId(quint16 shapeId)
-{
+bool isKnownShapeId(quint16 shapeId) {
     return rangeForShape(shapeId) != nullptr;
 }
 
-QString shapeName(quint16 shapeId)
-{
+QString shapeName(quint16 shapeId) {
     if (const ShapeRange *range = rangeForShape(shapeId)) {
         return QStringLiteral("%1_0x%2")
             .arg(QString::fromLatin1(range->prefix))

@@ -23,8 +23,7 @@ namespace gui {
 
 using namespace mw_detail;
 
-void MainWindow::setProject(fh6::Project project)
-{
+void MainWindow::setProject(fh6::Project project) {
     state_->setProject(std::move(project));
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
@@ -36,9 +35,7 @@ void MainWindow::setProject(fh6::Project project)
         rebuildSectionBar();
         prebakeLiverySectionCaches();
     } else {
-        if (sectionBar_ != nullptr) {
-            sectionBar_->setSections({});
-        }
+        sectionBar_->setSections({});
         treeModel_->setProject(&state_->project_);
     }
     updateColorPaletteWidget();
@@ -48,8 +45,7 @@ void MainWindow::setProject(fh6::Project project)
     updateCarUnwrapOverlay();
 }
 
-void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel)
-{
+void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     if (carPreview_ == nullptr || state_ == nullptr || !state_->hasProject_) {
         return;
     }
@@ -117,8 +113,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel)
     statusBar()->showMessage(QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
 }
 
-QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const
-{
+QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const {
     QDir dir(folder);
     if (modelName.isEmpty() || !dir.exists()) {
         return QString();
@@ -179,8 +174,7 @@ QString MainWindow::findCarModelPath(const QString &folder, const QString &model
     return QString();
 }
 
-void MainWindow::rebuildSectionBar()
-{
+void MainWindow::rebuildSectionBar() {
     if (sectionBar_ == nullptr) {
         return;
     }
@@ -194,8 +188,7 @@ void MainWindow::rebuildSectionBar()
     sectionBar_->setSections(sections);
 }
 
-void MainWindow::setActiveSection(const QString &sectionGroupId)
-{
+void MainWindow::setActiveSection(const QString &sectionGroupId) {
     state_->setActiveSectionId(sectionGroupId);
 
     applyLiverySectionVisibility(sectionGroupId);
@@ -212,8 +205,7 @@ void MainWindow::setActiveSection(const QString &sectionGroupId)
     updateCarUnwrapOverlay();
 }
 
-void MainWindow::prebakeLiverySectionCaches()
-{
+void MainWindow::prebakeLiverySectionCaches() {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery || canvas_ == nullptr || treeModel_ == nullptr) {
         return;
     }
@@ -251,33 +243,26 @@ void MainWindow::prebakeLiverySectionCaches()
     refreshSelectionProperties();
 }
 
-QString MainWindow::activeLiverySectionId() const
-{
+QString MainWindow::activeLiverySectionId() const {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery) {
         return {};
     }
-    auto isExistingSection = [this](const QString &id) {
-        for (const fh6::scene::Group *group : liverySections(state_->project_)) {
-            if (group->id == id) {
-                return true;
-            }
-        }
-        return false;
-    };
-    if (isExistingSection(state_->activeSectionId_)) {
+    const QVector<fh6::scene::Group *> sections = liverySections(state_->project_);
+    const bool activeSectionExists = std::any_of(
+        sections.cbegin(), sections.cend(), [this](const fh6::scene::Group *group) {
+            return group->id == state_->activeSectionId_;
+        });
+    if (activeSectionExists) {
         return state_->activeSectionId_;
     }
-    for (const fh6::scene::Group *section : liverySections(state_->project_)) {
-        if (isExistingSection(section->id)) {
-            state_->setActiveSectionId(section->id);
-            return section->id;
-        }
+    if (!sections.isEmpty()) {
+        state_->setActiveSectionId(sections.front()->id);
+        return sections.front()->id;
     }
     return {};
 }
 
-int MainWindow::activeLiverySectionSlot() const
-{
+int MainWindow::activeLiverySectionSlot() const {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery) {
         return -1;
     }
@@ -293,8 +278,7 @@ int MainWindow::activeLiverySectionSlot() const
     return -1;
 }
 
-void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId)
-{
+void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId) {
     if (state_ == nullptr || !state_->hasProject_ || sectionGroupId.isEmpty()) {
         return;
     }
@@ -305,8 +289,7 @@ void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId)
     });
 }
 
-void MainWindow::updateStatus()
-{
+void MainWindow::updateStatus() {
     if (!state_->hasProject_) {
         details_->setText(QStringLiteral("No project loaded"));
         return;
@@ -319,21 +302,19 @@ void MainWindow::updateStatus()
     int shapeCount = 0;
     int guideCount = 0;
     int groupCount = 0;
-    forEachShape(state_->project_, [&](fh6::scene::Shape &) { ++shapeCount; });
-    forEachGuide(state_->project_, [&](fh6::scene::GuideLayer &) { ++guideCount; });
-    if (state_->project_.root) {
-        std::function<void(const fh6::scene::Layer &)> countGroups = [&](const fh6::scene::Layer &node) {
-            if (node.kind() == fh6::scene::LayerKind::Group) {
-                ++groupCount;
-                for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
-                    countGroups(*child);
-                }
-            }
-        };
-        for (const auto &child : state_->project_.root->children) {
-            countGroups(*child);
+    forEachLayer(state_->project_, [&](fh6::scene::Layer &node) {
+        switch (node.kind()) {
+        case fh6::scene::LayerKind::Shape:
+            ++shapeCount;
+            break;
+        case fh6::scene::LayerKind::Guide:
+            ++guideCount;
+            break;
+        case fh6::scene::LayerKind::Group:
+            ++groupCount;
+            break;
         }
-    }
+    });
     QString text = QStringLiteral("%1\nCreator: %2\nSource: %3\nLayers: %4\nGroups: %5")
                           .arg(state_->project_.name)
                           .arg(creator.isEmpty() ? QStringLiteral("(unset)") : creator)
@@ -350,27 +331,23 @@ void MainWindow::updateStatus()
     details_->setText(text);
 }
 
-void MainWindow::updateClipboardWidget()
-{
+void MainWindow::updateClipboardWidget() {
     if (clipboardWidget_ == nullptr) {
         return;
     }
     clipboardWidget_->setClipboard(state_->clipboard());
 }
 
-void MainWindow::updateColorPaletteWidget()
-{
-    if (colorPalette_ == nullptr || state_ == nullptr || !state_->hasProject()) {
-        if (colorPalette_ != nullptr) {
-            colorPalette_->setSwatches(nullptr);
-        }
+void MainWindow::updateColorPaletteWidget() {
+    if (colorPalette_ == nullptr) {
         return;
     }
-    colorPalette_->setSwatches(&state_->project_.colorSwatches);
+    colorPalette_->setSwatches(state_ != nullptr && state_->hasProject()
+                                   ? &state_->project_.colorSwatches
+                                   : nullptr);
 }
 
-void MainWindow::updateLastSelectedShapeDefaults()
-{
+void MainWindow::updateLastSelectedShapeDefaults() {
     const QVector<fh6::scene::Shape *> selected = state_->selectedLayers();
     if (selected.isEmpty() || selected.front() == nullptr) {
         return;
@@ -382,8 +359,7 @@ void MainWindow::updateLastSelectedShapeDefaults()
     haveLastSelectedShapeDefaults_ = true;
 }
 
-void MainWindow::updateSelectionFromTree()
-{
+void MainWindow::updateSelectionFromTree() {
     if (syncingSelection_) {
         return;
     }
@@ -410,8 +386,7 @@ void MainWindow::updateSelectionFromTree()
     }
 }
 
-void MainWindow::syncTreeSelectionFromIds()
-{
+void MainWindow::syncTreeSelectionFromIds() {
     if (tree_->selectionModel() == nullptr) {
         return;
     }
@@ -483,8 +458,7 @@ void MainWindow::syncTreeSelectionFromIds()
     }
 }
 
-void MainWindow::revealTreeIndex(const QModelIndex &index)
-{
+void MainWindow::revealTreeIndex(const QModelIndex &index) {
     if (!index.isValid()) {
         return;
     }
@@ -514,8 +488,7 @@ void MainWindow::revealTreeIndex(const QModelIndex &index)
     tree_->scrollTo(index, QAbstractItemView::PositionAtCenter);
 }
 
-QVector<QString> MainWindow::selectedEntryIds() const
-{
+QVector<QString> MainWindow::selectedEntryIds() const {
     QVector<QString> ids;
     QSet<QString> seen;
     if (tree_ != nullptr && tree_->selectionModel() != nullptr) {
@@ -539,8 +512,7 @@ QVector<QString> MainWindow::selectedEntryIds() const
     return ids;
 }
 
-bool MainWindow::copySelectionToClipboard()
-{
+bool MainWindow::copySelectionToClipboard() {
     if (!state_->hasProject()) {
         return false;
     }
@@ -556,8 +528,7 @@ bool MainWindow::copySelectionToClipboard()
     return true;
 }
 
-bool MainWindow::ensureProjectForInsertion()
-{
+bool MainWindow::ensureProjectForInsertion() {
     if (state_->hasProject_) {
         return true;
     }
@@ -581,23 +552,11 @@ bool MainWindow::ensureProjectForInsertion()
     return true;
 }
 
-QStringList MainWindow::idsForIndex(const QModelIndex &index) const
-{
+QStringList MainWindow::idsForIndex(const QModelIndex &index) const {
     return index.data(LayerTreeModel::LeafIdsRole).toStringList();
 }
 
-QSet<QString> MainWindow::existingLayerIds(const QSet<QString> &ids) const
-{
-    QSet<QString> existing;
-    if (!state_->hasProject_) {
-        return existing;
-    }
-    existing = state_->existingLayerIds(ids);
-    return existing;
-}
-
-void MainWindow::setTargetCarDialog()
-{
+void MainWindow::setTargetCarDialog() {
     if (!state_->hasProject_ || !state_->project_.isLivery) {
         QMessageBox::information(this, QStringLiteral("Set Target Car"),
                                  QStringLiteral("Open a livery project to change its target car."));
@@ -621,8 +580,7 @@ void MainWindow::setTargetCarDialog()
     maybeAutoLoadCarForProject(true);
 }
 
-void MainWindow::setProjectNameDialog()
-{
+void MainWindow::setProjectNameDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Project Name"),
                                  QStringLiteral("Open a project to change its name."));
@@ -640,25 +598,14 @@ void MainWindow::setProjectNameDialog()
         return;
     }
     state_->project_.name = trimmed;
-    if (!state_->project_.headerMetadata) {
-        try {
-            state_->project_.headerMetadata = fh6::parseHeader(state_->project_.sourceHeader);
-        } catch (const std::exception &) {
-            state_->project_.headerMetadata = fh6::defaultDraftHeader(
-                trimmed, creatorName_, static_cast<quint32>(state_->project_.carId));
-        }
-    }
-    if (state_->project_.headerMetadata) {
-        state_->project_.headerMetadata->name = trimmed;
-    }
+    ensureProjectHeaderMetadata().name = trimmed;
     state_->setModified(true);
     updateStatus();
     refreshHeaderMetadataWidget();
     statusBar()->showMessage(QStringLiteral("Project name updated"), 5000);
 }
 
-void MainWindow::setCreatorNameDialog()
-{
+void MainWindow::setCreatorNameDialog() {
     if (!state_->hasProject_) {
         QMessageBox::information(this, QStringLiteral("Creator Name"),
                                  QStringLiteral("Open a project to change its creator."));
@@ -680,21 +627,24 @@ void MainWindow::setCreatorNameDialog()
     }
     creatorName_ = trimmed;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
+    ensureProjectHeaderMetadata().creatorName = trimmed;
+    state_->setModified(true);
+    updateStatus();
+    refreshHeaderMetadataWidget();
+    statusBar()->showMessage(QStringLiteral("Creator name updated"), 5000);
+}
+
+fh6::HeaderMetadata &MainWindow::ensureProjectHeaderMetadata() {
     if (!state_->project_.headerMetadata) {
         try {
             state_->project_.headerMetadata = fh6::parseHeader(state_->project_.sourceHeader);
         } catch (const std::exception &) {
             state_->project_.headerMetadata = fh6::defaultDraftHeader(
-                state_->project_.name, trimmed, static_cast<quint32>(state_->project_.carId));
+                state_->project_.name, creatorName_, static_cast<quint32>(state_->project_.carId));
         }
     }
-    if (state_->project_.headerMetadata) {
-        state_->project_.headerMetadata->creatorName = trimmed;
-    }
-    state_->setModified(true);
-    updateStatus();
-    refreshHeaderMetadataWidget();
-    statusBar()->showMessage(QStringLiteral("Creator name updated"), 5000);
+
+    return *state_->project_.headerMetadata;
 }
 
 } // namespace gui

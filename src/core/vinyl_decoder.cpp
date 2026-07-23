@@ -48,8 +48,7 @@ struct TransformRecord {
     QByteArray marker;
 };
 
-bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> bytes)
-{
+bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> bytes) {
     if (pos < 0 || pos + static_cast<int>(bytes.size()) > data.size()) {
         return false;
     }
@@ -63,8 +62,7 @@ bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> byte
     return true;
 }
 
-void setNodeTransform(VinylGroup &node, const Transform &transform)
-{
+void setNodeTransform(VinylGroup &node, const Transform &transform) {
     node.px = transform.px;
     node.py = transform.py;
     node.sx = transform.sx;
@@ -72,8 +70,7 @@ void setNodeTransform(VinylGroup &node, const Transform &transform)
     node.sy = transform.hasSy ? transform.sy : transform.sx;
 }
 
-void composeTransformIntoNode(const Transform &parent, VinylGroup &node)
-{
+void composeTransformIntoNode(const Transform &parent, VinylGroup &node) {
     const double sx = parent.sx;
     const double sy = parent.hasSy ? parent.sy : parent.sx;
     const double radians = parent.rot * Pi / 180.0;
@@ -88,8 +85,7 @@ void composeTransformIntoNode(const Transform &parent, VinylGroup &node)
     node.rot += parent.rot;
 }
 
-bool isValidShapeAt(const QByteArray &data, int pos, int end)
-{
+bool isValidShapeAt(const QByteArray &data, int pos, int end) {
     if (pos < 0 || pos >= end || pos >= data.size()) {
         return false;
     }
@@ -128,8 +124,7 @@ bool isValidShapeAt(const QByteArray &data, int pos, int end)
     return false;
 }
 
-bool isUnsupportedShapeRecordAt(const QByteArray &data, int pos, int end)
-{
+bool isUnsupportedShapeRecordAt(const QByteArray &data, int pos, int end) {
     // Unknown framed records still contribute structural occupancy.
     if (pos < 0 || pos + 32 > end || pos + 32 > data.size()
         || !(bytesAt(data, pos, {0x00, 0x02}) || bytesAt(data, pos, {0x01, 0x02}))) {
@@ -153,8 +148,7 @@ bool isUnsupportedShapeRecordAt(const QByteArray &data, int pos, int end)
         && std::isfinite(skew) && std::abs(skew) < 200.0;
 }
 
-VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false, int flags = 0)
-{
+VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false, int flags = 0) {
     if (absPos < 0 || absPos + 31 > data.size()) {
         throw std::runtime_error("shape record extends past layer data");
     }
@@ -184,8 +178,7 @@ VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false
     return shape;
 }
 
-VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos)
-{
+VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos) {
     VinylShape logo = decodeShapeAt(data, absPos);
     logo.isLogo = true;
     logo.logoId = logo.shapeId;
@@ -193,8 +186,7 @@ VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos)
     return logo;
 }
 
-std::optional<Transform> readTransformPayload(const QByteArray &data, int pos, int end)
-{
+std::optional<Transform> readTransformPayload(const QByteArray &data, int pos, int end) {
     if (pos + 16 > end) {
         return std::nullopt;
     }
@@ -212,8 +204,7 @@ std::optional<Transform> readTransformPayload(const QByteArray &data, int pos, i
     return std::nullopt;
 }
 
-QVector<QByteArray> transformMarkersAt(const QByteArray &data, int pos, int end, bool livery = false)
-{
+QVector<QByteArray> transformMarkersAt(const QByteArray &data, int pos, int end, bool livery = false) {
     QVector<QByteArray> markers;
     if (pos >= end || pos >= data.size()) {
         return markers;
@@ -272,8 +263,7 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
                                                 bool allowCountOne, bool livery);
 bool groupAtOrAfterControlByte(const QByteArray &data, int pos, int end, bool livery);
 
-bool isLiveryLogoAt(const QByteArray &data, int pos, int end)
-{
+bool isLiveryLogoAt(const QByteArray &data, int pos, int end) {
     if (pos < 0 || pos + 32 > end || pos + 32 > data.size()) {
         return false;
     }
@@ -295,13 +285,11 @@ bool isLiveryLogoAt(const QByteArray &data, int pos, int end)
         && std::abs(sy) > 1e-6 && std::abs(sy) < 200.0;
 }
 
-int expectedChildBlocks(int count)
-{
+int expectedChildBlocks(int count) {
     return (count + 7) / 8;
 }
 
-bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks)
-{
+bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks) {
     if (count <= 0) {
         return false;
     }
@@ -315,8 +303,7 @@ bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks)
     return true;
 }
 
-QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos, int end)
-{
+QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos, int end) {
     QVector<int> sizes;
     if (pos >= end || pos >= data.size()) {
         return sizes;
@@ -334,8 +321,7 @@ QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos,
     return sizes;
 }
 
-bool childBitmapBit(const QByteArray &bitmap, int index)
-{
+bool childBitmapBit(const QByteArray &bitmap, int index) {
     const int byteIndex = index / 8;
     return index >= 0 && byteIndex < bitmap.size()
         && (static_cast<quint8>(bitmap[byteIndex]) & (1 << (index % 8)));
@@ -343,8 +329,7 @@ bool childBitmapBit(const QByteArray &bitmap, int index)
 
 constexpr int kLiveryTransformTrailerSize = 9;
 
-bool isLiveryTransformTrailerAt(const QByteArray &data, int pos, int end)
-{
+bool isLiveryTransformTrailerAt(const QByteArray &data, int pos, int end) {
     return pos >= 0 && pos + kLiveryTransformTrailerSize <= end
         && pos + kLiveryTransformTrailerSize <= data.size()
         && static_cast<quint8>(data[pos]) == 0x21
@@ -353,8 +338,7 @@ bool isLiveryTransformTrailerAt(const QByteArray &data, int pos, int end)
 }
 
 // Transform leads are opaque; the surrounding record structure establishes their role.
-bool isLiveryTransformLead(const QByteArray &data, int pos, int end)
-{
+bool isLiveryTransformLead(const QByteArray &data, int pos, int end) {
     if (pos >= end || pos >= data.size()) {
         return false;
     }
@@ -365,8 +349,7 @@ bool isLiveryTransformLead(const QByteArray &data, int pos, int end)
     return true;
 }
 
-bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
-{
+bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end) {
     if (pos >= end) {
         return false;
     }
@@ -409,8 +392,7 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end)
     return false;
 }
 
-bool childTokenAt(const QByteArray &data, int pos, int end, bool livery)
-{
+bool childTokenAt(const QByteArray &data, int pos, int end, bool livery) {
     return isValidShapeAt(data, pos, end)
         || (livery && isLiveryLogoAt(data, pos, end))
         || validCountedGroupAt(data, pos, end, livery)
@@ -419,8 +401,7 @@ bool childTokenAt(const QByteArray &data, int pos, int end, bool livery)
 }
 
 std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos, int end,
-                                                bool allowCountOne = false, bool livery = false)
-{
+                                                bool allowCountOne = false, bool livery = false) {
     if (pos + 4 > end) {
         return std::nullopt;
     }
@@ -522,8 +503,7 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
     return info;
 }
 
-std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, int end, bool livery)
-{
+std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, int end, bool livery) {
     if (pos + 5 > end) {
         return std::nullopt;
     }
@@ -603,8 +583,7 @@ std::optional<GroupInfo> validCountedGroupAt(const QByteArray &data, int pos, in
     return info;
 }
 
-bool groupAtOrAfterControlByte(const QByteArray &data, int pos, int end, bool livery)
-{
+bool groupAtOrAfterControlByte(const QByteArray &data, int pos, int end, bool livery) {
     if (validCountedGroupAt(data, pos, end, livery)
         || validMarkerlessGroupAt(data, pos, end, false, livery)) {
         return true;
@@ -614,8 +593,7 @@ bool groupAtOrAfterControlByte(const QByteArray &data, int pos, int end, bool li
             || validMarkerlessGroupAt(data, pos + 1, end, false, true));
 }
 
-std::optional<TransformRecord> readTransformRecord(const QByteArray &data, int pos, int end)
-{
+std::optional<TransformRecord> readTransformRecord(const QByteArray &data, int pos, int end) {
     for (const QByteArray &marker : transformMarkersAt(data, pos, end)) {
         int size = marker.size() + 16;
         if (pos + size > end) {
@@ -638,8 +616,7 @@ std::optional<TransformRecord> readTransformRecord(const QByteArray &data, int p
     return std::nullopt;
 }
 
-bool liveryTransformEndsAtGroup(const QByteArray &data, int pos, int end)
-{
+bool liveryTransformEndsAtGroup(const QByteArray &data, int pos, int end) {
     for (int markerSize : liverySeparateTransformMarkerSizes(data, pos, end)) {
         auto transform = readTransformPayload(data, pos + markerSize, end);
         if (!transform) {
@@ -668,8 +645,7 @@ bool liveryTransformEndsAtGroup(const QByteArray &data, int pos, int end)
 }
 
 std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int pos, int end,
-                                                   bool invertOddRotation)
-{
+                                                   bool invertOddRotation) {
     if (pos >= end) {
         return std::nullopt;
     }
@@ -768,8 +744,7 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
 
 void applyGroupRecord(VinylGroup &node, const GroupInfo &info, const QString &source,
                       int pendingFlags = 0, bool pendingMask = false,
-                      bool applyInlineTransform = true)
-{
+                      bool applyInlineTransform = true) {
     node.expectedChildren = info.count;
     node.flags = info.flags | pendingFlags;
     node.isMask = (node.flags & 0x40) || pendingMask;
@@ -783,8 +758,7 @@ void applyGroupRecord(VinylGroup &node, const GroupInfo &info, const QString &so
     }
 }
 
-void applyRootHeader(const QByteArray &dec, VinylGroup &root)
-{
+void applyRootHeader(const QByteArray &dec, VinylGroup &root) {
     if (dec.isEmpty()) {
         return;
     }
@@ -803,30 +777,25 @@ void applyRootHeader(const QByteArray &dec, VinylGroup &root)
     }
 }
 
-void addChild(VinylGroup &parent, const VinylGroupPtr &child)
-{
+void addChild(VinylGroup &parent, const VinylGroupPtr &child) {
     parent.items.push_back(VinylItem{child});
 }
 
-void addShape(VinylGroup &parent, const VinylShape &shape)
-{
+void addShape(VinylGroup &parent, const VinylShape &shape) {
     parent.items.push_back(VinylItem{shape});
 }
 
-bool groupComplete(const VinylGroupPtr &group)
-{
+bool groupComplete(const VinylGroupPtr &group) {
     return group->expectedChildren && group->totalChildren() >= *group->expectedChildren;
 }
 
-void closeCompleteStack(QVector<VinylGroupPtr> &stack)
-{
+void closeCompleteStack(QVector<VinylGroupPtr> &stack) {
     while (stack.size() > 1 && groupComplete(stack.back())) {
         stack.pop_back();
     }
 }
 
-int countEncodedLiveryDecals(const VinylGroup &node)
-{
+int countEncodedLiveryDecals(const VinylGroup &node) {
     int count = node.skippedChildren;
     for (const VinylItem &item : node.items) {
         if (item.isShape()) {
@@ -838,8 +807,7 @@ int countEncodedLiveryDecals(const VinylGroup &node)
     return count;
 }
 
-void collectLiveryLogoCounts(const VinylGroup &node, QHash<quint16, int> &counts)
-{
+void collectLiveryLogoCounts(const VinylGroup &node, QHash<quint16, int> &counts) {
     for (const VinylItem &item : node.items) {
         if (item.isShape()) {
             const VinylShape &shape = std::get<VinylShape>(item.value);
@@ -858,8 +826,7 @@ struct InitialTransformResult {
     QByteArray marker;
 };
 
-InitialTransformResult readInitialChildTransform(const QByteArray &data, int pos, int end)
-{
+InitialTransformResult readInitialChildTransform(const QByteArray &data, int pos, int end) {
     const int scanEnd = std::min(end, pos + 8);
     for (int candidate = pos; candidate < scanEnd; ++candidate) {
         auto transformInfo = readTransformRecord(data, candidate, end);
@@ -887,8 +854,7 @@ struct WalkState {
     const QHash<quint16, int> *logoExtraCounts = nullptr;
 };
 
-void markPreviousDirectShapeAsMask(WalkState &state)
-{
+void markPreviousDirectShapeAsMask(WalkState &state) {
     if (state.stack.isEmpty() || state.stack.back()->items.isEmpty()) {
         return;
     }
@@ -901,8 +867,7 @@ void markPreviousDirectShapeAsMask(WalkState &state)
     shape.flags |= 0x40;
 }
 
-void markPreviousTerminalShapeAsMask(WalkState &state)
-{
+void markPreviousTerminalShapeAsMask(WalkState &state) {
     if (state.stack.isEmpty() || state.stack.back()->items.isEmpty()) {
         return;
     }
@@ -920,8 +885,7 @@ void markPreviousTerminalShapeAsMask(WalkState &state)
 }
 
 int pushMarkerlessGroup(const QByteArray &data, int pos, int end, const GroupInfo &info, WalkState &s,
-                        bool livery = false)
-{
+                        bool livery = false) {
     const bool inlineForFirstChild = info.inlineTransform && info.transformForFirstChild;
     auto node = std::make_shared<VinylGroup>();
     node->nodeType = QStringLiteral("group");
@@ -952,8 +916,7 @@ int pushMarkerlessGroup(const QByteArray &data, int pos, int end, const GroupInf
 }
 
 int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
-             bool liveryDialect = false, bool invertOddLiveryRotation = true)
-{
+             bool liveryDialect = false, bool invertOddLiveryRotation = true) {
     QVector<VinylGroupPtr> &stack = s.stack;
 
     auto markerlessInfo = s.pendingTransform
@@ -1113,8 +1076,7 @@ const LiverySlotDef kFH6LiverySlots[11] = {
     {"LeftWindow", 180.0}, {"RightWindow", 0.0},
 };
 
-Matrix3 liverySectionCanvasTransform(int slot)
-{
+Matrix3 liverySectionCanvasTransform(int slot) {
     Matrix3 transform;
     if (slot == 5) {
         transform.m[0][0] = -1.0;
@@ -1124,12 +1086,10 @@ Matrix3 liverySectionCanvasTransform(int slot)
 }
 
 VinylTreeDecoder::VinylTreeDecoder(VinylDecoderOptions options)
-    : options_(options)
-{
+    : options_(options) {
 }
 
-LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const
-{
+LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const {
     LayerData layerData;
     if (options_.markerlessRootHeader
         && payload.size() > 0x24
@@ -1167,8 +1127,7 @@ LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const
 }
 
 VinylGroup VinylTreeDecoder::decodeGroup(const QByteArray &payload,
-                                         LayerData *decodedLayerData) const
-{
+                                         LayerData *decodedLayerData) const {
     LayerData layerData = getLayerData(payload);
     QByteArray decoderPayload = payload;
     if (options_.markerlessRootHeader
@@ -1190,8 +1149,7 @@ VinylGroup VinylTreeDecoder::decodeGroup(const QByteArray &payload,
     return root;
 }
 
-VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteArray &fullPayload) const
-{
+VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteArray &fullPayload) const {
     auto root = std::make_shared<VinylGroup>();
     root->nodeType = QStringLiteral("root");
     root->source = QStringLiteral("root");
@@ -1216,14 +1174,12 @@ VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteA
 }
 
 QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body,
-                                                             const QVector<int> &sectionCounts) const
-{
+                                                             const QVector<int> &sectionCounts) const {
     return buildLiverySections(body, sectionCounts, kFH6LiverySlots, kFH6SectionCount);
 }
 
 QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts,
-                                                             const LiverySlotDef *slotDefs, int slotCount) const
-{
+                                                             const LiverySlotDef *slotDefs, int slotCount) const {
     QByteArray decoderBody = options_.normalizeRecords != nullptr
         ? options_.normalizeRecords(body)
         : body;
@@ -1365,25 +1321,21 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
     return {};
 }
 
-QVector<QString> VinylTreeDecoder::validateTree(const VinylGroup &root) const
-{
+QVector<QString> VinylTreeDecoder::validateTree(const VinylGroup &root) const {
     QVector<QString> errors;
     std::function<void(const VinylGroup &, const QString &)> visit = [&](const VinylGroup &node, const QString &path) {
         if (node.nodeType == QStringLiteral("root") && path == QStringLiteral("root") && node.totalChildren() == 0) {
             errors.push_back(QStringLiteral("%1: root has no children").arg(path));
         }
-        if (node.nodeType == QStringLiteral("group") && node.expectedChildren && node.totalChildren() != *node.expectedChildren)
-        {
+        if (node.nodeType == QStringLiteral("group") && node.expectedChildren && node.totalChildren() != *node.expectedChildren) {
             errors.push_back(QStringLiteral("%1: group has %2 child(ren), expected %3")
                                  .arg(path)
                                  .arg(node.totalChildren())
                                  .arg(*node.expectedChildren));
         }
         int childIndex = 0;
-        for (const VinylItem &item : node.items)
-        {
-            if (!item.isShape())
-            {
+        for (const VinylItem &item : node.items) {
+            if (!item.isShape()) {
                 visit(*std::get<VinylGroupPtr>(item.value),
                       QStringLiteral("%1.children[%2]").arg(path).arg(childIndex++));
             }
@@ -1393,28 +1345,23 @@ QVector<QString> VinylTreeDecoder::validateTree(const VinylGroup &root) const
     return errors;
 }
 
-LayerData getLayerData(const QByteArray &payload)
-{
+LayerData getLayerData(const QByteArray &payload) {
     return VinylTreeDecoder{}.getLayerData(payload);
 }
 
-VinylGroup decodeGroup(const QByteArray &payload, LayerData *decodedLayerData)
-{
+VinylGroup decodeGroup(const QByteArray &payload, LayerData *decodedLayerData) {
     return VinylTreeDecoder{}.decodeGroup(payload, decodedLayerData);
 }
 
-VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload)
-{
+VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload) {
     return VinylTreeDecoder{}.buildTree(layerData, fullPayload);
 }
 
-QVector<LiverySection> buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts)
-{
+QVector<LiverySection> buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts) {
     return VinylTreeDecoder{}.buildLiverySections(body, sectionCounts);
 }
 
-QVector<QString> validateTree(const VinylGroup &root)
-{
+QVector<QString> validateTree(const VinylGroup &root) {
     return VinylTreeDecoder{}.validateTree(root);
 }
 

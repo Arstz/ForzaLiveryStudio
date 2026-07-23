@@ -23,6 +23,18 @@ enum class AssetKind {
     MotorsportLivery,
 };
 
+bool isLiveryKind(AssetKind kind) {
+    return kind == AssetKind::HorizonLivery || kind == AssetKind::MotorsportLivery;
+}
+
+bool isGroupKind(AssetKind kind) {
+    return kind == AssetKind::HorizonGroup || kind == AssetKind::MotorsportGroup;
+}
+
+bool isNonEmptyFile(const QString &path) {
+    return !path.isEmpty() && QFileInfo(path).size() > 0;
+}
+
 struct AssetInfo {
     AssetKind kind = AssetKind::None;
     QString name;
@@ -31,14 +43,12 @@ struct AssetInfo {
     QString thumbnailPath;
 
     bool valid() const { return kind != AssetKind::None; }
-    bool motorsport() const
-    {
+    bool motorsport() const {
         return kind == AssetKind::MotorsportGroup || kind == AssetKind::MotorsportLivery;
     }
 };
 
-QString findFile(const QDir &directory, const QString &name)
-{
+QString findFile(const QDir &directory, const QString &name) {
     const QFileInfoList files = directory.entryInfoList(QDir::Files | QDir::Hidden | QDir::System);
     for (const QFileInfo &file : files) {
         if (file.fileName().compare(name, Qt::CaseInsensitive) == 0) {
@@ -48,8 +58,7 @@ QString findFile(const QDir &directory, const QString &name)
     return {};
 }
 
-QString findThumbnail(const QDir &directory)
-{
+QString findThumbnail(const QDir &directory) {
     const QStringList preferredNames = {
         QStringLiteral("bigThumb.webp"),
         QStringLiteral("thumb.webp"),
@@ -73,8 +82,7 @@ QString findThumbnail(const QDir &directory)
     return {};
 }
 
-QString liveryCarName(AssetKind kind, const QString &path)
-{
+QString liveryCarName(AssetKind kind, const QString &path) {
     try {
         if (kind == AssetKind::HorizonLivery) {
             return sharedCarRegistry().displayName(fh6::readLiveryPayload(path).carId);
@@ -87,8 +95,7 @@ QString liveryCarName(AssetKind kind, const QString &path)
     return {};
 }
 
-void readHeaderMetadata(const QString &headerPath, AssetInfo &asset)
-{
+void readHeaderMetadata(const QString &headerPath, AssetInfo &asset) {
     if (headerPath.isEmpty()) {
         return;
     }
@@ -112,8 +119,7 @@ void readHeaderMetadata(const QString &headerPath, AssetInfo &asset)
     }
 }
 
-AssetInfo inspectAsset(const QString &path)
-{
+AssetInfo inspectAsset(const QString &path) {
     AssetInfo asset;
     const QFileInfo directoryInfo(path);
     if (!directoryInfo.isDir()) {
@@ -126,11 +132,11 @@ AssetInfo inspectAsset(const QString &path)
     const QString header = findFile(directory, QStringLiteral("header"));
     const QString data = findFile(directory, QStringLiteral("data"));
 
-    if (!cLivery.isEmpty() && QFileInfo(cLivery).size() > 0) {
+    if (isNonEmptyFile(cLivery)) {
         asset.kind = AssetKind::HorizonLivery;
-    } else if (!cGroup.isEmpty() && QFileInfo(cGroup).size() > 0) {
+    } else if (isNonEmptyFile(cGroup)) {
         asset.kind = AssetKind::HorizonGroup;
-    } else if (!header.isEmpty() && !data.isEmpty() && QFileInfo(data).size() > 0) {
+    } else if (!header.isEmpty() && isNonEmptyFile(data)) {
         QFile dataFile(data);
         if (dataFile.open(QIODevice::ReadOnly)) {
             const QByteArray bytes = dataFile.readAll();
@@ -150,8 +156,7 @@ AssetInfo inspectAsset(const QString &path)
     return asset;
 }
 
-QString assetKindLabel(AssetKind kind)
-{
+QString assetKindLabel(AssetKind kind) {
     switch (kind) {
     case AssetKind::HorizonGroup:
         return QStringLiteral("Horizon group");
@@ -167,8 +172,7 @@ QString assetKindLabel(AssetKind kind)
     return {};
 }
 
-QImage readThumbnail(const QString &path)
-{
+QImage readThumbnail(const QString &path) {
     if (path.isEmpty()) {
         return {};
     }
@@ -181,8 +185,7 @@ QImage readThumbnail(const QString &path)
 class ImportAssetDialog final : public QDialog {
 public:
     ImportAssetDialog(QWidget *parent, QString startDirectory)
-        : QDialog(parent)
-    {
+        : QDialog(parent) {
         setWindowTitle(QStringLiteral("Import"));
         setModal(true);
         resize(760, 520);
@@ -269,10 +272,10 @@ public:
         connect(list_, &QListWidget::currentItemChanged, this,
                 [this](QListWidgetItem *current, QListWidgetItem *) { updateSelection(current); });
         connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
-            if (item->data(AssetRole).toBool()) {
+            if (item->data(kAssetRole).toBool()) {
                 acceptSelection();
             } else {
-                navigate(item->data(PathRole).toString());
+                navigate(item->data(kPathRole).toString());
             }
         });
         connect(buttons_, &QDialogButtonBox::accepted, this, [this]() { acceptSelection(); });
@@ -287,8 +290,7 @@ public:
         navigate(startDirectory);
     }
 
-    ImportAssetSelection selection() const
-    {
+    ImportAssetSelection selection() const {
         ImportAssetSelection result;
         result.path = selectedPath_;
         result.directory = currentDirectory_;
@@ -297,12 +299,12 @@ public:
     }
 
 private:
-    static constexpr int PathRole = Qt::UserRole;
-    static constexpr int AssetRole = Qt::UserRole + 1;
-    static constexpr int MotorsportRole = Qt::UserRole + 2;
-    static constexpr int BaseTextRole = Qt::UserRole + 3;
-    static constexpr int NameRole = Qt::UserRole + 4;
-    static constexpr int KindRole = Qt::UserRole + 5;
+    static constexpr int kPathRole = Qt::UserRole;
+    static constexpr int kAssetRole = Qt::UserRole + 1;
+    static constexpr int kMotorsportRole = Qt::UserRole + 2;
+    static constexpr int kBaseTextRole = Qt::UserRole + 3;
+    static constexpr int kNameRole = Qt::UserRole + 4;
+    static constexpr int kKindRole = Qt::UserRole + 5;
 
     struct AssetDetailsRequest {
         QString assetPath;
@@ -310,8 +312,7 @@ private:
         AssetKind kind = AssetKind::None;
     };
 
-    void navigate(const QString &path, bool recordHistory = true)
-    {
+    void navigate(const QString &path, bool recordHistory = true) {
         const QFileInfo info(path);
         if (!info.isDir()) {
             return;
@@ -330,8 +331,7 @@ private:
         refresh();
     }
 
-    void refresh()
-    {
+    void refresh() {
         const quint64 generation = ++thumbnailGeneration_;
         list_->clear();
         selectedPath_.clear();
@@ -372,12 +372,12 @@ private:
             }
 
             auto *item = new QListWidgetItem(icon, text, list_);
-            item->setData(PathRole, folder.absoluteFilePath());
-            item->setData(AssetRole, asset.valid());
-            item->setData(MotorsportRole, asset.motorsport());
-            item->setData(BaseTextRole, text);
-            item->setData(NameRole, name);
-            item->setData(KindRole, static_cast<int>(asset.kind));
+            item->setData(kPathRole, folder.absoluteFilePath());
+            item->setData(kAssetRole, asset.valid());
+            item->setData(kMotorsportRole, asset.motorsport());
+            item->setData(kBaseTextRole, text);
+            item->setData(kNameRole, name);
+            item->setData(kKindRole, static_cast<int>(asset.kind));
             item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
             item->setSizeHint(QSize(0, asset.valid() ? 86 : folderIconExtent + 12));
         }
@@ -404,8 +404,7 @@ private:
         }
     }
 
-    void applyFilters()
-    {
+    void applyFilters() {
         if (list_ == nullptr || searchEdit_ == nullptr || typeFilter_ == nullptr) {
             return;
         }
@@ -414,12 +413,12 @@ private:
         int visibleCount = 0;
         for (int row = 0; row < list_->count(); ++row) {
             QListWidgetItem *item = list_->item(row);
-            const AssetKind kind = static_cast<AssetKind>(item->data(KindRole).toInt());
+            const AssetKind kind = static_cast<AssetKind>(item->data(kKindRole).toInt());
             const bool folder = kind == AssetKind::None;
-            const bool livery = kind == AssetKind::HorizonLivery || kind == AssetKind::MotorsportLivery;
-            const bool group = kind == AssetKind::HorizonGroup || kind == AssetKind::MotorsportGroup;
+            const bool livery = isLiveryKind(kind);
+            const bool group = isGroupKind(kind);
             const bool nameMatches = search.isEmpty()
-                || item->data(NameRole).toString().contains(search, Qt::CaseInsensitive);
+                || item->data(kNameRole).toString().contains(search, Qt::CaseInsensitive);
             const bool typeMatches = type == 0 || folder || (type == 1 && livery) || (type == 2 && group);
             const bool visible = nameMatches && typeMatches;
             item->setHidden(!visible);
@@ -437,8 +436,7 @@ private:
         }
     }
 
-    void loadAssetDetails(const AssetDetailsRequest &request, quint64 generation)
-    {
+    void loadAssetDetails(const AssetDetailsRequest &request, quint64 generation) {
         const QPointer<ImportAssetDialog> dialog(this);
         if (!request.thumbnailPath.isEmpty()) {
             QThreadPool::globalInstance()->start([dialog, request, generation]() {
@@ -456,8 +454,7 @@ private:
                     Qt::QueuedConnection);
             }, 1);
         }
-        if (request.kind == AssetKind::HorizonLivery
-            || request.kind == AssetKind::MotorsportLivery) {
+        if (isLiveryKind(request.kind)) {
             QThreadPool::globalInstance()->start([dialog, request, generation]() {
                 const QString car = liveryCarName(request.kind, request.assetPath);
                 if (car.isEmpty()) {
@@ -476,19 +473,18 @@ private:
     }
 
     void applyAssetDetails(const QString &assetPath, quint64 generation,
-                           const QImage &image, const QString &car)
-    {
+                           const QImage &image, const QString &car) {
         if (generation != thumbnailGeneration_) {
             return;
         }
         for (int row = 0; row < list_->count(); ++row) {
             QListWidgetItem *item = list_->item(row);
-            if (item->data(PathRole).toString() == assetPath) {
+            if (item->data(kPathRole).toString() == assetPath) {
                 if (!image.isNull()) {
                     item->setIcon(QIcon(QPixmap::fromImage(image)));
                 }
                 if (!car.isEmpty()) {
-                    item->setText(item->data(BaseTextRole).toString()
+                    item->setText(item->data(kBaseTextRole).toString()
                                   + QStringLiteral("  |  %1").arg(car));
                 }
                 return;
@@ -496,8 +492,7 @@ private:
         }
     }
 
-    void goBack()
-    {
+    void goBack() {
         if (historyIndex_ <= 0) {
             return;
         }
@@ -505,17 +500,15 @@ private:
         navigate(history_.at(historyIndex_), false);
     }
 
-    void goUp()
-    {
+    void goUp() {
         const QString parent = QFileInfo(currentDirectory_).absolutePath();
         if (QDir::cleanPath(parent) != QDir::cleanPath(currentDirectory_)) {
             navigate(parent);
         }
     }
 
-    void updateSelection(QListWidgetItem *item)
-    {
-        const bool asset = item != nullptr && item->data(AssetRole).toBool();
+    void updateSelection(QListWidgetItem *item) {
+        const bool asset = item != nullptr && item->data(kAssetRole).toBool();
         buttons_->button(QDialogButtonBox::Open)->setEnabled(asset);
         if (!asset) {
             hint_->setText(item == nullptr
@@ -523,17 +516,16 @@ private:
                                : QStringLiteral("Double-click to open this folder."));
             return;
         }
-        hint_->setText(QDir::toNativeSeparators(item->data(PathRole).toString()));
+        hint_->setText(QDir::toNativeSeparators(item->data(kPathRole).toString()));
     }
 
-    void acceptSelection()
-    {
+    void acceptSelection() {
         QListWidgetItem *item = list_->currentItem();
-        if (item == nullptr || !item->data(AssetRole).toBool()) {
+        if (item == nullptr || !item->data(kAssetRole).toBool()) {
             return;
         }
-        selectedPath_ = item->data(PathRole).toString();
-        selectedMotorsport_ = item->data(MotorsportRole).toBool();
+        selectedPath_ = item->data(kPathRole).toString();
+        selectedMotorsport_ = item->data(kMotorsportRole).toBool();
         accept();
     }
 
@@ -556,8 +548,7 @@ private:
 
 } // namespace
 
-ImportAssetSelection showImportAssetDialog(QWidget *parent, const QString &startDirectory)
-{
+ImportAssetSelection showImportAssetDialog(QWidget *parent, const QString &startDirectory) {
     ImportAssetDialog dialog(parent, startDirectory);
     dialog.exec();
     return dialog.selection();

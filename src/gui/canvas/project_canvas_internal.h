@@ -22,21 +22,20 @@ namespace pc_detail {
 
 using fh6::normalizeRotation;
 
-constexpr double HandleHalf = 6.0;
-constexpr double ScaleGrabInside = 12.0;
-constexpr double ScaleGrabOutside = 12.0;
-constexpr double RotateCornerReach = 131.0;
-constexpr double SkewHandleOffset = 30.0;
-constexpr double ClickDragThreshold = 5.0;
-constexpr double RulerExtent = 28.0;
-constexpr double GuidelineHitRadius = 5.0;
+constexpr double kHandleHalf = 6.0;
+constexpr double kScaleGrabInside = 12.0;
+constexpr double kScaleGrabOutside = 12.0;
+constexpr double kRotateCornerReach = 131.0;
+constexpr double kSkewHandleOffset = 30.0;
+constexpr double kClickDragThreshold = 5.0;
+constexpr double kRulerExtent = 28.0;
+constexpr double kGuidelineHitRadius = 5.0;
 
-constexpr qint64 SelectionFlashDurationMs = 750;
-constexpr qint64 SelectionFlashPeriodMs = 3750;
-constexpr int SelectionFlashFrameMs = 33;
+constexpr qint64 kSelectionFlashDurationMs = 750;
+constexpr qint64 kSelectionFlashPeriodMs = 3750;
+constexpr int kSelectionFlashFrameMs = 33;
 
-inline QTransform flatEntryTransform(const fh6::scene::Shape &layer)
-{
+inline QTransform flatEntryTransform(const fh6::scene::Shape &layer) {
     QTransform transform;
     transform.translate(layer.x, layer.y);
     transform.rotate(layer.rotation);
@@ -45,8 +44,7 @@ inline QTransform flatEntryTransform(const fh6::scene::Shape &layer)
     return transform;
 }
 
-inline QTransform flatEntryTransform(const fh6::scene::GuideLayer &guide)
-{
+inline QTransform flatEntryTransform(const fh6::scene::GuideLayer &guide) {
     QTransform transform;
     transform.translate(guide.x, guide.y);
     transform.rotate(guide.rotation);
@@ -54,26 +52,22 @@ inline QTransform flatEntryTransform(const fh6::scene::GuideLayer &guide)
     return transform;
 }
 
-inline QSizeF flatEntrySize(const fh6::scene::Shape &layer, const QSizeF &vectorSize)
-{
+inline QSizeF flatEntrySize(const fh6::scene::Shape &layer, const QSizeF &vectorSize) {
     return layer.raster ? QSizeF(layer.rasterWidth, layer.rasterHeight) : vectorSize;
 }
 
-inline QRectF flatEntryRect(const fh6::scene::Shape &layer, const QSizeF &vectorSize)
-{
+inline QRectF flatEntryRect(const fh6::scene::Shape &layer, const QSizeF &vectorSize) {
     return sceneLocalRect(flatEntrySize(layer, vectorSize));
 }
 
-inline QRectF flatEntryVisualRect(const fh6::scene::Shape &layer, const ShapeGeometryStore &geometry)
-{
+inline QRectF flatEntryVisualRect(const fh6::scene::Shape &layer, const ShapeGeometryStore &geometry) {
     if (layer.raster) {
         return sceneLocalRect(QSizeF(layer.rasterWidth, layer.rasterHeight));
     }
     return geometry.shapeInkBounds(layer.shapeId);
 }
 
-inline QRectF flatEntryRect(const fh6::scene::GuideLayer &guide)
-{
+inline QRectF flatEntryRect(const fh6::scene::GuideLayer &guide) {
     const QSizeF size = guide.image != nullptr ? QSizeF(guide.image->width, guide.image->height) : QSizeF();
     return sceneLocalRect(size);
 }
@@ -85,14 +79,12 @@ struct EffectiveSelection {
     QSet<QString> looseLayerIds;
     QSet<QString> looseGuideIds;
 
-    int count() const
-    {
+    int count() const {
         return groupIds.size() + looseLayerIds.size() + looseGuideIds.size();
     }
 };
 
-inline void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out)
-{
+inline void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out) {
     if (node.kind() == fh6::scene::LayerKind::Guide) {
         out.insert(node.id);
         return;
@@ -107,8 +99,7 @@ inline void collectGuideIds(const fh6::scene::Layer &node, QSet<QString> &out)
 
 inline QVector<QString> buildTransformTargetIds(const QVector<QString> &groupIds,
                                                 const QVector<fh6::scene::Shape *> &layers,
-                                                const QVector<fh6::scene::GuideLayer *> &guides)
-{
+                                                const QVector<fh6::scene::GuideLayer *> &guides) {
     QVector<QString> ids;
     ids.reserve(groupIds.size() + layers.size() + guides.size());
     QSet<QString> seen;
@@ -137,14 +128,12 @@ struct HandleAxes {
     bool bottom = false;
 };
 
-inline HandleAxes handleAxes(const QString &handle)
-{
+inline HandleAxes handleAxes(const QString &handle) {
     return {handle.contains(QStringLiteral("left")), handle.contains(QStringLiteral("right")),
             handle.contains(QStringLiteral("top")), handle.contains(QStringLiteral("bottom"))};
 }
 
-inline bool handleAnchorLocalPoints(const QString &handle, const QRectF &rect, QPointF *handlePoint, QPointF *anchorPoint)
-{
+inline bool handleAnchorLocalPoints(const QString &handle, const QRectF &rect, QPointF *handlePoint, QPointF *anchorPoint) {
     const HandleAxes axes = handleAxes(handle);
     if ((!axes.left && !axes.right && !axes.top && !axes.bottom) || handle == QStringLiteral("skew")) {
         return false;

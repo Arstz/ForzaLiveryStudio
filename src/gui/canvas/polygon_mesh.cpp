@@ -9,13 +9,11 @@ namespace {
 
 constexpr double kEpsilon = 1e-9;
 
-double cross(const QPointF &a, const QPointF &b)
-{
+double cross(const QPointF &a, const QPointF &b) {
     return a.x() * b.y() - a.y() * b.x();
 }
 
-double signedArea(const QPolygonF &polygon)
-{
+double signedArea(const QPolygonF &polygon) {
     double result = 0.0;
     for (int i = 0; i < polygon.size(); ++i) {
         result += cross(polygon[i], polygon[(i + 1) % polygon.size()]);
@@ -23,14 +21,12 @@ double signedArea(const QPolygonF &polygon)
     return result * 0.5;
 }
 
-double polygonScale(const QPolygonF &polygon)
-{
+double polygonScale(const QPolygonF &polygon) {
     const QRectF bounds = polygon.boundingRect();
     return std::max({1.0, bounds.width(), bounds.height()});
 }
 
-double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QPointF &b)
-{
+double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QPointF &b) {
     const QPointF edge = b - a;
     const double length2 = QPointF::dotProduct(edge, edge);
     if (length2 <= kEpsilon) {
@@ -41,8 +37,7 @@ double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QP
     return QPointF::dotProduct(delta, delta);
 }
 
-double polygonCoordinateEpsilon(const QPolygonF &polygon)
-{
+double polygonCoordinateEpsilon(const QPolygonF &polygon) {
     double magnitude = polygonScale(polygon);
     for (const QPointF &point : polygon) {
         magnitude = std::max({magnitude, std::abs(point.x()), std::abs(point.y())});
@@ -54,8 +49,7 @@ double polygonCoordinateEpsilon(const QPolygonF &polygon)
 int orientation(const QPointF &a,
                 const QPointF &b,
                 const QPointF &c,
-                double coordinateEpsilon)
-{
+                double coordinateEpsilon) {
     const QPointF edge = b - a;
     const QPointF relative = c - a;
     const double value = cross(edge, relative);
@@ -72,8 +66,7 @@ int orientation(const QPointF &a,
 bool pointOnSegment(const QPointF &point,
                     const QPointF &a,
                     const QPointF &b,
-                    double coordinateEpsilon)
-{
+                    double coordinateEpsilon) {
     return orientation(a, b, point, coordinateEpsilon) == 0
         && point.x() >= std::min(a.x(), b.x()) - coordinateEpsilon
         && point.x() <= std::max(a.x(), b.x()) + coordinateEpsilon
@@ -86,8 +79,7 @@ bool segmentIntersection(const QPointF &a,
                          const QPointF &c,
                          const QPointF &d,
                          double coordinateEpsilon,
-                         QPointF *intersection)
-{
+                         QPointF *intersection) {
     const int o1 = orientation(a, b, c, coordinateEpsilon);
     const int o2 = orientation(a, b, d, coordinateEpsilon);
     const int o3 = orientation(c, d, a, coordinateEpsilon);
@@ -126,8 +118,7 @@ bool segmentIntersection(const QPointF &a,
     return false;
 }
 
-QVector<QPointF> polygonCrossings(const QPolygonF &polygon)
-{
+QVector<QPointF> polygonCrossings(const QPolygonF &polygon) {
     struct Edge {
         QPointF a;
         QPointF b;
@@ -188,8 +179,7 @@ QVector<QPointF> polygonCrossings(const QPolygonF &polygon)
     return result;
 }
 
-QPolygonF convexHull(QVector<QPointF> points)
-{
+QPolygonF convexHull(QVector<QPointF> points) {
     std::sort(points.begin(), points.end(), [](const QPointF &a, const QPointF &b) {
         return a.x() < b.x() || (a.x() == b.x() && a.y() < b.y());
     });
@@ -222,8 +212,7 @@ QPolygonF convexHull(QVector<QPointF> points)
     return QPolygonF(hull);
 }
 
-QPolygonF geometryHull(const ShapeGeometry *geometry)
-{
+QPolygonF geometryHull(const ShapeGeometry *geometry) {
     if (geometry == nullptr) {
         return {};
     }
@@ -249,8 +238,7 @@ QTransform affineFromTriangles(const QPointF &a,
                                const QPointF &p,
                                const QPointF &q,
                                const QPointF &r,
-                               bool *ok)
-{
+                               bool *ok) {
     const QPointF d1 = b - a;
     const QPointF d2 = c - a;
     const QPointF e1 = q - p;
@@ -275,15 +263,14 @@ QTransform affineFromTriangles(const QPointF &a,
     return QTransform(m11, m12, m21, m22, dx, dy);
 }
 
-bool pointInTriangle(const QPointF &point,
-                     const QPointF &a,
-                     const QPointF &b,
-                     const QPointF &c,
-                     double epsilon)
-{
-    return cross(b - a, point - a) >= -epsilon
-        && cross(c - b, point - b) >= -epsilon
-        && cross(a - c, point - c) >= -epsilon;
+bool pointStrictlyInTriangle(const QPointF &point,
+                             const QPointF &a,
+                             const QPointF &b,
+                             const QPointF &c,
+                             double epsilon) {
+    return cross(b - a, point - a) > epsilon
+        && cross(c - b, point - b) > epsilon
+        && cross(a - c, point - c) > epsilon;
 }
 
 struct MeshTriangle {
@@ -295,8 +282,7 @@ struct MeshTriangle {
 QVector<MeshTriangle> triangulate(const QPolygonF &polygon,
                                   double epsilon,
                                   const std::function<bool()> &cancelled,
-                                  QString *error)
-{
+                                  QString *error) {
     QVector<int> remaining;
     remaining.reserve(polygon.size());
     for (int i = 0; i < polygon.size(); ++i) {
@@ -329,11 +315,11 @@ QVector<MeshTriangle> triangulate(const QPolygonF &polygon,
                 if (candidate == previous || candidate == current || candidate == next) {
                     continue;
                 }
-                if (pointInTriangle(polygon[candidate],
-                                    polygon[previous],
-                                    polygon[current],
-                                    polygon[next],
-                                    epsilon)) {
+                if (pointStrictlyInTriangle(polygon[candidate],
+                                            polygon[previous],
+                                            polygon[current],
+                                            polygon[next],
+                                            epsilon)) {
                     containsVertex = true;
                     break;
                 }
@@ -357,8 +343,7 @@ QVector<MeshTriangle> triangulate(const QPolygonF &polygon,
     return triangles;
 }
 
-quint64 edgeKey(int a, int b)
-{
+quint64 edgeKey(int a, int b) {
     const quint32 low = static_cast<quint32>(std::min(a, b));
     const quint32 high = static_cast<quint32>(std::max(a, b));
     return (static_cast<quint64>(low) << 32) | high;
@@ -372,8 +357,7 @@ struct SquareCandidate {
 
 QPolygonF orderedQuad(const MeshTriangle &first,
                       const MeshTriangle &second,
-                      const QPolygonF &polygon)
-{
+                      const QPolygonF &polygon) {
     QVector<int> indices = {first.a, first.b, first.c, second.a, second.b, second.c};
     std::sort(indices.begin(), indices.end());
     indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
@@ -396,8 +380,7 @@ QPolygonF orderedQuad(const MeshTriangle &first,
     return result;
 }
 
-bool isParallelogram(const QPolygonF &quad, double epsilon)
-{
+bool isParallelogram(const QPolygonF &quad, double epsilon) {
     if (quad.size() != 4) {
         return false;
     }
@@ -413,8 +396,7 @@ bool isParallelogram(const QPolygonF &quad, double epsilon)
 
 QVector<SquareCandidate> squareCandidates(const QVector<MeshTriangle> &triangles,
                                           const QPolygonF &polygon,
-                                          double epsilon)
-{
+                                          double epsilon) {
     QHash<quint64, QVector<int>> trianglesByEdge;
     for (int i = 0; i < triangles.size(); ++i) {
         const MeshTriangle &triangle = triangles[i];
@@ -454,8 +436,7 @@ struct MatchNode {
 
 void scoreMatching(int node,
                    int parent,
-                   QVector<MatchNode> *nodes)
-{
+                   QVector<MatchNode> *nodes) {
     MatchNode &current = (*nodes)[node];
     int base = 0;
     for (const auto &edge : current.edges) {
@@ -487,8 +468,7 @@ void collectMatching(int node,
                      int parent,
                      bool matchedToParent,
                      const QVector<MatchNode> &nodes,
-                     QSet<int> *selectedCandidates)
-{
+                     QSet<int> *selectedCandidates) {
     const MatchNode &current = nodes[node];
     const int matchedChild = matchedToParent ? -1 : current.chosenChild;
     if (matchedChild >= 0) {
@@ -506,8 +486,7 @@ void collectMatching(int node,
 }
 
 QSet<int> maximumSquareMatching(int triangleCount,
-                                const QVector<SquareCandidate> &candidates)
-{
+                                const QVector<SquareCandidate> &candidates) {
     QVector<MatchNode> nodes(triangleCount);
     for (int i = 0; i < candidates.size(); ++i) {
         const SquareCandidate &candidate = candidates[i];
@@ -541,8 +520,7 @@ QSet<int> maximumSquareMatching(int triangleCount,
     return selected;
 }
 
-QPainterPath polygonPath(const QPolygonF &polygon)
-{
+QPainterPath polygonPath(const QPolygonF &polygon) {
     QPainterPath path;
     path.setFillRule(Qt::WindingFill);
     path.addPolygon(polygon);
@@ -550,8 +528,7 @@ QPainterPath polygonPath(const QPolygonF &polygon)
     return path;
 }
 
-double pathArea(const QPainterPath &path)
-{
+double pathArea(const QPainterPath &path) {
     double result = 0.0;
     for (const QPolygonF &polygon : path.toFillPolygons()) {
         result += signedArea(polygon);
@@ -561,8 +538,7 @@ double pathArea(const QPainterPath &path)
 
 } // namespace
 
-PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolerance)
-{
+PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolerance) {
     PolygonContour result;
     tolerance = std::max(tolerance, kEpsilon);
     for (const QPointF &point : points) {
@@ -610,15 +586,14 @@ PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolera
     return result;
 }
 
-PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry)
-{
-    return {geometryHull(geometry.shape(101)),
+PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry) {
+    return {geometryHull(geometry.shape(102)),
+            geometryHull(geometry.shape(101)),
             geometryHull(geometry.shape(103))};
 }
 
 PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
-                              const std::function<bool()> &cancelled)
-{
+                              const std::function<bool()> &cancelled) {
     PolygonMeshResult result;
     if (cancelled && cancelled()) {
         result.cancelled = true;
@@ -638,7 +613,8 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
     }
     result.contour = contour.path;
     const double scale = polygonScale(contour.polygon);
-    const double epsilon = kEpsilon * scale * scale;
+    const double epsilon = std::max(kEpsilon,
+                                    polygonCoordinateEpsilon(contour.polygon) * scale);
     QString triangulationError;
     const QVector<MeshTriangle> triangles = triangulate(contour.polygon,
                                                         epsilon,
@@ -683,7 +659,7 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
         result.placements.push_back({101, transform});
         consumed[candidate.firstTriangle] = true;
         consumed[candidate.secondTriangle] = true;
-        mesh = mesh.united(transform.map(polygonPath(request.sources.square)));
+        mesh.addPath(transform.map(polygonPath(request.sources.square)));
     }
     for (int i = 0; i < triangles.size(); ++i) {
         if (cancelled && cancelled()) {
@@ -709,10 +685,10 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
             return result;
         }
         result.placements.push_back({103, transform});
-        mesh = mesh.united(transform.map(polygonPath(request.sources.triangle)));
+        mesh.addPath(transform.map(polygonPath(request.sources.triangle)));
     }
 
-    const double allowedArea = std::max(1e-8, pathArea(contour.path) * 1e-8);
+    const double allowedArea = std::max(1e-6, pathArea(contour.path) * 1e-4);
     if (pathArea(mesh.subtracted(contour.path)) > allowedArea
         || pathArea(contour.path.subtracted(mesh)) > allowedArea) {
         result.error = QStringLiteral("The generated lasso mesh did not match its contour");

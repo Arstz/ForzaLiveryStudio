@@ -31,6 +31,7 @@ private:
     QLineEdit *nameEdit_ = nullptr;
     QLineEdit *creatorEdit_ = nullptr;
     QSpinBox *yearSpin_ = nullptr;
+    QCheckBox *publishedCheck_ = nullptr;
     QCheckBox *rebuildCheck_ = nullptr;
     QPushButton *applyButton_ = nullptr;
     QLabel *hint_ = nullptr;

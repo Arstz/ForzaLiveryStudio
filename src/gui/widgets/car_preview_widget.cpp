@@ -23,8 +23,7 @@ constexpr int kProjectedSectionToMaskSlot[fh6::kLiverySideCount] = {
     0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
 };
 
-bool transposedSection(int maskSlot)
-{
+bool transposedSection(int maskSlot) {
     return maskSlot == 5 || maskSlot == 6 || maskSlot == 7;
 }
 
@@ -40,8 +39,7 @@ struct PackedLiveryLayout {
     bool valid = false;
 };
 
-PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSize &baseTextureSize)
-{
+PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSize &baseTextureSize) {
     PackedLiveryLayout layout;
     layout.uvRegions.resize(fh6::kLiverySideCount);
     struct Item {
@@ -103,8 +101,7 @@ PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSi
     return layout;
 }
 
-fh6::Matrix3 fromQTransform(const QTransform &t)
-{
+fh6::Matrix3 fromQTransform(const QTransform &t) {
     fh6::Matrix3 m;
     m.m[0][0] = t.m11();
     m.m[1][0] = t.m12();
@@ -119,8 +116,7 @@ void collectProjectedShapes(const fh6::scene::Layer &node,
                             const QTransform &parentWorld,
                             double xOrigin,
                             double yOrigin,
-                            fh6::scene::Group &outRoot)
-{
+                            fh6::scene::Group &outRoot) {
     const QTransform world = sceneLocalTransform(node) * parentWorld;
     if (node.kind() == fh6::scene::LayerKind::Group) {
         for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
@@ -144,8 +140,7 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Pro
                                                                   const fh6::scene::Group &section,
                                                                   const fh6::LiveryMaskSet &masks,
                                                                   const QSize &texSize,
-                                                                  const PackedLiveryLayout &layout)
-{
+                                                                  const PackedLiveryLayout &layout) {
     if (!section.isLiverySection || !layout.valid) {
         return std::nullopt;
     }
@@ -191,8 +186,7 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Pro
     return projected;
 }
 
-QString findCarbin(const QString &root)
-{
+QString findCarbin(const QString &root) {
     QDirIterator it(root, QStringList{QStringLiteral("*.carbin")}, QDir::Files, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         return it.next();
@@ -200,8 +194,7 @@ QString findCarbin(const QString &root)
     return {};
 }
 
-QString findSharedCarAsset(const QString &sourcePath, const QString &relativePath)
-{
+QString findSharedCarAsset(const QString &sourcePath, const QString &relativePath) {
     QDir dir = QFileInfo(sourcePath).absoluteDir();
     for (int depth = 0; depth < 6; ++depth) {
         const QString candidate = dir.filePath(relativePath);
@@ -216,8 +209,7 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
 }
 
 std::optional<fh6::CarModel> loadArchivedModel(
-    const QString &archivePath, const QString &modelName)
-{
+    const QString &archivePath, const QString &modelName) {
     if (archivePath.isEmpty()) {
         return std::nullopt;
     }
@@ -237,8 +229,7 @@ std::optional<fh6::CarModel> loadArchivedModel(
                                 : std::optional<fh6::CarModel>(std::move(model));
 }
 
-void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath)
-{
+void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath) {
     const QString leftArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tire_b.zip"));
     const QString rightArchive = findSharedCarAsset(
@@ -255,32 +246,28 @@ void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath)
     }
 }
 
-QString materialArchiveEntry(QString resourcePath)
-{
+QString materialArchiveEntry(QString resourcePath) {
     resourcePath.replace(QLatin1Char('\\'), QLatin1Char('/'));
     const int materials = resourcePath.indexOf(
         QStringLiteral("/materials/"), 0, Qt::CaseInsensitive);
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
 }
 
-QString assetFileIdentity(const QString &path)
-{
+QString assetFileIdentity(const QString &path) {
     const QFileInfo info(path);
     return QDir::cleanPath(info.absoluteFilePath()).toLower()
         + QLatin1Char('|') + QString::number(info.size())
         + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
 }
 
-QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &materialDefaultsCache()
-{
+QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &materialDefaultsCache() {
     static QHash<QString, std::shared_ptr<fh6::ModelMaterial>> cache;
     return cache;
 }
 
 class NativeTextureCache {
 public:
-    std::shared_ptr<const fh6::ModelMaterialTexture> find(const QString &key, bool &known)
-    {
+    std::shared_ptr<const fh6::ModelMaterialTexture> find(const QString &key, bool &known) {
         const auto it = entries_.find(key);
         known = it != entries_.end();
         if (!known) {
@@ -291,8 +278,7 @@ public:
     }
 
     void insert(const QString &key,
-                const std::shared_ptr<const fh6::ModelMaterialTexture> &texture)
-    {
+                const std::shared_ptr<const fh6::ModelMaterialTexture> &texture) {
         Entry entry;
         entry.texture = texture;
         entry.bytes = texture ? static_cast<qsizetype>(texture->image.rgba.size()) : 0;
@@ -301,8 +287,7 @@ public:
         bytes_ += entries_.value(key).bytes;
     }
 
-    void trim()
-    {
+    void trim() {
         constexpr qsizetype budget = 256ll * 1024 * 1024;
         while (bytes_ > budget) {
             auto oldest = entries_.end();
@@ -334,14 +319,12 @@ private:
     quint64 clock_ = 0;
 };
 
-NativeTextureCache &nativeTextureCache()
-{
+NativeTextureCache &nativeTextureCache() {
     static NativeTextureCache cache;
     return cache;
 }
 
-bool isExteriorModelPath(QString path)
-{
+bool isExteriorModelPath(QString path) {
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive);
 }
@@ -355,8 +338,7 @@ enum class NativeTextureSlot {
     Unknown,
 };
 
-NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter)
-{
+NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter) {
     QString path = parameter.texturePath.toLower();
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     if (parameter.nameHash == 0xF9E8078D
@@ -397,22 +379,19 @@ NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter
     return NativeTextureSlot::Unknown;
 }
 
-QString normalizedTexturePath(QString path)
-{
+QString normalizedTexturePath(QString path) {
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     return path.toLower();
 }
 
-QString sharedTextureEntry(const QString &path)
-{
+QString sharedTextureEntry(const QString &path) {
     const QString normalized = normalizedTexturePath(path);
     const QString marker = QStringLiteral("/_library/textures/");
     const int offset = normalized.indexOf(marker);
     return offset < 0 ? QString() : normalized.mid(offset + marker.size());
 }
 
-QString localTexturePath(const QString &path, const QString &carRoot)
-{
+QString localTexturePath(const QString &path, const QString &carRoot) {
     QString normalized = path;
     normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
     const int cars = normalized.indexOf(QStringLiteral("/cars/"), 0, Qt::CaseInsensitive);
@@ -431,8 +410,7 @@ QString localTexturePath(const QString &path, const QString &carRoot)
 
 void assignNativeTexture(fh6::ModelMaterial &material,
                          NativeTextureSlot slot,
-                         const std::shared_ptr<const fh6::ModelMaterialTexture> &texture)
-{
+                         const std::shared_ptr<const fh6::ModelMaterialTexture> &texture) {
     switch (slot) {
     case NativeTextureSlot::Diffuse:
         material.diffuseTexture = texture;
@@ -455,8 +433,7 @@ void assignNativeTexture(fh6::ModelMaterial &material,
 }
 
 void resolveExteriorMaterials(
-    fh6::CarModel &model, const QString &sourcePath, const QString &carRoot)
-{
+    fh6::CarModel &model, const QString &sourcePath, const QString &carRoot) {
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
@@ -619,8 +596,7 @@ void resolveExteriorMaterials(
 } // namespace
 
 CarPreviewWidget::CarPreviewWidget(QWidget *parent)
-    : QOpenGLWidget(parent)
-{
+    : QOpenGLWidget(parent) {
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
@@ -645,16 +621,14 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     referenceNote_->raise();
 }
 
-CarPreviewWidget::~CarPreviewWidget()
-{
+CarPreviewWidget::~CarPreviewWidget() {
     makeCurrent();
     carRenderer_.release();
     shapeRenderer_.release();
     doneCurrent();
 }
 
-bool CarPreviewWidget::loadCar(const QString &path, QString *error)
-{
+bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
     QString loadPath = path;
     std::unique_ptr<QTemporaryDir> extracted;
     if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
@@ -702,21 +676,17 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error)
         liveryMasksDir_.clear();
     }
     liveryMasksPending_ = true;
-    liveryDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
+    invalidateCachedLivery();
 
     update();
     return true;
 }
 
-bool CarPreviewWidget::hasModel() const
-{
+bool CarPreviewWidget::hasModel() const {
     return !model_.meshes.empty();
 }
 
-QImage CarPreviewWidget::renderThumbnail(const QSize &size)
-{
+QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
     if (!hasModel() || !size.isValid() || size.isEmpty()) {
         return {};
     }
@@ -738,8 +708,7 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size)
     return scaled.copy(x, y, size.width(), size.height());
 }
 
-void CarPreviewWidget::clearModel()
-{
+void CarPreviewWidget::clearModel() {
     loadedCarPath_.clear();
     if (!hasModel() && !carRenderer_.hasModel()) {
         return;
@@ -750,9 +719,7 @@ void CarPreviewWidget::clearModel()
     liveryMasksDir_.clear();
     modelUploadPending_ = false;
     liveryMasksPending_ = false;
-    liveryDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
+    invalidateCachedLivery();
     if (carRenderer_.isInitialized()) {
         makeCurrent();
         carRenderer_.clearModel();
@@ -761,8 +728,7 @@ void CarPreviewWidget::clearModel()
     update();
 }
 
-QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
-{
+QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
     if (!liveryMasks_.valid()) {
         return {};
     }
@@ -874,17 +840,13 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const
     return drew ? image : QImage();
 }
 
-void CarPreviewWidget::setProject(fh6::Project *project)
-{
+void CarPreviewWidget::setProject(fh6::Project *project) {
     project_ = project;
-    liveryDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
+    invalidateCachedLivery();
     update();
 }
 
-void CarPreviewWidget::setEditorState(EditorState *state)
-{
+void CarPreviewWidget::setEditorState(EditorState *state) {
     if (state_ == state) {
         return;
     }
@@ -900,26 +862,23 @@ void CarPreviewWidget::setEditorState(EditorState *state)
     }
 }
 
-QColor CarPreviewWidget::basePaint() const
-{
+QColor CarPreviewWidget::basePaint() const {
     return basePaint_;
 }
 
-void CarPreviewWidget::setBasePaint(const QColor &color)
-{
-    if (color.isValid() && color != basePaint_) {
-        basePaint_ = color;
-        update();
+void CarPreviewWidget::setBasePaint(const QColor &color) {
+    if (!color.isValid() || color == basePaint_) {
+        return;
     }
+    basePaint_ = color;
+    update();
 }
 
-int CarPreviewWidget::liveryTextureScale() const
-{
+int CarPreviewWidget::liveryTextureScale() const {
     return liveryTextureScale_;
 }
 
-void CarPreviewWidget::setLiveryTextureScale(int scale)
-{
+void CarPreviewWidget::setLiveryTextureScale(int scale) {
     scale = std::clamp(scale, 1, 8);
     if (liveryTextureScale_ == scale) {
         return;
@@ -932,25 +891,20 @@ void CarPreviewWidget::setLiveryTextureScale(int scale)
     update();
 }
 
-void CarPreviewWidget::markLiveryDirty()
-{
+void CarPreviewWidget::markLiveryDirty() {
     liveLiveryFullDirty_ = true;
-    dirtySectionIds_.clear();
-    projectedSectionCache_.clear();
-    liveryDirty_ = true;
+    invalidateCachedLivery();
     update();
 }
 
-void CarPreviewWidget::markLiveryDirtyImmediate()
-{
+void CarPreviewWidget::markLiveryDirtyImmediate() {
     if (!hasModel()) {
         return;
     }
     markLiveryDirty();
 }
 
-void CarPreviewWidget::onProjectGeometryChanged(bool, const QVector<QString> &changedNodeIds)
-{
+void CarPreviewWidget::onProjectGeometryChanged(bool, const QVector<QString> &changedNodeIds) {
     if (changedNodeIds.isEmpty()) {
         markLiveryDirty();
         return;
@@ -958,8 +912,7 @@ void CarPreviewWidget::onProjectGeometryChanged(bool, const QVector<QString> &ch
     markLiverySectionsDirty(changedNodeIds);
 }
 
-void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds)
-{
+void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds) {
     if (!hasModel() || state_ == nullptr || project_ == nullptr || !project_->isLivery || !liveryMasks_.valid()) {
         markLiveryDirtyImmediate();
         return;
@@ -975,8 +928,7 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds)
     update();
 }
 
-void CarPreviewWidget::initializeGL()
-{
+void CarPreviewWidget::initializeGL() {
     context()->functions()->glEnable(GL_MULTISAMPLE);
     geometryLoaded_ = geometry_.loadDefault();
     shapeRenderer_.initialize();
@@ -989,12 +941,10 @@ void CarPreviewWidget::initializeGL()
     liveryDirty_ = true;
 }
 
-void CarPreviewWidget::resizeGL(int, int)
-{
+void CarPreviewWidget::resizeGL(int, int) {
 }
 
-void CarPreviewWidget::paintGL()
-{
+void CarPreviewWidget::paintGL() {
     QOpenGLContext *ctx = context();
     if (ctx == nullptr) {
         return;
@@ -1153,8 +1103,7 @@ void CarPreviewWidget::paintGL()
         project_ != nullptr ? &project_->liveryPaint : nullptr);
 }
 
-void CarPreviewWidget::setLoadCarTextures(bool enabled)
-{
+void CarPreviewWidget::setLoadCarTextures(bool enabled) {
     if (loadCarTextures_ == enabled) {
         return;
     }
@@ -1169,8 +1118,7 @@ void CarPreviewWidget::setLoadCarTextures(bool enabled)
     }
 }
 
-QMatrix4x4 CarPreviewWidget::cameraView() const
-{
+QMatrix4x4 CarPreviewWidget::cameraView() const {
     const float cp = std::cos(pitch_);
     const float sp = std::sin(pitch_);
     const float cy = std::cos(yaw_);
@@ -1181,8 +1129,7 @@ QMatrix4x4 CarPreviewWidget::cameraView() const
     return view;
 }
 
-QMatrix4x4 CarPreviewWidget::cameraProjection() const
-{
+QMatrix4x4 CarPreviewWidget::cameraProjection() const {
     const float aspect = height() > 0 ? static_cast<float>(width()) / static_cast<float>(height()) : 1.0f;
     const float nearPlane = std::max(0.01f, modelRadius_ * 0.02f);
     const float farPlane = modelRadius_ * 8.0f + distance_ * 2.0f;
@@ -1191,21 +1138,18 @@ QMatrix4x4 CarPreviewWidget::cameraProjection() const
     return projection;
 }
 
-QSize CarPreviewWidget::liveryTextureSize() const
-{
+QSize CarPreviewWidget::liveryTextureSize() const {
     return QSize(kLiveryBaseTexWidth * liveryTextureScale_, kLiveryBaseTexHeight * liveryTextureScale_);
 }
 
-QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const
-{
+QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const {
     QTransform transform;
     transform.translate(textureSize.width() * 0.5, textureSize.height() * 0.5);
     transform.scale(liveryTextureScale_, liveryTextureScale_);
     return transform;
 }
 
-void CarPreviewWidget::fitCameraToModel()
-{
+void CarPreviewWidget::fitCameraToModel() {
     const fh6::ModelVec3 &mn = model_.boundsMin;
     const fh6::ModelVec3 &mx = model_.boundsMax;
     target_ = QVector3D((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
@@ -1216,13 +1160,17 @@ void CarPreviewWidget::fitCameraToModel()
     pitch_ = 0.25f;
 }
 
-void CarPreviewWidget::mousePressEvent(QMouseEvent *event)
-{
+void CarPreviewWidget::invalidateCachedLivery() {
+    dirtySectionIds_.clear();
+    projectedSectionCache_.clear();
+    liveryDirty_ = true;
+}
+
+void CarPreviewWidget::mousePressEvent(QMouseEvent *event) {
     lastMousePos_ = event->pos();
 }
 
-void CarPreviewWidget::mouseMoveEvent(QMouseEvent *event)
-{
+void CarPreviewWidget::mouseMoveEvent(QMouseEvent *event) {
     const QPoint delta = event->pos() - lastMousePos_;
     lastMousePos_ = event->pos();
     if (event->buttons() & Qt::LeftButton) {
@@ -1239,24 +1187,15 @@ void CarPreviewWidget::mouseMoveEvent(QMouseEvent *event)
     }
 }
 
-void CarPreviewWidget::wheelEvent(QWheelEvent *event)
-{
+void CarPreviewWidget::wheelEvent(QWheelEvent *event) {
     const double steps = event->angleDelta().y() / 120.0;
     distance_ = std::clamp(distance_ * static_cast<float>(std::pow(0.88, steps)),
                            modelRadius_ * 0.1f, modelRadius_ * 40.0f);
     update();
 }
 
-void CarPreviewWidget::keyPressEvent(QKeyEvent *event)
-{
-    switch (event->key()) {
-    case Qt::Key_U:
-        carRenderer_.setDebugMode((carRenderer_.debugMode() + 1) % 3);
-        break;
-    default:
-        QOpenGLWidget::keyPressEvent(event);
-        return;
-    }
+void CarPreviewWidget::cycleDebugMode() {
+    carRenderer_.setDebugMode((carRenderer_.debugMode() + 1) % 3);
     update();
 }
 

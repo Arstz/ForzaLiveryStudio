@@ -28,8 +28,7 @@ constexpr FontBlocks kFonts[] = {
 
 constexpr int kBlockSize = 40;
 
-int upperOffset(QChar ch)
-{
+int upperOffset(QChar ch) {
     const ushort u = ch.unicode();
     if (u >= 'A' && u <= 'Z') {
         return u - 'A';
@@ -53,8 +52,7 @@ int upperOffset(QChar ch)
     }
 }
 
-int lowerOffset(QChar ch)
-{
+int lowerOffset(QChar ch) {
     const ushort u = ch.unicode();
     if (u >= 'a' && u <= 'z') {
         return u - 'a';
@@ -95,8 +93,7 @@ int lowerOffset(QChar ch)
 
 } // namespace
 
-QStringList fontNames()
-{
+QStringList fontNames() {
     QStringList names;
     names.reserve(static_cast<int>(std::size(kFonts)));
     for (const FontBlocks &font : kFonts) {
@@ -105,8 +102,7 @@ QStringList fontNames()
     return names;
 }
 
-QString sectionForShape(int shapeId)
-{
+QString sectionForShape(int shapeId) {
     for (const FontBlocks &font : kFonts) {
         if ((shapeId >= font.upper && shapeId < font.upper + kBlockSize)
             || (shapeId >= font.lower && shapeId < font.lower + kBlockSize)) {
@@ -116,8 +112,7 @@ QString sectionForShape(int shapeId)
     return QString();
 }
 
-int glyphShapeId(const QString &fontName, QChar ch)
-{
+int glyphShapeId(const QString &fontName, QChar ch) {
     for (const FontBlocks &font : kFonts) {
         if (fontName != QLatin1String(font.name)) {
             continue;
@@ -135,8 +130,7 @@ int glyphShapeId(const QString &fontName, QChar ch)
     return -1;
 }
 
-bool isUpperBlockShape(int shapeId)
-{
+bool isUpperBlockShape(int shapeId) {
     for (const FontBlocks &font : kFonts) {
         if (shapeId >= font.upper && shapeId < font.upper + kBlockSize) {
             return true;

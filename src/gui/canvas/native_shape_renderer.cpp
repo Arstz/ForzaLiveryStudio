@@ -119,8 +119,7 @@ void main()
 }
 )";
 
-QTransform layerTransform(const fh6::scene::Shape &layer)
-{
+QTransform layerTransform(const fh6::scene::Shape &layer) {
     QTransform transform;
     transform.translate(layer.x, layer.y);
     transform.rotate(layer.rotation);
@@ -129,8 +128,7 @@ QTransform layerTransform(const fh6::scene::Shape &layer)
     return transform;
 }
 
-QTransform rendererSceneLocalTransform(const fh6::scene::Layer &node)
-{
+QTransform rendererSceneLocalTransform(const fh6::scene::Layer &node) {
     QTransform transform;
     transform.translate(node.transform.x, node.transform.y);
     transform.rotate(node.transform.rotation);
@@ -139,22 +137,19 @@ QTransform rendererSceneLocalTransform(const fh6::scene::Layer &node)
     return transform;
 }
 
-void appendVertex(QVector<float> &vertices, const QPointF &point, double alpha)
-{
+void appendVertex(QVector<float> &vertices, const QPointF &point, double alpha) {
     vertices.push_back(static_cast<float>(point.x()));
     vertices.push_back(static_cast<float>(point.y()));
     vertices.push_back(static_cast<float>(std::clamp(alpha, 0.0, 1.0)));
 }
 
-void appendTriangle(QVector<float> &vertices, const ShapeTriangle &triangle)
-{
+void appendTriangle(QVector<float> &vertices, const ShapeTriangle &triangle) {
     appendVertex(vertices, triangle.p0, triangle.alpha0);
     appendVertex(vertices, triangle.p1, triangle.alpha1);
     appendVertex(vertices, triangle.p2, triangle.alpha2);
 }
 
-void appendRect(QVector<float> &vertices, const QSizeF &size)
-{
+void appendRect(QVector<float> &vertices, const QSizeF &size) {
     const double hw = size.width() * 0.5;
     const double hh = size.height() * 0.5;
     appendVertex(vertices, QPointF(-hw, -hh), 0.75);
@@ -170,17 +165,14 @@ void appendRect(QVector<float> &vertices, const QSizeF &size)
 NativeShapeRenderer::NativeShapeRenderer()
     : vertexBuffer_(QOpenGLBuffer::VertexBuffer)
     , rasterBuffer_(QOpenGLBuffer::VertexBuffer)
-    , compositeBuffer_(QOpenGLBuffer::VertexBuffer)
-{
+    , compositeBuffer_(QOpenGLBuffer::VertexBuffer) {
 }
 
-NativeShapeRenderer::~NativeShapeRenderer()
-{
+NativeShapeRenderer::~NativeShapeRenderer() {
     release();
 }
 
-void NativeShapeRenderer::initialize()
-{
+void NativeShapeRenderer::initialize() {
     if (initialized_) {
         return;
     }
@@ -262,8 +254,7 @@ void NativeShapeRenderer::initialize()
     geometryUploaded_ = false;
 }
 
-void NativeShapeRenderer::release()
-{
+void NativeShapeRenderer::release() {
     if (!rasterTextures_.isEmpty()) {
         if (QOpenGLContext *context = QOpenGLContext::currentContext()) {
             QVector<GLuint> textures;
@@ -319,13 +310,11 @@ void NativeShapeRenderer::release()
     geometryUploaded_ = false;
 }
 
-bool NativeShapeRenderer::isInitialized() const
-{
+bool NativeShapeRenderer::isInitialized() const {
     return initialized_;
 }
 
-void NativeShapeRenderer::uploadGeometry(const ShapeGeometryStore &geometry)
-{
+void NativeShapeRenderer::uploadGeometry(const ShapeGeometryStore &geometry) {
     if (!initialized_) {
         return;
     }
@@ -373,8 +362,7 @@ void NativeShapeRenderer::render(
     const QSet<QString> &flashingLayerIds,
     double flashHue,
     double flashStrength,
-    bool clearBackground)
-{
+    bool clearBackground) {
     QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
@@ -448,8 +436,7 @@ void NativeShapeRenderer::render(
     const QSet<QString> &flashingLayerIds,
     double flashHue,
     double flashStrength,
-    bool clearBackground)
-{
+    bool clearBackground) {
     QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
@@ -519,8 +506,7 @@ bool NativeShapeRenderer::drawSceneToFbo(
     const fh6::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
-    const QSize &size)
-{
+    const QSize &size) {
     if (!initialized_ || !geometryUploaded_ || vertices_.isEmpty() || size.isEmpty()) {
         return false;
     }
@@ -546,8 +532,7 @@ bool NativeShapeRenderer::drawRenderEntries(
     const QVector<SceneRenderEntry> &entries,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
-    const QSize &size)
-{
+    const QSize &size) {
     if (entries.isEmpty()) {
         return false;
     }
@@ -669,8 +654,7 @@ bool NativeShapeRenderer::drawProjectLayers(
     const fh6::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
-    const QSize &size)
-{
+    const QSize &size) {
     if (!project.root) {
         return false;
     }
@@ -809,8 +793,7 @@ bool NativeShapeRenderer::drawRasterLayer(QOpenGLFunctions *functions,
                                           const std::array<quint8, 4> &color,
                                           bool mask,
                                           const QSize &fallbackSize,
-                                          const QTransform &world)
-{
+                                          const QTransform &world) {
     const GLuint texture = ensureRasterTexture(functions, rasterId);
     if (texture == 0) {
         return false;
@@ -839,8 +822,7 @@ bool NativeShapeRenderer::drawRasterLayer(QOpenGLFunctions *functions,
     return true;
 }
 
-bool NativeShapeRenderer::ensureRasterPackLoaded()
-{
+bool NativeShapeRenderer::ensureRasterPackLoaded() {
     if (rasterPack_.isLoaded()) {
         return true;
     }
@@ -868,8 +850,7 @@ bool NativeShapeRenderer::ensureRasterPackLoaded()
     return false;
 }
 
-GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId)
-{
+GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId) {
     if (rasterId == 0) {
         return 0;
     }
@@ -913,8 +894,7 @@ GLuint NativeShapeRenderer::renderSceneToTexture(
     const fh6::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
-    const QSize &size)
-{
+    const QSize &size) {
     QOpenGLContext *context = QOpenGLContext::currentContext();
     if (context == nullptr) {
         return 0;
@@ -931,8 +911,7 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
     const QSize &size,
-    bool preserveExisting)
-{
+    bool preserveExisting) {
     QOpenGLContext *context = QOpenGLContext::currentContext();
     if (context == nullptr || !initialized_ || !geometryUploaded_ || vertices_.isEmpty() || size.isEmpty()) {
         return 0;
@@ -994,8 +973,7 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
     return (preserveExisting || drew) ? sceneFbo_->texture() : 0;
 }
 
-void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size)
-{
+void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size) {
     const QSize fboSize(std::max(size.width(), 1), std::max(size.height(), 1));
     if (sceneFbo_ != nullptr && sceneFboSize_ == fboSize && sceneFbo_->isValid()) {
         return;
@@ -1007,8 +985,7 @@ void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size)
     sceneFboSize_ = fboSize;
 }
 
-void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground)
-{
+void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground) {
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     if (clearBackground) {
         functions->glClearColor(24.0f / 255.0f, 25.0f / 255.0f, 28.0f / 255.0f, 1.0f);
@@ -1028,8 +1005,7 @@ void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSiz
     functions->glDisable(GL_BLEND);
 }
 
-void NativeShapeRenderer::setUniformRows(int row0Location, int row1Location, const QTransform &transform)
-{
+void NativeShapeRenderer::setUniformRows(int row0Location, int row1Location, const QTransform &transform) {
     program_.setUniformValue(row0Location,
                              static_cast<float>(transform.m11()),
                              static_cast<float>(transform.m21()),
@@ -1040,8 +1016,7 @@ void NativeShapeRenderer::setUniformRows(int row0Location, int row1Location, con
                              static_cast<float>(transform.dy()));
 }
 
-NativeShapeRenderer::ShapeRange NativeShapeRenderer::fallbackRange(int shapeId, const ShapeGeometryStore &geometry)
-{
+NativeShapeRenderer::ShapeRange NativeShapeRenderer::fallbackRange(int shapeId, const ShapeGeometryStore &geometry) {
     if (ranges_.contains(shapeId)) {
         return ranges_.value(shapeId);
     }

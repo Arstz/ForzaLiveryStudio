@@ -14,46 +14,67 @@
 namespace gui {
 namespace {
 
-constexpr const char *FavouritesCategory = "Favourites";
-constexpr const char *CustomCategory = "Custom";
-constexpr const char *LogoCategory = "Logos";
-constexpr const char *FavouritesSettingsKey = "shapes/favourites";
-constexpr const char *CustomGroupsSettingsKey = "shapes/customGroups";
-const QSize TileSize(132, 132);
-const QSize PreviewSize(86, 86);
+constexpr const char *kFavouritesCategory = "Favourites";
+constexpr const char *kCustomCategory = "Custom";
+constexpr const char *kLogoCategory = "Logos";
+constexpr const char *kFavouritesSettingsKey = "shapes/favourites";
+constexpr const char *kCustomGroupsSettingsKey = "shapes/customGroups";
+const QSize kTileSize(132, 132);
+const QSize kPreviewSize(86, 86);
 
-QSettings settings()
-{
+struct TilePaintLayout {
+    QRect previewRect;
+    QColor labelColor;
+    bool dark = false;
+};
+
+TilePaintLayout paintTileFrame(QPainter &painter, const QWidget &tile, bool hovered) {
+    const QRect tileRect = tile.rect().adjusted(2, 2, -2, -2);
+    const bool dark = isDarkTheme(currentUiTheme());
+    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
+    const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
+    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
+    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
+    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
+    const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
+    const QRect previewRect((tile.width() - kPreviewSize.width()) / 2, 12,
+                            kPreviewSize.width(), kPreviewSize.height());
+
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.fillRect(tileRect, hovered ? tileHover : tileBase);
+    painter.setPen(QPen(hovered ? hoverStroke : stroke, 1));
+    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
+    painter.fillRect(previewRect, previewBase);
+
+    return {previewRect, labelColor, dark};
+}
+
+QSettings settings() {
     return QSettings();
 }
 
-QString displayCategoryName(QString name)
-{
+QString displayCategoryName(QString name) {
     if (name.contains(QStringLiteral("_0x"))) {
         name = name.left(name.lastIndexOf(QStringLiteral("_0x")));
     }
     return name.replace(QLatin1Char('_'), QLatin1Char(' ')).trimmed();
 }
 
-QString fontSectionForShape(int shapeId)
-{
+QString fontSectionForShape(int shapeId) {
     return fontglyphs::sectionForShape(shapeId);
 }
 
-bool isFontCategory(const QString &category)
-{
+bool isFontCategory(const QString &category) {
     return fontglyphs::fontNames().contains(category);
 }
 
-QColor previewColor(const QColor &ink, double alpha)
-{
+QColor previewColor(const QColor &ink, double alpha) {
     QColor color = ink;
     color.setAlpha(std::clamp(static_cast<int>(std::round(alpha * 255.0)), 0, 255));
     return color;
 }
 
-QJsonObject clipboardToJson(const ProjectClipboard &clipboard)
-{
+QJsonObject clipboardToJson(const ProjectClipboard &clipboard) {
     QJsonObject object;
     fh6::scene::Group root;
     root.id = QStringLiteral("__root__");
@@ -67,8 +88,7 @@ QJsonObject clipboardToJson(const ProjectClipboard &clipboard)
     return object;
 }
 
-std::unique_ptr<fh6::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &object)
-{
+std::unique_ptr<fh6::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &object) {
     auto layer = std::make_unique<fh6::scene::Shape>();
     layer->id = object.value(QStringLiteral("id")).toString();
     layer->name = object.value(QStringLiteral("name")).toString(QStringLiteral("Shape"));
@@ -100,8 +120,7 @@ std::unique_ptr<fh6::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &
 std::unique_ptr<fh6::scene::Layer> legacyCustomNodeFromJson(const QString &id,
                                                             const QHash<QString, QJsonObject> &shapes,
                                                             const QHash<QString, QJsonObject> &groups,
-                                                            QSet<QString> &consumedShapes)
-{
+                                                            QSet<QString> &consumedShapes) {
     if (const auto groupIt = groups.constFind(id); groupIt != groups.constEnd()) {
         auto group = std::make_unique<fh6::scene::Group>();
         const QJsonObject object = groupIt.value();
@@ -123,8 +142,7 @@ std::unique_ptr<fh6::scene::Layer> legacyCustomNodeFromJson(const QString &id,
     return nullptr;
 }
 
-ProjectClipboard legacyCustomClipboardFromJson(const QJsonObject &object)
-{
+ProjectClipboard legacyCustomClipboardFromJson(const QJsonObject &object) {
     ProjectClipboard clipboard;
     QHash<QString, QJsonObject> shapes;
     QHash<QString, QJsonObject> groups;
@@ -159,8 +177,7 @@ ProjectClipboard legacyCustomClipboardFromJson(const QJsonObject &object)
     return clipboard;
 }
 
-ProjectClipboard clipboardFromJson(const QJsonObject &object)
-{
+ProjectClipboard clipboardFromJson(const QJsonObject &object) {
     ProjectClipboard clipboard;
     const QJsonValue rootValue = object.value(QStringLiteral("root"));
     if (!rootValue.isObject()) {
@@ -175,8 +192,7 @@ ProjectClipboard clipboardFromJson(const QJsonObject &object)
     return clipboard;
 }
 
-void forEachClipboardShape(const ProjectClipboard &clipboard, const std::function<void(const fh6::scene::Shape &)> &fn)
-{
+void forEachClipboardShape(const ProjectClipboard &clipboard, const std::function<void(const fh6::scene::Shape &)> &fn) {
     std::function<void(const fh6::scene::Layer &)> walk = [&](const fh6::scene::Layer &node) {
         if (node.kind() == fh6::scene::LayerKind::Shape) {
             fn(static_cast<const fh6::scene::Shape &>(node));
@@ -195,20 +211,17 @@ void forEachClipboardShape(const ProjectClipboard &clipboard, const std::functio
     }
 }
 
-int clipboardShapeCount(const ProjectClipboard &clipboard)
-{
+int clipboardShapeCount(const ProjectClipboard &clipboard) {
     int count = 0;
     forEachClipboardShape(clipboard, [&](const fh6::scene::Shape &) { ++count; });
     return count;
 }
 
-bool clipboardEmpty(const ProjectClipboard &clipboard)
-{
+bool clipboardEmpty(const ProjectClipboard &clipboard) {
     return clipboard.nodes.empty();
 }
 
-QTransform customNodeTransform(const fh6::scene::Layer &node)
-{
+QTransform customNodeTransform(const fh6::scene::Layer &node) {
     QTransform transform;
     transform.translate(node.transform.x, node.transform.y);
     transform.rotate(node.transform.rotation);
@@ -218,8 +231,7 @@ QTransform customNodeTransform(const fh6::scene::Layer &node)
 }
 
 void forEachClipboardRoot(const ProjectClipboard &clipboard,
-                          const std::function<void(const fh6::scene::Layer &)> &fn)
-{
+                          const std::function<void(const fh6::scene::Layer &)> &fn) {
     for (const auto &node : clipboard.nodes) {
         if (node) {
             fn(*node);
@@ -227,8 +239,7 @@ void forEachClipboardRoot(const ProjectClipboard &clipboard,
     }
 }
 
-QString newCustomGroupId()
-{
+QString newCustomGroupId() {
     return QStringLiteral("custom_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
 }
 
@@ -240,8 +251,7 @@ void rasterizePreviewTriangle(
     const QPointF &p2,
     double alpha0,
     double alpha1,
-    double alpha2)
-{
+    double alpha2) {
     const double minX = std::floor(std::min({p0.x(), p1.x(), p2.x()}));
     const double maxX = std::ceil(std::max({p0.x(), p1.x(), p2.x()}));
     const double minY = std::floor(std::min({p0.y(), p1.y(), p2.y()}));
@@ -279,18 +289,15 @@ class SplitterResizeCursorFilter final : public QObject {
 public:
     explicit SplitterResizeCursorFilter(Qt::Orientation orientation, QObject *parent = nullptr)
         : QObject(parent)
-        , cursorShape_(orientation == Qt::Horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor)
-    {
+        , cursorShape_(orientation == Qt::Horizontal ? Qt::SizeHorCursor : Qt::SizeVerCursor) {
     }
 
-    ~SplitterResizeCursorFilter() override
-    {
+    ~SplitterResizeCursorFilter() override {
         clearOverrideCursor();
     }
 
 protected:
-    bool eventFilter(QObject *watched, QEvent *event) override
-    {
+    bool eventFilter(QObject *watched, QEvent *event) override {
         switch (event->type()) {
         case QEvent::Enter:
         case QEvent::HoverEnter:
@@ -310,8 +317,7 @@ protected:
     }
 
 private:
-    void setOverrideCursor()
-    {
+    void setOverrideCursor() {
         const QCursor cursor(cursorShape_);
         if (active_) {
             QApplication::changeOverrideCursor(cursor);
@@ -321,8 +327,7 @@ private:
         }
     }
 
-    void clearOverrideCursor()
-    {
+    void clearOverrideCursor() {
         if (!active_) {
             return;
         }
@@ -334,8 +339,7 @@ private:
     bool active_ = false;
 };
 
-void installSplitterResizeCursor(QSplitter *splitter)
-{
+void installSplitterResizeCursor(QSplitter *splitter) {
     if (splitter == nullptr || splitter->count() < 2) {
         return;
     }
@@ -351,14 +355,33 @@ void installSplitterResizeCursor(QSplitter *splitter)
 
 } // namespace
 
+BrowserTile::BrowserTile(QWidget *parent)
+    : QWidget(parent) {
+    setFixedSize(kTileSize);
+    setCursor(Qt::PointingHandCursor);
+}
+
+bool BrowserTile::hovered() const {
+    return hovered_;
+}
+
+void BrowserTile::enterEvent(QEnterEvent *event) {
+    hovered_ = true;
+    update();
+    QWidget::enterEvent(event);
+}
+
+void BrowserTile::leaveEvent(QEvent *event) {
+    hovered_ = false;
+    update();
+    QWidget::leaveEvent(event);
+}
+
 ShapeTile::ShapeTile(int shapeId, const QString &label, const ShapeGeometryStore *geometry, QWidget *parent)
-    : QWidget(parent)
+    : BrowserTile(parent)
     , shapeId_(shapeId)
     , label_(label)
-    , geometry_(geometry)
-{
-    setFixedSize(TileSize);
-    setCursor(Qt::PointingHandCursor);
+    , geometry_(geometry) {
     const QString hex = QStringLiteral("%1").arg(shapeId_, 4, 16, QLatin1Char('0')).toUpper();
     const QString title = label_.isEmpty() ? QStringLiteral("Shape 0x%1").arg(hex) : label_;
     setToolTip(QStringLiteral("%1\nID: %2 / 0x%3")
@@ -381,51 +404,31 @@ ShapeTile::ShapeTile(int shapeId, const QString &label, const ShapeGeometryStore
     });
 }
 
-void ShapeTile::setFavourite(bool enabled)
-{
+void ShapeTile::setFavourite(bool enabled) {
     const QSignalBlocker blocker(favourite_);
     favourite_->setChecked(enabled);
     updateFavouriteIcon();
 }
 
-void ShapeTile::refreshTheme()
-{
+void ShapeTile::refreshTheme() {
     previewCache_.clear();
     updateFavouriteIcon();
     update();
 }
 
-void ShapeTile::setPressedCallback(std::function<void(int)> callback)
-{
+void ShapeTile::setPressedCallback(std::function<void(int)> callback) {
     pressedCallback_ = std::move(callback);
 }
 
-void ShapeTile::setRightPressedCallback(std::function<void(int)> callback)
-{
+void ShapeTile::setRightPressedCallback(std::function<void(int)> callback) {
     rightPressedCallback_ = std::move(callback);
 }
 
-void ShapeTile::setFavouriteCallback(std::function<void(int, bool)> callback)
-{
+void ShapeTile::setFavouriteCallback(std::function<void(int, bool)> callback) {
     favouriteCallback_ = std::move(callback);
 }
 
-void ShapeTile::enterEvent(QEnterEvent *event)
-{
-    hovered_ = true;
-    update();
-    QWidget::enterEvent(event);
-}
-
-void ShapeTile::leaveEvent(QEvent *event)
-{
-    hovered_ = false;
-    update();
-    QWidget::leaveEvent(event);
-}
-
-void ShapeTile::mousePressEvent(QMouseEvent *event)
-{
+void ShapeTile::mousePressEvent(QMouseEvent *event) {
     if (!favourite_->geometry().contains(event->position().toPoint())) {
         if (event->button() == Qt::LeftButton && pressedCallback_) {
             pressedCallback_(shapeId_);
@@ -441,53 +444,34 @@ void ShapeTile::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
-void ShapeTile::paintEvent(QPaintEvent *event)
-{
+void ShapeTile::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    const QRect tileRect = rect().adjusted(2, 2, -2, -2);
-    const bool dark = isDarkTheme(currentUiTheme());
-    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
-    const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
-    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
-    const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
-
-    painter.fillRect(tileRect, hovered_ ? tileHover : tileBase);
-    painter.setPen(QPen(hovered_ ? hoverStroke : stroke, 1));
-    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
-
-    const QRect previewRect((width() - PreviewSize.width()) / 2, 12, PreviewSize.width(), PreviewSize.height());
-    painter.fillRect(previewRect, previewBase);
-    drawPreview(painter, previewRect);
+    const TilePaintLayout layout = paintTileFrame(painter, *this, hovered());
+    drawPreview(painter, layout.previewRect);
 
     const QRect labelRect(8, height() - 30, width() - 40, 22);
-    painter.setPen(labelColor);
+    painter.setPen(layout.labelColor);
     const QString display = label_.isEmpty()
         ? QStringLiteral("0x%1").arg(shapeId_, 4, 16, QLatin1Char('0')).toUpper()
         : QStringLiteral("%1 (%2)").arg(label_).arg(shapeId_);
     painter.drawText(labelRect, Qt::AlignCenter, painter.fontMetrics().elidedText(display, Qt::ElideRight, labelRect.width()));
 }
 
-void ShapeTile::updateFavouriteIcon()
-{
+void ShapeTile::updateFavouriteIcon() {
     favourite_->setIcon(assetIcon(favourite_->isChecked()
                                       ? QStringLiteral("ShapeBrowserFavOn.xpm")
                                       : QStringLiteral("ShapeBrowserFavOff.xpm")));
 }
 
-void ShapeTile::favouriteToggled(bool checked)
-{
+void ShapeTile::favouriteToggled(bool checked) {
     if (favouriteCallback_) {
         favouriteCallback_(shapeId_, checked);
     }
 }
 
-void ShapeTile::drawPreview(QPainter &painter, const QRect &rect)
-{
+void ShapeTile::drawPreview(QPainter &painter, const QRect &rect) {
     if (previewCache_.contains(rect.size())) {
         painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
         return;
@@ -504,8 +488,7 @@ void ShapeTile::drawPreview(QPainter &painter, const QRect &rect)
     painter.drawImage(rect.topLeft(), preview);
 }
 
-QImage renderShapePreviewImage(const ShapeGeometryStore &geometry, int shapeId, const QSize &size, const QColor &ink)
-{
+QImage renderShapePreviewImage(const ShapeGeometryStore &geometry, int shapeId, const QSize &size, const QColor &ink) {
     const ShapeGeometry *shape = geometry.shape(shapeId);
     if (shape == nullptr || size.isEmpty()) {
         return {};
@@ -546,8 +529,7 @@ QImage renderShapePreviewImage(const ShapeGeometryStore &geometry, int shapeId, 
     return image;
 }
 
-QColor customLayerColor(const fh6::scene::Shape &layer, double alphaScale = 1.0)
-{
+QColor customLayerColor(const fh6::scene::Shape &layer, double alphaScale = 1.0) {
     return QColor(layer.color[2],
                   layer.color[1],
                   layer.color[0],
@@ -556,8 +538,7 @@ QColor customLayerColor(const fh6::scene::Shape &layer, double alphaScale = 1.0)
 
 QRectF customLayerBounds(const fh6::scene::Shape &layer,
                          const ShapeGeometryStore &geometry,
-                         const QTransform &parentWorld)
-{
+                         const QTransform &parentWorld) {
     const QSizeF size = layer.raster ? QSizeF(layer.rasterWidth, layer.rasterHeight)
                                      : geometry.shapeSize(layer.shapeId);
     const QRectF local(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
@@ -566,8 +547,7 @@ QRectF customLayerBounds(const fh6::scene::Shape &layer,
 
 QRectF customNodeBounds(const fh6::scene::Layer &node,
                         const ShapeGeometryStore &geometry,
-                        const QTransform &parentWorld)
-{
+                        const QTransform &parentWorld) {
     const QTransform world = customNodeTransform(node) * parentWorld;
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         return customLayerBounds(static_cast<const fh6::scene::Shape &>(node), geometry, parentWorld);
@@ -589,8 +569,7 @@ QRectF customNodeBounds(const fh6::scene::Layer &node,
     return bounds;
 }
 
-void blendCustomPreviewPixel(QImage &image, int x, int y, const fh6::scene::Shape &layer, double alphaScale)
-{
+void blendCustomPreviewPixel(QImage &image, int x, int y, const fh6::scene::Shape &layer, double alphaScale) {
     const double sourceAlpha = std::clamp((layer.color[3] / 255.0) * alphaScale, 0.0, 1.0);
     if (sourceAlpha <= 0.0) {
         return;
@@ -621,8 +600,7 @@ void rasterizeCustomPreviewTriangle(QImage &image,
                                     double alpha0,
                                     double alpha1,
                                     double alpha2,
-                                    const fh6::scene::Shape &layer)
-{
+                                    const fh6::scene::Shape &layer) {
     const double minX = std::floor(std::min({p0.x(), p1.x(), p2.x()}));
     const double maxX = std::ceil(std::max({p0.x(), p1.x(), p2.x()}));
     const double minY = std::floor(std::min({p0.y(), p1.y(), p2.y()}));
@@ -655,8 +633,7 @@ void paintCustomPreviewLayer(QImage &image,
                              const fh6::scene::Shape &layer,
                              const ShapeGeometryStore &geometry,
                              const QTransform &worldToPreview,
-                             const QTransform &parentWorld)
-{
+                             const QTransform &parentWorld) {
     if (!layer.visible) {
         return;
     }
@@ -696,8 +673,7 @@ void paintCustomPreviewNode(QImage &image,
                             const fh6::scene::Layer &node,
                             const ShapeGeometryStore &geometry,
                             const QTransform &worldToPreview,
-                            const QTransform &parentWorld)
-{
+                            const QTransform &parentWorld) {
     if (node.kind() == fh6::scene::LayerKind::Shape) {
         paintCustomPreviewLayer(image,
                                 static_cast<const fh6::scene::Shape &>(node),
@@ -715,8 +691,7 @@ void paintCustomPreviewNode(QImage &image,
     }
 }
 
-QImage renderCustomGroupPreviewImage(const CustomShapeGroup &group, const ShapeGeometryStore &geometry, const QSize &size)
-{
+QImage renderCustomGroupPreviewImage(const CustomShapeGroup &group, const ShapeGeometryStore &geometry, const QSize &size) {
     if (size.isEmpty()) {
         return {};
     }
@@ -750,12 +725,9 @@ QImage renderCustomGroupPreviewImage(const CustomShapeGroup &group, const ShapeG
 }
 
 CustomGroupTile::CustomGroupTile(const CustomShapeGroup &group, const ShapeGeometryStore *geometry, QWidget *parent)
-    : QWidget(parent)
+    : BrowserTile(parent)
     , group_(group)
-    , geometry_(geometry)
-{
-    setFixedSize(TileSize);
-    setCursor(Qt::PointingHandCursor);
+    , geometry_(geometry) {
     setToolTip(group_.name);
 
     delete_ = new QToolButton(this);
@@ -773,39 +745,21 @@ CustomGroupTile::CustomGroupTile(const CustomShapeGroup &group, const ShapeGeome
     });
 }
 
-void CustomGroupTile::refreshTheme()
-{
+void CustomGroupTile::refreshTheme() {
     previewCache_.clear();
     updateDeleteIcon();
     update();
 }
 
-void CustomGroupTile::setPressedCallback(std::function<void(const QString &)> callback)
-{
+void CustomGroupTile::setPressedCallback(std::function<void(const QString &)> callback) {
     pressedCallback_ = std::move(callback);
 }
 
-void CustomGroupTile::setDeleteCallback(std::function<void(const QString &)> callback)
-{
+void CustomGroupTile::setDeleteCallback(std::function<void(const QString &)> callback) {
     deleteCallback_ = std::move(callback);
 }
 
-void CustomGroupTile::enterEvent(QEnterEvent *event)
-{
-    hovered_ = true;
-    update();
-    QWidget::enterEvent(event);
-}
-
-void CustomGroupTile::leaveEvent(QEvent *event)
-{
-    hovered_ = false;
-    update();
-    QWidget::leaveEvent(event);
-}
-
-void CustomGroupTile::mousePressEvent(QMouseEvent *event)
-{
+void CustomGroupTile::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton && !delete_->geometry().contains(event->position().toPoint())) {
         if (pressedCallback_) {
             pressedCallback_(group_.id);
@@ -816,47 +770,29 @@ void CustomGroupTile::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
-void CustomGroupTile::paintEvent(QPaintEvent *event)
-{
+void CustomGroupTile::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    const QRect tileRect = rect().adjusted(2, 2, -2, -2);
-    const bool dark = isDarkTheme(currentUiTheme());
-    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
-    const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
-    const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
-    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
-
-    painter.fillRect(tileRect, hovered_ ? tileHover : tileBase);
-    painter.setPen(QPen(hovered_ ? hoverStroke : stroke, 1));
-    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
-
-    const QRect previewRect((width() - PreviewSize.width()) / 2, 12, PreviewSize.width(), PreviewSize.height());
-    painter.fillRect(previewRect, previewBase);
-    drawPreview(painter, previewRect);
-    painter.setPen(QPen(dark ? QColor(78, 78, 78) : QColor(180, 186, 196), 1));
-    painter.drawRect(previewRect.adjusted(0, 0, -1, -1));
+    const TilePaintLayout layout = paintTileFrame(painter, *this, hovered());
+    drawPreview(painter, layout.previewRect);
+    painter.setPen(QPen(layout.dark ? QColor(78, 78, 78) : QColor(180, 186, 196), 1));
+    painter.drawRect(layout.previewRect.adjusted(0, 0, -1, -1));
 
     const QRect countRect(width() - 42, 8, 30, 18);
-    painter.fillRect(countRect, dark ? QColor(58, 58, 58) : QColor(210, 216, 226));
-    painter.setPen(labelColor);
+    painter.fillRect(countRect, layout.dark ? QColor(58, 58, 58) : QColor(210, 216, 226));
+    painter.setPen(layout.labelColor);
     painter.drawText(countRect, Qt::AlignCenter, QString::number(layerCount()));
 
     const QRect labelRect(8, height() - 30, width() - 40, 22);
     painter.drawText(labelRect, Qt::AlignVCenter | Qt::AlignLeft, painter.fontMetrics().elidedText(group_.name, Qt::ElideRight, labelRect.width()));
 }
 
-void CustomGroupTile::updateDeleteIcon()
-{
+void CustomGroupTile::updateDeleteIcon() {
     delete_->setIcon(assetIcon(QStringLiteral("MenuExit.xpm")));
 }
 
-void CustomGroupTile::drawPreview(QPainter &painter, const QRect &rect)
-{
+void CustomGroupTile::drawPreview(QPainter &painter, const QRect &rect) {
     if (previewCache_.contains(rect.size())) {
         painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
         return;
@@ -872,49 +808,28 @@ void CustomGroupTile::drawPreview(QPainter &painter, const QRect &rect)
     painter.drawImage(rect.topLeft(), preview);
 }
 
-int CustomGroupTile::layerCount() const
-{
+int CustomGroupTile::layerCount() const {
     return clipboardShapeCount(group_.clipboard);
 }
 
 LogoTile::LogoTile(quint32 rasterId, const QSize &size, QWidget *parent)
-    : QWidget(parent)
+    : BrowserTile(parent)
     , rasterId_(rasterId)
-    , size_(size)
-{
-    setFixedSize(TileSize);
-    setCursor(Qt::PointingHandCursor);
+    , size_(size) {
     const QString hex = QStringLiteral("%1").arg(rasterId_, 4, 16, QLatin1Char('0')).toUpper();
     setToolTip(QStringLiteral("Logo %1\nID: %1 / 0x%2").arg(rasterId_).arg(hex));
 }
 
-void LogoTile::refreshTheme()
-{
+void LogoTile::refreshTheme() {
     previewCache_.clear();
     update();
 }
 
-void LogoTile::setPressedCallback(std::function<void(quint32)> callback)
-{
+void LogoTile::setPressedCallback(std::function<void(quint32)> callback) {
     pressedCallback_ = std::move(callback);
 }
 
-void LogoTile::enterEvent(QEnterEvent *event)
-{
-    hovered_ = true;
-    update();
-    QWidget::enterEvent(event);
-}
-
-void LogoTile::leaveEvent(QEvent *event)
-{
-    hovered_ = false;
-    update();
-    QWidget::leaveEvent(event);
-}
-
-void LogoTile::mousePressEvent(QMouseEvent *event)
-{
+void LogoTile::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
         if (pressedCallback_) {
             pressedCallback_(rasterId_);
@@ -925,37 +840,20 @@ void LogoTile::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
-void LogoTile::paintEvent(QPaintEvent *event)
-{
+void LogoTile::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
 
     QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    const QRect tileRect = rect().adjusted(2, 2, -2, -2);
-    const bool dark = isDarkTheme(currentUiTheme());
-    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
-    const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
-    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
-    const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
-
-    painter.fillRect(tileRect, hovered_ ? tileHover : tileBase);
-    painter.setPen(QPen(hovered_ ? hoverStroke : stroke, 1));
-    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
-
-    const QRect previewRect((width() - PreviewSize.width()) / 2, 12, PreviewSize.width(), PreviewSize.height());
-    painter.fillRect(previewRect, previewBase);
-    drawPreview(painter, previewRect);
+    const TilePaintLayout layout = paintTileFrame(painter, *this, hovered());
+    drawPreview(painter, layout.previewRect);
 
     const QRect labelRect(8, height() - 30, width() - 16, 22);
-    painter.setPen(labelColor);
+    painter.setPen(layout.labelColor);
     const QString display = QStringLiteral("Logo %1").arg(rasterId_);
     painter.drawText(labelRect, Qt::AlignCenter, painter.fontMetrics().elidedText(display, Qt::ElideRight, labelRect.width()));
 }
 
-void LogoTile::drawPreview(QPainter &painter, const QRect &rect)
-{
+void LogoTile::drawPreview(QPainter &painter, const QRect &rect) {
     if (previewCache_.contains(rect.size())) {
         painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
         return;
@@ -986,8 +884,7 @@ void LogoTile::drawPreview(QPainter &painter, const QRect &rect)
 }
 
 ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
-    : QWidget(parent)
-{
+    : QWidget(parent) {
     geometryLoaded_ = geometry_.loadDefault();
     names_.loadDefault();
     const fh6::RasterDecalPack &logoPack = fh6::sharedRasterDecals();
@@ -1011,11 +908,11 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     search_->addAction(assetIcon(QStringLiteral("ShapeBrowserSearch.xpm")), QLineEdit::LeadingPosition);
     layout->addWidget(search_);
 
-    auto *splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->setHandleWidth(6);
-    layout->addWidget(splitter, 1);
+    splitter_ = new QSplitter(Qt::Horizontal, this);
+    splitter_->setHandleWidth(6);
+    layout->addWidget(splitter_, 1);
 
-    auto *categoryPane = new QWidget(splitter);
+    auto *categoryPane = new QWidget(splitter_);
     auto *categoryLayout = new QVBoxLayout(categoryPane);
     categoryLayout->setContentsMargins(0, 0, 0, 0);
     categoryLayout->setSpacing(6);
@@ -1027,10 +924,10 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     addSelection_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addSelection_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     categoryLayout->addWidget(addSelection_);
-    splitter->addWidget(categoryPane);
-    splitter->setCollapsible(0, false);
+    splitter_->addWidget(categoryPane);
+    splitter_->setCollapsible(0, false);
 
-    scroll_ = new QScrollArea(splitter);
+    scroll_ = new QScrollArea(splitter_);
     scroll_->setWidgetResizable(true);
     gridHost_ = new QWidget(scroll_);
     grid_ = new QGridLayout(gridHost_);
@@ -1039,9 +936,17 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     grid_->setVerticalSpacing(8);
     grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     scroll_->setWidget(gridHost_);
-    splitter->addWidget(scroll_);
-    splitter->setStretchFactor(1, 1);
-    installSplitterResizeCursor(splitter);
+    splitter_->addWidget(scroll_);
+    splitter_->setStretchFactor(1, 1);
+    installSplitterResizeCursor(splitter_);
+    const QByteArray splitterState = settings().value(
+        QStringLiteral("ui/splitters/shapesSections")).toByteArray();
+    if (!splitterState.isEmpty()) {
+        splitter_->restoreState(splitterState);
+    }
+    connect(splitter_, &QSplitter::splitterMoved, this, [this]() {
+        settings().setValue(QStringLiteral("ui/splitters/shapesSections"), splitter_->saveState());
+    });
     refreshTheme();
 
     connect(search_, &QLineEdit::textChanged, this, [this]() { refreshGrid(); });
@@ -1069,33 +974,27 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     categoriesList_->setCurrentRow(initialRow);
 }
 
-void ShapesBrowserWidget::setShapeSelectedCallback(std::function<void(int)> callback)
-{
+void ShapesBrowserWidget::setShapeSelectedCallback(std::function<void(int)> callback) {
     shapeSelectedCallback_ = std::move(callback);
 }
 
-void ShapesBrowserWidget::setShapeReplaceCallback(std::function<void(int)> callback)
-{
+void ShapesBrowserWidget::setShapeReplaceCallback(std::function<void(int)> callback) {
     shapeReplaceCallback_ = std::move(callback);
 }
 
-void ShapesBrowserWidget::setLogoSelectedCallback(std::function<void(quint32, int, int)> callback)
-{
+void ShapesBrowserWidget::setLogoSelectedCallback(std::function<void(quint32, int, int)> callback) {
     logoSelectedCallback_ = std::move(callback);
 }
 
-void ShapesBrowserWidget::setCustomGroupSelectedCallback(std::function<void(const CustomShapeGroup &)> callback)
-{
+void ShapesBrowserWidget::setCustomGroupSelectedCallback(std::function<void(const CustomShapeGroup &)> callback) {
     customGroupSelectedCallback_ = std::move(callback);
 }
 
-void ShapesBrowserWidget::setAddCurrentSelectionCallback(std::function<void()> callback)
-{
+void ShapesBrowserWidget::setAddCurrentSelectionCallback(std::function<void()> callback) {
     addCurrentSelectionCallback_ = std::move(callback);
 }
 
-void ShapesBrowserWidget::addCustomGroup(const QString &name, const ProjectClipboard &clipboard)
-{
+void ShapesBrowserWidget::addCustomGroup(const QString &name, const ProjectClipboard &clipboard) {
     CustomShapeGroup group;
     group.id = newCustomGroupId();
     group.name = name.trimmed().isEmpty() ? QStringLiteral("Custom Group") : name.trimmed();
@@ -1103,15 +1002,14 @@ void ShapesBrowserWidget::addCustomGroup(const QString &name, const ProjectClipb
     customGroups_.push_back(group);
     saveCustomGroups();
     populateCategories();
-    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(CustomCategory), Qt::MatchExactly);
+    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(kCustomCategory), Qt::MatchExactly);
     if (!matches.isEmpty()) {
         categoriesList_->setCurrentItem(matches.front());
     }
     refreshGrid();
 }
 
-void ShapesBrowserWidget::refreshTheme()
-{
+void ShapesBrowserWidget::refreshTheme() {
     const QPalette pal = paletteForTheme(currentUiTheme());
     const QString base = pal.color(QPalette::Base).name();
     const QString text = pal.color(QPalette::Text).name();
@@ -1145,19 +1043,19 @@ void ShapesBrowserWidget::refreshTheme()
     }
 }
 
-void ShapesBrowserWidget::resizeEvent(QResizeEvent *event)
-{
+void ShapesBrowserWidget::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
     refreshGrid();
 }
 
-void ShapesBrowserWidget::populateCategories()
-{
+void ShapesBrowserWidget::populateCategories() {
     categories_.clear();
     categoryOrder_.clear();
-    categoryOrder_ << QString::fromLatin1(FavouritesCategory) << QString::fromLatin1(CustomCategory) << QString::fromLatin1(LogoCategory);
-    categories_.insert(QString::fromLatin1(FavouritesCategory), {});
-    categories_.insert(QString::fromLatin1(CustomCategory), {});
+    categoryOrder_ << QString::fromLatin1(kFavouritesCategory)
+                   << QString::fromLatin1(kCustomCategory)
+                   << QString::fromLatin1(kLogoCategory);
+    categories_.insert(QString::fromLatin1(kFavouritesCategory), {});
+    categories_.insert(QString::fromLatin1(kCustomCategory), {});
 
     QVector<int> ids = geometry_.shapeIds();
     std::sort(ids.begin(), ids.end());
@@ -1177,9 +1075,9 @@ void ShapesBrowserWidget::populateCategories()
     QStringList vinylCategories;
     QStringList fontCategories;
     for (auto it = categories_.constBegin(); it != categories_.constEnd(); ++it) {
-        if (it.key() == QString::fromLatin1(FavouritesCategory)
-            || it.key() == QString::fromLatin1(CustomCategory)
-            || it.key() == QString::fromLatin1(LogoCategory)) {
+        if (it.key() == QString::fromLatin1(kFavouritesCategory)
+            || it.key() == QString::fromLatin1(kCustomCategory)
+            || it.key() == QString::fromLatin1(kLogoCategory)) {
             continue;
         }
         if (isFontCategory(it.key())) {
@@ -1190,9 +1088,9 @@ void ShapesBrowserWidget::populateCategories()
     }
     vinylCategories.sort(Qt::CaseInsensitive);
     fontCategories.sort(Qt::CaseInsensitive);
-    categoryOrder_ = QStringList{QString::fromLatin1(FavouritesCategory),
-                                 QString::fromLatin1(CustomCategory),
-                                 QString::fromLatin1(LogoCategory)}
+    categoryOrder_ = QStringList{QString::fromLatin1(kFavouritesCategory),
+                                 QString::fromLatin1(kCustomCategory),
+                                 QString::fromLatin1(kLogoCategory)}
         + vinylCategories
         + fontCategories;
 
@@ -1202,8 +1100,7 @@ void ShapesBrowserWidget::populateCategories()
     }
 }
 
-void ShapesBrowserWidget::refreshGrid()
-{
+void ShapesBrowserWidget::refreshGrid() {
     if (grid_ == nullptr || scroll_ == nullptr) {
         return;
     }
@@ -1218,45 +1115,37 @@ void ShapesBrowserWidget::refreshGrid()
 
     const QString query = search_->text().trimmed().toLower();
 
-    constexpr int MinSearchLength = 3;
+    constexpr int kMinimumSearchLength = 3;
     const int queryLength = query.startsWith(QStringLiteral("0x")) ? query.size() - 2 : query.size();
-    if (!query.isEmpty() && queryLength < MinSearchLength) {
-        showGridMessage(QStringLiteral("Type at least %1 characters to search").arg(MinSearchLength));
+    if (!query.isEmpty() && queryLength < kMinimumSearchLength) {
+        showGridMessage(QStringLiteral("Type at least %1 characters to search").arg(kMinimumSearchLength));
         return;
     }
-    const bool searching = queryLength >= MinSearchLength;
+    const bool searching = queryLength >= kMinimumSearchLength;
 
-    if (!searching && currentCategory_ == QString::fromLatin1(CustomCategory)) {
-        const int columns = std::max(1, scroll_->viewport()->width() / (TileSize.width() + 10));
-        for (int column = 0; column <= columns; ++column) {
-            grid_->setColumnStretch(column, 0);
+    if (!searching && currentCategory_ == QString::fromLatin1(kCustomCategory)) {
+        QVector<QWidget *> tiles;
+        tiles.reserve(customGroups_.size());
+        for (const CustomShapeGroup &group : customGroups_) {
+            tiles.push_back(tileForCustomGroup(group));
         }
-        for (int index = 0; index < customGroups_.size(); ++index) {
-            CustomGroupTile *tile = tileForCustomGroup(customGroups_[index]);
-            grid_->addWidget(tile, index / columns, index % columns);
-        }
-        grid_->setColumnStretch(columns, 1);
-        grid_->setRowStretch((customGroups_.size() + columns - 1) / columns, 1);
+        layoutTiles(tiles);
         return;
     }
 
-    if (!searching && currentCategory_ == QString::fromLatin1(LogoCategory)) {
-        const int columns = std::max(1, scroll_->viewport()->width() / (TileSize.width() + 10));
-        for (int column = 0; column <= columns; ++column) {
-            grid_->setColumnStretch(column, 0);
-        }
+    if (!searching && currentCategory_ == QString::fromLatin1(kLogoCategory)) {
         QVector<quint32> ids;
         ids.reserve(logos_.size());
         for (auto it = logos_.constBegin(); it != logos_.constEnd(); ++it) {
             ids.push_back(it.key());
         }
         std::sort(ids.begin(), ids.end());
-        for (int index = 0; index < ids.size(); ++index) {
-            LogoTile *tile = tileForLogo(ids[index]);
-            grid_->addWidget(tile, index / columns, index % columns);
+        QVector<QWidget *> tiles;
+        tiles.reserve(ids.size());
+        for (quint32 id : ids) {
+            tiles.push_back(tileForLogo(id));
         }
-        grid_->setColumnStretch(columns, 1);
-        grid_->setRowStretch((ids.size() + columns - 1) / columns, 1);
+        layoutTiles(tiles);
         return;
     }
 
@@ -1314,33 +1203,35 @@ void ShapesBrowserWidget::refreshGrid()
         }
     }
 
-    const int columns = std::max(1, scroll_->viewport()->width() / (TileSize.width() + 10));
-    for (int column = 0; column <= columns; ++column) {
-        grid_->setColumnStretch(column, 0);
-    }
-    int index = 0;
+    QVector<QWidget *> tiles;
+    tiles.reserve(matchedCustom.size() + matchedLogos.size() + filtered.size());
     for (const CustomShapeGroup &group : matchedCustom) {
-        CustomGroupTile *tile = tileForCustomGroup(group);
-        grid_->addWidget(tile, index / columns, index % columns);
-        ++index;
+        tiles.push_back(tileForCustomGroup(group));
     }
     for (quint32 rasterId : matchedLogos) {
-        LogoTile *tile = tileForLogo(rasterId);
-        grid_->addWidget(tile, index / columns, index % columns);
-        ++index;
+        tiles.push_back(tileForLogo(rasterId));
     }
     for (int shapeId : filtered) {
         ShapeTile *tile = tileForShape(shapeId);
         tile->setFavourite(favourites_.contains(shapeId));
-        grid_->addWidget(tile, index / columns, index % columns);
-        ++index;
+        tiles.push_back(tile);
     }
-    grid_->setColumnStretch(columns, 1);
-    grid_->setRowStretch((index + columns - 1) / columns, 1);
+    layoutTiles(tiles);
 }
 
-void ShapesBrowserWidget::showGridMessage(const QString &text)
-{
+void ShapesBrowserWidget::layoutTiles(const QVector<QWidget *> &tiles) {
+    const int columns = std::max(1, scroll_->viewport()->width() / (kTileSize.width() + 10));
+    for (int column = 0; column <= columns; ++column) {
+        grid_->setColumnStretch(column, 0);
+    }
+    for (int index = 0; index < tiles.size(); ++index) {
+        grid_->addWidget(tiles[index], index / columns, index % columns);
+    }
+    grid_->setColumnStretch(columns, 1);
+    grid_->setRowStretch((tiles.size() + columns - 1) / columns, 1);
+}
+
+void ShapesBrowserWidget::showGridMessage(const QString &text) {
     if (searchHint_ == nullptr) {
         searchHint_ = new QLabel(gridHost_);
         searchHint_->setAlignment(Qt::AlignCenter);
@@ -1368,8 +1259,7 @@ void ShapesBrowserWidget::showGridMessage(const QString &text)
     searchHint_->show();
 }
 
-ShapeTile *ShapesBrowserWidget::tileForShape(int shapeId)
-{
+ShapeTile *ShapesBrowserWidget::tileForShape(int shapeId) {
     ShapeTile *tile = tiles_.value(shapeId, nullptr);
     if (tile != nullptr) {
         return tile;
@@ -1392,8 +1282,7 @@ ShapeTile *ShapesBrowserWidget::tileForShape(int shapeId)
     return tile;
 }
 
-LogoTile *ShapesBrowserWidget::tileForLogo(quint32 rasterId)
-{
+LogoTile *ShapesBrowserWidget::tileForLogo(quint32 rasterId) {
     LogoTile *tile = logoTiles_.value(rasterId, nullptr);
     if (tile != nullptr) {
         return tile;
@@ -1410,8 +1299,7 @@ LogoTile *ShapesBrowserWidget::tileForLogo(quint32 rasterId)
     return tile;
 }
 
-CustomGroupTile *ShapesBrowserWidget::tileForCustomGroup(const CustomShapeGroup &group)
-{
+CustomGroupTile *ShapesBrowserWidget::tileForCustomGroup(const CustomShapeGroup &group) {
     CustomGroupTile *tile = customTiles_.value(group.id, nullptr);
     if (tile != nullptr) {
         return tile;
@@ -1430,21 +1318,19 @@ CustomGroupTile *ShapesBrowserWidget::tileForCustomGroup(const CustomShapeGroup 
     return tile;
 }
 
-void ShapesBrowserWidget::setFavourite(int shapeId, bool enabled)
-{
+void ShapesBrowserWidget::setFavourite(int shapeId, bool enabled) {
     if (enabled) {
         favourites_.insert(shapeId);
     } else {
         favourites_.remove(shapeId);
     }
     saveFavourites();
-    if (currentCategory_ == QString::fromLatin1(FavouritesCategory)) {
+    if (currentCategory_ == QString::fromLatin1(kFavouritesCategory)) {
         refreshGrid();
     }
 }
 
-void ShapesBrowserWidget::deleteCustomGroup(const QString &id)
-{
+void ShapesBrowserWidget::deleteCustomGroup(const QString &id) {
     auto it = std::find_if(customGroups_.begin(), customGroups_.end(), [&](const CustomShapeGroup &group) {
         return group.id == id;
     });
@@ -1464,16 +1350,15 @@ void ShapesBrowserWidget::deleteCustomGroup(const QString &id)
     }
     saveCustomGroups();
     populateCategories();
-    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(CustomCategory), Qt::MatchExactly);
+    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(kCustomCategory), Qt::MatchExactly);
     if (!matches.isEmpty()) {
         categoriesList_->setCurrentItem(matches.front());
     }
     refreshGrid();
 }
 
-QVector<int> ShapesBrowserWidget::categoryShapeIds(const QString &category) const
-{
-    if (category == QString::fromLatin1(FavouritesCategory)) {
+QVector<int> ShapesBrowserWidget::categoryShapeIds(const QString &category) const {
+    if (category == QString::fromLatin1(kFavouritesCategory)) {
         QVector<int> ids;
         ids.reserve(favourites_.size());
         for (int shapeId : favourites_) {
@@ -1484,14 +1369,13 @@ QVector<int> ShapesBrowserWidget::categoryShapeIds(const QString &category) cons
         std::sort(ids.begin(), ids.end());
         return ids;
     }
-    if (category == QString::fromLatin1(CustomCategory)) {
+    if (category == QString::fromLatin1(kCustomCategory)) {
         return {};
     }
     return categories_.value(category);
 }
 
-QString ShapesBrowserWidget::categoryNameForShape(int shapeId, const ShapeGeometry &geometry) const
-{
+QString ShapesBrowserWidget::categoryNameForShape(int shapeId, const ShapeGeometry &geometry) const {
     const QString fontSection = fontSectionForShape(shapeId);
     if (!fontSection.isEmpty()) {
         return fontSection;
@@ -1505,8 +1389,7 @@ QString ShapesBrowserWidget::categoryNameForShape(int shapeId, const ShapeGeomet
     return display.isEmpty() || display.startsWith(QStringLiteral("0x")) ? prefix : display;
 }
 
-QString ShapesBrowserWidget::nameForShape(int shapeId, const ShapeGeometry &geometry) const
-{
+QString ShapesBrowserWidget::nameForShape(int shapeId, const ShapeGeometry &geometry) const {
     const QString visionName = names_.name(shapeId);
     if (!visionName.isEmpty()) {
         return visionName;
@@ -1518,10 +1401,9 @@ QString ShapesBrowserWidget::nameForShape(int shapeId, const ShapeGeometry &geom
     return geometry.source;
 }
 
-QSet<int> ShapesBrowserWidget::loadFavourites() const
-{
+QSet<int> ShapesBrowserWidget::loadFavourites() const {
     QSet<int> result;
-    const QString value = settings().value(QString::fromLatin1(FavouritesSettingsKey), QString()).toString();
+    const QString value = settings().value(QString::fromLatin1(kFavouritesSettingsKey), QString()).toString();
     for (const QString &part : value.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
         bool ok = false;
         const int shapeId = part.toInt(&ok);
@@ -1532,8 +1414,7 @@ QSet<int> ShapesBrowserWidget::loadFavourites() const
     return result;
 }
 
-void ShapesBrowserWidget::saveFavourites() const
-{
+void ShapesBrowserWidget::saveFavourites() const {
     QVector<int> ids;
     ids.reserve(favourites_.size());
     for (int shapeId : favourites_) {
@@ -1544,13 +1425,12 @@ void ShapesBrowserWidget::saveFavourites() const
     for (int shapeId : ids) {
         parts.push_back(QString::number(shapeId));
     }
-    settings().setValue(QString::fromLatin1(FavouritesSettingsKey), parts.join(QLatin1Char(',')));
+    settings().setValue(QString::fromLatin1(kFavouritesSettingsKey), parts.join(QLatin1Char(',')));
 }
 
-QVector<CustomShapeGroup> ShapesBrowserWidget::loadCustomGroups() const
-{
+QVector<CustomShapeGroup> ShapesBrowserWidget::loadCustomGroups() const {
     QVector<CustomShapeGroup> groups;
-    const QByteArray bytes = settings().value(QString::fromLatin1(CustomGroupsSettingsKey)).toByteArray();
+    const QByteArray bytes = settings().value(QString::fromLatin1(kCustomGroupsSettingsKey)).toByteArray();
     if (bytes.isEmpty()) {
         return groups;
     }
@@ -1574,8 +1454,7 @@ QVector<CustomShapeGroup> ShapesBrowserWidget::loadCustomGroups() const
     return groups;
 }
 
-void ShapesBrowserWidget::saveCustomGroups() const
-{
+void ShapesBrowserWidget::saveCustomGroups() const {
     QJsonArray array;
     for (const CustomShapeGroup &group : customGroups_) {
         QJsonObject object;
@@ -1584,7 +1463,8 @@ void ShapesBrowserWidget::saveCustomGroups() const
         object.insert(QStringLiteral("clipboard"), clipboardToJson(group.clipboard));
         array.append(object);
     }
-    settings().setValue(QString::fromLatin1(CustomGroupsSettingsKey), QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact)));
+    settings().setValue(QString::fromLatin1(kCustomGroupsSettingsKey),
+                        QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact)));
 }
 
 } // namespace gui

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ForzaLiveryStudio LANGUAGES CXX)
+project(ForzaLiveryStudio LANGUAGES CXX C)
+
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +11,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 find_package(ZLIB REQUIRED)
 qt_standard_project_setup()
+
+# Vendored potrace bitmap tracer (potracelib core only), GPLv2-or-later, which
+# is compatible with this project's AGPLv3. See third_party/potrace/COPYING.
+add_library(potrace STATIC
+    third_party/potrace/potracelib.c
+    third_party/potrace/curve.c
+    third_party/potrace/trace.c
+    third_party/potrace/decompose.c
+)
+target_include_directories(potrace PUBLIC third_party/potrace)
+target_compile_definitions(potrace PRIVATE VERSION="1.16" HAVE_INTTYPES_H=1 HAVE_STDINT_H=1)
+set_target_properties(potrace PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
 add_library(fls_core STATIC
     src/core/binary_io.cpp
@@ -133,6 +147,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/app/settings_dialog.h
     src/gui/app/theme_manager.cpp
     src/gui/app/theme_manager.h
+    src/gui/key_bindings.cpp
+    src/gui/key_bindings.h
     src/gui/state/editor_state.cpp
     src/gui/state/editor_state.h
     src/gui/state/editor_state_clipboard.cpp
@@ -146,15 +162,29 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/canvas_tools.h
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
+    src/gui/canvas/advancing_front.cpp
+    src/gui/canvas/advancing_front.h
+    src/gui/canvas/bucket_fill.cpp
+    src/gui/canvas/bucket_fill.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
     src/gui/canvas/native_shape_renderer.h
+    src/gui/canvas/lining_fill.cpp
+    src/gui/canvas/lining_fill.h
     src/gui/canvas/pen_fill.cpp
     src/gui/canvas/pen_fill.h
     src/gui/canvas/polygon_mesh.cpp
     src/gui/canvas/polygon_mesh.h
+    src/gui/canvas/region_extract.cpp
+    src/gui/canvas/region_extract.h
+    src/gui/canvas/region_fill.cpp
+    src/gui/canvas/region_fill.h
+    src/gui/canvas/region_layer_plan.cpp
+    src/gui/canvas/region_layer_plan.h
     src/gui/canvas/project_canvas.cpp
+    src/gui/canvas/project_canvas_bucket.cpp
+    src/gui/canvas/project_canvas_pen.cpp
     src/gui/canvas/project_canvas.h
     src/gui/canvas/project_canvas_internal.h
     src/gui/canvas/project_canvas_hit.cpp
@@ -174,6 +204,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/widgets/header_metadata_widget.h
     src/gui/widgets/image_io.cpp
     src/gui/widgets/image_io.h
+    src/gui/widgets/image_preprocess_dialog.cpp
+    src/gui/widgets/image_preprocess_dialog.h
+    src/gui/widgets/image_preprocessor.cpp
+    src/gui/widgets/image_preprocessor.h
     src/gui/widgets/import_asset_dialog.cpp
     src/gui/widgets/import_asset_dialog.h
     src/gui/widgets/import_locations.cpp
@@ -205,11 +239,60 @@ target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
 target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
     PRIVATE
         fls_core
+        potrace
         Qt6::Gui
         Qt6::Widgets
         Qt6::OpenGL
         Qt6::OpenGLWidgets
 )
+
+if(BUILD_TESTING)
+    add_executable(fls_guide_preprocess_metadata_tests
+        tools/guide_preprocess_metadata_test.cpp
+    )
+    target_link_libraries(fls_guide_preprocess_metadata_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME guide_preprocess_metadata COMMAND fls_guide_preprocess_metadata_tests)
+
+    add_executable(fls_image_preprocessor_tests
+        tools/image_preprocessor_test.cpp
+        src/gui/widgets/image_preprocessor.cpp
+    )
+    target_include_directories(fls_image_preprocessor_tests PRIVATE
+        src/gui/widgets
+    )
+    target_link_libraries(fls_image_preprocessor_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+    )
+    add_test(NAME image_preprocessor COMMAND fls_image_preprocessor_tests)
+
+    add_executable(fls_region_pen_conversion_tests
+        tools/region_pen_conversion_test.cpp
+        src/gui/canvas/advancing_front.cpp
+        src/gui/canvas/bucket_fill.cpp
+        src/gui/canvas/lining_fill.cpp
+        src/gui/canvas/pen_fill.cpp
+        src/gui/canvas/polygon_mesh.cpp
+        src/gui/canvas/region_extract.cpp
+        src/gui/canvas/region_fill.cpp
+        src/gui/canvas/region_layer_plan.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_region_pen_conversion_tests PRIVATE
+        src/gui/canvas
+        src/gui/widgets
+    )
+    target_link_libraries(fls_region_pen_conversion_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        ZLIB::ZLIB
+        potrace
+    )
+    add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
+endif()
 
 set(FH6_GUI_ASSETS
     Cursor.xpm
@@ -248,7 +331,10 @@ set(FH6_GUI_ASSETS
     ToolbarScale.xpm
     ToolbarSelect.xpm
     ToolbarSkew.xpm
+    ToolOpacity.xpm
+    ToolLining.xpm
     ToolPipette.xpm
+    ToolBucket.xpm
     ToolRotateE.xpm
     ToolRotateN.xpm
     ToolRotateNE.xpm
@@ -300,7 +386,7 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/car_ids.json"
-    COMMENT "Deploying used GUI XPM assets"
+    COMMENT "Deploying used GUI assets"
 )
 
 if(NOT FH6_BUILD_HELPER_TOOLS)

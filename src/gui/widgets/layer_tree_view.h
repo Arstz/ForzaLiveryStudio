@@ -15,7 +15,7 @@ namespace gui {
 
 class LayerTreeView final : public QTreeView {
 public:
-    using QTreeView::QTreeView;
+    explicit LayerTreeView(QWidget *parent = nullptr);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -31,9 +31,14 @@ private:
     QString parentIdForIndex(const QModelIndex &index) const;
     QRect visualSubtreeRect(const QModelIndex &index) const;
     void setDropIndicatorY(int y);
+    void updateDragAutoScroll(const QPoint &position);
+    void stopDragAutoScroll();
     bool dropTargetForPosition(const QPoint &position, QModelIndex *dropParent, int *dropRow, int *indicatorY) const;
 
     int dropIndicatorY_ = -1;
+    int dragScrollDirection_ = 0;
+    QPoint lastDragPosition_;
+    QTimer dragScrollTimer_;
 };
 
 } // namespace gui

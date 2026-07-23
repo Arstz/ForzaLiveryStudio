@@ -28,8 +28,7 @@
 namespace fh6 {
 namespace {
 
-quint8 byteFromJson(const QJsonArray &array, int index)
-{
+quint8 byteFromJson(const QJsonArray &array, int index) {
     const int value = array.at(index).toInt();
     if (value < 0 || value > 255) {
         throw std::runtime_error("color component is outside byte range");
@@ -37,13 +36,11 @@ quint8 byteFromJson(const QJsonArray &array, int index)
     return static_cast<quint8>(value);
 }
 
-QString toBase64(const QByteArray &bytes)
-{
+QString toBase64(const QByteArray &bytes) {
     return QString::fromLatin1(bytes.toBase64());
 }
 
-std::array<quint8, 4> colorSwatchFromJson(const QJsonValue &value)
-{
+std::array<quint8, 4> colorSwatchFromJson(const QJsonValue &value) {
     const QString text = value.toString();
     if (!text.startsWith(QLatin1Char('#')) || (text.size() != 9 && text.size() != 7)) {
         return {255, 255, 255, 255};
@@ -60,8 +57,7 @@ std::array<quint8, 4> colorSwatchFromJson(const QJsonValue &value)
     return {blue, green, red, alpha};
 }
 
-QString colorSwatchToJson(const std::array<quint8, 4> &color)
-{
+QString colorSwatchToJson(const std::array<quint8, 4> &color) {
     return QStringLiteral("#%1%2%3%4")
         .arg(color[3], 2, 16, QLatin1Char('0'))
         .arg(color[2], 2, 16, QLatin1Char('0'))
@@ -69,8 +65,7 @@ QString colorSwatchToJson(const std::array<quint8, 4> &color)
         .arg(color[0], 2, 16, QLatin1Char('0'));
 }
 
-QJsonObject liveryPaintColorToJson(const LiveryPaintColor &color)
-{
+QJsonObject liveryPaintColorToJson(const LiveryPaintColor &color) {
     QJsonArray bgra;
     for (const quint8 channel : color.bgra) {
         bgra.append(channel);
@@ -81,8 +76,7 @@ QJsonObject liveryPaintColorToJson(const LiveryPaintColor &color)
     return object;
 }
 
-LiveryPaintColor liveryPaintColorFromJson(const QJsonValue &value)
-{
+LiveryPaintColor liveryPaintColorFromJson(const QJsonValue &value) {
     if (!value.isObject()) {
         throw std::runtime_error("livery paint color is not an object");
     }
@@ -99,8 +93,7 @@ LiveryPaintColor liveryPaintColorFromJson(const QJsonValue &value)
     return color;
 }
 
-quint32 liveryPaintU32FromJson(const QJsonValue &value, quint32 fallback)
-{
+quint32 liveryPaintU32FromJson(const QJsonValue &value, quint32 fallback) {
     if (value.isUndefined()) {
         return fallback;
     }
@@ -113,8 +106,7 @@ quint32 liveryPaintU32FromJson(const QJsonValue &value, quint32 fallback)
     return static_cast<quint32>(number);
 }
 
-QJsonObject liveryPaintStateToJson(const LiveryPaintState &state)
-{
+QJsonObject liveryPaintStateToJson(const LiveryPaintState &state) {
     QJsonArray materials;
     for (const LiveryPaintMaterial &material : state.materials) {
         QJsonObject object;
@@ -132,8 +124,7 @@ QJsonObject liveryPaintStateToJson(const LiveryPaintState &state)
     return object;
 }
 
-LiveryPaintState liveryPaintStateFromJson(const QJsonValue &value)
-{
+LiveryPaintState liveryPaintStateFromJson(const QJsonValue &value) {
     if (!value.isObject()) {
         throw std::runtime_error("livery paint metadata is not an object");
     }
@@ -163,14 +154,12 @@ LiveryPaintState liveryPaintStateFromJson(const QJsonValue &value)
     return state;
 }
 
-bool looksGzipped(const QByteArray &bytes)
-{
+bool looksGzipped(const QByteArray &bytes) {
     return bytes.size() >= 2 && static_cast<quint8>(bytes[0]) == 0x1f
         && static_cast<quint8>(bytes[1]) == 0x8b;
 }
 
-QByteArray gzipCompress(const QByteArray &data)
-{
+QByteArray gzipCompress(const QByteArray &data) {
     z_stream stream{};
     // zlib window bits with gzip framing.
     if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
@@ -197,8 +186,7 @@ QByteArray gzipCompress(const QByteArray &data)
     return out;
 }
 
-QByteArray gzipDecompress(const QByteArray &data)
-{
+QByteArray gzipDecompress(const QByteArray &data) {
     z_stream stream{};
     // zlib window bits with automatic gzip/zlib detection.
     if (inflateInit2(&stream, 15 + 32) != Z_OK) {
@@ -224,8 +212,7 @@ QByteArray gzipDecompress(const QByteArray &data)
     return out;
 }
 
-QJsonObject headerMetadataToJson(const HeaderMetadata &meta)
-{
+QJsonObject headerMetadataToJson(const HeaderMetadata &meta) {
     QJsonObject object;
     object.insert(QStringLiteral("format_version"), static_cast<qint64>(meta.formatVersion));
     object.insert(QStringLiteral("name"), meta.name);
@@ -246,8 +233,7 @@ QJsonObject headerMetadataToJson(const HeaderMetadata &meta)
     return object;
 }
 
-HeaderMetadata headerMetadataFromJson(const QJsonObject &object)
-{
+HeaderMetadata headerMetadataFromJson(const QJsonObject &object) {
     HeaderMetadata meta;
     meta.formatVersion = static_cast<quint32>(object.value(QStringLiteral("format_version")).toInt(7));
     meta.name = object.value(QStringLiteral("name")).toString();
@@ -269,8 +255,7 @@ HeaderMetadata headerMetadataFromJson(const QJsonObject &object)
     return meta;
 }
 
-QByteArray readOptionalFile(const QString &path)
-{
+QByteArray readOptionalFile(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
@@ -278,8 +263,7 @@ QByteArray readOptionalFile(const QString &path)
     return file.readAll();
 }
 
-void enforcePrivacyPolicyForCGroup(const QByteArray &payload)
-{
+void enforcePrivacyPolicyForCGroup(const QByteArray &payload) {
 #if FH6_PRIVACY_POLICY
     const int gyvl = payload.indexOf(QByteArray("gyvl", 4));
     const int markerOffset = gyvl + 0x1d;
@@ -292,8 +276,7 @@ void enforcePrivacyPolicyForCGroup(const QByteArray &payload)
 #endif
 }
 
-void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery)
-{
+void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery) {
 #if FH6_PRIVACY_POLICY
     const int vlrc = livery.raw.indexOf(QByteArray("vlrc", 4));
     if (vlrc >= 0 && vlrc + 12 <= livery.raw.size()
@@ -305,8 +288,7 @@ void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery)
 #endif
 }
 
-Project newImportProject(const QString &folderOrFile, const QByteArray &payload)
-{
+Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
     Project project;
     QFileInfo info(folderOrFile);
     if (info.isDir()) {
@@ -321,18 +303,15 @@ Project newImportProject(const QString &folderOrFile, const QByteArray &payload)
     return project;
 }
 
-QString layerIdForIndex(int index)
-{
+QString layerIdForIndex(int index) {
     return QStringLiteral("layer-%1").arg(index, 4, 10, QLatin1Char('0'));
 }
 
-QString groupIdForIndex(int index)
-{
+QString groupIdForIndex(int index) {
     return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
 }
 
-Matrix3 nodeMatrix(const VinylGroup &node)
-{
+Matrix3 nodeMatrix(const VinylGroup &node) {
     constexpr double Pi = 3.14159265358979323846;
     const double radians = node.rot * Pi / 180.0;
     const double c = std::cos(radians);
@@ -341,8 +320,7 @@ Matrix3 nodeMatrix(const VinylGroup &node)
                   s * node.sx, c * node.sy, node.py);
 }
 
-Matrix3 shapeMatrixForShape(const VinylShape &shape)
-{
+Matrix3 shapeMatrixForShape(const VinylShape &shape) {
     FlattenedLayer layer;
     layer.rotation = shape.rotation;
     layer.posX = shape.posX;
@@ -353,8 +331,7 @@ Matrix3 shapeMatrixForShape(const VinylShape &shape)
     return shapeMatrix(layer);
 }
 
-int importedGroupTerminalDepth(const QHash<QString, const scene::Group *> &groupsById, const QString &groupId)
-{
+int importedGroupTerminalDepth(const QHash<QString, const scene::Group *> &groupsById, const QString &groupId) {
     const scene::Group *group = groupsById.value(groupId, nullptr);
     if (group == nullptr) {
         return 0;
@@ -369,8 +346,7 @@ int importedGroupTerminalDepth(const QHash<QString, const scene::Group *> &group
     return 1 + importedGroupTerminalDepth(groupsById, last->id);
 }
 
-QByteArray effectiveDebugMarker(const VinylGroup &node)
-{
+QByteArray effectiveDebugMarker(const VinylGroup &node) {
     if (!node.pendingTransformMarker.isEmpty()
         && !node.inlineTransformMarker.isEmpty()
         && node.effectiveTransformMarker == node.pendingTransformMarker + node.inlineTransformMarker) {
@@ -379,8 +355,7 @@ QByteArray effectiveDebugMarker(const VinylGroup &node)
     return node.effectiveTransformMarker;
 }
 
-QByteArray renameHeader(const QByteArray &headerBytes, const QString &newName)
-{
+QByteArray renameHeader(const QByteArray &headerBytes, const QString &newName) {
     if (headerBytes.size() < 8) {
         return headerBytes;
     }
@@ -403,8 +378,7 @@ QByteArray renameHeader(const QByteArray &headerBytes, const QString &newName)
     return out;
 }
 
-void copyFileReplacing(const QString &source, const QString &destination)
-{
+void copyFileReplacing(const QString &source, const QString &destination) {
     QFile::remove(destination);
     QDir().mkpath(QFileInfo(destination).absolutePath());
     if (!QFile::copy(source, destination)) {
@@ -412,8 +386,7 @@ void copyFileReplacing(const QString &source, const QString &destination)
     }
 }
 
-void copyDirectoryContentsExceptCGroup(const QString &sourceFolder, const QString &outputFolder)
-{
+void copyDirectoryContentsExceptCGroup(const QString &sourceFolder, const QString &outputFolder) {
     const QFileInfo sourceInfo(sourceFolder);
     if (!sourceInfo.isDir()) {
         return;
@@ -515,8 +488,7 @@ struct LegacyGroupRecord {
     int liverySectionSlot = -1;
 };
 
-LegacyShapeRecord legacyShapeFromJson(const QJsonObject &object)
-{
+LegacyShapeRecord legacyShapeFromJson(const QJsonObject &object) {
     LegacyShapeRecord layer;
     layer.id = object.value(QStringLiteral("id")).toString();
     layer.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Shape"));
@@ -564,8 +536,7 @@ LegacyShapeRecord legacyShapeFromJson(const QJsonObject &object)
     return layer;
 }
 
-LegacyGuideRecord legacyGuideFromJson(const QJsonObject &object)
-{
+LegacyGuideRecord legacyGuideFromJson(const QJsonObject &object) {
     LegacyGuideRecord guide;
     guide.id = object.value(QStringLiteral("id")).toString();
     guide.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Guide"));
@@ -586,8 +557,7 @@ LegacyGuideRecord legacyGuideFromJson(const QJsonObject &object)
     return guide;
 }
 
-LegacyGroupRecord legacyGroupFromJson(const QJsonObject &object)
-{
+LegacyGroupRecord legacyGroupFromJson(const QJsonObject &object) {
     LegacyGroupRecord group;
     group.id = object.value(QStringLiteral("id")).toString();
     group.name = object.value(QStringLiteral("name")).toString(QStringLiteral("Group"));
@@ -619,8 +589,7 @@ LegacyGroupRecord legacyGroupFromJson(const QJsonObject &object)
     return group;
 }
 
-std::unique_ptr<scene::Shape> makeSceneShape(const LegacyShapeRecord &src)
-{
+std::unique_ptr<scene::Shape> makeSceneShape(const LegacyShapeRecord &src) {
     auto shape = std::make_unique<scene::Shape>();
     shape->id = src.id;
     shape->name = src.name;
@@ -645,8 +614,7 @@ std::unique_ptr<scene::Shape> makeSceneShape(const LegacyShapeRecord &src)
     return shape;
 }
 
-std::unique_ptr<scene::GuideLayer> makeSceneGuide(const LegacyGuideRecord &src)
-{
+std::unique_ptr<scene::GuideLayer> makeSceneGuide(const LegacyGuideRecord &src) {
     auto guide = std::make_unique<scene::GuideLayer>();
     guide->id = src.id;
     guide->name = src.name;
@@ -665,8 +633,7 @@ std::unique_ptr<scene::GuideLayer> makeSceneGuide(const LegacyGuideRecord &src)
     return guide;
 }
 
-void copyGroupRecord(const LegacyGroupRecord &src, scene::Group &dst)
-{
+void copyGroupRecord(const LegacyGroupRecord &src, scene::Group &dst) {
     dst.id = src.id;
     dst.name = src.name;
     dst.locked = src.locked;
@@ -688,8 +655,7 @@ void copyGroupRecord(const LegacyGroupRecord &src, scene::Group &dst)
 std::unique_ptr<scene::Group> buildSceneFromLegacyRecords(const QVector<LegacyShapeRecord> &shapes,
                                                           const QVector<LegacyGuideRecord> &guides,
                                                           const QVector<LegacyGroupRecord> &groups,
-                                                          const QVector<QString> &roots)
-{
+                                                          const QVector<QString> &roots) {
     QHash<QString, const LegacyShapeRecord *> shapeById;
     QHash<QString, const LegacyGuideRecord *> guideById;
     QHash<QString, const LegacyGroupRecord *> groupById;
@@ -753,8 +719,7 @@ std::unique_ptr<scene::Group> buildSceneFromLegacyRecords(const QVector<LegacySh
 } // namespace
 
 
-Project importCGroupFlat(const QString &folderOrFile)
-{
+Project importCGroupFlat(const QString &folderOrFile) {
     const QByteArray payload = readCGroupPayload(folderOrFile);
     enforcePrivacyPolicyForCGroup(payload);
     LayerData layerData;
@@ -796,8 +761,7 @@ Project importCGroupFlat(const QString &folderOrFile)
     return project;
 }
 
-Project importCGroupNested(const QString &folderOrFile)
-{
+Project importCGroupNested(const QString &folderOrFile) {
     const QByteArray payload = readCGroupPayload(folderOrFile);
     enforcePrivacyPolicyForCGroup(payload);
     LayerData layerData;
@@ -898,8 +862,7 @@ Project importCGroupNested(const QString &folderOrFile)
     return project;
 }
 
-Project importCLivery(const QString &folderOrFile)
-{
+Project importCLivery(const QString &folderOrFile) {
     const LiveryPayload livery = readLiveryPayload(folderOrFile);
     enforcePrivacyPolicyForCLivery(livery);
     const QVector<LiverySection> sections =
@@ -1055,8 +1018,7 @@ Project importCLivery(const QString &folderOrFile)
     return project;
 }
 
-Project projectFromJson(const QJsonObject &object)
-{
+Project projectFromJson(const QJsonObject &object) {
     if (object.contains(QStringLiteral("format"))) {
         if (object.value(QStringLiteral("format")).toString() != QLatin1String(ProjectJsonFormat)) {
             throw std::runtime_error("not an editor project");
@@ -1173,8 +1135,7 @@ Project projectFromJson(const QJsonObject &object)
     return project;
 }
 
-QJsonObject projectToJson(const Project &project)
-{
+QJsonObject projectToJson(const Project &project) {
     QJsonObject object;
     object.insert(QStringLiteral("format"), QLatin1String(ProjectJsonFormat));
     object.insert(QStringLiteral("version"), ProjectJsonVersion);
@@ -1222,14 +1183,12 @@ QJsonObject projectToJson(const Project &project)
     return object;
 }
 
-QByteArray encodeProjectDocument(const Project &project)
-{
+QByteArray encodeProjectDocument(const Project &project) {
     const QJsonDocument document(projectToJson(project));
     return gzipCompress(document.toJson(QJsonDocument::Indented));
 }
 
-Project decodeProjectDocument(const QByteArray &fileBytes)
-{
+Project decodeProjectDocument(const QByteArray &fileBytes) {
     const QByteArray json = looksGzipped(fileBytes) ? gzipDecompress(fileBytes) : fileBytes;
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
@@ -1245,8 +1204,7 @@ Project decodeProjectDocument(const QByteArray &fileBytes)
 namespace {
 
 void writeExportFolder(const Project &project, const QString &outputFolder,
-                       const QString &name, const QByteArray &payload)
-{
+                       const QString &name, const QByteArray &payload) {
     if (outputFolder.isEmpty()) {
         throw std::runtime_error("export output folder is empty");
     }
@@ -1283,23 +1241,20 @@ void writeExportFolder(const Project &project, const QString &outputFolder,
 } // namespace
 
 void exportNestedProjectFolder(const Project &project, const QString &outputFolder,
-                               const QString &name, const SpriteSizeFn &spriteSize)
-{
+                               const QString &name, const SpriteSizeFn &spriteSize) {
     writeExportFolder(project, outputFolder, name, buildNestedPayload(project, spriteSize));
 }
 
 namespace {
 
-void writeLeU32InPlace(QByteArray &bytes, int offset, quint32 value)
-{
+void writeLeU32InPlace(QByteArray &bytes, int offset, quint32 value) {
     bytes[offset] = static_cast<char>(value & 0xff);
     bytes[offset + 1] = static_cast<char>((value >> 8) & 0xff);
     bytes[offset + 2] = static_cast<char>((value >> 16) & 0xff);
     bytes[offset + 3] = static_cast<char>((value >> 24) & 0xff);
 }
 
-void writeRawFile(const QString &path, const QByteArray &bytes)
-{
+void writeRawFile(const QString &path, const QByteArray &bytes) {
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         throw std::runtime_error(("could not write file: " + path).toStdString());
@@ -1309,8 +1264,7 @@ void writeRawFile(const QString &path, const QByteArray &bytes)
     }
 }
 
-QByteArray buildLiveryHeader(const Project &project)
-{
+QByteArray buildLiveryHeader(const Project &project) {
     std::optional<HeaderMetadata> sourceMetadata;
     if (!project.sourceHeader.isEmpty()) {
         try {
@@ -1349,8 +1303,7 @@ QByteArray buildLiveryHeader(const Project &project)
 
 } // namespace
 
-QByteArray encodeCLiveryPayload(const Project &project)
-{
+QByteArray encodeCLiveryPayload(const Project &project) {
     if (!project.isLivery) {
         throw std::runtime_error("not a livery project");
     }
@@ -1408,8 +1361,7 @@ QByteArray encodeCLiveryPayload(const Project &project)
     return payload;
 }
 
-void exportCLivery(const Project &project, const QString &outputFolder)
-{
+void exportCLivery(const Project &project, const QString &outputFolder) {
     if (outputFolder.isEmpty()) {
         throw std::runtime_error("export output folder is empty");
     }

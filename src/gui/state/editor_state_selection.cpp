@@ -1,80 +1,70 @@
 #include "editor_state.h"
 
 namespace gui {
+namespace {
 
-QVector<fh6::scene::Shape *> EditorState::selectedLayers()
-{
-    QVector<fh6::scene::Shape *> result;
-    if (!hasProject_) {
-        return result;
-    }
-    const ProjectIndexCache &cache = projectIndexCache();
-    for (const QString &id : selectedLayerIds_) {
-        if (fh6::scene::Shape *shape = cache.layers.value(id, nullptr)) {
-            result.push_back(shape);
+template <typename LayerType>
+QVector<LayerType *> selectedNodes(const QSet<QString> &ids, const QHash<QString, LayerType *> &nodes) {
+    QVector<LayerType *> result;
+    for (const QString &id : ids) {
+        if (LayerType *node = nodes.value(id, nullptr)) {
+            result.push_back(node);
         }
     }
+
     return result;
 }
 
-QVector<fh6::scene::GuideLayer *> EditorState::selectedGuideLayers()
-{
-    QVector<fh6::scene::GuideLayer *> result;
-    if (!hasProject_) {
-        return result;
-    }
-    const ProjectIndexCache &cache = projectIndexCache();
-    for (const QString &id : selectedGuideLayerIds_) {
-        if (fh6::scene::GuideLayer *guide = cache.guides.value(id, nullptr)) {
-            result.push_back(guide);
-        }
-    }
-    return result;
 }
 
-QVector<fh6::scene::Group *> EditorState::selectedGroups(const QVector<QString> &entryIds)
-{
+QVector<fh6::scene::Shape *> EditorState::selectedLayers() {
+    if (!hasProject_) {
+        return {};
+    }
+
+    return selectedNodes(selectedLayerIds_, projectIndexCache().layers);
+}
+
+QVector<fh6::scene::GuideLayer *> EditorState::selectedGuideLayers() {
+    if (!hasProject_) {
+        return {};
+    }
+
+    return selectedNodes(selectedGuideLayerIds_, projectIndexCache().guides);
+}
+
+QVector<fh6::scene::Group *> EditorState::selectedGroups(const QVector<QString> &entryIds) {
     QVector<fh6::scene::Group *> result;
     if (!hasProject_) {
         return result;
     }
     const QVector<QString> entries = normalizeEntrySelection(entryIds);
     const ProjectIndexCache &cache = projectIndexCache();
-    QSet<QString> seen;
     for (const QString &entryId : entries) {
-        if (seen.contains(entryId)) {
-            continue;
-        }
         if (fh6::scene::Group *group = cache.groups.value(entryId, nullptr)) {
             result.push_back(group);
-            seen.insert(entryId);
         }
     }
     return result;
 }
 
-QSet<QString> EditorState::selectedLayerIds() const
-{
+QSet<QString> EditorState::selectedLayerIds() const {
     return selectedLayerIds_;
 }
 
-void EditorState::setSelectedLayerIds(const QSet<QString> &ids)
-{
+void EditorState::setSelectedLayerIds(const QSet<QString> &ids) {
     setSelectionIds(ids, {});
 }
 
-QSet<QString> EditorState::selectedGuideLayerIds() const
-{
+QSet<QString> EditorState::selectedGuideLayerIds() const {
     return selectedGuideLayerIds_;
 }
 
-void EditorState::setSelectedGuideLayerIds(const QSet<QString> &ids)
-{
+void EditorState::setSelectedGuideLayerIds(const QSet<QString> &ids) {
     setSelectionIds({}, ids);
 }
 
-void EditorState::setSelectionIds(const QSet<QString> &layerIds, const QSet<QString> &guideLayerIds)
-{
+void EditorState::setSelectionIds(const QSet<QString> &layerIds, const QSet<QString> &guideLayerIds) {
     const QSet<QString> existingLayers = existingLayerIds(layerIds);
     const QSet<QString> existingGuides = existingGuideLayerIds(guideLayerIds);
     if (existingLayers == selectedLayerIds_ && existingGuides == selectedGuideLayerIds_
@@ -89,21 +79,10 @@ void EditorState::setSelectionIds(const QSet<QString> &layerIds, const QSet<QStr
 
 void EditorState::setSelectionFromEntries(const QSet<QString> &layerIds,
                                           const QSet<QString> &guideLayerIds,
-                                          const QVector<QString> &entryIds)
-{
+                                          const QVector<QString> &entryIds) {
     const QSet<QString> existingLayers = existingLayerIds(layerIds);
     const QSet<QString> existingGuides = existingGuideLayerIds(guideLayerIds);
-    QVector<QString> existingEntries;
-    existingEntries.reserve(entryIds.size());
-    QSet<QString> seen;
-    const ProjectIndexCache &cache = projectIndexCache();
-    for (const QString &id : entryIds) {
-        if (!id.isEmpty() && !seen.contains(id) && cache.nodes.contains(id)) {
-            existingEntries.push_back(id);
-            seen.insert(id);
-        }
-    }
-    existingEntries = normalizeEntrySelection(existingEntries);
+    const QVector<QString> existingEntries = existingEntryIds(entryIds);
     if (existingLayers == selectedLayerIds_ && existingGuides == selectedGuideLayerIds_
         && existingEntries == selectedEntryIds_) {
         return;
@@ -114,13 +93,11 @@ void EditorState::setSelectionFromEntries(const QSet<QString> &layerIds,
     Q_EMIT selectionChanged();
 }
 
-void EditorState::clearSelection()
-{
+void EditorState::clearSelection() {
     setSelectionIds({}, {});
 }
 
-void EditorState::selectLayerAtPoint(const QString &layerId, Qt::KeyboardModifiers modifiers)
-{
+void EditorState::selectLayerAtPoint(const QString &layerId, Qt::KeyboardModifiers modifiers) {
     QSet<QString> ids = selectedLayerIds_;
     if (layerId.isEmpty()) {
         if (!(modifiers & (Qt::ShiftModifier | Qt::ControlModifier))) {
@@ -148,8 +125,7 @@ void EditorState::selectLayerAtPoint(const QString &layerId, Qt::KeyboardModifie
     setSelectedLayerIds(ids);
 }
 
-QVector<QString> EditorState::normalizeEntrySelection(const QVector<QString> &entryIds) const
-{
+QVector<QString> EditorState::normalizeEntrySelection(const QVector<QString> &entryIds) const {
     QVector<QString> result;
     QSet<QString> selectedSet;
     for (const QString &id : entryIds) {

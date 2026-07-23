@@ -3,6 +3,7 @@
 #include "core_types.h"
 #include "editor_state.h"
 #include "layer_tree_model.h"
+#include "gui/key_bindings.h"
 #include "project_canvas.h"
 #include "settings_dialog.h"
 #include "theme_manager.h"
@@ -12,12 +13,14 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
 
 class QDockWidget;
 class QAction;
 class QLabel;
 class QMenu;
+class QProgressBar;
 class QObject;
 class QModelIndex;
 class QTreeView;
@@ -27,6 +30,8 @@ class QDropEvent;
 class QUrl;
 class QWidget;
 class QToolButton;
+class QSplitter;
+class QToolBar;
 
 namespace gui {
 
@@ -87,6 +92,9 @@ private:
 
     void importFileDialog();
     void importGuideLayerDialog();
+    void preprocessSelectedGuide();
+    void createRegions();
+    void fillRegions();
     bool importFM2023Folder(const QString &path, QString *error);
     void rebuildSectionBar();
     void setActiveSection(const QString &sectionGroupId);
@@ -122,14 +130,15 @@ private:
     QAction *registerShortcutAction(QAction *action,
                                     const QString &id,
                                     const QString &label,
-                                    const QKeySequence &defaultShortcut,
                                     const QString &iconName = QString(),
-                                    bool mirroredIcon = false,
-                                    Qt::ShortcutContext context = Qt::WindowShortcut);
+                                    bool mirroredIcon = false);
     QAction *trackIconAction(QAction *action, const QString &iconName, bool mirroredIcon = false);
     QVector<ShortcutSettingsItem> shortcutSettingsItems() const;
     void applyShortcutSettings(const QVector<ShortcutSettingsItem> &items);
-    void refreshShortcutActionText(QAction *action, const QString &id, const QString &label) const;
+    void refreshShortcutActionText(QAction *action,
+                                   const QString &id,
+                                   const QString &label,
+                                   const QKeySequence &shortcut) const;
     void setProject(fh6::Project project);
     void updateStatus();
     void updateClipboardWidget();
@@ -143,14 +152,40 @@ private:
     QVector<fh6::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
-    void startPenFill(const QVector<PenPoint> &points);
+    void startPenFill(const QVector<PenPoint> &points,
+                      const std::optional<QColor> &fillColor = std::nullopt);
+    void startLiningFill(const QVector<PenPoint> &points,
+                         double width,
+                         const std::optional<QColor> &fillColor = std::nullopt);
+    using GeneratedFillFunction = std::function<PenFillResult(const std::function<bool()> &)>;
+    void prepareGeneratedFill(const std::optional<QColor> &fillColor,
+                              const QString &label,
+                              const QString &tool);
+    void startGeneratedFillTask(GeneratedFillFunction fill);
+    void clearGeneratedFillState();
+    void cancelActiveFills();
     void cancelGeneratedFill();
-    void finishPenFill(quint64 generation, PenFillResult result);
+    void finishGeneratedFill(quint64 generation, PenFillResult result);
+    void cancelRegionFill();
+    void updateRegionFillProgress(quint64 generation, const QString &phase,
+                                  int completed, int total);
+    void finishRegionFill(quint64 generation, RegionFillBatchResult result);
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);
+    void insertGeneratedRegionVariants(
+        const QString &groupName,
+        const QString &displayName,
+        const QVector<GeneratedRegionVariant> &variants,
+        const QVector<QString> &insertionEntries,
+        const QImage &differenceHeatmap,
+        const QString &sourceGuideId);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
+    bool loadImportedProject(const std::function<fh6::Project()> &load,
+                             const QString &statusMessage,
+                             QString *error);
+    fh6::HeaderMetadata &ensureProjectHeaderMetadata();
     enum class ExternalDropKind {
         Unsupported,
         ProjectJson,
@@ -160,7 +195,6 @@ private:
     ExternalDropKind classifyExternalDropPath(const QString &path) const;
     bool handleExternalDropUrls(const QList<QUrl> &urls);
     QStringList idsForIndex(const QModelIndex &index) const;
-    QSet<QString> existingLayerIds(const QSet<QString> &ids) const;
     void normalizeDockResizeCursor();
     void clearDockResizeCursorOverride();
     void installDockAreaCollapseButton(QDockWidget *dock, Qt::DockWidgetArea fallbackArea);
@@ -180,14 +214,17 @@ private:
     void setupFileMenu();
     void setupEditMenu();
     void setupProjectMenu();
+    void setupImgGenMenu();
     void setupOptionsMenu();
     void setupToolbar();
+    void applyToolbarStyle(bool vertical);
     void setupWindowMenu();
     void importCarModel();
     void maybeAutoLoadCarForProject(bool replaceLoadedModel = false);
     QString findCarModelPath(const QString &folder, const QString &modelName) const;
 
     EditorState *state_ = nullptr;
+    KeyBindingRouter *keyBindings_ = nullptr;
     ProjectCanvas *canvas_ = nullptr;
     ClipboardBufferWidget *clipboardWidget_ = nullptr;
     ColorPaletteWidget *colorPalette_ = nullptr;
@@ -197,7 +234,13 @@ private:
     QAction *carUnwrapAction_ = nullptr;
     QTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;
+    QSplitter *layersSplitter_ = nullptr;
     QLabel *details_ = nullptr;
+    QLabel *liningWidthLabel_ = nullptr;
+    QDoubleSpinBox *liningWidthSpin_ = nullptr;
+    QToolBar *toolBar_ = nullptr;
+    QAction *skewToolAction_ = nullptr;
+    QAction *opacityToolAction_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;
@@ -237,6 +280,7 @@ private:
         QString id;
         QString label;
         QKeySequence defaultShortcut;
+        QKeySequence currentShortcut;
         QAction *action = nullptr;
     };
     struct IconAction {
@@ -256,6 +300,12 @@ private:
     QVector<QString> generatedFillInsertionEntries_;
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
+    QString generatedFillTool_;
+    int regionMergeAreaThreshold_ = 12;
+    std::shared_ptr<std::atomic_bool> regionFillCancel_;
+    quint64 regionFillGeneration_ = 0;
+    QVector<QString> regionFillInsertionEntries_;
+    QProgressBar *regionFillProgress_ = nullptr;
 };
 
 } // namespace gui
