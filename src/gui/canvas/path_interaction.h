@@ -20,6 +20,12 @@ struct PenCurveHit {
     bool valid() const { return insertIndex >= 0; }
 };
 
+struct PathInteractionState {
+    QVector<PenPoint> points;
+    std::optional<QColor> fillColor;
+    bool closed = false;
+};
+
 struct PathInteraction {
     QVector<PenPoint> points;
     std::optional<QColor> fillColor;
@@ -33,6 +39,9 @@ struct PathInteraction {
     int dragPoint = -1;
     bool closed = false;
     bool fillRunning = false;
+    QVector<PathInteractionState> undoStack;
+    QVector<PathInteractionState> redoStack;
+    std::optional<PathInteractionState> pendingEdit;
 
     void resetHover() {
         hoverCurve = {};
@@ -50,6 +59,9 @@ struct PathInteraction {
         resetHover();
         closed = false;
         fillRunning = false;
+        undoStack.clear();
+        redoStack.clear();
+        pendingEdit.reset();
     }
 };
 

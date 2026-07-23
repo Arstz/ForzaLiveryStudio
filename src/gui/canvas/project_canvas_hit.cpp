@@ -498,7 +498,7 @@ QString ProjectCanvas::transformHandleAt(const QPointF &point, const SelectionBo
     const double handleHalfX = kHandleHalf / lenX;
     const double handleHalfY = kHandleHalf / lenY;
 
-    {
+    if (!options_.separateOpacityAndSkewTools) {
         const QPointF skew(box.localRect.center().x(), box.localRect.top() - kSkewHandleOffset / lenY);
         if (std::abs(local.x() - skew.x()) <= handleHalfX && std::abs(local.y() - skew.y()) <= handleHalfY) {
             return QStringLiteral("skew");

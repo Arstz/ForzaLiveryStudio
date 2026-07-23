@@ -87,6 +87,24 @@ public:
     bool hoverCursor(const QPointF &point, QCursor *cursor) const override;
 };
 
+class SkewTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool picksUnderCursor() const override { return true; }
+    void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
+class OpacityTool final : public CanvasTool {
+public:
+    using CanvasTool::CanvasTool;
+    QString name() const override;
+    bool picksUnderCursor() const override { return true; }
+    void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
+};
+
 class PipetteTool final : public CanvasTool {
 public:
     using CanvasTool::CanvasTool;

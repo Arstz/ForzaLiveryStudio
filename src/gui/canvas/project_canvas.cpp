@@ -12,6 +12,25 @@ namespace {
 
 const QRectF kDefaultProjectBounds(-128.0, -128.0, 256.0, 256.0);
 
+PathInteractionState capturePathState(const PathInteraction &path) {
+    return {path.points, path.fillColor, path.closed};
+}
+
+bool pathStatesEqual(const PathInteractionState &left, const PathInteractionState &right) {
+    if (left.closed != right.closed
+        || left.fillColor != right.fillColor
+        || left.points.size() != right.points.size()) {
+        return false;
+    }
+    for (qsizetype i = 0; i < left.points.size(); ++i) {
+        if (left.points[i].position != right.points[i].position
+            || left.points[i].kind != right.points[i].kind) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 ProjectCanvas::ProjectCanvas(QWidget *parent)
@@ -38,6 +57,8 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
     tools_.push_back(std::make_unique<MarqueeTool>(*this));
     tools_.push_back(std::make_unique<TransformTool>(*this));
     tools_.push_back(std::make_unique<RotateTool>(*this));
+    tools_.push_back(std::make_unique<SkewTool>(*this));
+    tools_.push_back(std::make_unique<OpacityTool>(*this));
     tools_.push_back(std::make_unique<PipetteTool>(*this));
     tools_.push_back(std::make_unique<PenTool>(*this));
     tools_.push_back(std::make_unique<LiningTool>(*this));
@@ -97,10 +118,12 @@ void ProjectCanvas::setTool(const QString &tool) {
     }
     cancelDrag();
     if (tool_ == QStringLiteral("pen") && tool != tool_) {
+        commitPathEdit(pen_);
         pen_.resetHover();
         clearCursorHint();
     }
     if (tool_ == QStringLiteral("lining") && tool != tool_) {
+        commitPathEdit(lining_);
         lining_.resetHover();
         clearCursorHint();
     }
@@ -258,6 +281,15 @@ void ProjectCanvas::setTransformRelativeMode(bool relative) {
     frame_.layerSignature.clear();
     frame_.guideSignature.clear();
     invalidateSelectionCache();
+    update();
+}
+
+void ProjectCanvas::setSeparateOpacityAndSkewTools(bool enabled) {
+    if (options_.separateOpacityAndSkewTools == enabled) {
+        return;
+    }
+    options_.separateOpacityAndSkewTools = enabled;
+    updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
 }
 
@@ -477,6 +509,98 @@ void ProjectCanvas::cancelPathInteraction(PathInteraction &path, const std::func
         cancelCallback();
     }
     update();
+}
+
+void ProjectCanvas::discardPathInteraction(PathInteraction &path,
+                                           const std::function<void()> &cancelCallback) {
+    const bool wasRunning = path.fillRunning;
+    beginPathEdit(path);
+    path.points.clear();
+    path.crossings.clear();
+    path.fillColor.reset();
+    path.error.clear();
+    path.fillMessage.clear();
+    path.resetHover();
+    path.closed = false;
+    path.fillRunning = false;
+    commitPathEdit(path);
+    clearCursorHint();
+    if (wasRunning && cancelCallback != nullptr) {
+        cancelCallback();
+    }
+    update();
+}
+
+void ProjectCanvas::beginPathEdit(PathInteraction &path) {
+    if (!path.pendingEdit.has_value()) {
+        path.pendingEdit = capturePathState(path);
+    }
+}
+
+void ProjectCanvas::commitPathEdit(PathInteraction &path) {
+    if (!path.pendingEdit.has_value()) {
+        return;
+    }
+    if (!pathStatesEqual(*path.pendingEdit, capturePathState(path))) {
+        path.undoStack.push_back(std::move(*path.pendingEdit));
+        path.redoStack.clear();
+    }
+    path.pendingEdit.reset();
+}
+
+void ProjectCanvas::refreshPathAfterHistory(PathInteraction &path) {
+    path.resetHover();
+    path.crossings.clear();
+    path.error.clear();
+    const QPoint cursorPoint = mapFromGlobal(QCursor::pos());
+    if (&path == &pen_) {
+        normalizePenPointOrder();
+        validatePenInteraction();
+        refreshPenInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
+    } else {
+        validateLiningInteraction();
+        refreshLiningInteractionHint(cursorPoint, QGuiApplication::keyboardModifiers());
+    }
+    updateCursorForPoint(cursorPoint);
+    update();
+}
+
+bool ProjectCanvas::applyPathHistory(PathInteraction &path, bool undo) {
+    if (path.fillRunning || path.pendingEdit.has_value()) {
+        return false;
+    }
+    QVector<PathInteractionState> &source = undo ? path.undoStack : path.redoStack;
+    QVector<PathInteractionState> &destination = undo ? path.redoStack : path.undoStack;
+    if (source.isEmpty()) {
+        return false;
+    }
+    destination.push_back(capturePathState(path));
+    const PathInteractionState next = source.takeLast();
+    path.points = next.points;
+    path.fillColor = next.fillColor;
+    path.closed = next.closed;
+    refreshPathAfterHistory(path);
+    return true;
+}
+
+bool ProjectCanvas::undoContourEdit() {
+    if (tool_ == QStringLiteral("pen")) {
+        return applyPathHistory(pen_, true);
+    }
+    if (tool_ == QStringLiteral("lining")) {
+        return applyPathHistory(lining_, true);
+    }
+    return false;
+}
+
+bool ProjectCanvas::redoContourEdit() {
+    if (tool_ == QStringLiteral("pen")) {
+        return applyPathHistory(pen_, false);
+    }
+    if (tool_ == QStringLiteral("lining")) {
+        return applyPathHistory(lining_, false);
+    }
+    return false;
 }
 
 void ProjectCanvas::setPenFillRunning(bool running, const QString &message) {

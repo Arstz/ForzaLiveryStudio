@@ -267,6 +267,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
         return false;
     }
 
+    beginPathEdit(pen_);
     pen_.points = std::move(worldPoints);
     normalizePenPointOrder();
     pen_.fillColor = bucket_.fill.averageColor;
@@ -274,6 +275,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
     pen_.hoverWorld = pen_.points.front().position;
     pen_.crossings.clear();
     pen_.error.clear();
+    commitPathEdit(pen_);
     clearBucketPreview();
     setTool(QStringLiteral("pen"));
     validatePenInteraction();

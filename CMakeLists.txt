@@ -331,6 +331,7 @@ set(FH6_GUI_ASSETS
     ToolbarScale.xpm
     ToolbarSelect.xpm
     ToolbarSkew.xpm
+    ToolOpacity.xpm
     ToolLining.xpm
     ToolPipette.xpm
     ToolBucket.xpm
@@ -385,7 +386,7 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/car_ids.json"
-    COMMENT "Deploying used GUI XPM assets"
+    COMMENT "Deploying used GUI assets"
 )
 
 if(NOT FH6_BUILD_HELPER_TOOLS)

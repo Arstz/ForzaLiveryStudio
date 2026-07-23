@@ -188,6 +188,11 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     verticalToolbarCheck_->setChecked(behaviorSettings_.verticalToolbar);
     generalLayout->addRow(QStringLiteral("Vertical icon-only toolbar"), verticalToolbarCheck_);
 
+    separateOpacityAndSkewToolsCheck_ = new QCheckBox(general);
+    separateOpacityAndSkewToolsCheck_->setChecked(behaviorSettings_.separateOpacityAndSkewTools);
+    generalLayout->addRow(QStringLiteral("Separate opacity and skew tools"),
+                          separateOpacityAndSkewToolsCheck_);
+
     {
         auto *row = new QWidget(general);
         auto *rowLayout = new QHBoxLayout(row);
@@ -321,6 +326,7 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
     result.valueEditingWheelEnabled = valueEditingWheelCheck_->isChecked();
     result.verticalToolbar = verticalToolbarCheck_->isChecked();
+    result.separateOpacityAndSkewTools = separateOpacityAndSkewToolsCheck_->isChecked();
     result.carModelsFolder = carModelsFolder_->text().trimmed();
     result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
     result.loadCarTextures = loadCarTextures_->isChecked();

@@ -57,6 +57,7 @@ struct BehaviorSettings {
     bool discardModelOnLiveryOpen = true;
     bool loadCarTextures = false;
     bool verticalToolbar = false;
+    bool separateOpacityAndSkewTools = false;
 };
 
 enum class PreviewBackgroundMode {

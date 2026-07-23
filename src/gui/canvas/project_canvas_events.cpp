@@ -214,6 +214,8 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
     }
 
     const bool picksUnderCursor = activeTool_ != nullptr && activeTool_->picksUnderCursor();
+    const bool canPickUnderCursor = picksUnderCursor
+        && (tool_ != QStringLiteral("move") || options_.moveToolAutoSelect);
 
     auto selectMoveAutoTarget = [this, event]() -> bool {
         const QString target = selectTargetAtScreenPoint(event->position(), {});
@@ -261,7 +263,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
         return;
     }
 
-    if (picksUnderCursor
+    if (canPickUnderCursor
         && state_->selectedLayerIds().isEmpty()
         && !state_->selectedGuideLayerIds().isEmpty()) {
         const QString target = selectTargetAtScreenPoint(event->position(), {});
@@ -272,7 +274,7 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
     }
 
     if (state_->selectedLayerIds().isEmpty() && state_->selectedGuideLayerIds().isEmpty()
-        && picksUnderCursor) {
+        && canPickUnderCursor) {
         const QString target = selectTargetAtScreenPoint(event->position(), {});
         const QString guideTarget = target.isEmpty() ? guideAtScreenPoint(event->position()) : QString();
         if (target.isEmpty() && guideTarget.isEmpty()) {
@@ -299,10 +301,13 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
 
     if (drag_.mode != DragMode::None) {
         drag_.duplicated = false;
-        drag_.usesProjectEdit = (event->modifiers() & Qt::AltModifier)
+        const bool duplicateDrag = (event->modifiers() & Qt::AltModifier)
             && (drag_.mode == DragMode::Move || drag_.mode == DragMode::TransformMove);
+        drag_.usesProjectEdit = duplicateDrag || drag_.mode == DragMode::Opacity;
         if (drag_.usesProjectEdit) {
             state_->beginProjectEdit();
+        }
+        if (duplicateDrag) {
             const QVector<QString> entries = state_->selectedTransformTargetIds();
             QSet<QString> newLayerSel;
             QSet<QString> newGuideSel;
@@ -372,6 +377,11 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
     }
     if (drag_.mode == DragMode::Skew) {
         applySkewDrag(event->position());
+        event->accept();
+        return;
+    }
+    if (drag_.mode == DragMode::Opacity) {
+        applyOpacityDrag(event->position());
         event->accept();
         return;
     }
@@ -477,9 +487,11 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     if (interaction == KeyInteraction::CanvasRemovePathPoint
         && tool_ == QStringLiteral("pen") && !pen_.fillRunning && !pen_.closed) {
         if (!pen_.points.isEmpty()) {
+            beginPathEdit(pen_);
             pen_.points.removeLast();
             pen_.crossings.clear();
             pen_.error.clear();
+            commitPathEdit(pen_);
             clearCursorHint();
             update();
         }
@@ -489,8 +501,10 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     if (interaction == KeyInteraction::CanvasRemovePathPoint
         && tool_ == QStringLiteral("lining") && !lining_.fillRunning && !lining_.closed) {
         if (!lining_.points.isEmpty()) {
+            beginPathEdit(lining_);
             lining_.points.removeLast();
             lining_.error.clear();
+            commitPathEdit(lining_);
             clearCursorHint();
             update();
         }
@@ -517,11 +531,11 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     }
     if (interaction == KeyInteraction::CanvasCancelInteraction) {
         if (tool_ == QStringLiteral("pen")) {
-            cancelPenInteraction();
+            discardPathInteraction(pen_, penFillCancelCallback_);
             return true;
         }
         if (tool_ == QStringLiteral("lining")) {
-            cancelLiningInteraction();
+            discardPathInteraction(lining_, liningFillCancelCallback_);
             return true;
         }
         if (tool_ == QStringLiteral("bucket")) {

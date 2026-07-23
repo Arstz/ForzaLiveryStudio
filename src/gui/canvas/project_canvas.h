@@ -60,6 +60,7 @@ public:
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
     void setDisplayAnchorsDuringTransformDrag(bool enabled);
+    void setSeparateOpacityAndSkewTools(bool enabled);
     void setGuideLayersVisible(bool visible);
     void setGuideLayersOnTop(bool enabled);
     bool guideLayersOnTop() const;
@@ -114,6 +115,8 @@ public:
     bool alignSelection(AlignEdge edge);
     bool distributeSelection(DistributeAxis axis);
     bool handleKeyBinding(KeyInteraction interaction, KeyEventPhase phase, bool autoRepeat);
+    bool undoContourEdit();
+    bool redoContourEdit();
 
     bool currentTransformBox(QPointF *center,
                              double *width,
@@ -138,6 +141,8 @@ private:
     friend class MarqueeTool;
     friend class TransformTool;
     friend class RotateTool;
+    friend class SkewTool;
+    friend class OpacityTool;
     friend class PipetteTool;
     friend class PenTool;
     friend class LiningTool;
@@ -162,6 +167,7 @@ private:
         TransformMove,
         Scale,
         Skew,
+        Opacity,
         Rotate,
     };
 
@@ -185,6 +191,7 @@ private:
         double scaleY = 1.0;
         double rotation = 0.0;
         double skew = 0.0;
+        double opacity = 1.0;
     };
 
     struct SelectionBox {
@@ -274,6 +281,7 @@ private:
         bool moveToolAutoSelect = false;
         bool allowMoveOutsideBoundingBox = true;
         bool displayAnchorsDuringTransformDrag = true;
+        bool separateOpacityAndSkewTools = false;
         bool guideLayersVisible = true;
         bool guideLayersOnTop = true;
         bool visibilityBordersEnabled = true;
@@ -320,6 +328,7 @@ private:
                               bool descendSoleGroup = false);
     void applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers);
     void applySkewDrag(const QPointF &screenPoint);
+    void applyOpacityDrag(const QPointF &screenPoint);
     void applyDragTransform(const QTransform &transform, bool preMultiply);
     void applyWorldTransformToDragItems(const QTransform &worldTransform);
     QString transformSelectionSignature() const;
@@ -371,6 +380,11 @@ private:
     void storeSectionCanvasCache(const QString &key);
     void setPathFillRunning(PathInteraction &path, bool running, const QString &message);
     void cancelPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback);
+    void discardPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback);
+    void beginPathEdit(PathInteraction &path);
+    void commitPathEdit(PathInteraction &path);
+    bool applyPathHistory(PathInteraction &path, bool undo);
+    void refreshPathAfterHistory(PathInteraction &path);
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;

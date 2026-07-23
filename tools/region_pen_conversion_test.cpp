@@ -88,6 +88,19 @@ QVector<gui::PenPrimitive> penPrimitiveCatalog(TestContext *test)
     return primitives;
 }
 
+void centuryGothicLowercaseAUsesFullWidth(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error), "Century Gothic geometry should load");
+    const QSizeF size = geometry.shapeSize(3801);
+    const QRectF ink = geometry.shapeInkBounds(3801);
+    test->expect(std::abs(size.width() - 220.0) <= 1e-6,
+                 "Century Gothic lowercase a should use the full glyph width");
+    test->expect(ink.width() > 70.0,
+                 "Century Gothic lowercase a ink should span the corrected glyph width");
+}
+
 double filledPathArea(const QPainterPath &path)
 {
     double result = 0.0;
@@ -2676,6 +2689,7 @@ int main(int argc, char **argv)
         return checkLoggedRegion(QString::fromLocal8Bit(argv[2]), QSize(width, height));
     }
     TestContext test;
+    centuryGothicLowercaseAUsesFullWidth(&test);
     advancingFrontFillsSimpleEllipse(&test);
     advancingFrontHonorsSafeShapeCeiling(&test);
     advancingFrontPreflightRejectsUnprofitableSearch(&test);

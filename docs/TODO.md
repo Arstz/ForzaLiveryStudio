@@ -1,20 +1,19 @@
 Small changes:
-    - Move tool does not consider guide layer as selection and tries to override it
+    -Tool buttons not resized properly after applying custom keybinds, collapsing the text
+    -Skew tool hint text displays skew in px rather than editor units
+    -Cursor on layer drag in Layers widget is rendered only left half visible
 
 Medium changes:
-    -Itegrate contour created via pen/lining/bucket actions: point created, moved, deleted. etc... as proper history actions
     -Handle files that were passed as params on application launch, if 3so -> open project if image pass the image as a Guidelayer to a new project
-    -Add a checkbox to allow Opacity and Skew tools to be separate (use ToolOpacity and ToolbarSkew), if checked no skew anchor should appear in Transform tool, off by default.
     -Add dragging layer in Layers widget to scroll the list if near upper or lower borders
-    -Add contorols for internal contour fill params (epsilon, time...) 
 
 Big changes:
     -Add proper scaffolding and header generation from scratch for liveries
     -Apply proper car paint material from ingame files
-    -Reorganize Setting and Options into categories, add hints for each in Settings with show hint on hover behaviour, detach to a json file for ease of editing
     -Retire legacy format support in next version
 
 Manual tasks:
+    -Reorganize Setting and Options into categories, add hints for each in Settings with show hint on hover behaviour, detach to a json file for ease of editing
     -Create application icon, splash screen image and file association icon
     -Rewrite manual user-oriented
     -Add hints for all settings, regroup options and settings

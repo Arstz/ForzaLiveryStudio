@@ -82,6 +82,7 @@ private:
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;
     QCheckBox *loadCarTextures_ = nullptr;
     QCheckBox *verticalToolbarCheck_ = nullptr;
+    QCheckBox *separateOpacityAndSkewToolsCheck_ = nullptr;
     QCheckBox *valueEditingWheelCheck_ = nullptr;
     QTableWidget *shortcutTable_ = nullptr;
     QLabel *validationLabel_ = nullptr;

@@ -595,6 +595,10 @@ void MainWindow::setupToolbar() {
     toolGroup->addAction(addTool(QStringLiteral("Move"), QStringLiteral("move"), QStringLiteral("ToolbarMove.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Marquee"), QStringLiteral("marquee"), QStringLiteral("ToolbarMarquee.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Transform"), QStringLiteral("transform"), QStringLiteral("ToolbarScale.xpm")));
+    skewToolAction_ = addTool(QStringLiteral("Skew"), QStringLiteral("skew"), QStringLiteral("ToolbarSkew.xpm"));
+    toolGroup->addAction(skewToolAction_);
+    opacityToolAction_ = addTool(QStringLiteral("Opacity"), QStringLiteral("opacity"), QStringLiteral("ToolOpacity.xpm"));
+    toolGroup->addAction(opacityToolAction_);
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QStringLiteral("ToolbarRotate.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pipette"), QStringLiteral("pipette"), QStringLiteral("ToolPipette.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Pen"), QStringLiteral("pen"), QStringLiteral("ToolbarPen.xpm")));
@@ -627,7 +631,10 @@ void MainWindow::setupToolbar() {
                            QStringLiteral("PropertyName.xpm"));
     addAction(placeTextAction);
     connect(placeTextAction, &QAction::triggered, this, [this]() { placeTextDialog(); });
-    applyToolbarStyle(loadBehaviorSettings().verticalToolbar);
+    const BehaviorSettings settings = loadBehaviorSettings();
+    skewToolAction_->setVisible(settings.separateOpacityAndSkewTools);
+    opacityToolAction_->setVisible(settings.separateOpacityAndSkewTools);
+    applyToolbarStyle(settings.verticalToolbar);
 }
 
 void MainWindow::applyToolbarStyle(bool vertical) {
@@ -833,6 +840,8 @@ void MainWindow::refreshThemedIcons() {
 }
 
 void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool save) {
+    const bool saveToolbarLayout = save
+        && loadBehaviorSettings().verticalToolbar != settings.verticalToolbar;
     if (treeModel_ != nullptr) {
         const bool previewSettingChanged = treeModel_->generatePreviewsWithTransformations()
             != settings.generatePreviewsWithTransformations;
@@ -850,6 +859,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setAllowMoveOutsideBoundingBox(settings.allowMoveOutsideBoundingBox);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);
+        canvas_->setSeparateOpacityAndSkewTools(settings.separateOpacityAndSkewTools);
         canvas_->setGuideLayersVisible(settings.guideLayersVisible);
         canvas_->setGuideLayersOnTop(settings.guideLayersOnTop);
         canvas_->setGuidelinesVisible(settings.guidelinesVisible);
@@ -859,6 +869,17 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setPositionLimitBorderEnabled(settings.positionLimitBorderEnabled);
         canvas_->setVisibilityBorderResolution(settings.visibilityBorderResolution);
         canvas_->setNudgeSteps(settings.nudgeStep, settings.nudgeShiftStep);
+        if (!settings.separateOpacityAndSkewTools
+            && (canvas_->tool() == QStringLiteral("skew")
+                || canvas_->tool() == QStringLiteral("opacity"))) {
+            canvas_->setTool(QStringLiteral("transform"));
+        }
+    }
+    if (skewToolAction_ != nullptr) {
+        skewToolAction_->setVisible(settings.separateOpacityAndSkewTools);
+    }
+    if (opacityToolAction_ != nullptr) {
+        opacityToolAction_->setVisible(settings.separateOpacityAndSkewTools);
     }
     if (carPreview_ != nullptr) {
         carPreview_->setLiveryTextureScale(settings.liveryTextureScale);
@@ -868,6 +889,9 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     configureAutosaveTimer(settings);
     if (save) {
         saveBehaviorSettings(settings);
+        if (saveToolbarLayout) {
+            saveLayout();
+        }
     }
 }
 

@@ -239,6 +239,8 @@ private:
     QLabel *liningWidthLabel_ = nullptr;
     QDoubleSpinBox *liningWidthSpin_ = nullptr;
     QToolBar *toolBar_ = nullptr;
+    QAction *skewToolAction_ = nullptr;
+    QAction *opacityToolAction_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;

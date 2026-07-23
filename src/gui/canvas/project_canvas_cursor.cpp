@@ -226,8 +226,13 @@ Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point) {
     case DragMode::Marquee:
         return Qt::CrossCursor;
     case DragMode::Scale:
-    case DragMode::Skew:
         return cursorForScaleHandle(drag_.activeHandle, &drag_.startBox);
+    case DragMode::Skew:
+        return drag_.activeHandle.isEmpty()
+            ? Qt::SizeHorCursor
+            : cursorForScaleHandle(drag_.activeHandle, &drag_.startBox);
+    case DragMode::Opacity:
+        return Qt::SizeHorCursor;
     case DragMode::Rotate:
         return Qt::ArrowCursor;
     case DragMode::None:
@@ -254,8 +259,17 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point) {
         setCursor(box.valid ? rotateCursorForPoint(point, box) : rotateCursor());
         return;
     }
-    if (drag_.mode == DragMode::Scale || drag_.mode == DragMode::Skew) {
+    if (drag_.mode == DragMode::Scale
+        || (drag_.mode == DragMode::Skew && !drag_.activeHandle.isEmpty())) {
         setCursor(cursorForTransformHandle(drag_.activeHandle, &drag_.startBox));
+        return;
+    }
+    if (drag_.mode == DragMode::Skew) {
+        setCursor(Qt::SizeHorCursor);
+        return;
+    }
+    if (drag_.mode == DragMode::Opacity) {
+        setCursor(Qt::SizeHorCursor);
         return;
     }
     const GuidelineOrientation ruler = rulerAt(point);

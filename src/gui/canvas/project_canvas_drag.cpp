@@ -226,19 +226,26 @@ void ProjectCanvas::captureDragStarts() {
     drag_.groupStartFrames.clear();
     QSet<QString> groupedLayerIds;
     QSet<QString> groupedGuideIds;
-    collectDragGroups(drag_.groupIds, drag_.groupStartFrames, groupedLayerIds, groupedGuideIds);
+    if (drag_.mode != DragMode::Opacity) {
+        collectDragGroups(drag_.groupIds, drag_.groupStartFrames, groupedLayerIds, groupedGuideIds);
+    }
     drag_.layers.clear();
     drag_.guides.clear();
     for (fh6::scene::Shape *layer : selectedLayers()) {
         if (!groupedLayerIds.contains(layer->id)) {
             drag_.layers.push_back(layer);
-            drag_.starts.insert(layer->id, {layer->x, layer->y, layer->scaleX, layer->scaleY, layer->rotation, layer->skew});
+            drag_.starts.insert(layer->id,
+                                {layer->x, layer->y, layer->scaleX, layer->scaleY,
+                                 layer->rotation, layer->skew,
+                                 static_cast<double>(layer->color[ColorByteAlpha]) / 255.0});
         }
     }
     for (fh6::scene::GuideLayer *guide : selectedGuideLayers()) {
         if (!groupedGuideIds.contains(guide->id)) {
             drag_.guides.push_back(guide);
-            drag_.guideStarts.insert(guide->id, {guide->x, guide->y, guide->scaleX, guide->scaleY, guide->rotation});
+            drag_.guideStarts.insert(guide->id,
+                                     {guide->x, guide->y, guide->scaleX, guide->scaleY,
+                                      guide->rotation, 0.0, guide->opacity});
         }
     }
 }
@@ -751,6 +758,32 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint) {
     requestLiveSceneUpdate();
 }
 
+void ProjectCanvas::applyOpacityDrag(const QPointF &screenPoint) {
+    updateCursorForPoint(screenPoint);
+    const double delta = (screenPoint.x() - drag_.startScreen.x()) / 200.0;
+    double displayedOpacity = 0.0;
+    int itemCount = 0;
+    for (fh6::scene::Shape *layer : drag_.layers) {
+        const double opacity = std::clamp(drag_.starts.value(layer->id).opacity + delta, 0.0, 1.0);
+        layer->opacity = opacity;
+        layer->color[ColorByteAlpha] = static_cast<quint8>(std::clamp(qRound(opacity * 255.0), 0, 255));
+        displayedOpacity += opacity;
+        ++itemCount;
+    }
+    for (fh6::scene::GuideLayer *guide : drag_.guides) {
+        const double opacity = std::clamp(drag_.guideStarts.value(guide->id).opacity + delta, 0.0, 1.0);
+        guide->opacity = opacity;
+        displayedOpacity += opacity;
+        ++itemCount;
+    }
+    if (itemCount > 0) {
+        setCursorHint(screenPoint,
+                      {QStringLiteral("Opacity: %1%")
+                           .arg(qRound(displayedOpacity * 100.0 / itemCount))});
+    }
+    requestLiveSceneUpdate();
+}
+
 void ProjectCanvas::applyRotateDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers) {
     updateCursorForPoint(screenPoint);
     const QPointF current = screenToWorld(screenPoint);
@@ -777,6 +810,7 @@ bool ProjectCanvas::isTransformDrag() const {
     case DragMode::TransformMove:
     case DragMode::Scale:
     case DragMode::Skew:
+    case DragMode::Opacity:
     case DragMode::Rotate:
         return true;
     case DragMode::None:
@@ -815,6 +849,7 @@ void ProjectCanvas::resetDragState() {
 
 void ProjectCanvas::finishDrag() {
     if (isTransformDrag() && state_ != nullptr) {
+        const bool opacityChanged = drag_.mode == DragMode::Opacity;
         if (drag_.usesProjectEdit) {
             state_->commitProjectEdit();
         } else {
@@ -823,7 +858,7 @@ void ProjectCanvas::finishDrag() {
         if (drag_.duplicated) {
             state_->noteProjectStructureChanged();
         } else {
-            state_->noteProjectGeometryChanged(false, dragTransformTargetIds());
+            state_->noteProjectGeometryChanged(opacityChanged, dragTransformTargetIds());
         }
     }
     resetDragState();

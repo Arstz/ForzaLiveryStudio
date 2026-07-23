@@ -8,6 +8,8 @@
 namespace gui {
 namespace {
 
+constexpr int kCenturyGothicLowercaseA = 3801;
+
 QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
@@ -148,6 +150,14 @@ bool ShapeGeometryStore::loadFromFile(const QString &path, QString *error) {
             item.alpha2 = vertexAlpha(vertices, i2);
             if (item.alpha0 > 0.0 || item.alpha1 > 0.0 || item.alpha2 > 0.0) {
                 geometry.triangles.push_back(item);
+            }
+        }
+        if (shapeId == kCenturyGothicLowercaseA) {
+            geometry.width *= 2;
+            for (ShapeTriangle &triangle : geometry.triangles) {
+                triangle.p0.setX(triangle.p0.x() * 2.0);
+                triangle.p1.setX(triangle.p1.x() * 2.0);
+                triangle.p2.setX(triangle.p2.x() * 2.0);
             }
         }
         parsed.insert(shapeId, geometry);

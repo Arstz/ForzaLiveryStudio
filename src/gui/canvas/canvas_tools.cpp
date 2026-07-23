@@ -237,6 +237,36 @@ bool RotateTool::hoverCursor(const QPointF &point, QCursor *cursor) const {
     return true;
 }
 
+QString SkewTool::name() const {
+    return QStringLiteral("skew");
+}
+
+void SkewTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
+    Q_UNUSED(screenPos);
+    Q_UNUSED(boxCenterWorld);
+    canvas_.drag_.mode = ProjectCanvas::DragMode::Skew;
+}
+
+Qt::CursorShape SkewTool::idleCursorShape(const QPointF &point) const {
+    Q_UNUSED(point);
+    return Qt::SizeHorCursor;
+}
+
+QString OpacityTool::name() const {
+    return QStringLiteral("opacity");
+}
+
+void OpacityTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) {
+    Q_UNUSED(screenPos);
+    Q_UNUSED(boxCenterWorld);
+    canvas_.drag_.mode = ProjectCanvas::DragMode::Opacity;
+}
+
+Qt::CursorShape OpacityTool::idleCursorShape(const QPointF &point) const {
+    Q_UNUSED(point);
+    return Qt::SizeHorCursor;
+}
+
 
 QString PipetteTool::name() const {
     return QStringLiteral("pipette");
@@ -308,9 +338,11 @@ bool PenTool::handlePress(QMouseEvent *event) {
                     lines.push_back(removalMessage);
                     c.setCursorHint(event->position(), lines);
                 } else {
+                    c.beginPathEdit(c.pen_);
                     c.pen_.points.removeAt(pointIndex);
                     c.normalizePenPointOrder();
                     c.validatePenInteraction();
+                    c.commitPathEdit(c.pen_);
                     c.refreshPenInteractionHint(event->position(), event->modifiers());
                 }
             }
@@ -319,6 +351,7 @@ bool PenTool::handlePress(QMouseEvent *event) {
         }
 
         if ((event->modifiers() & Qt::AltModifier) && pointIndex >= 0) {
+            c.beginPathEdit(c.pen_);
             c.pen_.dragPoint = pointIndex;
             c.pen_.dragOffsetWorld = c.pen_.points[pointIndex].position - world;
             c.updateCursorForPoint(event->position());
@@ -327,6 +360,7 @@ bool PenTool::handlePress(QMouseEvent *event) {
         }
 
         if (event->modifiers() & Qt::ControlModifier) {
+            c.beginPathEdit(c.pen_);
             if (pointIndex >= 0) {
                 if (c.pen_.points[pointIndex].kind == PenPointKind::Soft) {
                     c.pen_.points[pointIndex].kind = PenPointKind::Hard;
@@ -338,6 +372,7 @@ bool PenTool::handlePress(QMouseEvent *event) {
                                     {c.pen_.hoverCurve.worldPosition, PenPointKind::Soft});
                 c.validatePenInteraction();
             }
+            c.commitPathEdit(c.pen_);
             c.refreshPenInteractionHint(event->position(), event->modifiers());
         }
         event->accept();
@@ -350,8 +385,10 @@ bool PenTool::handlePress(QMouseEvent *event) {
     if (c.pen_.points.size() >= 3
         && QLineF(event->position(), c.worldToScreen(c.pen_.points.front().position)).length()
                <= ProjectCanvas::kPenCloseRadius) {
+        c.beginPathEdit(c.pen_);
         c.pen_.closed = true;
         c.validatePenInteraction();
+        c.commitPathEdit(c.pen_);
         c.refreshPenInteractionHint(event->position(), event->modifiers());
         event->accept();
         return true;
@@ -361,11 +398,13 @@ bool PenTool::handlePress(QMouseEvent *event) {
         event->accept();
         return true;
     }
+    c.beginPathEdit(c.pen_);
     c.pen_.points.push_back({world,
                             c.pen_.points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
     c.pen_.hoverWorld = world;
     c.pen_.error.clear();
     c.pen_.crossings.clear();
+    c.commitPathEdit(c.pen_);
     c.update();
     event->accept();
     return true;
@@ -392,6 +431,7 @@ bool PenTool::handleRelease(QMouseEvent *event) {
     }
     c.pen_.dragPoint = -1;
     c.validatePenInteraction();
+    c.commitPathEdit(c.pen_);
     c.refreshPenInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
     event->accept();
@@ -408,6 +448,7 @@ bool PenTool::handleDoubleClick(QMouseEvent *event) {
         return true;
     }
     const QPointF world = c.screenToWorld(event->position());
+    c.beginPathEdit(c.pen_);
     if (!c.pen_.points.isEmpty()
         && QLineF(world, c.pen_.points.back().position).length()
                <= std::max(1e-8, ProjectCanvas::kPenCloseRadius / std::max(c.camera_.scale(), 1e-8))) {
@@ -419,6 +460,7 @@ bool PenTool::handleDoubleClick(QMouseEvent *event) {
     c.pen_.hoverWorld = world;
     c.pen_.error.clear();
     c.pen_.crossings.clear();
+    c.commitPathEdit(c.pen_);
     c.update();
     event->accept();
     return true;
@@ -453,10 +495,12 @@ bool LiningTool::handlePress(QMouseEvent *event) {
                 if (c.lining_.points.size() <= 2) {
                     c.lining_.error = QStringLiteral("A lining path needs at least two points");
                 } else {
+                    c.beginPathEdit(c.lining_);
                     c.lining_.points.removeAt(pointIndex);
                     c.lining_.points.front().kind = PenPointKind::Hard;
                     c.lining_.points.back().kind = PenPointKind::Hard;
                     c.validateLiningInteraction();
+                    c.commitPathEdit(c.lining_);
                 }
                 c.refreshLiningInteractionHint(event->position(), event->modifiers());
             }
@@ -464,6 +508,7 @@ bool LiningTool::handlePress(QMouseEvent *event) {
             return true;
         }
         if ((event->modifiers() & Qt::AltModifier) && pointIndex >= 0) {
+            c.beginPathEdit(c.lining_);
             c.lining_.dragPoint = pointIndex;
             c.lining_.dragOffsetWorld = c.lining_.points[pointIndex].position - world;
             c.updateCursorForPoint(event->position());
@@ -471,6 +516,7 @@ bool LiningTool::handlePress(QMouseEvent *event) {
             return true;
         }
         if (event->modifiers() & Qt::ControlModifier) {
+            c.beginPathEdit(c.lining_);
             if (pointIndex >= 0) {
                 if (c.lining_.points[pointIndex].kind == PenPointKind::Soft) {
                     c.lining_.points[pointIndex].kind = PenPointKind::Hard;
@@ -481,6 +527,7 @@ bool LiningTool::handlePress(QMouseEvent *event) {
                                        {c.lining_.hoverCurve.worldPosition, PenPointKind::Soft});
                 c.validateLiningInteraction();
             }
+            c.commitPathEdit(c.lining_);
             c.refreshLiningInteractionHint(event->position(), event->modifiers());
         }
         event->accept();
@@ -491,10 +538,12 @@ bool LiningTool::handlePress(QMouseEvent *event) {
         if (c.lining_.points.size() < 2) {
             c.lining_.error = QStringLiteral("A lining path needs at least two points");
         } else {
+            c.beginPathEdit(c.lining_);
             c.lining_.points.front().kind = PenPointKind::Hard;
             c.lining_.points.back().kind = PenPointKind::Hard;
             c.lining_.closed = true;
             c.validateLiningInteraction();
+            c.commitPathEdit(c.lining_);
         }
         c.refreshLiningInteractionHint(event->position(), event->modifiers());
         event->accept();
@@ -506,10 +555,12 @@ bool LiningTool::handlePress(QMouseEvent *event) {
         event->accept();
         return true;
     }
+    c.beginPathEdit(c.lining_);
     c.lining_.points.push_back({world,
                                c.lining_.points.isEmpty() ? PenPointKind::Hard : PenPointKind::Soft});
     c.lining_.hoverWorld = world;
     c.lining_.error.clear();
+    c.commitPathEdit(c.lining_);
     c.update();
     event->accept();
     return true;
@@ -559,6 +610,7 @@ bool LiningTool::handleRelease(QMouseEvent *event) {
     }
     c.lining_.dragPoint = -1;
     c.validateLiningInteraction();
+    c.commitPathEdit(c.lining_);
     c.refreshLiningInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
     event->accept();
@@ -575,6 +627,7 @@ bool LiningTool::handleDoubleClick(QMouseEvent *event) {
         return true;
     }
     const QPointF world = c.screenToWorld(event->position());
+    c.beginPathEdit(c.lining_);
     if (!c.lining_.points.isEmpty()
         && QLineF(world, c.lining_.points.back().position).length()
                <= std::max(1e-8, ProjectCanvas::kPenEditRadius / std::max(c.camera_.scale(), 1e-8))) {
@@ -585,6 +638,7 @@ bool LiningTool::handleDoubleClick(QMouseEvent *event) {
     }
     c.lining_.hoverWorld = world;
     c.lining_.error.clear();
+    c.commitPathEdit(c.lining_);
     c.update();
     event->accept();
     return true;

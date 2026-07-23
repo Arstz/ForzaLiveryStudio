@@ -140,6 +140,9 @@ BehaviorSettings loadBehaviorSettings() {
     result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), result.discardModelOnLiveryOpen).toBool();
     result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), result.loadCarTextures).toBool();
     result.verticalToolbar = settings.value(QStringLiteral("ui/behavior/verticalToolbar"), result.verticalToolbar).toBool();
+    result.separateOpacityAndSkewTools = settings.value(
+        QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
+        result.separateOpacityAndSkewTools).toBool();
     result.guidelineColor = validColor(result.guidelineColor, defaults.guidelineColor);
     if (result.nudgeStep <= 0.0) {
         result.nudgeStep = defaults.nudgeStep;
@@ -181,6 +184,8 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), settings.discardModelOnLiveryOpen);
     qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);
     qsettings.setValue(QStringLiteral("ui/behavior/verticalToolbar"), settings.verticalToolbar);
+    qsettings.setValue(QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
+                       settings.separateOpacityAndSkewTools);
 }
 
 PreviewBackgroundSettings loadPreviewBackgroundSettings() {

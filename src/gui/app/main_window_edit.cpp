@@ -1049,11 +1049,17 @@ void MainWindow::collapseAllGroups() {
 }
 
 void MainWindow::undo() {
+    if (canvas_ != nullptr && canvas_->undoContourEdit()) {
+        return;
+    }
     state_->undo();
     canvas_->resetRelativeSelectionFrame();
 }
 
 void MainWindow::redo() {
+    if (canvas_ != nullptr && canvas_->redoContourEdit()) {
+        return;
+    }
     state_->redo();
     canvas_->resetRelativeSelectionFrame();
 }

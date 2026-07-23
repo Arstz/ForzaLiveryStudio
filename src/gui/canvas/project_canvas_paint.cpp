@@ -586,7 +586,8 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                 toScreen.map(QPointF(lr.right(), lr.center().y())),
                 toScreen.map(QPointF(lr.center().x(), lr.top())),
                 toScreen.map(QPointF(lr.center().x(), lr.bottom())),
-            }; {
+            };
+            if (!options_.separateOpacityAndSkewTools) {
                 const QPointF topCenter = toScreen.map(QPointF(lr.center().x(), lr.top()));
                 const QPointF inward = toScreen.map(QPointF(lr.center().x(), lr.top() + 1.0));
                 QPointF up = topCenter - inward;
