@@ -1,5 +1,4 @@
 Small changes:
-    -Flipping mutates selection BB on mixed selection and does not rerender selected shapes in Livery projects, flipping is not cyclical, deviating on concequtive flips 
 
 Medium changes:
 

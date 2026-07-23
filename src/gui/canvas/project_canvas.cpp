@@ -72,6 +72,7 @@ void ProjectCanvas::setProject(fh6::Project *project) {
     cancelPenInteraction();
     cancelLiningInteraction();
     clearBucketPreview();
+    flipCycle_.reset();
     project_ = project;
     guidelines_.draggedOrientation = GuidelineOrientation::None;
     guidelines_.draggedIndex = -1;

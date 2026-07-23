@@ -104,6 +104,26 @@ void assignDecomposition(Item *item, const ScaleDecomposition &dec) {
     }
 }
 
+bool transformsEqual(const fh6::scene::Transform2D &left,
+                     const fh6::scene::Transform2D &right) {
+    return left.x == right.x
+        && left.y == right.y
+        && left.scaleX == right.scaleX
+        && left.scaleY == right.scaleY
+        && left.rotation == right.rotation
+        && left.skew == right.skew;
+}
+
+bool boundsEqual(const QRectF &left, const QRectF &right) {
+    const auto close = [](double a, double b) {
+        return std::abs(a - b) <= 1e-7 * std::max({1.0, std::abs(a), std::abs(b)});
+    };
+    return close(left.x(), right.x())
+        && close(left.y(), right.y())
+        && close(left.width(), right.width())
+        && close(left.height(), right.height());
+}
+
 } // namespace
 
 
@@ -141,41 +161,89 @@ void ProjectCanvas::cycleFlipSelection() {
         guides = selectedGuideLeaves;
     }
 
-    const double repScaleX = layers.isEmpty() ? guides.front()->scaleX : layers.front()->scaleX;
-    const double repScaleY = layers.isEmpty() ? guides.front()->scaleY : layers.front()->scaleY;
-    const int currentState = (repScaleY < 0 ? 1 : 0) + (repScaleX < 0 ? 2 : 0);
-    const QVector<int> cycle = {0, 1, 3, 2};
-    const int cycleIndex = cycle.contains(currentState) ? cycle.indexOf(currentState) : 0;
-    const int nextState = cycle[(cycleIndex + 1) % cycle.size()];
-    const bool toggleVertical = (repScaleY < 0) != ((nextState & 1) != 0);
-    const bool toggleHorizontal = (repScaleX < 0) != ((nextState & 2) != 0);
-    if (!toggleVertical && !toggleHorizontal) {
+    QVector<QString> targetIds = buildTransformTargetIds(groupIds, layers, guides);
+    QVector<QString> sortedTargetIds = targetIds;
+    std::sort(sortedTargetIds.begin(), sortedTargetIds.end());
+    const QRectF currentBounds = cachedSelectionWorldBounds();
+    if (targetIds.isEmpty() || !currentBounds.isValid()) {
         return;
     }
 
-    const QPointF center = selectedWorldBounds().center();
-    state_->beginTransformCommand(buildTransformTargetIds(groupIds, layers, guides));
+    bool continueCycle = flipCycle_.has_value()
+        && flipCycle_->targetIds == sortedTargetIds
+        && boundsEqual(flipCycle_->bounds, currentBounds)
+        && flipCycle_->expected.size() == targetIds.size();
+    if (continueCycle) {
+        for (const QString &id : targetIds) {
+            const fh6::scene::Layer *node = state_->sceneNode(id);
+            const auto expected = flipCycle_->expected.constFind(id);
+            if (node == nullptr
+                || expected == flipCycle_->expected.constEnd()
+                || !transformsEqual(node->transform, expected.value())) {
+                continueCycle = false;
+                break;
+            }
+        }
+    }
+    if (!continueCycle) {
+        FlipCycleState cycle;
+        cycle.targetIds = sortedTargetIds;
+        cycle.bounds = currentBounds;
+        for (const QString &id : targetIds) {
+            if (const fh6::scene::Layer *node = state_->sceneNode(id)) {
+                cycle.baseline.insert(id, node->transform);
+                cycle.expected.insert(id, node->transform);
+            }
+        }
+        if (cycle.baseline.size() != targetIds.size()) {
+            return;
+        }
+        flipCycle_ = std::move(cycle);
+    }
+
+    constexpr int kCycleStates[] = {0, 1, 3, 2};
+    const int nextStep = (flipCycle_->step + 1) % static_cast<int>(std::size(kCycleStates));
+    const int nextState = kCycleStates[nextStep];
+    const QPointF center = flipCycle_->bounds.center();
+    state_->beginTransformCommand(targetIds);
+
+    for (const QString &id : targetIds) {
+        if (fh6::scene::Layer *node = state_->sceneNode(id)) {
+            node->transform = flipCycle_->baseline.value(id);
+        }
+    }
 
     QTransform worldFlip;
     worldFlip.translate(center.x(), center.y());
-    worldFlip.scale(toggleVertical ? -1.0 : 1.0, toggleHorizontal ? -1.0 : 1.0);
+    worldFlip.scale((nextState & 1) != 0 ? -1.0 : 1.0,
+                    (nextState & 2) != 0 ? -1.0 : 1.0);
     worldFlip.translate(-center.x(), -center.y());
-    state_->setGroupFramesFromStart(groupStartFrames, worldFlip);
+    if (nextState != 0) {
+        QHash<QString, QTransform> baselineGroupFrames;
+        for (const QString &id : groupIds) {
+            baselineGroupFrames.insert(id, entryStartTransform(flipCycle_->baseline.value(id)));
+        }
+        state_->setGroupFramesFromStart(baselineGroupFrames, worldFlip);
+    }
 
-    const auto applyFlip = [&worldFlip, toggleHorizontal](auto *item) {
+    const auto applyFlip = [&](auto *item) {
+        if (nextState == 0) {
+            return;
+        }
         using Item = std::remove_pointer_t<decltype(item)>;
-        const double skew = [] (const Item *entry) {
+        const fh6::scene::Transform2D baseline = flipCycle_->baseline.value(item->id);
+        const double skew = [&] {
             if constexpr (std::is_same_v<Item, fh6::scene::Shape>) {
-                return entry->skew;
+                return baseline.skew;
             }
             return 0.0;
-        }(item);
-        const EntryStart start = {item->x, item->y, item->scaleX, item->scaleY,
-                                  item->rotation, skew};
+        }();
+        const EntryStart start = {baseline.x, baseline.y, baseline.scaleX, baseline.scaleY,
+                                  baseline.rotation, skew};
         ScaleDecomposition decomposition = decomposeScaleResult(
             localResultForWorldTransform(*item, start, worldFlip), start.skew);
         if (decomposition.ok) {
-            const bool scaleXNegative = (start.scaleX < 0.0) != toggleHorizontal;
+            const bool scaleXNegative = (start.scaleX < 0.0) != ((nextState & 2) != 0);
             if ((decomposition.scaleX < 0.0) != scaleXNegative) {
                 decomposition.scaleX = -decomposition.scaleX;
                 decomposition.scaleY = -decomposition.scaleY;
@@ -191,8 +259,16 @@ void ProjectCanvas::cycleFlipSelection() {
         applyFlip(guide);
     }
 
+    flipCycle_->expected.clear();
+    for (const QString &id : targetIds) {
+        if (const fh6::scene::Layer *node = state_->sceneNode(id)) {
+            flipCycle_->expected.insert(id, node->transform);
+        }
+    }
+    flipCycle_->step = nextStep;
+    state_->noteTransformLiveChanged(targetIds);
     state_->commitTransformCommand();
-    state_->noteProjectGeometryChanged(false, state_->selectedTransformTargetIds());
+    state_->noteProjectGeometryChanged(false, targetIds);
     invalidateSceneCache();
     update();
 }
