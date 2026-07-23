@@ -103,6 +103,25 @@ double filledPathArea(const QPainterPath &path)
     return result;
 }
 
+QPainterPath placementCoverage(const gui::PenFillResult &result,
+                               const QVector<gui::PenPrimitive> &primitives)
+{
+    QPainterPath coverage;
+    coverage.setFillRule(Qt::WindingFill);
+    for (const gui::PenPlacement &placement : result.placements) {
+        const auto primitive = std::find_if(
+            primitives.cbegin(), primitives.cend(),
+            [&](const gui::PenPrimitive &candidate) {
+                return candidate.shapeId == placement.shapeId;
+            });
+        if (primitive != primitives.cend()) {
+            coverage = coverage.united(
+                placement.transform.map(primitive->silhouette));
+        }
+    }
+    return coverage;
+}
+
 gui::ExtractedRegion rasterRegion(const std::vector<int> &labels,
                                   const QSize &size,
                                   int label,
@@ -882,6 +901,72 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
                      || hasPlacement(inwardArcResult, 139)
                      || hasPlacement(inwardArcResult, 2123),
                  "an internal arc should use a contained curve Primitive");
+}
+
+void concaveCoreFallbackStaysContained(TestContext *test)
+{
+    const QVector<gui::PenPrimitive> catalog = penPrimitiveCatalog(test);
+    QVector<gui::PenPrimitive> primitives;
+    for (const gui::PenPrimitive &primitive : catalog) {
+        if (primitive.shapeId == 101 || primitive.shapeId == 103) {
+            primitives.push_back(primitive);
+        }
+    }
+    gui::PenPrimitive unavailableCurve;
+    unavailableCurve.shapeId = 127;
+    unavailableCurve.silhouette.addRect(QRectF(-1.0, -1.0, 2.0, 2.0));
+    unavailableCurve.bounds = unavailableCurve.silhouette.boundingRect();
+    unavailableCurve.area = 4.0;
+    primitives.push_back(unavailableCurve);
+
+    gui::PenFillRequest request;
+    request.primitives = primitives;
+    request.boundaryTolerance = 0.5;
+    request.points = {{{0.0, -50.0}, gui::PenPointKind::Hard},
+                      {{0.0, 0.0}, gui::PenPointKind::Soft},
+                      {{50.0, 0.0}, gui::PenPointKind::Hard},
+                      {{50.0, 100.0}, gui::PenPointKind::Hard},
+                      {{-50.0, 100.0}, gui::PenPointKind::Hard},
+                      {{-50.0, -50.0}, gui::PenPointKind::Hard}};
+    const gui::PenContour contour = gui::buildPenContour(request.points);
+    const gui::PenFillResult result = gui::fillPenPath(request);
+    const QPainterPath coreCoverage = placementCoverage(result, primitives);
+    const double outsideArea =
+        filledPathArea(coreCoverage.subtracted(contour.path));
+    test->expect(result.error.isEmpty(),
+                 "a concave core should fill without a curve Primitive");
+    test->expect(outsideArea <= result.targetArea * 1e-5 + 1e-6,
+                 "fallback core shapes should remain within a concave boundary");
+}
+
+void negligibleCorePlacementsAreDiscarded(TestContext *test)
+{
+    gui::PenFillRequest baselineRequest;
+    baselineRequest.primitives = penPrimitiveCatalog(test);
+    baselineRequest.boundaryTolerance = 0.1;
+    baselineRequest.discardNegligiblePlacements = false;
+    baselineRequest.points = {{{0.0, 0.0}, gui::PenPointKind::Hard},
+                              {{100.0, 0.0}, gui::PenPointKind::Hard},
+                              {{100.0, 100.0}, gui::PenPointKind::Hard},
+                              {{0.0, 100.0}, gui::PenPointKind::Hard},
+                              {{0.0, 50.1}, gui::PenPointKind::Hard},
+                              {{-0.1, 50.0}, gui::PenPointKind::Hard},
+                              {{0.0, 49.9}, gui::PenPointKind::Hard}};
+    const gui::PenFillResult baseline = gui::fillPenPath(baselineRequest);
+    gui::PenFillRequest optimizedRequest = baselineRequest;
+    optimizedRequest.discardNegligiblePlacements = true;
+    const gui::PenFillResult optimized = gui::fillPenPath(optimizedRequest);
+    const double baselineMissing = filledPathArea(baseline.unfilled);
+    const double optimizedMissing = filledPathArea(optimized.unfilled);
+    test->expect(baseline.error.isEmpty() && optimized.error.isEmpty(),
+                 "a contour with a negligible core ear should fill");
+    test->expect(optimized.placements.size() < baseline.placements.size(),
+                 "the cleanup pass should discard a negligible core placement");
+    test->expect(optimizedMissing - baselineMissing
+                     <= optimized.targetArea * 1e-3 + 1e-6,
+                 "discarded placements should stay within the cleanup area budget");
+    test->expect(optimized.outsideArea <= baseline.outsideArea + 1e-6,
+                 "discarding a placement should not increase leakage");
 }
 
 void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
@@ -1914,6 +1999,10 @@ void crossedCoreRetainsValidFits(TestContext *test)
     test->expect(gui::buildPenContour(request.points).valid(),
                  "the local-repair contour should be a simple Pen path");
     const gui::PenFillResult result = gui::fillPenPath(request);
+    if (!result.error.isEmpty()) {
+        std::cerr << "Crossed core fill error: "
+                  << result.error.toStdString() << '\n';
+    }
     test->expect(result.error.isEmpty(),
                  "a crossed generated core should be repaired before meshing");
     test->expect(hasPlacement(result, 109) || hasPlacement(result, 127)
@@ -2321,6 +2410,104 @@ void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
     test->expect(curveMatches, "dense lining Hairs should retain their fitted curves");
 }
 
+int compareLoggedPen(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        std::cerr << "Could not open Pen fill log\n";
+        return 2;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (!document.isObject()) {
+        std::cerr << "Could not parse Pen fill log: "
+                  << parseError.errorString().toStdString() << '\n';
+        return 2;
+    }
+    const QJsonObject root = document.object();
+    const QJsonObject loggedRequest = root.value(QStringLiteral("request")).toObject();
+    gui::PenFillRequest request;
+    request.boundaryTolerance =
+        loggedRequest.value(QStringLiteral("boundaryTolerance")).toDouble(0.1);
+    for (const QJsonValue &value :
+         loggedRequest.value(QStringLiteral("points")).toArray()) {
+        const QJsonObject pointObject = value.toObject();
+        const QJsonArray position =
+            pointObject.value(QStringLiteral("position")).toArray();
+        if (position.size() != 2) {
+            std::cerr << "Pen fill log contains an invalid point\n";
+            return 2;
+        }
+        const gui::PenPointKind kind =
+            pointObject.value(QStringLiteral("kind")).toString()
+                    == QStringLiteral("hard")
+            ? gui::PenPointKind::Hard
+            : gui::PenPointKind::Soft;
+        request.points.push_back(
+            {{position[0].toDouble(), position[1].toDouble()}, kind});
+    }
+    gui::ShapeGeometryStore geometry;
+    QString geometryError;
+    if (!geometry.loadDefault(&geometryError)) {
+        std::cerr << "Could not load Primitive geometry: "
+                  << geometryError.toStdString() << '\n';
+        return 2;
+    }
+    request.primitives = gui::buildPenPrimitiveCatalog(geometry);
+    request.discardNegligiblePlacements = false;
+    QElapsedTimer timer;
+    timer.start();
+    const gui::PenFillResult baseline = gui::fillPenPath(request);
+    const qint64 baselineMilliseconds = timer.elapsed();
+    request.discardNegligiblePlacements = true;
+    timer.restart();
+    const gui::PenFillResult optimized = gui::fillPenPath(request);
+    const qint64 optimizedMilliseconds = timer.elapsed();
+    if (!baseline.error.isEmpty() || !optimized.error.isEmpty()) {
+        std::cerr << "Pen fill comparison failed: baseline="
+                  << baseline.error.toStdString()
+                  << " optimized=" << optimized.error.toStdString() << '\n';
+        return 1;
+    }
+    const double comparisonThreshold = baseline.targetArea * 1e-3;
+    const int eligiblePlacements = std::count_if(
+        baseline.placements.cbegin(), baseline.placements.cend(),
+        [&](const gui::PenPlacement &placement) {
+            return placement.area <= comparisonThreshold;
+        });
+    const auto minimumPlacement = std::min_element(
+        baseline.placements.cbegin(), baseline.placements.cend(),
+        [](const gui::PenPlacement &left, const gui::PenPlacement &right) {
+            return left.area < right.area;
+        });
+    const QJsonObject loggedResult =
+        root.value(QStringLiteral("result")).toObject();
+    std::cout << "points=" << request.points.size()
+              << " logged_strategy="
+              << loggedRequest.value(QStringLiteral("strategy"))
+                     .toString().toStdString()
+              << " logged_shapes="
+              << loggedResult.value(QStringLiteral("shapeCount")).toInt()
+              << " unpruned_shapes=" << baseline.placements.size()
+              << " pruned_shapes=" << optimized.placements.size()
+              << " eligible_shapes=" << eligiblePlacements
+              << " minimum_shape_area="
+              << (minimumPlacement != baseline.placements.cend()
+                      ? minimumPlacement->area : 0.0)
+              << " unpruned_missing="
+              << baseline.targetArea - baseline.coveredArea
+              << " pruned_missing="
+              << optimized.targetArea - optimized.coveredArea
+              << " unpruned_residual=" << filledPathArea(baseline.unfilled)
+              << " pruned_residual=" << filledPathArea(optimized.unfilled)
+              << " unpruned_outside=" << baseline.outsideArea
+              << " pruned_outside=" << optimized.outsideArea
+              << " unpruned_ms=" << baselineMilliseconds
+              << " pruned_ms=" << optimizedMilliseconds << '\n';
+    return 0;
+}
+
 int checkLoggedRegion(const QString &path, const QSize &imageSize)
 {
     QFile file(path);
@@ -2473,6 +2660,10 @@ int checkLoggedRegion(const QString &path, const QSize &imageSize)
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+    if (argc == 3
+        && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--compare-pen-log")) {
+        return compareLoggedPen(QString::fromLocal8Bit(argv[2]));
+    }
     if (argc == 5 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-region-log")) {
         bool widthOk = false;
         bool heightOk = false;
@@ -2502,6 +2693,8 @@ int main(int argc, char **argv)
     denseValidPolygonTriangulates(&test);
     ellipseLikeCoreUsesOneCircle(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
+    concaveCoreFallbackStaysContained(&test);
+    negligibleCorePlacementsAreDiscarded(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);
     smallRegionMergesIntoClosestColorNeighbor(&test);
     lineartDiagnosticCapturesComponentTopology(&test);

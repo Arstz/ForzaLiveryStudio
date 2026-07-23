@@ -23,6 +23,12 @@ constexpr int kGarlicShapeId = 139;
 constexpr int kToothShapeId = 2123;
 constexpr double kConcaveArcInnerRadiusRatio = 0.65;
 constexpr double kMaximumCurveOutsideRatio = 1e-5;
+constexpr double kMaximumCoreOutsideRatio = 1e-5;
+constexpr double kMaximumNegligiblePlacementAreaRatio = 1e-3;
+constexpr double kMaximumDiscardedAreaRatio = 1e-3;
+constexpr double kMaximumDiscardedThicknessRatio = 0.0025;
+constexpr int kInteriorCoreSteps = 16;
+constexpr int kChordContainmentSamples = 32;
 constexpr double kMaximumTangentJump = 0.35;
 constexpr double kMaximumCurvatureJump = 0.75;
 constexpr double kMaximumSpanErrorRatio = 0.05;
@@ -81,10 +87,10 @@ double signedArea(const QPolygonF &polygon) {
 
 double pathArea(const QPainterPath &path) {
     double result = 0.0;
-    for (const QPolygonF &polygon : path.simplified().toSubpathPolygons()) {
-        result += signedArea(polygon);
+    for (const QPolygonF &polygon : path.toFillPolygons()) {
+        result += std::abs(signedArea(polygon));
     }
-    return std::abs(result);
+    return result;
 }
 
 QPointF segmentPoint(const PenBoundarySegment &segment, double t) {
@@ -475,6 +481,166 @@ const PenPrimitive *primitiveForId(const QVector<PenPrimitive> &primitives, int 
     return nullptr;
 }
 
+bool discardNegligiblePlacements(
+    QVector<PenPlacement> *placements,
+    QPainterPath *coverage,
+    const QVector<PenPrimitive> &primitives,
+    const QPainterPath &target,
+    double targetArea,
+    double boundaryTolerance,
+    const std::function<bool()> &cancelled) {
+    if (placements->size() < 2 || targetArea <= kEpsilon) {
+        return true;
+    }
+    struct Candidate {
+        int index = -1;
+        double area = 0.0;
+    };
+
+    QVector<QPainterPath> placementPaths;
+    placementPaths.reserve(placements->size());
+    for (const PenPlacement &placement : std::as_const(*placements)) {
+        const PenPrimitive *primitive = primitiveForId(primitives, placement.shapeId);
+        if (primitive == nullptr) {
+            return true;
+        }
+        placementPaths.push_back(
+            placement.transform.map(primitive->silhouette).simplified());
+    }
+    const double maximumPlacementArea =
+        targetArea * kMaximumNegligiblePlacementAreaRatio;
+    const double maximumDiscardedArea =
+        targetArea * kMaximumDiscardedAreaRatio;
+    const double baselineMissingArea =
+        pathArea(target.subtracted(*coverage));
+    const double baselineOutsideArea =
+        pathArea(coverage->subtracted(target));
+    const double booleanAreaNoise =
+        std::max(kEpsilon, targetArea * 1e-8);
+    const QRectF targetBounds = target.boundingRect();
+    const double targetDiagonal =
+        std::hypot(targetBounds.width(), targetBounds.height());
+    const double maximumResidualThickness =
+        std::max(boundaryTolerance * 4.0,
+                 targetDiagonal * kMaximumDiscardedThicknessRatio);
+    QVector<Candidate> candidates;
+    QVector<bool> active(placements->size(), true);
+    for (int i = 0; i < placements->size(); ++i) {
+        if (cancelled && cancelled()) {
+            return false;
+        }
+        const double placementArea = (*placements)[i].area;
+        if (placementArea > maximumPlacementArea) {
+            continue;
+        }
+        const QRectF placementBounds = placementPaths[i].boundingRect();
+        const double placementDiameter =
+            std::hypot(placementBounds.width(), placementBounds.height());
+        const double placementThickness =
+            placementArea * 2.0 / std::max(placementDiameter, kEpsilon);
+        if (placementThickness <= maximumResidualThickness) {
+            candidates.push_back({i, placementArea});
+        }
+    }
+    std::sort(candidates.begin(),
+              candidates.end(),
+              [](const Candidate &left, const Candidate &right) {
+        if (std::abs(left.area - right.area) > kEpsilon) {
+            return left.area < right.area;
+        }
+        return left.index < right.index;
+    });
+    double discardedArea = 0.0;
+    QVector<int> discardedIndices;
+    for (const Candidate &candidate : std::as_const(candidates)) {
+        if (discardedArea + candidate.area > maximumDiscardedArea + kEpsilon) {
+            break;
+        }
+        active[candidate.index] = false;
+        discardedArea += candidate.area;
+        discardedIndices.push_back(candidate.index);
+    }
+    if (discardedIndices.isEmpty()) {
+        return true;
+    }
+    const auto rebuiltCoverage = [&]() {
+        QPainterPath result;
+        result.setFillRule(Qt::WindingFill);
+        for (int i = 0; i < placements->size(); ++i) {
+            if (active[i]) {
+                result = result.united(placementPaths[i]);
+            }
+        }
+        return result;
+    };
+    const auto coverageIsSafe = [&](const QPainterPath &candidateCoverage) {
+        const double missingArea =
+            pathArea(target.subtracted(candidateCoverage));
+        const double outsideArea =
+            pathArea(candidateCoverage.subtracted(target));
+        return missingArea <= baselineMissingArea + maximumDiscardedArea
+                + booleanAreaNoise
+            && outsideArea <= baselineOutsideArea + booleanAreaNoise;
+    };
+    QPainterPath retainedCoverage = rebuiltCoverage();
+    if (cancelled && cancelled()) {
+        return false;
+    }
+    if (!coverageIsSafe(retainedCoverage)) {
+        int acceptedCount = 0;
+        int rejectedCount = discardedIndices.size();
+        QPainterPath acceptedCoverage;
+        while (acceptedCount + 1 < rejectedCount) {
+            if (cancelled && cancelled()) {
+                return false;
+            }
+            const int trialCount = (acceptedCount + rejectedCount) / 2;
+            active.fill(true);
+            for (int i = 0; i < trialCount; ++i) {
+                active[discardedIndices[i]] = false;
+            }
+            QPainterPath trialCoverage = rebuiltCoverage();
+            if (coverageIsSafe(trialCoverage)) {
+                acceptedCount = trialCount;
+                acceptedCoverage = std::move(trialCoverage);
+            } else {
+                rejectedCount = trialCount;
+            }
+        }
+        if (acceptedCount == 0) {
+            if (cancelled && cancelled()) {
+                return false;
+            }
+            active.fill(true);
+            active[discardedIndices.front()] = false;
+            acceptedCoverage = rebuiltCoverage();
+            if (!coverageIsSafe(acceptedCoverage)) {
+                return true;
+            }
+            acceptedCount = 1;
+        }
+        active.fill(true);
+        for (int i = 0; i < acceptedCount; ++i) {
+            active[discardedIndices[i]] = false;
+        }
+        retainedCoverage = std::move(acceptedCoverage);
+        if (retainedCoverage.isEmpty()) {
+            return true;
+        }
+    }
+    QVector<PenPlacement> retained;
+    retained.reserve(placements->size());
+    for (int i = 0; i < placements->size(); ++i) {
+        if (active[i]) {
+            retained.push_back((*placements)[i]);
+        }
+    }
+    *placements = std::move(retained);
+    *coverage = std::move(retainedCoverage);
+
+    return true;
+}
+
 struct CurvePlacement {
     PenPlacement placement;
     QPainterPath path;
@@ -822,14 +988,31 @@ std::optional<CurvePlacement> outwardCurvePlacement(const QVector<CurvePrimitive
 bool chordInsideTarget(const QPointF &start,
                        const QPointF &end,
                        const QPainterPath &target) {
-    for (int i = 1; i < 8; ++i) {
-        const QPointF point = start * (1.0 - static_cast<double>(i) / 8.0)
-            + end * (static_cast<double>(i) / 8.0);
+    for (int i = 1; i < kChordContainmentSamples; ++i) {
+        const double fraction =
+            static_cast<double>(i) / kChordContainmentSamples;
+        const QPointF point = start * (1.0 - fraction) + end * fraction;
         if (!target.contains(point)) {
             return false;
         }
     }
     return true;
+}
+
+std::optional<QPointF> interiorCorePoint(const PenBoundarySegment &segment,
+                                         const QPainterPath &target) {
+    const QPointF curveMiddle = segmentPoint(segment, 0.5);
+    for (int step = 1; step <= kInteriorCoreSteps; ++step) {
+        const double fraction = static_cast<double>(step) / kInteriorCoreSteps;
+        const QPointF candidate = curveMiddle
+            + (segment.control - curveMiddle) * fraction;
+        if (target.contains(candidate)
+            && chordInsideTarget(segment.start, candidate, target)
+            && chordInsideTarget(candidate, segment.end, target)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
 }
 
 struct InwardCurvePlacement {
@@ -1424,16 +1607,37 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 activeSpanCovered[i] = true;
             }
         }
+        QHash<int, QPointF> interiorCorePoints;
         QVector<int> activeMidpointCandidates;
         for (int i = 0; i < segments.size(); ++i) {
             if (enabledInwardCurves[i]) {
                 ++activeInwardCount;
             } else if (segments[i].curved && !activeSpanCovered[i]) {
-                activeMidpointCandidates.push_back(i);
+                const QPointF curveMiddle = segmentPoint(segments[i], 0.5);
+                if (chordInsideTarget(segments[i].start,
+                                      segments[i].end,
+                                      contour.path)) {
+                    activeMidpointCandidates.push_back(i);
+                } else if (chordInsideTarget(segments[i].start,
+                                             curveMiddle,
+                                             contour.path)
+                           && chordInsideTarget(curveMiddle,
+                                                segments[i].end,
+                                                contour.path)) {
+                    interiorCorePoints.insert(i, curveMiddle);
+                } else {
+                    const auto point = interiorCorePoint(segments[i], contour.path);
+                    if (point) {
+                        interiorCorePoints.insert(i, *point);
+                    } else {
+                        interiorCorePoints.insert(i, segments[i].control);
+                    }
+                }
             }
         }
         const int capCount = activeSpanCount + activeInwardCount;
-        const int baseVertices = segments.size() - activeRemovedVertices + activeInwardCount;
+        const int baseVertices = segments.size() - activeRemovedVertices
+            + activeInwardCount + interiorCorePoints.size();
         const int maximumCoreVertices = std::max(3, result.shapeLimit - capCount + 2);
         const int midpointBudget = std::max(0, maximumCoreVertices - baseVertices);
         std::sort(activeMidpointCandidates.begin(),
@@ -1468,6 +1672,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             const PenBoundarySegment &segment = segments[i];
             if (enabledInwardCurves[i]) {
                 layout.points.push_back(inwardCurves[i]->coreMiddle);
+            } else if (interiorCorePoints.contains(i)) {
+                layout.points.push_back(interiorCorePoints.value(i));
             } else if (segment.curved && midpointSegments.contains(i)) {
                 layout.points.push_back(segmentPoint(segment, 0.5));
             }
@@ -1490,29 +1696,42 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     };
     CoreLayout layout = coreLayout(activeSpans, activeInwardCurves);
     PolygonContour coreContour = buildPolygonContour(layout.points);
-    while (!coreContour.crossings.isEmpty()) {
+    const double maximumCoreOutsideArea =
+        std::max(1e-6, result.targetArea * kMaximumCoreOutsideRatio);
+    const auto coreOutsideArea = [&](const PolygonContour &candidateContour) {
+        if (!candidateContour.valid()) {
+            return std::numeric_limits<double>::max();
+        }
+        return pathArea(candidateContour.path.subtracted(contour.path));
+    };
+    double outsideCoreArea = coreOutsideArea(coreContour);
+    while (!coreContour.valid() || outsideCoreArea > maximumCoreOutsideArea) {
         CoreFitKind bestKind = CoreFitKind::None;
         int bestIndex = -1;
-        int bestScore = std::numeric_limits<int>::max();
+        int bestCrossingCount = std::numeric_limits<int>::max();
+        double bestOutsideArea = std::numeric_limits<double>::max();
         CoreLayout bestLayout;
         PolygonContour bestContour;
         const auto consider = [&](CoreFitKind kind, int index) {
             CoreLayout candidateLayout = coreLayout(activeSpans, activeInwardCurves);
             PolygonContour candidateContour = buildPolygonContour(candidateLayout.points);
-            const int score = candidateContour.valid()
-                ? -1
-                : (!candidateContour.crossings.isEmpty()
-                       ? candidateContour.crossings.size()
-                       : std::numeric_limits<int>::max());
-            if (score < bestScore) {
+            const double candidateOutsideArea =
+                coreOutsideArea(candidateContour);
+            const int crossingCount = candidateContour.crossings.size();
+            if (crossingCount < bestCrossingCount
+                || (crossingCount == bestCrossingCount
+                    && candidateOutsideArea < bestOutsideArea)) {
                 bestKind = kind;
                 bestIndex = index;
-                bestScore = score;
+                bestCrossingCount = crossingCount;
+                bestOutsideArea = candidateOutsideArea;
                 bestLayout = std::move(candidateLayout);
                 bestContour = std::move(candidateContour);
             }
         };
-        for (int i = 0; i < activeSpans.size() && bestScore != -1; ++i) {
+        for (int i = 0; i < activeSpans.size()
+             && (bestCrossingCount != 0
+                 || bestOutsideArea > maximumCoreOutsideArea); ++i) {
             if (!activeSpans[i]) {
                 continue;
             }
@@ -1525,7 +1744,9 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 return result;
             }
         }
-        for (int i = 0; i < activeInwardCurves.size() && bestScore != -1; ++i) {
+        for (int i = 0; i < activeInwardCurves.size()
+             && (bestCrossingCount != 0
+                 || bestOutsideArea > maximumCoreOutsideArea); ++i) {
             if (!activeInwardCurves[i]) {
                 continue;
             }
@@ -1538,8 +1759,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 return result;
             }
         }
-        if (bestKind == CoreFitKind::None
-            || bestScore == std::numeric_limits<int>::max()) {
+        if (bestKind == CoreFitKind::None) {
             break;
         }
         if (bestKind == CoreFitKind::Span) {
@@ -1549,9 +1769,20 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         }
         layout = std::move(bestLayout);
         coreContour = std::move(bestContour);
+        outsideCoreArea = bestOutsideArea;
     }
     if (layout.points.size() < 3) {
         result.error = QStringLiteral("The Pen contour left no polygonal core");
+        return result;
+    }
+    if (!coreContour.valid()) {
+        result.error = coreContour.error.isEmpty()
+            ? QStringLiteral("The Pen core is invalid")
+            : QStringLiteral("Could not fill the Pen core: %1").arg(coreContour.error);
+        return result;
+    }
+    if (outsideCoreArea > maximumCoreOutsideArea) {
+        result.error = QStringLiteral("The Pen core could not remain within its contour");
         return result;
     }
     QPainterPath coverage;
@@ -1611,6 +1842,19 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     if (result.placements.size() > result.shapeLimit) {
         result.error = QStringLiteral("Pen fill exceeded its shape limit");
         result.placements.clear();
+        return result;
+    }
+    if (request.discardNegligiblePlacements
+        && !discardNegligiblePlacements(&result.placements,
+                                        &coverage,
+                                        primitives,
+                                        contour.path,
+                                        result.targetArea,
+                                        request.boundaryTolerance,
+                                        cancelled)) {
+        result.placements.clear();
+        result.cancelled = true;
+        result.error = QStringLiteral("Pen placement cleanup timed out");
         return result;
     }
     result.coveredArea = pathArea(coverage.intersected(contour.path));

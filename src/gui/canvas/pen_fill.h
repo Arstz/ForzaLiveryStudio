@@ -54,6 +54,7 @@ struct PenFillRequest {
     QVector<PenPoint> points;
     QVector<PenPrimitive> primitives;
     double boundaryTolerance = 0.1;
+    bool discardNegligiblePlacements = true;
 };
 
 struct PenFillResult {
