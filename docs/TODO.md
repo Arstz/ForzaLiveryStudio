@@ -1,11 +1,7 @@
 Small changes:
-    -Tool buttons not resized properly after applying custom keybinds, collapsing the text
-    -Skew tool hint text displays skew in px rather than editor units
-    -Cursor on layer drag in Layers widget is rendered only left half visible
+    -Flipping mutates selection BB on mixed selection and does not rerender selected shapes in Livery projects, flipping is not cyclical, deviating on concequtive flips 
 
 Medium changes:
-    -Handle files that were passed as params on application launch, if 3so -> open project if image pass the image as a Guidelayer to a new project
-    -Add dragging layer in Layers widget to scroll the list if near upper or lower borders
 
 Big changes:
     -Add proper scaffolding and header generation from scratch for liveries

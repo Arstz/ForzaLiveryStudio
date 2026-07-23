@@ -749,12 +749,14 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint) {
 
     const QPointF current = screenToWorld(screenPoint);
     const double delta = current.x() - drag_.startWorld.x();
+    double displayedSkew = 0.0;
     for (fh6::scene::Shape *layer : drag_.layers) {
         const EntryStart startState = drag_.starts.value(layer->id);
         const QSizeF size = flatEntrySize(*layer, geometry_.shapeSize(layer->shapeId));
         layer->skew = startState.skew + delta / std::max(size.width(), 1.0);
+        displayedSkew = layer->skew;
     }
-    setCursorHint(screenPoint, {QStringLiteral("Skew: %1").arg(formatHintNumber(delta, 2))});
+    setCursorHint(screenPoint, {QStringLiteral("Skew: %1").arg(formatHintNumber(displayedSkew, 3))});
     requestLiveSceneUpdate();
 }
 

@@ -1,10 +1,10 @@
 #include "main_window.h"
 #include "theme_manager.h"
+#include "image_io.h"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFileInfo>
-#include <QImageReader>
 
 namespace {
 
@@ -26,7 +26,7 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
         const QString absolutePath = info.absoluteFilePath();
         if (projectPath.isEmpty() && isProjectPath(absolutePath)) {
             projectPath = absolutePath;
-        } else if (!QImageReader::imageFormat(absolutePath).isEmpty()) {
+        } else if (gui::supportedImageSuffixes().contains(info.suffix().toLower())) {
             imagePaths.push_back(absolutePath);
         } else {
             qWarning().noquote() << QStringLiteral("Unsupported startup file: %1").arg(absolutePath);

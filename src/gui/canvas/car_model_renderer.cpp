@@ -190,14 +190,6 @@ void main()
                     if (coveredSide == 5 || coveredSide == 6 || coveredSide == 7) {
                         sectionUv = sectionUv.yx;
                     }
-                    if (coveredSide == 2 || coveredSide == 4 || coveredSide == 10) {
-                        sectionUv.y = 1.0 - sectionUv.y;
-                    } else {
-                        sectionUv.x = 1.0 - sectionUv.x;
-                    }
-                    if (coveredSide == 7) {
-                        sectionUv.y = 1.0 - sectionUv.y;
-                    }
                     vec4 paintRegion = side_paint_region[coveredSide];
                     paintUv = vec2(mix(paintRegion.x, paintRegion.y, sectionUv.x),
                                    mix(paintRegion.z, paintRegion.w, sectionUv.y));
@@ -250,12 +242,6 @@ void main()
             vec2 sectionUv = nrm;
             if (s == 5 || s == 6 || s == 7) {
                 sectionUv = sectionUv.yx;
-            }
-            sectionUv = (s == 2 || s == 4 || s == 10)
-                ? vec2(sectionUv.x, 1.0 - sectionUv.y)
-                : vec2(1.0 - sectionUv.x, sectionUv.y);
-            if (s == 7) {
-                sectionUv.y = 1.0 - sectionUv.y;
             }
             vec2 paintUv = vec2(mix(paintRegion.x, paintRegion.y, sectionUv.x),
                                 mix(paintRegion.z, paintRegion.w, sectionUv.y));
@@ -660,6 +646,15 @@ const QVector3D kFacing[fh6::kLiverySideCount] = {
     QVector3D(1.0f, 0.0f, 0.0f),  // Right window
 };
 
+constexpr int kMaskSlotGeometrySides[fh6::kLiverySideCount] = {
+    0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
+};
+
+fh6::ModelVec3 mirroredCarSpace(fh6::ModelVec3 value) {
+    value.x = -value.x;
+    return value;
+}
+
 float axisOf(const fh6::ModelVec3 &v, int axis) {
     return axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
 }
@@ -956,6 +951,8 @@ ProjectionAlignment alignProjectionToMask(
     const std::optional<float> &longitudinalPivotZ,
     bool lockLongitudinalX) {
     ProjectionAlignment result;
+    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
+
     if (!side.mask.valid() || axhi <= axlo || ayhi <= aylo) {
         return result;
     }
@@ -1004,7 +1001,7 @@ ProjectionAlignment alignProjectionToMask(
     result.pivotY = projectionPivot(false);
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const fh6::CarMesh &mesh = meshes[mi];
-        if (!keepLod[mi] || (projectionSidesForMesh(mesh) & (1 << sideIndex)) == 0) {
+        if (!keepLod[mi] || (projectionSidesForMesh(mesh) & (1 << geometrySide)) == 0) {
             continue;
         }
         for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -1018,16 +1015,17 @@ ProjectionAlignment alignProjectionToMask(
                     valid = false;
                     break;
                 }
-                const fh6::ModelVec3 point = mesh.boneTransform.transformPoint(mesh.positions[index]);
+                const fh6::ModelVec3 point =
+                    mirroredCarSpace(mesh.boneTransform.transformPoint(mesh.positions[index]));
                 const float x = (signedAxis(point, true) - axlo) / axisWidth;
                 const float y = (signedAxis(point, false) - aylo) / axisHeight;
                 triangle[corner] = QPointF(x * (rasterWidth - 1), y * (rasterHeight - 1));
                 if (index < mesh.normals.size()) {
                     const fh6::ModelVec3 normal =
-                        mesh.boneTransform.transformVector(mesh.normals[index]);
-                    facing += normal.x * kFacing[sideIndex].x()
-                        + normal.y * kFacing[sideIndex].y()
-                        + normal.z * kFacing[sideIndex].z();
+                        mirroredCarSpace(mesh.boneTransform.transformVector(mesh.normals[index]));
+                    facing += normal.x * kFacing[geometrySide].x()
+                        + normal.y * kFacing[geometrySide].y()
+                        + normal.z * kFacing[geometrySide].z();
                 } else {
                     haveNormals = false;
                 }
@@ -1304,9 +1302,10 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
             continue;
         }
         for (const fh6::ModelVec3 &position : mesh.positions) {
-            const fh6::ModelVec3 wp = mesh.boneTransform.transformPoint(position);
+            const fh6::ModelVec3 wp =
+                mirroredCarSpace(mesh.boneTransform.transformPoint(position));
             for (int side = 0; side < kLiverySideCount; ++side) {
-                if ((candidateSides & (1 << side)) == 0) {
+                if ((candidateSides & (1 << kMaskSlotGeometrySides[side])) == 0) {
                     continue;
                 }
                 const fh6::LiverySide &liverySide = masks.sides[side];
@@ -1397,7 +1396,7 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
             (512.0f - side.top) / 1024.0f,
             (512.0f - side.bottom) / 1024.0f));
 
-        sideFacing_.append(kFacing[s]);
+        sideFacing_.append(kFacing[kMaskSlotGeometrySides[s]]);
     }
     sidePaintRegion_ = defaultSidePaintRegion_;
     fns->glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
@@ -1694,14 +1693,18 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
 
         // Bone matrices cross from row-vector to column-vector convention.
         const auto &m = mesh.boneTransform.m;
-        buffers->model = QMatrix4x4(m[0], m[4], m[8], m[12],
-                                    m[1], m[5], m[9], m[13],
-                                    m[2], m[6], m[10], m[14],
-                                    m[3], m[7], m[11], m[15]);
+        const QMatrix4x4 boneModel(m[0], m[4], m[8], m[12],
+                                  m[1], m[5], m[9], m[13],
+                                  m[2], m[6], m[10], m[14],
+                                  m[3], m[7], m[11], m[15]);
+        QMatrix4x4 horizontalMirror;
+        horizontalMirror.scale(-1.0f, 1.0f, 1.0f);
+        buffers->model = horizontalMirror * boneModel;
 
         QVector3D center;
         for (const fh6::ModelVec3 &p : mesh.positions) {
-            const fh6::ModelVec3 wp = mesh.boneTransform.transformPoint(p);
+            const fh6::ModelVec3 wp =
+                mirroredCarSpace(mesh.boneTransform.transformPoint(p));
             center += QVector3D(wp.x, wp.y, wp.z);
         }
         center /= static_cast<float>(mesh.positions.size());

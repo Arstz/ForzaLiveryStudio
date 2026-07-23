@@ -19,8 +19,8 @@ namespace {
 
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
-constexpr int kProjectedSectionToMaskSlot[fh6::kLiverySideCount] = {
-    0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
+constexpr int kLiverySectionMaskSlots[fh6::kLiverySideCount] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 };
 
 bool transposedSection(int maskSlot) {
@@ -148,10 +148,7 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Pro
     if (slot < 0 || slot >= fh6::kLiverySideCount) {
         return std::nullopt;
     }
-    const int maskSlot = kProjectedSectionToMaskSlot[slot];
-    if (maskSlot < 0 || maskSlot >= fh6::kLiverySideCount) {
-        return std::nullopt;
-    }
+    const int maskSlot = kLiverySectionMaskSlots[slot];
     const fh6::LiverySide &side = masks.sides[maskSlot];
     if (!side.valid) {
         return std::nullopt;
@@ -175,8 +172,12 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Pro
     const double packedOriginX = (originPixelX - layout.textureSize.width() * 0.5) / scale;
     const double packedOriginY = (originPixelY - layout.textureSize.height() * 0.5) / scale;
     QTransform projectionTransform;
-    if (slot == 5 || slot == 6) {
+    if (slot == 4 || slot == 10) {
+        projectionTransform.scale(-1.0, -1.0);
+    } else if (slot == 6) {
         projectionTransform.scale(-1.0, 1.0);
+    } else if (slot == 7) {
+        projectionTransform.scale(1.0, -1.0);
     }
     collectProjectedShapes(
         section, projectionTransform, packedOriginX, packedOriginY, *projected.project.root);
@@ -766,20 +767,16 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
         if (liverySectionSlot >= fh6::kLiverySideCount) {
             return {};
         }
-        firstSide = kProjectedSectionToMaskSlot[liverySectionSlot];
-        if (firstSide < 0 || firstSide >= fh6::kLiverySideCount) {
-            return {};
-        }
+        firstSide = kLiverySectionMaskSlots[liverySectionSlot];
         lastSide = firstSide + 1;
     }
-    const bool flipSectionX = liverySectionSlot >= 0
-        && liverySectionSlot != 2
-        && liverySectionSlot != 3
-        && liverySectionSlot != 9;
-    const bool flipSectionY = liverySectionSlot == 2
-        || liverySectionSlot == 3
+    const bool flipSectionX = liverySectionSlot == 4
+        || liverySectionSlot == 6
         || liverySectionSlot == 7
-        || liverySectionSlot == 9;
+        || liverySectionSlot == 10;
+    const bool flipSectionY = liverySectionSlot == 4
+        || liverySectionSlot == 7
+        || liverySectionSlot == 10;
     const bool transpose = liverySectionSlot == 5
         || liverySectionSlot == 6
         || liverySectionSlot == 7;
@@ -1152,7 +1149,7 @@ QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const
 void CarPreviewWidget::fitCameraToModel() {
     const fh6::ModelVec3 &mn = model_.boundsMin;
     const fh6::ModelVec3 &mx = model_.boundsMax;
-    target_ = QVector3D((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
+    target_ = QVector3D(-(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
     const QVector3D extent(mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
     modelRadius_ = std::max(0.001f, 0.5f * extent.length());
     distance_ = modelRadius_ * 2.6f;

@@ -750,7 +750,9 @@ QAction *MainWindow::registerShortcutAction(QAction *action,
         : defaultSequence;
     keyBindings_->registerAction(id, action, currentSequence);
     refreshShortcutActionText(action, id, label, currentSequence);
-    shortcutActions_.push_back({id, label, defaultSequence, currentSequence, action});
+    QString settingsLabel = label;
+    settingsLabel.remove(QLatin1Char('&'));
+    shortcutActions_.push_back({id, settingsLabel, label, defaultSequence, currentSequence, action});
     return action;
 }
 
@@ -778,13 +780,26 @@ void MainWindow::applyShortcutSettings(const QVector<ShortcutSettingsItem> &item
         }
         binding.currentShortcut = it.value();
         keyBindings_->setActionSequence(binding.id, binding.currentShortcut);
-        refreshShortcutActionText(binding.action, binding.id, binding.label, binding.currentShortcut);
+        refreshShortcutActionText(binding.action, binding.id, binding.actionLabel, binding.currentShortcut);
         const QString settingsKey = QStringLiteral("shortcuts/%1").arg(binding.id);
         if (binding.currentShortcut == binding.defaultShortcut) {
             QSettings().remove(settingsKey);
         } else {
             QSettings().setValue(settingsKey, binding.currentShortcut.toString(QKeySequence::PortableText));
         }
+    }
+    if (toolBar_ != nullptr) {
+        for (QAction *action : toolBar_->actions()) {
+            if (auto *button = qobject_cast<QToolButton *>(toolBar_->widgetForAction(action))) {
+                button->adjustSize();
+                button->updateGeometry();
+            }
+        }
+        if (QLayout *layout = toolBar_->layout()) {
+            layout->invalidate();
+            layout->activate();
+        }
+        toolBar_->updateGeometry();
     }
 }
 

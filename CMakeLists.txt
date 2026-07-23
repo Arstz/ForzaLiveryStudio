@@ -91,6 +91,7 @@ target_include_directories(fls_core PUBLIC src/core)
 option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
 option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
+option(FH6_ENABLE_IMGGEN_MENU "Expose experimental ImgGen menu" OFF)
 option(ENFORCE_SHAPE_LIMITS "Enforce per-section livery shape limits during export" ON)
 
 target_compile_definitions(fls_core
@@ -244,6 +245,11 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::Widgets
         Qt6::OpenGL
         Qt6::OpenGLWidgets
+)
+
+target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
+    PRIVATE
+        FH6_ENABLE_IMGGEN_MENU=$<BOOL:${FH6_ENABLE_IMGGEN_MENU}>
 )
 
 if(BUILD_TESTING)

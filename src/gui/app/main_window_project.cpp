@@ -16,12 +16,21 @@
 #include <QLineEdit>
 #include <QMessageBox>
 
+#include <array>
 #include <exception>
 #include <functional>
 
 namespace gui {
 
 using namespace mw_detail;
+
+namespace {
+
+constexpr int kSectionBarLabelSlots[fh6::kLiverySideCount] = {
+    0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
+};
+
+} // namespace
 
 void MainWindow::setProject(fh6::Project project) {
     state_->setProject(std::move(project));
@@ -178,12 +187,29 @@ void MainWindow::rebuildSectionBar() {
     if (sectionBar_ == nullptr) {
         return;
     }
+    std::array<fh6::scene::Group *, fh6::kLiverySideCount> sectionsBySlot{};
+    const QVector<fh6::scene::Group *> projectSections = liverySections(state_->project_);
+    for (fh6::scene::Group *group : projectSections) {
+        if (group->liverySectionSlot >= 0 && group->liverySectionSlot < fh6::kLiverySideCount) {
+            sectionsBySlot[group->liverySectionSlot] = group;
+        }
+    }
+
     QVector<LiverySectionBar::SectionInfo> sections;
-    for (fh6::scene::Group *group : liverySections(state_->project_)) {
-        const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(group->id).size());
-        sections.push_back({group->id, group->name, shapeCount,
+    sections.reserve(projectSections.size());
+    for (fh6::scene::Group *projectGroup : projectSections) {
+        const int projectSlot = projectGroup->liverySectionSlot;
+        fh6::scene::Group *labelGroup = projectGroup;
+        if (projectSlot >= 0 && projectSlot < fh6::kLiverySideCount) {
+            if (fh6::scene::Group *mappedGroup = sectionsBySlot[kSectionBarLabelSlots[projectSlot]];
+                mappedGroup != nullptr) {
+                labelGroup = mappedGroup;
+            }
+        }
+        const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(projectGroup->id).size());
+        sections.push_back({projectGroup->id, labelGroup->name, shapeCount,
                             fh6::kEnforceLiveryShapeLimits
-                                && shapeCount > fh6::liverySectionShapeLimit(group->liverySectionSlot)});
+                                && shapeCount > fh6::liverySectionShapeLimit(projectGroup->liverySectionSlot)});
     }
     sectionBar_->setSections(sections);
 }

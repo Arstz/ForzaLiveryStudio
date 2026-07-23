@@ -54,7 +54,6 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Edit layer properties: name, shape ID, position, scale, rotation, skew,
   opacity, color, visibility, mask, and lock state. Direct numeric input accepts
   arithmetic expressions with parentheses and `+`, `-`, `*`, `/`, and `%`.
-  The Scale X/Y link applies the same proportional change to both axes.
 - Edit a group or multi-shape selection's position, scale, rotation, and skew as
   a unit: the values transform the selection's bounding box (about its centre)
   rather than each shape in place. A group also carries its own transform frame in

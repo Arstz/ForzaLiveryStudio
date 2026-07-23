@@ -279,6 +279,7 @@ private:
     struct ShortcutAction {
         QString id;
         QString label;
+        QString actionLabel;
         QKeySequence defaultShortcut;
         QKeySequence currentShortcut;
         QAction *action = nullptr;

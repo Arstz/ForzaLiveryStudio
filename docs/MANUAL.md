@@ -1,244 +1,71 @@
 # Forza Livery Studio — User Manual
 
-A practical guide to the editor's tools, keyboard shortcuts, and panels. For
+A practical guide to the editor's workflow and tools. For
 build and developer notes see
 [DEV.md](DEV.md).
 
-> All keyboard shortcuts below are the defaults. Every shortcut is rebindable
-> from **Window → Settings…** (`Ctrl+K`).
+> No shortcut guide is provided, discover them yourself by using the editor. Most shortcuts are rebindable from `Window → Settings`.
 
-## Keyboard Shortcuts
+## Getting started
 
-### File
-
-| Action | Shortcut |
-| --- | --- |
-| New Project | `Ctrl+N` |
-| Open Project (`.3so`) | `Ctrl+O` |
-| Save Project (`.3so`) | `Ctrl+S` |
-| Save Project As (`.3so`) | `Ctrl+Shift+S` |
-| Import Asset / Import Guide Layer / Import Car Model | *(menu only)* |
-| Export (grouped C_group) | *(menu only)* |
-| Exit | *(menu only)* |
-
-> Every menu-bar action is rebindable in Settings, including the *(menu only)*
-> ones that ship without a default shortcut.
-
-### Edit
-
-| Action | Shortcut |
-| --- | --- |
-| Undo | `Ctrl+Z` |
-| Redo | `Ctrl+Y` |
-| Copy | `Ctrl+C` |
-| Cut | `Ctrl+X` |
-| Paste | `Ctrl+V` |
-| Group / Ungroup | `Ctrl+G` |
-| Ungroup Flat | `Ctrl+Shift+G` |
-| Fold All Groups | `Ctrl+Shift+E` |
-| Delete Selected | `Del` |
-| Stamp (duplicate in place) | `Y` |
-| Flip Selection | `Tab` |
-| Center View on Selection | `F1` |
-| Align Top / Bottom | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` |
-| Align Left / Right | `Ctrl+Shift+Left` / `Ctrl+Shift+Right` |
-| Align Horizontal Centre | `Ctrl+Shift+C` |
-| Align Vertical Centre | `Ctrl+Shift+D` |
-| Distribute Vertical / Horizontal | `Ctrl+Shift+V` / `Ctrl+Shift+H` |
+The prebuilt binaries should contain ForzaLiveryStudio.exe launch it and you will be presented with the main editor window. The window contais widgets (small windows) - those are draggable and dockable and detachable, try for yourself, arrange them the way you want and locate `Window->Save Layout` in menu bar at the top. This layout would be loaded on next launch if something breaks or you lose a widget do `Window->Reset Layout`.
 
 ### Project
 
-| Action | Shortcut |
-| --- | --- |
-| Target Car… | *(menu only)* |
-| Project Name… | *(menu only)* |
-| Creator Name… | *(menu only)* |
+There are 2 project types avaliable in the editor `Group` and `Livery`. Currently editor supports only 1 project opened per instance. By default the editor creates an empty group project. Importing an existing file from supported titles can be done via `File->Import`, this will  To create a livery you would need to press `File->New Project`, this would create a new project based on the asset oppened if group->group project, if livery->livery project. Exporting the project is done with `File->Export`, select a folder you wish to save into the folder will be named according to project metadata configured. I reccommend saving to ContainersRoot directory directly. The editor will export to Forza Horizon 6 format as the only supported, if support for other games is needed it is possible on request, contact the dev team on Github or Discord.
 
-### Tools
+### Metadata 
 
-| Tool | Shortcut | Purpose |
-| --- | --- | --- |
-| Select | `S` | Click/drag to select and move layers and groups. |
-| Move | `V` | Reposition the selection; optional auto-select of the clicked layer. |
-| Marquee | `F` | Rubber-band select multiple layers. |
-| Transform | `T` | Scale/skew the selection via bounding-box handles. |
-| Rotate | `R` | Rotate the selection about its centre. |
-| Pipette | `I` | Pick a color from visible layers/guides, apply it, and save it to swatches. |
-| Pen | `P` | Draw a closed quadratic path and fill it with contained Primitive shapes. |
-| Lining | `L` | Draw an open centreline and fit lining Primitive shapes to its width. |
+Metadata is located in `Header` widget, it will be loaded from the imported assets or created by default on new project with the creator name last used. The file would be exported as a local instance, to publish you would need to resave it ingame and publish with Forza itself.
 
-### Options & Window
+### Shapes
 
-| Action | Shortcut |
-| --- | --- |
-| Show Selection Flash | `\` |
-| Show Guidelines | `Ctrl+;` |
-| Lock Guidelines | `Ctrl+Alt+;` |
-| Delete All Guidelines | `Ctrl+Alt+Shift+;` |
-| Show Guide Layers | *(unbound)* |
-| Show Guide Layers On Top | `` ` `` |
-| Settings… | `Ctrl+K` |
+To place shapes interact with `Shapes` widget. Left click would create a new shape and right would change the selected shape to the clicked one. Add and remove shapes to favourites via clicking on the star icon, shapes can be renamed by editing `assets/vector/shape_names.json` located in your install location.
 
-## Tools & Behaviours
+### Guide layers
 
-- **Select (`S`)** — primary editing tool. Click a shape or group to select it,
-  drag to move. Works together with the layer tree selection. Press `Escape` to
-  clear the current layer, guide, or group selection.
-- **Move (`V`)** — dedicated move tool. Enable **Options → Move Tool
-  Auto-Select** to select the layer group you click. When auto-select is off,
-  clicking outside the current selection preserves it unless nothing is selected.
-  Use arrow keys for precise movement: normal nudges use the Settings value
-  (`0.1` by default), and `Shift`+arrow uses the larger Settings value (`1.0` by
-  default).
-- **Marquee (`F`)** — drag a rectangle to select every layer it touches.
-- **Transform (`T`)** — drag edge/corner handles to scale, side handles to skew.
-  For a group or multi-shape selection the values transform the selection's
-  bounding box about its centre (each child keeps its relative position) rather
-  than editing each shape in place. `Tab` flips the current selection through the
-  scale-sign states. Arrow-key nudging works here too.
-- **Rotate (`R`)** — rotate the selection about its centre. Enable **Options →
-  Transform Relative Mode** if you want the transform/rotate handles to follow
-  the selected shape or group rotation.
-- **Pipette (`I`)** — click the canvas to sample the visible color under the
-  cursor. It samples regular layers and guide layers according to their visual
-  stacking, applies the picked color to the current selection, and adds it to the
-  project swatches. Guide colors are sampled from original guide pixels, ignoring
-  guide opacity.
-- **Bucket (`B`)** — select one visible guide layer, then hover its image to
-  preview the contiguous color region under the cursor. Use the mouse wheel to
-  change the `0–255` RGBA tolerance (`Shift` changes it in steps of five). Click
-  to trace the preview with Potrace and load the resulting optimized closed
-  contour into Pen. Press `Enter` to run the normal Pen fill; every
-  generated shape uses the average RGBA color of the selected bucket region.
-- **Pen (`P`)** — place a closed vector contour which is converted into ordinary
-  Forza Primitive layers. The first point is a hard corner. Single-click places a
-  soft quadratic control and double-click places a hard point; click the first
-  point again to loop the path. Once looped, `Ctrl`+left-click a curve to add a
-  soft point, `Ctrl`+left-click a soft point to make it hard, `Alt`+left-drag a
-  point to move it, or right-click a point to remove it. Press `Enter` to fill.
-  Contextual reminders appear beside the cursor while editing. Adjacent hard
-  points form a line, hard–soft–hard forms a quadratic curve, and consecutive
-  soft points share an implied midpoint. Before looping, `Backspace` removes the
-  latest point. `Escape` cancels the path or a running fill. Self-intersecting
-  contours are highlighted and must be corrected before filling. Open and
-  looped Pen paths remain intact when another tool is selected and reappear
-  when returning to Pen; only `Escape` or a completed fill clears that
-  progress. Finish or cancel an existing Pen path before tracing a new one with
-  Bucket.
+Using raster images as your guide is very straightforward, you can import one to your project by clicking `File->Import Guide Layer` or dropping the file into editor window directly. Guide layers have opacity and can be freely transformed. You can toggle their visibility and draw order (on top/on bottom) via `Option->Guides`.
 
-  Pen uses a bounded catalog of compatible vector primitives and follows the contour
-  inward. Curved boundaries receive fitted affine placements, then the remaining
-  core is deterministically meshed. Overlap is allowed, curve fits use a bounded
-  spill tolerance, and generated shape count is capped at twice the Pen point count.
-  The generated layers share the last selected shape color when the corresponding
-  new-shape behavior is enabled (otherwise white) and are placed in one **Pen
-  Fill** group as a single undoable operation. Filling runs in the background.
-- **Lining (`L`)** — draw an open hard/soft quadratic centreline and set its
-  universal width in the toolbar. The mouse wheel changes the width in `0.5`
-  steps and `Shift` changes it five times faster. Right-click completes the path
-  without generating shapes. The completed path remains editable with the Pen
-  point controls until `Enter` fits lining Primitives and creates a
-  single **Lining** group. The hard/soft point structure guides the fit, curve
-  agreement is prioritized ahead of width coverage, placement widths are
-  normalized to the generated curve coverage, path direction controls asymmetric
-  shape orientation, and neighboring placements must overlap. Each authored span
-  receives one primary placement. `Escape` clears the path or cancels a running fit.
-  The latest fit trace is written to `lining_fill.log` beside the executable.
-- **Place Text** (toolbar) — build a line of text from the vector font glyphs.
-  Clicking the toolbar button opens a dialog to pick a **font** (Arial, Magneto,
-  Freestyle, Pristina, EnglishMT, BrushMT, Impact, Playbill, TimesNewRoman,
-  Elephant, CenturyGothic) and type the **text**. On confirm the glyph shapes are
-  laid out proportionally in a line at the current view centre and grouped into a
-  new group named after the text. Text is case-sensitive (upper and lower letters
-  use different glyphs). Supported characters are `A–Z a–z 1–9 0 ! ? @ &` and the
-  lowercase symbols `$ £ ¥ € ( ) ¢ * # + % ; : ,`; a space inserts a gap and any
-  other character is skipped (reported afterwards).
-- **Numeric property drag** — in the Properties dock, drag a numeric field's
-  label left/right (or up/down) to scrub its value live.
-- **Align / Distribute** (**Edit → Align** / **Edit → Distribute**) — arrange the
-  current selection by its shape geometry. Each selected top-level unit — a whole
-  group counts as one, loose shapes/guides count individually — is snapped to a
-  shared edge (**Top/Bottom/Left/Right**) or a shared **Horizontal/Vertical Centre**.
-  **Distribute Vertical/Horizontal** evens the gaps between unit bounds; selecting
-  a single group distributes that group's own direct children. Align needs ≥2 units,
-  distribute ≥3.
-- **Project menu** — edit one project field at a time: **Target Car…** (the car a
-  livery targets), **Project Name…**, and **Creator Name…** (also saved as the
-  default creator for new projects). Changing the target car reloads its matching
-  model in the 3D preview.
-- **Import** (**File → Import…**) — browse folders in the built-in asset explorer.
-  Importable folders show their available metadata and thumbnail; selecting one
-  routes it to the matching importer. The explorer restores its last location,
-  search text, and asset-type filter.
-- **Import Car Model** (**File → Import Car Model…**) — load a `.modelbin`,
-  `.carbin`, or zipped car folder into the **3D Preview** dock, which shows the
-  current vinyl mapped through the model's livery UVs and coverage masks (reference
-  only; the in-game material and lighting may differ). Opening a livery auto-loads
-  its matching car from the **car models
-  folder** set in Settings (prompted once if unset); **Discard current model on
-  livery open** (Settings, on by default) controls whether that replaces the
-  currently loaded model.
-- **Export** (**File → Export…**) — writes a grouped `C_group` folder while
-  preserving structure, nesting, and masks. Source-backed livery projects write a
-  `C_livery` folder preserving visible section groups, nesting, and masks. When a car
-  model is loaded,
-  livery export renders `bigThumb.webp` from the textured 3D preview.
-- **Project files** — projects save to a `.3so` container: the editor project
-  JSON wrapped in a gzip stream. Legacy plain-JSON (`.json`) projects still open.
-  **Auto Save** is enabled by default in Settings; turn it off to suspend periodic
-  saves without changing the configured autosave interval.
-- **Guide layers** — import a raster image as an editor-only reference layer
-  (**File → Import Guide Layer…**, toolbar **Add Guide Layer**, or drag an image
-  from Explorer). Guide layers are stored inside the project file and ignored by
-  game export. **Options → Guides → Show Guide Layers On Top** is enabled by
-  default and can be changed with `` ` ``. All guide layers can be shown or hidden
-  together from the same menu without changing their individual visibility.
-- **Rulers and guidelines** — canvas rulers track world coordinates while the
-  view is panned or zoomed. `Alt`+left-click a ruler to add a project guideline,
-  drag its ruler marker to reposition it, or right-click the marker to remove it.
-  Guideline visibility, locking, clearing, shortcuts, and color are configurable
-  from **Options → Guides** and Settings.
-- **Visibility borders** — Settings can show viewport/placement reference
-  borders on the canvas and choose the reference resolution. **Position Limit
-  Border** is off by default.
-- **Transform anchors** — Settings can hide transform handles during a drag.
-  They remain visible by default.
-- **Swatches** — saved colors are project-specific. Click a swatch to apply it
-  to the current selection, click `+` to save the current selection color, and
-  middle-click or right-click a swatch to remove it.
-- **Drag & drop** — drop a project (`.3so`/`.json`), a `C_group`/`C_livery`
-  file/folder, or an image file from Explorer straight onto the window.
-- **Flash Selected Layers (`\`)** — briefly flash the current selection on the
-  canvas to locate it.
+## Tools
 
-## Panels
+### Select
 
-- **Canvas** — the OpenGL editing surface; pan and zoom to navigate.
-- **Layers** — the layer/group/guide tree with thumbnails and visibility / mask
-  / lock badges. Reorder siblings by internal drag/drop; group, ungroup, delete,
-  copy/cut/paste, duplicate, and stamp from here or the Edit menu. Livery section
-  labels display leaf counts that update after structural edits. Builds with
-  shape-limit enforcement enabled display an over-limit count in red and reject
-  the livery export.
-- **Properties** — edit name, shape ID, position, scale, rotation, skew,
-  opacity, colour, visibility, mask, and lock for the current selection.
-  The color picker samples original guide pixels under the cursor, ignoring
-  guide opacity. Enable **Options → Show Property Debug** for extra diagnostics.
-- **Shapes** — browse and insert vector shapes.
-  - Shapes are labelled `Name (ID)`; names come from
-    `assets/vector/shape_names.json` and are reparsed on each launch.
-  - The search box matches by **ID** or **name** and activates at **3
-    characters**; shorter input shows a hint. Search spans every category (and
-    matching custom groups).
-  - Star a shape to add it to **Favourites**. Use **Add current selection** to
-    save the current selection as a reusable **Custom** group.
-- **Buffer** — shows the current clipboard contents.
-- **Swatches** — project-specific color palette for applying, saving, and
-  removing colors.
-- **Project** — summary of the open project (name, creator, source, layer/group
-  counts, and the target car for liveries). Edit these via the **Project** menu.
-- **Header** — edit header metadata written into exported projects.
-- **3D Preview** — an orbit-camera view of an imported car with the current vinyl
-  mapped onto its paint. Drag to orbit, middle-drag to pan, wheel to zoom. Material
-  and lighting are a reference approximation rather than the in-game render. Press
-  `U` while the preview has focus to cycle its projection diagnostics.
+Your main way to select shapes and groups. Select one with left click and cycle through if multiple are at the same spot by repeating. Clicking with `Shift` would select the topmost group, and `Control` would toggle a specific shape to current selection.
+
+### Marquee
+
+Select multiple shapes contained within a rectangle on left click and drag. Shapes will be selected based on their center point. Is global so it would ignore shape nesting into groups.
+
+### Move
+
+This tool is used, well, to move current selection. You can toggle autoselection via `Options`, otherwise you would have to modify selection with other tools.
+
+### Rotate
+
+A separate tool for rotation only, if you prefer to do rotation separately or globally.
+
+### Opacity and Skew
+
+These tools are opt-in via `Settings` widget, used to control opacity and skew by dragging horizontally. If setting enabled it would remove separate skew anchor from the Transform tool.  
+
+### Transform
+
+All in one tool to move, rotate, scale and skew the selection. Applying `Shift` causes the scale to be uniform, rotate to snap 15 degree intervals. Scaling with `Alt` held would pin the selection.
+
+### Pipette
+
+Click a layer to sample its color, will apply it to the current selection. You can also sample the guide layer. Every sample adds this color to Swatches widget to be reused later if not already present.
+
+### Pen
+
+Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. A closed contour can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. 
+
+### Bucket
+
+Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Some larger contours may take longer. For best results try to maximize tolerance and hard point count.
+
+>Both Bucket and Pen is not a replacement for every contour, and can have unpredictable results on finer details. For basic shapes like fonts it is still reccommended to use other means. Use both if you want to speed up the process but be aware that they might consume more shapes than if done manually.
+
+### Lining (experimental)
+
+This tool is aimed to help tracing the finer details, same as Pen but allows for a non-closed contour, to stop drawing press right mouse button. Adjust width with scrollwheel, it gives the filling algorithm some leeway, confirm with `Enter` it will try to match the curve with shapes, try to maximize hardpoints and minimize contour lenght. Try different width settings, usually best around 4-8.

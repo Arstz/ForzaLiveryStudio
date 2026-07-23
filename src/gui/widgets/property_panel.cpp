@@ -26,7 +26,6 @@ constexpr double kLabelDragStepDefault = 1.0;
 constexpr double kLabelDragStepScale = 0.1;
 constexpr double kLabelDragStepSkew = 0.1;
 constexpr double kLabelDragStepOpacity = 0.01;
-constexpr double kScaleLinkEpsilon = 1e-9;
 
 bool isTransformProperty(const QString &property) {
     return property == QStringLiteral("x") || property == QStringLiteral("y")
@@ -732,10 +731,6 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     y_ = floatBox(-kPositionSpinRange, kPositionSpinRange);
     scaleX_ = floatBox(-kScaleSkewSpinRange, kScaleSkewSpinRange);
     scaleY_ = floatBox(-kScaleSkewSpinRange, kScaleSkewSpinRange);
-    scaleLink_ = new QToolButton(this);
-    scaleLink_->setText(QStringLiteral("Link X/Y"));
-    scaleLink_->setCheckable(true);
-    scaleLink_->setToolTip(QStringLiteral("Keep Scale X and Scale Y proportional"));
     rotation_ = new RotationSpinBox(this);
     rotation_->setRange(0.0, kRotationSpinMax);
     rotation_->setDecimals(kFloatSpinDecimals);
@@ -768,12 +763,6 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
         {opacity_, QStringLiteral("opacity")},
     };
 
-    connect(scaleX_, &QDoubleSpinBox::valueChanged, this, [this]() {
-        propagateLinkedScale(scaleX_, scaleY_);
-    });
-    connect(scaleY_, &QDoubleSpinBox::valueChanged, this, [this]() {
-        propagateLinkedScale(scaleY_, scaleX_);
-    });
     for (auto it = widgetProperties_.begin(); it != widgetProperties_.end(); ++it) {
         QWidget *widget = it.key();
         if (qobject_cast<QAbstractSpinBox *>(widget) != nullptr) {
@@ -805,7 +794,6 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     layout->addRow(dragLabel(QStringLiteral("Position X"), QStringLiteral("PropertyXY.xpm"), QStringLiteral("x"), x_), x_);
     layout->addRow(dragLabel(QStringLiteral("Position Y"), QStringLiteral("PropertyXY.xpm"), QStringLiteral("y"), y_), y_);
     layout->addRow(dragLabel(QStringLiteral("Scale X"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleX"), scaleX_), scaleX_);
-    layout->addRow(QString(), scaleLink_);
     layout->addRow(dragLabel(QStringLiteral("Scale Y"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleY"), scaleY_), scaleY_);
     layout->addRow(dragLabel(QStringLiteral("Rotation"), QStringLiteral("ToolbarRotate.xpm"), QStringLiteral("rotation"), rotation_), rotation_);
     layout->addRow(dragLabel(QStringLiteral("Skew"), QStringLiteral("ToolbarSkew.xpm"), QStringLiteral("skew"), skew_), skew_);
@@ -929,7 +917,6 @@ void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
         } else {
             setMultipleGuides(guides_);
         }
-        updateScaleLinkEnabled();
         loading_ = false;
         return;
     }
@@ -937,7 +924,6 @@ void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
         for (QWidget *widget : layerPropertyWidgets(name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_, opacity_, visible_, locked_, mask_, colorButton_)) {
             widget->setEnabled(false);
         }
-        updateScaleLinkEnabled();
         debug_->setText(QStringLiteral("Mixed guide and vinyl selection"));
         loading_ = false;
         return;
@@ -1042,7 +1028,6 @@ void PropertyPanel::setSelection(const QVector<fh6::scene::Shape *> &layers,
         setMultipleLayers(layers_);
         setBoxProxyFields(false);
     }
-    updateScaleLinkEnabled();
     loading_ = false;
 }
 
@@ -1377,75 +1362,6 @@ void PropertyPanel::clearMixedStyles() {
     }
 }
 
-void PropertyPanel::propagateLinkedScale(QDoubleSpinBox *source, QDoubleSpinBox *target) {
-    if (loading_ || applyingChange_ || scaleLink_ == nullptr || !scaleLink_->isChecked()
-        || source == nullptr || target == nullptr) {
-        return;
-    }
-    const double sourceFrom = scaleValueBeforeChange(source);
-    const double sourceTo = source->value();
-    const double targetFrom = target->value();
-    const double targetTo = std::abs(sourceFrom) > kScaleLinkEpsilon
-        ? targetFrom * sourceTo / sourceFrom
-        : targetFrom + sourceTo - sourceFrom;
-
-    linkedScaleOther_ = target;
-    linkedScaleOtherFrom_ = targetFrom;
-    linkedScaleOtherTo_ = std::clamp(targetTo, target->minimum(), target->maximum());
-    linkedScaleChangePending_ = true;
-    const QSignalBlocker blocker(target);
-    target->setValue(linkedScaleOtherTo_);
-}
-
-double PropertyPanel::scaleValueBeforeChange(QDoubleSpinBox *box) const {
-    if (baselines_.contains(box)) {
-        return baselines_.value(box);
-    }
-    if (layers_.size() == 1 && guides_.isEmpty() && groups_.isEmpty()) {
-        return box == scaleX_ ? layers_.front()->scaleX : layers_.front()->scaleY;
-    }
-    if (guides_.size() == 1 && layers_.isEmpty() && groups_.isEmpty()) {
-        return box == scaleX_ ? guides_.front()->scaleX : guides_.front()->scaleY;
-    }
-
-    return box->value();
-}
-
-void PropertyPanel::applyLinkedScaleBoxTransform(double scaleXFrom,
-                                                 double scaleXTo,
-                                                 double scaleYFrom,
-                                                 double scaleYTo) {
-    const double factorX = std::abs(scaleXFrom) > kScaleLinkEpsilon ? scaleXTo / scaleXFrom : 1.0;
-    const double factorY = std::abs(scaleYFrom) > kScaleLinkEpsilon ? scaleYTo / scaleYFrom : 1.0;
-    QTransform scale;
-    scale.scale(factorX, factorY);
-    const QTransform transform = aboutPivot(selectionBoxCenter(), scale);
-    if (transform.isIdentity()) {
-        return;
-    }
-    const QSet<QString> groupedLayerIds = coveredLayerIdsForGroups(state_, groups_);
-    for (fh6::scene::Shape *layer : layers_) {
-        if (groupedLayerIds.contains(layer->id)) {
-            continue;
-        }
-        applyDecomposedTransform(layer, localResultForWorldTransform(*layer, flatEntryTransform(*layer), transform));
-    }
-    if (state_ != nullptr && !groups_.isEmpty()) {
-        QVector<QString> groupIds;
-        groupIds.reserve(groups_.size());
-        for (const fh6::scene::Group *group : groups_) {
-            groupIds.push_back(group->id);
-        }
-        state_->transformGroupFrames(groupIds, transform);
-    }
-}
-
-void PropertyPanel::updateScaleLinkEnabled() {
-    if (scaleLink_ != nullptr) {
-        scaleLink_->setEnabled(scaleX_->isEnabled() && scaleY_->isEnabled());
-    }
-}
-
 void PropertyPanel::applyChanged(QWidget *sender) {
     if (loading_ || (layers_.isEmpty() && guides_.isEmpty() && groups_.isEmpty())) {
         return;
@@ -1454,9 +1370,6 @@ void PropertyPanel::applyChanged(QWidget *sender) {
     if (property.isEmpty()) {
         return;
     }
-    const bool linkedScaleChange = linkedScaleChangePending_
-        && (sender == scaleX_ || sender == scaleY_);
-    linkedScaleChangePending_ = false;
     if (!guides_.isEmpty() && (sender != locked_)) {
         for (const fh6::scene::GuideLayer *guide : guides_) {
             if (guide->locked) {
@@ -1521,10 +1434,6 @@ void PropertyPanel::applyChanged(QWidget *sender) {
             const double old = baselines_.value(box, box->value());
             const double delta = box->value() - old;
             baselines_.insert(box, box->value());
-            const double linkedDelta = linkedScaleOtherTo_ - linkedScaleOtherFrom_;
-            if (linkedScaleChange && linkedScaleOther_ != nullptr) {
-                baselines_.insert(linkedScaleOther_, linkedScaleOtherTo_);
-            }
             for (fh6::scene::GuideLayer *guide : guides_) {
                 if (property == QStringLiteral("x")) {
                     guide->x += delta;
@@ -1538,11 +1447,6 @@ void PropertyPanel::applyChanged(QWidget *sender) {
                     guide->rotation = normalizeRotation(guide->rotation + delta);
                 } else if (property == QStringLiteral("opacity")) {
                     guide->opacity = std::clamp(guide->opacity + delta, 0.0, 1.0);
-                }
-                if (linkedScaleChange && linkedScaleOther_ == scaleX_) {
-                    guide->scaleX += linkedDelta;
-                } else if (linkedScaleChange && linkedScaleOther_ == scaleY_) {
-                    guide->scaleY += linkedDelta;
                 }
             }
         } else if (auto *line = qobject_cast<QLineEdit *>(sender)) {
@@ -1575,12 +1479,7 @@ void PropertyPanel::applyChanged(QWidget *sender) {
                 state_->setGroupDescendantMask(group->id, value);
             }
         } else if (auto *box = qobject_cast<QDoubleSpinBox *>(sender); box != nullptr && isTransformProperty(property)) {
-            if (linkedScaleChange) {
-                applyLinkedScaleBoxTransform(baselines_.value(scaleX_, scaleX_->value()), scaleX_->value(),
-                                             baselines_.value(scaleY_, scaleY_->value()), scaleY_->value());
-            } else {
-                applyBoxTransform(property, baselines_.value(box, box->value()), box->value());
-            }
+            applyBoxTransform(property, baselines_.value(box, box->value()), box->value());
         }
     } else if (sender == locked_ && locked_->checkState() != Qt::PartiallyChecked) {
         const bool value = locked_->checkState() == Qt::Checked;
@@ -1590,7 +1489,7 @@ void PropertyPanel::applyChanged(QWidget *sender) {
     } else if (layers_.size() == 1) {
         applySingle(sender);
     } else {
-        applyMulti(sender, property, linkedScaleChange);
+        applyMulti(sender, property);
     }
     if (transformOnly) {
         state_->commitTransformCommand();
@@ -1937,15 +1836,10 @@ void PropertyPanel::applySingle(QWidget *sender) {
     layer->mask = mask_->isChecked();
 }
 
-void PropertyPanel::applyMulti(QWidget *sender, const QString &property, bool linkedScaleChange) {
+void PropertyPanel::applyMulti(QWidget *sender, const QString &property) {
     if (auto *box = qobject_cast<QDoubleSpinBox *>(sender)) {
         if (isTransformProperty(property)) {
-            if (linkedScaleChange) {
-                applyLinkedScaleBoxTransform(baselines_.value(scaleX_, scaleX_->value()), scaleX_->value(),
-                                             baselines_.value(scaleY_, scaleY_->value()), scaleY_->value());
-            } else {
-                applyBoxTransform(property, baselines_.value(box, box->value()), box->value());
-            }
+            applyBoxTransform(property, baselines_.value(box, box->value()), box->value());
             return;
         }
         const double old = baselines_.value(box, box->value());

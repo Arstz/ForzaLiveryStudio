@@ -8,7 +8,7 @@
 namespace gui {
 namespace {
 
-constexpr int kCursorExtent = 11;
+constexpr int kCursorExtent = 16;
 const QColor kDropIndicatorLineColor(244, 197, 66);
 const QColor kAllowedBorderColor(30, 30, 30);
 const QColor kAllowedFillColor(245, 245, 245);
