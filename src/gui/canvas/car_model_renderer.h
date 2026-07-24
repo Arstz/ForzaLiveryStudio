@@ -2,6 +2,7 @@
 
 #include "core_types.h"
 #include "livery_masks.h"
+#include "manufacturer_colors.h"
 #include "model_geometry.h"
 #include "paint_finish_catalog.h"
 
@@ -43,6 +44,7 @@ public:
                 GLuint liveryTexture,
                 const QColor &basePaint,
                 const fh6::LiveryPaintState *paintState,
+                const fh6::ManufacturerColorPalette *manufacturerColors,
                 const fh6::PaintFinishLibrary *paintFinishes);
 
 private:

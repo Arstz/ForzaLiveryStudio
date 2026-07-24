@@ -1859,6 +1859,8 @@ constexpr float kFlakeSecondaryMix = 0.6f;
 constexpr float kFlakeSecondaryMixMax = 0.45f;
 constexpr float kFlakeBaseTint = 0.7f;
 constexpr float kFlakeBaseTintMax = 0.9f;
+constexpr float kManufacturerFlakeBaseMetallic = 0.45f;
+constexpr float kManufacturerFlakeMetallicGain = 0.5f;
 
 // Approximates a finish's shading when the painttype material library is unavailable,
 // preserving the earlier hardcoded behaviour for the most common finish codes.
@@ -1987,6 +1989,7 @@ void CarModelRenderer::render(
     GLuint liveryTexture,
     const QColor &basePaint,
     const fh6::LiveryPaintState *paintState,
+    const fh6::ManufacturerColorPalette *manufacturerColors,
     const fh6::PaintFinishLibrary *paintFinishes) {
     if (!initialized_ || meshes_.empty()) {
         return;
@@ -2049,8 +2052,13 @@ void CarModelRenderer::render(
         float secondaryMix = 0.0f;
         float gloss = mesh.gloss;
         float metallic = mesh.metallic;
+        float manufacturerFlake = 0.0f;
         const fh6::LiveryPaintMaterial *paint = paintState != nullptr
             ? paintState->find(mesh.paintMaterialHash)
+            : nullptr;
+        const fh6::ManufacturerColor *manufacturerColor =
+            paint != nullptr && manufacturerColors != nullptr
+            ? manufacturerColors->find(paint->manufacturerSelector)
             : nullptr;
         const fh6::PaintFinishRender *finish = (paint != nullptr && paintFinishes != nullptr)
             ? paintFinishes->find(static_cast<int>(paint->finish))
@@ -2058,6 +2066,31 @@ void CarModelRenderer::render(
         const auto decodedColor = [](const fh6::LiveryPaintColor &color) {
             return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
         };
+        const auto decodedManufacturerColor = [](const std::array<float, 3> &color) {
+            return QVector3D(
+                linearToDisplay(color[0]),
+                linearToDisplay(color[1]),
+                linearToDisplay(color[2]));
+        };
+        if (manufacturerColor != nullptr) {
+            primary = decodedManufacturerColor(manufacturerColor->primary);
+            secondary = manufacturerColor->secondaryEnabled
+                ? decodedManufacturerColor(manufacturerColor->secondary)
+                : primary;
+            if (manufacturerColor->material) {
+                gloss = manufacturerColor->material->gloss;
+                if (manufacturerColor->material->hasMetallic) {
+                    metallic = manufacturerColor->material->metallic;
+                }
+                manufacturerFlake = manufacturerColor->material->flakeAmount;
+                if (manufacturerFlake > 0.0f) {
+                    metallic = std::max(
+                        metallic,
+                        kManufacturerFlakeBaseMetallic
+                            + kManufacturerFlakeMetallicGain * manufacturerFlake);
+                }
+            }
+        }
         if (paint != nullptr) {
             if (paint->primary.enabled) {
                 primary = decodedColor(paint->primary);
@@ -2102,7 +2135,9 @@ void CarModelRenderer::render(
         program_.setUniformValue(finishSelfColoredLocation_,
                                  (finish != nullptr && finish->selfColored) ? 1 : 0);
         program_.setUniformValue(finishTilingLocation_, 1.0f);
-        program_.setUniformValue(finishFlakeLocation_, finish != nullptr ? finish->flakeAmount : 0.0f);
+        program_.setUniformValue(
+            finishFlakeLocation_,
+            finish != nullptr ? finish->flakeAmount : manufacturerFlake);
         functions->glActiveTexture(GL_TEXTURE0);
         program_.setUniformValue(mvpLocation_, viewProjection * mesh.model);
         program_.setUniformValue(modelLocation_, mesh.model);

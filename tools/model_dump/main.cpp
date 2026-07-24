@@ -1,5 +1,6 @@
 #include "car_scene.h"
 #include "livery_masks.h"
+#include "manufacturer_colors.h"
 #include "model_geometry.h"
 #include "model_material.h"
 #include "swatchbin.h"
@@ -8,6 +9,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QString>
 #include <QTemporaryDir>
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <string>
@@ -377,6 +380,35 @@ static int dumpSwatchbin(const QString &path)
     return 0;
 }
 
+static int dumpManufacturerColors(const QString &carbinPath)
+{
+    const QString path =
+        QFileInfo(carbinPath).absoluteDir().filePath(QStringLiteral("ManufacturerColors.bin"));
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        std::fprintf(stderr, "could not open %s\n", qPrintable(path));
+        return 1;
+    }
+
+    try {
+        const ManufacturerColorPalette palette = decodeManufacturerColors(file.readAll());
+        std::printf("%s\n  colors: %lld\n", qPrintable(path),
+                    static_cast<long long>(palette.colors.size()));
+        for (qsizetype index = 0; index < palette.colors.size(); ++index) {
+            const ManufacturerColor &color = palette.colors[index];
+            std::printf("  [%lld] enabled=%d rgb=(%.5f,%.5f,%.5f) material=%s slots=%s\n",
+                        static_cast<long long>(index), color.enabled ? 1 : 0,
+                        color.primary[0], color.primary[1], color.primary[2],
+                        qPrintable(color.materialPath),
+                        qPrintable(color.materialSlots.join(QLatin1Char(','))));
+        }
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "failed to decode %s: %s\n", qPrintable(path), error.what());
+        return 1;
+    }
+    return 0;
+}
+
 static int dumpUv(const QString &carbinPath)
 {
     QString error;
@@ -449,7 +481,7 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     const QStringList args = app.arguments();
     if (args.size() < 2) {
-        std::fprintf(stderr, "usage: fh6_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv]\n");
+        std::fprintf(stderr, "usage: fh6_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv] [--manufacturer-colors]\n");
         return 2;
     }
 
@@ -462,6 +494,9 @@ int main(int argc, char *argv[])
     std::unique_ptr<QTemporaryDir> tempDir;
     if (!resolveZipInput(path, tempDir)) {
         return 1;
+    }
+    if (args.contains(QStringLiteral("--manufacturer-colors"))) {
+        return dumpManufacturerColors(path);
     }
     if (args.contains(QStringLiteral("--uv"))) {
         return dumpUv(path);

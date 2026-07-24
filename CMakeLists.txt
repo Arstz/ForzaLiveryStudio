@@ -55,6 +55,8 @@ add_library(fls_core STATIC
     src/core/matrix_math.cpp
     src/core/matrix_math.h
     src/core/material_hashes.h
+    src/core/manufacturer_colors.cpp
+    src/core/manufacturer_colors.h
     src/core/model_bundle.cpp
     src/core/model_bundle.h
     src/core/model_geometry.cpp

@@ -3,6 +3,7 @@
 #include "car_model_renderer.h"
 #include "core_types.h"
 #include "livery_masks.h"
+#include "manufacturer_colors.h"
 #include "native_shape_renderer.h"
 #include "shape_geometry_store.h"
 #include "model_geometry.h"
@@ -91,6 +92,7 @@ private:
     EditorState *state_ = nullptr;
 
     fh6::CarModel model_;
+    fh6::ManufacturerColorPalette manufacturerColors_;
     bool modelUploadPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;

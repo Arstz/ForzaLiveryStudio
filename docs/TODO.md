@@ -1,4 +1,5 @@
 Small changes:
+    -Decompose car_renderer
 
 Medium changes:
 

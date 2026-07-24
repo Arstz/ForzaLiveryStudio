@@ -490,6 +490,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   - `material_hashes.h`: shared paint-binding and material-parameter hash
     catalogue used by container encoding, model decoding, texture selection, and
     preview paint binding.
+  - `manufacturer_colors.*`: decodes the car-specific manufacturer paint
+    palette and its material bindings.
   - `paint_finish_catalog.*`: the global livery-material enumeration (finish code →
     display name → painttype `.materialbin` stem → category) plus `PaintFinishLibrary`,
     which decodes each material into `PaintFinishRender` shading parameters keyed by
@@ -587,7 +589,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     `resolveExteriorMaterials` merges the material defaults always and loads the
     swatchbin textures only when the opt-in setting is on; `assignSharedSlotMaterials`
     synthesizes a materialbin path for wheel slot names that carry none. Resolved
-    materials are flagged so the renderer prefers them over name heuristics. Decoded
+    materials are flagged so the renderer prefers them over name heuristics.
+    Manufacturer paint selectors resolve through the loaded car's paint palette
+    and shared material tuning. Decoded
     material defaults and native textures are held in bounded process-wide caches.
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with

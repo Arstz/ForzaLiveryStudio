@@ -686,9 +686,67 @@ void resolveExteriorMaterials(
     textureCache.trim();
 }
 
+fh6::ManufacturerColorPalette loadManufacturerColors(
+    const QString &carRoot, const QString &sourcePath) {
+    QFile file(QDir(carRoot).filePath(QStringLiteral("ManufacturerColors.bin")));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+
+    fh6::ManufacturerColorPalette palette;
+    try {
+        palette = fh6::decodeManufacturerColors(file.readAll());
+    } catch (const std::exception &) {
+        return {};
+    }
+
+    const QString archivePath = findSharedCarAsset(
+        sourcePath, QStringLiteral("_library/Materials.zip"));
+    if (archivePath.isEmpty()) {
+        return palette;
+    }
+
+    const QString archiveKey = assetFileIdentity(archivePath);
+    QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &defaults = materialDefaultsCache();
+    QStringList missingEntries;
+    QSet<QString> requestedEntries;
+    for (const fh6::ManufacturerColor &color : std::as_const(palette.colors)) {
+        const QString entry = materialArchiveEntry(color.materialPath);
+        const QString lowerEntry = entry.toLower();
+        const QString key = archiveKey + QLatin1Char('|') + lowerEntry;
+        if (!entry.isEmpty() && !defaults.contains(key)
+            && !requestedEntries.contains(lowerEntry)) {
+            requestedEntries.insert(lowerEntry);
+            missingEntries.push_back(entry);
+        }
+    }
+
+    const QHash<QString, QByteArray> materialData =
+        fh6::readZipEntries(archivePath, missingEntries);
+    for (const QString &entry : missingEntries) {
+        std::shared_ptr<fh6::ModelMaterial> material;
+        const QByteArray bytes = materialData.value(entry.toLower());
+        if (!bytes.isEmpty()) {
+            try {
+                material = fh6::decodeMaterialBundle(bytes);
+            } catch (const std::exception &) {
+            }
+        }
+        defaults.insert(archiveKey + QLatin1Char('|') + entry.toLower(), material);
+    }
+    for (fh6::ManufacturerColor &color : palette.colors) {
+        const QString entry = materialArchiveEntry(color.materialPath);
+        color.material = defaults.value(
+            archiveKey + QLatin1Char('|') + entry.toLower());
+    }
+
+    return palette;
+}
+
 struct PreparedCar {
     fh6::CarModel model;
     fh6::LiveryMaskSet liveryMasks;
+    fh6::ManufacturerColorPalette manufacturerColors;
     std::unique_ptr<QTemporaryDir> extractedCarDir;
     QString loadedCarPath;
     QString liveryMasksDir;
@@ -730,12 +788,13 @@ std::shared_ptr<PreparedCar> prepareCar(
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
 
+    const QDir carDir = QFileInfo(loadPath).absoluteDir();
     auto prepared = std::make_shared<PreparedCar>();
     prepared->model = std::move(model);
+    prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), path);
     prepared->extractedCarDir = std::move(extracted);
     prepared->loadedCarPath = path;
 
-    const QDir carDir = QFileInfo(loadPath).absoluteDir();
     const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
     if (QFileInfo::exists(masksDir)) {
         prepared->liveryMasks = fh6::loadLiveryMasks(masksDir);
@@ -807,6 +866,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     }
 
                     guard->model_ = std::move(prepared->model);
+                    guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
@@ -856,6 +916,7 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
 void CarPreviewWidget::clearModel() {
     cancelCarLoad();
     loadedCarPath_.clear();
+    manufacturerColors_ = {};
     if (!hasModel() && !carRenderer_.hasModel()) {
         return;
     }
@@ -1243,6 +1304,7 @@ void CarPreviewWidget::paintGL() {
     carRenderer_.render(
         cameraView(), cameraProjection(), liveryTexture, basePaint_,
         project_ != nullptr ? &project_->liveryPaint : nullptr,
+        manufacturerColors_.colors.isEmpty() ? nullptr : &manufacturerColors_,
         paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
 }
 
