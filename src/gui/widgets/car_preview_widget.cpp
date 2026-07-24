@@ -1097,7 +1097,20 @@ void CarPreviewWidget::paintGL() {
     }
     carRenderer_.render(
         cameraView(), cameraProjection(), liveryTexture, basePaint_,
-        project_ != nullptr ? &project_->liveryPaint : nullptr);
+        project_ != nullptr ? &project_->liveryPaint : nullptr,
+        paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
+}
+
+void CarPreviewWidget::setGameFolder(const QString &folder) {
+    if (folder == paintFinishes_.folder()) {
+        return;
+    }
+    if (folder.isEmpty()) {
+        paintFinishes_.clear();
+    } else {
+        paintFinishes_.load(folder);
+    }
+    update();
 }
 
 void CarPreviewWidget::setLoadCarTextures(bool enabled) {

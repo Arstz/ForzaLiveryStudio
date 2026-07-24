@@ -31,6 +31,8 @@ add_library(fls_core STATIC
     src/core/cgroup_codec.h
     src/core/core_types.cpp
     src/core/core_types.h
+    src/core/game_paths.cpp
+    src/core/game_paths.h
     src/core/fh6_core.cpp
     src/core/fh6_core.h
     src/core/fm_codec.cpp
@@ -58,6 +60,8 @@ add_library(fls_core STATIC
     src/core/model_geometry.h
     src/core/model_material.cpp
     src/core/model_material.h
+    src/core/paint_finish_catalog.cpp
+    src/core/paint_finish_catalog.h
     src/core/project_codec.cpp
     src/core/project_codec.h
     src/core/raster_decals.cpp

@@ -204,8 +204,13 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
     if (parameter.type == ModelMaterialParameterType::Float
         && containsHash(parameter.nameHash, {
             0x5FF94E67, 0x70328B61, 0xF8D6CE36, 0x355CC996, 0xBD820385,
-            0xDC5CC796, 0xD2AFDCA3, 0xBA21FEC7, 0x7E88DE7D})) {
+            0xDC5CC796, 0xD2AFDCA3, 0xBA21FEC7, 0x7E88DE7D, 0x52E99DA3})) {
         material.gloss = std::clamp(parameter.scalar, 0.0f, 1.0f);
+    }
+    // The clearcoat is the visible gloss for automotive paint; its roughness overrides.
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == 0x18A539DD && std::isfinite(parameter.scalar)) {
+        material.gloss = std::clamp(1.0f - parameter.scalar, 0.0f, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
         && parameter.nameHash == 0x19A7D8F1 && std::isfinite(parameter.scalar)) {
@@ -220,6 +225,30 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         && std::isfinite(parameter.vector[0]) && std::isfinite(parameter.vector[1])) {
         material.uTiling = std::abs(parameter.vector[0]) > 0.000001f ? parameter.vector[0] : 1.0f;
         material.vTiling = std::abs(parameter.vector[1]) > 0.000001f ? parameter.vector[1] : 1.0f;
+    }
+    if (vectorValue && containsHash(parameter.nameHash, {0x938926B0, 0xA415641F})) {
+        const float f0 = std::max({parameter.vector[0], parameter.vector[1], parameter.vector[2]});
+        if (std::isfinite(f0)) {
+            material.hasMetallic = true;
+            material.metallic = std::clamp((f0 - 0.10f) / 0.40f, 0.0f, 1.0f);
+        }
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && containsHash(parameter.nameHash, {0x86EF8FB1, 0x604BA06B})
+        && std::isfinite(parameter.scalar)) {
+        material.flakeAmount = std::clamp(parameter.scalar, 0.0f, 1.0f);
+    }
+    if (parameter.type == ModelMaterialParameterType::Texture2D
+        && parameter.nameHash == 0x85E937A9) {
+        material.patternTexture = parameter.texturePath;
+    }
+    if (parameter.type == ModelMaterialParameterType::Texture2D
+        && containsHash(parameter.nameHash, {0xEC13FF23, 0x87078E77, 0xB59BE3AB, 0xB61760D8})) {
+        material.detailNormalTexture = parameter.texturePath;
+    }
+    if (parameter.type == ModelMaterialParameterType::Texture2D
+        && parameter.nameHash == 0x8D9C56EF) {
+        material.roughMetalAoTexture = parameter.texturePath;
     }
 }
 

@@ -4,6 +4,7 @@
 
 #include "car_preview_widget.h"
 #include "car_registry.h"
+#include "game_paths.h"
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
 #include "header_codec.h"
@@ -79,23 +80,24 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
         return;
     }
 
-    QString folder = settings.carModelsFolder;
+    QString folder = fh6::gameCarsDir(settings.gameFolder);
     if (folder.isEmpty() || !QDir(folder).exists()) {
-        if (!promptedForCarModelsFolder_) {
-            promptedForCarModelsFolder_ = true;
+        if (!promptedForGameFolder_) {
+            promptedForGameFolder_ = true;
             const QMessageBox::StandardButton choice = QMessageBox::question(
-                this, QStringLiteral("Car models folder"),
-                QStringLiteral("This livery targets \"%1\".\n\nChoose the folder that holds your extracted "
-                               "car models so the matching car can be loaded automatically? "
+                this, QStringLiteral("Game folder"),
+                QStringLiteral("This livery targets \"%1\".\n\nChoose your Forza game install folder so the "
+                               "matching car and its paint materials can be loaded automatically? "
                                "(You can also set it later under Settings.)")
                     .arg(modelName.isEmpty() ? modelCode : modelName),
                 QMessageBox::Yes | QMessageBox::No);
             if (choice == QMessageBox::Yes) {
-                const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Car Models Folder"));
+                const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Forza Game Folder"));
                 if (!picked.isEmpty()) {
-                    settings.carModelsFolder = picked;
+                    settings.gameFolder = picked;
                     saveBehaviorSettings(settings);
-                    folder = picked;
+                    carPreview_->setGameFolder(picked);
+                    folder = fh6::gameCarsDir(picked);
                 }
             }
         }

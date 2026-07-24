@@ -54,7 +54,7 @@ struct BehaviorSettings {
     int liveryTextureScale = 4;
     bool autosaveEnabled = true;
     int autosaveIntervalMinutes = 5;
-    QString carModelsFolder;
+    QString gameFolder;
     bool discardModelOnLiveryOpen = true;
     bool loadCarTextures = false;
     bool verticalToolbar = false;

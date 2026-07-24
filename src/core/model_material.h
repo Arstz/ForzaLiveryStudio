@@ -62,6 +62,12 @@ struct ModelMaterial {
     float gloss = 0.45f;
     float uTiling = 1.0f;
     float vTiling = 1.0f;
+    bool hasMetallic = false;
+    float metallic = 0.0f;
+    float flakeAmount = 0.0f;
+    QString patternTexture;      // BaseColorAlpha colour/pattern swatch
+    QString detailNormalTexture; // weave / brushed / flake normal swatch
+    QString roughMetalAoTexture; // packed roughness/metal/AO swatch
     std::shared_ptr<const ModelMaterialTexture> diffuseTexture;
     std::shared_ptr<const ModelMaterialTexture> alphaTexture;
     std::shared_ptr<const ModelMaterialTexture> normalTexture;

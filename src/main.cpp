@@ -1,10 +1,14 @@
 #include "main_window.h"
 #include "theme_manager.h"
 #include "image_io.h"
+#include "car_model_renderer.h"
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
 
 namespace {
 
@@ -61,6 +65,22 @@ int main(int argc, char *argv[]) {
     QCoreApplication::setOrganizationName(QStringLiteral("ForzaTools"));
     QCoreApplication::setApplicationName(QStringLiteral("ForzaLiveryStudio"));
     gui::applyUiTheme(app, gui::loadUiTheme());
+
+    if (QCoreApplication::arguments().contains(QStringLiteral("--shadertest"))) {
+        QOffscreenSurface surface;
+        surface.create();
+        QOpenGLContext context;
+        QString result = QStringLiteral("no GL context");
+        if (context.create() && context.makeCurrent(&surface)) {
+            const QString log = gui::CarModelRenderer::shaderSelfTest();
+            result = log.isEmpty() ? QStringLiteral("SHADER OK") : QStringLiteral("SHADER FAIL\n") + log;
+        }
+        QFile out(QStringLiteral("shader_selftest.txt"));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            out.write(result.toUtf8());
+        }
+        return 0;
+    }
 
     gui::MainWindow window;
     openStartupFiles(window, QCoreApplication::arguments().mid(1));

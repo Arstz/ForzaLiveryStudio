@@ -3,6 +3,7 @@
 #include "core_types.h"
 #include "livery_masks.h"
 #include "model_geometry.h"
+#include "paint_finish_catalog.h"
 
 #include <QtGui>
 #include <QtOpenGL>
@@ -24,6 +25,7 @@ public:
     void initialize();
     void release();
     bool isInitialized() const;
+    static QString shaderSelfTest();
     bool hasModel() const;
 
     void uploadModel(const fh6::CarModel &model);
@@ -40,7 +42,8 @@ public:
                 const QMatrix4x4 &projection,
                 GLuint liveryTexture,
                 const QColor &basePaint,
-                const fh6::LiveryPaintState *paintState);
+                const fh6::LiveryPaintState *paintState,
+                const fh6::PaintFinishLibrary *paintFinishes);
 
 private:
     struct MeshBuffers {
@@ -75,12 +78,25 @@ private:
         qsizetype bytes = 0;
     };
 
+    struct FinishTextureEntry {
+        GLuint pattern = 0;
+        GLuint normal = 0;
+        GLuint surface = 0;
+    };
+
+    GLuint uploadSwatchTexture(const fh6::SwatchImage &image);
+    const FinishTextureEntry *ensurePaintFinishTextures(int code, const fh6::PaintFinishRender &render);
+    void clearPaintFinishTextures();
+
     static constexpr int kLiverySideCount = fh6::kLiverySideCount;
 
     QOpenGLShaderProgram program_;
     std::vector<std::unique_ptr<MeshBuffers>> meshes_;
     QHash<QString, MaterialTextureCacheEntry> materialTextureCache_;
     qsizetype materialTextureCacheBytes_ = 0;
+    QHash<int, FinishTextureEntry> finishTextureCache_;
+    unsigned paintFinishGeneration_ = 0;
+    bool paintFinishTracked_ = false;
     bool initialized_ = false;
 
     GLuint sideMaskArray_ = 0;
@@ -127,6 +143,15 @@ private:
     int hasNativeNormalLocation_ = -1;
     int hasNativeSurfaceLocation_ = -1;
     int hasNativeEmissiveLocation_ = -1;
+    int finishPatternLocation_ = -1;
+    int finishNormalLocation_ = -1;
+    int finishSurfaceLocation_ = -1;
+    int hasFinishPatternLocation_ = -1;
+    int hasFinishNormalLocation_ = -1;
+    int hasFinishSurfaceLocation_ = -1;
+    int finishSelfColoredLocation_ = -1;
+    int finishTilingLocation_ = -1;
+    int finishFlakeLocation_ = -1;
 };
 
 } // namespace gui

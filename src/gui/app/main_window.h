@@ -256,7 +256,7 @@ private:
     QVector<QPersistentModelIndex> autoExpandedTreeIndexes_;
     QStringList autoExpandedGroupIds_;
     bool dockResizeCursorOverrideActive_ = false;
-    bool promptedForCarModelsFolder_ = false;
+    bool promptedForGameFolder_ = false;
     struct DockAreaCollapseState {
         Qt::DockWidgetArea area = Qt::NoDockWidgetArea;
         bool collapsed = false;

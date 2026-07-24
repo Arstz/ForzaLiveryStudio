@@ -241,6 +241,7 @@ void MainWindow::setupDocks() {
 
     carPreview_ = new CarPreviewWidget(this);
     carPreview_->setLoadCarTextures(behaviorSettings.loadCarTextures);
+    carPreview_->setGameFolder(behaviorSettings.gameFolder);
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
     keyBindings_->registerInteraction(
@@ -899,6 +900,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (carPreview_ != nullptr) {
         carPreview_->setLiveryTextureScale(settings.liveryTextureScale);
         carPreview_->setLoadCarTextures(settings.loadCarTextures);
+        carPreview_->setGameFolder(settings.gameFolder);
     }
     applyToolbarStyle(settings.verticalToolbar);
     configureAutosaveTimer(settings);

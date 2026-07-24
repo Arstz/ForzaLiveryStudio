@@ -15,4 +15,6 @@ QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QStrin
 QHash<QString, QByteArray> readZipEntries(
     const QString &zipPath, const QStringList &entryPaths, QString *error = nullptr);
 
+QStringList listZipEntries(const QString &zipPath, QString *error = nullptr);
+
 } // namespace fh6

@@ -45,6 +45,7 @@ public:
     int liveryTextureScale() const;
     void setLiveryTextureScale(int scale);
     void setLoadCarTextures(bool enabled);
+    void setGameFolder(const QString &folder);
     void cycleDebugMode();
 
 public Q_SLOTS:
@@ -77,6 +78,7 @@ private:
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
     CarModelRenderer carRenderer_;
+    fh6::PaintFinishLibrary paintFinishes_;
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;

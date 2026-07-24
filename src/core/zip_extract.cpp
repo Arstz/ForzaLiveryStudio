@@ -422,6 +422,68 @@ QHash<QString, QByteArray> readZipEntries(
     return result;
 }
 
+QStringList listZipEntries(const QString &zipPath, QString *error) {
+    QFile file(zipPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("cannot open %1").arg(zipPath);
+        }
+        return {};
+    }
+
+    const quint64 tailSize = std::min<quint64>(static_cast<quint64>(file.size()), 0xffffu + 22u);
+    const QByteArray tail = readRange(file, static_cast<quint64>(file.size()) - tailSize, tailSize);
+    const int relativeEocd = findEndOfCentralDirectory(tail);
+    if (relativeEocd < 0 || !hasBytes(tail, relativeEocd, 22)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("zip: central directory not found");
+        }
+        return {};
+    }
+    const quint16 entryCount = readLeU16(tail, relativeEocd + 10);
+    const quint32 centralSize = readLeU32(tail, relativeEocd + 12);
+    const quint32 centralOffset = readLeU32(tail, relativeEocd + 16);
+    if (entryCount == 0xffffu || centralSize == 0xffffffffu || centralOffset == 0xffffffffu) {
+        if (error != nullptr) {
+            *error = QStringLiteral("zip: ZIP64 archive is unsupported");
+        }
+        return {};
+    }
+    const QByteArray central = readRange(file, centralOffset, centralSize);
+    if (central.size() != static_cast<int>(centralSize)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("zip: central directory is out of range");
+        }
+        return {};
+    }
+
+    QStringList names;
+    names.reserve(entryCount);
+    qsizetype pos = 0;
+    for (quint16 i = 0; i < entryCount; ++i) {
+        if (!hasBytes(central, pos, 46)
+            || readLeU32(central, static_cast<int>(pos)) != kCentralDirectoryHeader) {
+            break;
+        }
+        const quint16 flags = readLeU16(central, static_cast<int>(pos + 8));
+        const quint16 nameLen = readLeU16(central, static_cast<int>(pos + 28));
+        const quint16 extraLen = readLeU16(central, static_cast<int>(pos + 30));
+        const quint16 commentLen = readLeU16(central, static_cast<int>(pos + 32));
+        const qsizetype nameOffset = pos + 46;
+        if (!hasBytes(central, nameOffset, nameLen)) {
+            break;
+        }
+        QString name = decodeEntryName(central.mid(nameOffset, nameLen), flags);
+        name.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        pos = nameOffset + nameLen + extraLen + commentLen;
+        if (!name.endsWith(QLatin1Char('/'))) {
+            names.push_back(name);
+        }
+    }
+
+    return names;
+}
+
 QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QString *error) {
     QString key = entryPath;
     key.replace(QLatin1Char('\\'), QLatin1Char('/'));

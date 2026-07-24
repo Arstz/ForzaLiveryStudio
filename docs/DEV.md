@@ -279,18 +279,31 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   layers are edited.
   A "reference only" note is pinned in the preview's corner because its material and
   lighting remain a simplified representation of the in-game renderer.
-  When a livery project is opened, the matching car model is auto-loaded from a
-  user-configured **car models folder** (matched by the livery's target car id → the
-  car registry's model code, searched recursively). If the folder is unset the app
-  prompts once to pick it; it can also be set in Settings. A **Discard current model on
-  livery open** option (on by default) controls whether opening a livery replaces the
-  currently loaded model or keeps it. Changing the target car always reloads the
-  matching preview model. Native car texture loading is an opt-in preview
-  setting and is disabled by default.
+  A livery's imported paint state carries, per paintable region, a game **finish**
+  code (a global paint-material enumeration). The preview resolves each code to its
+  real painttype material: the finish catalog decodes the matching `.materialbin`
+  (read from the game's paint-materials archive) into gloss, metallic, and
+  two-tone/self-coloured shading, and loads that material's pattern/normal/surface
+  swatchbin textures (carbon weave, camo, wood, damascus, brushed-metal, packed
+  roughness/metal/AO) from the game's textures archive. The car shader tiles the
+  pattern colour, packed surface, and detail normal over the region and composites
+  the livery on top. Unmapped codes fall back to a small built-in approximation. See
+  `GAMEDATA.md` for where the enumeration, materials, and textures live in the game
+  media folder.
+  When a livery project is opened, the matching car model is auto-loaded from the
+  configured **game folder** (matched by the livery's target car id → the car
+  registry's model code, searched recursively under `media/Cars`). If the folder is
+  unset the app prompts once to pick it; it can also be set in Settings. A **Discard
+  current model on livery open** option (on by default) controls whether opening a
+  livery replaces the currently loaded model or keeps it. Changing the target car
+  always reloads the matching preview model. Native car texture loading is an opt-in
+  preview setting and is disabled by default.
 - Configure UI theme, canvas, preview-background and guideline colors, layout,
   keybinds, behavior options, guide
-  visibility borders, transform-drag anchors, nudge step sizes, the car models folder,
-  and the discard-model option. Every menu-bar action can be bound to a hotkey in the
+  visibility borders, transform-drag anchors, nudge step sizes, the game folder,
+  and the discard-model option. The single **game folder** (the Forza install root
+  or its `media` directory) is the source for auto-loaded car models and painttype
+  paint materials; every game resource path is derived from it. Every menu-bar action can be bound to a hotkey in the
   keybind settings, even those with no default shortcut.
   Buffer and layer-preview backgrounds independently support theme-default,
   checkerboard, and custom modes. The toolbar can use a vertical icon-only layout.
@@ -415,8 +428,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind
   `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
   scripts are Windows-only; on Linux, use CMake directly.
-- `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and consolidated
-  format notes for Forza Horizon and Forza Motorsport containers, groups,
+- `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), `GAMEDATA.md`
+  (the game media folder layout and where the resources the editor reads live), and
+  consolidated format notes for Forza Horizon and Forza Motorsport containers, groups,
   liveries, and headers.
 
 ## Code Map
@@ -455,9 +469,18 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     material resources, typed shader parameters, and per-mesh geometry dequant
     (positions/normals/UVs/indices, bone transforms, texture-coordinate transforms).
     Material defaults retain their native texture slots and UV tiling for preview use.
+    Decoded materials also expose derived paint fields (metallic from F0 reflectance,
+    flake amount, flake-normal texture) for painttype finishes.
     Resolved material defaults and decoded textures are retained in bounded runtime caches,
     while uploaded native textures are reused for the lifetime of the preview context.
     No proprietary DLL is required.
+  - `paint_finish_catalog.*`: the global livery-material enumeration (finish code →
+    display name → painttype `.materialbin` stem → category) plus `PaintFinishLibrary`,
+    which decodes each material into `PaintFinishRender` shading parameters keyed by
+    finish code. Reads materials from the game's paint-materials archive or a loose
+    folder of materialbins.
+  - `game_paths.*`: resolves resource locations (media dir, `Cars`, the paint
+    materials/textures archives) from one game install folder.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
     part's transform (× its own skeleton bone) into a merged `CarModel`. Stock
@@ -521,7 +544,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     transformed mesh UV3, converts backing-texture coordinates into the mask atlas,
     resolves coverage from the swatch texture array, normalizes section coordinates,
     samples separate packed paint regions, and shades non-paint materials with native
-    diffuse, alpha, normal, surface, and emissive maps. Meshes without usable UV3 fall back to
+    diffuse, alpha, normal, surface, and emissive maps. Paintable regions take their
+    gloss/metallic/flake and two-tone/self-coloured shading from the finish resolved
+    through `PaintFinishLibrary` for the region's livery finish code. Meshes without usable UV3 fall back to
     registered planar projection using the model scene, mask boundary, part metadata,
     and locator landmarks. It uploads only each part's highest LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
@@ -565,6 +590,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `scene::sceneTreeToJson()` / `scene::sceneTreeFromJson()`
 - `encodeProjectDocument()` / `decodeProjectDocument()` (`.3so` gzip container)
 - `parseHeader()` / `buildHeader()` / `defaultDraftHeader()`
+- `paintFinishTable()` / `PaintFinishLibrary::load()` / `findPaintFinish()`
+- `gameMediaDir()` / `gameCarsDir()` / `gamePaintMaterialsArchive()`
 
 ## Privacy Policy Build Flag
 
