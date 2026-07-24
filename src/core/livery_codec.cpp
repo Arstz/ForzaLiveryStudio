@@ -149,7 +149,7 @@ const std::array<float, 11> kSlotRotation = {
 };
 
 const std::array<float, 11> kEmptySlotRotation = {
-    0.0f, 0.0f, 0.0f, 0.0f, 180.0f, 0.0f, -90.0f, 90.0f, 0.0f, 0.0f, 180.0f,
+    0.0f, 0.0f, 0.0f, 0.0f, 180.0f, 90.0f, -90.0f, 90.0f, 0.0f, 0.0f, 180.0f,
 };
 
 constexpr int kLiveryBodyTruncate = 17;
@@ -836,7 +836,7 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
 }
 
 void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
-                              const SourceLivery *source, int slot, bool hasLaterArtwork) {
+                              const SourceLivery *source, int slot, bool hasFollowingSlot) {
     if (sectionGroup == nullptr) {
         body.append(sourceEmptySlot(source, slot));
         return;
@@ -891,7 +891,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
     const bool endsInNestedGroup = !children.isEmpty()
         && children.back().kind == LiveryEntry::Group
         && terminalDepth(children.back()) > 1;
-    if (endsInNestedGroup && !hasLaterArtwork) {
+    if (endsInNestedGroup && !hasFollowingSlot) {
         body.append(previousShapeMask ? '\x01' : '\x00');
         return;
     }
@@ -901,7 +901,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
             remnant[0] = '\x01';
         }
         body.append(remnant);
-    } else if (hasLaterArtwork) {
+    } else if (hasFollowingSlot) {
         QByteArray remnant = sourceRemnant(source, slot);
         if (previousShapeMask && !remnant.isEmpty()) {
             remnant[0] = '\x01';
@@ -963,6 +963,12 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
     }
     // yrvl counts are coupled to the records emitted for each slot.
     std::array<int, kLiverySectionCount> counts{};
+    int lastPopulatedSlot = -1;
+    for (int slot = 0; slot < kLiverySectionCount; ++slot) {
+        if (!slotShapes[slot].isEmpty()) {
+            lastPopulatedSlot = slot;
+        }
+    }
     QByteArray body;
     for (int slot = 0; slot < kLiverySectionCount; ++slot) {
         const QVector<const scene::Shape *> &shapes = slotShapes[slot];
@@ -974,6 +980,16 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
                 && slot < sourcePtr->payload.sectionCounts.size()
             ? sourcePtr->payload.sectionCounts[slot]
             : static_cast<int>(shapes.size());
+
+        if (sourcePtr == nullptr && shapes.isEmpty()) {
+            QByteArray emptySlot = defaultEmptySlot(slot);
+            if (slot == lastPopulatedSlot + 1) {
+                emptySlot.remove(0, kLiveryBodyTruncate);
+            }
+            body.append(emptySlot);
+            counts[static_cast<size_t>(slot)] = 0;
+            continue;
+        }
 
         if (requiresStructuralArtwork && shapes.isEmpty() && slot + 1 < kLiverySectionCount) {
             body.append(sourceEmptySlot(sourcePtr, slot));
@@ -999,20 +1015,16 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
                 throw std::runtime_error("changed custom logo decals cannot be synthesized yet");
             }
         }
-        bool hasLaterArtwork = false;
-        for (int later = slot + 1; later < kLiverySectionCount; ++later) {
-            if (!slotShapes[later].isEmpty()) {
-                hasLaterArtwork = true;
-                break;
-            }
-        }
-        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot, hasLaterArtwork);
-        if (slot == kLiverySectionCount - 1) {
+        const bool hasFollowingSlot = slot + 1 < kLiverySectionCount;
+        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot, hasFollowingSlot);
+        if (sourcePtr != nullptr && slot == kLiverySectionCount - 1 && !shapes.isEmpty()) {
             body.append(QByteArray(kLiveryBodyTruncate, '\0'));
         }
         counts[static_cast<size_t>(slot)] = static_cast<int>(shapes.size());
     }
-    body = body.left(std::max<qsizetype>(0, body.size() - kLiveryBodyTruncate));
+    if (sourcePtr != nullptr) {
+        body = body.left(std::max<qsizetype>(0, body.size() - kLiveryBodyTruncate));
+    }
 
     if (outSectionCounts != nullptr) {
         *outSectionCounts = counts;

@@ -2,7 +2,7 @@
 
 Standalone Qt6/C++ editor for Forza vinyl projects. It imports supported game
 assets, edits vector and guide layers, saves editor project containers, and
-exports grouped `C_group` folders and source-backed `C_livery` folders.
+exports grouped `C_group` folders and `C_livery` folders.
 
 ## Functionality
 
@@ -253,8 +253,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
   preview thumbnail, and draft/imported header handling. The same action exports
-  source-backed livery projects while preserving visible section group structure,
-  nesting, and masks. With a
+  imported and newly created livery projects while preserving visible section
+  group structure, nesting, and masks. With a
   car model loaded, livery export writes `bigThumb.webp` from the textured car render.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
@@ -332,12 +332,12 @@ translation-only origin transform and shapes packed relative to it, mask groups 
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
 their own child-type bitmaps. It is not byte-identical to the game's own encoding.
 
-Livery (`C_livery`) export is available through the core and GUI for source-backed
-projects. Visible section groups are emitted as nested records with composed group and
-shape transforms. Mask ancestry and trailing shape-mask state remain represented. A
-terminal masked shape uses the trailing `01` marker after the section walk. Structured
-sections emit inherited mask leads, single-byte group-to-shape state transitions, and
-complete remnants between populated section slots.
+Livery (`C_livery`) export is available through the core and GUI for imported and
+newly created projects. Visible section groups are emitted as nested records with
+composed group and shape transforms. Mask ancestry and trailing shape-mask state
+remain represented. A terminal masked shape uses the trailing `01` marker after
+the section walk. Structured sections emit inherited mask leads, single-byte
+group-to-shape state transitions, and complete positional remnants.
 
 ## Build
 

@@ -37,9 +37,9 @@ byte[16]  asset GUID
 byte[]    trailing data
 ```
 
-The metadata field block, creator identity tag, section prefix, type value, GUID,
-and trailing data are preserved by the editor. Livery export synchronizes the
-target car identifier with the embedded container metadata.
+The metadata field block, creator identity tag, section prefix, GUID, and trailing
+data are preserved by the editor. Livery export synchronizes the target car
+identifier and decal total with the embedded container metadata.
 
 ## Published Layout
 
@@ -57,4 +57,5 @@ GUID, and initialized opaque blocks.
 Imported header bytes remain attached to the project. Group export converts
 published metadata to a draft header and clears the description before writing
 the output folder. Livery export writes edited names and creators while retaining
-the remaining decoded header fields.
+the remaining decoded header fields. Projects without an imported header receive
+a generated draft header.

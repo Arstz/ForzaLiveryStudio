@@ -1156,6 +1156,7 @@ int main(int argc, char *argv[])
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+    const bool withoutSource = args.removeAll(QStringLiteral("--without-source")) > 0;
     const bool generateSyntheticMode = args.removeAll(QStringLiteral("--generate-synthetic")) > 0;
     const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
     const auto takeOption = [&args](const QString &name) {
@@ -1296,7 +1297,9 @@ int main(int argc, char *argv[])
 
     if (exportReencodedMode) {
         if (args.size() < 3) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --export-reencoded <liveryFolder> <outputFolder>\n");
+            std::fprintf(
+                stderr,
+                "usage: fh6_livery_compare --export-reencoded [--without-source] <liveryFolder> <outputFolder>\n");
             return 2;
         }
         const QString folder = args[1];
@@ -1326,6 +1329,11 @@ int main(int argc, char *argv[])
                     project.name, creatorOption, static_cast<quint32>(project.carId));
             }
             project.headerMetadata->creatorName = creatorOption;
+        }
+        if (withoutSource) {
+            project.sourceFolder.clear();
+            project.sourceHeader.clear();
+            project.liverySource.clear();
         }
         if (nudgeFirstShape && (!project.root || !nudgeFirstBuiltInShape(*project.root))) {
             std::fprintf(stderr, "no built-in shape found to nudge\n");

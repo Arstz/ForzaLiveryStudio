@@ -16,6 +16,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <variant>
 
@@ -1254,6 +1255,11 @@ void writeLeU32InPlace(QByteArray &bytes, int offset, quint32 value) {
     bytes[offset + 3] = static_cast<char>((value >> 24) & 0xff);
 }
 
+void appendLeU64(QByteArray &bytes, quint64 value) {
+    detail::appendLeU32(bytes, static_cast<quint32>(value & 0xffffffffu));
+    detail::appendLeU32(bytes, static_cast<quint32>(value >> 32));
+}
+
 void writeRawFile(const QString &path, const QByteArray &bytes) {
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -1264,7 +1270,136 @@ void writeRawFile(const QString &path, const QByteArray &bytes) {
     }
 }
 
-QByteArray buildLiveryHeader(const Project &project) {
+QByteArray normalizedCreatorTag(const Project &project) {
+    QByteArray creatorTag;
+    if (project.headerMetadata) {
+        creatorTag = project.headerMetadata->creatorTag;
+    } else if (!project.sourceHeader.isEmpty()) {
+        try {
+            creatorTag = parseHeader(project.sourceHeader).creatorTag;
+        } catch (const std::exception &) {
+        }
+    }
+    creatorTag = creatorTag.left(8);
+    creatorTag.append(QByteArray(8 - creatorTag.size(), '\0'));
+    return creatorTag;
+}
+
+QByteArray buildLiveryDescriptorTable(const Project &project) {
+    static constexpr std::array<quint64, 7> kMaterialHashes = {
+        0xf7dbe8a7c839a675ULL,
+        0x6ac1e9d87fe5d953ULL,
+        0x1e5ff0f50c741122ULL,
+        0xcd48110253ee319aULL,
+        0xbcea13c28aa26965ULL,
+        0xb963c2391a4eb883ULL,
+        0x4a7ff0b38ca8f1a0ULL,
+    };
+    static constexpr std::array<quint64, 11> kPanelHashes = {
+        0x4ff3746d9b055f1dULL,
+        0xe00e033e6a20b977ULL,
+        0xe00e023e6a20b7c4ULL,
+        0xe00e053e6a20bcddULL,
+        0xe00e043e6a20bb2aULL,
+        0xe00dff3e6a20b2abULL,
+        0xe00dfe3e6a20b0f8ULL,
+        0xe00e013e6a20b611ULL,
+        0xe00e003e6a20b45eULL,
+        0xe00dfb3e6a20abdfULL,
+        0xe00dfa3e6a20aa2cULL,
+    };
+    QVector<quint64> recordHashes;
+    recordHashes.reserve(static_cast<qsizetype>(
+        kMaterialHashes.size() + kPanelHashes.size()) + project.liveryPaint.materials.size());
+    for (const quint64 hash : kMaterialHashes) {
+        recordHashes.push_back(hash);
+    }
+    for (const LiveryPaintMaterial &material : project.liveryPaint.materials) {
+        if (!recordHashes.contains(material.materialHash)) {
+            recordHashes.push_back(material.materialHash);
+        }
+    }
+    for (const quint64 hash : kPanelHashes) {
+        if (!recordHashes.contains(hash)) {
+            recordHashes.push_back(hash);
+        }
+    }
+    if (recordHashes.size() > std::numeric_limits<quint16>::max()) {
+        throw std::runtime_error("livery descriptor table has too many material records");
+    }
+
+    QByteArray table("yrvl", 4);
+    table.append('\0');
+    table.append('\x02');
+    detail::appendLeU16(table, static_cast<quint16>(recordHashes.size()));
+    table.append(QByteArray(6, '\0'));
+
+    const auto appendMaterial = [&project, &table](quint64 hash, quint32 defaultSelector) {
+        const LiveryPaintMaterial *paint = project.liveryPaint.find(hash);
+        appendLeU64(table, hash);
+        table.append('\x02');
+        table.append(paint != nullptr && paint->primary.enabled ? '\x01' : '\0');
+        for (const quint8 channel : paint != nullptr
+                 ? paint->primary.bgra
+                 : std::array<quint8, 4>{0, 0, 0, 0}) {
+            table.append(static_cast<char>(channel));
+        }
+        table.append(paint != nullptr && paint->secondary.enabled ? '\x01' : '\0');
+        for (const quint8 channel : paint != nullptr
+                 ? paint->secondary.bgra
+                 : std::array<quint8, 4>{0, 0, 0, 0}) {
+            table.append(static_cast<char>(channel));
+        }
+        detail::appendLeU32(table, paint != nullptr ? paint->manufacturerSelector : defaultSelector);
+        detail::appendLeU32(table, paint != nullptr ? paint->finish : 0);
+    };
+
+    for (const quint64 hash : recordHashes) {
+        const bool isPanel = std::find(kPanelHashes.cbegin(), kPanelHashes.cend(), hash)
+            != kPanelHashes.cend();
+        appendMaterial(hash, isPanel ? 0xffffffffu : 0);
+    }
+
+    detail::appendLeU32(table, static_cast<quint32>(kPanelHashes.size()));
+    for (const quint64 hash : kPanelHashes) {
+        appendLeU64(table, hash);
+    }
+    return table;
+}
+
+QByteArray buildNewLiveryPayload(const Project &project, const QByteArray &gyvl,
+                                 const std::array<int, 11> &counts) {
+    QByteArray payload("vlrc", 4);
+    detail::appendLeU32(payload, 2);
+    detail::appendLeU32(payload, 0);
+    detail::appendLeU32(payload, 0);
+    detail::appendLeU32(payload, static_cast<quint32>(project.carId));
+    detail::appendLeU32(payload, 0);
+    detail::appendLeU16(payload, 0);
+
+    payload.append("yrvl", 4);
+    detail::appendLeU32(payload, 19);
+    payload.append(normalizedCreatorTag(project));
+    detail::appendLeU32(payload, 1);
+    payload.append('\0');
+    detail::appendLeU32(payload, static_cast<quint32>(gyvl.size()));
+    payload.append(gyvl);
+
+    payload.append("yrvl", 4);
+    for (const int count : counts) {
+        detail::appendLeU32(payload, static_cast<quint32>(count));
+    }
+    detail::appendLeU32(payload, 0);
+
+    payload.append(buildLiveryDescriptorTable(project));
+    payload.append("yrvl", 4);
+    detail::appendLeU32(payload, 0);
+    return payload;
+}
+
+QByteArray buildLiveryHeader(const Project &project, const QVector<int> &sectionCounts) {
+    const quint32 decalCount = static_cast<quint32>(
+        std::accumulate(sectionCounts.cbegin(), sectionCounts.cend(), 0));
     std::optional<HeaderMetadata> sourceMetadata;
     if (!project.sourceHeader.isEmpty()) {
         try {
@@ -1281,6 +1416,7 @@ QByteArray buildLiveryHeader(const Project &project) {
         }
         metadata.name = project.name;
         metadata.carId = static_cast<quint32>(project.carId);
+        metadata.typeValue = decalCount;
         return buildHeader(metadata);
     }
 
@@ -1296,9 +1432,13 @@ QByteArray buildLiveryHeader(const Project &project) {
         HeaderMetadata metadata = *project.headerMetadata;
         metadata.name = project.name;
         metadata.carId = static_cast<quint32>(project.carId);
+        metadata.typeValue = decalCount;
         return buildHeader(metadata);
     }
-    return {};
+    HeaderMetadata metadata = defaultDraftHeader(
+        project.name, QString(), static_cast<quint32>(project.carId));
+    metadata.typeValue = decalCount;
+    return buildHeader(metadata);
 }
 
 } // namespace
@@ -1307,10 +1447,10 @@ QByteArray encodeCLiveryPayload(const Project &project) {
     if (!project.isLivery) {
         throw std::runtime_error("not a livery project");
     }
+    std::array<int, 11> counts{};
+    const QByteArray gyvl = buildLiveryGyvl(project, &counts);
     if (project.liverySource.isEmpty()) {
-        throw std::runtime_error(
-            "this livery has no captured source to re-encode; re-import the C_livery "
-            "(authoring livery artwork from scratch is not yet supported)");
+        return buildNewLiveryPayload(project, gyvl, counts);
     }
     const LiveryPayload source = [&project]() {
         LiveryPayload payload;
@@ -1329,8 +1469,6 @@ QByteArray encodeCLiveryPayload(const Project &project) {
         return payload;
     }();
 
-    std::array<int, 11> counts{};
-    const QByteArray gyvl = buildLiveryGyvl(project, &counts);
     const int oldGyvlEnd = source.gyvlOffset + 0x15 + source.body.size();
     if (oldGyvlEnd > project.liverySource.size()) {
         throw std::runtime_error("livery source gyvl chunk is truncated");
@@ -1374,7 +1512,8 @@ void exportCLivery(const Project &project, const QString &outputFolder) {
 
     writeCGroupFile(outputDir.filePath(QStringLiteral("C_livery")), payload);
 
-    const QByteArray header = buildLiveryHeader(project);
+    const LiveryPayload encoded = parseInflatedLiveryPayload(payload);
+    const QByteArray header = buildLiveryHeader(project, encoded.sectionCounts);
     if (!header.isEmpty()) {
         writeRawFile(outputDir.filePath(QStringLiteral("header")), header);
     }
