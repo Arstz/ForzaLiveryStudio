@@ -161,11 +161,13 @@ float finishGlitter(vec3 worldPos, float facing)
     if (finish_flake <= 0.0) {
         return 0.0;
     }
-    vec3 cell = floor(worldPos * 1600.0);
+    vec3 cell = floor(worldPos * 900.0);
     float rnd = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
     float rnd2 = fract(rnd * 251.7);
-    float active = step(1.0 - 0.5 * finish_flake, rnd);
-    float lit = smoothstep(0.86, 1.0, facing + (rnd2 - 0.5) * 0.12);
+    // Sparse: only a fraction of cells hold a flake, and each lights only very close to
+    // the highlight so the result reads as occasional sparkle, not salt-and-pepper noise.
+    float active = step(1.0 - 0.3 * finish_flake, rnd);
+    float lit = smoothstep(0.92, 1.0, facing + (rnd2 - 0.5) * 0.05);
     return active * lit;
 }
 
@@ -361,7 +363,7 @@ void main()
     float glitter = finishGlitter(v_world, max(dot(n, h), 0.0));
     vec3 lit = albedo * (ambient + (1.0 - ambient) * diffuse)
         + specularColor * specular * specularStrength
-        + specularColor * glitter * finish_flake * 3.0
+        + specularColor * glitter * finish_flake * 1.4
         + environmentSpecular
         + material_emissive
         + nativeEmission;
@@ -1680,6 +1682,9 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 mesh.material->emissiveColor[0], mesh.material->emissiveColor[1], mesh.material->emissiveColor[2]);
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
             buffers->gloss = mesh.material->gloss;
+            if (mesh.material->hasMetallic) {
+                buffers->metallic = mesh.material->metallic;
+            }
             buffers->alpha = mesh.material->opacity;
             if (materialUv != nullptr) {
                 buffers->diffuseTexture = uploadTexture(mesh.material->diffuseTexture, false);
@@ -1696,20 +1701,29 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         if (isBodyPaintMaterial(mesh.materialName)) {
             buffers->hasMaterialColor = false;
         }
+        // When the shared _library material was resolved, its gloss/metallic are the game's
+        // real tuning; the name-heuristic fallbacks then only fill in a base colour.
+        const bool libraryMaterial = mesh.material && mesh.material->resolvedFromLibrary;
         const std::optional<WheelMaterialFallback> wheel = wheelMaterialFallback(mesh);
         const std::optional<MaterialFallback> material = exteriorMaterialFallback(mesh);
         if (mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)) {
-            buffers->hasMaterialColor = true;
-            buffers->materialColor = kRubberColor;
-            buffers->gloss = 0.22f;
-            buffers->metallic = 0.0f;
+            if (!libraryMaterial || !mesh.material->hasBaseColor) {
+                buffers->hasMaterialColor = true;
+                buffers->materialColor = kRubberColor;
+            }
+            if (!libraryMaterial) {
+                buffers->gloss = 0.22f;
+                buffers->metallic = 0.0f;
+            }
         } else if (wheel) {
             if (!buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
                 buffers->materialColor = wheel->color;
             }
-            buffers->gloss = wheel->gloss;
-            buffers->metallic = wheel->metallic;
+            if (!libraryMaterial) {
+                buffers->gloss = wheel->gloss;
+                buffers->metallic = wheel->metallic;
+            }
         } else if (material) {
             const float brightestColor = std::max({buffers->materialColor.x(),
                                                    buffers->materialColor.y(),
@@ -1718,8 +1732,10 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 buffers->hasMaterialColor = true;
                 buffers->materialColor = material->color;
             }
-            buffers->gloss = material->gloss;
-            buffers->metallic = material->metallic;
+            if (!libraryMaterial) {
+                buffers->gloss = material->gloss;
+                buffers->metallic = material->metallic;
+            }
         }
         if (isLampSurface(mesh)) {
             const QString material = materialIdentity(mesh);
@@ -1775,6 +1791,17 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             buffers->alpha = 0.42f;
         }
         buffers->translucent = buffers->alpha < 0.995f;
+        // Wheels/tires don't play well with back-face culling: the generated tires bake an
+        // X-mirror into their right-side vertices (flipping winding) and the wheel discs
+        // pair with motion-blur geometry, so cull them double-sided like before.
+        {
+            QString wheelPath = mesh.sourceModelPath.toLower();
+            wheelPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+            buffers->doubleSided = wheelPath.contains(QStringLiteral("/wheels/"))
+                || wheelPath.contains(QStringLiteral("/tires/"))
+                || mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)
+                || mesh.name.startsWith(QStringLiteral("wheel"), Qt::CaseInsensitive);
+        }
 
         // Bone matrices cross from row-vector to column-vector convention.
         const auto &m = mesh.boneTransform.m;
@@ -2090,7 +2117,14 @@ void CarModelRenderer::render(
     functions->glEnable(GL_CULL_FACE);
     functions->glCullFace(GL_BACK);
     for (const auto &mesh : meshes_) {
-        if (!mesh->translucent) {
+        if (mesh->translucent) {
+            continue;
+        }
+        if (mesh->doubleSided) {
+            functions->glDisable(GL_CULL_FACE);
+            drawMesh(*mesh);
+            functions->glEnable(GL_CULL_FACE);
+        } else {
             drawMesh(*mesh);
         }
     }

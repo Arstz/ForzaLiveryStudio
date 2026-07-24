@@ -4,8 +4,8 @@ Medium changes:
 
 Big changes:
     -Add proper scaffolding and header generation from scratch for liveries
-    -Apply proper car paint material from ingame files
     -Retire legacy format support in next version
+    -Add tuning details support for liveries
 
 Manual tasks:
     -Reorganize Setting and Options into categories, add hints for each in Settings with show hint on hover behaviour, detach to a json file for ease of editing

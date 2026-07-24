@@ -55,6 +55,7 @@ private:
         bool hasDirectLiveryUv = false;
         int allowedSides = 0;
         bool translucent = false;
+        bool doubleSided = false;
         float alpha = 1.0f;
         quint64 paintMaterialHash = 0;
         bool hasMaterialColor = false;

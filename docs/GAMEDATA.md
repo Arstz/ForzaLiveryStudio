@@ -50,12 +50,24 @@ registry) to a model code; `findCarModelPath()` searches `Cars` recursively for
 
 ```
 <CODE>.zip
-  *.carbin                the car definition (part list + per-part transforms)
-  *.modelbin              geometry/material bundles for each referenced part
+  <CODE>.carbin           the car definition (part list + per-part transforms)
+  Scene/**/*.modelbin     geometry/material bundles for each referenced part
+  Manifest.xml            per-model material + texture binding map (see below)
   LiveryMasks/            Masks.xml + body-side coverage swatchbins
-  materials/
-    carColors/            per-car preset paint materials (base livery, named colors)
+  Locators.xml            named locator transforms (wheel/bumper landmarks)
+  ManufacturerColors.bin  factory paint presets
+  LightPresets.bin        light rig
+  <CODE>.avpins           physics/attachment pins
+  carscene_<CODE>_build_report.html   asset build report
 ```
+
+`Manifest.xml` is the authoritative per-part visual tuning: under
+`<NonUpgradeablePart>` / `<UpgradeablePart>` groups, each `<Model path=…modelbin>`
+lists its `<Material path=…materialbin>` set and `<Swatchbin path=…swatchbin>` set,
+all pointing into the shared `_library`. The editor does **not** parse it — each
+exterior mesh already carries its materialbin path in its own modelbin (see the code
+map for `resolveExteriorMaterials`) — but it is the ground truth for which library
+materials a part uses.
 
 ### media/Cars/_library/
 
@@ -65,7 +77,25 @@ _library/
   Textures.zip            shared textures, including paint-finish swatchbins
   Shaders.zip             compiled shaders
   scene/wheels/*.zip      shared wheel models
+  scene/tires/tire_b.zip  shared tire model template (tireL_b/tireR_b.modelbin)
 ```
+
+`Materials.zip` also holds the shared non-paint material library the exterior/wheel
+parts bind to, e.g. `_fmnext/metal/*` (aluminum, steel, chrome, gold…),
+`_fmnext/rubber/*`, `_fmnext/tires/*`, `_fmnext/wheel/wheelpaint*`,
+`_fmnext/specialcase/{blackhole,wheelblur}`, and `wheelmaterials/*`.
+
+### Wheels and tires
+
+Wheel and tire modelbins are special: they reference materials only by **slot name**
+(wheels: `rim`, `rim2`, `hub`, `inner_rim`, `lip`, `detail`, `detail2`, `valve_cap`,
+`black`, `blur_lip`; tires: `tread`, `scaling_text`) and carry **no materialbin path**
+in the modelbin (exterior panels do). The binding is a fixed shared-library
+convention — rims → `_fmnext/wheel/wheelpaint`, `black` → `_fmnext/specialcase/blackhole`,
+metal slots → `wheelmaterials/aluminum_machined_satin`, tread → `_fmnext/tires/tires_pg`.
+Rims are paintable (their colour/finish come from the livery paint state, keyed by a
+per-channel wheel paint hash). The car's real per-corner tires are not shipped as loose
+meshes here; the shared `tire_b` template is scaled to fit each rim.
 
 ## Paint finishes (the customizable paint materials)
 

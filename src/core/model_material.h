@@ -62,6 +62,7 @@ struct ModelMaterial {
     float gloss = 0.45f;
     float uTiling = 1.0f;
     float vTiling = 1.0f;
+    bool resolvedFromLibrary = false; // params merged from the shared _library material
     bool hasMetallic = false;
     float metallic = 0.0f;
     float flakeAmount = 0.0f;

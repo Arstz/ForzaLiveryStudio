@@ -235,13 +235,24 @@ void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath) {
         sourcePath, QStringLiteral("_library/scene/tires/tire_b.zip"));
     const QString rightArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tireR_b.zip"));
-    const std::optional<fh6::CarModel> left = loadArchivedModel(
+    std::optional<fh6::CarModel> left = loadArchivedModel(
         leftArchive, QStringLiteral("tireL_b.modelbin"));
     std::optional<fh6::CarModel> right = loadArchivedModel(
         rightArchive, QStringLiteral("tireR_b.modelbin"));
     if (!right) {
         right = loadArchivedModel(leftArchive, QStringLiteral("tireR_b.modelbin"));
     }
+    // Tag the shared tire meshes with a /tires/ path so their rubber material resolves from
+    // the _library like the exterior parts (appendApproximateTires copies these meshes).
+    const auto tagTires = [](std::optional<fh6::CarModel> &tire, const QString &path) {
+        if (tire) {
+            for (fh6::CarMesh &mesh : tire->meshes) {
+                mesh.sourceModelPath = path;
+            }
+        }
+    };
+    tagTires(left, QStringLiteral("_library/scene/tires/tireL_b.modelbin"));
+    tagTires(right, QStringLiteral("_library/scene/tires/tireR_b.modelbin"));
     if (left && right) {
         fh6::appendApproximateTires(model, *left, *right);
     }
@@ -252,6 +263,52 @@ QString materialArchiveEntry(QString resourcePath) {
     const int materials = resourcePath.indexOf(
         QStringLiteral("/materials/"), 0, Qt::CaseInsensitive);
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
+}
+
+// Wheel and tire modelbins reference their materials only by slot name (rim, hub, tread…),
+// not by a materialbin path, so the shared-library binding is a fixed convention. Map the
+// slot name to its _library materialbin so the normal material resolver can pick it up.
+QString sharedSlotMaterialEntry(const QString &materialName) {
+    const QString n = materialName.toLower();
+    if (n == QStringLiteral("rim") || n == QStringLiteral("rim2")) {
+        return QStringLiteral("_fmnext/wheel/wheelpaint.materialbin");
+    }
+    if (n == QStringLiteral("black")) {
+        return QStringLiteral("_fmnext/specialcase/blackhole.materialbin");
+    }
+    if (n.startsWith(QStringLiteral("blur"))) {
+        return QString(); // motion-blur mesh, not shown when static
+    }
+    if (n == QStringLiteral("lip") || n == QStringLiteral("hub") || n == QStringLiteral("lug")
+        || n == QStringLiteral("inner_rim") || n == QStringLiteral("detail")
+        || n == QStringLiteral("detail2") || n == QStringLiteral("valve_cap")) {
+        return QStringLiteral("wheelmaterials/aluminum_machined_satin.materialbin");
+    }
+    return QString();
+}
+
+// Give wheel/tire meshes a synthetic materialbin resourcePath (from their slot name) unless
+// they already carry a resolvable one, so resolveExteriorMaterials loads the real tuning.
+void assignSharedSlotMaterials(fh6::CarModel &model) {
+    for (fh6::CarMesh &mesh : model.meshes) {
+        if (!mesh.material) {
+            continue;
+        }
+        QString path = mesh.sourceModelPath.toLower();
+        path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        const bool wheel = path.contains(QStringLiteral("/wheels/"));
+        // Tires stay on the solid rubber fallback for now: the shared tire materials decode
+        // with sub-1 opacity, which renders the approximated tires see-through.
+        if (!wheel || !materialArchiveEntry(mesh.material->resourcePath).isEmpty()) {
+            continue;
+        }
+        const QString entry = sharedSlotMaterialEntry(mesh.materialName);
+        if (entry.isEmpty()) {
+            continue;
+        }
+        mesh.material->resourcePath =
+            QStringLiteral("game:/media/cars/_library/materials/") + entry;
+    }
 }
 
 QString assetFileIdentity(const QString &path) {
@@ -325,9 +382,11 @@ NativeTextureCache &nativeTextureCache() {
     return cache;
 }
 
-bool isExteriorModelPath(QString path) {
+bool isLibraryMaterialPath(QString path) {
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive);
+    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/tires/"), Qt::CaseInsensitive);
 }
 
 enum class NativeTextureSlot {
@@ -434,7 +493,8 @@ void assignNativeTexture(fh6::ModelMaterial &material,
 }
 
 void resolveExteriorMaterials(
-    fh6::CarModel &model, const QString &sourcePath, const QString &carRoot) {
+    fh6::CarModel &model, const QString &sourcePath, const QString &carRoot,
+    bool includeTextures) {
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
@@ -445,7 +505,7 @@ void resolveExteriorMaterials(
     QStringList missingMaterialEntries;
     QSet<QString> requestedMaterials;
     for (fh6::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
+        if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
             continue;
         }
         const QString entry = materialArchiveEntry(mesh.material->resourcePath);
@@ -472,7 +532,7 @@ void resolveExteriorMaterials(
         defaults.insert(materialArchiveKey + QLatin1Char('|') + entry.toLower(), decoded);
     }
     for (fh6::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
+        if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
             continue;
         }
         const QString entry = materialArchiveEntry(mesh.material->resourcePath);
@@ -480,7 +540,12 @@ void resolveExteriorMaterials(
             defaults.value(materialArchiveKey + QLatin1Char('|') + entry.toLower());
         if (materialDefaults) {
             mesh.material = fh6::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
+            mesh.material->resolvedFromLibrary = true;
         }
+    }
+
+    if (!includeTextures) {
+        return;
     }
 
     struct PendingTexture {
@@ -495,7 +560,7 @@ void resolveExteriorMaterials(
     QSet<const fh6::ModelMaterial *> visited;
     for (fh6::CarMesh &mesh : model.meshes) {
         if (!mesh.material || visited.contains(mesh.material.get())
-            || !isExteriorModelPath(mesh.sourceModelPath)
+            || !isLibraryMaterialPath(mesh.sourceModelPath)
             || mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
             continue;
         }
@@ -659,9 +724,10 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
         return false;
     }
     appendSharedTireB(model, path);
-    if (loadCarTextures_) {
-        resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath());
-    }
+    assignSharedSlotMaterials(model);
+    // Material tuning (gloss/metallic/base colour from the shared _library materials) is
+    // cheap and always applied; the heavier swatchbin textures load only on demand.
+    resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures_);
     model_ = std::move(model);
     extractedCarDir_ = std::move(extracted);
     loadedCarPath_ = path;

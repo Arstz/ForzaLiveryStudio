@@ -290,14 +290,25 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   the livery on top. Unmapped codes fall back to a small built-in approximation. See
   `GAMEDATA.md` for where the enumeration, materials, and textures live in the game
   media folder.
+  Non-paint parts take their real shading from the game's shared `_library` materials:
+  each mesh's materialbin (gloss, F0→metallic, base colour) is decoded and merged in
+  whenever a car loads — this tuning is cheap and always applied, independent of the
+  opt-in texture setting, which now only gates the heavier `.swatchbin` texture uploads.
+  Name-based material heuristics remain as a fallback and yield to the real material
+  data when it resolves. Wheels and tires bind their materials by slot name (their
+  modelbins carry no materialbin path), mapped to the shared wheel/metal/rubber
+  materials; rims stay paintable from the livery paint state. Solid geometry is
+  back-face culled so recessed intakes/grilles stop z-fighting, while glass and the
+  approximated tires/wheel discs render double-sided.
   When a livery project is opened, the matching car model is auto-loaded from the
   configured **game folder** (matched by the livery's target car id → the car
   registry's model code, searched recursively under `media/Cars`). If the folder is
   unset the app prompts once to pick it; it can also be set in Settings. A **Discard
   current model on livery open** option (on by default) controls whether opening a
   livery replaces the currently loaded model or keeps it. Changing the target car
-  always reloads the matching preview model. Native car texture loading is an opt-in
-  preview setting and is disabled by default.
+  always reloads the matching preview model. Native car **texture** loading (the
+  `.swatchbin` pattern/normal/surface maps) is an opt-in preview setting and is
+  disabled by default; material tuning above loads regardless.
 - Configure UI theme, canvas, preview-background and guideline colors, layout,
   keybinds, behavior options, guide
   visibility borders, transform-drag anchors, nudge step sizes, the game folder,
@@ -546,7 +557,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     samples separate packed paint regions, and shades non-paint materials with native
     diffuse, alpha, normal, surface, and emissive maps. Paintable regions take their
     gloss/metallic/flake and two-tone/self-coloured shading from the finish resolved
-    through `PaintFinishLibrary` for the region's livery finish code. Meshes without usable UV3 fall back to
+    through `PaintFinishLibrary` for the region's livery finish code; flake finishes add
+    a procedural per-cell sparkle gated to the highlight. Non-paint meshes prefer their
+    resolved `_library` material's gloss/metallic (falling back to name heuristics only
+    when unresolved). Solid meshes are back-face culled (the whole car draws through an
+    X-mirror, so front faces are `GL_CW`); wheels, tires, and translucent surfaces are
+    marked double-sided. Meshes without usable UV3 fall back to
     registered planar projection using the model scene, mask boundary, part metadata,
     and locator landmarks. It uploads only each part's highest LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
@@ -561,6 +577,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     from `EditorState` change signals. Imported `C_livery` sections are rendered into
     isolated packed regions derived from `Masks.xml`; section axes are normalized in the
     preview copy and sampling path without mutating decoded section/group transforms.
+    On load it resolves each exterior/wheel/tire mesh's shared `_library` material:
+    `resolveExteriorMaterials` merges the material defaults always and loads the
+    swatchbin textures only when the opt-in setting is on; `assignSharedSlotMaterials`
+    synthesizes a materialbin path for wheel slot names that carry none. Resolved
+    materials are flagged so the renderer prefers them over name heuristics. Decoded
+    material defaults and native textures are held in bounded process-wide caches.
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with
     sibling-only drag/drop reordering, row badges, and thumbnails; the
