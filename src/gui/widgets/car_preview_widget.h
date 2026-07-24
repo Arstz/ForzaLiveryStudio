@@ -11,6 +11,7 @@
 #include <QtGui>
 #include <QtOpenGLWidgets>
 
+#include <functional>
 #include <memory>
 
 class QTemporaryDir;
@@ -27,10 +28,13 @@ class EditorState;
 class CarPreviewWidget final : public QOpenGLWidget {
     Q_OBJECT
 public:
+    using CarLoadCallback = std::function<void(bool, const QString &)>;
+
     explicit CarPreviewWidget(QWidget *parent = nullptr);
     ~CarPreviewWidget() override;
 
-    bool loadCar(const QString &path, QString *error = nullptr);
+    void loadCarAsync(const QString &path, CarLoadCallback callback = {});
+    void cancelCarLoad();
     bool hasModel() const;
     void clearModel();
     QImage renderThumbnail(const QSize &size);
@@ -79,6 +83,8 @@ private:
     ShapeGeometryStore geometry_;
     CarModelRenderer carRenderer_;
     fh6::PaintFinishLibrary paintFinishes_;
+    QString gameFolder_;
+    quint64 paintFinishLoadGeneration_ = 0;
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;
@@ -88,6 +94,7 @@ private:
     bool modelUploadPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
+    quint64 carLoadGeneration_ = 0;
     bool loadCarTextures_ = false;
 
     fh6::LiveryMaskSet liveryMasks_;

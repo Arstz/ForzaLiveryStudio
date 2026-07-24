@@ -958,7 +958,7 @@ void MainWindow::refreshHeaderMetadataWidget() {
     }
 
     if (!state_->hasProject_) {
-        headerMetadata_->setMetadata({}, false, false);
+        headerMetadata_->setMetadata({}, {}, false, false);
         return;
     }
 
@@ -967,8 +967,9 @@ void MainWindow::refreshHeaderMetadataWidget() {
         meta.name = state_->project_.name;
     }
 
-    const bool importedDraft = !state_->project_.sourceHeader.isEmpty();
-    headerMetadata_->setMetadata(meta, importedDraft, true);
+    headerMetadata_->setMetadata(
+        meta, sharedCarRegistry().displayName(state_->project_.carId),
+        true, state_->project_.isLivery);
 }
 
 void MainWindow::showHeaderMetadataDock() {
@@ -991,16 +992,19 @@ void MainWindow::applyHeaderMetadata() {
 
     fh6::HeaderMetadata meta = headerMetadata_->metadata();
     meta.carId = static_cast<quint32>(state_->project_.carId);
-    const bool importedDraft = !state_->project_.sourceHeader.isEmpty();
-    const bool rebuild = headerMetadata_->rebuildRequested();
+    const fh6::HeaderMetadata current =
+        effectiveHeaderMetadata(state_->project_, creatorName_);
+    if (meta.name == current.name
+        && meta.creatorName == current.creatorName
+        && meta.year == current.year) {
+        return;
+    }
 
     state_->project_.name = meta.name;
     creatorName_ = meta.creatorName;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
 
-    if (!importedDraft || rebuild) {
-        state_->project_.sourceHeader.clear();
-    }
+    state_->project_.sourceHeader.clear();
     state_->project_.headerMetadata = meta;
     state_->setModified(true);
     updateStatus();

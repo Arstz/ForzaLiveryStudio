@@ -5,6 +5,7 @@
 #include "flat_payload.h"
 #include "header_codec.h"
 #include "livery_codec.h"
+#include "material_hashes.h"
 #include "matrix_math.h"
 #include "scene_codec.h"
 #include "shape_registry.h"
@@ -1286,32 +1287,12 @@ QByteArray normalizedCreatorTag(const Project &project) {
 }
 
 QByteArray buildLiveryDescriptorTable(const Project &project) {
-    static constexpr std::array<quint64, 7> kMaterialHashes = {
-        0xf7dbe8a7c839a675ULL,
-        0x6ac1e9d87fe5d953ULL,
-        0x1e5ff0f50c741122ULL,
-        0xcd48110253ee319aULL,
-        0xbcea13c28aa26965ULL,
-        0xb963c2391a4eb883ULL,
-        0x4a7ff0b38ca8f1a0ULL,
-    };
-    static constexpr std::array<quint64, 11> kPanelHashes = {
-        0x4ff3746d9b055f1dULL,
-        0xe00e033e6a20b977ULL,
-        0xe00e023e6a20b7c4ULL,
-        0xe00e053e6a20bcddULL,
-        0xe00e043e6a20bb2aULL,
-        0xe00dff3e6a20b2abULL,
-        0xe00dfe3e6a20b0f8ULL,
-        0xe00e013e6a20b611ULL,
-        0xe00e003e6a20b45eULL,
-        0xe00dfb3e6a20abdfULL,
-        0xe00dfa3e6a20aa2cULL,
-    };
     QVector<quint64> recordHashes;
     recordHashes.reserve(static_cast<qsizetype>(
-        kMaterialHashes.size() + kPanelHashes.size()) + project.liveryPaint.materials.size());
-    for (const quint64 hash : kMaterialHashes) {
+        material_hashes::binding::kLiveryMaterials.size()
+        + material_hashes::binding::kLiveryPanels.size())
+        + project.liveryPaint.materials.size());
+    for (const quint64 hash : material_hashes::binding::kLiveryMaterials) {
         recordHashes.push_back(hash);
     }
     for (const LiveryPaintMaterial &material : project.liveryPaint.materials) {
@@ -1319,7 +1300,7 @@ QByteArray buildLiveryDescriptorTable(const Project &project) {
             recordHashes.push_back(material.materialHash);
         }
     }
-    for (const quint64 hash : kPanelHashes) {
+    for (const quint64 hash : material_hashes::binding::kLiveryPanels) {
         if (!recordHashes.contains(hash)) {
             recordHashes.push_back(hash);
         }
@@ -1355,13 +1336,14 @@ QByteArray buildLiveryDescriptorTable(const Project &project) {
     };
 
     for (const quint64 hash : recordHashes) {
-        const bool isPanel = std::find(kPanelHashes.cbegin(), kPanelHashes.cend(), hash)
-            != kPanelHashes.cend();
+        const bool isPanel =
+            material_hashes::contains(material_hashes::binding::kLiveryPanels, hash);
         appendMaterial(hash, isPanel ? 0xffffffffu : 0);
     }
 
-    detail::appendLeU32(table, static_cast<quint32>(kPanelHashes.size()));
-    for (const quint64 hash : kPanelHashes) {
+    detail::appendLeU32(
+        table, static_cast<quint32>(material_hashes::binding::kLiveryPanels.size()));
+    for (const quint64 hash : material_hashes::binding::kLiveryPanels) {
         appendLeU64(table, hash);
     }
     return table;

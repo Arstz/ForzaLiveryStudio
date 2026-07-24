@@ -239,10 +239,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   the view centre and grouped into a new group named after the text. A Monospace
   flag (persisted in QSettings) instead advances every glyph by a fixed cell — the
   font's average glyph width, computed separately for upper- and lower-case.
-- Edit header metadata for exported projects, or edit individual project fields
-  directly from the **Project** menu: **Target Car…** (the car a livery is for),
-  **Project Name…**, and **Creator Name…** (the last also persists as the default
-  creator for new projects).
+- Edit project metadata from the Header dock. Name, creator, and year changes
+  rebuild the project header when input finishes. Livery projects also expose
+  their target car and a Change button there. The Project dock remains a
+  read-only summary.
 - Align and distribute the current selection from the **Edit** menu. **Align**
   (Top/Bottom/Left/Right/Horizontal Centre/Vertical Centre) snaps each selected
   top-level unit — a whole group counts as one unit, loose leaves individually —
@@ -300,7 +300,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   materials; rims stay paintable from the livery paint state. Solid geometry is
   back-face culled so recessed intakes/grilles stop z-fighting, while glass and the
   approximated tires/wheel discs render double-sided.
-  When a livery project is opened, the matching car model is auto-loaded from the
+  When a livery project is opened, the matching car model is auto-loaded in the
+  background from the
   configured **game folder** (matched by the livery's target car id → the car
   registry's model code, searched recursively under `media/Cars`). If the folder is
   unset the app prompts once to pick it; it can also be set in Settings. A **Discard
@@ -308,7 +309,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   livery replaces the currently loaded model or keeps it. Changing the target car
   always reloads the matching preview model. Native car **texture** loading (the
   `.swatchbin` pattern/normal/surface maps) is an opt-in preview setting and is
-  disabled by default; material tuning above loads regardless.
+  disabled by default; material tuning above loads regardless. Model, material,
+  mask, and enabled texture decoding run outside the UI thread.
 - Configure UI theme, canvas, preview-background and guideline colors, layout,
   keybinds, behavior options, guide
   visibility borders, transform-drag anchors, nudge step sizes, the game folder,
@@ -485,6 +487,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     Resolved material defaults and decoded textures are retained in bounded runtime caches,
     while uploaded native textures are reused for the lifetime of the preview context.
     No proprietary DLL is required.
+  - `material_hashes.h`: shared paint-binding and material-parameter hash
+    catalogue used by container encoding, model decoding, texture selection, and
+    preview paint binding.
   - `paint_finish_catalog.*`: the global livery-material enumeration (finish code →
     display name → painttype `.materialbin` stem → category) plus `PaintFinishLibrary`,
     which decodes each material into `PaintFinishRender` shading parameters keyed by
@@ -577,7 +582,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     from `EditorState` change signals. Imported `C_livery` sections are rendered into
     isolated packed regions derived from `Masks.xml`; section axes are normalized in the
     preview copy and sampling path without mutating decoded section/group transforms.
-    On load it resolves each exterior/wheel/tire mesh's shared `_library` material:
+    Its model preparation runs on a background worker and resolves each
+    exterior/wheel/tire mesh's shared `_library` material:
     `resolveExteriorMaterials` merges the material defaults always and loads the
     swatchbin textures only when the opt-in setting is on; `assignSharedSlotMaterials`
     synthesizes a materialbin path for wheel slot names that carry none. Resolved

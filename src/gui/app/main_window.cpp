@@ -27,7 +27,6 @@ MainWindow::MainWindow(QWidget *parent)
     connectEditorStateSignals();
     setupFileMenu();
     setupEditMenu();
-    setupProjectMenu();
 #if FH6_ENABLE_IMGGEN_MENU
     setupImgGenMenu();
 #endif

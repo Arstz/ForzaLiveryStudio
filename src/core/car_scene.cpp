@@ -1,6 +1,7 @@
 #include "car_scene.h"
 
 #include "binary_io.h"
+#include "material_hashes.h"
 #include "model_bundle.h"
 #include "model_material.h"
 
@@ -428,19 +429,13 @@ bool frontWheel(const PartInstance &part, const CarMesh &mesh) {
 }
 
 quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh) {
-    static constexpr quint64 Front[] = {
-        0xB8925E450764DE78ull, 0x15EDB6869EFC7F22ull, 0x2407D33BE191E83Dull,
-        0x564DF80BF320D318ull, 0x818BB1EF6C704F11ull,
-    };
-    static constexpr quint64 Rear[] = {
-        0x6613B1E8FA7AE743ull, 0x3A3CBDA8CF17E711ull, 0xC338EA21477FD950ull,
-        0x0F1580E714EA9063ull, 0x874E9585EAB6EF64ull,
-    };
     const int channel = wheelPaintChannel(mesh.materialName);
     if (channel < 0) {
         return 0;
     }
-    return frontWheel(part, mesh) ? Front[channel] : Rear[channel];
+    return frontWheel(part, mesh)
+        ? material_hashes::binding::kFrontWheelPaint[channel]
+        : material_hashes::binding::kRearWheelPaint[channel];
 }
 
 std::vector<CarLocator> loadCarLocators(const QString &carbinDir) {

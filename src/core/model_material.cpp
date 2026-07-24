@@ -1,6 +1,7 @@
 #include "model_material.h"
 
 #include "binary_io.h"
+#include "material_hashes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -165,68 +166,59 @@ std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob)
     return parameters;
 }
 
-bool containsHash(quint32 hash, std::initializer_list<quint32> hashes) {
-    return std::find(hashes.begin(), hashes.end(), hash) != hashes.end();
-}
-
 void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter &parameter) {
     const bool vectorValue = parameter.type == ModelMaterialParameterType::Vector
         || parameter.type == ModelMaterialParameterType::Color;
-    if (vectorValue && containsHash(parameter.nameHash, {
-            0xEA718FBE, 0x53A946B6, 0x6B242133, 0x63040D89, 0xF51639BE,
-            0x57C321A6, 0x73A9E2DF, 0x1F3EB7A9, 0xEF5CCE09, 0x76BEA808,
-            0x1F30F777, 0x1925D9BF, 0xD0F0433A, 0xA76D0485, 0xD9826618,
-            0x00FC00E4, 0x1F0BBA20, 0x36976C2B, 0x5D1D0449, 0x0940E415})) {
+    if (vectorValue
+        && material_hashes::contains(material_hashes::parameter::kBaseColor, parameter.nameHash)) {
         material.hasBaseColor = true;
         material.baseColor = {parameter.vector[0], parameter.vector[1], parameter.vector[2]};
         if (parameter.vector[3] > 0.0f && parameter.vector[3] < 1.0f) {
             material.opacity = parameter.vector[3];
         }
     }
-    if (vectorValue && containsHash(parameter.nameHash, {
-            0x4E0D5E89, 0x6161E552, 0x020B22EB, 0x212B4B48,
-            0x3CB4DFCB, 0x21EC1E4D, 0xEFBBC518, 0x1D6AA640})) {
+    if (vectorValue
+        && material_hashes::contains(material_hashes::parameter::kEmissiveColor, parameter.nameHash)) {
         material.emissiveColor = {parameter.vector[0], parameter.vector[1], parameter.vector[2]};
         material.emissiveIntensity = std::max(material.emissiveIntensity, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && containsHash(parameter.nameHash, {
-            0x074CCD8C, 0x9421C781, 0xD78943E8, 0x4C6E94DA,
-            0x22F9702D, 0xE76C20ED})) {
+        && material_hashes::contains(
+            material_hashes::parameter::kEmissiveIntensity, parameter.nameHash)) {
         material.emissiveIntensity = std::max(0.0f, parameter.scalar);
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && containsHash(parameter.nameHash, {
-            0x698CA64F, 0x5D3E6F2D, 0x85E937A9, 0x03ED197F,
-            0x9C489ADE, 0x40CCF359})) {
+        && material_hashes::contains(material_hashes::parameter::kOpacity, parameter.nameHash)) {
         material.opacity = std::clamp(parameter.scalar, 0.0f, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && containsHash(parameter.nameHash, {
-            0x5FF94E67, 0x70328B61, 0xF8D6CE36, 0x355CC996, 0xBD820385,
-            0xDC5CC796, 0xD2AFDCA3, 0xBA21FEC7, 0x7E88DE7D, 0x52E99DA3})) {
+        && material_hashes::contains(material_hashes::parameter::kGloss, parameter.nameHash)) {
         material.gloss = std::clamp(parameter.scalar, 0.0f, 1.0f);
     }
     // The clearcoat is the visible gloss for automotive paint; its roughness overrides.
     if (parameter.type == ModelMaterialParameterType::Float
-        && parameter.nameHash == 0x18A539DD && std::isfinite(parameter.scalar)) {
+        && parameter.nameHash == material_hashes::parameter::kClearcoatRoughness
+        && std::isfinite(parameter.scalar)) {
         material.gloss = std::clamp(1.0f - parameter.scalar, 0.0f, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && parameter.nameHash == 0x19A7D8F1 && std::isfinite(parameter.scalar)) {
+        && parameter.nameHash == material_hashes::parameter::kTextureTilingU
+        && std::isfinite(parameter.scalar)) {
         material.uTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && parameter.nameHash == 0x4A3D8375 && std::isfinite(parameter.scalar)) {
+        && parameter.nameHash == material_hashes::parameter::kTextureTilingV
+        && std::isfinite(parameter.scalar)) {
         material.vTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
     }
     if (parameter.type == ModelMaterialParameterType::Vector2
-        && parameter.nameHash == 0xB99646E7
+        && parameter.nameHash == material_hashes::parameter::kTextureTiling
         && std::isfinite(parameter.vector[0]) && std::isfinite(parameter.vector[1])) {
         material.uTiling = std::abs(parameter.vector[0]) > 0.000001f ? parameter.vector[0] : 1.0f;
         material.vTiling = std::abs(parameter.vector[1]) > 0.000001f ? parameter.vector[1] : 1.0f;
     }
-    if (vectorValue && containsHash(parameter.nameHash, {0x938926B0, 0xA415641F})) {
+    if (vectorValue
+        && material_hashes::contains(material_hashes::parameter::kMetallic, parameter.nameHash)) {
         const float f0 = std::max({parameter.vector[0], parameter.vector[1], parameter.vector[2]});
         if (std::isfinite(f0)) {
             material.hasMetallic = true;
@@ -234,20 +226,21 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         }
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && containsHash(parameter.nameHash, {0x86EF8FB1, 0x604BA06B})
+        && material_hashes::contains(material_hashes::parameter::kFlakeAmount, parameter.nameHash)
         && std::isfinite(parameter.scalar)) {
         material.flakeAmount = std::clamp(parameter.scalar, 0.0f, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Texture2D
-        && parameter.nameHash == 0x85E937A9) {
+        && parameter.nameHash == material_hashes::parameter::kColorTexture) {
         material.patternTexture = parameter.texturePath;
     }
     if (parameter.type == ModelMaterialParameterType::Texture2D
-        && containsHash(parameter.nameHash, {0xEC13FF23, 0x87078E77, 0xB59BE3AB, 0xB61760D8})) {
+        && material_hashes::contains(
+            material_hashes::parameter::kDetailNormalTexture, parameter.nameHash)) {
         material.detailNormalTexture = parameter.texturePath;
     }
     if (parameter.type == ModelMaterialParameterType::Texture2D
-        && parameter.nameHash == 0x8D9C56EF) {
+        && parameter.nameHash == material_hashes::parameter::kSurfaceTexture) {
         material.roughMetalAoTexture = parameter.texturePath;
     }
 }

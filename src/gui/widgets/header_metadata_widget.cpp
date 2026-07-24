@@ -32,15 +32,27 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     descEdit->setReadOnly(true);
     form->addRow(QStringLiteral("Description"), descEdit);
 
-    rebuildCheck_ = new QCheckBox(QStringLiteral("Rebuild header from these fields (drops original bytes)"), this);
-    rebuildCheck_->setVisible(false);
-    form->addRow(QString(), rebuildCheck_);
+    auto *targetCarRow = new QWidget(this);
+    auto *targetCarLayout = new QHBoxLayout(targetCarRow);
+    targetCarLayout->setContentsMargins(0, 0, 0, 0);
+    targetCar_ = new QLabel(targetCarRow);
+    targetCar_->setWordWrap(true);
+    targetCarLayout->addWidget(targetCar_, 1);
+    changeTargetCar_ = new QPushButton(QStringLiteral("Change"), targetCarRow);
+    targetCarLayout->addWidget(changeTargetCar_);
+    form->addRow(QStringLiteral("Target car"), targetCarRow);
 
-    applyButton_ = new QPushButton(QStringLiteral("Apply"), this);
-    outer->addWidget(applyButton_);
-    connect(applyButton_, &QPushButton::clicked, this, [this]() {
-        if (applyCallback_) {
-            applyCallback_();
+    const auto commit = [this]() {
+        if (metadataChangedCallback_) {
+            metadataChangedCallback_();
+        }
+    };
+    connect(nameEdit_, &QLineEdit::editingFinished, this, commit);
+    connect(creatorEdit_, &QLineEdit::editingFinished, this, commit);
+    connect(yearSpin_, &QSpinBox::editingFinished, this, commit);
+    connect(changeTargetCar_, &QPushButton::clicked, this, [this]() {
+        if (changeTargetCarCallback_) {
+            changeTargetCarCallback_();
         }
     });
 
@@ -50,28 +62,24 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
 
     outer->addStretch(1);
 
-    setMetadata({}, false, false);
+    setMetadata({}, {}, false, false);
 }
 
-void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool importedDraft, bool hasProject) {
+void HeaderMetadataWidget::setMetadata(
+    const fh6::HeaderMetadata &seed, const QString &targetCar,
+    bool hasProject, bool canChangeTargetCar) {
     seed_ = seed;
-    importedDraft_ = importedDraft;
 
     nameEdit_->setText(seed.name);
     creatorEdit_->setText(seed.creatorName);
     yearSpin_->setValue(seed.year == 0 ? QDate::currentDate().year() : seed.year);
     publishedCheck_->setChecked(seed.published);
-
-    rebuildCheck_->setVisible(importedDraft);
-    if (!importedDraft) {
-        rebuildCheck_->setChecked(false);
-    }
+    targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
 
     nameEdit_->setEnabled(hasProject);
     creatorEdit_->setEnabled(hasProject);
     yearSpin_->setEnabled(hasProject);
-    rebuildCheck_->setEnabled(hasProject);
-    applyButton_->setEnabled(hasProject);
+    changeTargetCar_->setEnabled(hasProject && canChangeTargetCar);
     hint_->setVisible(!hasProject);
 }
 
@@ -85,12 +93,12 @@ fh6::HeaderMetadata HeaderMetadataWidget::metadata() const {
     return meta;
 }
 
-bool HeaderMetadataWidget::rebuildRequested() const {
-    return importedDraft_ && rebuildCheck_->isChecked();
+void HeaderMetadataWidget::setMetadataChangedCallback(std::function<void()> callback) {
+    metadataChangedCallback_ = std::move(callback);
 }
 
-void HeaderMetadataWidget::setApplyCallback(std::function<void()> callback) {
-    applyCallback_ = std::move(callback);
+void HeaderMetadataWidget::setChangeTargetCarCallback(std::function<void()> callback) {
+    changeTargetCarCallback_ = std::move(callback);
 }
 
 } // namespace gui

@@ -13,13 +13,12 @@
 #include "perf_utils.h"
 #include "property_panel.h"
 
-#include <QInputDialog>
-#include <QLineEdit>
 #include <QMessageBox>
 
 #include <array>
 #include <exception>
 #include <functional>
+#include <utility>
 
 namespace gui {
 
@@ -34,6 +33,9 @@ constexpr int kSectionBarLabelSlots[fh6::kLiverySideCount] = {
 } // namespace
 
 void MainWindow::setProject(fh6::Project project) {
+    if (carPreview_ != nullptr) {
+        carPreview_->cancelCarLoad();
+    }
     state_->setProject(std::move(project));
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
@@ -51,6 +53,9 @@ void MainWindow::setProject(fh6::Project project) {
     updateColorPaletteWidget();
     updateClipboardWidget();
     updateStatus();
+    if (carUnwrapAction_ != nullptr) {
+        carUnwrapAction_->setChecked(state_->project_.isLivery);
+    }
     maybeAutoLoadCarForProject();
     updateCarUnwrapOverlay();
 }
@@ -112,16 +117,22 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
             QStringLiteral("No car model matching \"%1\" found in the car models folder").arg(modelCode), 4000);
         return;
     }
-    QString error;
-    if (!carPreview_->loadCar(path, &error)) {
-        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("Failed to auto-load car model") : error, 4000);
-        return;
-    }
-    if (carPreviewDock_ != nullptr) {
-        carPreviewDock_->show();
-        carPreviewDock_->raise();
-    }
-    statusBar()->showMessage(QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
+    statusBar()->showMessage(
+        QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
+        if (!loaded) {
+            statusBar()->showMessage(
+                error.isEmpty() ? QStringLiteral("Failed to auto-load car model") : error, 4000);
+            return;
+        }
+        if (carPreviewDock_ != nullptr) {
+            carPreviewDock_->show();
+            carPreviewDock_->raise();
+        }
+        updateCarUnwrapOverlay();
+        statusBar()->showMessage(
+            QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
+    });
 }
 
 QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const {
@@ -597,82 +608,29 @@ void MainWindow::setTargetCarDialog() {
     if (carId == state_->project_.carId) {
         return;
     }
-    state_->project_.carId = carId;
+    fh6::HeaderMetadata metadata;
     if (state_->project_.headerMetadata) {
-        state_->project_.headerMetadata->carId = static_cast<quint32>(carId);
+        metadata = *state_->project_.headerMetadata;
+    } else {
+        try {
+            metadata = fh6::parseHeader(state_->project_.sourceHeader);
+        } catch (const std::exception &) {
+            metadata = fh6::defaultDraftHeader(
+                state_->project_.name, creatorName_, static_cast<quint32>(carId));
+        }
     }
+    metadata.carId = static_cast<quint32>(carId);
+    metadata.published = false;
+    metadata.description.clear();
+    state_->project_.carId = carId;
+    state_->project_.sourceHeader.clear();
+    state_->project_.headerMetadata = std::move(metadata);
     state_->setModified(true);
     updateStatus();
+    refreshHeaderMetadataWidget();
     statusBar()->showMessage(
         QStringLiteral("Target car set to %1").arg(sharedCarRegistry().displayName(carId)), 5000);
     maybeAutoLoadCarForProject(true);
-}
-
-void MainWindow::setProjectNameDialog() {
-    if (!state_->hasProject_) {
-        QMessageBox::information(this, QStringLiteral("Project Name"),
-                                 QStringLiteral("Open a project to change its name."));
-        return;
-    }
-    bool ok = false;
-    const QString current = state_->project_.name;
-    const QString name = QInputDialog::getText(this, QStringLiteral("Project Name"),
-                                               QStringLiteral("Project name:"), QLineEdit::Normal, current, &ok);
-    if (!ok) {
-        return;
-    }
-    const QString trimmed = name.trimmed();
-    if (trimmed == current) {
-        return;
-    }
-    state_->project_.name = trimmed;
-    ensureProjectHeaderMetadata().name = trimmed;
-    state_->setModified(true);
-    updateStatus();
-    refreshHeaderMetadataWidget();
-    statusBar()->showMessage(QStringLiteral("Project name updated"), 5000);
-}
-
-void MainWindow::setCreatorNameDialog() {
-    if (!state_->hasProject_) {
-        QMessageBox::information(this, QStringLiteral("Creator Name"),
-                                 QStringLiteral("Open a project to change its creator."));
-        return;
-    }
-    bool ok = false;
-    QString current = state_->project_.headerMetadata ? state_->project_.headerMetadata->creatorName : QString();
-    if (current.isEmpty()) {
-        current = creatorName_;
-    }
-    const QString name = QInputDialog::getText(this, QStringLiteral("Creator Name"),
-                                               QStringLiteral("Creator name:"), QLineEdit::Normal, current, &ok);
-    if (!ok) {
-        return;
-    }
-    const QString trimmed = name.trimmed();
-    if (trimmed == current) {
-        return;
-    }
-    creatorName_ = trimmed;
-    QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
-    ensureProjectHeaderMetadata().creatorName = trimmed;
-    state_->setModified(true);
-    updateStatus();
-    refreshHeaderMetadataWidget();
-    statusBar()->showMessage(QStringLiteral("Creator name updated"), 5000);
-}
-
-fh6::HeaderMetadata &MainWindow::ensureProjectHeaderMetadata() {
-    if (!state_->project_.headerMetadata) {
-        try {
-            state_->project_.headerMetadata = fh6::parseHeader(state_->project_.sourceHeader);
-        } catch (const std::exception &) {
-            state_->project_.headerMetadata = fh6::defaultDraftHeader(
-                state_->project_.name, creatorName_, static_cast<quint32>(state_->project_.carId));
-        }
-    }
-
-    return *state_->project_.headerMetadata;
 }
 
 } // namespace gui

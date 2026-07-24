@@ -54,6 +54,7 @@ add_library(fls_core STATIC
     src/core/car_scene.h
     src/core/matrix_math.cpp
     src/core/matrix_math.h
+    src/core/material_hashes.h
     src/core/model_bundle.cpp
     src/core/model_bundle.h
     src/core/model_geometry.cpp
@@ -391,6 +392,9 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/decal_textures.bin"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/decal_textures.bin"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/MissingTexture.png"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/MissingTexture.png"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different

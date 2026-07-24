@@ -106,8 +106,6 @@ private:
     void exportDialog();
     bool exportFolderImpl(const QString &folder, QString *error);
     void setTargetCarDialog();
-    void setProjectNameDialog();
-    void setCreatorNameDialog();
     void newProjectDialog();
     void saveProjectJsonDialog();
     void saveProjectJsonAsDialog();
@@ -185,7 +183,6 @@ private:
     bool loadImportedProject(const std::function<fh6::Project()> &load,
                              const QString &statusMessage,
                              QString *error);
-    fh6::HeaderMetadata &ensureProjectHeaderMetadata();
     enum class ExternalDropKind {
         Unsupported,
         ProjectJson,
@@ -213,7 +210,6 @@ private:
     void connectEditorStateSignals();
     void setupFileMenu();
     void setupEditMenu();
-    void setupProjectMenu();
     void setupImgGenMenu();
     void setupOptionsMenu();
     void setupToolbar();

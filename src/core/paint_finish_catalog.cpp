@@ -9,6 +9,7 @@
 #include <QFileInfo>
 
 #include <memory>
+#include <utility>
 
 namespace fh6 {
 namespace {
@@ -184,6 +185,13 @@ void PaintFinishLibrary::clear() {
     folder_.clear();
     byCode_.clear();
     loaded_ = false;
+    ++generation_;
+}
+
+void PaintFinishLibrary::replace(PaintFinishLibrary library) {
+    folder_ = std::move(library.folder_);
+    loaded_ = library.loaded_;
+    byCode_ = std::move(library.byCode_);
     ++generation_;
 }
 

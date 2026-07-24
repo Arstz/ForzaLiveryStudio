@@ -1,5 +1,6 @@
 #include "car_model_renderer.h"
 
+#include "material_hashes.h"
 #include "model_material.h"
 
 #include <QDebug>
@@ -832,22 +833,22 @@ enum CarPartType {
 quint64 fallbackPaintHash(const fh6::CarMesh &mesh) {
     const QString identity = mesh.name.toLower() + QLatin1Char('|') + mesh.materialName.toLower();
     if (isWindowGlassMaterial(mesh)) {
-        return 0x9582FD1BA2FFF9A4ull;
+        return fh6::material_hashes::binding::kWindowGlass;
     }
     if (identity.contains(QStringLiteral("caliper")) || identity.contains(QStringLiteral("brake"))) {
-        return 0xA5495E0A43DF55B9ull;
+        return fh6::material_hashes::binding::kBrakeCaliper;
     }
     if (isBodyPaintMaterial(mesh.materialName)) {
         if (isSpoilerMesh(mesh.name)) {
-            return 0xCD48110253EE319Aull;
+            return fh6::material_hashes::binding::kSpoilerPaint;
         }
         if (mesh.carPartType == kHoodPart || identity.contains(QStringLiteral("hood"))) {
-            return 0x6AC1E9D87FE5D953ull;
+            return fh6::material_hashes::binding::kHoodPaint;
         }
         if (identity.contains(QStringLiteral("mirror"))) {
-            return 0x1E5FF0F50C741122ull;
+            return fh6::material_hashes::binding::kMirrorPaint;
         }
-        return 0xF7DBE8A7C839A675ull;
+        return fh6::material_hashes::binding::kBodyPaint;
     }
     return 0;
 }

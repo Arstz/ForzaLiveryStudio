@@ -57,6 +57,7 @@ class PaintFinishLibrary {
 public:
     void load(const QString &gameFolder);
     void clear();
+    void replace(PaintFinishLibrary library);
     bool loaded() const { return loaded_; }
     QString folder() const { return folder_; }
     // Bumped on every load/clear so cached GPU uploads can detect a reload.

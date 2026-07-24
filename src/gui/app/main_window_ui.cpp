@@ -169,7 +169,8 @@ void MainWindow::setupDocks() {
                                      QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
 
     headerMetadata_ = new HeaderMetadataWidget(this);
-    headerMetadata_->setApplyCallback([this]() { applyHeaderMetadata(); });
+    headerMetadata_->setMetadataChangedCallback([this]() { applyHeaderMetadata(); });
+    headerMetadata_->setChangeTargetCarCallback([this]() { setTargetCarDialog(); });
     headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
                                        QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_, true);
     tabifyDockWidget(detailsDock, headerMetadataDock_);
@@ -436,25 +437,6 @@ void MainWindow::distributeSelection(ProjectCanvas::DistributeAxis axis) {
     }
 }
 
-void MainWindow::setupProjectMenu() {
-    auto *projectMenu = menuBar()->addMenu(QStringLiteral("&Project"));
-    auto addProjectEntry = [this, projectMenu](const QString &text, const QString &id, const QString &iconName,
-                                               auto slot) {
-        QAction *action = iconName.isEmpty() ? projectMenu->addAction(text)
-                                             : projectMenu->addAction(assetIcon(iconName), text);
-        registerShortcutAction(action, id, text, iconName);
-        addAction(action);
-        connect(action, &QAction::triggered, this, slot);
-        return action;
-    };
-    addProjectEntry(QStringLiteral("&Target Car..."), QStringLiteral("set_target_car"),
-                    QStringLiteral("ImportCar.xpm"), &MainWindow::setTargetCarDialog);
-    addProjectEntry(QStringLiteral("Project &Name..."), QStringLiteral("set_project_name"),
-                    QString(), &MainWindow::setProjectNameDialog);
-    addProjectEntry(QStringLiteral("&Creator Name..."), QStringLiteral("set_creator_name"),
-                    QString(), &MainWindow::setCreatorNameDialog);
-}
-
 void MainWindow::setupImgGenMenu() {
     auto *imgGenMenu = menuBar()->addMenu(QStringLiteral("&ImgGen"));
     auto addEntry = [this, imgGenMenu](const QString &text, const QString &id,
@@ -668,17 +650,21 @@ void MainWindow::importCarModel() {
     if (path.isEmpty()) {
         return;
     }
-    QString error;
-    if (!carPreview_->loadCar(path, &error)) {
-        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("Failed to load car model") : error);
-        return;
-    }
-    if (carPreviewDock_ != nullptr) {
-        carPreviewDock_->show();
-        carPreviewDock_->raise();
-    }
-    updateCarUnwrapOverlay();
-    statusBar()->showMessage(QStringLiteral("Loaded car model: %1").arg(QFileInfo(path).fileName()));
+    statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
+        if (!loaded) {
+            statusBar()->showMessage(
+                error.isEmpty() ? QStringLiteral("Failed to load car model") : error);
+            return;
+        }
+        if (carPreviewDock_ != nullptr) {
+            carPreviewDock_->show();
+            carPreviewDock_->raise();
+        }
+        updateCarUnwrapOverlay();
+        statusBar()->showMessage(
+            QStringLiteral("Loaded car model: %1").arg(QFileInfo(path).fileName()));
+    });
 }
 
 void MainWindow::updateCarUnwrapOverlay() {
