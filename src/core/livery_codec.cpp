@@ -33,11 +33,61 @@ quint64 readLeU64(const QByteArray &bytes, int offset) {
         | (static_cast<quint64>(detail::readLeU32(bytes, offset + 4)) << 32);
 }
 
-LiveryPaintState readPaintState(const QByteArray &raw, int end) {
+// Read `count` 27-byte paint-material records starting at the header at `headerStart`.
+// Header: byte0 status (<=1), byte1 == 0x02, u16 count, then padding to +10, then the records.
+// `limit` bounds the block (the paint-section terminator or end of data). Returns false if the
+// header/records don't fit or don't look like a paint header.
+bool readPaintMaterialsAt(const QByteArray &raw, int headerStart, int limit,
+                          LiveryPaintState &state) {
+    if (headerStart < 0 || headerStart + 10 > raw.size()) {
+        return false;
+    }
+    if (static_cast<quint8>(raw[headerStart]) > 1
+        || static_cast<quint8>(raw[headerStart + 1]) != 2) {
+        return false;
+    }
+    const int count = detail::readLeU16(raw, headerStart + 2);
+    if (count <= 0 || count > 256) {
+        return false;
+    }
+    const int materialsEnd = headerStart + 10 + count * 27;
+    if (materialsEnd > raw.size() || (limit >= 0 && materialsEnd > limit)) {
+        return false;
+    }
+    state.materials.clear();
+    state.materials.reserve(count);
+    int pos = headerStart + 10;
+    for (int i = 0; i < count; ++i, pos += 27) {
+        LiveryPaintMaterial material;
+        material.materialHash = readLeU64(raw, pos);
+        material.primary.enabled = raw[pos + 9] != 0;
+        for (int channel = 0; channel < 4; ++channel) {
+            material.primary.bgra[channel] = static_cast<quint8>(raw[pos + 10 + channel]);
+        }
+        material.secondary.enabled = raw[pos + 14] != 0;
+        for (int channel = 0; channel < 4; ++channel) {
+            material.secondary.bgra[channel] = static_cast<quint8>(raw[pos + 15 + channel]);
+        }
+        material.manufacturerSelector = detail::readLeU32(raw, pos + 19);
+        material.finish = detail::readLeU32(raw, pos + 23);
+        state.materials.push_back(material);
+    }
+    return true;
+}
+
+// The paint materials follow the paint-section 'yrvl' tag; `blockStart` is that tag + 4 (where the
+// header sits for every livery observed) and `end` is the section terminator. Parse forward from
+// the header directly — the old approach scanned backward from `end` requiring an exact 102-byte
+// block/trailer size, but some liveries carry a shorter trailer, which silently dropped the paint
+// state (car rendered with no paint/material). The backward scan is kept only as a fallback.
+LiveryPaintState readPaintState(const QByteArray &raw, int blockStart, int end) {
     LiveryPaintState state;
+    if (readPaintMaterialsAt(raw, blockStart, end, state)) {
+        return state;
+    }
     const int firstCandidate = std::max(0, end - 4096);
     for (int start = end - 102; start >= firstCandidate; --start) {
-        if (start + 10 > end
+        if (start + 4 > raw.size()
             || static_cast<quint8>(raw[start]) > 1
             || static_cast<quint8>(raw[start + 1]) != 2) {
             continue;
@@ -46,24 +96,9 @@ LiveryPaintState readPaintState(const QByteArray &raw, int end) {
         if (count <= 0 || count > 256 || start + 102 + count * 27 != end) {
             continue;
         }
-        state.materials.reserve(count);
-        int pos = start + 10;
-        for (int i = 0; i < count; ++i, pos += 27) {
-            LiveryPaintMaterial material;
-            material.materialHash = readLeU64(raw, pos);
-            material.primary.enabled = raw[pos + 9] != 0;
-            for (int channel = 0; channel < 4; ++channel) {
-                material.primary.bgra[channel] = static_cast<quint8>(raw[pos + 10 + channel]);
-            }
-            material.secondary.enabled = raw[pos + 14] != 0;
-            for (int channel = 0; channel < 4; ++channel) {
-                material.secondary.bgra[channel] = static_cast<quint8>(raw[pos + 15 + channel]);
-            }
-            material.manufacturerSelector = detail::readLeU32(raw, pos + 19);
-            material.finish = detail::readLeU32(raw, pos + 23);
-            state.materials.push_back(material);
+        if (readPaintMaterialsAt(raw, start, end, state)) {
+            return state;
         }
-        return state;
     }
     return state;
 }
@@ -99,7 +134,7 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
         ? payload.raw.indexOf(QByteArray("yrvl", 4), paintTag + 4)
         : -1;
     if (paintEnd >= 0) {
-        payload.paint = readPaintState(payload.raw, paintEnd);
+        payload.paint = readPaintState(payload.raw, paintTag + 4, paintEnd);
     }
     payload.sectionCounts.reserve(11);
     if (statsTag >= 0 && payload.raw.mid(statsTag, 4) == QByteArray("yrvl", 4)) {

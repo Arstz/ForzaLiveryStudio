@@ -23,6 +23,25 @@ using fh6::detail::readLeFloat;
 using fh6::detail::readLeU16;
 using fh6::detail::readLeU32;
 
+// The shared wheel (disk) and tyre models in _library/scene are normalised identically for every
+// car: the rim outer and the tyre inner bead both sit at a canonical radius (~0.140 m — verified:
+// rim max radial 0.1398, tyre min radial 0.1401), the tyre outer at ~0.225 m, and the axial X
+// (wheel width) is normalised to 0..1. There is no per-car scale in the scene data (the wheel part
+// transform is a pure rotation+translation whose origin is the wheel-centre plane). The real size
+// is a single uniform per-axle scale S set by the stock rim diameter: an N-inch rim means the
+// canonical 0.280 m-diameter rim scales to N inches, i.e. S = N * 0.0254 / 0.280. (The old code
+// hardcoded S = 1.632857, which is exactly an 18" rim, for every car.) The tyre scales with the
+// rim because they share the 0.140 m mating radius; the width is kept proportional so wider cars
+// read as wider. These are shared by the wheel bake and the approximated tyre.
+constexpr float kCanonRimRadial = 0.140f;   // normalised rim outer == tyre inner bead
+constexpr float kCanonTireRadial = 0.225f;  // normalised tyre outer
+constexpr float kCanonRimDiameterM = 2.0f * kCanonRimRadial;  // rim diameter the inch rating maps onto
+constexpr float kWheelWidthAspect = 1.2f;   // wheel/tyre width as a multiple of the rim radius
+
+float wheelScaleForDiameter(float rimDiameterInches) {
+    return rimDiameterInches * 0.0254f / kCanonRimDiameterM;
+}
+
 namespace {
 
 struct Cursor {
@@ -379,15 +398,20 @@ bool isWheelModelPath(QString path) {
     return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
 }
 
-void bakeWheelTransform(CarMesh &mesh) {
-    constexpr float radialScale = 1.632857f;
+void bakeWheelTransform(CarMesh &mesh, float rimDiameterInches) {
+    const float radialScale = wheelScaleForDiameter(rimDiameterInches);
+    const float widthScale = kCanonRimRadial * kWheelWidthAspect * radialScale;
     for (ModelVec3 &position : mesh.positions) {
         position = mesh.boneTransform.transformPoint(
-            {-position.x, position.y * radialScale, -position.z * radialScale});
+            {(0.5f - position.x) * widthScale,
+             position.y * radialScale,
+             position.z * radialScale});
     }
     for (ModelVec3 &normal : mesh.normals) {
         normal = mesh.boneTransform.transformVector(
-            {-normal.x, normal.y / radialScale, -normal.z / radialScale});
+            {normal.x / -widthScale,
+             normal.y / radialScale,
+             normal.z / radialScale});
         const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
         if (length > 0.000001f) {
             normal.x /= length;
@@ -507,6 +531,12 @@ const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QStri
                 return &bone;
             }
         }
+        // A bone name was requested but this part's local model-bundle skeleton doesn't contain
+        // it: the numeric boneId indexes the *global* car skeleton, not this local one, so
+        // bones[id] here would attach the part to an unrelated local bone and misplace it (e.g.
+        // Ultima's spindleLF -> local root_boneTrunk flings the wheel/brake into the air). The
+        // part transform already carries the correct world placement, so fall back to no bone.
+        return nullptr;
     }
     if (id >= 0 && id < static_cast<qint16>(bones.size())) {
         return &bones[id];
@@ -516,7 +546,7 @@ const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QStri
 
 } // namespace
 
-CarModel loadCarBin(const QString &path, QString *error) {
+CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &wheels) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) {
@@ -597,7 +627,8 @@ CarModel loadCarBin(const QString &path, QString *error) {
             mesh.stockPart = stock;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
-                bakeWheelTransform(mesh);
+                bakeWheelTransform(mesh, frontWheel(part, mesh) ? wheels.frontDiameterInches
+                                                                : wheels.rearDiameterInches);
                 if (mesh.paintMaterialHash == 0) {
                     mesh.paintMaterialHash = wheelPaintHash(part, mesh);
                 }
@@ -693,8 +724,11 @@ void appendApproximateTires(
     const TemplateBounds leftBounds = templateBounds(leftTemplate);
     const TemplateBounds rightBounds = templateBounds(rightTemplate);
 
-    constexpr float widthToRimRadius = 0.305f / 0.2286f;
-    constexpr float tireToRimRadius = 0.3201f / 0.2286f;
+    // The rim is baked at its real radius (kCanonRimRadial * S, where S is the per-axle scale set
+    // by the stock rim diameter). Derive the tyre from the measured rim so it inherits that scale:
+    // it wraps the rim with the canonical tyre/rim proportion and matches the wheel width.
+    constexpr float tireToRimRadius = kCanonTireRadial / kCanonRimRadial;
+    constexpr float widthToRimRadius = kWheelWidthAspect;
 
     for (const auto &[sourceInstanceId, bounds] : mounts) {
         (void)sourceInstanceId;

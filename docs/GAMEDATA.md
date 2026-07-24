@@ -97,6 +97,21 @@ Rims are paintable (their colour/finish come from the livery paint state, keyed 
 per-channel wheel paint hash). The car's real per-corner tires are not shipped as loose
 meshes here; the shared `tire_b` template is scaled to fit each rim.
 
+**Sizing.** The wheel and tire models are normalised identically for every car: the rim outer
+and the tire inner bead both sit at a canonical ~0.140 m radius (they mate there), the tire
+outer at ~0.225 m, and the axial X (wheel width) is normalised to 0..1. There is **no per-car
+scale in the scene data** — the carbin wheel part transform is a pure rotation+translation
+(unit scale) whose origin is the wheel-centre plane (matching `carLocator_wheel{LF,RF,LR,RR}`).
+The real size is a single **uniform per-axle scale set by the stock rim diameter in inches**:
+an N-inch rim scales the canonical 0.280 m rim diameter to N inches (`S = N·0.0254/0.280`), and
+the tire scales with it because they share the 0.140 m mating radius. The real per-car tire
+radius does live in `physicsdefinition.bin` (e.g. RS200 0.301 m), but that blob has no
+stable cross-car layout, so the stock rim diameters are instead kept in the editor asset
+`assets/cars/wheel_sizes.json` (`{ "_default": {front,rear}, "<MODELCODE>": {front,rear} }`,
+inches; `_default` 18"). `car_preview_widget` looks it up per car and passes a `WheelSizing`
+into `loadCarBin`; `bakeWheelTransform` applies the scale (front/rear per wheel) and
+`appendApproximateTires` inherits it from the baked rim.
+
 ## Paint finishes (the customizable paint materials)
 
 `gamePaintMaterialsArchive()` → `media/Cars/_library/Materials.zip`. The customizable

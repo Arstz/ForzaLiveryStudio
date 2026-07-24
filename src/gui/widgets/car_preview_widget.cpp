@@ -9,6 +9,11 @@
 #include "scene_view.h"
 #include "zip_extract.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QSet>
 
@@ -210,6 +215,49 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
         }
     }
     return {};
+}
+
+// Stock rim diameter (inches) per car, from assets/cars/wheel_sizes.json. The wheel/tire models
+// are normalised, so this is what sizes them per car (see docs/GAMEDATA.md). Lazily loaded once.
+fh6::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
+    static const auto table = [] {
+        QHash<QString, fh6::WheelSizing> sizes;
+        fh6::WheelSizing fallback;  // 18"/18" default matches the historical behaviour
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString cwd = QDir::currentPath();
+        const QStringList candidates = {
+            QDir(appDir).filePath(QStringLiteral("assets/cars/wheel_sizes.json")),
+            QDir(cwd).filePath(QStringLiteral("assets/cars/wheel_sizes.json")),
+            QDir(cwd).filePath(QStringLiteral("cpp-port/assets/cars/wheel_sizes.json")),
+        };
+        for (const QString &path : candidates) {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly)) {
+                continue;
+            }
+            const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+            const auto parse = [](const QJsonObject &o, fh6::WheelSizing def) {
+                fh6::WheelSizing w = def;
+                w.frontDiameterInches = static_cast<float>(
+                    o.value(QStringLiteral("front")).toDouble(def.frontDiameterInches));
+                w.rearDiameterInches = static_cast<float>(
+                    o.value(QStringLiteral("rear")).toDouble(def.rearDiameterInches));
+                return w;
+            };
+            if (root.value(QStringLiteral("_default")).isObject()) {
+                fallback = parse(root.value(QStringLiteral("_default")).toObject(), fallback);
+            }
+            for (auto it = root.begin(); it != root.end(); ++it) {
+                if (it.key().startsWith(QLatin1Char('_')) || !it.value().isObject()) {
+                    continue;
+                }
+                sizes.insert(it.key().toLower(), parse(it.value().toObject(), fallback));
+            }
+            break;
+        }
+        return std::make_pair(sizes, fallback);
+    }();
+    return table.first.value(modelCode.toLower(), table.second);
 }
 
 std::optional<fh6::CarModel> loadArchivedModel(
@@ -778,8 +826,10 @@ std::shared_ptr<PreparedCar> prepareCar(
         }
     }
 
+    const fh6::WheelSizing wheelSizing =
+        wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName());
     fh6::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
-        ? fh6::loadCarBin(loadPath, error)
+        ? fh6::loadCarBin(loadPath, error, wheelSizing)
         : fh6::loadModelBin(loadPath, error);
     if (model.meshes.empty()) {
         return {};

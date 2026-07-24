@@ -39,6 +39,7 @@ public:
     bool generatePreviewsWithTransformations() const;
     void setProject(const fh6::Project *project);
     void setProjectSection(const fh6::Project *project, const QString &sectionGroupId);
+    void resetSections();
     void clearSectionCache();
     void refreshStateRoles(const fh6::Project *project);
     void refreshPreviews(const fh6::Project *project);

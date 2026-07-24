@@ -44,6 +44,7 @@ void MainWindow::setProject(fh6::Project project) {
         canvas_->setProject(&state_->project_);
     }
     if (state_->project_.isLivery) {
+        treeModel_->resetSections();
         rebuildSectionBar();
         prebakeLiverySectionCaches();
     } else {

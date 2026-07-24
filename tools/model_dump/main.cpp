@@ -507,6 +507,48 @@ int main(int argc, char *argv[])
     if (args.contains(QStringLiteral("--fit"))) {
         return fitLivery(path);
     }
+    WheelSizing rimSizing;
+    if (const int ri = args.indexOf(QStringLiteral("--rim")); ri >= 0 && ri + 1 < args.size()) {
+        rimSizing.frontDiameterInches = rimSizing.rearDiameterInches = args[ri + 1].toFloat();
+    }
+    if (args.contains(QStringLiteral("--radial"))) {
+        QString err;
+        const CarModel m = path.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+            ? loadCarBin(path, &err, rimSizing) : loadModelBin(path, &err);
+        // Isolate a single rim instance so the wheel size is readable (radial about its centre).
+        int rimInstance = -1; double cy = 0, cz = 0; int cn = 0;
+        for (const CarMesh &mesh : m.meshes) {
+            const QString mat = mesh.materialName.toLower();
+            if (mat != QStringLiteral("rim") && mat != QStringLiteral("rim2")) continue;
+            if (rimInstance < 0) rimInstance = mesh.modelInstanceId;
+            if (mesh.modelInstanceId != rimInstance) continue;
+            for (const ModelVec3 &p0 : mesh.positions) {
+                const ModelVec3 p = mesh.boneTransform.transformPoint(p0);
+                cy += p.y; cz += p.z; ++cn;
+            }
+        }
+        if (cn) { cy /= cn; cz /= cn; }
+        std::vector<float> rad; std::vector<float> xs;
+        for (const CarMesh &mesh : m.meshes) {
+            const QString mat = mesh.materialName.toLower();
+            const bool isRim = (mat == QStringLiteral("rim") || mat == QStringLiteral("rim2"))
+                && mesh.modelInstanceId == rimInstance;
+            if (rimInstance >= 0 && !isRim) continue;   // carbin: just the one rim
+            for (const ModelVec3 &p0 : mesh.positions) {
+                const ModelVec3 p = mesh.boneTransform.transformPoint(p0);
+                rad.push_back(std::hypot(p.y - static_cast<float>(cy), p.z - static_cast<float>(cz)));
+                xs.push_back(p.x);
+            }
+        }
+        std::sort(rad.begin(), rad.end()); std::sort(xs.begin(), xs.end());
+        auto pct = [](std::vector<float> &v, double q) {
+            return v.empty() ? 0.0f : v[static_cast<size_t>(q * (v.size() - 1))];
+        };
+        std::printf("radial: min=%.4f p02=%.4f p10=%.4f p50=%.4f p90=%.4f max=%.4f\n",
+                    pct(rad, 0), pct(rad, 0.02), pct(rad, 0.10), pct(rad, 0.5), pct(rad, 0.9), pct(rad, 1.0));
+        std::printf("X:      min=%.4f max=%.4f span=%.4f\n", pct(xs, 0), pct(xs, 1.0), pct(xs, 1.0) - pct(xs, 0));
+        return 0;
+    }
 
     QString error;
     const CarModel model = path.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)

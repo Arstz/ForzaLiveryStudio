@@ -1,0 +1,5 @@
+{
+  "_comment": "Stock rim diameter (inches) per axle, keyed by car model code (case-insensitive). The shared wheel/tire models are normalised; this sets the real per-car size. Cars without an entry use _default. See docs/GAMEDATA.md 'Wheels and tires'.",
+  "_default": { "front": 18, "rear": 18 },
+  "FOR_RS200Evolution_87": { "front": 16, "rear": 16 }
+}
