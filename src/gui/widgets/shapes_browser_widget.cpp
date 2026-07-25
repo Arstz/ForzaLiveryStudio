@@ -88,100 +88,11 @@ QJsonObject clipboardToJson(const ProjectClipboard &clipboard) {
     return object;
 }
 
-std::unique_ptr<fh6::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &object) {
-    auto layer = std::make_unique<fh6::scene::Shape>();
-    layer->id = object.value(QStringLiteral("id")).toString();
-    layer->name = object.value(QStringLiteral("name")).toString(QStringLiteral("Shape"));
-    layer->transform.x = object.value(QStringLiteral("x")).toDouble(0.0);
-    layer->transform.y = object.value(QStringLiteral("y")).toDouble(0.0);
-    layer->transform.scaleX = object.value(QStringLiteral("scale_x")).toDouble(1.0);
-    layer->transform.scaleY = object.value(QStringLiteral("scale_y")).toDouble(1.0);
-    layer->transform.rotation = object.value(QStringLiteral("rotation")).toDouble(0.0);
-    layer->transform.skew = object.value(QStringLiteral("skew")).toDouble(0.0);
-    layer->visible = object.value(QStringLiteral("visible")).toBool(true);
-    layer->locked = object.value(QStringLiteral("locked")).toBool(false);
-    layer->mask = object.value(QStringLiteral("mask")).toBool(false);
-    const QJsonArray color = object.value(QStringLiteral("color")).toArray();
-    if (color.size() == 4) {
-        for (int i = 0; i < 4; ++i) {
-            layer->color[i] = static_cast<quint8>(std::clamp(color.at(i).toInt(), 0, 255));
-        }
-    }
-    if (object.value(QStringLiteral("raster")).toBool(false)) {
-        layer->setRasterShape(static_cast<quint32>(object.value(QStringLiteral("raster_id")).toInteger(0)),
-                              object.value(QStringLiteral("raster_width")).toInt(256),
-                              object.value(QStringLiteral("raster_height")).toInt(256));
-    } else {
-        layer->setVectorShape(static_cast<quint16>(object.value(QStringLiteral("shape_id")).toInt(0)));
-    }
-    return layer;
-}
-
-std::unique_ptr<fh6::scene::Layer> legacyCustomNodeFromJson(const QString &id,
-                                                            const QHash<QString, QJsonObject> &shapes,
-                                                            const QHash<QString, QJsonObject> &groups,
-                                                            QSet<QString> &consumedShapes) {
-    if (const auto groupIt = groups.constFind(id); groupIt != groups.constEnd()) {
-        auto group = std::make_unique<fh6::scene::Group>();
-        const QJsonObject object = groupIt.value();
-        group->id = object.value(QStringLiteral("id")).toString();
-        group->name = object.value(QStringLiteral("name")).toString(QStringLiteral("Group"));
-        group->locked = object.value(QStringLiteral("locked")).toBool(false);
-        const QJsonArray children = object.value(QStringLiteral("child_ids")).toArray();
-        for (const QJsonValue &value : children) {
-            if (auto child = legacyCustomNodeFromJson(value.toString(), shapes, groups, consumedShapes)) {
-                group->append(std::move(child));
-            }
-        }
-        return group;
-    }
-    if (const auto shapeIt = shapes.constFind(id); shapeIt != shapes.constEnd()) {
-        consumedShapes.insert(id);
-        return legacyCustomShapeFromJson(shapeIt.value());
-    }
-    return nullptr;
-}
-
-ProjectClipboard legacyCustomClipboardFromJson(const QJsonObject &object) {
-    ProjectClipboard clipboard;
-    QHash<QString, QJsonObject> shapes;
-    QHash<QString, QJsonObject> groups;
-    for (const QJsonValue &value : object.value(QStringLiteral("layers")).toArray()) {
-        if (value.isObject()) {
-            const QJsonObject layer = value.toObject();
-            shapes.insert(layer.value(QStringLiteral("id")).toString(), layer);
-        }
-    }
-    for (const QJsonValue &value : object.value(QStringLiteral("groups")).toArray()) {
-        if (value.isObject()) {
-            const QJsonObject group = value.toObject();
-            groups.insert(group.value(QStringLiteral("id")).toString(), group);
-        }
-    }
-
-    QSet<QString> consumedShapes;
-    for (const QJsonValue &value : object.value(QStringLiteral("rootIds")).toArray()) {
-        const QString id = value.toString();
-        if (auto node = legacyCustomNodeFromJson(id, shapes, groups, consumedShapes)) {
-            clipboard.rootIds.push_back(node->id);
-            clipboard.nodes.push_back(std::move(node));
-        }
-    }
-    for (auto it = shapes.constBegin(); it != shapes.constEnd(); ++it) {
-        if (!consumedShapes.contains(it.key())) {
-            auto node = legacyCustomShapeFromJson(it.value());
-            clipboard.rootIds.push_back(node->id);
-            clipboard.nodes.push_back(std::move(node));
-        }
-    }
-    return clipboard;
-}
-
 ProjectClipboard clipboardFromJson(const QJsonObject &object) {
     ProjectClipboard clipboard;
     const QJsonValue rootValue = object.value(QStringLiteral("root"));
     if (!rootValue.isObject()) {
-        return legacyCustomClipboardFromJson(object);
+        return clipboard;
     }
     std::unique_ptr<fh6::scene::Group> root = fh6::scene::sceneTreeFromJson(rootValue.toObject());
     while (root && !root->children.empty()) {

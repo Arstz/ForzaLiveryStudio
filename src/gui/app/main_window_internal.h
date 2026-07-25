@@ -94,10 +94,8 @@ inline QString importDialogStartDirectoryWithFallbacks(QWidget *parent,
 }
 
 inline bool isProjectDocumentFile(const QFileInfo &info) {
-    const QString suffix = info.suffix();
-    const bool isProjectFile = suffix.compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || suffix.compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
-    return info.isFile() && isProjectFile;
+    return info.isFile()
+        && info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0;
 }
 
 inline QString entryNameForId(const fh6::Project &project, const QString &id) {

@@ -11,13 +11,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   header metadata and thumbnails, routes the selection to the matching decoder,
   and restores its last folder and filters when reopened.
 - Open/save editor projects as a `.3so` container: the editor project JSON
-  wrapped in a gzip stream. The document is the unified scene tree (v2: a recursive
-  `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON
-  (`.json`) projects still load and are upgraded to v2 on save. Imported livery
-  paint-material colors, selectors, and finishes are stored as project metadata.
-  Periodic autosave is enabled by default and can be suspended independently of
-  its configured interval from Settings.
-- Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
+  wrapped in a gzip stream. The document is the unified scene tree (a recursive
+  `root` of kind-discriminated layer nodes). Packed `.3so` is the only recognized
+  project file; the legacy v1 flat and plain-`.json` documents are no longer
+  loaded. Imported livery paint-material colors, selectors, and finishes are stored
+  as project metadata. Periodic autosave is enabled by default and can be suspended
+  independently of its configured interval from Settings.
+- Drag/drop projects (`.3so`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette returns to the previously used tool after a successful pick.
@@ -617,7 +617,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `readFM2023LiveryPayload()` / `decodeFM2023LiverySections()`
 - `buildFlatPayload()` / `buildNestedPayload()`
 - `exportFlatProjectFolder()` / `exportNestedProjectFolder()`
-- `projectToJson()` / `projectFromJson()` (v2 scene-tree JSON; v1 flat loader kept)
+- `projectToJson()` / `projectFromJson()` (scene-tree JSON; requires a `root` node)
 - `Project::root` (`scene::Group`, canonical runtime scene tree)
 - `scene::sceneTreeToJson()` / `scene::sceneTreeFromJson()`
 - `encodeProjectDocument()` / `decodeProjectDocument()` (`.3so` gzip container)

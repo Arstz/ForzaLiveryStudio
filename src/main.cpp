@@ -13,9 +13,7 @@
 namespace {
 
 bool isProjectPath(const QString &path) {
-    const QString suffix = QFileInfo(path).suffix();
-    return suffix.compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || suffix.compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
+    return QFileInfo(path).suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0;
 }
 
 void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
