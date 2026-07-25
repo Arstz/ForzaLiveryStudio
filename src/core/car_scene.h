@@ -7,18 +7,24 @@
 
 namespace fh6 {
 
-// Stock rim diameter (inches) per axle. The shared wheel/tire models are normalised (they mate
-// at a canonical rim radius); the real size is a uniform scale derived from these. Default 18"
-// matches the historical hardcoded scale, so cars without an explicit entry are unchanged.
+// Stock tyre spec for one axle, in the units the game states it in. The shared wheel and tyre
+// models are normalised, so this is what gives them their real size (see docs/GAMEDATA.md).
+struct AxleSizing {
+    float tireWidthMillimetres = 245.0f;
+    float tireAspectPercent = 40.0f;
+    float rimDiameterInches = 18.0f;
+};
+
 struct WheelSizing {
-    float frontDiameterInches = 18.0f;
-    float rearDiameterInches = 18.0f;
+    AxleSizing front;
+    AxleSizing rear;
 };
 
 CarModel loadCarBin(const QString &path, QString *error = nullptr,
                     const WheelSizing &wheels = {});
 
 void appendApproximateTires(
-    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate);
+    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate,
+    const WheelSizing &wheels = {});
 
 } // namespace fh6

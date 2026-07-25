@@ -217,12 +217,12 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
     return {};
 }
 
-// Stock rim diameter (inches) per car, from assets/cars/wheel_sizes.json. The wheel/tire models
-// are normalised, so this is what sizes them per car (see docs/GAMEDATA.md). Lazily loaded once.
+// Stock tyre spec per car, from assets/cars/wheel_sizes.json. The wheel/tire models are
+// normalised, so this is what sizes them per car (see docs/GAMEDATA.md). Lazily loaded once.
 fh6::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
     static const auto table = [] {
         QHash<QString, fh6::WheelSizing> sizes;
-        fh6::WheelSizing fallback;  // 18"/18" default matches the historical behaviour
+        fh6::WheelSizing fallback;
         const QString appDir = QCoreApplication::applicationDirPath();
         const QString cwd = QDir::currentPath();
         const QStringList candidates = {
@@ -236,12 +236,21 @@ fh6::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
                 continue;
             }
             const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-            const auto parse = [](const QJsonObject &o, fh6::WheelSizing def) {
-                fh6::WheelSizing w = def;
-                w.frontDiameterInches = static_cast<float>(
-                    o.value(QStringLiteral("front")).toDouble(def.frontDiameterInches));
-                w.rearDiameterInches = static_cast<float>(
-                    o.value(QStringLiteral("rear")).toDouble(def.rearDiameterInches));
+            const auto parseAxle = [](const QJsonValue &value, fh6::AxleSizing def) {
+                const QJsonObject o = value.toObject();
+                fh6::AxleSizing axle = def;
+                axle.tireWidthMillimetres = static_cast<float>(
+                    o.value(QStringLiteral("width")).toDouble(def.tireWidthMillimetres));
+                axle.tireAspectPercent = static_cast<float>(
+                    o.value(QStringLiteral("aspect")).toDouble(def.tireAspectPercent));
+                axle.rimDiameterInches = static_cast<float>(
+                    o.value(QStringLiteral("rim")).toDouble(def.rimDiameterInches));
+                return axle;
+            };
+            const auto parse = [&parseAxle](const QJsonObject &o, fh6::WheelSizing def) {
+                fh6::WheelSizing w;
+                w.front = parseAxle(o.value(QStringLiteral("front")), def.front);
+                w.rear = parseAxle(o.value(QStringLiteral("rear")), def.rear);
                 return w;
             };
             if (root.value(QStringLiteral("_default")).isObject()) {
@@ -281,7 +290,8 @@ std::optional<fh6::CarModel> loadArchivedModel(
                                 : std::optional<fh6::CarModel>(std::move(model));
 }
 
-void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath) {
+void appendSharedTireB(
+    fh6::CarModel &model, const QString &sourcePath, const fh6::WheelSizing &wheels) {
     const QString leftArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tire_b.zip"));
     const QString rightArchive = findSharedCarAsset(
@@ -305,7 +315,7 @@ void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath) {
     tagTires(left, QStringLiteral("_library/scene/tires/tireL_b.modelbin"));
     tagTires(right, QStringLiteral("_library/scene/tires/tireR_b.modelbin"));
     if (left && right) {
-        fh6::appendApproximateTires(model, *left, *right);
+        fh6::appendApproximateTires(model, *left, *right, wheels);
     }
 }
 
@@ -834,7 +844,7 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (model.meshes.empty()) {
         return {};
     }
-    appendSharedTireB(model, path);
+    appendSharedTireB(model, path, wheelSizing);
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
 

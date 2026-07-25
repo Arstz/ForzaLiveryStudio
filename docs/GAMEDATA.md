@@ -98,19 +98,31 @@ per-channel wheel paint hash). The car's real per-corner tires are not shipped a
 meshes here; the shared `tire_b` template is scaled to fit each rim.
 
 **Sizing.** The wheel and tire models are normalised identically for every car: the rim outer
-and the tire inner bead both sit at a canonical ~0.140 m radius (they mate there), the tire
-outer at ~0.225 m, and the axial X (wheel width) is normalised to 0..1. There is **no per-car
-scale in the scene data** — the carbin wheel part transform is a pure rotation+translation
-(unit scale) whose origin is the wheel-centre plane (matching `carLocator_wheel{LF,RF,LR,RR}`).
-The real size is a single **uniform per-axle scale set by the stock rim diameter in inches**:
-an N-inch rim scales the canonical 0.280 m rim diameter to N inches (`S = N·0.0254/0.280`), and
-the tire scales with it because they share the 0.140 m mating radius. The real per-car tire
-radius does live in `physicsdefinition.bin` (e.g. RS200 0.301 m), but that blob has no
-stable cross-car layout, so the stock rim diameters are instead kept in the editor asset
-`assets/cars/wheel_sizes.json` (`{ "_default": {front,rear}, "<MODELCODE>": {front,rear} }`,
-inches; `_default` 18"). `car_preview_widget` looks it up per car and passes a `WheelSizing`
-into `loadCarBin`; `bakeWheelTransform` applies the scale (front/rear per wheel) and
-`appendApproximateTires` inherits it from the baked rim.
+and the tire inner bead mate at a canonical **0.1397 m** radius — a 0.2794 m diameter, exactly
+11 in — and the axial X (wheel width) is normalised to 0..1. Measured across all 651 per-car
+stock wheels and all 527 shared rim styles.
+
+There is **no size anywhere in the scene data**. The carbin wheel part transform is a pure
+rotation+translation (unit scale) whose origin is the wheel-centre plane (matching
+`carLocator_wheel{LF,RF,LR,RR}`), the part's stored AABB is the normalised mesh AABB, and
+`physicsdefinition.bin` holds only mass, inertia tensors and collision point clouds. Locator
+and skeleton hub heights are authoring poses, not ride height.
+
+The real dimensions come from `Data_Car` in the game database (see *The car database* below),
+stated the way a sidewall states them — section width in mm, aspect ratio in percent, rim
+diameter in inches — and are kept in the editor asset `assets/cars/wheel_sizes.json`, keyed by
+model code with a `_default` fallback:
+
+```json
+"<MODELCODE>": { "front": { "width": 205, "aspect": 40, "rim": 18 },
+                 "rear":  { "width": 235, "aspect": 35, "rim": 19 } }
+```
+
+`car_preview_widget` looks it up per car and passes a `WheelSizing` into `loadCarBin` and
+`appendApproximateTires`. `bakeWheelTransform` scales the rim radially by
+`(rimDiameter/2) / 0.1397` and axially to the section width; the tire is built at radius
+`rimDiameter/2 + width·aspect` with the same width. Regenerate the asset with
+`tools/gen_wheel_sizes.py`.
 
 ## Paint finishes (the customizable paint materials)
 
@@ -182,6 +194,50 @@ Livery/
   Decals.zip / DecalsHiRes.zip   raster decal artwork
   Vinyls.zip                     vector vinyl shapes
 ```
+
+## The car database
+
+`media/Stripped/gamedbRC.slt` is a SQLite database (205 tables) holding everything the
+`.str` tables only name: per-car specs, upgrade part tables, class and bucket assignments.
+It is the authority for numbers that appear nowhere in the scene data.
+
+`Data_Car` has one row per car (651, matching the `Cars/*.zip` set exactly) and 151 columns.
+`MediaName` is the car folder code, which is what joins it to everything else on disk. The
+columns the editor cares about:
+
+| Column | Meaning |
+|--------|---------|
+| `MediaName` | `Cars/<CODE>.zip` folder code |
+| `FrontTireWidthMM` / `RearTireWidthMM` | Tire section width, millimetres |
+| `FrontTireAspect` / `RearTireAspect` | Sidewall height as a percentage of width |
+| `FrontWheelDiameterIN` / `RearWheelDiameterIN` | Rim diameter, inches |
+| `StockWheelID` | Stock rim style |
+| `FrontStockRideHeight` / `RearStockRideHeight` | Stock ride height |
+
+Upgrades that change these live in `List_UpgradeRimSize{Front,Rear}` and
+`List_UpgradeCarBodyTireWidth{Front,Rear}`.
+
+### The container
+
+The file is not readable as-is: it is wrapped in an Arxan TransformIT (white-box AES)
+container, the same one used for `media/sfsdata` and `media/zipmanifest.xml`. Layout:
+
+```
+u8[16]  IV
+u32     padding_size          (unencrypted)
+u8[16]  header MAC            (unencrypted)
+repeat: u8[0x200 | 0x20000] data block (encrypted, CBC)
+        u8[16]               block MAC (encrypted)
+```
+
+Plaintext size is `blocks · blockSize − padding_size`. The cipher is table-driven — 17
+rounds of `keys[4]` + `tables[16][256]` — and those tables are stored obfuscated, so they
+cannot be lifted out of the executable statically; a full sweep of `forzahorizon6.exe`
+against a known-plaintext oracle finds nothing. Decryption therefore needs an external
+tool. The editor does not read the database at runtime: values are extracted once and
+checked in as assets.
+
+---
 
 ## String table hashes (from strData.md)
 
@@ -316,8 +372,9 @@ Additional wheel materials in `Materials.zip`: `wheelmaterials/chrome_machined_s
 
 ### Per-car rim sizes
 
-Stored in `assets/cars/wheel_sizes.json` — keyed by model code, values are
-front/rear diameter in inches. Falls back to 18"/18" if no entry exists.
+Stored in `assets/cars/wheel_sizes.json` — keyed by model code, per axle: tire section
+width (mm), aspect ratio (%), rim diameter (in). Generated from `Data_Car` in the game
+database by `tools/gen_wheel_sizes.py`; falls back to `_default` if no entry exists.
 
 ---
 
@@ -354,9 +411,11 @@ From `Cars/_library/Materials.zip`:
 
 ### Approximate tire generation
 
-The editor generates tire geometry from rim mesh bounds (`car_scene.cpp:669-809`):
-- `kCanonRimRadial = 0.140f`, `kCanonTireRadial = 0.225f` → tire/rim ratio ≈ 1.607
-- `kWheelWidthAspect = 1.2f` for tire width
+The editor stands a scaled `tire_b` template in for the real tire. Its shape is the
+template's; its dimensions come from the axle's tire spec — radius
+`rimDiameter/2 + width·aspect`, width the section width — so only the tread pattern is
+approximate. The rim mesh bounds are still measured, to find the lip the tire seats
+against. `kCanonRimRadial = 0.1397f` is the normalised radius both models mate at.
 
 ---
 
@@ -955,7 +1014,7 @@ from the executable using the IDA Pro debugging workflow described in the
 | `Stripped/gs/snapnodes.zip` | 274 track scene snap nodes |
 | `Stripped/RC0.zip` | Decal swatchbins (thumbnail textures) |
 | `Stripped/EntityModel.zip` | Entity model data |
-| `Stripped/gamedbRC.slt` | Game database (SQLite) |
+| `Stripped/gamedbRC.slt` | Game database (SQLite in a TransformIT container — see *The car database*) |
 | `NerdData/NerdData.json` | Encrypted binary blob (564 bytes, AES-encrypted) |
 | `Livery/Decals.zip` | Decal textures (536 entries) |
 | `Livery/DecalsHiRes.zip` | High-res decal meshes (188 entries) |

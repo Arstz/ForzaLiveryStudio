@@ -23,23 +23,30 @@ using fh6::detail::readLeFloat;
 using fh6::detail::readLeU16;
 using fh6::detail::readLeU32;
 
-// The shared wheel (disk) and tyre models in _library/scene are normalised identically for every
-// car: the rim outer and the tyre inner bead both sit at a canonical radius (~0.140 m — verified:
-// rim max radial 0.1398, tyre min radial 0.1401), the tyre outer at ~0.225 m, and the axial X
-// (wheel width) is normalised to 0..1. There is no per-car scale in the scene data (the wheel part
-// transform is a pure rotation+translation whose origin is the wheel-centre plane). The real size
-// is a single uniform per-axle scale S set by the stock rim diameter: an N-inch rim means the
-// canonical 0.280 m-diameter rim scales to N inches, i.e. S = N * 0.0254 / 0.280. (The old code
-// hardcoded S = 1.632857, which is exactly an 18" rim, for every car.) The tyre scales with the
-// rim because they share the 0.140 m mating radius; the width is kept proportional so wider cars
-// read as wider. These are shared by the wheel bake and the approximated tyre.
-constexpr float kCanonRimRadial = 0.140f;   // normalised rim outer == tyre inner bead
-constexpr float kCanonTireRadial = 0.225f;  // normalised tyre outer
-constexpr float kCanonRimDiameterM = 2.0f * kCanonRimRadial;  // rim diameter the inch rating maps onto
-constexpr float kWheelWidthAspect = 1.2f;   // wheel/tyre width as a multiple of the rim radius
+// The shared wheel and tyre models in _library/scene carry no size of their own: every one of
+// them is normalised to the same canonical rim radius, with the axial X spanning 0..1 across the
+// wheel width. The real dimensions come from the axle's tyre spec, read the way a sidewall states
+// it — section width, aspect ratio, rim diameter. These are shared by the wheel bake and the
+// approximated tyre.
+constexpr float kCanonRimRadial = 0.1397f;  // normalised rim outer == tyre inner bead
+constexpr float kMetresPerInch = 0.0254f;
+constexpr float kMetresPerMillimetre = 0.001f;
+constexpr float kPercent = 0.01f;
 
-float wheelScaleForDiameter(float rimDiameterInches) {
-    return rimDiameterInches * 0.0254f / kCanonRimDiameterM;
+float rimRadiusMetres(const AxleSizing &axle) {
+    return axle.rimDiameterInches * kMetresPerInch * 0.5f;
+}
+
+float tireWidthMetres(const AxleSizing &axle) {
+    return axle.tireWidthMillimetres * kMetresPerMillimetre;
+}
+
+float tireRadiusMetres(const AxleSizing &axle) {
+    return rimRadiusMetres(axle) + tireWidthMetres(axle) * axle.tireAspectPercent * kPercent;
+}
+
+float wheelRadialScale(const AxleSizing &axle) {
+    return rimRadiusMetres(axle) / kCanonRimRadial;
 }
 
 namespace {
@@ -398,9 +405,9 @@ bool isWheelModelPath(QString path) {
     return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
 }
 
-void bakeWheelTransform(CarMesh &mesh, float rimDiameterInches) {
-    const float radialScale = wheelScaleForDiameter(rimDiameterInches);
-    const float widthScale = kCanonRimRadial * kWheelWidthAspect * radialScale;
+void bakeWheelTransform(CarMesh &mesh, const AxleSizing &axle) {
+    const float radialScale = wheelRadialScale(axle);
+    const float widthScale = tireWidthMetres(axle);
     for (ModelVec3 &position : mesh.positions) {
         position = mesh.boneTransform.transformPoint(
             {(0.5f - position.x) * widthScale,
@@ -627,8 +634,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.stockPart = stock;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
-                bakeWheelTransform(mesh, frontWheel(part, mesh) ? wheels.frontDiameterInches
-                                                                : wheels.rearDiameterInches);
+                bakeWheelTransform(mesh, frontWheel(part, mesh) ? wheels.front : wheels.rear);
                 if (mesh.paintMaterialHash == 0) {
                     mesh.paintMaterialHash = wheelPaintHash(part, mesh);
                 }
@@ -667,7 +673,8 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
 }
 
 void appendApproximateTires(
-    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate) {
+    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate,
+    const WheelSizing &wheels) {
     struct MountBounds {
         float minX = std::numeric_limits<float>::max();
         float minY = minX;
@@ -724,12 +731,6 @@ void appendApproximateTires(
     const TemplateBounds leftBounds = templateBounds(leftTemplate);
     const TemplateBounds rightBounds = templateBounds(rightTemplate);
 
-    // The rim is baked at its real radius (kCanonRimRadial * S, where S is the per-axle scale set
-    // by the stock rim diameter). Derive the tyre from the measured rim so it inherits that scale:
-    // it wraps the rim with the canonical tyre/rim proportion and matches the wheel width.
-    constexpr float tireToRimRadius = kCanonTireRadial / kCanonRimRadial;
-    constexpr float widthToRimRadius = kWheelWidthAspect;
-
     for (const auto &[sourceInstanceId, bounds] : mounts) {
         (void)sourceInstanceId;
         if (bounds.minX > bounds.maxX) {
@@ -738,9 +739,10 @@ void appendApproximateTires(
         const float side = bounds.minX + bounds.maxX >= 0.0f ? 1.0f : -1.0f;
         const float centerY = (bounds.minY + bounds.maxY) * 0.5f;
         const float centerZ = (bounds.minZ + bounds.maxZ) * 0.5f;
+        const AxleSizing &axle = centerZ >= 0.0f ? wheels.front : wheels.rear;
         const float rimRadius = std::max(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ) * 0.5f;
-        const float tireWidth = rimRadius * widthToRimRadius;
-        const float tireRadius = rimRadius * tireToRimRadius;
+        const float tireWidth = tireWidthMetres(axle);
+        const float tireRadius = tireRadiusMetres(axle);
         std::vector<float> lipSamples;
         lipSamples.reserve(bounds.positions.size());
         for (const ModelVec3 &position : bounds.positions) {

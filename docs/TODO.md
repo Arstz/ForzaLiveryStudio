@@ -3,6 +3,7 @@ Small changes:
     -Rename project related functions to drop json naming
 
 Medium changes:
+    -FH6_BUILD_HELPER_TOOLS OFF should disable testing exe build as well
 
 Big changes:
     -Add tuning details support for liveries
