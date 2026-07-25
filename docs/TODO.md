@@ -13,4 +13,3 @@ Manual tasks:
     -Create application icon, splash screen image and file association icon
     -Rewrite manual user-oriented
     -Add hints for all settings, regroup options and settings
-    -Rename logos and cars to align with the game

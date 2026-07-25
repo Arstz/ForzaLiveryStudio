@@ -812,12 +812,14 @@ int CustomGroupTile::layerCount() const {
     return clipboardShapeCount(group_.clipboard);
 }
 
-LogoTile::LogoTile(quint32 rasterId, const QSize &size, QWidget *parent)
+LogoTile::LogoTile(quint32 rasterId, const QSize &size, const QString &name, QWidget *parent)
     : BrowserTile(parent)
     , rasterId_(rasterId)
-    , size_(size) {
+    , size_(size)
+    , name_(name) {
     const QString hex = QStringLiteral("%1").arg(rasterId_, 4, 16, QLatin1Char('0')).toUpper();
-    setToolTip(QStringLiteral("Logo %1\nID: %1 / 0x%2").arg(rasterId_).arg(hex));
+    const QString title = name_.isEmpty() ? QStringLiteral("Logo %1").arg(rasterId_) : name_;
+    setToolTip(QStringLiteral("%1\nID: %2 / 0x%3").arg(title).arg(rasterId_).arg(hex));
 }
 
 void LogoTile::refreshTheme() {
@@ -849,7 +851,7 @@ void LogoTile::paintEvent(QPaintEvent *event) {
 
     const QRect labelRect(8, height() - 30, width() - 16, 22);
     painter.setPen(layout.labelColor);
-    const QString display = QStringLiteral("Logo %1").arg(rasterId_);
+    const QString display = name_.isEmpty() ? QStringLiteral("Logo %1").arg(rasterId_) : name_;
     painter.drawText(labelRect, Qt::AlignCenter, painter.fontMetrics().elidedText(display, Qt::ElideRight, labelRect.width()));
 }
 
@@ -887,6 +889,20 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     : QWidget(parent) {
     geometryLoaded_ = geometry_.loadDefault();
     names_.loadDefault();
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString cwd = QDir::currentPath();
+        const QStringList candidates = {
+            QDir(appDir).filePath(QStringLiteral("assets/raster/logo_names.json")),
+            QDir(cwd).filePath(QStringLiteral("assets/raster/logo_names.json")),
+            QDir(cwd).filePath(QStringLiteral("cpp-port/assets/raster/logo_names.json")),
+        };
+        for (const QString &path : candidates) {
+            if (QFile::exists(path) && logoNames_.loadFromFile(path)) {
+                break;
+            }
+        }
+    }
     const fh6::RasterDecalPack &logoPack = fh6::sharedRasterDecals();
     if (logoPack.isLoaded()) {
         for (quint32 id : logoPack.ids()) {
@@ -1009,6 +1025,22 @@ void ShapesBrowserWidget::addCustomGroup(const QString &name, const ProjectClipb
     refreshGrid();
 }
 
+void ShapesBrowserWidget::setLiveryContext(bool isLivery) {
+    if (liveryContext_ == isLivery) {
+        return;
+    }
+    liveryContext_ = isLivery;
+    const QString previous = currentCategory_;
+    populateCategories();
+    const QList<QListWidgetItem *> matches = categoriesList_->findItems(previous, Qt::MatchExactly);
+    if (!matches.isEmpty()) {
+        categoriesList_->setCurrentItem(matches.front());
+    } else {
+        categoriesList_->setCurrentRow(0);
+    }
+    refreshGrid();
+}
+
 void ShapesBrowserWidget::refreshTheme() {
     const QPalette pal = paletteForTheme(currentUiTheme());
     const QString base = pal.color(QPalette::Base).name();
@@ -1088,11 +1120,13 @@ void ShapesBrowserWidget::populateCategories() {
     }
     vinylCategories.sort(Qt::CaseInsensitive);
     fontCategories.sort(Qt::CaseInsensitive);
-    categoryOrder_ = QStringList{QString::fromLatin1(kFavouritesCategory),
-                                 QString::fromLatin1(kCustomCategory),
-                                 QString::fromLatin1(kLogoCategory)}
-        + vinylCategories
-        + fontCategories;
+    QStringList headerCategories{QString::fromLatin1(kFavouritesCategory),
+                                 QString::fromLatin1(kCustomCategory)};
+    if (liveryContext_) {
+        // Logos can only be applied inside a livery; hide them for Group projects.
+        headerCategories << QString::fromLatin1(kLogoCategory);
+    }
+    categoryOrder_ = headerCategories + vinylCategories + fontCategories;
 
     categoriesList_->clear();
     for (const QString &category : categoryOrder_) {
@@ -1133,7 +1167,7 @@ void ShapesBrowserWidget::refreshGrid() {
         return;
     }
 
-    if (!searching && currentCategory_ == QString::fromLatin1(kLogoCategory)) {
+    if (!searching && liveryContext_ && currentCategory_ == QString::fromLatin1(kLogoCategory)) {
         QVector<quint32> ids;
         ids.reserve(logos_.size());
         for (auto it = logos_.constBegin(); it != logos_.constEnd(); ++it) {
@@ -1163,12 +1197,13 @@ void ShapesBrowserWidget::refreshGrid() {
     }
 
     QVector<quint32> matchedLogos;
-    if (searching) {
+    if (searching && liveryContext_) {
         for (auto it = logos_.constBegin(); it != logos_.constEnd(); ++it) {
             const quint32 rasterId = it.key();
-            const QString haystack = QStringLiteral("logo %1 0x%2")
+            const QString haystack = QStringLiteral("logo %1 0x%2 %3")
                                          .arg(rasterId)
                                          .arg(rasterId, 4, 16, QLatin1Char('0'))
+                                         .arg(logoNames_.name(static_cast<int>(rasterId)))
                                          .toLower();
             if (haystack.contains(query)) {
                 matchedLogos.push_back(rasterId);
@@ -1288,7 +1323,7 @@ LogoTile *ShapesBrowserWidget::tileForLogo(quint32 rasterId) {
         return tile;
     }
     const QSize size = logos_.value(rasterId);
-    tile = new LogoTile(rasterId, size);
+    tile = new LogoTile(rasterId, size, logoNames_.name(static_cast<int>(rasterId)));
     tile->setPressedCallback([this](quint32 id) {
         if (logoSelectedCallback_) {
             const QSize logoSize = logos_.value(id);

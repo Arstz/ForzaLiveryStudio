@@ -12,6 +12,7 @@
 #include "livery_section_bar.h"
 #include "perf_utils.h"
 #include "property_panel.h"
+#include "shapes_browser_widget.h"
 
 #include <QMessageBox>
 
@@ -50,6 +51,9 @@ void MainWindow::setProject(fh6::Project project) {
     } else {
         sectionBar_->setSections({});
         treeModel_->setProject(&state_->project_);
+    }
+    if (shapesBrowser_ != nullptr) {
+        shapesBrowser_->setLiveryContext(state_->project_.isLivery);
     }
     updateColorPaletteWidget();
     updateClipboardWidget();

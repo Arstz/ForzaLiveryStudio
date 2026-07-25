@@ -100,7 +100,7 @@ private:
 
 class LogoTile final : public BrowserTile {
 public:
-    LogoTile(quint32 rasterId, const QSize &size, QWidget *parent = nullptr);
+    LogoTile(quint32 rasterId, const QSize &size, const QString &name = QString(), QWidget *parent = nullptr);
 
     void refreshTheme();
     void setPressedCallback(std::function<void(quint32)> callback);
@@ -114,6 +114,7 @@ private:
 
     quint32 rasterId_ = 0;
     QSize size_;
+    QString name_;
     mutable QHash<QSize, QImage> previewCache_;
     std::function<void(quint32)> pressedCallback_;
 };
@@ -128,6 +129,8 @@ public:
     void setCustomGroupSelectedCallback(std::function<void(const CustomShapeGroup &)> callback);
     void setAddCurrentSelectionCallback(std::function<void()> callback);
     void addCustomGroup(const QString &name, const ProjectClipboard &clipboard);
+    // Logos may only be used in livery projects; hide them for Group projects.
+    void setLiveryContext(bool isLivery);
     void refreshTheme();
 
 protected:
@@ -153,7 +156,9 @@ private:
 
     ShapeGeometryStore geometry_;
     ShapeNameStore names_;
+    ShapeNameStore logoNames_;
     bool geometryLoaded_ = false;
+    bool liveryContext_ = false;
     QHash<QString, QVector<int>> categories_;
     QHash<quint32, QSize> logos_;
     QStringList categoryOrder_;
