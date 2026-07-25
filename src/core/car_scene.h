@@ -7,12 +7,15 @@
 
 namespace fh6 {
 
-// Stock tyre spec for one axle, in the units the game states it in. The shared wheel and tyre
-// models are normalised, so this is what gives them their real size (see docs/GAMEDATA.md).
+// Stock wheel geometry for one axle, in the units the game states it in. The shared wheel and
+// tyre models are normalised and the carbin's wheel placement is an authoring pose, so this is
+// what gives the corner both its real size and its real position (see docs/GAMEDATA.md).
 struct AxleSizing {
     float tireWidthMillimetres = 245.0f;
     float tireAspectPercent = 40.0f;
     float rimDiameterInches = 18.0f;
+    float trackOuterMetres = 1.815f;   // outer tyre face to outer tyre face
+    float rideHeightMetres = 0.1655f;  // ground to the model's Y origin
 };
 
 struct WheelSizing {

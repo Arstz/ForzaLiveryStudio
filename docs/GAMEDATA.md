@@ -125,14 +125,36 @@ model code with a `_default` fallback:
 `tools/gen_wheel_sizes.py`.
 
 **Axial anchoring.** The wheel model's axial X runs from the outboard face at 0 to the
-inboard rim edge at 1, and the plane the part transform positions is the **mounting plane**,
-not the mid-width. Each wheel model carries its own `spindle` bone marking it, at a
-normalised X that varies per model (fleet median 0.100, range 0.04–0.28). The carbin names
-the bone after the *car* skeleton (`spindleLF`), which never matches the wheel's local
-`spindle`, so it has to be resolved by name against the model's own skeleton. Anchoring on
-mid-width instead pushes every wheel outboard by roughly half a section width, which leaves
-the brake rotor — a separate, unscaled `Scene/_library/scene/brakes/` part at authored car
-coordinates — hanging outside the rim barrel.
+inboard rim edge at 1, and the plane the part transform positions is the wheel's mid-width.
+Wheel models also carry a local `spindle` bone at a normalised X of their own, but it is not
+the anchor: using it sinks the wheel into the arch.
+
+**Where the corner sits.** The carbin's wheel placement is an authoring pose, not the render
+pose. Its **Z is trustworthy** — front-to-rear spacing matches `Data_CarBody.ModelWheelbase`
+to a median of 0.9 mm — but **X and Y are not**: some cars carry round placeholders (one has
+all four wheels at exactly `X = ±1.0`, others sit at `Y = 0`). Those two axes come from the
+database instead:
+
+```
+wheel centre |X| = ModelTrackOuter/2 - tireWidth/2
+wheel centre  Y  = tireRadius - ModelStockRideHeight
+```
+
+Measured against each car's collision hull, this puts the outer tyre face a median 22 mm
+inside the bodywork, where the carbin's own X leaves it a median 88 mm outside.
+
+A corner is a rigid assembly — wheel, rotor, caliper, suspension arm — so the correction is
+computed once from the wheel and applied to every part naming that corner's bone. Otherwise
+the brakes stay behind while the wheel moves.
+
+**The corner is a chain.** The suspension arm does not float at the hub: its outboard end
+butts against the brake rotor's **inboard face**, which the rotor in turn shares an axis with
+the rim. Across the cars that place their arm explicitly, that joint closes to a median of
+2 mm. A bone-placed arm is therefore slid along the axle until its outboard extent meets that
+face, rather than being left centred on the hub where it passes straight through the disc.
+Both extents come from the bundles' own bounding boxes, so no geometry has to be decoded to
+find them. A part needing to travel more than `kMaxHubReach` to reach the hub spans more than
+one corner — a beam axle, not an arm — and is left where the corner correction put it.
 
 ## Paint finishes (the customizable paint materials)
 
@@ -436,6 +458,21 @@ template's; its dimensions come from the axle's tire spec — radius
 approximate. The rim mesh bounds are still measured, to find the lip the tire seats
 against. `kCanonRimRadial = 0.1397f` is the normalised radius both models mate at.
 
+**The sidewall is stretched, not scaled.** The template has a fixed bead-to-tread
+proportion (0.1401 / 0.2248 = 0.623), which only matches a real tire at one aspect ratio.
+Scaling it as a whole therefore lands the bead wherever the tread scale puts it instead of
+on the rim: 845 of 1,302 axles end up off by more than 20 mm, opening a gap of +76 mm on
+tall sidewalls (315/80 R17) and burying the rim by −35 mm on low-profile ones. Each vertex
+is instead remapped by radius,
+
+```
+r' = rimRadius + (r - beadRadius) · (tireRadius - rimRadius) / (treadRadius - beadRadius)
+```
+
+so the bead seats on the rim and the tread reaches the tire radius exactly, whatever the
+aspect ratio. Normals are transformed anisotropically to match — scaled by the sidewall
+factor along the radius and by the local hoop factor around it.
+
 ---
 
 ## Upgrade parts
@@ -448,6 +485,27 @@ files. The `.carbin` scene manifest defines the complete upgrade hierarchy.
 **Key insight: Livery files (`C_livery`) contain NO upgrade data.** They only store vinyl
 shapes and paint materials for body panels. Upgrades are determined entirely by the
 `.carbin` scene manifest at render time.
+
+### Part placement and bones
+
+A `CarRenderModel` carries both a transform and the name of a bone. The two are alternatives,
+not a composition:
+
+- **Transform with a translation** — the world placement, used as-is. The bone names the rig
+  parent that animates it; applying it as well double-transforms the part.
+- **Transform with no translation, plus a bone** — placed entirely by that bone. The name
+  belongs to the *car* skeleton (`Scene/<CODE>_skeleton.modelbin`, path in the carbin header),
+  not to the part's own bundle. This is how the suspension arms are placed on 425 of 624 cars
+  (1,672 parts, all `controlArm_*`); resolving it against the part's local skeleton finds
+  nothing and collapses them onto the car origin.
+
+The car skeleton is a **bind pose**, not the render pose — where a car states both, they
+differ by up to 0.34 m — and its corner bones are largely a shared template: 302 of 482 cars
+repeat the same `controlArm_LF` value. It therefore supplies orientation only; a bone-placed
+corner part takes its position from the corner (see *Where the corner sits*).
+
+Corner membership comes from the bone-name suffix (`spindleLF`, `hubLR`, `controlArm_RF`),
+which is consistent with the placement on all but 2 of 2,493 wheel instances.
 
 ### .carbin binary format (verified from ForzaTechStudio reference)
 

@@ -245,6 +245,10 @@ fh6::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
                     o.value(QStringLiteral("aspect")).toDouble(def.tireAspectPercent));
                 axle.rimDiameterInches = static_cast<float>(
                     o.value(QStringLiteral("rim")).toDouble(def.rimDiameterInches));
+                axle.trackOuterMetres = static_cast<float>(
+                    o.value(QStringLiteral("track")).toDouble(def.trackOuterMetres));
+                axle.rideHeightMetres = static_cast<float>(
+                    o.value(QStringLiteral("ride")).toDouble(def.rideHeightMetres));
                 return axle;
             };
             const auto parse = [&parseAxle](const QJsonObject &o, fh6::WheelSizing def) {
