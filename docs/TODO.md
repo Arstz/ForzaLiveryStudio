@@ -1,6 +1,7 @@
 Small changes:
     -Decompose car_renderer
     -Rename project related functions to drop json naming
+    -Deprecate double check for car model LOD
 
 Medium changes:
     -FH6_BUILD_HELPER_TOOLS OFF should disable testing exe build as well

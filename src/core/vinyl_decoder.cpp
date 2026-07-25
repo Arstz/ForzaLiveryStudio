@@ -303,6 +303,24 @@ bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks) {
     return true;
 }
 
+constexpr int kHeaderFieldShift = 256;
+
+bool markerlessHeaderFieldsMatch(const QByteArray &data, int pos, int end) {
+    if (pos + 4 > end || pos + 4 > data.size()) {
+        return false;
+    }
+    const int count = readLeU16(data, pos);
+
+    return count >= 2 && childBlockFieldMatches(count, readLeU16(data, pos + 2), nullptr);
+}
+
+// Both header fields scale by one byte position, so a header that is the shifted image of the
+// header one byte later reads a preceding flag byte as its own count.
+bool isShiftedMarkerlessHeader(const QByteArray &data, int pos, int end, int count) {
+    return count >= kHeaderFieldShift && count % kHeaderFieldShift == 0
+        && markerlessHeaderFieldsMatch(data, pos + 1, end);
+}
+
 QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos, int end) {
     QVector<int> sizes;
     if (pos >= end || pos >= data.size()) {
@@ -410,6 +428,9 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
     const int minCount = allowCountOne ? 1 : 2;
     int childBlocks = 0;
     if (count < minCount || !childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
+        return std::nullopt;
+    }
+    if (livery && isShiftedMarkerlessHeader(data, pos, end, count)) {
         return std::nullopt;
     }
     constexpr int kControlBytes = 2;
@@ -854,25 +875,15 @@ struct WalkState {
     const QHash<quint16, int> *logoExtraCounts = nullptr;
 };
 
-void markPreviousDirectShapeAsMask(WalkState &state) {
-    if (state.stack.isEmpty() || state.stack.back()->items.isEmpty()) {
-        return;
-    }
-    VinylItem &previous = state.stack.back()->items.back();
-    if (!previous.isShape()) {
-        return;
-    }
-    VinylShape &shape = std::get<VinylShape>(previous.value);
-    shape.isMask = true;
-    shape.flags |= 0x40;
-}
-
-void markPreviousTerminalShapeAsMask(WalkState &state) {
+void markPreviousShapeAsMask(WalkState &state, bool throughGroups) {
     if (state.stack.isEmpty() || state.stack.back()->items.isEmpty()) {
         return;
     }
     VinylItem *previous = &state.stack.back()->items.back();
     while (!previous->isShape()) {
+        if (!throughGroups) {
+            return;
+        }
         VinylGroupPtr group = std::get<VinylGroupPtr>(previous->value);
         if (!group || group->items.isEmpty()) {
             return;
@@ -962,7 +973,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
     if (liveryDialect && isLiveryLogoAt(layerData, pos, end)) {
         const VinylShape logo = decodeLiveryLogoAt(layerData, pos);
         if (bytesAt(layerData, pos, {0x01, 0x02})) {
-            markPreviousDirectShapeAsMask(s);
+            markPreviousShapeAsMask(s, liveryDialect);
         }
         addShape(*stack.back(), logo);
         s.decodedDecals += 1 + (s.logoExtraCounts ? s.logoExtraCounts->value(logo.logoId, 0) : 0);
@@ -976,7 +987,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
 
     if (isValidShapeAt(layerData, pos, end)) {
         if (bytesAt(layerData, pos, {0x01, 0x02})) {
-            markPreviousDirectShapeAsMask(s);
+            markPreviousShapeAsMask(s, liveryDialect);
         }
         if (s.pendingTransform) {
             auto node = std::make_shared<VinylGroup>();
@@ -1017,7 +1028,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
                                                        invertOddLiveryRotation)) {
             if (!liveryTransform->marker.isEmpty()
                 && (static_cast<quint8>(liveryTransform->marker[0]) & 0x01)) {
-                markPreviousTerminalShapeAsMask(s);
+                markPreviousShapeAsMask(s, true);
             }
             s.pendingTransform = liveryTransform->transform;
             s.pendingTransformMarker = liveryTransform->marker;
@@ -1031,7 +1042,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
     if (transformInfo) {
         if (!transformInfo->marker.isEmpty()
             && (static_cast<quint8>(transformInfo->marker[0]) & 0x01)) {
-            markPreviousTerminalShapeAsMask(s);
+            markPreviousShapeAsMask(s, true);
         }
         s.pendingTransform = transformInfo->transform;
         s.pendingTransformMarker = s.pendingTransformPrefix + transformInfo->marker;
@@ -1278,7 +1289,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
             }
             closeCompleteStack(state.stack);
             if (pos < end && static_cast<quint8>(decoderBody[pos]) == 0x01) {
-                markPreviousTerminalShapeAsMask(state);
+                markPreviousShapeAsMask(state, true);
             }
 
             section.subtree = *sectionNode;
