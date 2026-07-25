@@ -1,6 +1,6 @@
 # Forza Livery Studio
 
-I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion.
+I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion. Preferred communication is via [Discord Channel](https://discord.gg/zshDeRDBW), but you can leave the issue here as well.
 
 ## Features
 
@@ -90,7 +90,7 @@ The import/export for groups is fully supported, core functionality in place. So
 - Did you use AI? - Yes. Initially all of project base has been built in python by hands, but due to performance limitations we decided to port the project to C++. To speed up porting we used AI.
 - When `[FeatureName]`? - Tomorrow.
 - Can I get banned for this? - No.
-- I want `[FeatureName]`, where to request? - Create an issue in this repo.
+- I want `[FeatureName]`, where to request? - in the discord channel "suggestions"
 - Why not Rust? -  https://youtu.be/8ue3PXu3W8Q
 
 ## Credits
