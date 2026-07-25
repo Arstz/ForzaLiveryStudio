@@ -337,9 +337,6 @@ QString sharedSlotMaterialEntry(const QString &materialName) {
     if (n == QStringLiteral("black")) {
         return QStringLiteral("_fmnext/specialcase/blackhole.materialbin");
     }
-    if (n.startsWith(QStringLiteral("blur"))) {
-        return QString(); // motion-blur mesh, not shown when static
-    }
     if (n == QStringLiteral("lip") || n == QStringLiteral("hub") || n == QStringLiteral("lug")
         || n == QStringLiteral("inner_rim") || n == QStringLiteral("detail")
         || n == QStringLiteral("detail2") || n == QStringLiteral("valve_cap")) {

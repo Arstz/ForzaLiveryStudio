@@ -32,6 +32,7 @@ constexpr float kCanonRimRadial = 0.1397f;  // normalised rim outer == tyre inne
 constexpr float kMetresPerInch = 0.0254f;
 constexpr float kMetresPerMillimetre = 0.001f;
 constexpr float kPercent = 0.01f;
+constexpr float kDefaultSpindleOffset = 0.1f;  // fleet median, for a wheel with no spindle bone
 
 float rimRadiusMetres(const AxleSizing &axle) {
     return axle.rimDiameterInches * kMetresPerInch * 0.5f;
@@ -405,18 +406,38 @@ bool isWheelModelPath(QString path) {
     return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
 }
 
-void bakeWheelTransform(CarMesh &mesh, const AxleSizing &axle) {
+// The wheel's blur slots carry the full-radius discs the game swaps in for a spinning wheel,
+// covering the opening the spokes and brake are seen through.
+bool isMotionBlurSlot(const QString &materialName) {
+    return materialName.startsWith(QStringLiteral("blur"), Qt::CaseInsensitive);
+}
+
+// Where the wheel's own `spindle` bone sits along its normalised axial X: the mounting plane the
+// part transform positions, which is not the wheel's mid-width. The carbin names the bone after
+// the car skeleton (`spindleLF`), so it never resolves against the wheel's local skeleton.
+float wheelSpindleOffset(const std::vector<SkeletonBone> &bones) {
+    for (const SkeletonBone &bone : bones) {
+        if (bone.name.compare(QStringLiteral("spindle"), Qt::CaseInsensitive) == 0) {
+            return bone.world.transformPoint({0.0f, 0.0f, 0.0f}).x;
+        }
+    }
+    return kDefaultSpindleOffset;
+}
+
+// The model's axial X runs from the outboard face at 0 to the inboard rim edge at 1, so it maps
+// onto the axle direction directly once the spindle plane is moved onto the part transform.
+void bakeWheelTransform(CarMesh &mesh, const AxleSizing &axle, float spindleOffset) {
     const float radialScale = wheelRadialScale(axle);
     const float widthScale = tireWidthMetres(axle);
     for (ModelVec3 &position : mesh.positions) {
         position = mesh.boneTransform.transformPoint(
-            {(0.5f - position.x) * widthScale,
+            {(position.x - spindleOffset) * widthScale,
              position.y * radialScale,
              position.z * radialScale});
     }
     for (ModelVec3 &normal : mesh.normals) {
         normal = mesh.boneTransform.transformVector(
-            {normal.x / -widthScale,
+            {normal.x / widthScale,
              normal.y / radialScale,
              normal.z / radialScale});
         const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
@@ -627,6 +648,9 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         }
 
         for (CarMesh &mesh : model.meshes) {
+            if (isWheelModelPath(part.path) && isMotionBlurSlot(mesh.materialName)) {
+                continue;
+            }
             mesh.sourceModelPath = part.path;
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             mesh.carPartType = part.partType;
@@ -634,7 +658,8 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.stockPart = stock;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
-                bakeWheelTransform(mesh, frontWheel(part, mesh) ? wheels.front : wheels.rear);
+                bakeWheelTransform(mesh, frontWheel(part, mesh) ? wheels.front : wheels.rear,
+                                   wheelSpindleOffset(partSkeleton));
                 if (mesh.paintMaterialHash == 0) {
                     mesh.paintMaterialHash = wheelPaintHash(part, mesh);
                 }

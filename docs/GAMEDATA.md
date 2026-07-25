@@ -124,6 +124,16 @@ model code with a `_default` fallback:
 `rimDiameter/2 + width·aspect` with the same width. Regenerate the asset with
 `tools/gen_wheel_sizes.py`.
 
+**Axial anchoring.** The wheel model's axial X runs from the outboard face at 0 to the
+inboard rim edge at 1, and the plane the part transform positions is the **mounting plane**,
+not the mid-width. Each wheel model carries its own `spindle` bone marking it, at a
+normalised X that varies per model (fleet median 0.100, range 0.04–0.28). The carbin names
+the bone after the *car* skeleton (`spindleLF`), which never matches the wheel's local
+`spindle`, so it has to be resolved by name against the model's own skeleton. Anchoring on
+mid-width instead pushes every wheel outboard by roughly half a section width, which leaves
+the brake rotor — a separate, unscaled `Scene/_library/scene/brakes/` part at authored car
+coordinates — hanging outside the rim barrel.
+
 ## Paint finishes (the customizable paint materials)
 
 `gamePaintMaterialsArchive()` → `media/Cars/_library/Materials.zip`. The customizable
@@ -356,6 +366,15 @@ Each car also has its **stock wheel** as a `.modelbin` inside its own zip:
 ```
 Cars/BMW_M3E92_08.zip → Scene/_library/Scene/Wheels/BMW_M3E92_08_wheelLF.modelbin
 ```
+
+### Motion-blur slots
+
+Wheel models carry a second set of meshes on `blur_lip` / `blur_rim` slots (1,000 meshes
+across 609 cars) bound to `_fmnext/specialcase/wheelblur`. They are full-rim-radius discs
+sitting in a thin slab at the outboard face — the geometry the game swaps in for a spinning
+wheel — and they cover the opening the spokes and brake are seen through, so a static render
+drops them. The `black` slot is different: it is a tube running the length of the barrel
+(`_fmnext/specialcase/blackhole`), and stays.
 
 ### Wheel paint channels
 
