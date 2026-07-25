@@ -155,6 +155,8 @@ private:
     int finishSelfColoredLocation_ = -1;
     int finishTilingLocation_ = -1;
     int finishFlakeLocation_ = -1;
+    int clearCoatRoughnessLocation_ = -1;
+    int clearCoatIntensityLocation_ = -1;
 };
 
 } // namespace gui

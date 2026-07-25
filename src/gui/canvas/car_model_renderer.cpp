@@ -89,6 +89,8 @@ uniform int has_finish_surface;
 uniform int finish_self_colored;
 uniform float finish_tiling;
 uniform float finish_flake;
+uniform float clear_coat_roughness;
+uniform float clear_coat_intensity;
 
 out vec4 out_color;
 
@@ -105,6 +107,42 @@ const vec3 DEBUG_LEFT_GLASS_COLOR = vec3(1.0, 0.9, 0.4);
 const vec3 DEBUG_RIGHT_GLASS_COLOR = vec3(1.0, 0.5, 1.0);
 const vec3 ENVIRONMENT_LOW_COLOR = vec3(0.025, 0.028, 0.035);
 const vec3 ENVIRONMENT_HIGH_COLOR = vec3(0.58, 0.64, 0.72);
+
+const float PI = 3.14159265359;
+
+float distributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    return a2 / (PI * denom * denom);
+}
+
+float geometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
 
 vec3 sideColor(int s)
 {
@@ -348,32 +386,46 @@ void main()
         ? texture(native_emissive, materialUv).rgb
         : vec3(0.0);
     vec3 l = normalize(vec3(0.4, 0.8, 0.6));
-    vec3 h = normalize(l + viewDir);
-    float ambient = 0.35 * mix(0.35, 1.0, surfaceAo);
-    float diffuse = max(dot(n, l), 0.0);
-    float shininess = mix(8.0, 128.0, surfaceGloss);
-    float specular = pow(max(dot(n, h), 0.0), shininess);
-    float specularStrength = mix(0.08, 0.62, surfaceMetallic) * (1.0 + finish_flake * 1.5);
-    vec3 specularColor = mix(mix(vec3(1.0), albedo, surfaceMetallic), vec3(1.0), finish_flake * 0.6);
-    float nDotV = max(dot(n, viewDir), 0.0);
-    vec3 fresnelBase = mix(vec3(0.04), albedo, surfaceMetallic);
-    vec3 fresnel = fresnelBase
-        + (vec3(1.0) - fresnelBase) * pow(1.0 - nDotV, 5.0);
-    vec3 reflected = reflect(-viewDir, n);
-    vec3 environment = mix(ENVIRONMENT_LOW_COLOR,
-                           ENVIRONMENT_HIGH_COLOR,
-                           clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0));
-    vec3 environmentSpecular = environment * fresnel
-        * mix(0.12, 0.82, surfaceGloss)
-        * mix(0.55, 1.0, surfaceAo);
-    float glitter = finishGlitter(v_world, max(dot(n, h), 0.0));
-    vec3 lit = albedo * (ambient + (1.0 - ambient) * diffuse)
-        + specularColor * specular * specularStrength
-        + specularColor * glitter * finish_flake * 1.4
-        + environmentSpecular
-        + material_emissive
-        + nativeEmission;
-    out_color = vec4(lit, outputAlpha);
+    vec3 v = viewDir;
+    float NdotV = max(dot(n, v), 0.0);
+    vec3 F0 = mix(vec3(0.04), albedo, surfaceMetallic);
+    float roughness = 1.0 - surfaceGloss;
+    roughness = clamp(roughness, 0.04, 1.0);
+    float NdotL = max(dot(n, l), 0.0);
+    vec3 H = normalize(l + v);
+    float D = distributionGGX(n, H, roughness);
+    float G = geometrySmith(n, v, l, roughness);
+    vec3 F = fresnelSchlick(max(dot(H, v), 0.0), F0);
+    vec3 kS = F;
+    vec3 kD = (vec3(1.0) - kS) * (1.0 - surfaceMetallic);
+    vec3 diffuse = kD * albedo / PI;
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+    vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL;
+    vec3 ambient = vec3(0.03) * albedo * surfaceAo;
+    vec3 color = ambient + lo;
+    vec3 reflected = reflect(-v, n);
+    float envUp = reflected.y * 0.5 + 0.5;
+    vec3 envColor = mix(ENVIRONMENT_LOW_COLOR, ENVIRONMENT_HIGH_COLOR, clamp(envUp, 0.0, 1.0));
+    vec3 Fenv = fresnelSchlickRoughness(NdotV, F0, roughness);
+    vec3 envSpecular = envColor * Fenv * mix(0.15, 0.95, surfaceGloss) * surfaceAo;
+    vec3 envDiffuse = albedo * envColor * 0.15 * (1.0 - surfaceMetallic);
+    color += envDiffuse + envSpecular;
+    float glitter = finishGlitter(v_world, max(dot(n, H), 0.0));
+    color += vec3(glitter * finish_flake * 1.4) * Fenv;
+    if (clear_coat_intensity > 0.01) {
+        float ccRoughness = clamp(clear_coat_roughness, 0.04, 1.0);
+        float ccD = distributionGGX(n, H, ccRoughness);
+        float ccG = geometrySmith(n, v, l, ccRoughness);
+        vec3 ccF = fresnelSchlick(max(dot(H, v), 0.0), vec3(0.04));
+        vec3 ccSpecular = (ccD * ccG * ccF) / max(4.0 * NdotV * NdotL, 0.001);
+        color += ccSpecular * vec3(3.0) * NdotL * clear_coat_intensity;
+        vec3 ccEnvF = fresnelSchlickRoughness(NdotV, vec3(0.04), ccRoughness);
+        color += envColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
+        float ccFresnelEdge = pow(1.0 - NdotV, 4.0);
+        color += vec3(ccFresnelEdge * 0.06 * clear_coat_intensity);
+    }
+    color += material_emissive + nativeEmission;
+    out_color = vec4(color, outputAlpha);
 }
 )";
 
@@ -625,6 +677,8 @@ void CarModelRenderer::initialize() {
     finishSelfColoredLocation_ = program_.uniformLocation("finish_self_colored");
     finishTilingLocation_ = program_.uniformLocation("finish_tiling");
     finishFlakeLocation_ = program_.uniformLocation("finish_flake");
+    clearCoatRoughnessLocation_ = program_.uniformLocation("clear_coat_roughness");
+    clearCoatIntensityLocation_ = program_.uniformLocation("clear_coat_intensity");
     initialized_ = true;
 }
 
@@ -679,6 +733,8 @@ void CarModelRenderer::release() {
     hasNativeNormalLocation_ = -1;
     hasNativeSurfaceLocation_ = -1;
     hasNativeEmissiveLocation_ = -1;
+    clearCoatRoughnessLocation_ = -1;
+    clearCoatIntensityLocation_ = -1;
 }
 
 bool CarModelRenderer::isInitialized() const {
@@ -1916,7 +1972,8 @@ void applyPaintFinish(const fh6::LiveryPaintMaterial &paint, const fh6::PaintFin
         primary = primary * (1.0f - tint) + secondary * tint;
         secondaryMix = std::clamp(finish->flakeAmount * kFlakeSecondaryMix, 0.0f, kFlakeSecondaryMixMax);
     }
-    if (finish->selfColored && finish->hasMaterialColor) {
+    if (finish->hasMaterialColor
+        && (finish->selfColored || finish->category == fh6::PaintFinishCategory::Metal)) {
         primary = QVector3D(finish->materialColor[0], finish->materialColor[1], finish->materialColor[2]);
         secondary = primary;
     }
@@ -2022,6 +2079,8 @@ void CarModelRenderer::render(
     bool eyeValid = false;
     const QVector3D eye = view.inverted(&eyeValid).map(QVector3D(0.0f, 0.0f, 0.0f));
     program_.setUniformValue(eyePositionLocation_, eyeValid ? eye : QVector3D());
+    program_.setUniformValue(clearCoatRoughnessLocation_, 0.2f);
+    program_.setUniformValue(clearCoatIntensityLocation_, 0.0f);
 
     const bool hasLivery = liveryTexture != 0 && sideMaskArray_ != 0 && sideCount_ > 0;
     if (hasLivery) {
@@ -2063,6 +2122,32 @@ void CarModelRenderer::render(
         const fh6::PaintFinishRender *finish = (paint != nullptr && paintFinishes != nullptr)
             ? paintFinishes->find(static_cast<int>(paint->finish))
             : nullptr;
+        if (paint != nullptr && paint->manufacturerSelector != 0xffffffffu) {
+            static bool once = false;
+            if (!once) {
+                once = true;
+                QFile dbg("C:\\Users\\Fr4g3z\\AppData\\Local\\Temp\\paint_debug.txt");
+                if (dbg.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                    dbg.write(QString("paletteSize=%1\n")
+                        .arg(manufacturerColors ? manufacturerColors->colors.size() : 0).toUtf8());
+                }
+            }
+            QFile dbg("C:\\Users\\Fr4g3z\\AppData\\Local\\Temp\\paint_debug.txt");
+            if (dbg.open(QIODevice::Append | QIODevice::Text)) {
+                dbg.write(QString("hash=%1 selector=%2 finish=%3 mfr=%4 palSz=%5 pri=(%6,%7,%8) priEn=%9 mat=%10\n")
+                    .arg(static_cast<quint64>(mesh.paintMaterialHash), 16, 16, QChar('0'))
+                    .arg(paint->manufacturerSelector)
+                    .arg(paint->finish)
+                    .arg(reinterpret_cast<quintptr>(manufacturerColor), 16, 16, QChar('0'))
+                    .arg(manufacturerColors ? manufacturerColors->colors.size() : 0)
+                    .arg(manufacturerColor ? manufacturerColor->primary[0] : -1.0f)
+                    .arg(manufacturerColor ? manufacturerColor->primary[1] : -1.0f)
+                    .arg(manufacturerColor ? manufacturerColor->primary[2] : -1.0f)
+                    .arg(paint->primary.enabled)
+                    .arg(manufacturerColor && manufacturerColor->material ? "yes" : "no")
+                    .toUtf8());
+            }
+        }
         const auto decodedColor = [](const fh6::LiveryPaintColor &color) {
             return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
         };

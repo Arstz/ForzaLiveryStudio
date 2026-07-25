@@ -18,6 +18,7 @@ struct ManufacturerColor {
     std::shared_ptr<ModelMaterial> material;
     std::array<float, 3> primary = {0.0f, 0.0f, 0.0f};
     std::array<float, 3> secondary = {0.0f, 0.0f, 0.0f};
+    quint32 materialIndexMask = 0;
     bool enabled = false;
     bool secondaryEnabled = false;
 };

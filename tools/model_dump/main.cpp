@@ -509,7 +509,8 @@ int main(int argc, char *argv[])
     }
     WheelSizing rimSizing;
     if (const int ri = args.indexOf(QStringLiteral("--rim")); ri >= 0 && ri + 1 < args.size()) {
-        rimSizing.frontDiameterInches = rimSizing.rearDiameterInches = args[ri + 1].toFloat();
+        const float d = args[ri + 1].toFloat();
+        rimSizing.front.rimDiameterInches = rimSizing.rear.rimDiameterInches = d;
     }
     if (args.contains(QStringLiteral("--radial"))) {
         QString err;
