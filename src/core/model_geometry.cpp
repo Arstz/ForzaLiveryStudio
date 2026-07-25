@@ -90,6 +90,7 @@ struct MeshInfo {
     QString name;
     qint16 materialId = -1;
     qint16 rigidBoneIndex = -1;
+    quint8 lodLevel = 0;
     bool is32BitIndices = true;
     qint32 indexBufferOffset = 0;
     qint32 indexBufferDrawOffset = 0;
@@ -260,7 +261,7 @@ MeshInfo decodeMesh(const BundleBlobRecord &blob) {
 
     mesh.rigidBoneIndex = c.i16();
     c.u16(); // LODFlags
-    c.u8();  // LODLevel1
+    mesh.lodLevel = c.u8();
     c.u8();  // LODLevel2
     c.u16(); // bucket flags
     c.u8();  // bucket order
@@ -525,10 +526,21 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
     float maxY = maxX;
     float maxZ = maxX;
 
+    // Every LOD of a part is stored side by side. Only the most detailed one is wanted; which
+    // level that is varies by model, so it is whichever level the model actually starts at.
+    quint8 detailLevel = std::numeric_limits<quint8>::max();
+    for (const BundleBlobRecord *blob : meshBlobs) {
+        const MeshInfo info = decodeMesh(*blob);
+        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) != 0) {
+            detailLevel = std::min(detailLevel, info.lodLevel);
+        }
+    }
+
     for (int mi = 0; mi < static_cast<int>(meshBlobs.size()); ++mi) {
         const MeshInfo info = decodeMesh(*meshBlobs[mi]);
 
-        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0) {
+        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0
+            || info.lodLevel != detailLevel) {
             continue;
         }
 

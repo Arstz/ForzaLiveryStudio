@@ -845,7 +845,10 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (model.meshes.empty()) {
         return {};
     }
-    appendSharedTireB(model, path, wheelSizing);
+    // Set FLS_HIDE_TIRES to inspect the rims on their own.
+    if (qEnvironmentVariableIsEmpty("FLS_HIDE_TIRES")) {
+        appendSharedTireB(model, path, wheelSizing);
+    }
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
 

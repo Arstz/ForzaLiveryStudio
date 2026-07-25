@@ -147,14 +147,25 @@ A corner is a rigid assembly — wheel, rotor, caliper, suspension arm — so th
 computed once from the wheel and applied to every part naming that corner's bone. Otherwise
 the brakes stay behind while the wheel moves.
 
-**The corner is a chain.** The suspension arm does not float at the hub: its outboard end
-butts against the brake rotor's **inboard face**, which the rotor in turn shares an axis with
-the rim. Across the cars that place their arm explicitly, that joint closes to a median of
-2 mm. A bone-placed arm is therefore slid along the axle until its outboard extent meets that
-face, rather than being left centred on the hub where it passes straight through the disc.
-Both extents come from the bundles' own bounding boxes, so no geometry has to be decoded to
-find them. A part needing to travel more than `kMaxHubReach` to reach the hub spans more than
-one corner — a beam axle, not an arm — and is left where the corner correction put it.
+**The corner is a chain**, and it hangs off the rim rather than off the pose the carbin
+authored it in. There is no hub model in the game data — no shaft, axle, upright or carrier
+exists in any car archive — so the rotor is what joins the wheel to the suspension:
+
+1. **Rim** — placed from the track and ride height (above).
+2. **Rotor** — its outer face is the wheel's mounting plane, so it is seated on the rim's
+   centre. Inheriting the carbin's authored rotor-to-wheel offset instead leaves the disc a
+   median 217 mm inboard of the rim's outer face, with only 23% of cars having it inside the
+   rim at all; seating it on the centre plane puts 98% inside.
+3. **Caliper** — rides on the hub, so it takes the same shift as the rotor.
+4. **Suspension arm** — its outboard end butts against the rotor's **inboard** face. Across
+   the cars that place their arm explicitly, that joint closes to a median of 2 mm. A
+   bone-placed arm is slid along the axle until its outboard extent meets that face, rather
+   than being left centred on the hub where it passes straight through the disc. A part
+   needing to travel more than `kMaxHubReach` spans more than one corner — a beam axle, not
+   an arm — and is left where the corner correction put it.
+
+All the extents come from the bundles' own bounding boxes, so no geometry has to be decoded
+to find them.
 
 ## Paint finishes (the customizable paint materials)
 
@@ -389,14 +400,36 @@ Each car also has its **stock wheel** as a `.modelbin` inside its own zip:
 Cars/BMW_M3E92_08.zip → Scene/_library/Scene/Wheels/BMW_M3E92_08_wheelLF.modelbin
 ```
 
-### Motion-blur slots
+### Stand-in slots
 
-Wheel models carry a second set of meshes on `blur_lip` / `blur_rim` slots (1,000 meshes
-across 609 cars) bound to `_fmnext/specialcase/wheelblur`. They are full-rim-radius discs
-sitting in a thin slab at the outboard face — the geometry the game swaps in for a spinning
-wheel — and they cover the opening the spokes and brake are seen through, so a static render
-drops them. The `black` slot is different: it is a tube running the length of the barrel
-(`_fmnext/specialcase/blackhole`), and stays.
+Wheel models carry two sets of meshes the game draws *instead of* the wheel, both bound to
+`_fmnext/specialcase/*` stub materials that hold no parameters at all (248 bytes each). Both
+sit on top of the geometry they stand for, so a static render drops them:
+
+| Slot | Material | What it is |
+|------|----------|------------|
+| `blur_lip`, `blur_rim` | `wheelblur` | Full-rim-radius discs in a thin slab at the outboard face — what a spinning wheel reads as. 1,000 meshes across 609 cars. Left in, they cover the opening the spokes and brake are seen through. |
+| `black` | `blackhole` | A shell laid over the barrel to read as unlit depth. On 511 of 651 cars it sits at the **same radius** as the real `inner_rim` barrel and spans the same axial range (overlap 0.94–0.98). Left in, it hides the barrel and the wheel renders as a thin outboard slice. |
+
+Dropping `black` does not leave a hole: every car that has one also has an `inner_rim` barrel
+underneath it. The barrel is only ever seen from inside, so it also needs two-sided lighting
+to read as anything but unlit black.
+
+### LOD meshes
+
+A modelbin stores every LOD of a part side by side, distinguished by `LODLevel1` in the mesh
+header (0 = most detailed) rather than by the mesh name. Only the most detailed one is kept;
+the rest are coincident lower-poly copies of the same surfaces — roughly 70% of a car's mesh
+instances. Which level a model starts at varies — most begin at 0, but some carry 1, 30 or 255
+throughout — so the level kept is whichever the model itself starts at, never a fixed 0.
+Meshes named `shadow` are shadow-caster proxies and are skipped outright.
+
+### Wheel slots are all geometry
+
+Every slot on a wheel model except the stand-ins above is real geometry and is drawn. The
+`rim` and `rim2` slots are only the outboard face — on a typical wheel they occupy the first
+7% of the axial width — so keeping just those leaves a thin disc with no barrel behind it.
+`inner_rim` is the barrel and carries the wheel's depth.
 
 ### Wheel paint channels
 

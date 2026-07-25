@@ -174,7 +174,12 @@ float finishGlitter(vec3 worldPos, float facing)
 
 void main()
 {
+    // Surfaces drawn double-sided are seen from behind as often as in front — a wheel barrel is
+    // only ever viewed from inside — so light the side that is actually facing the eye.
     vec3 n = normalize(v_normal);
+    if (!gl_FrontFacing) {
+        n = -n;
+    }
     vec2 materialUv = v_material_uv;
     if (has_native_normal == 1) {
         vec3 mappedNormal = texture(native_normal, materialUv).xyz * 2.0 - 1.0;
@@ -1593,11 +1598,6 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
     const std::vector<char> keepLod = highestLodFlags(model.meshes);
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         const fh6::CarMesh &mesh = model.meshes[mi];
-        const QString materialName = mesh.materialName.toLower();
-        if (mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
-            && materialName != QStringLiteral("rim") && materialName != QStringLiteral("rim2")) {
-            continue;
-        }
         if (!keepLod[mi] || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }

@@ -446,6 +446,14 @@ bool isBrakeRotorPath(QString path) {
     return path.contains(QStringLiteral("/rotors/"), Qt::CaseInsensitive);
 }
 
+// The rotor and its caliper ride on the hub, so they follow the rim rather than the pose the
+// carbin authored them against.
+bool isHubMountedPath(QString path) {
+    path.replace('\\', '/');
+    return path.contains(QStringLiteral("/rotors/"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/calipers/"), Qt::CaseInsensitive);
+}
+
 // Car-space X span of a model, taken from the bundle's own bounding box so the caller does not
 // have to decode geometry to find where a part reaches.
 bool modelSpanX(const ModelBundle &bundle, const ModelMat4 &instance, float &minX, float &maxX) {
@@ -469,10 +477,12 @@ bool modelSpanX(const ModelBundle &bundle, const ModelMat4 &instance, float &min
     return false;
 }
 
-// The wheel's blur slots carry the full-radius discs the game swaps in for a spinning wheel,
-// covering the opening the spokes and brake are seen through.
-bool isMotionBlurSlot(const QString &materialName) {
-    return materialName.startsWith(QStringLiteral("blur"), Qt::CaseInsensitive);
+// Stand-ins the game draws instead of the wheel itself: the blur slots hold the full-radius discs
+// it swaps in for a spinning wheel, and the black slot a shell laid over the barrel to read as
+// unlit depth. Both sit on top of the geometry they stand for, so a static render wants neither.
+bool isWheelStandInSlot(const QString &materialName) {
+    return materialName.startsWith(QStringLiteral("blur"), Qt::CaseInsensitive)
+        || materialName.compare(QStringLiteral("black"), Qt::CaseInsensitive) == 0;
 }
 
 // The model's axial X runs from the outboard face at 0 to the inboard rim edge at 1, and the
@@ -717,29 +727,33 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         placement.known = true;
     }
 
-    // The brake rotor's inboard face is where the corner's suspension arm reaches: parts that
-    // state no placement of their own are hung off it rather than left floating at the hub.
+    // The rotor's outer face is the wheel's mounting plane, so it is seated on the rim's centre
+    // and the rest of the corner hangs off it: the caliper rides along, and the suspension arm
+    // reaches the rotor's inboard face.
+    std::array<float, kCornerCount> hubShiftX{};
     std::array<float, kCornerCount> hubFaceX{};
     std::array<bool, kCornerCount> hubFaceKnown{};
     for (const PartInstance &part : parts.projection) {
         const int corner = cornerFromBoneName(part.boneName);
-        if (corner < 0 || hubFaceKnown[corner] || !isBrakeRotorPath(part.path)) {
+        if (corner < 0 || hubFaceKnown[corner] || !isBrakeRotorPath(part.path)
+            || !cornerPlacements[corner].known) {
             continue;
         }
         QFile rotorFile(resolvePath(part.path, carbinDir, mediaName));
         if (!rotorFile.open(QIODevice::ReadOnly)) {
             continue;
         }
+        const CornerPlacement &placement = cornerPlacements[corner];
         ModelMat4 instance = part.transform;
-        if (cornerPlacements[corner].known) {
-            instance.m[12] += cornerPlacements[corner].shiftX;
-            instance.m[13] += cornerPlacements[corner].shiftY;
-        }
+        instance.m[12] += placement.shiftX;
+        instance.m[13] += placement.shiftY;
         float minX = 0.0f;
         float maxX = 0.0f;
         try {
             if (modelSpanX(parseModelBundle(rotorFile.readAll()), instance, minX, maxX)) {
-                hubFaceX[corner] = isLeftCorner(corner) ? maxX : minX;
+                const bool left = isLeftCorner(corner);
+                hubShiftX[corner] = placement.centre.x - (left ? minX : maxX);
+                hubFaceX[corner] = (left ? maxX : minX) + hubShiftX[corner];
                 hubFaceKnown[corner] = true;
             }
         } catch (const std::exception &) {
@@ -792,6 +806,9 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                 instance.m[13] += placement.shiftY;
             }
         }
+        if (corner >= 0 && hubFaceKnown[corner] && isHubMountedPath(part.path)) {
+            instance.m[12] += hubShiftX[corner];
+        }
         if (corner >= 0 && boneOnly && hubFaceKnown[corner]) {
             float minX = 0.0f;
             float maxX = 0.0f;
@@ -806,7 +823,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         }
 
         for (CarMesh &mesh : model.meshes) {
-            if (isWheelModelPath(part.path) && isMotionBlurSlot(mesh.materialName)) {
+            if (isWheelModelPath(part.path) && isWheelStandInSlot(mesh.materialName)) {
                 continue;
             }
             mesh.sourceModelPath = part.path;
@@ -953,11 +970,14 @@ void appendApproximateTires(
         const float sourceCenterX = (sourceBounds.minX + sourceBounds.maxX) * 0.5f;
         const float sidewallSpan = sourceBounds.radius - sourceBounds.beadRadius;
         const float axialScale = tireWidth / sourceWidth;
+        // The bead sits just clear of the rim in the shipped models; scaling it by the rim's own
+        // factor keeps that gap, where seating it flat on the rim radius makes the two surfaces
+        // coincide and fight.
+        const float beadSeatRadius = sourceBounds.beadRadius * rimRadius / kCanonRimRadial;
         // The template's own bead-to-tread proportion only matches the axle's at one aspect
-        // ratio, so the sidewall is stretched to seat the bead on the rim and put the tread at
-        // the tyre radius, rather than scaled as a whole.
+        // ratio, so the sidewall is stretched to reach the tyre radius rather than scaled whole.
         const float sidewallScale = sidewallSpan > 0.000001f
-            ? (tireRadius - rimRadius) / sidewallSpan
+            ? (tireRadius - beadSeatRadius) / sidewallSpan
             : tireRadius / sourceBounds.radius;
         const int instanceId = nextInstanceId++;
 
@@ -973,7 +993,7 @@ void appendApproximateTires(
                 const ModelVec3 p = sourceMesh.boneTransform.transformPoint(sourceMesh.positions[i]);
                 const float sourceRadius = std::hypot(p.y, p.z);
                 const float hoopScale = sourceRadius > 0.000001f
-                    ? (rimRadius + (sourceRadius - sourceBounds.beadRadius) * sidewallScale)
+                    ? (beadSeatRadius + (sourceRadius - sourceBounds.beadRadius) * sidewallScale)
                         / sourceRadius
                     : 1.0f;
 
