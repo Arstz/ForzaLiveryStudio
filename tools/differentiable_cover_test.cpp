@@ -45,8 +45,19 @@ cover::Affine variedTransform(const cover::Affine &source,
 }
 
 bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
-    if (!check(catalog.size() == 9, "analytic catalog did not load nine shapes")) {
+    constexpr int kExpectedCatalogSize = 12;
+    constexpr std::array<int, 3> kExpandedShapeIds = {
+        2103, 2104, 2133,
+    };
+    if (!check(catalog.size() == kExpectedCatalogSize,
+               "analytic catalog did not load twelve shapes")) {
         return false;
+    }
+    for (const int shapeId : kExpandedShapeIds) {
+        if (!check(shapeById(catalog, shapeId) != nullptr,
+                   "expanded analytic geometry is unavailable")) {
+            return false;
+        }
     }
     const cover::ShapeMesh *shape = shapeById(catalog, 101);
     if (!check(shape != nullptr && shape->valid(),
@@ -231,7 +242,9 @@ bool repeatablePlacement(const cover::Placement &left,
         && std::abs(left.transform.f - right.transform.f) <= kTransformTolerance;
 }
 
-QPainterPath loggedContourPath(const QVector<PenPoint> &points) {
+QPainterPath loggedContourPath(
+    const QVector<PenPoint> &points,
+    QVector<cover::ContourSpan> *boundarySpans) {
     const auto firstHard = std::find_if(
         points.cbegin(), points.cend(),
         [](const PenPoint &point) {
@@ -251,11 +264,19 @@ QPainterPath loggedContourPath(const QVector<PenPoint> &points) {
     QPainterPath result;
     result.setFillRule(Qt::WindingFill);
     result.moveTo(ordered.front().position);
+    QPointF current = ordered.front().position;
     int index = 1;
     while (index <= ordered.size()) {
         const PenPoint &next = ordered[index % ordered.size()];
         if (next.kind == PenPointKind::Hard) {
+            boundarySpans->push_back({
+                current,
+                {},
+                next.position,
+                false,
+            });
             result.lineTo(next.position);
+            current = next.position;
             ++index;
             continue;
         }
@@ -263,7 +284,14 @@ QPainterPath loggedContourPath(const QVector<PenPoint> &points) {
         const QPointF end = after.kind == PenPointKind::Hard
             ? after.position
             : (next.position + after.position) * 0.5;
+        boundarySpans->push_back({
+            current,
+            next.position,
+            end,
+            true,
+        });
         result.quadTo(next.position, end);
+        current = end;
         index += after.kind == PenPointKind::Hard ? 2 : 1;
     }
     result.closeSubpath();
@@ -280,7 +308,8 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     if (!available) {
         return true;
     }
-    const QPainterPath contour = loggedContourPath(points);
+    QVector<cover::ContourSpan> boundarySpans;
+    const QPainterPath contour = loggedContourPath(points, &boundarySpans);
     if (!check(!contour.isEmpty(), "logged Pen contour is invalid")) {
         return false;
     }
@@ -293,6 +322,7 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     cover::FillInput input;
     input.mustCover = polygons;
     input.mayCover = polygons;
+    input.boundarySpans = boundarySpans;
     cover::FillOptions options;
     bool budgetOk = false;
     const int requestedBudget =
@@ -310,7 +340,12 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                                      &restartsOk);
     options.restarts =
         restartsOk && requestedRestarts >= 0 ? requestedRestarts : 0;
-    options.seed = 0x5a17;
+    options.seed = 0;
+    bool repeatOk = false;
+    const int requestedRepeat =
+        qEnvironmentVariableIntValue(
+            "FH6_DIFFERENTIABLE_TEST_REPEAT", &repeatOk);
+    const bool repeat = !repeatOk || requestedRepeat != 0;
     QVector<cover::FillProgress> progress;
     const cover::FillResult first =
         cover::analyticCoverFill(
@@ -319,7 +354,9 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                 progress.push_back(update);
             });
     const cover::FillResult second =
-        cover::analyticCoverFill(input, catalog, options);
+        repeat
+        ? cover::analyticCoverFill(input, catalog, options)
+        : first;
     if (!check(first.error.isEmpty() && second.error.isEmpty(),
                "logged contour solver returned an error")
         || !check(!first.placements.isEmpty(),
@@ -397,7 +434,18 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
               << " placements, " << first.coveredArea
               << " covered, " << first.residualArea << " residual, "
               << qPrintable(first.profile.evaluationBackend)
-              << ", " << first.profile.gpuBatches << " GPU batches";
+              << ", " << first.profile.totalWallSeconds << " seconds, "
+              << first.profile.gpuBatches << " GPU batches, "
+              << first.profile.complexitySelections
+              << " complexity selections, "
+              << first.profile.localComponentPlacements
+              << " local-component placements, "
+              << first.profile.wholeComponentPlacements
+              << " whole-component placements, "
+              << first.profile.hardEdgePlacements
+              << " hard-edge placements from "
+              << first.profile.hardEdgeCandidates
+              << " hard-edge candidates";
     if (!first.profile.gpuError.isEmpty()) {
         std::cout << ", fallback: " << qPrintable(first.profile.gpuError);
     }

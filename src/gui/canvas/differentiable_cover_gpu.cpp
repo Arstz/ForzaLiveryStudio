@@ -620,6 +620,23 @@ public:
             || scratchCount > std::numeric_limits<std::uint32_t>::max()
             || scratchCount * 2ULL * sizeof(float) * 14ULL
                 > kMaximumScratchBytes) {
+            if (requests.size() > 1) {
+                const qsizetype middle = requests.size() / 2;
+                QVector<AreaGradient> firstResults;
+                QVector<AreaGradient> secondResults;
+                if (!evaluate(
+                        requests.mid(0, middle),
+                        &firstResults)
+                    || !evaluate(
+                        requests.mid(middle),
+                        &secondResults)) {
+                    return false;
+                }
+                *results = std::move(firstResults);
+                *results += secondResults;
+
+                return true;
+            }
             return disable(QStringLiteral("GPU evaluation buffers exceed capacity"));
         }
 

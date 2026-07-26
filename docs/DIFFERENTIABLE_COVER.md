@@ -76,7 +76,8 @@ The Pen caller provides one contour:
 | `mustCover` | polygon set | The flattened active contour. |
 | `mayCover` | polygon set | Identical to `mustCover`; this mode has no legal overspill. |
 | `colour` | RGBA | The region colour, copied onto every placement. |
-| `mask` *(optional)* | binary raster + bbox | Rasterized `mustCover`, for the distance-transform initializer (§7.2). Can be rasterized from `mustCover` internally instead. |
+| `mask` *(optional)* | binary raster + bbox | Rasterized `mustCover`, for the distance-transform initializer (§7.3). Can be rasterized from `mustCover` internally instead. |
+| `boundarySpans` | ordered line/quadratic spans | Original contour topology used to measure straight-boundary dominance and build hard-edge candidates. |
 
 Polygons are simple, closed, with explicit orientation (outer CCW, holes CW, or
 whatever convention the chosen boolean library uses — pick one and enforce it).
@@ -105,7 +106,7 @@ Shapes live in `assets/vector/shape_geometry.json.gz`. Structure:
 }
 ```
 
-The nine shapes the fill uses (ids and roles):
+The twelve shapes the fill uses:
 
 | id | name | verts | tris | convex? |
 | --- | --- | --- | --- | --- |
@@ -113,11 +114,18 @@ The nine shapes the fill uses (ids and roles):
 | 102 | circle | 48 | 46 | yes |
 | 103 | triangle | 3 | 1 | yes |
 | 109 | half circle | 33 | 31 | yes |
-| 130 | quarter circle | 17 | 15 | yes |
 | 127 | fang | 78 | 76 | **no** |
-| 129 | concave arc | 50 | 48 | **no** |
+| 129 | half crescent | 50 | 48 | **no** |
+| 130 | quarter circle | 17 | 15 | yes |
 | 139 | garlic | 65 | 63 | **no** |
+| 2103 | rang | 49 | 47 | **no** |
+| 2104 | rounded triangle | 24 | 22 | yes |
 | 2123 | tooth | 56 | 54 | **no** |
+| 2133 | pill | 30 | 28 | yes |
+
+Catalog shapes must be solid, compact residual fillers. Silhouettes with interior
+voids or several sharp appendages are excluded because their containment-constrained
+placements increase shape count while leaving fragmented residuals.
 
 **Verified structural facts (these are load-bearing for §5):**
 
@@ -135,9 +143,9 @@ Consequences the implementer can rely on:
 2. Every triangle is a **convex** clip window → Sutherland–Hodgman applies directly
    even for the non-convex shapes (fang/garlic/tooth/concave arc): just sum over
    their convex triangles.
-3. Convex shapes (101/102/103/109/130) clip against their single boundary polygon
-   for speed; the boundary loop is recoverable because `boundaryEdges == verts`.
-   Non-convex shapes retain the exact triangle sum.
+3. Convex shapes clip against their single boundary polygon for speed; the boundary
+   loop is recoverable because `boundaryEdges == verts`. Non-convex shapes retain
+   the exact triangle sum.
 
 Load the catalog once into:
 
@@ -230,7 +238,7 @@ contour; the objective drives it toward 0.
 score(θ) = covered(θ, residual)  −  λ_spill · spill_out(θ)
 ```
 
-Maximize by gradient ascent (Adam is fine; §7.3). `covered` pulls the shape to
+Maximize by gradient ascent (Adam is fine; §7.4). `covered` pulls the shape to
 swallow residual; `λ_spill` (large, e.g. 4–16× the coverage weight) keeps it inside
 `mayCover`. No term is needed to prevent degeneracy — maximizing coverage inflates
 the shape on its own.
@@ -244,7 +252,7 @@ exact; at a kink AD returns a valid one-sided gradient. Adam tolerates this — 
 far milder than the global visibility discontinuity DiffVG must edge-sample,
 because only **one** convex-clip primitive moves against a **fixed** residual.
 Optional robustness: a tiny softening margin on the half-plane tests, or a couple
-of random restarts (§7.3) if a region proves finicky. No special discontinuity
+of random restarts (§7.4) if a region proves finicky. No special discontinuity
 machinery is required.
 
 ### 5.7 GPU execution
@@ -278,6 +286,11 @@ interrupted optimizer step is recomputed through a precision-safe path. Failure
 reasons remain in the profile. Backend selection does not alter placement budget,
 optimizer iteration counts, restart counts, legalization steps, or stopping
 thresholds.
+
+Evaluation requests that exceed a backend dispatch capacity are divided into
+smaller batches and evaluated recursively on that backend. Batching preserves
+every requested candidate and calculation; it is not a placement clock,
+calculation cap, or reduced optimizer budget.
 
 ---
 
@@ -323,23 +336,44 @@ its own code path (it needs derivatives, which Clipper2 does not provide).
 `bestPlacement(residual, mayCover, catalog)` returns the shape+affine that removes
 the most residual this step.
 
-### 7.1 Candidate shapes — descriptor router (keep it cheap)
+### 7.1 Candidate shapes — global and component-local routing
 
-Do **not** optimize all 9 shapes every step. Classify the residual locally and try
-only the 1–3 shapes whose descriptor matches, then keep the best:
+Do **not** optimize all 12 shapes every step. Rank the catalog against the residual
+descriptor and optimize only the three closest shapes, then keep the best:
 
-- Compute the residual's largest inscribed disk (distance transform, §7.2) and the
-  local shape around that seed: convex vs concave lobe, aspect ratio, corner-ness.
-- Convex blob → circle 102 / square 101 / triangle 103.
-- Long convex lobe → ellipse (circle 102 under anisotropic affine) / half circle
-  109.
-- Concave notch / claw / tab → fang 127 / garlic 139 / tooth 2123 / concave arc
-  129.
-- Sharp corner of residual → triangle 103.
+- Compute the residual and catalog bounding-box aspect ratios and occupied-area
+  fractions.
+- Rank by logarithmic aspect-ratio distance plus weighted occupied-area distance.
+- Break equal descriptor distances by shape id for deterministic selection.
+- When the residual has multiple connected components, repeat the descriptor
+  comparison for the component containing the distance-transform seed. Add at
+  most one component-local candidate when its descriptor match is decisively
+  better than the global route.
 
-The router keeps per-step cost bounded regardless of catalog growth.
+The component-local candidate may replace a global candidate only when it has
+both a decisive exact-area advantage and a decisively simpler resulting residual.
+It cannot extend a step after all global candidates stall. The router therefore
+keeps per-step cost bounded regardless of catalog growth while avoiding count
+inflation from weak component-local gains.
 
-### 7.2 Initialization (per candidate) — medial axis, **not** triangulation
+### 7.2 Structural prepasses
+
+The first greedy step adds one oriented-bounds initialization for every
+catalog-shape/component pair. This gives affine-equivalent or near-equivalent
+components an opportunity to be removed with one placement before the local
+medial-axis search dominates.
+
+The original contour spans also provide a straight-boundary ratio. A
+hard-edge-dominated contour produces fixed polygon-mesh candidates using the
+catalog's square and triangle geometry. Mixed contours retain rectangular
+candidates, while a completely straight contour may retain both. Every fixed
+candidate passes the same exact coverage and spill checks as an optimized
+candidate.
+
+These are candidate-generation passes, not forced placements. They compete with
+the differentiable candidates through the common exact selector.
+
+### 7.3 Initialization (per optimized candidate) — medial axis, **not** triangulation
 
 Good init is what makes the optimizer fast and local-minimum-free:
 
@@ -354,7 +388,7 @@ Good init is what makes the optimizer fast and local-minimum-free:
   the analog of LIVE's component-wise path initialization. It yields an overlapping,
   low-count cover and keeps each Adam run to a short warm descent.
 
-### 7.3 Optimize (per candidate)
+### 7.4 Optimize (per candidate)
 
 - Ascend `score(θ)` (§5.5) with Adam over the 6 params. ~100–300 iters; stop early
   on small gradient norm.
@@ -369,10 +403,14 @@ Good init is what makes the optimizer fast and local-minimum-free:
   results are written to fixed slots, and selection is performed in that same
   order so scheduling cannot change the output.
 
-### 7.4 Select
+### 7.5 Select
 
-Among surviving candidates pick the one with the largest **`covered`** (ties → lowest
-shape id, for repeatability). Return it as the step's placement.
+Compute exact residual subtraction for competitive candidates. Preserve the
+verified optimizer coverage as the primary ranking used by the greedy loop.
+Residual complexity, measured from normalized perimeter, connected-component
+count, and hole count, breaks optimizer-coverage ties in favor of a residual that
+is easier to cover on later steps. Remaining ties use shape id for repeatability.
+The accepted placement stores its exact subtraction gain.
 
 ---
 
@@ -396,8 +434,10 @@ shape id, for repeatability). Return it as the step's placement.
   evaluation time, legalization time, exact residual updates, final measurement,
   evaluation counts, worker configuration, evaluation backend, GPU adapter,
   GPU failure reason, GPU batch and intersection-task counts, and cumulative GPU
-  evaluation wall time in `pen_fill.log`. Cumulative worker durations overlap
-  while jobs execute in parallel and are not elapsed wall time.
+  evaluation wall time in `pen_fill.log`. It also records whole-component jobs,
+  generated hard-edge candidates, complexity selections, and accepted placements
+  from component-local, whole-component, and hard-edge routes. Cumulative worker
+  durations overlap while jobs execute in parallel and are not elapsed wall time.
 
 ---
 
@@ -406,7 +446,9 @@ shape id, for repeatability). Return it as the step's placement.
 The optimizer is non-deterministic in principle, but the module must be
 **run-to-run repeatable** so regenerating a livery does not reshuffle decals:
 
-- Fixed RNG seed for restarts/jitter (seed derivable from region id).
+- Fixed RNG seed for restarts/jitter (seed derivable from region id), with
+  separate streams for optional routes so rejected candidates do not perturb
+  later global restarts.
 - Fixed iteration counts and a fixed candidate/shape ordering.
 - Deterministic tie-breaks (lowest shape id, then lexicographic θ).
 
@@ -431,10 +473,10 @@ struct FillInput {
     // Exact polygons in canvas world space; outer CCW, holes CW.
     Polygons mustCover;
     Polygons mayCover;                            // equal for Pen mode
+    QVector<ContourSpan> boundarySpans;
     // Optional prebuilt raster of mustCover for the DT initializer.
-    const uint8_t* mask = nullptr;
-    int maskW = 0, maskH = 0;
-    QRect maskBounds;
+    QImage mask;
+    QRectF maskBounds;
 };
 
 struct FillOptions {
@@ -469,7 +511,13 @@ struct FillProfile {
     uint64_t legalizationEvaluations = 0;
     uint64_t gpuBatches = 0;
     uint64_t gpuIntersectionTasks = 0;
+    uint64_t wholeComponentJobs = 0;
+    uint64_t hardEdgeCandidates = 0;
     int greedySteps = 0;
+    int complexitySelections = 0;
+    int localComponentPlacements = 0;
+    int wholeComponentPlacements = 0;
+    int hardEdgePlacements = 0;
     int workerThreads = 0;
 };
 
@@ -515,7 +563,7 @@ enough decay information for an estimate.
 ## 11. Implementation and validation layout
 
 1. **Catalog adapter** — `ShapeGeometryStore` loads `shape_geometry.json.gz`; the
-   cover module reconstructs indexed `ShapeMesh` data for the nine ids, validates
+   cover module reconstructs indexed `ShapeMesh` data for the twelve ids, validates
    the §4 invariants, and recovers each boundary loop.
 2. **Jet type + differentiable clip kernel (§5)** — `Jet` with 6 partials;
    Sutherland–Hodgman clip of a constant subject against a moving convex triangle;
@@ -530,8 +578,9 @@ enough decay information for an estimate.
 5. **Clipper2 2.0.1** is vendored under `third_party/clipper2`; fixed six-decimal
    integer conversion wraps residual, footprint, union, and subtraction booleans.
    The initializer rasterizes world coordinates independently.
-6. **Single greedy step (§7)** — router + DT init + Adam + select. Test on a
-   convex region (should cover a disk with ~1 circle) then a concave one.
+6. **Single greedy step (§7)** — structural prepasses, global and component-local
+   routing, DT initialization, Adam, residual-complexity ranking, and exact
+   selection.
 7. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
 8. **Pen commit integration** sits behind the persistent, default-off
    Differentiable Pen Fill option. Bucket requires no separate solver integration
@@ -583,7 +632,7 @@ reference implementations to crib correctness from:
   becomes the bottleneck, cache `mayCover` clips and consider a scanline/raster
   residual for the *progress test* while keeping exact booleans only for the final
   subtraction.
-- **Affine-catalog ceiling.** Nine affine shapes cap how low the count can go;
+- **Affine-catalog ceiling.** Twelve affine shapes cap how low the count can go;
   organic regions benefit most, geometric ones barely — so gate the HQ mode to fire
   only where a cheap pre-estimate says the region is count-heavy. Richer shapes are
   a separate axis (a closed-form-fittable catalog extension), out of scope here.

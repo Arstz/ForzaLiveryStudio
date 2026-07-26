@@ -1,5 +1,6 @@
 #include "differentiable_cover.h"
 #include "differentiable_cover_gpu.h"
+#include "polygon_mesh.h"
 
 #include <clipper2/clipper.engine.h>
 
@@ -16,8 +17,9 @@
 namespace gui::cover {
 namespace {
 
-constexpr std::array<int, 9> kShapeIds = {
-    101, 102, 103, 109, 127, 129, 130, 139, 2123,
+constexpr std::array<int, 12> kShapeIds = {
+    101, 102, 103, 109, 127, 129, 130, 139, 2103, 2104,
+    2123, 2133,
 };
 constexpr double kGeometryEpsilon = 1e-10;
 constexpr double kClipperScale = 1000000.0;
@@ -37,6 +39,14 @@ constexpr double kMinimumAffineScale = 1e-6;
 constexpr double kLegalShrinkFactor = 0.9;
 constexpr int kLegalShrinkSteps = 64;
 constexpr int kGpuLegalizationBatchSteps = 8;
+constexpr double kHardBoundaryFraction = 0.6;
+constexpr double kComplexityGainWindow = 1.0;
+constexpr double kLocalRouterAdvantage = 0.75;
+constexpr double kLocalSelectionGainAdvantage = 1.05;
+constexpr double kLocalSelectionComplexityRatio = 0.95;
+constexpr double kComponentComplexityWeight = 8.0;
+constexpr double kHoleComplexityWeight = 16.0;
+constexpr double kPi = 3.14159265358979323846;
 
 struct Jet {
     std::array<double, kGradientCount> gradient{};
@@ -54,11 +64,19 @@ struct DistanceSeed {
     double radius = 0.0;
 };
 
+enum class CandidateOrigin {
+    Greedy,
+    LocalComponent,
+    WholeComponent,
+    HardEdge,
+};
+
 struct Candidate {
     Affine transform;
     int shapeId = 0;
     double covered = 0.0;
     double spill = 0.0;
+    CandidateOrigin origin = CandidateOrigin::Greedy;
     bool valid = false;
 };
 
@@ -71,6 +89,14 @@ struct CandidateInitialization {
 struct CandidateJob {
     const ShapeMesh *shape = nullptr;
     CandidateInitialization initialization;
+    Affine transform;
+    CandidateOrigin origin = CandidateOrigin::Greedy;
+    bool hasTransform = false;
+};
+
+struct FixedCandidate {
+    const ShapeMesh *shape = nullptr;
+    Affine transform;
 };
 
 struct CandidateProfile {
@@ -110,6 +136,29 @@ struct QueueNode {
 struct IntersectionJets {
     Jet covered;
     Jet legal;
+};
+
+struct ResidualComplexity {
+    double score = 0.0;
+    int components = 0;
+    int holes = 0;
+};
+
+struct CandidateSelection {
+    Candidate candidate;
+    Polygons residual;
+    double exactGain = 0.0;
+    bool complexityPreferred = false;
+    bool valid = false;
+};
+
+struct OrientedBounds {
+    QPointF center;
+    QPointF axisX;
+    QPointF axisY;
+    double extentX = 0.0;
+    double extentY = 0.0;
+    bool valid = false;
 };
 
 struct EvaluationBounds {
@@ -954,6 +1003,240 @@ Affine initialTransform(const ShapeMesh &shape,
     return result;
 }
 
+Affine initialTransform(const CandidateJob &job,
+                        const DistanceSeed &seed) {
+    if (job.hasTransform) {
+        return job.transform;
+    }
+
+    return initialTransform(
+        *job.shape,
+        seed,
+        job.initialization.angleOffset,
+        job.initialization.scaleFactor,
+        job.initialization.translationOffset);
+}
+
+OrientedBounds orientedBounds(const QVector<QPointF> &points) {
+    OrientedBounds result;
+    if (points.size() < 3) {
+        return result;
+    }
+
+    QPointF mean;
+    for (const QPointF &point : points) {
+        mean += point;
+    }
+    mean /= points.size();
+    double covarianceXX = 0.0;
+    double covarianceXY = 0.0;
+    double covarianceYY = 0.0;
+    for (const QPointF &point : points) {
+        const QPointF centered = point - mean;
+        covarianceXX += centered.x() * centered.x();
+        covarianceXY += centered.x() * centered.y();
+        covarianceYY += centered.y() * centered.y();
+    }
+    const double angle = 0.5 * std::atan2(
+        2.0 * covarianceXY, covarianceXX - covarianceYY);
+    result.axisX = QPointF(std::cos(angle), std::sin(angle));
+    result.axisY = QPointF(-result.axisX.y(), result.axisX.x());
+    double minimumX = std::numeric_limits<double>::max();
+    double minimumY = std::numeric_limits<double>::max();
+    double maximumX = std::numeric_limits<double>::lowest();
+    double maximumY = std::numeric_limits<double>::lowest();
+    for (const QPointF &point : points) {
+        const double projectedX =
+            QPointF::dotProduct(point, result.axisX);
+        const double projectedY =
+            QPointF::dotProduct(point, result.axisY);
+        minimumX = std::min(minimumX, projectedX);
+        minimumY = std::min(minimumY, projectedY);
+        maximumX = std::max(maximumX, projectedX);
+        maximumY = std::max(maximumY, projectedY);
+    }
+    result.extentX = maximumX - minimumX;
+    result.extentY = maximumY - minimumY;
+    result.center =
+        result.axisX * ((minimumX + maximumX) * 0.5)
+        + result.axisY * ((minimumY + maximumY) * 0.5);
+    result.valid =
+        result.extentX > kGeometryEpsilon
+        && result.extentY > kGeometryEpsilon;
+
+    return result;
+}
+
+Affine orientedBoundsTransform(const OrientedBounds &source,
+                               const OrientedBounds &target,
+                               double axisXSign,
+                               double axisYSign) {
+    const QPointF targetAxisX = target.axisX * axisXSign;
+    const QPointF targetAxisY = target.axisY * axisYSign;
+    const double scaleX = target.extentX / source.extentX;
+    const double scaleY = target.extentY / source.extentY;
+    Affine result;
+    result.a =
+        targetAxisX.x() * scaleX * source.axisX.x()
+        + targetAxisY.x() * scaleY * source.axisY.x();
+    result.b =
+        targetAxisX.y() * scaleX * source.axisX.x()
+        + targetAxisY.y() * scaleY * source.axisY.x();
+    result.c =
+        targetAxisX.x() * scaleX * source.axisX.y()
+        + targetAxisY.x() * scaleY * source.axisY.y();
+    result.d =
+        targetAxisX.y() * scaleX * source.axisX.y()
+        + targetAxisY.y() * scaleY * source.axisY.y();
+    result.e =
+        target.center.x()
+        - result.a * source.center.x()
+        - result.c * source.center.y();
+    result.f =
+        target.center.y()
+        - result.b * source.center.x()
+        - result.d * source.center.y();
+
+    return result;
+}
+
+QVector<CandidateJob> wholeComponentJobs(
+    const Polygons &residual,
+    const QVector<ShapeMesh> &catalog) {
+    QVector<QPolygonF> outerPolygons;
+    for (const QPolygonF &polygon : residual) {
+        if (signedArea(polygon) > kGeometryEpsilon) {
+            outerPolygons.push_back(polygon);
+        }
+    }
+    if (outerPolygons.isEmpty() && !residual.isEmpty()) {
+        outerPolygons.push_back(residual.front());
+    }
+
+    QVector<CandidateJob> result;
+    for (const QPolygonF &polygon : outerPolygons) {
+        const OrientedBounds target =
+            orientedBounds(QVector<QPointF>(polygon.cbegin(), polygon.cend()));
+        if (!target.valid) {
+            continue;
+        }
+        for (const ShapeMesh &shape : catalog) {
+            QVector<QPointF> shapePoints;
+            shapePoints.reserve(shape.boundary.size());
+            for (const Vec2 &point : shape.boundary) {
+                shapePoints.push_back(QPointF(point.x, point.y));
+            }
+            const OrientedBounds source = orientedBounds(shapePoints);
+            if (!source.valid) {
+                continue;
+            }
+            CandidateJob job;
+            job.shape = &shape;
+            job.transform = orientedBoundsTransform(
+                source, target, 1.0, 1.0);
+            job.origin = CandidateOrigin::WholeComponent;
+            job.hasTransform = true;
+            result.push_back(job);
+        }
+    }
+
+    return result;
+}
+
+const ShapeMesh *shapeById(const QVector<ShapeMesh> &catalog,
+                           int shapeId) {
+    const auto found = std::find_if(
+        catalog.cbegin(), catalog.cend(),
+        [shapeId](const ShapeMesh &shape) {
+            return shape.id == shapeId;
+        });
+
+    return found == catalog.cend() ? nullptr : &*found;
+}
+
+QPolygonF shapePolygon(const ShapeMesh &shape) {
+    QPolygonF result;
+    result.reserve(shape.boundary.size());
+    for (const Vec2 &point : shape.boundary) {
+        result.push_back(QPointF(point.x, point.y));
+    }
+
+    return result;
+}
+
+Affine fromQTransform(const QTransform &transform) {
+    return {
+        transform.m11(),
+        transform.m12(),
+        transform.m21(),
+        transform.m22(),
+        transform.dx(),
+        transform.dy(),
+    };
+}
+
+QVector<FixedCandidate> hardEdgeCandidates(
+    const QVector<ContourSpan> &boundarySpans,
+    const QVector<ShapeMesh> &catalog,
+    const std::function<bool()> &cancelled) {
+    QVector<FixedCandidate> result;
+    if (boundarySpans.size() < 3) {
+        return result;
+    }
+
+    double straightLength = 0.0;
+    double totalLength = 0.0;
+    PolygonMeshRequest request;
+    request.points.reserve(boundarySpans.size());
+    for (const ContourSpan &span : boundarySpans) {
+        request.points.push_back(span.start);
+        const double chordLength =
+            QLineF(span.start, span.end).length();
+        const double spanLength = span.curved
+            ? QLineF(span.start, span.control).length()
+                + QLineF(span.control, span.end).length()
+            : chordLength;
+        totalLength += spanLength;
+        if (!span.curved) {
+            straightLength += chordLength;
+        }
+    }
+    if (straightLength
+        < totalLength * kHardBoundaryFraction) {
+        return result;
+    }
+
+    const ShapeMesh *square = shapeById(catalog, 101);
+    const ShapeMesh *triangle = shapeById(catalog, 103);
+    if (square == nullptr || triangle == nullptr) {
+        return result;
+    }
+    request.sources.square = shapePolygon(*square);
+    request.sources.triangle = shapePolygon(*triangle);
+    const PolygonMeshResult mesh = meshPolygon(request, cancelled);
+    if (!mesh.error.isEmpty() || mesh.cancelled) {
+        return result;
+    }
+
+    const bool entirelyStraight =
+        straightLength >= totalLength - kGeometryEpsilon;
+    result.reserve(mesh.placements.size());
+    for (const PolygonMeshPlacement &placement : mesh.placements) {
+        if (!entirelyStraight && placement.shapeId != 101) {
+            continue;
+        }
+        const ShapeMesh *shape = shapeById(catalog, placement.shapeId);
+        if (shape != nullptr) {
+            result.push_back({
+                shape,
+                fromQTransform(placement.transform),
+            });
+        }
+    }
+
+    return result;
+}
+
 std::array<double, kGradientCount> affineValues(const Affine &transform) {
     return {
         transform.a, transform.b, transform.c,
@@ -1026,22 +1309,19 @@ Candidate legalCandidate(const ShapeMesh &shape,
 }
 
 CandidateJobResult optimizeCandidate(
-    const ShapeMesh &shape,
+    const CandidateJob &job,
     const Polygons &residual,
     const Polygons &mayCover,
     const EvaluationBounds &subjectBounds,
     const FillOptions &options,
     const DistanceSeed &seed,
-    const CandidateInitialization &initialization,
     const std::function<bool()> &cancelled) {
     QElapsedTimer jobTimer;
     jobTimer.start();
     CandidateJobResult result;
-    std::array<double, kGradientCount> values = affineValues(
-        initialTransform(shape, seed,
-                         initialization.angleOffset,
-                         initialization.scaleFactor,
-                         initialization.translationOffset));
+    const ShapeMesh &shape = *job.shape;
+    std::array<double, kGradientCount> values =
+        affineValues(initialTransform(job, seed));
     std::array<double, kGradientCount> firstMoment{};
     std::array<double, kGradientCount> secondMoment{};
     result.candidate = legalCandidate(
@@ -1320,12 +1600,7 @@ bool optimizeCandidatesGpu(
     for (const CandidateJob &job : jobs) {
         GpuCandidateState state;
         state.job = &job;
-        state.values = affineValues(
-            initialTransform(
-                *job.shape, seed,
-                job.initialization.angleOffset,
-                job.initialization.scaleFactor,
-                job.initialization.translationOffset));
+        state.values = affineValues(initialTransform(job, seed));
         states.push_back(state);
     }
 
@@ -1524,12 +1799,117 @@ CandidateInitialization candidateInitialization(
     return result;
 }
 
+double polygonPerimeter(const Polygons &polygons) {
+    double result = 0.0;
+    for (const QPolygonF &polygon : polygons) {
+        for (int index = 0; index < polygon.size(); ++index) {
+            result += QLineF(
+                polygon[index],
+                polygon[(index + 1) % polygon.size()]).length();
+        }
+    }
+
+    return result;
+}
+
+ResidualComplexity residualComplexity(const Polygons &polygons) {
+    ResidualComplexity result;
+    QVector<QPointF> points;
+    for (const QPolygonF &polygon : polygons) {
+        points += polygon;
+        if (signedArea(polygon) >= 0.0) {
+            ++result.components;
+        } else {
+            ++result.holes;
+        }
+    }
+    if (!polygons.isEmpty() && result.components == 0) {
+        result.components = polygons.size();
+        result.holes = 0;
+    }
+    const double area = std::max(
+        kGeometryEpsilon, polygonSetArea(polygons));
+    const double perimeter = polygonPerimeter(polygons);
+    result.score =
+        perimeter * perimeter / (4.0 * kPi * area)
+        + kComponentComplexityWeight
+            * std::max(0, result.components - 1)
+        + kHoleComplexityWeight * result.holes;
+
+    return result;
+}
+
+Polygons componentAtPoint(const Polygons &polygons,
+                          const QPointF &point) {
+    int outerIndex = -1;
+    double outerArea = std::numeric_limits<double>::max();
+    for (int index = 0; index < polygons.size(); ++index) {
+        const double area = signedArea(polygons[index]);
+        if (area > kGeometryEpsilon
+            && std::abs(area) < outerArea
+            && polygons[index].containsPoint(point, Qt::OddEvenFill)) {
+            outerIndex = index;
+            outerArea = std::abs(area);
+        }
+    }
+    if (outerIndex < 0) {
+        for (int index = 0; index < polygons.size(); ++index) {
+            const double area = std::abs(signedArea(polygons[index]));
+            if (area > kGeometryEpsilon
+                && (outerIndex < 0 || area > outerArea)) {
+                outerIndex = index;
+                outerArea = area;
+            }
+        }
+    }
+    if (outerIndex < 0) {
+        return polygons;
+    }
+
+    Polygons result{polygons[outerIndex]};
+    const QPolygonF &outer = polygons[outerIndex];
+    for (int index = 0; index < polygons.size(); ++index) {
+        if (index == outerIndex || polygons[index].isEmpty()
+            || signedArea(polygons[index]) >= 0.0) {
+            continue;
+        }
+        if (outer.containsPoint(
+                polygons[index].front(), Qt::OddEvenFill)) {
+            result.push_back(polygons[index]);
+        }
+    }
+
+    return result;
+}
+
 double descriptorAspect(const QRectF &bounds) {
     const double minimum = std::max(
-        kGeometryEpsilon, std::min(bounds.width(), bounds.height()));
-    const double maximum = std::max(bounds.width(), bounds.height());
+        kGeometryEpsilon,
+        std::min(bounds.width(), bounds.height()));
+    const double maximum =
+        std::max(bounds.width(), bounds.height());
 
     return maximum / minimum;
+}
+
+double descriptorDistance(const ShapeMesh &shape,
+                          const Polygons &residual) {
+    const QRectF residualBounds = polygonBounds(residual);
+    const QRectF shapeBoundsValue = shapeBounds(shape);
+    const double residualArea = std::max(
+        kGeometryEpsilon,
+        residualBounds.width() * residualBounds.height());
+    const double shapeArea = std::max(
+        kGeometryEpsilon,
+        shapeBoundsValue.width() * shapeBoundsValue.height());
+    const double residualFill =
+        polygonSetArea(residual) / residualArea;
+    const double shapeFill = shape.area / shapeArea;
+
+    return std::abs(
+               std::log(descriptorAspect(shapeBoundsValue))
+               - std::log(descriptorAspect(residualBounds)))
+        + 2.0 * std::abs(shapeFill - residualFill);
 }
 
 QVector<const ShapeMesh *> routedShapes(const Polygons &residual,
@@ -1549,30 +1929,13 @@ QVector<const ShapeMesh *> routedShapes(const Polygons &residual,
         return result;
     }
 
-    const QRectF residualBounds = polygonBounds(residual);
-    const double residualAspect = descriptorAspect(residualBounds);
-    const double residualFill = polygonSetArea(residual)
-        / std::max(kGeometryEpsilon,
-                   residualBounds.width() * residualBounds.height());
     std::stable_sort(result.begin(), result.end(),
-                     [residualAspect, residualFill](
+                     [&residual](
                          const ShapeMesh *left, const ShapeMesh *right) {
-                         const QRectF leftBounds = shapeBounds(*left);
-                         const QRectF rightBounds = shapeBounds(*right);
-                         const double leftFill = left->area
-                             / std::max(kGeometryEpsilon,
-                                        leftBounds.width() * leftBounds.height());
-                         const double rightFill = right->area
-                             / std::max(kGeometryEpsilon,
-                                        rightBounds.width() * rightBounds.height());
                          const double leftDistance =
-                             std::abs(std::log(descriptorAspect(leftBounds))
-                                      - std::log(residualAspect))
-                             + 2.0 * std::abs(leftFill - residualFill);
+                             descriptorDistance(*left, residual);
                          const double rightDistance =
-                             std::abs(std::log(descriptorAspect(rightBounds))
-                                      - std::log(residualAspect))
-                             + 2.0 * std::abs(rightFill - residualFill);
+                             descriptorDistance(*right, residual);
                          if (std::abs(leftDistance - rightDistance)
                              > kGeometryEpsilon) {
                              return leftDistance < rightDistance;
@@ -1580,6 +1943,181 @@ QVector<const ShapeMesh *> routedShapes(const Polygons &residual,
                          return left->id < right->id;
                      });
     result.resize(kRouterCandidateCount);
+
+    return result;
+}
+
+Candidate fixedCandidate(const FixedCandidate &fixed,
+                         const Polygons &residual,
+                         const Polygons &mayCover,
+                         const EvaluationBounds &subjectBounds,
+                         const FillOptions &options,
+                         CandidateProfile *profile) {
+    QElapsedTimer timer;
+    timer.start();
+    const AreaGradient evaluation = areaGradient(
+        *fixed.shape, fixed.transform,
+        residual, mayCover, subjectBounds);
+    ++profile->legalizationEvaluations;
+    profile->legalizationNanoseconds += timer.nsecsElapsed();
+    Candidate result;
+    if (!finiteGradient(evaluation)
+        || evaluation.spill > options.epsSpill
+        || evaluation.covered < options.epsGain) {
+        return result;
+    }
+    result.transform = fixed.transform;
+    result.shapeId = fixed.shape->id;
+    result.covered = evaluation.covered;
+    result.spill = std::max(0.0, evaluation.spill);
+    result.origin = CandidateOrigin::HardEdge;
+    result.valid = true;
+
+    return result;
+}
+
+CandidateSelection selectCandidate(
+    const QVector<Candidate> &candidates,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &residual,
+    double epsGain) {
+    CandidateSelection result;
+    const bool havePrimary = std::any_of(
+        candidates.cbegin(), candidates.cend(),
+        [](const Candidate &candidate) {
+            return candidate.valid
+                && candidate.origin
+                    != CandidateOrigin::LocalComponent;
+        });
+    if (!havePrimary) {
+        return result;
+    }
+    double maximumCovered = 0.0;
+    for (const Candidate &candidate : candidates) {
+        if (candidate.valid
+            && candidate.origin
+                != CandidateOrigin::LocalComponent) {
+            maximumCovered =
+                std::max(maximumCovered, candidate.covered);
+        }
+    }
+    if (maximumCovered < epsGain) {
+        return result;
+    }
+
+    struct ScoredCandidate {
+        Candidate candidate;
+        Polygons residual;
+        double exactGain = 0.0;
+        double complexity = 0.0;
+    };
+    QVector<ScoredCandidate> scored;
+    const double previousArea = polygonSetArea(residual);
+    for (const Candidate &candidate : candidates) {
+        if (!candidate.valid) {
+            continue;
+        }
+        const bool local =
+            candidate.origin == CandidateOrigin::LocalComponent;
+        if ((local
+             && candidate.covered
+                 < maximumCovered
+                     * kLocalSelectionGainAdvantage)
+            || (!local
+                && candidate.covered
+                    < maximumCovered
+                        * kComplexityGainWindow)) {
+            continue;
+        }
+        const ShapeMesh *shape = shapeById(catalog, candidate.shapeId);
+        if (shape == nullptr) {
+            continue;
+        }
+        const Polygons footprint{
+            transformedBoundary(*shape, candidate.transform),
+        };
+        Polygons nextResidual =
+            differencePolygons(residual, footprint);
+        const double exactGain =
+            previousArea - polygonSetArea(nextResidual);
+        if (!std::isfinite(exactGain) || exactGain < epsGain) {
+            continue;
+        }
+        scored.push_back({
+            candidate,
+            std::move(nextResidual),
+            exactGain,
+            0.0,
+        });
+    }
+    if (scored.isEmpty()) {
+        return result;
+    }
+
+    double primaryComplexity =
+        std::numeric_limits<double>::max();
+    for (ScoredCandidate &candidate : scored) {
+        candidate.complexity =
+            residualComplexity(candidate.residual).score;
+        if (candidate.candidate.origin
+            != CandidateOrigin::LocalComponent) {
+            primaryComplexity = std::min(
+                primaryComplexity, candidate.complexity);
+        }
+    }
+    int areaWinner = -1;
+    for (int index = 0; index < scored.size(); ++index) {
+        if (scored[index].candidate.origin
+                == CandidateOrigin::LocalComponent
+            && scored[index].complexity
+                > primaryComplexity
+                    * kLocalSelectionComplexityRatio) {
+            continue;
+        }
+        if (areaWinner < 0
+            || betterCandidate(
+                scored[index].candidate,
+                scored[areaWinner].candidate)) {
+            areaWinner = index;
+        }
+    }
+    if (areaWinner < 0) {
+        return result;
+    }
+    int winner = -1;
+    for (int index = 0; index < scored.size(); ++index) {
+        if (std::abs(
+                scored[index].candidate.covered
+                - scored[areaWinner].candidate.covered)
+            > kGeometryEpsilon) {
+            continue;
+        }
+        if (scored[index].candidate.origin
+                == CandidateOrigin::LocalComponent
+            && scored[index].complexity
+                > primaryComplexity
+                    * kLocalSelectionComplexityRatio) {
+            continue;
+        }
+        if (winner < 0
+            || scored[index].complexity
+                < scored[winner].complexity - kGeometryEpsilon
+            || (std::abs(
+                    scored[index].complexity
+                    - scored[winner].complexity)
+                    <= kGeometryEpsilon
+                && betterCandidate(
+                    scored[index].candidate,
+                    scored[winner].candidate))) {
+            winner = index;
+        }
+    }
+    result.candidate = scored[winner].candidate;
+    result.candidate.covered = scored[winner].exactGain;
+    result.residual = std::move(scored[winner].residual);
+    result.exactGain = scored[winner].exactGain;
+    result.complexityPreferred = winner != areaWinner;
+    result.valid = true;
 
     return result;
 }
@@ -1759,6 +2297,9 @@ FillResult analyticCoverFill(
 
     result.residual = mustCover;
     const double targetArea = polygonSetArea(mustCover);
+    const QVector<FixedCandidate> hardCandidates =
+        hardEdgeCandidates(input.boundarySpans, catalog, cancelled);
+    result.profile.hardEdgeCandidates = hardCandidates.size();
     QElapsedTimer elapsed;
     elapsed.start();
     QVector<double> acceptedGains;
@@ -1825,17 +2366,69 @@ FillResult analyticCoverFill(
             individualPolygonBounds(mayCover),
         };
         const DistanceSeed seed = distanceSeed(result.residual);
-        const QVector<const ShapeMesh *> candidates =
+        const Polygons routedComponent =
+            componentAtPoint(result.residual, seed.point);
+        QVector<const ShapeMesh *> candidates =
             routedShapes(result.residual, catalog, options.useRouter);
+        const ResidualComplexity structure =
+            residualComplexity(result.residual);
+        QSet<const ShapeMesh *> localFallbackShapes;
+        if (options.useRouter && structure.components > 1) {
+            const QVector<const ShapeMesh *> localCandidates =
+                routedShapes(
+                    routedComponent, catalog, options.useRouter);
+            double globalComponentDistance =
+                std::numeric_limits<double>::max();
+            for (const ShapeMesh *shape : candidates) {
+                globalComponentDistance = std::min(
+                    globalComponentDistance,
+                    descriptorDistance(
+                        *shape, routedComponent));
+            }
+            for (const ShapeMesh *shape : localCandidates) {
+                if (!candidates.contains(shape)
+                    && descriptorDistance(
+                           *shape, routedComponent)
+                        < globalComponentDistance
+                            * kLocalRouterAdvantage) {
+                    candidates.push_back(shape);
+                    localFallbackShapes.insert(shape);
+                    break;
+                }
+            }
+        }
         std::vector<CandidateJob> jobs;
         jobs.reserve(static_cast<size_t>(
             candidates.size() * (options.restarts + 1)));
+        std::mt19937_64 localRandom;
+        bool localRandomReady = false;
         for (const ShapeMesh *shape : candidates) {
+            const bool local =
+                localFallbackShapes.contains(shape);
+            if (local && !localRandomReady) {
+                localRandom = random;
+                localRandomReady = true;
+            }
             for (int restart = 0; restart <= options.restarts; ++restart) {
-                jobs.push_back({
-                    shape,
-                    candidateInitialization(seed, restart, &random),
-                });
+                CandidateJob job;
+                job.shape = shape;
+                job.initialization =
+                    candidateInitialization(
+                        seed, restart,
+                        local ? &localRandom : &random);
+                job.origin = local
+                    ? CandidateOrigin::LocalComponent
+                    : CandidateOrigin::Greedy;
+                jobs.push_back(job);
+            }
+        }
+        if (result.placements.isEmpty()) {
+            const QVector<CandidateJob> componentJobs =
+                wholeComponentJobs(result.residual, catalog);
+            result.profile.wholeComponentJobs +=
+                componentJobs.size();
+            for (const CandidateJob &job : componentJobs) {
+                jobs.push_back(job);
             }
         }
         result.profile.greedySetupWallSeconds +=
@@ -1852,7 +2445,8 @@ FillResult analyticCoverFill(
             usedGpu = optimizeCandidatesGpu(
                 jobs, result.residual, mayCover, subjectBounds,
                 options, seed, gpuEvaluator.get(), &candidatePool,
-                &result.profile, cancelled, &gpuResults, &gpuCancelled);
+                &result.profile, cancelled,
+                &gpuResults, &gpuCancelled);
             if (usedGpu) {
                 for (size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex) {
                     if (!gpuResults[jobIndex].valid) {
@@ -1873,15 +2467,39 @@ FillResult analyticCoverFill(
                 candidatePool.start([&, jobIndex]() {
                     const CandidateJob &job = jobs[jobIndex];
                     jobResults[jobIndex] = optimizeCandidate(
-                        *job.shape, result.residual, mayCover, subjectBounds,
-                        options, seed, job.initialization, cancelled);
+                        job, result.residual, mayCover, subjectBounds,
+                        options, seed, cancelled);
                 });
             }
             candidatePool.waitForDone();
         }
+        QVector<Candidate> rankedCandidates;
+        rankedCandidates.reserve(
+            static_cast<qsizetype>(jobResults.size())
+            + hardCandidates.size());
+        for (size_t jobIndex = 0;
+             jobIndex < jobResults.size(); ++jobIndex) {
+            jobResults[jobIndex].candidate.origin =
+                jobs[jobIndex].origin;
+            rankedCandidates.push_back(
+                jobResults[jobIndex].candidate);
+        }
+        for (const FixedCandidate &fixed : hardCandidates) {
+            CandidateProfile fixedProfile;
+            rankedCandidates.push_back(fixedCandidate(
+                fixed, result.residual, mayCover,
+                subjectBounds, options, &fixedProfile));
+            result.profile.candidateWorkerSeconds +=
+                static_cast<double>(
+                    fixedProfile.legalizationNanoseconds) * 1e-9;
+            result.profile.legalizationWorkerSeconds +=
+                static_cast<double>(
+                    fixedProfile.legalizationNanoseconds) * 1e-9;
+            result.profile.legalizationEvaluations +=
+                fixedProfile.legalizationEvaluations;
+        }
         result.profile.candidateBatchWallSeconds +=
             static_cast<double>(candidateBatchTimer.nsecsElapsed()) * 1e-9;
-        Candidate best;
         for (const CandidateJobResult &jobResult : jobResults) {
             result.profile.candidateWorkerSeconds +=
                 static_cast<double>(jobResult.profile.totalNanoseconds) * 1e-9;
@@ -1895,9 +2513,6 @@ FillResult analyticCoverFill(
                 jobResult.profile.adamEvaluations;
             result.profile.legalizationEvaluations +=
                 jobResult.profile.legalizationEvaluations;
-            if (betterCandidate(jobResult.candidate, best)) {
-                best = jobResult.candidate;
-            }
         }
         if (cancelled && cancelled()) {
             result.cancelled = true;
@@ -1908,38 +2523,44 @@ FillResult analyticCoverFill(
             updateGpuProfile();
             return result;
         }
-        if (!best.valid) {
+        QElapsedTimer residualTimer;
+        residualTimer.start();
+        CandidateSelection selection = selectCandidate(
+            rankedCandidates, catalog,
+            result.residual, options.epsGain);
+        result.profile.residualUpdateWallSeconds +=
+            static_cast<double>(residualTimer.nsecsElapsed()) * 1e-9;
+        if (!selection.valid) {
             result.stalled = true;
             break;
         }
-
-        QElapsedTimer residualTimer;
-        residualTimer.start();
-        const Polygons footprint{transformedBoundary(
-            *std::find_if(catalog.cbegin(), catalog.cend(),
-                          [&best](const ShapeMesh &shape) {
-                              return shape.id == best.shapeId;
-                          }),
-            best.transform)};
-        Polygons nextResidual = differencePolygons(result.residual, footprint);
-        const double previousArea = polygonSetArea(result.residual);
-        const double nextArea = polygonSetArea(nextResidual);
-        const double exactGain = previousArea - nextArea;
-        result.profile.residualUpdateWallSeconds +=
-            static_cast<double>(residualTimer.nsecsElapsed()) * 1e-9;
-        if (!std::isfinite(exactGain) || exactGain < options.epsGain) {
-            result.stalled = true;
-            break;
+        if (selection.complexityPreferred) {
+            ++result.profile.complexitySelections;
+        }
+        if (selection.candidate.origin
+            == CandidateOrigin::LocalComponent) {
+            ++result.profile.localComponentPlacements;
+        } else if (selection.candidate.origin
+            == CandidateOrigin::WholeComponent) {
+            ++result.profile.wholeComponentPlacements;
+        } else if (selection.candidate.origin
+                   == CandidateOrigin::HardEdge) {
+            ++result.profile.hardEdgePlacements;
         }
 
         result.placements.push_back({
-            best.transform,
-            best.shapeId,
-            exactGain,
+            selection.candidate.transform,
+            selection.candidate.shapeId,
+            selection.exactGain,
         });
+        const ShapeMesh *selectedShape =
+            shapeById(catalog, selection.candidate.shapeId);
+        const Polygons footprint{transformedBoundary(
+            *selectedShape, selection.candidate.transform)};
         footprints += footprint;
-        result.residual = std::move(nextResidual);
-        acceptedGains.push_back(exactGain);
+        result.residual = std::move(selection.residual);
+        const double nextArea = polygonSetArea(result.residual);
+        acceptedGains.push_back(selection.exactGain);
         if (progress) {
             const double elapsedSeconds =
                 static_cast<double>(elapsed.elapsed()) / 1000.0;

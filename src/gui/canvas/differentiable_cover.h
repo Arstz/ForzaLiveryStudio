@@ -57,9 +57,17 @@ struct Placement {
 
 using Polygons = QVector<QPolygonF>;
 
+struct ContourSpan {
+    QPointF start;
+    QPointF control;
+    QPointF end;
+    bool curved = false;
+};
+
 struct FillInput {
     Polygons mustCover;
     Polygons mayCover;
+    QVector<ContourSpan> boundarySpans;
     QImage mask;
     QRectF maskBounds;
 };
@@ -96,7 +104,13 @@ struct FillProfile {
     std::uint64_t legalizationEvaluations = 0;
     std::uint64_t gpuBatches = 0;
     std::uint64_t gpuIntersectionTasks = 0;
+    std::uint64_t wholeComponentJobs = 0;
+    std::uint64_t hardEdgeCandidates = 0;
     int greedySteps = 0;
+    int complexitySelections = 0;
+    int localComponentPlacements = 0;
+    int wholeComponentPlacements = 0;
+    int hardEdgePlacements = 0;
     int workerThreads = 0;
 };
 

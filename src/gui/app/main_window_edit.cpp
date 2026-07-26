@@ -148,7 +148,25 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("gpuIntersectionTasks"),
             static_cast<qint64>(profile->gpuIntersectionTasks));
         profileObject.insert(
+            QStringLiteral("wholeComponentJobs"),
+            static_cast<qint64>(profile->wholeComponentJobs));
+        profileObject.insert(
+            QStringLiteral("hardEdgeCandidates"),
+            static_cast<qint64>(profile->hardEdgeCandidates));
+        profileObject.insert(
             QStringLiteral("greedySteps"), profile->greedySteps);
+        profileObject.insert(
+            QStringLiteral("complexitySelections"),
+            profile->complexitySelections);
+        profileObject.insert(
+            QStringLiteral("localComponentPlacements"),
+            profile->localComponentPlacements);
+        profileObject.insert(
+            QStringLiteral("wholeComponentPlacements"),
+            profile->wholeComponentPlacements);
+        profileObject.insert(
+            QStringLiteral("hardEdgePlacements"),
+            profile->hardEdgePlacements);
         profileObject.insert(
             QStringLiteral("workerThreads"), profile->workerThreads);
         resultObject.insert(QStringLiteral("profile"), profileObject);
@@ -258,6 +276,15 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         cover::FillInput input;
         input.mustCover = polygons;
         input.mayCover = polygons;
+        input.boundarySpans.reserve(contour.segments.size());
+        for (const PenBoundarySegment &segment : contour.segments) {
+            input.boundarySpans.push_back({
+                segment.start,
+                segment.control,
+                segment.end,
+                segment.curved,
+            });
+        }
         cover::FillOptions options;
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(

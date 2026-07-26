@@ -201,6 +201,23 @@ public:
                 > std::numeric_limits<std::uint32_t>::max()
             || scratchCount * 2ULL * sizeof(cuda::JetPoint)
                 > kMaximumScratchBytes) {
+            if (requests.size() > 1) {
+                const qsizetype middle = requests.size() / 2;
+                QVector<AreaGradient> firstResults;
+                QVector<AreaGradient> secondResults;
+                if (!evaluate(
+                        requests.mid(0, middle),
+                        &firstResults)
+                    || !evaluate(
+                        requests.mid(middle),
+                        &secondResults)) {
+                    return false;
+                }
+                *results = std::move(firstResults);
+                *results += secondResults;
+
+                return true;
+            }
             return disable(
                 QStringLiteral(
                     "CUDA evaluation buffers exceed capacity"));

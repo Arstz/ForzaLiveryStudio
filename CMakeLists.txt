@@ -353,6 +353,7 @@ if(BUILD_TESTING)
         tools/differentiable_cover_test.cpp
         src/gui/canvas/differentiable_cover.cpp
         src/gui/canvas/differentiable_cover_gpu.cpp
+        src/gui/canvas/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_differentiable_cover_tests PRIVATE
