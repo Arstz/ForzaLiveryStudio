@@ -75,6 +75,7 @@ struct FillOptions {
     double adamLearningRate = kDefaultAdamLearningRate;
     std::uint64_t seed = 0;
     bool useRouter = true;
+    bool useGpu = true;
 };
 
 struct FillProfile {
@@ -86,9 +87,15 @@ struct FillProfile {
     double legalizationWorkerSeconds = 0.0;
     double residualUpdateWallSeconds = 0.0;
     double finalMeasurementWallSeconds = 0.0;
+    double gpuEvaluationWallSeconds = 0.0;
+    QString evaluationBackend;
+    QString gpuAdapter;
+    QString gpuError;
     std::uint64_t candidateJobs = 0;
     std::uint64_t adamEvaluations = 0;
     std::uint64_t legalizationEvaluations = 0;
+    std::uint64_t gpuBatches = 0;
+    std::uint64_t gpuIntersectionTasks = 0;
     int greedySteps = 0;
     int workerThreads = 0;
 };

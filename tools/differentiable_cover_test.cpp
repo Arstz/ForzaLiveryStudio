@@ -1,4 +1,5 @@
 #include "differentiable_cover.h"
+#include "differentiable_cover_gpu.h"
 #include "pen_fill.h"
 
 #include <QtCore>
@@ -100,6 +101,66 @@ bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
                        <= kGradientTolerance * spillScale,
                    "analytic spill-area gradient differs from finite difference")) {
             return false;
+        }
+    }
+
+    std::unique_ptr<cover::GpuAreaEvaluator> gpu =
+        cover::createGpuAreaEvaluator(catalog);
+    if (gpu->available()) {
+        QVector<cover::GpuEvaluationRequest> requests;
+        for (const cover::ShapeMesh &catalogShape : catalog) {
+            requests.push_back({&catalogShape, transform});
+            requests.push_back({
+                &catalogShape,
+                variedTransform(transform, 4, 0.25),
+            });
+        }
+        QVector<cover::AreaGradient> gpuEvaluations;
+        if (!check(gpu->setSubjects(subjects, legalSubjects)
+                       && gpu->evaluate(requests, &gpuEvaluations)
+                       && gpuEvaluations.size() == requests.size(),
+                   "GPU area-gradient evaluation failed")) {
+            return false;
+        }
+        for (int evaluationIndex = 0;
+             evaluationIndex < gpuEvaluations.size(); ++evaluationIndex) {
+            const cover::AreaGradient expected =
+                cover::evaluateAreaGradient(
+                    *requests[evaluationIndex].shape,
+                    requests[evaluationIndex].transform,
+                    subjects, legalSubjects);
+            const cover::AreaGradient &actual =
+                gpuEvaluations[evaluationIndex];
+            const double coveredScale =
+                std::max(1.0, std::abs(expected.covered));
+            const double spillScale =
+                std::max(1.0, std::abs(expected.spill));
+            if (!check(
+                    std::abs(actual.covered - expected.covered)
+                            <= 1e-4 * coveredScale
+                        && std::abs(actual.spill - expected.spill)
+                            <= 1e-4 * spillScale,
+                    "GPU area values differ from the CPU evaluator")) {
+                return false;
+            }
+            for (int parameter = 0; parameter < 6; ++parameter) {
+                const double coveredGradientScale = std::max(
+                    1.0, std::abs(expected.coveredGradient[parameter]));
+                const double spillGradientScale = std::max(
+                    1.0, std::abs(expected.spillGradient[parameter]));
+                if (!check(
+                        std::abs(
+                            actual.coveredGradient[parameter]
+                            - expected.coveredGradient[parameter])
+                                <= 2e-3 * coveredGradientScale
+                            && std::abs(
+                                actual.spillGradient[parameter]
+                                - expected.spillGradient[parameter])
+                                <= 2e-3 * spillGradientScale,
+                        "GPU area gradients differ from the CPU evaluator")) {
+                    return false;
+                }
+            }
         }
     }
 
@@ -263,13 +324,7 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                       && first.profile.totalWallSeconds > 0.0
                       && std::isfinite(
                           first.profile.candidateBatchWallSeconds)
-                      && first.profile.candidateBatchWallSeconds > 0.0
-                      && std::isfinite(
-                          first.profile.adamEvaluationWorkerSeconds)
-                      && first.profile.adamEvaluationWorkerSeconds > 0.0
-                      && std::isfinite(
-                          first.profile.legalizationWorkerSeconds)
-                      && first.profile.legalizationWorkerSeconds > 0.0,
+                      && first.profile.candidateBatchWallSeconds > 0.0,
                   "logged contour solver profiling times are invalid")
         || !check(first.profile.greedySteps > 0
                       && first.profile.workerThreads > 0
@@ -277,6 +332,15 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                       && first.profile.adamEvaluations > 0
                       && first.profile.legalizationEvaluations > 0,
                   "logged contour solver profiling counts are invalid")
+        || !check(
+            first.profile.evaluationBackend.contains(
+                QStringLiteral("Direct3D"))
+                ? (first.profile.gpuBatches > 0
+                   && first.profile.gpuEvaluationWallSeconds > 0.0
+                   && !first.profile.gpuAdapter.isEmpty())
+                : (first.profile.adamEvaluationWorkerSeconds > 0.0
+                   && first.profile.legalizationWorkerSeconds > 0.0),
+            "logged contour solver backend profiling is invalid")
         || !check(!progress.isEmpty() && progress.front().placementCount == 0,
                   "logged contour solver did not report initial progress")
         || !check(progress.back().placementCount == first.placements.size(),
@@ -318,7 +382,13 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     }
     std::cout << "logged contour: " << first.placements.size()
               << " placements, " << first.coveredArea
-              << " covered, " << first.residualArea << " residual\n";
+              << " covered, " << first.residualArea << " residual, "
+              << qPrintable(first.profile.evaluationBackend)
+              << ", " << first.profile.gpuBatches << " GPU batches";
+    if (!first.profile.gpuError.isEmpty()) {
+        std::cout << ", fallback: " << qPrintable(first.profile.gpuError);
+    }
+    std::cout << '\n';
 
     return true;
 }

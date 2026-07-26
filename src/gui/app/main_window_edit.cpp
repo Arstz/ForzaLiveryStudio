@@ -123,6 +123,16 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("finalMeasurementWallSeconds"),
             profile->finalMeasurementWallSeconds);
         profileObject.insert(
+            QStringLiteral("gpuEvaluationWallSeconds"),
+            profile->gpuEvaluationWallSeconds);
+        profileObject.insert(
+            QStringLiteral("evaluationBackend"),
+            profile->evaluationBackend);
+        profileObject.insert(
+            QStringLiteral("gpuAdapter"), profile->gpuAdapter);
+        profileObject.insert(
+            QStringLiteral("gpuError"), profile->gpuError);
+        profileObject.insert(
             QStringLiteral("candidateJobs"),
             static_cast<qint64>(profile->candidateJobs));
         profileObject.insert(
@@ -131,6 +141,12 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("legalizationEvaluations"),
             static_cast<qint64>(profile->legalizationEvaluations));
+        profileObject.insert(
+            QStringLiteral("gpuBatches"),
+            static_cast<qint64>(profile->gpuBatches));
+        profileObject.insert(
+            QStringLiteral("gpuIntersectionTasks"),
+            static_cast<qint64>(profile->gpuIntersectionTasks));
         profileObject.insert(
             QStringLiteral("greedySteps"), profile->greedySteps);
         profileObject.insert(

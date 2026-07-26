@@ -1,4 +1,5 @@
 #include "differentiable_cover.h"
+#include "differentiable_cover_gpu.h"
 
 #include <clipper2/clipper.engine.h>
 
@@ -35,6 +36,7 @@ constexpr double kInitialRadiusFraction = 0.8;
 constexpr double kMinimumAffineScale = 1e-6;
 constexpr double kLegalShrinkFactor = 0.9;
 constexpr int kLegalShrinkSteps = 64;
+constexpr int kGpuLegalizationBatchSteps = 8;
 
 struct Jet {
     std::array<double, kGradientCount> gradient{};
@@ -82,6 +84,18 @@ struct CandidateProfile {
 struct CandidateJobResult {
     Candidate candidate;
     CandidateProfile profile;
+};
+
+struct GpuCandidateState {
+    std::array<double, kGradientCount> values{};
+    std::array<double, kGradientCount> firstMoment{};
+    std::array<double, kGradientCount> secondMoment{};
+    Candidate best;
+    Candidate bestGpu;
+    const CandidateJob *job = nullptr;
+    double beta1Power = 1.0;
+    double beta2Power = 1.0;
+    bool active = true;
 };
 
 struct QueueNode {
@@ -1099,6 +1113,368 @@ CandidateJobResult optimizeCandidate(
     return result;
 }
 
+bool evaluateGpuBatch(
+    GpuAreaEvaluator *evaluator,
+    const QVector<GpuEvaluationRequest> &requests,
+    QVector<AreaGradient> *evaluations,
+    FillProfile *profile,
+    bool legalization) {
+    if (!evaluator->evaluate(requests, evaluations)) {
+        return false;
+    }
+    if (legalization) {
+        profile->legalizationEvaluations += requests.size();
+    } else {
+        profile->adamEvaluations += requests.size();
+    }
+
+    return true;
+}
+
+void evaluateCpuBatch(
+    const QVector<GpuEvaluationRequest> &requests,
+    const Polygons &residual,
+    const Polygons &mayCover,
+    const EvaluationBounds &subjectBounds,
+    QThreadPool *candidatePool,
+    QVector<AreaGradient> *evaluations,
+    FillProfile *profile) {
+    evaluations->fill({}, requests.size());
+    std::vector<qint64> durations(
+        static_cast<size_t>(requests.size()));
+    for (int requestIndex = 0; requestIndex < requests.size();
+         ++requestIndex) {
+        candidatePool->start([&, requestIndex]() {
+            QElapsedTimer timer;
+            timer.start();
+            const GpuEvaluationRequest &request = requests[requestIndex];
+            (*evaluations)[requestIndex] = areaGradient(
+                *request.shape, request.transform,
+                residual, mayCover, subjectBounds);
+            durations[static_cast<size_t>(requestIndex)] =
+                timer.nsecsElapsed();
+        });
+    }
+    candidatePool->waitForDone();
+    for (const qint64 duration : durations) {
+        const double seconds = static_cast<double>(duration) * 1e-9;
+        profile->candidateWorkerSeconds += seconds;
+        profile->adamEvaluationWorkerSeconds += seconds;
+    }
+    profile->adamEvaluations += requests.size();
+}
+
+bool legalCandidatesGpu(
+    const QVector<const ShapeMesh *> &shapes,
+    const QVector<Affine> &initialTransforms,
+    const FillOptions &options,
+    GpuAreaEvaluator *evaluator,
+    FillProfile *profile,
+    QVector<Candidate> *candidates,
+    const std::function<bool()> &cancelled,
+    bool *wasCancelled) {
+    QVector<int> pending;
+    pending.reserve(shapes.size());
+    for (int index = 0; index < shapes.size(); ++index) {
+        pending.push_back(index);
+    }
+    QVector<Affine> transforms = initialTransforms;
+    candidates->fill({}, shapes.size());
+    for (int step = 0;
+         step <= kLegalShrinkSteps && !pending.isEmpty();
+         step += kGpuLegalizationBatchSteps) {
+        if (cancelled && cancelled()) {
+            *wasCancelled = true;
+            return true;
+        }
+        const int batchSteps = std::min(
+            kGpuLegalizationBatchSteps,
+            kLegalShrinkSteps - step + 1);
+        QVector<GpuEvaluationRequest> requests;
+        requests.reserve(pending.size() * batchSteps);
+        for (const int pendingIndex : pending) {
+            Affine transform = transforms[pendingIndex];
+            for (int batchStep = 0; batchStep < batchSteps; ++batchStep) {
+                requests.push_back({
+                    shapes[pendingIndex],
+                    transform,
+                });
+                transform.a *= kLegalShrinkFactor;
+                transform.b *= kLegalShrinkFactor;
+                transform.c *= kLegalShrinkFactor;
+                transform.d *= kLegalShrinkFactor;
+            }
+        }
+        QVector<AreaGradient> evaluations;
+        if (!evaluateGpuBatch(
+                evaluator, requests, &evaluations, profile, true)) {
+            return false;
+        }
+
+        QVector<int> nextPending;
+        nextPending.reserve(pending.size());
+        for (int pendingOffset = 0; pendingOffset < pending.size();
+             ++pendingOffset) {
+            const int pendingIndex = pending[pendingOffset];
+            bool accepted = false;
+            for (int batchStep = 0; batchStep < batchSteps; ++batchStep) {
+                const int requestIndex =
+                    pendingOffset * batchSteps + batchStep;
+                const AreaGradient &evaluation = evaluations[requestIndex];
+                const double spillSlack = std::max(
+                    0.05, std::abs(evaluation.covered) * 1e-4);
+                if (!finiteGradient(evaluation)
+                    || evaluation.spill > options.epsSpill + spillSlack
+                    || evaluation.covered < options.epsGain * 0.5) {
+                    continue;
+                }
+                Candidate candidate;
+                candidate.transform = requests[requestIndex].transform;
+                candidate.shapeId = shapes[pendingIndex]->id;
+                candidate.covered = evaluation.covered;
+                candidate.spill = std::max(0.0, evaluation.spill);
+                candidate.valid = true;
+                (*candidates)[pendingIndex] = candidate;
+                accepted = true;
+                break;
+            }
+            if (accepted) {
+                continue;
+            }
+            for (int batchStep = 0; batchStep < batchSteps; ++batchStep) {
+                transforms[pendingIndex].a *= kLegalShrinkFactor;
+                transforms[pendingIndex].b *= kLegalShrinkFactor;
+                transforms[pendingIndex].c *= kLegalShrinkFactor;
+                transforms[pendingIndex].d *= kLegalShrinkFactor;
+            }
+            nextPending.push_back(pendingIndex);
+        }
+        pending = std::move(nextPending);
+    }
+
+    return true;
+}
+
+void exactCandidatesCpuBatch(
+    const QVector<const ShapeMesh *> &shapes,
+    const QVector<Candidate> &gpuCandidates,
+    const Polygons &residual,
+    const Polygons &mayCover,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options,
+    QThreadPool *candidatePool,
+    FillProfile *profile,
+    QVector<Candidate> *candidates) {
+    candidates->fill({}, gpuCandidates.size());
+    std::vector<CandidateProfile> profiles(
+        static_cast<size_t>(gpuCandidates.size()));
+    for (int index = 0; index < gpuCandidates.size(); ++index) {
+        if (!gpuCandidates[index].valid) {
+            continue;
+        }
+        candidatePool->start([&, index]() {
+            (*candidates)[index] = legalCandidate(
+                *shapes[index], gpuCandidates[index].transform,
+                residual, mayCover, subjectBounds, options,
+                &profiles[static_cast<size_t>(index)]);
+        });
+    }
+    candidatePool->waitForDone();
+    for (const CandidateProfile &candidateProfile : profiles) {
+        const double seconds = static_cast<double>(
+            candidateProfile.legalizationNanoseconds) * 1e-9;
+        profile->candidateWorkerSeconds += seconds;
+        profile->legalizationWorkerSeconds += seconds;
+        profile->legalizationEvaluations +=
+            candidateProfile.legalizationEvaluations;
+    }
+}
+
+bool optimizeCandidatesGpu(
+    const std::vector<CandidateJob> &jobs,
+    const Polygons &residual,
+    const Polygons &mayCover,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options,
+    const DistanceSeed &seed,
+    GpuAreaEvaluator *evaluator,
+    QThreadPool *candidatePool,
+    FillProfile *profile,
+    const std::function<bool()> &cancelled,
+    std::vector<Candidate> *results,
+    bool *wasCancelled) {
+    QVector<GpuCandidateState> states;
+    states.reserve(static_cast<qsizetype>(jobs.size()));
+    for (const CandidateJob &job : jobs) {
+        GpuCandidateState state;
+        state.job = &job;
+        state.values = affineValues(
+            initialTransform(
+                *job.shape, seed,
+                job.initialization.angleOffset,
+                job.initialization.scaleFactor,
+                job.initialization.translationOffset));
+        states.push_back(state);
+    }
+
+    QVector<const ShapeMesh *> initialShapes;
+    QVector<Affine> initialTransforms;
+    initialShapes.reserve(states.size());
+    initialTransforms.reserve(states.size());
+    for (int index = 0; index < states.size(); ++index) {
+        initialShapes.push_back(states[index].job->shape);
+        initialTransforms.push_back(affineFromValues(states[index].values));
+    }
+    QVector<Candidate> initialGpuCandidates;
+    if (!legalCandidatesGpu(
+            initialShapes, initialTransforms, options, evaluator, profile,
+            &initialGpuCandidates, cancelled, wasCancelled)) {
+        return false;
+    }
+    QVector<Candidate> initialCandidates;
+    exactCandidatesCpuBatch(
+        initialShapes, initialGpuCandidates, residual, mayCover,
+        subjectBounds, options, candidatePool, profile,
+        &initialCandidates);
+    for (int index = 0; index < states.size(); ++index) {
+        states[index].best = initialCandidates[index];
+        states[index].bestGpu = initialGpuCandidates[index];
+    }
+
+    for (int iteration = 1; iteration <= options.adamIterations;
+         ++iteration) {
+        if (*wasCancelled || (cancelled && cancelled())) {
+            *wasCancelled = true;
+            break;
+        }
+
+        QVector<int> activeIndices;
+        QVector<GpuEvaluationRequest> requests;
+        for (int index = 0; index < states.size(); ++index) {
+            if (!states[index].active) {
+                continue;
+            }
+            activeIndices.push_back(index);
+            requests.push_back({
+                states[index].job->shape,
+                affineFromValues(states[index].values),
+            });
+        }
+        if (requests.isEmpty()) {
+            break;
+        }
+
+        QVector<AreaGradient> evaluations;
+        evaluateCpuBatch(
+            requests, residual, mayCover, subjectBounds,
+            candidatePool, &evaluations, profile);
+        QVector<int> legalIndices;
+        QVector<const ShapeMesh *> legalShapes;
+        QVector<Affine> legalTransforms;
+        for (int requestIndex = 0; requestIndex < activeIndices.size();
+             ++requestIndex) {
+            GpuCandidateState &state =
+                states[activeIndices[requestIndex]];
+            const AreaGradient &evaluation = evaluations[requestIndex];
+            if (!finiteGradient(evaluation)) {
+                state.active = false;
+                continue;
+            }
+
+            std::array<double, kGradientCount> scoreGradient{};
+            double gradientNormSquared = 0.0;
+            for (int parameter = 0; parameter < kGradientCount;
+                 ++parameter) {
+                scoreGradient[parameter] =
+                    evaluation.coveredGradient[parameter]
+                    - options.spillWeight
+                        * evaluation.spillGradient[parameter];
+                gradientNormSquared += scoreGradient[parameter]
+                    * scoreGradient[parameter];
+            }
+            const double gradientNorm = std::sqrt(gradientNormSquared);
+            if (gradientNorm <= kGradientStopNorm) {
+                state.active = false;
+                continue;
+            }
+            if (gradientNorm > kGradientNormLimit) {
+                const double factor = kGradientNormLimit / gradientNorm;
+                for (double &gradient : scoreGradient) {
+                    gradient *= factor;
+                }
+            }
+
+            state.beta1Power *= kAdamBeta1;
+            state.beta2Power *= kAdamBeta2;
+            for (int parameter = 0; parameter < kGradientCount;
+                 ++parameter) {
+                state.firstMoment[parameter] =
+                    kAdamBeta1 * state.firstMoment[parameter]
+                    + (1.0 - kAdamBeta1) * scoreGradient[parameter];
+                state.secondMoment[parameter] =
+                    kAdamBeta2 * state.secondMoment[parameter]
+                    + (1.0 - kAdamBeta2) * scoreGradient[parameter]
+                        * scoreGradient[parameter];
+                const double correctedFirst =
+                    state.firstMoment[parameter]
+                    / (1.0 - state.beta1Power);
+                const double correctedSecond =
+                    state.secondMoment[parameter]
+                    / (1.0 - state.beta2Power);
+                state.values[parameter] +=
+                    options.adamLearningRate * correctedFirst
+                    / (std::sqrt(correctedSecond) + kAdamEpsilon);
+            }
+            legalIndices.push_back(activeIndices[requestIndex]);
+            legalShapes.push_back(state.job->shape);
+            legalTransforms.push_back(affineFromValues(state.values));
+        }
+        if (legalIndices.isEmpty()) {
+            continue;
+        }
+
+        QVector<Candidate> gpuLegalCandidates;
+        if (!legalCandidatesGpu(
+                legalShapes, legalTransforms, options, evaluator,
+                profile, &gpuLegalCandidates, cancelled, wasCancelled)) {
+            return false;
+        }
+        QVector<int> competitiveIndices;
+        QVector<const ShapeMesh *> competitiveShapes;
+        QVector<Candidate> competitiveGpuCandidates;
+        for (int index = 0; index < legalIndices.size(); ++index) {
+            GpuCandidateState &state = states[legalIndices[index]];
+            if (betterCandidate(
+                    gpuLegalCandidates[index], state.bestGpu)) {
+                state.bestGpu = gpuLegalCandidates[index];
+                competitiveIndices.push_back(legalIndices[index]);
+                competitiveShapes.push_back(state.job->shape);
+                competitiveGpuCandidates.push_back(
+                    gpuLegalCandidates[index]);
+            }
+        }
+        QVector<Candidate> competitiveCandidates;
+        exactCandidatesCpuBatch(
+            competitiveShapes, competitiveGpuCandidates,
+            residual, mayCover, subjectBounds, options,
+            candidatePool, profile, &competitiveCandidates);
+        for (int index = 0; index < competitiveIndices.size(); ++index) {
+            GpuCandidateState &state = states[competitiveIndices[index]];
+            if (betterCandidate(competitiveCandidates[index], state.best)) {
+                state.best = competitiveCandidates[index];
+            }
+        }
+    }
+
+    results->clear();
+    results->reserve(jobs.size());
+    for (const GpuCandidateState &state : states) {
+        results->push_back(*wasCancelled ? Candidate{} : state.best);
+    }
+
+    return true;
+}
+
 CandidateInitialization candidateInitialization(
     const DistanceSeed &seed,
     int restart,
@@ -1375,6 +1751,30 @@ FillResult analyticCoverFill(
     candidatePool.setMaxThreadCount(
         std::max(1, QThread::idealThreadCount() - 1));
     result.profile.workerThreads = candidatePool.maxThreadCount();
+    std::unique_ptr<GpuAreaEvaluator> gpuEvaluator =
+        options.useGpu ? createGpuAreaEvaluator(catalog) : nullptr;
+    result.profile.evaluationBackend =
+        gpuEvaluator != nullptr && gpuEvaluator->available()
+        ? QStringLiteral("Hybrid Direct3D 11 compute")
+        : QStringLiteral("CPU");
+    auto updateGpuProfile = [&]() {
+        if (gpuEvaluator == nullptr) {
+            return;
+        }
+        const GpuEvaluatorStats stats = gpuEvaluator->stats();
+        result.profile.gpuAdapter = stats.adapter;
+        result.profile.gpuError = stats.error;
+        result.profile.gpuBatches = stats.batches;
+        result.profile.gpuIntersectionTasks = stats.intersectionTasks;
+        result.profile.gpuEvaluationWallSeconds = stats.wallSeconds;
+        if (!stats.error.isEmpty() && stats.batches > 0) {
+            result.profile.evaluationBackend =
+                QStringLiteral(
+                    "Hybrid Direct3D 11 compute with CPU fallback");
+        } else if (!stats.error.isEmpty()) {
+            result.profile.evaluationBackend = QStringLiteral("CPU");
+        }
+    };
     while (polygonSetArea(result.residual) > options.epsArea
            && result.placements.size() < options.budget) {
         if (cancelled && cancelled()) {
@@ -1383,6 +1783,7 @@ FillResult analyticCoverFill(
             result.coveredArea = targetArea - result.residualArea;
             result.profile.totalWallSeconds =
                 static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
+            updateGpuProfile();
             return result;
         }
 
@@ -1413,15 +1814,41 @@ FillResult analyticCoverFill(
         std::vector<CandidateJobResult> jobResults(jobs.size());
         QElapsedTimer candidateBatchTimer;
         candidateBatchTimer.start();
-        for (size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex) {
-            candidatePool.start([&, jobIndex]() {
-                const CandidateJob &job = jobs[jobIndex];
-                jobResults[jobIndex] = optimizeCandidate(
-                    *job.shape, result.residual, mayCover, subjectBounds,
-                    options, seed, job.initialization, cancelled);
-            });
+        bool usedGpu = false;
+        bool gpuCancelled = false;
+        if (gpuEvaluator != nullptr && gpuEvaluator->available()
+            && gpuEvaluator->setSubjects(result.residual, mayCover)) {
+            std::vector<Candidate> gpuResults;
+            usedGpu = optimizeCandidatesGpu(
+                jobs, result.residual, mayCover, subjectBounds,
+                options, seed, gpuEvaluator.get(), &candidatePool,
+                &result.profile, cancelled, &gpuResults, &gpuCancelled);
+            if (usedGpu) {
+                for (size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex) {
+                    if (!gpuResults[jobIndex].valid) {
+                        continue;
+                    }
+                    CandidateProfile exactProfile;
+                    jobResults[jobIndex].candidate = legalCandidate(
+                        *jobs[jobIndex].shape,
+                        gpuResults[jobIndex].transform,
+                        result.residual, mayCover, subjectBounds,
+                        options, &exactProfile);
+                    jobResults[jobIndex].profile = exactProfile;
+                }
+            }
         }
-        candidatePool.waitForDone();
+        if (!usedGpu && !gpuCancelled) {
+            for (size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex) {
+                candidatePool.start([&, jobIndex]() {
+                    const CandidateJob &job = jobs[jobIndex];
+                    jobResults[jobIndex] = optimizeCandidate(
+                        *job.shape, result.residual, mayCover, subjectBounds,
+                        options, seed, job.initialization, cancelled);
+                });
+            }
+            candidatePool.waitForDone();
+        }
         result.profile.candidateBatchWallSeconds +=
             static_cast<double>(candidateBatchTimer.nsecsElapsed()) * 1e-9;
         Candidate best;
@@ -1448,6 +1875,7 @@ FillResult analyticCoverFill(
             result.coveredArea = targetArea - result.residualArea;
             result.profile.totalWallSeconds =
                 static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
+            updateGpuProfile();
             return result;
         }
         if (!best.valid) {
@@ -1511,6 +1939,7 @@ FillResult analyticCoverFill(
         static_cast<double>(finalTimer.nsecsElapsed()) * 1e-9;
     result.profile.totalWallSeconds =
         static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
+    updateGpuProfile();
 
     return result;
 }

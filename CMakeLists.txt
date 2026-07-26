@@ -174,6 +174,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/bucket_fill.h
     src/gui/canvas/differentiable_cover.cpp
     src/gui/canvas/differentiable_cover.h
+    src/gui/canvas/differentiable_cover_gpu.cpp
+    src/gui/canvas/differentiable_cover_gpu.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
@@ -305,6 +307,7 @@ if(BUILD_TESTING)
     add_executable(fls_differentiable_cover_tests
         tools/differentiable_cover_test.cpp
         src/gui/canvas/differentiable_cover.cpp
+        src/gui/canvas/differentiable_cover_gpu.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_differentiable_cover_tests PRIVATE
@@ -317,6 +320,12 @@ if(BUILD_TESTING)
         Qt6::Gui
         ZLIB::ZLIB
     )
+    if(WIN32)
+        target_link_libraries(fls_differentiable_cover_tests PRIVATE
+            d3d11
+            d3dcompiler
+        )
+    endif()
     add_test(NAME differentiable_cover COMMAND fls_differentiable_cover_tests)
 endif()
 
