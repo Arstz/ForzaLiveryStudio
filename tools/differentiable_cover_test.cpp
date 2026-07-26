@@ -5,6 +5,7 @@
 #include <QtCore>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <iostream>
 
@@ -189,6 +190,112 @@ bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
     }
 
     return true;
+}
+
+bool testReflectedPlacementUnion(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr int kSquareShapeId = 101;
+    constexpr double kReflectionOffset = 300.0;
+    const cover::ShapeMesh *shape =
+        shapeById(catalog, kSquareShapeId);
+    if (!check(shape != nullptr,
+               "square analytic geometry is unavailable")) {
+        return false;
+    }
+
+    cover::Placement direct;
+    direct.shapeId = kSquareShapeId;
+    cover::Placement reflected;
+    reflected.shapeId = kSquareShapeId;
+    reflected.transform.a = -1.0;
+    reflected.transform.e = kReflectionOffset;
+    const double directArea =
+        cover::placementUnionAreaForTesting(
+            {direct}, catalog);
+    const double reflectedArea =
+        cover::placementUnionAreaForTesting(
+            {reflected}, catalog);
+    const double combinedArea =
+        cover::placementUnionAreaForTesting(
+            {direct, reflected}, catalog);
+    const double expectedArea =
+        directArea + reflectedArea;
+    const double tolerance =
+        std::max(1.0, expectedArea) * 1e-10;
+
+    return check(
+        directArea > 0.0
+            && reflectedArea > 0.0
+            && std::abs(
+                combinedArea - expectedArea)
+                <= tolerance,
+        "reflected placement reduced exact union coverage");
+}
+
+bool testPartialTermination(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr int kSquareShapeId = 101;
+    constexpr double kExtent = 100.0;
+    const cover::ShapeMesh *shape =
+        shapeById(catalog, kSquareShapeId);
+    if (!check(shape != nullptr,
+               "square analytic geometry is unavailable")) {
+        return false;
+    }
+
+    cover::FillInput input;
+    input.mustCover = {
+        QPolygonF{
+            QPointF(-kExtent, -kExtent),
+            QPointF(kExtent, -kExtent),
+            QPointF(kExtent, kExtent),
+            QPointF(-kExtent, kExtent),
+        },
+    };
+    input.mayCover = input.mustCover;
+    cover::FillOptions options;
+    options.budget = 2;
+    options.adamIterations = 12;
+    options.restarts = 0;
+    options.inactivityTimeoutSeconds = 0.0;
+    options.useGpu = false;
+    const QVector<cover::ShapeMesh> squareCatalog{
+        *shape,
+    };
+    std::atomic_bool cancellationRequested{false};
+    const cover::FillResult cancelled =
+        cover::analyticCoverFill(
+            input, squareCatalog, options,
+            [&cancellationRequested]() {
+                return cancellationRequested.load(
+                    std::memory_order_relaxed);
+            },
+            [&cancellationRequested](
+                const cover::FillProgress &progress) {
+                if (progress.placementCount > 0) {
+                    cancellationRequested.store(
+                        true,
+                        std::memory_order_relaxed);
+                }
+            });
+    if (!check(
+            cancelled.cancelled
+                && !cancelled.timedOut
+                && !cancelled.placements.isEmpty()
+                && cancelled.coveredArea > 0.0,
+            "cancelled cover did not retain its partial fill")) {
+        return false;
+    }
+
+    options.inactivityTimeoutSeconds = 1e-6;
+    const cover::FillResult timedOut =
+        cover::analyticCoverFill(
+            input, squareCatalog, options);
+
+    return check(
+        timedOut.cancelled
+            && timedOut.timedOut,
+        "inactive cover did not time out");
 }
 
 bool loadLoggedContour(QVector<PenPoint> *points, bool *available) {
@@ -525,6 +632,8 @@ int main(int argc, char **argv) {
     if (!check(error.isEmpty(),
                qPrintable(QStringLiteral("catalog build failed: %1").arg(error)))
         || !testCatalogAndGradient(catalog)
+        || !testReflectedPlacementUnion(catalog)
+        || !testPartialTermination(catalog)
         || !testLoggedContour(catalog)) {
         return 1;
     }

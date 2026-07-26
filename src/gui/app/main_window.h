@@ -167,7 +167,7 @@ private:
     void startGeneratedFillTask(GeneratedFillFunction fill);
     void clearGeneratedFillState();
     void cancelActiveFills();
-    void cancelGeneratedFill();
+    void cancelGeneratedFill(bool keepPartial = false);
     void updateGeneratedFillProgress(quint64 generation, int placementCount,
                                      double targetArea, double coveredArea,
                                      double etaSeconds);
@@ -303,6 +303,7 @@ private:
     double lastSelectedShapeScaleY_ = 1.0;
     std::shared_ptr<std::atomic_bool> generatedFillCancel_;
     quint64 generatedFillGeneration_ = 0;
+    bool generatedFillKeepPartialOnCancel_ = false;
     QVector<QString> generatedFillInsertionEntries_;
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;

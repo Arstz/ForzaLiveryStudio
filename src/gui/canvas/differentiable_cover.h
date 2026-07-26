@@ -19,6 +19,7 @@ inline constexpr double kDefaultEpsSpill = 0.25;
 inline constexpr int kDefaultAdamIterations = 200;
 inline constexpr double kDefaultAdamLearningRate = 0.05;
 inline constexpr int kDefaultRestarts = 2;
+inline constexpr double kDefaultInactivityTimeoutSeconds = 60.0;
 
 struct Vec2 {
     double x = 0.0;
@@ -81,6 +82,8 @@ struct FillOptions {
     double epsGain = kDefaultEpsGain;
     double epsSpill = kDefaultEpsSpill;
     double adamLearningRate = kDefaultAdamLearningRate;
+    double inactivityTimeoutSeconds =
+        kDefaultInactivityTimeoutSeconds;
     std::uint64_t seed = 0;
     bool useRouter = true;
     bool useGpu = true;
@@ -139,6 +142,7 @@ struct FillResult {
     bool budgetHit = false;
     bool stalled = false;
     bool cancelled = false;
+    bool timedOut = false;
 };
 
 struct FillProgress {
@@ -177,5 +181,11 @@ FillResult analyticCoverFill(
     const std::function<void(const FillProgress &)> &progress = {});
 
 QTransform toQTransform(const Affine &transform);
+
+#ifdef FH6_DIFFERENTIABLE_COVER_TESTS
+double placementUnionAreaForTesting(
+    const QVector<Placement> &placements,
+    const QVector<ShapeMesh> &catalog);
+#endif
 
 } // namespace gui::cover

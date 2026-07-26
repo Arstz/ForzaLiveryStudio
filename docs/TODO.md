@@ -5,6 +5,7 @@ Small changes:
     -Rename all FH6 variables to FLS if not directly related to Forza Horizon 6 but a general case, apply for cmake and libs as well.
 
 Medium changes:
+    -Replace ETA to Elapsed instead in fill progress bar
     -Termination of the fill should still place the shapes generated
     -Deprecate advancing front algorithm, cleanup references
     -Handle files that were passed as params on application launch, if 3so -> open project if image pass the image as a Guidelayer to a new project

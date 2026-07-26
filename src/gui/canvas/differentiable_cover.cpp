@@ -5,6 +5,8 @@
 #include <clipper2/clipper.engine.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -629,6 +631,9 @@ QPolygonF transformedBoundary(const ShapeMesh &shape, const Affine &transform) {
     for (const Vec2 &point : shape.boundary) {
         const Vec2 mapped = transformedPoint(point, transform);
         result.push_back(QPointF(mapped.x, mapped.y));
+    }
+    if (signedArea(result) < 0.0) {
+        std::reverse(result.begin(), result.end());
     }
 
     return result;
@@ -2623,7 +2628,10 @@ bool validOptions(const FillOptions &options) {
         && std::isfinite(options.epsGain) && options.epsGain > 0.0
         && std::isfinite(options.epsSpill) && options.epsSpill >= 0.0
         && std::isfinite(options.adamLearningRate)
-        && options.adamLearningRate > 0.0;
+        && options.adamLearningRate > 0.0
+        && std::isfinite(
+            options.inactivityTimeoutSeconds)
+        && options.inactivityTimeoutSeconds >= 0.0;
 }
 
 double estimatedRemainingSeconds(const QVector<double> &gains,
@@ -3246,10 +3254,91 @@ FillResult analyticCoverFill(
     const FillOptions &options,
     const std::function<bool()> &cancelled,
     const std::function<void(const FillProgress &)> &progress) {
-    return analyticCoverFillInternal(
-        input, catalog, options,
-        cancelled, progress, true);
+    using ActivityClock =
+        std::chrono::steady_clock;
+    const auto activityNanoseconds = []() {
+        return std::chrono::duration_cast<
+            std::chrono::nanoseconds>(
+                ActivityClock::now()
+                    .time_since_epoch())
+            .count();
+    };
+    std::atomic<qint64> lastActivity{
+        activityNanoseconds(),
+    };
+    std::atomic_bool timedOut{false};
+    int previousPlacementCount = -1;
+    double previousCoveredArea = -1.0;
+    const qint64 timeoutNanoseconds =
+        static_cast<qint64>(
+            options.inactivityTimeoutSeconds
+            * 1e9);
+    const auto stopRequested = [&]() {
+        if (cancelled && cancelled()) {
+            return true;
+        }
+        if (timeoutNanoseconds <= 0) {
+            return false;
+        }
+        const bool expired =
+            activityNanoseconds()
+                - lastActivity.load(
+                    std::memory_order_relaxed)
+            >= timeoutNanoseconds;
+        if (expired) {
+            timedOut.store(
+                true,
+                std::memory_order_relaxed);
+        }
+
+        return expired;
+    };
+    const auto activityProgress =
+        [&](const FillProgress &update) {
+            const bool changed =
+                update.placementCount
+                    != previousPlacementCount
+                || std::abs(
+                       update.coveredArea
+                       - previousCoveredArea)
+                    > kGeometryEpsilon;
+            previousPlacementCount =
+                update.placementCount;
+            previousCoveredArea =
+                update.coveredArea;
+            if (changed) {
+                lastActivity.store(
+                    activityNanoseconds(),
+                    std::memory_order_relaxed);
+            }
+            if (progress) {
+                progress(update);
+            }
+        };
+    FillResult result =
+        analyticCoverFillInternal(
+            input, catalog, options,
+            stopRequested,
+            activityProgress, true);
+    result.timedOut =
+        timedOut.load(
+            std::memory_order_relaxed);
+    result.cancelled =
+        result.cancelled || result.timedOut;
+
+    return result;
 }
+
+#ifdef FH6_DIFFERENTIABLE_COVER_TESTS
+double placementUnionAreaForTesting(
+    const QVector<Placement> &placements,
+    const QVector<ShapeMesh> &catalog) {
+    return polygonSetArea(
+        unionPolygons(
+            placementFootprints(
+                placements, catalog)));
+}
+#endif
 
 QTransform toQTransform(const Affine &transform) {
     return QTransform(transform.a, transform.b,

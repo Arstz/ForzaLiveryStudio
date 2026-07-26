@@ -317,6 +317,9 @@ return placements, area(residual)
   (non-differentiable — that is fine; they run *between* optimization steps, and
   `residual`/`mayCover` are constant *during* a step, which is what lets §5 treat
   the subject as constant jets).
+- Transform each catalog boundary into the boolean library's outer-path
+  orientation before subtraction or union. Affine reflection reverses source
+  winding but does not change a solid placement into a hole.
 - Termination: each accepted step removes a positive area from `residual`; the loop
   ends when the residual is negligible, the budget is hit, cancellation is
   requested, or candidate gain falls below `epsGain`.
@@ -451,10 +454,15 @@ The repair result is not pruned again.
   optimization, and residual subtraction.
 - **No fallback:** a stalled or budget-limited run does not call another fill,
   triangulate the residual, discard it as occluded, or fabricate a placement.
+- **Inactivity timeout:** stop after 60 seconds without an accepted placement or
+  prune operation. Timeout uses the same exact partial-result finalization as
+  user cancellation.
 - **Partial insertion:** a nonempty placement list is a usable result even when
   `residualArea > epsArea`. The caller inserts it, clears the active contour, and
   reports the uncovered world-unit area plus the stopping reason. A zero-placement
-  result inserts nothing and leaves the active contour available.
+  result inserts nothing and leaves the active contour available. Cancelling an
+  active differentiable fill retains and inserts the best exact cover completed
+  before cancellation.
 - **Progress:** report exact covered-area progress after every accepted placement
   and every accepted prune operation.
   The status bar estimates remaining time from measured placement duration and
@@ -524,6 +532,7 @@ struct FillOptions {
     int    adamIters     = 200;
     double adamLr        = 0.05;
     int    restarts      = 2;
+    double inactivityTimeoutSeconds = 60.0;
     uint64_t seed        = 0;                     // 0 → derive from region
     bool   useRouter     = true;                  // §7.1
     bool   useGpu        = true;                  // §5.7
@@ -581,6 +590,7 @@ struct FillResult {
     bool budgetHit = false;
     bool stalled = false;
     bool cancelled = false;
+    bool timedOut = false;
     QString error;
 };
 

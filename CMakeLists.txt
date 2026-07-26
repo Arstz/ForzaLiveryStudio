@@ -360,6 +360,9 @@ if(BUILD_TESTING)
         src/gui/canvas
         src/gui/widgets
     )
+    target_compile_definitions(
+        fls_differentiable_cover_tests
+        PRIVATE FH6_DIFFERENTIABLE_COVER_TESTS=1)
     target_link_libraries(fls_differentiable_cover_tests PRIVATE
         clipper2
         Qt6::Core

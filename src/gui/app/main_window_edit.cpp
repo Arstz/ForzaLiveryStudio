@@ -99,6 +99,7 @@ void writePenFillLog(const PenFillRequest &request,
         std::max(0.0, result.targetArea - result.coveredArea));
     resultObject.insert(QStringLiteral("outsideArea"), result.outsideArea);
     resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
+    resultObject.insert(QStringLiteral("timedOut"), result.timedOut);
     resultObject.insert(QStringLiteral("error"), result.error);
     if (profile != nullptr) {
         QJsonObject profileObject;
@@ -261,6 +262,7 @@ PenFillResult differentiablePenFill(
     result.outsideArea = fill.outsideArea;
     result.shapeLimit = options.budget;
     result.cancelled = fill.cancelled;
+    result.timedOut = fill.timedOut;
     result.error = fill.error;
     result.unfilled = cover::painterPathFromPolygons(fill.residual);
     result.placements.reserve(fill.placements.size());
@@ -483,6 +485,7 @@ void MainWindow::clearGeneratedFillState() {
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();
     generatedFillTool_.clear();
+    generatedFillKeepPartialOnCancel_ = false;
 }
 
 void MainWindow::cancelActiveFills() {
@@ -490,11 +493,28 @@ void MainWindow::cancelActiveFills() {
     cancelRegionFill();
 }
 
-void MainWindow::cancelGeneratedFill() {
+void MainWindow::cancelGeneratedFill(bool keepPartial) {
     if (generatedFillCancel_ == nullptr) {
         return;
     }
     generatedFillCancel_->store(true, std::memory_order_relaxed);
+    const bool finalizePartial =
+        keepPartial
+        && generatedFillTool_
+            == QStringLiteral("differentiable");
+    if (finalizePartial) {
+        generatedFillKeepPartialOnCancel_ = true;
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Finalizing %1 with generated shapes")
+                .arg(generatedFillLabel_));
+        if (generatedFillProgress_ != nullptr) {
+            generatedFillProgress_->setFormat(
+                QStringLiteral(
+                    "Finalizing differentiable fill"));
+        }
+        return;
+    }
     generatedFillCancel_.reset();
     ++generatedFillGeneration_;
     if (canvas_ != nullptr) {
@@ -512,6 +532,7 @@ void MainWindow::updateGeneratedFillProgress(quint64 generation,
                                              double etaSeconds) {
     if (generation != generatedFillGeneration_
         || generatedFillCancel_ == nullptr
+        || generatedFillKeepPartialOnCancel_
         || generatedFillTool_ != QStringLiteral("differentiable")
         || generatedFillProgress_ == nullptr
         || !std::isfinite(targetArea) || targetArea <= 0.0
@@ -554,7 +575,16 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
             canvas_->setPenFillRunning(false);
         }
     }
-    if (result.cancelled) {
+    const bool differentiable =
+        generatedFillTool_
+        == QStringLiteral("differentiable");
+    const bool retainPartial =
+        result.cancelled
+        && differentiable
+        && !result.placements.isEmpty()
+        && (result.timedOut
+            || generatedFillKeepPartialOnCancel_);
+    if (result.cancelled && !retainPartial) {
         statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
         clearGeneratedFillState();
         return;
@@ -574,8 +604,6 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         placements.push_back({placement.shapeId, placement.transform});
     }
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
-    const bool differentiable =
-        generatedFillTool_ == QStringLiteral("differentiable");
     const QString groupName = lining
         ? QStringLiteral("Lining")
         : (differentiable

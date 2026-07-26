@@ -35,7 +35,8 @@ void MainWindow::setupCanvas() {
         [this](const QVector<PenPoint> &points, const std::optional<QColor> &fillColor) {
         startPenFill(points, fillColor);
     });
-    canvas_->setPenFillCancelCallback([this]() { cancelGeneratedFill(); });
+    canvas_->setPenFillCancelCallback(
+        [this]() { cancelGeneratedFill(true); });
     canvas_->setLiningFillRequestedCallback(
         [this](const QVector<PenPoint> &points,
                double width,

@@ -65,6 +65,7 @@ struct PenFillResult {
     double outsideArea = 0.0;
     int shapeLimit = 0;
     bool cancelled = false;
+    bool timedOut = false;
     QString error;
 };
 
