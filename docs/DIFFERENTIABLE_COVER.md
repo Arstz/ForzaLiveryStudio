@@ -135,9 +135,9 @@ Consequences the implementer can rely on:
 2. Every triangle is a **convex** clip window → Sutherland–Hodgman applies directly
    even for the non-convex shapes (fang/garlic/tooth/concave arc): just sum over
    their convex triangles.
-3. Convex shapes (101/102/103/109/130) can alternatively clip against their single
-   boundary polygon for speed; the boundary loop is recoverable because
-   `boundaryEdges == verts`.
+3. Convex shapes (101/102/103/109/130) clip against their single boundary polygon
+   for speed; the boundary loop is recoverable because `boundaryEdges == verts`.
+   Non-convex shapes retain the exact triangle sum.
 
 Load the catalog once into:
 
@@ -330,6 +330,10 @@ Good init is what makes the optimizer fast and local-minimum-free:
   step robust to kinks without a framework.
 - Reject a candidate whose final `spill_out > ε_spill` (it would paint outside
   the contour tolerance) or whose `covered < ε_gain`.
+- Candidate/restart jobs for one residual are independent and execute on all but
+  one available CPU thread. Initial jitter is generated in stable job order before
+  dispatch, results are written to fixed slots, and selection is performed in that
+  same order so parallel scheduling cannot change the output.
 
 ### 7.4 Select
 
@@ -444,6 +448,12 @@ returned placement when building decals.
 6. **Pen commit integration** sits behind the persistent, default-off
    Differentiable Pen Fill option. Bucket requires no separate solver integration
    because its traced region already becomes an editable Pen contour.
+
+The optimizer caches subject bounds for the duration of each greedy step, rejects
+triangle/contour pairs whose bounds do not intersect, reuses clipping buffers, and
+transforms each triangle only once when evaluating covered and legal area. These
+are exact work-reduction paths: they do not change iteration counts, restarts,
+candidate routing, placement budget, or stopping thresholds.
 
 Validate by rasterizing the returned union and checking: (a) reported coverage
 matches the union, (b) it stays within `mayCover` up to `epsSpill`, and (c) its

@@ -60,6 +60,17 @@ struct Candidate {
     bool valid = false;
 };
 
+struct CandidateInitialization {
+    QPointF translationOffset;
+    double angleOffset = 0.0;
+    double scaleFactor = 1.0;
+};
+
+struct CandidateJob {
+    const ShapeMesh *shape = nullptr;
+    CandidateInitialization initialization;
+};
+
 struct QueueNode {
     int index = 0;
     double distance = 0.0;
@@ -67,6 +78,16 @@ struct QueueNode {
     bool operator>(const QueueNode &other) const {
         return distance > other.distance;
     }
+};
+
+struct IntersectionJets {
+    Jet covered;
+    Jet legal;
+};
+
+struct EvaluationBounds {
+    QVector<QRectF> covered;
+    QVector<QRectF> legal;
 };
 
 Jet constantJet(double value) {
@@ -228,6 +249,16 @@ QRectF polygonBounds(const Polygons &polygons) {
     return result;
 }
 
+QVector<QRectF> individualPolygonBounds(const Polygons &polygons) {
+    QVector<QRectF> result;
+    result.reserve(polygons.size());
+    for (const QPolygonF &polygon : polygons) {
+        result.push_back(polygon.boundingRect());
+    }
+
+    return result;
+}
+
 JetPoint transformedVertex(const Vec2 &vertex, const Affine &transform) {
     const Jet a = parameterJet(transform.a, 0);
     const Jet b = parameterJet(transform.b, 1);
@@ -265,13 +296,15 @@ JetPoint intersectionPoint(const JetPoint &start,
     return start + (end - start) * fraction;
 }
 
-QVector<JetPoint> clipHalfPlane(const QVector<JetPoint> &subject,
-                                const JetPoint &windowStart,
-                                const JetPoint &windowEnd) {
-    QVector<JetPoint> result;
+void clipHalfPlane(const QVector<JetPoint> &subject,
+                   const JetPoint &windowStart,
+                   const JetPoint &windowEnd,
+                   QVector<JetPoint> *result) {
+    result->clear();
     if (subject.isEmpty()) {
-        return result;
+        return;
     }
+    result->reserve(subject.size() + 2);
 
     JetPoint start = subject.back();
     Jet startSide = sideValue(start, windowStart, windowEnd);
@@ -280,17 +313,15 @@ QVector<JetPoint> clipHalfPlane(const QVector<JetPoint> &subject,
         const Jet endSide = sideValue(end, windowStart, windowEnd);
         const bool endInside = endSide.value >= -kGeometryEpsilon;
         if (endInside != startInside) {
-            result.push_back(intersectionPoint(start, end, startSide, endSide));
+            result->push_back(intersectionPoint(start, end, startSide, endSide));
         }
         if (endInside) {
-            result.push_back(end);
+            result->push_back(end);
         }
         start = end;
         startSide = endSide;
         startInside = endInside;
     }
-
-    return result;
 }
 
 Jet clippedPolygonArea(const QPolygonF &subject,
@@ -300,6 +331,8 @@ Jet clippedPolygonArea(const QPolygonF &subject,
     for (const QPointF &point : subject) {
         clipped.push_back(constantPoint(point));
     }
+    QVector<JetPoint> scratch;
+    scratch.reserve(subject.size() + 6);
 
     const Jet orientation = cross(window[1] - window[0],
                                   window[2] - window[0]);
@@ -307,7 +340,8 @@ Jet clippedPolygonArea(const QPolygonF &subject,
         std::swap(window[1], window[2]);
     }
     for (int edge = 0; edge < 3 && !clipped.isEmpty(); ++edge) {
-        clipped = clipHalfPlane(clipped, window[edge], window[(edge + 1) % 3]);
+        clipHalfPlane(clipped, window[edge], window[(edge + 1) % 3], &scratch);
+        clipped.swap(scratch);
     }
     if (clipped.size() < 3) {
         return {};
@@ -322,18 +356,120 @@ Jet clippedPolygonArea(const QPolygonF &subject,
     return doubledArea * 0.5;
 }
 
-Jet intersectionArea(const ShapeMesh &shape,
-                     const Affine &transform,
-                     const Polygons &subject) {
-    Jet result;
+Jet clippedConvexPolygonArea(const QPolygonF &subject,
+                             const QVector<JetPoint> &window) {
+    QVector<JetPoint> clipped;
+    clipped.reserve(subject.size() + window.size());
+    for (const QPointF &point : subject) {
+        clipped.push_back(constantPoint(point));
+    }
+    QVector<JetPoint> scratch;
+    scratch.reserve(subject.size() + window.size() * 2);
+
+    Jet windowArea;
+    for (int i = 0; i < window.size(); ++i) {
+        windowArea = windowArea
+            + cross(window[i], window[(i + 1) % window.size()]);
+    }
+    const bool reverse = windowArea.value < 0.0;
+    for (int edge = 0; edge < window.size() && !clipped.isEmpty(); ++edge) {
+        const int start = reverse ? (window.size() - edge) % window.size() : edge;
+        const int end = reverse
+            ? (window.size() - edge - 1 + window.size()) % window.size()
+            : (edge + 1) % window.size();
+        clipHalfPlane(clipped, window[start], window[end], &scratch);
+        clipped.swap(scratch);
+    }
+    if (clipped.size() < 3) {
+        return {};
+    }
+
+    Jet doubledArea;
+    for (int i = 0; i < clipped.size(); ++i) {
+        doubledArea = doubledArea
+            + cross(clipped[i], clipped[(i + 1) % clipped.size()]);
+    }
+
+    return doubledArea * 0.5;
+}
+
+QRectF jetWindowBounds(const QVector<JetPoint> &window) {
+    double minimumX = std::numeric_limits<double>::max();
+    double minimumY = std::numeric_limits<double>::max();
+    double maximumX = std::numeric_limits<double>::lowest();
+    double maximumY = std::numeric_limits<double>::lowest();
+    for (const JetPoint &point : window) {
+        minimumX = std::min(minimumX, point.x.value);
+        minimumY = std::min(minimumY, point.y.value);
+        maximumX = std::max(maximumX, point.x.value);
+        maximumY = std::max(maximumY, point.y.value);
+    }
+
+    return QRectF(QPointF(minimumX, minimumY),
+                  QPointF(maximumX, maximumY));
+}
+
+IntersectionJets intersectionAreas(const ShapeMesh &shape,
+                                   const Affine &transform,
+                                   const Polygons &coveredSubject,
+                                   const Polygons &legalSubject,
+                                   const EvaluationBounds &subjectBounds) {
+    IntersectionJets result;
+    if (shape.convex) {
+        QVector<JetPoint> window;
+        window.reserve(shape.boundary.size());
+        for (const Vec2 &point : shape.boundary) {
+            window.push_back(transformedVertex(point, transform));
+        }
+        const QRectF windowBounds = jetWindowBounds(window);
+        for (int i = 0; i < coveredSubject.size(); ++i) {
+            if (subjectBounds.covered[i].intersects(windowBounds)) {
+                result.covered = result.covered
+                    + clippedConvexPolygonArea(coveredSubject[i], window);
+            }
+        }
+        for (int i = 0; i < legalSubject.size(); ++i) {
+            if (subjectBounds.legal[i].intersects(windowBounds)) {
+                result.legal = result.legal
+                    + clippedConvexPolygonArea(legalSubject[i], window);
+            }
+        }
+
+        return result;
+    }
     for (const std::array<int, 3> &triangle : shape.triangles) {
         std::array<JetPoint, 3> window = {
             transformedVertex(shape.vertices[triangle[0]], transform),
             transformedVertex(shape.vertices[triangle[1]], transform),
             transformedVertex(shape.vertices[triangle[2]], transform),
         };
-        for (const QPolygonF &polygon : subject) {
-            result = result + clippedPolygonArea(polygon, window);
+        const double minimumX = std::min({
+            window[0].x.value, window[1].x.value, window[2].x.value,
+        });
+        const double minimumY = std::min({
+            window[0].y.value, window[1].y.value, window[2].y.value,
+        });
+        const double maximumX = std::max({
+            window[0].x.value, window[1].x.value, window[2].x.value,
+        });
+        const double maximumY = std::max({
+            window[0].y.value, window[1].y.value, window[2].y.value,
+        });
+        const QRectF windowBounds(
+            QPointF(minimumX, minimumY), QPointF(maximumX, maximumY));
+        for (int i = 0; i < coveredSubject.size(); ++i) {
+            if (!subjectBounds.covered[i].intersects(windowBounds)) {
+                continue;
+            }
+            result.covered =
+                result.covered + clippedPolygonArea(coveredSubject[i], window);
+        }
+        for (int i = 0; i < legalSubject.size(); ++i) {
+            if (!subjectBounds.legal[i].intersects(windowBounds)) {
+                continue;
+            }
+            result.legal =
+                result.legal + clippedPolygonArea(legalSubject[i], window);
         }
     }
 
@@ -347,6 +483,25 @@ Jet transformedShapeArea(const ShapeMesh &shape, const Affine &transform) {
     const Jet d = parameterJet(transform.d, 3);
 
     return absoluteJet(a * d - b * c) * shape.area;
+}
+
+AreaGradient areaGradient(const ShapeMesh &shape,
+                          const Affine &transform,
+                          const Polygons &coveredSubject,
+                          const Polygons &legalSubject,
+                          const EvaluationBounds &subjectBounds) {
+    const IntersectionJets intersections =
+        intersectionAreas(shape, transform, coveredSubject, legalSubject,
+                          subjectBounds);
+    const Jet spill =
+        transformedShapeArea(shape, transform) - intersections.legal;
+    AreaGradient result;
+    result.covered = intersections.covered.value;
+    result.spill = std::max(0.0, spill.value);
+    result.coveredGradient = intersections.covered.gradient;
+    result.spillGradient = spill.gradient;
+
+    return result;
 }
 
 bool finiteGradient(const AreaGradient &evaluation) {
@@ -811,12 +966,13 @@ Candidate legalCandidate(const ShapeMesh &shape,
                          Affine transform,
                          const Polygons &residual,
                          const Polygons &mayCover,
+                         const EvaluationBounds &subjectBounds,
                          const FillOptions &options) {
     Candidate result;
     result.shapeId = shape.id;
     for (int step = 0; step <= kLegalShrinkSteps; ++step) {
         const AreaGradient evaluation =
-            evaluateAreaGradient(shape, transform, residual, mayCover);
+            areaGradient(shape, transform, residual, mayCover, subjectBounds);
         if (finiteGradient(evaluation)
             && evaluation.spill <= options.epsSpill
             && evaluation.covered >= options.epsGain) {
@@ -839,26 +995,21 @@ Candidate legalCandidate(const ShapeMesh &shape,
 Candidate optimizeCandidate(const ShapeMesh &shape,
                             const Polygons &residual,
                             const Polygons &mayCover,
+                            const EvaluationBounds &subjectBounds,
                             const FillOptions &options,
                             const DistanceSeed &seed,
-                            std::mt19937_64 *random,
-                            int restart,
+                            const CandidateInitialization &initialization,
                             const std::function<bool()> &cancelled) {
-    std::uniform_real_distribution<double> unitDistribution(-1.0, 1.0);
-    const double angleOffset = restart == 0
-        ? 0.0 : unitDistribution(*random) * kRestartAngleRange;
-    const double scaleFactor = restart == 0
-        ? 1.0 : 1.0 + unitDistribution(*random) * kRestartScaleRange;
-    const QPointF translationOffset = restart == 0
-        ? QPointF()
-        : QPointF(unitDistribution(*random), unitDistribution(*random))
-            * (seed.radius * kRestartTranslationFraction);
     std::array<double, kGradientCount> values = affineValues(
-        initialTransform(shape, seed, angleOffset, scaleFactor, translationOffset));
+        initialTransform(shape, seed,
+                         initialization.angleOffset,
+                         initialization.scaleFactor,
+                         initialization.translationOffset));
     std::array<double, kGradientCount> firstMoment{};
     std::array<double, kGradientCount> secondMoment{};
-    Candidate best = legalCandidate(shape, affineFromValues(values),
-                                    residual, mayCover, options);
+    Candidate best = legalCandidate(
+        shape, affineFromValues(values), residual, mayCover,
+        subjectBounds, options);
     double beta1Power = 1.0;
     double beta2Power = 1.0;
     for (int iteration = 1; iteration <= options.adamIterations; ++iteration) {
@@ -867,7 +1018,7 @@ Candidate optimizeCandidate(const ShapeMesh &shape,
         }
         const Affine transform = affineFromValues(values);
         const AreaGradient evaluation =
-            evaluateAreaGradient(shape, transform, residual, mayCover);
+            areaGradient(shape, transform, residual, mayCover, subjectBounds);
         if (!finiteGradient(evaluation)) {
             break;
         }
@@ -907,13 +1058,34 @@ Candidate optimizeCandidate(const ShapeMesh &shape,
                 / (std::sqrt(correctedSecond) + kAdamEpsilon);
         }
         const Candidate candidate = legalCandidate(
-            shape, affineFromValues(values), residual, mayCover, options);
+            shape, affineFromValues(values), residual, mayCover,
+            subjectBounds, options);
         if (betterCandidate(candidate, best)) {
             best = candidate;
         }
     }
 
     return best;
+}
+
+CandidateInitialization candidateInitialization(
+    const DistanceSeed &seed,
+    int restart,
+    std::mt19937_64 *random) {
+    CandidateInitialization result;
+    if (restart == 0) {
+        return result;
+    }
+
+    std::uniform_real_distribution<double> unitDistribution(-1.0, 1.0);
+    result.angleOffset = unitDistribution(*random) * kRestartAngleRange;
+    result.scaleFactor =
+        1.0 + unitDistribution(*random) * kRestartScaleRange;
+    result.translationOffset =
+        QPointF(unitDistribution(*random), unitDistribution(*random))
+        * (seed.radius * kRestartTranslationFraction);
+
+    return result;
 }
 
 double descriptorAspect(const QRectF &bounds) {
@@ -1067,16 +1239,13 @@ AreaGradient evaluateAreaGradient(const ShapeMesh &shape,
                                   const Affine &transform,
                                   const Polygons &coveredSubject,
                                   const Polygons &legalSubject) {
-    const Jet covered = intersectionArea(shape, transform, coveredSubject);
-    const Jet legal = intersectionArea(shape, transform, legalSubject);
-    const Jet spill = transformedShapeArea(shape, transform) - legal;
-    AreaGradient result;
-    result.covered = covered.value;
-    result.spill = std::max(0.0, spill.value);
-    result.coveredGradient = covered.gradient;
-    result.spillGradient = spill.gradient;
+    const EvaluationBounds subjectBounds{
+        individualPolygonBounds(coveredSubject),
+        individualPolygonBounds(legalSubject),
+    };
 
-    return result;
+    return areaGradient(shape, transform, coveredSubject, legalSubject,
+                        subjectBounds);
 }
 
 FillResult analyticCoverFill(
@@ -1108,6 +1277,9 @@ FillResult analyticCoverFill(
         ? derivedSeed(mustCover) : options.seed;
     std::mt19937_64 random(seedValue);
     Polygons footprints;
+    QThreadPool candidatePool;
+    candidatePool.setMaxThreadCount(
+        std::max(1, QThread::idealThreadCount() - 1));
     while (polygonSetArea(result.residual) > options.epsArea
            && result.placements.size() < options.budget) {
         if (cancelled && cancelled()) {
@@ -1117,25 +1289,45 @@ FillResult analyticCoverFill(
             return result;
         }
 
+        const EvaluationBounds subjectBounds{
+            individualPolygonBounds(result.residual),
+            individualPolygonBounds(mayCover),
+        };
         const DistanceSeed seed = distanceSeed(result.residual);
         const QVector<const ShapeMesh *> candidates =
             routedShapes(result.residual, catalog, options.useRouter);
-        Candidate best;
+        std::vector<CandidateJob> jobs;
+        jobs.reserve(static_cast<size_t>(
+            candidates.size() * (options.restarts + 1)));
         for (const ShapeMesh *shape : candidates) {
             for (int restart = 0; restart <= options.restarts; ++restart) {
-                const Candidate candidate = optimizeCandidate(
-                    *shape, result.residual, mayCover, options,
-                    seed, &random, restart, cancelled);
-                if (cancelled && cancelled()) {
-                    result.cancelled = true;
-                    result.residualArea = polygonSetArea(result.residual);
-                    result.coveredArea = targetArea - result.residualArea;
-                    return result;
-                }
-                if (betterCandidate(candidate, best)) {
-                    best = candidate;
-                }
+                jobs.push_back({
+                    shape,
+                    candidateInitialization(seed, restart, &random),
+                });
             }
+        }
+        std::vector<Candidate> jobResults(jobs.size());
+        for (size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex) {
+            candidatePool.start([&, jobIndex]() {
+                const CandidateJob &job = jobs[jobIndex];
+                jobResults[jobIndex] = optimizeCandidate(
+                    *job.shape, result.residual, mayCover, subjectBounds,
+                    options, seed, job.initialization, cancelled);
+            });
+        }
+        candidatePool.waitForDone();
+        Candidate best;
+        for (const Candidate &candidate : jobResults) {
+            if (betterCandidate(candidate, best)) {
+                best = candidate;
+            }
+        }
+        if (cancelled && cancelled()) {
+            result.cancelled = true;
+            result.residualArea = polygonSetArea(result.residual);
+            result.coveredArea = targetArea - result.residualArea;
+            return result;
         }
         if (!best.valid) {
             result.stalled = true;

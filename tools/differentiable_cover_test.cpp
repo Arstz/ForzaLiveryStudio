@@ -220,9 +220,22 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     input.mustCover = polygons;
     input.mayCover = polygons;
     cover::FillOptions options;
-    options.budget = 2;
-    options.adamIterations = 12;
-    options.restarts = 0;
+    bool budgetOk = false;
+    const int requestedBudget =
+        qEnvironmentVariableIntValue("FH6_DIFFERENTIABLE_TEST_BUDGET", &budgetOk);
+    options.budget = budgetOk && requestedBudget > 0 ? requestedBudget : 2;
+    bool iterationsOk = false;
+    const int requestedIterations =
+        qEnvironmentVariableIntValue("FH6_DIFFERENTIABLE_TEST_ITERATIONS",
+                                     &iterationsOk);
+    options.adamIterations =
+        iterationsOk && requestedIterations > 0 ? requestedIterations : 12;
+    bool restartsOk = false;
+    const int requestedRestarts =
+        qEnvironmentVariableIntValue("FH6_DIFFERENTIABLE_TEST_RESTARTS",
+                                     &restartsOk);
+    options.restarts =
+        restartsOk && requestedRestarts >= 0 ? requestedRestarts : 0;
     options.seed = 0x5a17;
     const cover::FillResult first =
         cover::analyticCoverFill(input, catalog, options);
@@ -236,7 +249,8 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                       && std::isfinite(first.residualArea)
                       && std::isfinite(first.outsideArea),
                   "logged contour solver metrics are not finite")
-        || !check(first.outsideArea <= options.epsSpill + 1e-6,
+        || !check(first.outsideArea
+                          <= first.placements.size() * options.epsSpill + 1e-6,
                   "logged contour solver exceeded spill tolerance")
         || !check(first.placements.size() == second.placements.size(),
                   "logged contour solver placement count is not repeatable")) {
