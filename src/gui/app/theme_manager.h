@@ -34,6 +34,7 @@ struct TransformModeSettings {
 struct BehaviorSettings {
     bool insertShapeWithLastSelectedColor = true;
     bool insertShapeWithLastSelectedScale = false;
+    bool differentiablePenFill = false;
     bool showPropertyDebug = false;
     bool moveToolAutoSelect = false;
     bool allowMoveOutsideBoundingBox = true;

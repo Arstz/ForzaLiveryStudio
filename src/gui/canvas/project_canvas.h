@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bucket_fill.h"
+#include "differentiable_cover.h"
 #include "canvas_camera.h"
 #include "core_types.h"
 #include "layer.h"
@@ -80,6 +81,7 @@ public:
         std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
+    QVector<cover::ShapeMesh> differentiableCoverCatalog(QString *error = nullptr) const;
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
     void setLiningFillRequestedCallback(

@@ -516,6 +516,9 @@ void MainWindow::setupOptionsMenu() {
     };
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
+    addBehaviorOption(optionsMenu, QStringLiteral("Differentiable Pen Fill"),
+                      QStringLiteral("toggle_differentiable_pen_fill"),
+                      &BehaviorSettings::differentiablePenFill);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
     addBehaviorOption(optionsMenu, QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
     addBehaviorOption(optionsMenu, QStringLiteral("Allow Move Outside Bounding Box"),

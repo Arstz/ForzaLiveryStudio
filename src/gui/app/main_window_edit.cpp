@@ -4,6 +4,7 @@
 
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
+#include "differentiable_cover.h"
 #include "image_io.h"
 #include "layer_tree_view.h"
 #include "perf_utils.h"
@@ -45,6 +46,80 @@ std::array<quint8, 4> colorBytes(const QColor &color) {
     };
 }
 
+void writePenFillLog(const PenFillRequest &request,
+                     const PenFillResult &result,
+                     const QString &strategy) {
+    QJsonArray points;
+    for (const PenPoint &point : request.points) {
+        QJsonObject pointObject;
+        pointObject.insert(QStringLiteral("kind"),
+                           point.kind == PenPointKind::Hard
+                               ? QStringLiteral("hard")
+                               : QStringLiteral("soft"));
+        pointObject.insert(QStringLiteral("position"),
+                           QJsonArray{point.position.x(), point.position.y()});
+        points.push_back(pointObject);
+    }
+
+    QJsonObject requestObject;
+    requestObject.insert(QStringLiteral("strategy"), strategy);
+    requestObject.insert(QStringLiteral("boundaryTolerance"), request.boundaryTolerance);
+    requestObject.insert(QStringLiteral("discardNegligiblePlacements"),
+                         request.discardNegligiblePlacements);
+    requestObject.insert(QStringLiteral("points"), points);
+
+    QJsonObject resultObject;
+    resultObject.insert(QStringLiteral("shapeCount"), result.placements.size());
+    resultObject.insert(QStringLiteral("shapeLimit"), result.shapeLimit);
+    resultObject.insert(QStringLiteral("targetArea"), result.targetArea);
+    resultObject.insert(QStringLiteral("coveredArea"), result.coveredArea);
+    resultObject.insert(QStringLiteral("outsideArea"), result.outsideArea);
+    resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
+    resultObject.insert(QStringLiteral("error"), result.error);
+
+    QJsonObject root;
+    root.insert(QStringLiteral("request"), requestObject);
+    root.insert(QStringLiteral("result"), resultObject);
+
+    const QString path = QDir(QCoreApplication::applicationDirPath())
+                             .filePath(QStringLiteral("pen_fill.log"));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        qWarning().noquote() << "Could not write Pen fill log to" << path;
+        return;
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    file.close();
+    qWarning().noquote() << "Pen fill log written to" << path;
+}
+
+PenFillResult differentiablePenFill(
+    const cover::FillInput &input,
+    const QVector<cover::ShapeMesh> &catalog,
+    const cover::FillOptions &options,
+    const std::function<bool()> &cancelled) {
+    const cover::FillResult fill =
+        cover::analyticCoverFill(input, catalog, options, cancelled);
+    PenFillResult result;
+    result.targetArea = fill.coveredArea + fill.residualArea;
+    result.coveredArea = fill.coveredArea;
+    result.outsideArea = fill.outsideArea;
+    result.shapeLimit = options.budget;
+    result.cancelled = fill.cancelled;
+    result.error = fill.error;
+    result.unfilled = cover::painterPathFromPolygons(fill.residual);
+    result.placements.reserve(fill.placements.size());
+    for (const cover::Placement &placement : fill.placements) {
+        PenPlacement item;
+        item.shapeId = placement.shapeId;
+        item.transform = cover::toQTransform(placement.transform);
+        item.area = placement.coveredArea;
+        result.placements.push_back(item);
+    }
+
+    return result;
+}
+
 } // namespace
 
 void MainWindow::startPenFill(const QVector<PenPoint> &points,
@@ -55,10 +130,64 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         }
         return;
     }
-    prepareGeneratedFill(fillColor, QStringLiteral("Pen fill"), QStringLiteral("pen"));
-
+    const bool differentiable = loadBehaviorSettings().differentiablePenFill;
+    const QString fillLabel = differentiable
+        ? QStringLiteral("Differentiable Pen fill")
+        : QStringLiteral("Pen fill");
+    const QString fillTool = differentiable
+        ? QStringLiteral("differentiable")
+        : QStringLiteral("pen");
+    prepareGeneratedFill(fillColor, fillLabel, fillTool);
     PenFillRequest request;
     request.points = points;
+    if (differentiable) {
+        QString catalogError;
+        const QVector<cover::ShapeMesh> catalog =
+            canvas_->differentiableCoverCatalog(&catalogError);
+        const PenContour contour = buildPenContour(
+            request.points, request.boundaryTolerance * 0.25);
+        const cover::Polygons polygons = contour.valid()
+            ? cover::polygonsFromPainterPath(contour.path)
+            : cover::Polygons{};
+        if (catalog.isEmpty() || polygons.isEmpty()) {
+            canvas_->setPenFillRunning(false);
+            clearGeneratedFillState();
+            const QString reason = !catalogError.isEmpty()
+                ? catalogError
+                : (contour.error.isEmpty()
+                       ? QStringLiteral("The active contour is unavailable")
+                       : contour.error);
+            statusBar()->showMessage(
+                QStringLiteral("Differentiable Pen fill failed: %1").arg(reason),
+                4000);
+            return;
+        }
+
+        cover::FillInput input;
+        input.mustCover = polygons;
+        input.mayCover = polygons;
+        cover::FillOptions options;
+        canvas_->setPenFillRunning(
+            true, QStringLiteral("Optimizing differentiable Pen fill…"));
+        statusBar()->showMessage(
+            QStringLiteral("Optimizing differentiable Pen fill… Press %1 to cancel")
+                .arg(interactionShortcutText(
+                    KeyInteraction::CanvasCancelInteraction)));
+        const QString strategy = fillColor.has_value()
+            ? QStringLiteral("differentiable-bucket")
+            : QStringLiteral("differentiable-pen");
+        startGeneratedFillTask(
+            [request = std::move(request), input = std::move(input),
+             catalog, options, strategy](const std::function<bool()> &cancelled) {
+                PenFillResult result =
+                    differentiablePenFill(input, catalog, options, cancelled);
+                writePenFillLog(request, result, strategy);
+
+                return result;
+            });
+        return;
+    }
+
     request.primitives = canvas_->penPrimitiveCatalog();
     if (request.primitives.isEmpty()) {
         canvas_->setPenFillRunning(false);
@@ -71,8 +200,15 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
     statusBar()->showMessage(QStringLiteral("Filling Pen path… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
-    startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
-        return fillPenPath(request, cancelled);
+    const QString strategy = fillColor.has_value()
+        ? QStringLiteral("bucket-hybrid-quadratic-rdp")
+        : QStringLiteral("pen");
+    startGeneratedFillTask([request = std::move(request), strategy](
+                               const std::function<bool()> &cancelled) {
+        PenFillResult result = fillPenPath(request, cancelled);
+        writePenFillLog(request, result, strategy);
+
+        return result;
     });
 }
 
@@ -205,8 +341,26 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         placements.push_back({placement.shapeId, placement.transform});
     }
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
-    const QString groupName = lining ? QStringLiteral("Lining") : QStringLiteral("Pen Fill");
+    const bool differentiable =
+        generatedFillTool_ == QStringLiteral("differentiable");
+    const QString groupName = lining
+        ? QStringLiteral("Lining")
+        : (differentiable
+               ? QStringLiteral("Differentiable Fill")
+               : QStringLiteral("Pen Fill"));
     insertGeneratedFill(groupName, groupName, placements);
+    if (differentiable) {
+        const double residualArea =
+            std::max(0.0, result.targetArea - result.coveredArea);
+        if (residualArea > cover::kDefaultEpsArea) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Created Differentiable Fill with %1 shapes; %2 world² remains uncovered")
+                    .arg(placements.size())
+                    .arg(residualArea, 0, 'g', 10),
+                5000);
+        }
+    }
     if (canvas_ != nullptr) {
         if (lining) {
             canvas_->cancelLiningInteraction();

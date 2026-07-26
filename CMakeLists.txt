@@ -24,6 +24,12 @@ target_include_directories(potrace PUBLIC third_party/potrace)
 target_compile_definitions(potrace PRIVATE VERSION="1.16" HAVE_INTTYPES_H=1 HAVE_STDINT_H=1)
 set_target_properties(potrace PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
+add_library(clipper2 STATIC
+    third_party/clipper2/src/clipper.engine.cpp
+)
+target_include_directories(clipper2 PUBLIC third_party/clipper2/include)
+set_target_properties(clipper2 PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+
 add_library(fls_core STATIC
     src/core/binary_io.cpp
     src/core/binary_io.h
@@ -166,6 +172,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/advancing_front.h
     src/gui/canvas/bucket_fill.cpp
     src/gui/canvas/bucket_fill.h
+    src/gui/canvas/differentiable_cover.cpp
+    src/gui/canvas/differentiable_cover.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
@@ -239,6 +247,7 @@ target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
 target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
     PRIVATE
         fls_core
+        clipper2
         potrace
         Qt6::Gui
         Qt6::Widgets
@@ -292,6 +301,23 @@ if(BUILD_TESTING)
         potrace
     )
     add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
+
+    add_executable(fls_differentiable_cover_tests
+        tools/differentiable_cover_test.cpp
+        src/gui/canvas/differentiable_cover.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_differentiable_cover_tests PRIVATE
+        src/gui/canvas
+        src/gui/widgets
+    )
+    target_link_libraries(fls_differentiable_cover_tests PRIVATE
+        clipper2
+        Qt6::Core
+        Qt6::Gui
+        ZLIB::ZLIB
+    )
+    add_test(NAME differentiable_cover COMMAND fls_differentiable_cover_tests)
 endif()
 
 set(FH6_GUI_ASSETS

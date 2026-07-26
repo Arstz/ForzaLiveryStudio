@@ -8,6 +8,7 @@ Medium changes:
     -Add dragging layer in Layers widget to scroll the list if near upper or lower borders
 
 Big changes:
+    -Add speedpaint caching for telemetry
     -Add proper scaffolding and header generation from scratch for liveries
     -Apply proper car paint material from ingame files
     -Retire legacy format support in next version

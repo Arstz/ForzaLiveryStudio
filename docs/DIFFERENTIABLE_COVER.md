@@ -1,0 +1,497 @@
+# Analytic Differentiable Cover — Minimal-Shape Fill of a Pen Contour
+
+Design + handoff spec for an **opt-in, high-quality Pen fill mode** that covers one
+closed, single-colour contour with **as few affine primitive decals as possible**.
+Bucket Fill is included because it converts its traced mask into the same editable
+Pen contour before filling. The implementation is a standalone C++ alternative to
+the existing deterministic Pen fill. Existing fill algorithms in `pen_fill.cpp`,
+`polygon_mesh.cpp`, `advancing_front.cpp`, and `region_fill.cpp` are out of scope
+to reuse; only the caller's contour and the raw shape-geometry asset in §4 are
+shared.
+
+Status: **implemented on the `image_gen` branch.** This document is the behavior
+and maintenance specification for the standalone module.
+
+---
+
+## 1. Goal and scope
+
+- **Input:** the current valid closed Pen contour, either hand-authored or produced
+  by Bucket Fill. The caller flattens the contour into an oriented polygon in
+  canvas world coordinates and may also provide a rasterized copy for the
+  distance-transform initializer.
+- **Output:** an ordered list of **placements**, each a catalog shape id + a 2-D
+  **affine transform** (6 DoF), whose opaque union covers as much of the contour as
+  the optimizer can reach without leaving it. Colour is the Pen or Bucket colour.
+- **Objective:** minimise the **number of placements** while maximizing legal
+  coverage. Complete coverage is preferred but is not a success requirement.
+- **Mode:** a persistent **Differentiable Pen Fill** tool option, off by default.
+  When enabled, the normal Pen commit uses this module instead of the deterministic
+  Pen fill. It does not refine or wrap the existing result. Runs must be
+  repeatable (§9).
+
+Non-goals: lineart/stroke fitting; whole-image segmentation; Fill Regions
+integration; gradient/painterly art. The module fills one active contour.
+
+---
+
+## 2. Why a new approach (and why the obvious one fails)
+
+The problem is a **set cover of a target polygon by affine images of a small shape
+catalog**, minimising shape count. Two naive framings both fail:
+
+- **Deterministic triangulation** (what the existing fill effectively does for the
+  interior): decomposes the region into many non-overlapping triangles/quads. It
+  is correct and fast but **cannot use overlap**, so shape count is high on
+  organic/non-convex regions. It is a *bad initializer* for a count-minimizing
+  solver because it sits in exactly the high-count, non-overlapping local optimum
+  we want to escape.
+- **Global differentiable area-maximization** (DiffVG/soft-raster style over a
+  fixed slot set): optimize N primitives at once to maximize rendered overlap with
+  the target. This is slow, prone to local minima, and — critically — **cannot
+  guarantee coverage**: maximizing covered area leaves sub-pixel and thin gaps that
+  render as holes. Prior experiments confirmed this is not adequate on whole
+  images.
+
+**The reframe this doc specifies:** an **explicit-residual greedy covering loop**,
+where differentiable optimization is confined to a single well-posed subproblem —
+"place *one* primitive to cover as much of the current uncovered residual as
+possible, without spilling outside the contour." The residual provides an exact
+coverage measurement after every accepted placement. The optimizer decides
+where and how large each primitive is, and the loop stops when the residual is
+empty, the budget is reached, or no candidate makes sufficient progress. This
+removes reliance on a triangle-fan seed and bounds per-step compute.
+
+Placements may overlap each other because every placement has the same opaque
+colour. Overlap can lower the shape count without changing the result.
+
+---
+
+## 3. Inputs
+
+The Pen caller provides one contour:
+
+| Name | Type | Meaning |
+| --- | --- | --- |
+| `mustCover` | polygon set | The flattened active contour. |
+| `mayCover` | polygon set | Identical to `mustCover`; this mode has no legal overspill. |
+| `colour` | RGBA | The region colour, copied onto every placement. |
+| `mask` *(optional)* | binary raster + bbox | Rasterized `mustCover`, for the distance-transform initializer (§7.2). Can be rasterized from `mustCover` internally instead. |
+
+Polygons are simple, closed, with explicit orientation (outer CCW, holes CW, or
+whatever convention the chosen boolean library uses — pick one and enforce it).
+Coordinates and all area thresholds are in canvas world units. The solver must
+not normalize by zoom, guide scale, or a canonical raster resolution.
+
+> The geometric contract is: maximize coverage of `mustCover` while keeping every
+> accepted placement within the equal `mayCover` polygon up to `epsSpill`.
+
+---
+
+## 4. The shape catalog (verified geometry)
+
+Shapes live in `assets/vector/shape_geometry.json.gz`. Structure:
+
+```json
+{
+  "shapes": {
+    "127": {
+      "source": "A_27",
+      "size": [85, 128],
+      "vertices": [[x, y, alpha], ...],      // local coords, ~128-unit centered box
+      "triangles": [[i, j, k], ...]          // indices into vertices
+    }
+  }
+}
+```
+
+The nine shapes the fill uses (ids and roles):
+
+| id | name | verts | tris | convex? |
+| --- | --- | --- | --- | --- |
+| 101 | square | 4 | 2 | yes |
+| 102 | circle | 48 | 46 | yes |
+| 103 | triangle | 3 | 1 | yes |
+| 109 | half circle | 33 | 31 | yes |
+| 130 | quarter circle | 17 | 15 | yes |
+| 127 | fang | 78 | 76 | **no** |
+| 129 | concave arc | 50 | 48 | **no** |
+| 139 | garlic | 65 | 63 | **no** |
+| 2123 | tooth | 56 | 54 | **no** |
+
+**Verified structural facts (these are load-bearing for §5):**
+
+- For **every** shape, `tris == verts − 2`, `boundaryEdges == verts`, and no edge
+  is shared by more than two triangles. → Each shape is a **single simple polygon**
+  (genus 0, no holes, manifold) with a **non-overlapping triangulation**.
+- All vertex alphas are `1.0` → shapes are **hard opaque polygons**, no soft-alpha
+  edges to handle.
+- Coordinates sit in a centered ~128-unit box (well-conditioned for affine maps).
+
+Consequences the implementer can rely on:
+
+1. `area(T(S) ∩ R) = Σ_tri area(T(tri) ∩ R)` is **exact** (non-overlapping tiling,
+   no double counting), for any affine `T` and any region `R`.
+2. Every triangle is a **convex** clip window → Sutherland–Hodgman applies directly
+   even for the non-convex shapes (fang/garlic/tooth/concave arc): just sum over
+   their convex triangles.
+3. Convex shapes (101/102/103/109/130) can alternatively clip against their single
+   boundary polygon for speed; the boundary loop is recoverable because
+   `boundaryEdges == verts`.
+
+Load the catalog once into:
+
+```cpp
+struct Vec2 { double x, y; };
+struct ShapeMesh {
+    int id;
+    std::vector<Vec2> verts;                 // alpha dropped (all 1.0)
+    std::vector<std::array<int,3>> tris;
+    std::vector<Vec2> boundary;              // ordered boundary loop (for convex fast path)
+    bool convex;
+    double area;                             // area of the local silhouette
+};
+```
+
+(There is an existing `ShapeGeometryStore` loader; using it is fine — it is a data
+loader, not fill logic. Loading the JSON directly is equally fine.)
+
+---
+
+## 5. The differentiable kernel — covered/spill area and its gradient
+
+This is the only genuinely new numerical code and the only part with no drop-in
+library. It is small (~200 lines). It computes, for one candidate placement,
+scalar **covered area** and **spill area** *and their gradients* w.r.t. the 6
+affine parameters, using **forward-mode automatic differentiation (dual numbers)**
+— no ML framework, no reverse-mode tape.
+
+### 5.1 Parameterization
+
+Affine `θ = (a, b, c, d, e, f)` maps local `u = (ux, uy)` to world:
+
+```
+T(u) = ( a·ux + c·uy + e ,  b·ux + d·uy + f )
+```
+
+Determinant `det = a·d − b·c`; `area(T(S)) = area(S) · |det|`.
+
+Output affine maps to the game's `QTransform(m11=a, m12=b, m21=c, m22=d, dx=e,
+dy=f)` at serialization time (done by the caller, not here).
+
+### 5.2 Forward-mode AD ("jets")
+
+Carry every scalar as a value plus its 6 partials:
+
+```cpp
+struct Jet { double v; double g[6]; };      // v = value, g = d v / d θ
+// arithmetic overloads: +, −, *, /, with product/quotient rules on g[]
+```
+
+The candidate shape's triangle vertices are **linear in θ**, so their jets are
+exact and trivial to seed: for local vertex `u`,
+`T(u).x = a·ux + c·uy + e` → its jet gradient is `(ux,0,uy,0,1,0)`, etc. Subject
+(residual / `mayCover`) vertices are **constants** during a single primitive's
+optimization → jets with zero gradient. Propagating jets through the clip and
+shoelace yields `covered.v` and `covered.g[]` in one pass.
+
+### 5.3 Covered area = Σ (residual ∩ triangle), via Sutherland–Hodgman + shoelace
+
+For a fixed subject polygon `R` (the residual — may be non-convex, may have holes;
+holes handled by signed areas) and each mapped triangle window `T(tri)`:
+
+1. **Clip** `R` against the triangle's 3 half-planes (Sutherland–Hodgman). The clip
+   window must be convex — a triangle always is. Output vertices are either
+   original `R` vertices (constant jets) or edge–edge intersection points (jets
+   depend on θ through the moving window edge). The intersection point of a
+   constant subject edge `p→q` with a moving window edge is a rational expression →
+   fully differentiable; propagate jets through it.
+2. **Shoelace** the clipped polygon for its signed area (as a jet).
+3. Sum signed areas over all triangles of the shape. Because the triangulation
+   tiles the shape without overlap, the sum equals `area(T(S) ∩ R)` exactly.
+
+Handle `R` with holes by giving holes negative orientation and summing signed
+areas; the clip is linear over the subject's subpaths.
+
+### 5.4 Spill area
+
+```
+spill_out(θ) = area(T(S)) − area(T(S) ∩ mayCover)
+            = area(S)·|det(θ)|  −  Σ_tri area( T(tri) ∩ mayCover )
+```
+
+Both terms are jets (the first via `|det|`, the second via §5.3 against
+`mayCover`). `spill_out` is the area of the placement lying **outside** the active
+contour; the objective drives it toward 0.
+
+### 5.5 Per-placement objective
+
+```
+score(θ) = covered(θ, residual)  −  λ_spill · spill_out(θ)
+```
+
+Maximize by gradient ascent (Adam is fine; §7.3). `covered` pulls the shape to
+swallow residual; `λ_spill` (large, e.g. 4–16× the coverage weight) keeps it inside
+`mayCover`. No term is needed to prevent degeneracy — maximizing coverage inflates
+the shape on its own.
+
+### 5.6 Non-smoothness (kinks) — expected, benign
+
+`score(θ)` is **C0 continuous but only piecewise-C1**: a kink occurs when the
+intersection's combinatorics change (a residual vertex crosses a triangle edge, or
+a triangle vertex crosses a residual edge). Within a piece the jet gradient is
+exact; at a kink AD returns a valid one-sided gradient. Adam tolerates this — it is
+far milder than the global visibility discontinuity DiffVG must edge-sample,
+because only **one** convex-clip primitive moves against a **fixed** residual.
+Optional robustness: a tiny softening margin on the half-plane tests, or a couple
+of random restarts (§7.3) if a region proves finicky. No special discontinuity
+machinery is required.
+
+---
+
+## 6. The exact residual loop
+
+Keep an exact `residual` polygon so coverage and stopping state are measured
+geometrically rather than inferred from the optimizer's score.
+
+```
+residual   ← mustCover                      // exact polygon
+placements ← []
+while area(residual) > ε_area and |placements| < budget:
+    (shapeId, θ, gain) ← bestPlacement(residual, mayCover, catalog)   // §7
+    if gain < ε_gain:                        // no primitive makes progress
+        stalled ← true
+        break
+    footprint ← polygon(T_θ(shape[shapeId])) # exact, via boolean lib
+    placements.append({shapeId, θ})
+    residual ← residual  −  footprint        # exact boolean subtraction
+return placements, area(residual)
+```
+
+- `residual`, `footprint`, and the subtraction are **exact** polygon booleans
+  (non-differentiable — that is fine; they run *between* optimization steps, and
+  `residual`/`mayCover` are constant *during* a step, which is what lets §5 treat
+  the subject as constant jets).
+- Termination: each accepted step removes a positive area from `residual`; the loop
+  ends when the residual is negligible, the budget is hit, cancellation is
+  requested, or candidate gain falls below `epsGain`.
+- `epsArea` is a small world-unit area threshold so negligible residues do not
+  spawn shapes.
+
+**Polygon boolean library:** use **Clipper2** (C++, permissive Boost Software
+License, robust integer-based booleans). Vendor it under `third_party/`. Note:
+Clipper2 scales coordinates to integers for robustness — use it only for the exact
+residual/footprint booleans. Keep the §5 differentiable clip in floating point as
+its own code path (it needs derivatives, which Clipper2 does not provide).
+
+---
+
+## 7. Choosing each placement (the greedy step)
+
+`bestPlacement(residual, mayCover, catalog)` returns the shape+affine that removes
+the most residual this step.
+
+### 7.1 Candidate shapes — descriptor router (keep it cheap)
+
+Do **not** optimize all 9 shapes every step. Classify the residual locally and try
+only the 1–3 shapes whose descriptor matches, then keep the best:
+
+- Compute the residual's largest inscribed disk (distance transform, §7.2) and the
+  local shape around that seed: convex vs concave lobe, aspect ratio, corner-ness.
+- Convex blob → circle 102 / square 101 / triangle 103.
+- Long convex lobe → ellipse (circle 102 under anisotropic affine) / half circle
+  109.
+- Concave notch / claw / tab → fang 127 / garlic 139 / tooth 2123 / concave arc
+  129.
+- Sharp corner of residual → triangle 103.
+
+The router keeps per-step cost bounded regardless of catalog growth.
+
+### 7.2 Initialization (per candidate) — medial axis, **not** triangulation
+
+Good init is what makes the optimizer fast and local-minimum-free:
+
+- Compute the **distance transform** of `residual`. Its maximum is the deepest
+  interior point `p*` with clearance `r*` (the largest inscribed circle).
+- Seed the candidate so its silhouette is roughly the largest-inscribed instance at
+  `p*`: circle → center `p*`, radius `r*`; square/triangle → centered at `p*`,
+  scaled ~`r*`, rotated to the local residual orientation (PCA of residual pixels
+  near `p*`); concave shapes → align the shape's concavity to the nearest residual
+  boundary feature.
+- This is the classic medial-axis "cover with maximal inscribed shapes" seed and
+  the analog of LIVE's component-wise path initialization. It yields an overlapping,
+  low-count cover and keeps each Adam run to a short warm descent.
+
+### 7.3 Optimize (per candidate)
+
+- Ascend `score(θ)` (§5.5) with Adam over the 6 params. ~100–300 iters; stop early
+  on small gradient norm.
+- Optionally 1–3 random restarts (jitter θ) and keep the best `score`; makes the
+  step robust to kinks without a framework.
+- Reject a candidate whose final `spill_out > ε_spill` (it would paint outside
+  the contour tolerance) or whose `covered < ε_gain`.
+
+### 7.4 Select
+
+Among surviving candidates pick the one with the largest **`covered`** (ties → lowest
+shape id, for repeatability). Return it as the step's placement.
+
+---
+
+## 8. Budget, stopping, and partial results
+
+- **Budget:** `budget` caps placements. The default remains high because this is
+  an explicitly slow mode, and cancellation must be checked throughout routing,
+  optimization, and residual subtraction.
+- **No fallback:** a stalled or budget-limited run does not call another fill,
+  triangulate the residual, discard it as occluded, or fabricate a placement.
+- **Partial insertion:** a nonempty placement list is a usable result even when
+  `residualArea > epsArea`. The caller inserts it, clears the active contour, and
+  reports the uncovered world-unit area plus the stopping reason. A zero-placement
+  result inserts nothing and leaves the active contour available.
+
+---
+
+## 9. Repeatability (determinism is relaxed, not abandoned)
+
+The optimizer is non-deterministic in principle, but the module must be
+**run-to-run repeatable** so regenerating a livery does not reshuffle decals:
+
+- Fixed RNG seed for restarts/jitter (seed derivable from region id).
+- Fixed iteration counts and a fixed candidate/shape ordering.
+- Deterministic tie-breaks (lowest shape id, then lexicographic θ).
+
+Bit-exact reproducibility across machines is **not** required; stable output on one
+build is.
+
+---
+
+## 10. Module interface
+
+```cpp
+namespace cover {
+
+struct Affine { double a, b, c, d, e, f; };     // maps to QTransform(a,b,c,d,e,f)
+
+struct Placement {
+    int   shapeId;
+    Affine xf;
+};
+
+struct FillInput {
+    // Exact polygons in canvas world space; outer CCW, holes CW.
+    Polygons mustCover;
+    Polygons mayCover;                            // equal for Pen mode
+    // Optional prebuilt raster of mustCover for the DT initializer.
+    const uint8_t* mask = nullptr;
+    int maskW = 0, maskH = 0;
+    QRect maskBounds;
+};
+
+struct FillOptions {
+    int    budget        = 100000;               // max placements
+    double spillWeight   = 8.0;                   // λ_spill
+    double epsArea       = 0.25;                  // world², residual-empty threshold
+    double epsGain       = 1.0;                   // world², min progress per step
+    double epsSpill      = 0.25;                  // world², max tolerated outside
+    int    adamIters     = 200;
+    double adamLr        = 0.05;
+    int    restarts      = 2;
+    uint64_t seed        = 0;                     // 0 → derive from region
+    bool   useRouter     = true;                  // §7.1
+};
+
+struct FillResult {
+    std::vector<Placement> placements;
+    Polygons residual;
+    double residualArea = 0.0;
+    double coveredArea = 0.0;
+    double outsideArea = 0.0;
+    bool budgetHit = false;
+    bool stalled = false;
+    bool cancelled = false;
+    QString error;
+};
+
+FillResult analyticCoverFill(const FillInput& in,
+                             const std::vector<ShapeMesh>& catalog,
+                             const FillOptions& opt,
+                             const std::function<bool()>& cancelled = {});
+
+} // namespace cover
+```
+
+Colour is not in `Placement` — the caller stamps the region colour onto every
+returned placement when building decals.
+
+---
+
+## 11. Implementation and validation layout
+
+1. **Catalog adapter** — `ShapeGeometryStore` loads `shape_geometry.json.gz`; the
+   cover module reconstructs indexed `ShapeMesh` data for the nine ids, validates
+   the §4 invariants, and recovers each boundary loop.
+2. **Jet type + differentiable clip kernel (§5)** — `Jet` with 6 partials;
+   Sutherland–Hodgman clip of a constant subject against a moving convex triangle;
+   shoelace; `covered` and `spill_out` with gradients. **Unit-test the gradient
+   against finite differences** — this is the correctness lynchpin.
+3. **Clipper2 2.0.1** is vendored under `third_party/clipper2`; fixed six-decimal
+   integer conversion wraps residual, footprint, union, and subtraction booleans.
+   The initializer rasterizes world coordinates independently.
+4. **Single greedy step (§7)** — router + DT init + Adam + select. Test on a
+   convex region (should cover a disk with ~1 circle) then a concave one.
+5. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
+6. **Pen commit integration** sits behind the persistent, default-off
+   Differentiable Pen Fill option. Bucket requires no separate solver integration
+   because its traced region already becomes an editable Pen contour.
+
+Validate by rasterizing the returned union and checking: (a) reported coverage
+matches the union, (b) it stays within `mayCover` up to `epsSpill`, and (c) its
+placement and residual counts are repeatable.
+
+Use `build/Release/pen_fill.log` as the integration reference contour. The test
+loads its request points, rebuilds the same Bucket-derived Pen contour in world
+coordinates, runs the analytic method with a fixed seed, and verifies that it
+produces placements, reports finite coverage/residual metrics, respects the spill
+tolerance, and repeats the same placement ids and transforms within floating-point
+tolerance. The log is a local test asset and is not compiled into the application.
+
+---
+
+## 12. Prior art / references
+
+The differentiable kernel is a documented technique (differentiable polygon
+clipping for rotated-IoU), not novel research; the greedy-few-shapes architecture
+mirrors LIVE. None is a drop-in for the affine-catalog C++ case, but they are the
+reference implementations to crib correctness from:
+
+- **Differentiable Sutherland–Hodgman + shoelace** (the §5 method):
+  <https://github.com/mhdadk/sutherland-hodgman>
+- **DGAL — header-only C++ differentiable geometry (polygon intersection):**
+  <https://github.com/cmpute/dgal>
+- **Differentiable Computational Geometry for 2D/3D ML** (rotated-IoU basis):
+  <https://arxiv.org/pdf/2011.11134>
+- **LIVE — layer-wise image vectorization, minimal path count, component-wise init**
+  (architecture precedent): <https://ma-xu.github.io/LIVE/> ·
+  <https://github.com/Picsart-AI-Research/LIVE-Layerwise-Image-Vectorization>
+- **Clipper2** (exact polygon booleans, permissive): the residual/boolean engine.
+
+---
+
+## 13. Open risks
+
+- **Boolean robustness/perf.** The exact `residual` loop leans on Clipper2 booleans
+  per step. Clipper2 is robust, but many steps on complex regions add up; if it
+  becomes the bottleneck, cache `mayCover` clips and consider a scanline/raster
+  residual for the *progress test* while keeping exact booleans only for the final
+  subtraction.
+- **Affine-catalog ceiling.** Nine affine shapes cap how low the count can go;
+  organic regions benefit most, geometric ones barely — so gate the HQ mode to fire
+  only where a cheap pre-estimate says the region is count-heavy. Richer shapes are
+  a separate axis (a closed-form-fittable catalog extension), out of scope here.
+- **Kinks on difficult residuals.** Expected benign (§5.6); restarts are the
+  escape hatch. If a contour defeats the optimizer, return the measured partial
+  result rather than looping.
+- **Strict containment.** Pen mode supplies no leeway, so shape-count reduction is
+  limited by the contour boundary. `epsSpill` is the only accepted numerical
+  tolerance outside it.

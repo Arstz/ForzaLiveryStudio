@@ -491,6 +491,10 @@ QVector<PenPrimitive> ProjectCanvas::penPrimitiveCatalog() const {
     return buildPenPrimitiveCatalog(geometry_);
 }
 
+QVector<cover::ShapeMesh> ProjectCanvas::differentiableCoverCatalog(QString *error) const {
+    return cover::buildShapeCatalog(geometry_, error);
+}
+
 void ProjectCanvas::setPathFillRunning(PathInteraction &path, bool running, const QString &message) {
     path.fillRunning = running;
     path.fillMessage = running ? message : QString();

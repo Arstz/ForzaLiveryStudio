@@ -25,6 +25,11 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
+  A persistent, default-off **Differentiable Pen Fill** option replaces that commit
+  path with a slow analytic greedy cover for the active contour. It optimizes
+  affine catalog shapes against an exact world-coordinate residual, stays within
+  the contour tolerance, and inserts a measured partial result when progress
+  stalls. Bucket-derived Pen contours use the same selected mode.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated
   Primitive catalog. Selection follows the authored point structure, ranks
