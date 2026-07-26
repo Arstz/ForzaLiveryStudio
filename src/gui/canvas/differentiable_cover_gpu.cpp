@@ -727,6 +727,14 @@ public:
         return available_;
     }
 
+    bool supportsOptimizerEvaluation() const override {
+        return false;
+    }
+
+    bool usesDoublePrecision() const override {
+        return false;
+    }
+
     GpuEvaluatorStats stats() const override {
         return stats_;
     }
@@ -1000,6 +1008,7 @@ private:
     }
 
     void initialize(const QVector<ShapeMesh> &catalog) {
+        stats_.backend = QStringLiteral("Direct3D 11 compute");
         const D3D_FEATURE_LEVEL levels[] = {
             D3D_FEATURE_LEVEL_11_1,
             D3D_FEATURE_LEVEL_11_0,
@@ -1156,8 +1165,17 @@ public:
         return false;
     }
 
+    bool supportsOptimizerEvaluation() const override {
+        return false;
+    }
+
+    bool usesDoublePrecision() const override {
+        return false;
+    }
+
     GpuEvaluatorStats stats() const override {
         GpuEvaluatorStats result;
+        result.backend = QStringLiteral("Direct3D 11 compute");
         result.error = QStringLiteral(
             "Direct3D GPU evaluation is unavailable on this platform");
         return result;
@@ -1166,16 +1184,121 @@ public:
 
 #endif
 
+class FallbackGpuEvaluator final : public GpuAreaEvaluator {
+public:
+    explicit FallbackGpuEvaluator(const QVector<ShapeMesh> &catalog) {
+#ifdef FH6_HAS_CUDA
+        evaluators_.push_back(createCudaAreaEvaluator(catalog));
+#endif
+#ifdef Q_OS_WIN
+        evaluators_.push_back(std::make_unique<D3dAreaEvaluator>(catalog));
+#else
+        evaluators_.push_back(std::make_unique<UnavailableGpuEvaluator>());
+#endif
+        selectAvailable(0);
+    }
+
+    bool setSubjects(const Polygons &coveredSubject,
+                     const Polygons &legalSubject) override {
+        coveredSubject_ = coveredSubject;
+        legalSubject_ = legalSubject;
+        subjectsSet_ = false;
+        while (active_ < evaluators_.size()) {
+            if (evaluators_[active_]->available()
+                && evaluators_[active_]->setSubjects(
+                    coveredSubject_, legalSubject_)) {
+                subjectsSet_ = true;
+                return true;
+            }
+            selectAvailable(active_ + 1);
+        }
+
+        return false;
+    }
+
+    bool evaluate(const QVector<GpuEvaluationRequest> &requests,
+                  QVector<AreaGradient> *results) override {
+        while (active_ < evaluators_.size()) {
+            if (subjectsSet_
+                && evaluators_[active_]->evaluate(requests, results)) {
+                return true;
+            }
+            selectAvailable(active_ + 1);
+            if (active_ < evaluators_.size()
+                && evaluators_[active_]->setSubjects(
+                    coveredSubject_, legalSubject_)) {
+                subjectsSet_ = true;
+                continue;
+            }
+            subjectsSet_ = false;
+        }
+
+        return false;
+    }
+
+    bool available() const override {
+        return active_ < evaluators_.size();
+    }
+
+    bool supportsOptimizerEvaluation() const override {
+        return available()
+            && evaluators_[active_]->supportsOptimizerEvaluation();
+    }
+
+    bool usesDoublePrecision() const override {
+        return available()
+            && evaluators_[active_]->usesDoublePrecision();
+    }
+
+    GpuEvaluatorStats stats() const override {
+        GpuEvaluatorStats result;
+        QStringList errors;
+        for (size_t index = 0; index < evaluators_.size(); ++index) {
+            const GpuEvaluatorStats current = evaluators_[index]->stats();
+            result.batches += current.batches;
+            result.evaluations += current.evaluations;
+            result.intersectionTasks += current.intersectionTasks;
+            result.wallSeconds += current.wallSeconds;
+            if (!current.error.isEmpty()) {
+                errors.push_back(
+                    QStringLiteral("%1: %2")
+                        .arg(current.backend, current.error));
+            }
+            if (index == active_) {
+                result.backend = current.backend;
+                result.adapter = current.adapter;
+            }
+        }
+        if (result.backend.isEmpty()) {
+            result.backend = QStringLiteral("CPU");
+        }
+        result.error = errors.join(QStringLiteral("; "));
+
+        return result;
+    }
+
+private:
+    void selectAvailable(size_t first) {
+        active_ = first;
+        while (active_ < evaluators_.size()
+               && !evaluators_[active_]->available()) {
+            ++active_;
+        }
+        subjectsSet_ = false;
+    }
+
+    std::vector<std::unique_ptr<GpuAreaEvaluator>> evaluators_;
+    Polygons coveredSubject_;
+    Polygons legalSubject_;
+    size_t active_ = 0;
+    bool subjectsSet_ = false;
+};
+
 } // namespace
 
 std::unique_ptr<GpuAreaEvaluator> createGpuAreaEvaluator(
     const QVector<ShapeMesh> &catalog) {
-#ifdef Q_OS_WIN
-    return std::make_unique<D3dAreaEvaluator>(catalog);
-#else
-    Q_UNUSED(catalog)
-    return std::make_unique<UnavailableGpuEvaluator>();
-#endif
+    return std::make_unique<FallbackGpuEvaluator>(catalog);
 }
 
 } // namespace gui::cover

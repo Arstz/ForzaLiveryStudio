@@ -25,7 +25,10 @@ All settings as well as custom groups are stored in your QSettings, in the regis
 
 ### Windows
 
-Requirements: Qt6 via vcpkg, C++ compiler, zlib.
+Requirements: Qt6 via vcpkg, Visual Studio 2022 with C++ support, zlib, and CMake 3.24+.
+
+Optional: NVIDIA CUDA Toolkit. When available, the build enables the CUDA differentiable-fill optimizer and deploys its runtime DLL automatically. Without CUDA, the application falls back
+to Direct3D 11 and then CPU evaluation.
 
 Run the build script:
 ```powershell
@@ -37,6 +40,8 @@ See [developer guide](docs/DEV.md) for detailed instructions.
 ### Linux (Arch)
 
 Requirements: Qt6, zlib, CMake 3.24+, C++20 compiler.
+
+Optional: NVIDIA CUDA Toolkit for CUDA-accelerated differentiable fill. Without CUDA, CPU evaluation is used.
 
 Install dependencies:
 

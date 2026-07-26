@@ -29,9 +29,10 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   path with a slow analytic greedy cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, stays within
   the contour tolerance, and inserts a measured partial result when progress
-  stalls. A hybrid Direct3D 11 compute path batches legalization intersections
-  while double-precision CPU evaluation retains optimization and acceptance
-  authority; unsupported or failed GPU execution falls back automatically.
+  stalls. An optional double-precision CUDA path evaluates the optimizer and
+  legalization first. Direct3D 11 legalization with double-precision CPU Adam is
+  the next backend, followed by the parallel CPU evaluator. Exact CPU candidate
+  verification remains authoritative, and backend failure advances automatically.
   Its status-bar progress reports exact covered area and an approximate ETA
   derived from observed placement timing and gain decay. Bucket-derived Pen
   contours use the same selected mode.

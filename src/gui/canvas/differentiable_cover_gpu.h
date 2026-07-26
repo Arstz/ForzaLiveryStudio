@@ -12,6 +12,7 @@ struct GpuEvaluationRequest {
 };
 
 struct GpuEvaluatorStats {
+    QString backend;
     QString adapter;
     QString error;
     std::uint64_t batches = 0;
@@ -29,10 +30,17 @@ public:
     virtual bool evaluate(const QVector<GpuEvaluationRequest> &requests,
                           QVector<AreaGradient> *results) = 0;
     virtual bool available() const = 0;
+    virtual bool supportsOptimizerEvaluation() const = 0;
+    virtual bool usesDoublePrecision() const = 0;
     virtual GpuEvaluatorStats stats() const = 0;
 };
 
 std::unique_ptr<GpuAreaEvaluator> createGpuAreaEvaluator(
     const QVector<ShapeMesh> &catalog);
+
+#ifdef FH6_HAS_CUDA
+std::unique_ptr<GpuAreaEvaluator> createCudaAreaEvaluator(
+    const QVector<ShapeMesh> &catalog);
+#endif
 
 } // namespace gui::cover

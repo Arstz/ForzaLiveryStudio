@@ -3,10 +3,27 @@ cmake_minimum_required(VERSION 3.24)
 project(ForzaLiveryStudio LANGUAGES CXX C)
 
 include(CTest)
+include(CheckLanguage)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(FH6_ENABLE_CUDA "Build the optional CUDA differentiable optimizer" ON)
+if(FH6_ENABLE_CUDA)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        find_package(CUDAToolkit REQUIRED)
+        set(CMAKE_CUDA_STANDARD 20)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+        if(WIN32)
+            file(GLOB FH6_CUDART_DLLS
+                "${CUDAToolkit_BIN_DIR}/x64/cudart64_*.dll")
+            list(GET FH6_CUDART_DLLS 0 FH6_CUDART_DLL)
+        endif()
+    endif()
+endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 find_package(ZLIB REQUIRED)
@@ -238,6 +255,34 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/widgets/shapes_browser_widget.h
 )
 
+if(CMAKE_CUDA_COMPILER)
+    target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
+        src/gui/canvas/differentiable_cover_cuda.cpp
+        src/gui/canvas/differentiable_cover_cuda.cu
+        src/gui/canvas/differentiable_cover_cuda_kernel.h
+    )
+    target_compile_definitions(
+        ${FORZA_LIVERY_STUDIO_TARGET} PRIVATE FH6_HAS_CUDA=1)
+    target_compile_options(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>
+    )
+    target_link_libraries(
+        ${FORZA_LIVERY_STUDIO_TARGET} PRIVATE CUDA::cudart)
+    set_target_properties(${FORZA_LIVERY_STUDIO_TARGET} PROPERTIES
+        CUDA_ARCHITECTURES all-major
+        CUDA_RUNTIME_LIBRARY Shared
+    )
+    if(WIN32)
+        add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FH6_CUDART_DLL}"
+                "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>"
+        )
+    endif()
+endif()
+
 target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
     src
     src/gui/app
@@ -320,6 +365,34 @@ if(BUILD_TESTING)
         Qt6::Gui
         ZLIB::ZLIB
     )
+    if(CMAKE_CUDA_COMPILER)
+        target_sources(fls_differentiable_cover_tests PRIVATE
+            src/gui/canvas/differentiable_cover_cuda.cpp
+            src/gui/canvas/differentiable_cover_cuda.cu
+            src/gui/canvas/differentiable_cover_cuda_kernel.h
+        )
+        target_compile_definitions(
+            fls_differentiable_cover_tests PRIVATE FH6_HAS_CUDA=1)
+        target_compile_options(fls_differentiable_cover_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>
+        )
+        target_link_libraries(
+            fls_differentiable_cover_tests PRIVATE CUDA::cudart)
+        set_target_properties(fls_differentiable_cover_tests PROPERTIES
+            CUDA_ARCHITECTURES native
+            CUDA_RUNTIME_LIBRARY Shared
+        )
+        if(WIN32)
+            add_custom_command(
+                TARGET fls_differentiable_cover_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${FH6_CUDART_DLL}"
+                    "$<TARGET_FILE_DIR:fls_differentiable_cover_tests>"
+            )
+        endif()
+    endif()
     if(WIN32)
         target_link_libraries(fls_differentiable_cover_tests PRIVATE
             d3d11

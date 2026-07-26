@@ -2,6 +2,7 @@ Small changes:
     -Tool buttons not resized properly after applying custom keybinds, collapsing the text
     -Skew tool hint text displays skew in px rather than editor units
     -Cursor on layer drag in Layers widget is rendered only left half visible
+    -Rename all FH6 variables to FLS if not directly related to Forza Horizon 6 but a general case, apply for cmake and libs as well.
 
 Medium changes:
     -Termination of the fill should still place the shapes generated

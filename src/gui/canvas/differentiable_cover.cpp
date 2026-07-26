@@ -1119,7 +1119,11 @@ bool evaluateGpuBatch(
     QVector<AreaGradient> *evaluations,
     FillProfile *profile,
     bool legalization) {
-    if (!evaluator->evaluate(requests, evaluations)) {
+    const bool optimizerBackend =
+        evaluator->supportsOptimizerEvaluation();
+    if (!evaluator->evaluate(requests, evaluations)
+        || (!legalization && optimizerBackend
+            && !evaluator->supportsOptimizerEvaluation())) {
         return false;
     }
     if (legalization) {
@@ -1221,11 +1225,19 @@ bool legalCandidatesGpu(
                 const int requestIndex =
                     pendingOffset * batchSteps + batchStep;
                 const AreaGradient &evaluation = evaluations[requestIndex];
-                const double spillSlack = std::max(
-                    0.05, std::abs(evaluation.covered) * 1e-4);
+                const double spillSlack =
+                    evaluator->usesDoublePrecision()
+                    ? 0.0
+                    : std::max(
+                          0.05,
+                          std::abs(evaluation.covered) * 1e-4);
+                const double minimumCovered =
+                    evaluator->usesDoublePrecision()
+                    ? options.epsGain
+                    : options.epsGain * 0.5;
                 if (!finiteGradient(evaluation)
                     || evaluation.spill > options.epsSpill + spillSlack
-                    || evaluation.covered < options.epsGain * 0.5) {
+                    || evaluation.covered < minimumCovered) {
                     continue;
                 }
                 Candidate candidate;
@@ -1331,11 +1343,13 @@ bool optimizeCandidatesGpu(
             &initialGpuCandidates, cancelled, wasCancelled)) {
         return false;
     }
-    QVector<Candidate> initialCandidates;
-    exactCandidatesCpuBatch(
-        initialShapes, initialGpuCandidates, residual, mayCover,
-        subjectBounds, options, candidatePool, profile,
-        &initialCandidates);
+    QVector<Candidate> initialCandidates = initialGpuCandidates;
+    if (!evaluator->usesDoublePrecision()) {
+        exactCandidatesCpuBatch(
+            initialShapes, initialGpuCandidates, residual, mayCover,
+            subjectBounds, options, candidatePool, profile,
+            &initialCandidates);
+    }
     for (int index = 0; index < states.size(); ++index) {
         states[index].best = initialCandidates[index];
         states[index].bestGpu = initialGpuCandidates[index];
@@ -1365,9 +1379,17 @@ bool optimizeCandidatesGpu(
         }
 
         QVector<AreaGradient> evaluations;
-        evaluateCpuBatch(
-            requests, residual, mayCover, subjectBounds,
-            candidatePool, &evaluations, profile);
+        if (evaluator->supportsOptimizerEvaluation()) {
+            if (!evaluateGpuBatch(
+                    evaluator, requests, &evaluations,
+                    profile, false)) {
+                return false;
+            }
+        } else {
+            evaluateCpuBatch(
+                requests, residual, mayCover, subjectBounds,
+                candidatePool, &evaluations, profile);
+        }
         QVector<int> legalIndices;
         QVector<const ShapeMesh *> legalShapes;
         QVector<Affine> legalTransforms;
@@ -1447,6 +1469,13 @@ bool optimizeCandidatesGpu(
             if (betterCandidate(
                     gpuLegalCandidates[index], state.bestGpu)) {
                 state.bestGpu = gpuLegalCandidates[index];
+                if (evaluator->usesDoublePrecision()) {
+                    if (betterCandidate(
+                            gpuLegalCandidates[index], state.best)) {
+                        state.best = gpuLegalCandidates[index];
+                    }
+                    continue;
+                }
                 competitiveIndices.push_back(legalIndices[index]);
                 competitiveShapes.push_back(state.job->shape);
                 competitiveGpuCandidates.push_back(
@@ -1753,10 +1782,12 @@ FillResult analyticCoverFill(
     result.profile.workerThreads = candidatePool.maxThreadCount();
     std::unique_ptr<GpuAreaEvaluator> gpuEvaluator =
         options.useGpu ? createGpuAreaEvaluator(catalog) : nullptr;
-    result.profile.evaluationBackend =
-        gpuEvaluator != nullptr && gpuEvaluator->available()
-        ? QStringLiteral("Hybrid Direct3D 11 compute")
-        : QStringLiteral("CPU");
+    if (gpuEvaluator != nullptr && gpuEvaluator->available()) {
+        result.profile.evaluationBackend =
+            gpuEvaluator->stats().backend;
+    } else {
+        result.profile.evaluationBackend = QStringLiteral("CPU");
+    }
     auto updateGpuProfile = [&]() {
         if (gpuEvaluator == nullptr) {
             return;
@@ -1767,12 +1798,11 @@ FillResult analyticCoverFill(
         result.profile.gpuBatches = stats.batches;
         result.profile.gpuIntersectionTasks = stats.intersectionTasks;
         result.profile.gpuEvaluationWallSeconds = stats.wallSeconds;
-        if (!stats.error.isEmpty() && stats.batches > 0) {
-            result.profile.evaluationBackend =
-                QStringLiteral(
-                    "Hybrid Direct3D 11 compute with CPU fallback");
-        } else if (!stats.error.isEmpty()) {
-            result.profile.evaluationBackend = QStringLiteral("CPU");
+        result.profile.evaluationBackend = stats.backend;
+        if (!stats.error.isEmpty()
+            && stats.backend != QStringLiteral("CPU")) {
+            result.profile.evaluationBackend +=
+                QStringLiteral(" with fallback");
         }
     };
     while (polygonSetArea(result.residual) > options.epsArea

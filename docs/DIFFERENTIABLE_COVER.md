@@ -247,25 +247,37 @@ Optional robustness: a tiny softening margin on the half-plane tests, or a coupl
 of random restarts (§7.3) if a region proves finicky. No special discontinuity
 machinery is required.
 
-### 5.7 Hybrid GPU execution
+### 5.7 GPU execution
 
-On Windows, the evaluator creates a Direct3D 11 compute device and compiles the
-analytic clipping kernel for shader model 5. The GPU batches independent
-shape-primitive/subject-polygon intersections and reduces their values and six
-partials in stable request order on the CPU.
+`useGpu` selects the first available evaluation backend in this order:
 
-The GPU kernel uses single precision, so it is an acceleration and screening
-layer rather than the authority for accepted geometry. Adam's trajectory remains
-on the parallel double-precision CPU kernel. GPU legalization evaluates the same
-ordered shrink sequence in grouped dispatches; a candidate that can become the
-best result is legalized again with the double-precision CPU kernel. Exact
-residual subtraction and final coverage measurement remain in Clipper2.
+1. CUDA double-precision optimizer evaluation.
+2. Direct3D 11 single-precision legalization with double-precision CPU Adam
+   evaluation.
+3. Parallel double-precision CPU evaluation.
 
-`useGpu` enables this hybrid path by default. Device creation, shader compilation,
-buffer allocation, or dispatch failure disables it for the current fill and
-restarts the current greedy step on the CPU path. The failure reason is retained
-in the profile. The GPU path does not alter placement budget, optimizer iteration
-counts, restart counts, legalization steps, or stopping thresholds.
+CUDA is an optional build capability controlled by `FH6_ENABLE_CUDA`. When a CUDA
+compiler is found, the build compiles the clipping kernel for the GPU
+architectures supported by that toolkit and deploys the CUDA runtime beside the
+application. The residual and catalog geometry stay in device buffers for a
+greedy step. Covered/spill values and all six partials are evaluated in double
+precision on CUDA for both Adam and legalization. Adam's small state update
+remains in stable host order, and task results are reduced in stable order on the
+CPU.
+
+The Direct3D evaluator compiles the analytic clipping kernel for shader model 5.
+It uses single precision, so it remains an acceleration and screening layer:
+Adam's trajectory uses the parallel double-precision CPU kernel, legalization
+uses grouped Direct3D dispatches, and competitive results are legalized again
+with the CPU kernel.
+
+Both GPU paths preserve exact CPU verification of each job winner. Exact residual
+subtraction and final coverage measurement remain in Clipper2. Backend
+initialization or evaluation failure advances to the next backend, and an
+interrupted optimizer step is recomputed through a precision-safe path. Failure
+reasons remain in the profile. Backend selection does not alter placement budget,
+optimizer iteration counts, restart counts, legalization steps, or stopping
+thresholds.
 
 ---
 
@@ -350,12 +362,12 @@ Good init is what makes the optimizer fast and local-minimum-free:
   step robust to kinks without a framework.
 - Reject a candidate whose final `spill_out > ε_spill` (it would paint outside
   the contour tolerance) or whose `covered < ε_gain`.
-- Candidate/restart jobs use all but one available CPU thread for the
-  double-precision Adam evaluations. When the hybrid backend is available,
-  legalization intersections are batched on the GPU and competitive results are
-  verified by the CPU kernel. Initial jitter is generated in stable job order
-  before dispatch, results are written to fixed slots, and selection is performed
-  in that same order so scheduling cannot change the output.
+- CUDA evaluates the double-precision Adam gradients and legalization batches
+  when available. Direct3D accelerates legalization while all but one available
+  CPU thread evaluates Adam. GPU candidates are verified by the CPU kernel before
+  acceptance. Initial jitter is generated in stable job order before dispatch,
+  results are written to fixed slots, and selection is performed in that same
+  order so scheduling cannot change the output.
 
 ### 7.4 Select
 
@@ -509,16 +521,19 @@ enough decay information for an estimate.
    Sutherland–Hodgman clip of a constant subject against a moving convex triangle;
    shoelace; `covered` and `spill_out` with gradients. **Unit-test the gradient
    against finite differences** — this is the correctness lynchpin.
-3. **Direct3D 11 compute evaluator (§5.7)** — batch intersection requests,
-   retain stable CPU reduction, verify its area and gradient against the
-   double-precision kernel, and retain automatic CPU fallback.
-4. **Clipper2 2.0.1** is vendored under `third_party/clipper2`; fixed six-decimal
+3. **CUDA evaluator (§5.7)** — evaluate the optimizer and legalization kernel in
+   double precision, retain stable CPU reduction, and verify values and gradients
+   against the CPU kernel.
+4. **Direct3D 11 compute evaluator (§5.7)** — batch legalization intersections,
+   verify its values and gradients against the double-precision kernel, and
+   retain automatic fallback.
+5. **Clipper2 2.0.1** is vendored under `third_party/clipper2`; fixed six-decimal
    integer conversion wraps residual, footprint, union, and subtraction booleans.
    The initializer rasterizes world coordinates independently.
-5. **Single greedy step (§7)** — router + DT init + Adam + select. Test on a
+6. **Single greedy step (§7)** — router + DT init + Adam + select. Test on a
    convex region (should cover a disk with ~1 circle) then a concave one.
-6. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
-7. **Pen commit integration** sits behind the persistent, default-off
+7. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
+8. **Pen commit integration** sits behind the persistent, default-off
    Differentiable Pen Fill option. Bucket requires no separate solver integration
    because its traced region already becomes an editable Pen contour.
 
