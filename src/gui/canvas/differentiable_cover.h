@@ -97,6 +97,12 @@ struct FillProfile {
     double finalMeasurementWallSeconds = 0.0;
     double gpuEvaluationWallSeconds = 0.0;
     double pruneWallSeconds = 0.0;
+    double repairWallSeconds = 0.0;
+    double prePruneResidualArea = 0.0;
+    double postPruneResidualArea = 0.0;
+    double repairTargetArea = 0.0;
+    double postRepairNewGapArea = 0.0;
+    double repairCoveredArea = 0.0;
     QString evaluationBackend;
     QString gpuAdapter;
     QString gpuError;
@@ -117,6 +123,8 @@ struct FillProfile {
     int prunedPlacements = 0;
     int adjustedPlacements = 0;
     int prunePasses = 0;
+    int repairSteps = 0;
+    int repairPlacements = 0;
     int workerThreads = 0;
 };
 

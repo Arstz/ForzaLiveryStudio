@@ -436,6 +436,12 @@ cover. Repeated removals therefore cannot accumulate tolerance loss. Survivor
 adjustment uses the selected CUDA, Direct3D, or CPU optimizer without a placement
 clock, calculation cap, or separate iteration reduction.
 
+After pruning converges, compute the exact repair target as
+`postPruneResidual - prePruneResidual`. Run one additive greedy cover on that
+target using the normal catalog, routing, optimizer, legality checks, and
+remaining placement budget. Append the resulting placements to the pruned cover.
+The repair result is not pruned again.
+
 ---
 
 ## 8. Budget, stopping, and partial results
@@ -464,8 +470,10 @@ clock, calculation cap, or separate iteration reduction.
   generated hard-edge candidates, complexity selections, and accepted placements
   from component-local, whole-component, and hard-edge routes. Prune wall time,
   passes, attempts, survivor optimizations, adjusted placements, and removed
-  placements are recorded separately. Cumulative worker durations overlap while
-  jobs execute in parallel and are not elapsed wall time.
+  placements are recorded separately. The pre-prune and post-prune residual
+  areas, repair-target area, repair placements, repaired area, remaining newly
+  exposed area, and repair wall time are also recorded. Cumulative worker
+  durations overlap while jobs execute in parallel and are not elapsed wall time.
 
 ---
 
@@ -532,6 +540,12 @@ struct FillProfile {
     double finalMeasurementWallSeconds = 0.0;
     double gpuEvaluationWallSeconds = 0.0;
     double pruneWallSeconds = 0.0;
+    double repairWallSeconds = 0.0;
+    double prePruneResidualArea = 0.0;
+    double postPruneResidualArea = 0.0;
+    double repairTargetArea = 0.0;
+    double postRepairNewGapArea = 0.0;
+    double repairCoveredArea = 0.0;
     QString evaluationBackend;
     QString gpuAdapter;
     QString gpuError;
@@ -552,6 +566,8 @@ struct FillProfile {
     int prunedPlacements = 0;
     int adjustedPlacements = 0;
     int prunePasses = 0;
+    int repairSteps = 0;
+    int repairPlacements = 0;
     int workerThreads = 0;
 };
 
@@ -617,7 +633,8 @@ enough decay information for an estimate.
    selection.
 7. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
 8. **Redundancy pruning (§7.6)** — exact unique-area ranking, tentative removal,
-   local survivor adjustment, fixed acceptance limits, and convergence.
+   local survivor adjustment, fixed acceptance limits, convergence, and one
+   additive repair cover of newly exposed residual.
 9. **Pen commit integration** sits behind the persistent, default-off
    Differentiable Pen Fill option. Bucket requires no separate solver integration
    because its traced region already becomes an editable Pen contour.

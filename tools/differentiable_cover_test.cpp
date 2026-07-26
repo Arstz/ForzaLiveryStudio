@@ -384,7 +384,16 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                       && first.profile.prunePasses > 0
                       && first.profile.pruneAttempts > 0
                       && std::isfinite(first.profile.pruneWallSeconds)
-                      && first.profile.pruneWallSeconds >= 0.0,
+                      && first.profile.pruneWallSeconds >= 0.0
+                      && std::isfinite(
+                          first.profile.repairWallSeconds)
+                      && first.profile.repairWallSeconds >= 0.0
+                      && first.profile.repairTargetArea >= 0.0
+                      && first.profile.repairCoveredArea >= 0.0
+                      && first.profile.repairCoveredArea
+                          <= first.profile.repairTargetArea + 1e-6
+                      && first.profile.postRepairNewGapArea
+                          <= first.profile.repairTargetArea + 1e-6,
                    "logged contour solver profiling counts are invalid")
         || !check(
             first.profile.evaluationBackend
@@ -408,7 +417,13 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                   "logged contour solver did not produce an ETA")) {
         return false;
     }
-    bool pruningProgress = false;
+    enum class ProgressPhase {
+        Greedy,
+        Prune,
+        Repair,
+    };
+    ProgressPhase progressPhase =
+        ProgressPhase::Greedy;
     double peakCoveredArea = 0.0;
     for (int i = 0; i < progress.size(); ++i) {
         const cover::FillProgress &update = progress[i];
@@ -417,7 +432,13 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
         if (i > 0
             && update.placementCount
                 < progress[i - 1].placementCount) {
-            pruningProgress = true;
+            progressPhase = ProgressPhase::Prune;
+        } else if (i > 0
+                   && progressPhase
+                       == ProgressPhase::Prune
+                   && update.placementCount
+                       > progress[i - 1].placementCount) {
+            progressPhase = ProgressPhase::Repair;
         }
         if (!check(std::isfinite(update.targetArea)
                        && std::isfinite(update.coveredArea)
@@ -428,19 +449,20 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                    "logged contour solver progress metrics are invalid")
             || !check(
                 i == 0
-                    || (!pruningProgress
+                    || (progressPhase
+                            == ProgressPhase::Prune
                         ? (update.placementCount
-                               >= progress[i - 1].placementCount
-                           && update.coveredArea
-                               >= progress[i - 1].coveredArea
-                           && update.residualArea
-                               <= progress[i - 1].residualArea)
-                        : (update.placementCount
                                <= progress[i - 1].placementCount
                            && update.coveredArea
                                >= peakCoveredArea
                                    - options.epsArea
-                                   - 1e-6)),
+                                   - 1e-6)
+                        : (update.placementCount
+                               >= progress[i - 1].placementCount
+                           && update.coveredArea
+                               >= progress[i - 1].coveredArea
+                           && update.residualArea
+                               <= progress[i - 1].residualArea)),
                       "logged contour solver progress is not monotonic")) {
             return false;
         }
@@ -472,7 +494,14 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
               << first.profile.pruneAttempts
               << " attempts and "
               << first.profile.pruneOptimizations
-              << " survivor optimizations";
+              << " survivor optimizations, "
+              << first.profile.repairTargetArea
+              << " repair target, "
+              << first.profile.repairPlacements
+              << " repair placements covering "
+              << first.profile.repairCoveredArea
+              << ", " << first.profile.postRepairNewGapArea
+              << " newly exposed area remaining";
     if (!first.profile.gpuError.isEmpty()) {
         std::cout << ", fallback: " << qPrintable(first.profile.gpuError);
     }

@@ -2675,6 +2675,52 @@ double estimatedRemainingSeconds(const QVector<double> &gains,
     return std::isfinite(estimate) && estimate >= 0.0 ? estimate : -1.0;
 }
 
+void mergeRepairProfile(
+    const FillProfile &repair,
+    FillProfile *profile) {
+    profile->greedySetupWallSeconds +=
+        repair.greedySetupWallSeconds;
+    profile->candidateBatchWallSeconds +=
+        repair.candidateBatchWallSeconds;
+    profile->candidateWorkerSeconds +=
+        repair.candidateWorkerSeconds;
+    profile->adamEvaluationWorkerSeconds +=
+        repair.adamEvaluationWorkerSeconds;
+    profile->legalizationWorkerSeconds +=
+        repair.legalizationWorkerSeconds;
+    profile->residualUpdateWallSeconds +=
+        repair.residualUpdateWallSeconds;
+    profile->finalMeasurementWallSeconds +=
+        repair.finalMeasurementWallSeconds;
+    profile->gpuEvaluationWallSeconds +=
+        repair.gpuEvaluationWallSeconds;
+    profile->candidateJobs += repair.candidateJobs;
+    profile->adamEvaluations += repair.adamEvaluations;
+    profile->legalizationEvaluations +=
+        repair.legalizationEvaluations;
+    profile->gpuBatches += repair.gpuBatches;
+    profile->gpuIntersectionTasks +=
+        repair.gpuIntersectionTasks;
+    profile->wholeComponentJobs +=
+        repair.wholeComponentJobs;
+    profile->hardEdgeCandidates +=
+        repair.hardEdgeCandidates;
+    profile->complexitySelections +=
+        repair.complexitySelections;
+    profile->localComponentPlacements +=
+        repair.localComponentPlacements;
+    profile->wholeComponentPlacements +=
+        repair.wholeComponentPlacements;
+    profile->hardEdgePlacements +=
+        repair.hardEdgePlacements;
+    profile->workerThreads = std::max(
+        profile->workerThreads,
+        repair.workerThreads);
+    if (profile->gpuError.isEmpty()) {
+        profile->gpuError = repair.gpuError;
+    }
+}
+
 } // namespace
 
 QVector<ShapeMesh> buildShapeCatalog(const ShapeGeometryStore &geometry,
@@ -2748,12 +2794,13 @@ AreaGradient evaluateAreaGradient(const ShapeMesh &shape,
                         subjectBounds);
 }
 
-FillResult analyticCoverFill(
+FillResult analyticCoverFillInternal(
     const FillInput &input,
     const QVector<ShapeMesh> &catalog,
     const FillOptions &options,
     const std::function<bool()> &cancelled,
-    const std::function<void(const FillProgress &)> &progress) {
+    const std::function<void(const FillProgress &)> &progress,
+    bool postProcess) {
     FillResult result;
     const Polygons mustCover = normalizedInputPolygons(input.mustCover);
     const Polygons mayCover = normalizedInputPolygons(input.mayCover);
@@ -3053,13 +3100,100 @@ FillResult analyticCoverFill(
     ExactCoverState coverState = exactCoverState(
         result.placements, catalog,
         mustCover, mayCover, targetArea);
-    if (!prunePlacements(
-            &result.placements, &coverState,
-            catalog, mustCover, mayCover,
-            targetArea, options, gpuEvaluator.get(),
-            &candidatePool, &result.profile, &elapsed,
-            cancelled, progress)) {
-        result.cancelled = true;
+    FillProfile repairProfile;
+    bool haveRepairProfile = false;
+    Polygons prePruneResidual;
+    if (postProcess) {
+        result.profile.prePruneResidualArea =
+            coverState.residualArea;
+        prePruneResidual = coverState.residual;
+        if (!prunePlacements(
+                &result.placements, &coverState,
+                catalog, mustCover, mayCover,
+                targetArea, options, gpuEvaluator.get(),
+                &candidatePool, &result.profile, &elapsed,
+                cancelled, progress)) {
+            result.cancelled = true;
+        }
+        result.profile.postPruneResidualArea =
+            coverState.residualArea;
+        const Polygons repairTarget =
+            differencePolygons(
+                coverState.residual,
+                prePruneResidual);
+        result.profile.repairTargetArea =
+            polygonSetArea(repairTarget);
+        const int remainingBudget =
+            options.budget
+            - static_cast<int>(
+                result.placements.size());
+        if (!result.cancelled
+            && result.profile.repairTargetArea
+                > options.epsArea
+            && remainingBudget > 0) {
+            FillInput repairInput;
+            repairInput.mustCover = repairTarget;
+            repairInput.mayCover = mayCover;
+            FillOptions repairOptions = options;
+            repairOptions.budget = remainingBudget;
+            const int placementOffset =
+                result.placements.size();
+            const double coveredOffset =
+                coverState.coveredArea;
+            const auto repairProgress =
+                [&, placementOffset, coveredOffset](
+                    const FillProgress &update) {
+                    if (!progress) {
+                        return;
+                    }
+                    const double combinedCovered =
+                        std::min(
+                            targetArea,
+                            coveredOffset
+                                + update.coveredArea);
+                    progress({
+                        placementOffset
+                            + update.placementCount,
+                        targetArea,
+                        combinedCovered,
+                        std::max(
+                            0.0,
+                            targetArea - combinedCovered),
+                        static_cast<double>(
+                            elapsed.elapsed()) / 1000.0,
+                        update.etaSeconds,
+                    });
+                };
+            QElapsedTimer repairTimer;
+            repairTimer.start();
+            FillResult repair =
+                analyticCoverFillInternal(
+                    repairInput, catalog,
+                    repairOptions, cancelled,
+                    repairProgress, false);
+            result.profile.repairWallSeconds =
+                static_cast<double>(
+                    repairTimer.nsecsElapsed()) * 1e-9;
+            result.profile.repairPlacements =
+                static_cast<int>(
+                    repair.placements.size());
+            result.profile.repairSteps =
+                repair.profile.greedySteps;
+            result.profile.repairCoveredArea =
+                repair.coveredArea;
+            repairProfile = repair.profile;
+            haveRepairProfile = true;
+            for (const Placement &placement :
+                 repair.placements) {
+                result.placements.push_back(
+                    placement);
+            }
+            result.cancelled = repair.cancelled;
+            result.stalled = repair.stalled;
+            if (!repair.error.isEmpty()) {
+                result.error = repair.error;
+            }
+        }
     }
     QElapsedTimer finalTimer;
     finalTimer.start();
@@ -3070,14 +3204,51 @@ FillResult analyticCoverFill(
     result.residualArea = coverState.residualArea;
     result.coveredArea = coverState.coveredArea;
     result.outsideArea = coverState.outsideArea;
-    result.budgetHit = greedyBudgetHit;
+    if (postProcess) {
+        result.profile.postRepairNewGapArea =
+            polygonSetArea(
+                differencePolygons(
+                    coverState.residual,
+                    prePruneResidual));
+    }
+    result.budgetHit = greedyBudgetHit
+        || (result.placements.size() >= options.budget
+            && result.residualArea > options.epsArea);
     result.profile.finalMeasurementWallSeconds =
         static_cast<double>(finalTimer.nsecsElapsed()) * 1e-9;
     result.profile.totalWallSeconds =
         static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
     updateGpuProfile();
+    if (haveRepairProfile) {
+        mergeRepairProfile(
+            repairProfile, &result.profile);
+    }
+    if (postProcess && progress
+        && result.profile.repairPlacements > 0) {
+        progress({
+            static_cast<int>(
+                result.placements.size()),
+            targetArea,
+            result.coveredArea,
+            result.residualArea,
+            static_cast<double>(
+                elapsed.elapsed()) / 1000.0,
+            -1.0,
+        });
+    }
 
     return result;
+}
+
+FillResult analyticCoverFill(
+    const FillInput &input,
+    const QVector<ShapeMesh> &catalog,
+    const FillOptions &options,
+    const std::function<bool()> &cancelled,
+    const std::function<void(const FillProgress &)> &progress) {
+    return analyticCoverFillInternal(
+        input, catalog, options,
+        cancelled, progress, true);
 }
 
 QTransform toQTransform(const Affine &transform) {

@@ -94,6 +94,9 @@ void writePenFillLog(const PenFillRequest &request,
     resultObject.insert(QStringLiteral("shapeLimit"), result.shapeLimit);
     resultObject.insert(QStringLiteral("targetArea"), result.targetArea);
     resultObject.insert(QStringLiteral("coveredArea"), result.coveredArea);
+    resultObject.insert(
+        QStringLiteral("residualArea"),
+        std::max(0.0, result.targetArea - result.coveredArea));
     resultObject.insert(QStringLiteral("outsideArea"), result.outsideArea);
     resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
     resultObject.insert(QStringLiteral("error"), result.error);
@@ -128,6 +131,24 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("pruneWallSeconds"),
             profile->pruneWallSeconds);
+        profileObject.insert(
+            QStringLiteral("repairWallSeconds"),
+            profile->repairWallSeconds);
+        profileObject.insert(
+            QStringLiteral("prePruneResidualArea"),
+            profile->prePruneResidualArea);
+        profileObject.insert(
+            QStringLiteral("postPruneResidualArea"),
+            profile->postPruneResidualArea);
+        profileObject.insert(
+            QStringLiteral("repairTargetArea"),
+            profile->repairTargetArea);
+        profileObject.insert(
+            QStringLiteral("postRepairNewGapArea"),
+            profile->postRepairNewGapArea);
+        profileObject.insert(
+            QStringLiteral("repairCoveredArea"),
+            profile->repairCoveredArea);
         profileObject.insert(
             QStringLiteral("evaluationBackend"),
             profile->evaluationBackend);
@@ -185,6 +206,12 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("prunePasses"),
             profile->prunePasses);
+        profileObject.insert(
+            QStringLiteral("repairSteps"),
+            profile->repairSteps);
+        profileObject.insert(
+            QStringLiteral("repairPlacements"),
+            profile->repairPlacements);
         profileObject.insert(
             QStringLiteral("workerThreads"), profile->workerThreads);
         resultObject.insert(QStringLiteral("profile"), profileObject);
