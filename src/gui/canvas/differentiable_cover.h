@@ -96,6 +96,7 @@ struct FillProfile {
     double residualUpdateWallSeconds = 0.0;
     double finalMeasurementWallSeconds = 0.0;
     double gpuEvaluationWallSeconds = 0.0;
+    double pruneWallSeconds = 0.0;
     QString evaluationBackend;
     QString gpuAdapter;
     QString gpuError;
@@ -106,11 +107,16 @@ struct FillProfile {
     std::uint64_t gpuIntersectionTasks = 0;
     std::uint64_t wholeComponentJobs = 0;
     std::uint64_t hardEdgeCandidates = 0;
+    std::uint64_t pruneAttempts = 0;
+    std::uint64_t pruneOptimizations = 0;
     int greedySteps = 0;
     int complexitySelections = 0;
     int localComponentPlacements = 0;
     int wholeComponentPlacements = 0;
     int hardEdgePlacements = 0;
+    int prunedPlacements = 0;
+    int adjustedPlacements = 0;
+    int prunePasses = 0;
     int workerThreads = 0;
 };
 

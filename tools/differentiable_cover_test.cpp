@@ -380,8 +380,12 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                       && first.profile.workerThreads > 0
                       && first.profile.candidateJobs > 0
                       && first.profile.adamEvaluations > 0
-                      && first.profile.legalizationEvaluations > 0,
-                  "logged contour solver profiling counts are invalid")
+                      && first.profile.legalizationEvaluations > 0
+                      && first.profile.prunePasses > 0
+                      && first.profile.pruneAttempts > 0
+                      && std::isfinite(first.profile.pruneWallSeconds)
+                      && first.profile.pruneWallSeconds >= 0.0,
+                   "logged contour solver profiling counts are invalid")
         || !check(
             first.profile.evaluationBackend
                     != QStringLiteral("CPU")
@@ -404,8 +408,17 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                   "logged contour solver did not produce an ETA")) {
         return false;
     }
+    bool pruningProgress = false;
+    double peakCoveredArea = 0.0;
     for (int i = 0; i < progress.size(); ++i) {
         const cover::FillProgress &update = progress[i];
+        peakCoveredArea =
+            std::max(peakCoveredArea, update.coveredArea);
+        if (i > 0
+            && update.placementCount
+                < progress[i - 1].placementCount) {
+            pruningProgress = true;
+        }
         if (!check(std::isfinite(update.targetArea)
                        && std::isfinite(update.coveredArea)
                        && std::isfinite(update.residualArea)
@@ -413,13 +426,21 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                        && (update.etaSeconds < 0.0
                            || std::isfinite(update.etaSeconds)),
                    "logged contour solver progress metrics are invalid")
-            || !check(i == 0
-                          || (update.placementCount
-                                  >= progress[i - 1].placementCount
-                              && update.coveredArea
-                                  >= progress[i - 1].coveredArea
-                              && update.residualArea
-                                  <= progress[i - 1].residualArea),
+            || !check(
+                i == 0
+                    || (!pruningProgress
+                        ? (update.placementCount
+                               >= progress[i - 1].placementCount
+                           && update.coveredArea
+                               >= progress[i - 1].coveredArea
+                           && update.residualArea
+                               <= progress[i - 1].residualArea)
+                        : (update.placementCount
+                               <= progress[i - 1].placementCount
+                           && update.coveredArea
+                               >= peakCoveredArea
+                                   - options.epsArea
+                                   - 1e-6)),
                       "logged contour solver progress is not monotonic")) {
             return false;
         }
@@ -445,7 +466,13 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
               << first.profile.hardEdgePlacements
               << " hard-edge placements from "
               << first.profile.hardEdgeCandidates
-              << " hard-edge candidates";
+              << " hard-edge candidates, "
+              << first.profile.prunedPlacements
+              << " pruned placements after "
+              << first.profile.pruneAttempts
+              << " attempts and "
+              << first.profile.pruneOptimizations
+              << " survivor optimizations";
     if (!first.profile.gpuError.isEmpty()) {
         std::cout << ", fallback: " << qPrintable(first.profile.gpuError);
     }

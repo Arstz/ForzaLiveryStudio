@@ -126,6 +126,9 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("gpuEvaluationWallSeconds"),
             profile->gpuEvaluationWallSeconds);
         profileObject.insert(
+            QStringLiteral("pruneWallSeconds"),
+            profile->pruneWallSeconds);
+        profileObject.insert(
             QStringLiteral("evaluationBackend"),
             profile->evaluationBackend);
         profileObject.insert(
@@ -154,6 +157,12 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("hardEdgeCandidates"),
             static_cast<qint64>(profile->hardEdgeCandidates));
         profileObject.insert(
+            QStringLiteral("pruneAttempts"),
+            static_cast<qint64>(profile->pruneAttempts));
+        profileObject.insert(
+            QStringLiteral("pruneOptimizations"),
+            static_cast<qint64>(profile->pruneOptimizations));
+        profileObject.insert(
             QStringLiteral("greedySteps"), profile->greedySteps);
         profileObject.insert(
             QStringLiteral("complexitySelections"),
@@ -167,6 +176,15 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("hardEdgePlacements"),
             profile->hardEdgePlacements);
+        profileObject.insert(
+            QStringLiteral("prunedPlacements"),
+            profile->prunedPlacements);
+        profileObject.insert(
+            QStringLiteral("adjustedPlacements"),
+            profile->adjustedPlacements);
+        profileObject.insert(
+            QStringLiteral("prunePasses"),
+            profile->prunePasses);
         profileObject.insert(
             QStringLiteral("workerThreads"), profile->workerThreads);
         resultObject.insert(QStringLiteral("profile"), profileObject);

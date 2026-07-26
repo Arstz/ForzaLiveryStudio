@@ -166,6 +166,28 @@ struct EvaluationBounds {
     QVector<QRectF> legal;
 };
 
+struct ExactCoverState {
+    Polygons footprints;
+    Polygons coverage;
+    Polygons residual;
+    double residualArea = 0.0;
+    double coveredArea = 0.0;
+    double outsideArea = 0.0;
+};
+
+struct PruneCandidate {
+    Affine transform;
+    int index = 0;
+    int shapeId = 0;
+    double uniqueArea = 0.0;
+};
+
+struct PruneNeighbor {
+    int index = 0;
+    double overlapArea = 0.0;
+    double distanceSquared = 0.0;
+};
+
 Jet constantJet(double value) {
     Jet result;
     result.value = value;
@@ -667,6 +689,12 @@ Polygons booleanOperation(const Polygons &subjects,
 
 Polygons differencePolygons(const Polygons &subjects, const Polygons &clips) {
     return booleanOperation(subjects, clips, Clipper2Lib::ClipType::Difference);
+}
+
+Polygons intersectionPolygons(const Polygons &subjects,
+                              const Polygons &clips) {
+    return booleanOperation(
+        subjects, clips, Clipper2Lib::ClipType::Intersection);
 }
 
 Polygons unionPolygons(const Polygons &subjects) {
@@ -2122,6 +2150,455 @@ CandidateSelection selectCandidate(
     return result;
 }
 
+Polygons placementFootprints(
+    const QVector<Placement> &placements,
+    const QVector<ShapeMesh> &catalog) {
+    Polygons result;
+    result.reserve(placements.size());
+    for (const Placement &placement : placements) {
+        const ShapeMesh *shape =
+            shapeById(catalog, placement.shapeId);
+        if (shape != nullptr) {
+            result.push_back(
+                transformedBoundary(*shape, placement.transform));
+        }
+    }
+
+    return result;
+}
+
+ExactCoverState exactCoverState(
+    const QVector<Placement> &placements,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &mustCover,
+    const Polygons &mayCover,
+    double targetArea) {
+    ExactCoverState result;
+    result.footprints =
+        placementFootprints(placements, catalog);
+    result.coverage = unionPolygons(result.footprints);
+    result.residual =
+        differencePolygons(mustCover, result.coverage);
+    result.residualArea = polygonSetArea(result.residual);
+    result.coveredArea =
+        std::max(0.0, targetArea - result.residualArea);
+    result.outsideArea = polygonSetArea(
+        differencePolygons(
+            result.coverage, mayCover));
+
+    return result;
+}
+
+void refreshPlacementGains(
+    QVector<Placement> *placements,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &mustCover) {
+    Polygons residual = mustCover;
+    double previousArea = polygonSetArea(residual);
+    for (Placement &placement : *placements) {
+        const ShapeMesh *shape =
+            shapeById(catalog, placement.shapeId);
+        if (shape == nullptr) {
+            placement.coveredArea = 0.0;
+            continue;
+        }
+        const Polygons footprint{
+            transformedBoundary(*shape, placement.transform),
+        };
+        Polygons nextResidual =
+            differencePolygons(residual, footprint);
+        const double nextArea = polygonSetArea(nextResidual);
+        placement.coveredArea =
+            std::max(0.0, previousArea - nextArea);
+        residual = std::move(nextResidual);
+        previousArea = nextArea;
+    }
+}
+
+QVector<PruneCandidate> pruneCandidateOrder(
+    const QVector<Placement> &placements,
+    const Polygons &mustCover,
+    const ExactCoverState &currentState) {
+    QVector<PruneCandidate> result;
+    result.reserve(placements.size());
+    for (int index = 0; index < placements.size(); ++index) {
+        Polygons reducedFootprints =
+            currentState.footprints;
+        reducedFootprints.removeAt(index);
+        const Polygons reducedCoverage =
+            unionPolygons(reducedFootprints);
+        const Polygons reducedResidual =
+            differencePolygons(
+                mustCover, reducedCoverage);
+        const double reducedResidualArea =
+            polygonSetArea(reducedResidual);
+        const Placement &placement = placements[index];
+        result.push_back({
+            placement.transform,
+            index,
+            placement.shapeId,
+            std::max(
+                0.0,
+                reducedResidualArea
+                    - currentState.residualArea),
+        });
+    }
+    std::stable_sort(
+        result.begin(), result.end(),
+        [](const PruneCandidate &left,
+           const PruneCandidate &right) {
+            if (std::abs(left.uniqueArea - right.uniqueArea)
+                > kGeometryEpsilon) {
+                return left.uniqueArea < right.uniqueArea;
+            }
+            if (left.shapeId != right.shapeId) {
+                return left.shapeId < right.shapeId;
+            }
+            if (lexicographicTransformLess(
+                    left.transform, right.transform)) {
+                return true;
+            }
+            if (lexicographicTransformLess(
+                    right.transform, left.transform)) {
+                return false;
+            }
+            return left.index < right.index;
+        });
+
+    return result;
+}
+
+QVector<PruneNeighbor> pruneNeighbors(
+    const QPolygonF &removedFootprint,
+    const ExactCoverState &trialState) {
+    QVector<PruneNeighbor> result;
+    const Polygons removed{removedFootprint};
+    const QRectF removedBounds =
+        removedFootprint.boundingRect();
+    for (int index = 0;
+         index < trialState.footprints.size(); ++index) {
+        const QPolygonF &footprint =
+            trialState.footprints[index];
+        const QRectF footprintBounds =
+            footprint.boundingRect();
+        if (!footprintBounds.intersects(removedBounds)) {
+            continue;
+        }
+        const double overlapArea = polygonSetArea(
+            intersectionPolygons(
+                Polygons{footprint}, removed));
+        const QPointF centerDelta =
+            footprintBounds.center()
+            - removedBounds.center();
+        result.push_back({
+            index,
+            overlapArea,
+            QPointF::dotProduct(
+                centerDelta, centerDelta),
+        });
+    }
+    std::stable_sort(
+        result.begin(), result.end(),
+        [](const PruneNeighbor &left,
+           const PruneNeighbor &right) {
+            if (std::abs(
+                    left.overlapArea - right.overlapArea)
+                > kGeometryEpsilon) {
+                return left.overlapArea > right.overlapArea;
+            }
+            if (std::abs(
+                    left.distanceSquared
+                    - right.distanceSquared)
+                > kGeometryEpsilon) {
+                return left.distanceSquared
+                    < right.distanceSquared;
+            }
+            return left.index < right.index;
+        });
+
+    return result;
+}
+
+void accumulateCandidateProfile(
+    const CandidateProfile &candidateProfile,
+    FillProfile *profile) {
+    const qint64 workerNanoseconds =
+        candidateProfile.totalNanoseconds > 0
+        ? candidateProfile.totalNanoseconds
+        : candidateProfile.legalizationNanoseconds;
+    profile->candidateWorkerSeconds +=
+        static_cast<double>(
+            workerNanoseconds) * 1e-9;
+    profile->adamEvaluationWorkerSeconds +=
+        static_cast<double>(
+            candidateProfile.adamEvaluationNanoseconds) * 1e-9;
+    profile->legalizationWorkerSeconds +=
+        static_cast<double>(
+            candidateProfile.legalizationNanoseconds) * 1e-9;
+    profile->adamEvaluations +=
+        candidateProfile.adamEvaluations;
+    profile->legalizationEvaluations +=
+        candidateProfile.legalizationEvaluations;
+}
+
+Candidate optimizeExistingPlacement(
+    const Placement &placement,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &subject,
+    const Polygons &mayCover,
+    const FillOptions &options,
+    GpuAreaEvaluator *gpuEvaluator,
+    QThreadPool *candidatePool,
+    FillProfile *profile,
+    const std::function<bool()> &cancelled,
+    bool *wasCancelled) {
+    Candidate result;
+    const ShapeMesh *shape =
+        shapeById(catalog, placement.shapeId);
+    if (shape == nullptr || subject.isEmpty()) {
+        return result;
+    }
+    CandidateJob job;
+    job.shape = shape;
+    job.transform = placement.transform;
+    job.hasTransform = true;
+    const std::vector<CandidateJob> jobs{job};
+    const EvaluationBounds subjectBounds{
+        individualPolygonBounds(subject),
+        individualPolygonBounds(mayCover),
+    };
+    const DistanceSeed seed = distanceSeed(subject);
+    ++profile->candidateJobs;
+    ++profile->pruneOptimizations;
+    QElapsedTimer batchTimer;
+    batchTimer.start();
+    bool usedGpu = false;
+    bool gpuCancelled = false;
+    if (gpuEvaluator != nullptr
+        && gpuEvaluator->available()
+        && gpuEvaluator->setSubjects(subject, mayCover)) {
+        std::vector<Candidate> gpuResults;
+        usedGpu = optimizeCandidatesGpu(
+            jobs, subject, mayCover, subjectBounds,
+            options, seed, gpuEvaluator, candidatePool,
+            profile, cancelled, &gpuResults,
+            &gpuCancelled);
+        if (usedGpu && !gpuResults.empty()
+            && gpuResults.front().valid) {
+            CandidateProfile exactProfile;
+            result = legalCandidate(
+                *shape, gpuResults.front().transform,
+                subject, mayCover, subjectBounds,
+                options, &exactProfile);
+            accumulateCandidateProfile(
+                exactProfile, profile);
+        }
+    }
+    if (!usedGpu && !gpuCancelled) {
+        const CandidateJobResult cpuResult =
+            optimizeCandidate(
+                job, subject, mayCover, subjectBounds,
+                options, seed, cancelled);
+        result = cpuResult.candidate;
+        accumulateCandidateProfile(
+            cpuResult.profile, profile);
+    }
+    profile->candidateBatchWallSeconds +=
+        static_cast<double>(
+            batchTimer.nsecsElapsed()) * 1e-9;
+    *wasCancelled = gpuCancelled
+        || (cancelled && cancelled());
+
+    return result;
+}
+
+bool sameTransform(
+    const Affine &left,
+    const Affine &right) {
+    const auto leftValues = affineValues(left);
+    const auto rightValues = affineValues(right);
+    for (int index = 0;
+         index < kGradientCount; ++index) {
+        if (std::abs(
+                leftValues[index] - rightValues[index])
+            > kGeometryEpsilon) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool acceptablePruneState(
+    const ExactCoverState &state,
+    double residualLimit,
+    double outsideLimit) {
+    return state.residualArea
+            <= residualLimit + kGeometryEpsilon
+        && state.outsideArea
+            <= outsideLimit + kGeometryEpsilon;
+}
+
+bool prunePlacements(
+    QVector<Placement> *placements,
+    ExactCoverState *currentState,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &mustCover,
+    const Polygons &mayCover,
+    double targetArea,
+    const FillOptions &options,
+    GpuAreaEvaluator *gpuEvaluator,
+    QThreadPool *candidatePool,
+    FillProfile *profile,
+    QElapsedTimer *elapsed,
+    const std::function<bool()> &cancelled,
+    const std::function<void(const FillProgress &)> &progress) {
+    QElapsedTimer pruneTimer;
+    pruneTimer.start();
+    const double residualLimit =
+        currentState->residualArea + options.epsArea;
+    const double outsideLimit =
+        currentState->outsideArea + options.epsSpill;
+    while (!placements->isEmpty()) {
+        if (cancelled && cancelled()) {
+            profile->pruneWallSeconds +=
+                static_cast<double>(
+                    pruneTimer.nsecsElapsed()) * 1e-9;
+            return false;
+        }
+        ++profile->prunePasses;
+        const QVector<PruneCandidate> order =
+            pruneCandidateOrder(
+                *placements, mustCover,
+                *currentState);
+        bool removedInPass = false;
+        for (const PruneCandidate &pruneCandidate : order) {
+            if (cancelled && cancelled()) {
+                profile->pruneWallSeconds +=
+                    static_cast<double>(
+                        pruneTimer.nsecsElapsed()) * 1e-9;
+                return false;
+            }
+            ++profile->pruneAttempts;
+            QVector<Placement> trial = *placements;
+            const Placement removed =
+                trial.takeAt(pruneCandidate.index);
+            const ShapeMesh *removedShape =
+                shapeById(catalog, removed.shapeId);
+            if (removedShape == nullptr) {
+                continue;
+            }
+            const QPolygonF removedFootprint =
+                transformedBoundary(
+                    *removedShape, removed.transform);
+            ExactCoverState trialState =
+                exactCoverState(
+                    trial, catalog, mustCover,
+                    mayCover, targetArea);
+            QSet<int> adjustedIndices;
+            if (!acceptablePruneState(
+                    trialState,
+                    residualLimit,
+                    outsideLimit)) {
+                const QVector<PruneNeighbor> neighbors =
+                    pruneNeighbors(
+                        removedFootprint, trialState);
+                for (const PruneNeighbor &neighbor : neighbors) {
+                    Polygons fixedFootprints =
+                        trialState.footprints;
+                    fixedFootprints.removeAt(
+                        neighbor.index);
+                    const Polygons fixedCoverage =
+                        unionPolygons(fixedFootprints);
+                    const Polygons fixedResidual =
+                        differencePolygons(
+                            mustCover, fixedCoverage);
+                    bool optimizationCancelled = false;
+                    const Candidate optimized =
+                        optimizeExistingPlacement(
+                            trial[neighbor.index],
+                            catalog, fixedResidual,
+                            mayCover, options,
+                            gpuEvaluator, candidatePool,
+                            profile, cancelled,
+                            &optimizationCancelled);
+                    if (optimizationCancelled) {
+                        profile->pruneWallSeconds +=
+                            static_cast<double>(
+                                pruneTimer.nsecsElapsed()) * 1e-9;
+                        return false;
+                    }
+                    if (!optimized.valid
+                        || sameTransform(
+                            optimized.transform,
+                            trial[neighbor.index].transform)) {
+                        continue;
+                    }
+                    QVector<Placement> adjustedTrial = trial;
+                    adjustedTrial[neighbor.index].transform =
+                        optimized.transform;
+                    ExactCoverState adjustedState =
+                        exactCoverState(
+                            adjustedTrial, catalog,
+                            mustCover, mayCover,
+                            targetArea);
+                    if (adjustedState.residualArea
+                            >= trialState.residualArea
+                                - kGeometryEpsilon
+                        || adjustedState.outsideArea
+                            > outsideLimit
+                                + kGeometryEpsilon) {
+                        continue;
+                    }
+                    trial = std::move(adjustedTrial);
+                    trialState = std::move(adjustedState);
+                    adjustedIndices.insert(neighbor.index);
+                    if (acceptablePruneState(
+                            trialState,
+                            residualLimit,
+                            outsideLimit)) {
+                        break;
+                    }
+                }
+            }
+            if (!acceptablePruneState(
+                    trialState,
+                    residualLimit,
+                    outsideLimit)) {
+                continue;
+            }
+            *placements = std::move(trial);
+            *currentState = std::move(trialState);
+            refreshPlacementGains(
+                placements, catalog, mustCover);
+            ++profile->prunedPlacements;
+            profile->adjustedPlacements +=
+                adjustedIndices.size();
+            removedInPass = true;
+            if (progress) {
+                progress({
+                    static_cast<int>(placements->size()),
+                    targetArea,
+                    currentState->coveredArea,
+                    currentState->residualArea,
+                    static_cast<double>(
+                        elapsed->elapsed()) / 1000.0,
+                    -1.0,
+                });
+            }
+            break;
+        }
+        if (!removedInPass) {
+            break;
+        }
+    }
+    profile->pruneWallSeconds +=
+        static_cast<double>(
+            pruneTimer.nsecsElapsed()) * 1e-9;
+
+    return true;
+}
+
 std::uint64_t derivedSeed(const Polygons &polygons) {
     std::uint64_t result = 1469598103934665603ULL;
     for (const QPolygonF &polygon : polygons) {
@@ -2316,7 +2793,6 @@ FillResult analyticCoverFill(
     const std::uint64_t seedValue = options.seed == 0
         ? derivedSeed(mustCover) : options.seed;
     std::mt19937_64 random(seedValue);
-    Polygons footprints;
     QThreadPool candidatePool;
     candidatePool.setMaxThreadCount(
         std::max(1, QThread::idealThreadCount() - 1));
@@ -2553,11 +3029,6 @@ FillResult analyticCoverFill(
             selection.candidate.shapeId,
             selection.exactGain,
         });
-        const ShapeMesh *selectedShape =
-            shapeById(catalog, selection.candidate.shapeId);
-        const Polygons footprint{transformedBoundary(
-            *selectedShape, selection.candidate.transform)};
-        footprints += footprint;
         result.residual = std::move(selection.residual);
         const double nextArea = polygonSetArea(result.residual);
         acceptedGains.push_back(selection.exactGain);
@@ -2576,16 +3047,30 @@ FillResult analyticCoverFill(
         }
     }
 
+    const bool greedyBudgetHit =
+        result.placements.size() >= options.budget
+        && polygonSetArea(result.residual) > options.epsArea;
+    ExactCoverState coverState = exactCoverState(
+        result.placements, catalog,
+        mustCover, mayCover, targetArea);
+    if (!prunePlacements(
+            &result.placements, &coverState,
+            catalog, mustCover, mayCover,
+            targetArea, options, gpuEvaluator.get(),
+            &candidatePool, &result.profile, &elapsed,
+            cancelled, progress)) {
+        result.cancelled = true;
+    }
     QElapsedTimer finalTimer;
     finalTimer.start();
-    result.residualArea = polygonSetArea(result.residual);
-    result.coveredArea = std::max(0.0, targetArea - result.residualArea);
-    result.budgetHit = result.placements.size() >= options.budget
-        && result.residualArea > options.epsArea;
-    if (!footprints.isEmpty()) {
-        const Polygons coverage = unionPolygons(footprints);
-        result.outsideArea = polygonSetArea(differencePolygons(coverage, mayCover));
-    }
+    coverState = exactCoverState(
+        result.placements, catalog,
+        mustCover, mayCover, targetArea);
+    result.residual = std::move(coverState.residual);
+    result.residualArea = coverState.residualArea;
+    result.coveredArea = coverState.coveredArea;
+    result.outsideArea = coverState.outsideArea;
+    result.budgetHit = greedyBudgetHit;
     result.profile.finalMeasurementWallSeconds =
         static_cast<double>(finalTimer.nsecsElapsed()) * 1e-9;
     result.profile.totalWallSeconds =

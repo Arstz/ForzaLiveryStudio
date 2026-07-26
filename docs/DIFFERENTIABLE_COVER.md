@@ -412,6 +412,30 @@ count, and hole count, breaks optimizer-coverage ties in favor of a residual tha
 is easier to cover on later steps. Remaining ties use shape id for repeatability.
 The accepted placement stores its exact subtraction gain.
 
+### 7.6 Redundancy pruning and local adjustment
+
+After the greedy loop stops, run an exact backward-elimination pass:
+
+1. Measure each placement's unique covered area by subtracting the union of all
+   other placements from the target.
+2. Rank placements from least to greatest unique area, with deterministic
+   shape/transform tie-breaks.
+3. Tentatively remove the least-essential placement. Accept immediately when
+   exact coverage and outside-area tolerances remain satisfied.
+4. Otherwise, order spatially overlapping survivors by their overlap with the
+   removed footprint. Re-optimize each survivor from its existing affine
+   transform against the exact area not covered by the other fixed placements.
+   Retain only adjustments that monotonically reduce the trial residual and
+   satisfy the outside-area tolerance.
+5. Accept the removal when the adjusted trial satisfies the fixed coverage and
+   outside-area limits, then recompute unique areas and restart. Stop only when
+   an entire pass removes nothing or cancellation is requested.
+
+The coverage floor and outside-area ceiling are fixed from the completed greedy
+cover. Repeated removals therefore cannot accumulate tolerance loss. Survivor
+adjustment uses the selected CUDA, Direct3D, or CPU optimizer without a placement
+clock, calculation cap, or separate iteration reduction.
+
 ---
 
 ## 8. Budget, stopping, and partial results
@@ -425,10 +449,12 @@ The accepted placement stores its exact subtraction gain.
   `residualArea > epsArea`. The caller inserts it, clears the active contour, and
   reports the uncovered world-unit area plus the stopping reason. A zero-placement
   result inserts nothing and leaves the active contour available.
-- **Progress:** report exact covered-area progress after every accepted placement.
+- **Progress:** report exact covered-area progress after every accepted placement
+  and every accepted prune operation.
   The status bar estimates remaining time from measured placement duration and
   recent gain decay. It remains explicitly approximate because the residual loop
-  has no predetermined placement count.
+  has no predetermined placement count. The ETA becomes indeterminate during
+  backward elimination.
 - **Profiling:** every differentiable run records total wall time, greedy setup,
   parallel candidate-batch wall time, cumulative candidate worker time, Adam
   evaluation time, legalization time, exact residual updates, final measurement,
@@ -436,8 +462,10 @@ The accepted placement stores its exact subtraction gain.
   GPU failure reason, GPU batch and intersection-task counts, and cumulative GPU
   evaluation wall time in `pen_fill.log`. It also records whole-component jobs,
   generated hard-edge candidates, complexity selections, and accepted placements
-  from component-local, whole-component, and hard-edge routes. Cumulative worker
-  durations overlap while jobs execute in parallel and are not elapsed wall time.
+  from component-local, whole-component, and hard-edge routes. Prune wall time,
+  passes, attempts, survivor optimizations, adjusted placements, and removed
+  placements are recorded separately. Cumulative worker durations overlap while
+  jobs execute in parallel and are not elapsed wall time.
 
 ---
 
@@ -503,6 +531,7 @@ struct FillProfile {
     double residualUpdateWallSeconds = 0.0;
     double finalMeasurementWallSeconds = 0.0;
     double gpuEvaluationWallSeconds = 0.0;
+    double pruneWallSeconds = 0.0;
     QString evaluationBackend;
     QString gpuAdapter;
     QString gpuError;
@@ -513,11 +542,16 @@ struct FillProfile {
     uint64_t gpuIntersectionTasks = 0;
     uint64_t wholeComponentJobs = 0;
     uint64_t hardEdgeCandidates = 0;
+    uint64_t pruneAttempts = 0;
+    uint64_t pruneOptimizations = 0;
     int greedySteps = 0;
     int complexitySelections = 0;
     int localComponentPlacements = 0;
     int wholeComponentPlacements = 0;
     int hardEdgePlacements = 0;
+    int prunedPlacements = 0;
+    int adjustedPlacements = 0;
+    int prunePasses = 0;
     int workerThreads = 0;
 };
 
@@ -582,7 +616,9 @@ enough decay information for an estimate.
    routing, DT initialization, Adam, residual-complexity ranking, and exact
    selection.
 7. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
-8. **Pen commit integration** sits behind the persistent, default-off
+8. **Redundancy pruning (§7.6)** — exact unique-area ranking, tentative removal,
+   local survivor adjustment, fixed acceptance limits, and convergence.
+9. **Pen commit integration** sits behind the persistent, default-off
    Differentiable Pen Fill option. Bucket requires no separate solver integration
    because its traced region already becomes an editable Pen contour.
 
