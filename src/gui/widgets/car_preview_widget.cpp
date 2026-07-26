@@ -1027,6 +1027,15 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     });
     addAction(analyticEnvironment);
 
+    auto *ground = new QAction(QStringLiteral("Ground and contact shadow"), this);
+    ground->setCheckable(true);
+    ground->setChecked(renderSettings_.ground.enabled);
+    connect(ground, &QAction::toggled, this, [this](bool enabled) {
+        renderSettings_.ground.enabled = enabled;
+        update();
+    });
+    addAction(ground);
+
     referenceNote_ = new QLabel(this);
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
     referenceNote_->setStyleSheet(QStringLiteral(
@@ -1046,6 +1055,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
 CarPreviewWidget::~CarPreviewWidget() {
     makeCurrent();
     releasePostProcessing();
+    groundRenderer_.release();
     carRenderer_.release();
     shapeRenderer_.release();
     doneCurrent();
@@ -1353,6 +1363,7 @@ void CarPreviewWidget::initializeGL() {
         shapeRenderer_.uploadGeometry(geometry_);
     }
     carRenderer_.initialize();
+    groundRenderer_.initialize();
     liveryTexture_ = 0;
     liveLiveryFullDirty_ = true;
     liveryDirty_ = true;
@@ -1536,6 +1547,7 @@ void CarPreviewWidget::paintGL() {
     functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
     functions->glViewport(0, 0, framebufferSize.width(), framebufferSize.height());
     clearRenderTarget(false);
+    renderGround(false);
     renderCar(liveryTexture, false);
 }
 
@@ -1883,6 +1895,16 @@ void CarPreviewWidget::clearRenderTarget(bool linearColor) const {
     functions->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
+void CarPreviewWidget::renderGround(bool linearOutput) {
+    if (transparentBackground_ || !hasModel()) {
+        return;
+    }
+    groundRenderer_.render(
+        cameraView(), cameraProjection(), model_.boundsMin, model_.boundsMax,
+        renderSettings_.ground, renderSettings_.environment.backgroundColor,
+        linearOutput);
+}
+
 void CarPreviewWidget::renderCar(GLuint liveryTexture, bool linearOutput) {
     carRenderer_.render(
         cameraView(), cameraProjection(), liveryTexture, basePaint_,
@@ -1946,6 +1968,7 @@ bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
     functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrSceneFramebuffer_);
     functions->glViewport(0, 0, size.width(), size.height());
     clearRenderTarget(true);
+    renderGround(true);
     renderCar(liveryTexture, true);
 
     functions->glBindFramebuffer(GL_READ_FRAMEBUFFER, hdrSceneFramebuffer_);

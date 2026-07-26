@@ -4,6 +4,7 @@
 #include "core_types.h"
 #include "garage_render_settings.h"
 #include "garage_environment.h"
+#include "garage_ground_renderer.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "native_shape_renderer.h"
@@ -92,6 +93,7 @@ private:
     void releaseHdrFramebuffers();
     bool ensureHdrFramebuffers(const QSize &size);
     void clearRenderTarget(bool linearColor) const;
+    void renderGround(bool linearOutput);
     void renderCar(GLuint liveryTexture, bool linearOutput);
     bool renderCarHdr(GLuint liveryTexture, const QSize &size);
     void invalidateCachedLivery();
@@ -99,6 +101,7 @@ private:
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
     CarModelRenderer carRenderer_;
+    GarageGroundRenderer groundRenderer_;
     GarageRenderSettings renderSettings_;
     QOpenGLShaderProgram postProcessProgram_;
     QOpenGLVertexArrayObject postProcessVao_;

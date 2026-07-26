@@ -21,8 +21,9 @@ inline const QVector3D kAmbientColor(0.142109f, 0.175171f, 0.197850f);
 inline const QVector3D kEnvironmentLowColor(0.025f, 0.028f, 0.035f);
 inline const QVector3D kEnvironmentHighColor(0.58f, 0.64f, 0.72f);
 inline const QVector3D kBackgroundColor(0.09f, 0.10f, 0.12f);
+inline const QVector3D kGroundColor(0.115f, 0.125f, 0.145f);
 inline constexpr bool kHdrEnabled = true;
-inline constexpr bool kGroundEnabled = false;
+inline constexpr bool kGroundEnabled = true;
 inline constexpr float kDirectDiffuseScale = 3.0f;
 inline constexpr float kDirectSpecularScale = 2.0f;
 inline constexpr float kAmbientScale = 0.2f;
@@ -32,6 +33,10 @@ inline constexpr float kEnvironmentSpecularHighScale = 0.95f;
 inline constexpr float kExposure = -0.4f;
 inline constexpr float kFilmicWhite = 1.5f;
 inline constexpr float kShadowOpacity = 0.35f;
+inline constexpr float kGroundPlaneSizeScale = 4.0f;
+inline constexpr float kGroundVerticalOffsetScale = 0.003f;
+inline constexpr float kShadowWidthScale = 0.92f;
+inline constexpr float kShadowLengthScale = 0.84f;
 inline constexpr float kCameraFovDegrees = 45.0f;
 inline constexpr float kCameraYawRadians = 0.6f;
 inline constexpr float kCameraPitchRadians = 0.25f;
@@ -97,7 +102,12 @@ struct GarageRenderSettings {
 
     struct Ground {
         bool enabled = garage_render_defaults::kGroundEnabled;
+        QVector3D color = garage_render_defaults::kGroundColor;
         float shadowOpacity = garage_render_defaults::kShadowOpacity;
+        float planeSizeScale = garage_render_defaults::kGroundPlaneSizeScale;
+        float verticalOffsetScale = garage_render_defaults::kGroundVerticalOffsetScale;
+        float shadowWidthScale = garage_render_defaults::kShadowWidthScale;
+        float shadowLengthScale = garage_render_defaults::kShadowLengthScale;
     };
 
     struct Camera {

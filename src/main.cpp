@@ -81,6 +81,9 @@ int main(int argc, char *argv[]) {
             if (log.isEmpty()) {
                 log = gui::CarPreviewWidget::postProcessShaderSelfTest();
             }
+            if (log.isEmpty()) {
+                log = gui::GarageGroundRenderer::shaderSelfTest();
+            }
             result = log.isEmpty() ? QStringLiteral("SHADER OK") : QStringLiteral("SHADER FAIL\n") + log;
         }
         QFile out(QStringLiteral("shader_selftest.txt"));
