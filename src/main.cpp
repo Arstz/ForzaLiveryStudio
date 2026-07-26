@@ -13,7 +13,9 @@
 namespace {
 
 bool isProjectPath(const QString &path) {
-    return QFileInfo(path).suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0;
+    const QFileInfo info(path);
+    return info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
+        || info.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
 }
 
 void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
@@ -37,7 +39,11 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
 
     QString error;
     if (!projectPath.isEmpty()) {
-        if (!window.loadProjectJson(projectPath, &error)) {
+        const bool isLivery = QFileInfo(projectPath).fileName()
+                                  .compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
+        const bool opened = isLivery ? window.importAny(projectPath, &error)
+                                     : window.loadProjectJson(projectPath, &error);
+        if (!opened) {
             qWarning().noquote() << QStringLiteral("Could not open startup project %1: %2")
                                         .arg(projectPath, error);
             window.newProject();

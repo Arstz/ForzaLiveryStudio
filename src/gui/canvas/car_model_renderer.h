@@ -55,6 +55,7 @@ private:
         int indexCount = 0;
         bool applyLivery = false;
         bool hasDirectLiveryUv = false;
+        bool bodyPaint = false;
         int allowedSides = 0;
         bool translucent = false;
         bool doubleSided = false;
@@ -66,6 +67,8 @@ private:
         float emissiveIntensity = 0.0f;
         float gloss = 0.45f;
         float metallic = 0.0f;
+        QString name;
+        QString materialName;
         GLuint diffuseTexture = 0;
         GLuint alphaTexture = 0;
         GLuint normalTexture = 0;
@@ -100,6 +103,7 @@ private:
     QHash<int, FinishTextureEntry> finishTextureCache_;
     unsigned paintFinishGeneration_ = 0;
     bool paintFinishTracked_ = false;
+    bool paintDiagnosticsLogged_ = false;
     bool initialized_ = false;
 
     GLuint sideMaskArray_ = 0;

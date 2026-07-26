@@ -647,6 +647,18 @@ void resolveExteriorMaterials(
         QString cacheKey;
     };
     QVector<PendingTexture> pending;
+    const auto appendPending = [&](const std::shared_ptr<fh6::ModelMaterial> &material,
+                                   NativeTextureSlot slot, const QString &path) {
+        PendingTexture item;
+        item.material = material;
+        item.slot = slot;
+        item.path = path;
+        item.sharedEntry = sharedTextureEntry(item.path);
+        if (item.sharedEntry.isEmpty()) {
+            item.localPath = localTexturePath(item.path, carRoot);
+        }
+        pending.push_back(std::move(item));
+    };
     QSet<const fh6::ModelMaterial *> visited;
     for (fh6::CarMesh &mesh : model.meshes) {
         if (!mesh.material || visited.contains(mesh.material.get())
@@ -655,6 +667,7 @@ void resolveExteriorMaterials(
             continue;
         }
         visited.insert(mesh.material.get());
+        bool hasNormal = false;
         for (const fh6::ModelMaterialParameter &parameter : mesh.material->parameters) {
             if (parameter.type != fh6::ModelMaterialParameterType::Texture2D
                 || parameter.texturePath.isEmpty()) {
@@ -664,15 +677,34 @@ void resolveExteriorMaterials(
             if (slot == NativeTextureSlot::Unknown) {
                 continue;
             }
-            PendingTexture item;
-            item.material = mesh.material;
-            item.slot = slot;
-            item.path = parameter.texturePath;
-            item.sharedEntry = sharedTextureEntry(item.path);
-            if (item.sharedEntry.isEmpty()) {
-                item.localPath = localTexturePath(item.path, carRoot);
+            // Flat placeholder swatches (e.g. the wheel paint's green base) are solid colours the
+            // game replaces with the chosen paint; loaded as real maps they tint painted parts
+            // (green rims) and skew their shading, so drop them and let the paint colour stand.
+            if (normalizedTexturePath(parameter.texturePath)
+                    .contains(QStringLiteral("globaltexture/swatches/flat_texture"))) {
+                continue;
             }
-            pending.push_back(std::move(item));
+            if (slot == NativeTextureSlot::Normal) {
+                hasNormal = true;
+            }
+            appendPending(mesh.material, slot, parameter.texturePath);
+        }
+        // The car_carbonfiber shader bakes its weave into the shader, so the plain carbonfiber
+        // materialbin names no maps at all (only 32x tiling): a mesh using it arrives with no
+        // normal and renders as flat gloss. Supply the shader's canonical twin-twill weave
+        // normal/rmao — the very swatches the carbonfiber_livery variant lists explicitly — so
+        // structural carbon reads as carbon. The material's own 32x tiling turns it into a weave.
+        if (!hasNormal
+            && normalizedTexturePath(mesh.material->resourcePath)
+                   .contains(QStringLiteral("/carbonfiber/carbonfiber"))) {
+            appendPending(mesh.material, NativeTextureSlot::Normal,
+                          QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
+                                         "\\twin_twill_weave\\swatches\\twin_twill_weave_normal_5eewzs7"
+                                         ".swatchbin"));
+            appendPending(mesh.material, NativeTextureSlot::Surface,
+                          QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
+                                         "\\twin_twill_weave\\swatches\\twin_twill_weave_rmao_x9t8d8u"
+                                         ".swatchbin"));
         }
     }
 

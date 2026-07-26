@@ -471,6 +471,15 @@ bool isInteriorWindowShell(const QString &rawName) {
     return name.startsWith(QStringLiteral("glass")) && name.contains(QStringLiteral("int"));
 }
 
+// The interior ships as detailed parts (dash, seats, roll cage…) plus a single coarse whole-cabin
+// stand-in — material InteriorLOD* — that the game only swaps in at distance. That stand-in is
+// authored at the base LOD level, so the LOD filter keeps it, and up close it renders as a pale
+// low-poly shell overlapping the real interior (the "torpedo" clipping). Drop it so only the
+// detailed interior shows.
+bool isCoarseInteriorLod(const fh6::CarMesh &mesh) {
+    return mesh.materialName.startsWith(QStringLiteral("InteriorLOD"), Qt::CaseInsensitive);
+}
+
 QString materialIdentity(const fh6::CarMesh &mesh) {
     QString identity = mesh.materialName.toLower();
     if (mesh.material) {
@@ -1561,6 +1570,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         return;
     }
     clearModel();
+    paintDiagnosticsLogged_ = false;
 
     const auto textureKey = [](const std::shared_ptr<const fh6::ModelMaterialTexture> &texture,
                                bool srgb) {
@@ -1660,6 +1670,9 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         if (isInteriorWindowShell(mesh.name)) {
             continue;
         }
+        if (isCoarseInteriorLod(mesh)) {
+            continue;
+        }
 
         const std::vector<fh6::ModelVec2> *uv = nullptr;
         if (mesh.liveryUvChannel >= 0
@@ -1669,11 +1682,38 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         }
         const bool hasDirectLiveryUv = uv != nullptr && mesh.liveryUvChannel == 3;
         const fh6::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
+        int materialUvIndex = 0;
+        float materialUTiling = mesh.material ? mesh.material->uTiling : 1.0f;
+        float materialVTiling = mesh.material ? mesh.material->vTiling : 1.0f;
+        bool rawMaterialUv = false;
+        // The car_carbonfiber shader (into which resolveExteriorMaterials injects the twin-twill
+        // weave) samples its weave on RAW UV channel 0 tiled by the material's U/V tiling. Decompiled
+        // from the game PS+VS (see docs/SHADER_ANALYSIS.md "Carbon Weave UV & Tiling"): the pixel
+        // shader samples the weave at raw TEXCOORD0; the vertex shader builds TEXCOORD0 = channel0 *
+        // (U_Tiling, V_Tiling) with U_Tiling=V_Tiling=32 for carbonfiber.materialbin (the ID15 variant
+        // bakes 75). We must NOT apply channel 0's decoded transform — for carbon that is a ~0.03
+        // livery-atlas packing the game replaces with the tiling — so sample channel 0 raw × tiling.
+        QString carbonResource = mesh.material ? mesh.material->resourcePath : QString();
+        carbonResource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (carbonResource.contains(QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive)) {
+            materialUvIndex = 0;
+            rawMaterialUv = true;
+            // Force the shader's U_Tiling if the shared-library merge didn't resolve it (leaving 1).
+            if (materialUTiling <= 1.5f) {
+                materialUTiling = 32.0f;
+            }
+            if (materialVTiling <= 1.5f) {
+                materialVTiling = 32.0f;
+            }
+        }
         const std::vector<fh6::ModelVec2> *materialUv =
-            !mesh.uvChannels.empty() && mesh.uvChannels[0].size() == mesh.positions.size()
-            ? &mesh.uvChannels[0]
+            materialUvIndex < static_cast<int>(mesh.uvChannels.size())
+            && mesh.uvChannels[materialUvIndex].size() == mesh.positions.size()
+            ? &mesh.uvChannels[materialUvIndex]
             : nullptr;
-        const fh6::TexCoordTransform &materialUvTransform = mesh.texCoordTransforms[0];
+        const fh6::TexCoordTransform identityUvTransform;
+        const fh6::TexCoordTransform &materialUvTransform =
+            rawMaterialUv ? identityUvTransform : mesh.texCoordTransforms[materialUvIndex];
 
         std::vector<float> interleaved;
         interleaved.reserve(mesh.positions.size() * 10);
@@ -1694,12 +1734,14 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 interleaved.push_back(0.0f);
             }
             if (materialUv != nullptr) {
-                const float uTiling = mesh.material ? mesh.material->uTiling : 1.0f;
-                const float vTiling = mesh.material ? mesh.material->vTiling : 1.0f;
+                // The car_carbonfiber weave rides raw TEXCOORD0 (V NOT flipped); every other native
+                // material samples with the usual V-flip. Flipping the weave mirrors the twill
+                // diagonal (/ vs \), which reads as the wrong orientation.
+                const float mv = rawMaterialUv ? (*materialUv)[i].v : (1.0f - (*materialUv)[i].v);
                 interleaved.push_back(((*materialUv)[i].u * materialUvTransform.scaleU
-                                       + materialUvTransform.offsetU) * uTiling);
-                interleaved.push_back(((1.0f - (*materialUv)[i].v) * materialUvTransform.scaleV
-                                       + materialUvTransform.offsetV) * vTiling);
+                                       + materialUvTransform.offsetU) * materialUTiling);
+                interleaved.push_back((mv * materialUvTransform.scaleV
+                                       + materialUvTransform.offsetV) * materialVTiling);
             } else {
                 interleaved.push_back(0.0f);
                 interleaved.push_back(0.0f);
@@ -1708,10 +1750,13 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
 
         auto buffers = std::make_unique<MeshBuffers>();
         buffers->materialColor = kDefaultMaterialColor;
+        buffers->name = mesh.name;
+        buffers->materialName = mesh.materialName;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
         int bodySides = 0;
-        if (isBodyPaintMaterial(mesh.materialName)) {
+        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName);
+        if (buffers->bodyPaint) {
             if (isSpoilerMesh(mesh.name)) {
                 bodySides = kSideSpoiler;
             } else if (isTrunkPanelMesh(mesh.name)) {
@@ -1918,6 +1963,35 @@ constexpr float kFlakeBaseTintMax = 0.9f;
 constexpr float kManufacturerFlakeBaseMetallic = 0.45f;
 constexpr float kManufacturerFlakeMetallicGain = 0.5f;
 
+// Automotive paint carries a clear lacquer coat over the colour; matte finishes below the
+// gloss floor read as bare, and bare metals keep only a faint residual coat.
+constexpr float kClearCoatGlossFloor = 0.35f;
+constexpr float kClearCoatGlossRange = 0.6f;
+constexpr float kClearCoatMetalCoverage = 0.25f;
+constexpr float kClearCoatMinRoughness = 0.04f;
+constexpr float kClearCoatMaxRoughness = 0.4f;
+
+struct ClearCoat {
+    float coverage = 0.0f;
+    float roughness = kClearCoatMinRoughness;
+};
+
+ClearCoat bodyClearCoat(bool bodyPaint, const fh6::PaintFinishRender *finish, float gloss) {
+    if (!bodyPaint) {
+        return {};
+    }
+    const bool bareMetal = finish != nullptr && finish->valid
+        && finish->category == fh6::PaintFinishCategory::Metal;
+    ClearCoat coat;
+    coat.coverage = std::clamp((gloss - kClearCoatGlossFloor) / kClearCoatGlossRange, 0.0f, 1.0f);
+    if (bareMetal) {
+        coat.coverage *= kClearCoatMetalCoverage;
+    }
+    coat.roughness = std::clamp(1.0f - gloss, kClearCoatMinRoughness, kClearCoatMaxRoughness);
+
+    return coat;
+}
+
 // Approximates a finish's shading when the painttype material library is unavailable,
 // preserving the earlier hardcoded behaviour for the most common finish codes.
 void applyLegacyPaintFinish(const fh6::LiveryPaintMaterial &paint, float &secondaryMix,
@@ -2079,8 +2153,6 @@ void CarModelRenderer::render(
     bool eyeValid = false;
     const QVector3D eye = view.inverted(&eyeValid).map(QVector3D(0.0f, 0.0f, 0.0f));
     program_.setUniformValue(eyePositionLocation_, eyeValid ? eye : QVector3D());
-    program_.setUniformValue(clearCoatRoughnessLocation_, 0.2f);
-    program_.setUniformValue(clearCoatIntensityLocation_, 0.0f);
 
     const bool hasLivery = liveryTexture != 0 && sideMaskArray_ != 0 && sideCount_ > 0;
     if (hasLivery) {
@@ -2104,9 +2176,71 @@ void CarModelRenderer::render(
         functions->glActiveTexture(GL_TEXTURE0);
     }
 
+    // Manufacturer (factory) colours are the car's default paint. They only belong on an
+    // uncustomised car: the moment the livery assigns any explicit primary colour, the whole car
+    // is custom-painted, and materials left blank must inherit the chosen base paint rather than a
+    // factory tint. A blank paint record is all-zero, so its manufacturerSelector reads 0 — which
+    // would otherwise resolve to palette slot 0 (this car's golden yellow) and bleed onto every
+    // livery panel. A blank record carries no colour either. Every blank-record mesh is a livery-
+    // canvas panel (name "…Livery…") the game paints over, so with the livery off there is no single
+    // right base for it — but material and part don't discriminate (the maroon rocker line and the
+    // grey hood both carry blank carPaint_secondary on grey-dominant parts). What DOES discriminate
+    // is position: a canvas panel should read as the real paint physically next to it. So collect
+    // the painted panels' centres/colours and give each blank panel its nearest painted neighbour.
+    bool liveryCustomPainted = false;
+    QVector3D liveryPrimaryColor = fallbackColor;
+    struct PaintedPanel {
+        QVector3D center;
+        QVector3D color;
+        float weight;
+    };
+    std::vector<PaintedPanel> paintedPanels;
+    if (paintState != nullptr) {
+        QHash<quint32, int> primaryCounts;
+        int bestPrimary = 0;
+        for (const std::unique_ptr<MeshBuffers> &meshPtr : meshes_) {
+            const MeshBuffers &m = *meshPtr;
+            const fh6::LiveryPaintMaterial *paint =
+                m.bodyPaint ? paintState->find(m.paintMaterialHash) : nullptr;
+            if (paint == nullptr || !paint->primary.enabled) {
+                continue;
+            }
+            liveryCustomPainted = true;
+            const quint32 key = (quint32(paint->primary.bgra[0]) << 16)
+                | (quint32(paint->primary.bgra[1]) << 8) | quint32(paint->primary.bgra[2]);
+            const QVector3D color(paint->primary.bgra[2] / 255.0f,
+                                  paint->primary.bgra[1] / 255.0f,
+                                  paint->primary.bgra[0] / 255.0f);
+            const int weight = std::max(1, m.indexCount);
+            paintedPanels.push_back({m.center, color, static_cast<float>(weight)});
+            primaryCounts[key] += weight;
+            if (primaryCounts[key] > bestPrimary) {
+                bestPrimary = primaryCounts[key];
+                liveryPrimaryColor = color;
+            }
+        }
+    }
+
     const QMatrix4x4 viewProjection = projection * view;
     const auto drawMesh = [&](MeshBuffers &mesh) {
         QVector3D primary = mesh.hasMaterialColor ? mesh.materialColor : fallbackColor;
+        // A custom-painted body panel with no explicit colour of its own (the livery-canvas layer)
+        // takes the colour of the painted panel around it, so it reads as the paint nearby rather
+        // than a car-wide guess (grey on the maroon rocker, or maroon on the grey hood). Rank by
+        // distance²/panelArea so a big adjacent panel (the grey roof/body skin) wins over a small
+        // accent that merely happens to be close (a maroon pillar sliver) — otherwise thin accents
+        // bleed across whole canvas regions (e.g. the roof).
+        if (mesh.bodyPaint && liveryCustomPainted) {
+            primary = liveryPrimaryColor;
+            float bestScore = std::numeric_limits<float>::max();
+            for (const PaintedPanel &panel : paintedPanels) {
+                const float score = (panel.center - mesh.center).lengthSquared() / panel.weight;
+                if (score < bestScore) {
+                    bestScore = score;
+                    primary = panel.color;
+                }
+            }
+        }
         QVector3D secondary = primary;
         float secondaryMix = 0.0f;
         float gloss = mesh.gloss;
@@ -2116,38 +2250,12 @@ void CarModelRenderer::render(
             ? paintState->find(mesh.paintMaterialHash)
             : nullptr;
         const fh6::ManufacturerColor *manufacturerColor =
-            paint != nullptr && manufacturerColors != nullptr
+            paint != nullptr && manufacturerColors != nullptr && !liveryCustomPainted
             ? manufacturerColors->find(paint->manufacturerSelector)
             : nullptr;
         const fh6::PaintFinishRender *finish = (paint != nullptr && paintFinishes != nullptr)
             ? paintFinishes->find(static_cast<int>(paint->finish))
             : nullptr;
-        if (paint != nullptr && paint->manufacturerSelector != 0xffffffffu) {
-            static bool once = false;
-            if (!once) {
-                once = true;
-                QFile dbg("C:\\Users\\Fr4g3z\\AppData\\Local\\Temp\\paint_debug.txt");
-                if (dbg.open(QIODevice::WriteOnly | QIODevice::Text)) {
-                    dbg.write(QString("paletteSize=%1\n")
-                        .arg(manufacturerColors ? manufacturerColors->colors.size() : 0).toUtf8());
-                }
-            }
-            QFile dbg("C:\\Users\\Fr4g3z\\AppData\\Local\\Temp\\paint_debug.txt");
-            if (dbg.open(QIODevice::Append | QIODevice::Text)) {
-                dbg.write(QString("hash=%1 selector=%2 finish=%3 mfr=%4 palSz=%5 pri=(%6,%7,%8) priEn=%9 mat=%10\n")
-                    .arg(static_cast<quint64>(mesh.paintMaterialHash), 16, 16, QChar('0'))
-                    .arg(paint->manufacturerSelector)
-                    .arg(paint->finish)
-                    .arg(reinterpret_cast<quintptr>(manufacturerColor), 16, 16, QChar('0'))
-                    .arg(manufacturerColors ? manufacturerColors->colors.size() : 0)
-                    .arg(manufacturerColor ? manufacturerColor->primary[0] : -1.0f)
-                    .arg(manufacturerColor ? manufacturerColor->primary[1] : -1.0f)
-                    .arg(manufacturerColor ? manufacturerColor->primary[2] : -1.0f)
-                    .arg(paint->primary.enabled)
-                    .arg(manufacturerColor && manufacturerColor->material ? "yes" : "no")
-                    .toUtf8());
-            }
-        }
         const auto decodedColor = [](const fh6::LiveryPaintColor &color) {
             return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
         };
@@ -2190,6 +2298,20 @@ void CarModelRenderer::render(
         program_.setUniformValue(secondaryMixLocation_, secondaryMix);
         program_.setUniformValue(glossLocation_, gloss);
         program_.setUniformValue(metallicLocation_, metallic);
+        const ClearCoat clearCoat = bodyClearCoat(mesh.bodyPaint, finish, gloss);
+        program_.setUniformValue(clearCoatRoughnessLocation_, clearCoat.roughness);
+        program_.setUniformValue(clearCoatIntensityLocation_, clearCoat.coverage);
+        // Opt-in trace of the paint/finish each mesh resolves to, for diagnosing mis-shaded parts.
+        static const bool paintDiagnostics = qEnvironmentVariableIsSet("FLS_PAINT_DIAG");
+        if (paintDiagnostics && !paintDiagnosticsLogged_
+            && (paint != nullptr || mesh.diffuseTexture != 0)) {
+            qDebug().nospace().noquote()
+                << "[paint] " << mesh.name << " mat=" << mesh.materialName
+                << " painted=" << (paint != nullptr)
+                << " nativeDiffuse=" << (mesh.diffuseTexture != 0)
+                << " finish=" << (paint != nullptr ? int(paint->finish) : -1)
+                << " primary=(" << primary.x() << "," << primary.y() << "," << primary.z() << ")";
+        }
         program_.setUniformValue(
             emissiveLocation_, mesh.emissiveColor * std::max(0.0f, mesh.emissiveIntensity));
         program_.setUniformValue(hasLiveryLocation_, (hasLivery && mesh.applyLivery) ? 1 : 0);
@@ -2274,6 +2396,8 @@ void CarModelRenderer::render(
         functions->glDepthMask(GL_TRUE);
         functions->glDisable(GL_BLEND);
     }
+
+    paintDiagnosticsLogged_ = true;
 
     if (hasLivery) {
         functions->glActiveTexture(GL_TEXTURE1);

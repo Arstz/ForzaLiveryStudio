@@ -438,9 +438,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   executable at build time.
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
   `gen_xpm.ps1`, `gen_xpm.py`) plus optional dev-only console harnesses
-  (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind
-  `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
-  scripts are Windows-only; on Linux, use CMake directly.
+  (`livery_compare`, `model_dump`, `pack_decals`, `finish_dump`). `finish_dump`
+  prints each livery paint-finish material's resolved render parameters
+  (`--library <gameFolder>`) or one materialbin's decoded parameters
+  (`--material <file>`), for tracing mis-shaded finishes. The harnesses are gated
+  behind `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping.
+  Note: the scripts are Windows-only; on Linux, use CMake directly.
 - `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), `GAMEDATA.md`
   (the game media folder layout and where the resources the editor reads live), and
   consolidated format notes for Forza Horizon and Forza Motorsport containers, groups,

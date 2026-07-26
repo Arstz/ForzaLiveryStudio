@@ -507,6 +507,42 @@ int main(int argc, char *argv[])
     if (args.contains(QStringLiteral("--fit"))) {
         return fitLivery(path);
     }
+    if (const int mi = args.indexOf(QStringLiteral("--mat")); mi >= 0 && mi + 1 < args.size()) {
+        const QString needle = args[mi + 1].toLower();
+        QString err;
+        const CarModel model = path.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+            ? loadCarBin(path, &err) : loadModelBin(path, &err);
+        QSet<QString> seen;
+        for (const CarMesh &mesh : model.meshes) {
+            if (!mesh.material || !mesh.materialName.toLower().contains(needle)) {
+                continue;
+            }
+            const QString key = mesh.materialName + QLatin1Char('|') + mesh.material->resourcePath;
+            if (seen.contains(key)) {
+                continue;
+            }
+            seen.insert(key);
+            std::printf("material '%s' resource='%s' fromLibrary=%d params=%lld uTiling=%.4f vTiling=%.4f gloss=%.3f\n",
+                        qPrintable(mesh.materialName), qPrintable(mesh.material->resourcePath),
+                        mesh.material->resolvedFromLibrary ? 1 : 0,
+                        static_cast<long long>(mesh.material->parameters.size()),
+                        mesh.material->uTiling, mesh.material->vTiling, mesh.material->gloss);
+            std::printf("  patternTex='%s'\n  detailNormalTex='%s'\n  roughMetalAoTex='%s'\n",
+                        qPrintable(mesh.material->patternTexture),
+                        qPrintable(mesh.material->detailNormalTexture),
+                        qPrintable(mesh.material->roughMetalAoTexture));
+            for (const ModelMaterialParameter &p : mesh.material->parameters) {
+                if (p.type == ModelMaterialParameterType::Texture2D) {
+                    std::printf("  tex   hash=%08X path=%s\n", p.nameHash, qPrintable(p.texturePath));
+                } else {
+                    std::printf("  param hash=%08X type=%d scalar=%.4f vec=(%.3f,%.3f,%.3f,%.3f)\n",
+                                p.nameHash, static_cast<int>(p.type), p.scalar,
+                                p.vector[0], p.vector[1], p.vector[2], p.vector[3]);
+                }
+            }
+        }
+        return 0;
+    }
     WheelSizing rimSizing;
     if (const int ri = args.indexOf(QStringLiteral("--rim")); ri >= 0 && ri + 1 < args.size()) {
         const float d = args[ri + 1].toFloat();

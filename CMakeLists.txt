@@ -130,6 +130,13 @@ if(FH6_BUILD_HELPER_TOOLS)
     )
     target_link_libraries(fh6_pack_decals PRIVATE fls_core Qt6::Core)
 
+    # Console harness: decode livery paint-finish materials and print the resolved
+    # render parameters, to trace mis-shaded finishes back to their materialbin values.
+    add_executable(fh6_finish_dump
+        tools/finish_dump/main.cpp
+    )
+    target_link_libraries(fh6_finish_dump PRIVATE fls_core Qt6::Core)
+
 endif()
 
 set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)
