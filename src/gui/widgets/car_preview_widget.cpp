@@ -510,12 +510,24 @@ enum class NativeTextureSlot {
     Normal,
     Surface,
     Emissive,
+    PaintNormalMap00,
+    PaintNormalMap0,
+    OrangePeelNormal,
     Unknown,
 };
 
 NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter) {
     QString path = parameter.texturePath.toLower();
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (parameter.nameHash == fh6::material_hashes::parameter::kNormalMap00Texture) {
+        return NativeTextureSlot::PaintNormalMap00;
+    }
+    if (parameter.nameHash == fh6::material_hashes::parameter::kNormalMap0Texture) {
+        return NativeTextureSlot::PaintNormalMap0;
+    }
+    if (parameter.nameHash == fh6::material_hashes::parameter::kOrangePeelNormalTexture) {
+        return NativeTextureSlot::OrangePeelNormal;
+    }
     if (parameter.nameHash == fh6::material_hashes::parameter::kNormalTexture
         || path.contains(QStringLiteral("normal"))
         || path.contains(QStringLiteral("nrml"))) {
@@ -596,6 +608,15 @@ void assignNativeTexture(fh6::ModelMaterial &material,
         break;
     case NativeTextureSlot::Emissive:
         material.emissiveTexture = texture;
+        break;
+    case NativeTextureSlot::PaintNormalMap00:
+        material.paintNormalMap00Texture = texture;
+        break;
+    case NativeTextureSlot::PaintNormalMap0:
+        material.paintNormalMap0Texture = texture;
+        break;
+    case NativeTextureSlot::OrangePeelNormal:
+        material.orangePeelNormalTexture = texture;
         break;
     case NativeTextureSlot::Unknown:
         break;

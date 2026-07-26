@@ -81,6 +81,7 @@ private:
         float emissiveIntensity = 0.0f;
         float gloss = 0.45f;
         float metallic = 0.0f;
+        fh6::AutomotivePaintParameters automotivePaint;
         QString name;
         QString materialName;
         GLuint diffuseTexture = 0;
@@ -88,6 +89,9 @@ private:
         GLuint normalTexture = 0;
         GLuint surfaceTexture = 0;
         GLuint emissiveTexture = 0;
+        GLuint paintNormalMap00Texture = 0;
+        GLuint paintNormalMap0Texture = 0;
+        GLuint orangePeelNormalTexture = 0;
         QVector3D center;
         QMatrix4x4 model;
     };
@@ -102,6 +106,9 @@ private:
         GLuint pattern = 0;
         GLuint normal = 0;
         GLuint surface = 0;
+        GLuint normalMap00 = 0;
+        GLuint normalMap0 = 0;
+        GLuint orangePeelNormal = 0;
     };
 
     GLuint uploadSwatchTexture(const fh6::SwatchImage &image, bool srgb);
@@ -188,14 +195,31 @@ private:
     int finishPatternLocation_ = -1;
     int finishNormalLocation_ = -1;
     int finishSurfaceLocation_ = -1;
+    int finishNormalMap00Location_ = -1;
+    int finishNormalMap0Location_ = -1;
+    int finishOrangePeelNormalLocation_ = -1;
     int hasFinishPatternLocation_ = -1;
     int hasFinishNormalLocation_ = -1;
     int hasFinishSurfaceLocation_ = -1;
+    int hasFinishNormalMap00Location_ = -1;
+    int hasFinishNormalMap0Location_ = -1;
+    int hasFinishOrangePeelNormalLocation_ = -1;
     int finishSelfColoredLocation_ = -1;
     int finishTilingLocation_ = -1;
     int finishFlakeLocation_ = -1;
+    int finishFlakeColorLocation_ = -1;
+    int finishFlakeRoughnessLocation_ = -1;
+    int finishGlitterIntensityLocation_ = -1;
+    int glancingFlopEnabledLocation_ = -1;
+    int glancingFlopPowerLocation_ = -1;
+    int finishNormalIntensityLocation_ = -1;
+    int finishNormalMap00TilingLocation_ = -1;
+    int finishNormalMap0TilingLocation_ = -1;
+    int finishOrangePeelStrengthLocation_ = -1;
     int clearCoatRoughnessLocation_ = -1;
     int clearCoatIntensityLocation_ = -1;
+    int clearCoatTintLocation_ = -1;
+    int clearCoatOnLiveryLocation_ = -1;
 };
 
 } // namespace gui

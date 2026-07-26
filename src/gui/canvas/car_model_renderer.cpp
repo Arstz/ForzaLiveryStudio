@@ -103,14 +103,31 @@ uniform int has_native_emissive;
 uniform sampler2D finish_pattern;
 uniform sampler2D finish_normal;
 uniform sampler2D finish_surface;
+uniform sampler2D finish_normal_map00;
+uniform sampler2D finish_normal_map0;
+uniform sampler2D finish_orange_peel_normal;
 uniform int has_finish_pattern;
 uniform int has_finish_normal;
 uniform int has_finish_surface;
+uniform int has_finish_normal_map00;
+uniform int has_finish_normal_map0;
+uniform int has_finish_orange_peel_normal;
 uniform int finish_self_colored;
 uniform float finish_tiling;
 uniform float finish_flake;
+uniform vec3 finish_flake_color;
+uniform float finish_flake_roughness;
+uniform float finish_glitter_intensity;
+uniform int glancing_flop_enabled;
+uniform float glancing_flop_power;
+uniform float finish_normal_intensity;
+uniform vec4 finish_normal_map00_tiling;
+uniform vec4 finish_normal_map0_tiling;
+uniform float finish_orange_peel_strength;
 uniform float clear_coat_roughness;
 uniform float clear_coat_intensity;
+uniform vec3 clear_coat_tint;
+uniform int clear_coat_on_livery;
 
 out vec4 out_color;
 
@@ -271,6 +288,26 @@ mat3 materialTangentFrame(vec3 normal, vec3 position, vec2 uv)
     return mat3(tangent * scale, bitangent * scale, normal);
 }
 
+vec2 transformedPaintUv(vec2 uv, vec4 scaleOffset)
+{
+    return fract(uv * scaleOffset.xy + scaleOffset.zw);
+}
+
+vec3 mappedNormal(sampler2D normalTexture, vec2 uv, float intensity)
+{
+    vec3 mapped = texture(normalTexture, uv).xyz * 2.0 - 1.0;
+    mapped.xy *= max(intensity, 0.0);
+    mapped.z = sqrt(max(1.0 - dot(mapped.xy, mapped.xy), 0.0));
+    return normalize(mapped);
+}
+
+vec3 applyNormalMap(vec3 surfaceNormal, sampler2D normalTexture, vec3 position,
+                    vec2 uv, float intensity)
+{
+    return normalize(materialTangentFrame(surfaceNormal, position, uv)
+        * mappedNormal(normalTexture, uv, intensity));
+}
+
 vec3 finishBaseColor(vec2 uv, vec3 paint)
 {
     if (has_finish_pattern == 0) {
@@ -294,7 +331,8 @@ float finishGlitter(vec3 worldPos, float facing)
     // Sparse: only a fraction of cells hold a flake, and each lights only very close to
     // the highlight so the result reads as occasional sparkle, not salt-and-pepper noise.
     float active = step(1.0 - 0.3 * finish_flake, rnd);
-    float lit = smoothstep(0.92, 1.0, facing + (rnd2 - 0.5) * 0.05);
+    float highlightStart = mix(0.97, 0.84, clamp(finish_flake_roughness, 0.0, 1.0));
+    float lit = smoothstep(highlightStart, 1.0, facing + (rnd2 - 0.5) * 0.05);
     return active * lit;
 }
 
@@ -306,19 +344,22 @@ void main()
 {
     // Surfaces drawn double-sided are seen from behind as often as in front — a wheel barrel is
     // only ever viewed from inside — so light the side that is actually facing the eye.
-    vec3 n = normalize(v_normal);
+    vec3 geometricNormal = normalize(v_normal);
     if (!gl_FrontFacing) {
-        n = -n;
+        geometricNormal = -geometricNormal;
     }
+    vec3 baseNormal = geometricNormal;
     vec2 materialUv = v_material_uv;
     if (has_native_normal == 1) {
-        vec3 mappedNormal = texture(native_normal, materialUv).xyz * 2.0 - 1.0;
-        mappedNormal.z = sqrt(max(1.0 - dot(mappedNormal.xy, mappedNormal.xy), 0.0));
-        n = normalize(materialTangentFrame(n, v_world, materialUv) * mappedNormal);
+        baseNormal = applyNormalMap(baseNormal, native_normal, v_world, materialUv, 1.0);
     }
     vec3 viewDir = normalize(eye_position - v_world);
-    float edge = pow(1.0 - max(dot(n, viewDir), 0.0), 2.0);
-    vec3 surfacePaint = mix(base_paint, secondary_paint, secondary_mix * edge);
+    float edge = pow(1.0 - max(dot(baseNormal, viewDir), 0.0),
+                     max(glancing_flop_power, 0.01));
+    float glancingMix = glancing_flop_enabled == 1
+        ? clamp(secondary_mix * edge, 0.0, 1.0)
+        : 0.0;
+    vec3 surfacePaint = mix(base_paint, secondary_paint, glancingMix);
     float outputAlpha = material_alpha;
     if (has_native_diffuse == 1) {
         vec4 nativeColor = texture(native_diffuse, materialUv);
@@ -334,6 +375,7 @@ void main()
     vec3 albedo = surfacePaint;
     vec2 finishUv = vec2(0.0);
     bool finishUvValid = false;
+    float liveryCoverage = 0.0;
     if (has_livery == 1 && side_count > 0) {
         if (use_direct_uv == 1) {
             vec2 atlasUv = vec2(v_uv.x * 0.5, v_uv.y);
@@ -386,6 +428,7 @@ void main()
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
                 albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
+                liveryCoverage = paint.a;
             }
         } else {
         float bestScore = -1.0;
@@ -396,7 +439,7 @@ void main()
             if ((allowed_sides & (1 << s)) == 0) {
                 continue;
             }
-            float facing = dot(side_facing[s], n);
+            float facing = dot(side_facing[s], baseNormal);
             if (facing <= 0.0) {
                 continue;
             }
@@ -448,6 +491,7 @@ void main()
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
             albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
+            liveryCoverage = paint.a;
         }
         }
     }
@@ -460,25 +504,46 @@ void main()
         surfaceMetallic = packedSurface.g;
         surfaceAo = packedSurface.b;
     }
+    vec3 paintNormal = baseNormal;
+    vec3 coatNormal = geometricNormal;
+    bool hasCoatDetailNormal = false;
+    vec2 paintDetailUv = finishUvValid ? finishUv : materialUv;
     if (finishUvValid) {
-        vec2 finishTiledUv = fract(finishUv * finish_tiling);
+        vec2 finishTiledUv = fract(paintDetailUv * finish_tiling);
         if (has_finish_surface == 1) {
             vec3 packedFinish = texture(finish_surface, finishTiledUv).rgb;
             surfaceGloss = 1.0 - packedFinish.r;
             surfaceMetallic = packedFinish.g;
             surfaceAo = packedFinish.b;
         }
-        if (has_finish_normal == 1) {
-            vec3 mapped = texture(finish_normal, finishTiledUv).xyz * 2.0 - 1.0;
-            mapped.z = sqrt(max(1.0 - dot(mapped.xy, mapped.xy), 0.0));
-            n = normalize(materialTangentFrame(n, v_world, finishTiledUv) * mapped);
+        if (has_finish_normal_map0 == 1) {
+            vec2 normalUv = transformedPaintUv(paintDetailUv, finish_normal_map0_tiling);
+            paintNormal = applyNormalMap(
+                paintNormal, finish_normal_map0, v_world, normalUv, finish_normal_intensity);
+        }
+        if (has_finish_normal_map00 == 1) {
+            vec2 normalUv = transformedPaintUv(paintDetailUv, finish_normal_map00_tiling);
+            paintNormal = applyNormalMap(
+                paintNormal, finish_normal_map00, v_world, normalUv, finish_normal_intensity);
+        }
+        if (has_finish_normal == 1
+            && has_finish_normal_map0 == 0 && has_finish_normal_map00 == 0) {
+            paintNormal = applyNormalMap(
+                paintNormal, finish_normal, v_world, finishTiledUv, finish_normal_intensity);
+        }
+        if (has_finish_orange_peel_normal == 1 && finish_orange_peel_strength > 0.0) {
+            vec2 orangeUv = transformedPaintUv(paintDetailUv, finish_normal_map0_tiling);
+            coatNormal = applyNormalMap(
+                paintNormal, finish_orange_peel_normal, v_world, orangeUv,
+                finish_orange_peel_strength);
+            hasCoatDetailNormal = true;
         }
     }
     vec3 nativeEmission = has_native_emissive == 1
         ? texture(native_emissive, materialUv).rgb
         : vec3(0.0);
     vec3 v = viewDir;
-    float NdotV = max(dot(n, v), 0.0);
+    float NdotV = max(dot(paintNormal, v), 0.0);
     vec3 F0 = mix(vec3(0.04), albedo, surfaceMetallic);
     float roughness = 1.0 - surfaceGloss;
     roughness = clamp(roughness, 0.04, 1.0);
@@ -487,13 +552,15 @@ void main()
     vec3 ambient = ambient_color * ambient_scale * albedo * surfaceAo;
     vec3 color = ambient;
     color += direct_light_weights.x
-        * evaluateDirectSurface(n, v, primaryLight, albedo, F0, roughness, surfaceMetallic);
+        * evaluateDirectSurface(
+            paintNormal, v, primaryLight, albedo, F0, roughness, surfaceMetallic);
     color += direct_light_weights.y
-        * evaluateDirectSurface(n, v, secondaryLight, albedo, F0, roughness, surfaceMetallic);
-    vec3 reflected = reflect(-v, n);
+        * evaluateDirectSurface(
+            paintNormal, v, secondaryLight, albedo, F0, roughness, surfaceMetallic);
+    vec3 reflected = reflect(-v, paintNormal);
     vec3 diffuseEnvColor = has_environment_maps == 1
-        ? texture(diffuse_environment, n).rgb
-        : evaluateAnalyticEnvironment(n);
+        ? texture(diffuse_environment, paintNormal).rgb
+        : evaluateAnalyticEnvironment(paintNormal);
     vec3 specularEnvColor = has_environment_maps == 1
         ? textureLod(specular_environment, reflected, roughness * specular_environment_max_lod).rgb
         : evaluateAnalyticEnvironment(reflected);
@@ -506,23 +573,37 @@ void main()
         * (vec3(1.0) - Fenv) * (1.0 - surfaceMetallic) * surfaceAo;
     color += envDiffuse + envSpecular;
     float primaryGlitterFacing = direct_light_weights.x > 0.0
-        ? max(dot(n, normalize(primaryLight + v)), 0.0)
+        ? max(dot(paintNormal, normalize(primaryLight + v)), 0.0)
         : 0.0;
     float secondaryGlitterFacing = direct_light_weights.y > 0.0
-        ? max(dot(n, normalize(secondaryLight + v)), 0.0)
+        ? max(dot(paintNormal, normalize(secondaryLight + v)), 0.0)
         : 0.0;
     float glitter = finishGlitter(v_world, max(primaryGlitterFacing, secondaryGlitterFacing));
-    color += vec3(glitter * finish_flake * 1.4) * Fenv;
-    if (clear_coat_intensity > 0.01) {
+    color += finish_flake_color
+        * (glitter * finish_flake * finish_glitter_intensity) * Fenv;
+    float coatOverLivery = clear_coat_on_livery == 1 ? 1.0 : 0.0;
+    float coatIntensity = clear_coat_intensity
+        * mix(1.0, coatOverLivery, clamp(liveryCoverage, 0.0, 1.0));
+    if (coatIntensity > 0.01) {
         float ccRoughness = clamp(clear_coat_roughness, 0.04, 1.0);
+        vec3 clearCoatNormal = hasCoatDetailNormal ? coatNormal : geometricNormal;
+        float ccNdotV = max(dot(clearCoatNormal, v), 0.0);
         color += direct_light_weights.x
-            * evaluateDirectClearCoat(n, v, primaryLight, ccRoughness) * clear_coat_intensity;
+            * evaluateDirectClearCoat(clearCoatNormal, v, primaryLight, ccRoughness)
+            * clear_coat_tint * coatIntensity;
         color += direct_light_weights.y
-            * evaluateDirectClearCoat(n, v, secondaryLight, ccRoughness) * clear_coat_intensity;
-        vec3 ccEnvF = fresnelSchlickRoughness(NdotV, vec3(0.04), ccRoughness);
-        color += specularEnvColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
-        float ccFresnelEdge = pow(1.0 - NdotV, 4.0);
-        color += vec3(ccFresnelEdge * 0.06 * clear_coat_intensity);
+            * evaluateDirectClearCoat(clearCoatNormal, v, secondaryLight, ccRoughness)
+            * clear_coat_tint * coatIntensity;
+        vec3 ccReflected = reflect(-v, clearCoatNormal);
+        vec3 ccSpecularEnvironment = has_environment_maps == 1
+            ? textureLod(specular_environment, ccReflected,
+                         ccRoughness * specular_environment_max_lod).rgb
+            : evaluateAnalyticEnvironment(ccReflected);
+        vec3 ccEnvF = fresnelSchlickRoughness(ccNdotV, vec3(0.04), ccRoughness);
+        color += ccSpecularEnvironment * ccEnvF * clear_coat_tint
+            * mix(0.15, 0.95, 1.0 - ccRoughness) * coatIntensity;
+        float ccFresnelEdge = pow(1.0 - ccNdotV, 4.0);
+        color += clear_coat_tint * (ccFresnelEdge * 0.06 * coatIntensity);
     }
     color += material_emissive + nativeEmission;
     out_color = vec4(
@@ -802,14 +883,32 @@ void CarModelRenderer::initialize() {
     finishPatternLocation_ = program_.uniformLocation("finish_pattern");
     finishNormalLocation_ = program_.uniformLocation("finish_normal");
     finishSurfaceLocation_ = program_.uniformLocation("finish_surface");
+    finishNormalMap00Location_ = program_.uniformLocation("finish_normal_map00");
+    finishNormalMap0Location_ = program_.uniformLocation("finish_normal_map0");
+    finishOrangePeelNormalLocation_ = program_.uniformLocation("finish_orange_peel_normal");
     hasFinishPatternLocation_ = program_.uniformLocation("has_finish_pattern");
     hasFinishNormalLocation_ = program_.uniformLocation("has_finish_normal");
     hasFinishSurfaceLocation_ = program_.uniformLocation("has_finish_surface");
+    hasFinishNormalMap00Location_ = program_.uniformLocation("has_finish_normal_map00");
+    hasFinishNormalMap0Location_ = program_.uniformLocation("has_finish_normal_map0");
+    hasFinishOrangePeelNormalLocation_ =
+        program_.uniformLocation("has_finish_orange_peel_normal");
     finishSelfColoredLocation_ = program_.uniformLocation("finish_self_colored");
     finishTilingLocation_ = program_.uniformLocation("finish_tiling");
     finishFlakeLocation_ = program_.uniformLocation("finish_flake");
+    finishFlakeColorLocation_ = program_.uniformLocation("finish_flake_color");
+    finishFlakeRoughnessLocation_ = program_.uniformLocation("finish_flake_roughness");
+    finishGlitterIntensityLocation_ = program_.uniformLocation("finish_glitter_intensity");
+    glancingFlopEnabledLocation_ = program_.uniformLocation("glancing_flop_enabled");
+    glancingFlopPowerLocation_ = program_.uniformLocation("glancing_flop_power");
+    finishNormalIntensityLocation_ = program_.uniformLocation("finish_normal_intensity");
+    finishNormalMap00TilingLocation_ = program_.uniformLocation("finish_normal_map00_tiling");
+    finishNormalMap0TilingLocation_ = program_.uniformLocation("finish_normal_map0_tiling");
+    finishOrangePeelStrengthLocation_ = program_.uniformLocation("finish_orange_peel_strength");
     clearCoatRoughnessLocation_ = program_.uniformLocation("clear_coat_roughness");
     clearCoatIntensityLocation_ = program_.uniformLocation("clear_coat_intensity");
+    clearCoatTintLocation_ = program_.uniformLocation("clear_coat_tint");
+    clearCoatOnLiveryLocation_ = program_.uniformLocation("clear_coat_on_livery");
     initialized_ = true;
 }
 
@@ -883,8 +982,34 @@ void CarModelRenderer::release() {
     hasNativeNormalLocation_ = -1;
     hasNativeSurfaceLocation_ = -1;
     hasNativeEmissiveLocation_ = -1;
+    finishPatternLocation_ = -1;
+    finishNormalLocation_ = -1;
+    finishSurfaceLocation_ = -1;
+    finishNormalMap00Location_ = -1;
+    finishNormalMap0Location_ = -1;
+    finishOrangePeelNormalLocation_ = -1;
+    hasFinishPatternLocation_ = -1;
+    hasFinishNormalLocation_ = -1;
+    hasFinishSurfaceLocation_ = -1;
+    hasFinishNormalMap00Location_ = -1;
+    hasFinishNormalMap0Location_ = -1;
+    hasFinishOrangePeelNormalLocation_ = -1;
+    finishSelfColoredLocation_ = -1;
+    finishTilingLocation_ = -1;
+    finishFlakeLocation_ = -1;
+    finishFlakeColorLocation_ = -1;
+    finishFlakeRoughnessLocation_ = -1;
+    finishGlitterIntensityLocation_ = -1;
+    glancingFlopEnabledLocation_ = -1;
+    glancingFlopPowerLocation_ = -1;
+    finishNormalIntensityLocation_ = -1;
+    finishNormalMap00TilingLocation_ = -1;
+    finishNormalMap0TilingLocation_ = -1;
+    finishOrangePeelStrengthLocation_ = -1;
     clearCoatRoughnessLocation_ = -1;
     clearCoatIntensityLocation_ = -1;
+    clearCoatTintLocation_ = -1;
+    clearCoatOnLiveryLocation_ = -1;
 }
 
 bool CarModelRenderer::isInitialized() const {
@@ -2041,6 +2166,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 mesh.material->emissiveColor[0], mesh.material->emissiveColor[1], mesh.material->emissiveColor[2]);
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
             buffers->gloss = mesh.material->gloss;
+            buffers->automotivePaint = mesh.material->automotivePaint;
             if (mesh.material->hasMetallic) {
                 buffers->metallic = mesh.material->metallic;
             }
@@ -2051,6 +2177,12 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 buffers->normalTexture = uploadTexture(mesh.material->normalTexture, false);
                 buffers->surfaceTexture = uploadTexture(mesh.material->surfaceTexture, false);
                 buffers->emissiveTexture = uploadTexture(mesh.material->emissiveTexture, true);
+                buffers->paintNormalMap00Texture =
+                    uploadTexture(mesh.material->paintNormalMap00Texture, false);
+                buffers->paintNormalMap0Texture =
+                    uploadTexture(mesh.material->paintNormalMap0Texture, false);
+                buffers->orangePeelNormalTexture =
+                    uploadTexture(mesh.material->orangePeelNormalTexture, false);
             }
             if (buffers->diffuseTexture != 0 && !buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
@@ -2231,9 +2363,12 @@ constexpr float kClearCoatMaxRoughness = 0.4f;
 struct ClearCoat {
     float coverage = 0.0f;
     float roughness = kClearCoatMinRoughness;
+    QVector3D tint = QVector3D(1.0f, 1.0f, 1.0f);
+    bool onLivery = true;
 };
 
-ClearCoat bodyClearCoat(bool bodyPaint, const fh6::PaintFinishRender *finish, float gloss) {
+ClearCoat bodyClearCoat(bool bodyPaint, const fh6::PaintFinishRender *finish,
+                        const fh6::AutomotivePaintParameters *paint, float gloss) {
     if (!bodyPaint) {
         return {};
     }
@@ -2245,6 +2380,24 @@ ClearCoat bodyClearCoat(bool bodyPaint, const fh6::PaintFinishRender *finish, fl
         coat.coverage *= kClearCoatMetalCoverage;
     }
     coat.roughness = std::clamp(1.0f - gloss, kClearCoatMinRoughness, kClearCoatMaxRoughness);
+    if (paint != nullptr) {
+        if (paint->hasClearCoatCoverage) {
+            coat.coverage = std::clamp(paint->clearCoatCoverage, 0.0f, 1.0f);
+        } else if (paint->hasClearCoatRoughness) {
+            coat.coverage = bareMetal ? kClearCoatMetalCoverage : 1.0f;
+        }
+        if (paint->hasClearCoatRoughness) {
+            coat.roughness = std::clamp(
+                paint->clearCoatRoughness, kClearCoatMinRoughness, 1.0f);
+        }
+        if (paint->hasClearCoatTint) {
+            coat.tint = QVector3D(
+                paint->clearCoatTint[0], paint->clearCoatTint[1], paint->clearCoatTint[2]);
+        }
+        if (paint->hasClearCoatOnLivery) {
+            coat.onLivery = paint->clearCoatOnLivery;
+        }
+    }
 
     return coat;
 }
@@ -2347,6 +2500,9 @@ const CarModelRenderer::FinishTextureEntry *CarModelRenderer::ensurePaintFinishT
     entry.pattern = uploadSwatchTexture(render.patternImage, true);
     entry.normal = uploadSwatchTexture(render.detailNormalImage, false);
     entry.surface = uploadSwatchTexture(render.roughMetalAoImage, false);
+    entry.normalMap00 = uploadSwatchTexture(render.normalMap00Image, false);
+    entry.normalMap0 = uploadSwatchTexture(render.normalMap0Image, false);
+    entry.orangePeelNormal = uploadSwatchTexture(render.orangePeelNormalImage, false);
 
     return &*finishTextureCache_.insert(code, entry);
 }
@@ -2355,9 +2511,10 @@ void CarModelRenderer::clearPaintFinishTextures() {
     if (!finishTextureCache_.isEmpty()) {
         if (QOpenGLContext *context = QOpenGLContext::currentContext()) {
             QVector<GLuint> ids;
-            ids.reserve(finishTextureCache_.size() * 3);
+            ids.reserve(finishTextureCache_.size() * 6);
             for (const FinishTextureEntry &entry : std::as_const(finishTextureCache_)) {
-                for (GLuint id : {entry.pattern, entry.normal, entry.surface}) {
+                for (GLuint id : {entry.pattern, entry.normal, entry.surface,
+                                  entry.normalMap00, entry.normalMap0, entry.orangePeelNormal}) {
                     if (id != 0) {
                         ids.push_back(id);
                     }
@@ -2580,14 +2737,105 @@ void CarModelRenderer::render(
             }
             applyPaintFinish(*paint, finish, primary, secondary, secondaryMix, gloss, metallic);
         }
+        const fh6::AutomotivePaintParameters *automotivePaint = nullptr;
+        if (finish != nullptr && finish->valid) {
+            automotivePaint = &finish->automotivePaint;
+        } else if (manufacturerColor != nullptr && manufacturerColor->material) {
+            automotivePaint = &manufacturerColor->material->automotivePaint;
+        } else {
+            automotivePaint = &mesh.automotivePaint;
+        }
+
+        bool glancingFlopEnabled = secondaryMix > 0.0f;
+        float glancingFlopPower = 2.0f;
+        float glancingFlopStrength = secondaryMix;
+        QVector3D glancingFlopColor = secondary;
+        float flakeCoverage = finish != nullptr ? finish->flakeAmount : manufacturerFlake;
+        float flakeRoughness = 0.4f;
+        float glitterIntensity = 1.4f;
+        QVector3D flakeColor(1.0f, 1.0f, 1.0f);
+        float normalIntensity = 1.0f;
+        QVector4D normalMap00Tiling(1.0f, 1.0f, 0.0f, 0.0f);
+        QVector4D normalMap0Tiling(1.0f, 1.0f, 0.0f, 0.0f);
+        float orangePeelStrength = 0.0f;
+        if (automotivePaint != nullptr) {
+            if (automotivePaint->hasGlancingFlopEnabled) {
+                glancingFlopEnabled = automotivePaint->glancingFlopEnabled;
+            }
+            if (automotivePaint->hasGlancingFlopPower) {
+                glancingFlopPower = automotivePaint->glancingFlopPower;
+            }
+            if (automotivePaint->hasGlancingFlopStrength) {
+                glancingFlopStrength = automotivePaint->glancingFlopStrength;
+            }
+            if (automotivePaint->hasGlancingFlopColor
+                && (paint == nullptr || !paint->secondary.enabled)) {
+                glancingFlopColor = QVector3D(
+                    automotivePaint->glancingFlopColor[0],
+                    automotivePaint->glancingFlopColor[1],
+                    automotivePaint->glancingFlopColor[2]);
+            }
+            if (automotivePaint->hasFlakeCoverage) {
+                flakeCoverage = automotivePaint->flakeCoverage;
+            }
+            if (automotivePaint->hasFlakeRoughness) {
+                flakeRoughness = automotivePaint->flakeRoughness;
+            }
+            if (automotivePaint->hasGlitterIntensity) {
+                glitterIntensity = automotivePaint->glitterIntensity;
+            }
+            if (automotivePaint->hasFlakeColor) {
+                flakeColor = QVector3D(
+                    automotivePaint->flakeColor[0], automotivePaint->flakeColor[1],
+                    automotivePaint->flakeColor[2]);
+            }
+            if (automotivePaint->hasNormalIntensity) {
+                normalIntensity = automotivePaint->normalIntensity;
+            }
+            if (automotivePaint->hasNormalMap00UvTiling) {
+                normalMap00Tiling = QVector4D(
+                    automotivePaint->normalMap00UvTiling[0],
+                    automotivePaint->normalMap00UvTiling[1],
+                    automotivePaint->normalMap00UvTiling[2],
+                    automotivePaint->normalMap00UvTiling[3]);
+            }
+            if (automotivePaint->hasNormalMap0UvTiling) {
+                normalMap0Tiling = QVector4D(
+                    automotivePaint->normalMap0UvTiling[0],
+                    automotivePaint->normalMap0UvTiling[1],
+                    automotivePaint->normalMap0UvTiling[2],
+                    automotivePaint->normalMap0UvTiling[3]);
+            }
+            if (automotivePaint->hasOrangePeelStrength) {
+                orangePeelStrength = automotivePaint->orangePeelStrength;
+            }
+        }
+        if (paint != nullptr && paint->secondary.enabled && flakeCoverage > 0.0f
+            && (finish == nullptr || !finish->usesSecondary)) {
+            flakeColor = secondary;
+        }
+
         program_.setUniformValue(basePaintLocation_, primary);
-        program_.setUniformValue(secondaryPaintLocation_, secondary);
-        program_.setUniformValue(secondaryMixLocation_, secondaryMix);
+        program_.setUniformValue(secondaryPaintLocation_, glancingFlopColor);
+        program_.setUniformValue(secondaryMixLocation_, std::clamp(glancingFlopStrength, 0.0f, 1.0f));
+        program_.setUniformValue(glancingFlopEnabledLocation_, glancingFlopEnabled ? 1 : 0);
+        program_.setUniformValue(glancingFlopPowerLocation_, std::max(glancingFlopPower, 0.01f));
         program_.setUniformValue(glossLocation_, gloss);
         program_.setUniformValue(metallicLocation_, metallic);
-        const ClearCoat clearCoat = bodyClearCoat(mesh.bodyPaint, finish, gloss);
+        program_.setUniformValue(
+            finishFlakeLocation_, std::clamp(flakeCoverage, 0.0f, 1.0f));
+        program_.setUniformValue(finishFlakeColorLocation_, flakeColor);
+        program_.setUniformValue(finishFlakeRoughnessLocation_, std::clamp(flakeRoughness, 0.0f, 1.0f));
+        program_.setUniformValue(finishGlitterIntensityLocation_, std::max(glitterIntensity, 0.0f));
+        program_.setUniformValue(finishNormalIntensityLocation_, std::max(normalIntensity, 0.0f));
+        program_.setUniformValue(finishNormalMap00TilingLocation_, normalMap00Tiling);
+        program_.setUniformValue(finishNormalMap0TilingLocation_, normalMap0Tiling);
+        program_.setUniformValue(finishOrangePeelStrengthLocation_, std::max(orangePeelStrength, 0.0f));
+        const ClearCoat clearCoat = bodyClearCoat(mesh.bodyPaint, finish, automotivePaint, gloss);
         program_.setUniformValue(clearCoatRoughnessLocation_, clearCoat.roughness);
         program_.setUniformValue(clearCoatIntensityLocation_, clearCoat.coverage);
+        program_.setUniformValue(clearCoatTintLocation_, clearCoat.tint);
+        program_.setUniformValue(clearCoatOnLiveryLocation_, clearCoat.onLivery ? 1 : 0);
         // Opt-in trace of the paint/finish each mesh resolves to, for diagnosing mis-shaded parts.
         static const bool paintDiagnostics = qEnvironmentVariableIsSet("FLS_PAINT_DIAG");
         if (paintDiagnostics && !paintDiagnosticsLogged_
@@ -2626,12 +2874,25 @@ void CarModelRenderer::render(
                             finishNormalLocation_, hasFinishNormalLocation_);
         bindMaterialTexture(9, finishTextures != nullptr ? finishTextures->surface : 0,
                             finishSurfaceLocation_, hasFinishSurfaceLocation_);
+        bindMaterialTexture(12,
+                            finishTextures != nullptr && finishTextures->normalMap00 != 0
+                                ? finishTextures->normalMap00
+                                : mesh.paintNormalMap00Texture,
+                            finishNormalMap00Location_, hasFinishNormalMap00Location_);
+        bindMaterialTexture(13,
+                            finishTextures != nullptr && finishTextures->normalMap0 != 0
+                                ? finishTextures->normalMap0
+                                : mesh.paintNormalMap0Texture,
+                            finishNormalMap0Location_, hasFinishNormalMap0Location_);
+        bindMaterialTexture(14,
+                            finishTextures != nullptr && finishTextures->orangePeelNormal != 0
+                                ? finishTextures->orangePeelNormal
+                                : mesh.orangePeelNormalTexture,
+                            finishOrangePeelNormalLocation_,
+                            hasFinishOrangePeelNormalLocation_);
         program_.setUniformValue(finishSelfColoredLocation_,
                                  (finish != nullptr && finish->selfColored) ? 1 : 0);
         program_.setUniformValue(finishTilingLocation_, 1.0f);
-        program_.setUniformValue(
-            finishFlakeLocation_,
-            finish != nullptr ? finish->flakeAmount : manufacturerFlake);
         functions->glActiveTexture(GL_TEXTURE0);
         program_.setUniformValue(mvpLocation_, viewProjection * mesh.model);
         program_.setUniformValue(modelLocation_, mesh.model);

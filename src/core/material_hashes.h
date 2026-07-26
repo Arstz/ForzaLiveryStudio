@@ -91,6 +91,21 @@ inline constexpr std::array<quint32, 10> kGloss = {
 };
 
 inline constexpr quint32 kClearcoatRoughness = 0x18A539DD;
+inline constexpr quint32 kGlancingFlopColor = 0x682DB27E;
+inline constexpr quint32 kFlakeColor = 0x38B56360;
+inline constexpr quint32 kGlancingFlopEnabled = 0xB10FD456;
+inline constexpr quint32 kGlancingFlopPower = 0x194C4F17;
+inline constexpr quint32 kGlancingFlopStrength = 0x9B4EC25B;
+inline constexpr quint32 kFlakeRoughness = 0x4E547D2C;
+inline constexpr quint32 kFlakeCoverage = 0x604BA06B;
+inline constexpr quint32 kGlitterIntensity = 0x4393C2CA;
+inline constexpr quint32 kClearcoatCoverage = 0x22CB725E;
+inline constexpr quint32 kClearcoatTint = 0x218D90FE;
+inline constexpr quint32 kClearcoatOnLivery = 0x443C9A28;
+inline constexpr quint32 kNormalIntensity = 0xCD6B029B;
+inline constexpr quint32 kNormalMap00UvTiling = 0x9A7DB1FA;
+inline constexpr quint32 kNormalMap0UvTiling = 0xFD6BB566;
+inline constexpr quint32 kOrangePeelStrength = 0xAB378776;
 inline constexpr quint32 kTextureTilingU = 0x19A7D8F1;
 inline constexpr quint32 kTextureTilingV = 0x4A3D8375;
 inline constexpr quint32 kTextureTiling = 0xB99646E7;
@@ -106,6 +121,9 @@ inline constexpr std::array<quint32, 2> kFlakeAmount = {
 inline constexpr quint32 kColorTexture = 0x85E937A9;
 inline constexpr quint32 kNormalTexture = 0xF9E8078D;
 inline constexpr quint32 kSurfaceTexture = 0x8D9C56EF;
+inline constexpr quint32 kNormalMap00Texture = 0xA0256751;
+inline constexpr quint32 kNormalMap0Texture = 0x8FC670E1;
+inline constexpr quint32 kOrangePeelNormalTexture = 0x8C7FDE22;
 
 inline constexpr std::array<quint32, 4> kDetailNormalTexture = {
     0xEC13FF23, 0x87078E77, 0xB59BE3AB, 0xB61760D8,

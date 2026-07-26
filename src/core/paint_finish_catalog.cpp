@@ -38,6 +38,7 @@ PaintFinishRender renderFromMaterial(const PaintFinishInfo &info, const ModelMat
         ? material.metallic
         : (info.category == PaintFinishCategory::Metal ? kMetalFallbackMetallic : 0.0f);
     render.flakeAmount = material.flakeAmount;
+    render.automotivePaint = material.automotivePaint;
     // Flake (metallic/glitter/candy) paints read as metallic sparkle even without an F0.
     if (info.category == PaintFinishCategory::Solid && material.flakeAmount > 0.0f) {
         render.metallic = std::max(render.metallic, kFlakeBaseMetallic + kFlakeMetallicGain * material.flakeAmount);
@@ -216,7 +217,12 @@ void PaintFinishLibrary::load(const QString &gameFolder) {
     QStringList wanted;
     for (const std::shared_ptr<ModelMaterial> &material : materials) {
         for (const QString &reference :
-             {material->patternTexture, material->detailNormalTexture, material->roughMetalAoTexture}) {
+             {material->patternTexture,
+              material->detailNormalTexture,
+              material->roughMetalAoTexture,
+              material->automotivePaint.normalMap00Texture,
+              material->automotivePaint.normalMap0Texture,
+              material->automotivePaint.orangePeelNormalTexture}) {
             const QString path = swatchPath(reference);
             if (!path.isEmpty()) {
                 wanted.push_back(path);
@@ -242,6 +248,10 @@ void PaintFinishLibrary::load(const QString &gameFolder) {
         render.patternImage = swatchImage(material.patternTexture);
         render.detailNormalImage = swatchImage(material.detailNormalTexture);
         render.roughMetalAoImage = swatchImage(material.roughMetalAoTexture);
+        render.normalMap00Image = swatchImage(material.automotivePaint.normalMap00Texture);
+        render.normalMap0Image = swatchImage(material.automotivePaint.normalMap0Texture);
+        render.orangePeelNormalImage =
+            swatchImage(material.automotivePaint.orangePeelNormalTexture);
         byCode_.insert(info.code, render);
     }
     loaded_ = !byCode_.isEmpty();

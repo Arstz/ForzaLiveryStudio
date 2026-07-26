@@ -40,6 +40,10 @@ void dumpRawMaterial(const QString &path) {
         return;
     }
     std::printf("%s\n", path.toUtf8().constData());
+    std::printf("  resource=%s\n", material->resourcePath.toUtf8().constData());
+    for (const QString &linkedPath : material->linkedPaths) {
+        std::printf("  linked=%s\n", linkedPath.toUtf8().constData());
+    }
     std::printf("  hasBaseColor=%d baseColor=(%.4f, %.4f, %.4f) gloss=%.3f hasMetallic=%d metallic=%.3f flake=%.3f\n",
                 material->hasBaseColor ? 1 : 0, material->baseColor[0], material->baseColor[1],
                 material->baseColor[2], material->gloss, material->hasMetallic ? 1 : 0,

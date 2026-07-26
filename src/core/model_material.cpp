@@ -169,6 +169,10 @@ std::vector<ModelMaterialParameter> readParameters(const BundleBlobRecord &blob)
 void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter &parameter) {
     const bool vectorValue = parameter.type == ModelMaterialParameterType::Vector
         || parameter.type == ModelMaterialParameterType::Color;
+    const bool finiteVector = vectorValue
+        && std::all_of(parameter.vector.cbegin(), parameter.vector.cend(), [](float value) {
+               return std::isfinite(value);
+           });
     if (vectorValue
         && material_hashes::contains(material_hashes::parameter::kBaseColor, parameter.nameHash)) {
         material.hasBaseColor = true;
@@ -195,11 +199,92 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         && material_hashes::contains(material_hashes::parameter::kGloss, parameter.nameHash)) {
         material.gloss = std::clamp(parameter.scalar, 0.0f, 1.0f);
     }
-    // The clearcoat is the visible gloss for automotive paint; its roughness overrides.
     if (parameter.type == ModelMaterialParameterType::Float
         && parameter.nameHash == material_hashes::parameter::kClearcoatRoughness
         && std::isfinite(parameter.scalar)) {
-        material.gloss = std::clamp(1.0f - parameter.scalar, 0.0f, 1.0f);
+        material.automotivePaint.hasClearCoatRoughness = true;
+        material.automotivePaint.clearCoatRoughness = parameter.scalar;
+    }
+    if (finiteVector
+        && parameter.nameHash == material_hashes::parameter::kGlancingFlopColor) {
+        material.automotivePaint.hasGlancingFlopColor = true;
+        material.automotivePaint.glancingFlopColor = parameter.vector;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kGlancingFlopPower
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasGlancingFlopPower = true;
+        material.automotivePaint.glancingFlopPower = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Bool
+        && parameter.nameHash == material_hashes::parameter::kGlancingFlopEnabled) {
+        material.automotivePaint.hasGlancingFlopEnabled = true;
+        material.automotivePaint.glancingFlopEnabled = parameter.boolean;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kGlancingFlopStrength
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasGlancingFlopStrength = true;
+        material.automotivePaint.glancingFlopStrength = parameter.scalar;
+    }
+    if (finiteVector && parameter.nameHash == material_hashes::parameter::kFlakeColor) {
+        material.automotivePaint.hasFlakeColor = true;
+        material.automotivePaint.flakeColor = parameter.vector;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kFlakeCoverage
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasFlakeCoverage = true;
+        material.automotivePaint.flakeCoverage = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kFlakeRoughness
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasFlakeRoughness = true;
+        material.automotivePaint.flakeRoughness = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kGlitterIntensity
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasGlitterIntensity = true;
+        material.automotivePaint.glitterIntensity = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kClearcoatCoverage
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasClearCoatCoverage = true;
+        material.automotivePaint.clearCoatCoverage = parameter.scalar;
+    }
+    if (finiteVector && parameter.nameHash == material_hashes::parameter::kClearcoatTint) {
+        material.automotivePaint.hasClearCoatTint = true;
+        material.automotivePaint.clearCoatTint = parameter.vector;
+    }
+    if (parameter.type == ModelMaterialParameterType::Bool
+        && parameter.nameHash == material_hashes::parameter::kClearcoatOnLivery) {
+        material.automotivePaint.hasClearCoatOnLivery = true;
+        material.automotivePaint.clearCoatOnLivery = parameter.boolean;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kNormalIntensity
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasNormalIntensity = true;
+        material.automotivePaint.normalIntensity = parameter.scalar;
+    }
+    if (finiteVector
+        && parameter.nameHash == material_hashes::parameter::kNormalMap00UvTiling) {
+        material.automotivePaint.hasNormalMap00UvTiling = true;
+        material.automotivePaint.normalMap00UvTiling = parameter.vector;
+    }
+    if (finiteVector
+        && parameter.nameHash == material_hashes::parameter::kNormalMap0UvTiling) {
+        material.automotivePaint.hasNormalMap0UvTiling = true;
+        material.automotivePaint.normalMap0UvTiling = parameter.vector;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kOrangePeelStrength
+        && std::isfinite(parameter.scalar)) {
+        material.automotivePaint.hasOrangePeelStrength = true;
+        material.automotivePaint.orangePeelStrength = parameter.scalar;
     }
     if (parameter.type == ModelMaterialParameterType::Float
         && parameter.nameHash == material_hashes::parameter::kTextureTilingU
@@ -242,6 +327,18 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
     if (parameter.type == ModelMaterialParameterType::Texture2D
         && parameter.nameHash == material_hashes::parameter::kSurfaceTexture) {
         material.roughMetalAoTexture = parameter.texturePath;
+    }
+    if (parameter.type == ModelMaterialParameterType::Texture2D
+        && parameter.nameHash == material_hashes::parameter::kNormalMap00Texture) {
+        material.automotivePaint.normalMap00Texture = parameter.texturePath;
+    }
+    if (parameter.type == ModelMaterialParameterType::Texture2D
+        && parameter.nameHash == material_hashes::parameter::kNormalMap0Texture) {
+        material.automotivePaint.normalMap0Texture = parameter.texturePath;
+    }
+    if (parameter.type == ModelMaterialParameterType::Texture2D
+        && parameter.nameHash == material_hashes::parameter::kOrangePeelNormalTexture) {
+        material.automotivePaint.orangePeelNormalTexture = parameter.texturePath;
     }
 }
 

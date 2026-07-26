@@ -1,5 +1,6 @@
 #pragma once
 
+#include "automotive_paint.h"
 #include "model_bundle.h"
 #include "swatchbin.h"
 
@@ -66,6 +67,7 @@ struct ModelMaterial {
     bool hasMetallic = false;
     float metallic = 0.0f;
     float flakeAmount = 0.0f;
+    AutomotivePaintParameters automotivePaint;
     QString patternTexture;      // BaseColorAlpha colour/pattern swatch
     QString detailNormalTexture; // weave / brushed / flake normal swatch
     QString roughMetalAoTexture; // packed roughness/metal/AO swatch
@@ -74,6 +76,9 @@ struct ModelMaterial {
     std::shared_ptr<const ModelMaterialTexture> normalTexture;
     std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
+    std::shared_ptr<const ModelMaterialTexture> paintNormalMap00Texture;
+    std::shared_ptr<const ModelMaterialTexture> paintNormalMap0Texture;
+    std::shared_ptr<const ModelMaterialTexture> orangePeelNormalTexture;
 };
 
 std::shared_ptr<ModelMaterial> decodeModelMaterial(const BundleBlobRecord &blob);

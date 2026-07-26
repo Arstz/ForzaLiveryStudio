@@ -25,6 +25,7 @@ target_compile_definitions(potrace PRIVATE VERSION="1.16" HAVE_INTTYPES_H=1 HAVE
 set_target_properties(potrace PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
 add_library(fls_core STATIC
+    src/core/automotive_paint.h
     src/core/binary_io.cpp
     src/core/binary_io.h
     src/core/cgroup_codec.cpp
@@ -271,6 +272,23 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(BUILD_TESTING)
+    add_executable(fls_model_material_tests
+        tools/model_material_test.cpp
+    )
+    target_link_libraries(fls_model_material_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME model_material_parameters COMMAND fls_model_material_tests)
+    set(FLS_PAINT_EVIDENCE_DIR
+        "${CMAKE_SOURCE_DIR}/tools/temp/evidence/m5_paint_params/inputs")
+    if(EXISTS "${FLS_PAINT_EVIDENCE_DIR}/normalpaint.materialbin"
+       AND EXISTS "${FLS_PAINT_EVIDENCE_DIR}/twotonepolished.materialbin"
+       AND EXISTS "${FLS_PAINT_EVIDENCE_DIR}/candypaint.materialbin")
+        add_test(NAME model_material_game_evidence
+            COMMAND fls_model_material_tests "${FLS_PAINT_EVIDENCE_DIR}")
+    endif()
+
     add_executable(fls_swatchbin_tests
         tools/swatchbin_test.cpp
     )

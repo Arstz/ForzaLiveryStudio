@@ -1,5 +1,6 @@
 #pragma once
 
+#include "automotive_paint.h"
 #include "swatchbin.h"
 
 #include <QHash>
@@ -41,13 +42,20 @@ struct PaintFinishRender {
     float metallic = 0.0f;
     float flakeAmount = 0.0f;
     std::array<float, 3> materialColor = {0.5f, 0.5f, 0.5f};
+    AutomotivePaintParameters automotivePaint;
     SwatchImage patternImage;      // BaseColorAlpha colour/pattern
     SwatchImage detailNormalImage; // weave / brushed / flake normal
     SwatchImage roughMetalAoImage; // packed roughness/metal/AO
+    SwatchImage normalMap00Image;   // fine automotive paint normal
+    SwatchImage normalMap0Image;    // coarse automotive paint normal
+    SwatchImage orangePeelNormalImage;
 
     bool hasPattern() const { return patternImage.valid(); }
     bool hasDetailNormal() const { return detailNormalImage.valid(); }
     bool hasRoughMetalAo() const { return roughMetalAoImage.valid(); }
+    bool hasNormalMap00() const { return normalMap00Image.valid(); }
+    bool hasNormalMap0() const { return normalMap0Image.valid(); }
+    bool hasOrangePeelNormal() const { return orangePeelNormalImage.valid(); }
 };
 
 // Decodes each painttype .materialbin into render parameters keyed by finish code.
