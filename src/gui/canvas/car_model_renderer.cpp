@@ -1,7 +1,9 @@
 #include "car_model_renderer.h"
 
+#include "color_space.h"
 #include "material_hashes.h"
 #include "model_material.h"
+#include "swatchbin.h"
 
 #include <QDebug>
 #include <QHash>
@@ -43,7 +45,7 @@ void main()
 }
 )";
 
-constexpr char kFragmentShader[] = R"(#version 330 core
+constexpr char kFragmentShaderPreamble[] = R"(#version 330 core
 in vec3 v_normal;
 in vec3 v_world;
 in vec2 v_uv;
@@ -58,6 +60,24 @@ uniform float material_gloss;
 uniform float material_metallic;
 uniform vec3 material_emissive;
 uniform vec3 eye_position;
+uniform int linear_output;
+uniform vec3 primary_light_direction;
+uniform vec3 secondary_light_direction;
+uniform vec2 direct_light_weights;
+uniform vec3 light_chromaticity;
+uniform float direct_diffuse_scale;
+uniform float direct_specular_scale;
+uniform vec3 ambient_color;
+uniform float ambient_scale;
+uniform vec3 environment_low_color;
+uniform vec3 environment_high_color;
+uniform float environment_diffuse_scale;
+uniform float environment_specular_low_scale;
+uniform float environment_specular_high_scale;
+uniform samplerCube diffuse_environment;
+uniform samplerCube specular_environment;
+uniform int has_environment_maps;
+uniform float specular_environment_max_lod;
 uniform int has_livery;
 uniform int use_direct_uv;
 uniform int side_count;
@@ -105,10 +125,21 @@ const vec3 DEBUG_BACK_GLASS_COLOR = vec3(0.5, 1.0, 0.5);
 const vec3 DEBUG_TOP_GLASS_COLOR = vec3(0.5, 0.8, 1.0);
 const vec3 DEBUG_LEFT_GLASS_COLOR = vec3(1.0, 0.9, 0.4);
 const vec3 DEBUG_RIGHT_GLASS_COLOR = vec3(1.0, 0.5, 1.0);
-const vec3 ENVIRONMENT_LOW_COLOR = vec3(0.025, 0.028, 0.035);
-const vec3 ENVIRONMENT_HIGH_COLOR = vec3(0.58, 0.64, 0.72);
-
 const float PI = 3.14159265359;
+
+vec3 srgbToLinear(vec3 color)
+{
+    vec3 low = color / 12.92;
+    vec3 high = pow((color + 0.055) / 1.055, vec3(2.4));
+    return mix(high, low, lessThanEqual(color, vec3(0.04045)));
+}
+
+vec3 linearToSrgb(vec3 color)
+{
+    vec3 low = color * 12.92;
+    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
+}
 
 float distributionGGX(vec3 N, vec3 H, float roughness)
 {
@@ -142,6 +173,63 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0)
 vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
 {
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 evaluateAnalyticEnvironment(vec3 direction)
+{
+    float up = direction.y * 0.5 + 0.5;
+    return mix(environment_low_color, environment_high_color, clamp(up, 0.0, 1.0));
+}
+
+vec3 environmentBrdfApproximation(vec3 F0, float roughness, float NdotV)
+{
+    vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    vec2 scaleBias = vec2(-1.04, 1.04) * a004 + r.zw;
+    return F0 * scaleBias.x + scaleBias.y;
+}
+
+float specularOcclusion(float NdotV, float ao, float roughness)
+{
+    return clamp(pow(NdotV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+}
+
+vec3 evaluateDirectSurface(
+    vec3 n, vec3 v, vec3 l, vec3 albedo, vec3 F0, float roughness, float metallic)
+{
+    float NdotV = max(dot(n, v), 0.0);
+    float NdotL = max(dot(n, l), 0.0);
+    if (NdotL <= 0.0) {
+        return vec3(0.0);
+    }
+    vec3 H = normalize(l + v);
+    float D = distributionGGX(n, H, roughness);
+    float G = geometrySmith(n, v, l, roughness);
+    vec3 F = fresnelSchlick(max(dot(H, v), 0.0), F0);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+    vec3 diffuse = kD * albedo / PI;
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+
+    return (diffuse * direct_diffuse_scale + specular * direct_specular_scale)
+        * light_chromaticity * NdotL;
+}
+
+vec3 evaluateDirectClearCoat(vec3 n, vec3 v, vec3 l, float roughness)
+{
+    float NdotV = max(dot(n, v), 0.0);
+    float NdotL = max(dot(n, l), 0.0);
+    if (NdotL <= 0.0) {
+        return vec3(0.0);
+    }
+    vec3 H = normalize(l + v);
+    float D = distributionGGX(n, H, roughness);
+    float G = geometrySmith(n, v, l, roughness);
+    vec3 F = fresnelSchlick(max(dot(H, v), 0.0), vec3(0.04));
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+
+    return specular * light_chromaticity * direct_specular_scale * NdotL;
 }
 
 vec3 sideColor(int s)
@@ -209,6 +297,10 @@ float finishGlitter(vec3 worldPos, float facing)
     float lit = smoothstep(0.92, 1.0, facing + (rnd2 - 0.5) * 0.05);
     return active * lit;
 }
+
+)";
+
+constexpr char kFragmentShaderMain[] = R"(
 
 void main()
 {
@@ -293,7 +385,7 @@ void main()
             }
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
-                albedo = albedo * (1.0 - paint.a) + paint.rgb;
+                albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
             }
         } else {
         float bestScore = -1.0;
@@ -355,7 +447,7 @@ void main()
         }
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
-            albedo = albedo * (1.0 - paint.a) + paint.rgb;
+            albedo = albedo * (1.0 - paint.a) + srgbToLinear(paint.rgb);
         }
         }
     }
@@ -385,49 +477,66 @@ void main()
     vec3 nativeEmission = has_native_emissive == 1
         ? texture(native_emissive, materialUv).rgb
         : vec3(0.0);
-    vec3 l = normalize(vec3(0.4, 0.8, 0.6));
     vec3 v = viewDir;
     float NdotV = max(dot(n, v), 0.0);
     vec3 F0 = mix(vec3(0.04), albedo, surfaceMetallic);
     float roughness = 1.0 - surfaceGloss;
     roughness = clamp(roughness, 0.04, 1.0);
-    float NdotL = max(dot(n, l), 0.0);
-    vec3 H = normalize(l + v);
-    float D = distributionGGX(n, H, roughness);
-    float G = geometrySmith(n, v, l, roughness);
-    vec3 F = fresnelSchlick(max(dot(H, v), 0.0), F0);
-    vec3 kS = F;
-    vec3 kD = (vec3(1.0) - kS) * (1.0 - surfaceMetallic);
-    vec3 diffuse = kD * albedo / PI;
-    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
-    vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL;
-    vec3 ambient = vec3(0.03) * albedo * surfaceAo;
-    vec3 color = ambient + lo;
+    vec3 primaryLight = normalize(primary_light_direction);
+    vec3 secondaryLight = normalize(secondary_light_direction);
+    vec3 ambient = ambient_color * ambient_scale * albedo * surfaceAo;
+    vec3 color = ambient;
+    color += direct_light_weights.x
+        * evaluateDirectSurface(n, v, primaryLight, albedo, F0, roughness, surfaceMetallic);
+    color += direct_light_weights.y
+        * evaluateDirectSurface(n, v, secondaryLight, albedo, F0, roughness, surfaceMetallic);
     vec3 reflected = reflect(-v, n);
-    float envUp = reflected.y * 0.5 + 0.5;
-    vec3 envColor = mix(ENVIRONMENT_LOW_COLOR, ENVIRONMENT_HIGH_COLOR, clamp(envUp, 0.0, 1.0));
+    vec3 diffuseEnvColor = has_environment_maps == 1
+        ? texture(diffuse_environment, n).rgb
+        : evaluateAnalyticEnvironment(n);
+    vec3 specularEnvColor = has_environment_maps == 1
+        ? textureLod(specular_environment, reflected, roughness * specular_environment_max_lod).rgb
+        : evaluateAnalyticEnvironment(reflected);
     vec3 Fenv = fresnelSchlickRoughness(NdotV, F0, roughness);
-    vec3 envSpecular = envColor * Fenv * mix(0.15, 0.95, surfaceGloss) * surfaceAo;
-    vec3 envDiffuse = albedo * envColor * 0.15 * (1.0 - surfaceMetallic);
+    vec3 envBrdf = environmentBrdfApproximation(F0, roughness, NdotV);
+    vec3 envSpecular = specularEnvColor * envBrdf
+        * mix(environment_specular_low_scale, environment_specular_high_scale, surfaceGloss)
+        * specularOcclusion(NdotV, surfaceAo, roughness);
+    vec3 envDiffuse = albedo * diffuseEnvColor * environment_diffuse_scale
+        * (vec3(1.0) - Fenv) * (1.0 - surfaceMetallic) * surfaceAo;
     color += envDiffuse + envSpecular;
-    float glitter = finishGlitter(v_world, max(dot(n, H), 0.0));
+    float primaryGlitterFacing = direct_light_weights.x > 0.0
+        ? max(dot(n, normalize(primaryLight + v)), 0.0)
+        : 0.0;
+    float secondaryGlitterFacing = direct_light_weights.y > 0.0
+        ? max(dot(n, normalize(secondaryLight + v)), 0.0)
+        : 0.0;
+    float glitter = finishGlitter(v_world, max(primaryGlitterFacing, secondaryGlitterFacing));
     color += vec3(glitter * finish_flake * 1.4) * Fenv;
     if (clear_coat_intensity > 0.01) {
         float ccRoughness = clamp(clear_coat_roughness, 0.04, 1.0);
-        float ccD = distributionGGX(n, H, ccRoughness);
-        float ccG = geometrySmith(n, v, l, ccRoughness);
-        vec3 ccF = fresnelSchlick(max(dot(H, v), 0.0), vec3(0.04));
-        vec3 ccSpecular = (ccD * ccG * ccF) / max(4.0 * NdotV * NdotL, 0.001);
-        color += ccSpecular * vec3(3.0) * NdotL * clear_coat_intensity;
+        color += direct_light_weights.x
+            * evaluateDirectClearCoat(n, v, primaryLight, ccRoughness) * clear_coat_intensity;
+        color += direct_light_weights.y
+            * evaluateDirectClearCoat(n, v, secondaryLight, ccRoughness) * clear_coat_intensity;
         vec3 ccEnvF = fresnelSchlickRoughness(NdotV, vec3(0.04), ccRoughness);
-        color += envColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
+        color += specularEnvColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
         float ccFresnelEdge = pow(1.0 - NdotV, 4.0);
         color += vec3(ccFresnelEdge * 0.06 * clear_coat_intensity);
     }
     color += material_emissive + nativeEmission;
-    out_color = vec4(color, outputAlpha);
+    out_color = vec4(
+        linear_output == 1 ? color : linearToSrgb(max(color, vec3(0.0))),
+        outputAlpha);
 }
 )";
+
+QByteArray fragmentShaderSource() {
+    QByteArray source(kFragmentShaderPreamble);
+    source.append(kFragmentShaderMain);
+
+    return source;
+}
 
 constexpr int kMaskTextureScale = 2;
 
@@ -555,13 +664,6 @@ const QVector3D kTailLampEmissionColor(1.0f, 0.025f, 0.012f);
 const QVector3D kIndicatorEmissionColor(1.0f, 0.30f, 0.025f);
 const QVector3D kHeadLampEmissionColor(1.0f, 0.86f, 0.68f);
 
-float linearToDisplay(float value) {
-    const float linear = std::clamp(value, 0.0f, 1.0f);
-    return linear <= 0.0031308f
-        ? linear * 12.92f
-        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
-}
-
 std::optional<MaterialFallback> exteriorMaterialFallback(const fh6::CarMesh &mesh) {
     const QString resource = materialResourceIdentity(mesh);
     const QString material = resource.isEmpty() ? materialIdentity(mesh) : resource;
@@ -619,8 +721,9 @@ std::optional<MaterialFallback> exteriorMaterialFallback(const fh6::CarMesh &mes
 
 QString CarModelRenderer::shaderSelfTest() {
     QOpenGLShaderProgram program;
+    const QByteArray fragmentShader = fragmentShaderSource();
     if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader)
-        || !program.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader)
+        || !program.addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShader)
         || !program.link()) {
         return program.log();
     }
@@ -638,8 +741,9 @@ void CarModelRenderer::initialize() {
     if (initialized_) {
         return;
     }
+    const QByteArray fragmentShader = fragmentShaderSource();
     if (!program_.addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader)
-        || !program_.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader)
+        || !program_.addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShader)
         || !program_.link()) {
         qWarning().noquote() << "CarModelRenderer shader failed to build:" << program_.log();
         return;
@@ -667,6 +771,24 @@ void CarModelRenderer::initialize() {
     metallicLocation_ = program_.uniformLocation("material_metallic");
     emissiveLocation_ = program_.uniformLocation("material_emissive");
     eyePositionLocation_ = program_.uniformLocation("eye_position");
+    linearOutputLocation_ = program_.uniformLocation("linear_output");
+    primaryLightDirectionLocation_ = program_.uniformLocation("primary_light_direction");
+    secondaryLightDirectionLocation_ = program_.uniformLocation("secondary_light_direction");
+    directLightWeightsLocation_ = program_.uniformLocation("direct_light_weights");
+    lightChromaticityLocation_ = program_.uniformLocation("light_chromaticity");
+    directDiffuseScaleLocation_ = program_.uniformLocation("direct_diffuse_scale");
+    directSpecularScaleLocation_ = program_.uniformLocation("direct_specular_scale");
+    ambientColorLocation_ = program_.uniformLocation("ambient_color");
+    ambientScaleLocation_ = program_.uniformLocation("ambient_scale");
+    environmentLowColorLocation_ = program_.uniformLocation("environment_low_color");
+    environmentHighColorLocation_ = program_.uniformLocation("environment_high_color");
+    environmentDiffuseScaleLocation_ = program_.uniformLocation("environment_diffuse_scale");
+    environmentSpecularLowScaleLocation_ = program_.uniformLocation("environment_specular_low_scale");
+    environmentSpecularHighScaleLocation_ = program_.uniformLocation("environment_specular_high_scale");
+    diffuseEnvironmentLocation_ = program_.uniformLocation("diffuse_environment");
+    specularEnvironmentLocation_ = program_.uniformLocation("specular_environment");
+    hasEnvironmentMapsLocation_ = program_.uniformLocation("has_environment_maps");
+    specularEnvironmentMaxLodLocation_ = program_.uniformLocation("specular_environment_max_lod");
     nativeDiffuseLocation_ = program_.uniformLocation("native_diffuse");
     nativeAlphaLocation_ = program_.uniformLocation("native_alpha");
     nativeNormalLocation_ = program_.uniformLocation("native_normal");
@@ -707,6 +829,7 @@ void CarModelRenderer::release() {
     }
     clearPaintFinishTextures();
     clearLivery();
+    clearEnvironmentMaps();
     program_.removeAllShaders();
     initialized_ = false;
     mvpLocation_ = -1;
@@ -732,6 +855,24 @@ void CarModelRenderer::release() {
     metallicLocation_ = -1;
     emissiveLocation_ = -1;
     eyePositionLocation_ = -1;
+    linearOutputLocation_ = -1;
+    primaryLightDirectionLocation_ = -1;
+    secondaryLightDirectionLocation_ = -1;
+    directLightWeightsLocation_ = -1;
+    lightChromaticityLocation_ = -1;
+    directDiffuseScaleLocation_ = -1;
+    directSpecularScaleLocation_ = -1;
+    ambientColorLocation_ = -1;
+    ambientScaleLocation_ = -1;
+    environmentLowColorLocation_ = -1;
+    environmentHighColorLocation_ = -1;
+    environmentDiffuseScaleLocation_ = -1;
+    environmentSpecularLowScaleLocation_ = -1;
+    environmentSpecularHighScaleLocation_ = -1;
+    diffuseEnvironmentLocation_ = -1;
+    specularEnvironmentLocation_ = -1;
+    hasEnvironmentMapsLocation_ = -1;
+    specularEnvironmentMaxLodLocation_ = -1;
     nativeDiffuseLocation_ = -1;
     nativeAlphaLocation_ = -1;
     nativeNormalLocation_ = -1;
@@ -785,6 +926,122 @@ void CarModelRenderer::clearLivery() {
     defaultSidePaintRegion_.clear();
     sidePaintRegion_.clear();
     sideFacing_.clear();
+}
+
+void CarModelRenderer::clearEnvironmentMaps() {
+    QOpenGLContext *context = QOpenGLContext::currentContext();
+    if (context != nullptr) {
+        const GLuint textures[] = {diffuseEnvironmentTexture_, specularEnvironmentTexture_};
+        context->functions()->glDeleteTextures(2, textures);
+    }
+    diffuseEnvironmentTexture_ = 0;
+    specularEnvironmentTexture_ = 0;
+    specularEnvironmentMaxLod_ = 0.0f;
+}
+
+bool CarModelRenderer::setEnvironmentMaps(
+    const fh6::SwatchTexture &diffuseCubemap,
+    const fh6::SwatchTexture &specularCubemap,
+    QString *error) {
+    const auto fail = [error](const QString &message) {
+        if (error != nullptr) {
+            *error = message;
+        }
+        return false;
+    };
+    QOpenGLContext *context = QOpenGLContext::currentContext();
+    if (!initialized_ || context == nullptr) {
+        return fail(QStringLiteral("environment upload requires an initialized current GL context"));
+    }
+    if (diffuseCubemap.platform != 0 || diffuseCubemap.sliceCount != 6
+        || diffuseCubemap.mipCount != 1
+        || specularCubemap.platform != 0 || specularCubemap.sliceCount != 6
+        || specularCubemap.mipCount < 1) {
+        return fail(QStringLiteral("environment cubemap topology is unsupported"));
+    }
+    if (!context->hasExtension(QByteArrayLiteral("GL_ARB_texture_compression_bptc"))) {
+        return fail(QStringLiteral("GL_ARB_texture_compression_bptc is unavailable"));
+    }
+
+    for (const fh6::SwatchTextureSlice &slice : diffuseCubemap.slices) {
+        if (slice.encoding != fh6::SwatchEncoding::R16G16B16A16Float) {
+            return fail(QStringLiteral("diffuse environment is not RGBA16F"));
+        }
+    }
+    for (const fh6::SwatchTextureSlice &slice : specularCubemap.slices) {
+        if (slice.encoding != fh6::SwatchEncoding::UnsignedBc6H) {
+            return fail(QStringLiteral("specular environment is not unsigned BC6H"));
+        }
+    }
+
+    QOpenGLFunctions *functions = context->functions();
+    GLint previousActiveTexture = GL_TEXTURE0;
+    GLint previousCubeTexture = 0;
+    GLint previousUnpackAlignment = 4;
+    functions->glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &previousCubeTexture);
+    functions->glGetIntegerv(GL_UNPACK_ALIGNMENT, &previousUnpackAlignment);
+    functions->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    while (functions->glGetError() != GL_NO_ERROR) {
+    }
+
+    GLuint uploaded[2] = {0, 0};
+    functions->glGenTextures(2, uploaded);
+    const auto configure = [functions](GLuint texture, int maxLevel) {
+        functions->glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
+                                  maxLevel > 0 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_BASE_LEVEL, 0);
+        functions->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, maxLevel);
+    };
+
+    configure(uploaded[0], 0);
+    for (int face = 0; face < 6; ++face) {
+        const QByteArray data = diffuseCubemap.mipBytes(face, 0);
+        functions->glTexImage2D(
+            GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA16F,
+            diffuseCubemap.width, diffuseCubemap.height, 0,
+            GL_RGBA, GL_HALF_FLOAT, data.constData());
+    }
+
+    configure(uploaded[1], specularCubemap.mipCount - 1);
+    for (int face = 0; face < 6; ++face) {
+        int width = specularCubemap.width;
+        int height = specularCubemap.height;
+        for (int mip = 0; mip < specularCubemap.mipCount; ++mip) {
+            const QByteArray data = specularCubemap.mipBytes(face, mip);
+            functions->glCompressedTexImage2D(
+                GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, mip,
+                GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT,
+                width, height, 0, data.size(), data.constData());
+            width = std::max(1, width / 2);
+            height = std::max(1, height / 2);
+        }
+    }
+
+    const GLenum uploadError = functions->glGetError();
+    functions->glBindTexture(GL_TEXTURE_CUBE_MAP, static_cast<GLuint>(previousCubeTexture));
+    functions->glPixelStorei(GL_UNPACK_ALIGNMENT, previousUnpackAlignment);
+    functions->glActiveTexture(static_cast<GLenum>(previousActiveTexture));
+    if (uploadError != GL_NO_ERROR) {
+        functions->glDeleteTextures(2, uploaded);
+        return fail(QStringLiteral("OpenGL rejected environment upload (0x%1)")
+                        .arg(uploadError, 0, 16));
+    }
+
+    clearEnvironmentMaps();
+    diffuseEnvironmentTexture_ = uploaded[0];
+    specularEnvironmentTexture_ = uploaded[1];
+    specularEnvironmentMaxLod_ = static_cast<float>(specularCubemap.mipCount - 1);
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
 }
 
 namespace {
@@ -1597,7 +1854,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         if (!mesh.material) {
             continue;
         }
-        requireTexture(mesh.material->diffuseTexture, false);
+        requireTexture(mesh.material->diffuseTexture, true);
         requireTexture(mesh.material->alphaTexture, false);
         requireTexture(mesh.material->normalTexture, false);
         requireTexture(mesh.material->surfaceTexture, false);
@@ -1777,9 +2034,9 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         if (mesh.material) {
             buffers->hasMaterialColor = mesh.material->hasBaseColor;
             buffers->materialColor = QVector3D(
-                linearToDisplay(mesh.material->baseColor[0]),
-                linearToDisplay(mesh.material->baseColor[1]),
-                linearToDisplay(mesh.material->baseColor[2]));
+                mesh.material->baseColor[0],
+                mesh.material->baseColor[1],
+                mesh.material->baseColor[2]);
             buffers->emissiveColor = QVector3D(
                 mesh.material->emissiveColor[0], mesh.material->emissiveColor[1], mesh.material->emissiveColor[2]);
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
@@ -1789,7 +2046,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             }
             buffers->alpha = mesh.material->opacity;
             if (materialUv != nullptr) {
-                buffers->diffuseTexture = uploadTexture(mesh.material->diffuseTexture, false);
+                buffers->diffuseTexture = uploadTexture(mesh.material->diffuseTexture, true);
                 buffers->alphaTexture = uploadTexture(mesh.material->alphaTexture, false);
                 buffers->normalTexture = uploadTexture(mesh.material->normalTexture, false);
                 buffers->surfaceTexture = uploadTexture(mesh.material->surfaceTexture, false);
@@ -2055,7 +2312,7 @@ void applyPaintFinish(const fh6::LiveryPaintMaterial &paint, const fh6::PaintFin
 
 } // namespace
 
-GLuint CarModelRenderer::uploadSwatchTexture(const fh6::SwatchImage &image) {
+GLuint CarModelRenderer::uploadSwatchTexture(const fh6::SwatchImage &image, bool srgb) {
     if (!image.valid()) {
         return 0;
     }
@@ -2067,8 +2324,9 @@ GLuint CarModelRenderer::uploadSwatchTexture(const fh6::SwatchImage &image) {
     GLuint texture = 0;
     functions->glGenTextures(1, &texture);
     functions->glBindTexture(GL_TEXTURE_2D, texture);
-    functions->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0, GL_RGBA,
-                            GL_UNSIGNED_BYTE, image.rgba.data());
+    functions->glTexImage2D(
+        GL_TEXTURE_2D, 0, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
+        image.width, image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image.rgba.data());
     functions->glGenerateMipmap(GL_TEXTURE_2D);
     functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
@@ -2086,9 +2344,9 @@ const CarModelRenderer::FinishTextureEntry *CarModelRenderer::ensurePaintFinishT
         return &existing.value();
     }
     FinishTextureEntry entry;
-    entry.pattern = uploadSwatchTexture(render.patternImage);
-    entry.normal = uploadSwatchTexture(render.detailNormalImage);
-    entry.surface = uploadSwatchTexture(render.roughMetalAoImage);
+    entry.pattern = uploadSwatchTexture(render.patternImage, true);
+    entry.normal = uploadSwatchTexture(render.detailNormalImage, false);
+    entry.surface = uploadSwatchTexture(render.roughMetalAoImage, false);
 
     return &*finishTextureCache_.insert(code, entry);
 }
@@ -2121,7 +2379,10 @@ void CarModelRenderer::render(
     const QColor &basePaint,
     const fh6::LiveryPaintState *paintState,
     const fh6::ManufacturerColorPalette *manufacturerColors,
-    const fh6::PaintFinishLibrary *paintFinishes) {
+    const fh6::PaintFinishLibrary *paintFinishes,
+    const GarageRenderSettings::Lighting &lighting,
+    const GarageRenderSettings::Environment &environment,
+    bool linearOutput) {
     if (!initialized_ || meshes_.empty()) {
         return;
     }
@@ -2145,10 +2406,35 @@ void CarModelRenderer::render(
     }
 
     program_.bind();
-    const QVector3D fallbackColor(
+    program_.setUniformValue(linearOutputLocation_, linearOutput ? 1 : 0);
+    program_.setUniformValue(primaryLightDirectionLocation_, lighting.primaryRendererDirection());
+    program_.setUniformValue(secondaryLightDirectionLocation_, lighting.secondaryRendererDirection());
+    program_.setUniformValue(directLightWeightsLocation_, lighting.directLightWeights());
+    program_.setUniformValue(lightChromaticityLocation_, lighting.normalizedChromaticity());
+    program_.setUniformValue(directDiffuseScaleLocation_, lighting.directDiffuseScale);
+    program_.setUniformValue(directSpecularScaleLocation_, lighting.directSpecularScale);
+    program_.setUniformValue(ambientColorLocation_, lighting.ambientColor);
+    program_.setUniformValue(ambientScaleLocation_, lighting.ambientScale);
+    program_.setUniformValue(environmentLowColorLocation_, environment.lowColor);
+    program_.setUniformValue(environmentHighColorLocation_, environment.highColor);
+    program_.setUniformValue(environmentDiffuseScaleLocation_, environment.diffuseScale);
+    program_.setUniformValue(environmentSpecularLowScaleLocation_, environment.specularLowScale);
+    program_.setUniformValue(environmentSpecularHighScaleLocation_, environment.specularHighScale);
+    const bool hasEnvironmentMaps = diffuseEnvironmentTexture_ != 0
+        && specularEnvironmentTexture_ != 0;
+    functions->glActiveTexture(GL_TEXTURE10);
+    functions->glBindTexture(GL_TEXTURE_CUBE_MAP, diffuseEnvironmentTexture_);
+    program_.setUniformValue(diffuseEnvironmentLocation_, 10);
+    functions->glActiveTexture(GL_TEXTURE11);
+    functions->glBindTexture(GL_TEXTURE_CUBE_MAP, specularEnvironmentTexture_);
+    program_.setUniformValue(specularEnvironmentLocation_, 11);
+    program_.setUniformValue(hasEnvironmentMapsLocation_, hasEnvironmentMaps ? 1 : 0);
+    program_.setUniformValue(specularEnvironmentMaxLodLocation_, specularEnvironmentMaxLod_);
+    functions->glActiveTexture(GL_TEXTURE0);
+    const QVector3D fallbackColor = srgbToLinear(QVector3D(
         static_cast<float>(basePaint.redF()),
         static_cast<float>(basePaint.greenF()),
-        static_cast<float>(basePaint.blueF()));
+        static_cast<float>(basePaint.blueF())));
 
     bool eyeValid = false;
     const QVector3D eye = view.inverted(&eyeValid).map(QVector3D(0.0f, 0.0f, 0.0f));
@@ -2208,9 +2494,10 @@ void CarModelRenderer::render(
             liveryCustomPainted = true;
             const quint32 key = (quint32(paint->primary.bgra[0]) << 16)
                 | (quint32(paint->primary.bgra[1]) << 8) | quint32(paint->primary.bgra[2]);
-            const QVector3D color(paint->primary.bgra[2] / 255.0f,
-                                  paint->primary.bgra[1] / 255.0f,
-                                  paint->primary.bgra[0] / 255.0f);
+            const QVector3D color = srgbToLinear(QVector3D(
+                paint->primary.bgra[2] / 255.0f,
+                paint->primary.bgra[1] / 255.0f,
+                paint->primary.bgra[0] / 255.0f));
             const int weight = std::max(1, m.indexCount);
             paintedPanels.push_back({m.center, color, static_cast<float>(weight)});
             primaryCounts[key] += weight;
@@ -2257,13 +2544,13 @@ void CarModelRenderer::render(
             ? paintFinishes->find(static_cast<int>(paint->finish))
             : nullptr;
         const auto decodedColor = [](const fh6::LiveryPaintColor &color) {
-            return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
+            return srgbToLinear(QVector3D(
+                color.bgra[2] / 255.0f,
+                color.bgra[1] / 255.0f,
+                color.bgra[0] / 255.0f));
         };
         const auto decodedManufacturerColor = [](const std::array<float, 3> &color) {
-            return QVector3D(
-                linearToDisplay(color[0]),
-                linearToDisplay(color[1]),
-                linearToDisplay(color[2]));
+            return QVector3D(color[0], color[1], color[2]);
         };
         if (manufacturerColor != nullptr) {
             primary = decodedManufacturerColor(manufacturerColor->primary);
@@ -2408,6 +2695,10 @@ void CarModelRenderer::render(
     for (int unit = 2; unit <= 6; ++unit) {
         functions->glActiveTexture(GL_TEXTURE0 + unit);
         functions->glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    for (int unit = 10; unit <= 11; ++unit) {
+        functions->glActiveTexture(GL_TEXTURE0 + unit);
+        functions->glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
     }
     functions->glActiveTexture(GL_TEXTURE0);
     program_.release();

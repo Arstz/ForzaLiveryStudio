@@ -2,6 +2,7 @@
 #include "theme_manager.h"
 #include "image_io.h"
 #include "car_model_renderer.h"
+#include "car_preview_widget.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -76,7 +77,10 @@ int main(int argc, char *argv[]) {
         QOpenGLContext context;
         QString result = QStringLiteral("no GL context");
         if (context.create() && context.makeCurrent(&surface)) {
-            const QString log = gui::CarModelRenderer::shaderSelfTest();
+            QString log = gui::CarModelRenderer::shaderSelfTest();
+            if (log.isEmpty()) {
+                log = gui::CarPreviewWidget::postProcessShaderSelfTest();
+            }
             result = log.isEmpty() ? QStringLiteral("SHADER OK") : QStringLiteral("SHADER FAIL\n") + log;
         }
         QFile out(QStringLiteral("shader_selftest.txt"));

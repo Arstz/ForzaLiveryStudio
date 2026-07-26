@@ -2,6 +2,8 @@
 
 #include "car_model_renderer.h"
 #include "core_types.h"
+#include "garage_render_settings.h"
+#include "garage_environment.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "native_shape_renderer.h"
@@ -39,6 +41,7 @@ public:
     bool hasModel() const;
     void clearModel();
     QImage renderThumbnail(const QSize &size);
+    static QString postProcessShaderSelfTest();
 
     QImage unwrapOverlay(int liverySectionSlot = -1) const;
 
@@ -77,15 +80,36 @@ private:
     QMatrix4x4 cameraProjection() const;
     QSize liveryTextureSize() const;
     QTransform liveryWorldToScreen(const QSize &textureSize) const;
+    QSize physicalFramebufferSize() const;
     void fitCameraToModel();
+    void resetComparisonCamera();
+    void setLightDirectionCandidate(LightDirectionCandidate candidate);
+    void setGameEnvironmentEnabled(bool enabled);
+    void updateReferenceNote();
+    void logGlCapabilities() const;
+    void initializePostProcessing();
+    void releasePostProcessing();
+    void releaseHdrFramebuffers();
+    bool ensureHdrFramebuffers(const QSize &size);
+    void clearRenderTarget(bool linearColor) const;
+    void renderCar(GLuint liveryTexture, bool linearOutput);
+    bool renderCarHdr(GLuint liveryTexture, const QSize &size);
     void invalidateCachedLivery();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
     CarModelRenderer carRenderer_;
+    GarageRenderSettings renderSettings_;
+    QOpenGLShaderProgram postProcessProgram_;
+    QOpenGLVertexArrayObject postProcessVao_;
+    QSize hdrFramebufferSize_;
     fh6::PaintFinishLibrary paintFinishes_;
+    fh6::GarageEnvironmentResources environmentResources_;
     QString gameFolder_;
     quint64 paintFinishLoadGeneration_ = 0;
+    bool environmentUploadPending_ = false;
+    bool gameEnvironmentEnabled_ = true;
+    QString environmentSourceLabel_ = QStringLiteral("Analytic env");
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;
@@ -108,18 +132,28 @@ private:
     QSet<QString> dirtySectionIds_;
     QHash<QString, CachedProjectedLiverySection> projectedSectionCache_;
     GLuint liveryTexture_ = 0;
+    GLuint hdrSceneFramebuffer_ = 0;
+    GLuint hdrSceneColor_ = 0;
+    GLuint hdrSceneDepth_ = 0;
+    GLuint hdrResolveFramebuffer_ = 0;
+    GLuint hdrResolveTexture_ = 0;
     int liveryTextureScale_ = 4;
+    int hdrSampleCount_ = 0;
+    int postSceneTextureLocation_ = -1;
+    int postExposureLocation_ = -1;
+    int postFilmicWhiteLocation_ = -1;
 
     QColor basePaint_ = QColor(180, 182, 190);
     bool transparentBackground_ = false;
+    bool postProcessInitialized_ = false;
 
     QLabel *referenceNote_ = nullptr;
 
     QVector3D target_;
     float modelRadius_ = 1.0f;
-    float yaw_ = 0.6f;
-    float pitch_ = 0.3f;
-    float distance_ = 4.0f;
+    float yaw_;
+    float pitch_;
+    float distance_;
     QPoint lastMousePos_;
 };
 

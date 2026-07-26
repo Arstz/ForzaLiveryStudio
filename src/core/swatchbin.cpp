@@ -36,18 +36,44 @@ struct TextureSurface {
     QByteArray pixels;
 };
 
-enum class Encoding : int {
-    Bc1 = 0, Bc2 = 1, Bc3 = 2, UnsignedBc4 = 3, SignedBc4 = 4,
-    UnsignedBc5 = 5, SignedBc5 = 6, UnsignedBc6H = 7, SignedBc6H = 8,
-    Bc7 = 9, R32G32B32A32Float = 10, R16G16B16A16 = 11, R16G16B16A16Float = 12,
-    R8G8B8A8 = 13, B5G6R5 = 14, B5G5R5A1 = 15, Dct = 16, IntegerDct = 17,
-    Procedural = 18, R8 = 19, A8 = 20, R8G8 = 21, Bc7HighQuality = 22,
-};
+using Encoding = SwatchEncoding;
 
 void setError(QString *error, const QString &message) {
     if (error != nullptr) {
         *error = message;
     }
+}
+
+bool rangeWithin(qint64 offset, qint64 length, qint64 totalLength) {
+    return offset >= 0 && length >= 0 && offset <= totalLength && length <= totalLength - offset;
+}
+
+float halfToFloat(quint16 half) {
+    const quint32 sign = static_cast<quint32>(half & 0x8000u) << 16;
+    quint32 exponent = (half >> 10) & 0x1Fu;
+    quint32 mantissa = half & 0x03FFu;
+    quint32 bits = 0;
+    if (exponent == 0) {
+        if (mantissa == 0) {
+            bits = sign;
+        } else {
+            exponent = 127 - 15 + 1;
+            while ((mantissa & 0x0400u) == 0) {
+                mantissa <<= 1;
+                --exponent;
+            }
+            mantissa &= 0x03FFu;
+            bits = sign | (exponent << 23) | (mantissa << 13);
+        }
+    } else if (exponent == 0x1Fu) {
+        bits = sign | 0x7F800000u | (mantissa << 13);
+    } else {
+        bits = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13);
+    }
+
+    float result = 0.0f;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
 }
 
 // Decodes one BC4 (single-channel) 8-byte block into a 4x4 tile of bytes.
@@ -519,7 +545,7 @@ SwatchImage decodeBc7Surface(const QByteArray &, int, int, QString *error) {
 }
 #endif
 
-std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error) {
+std::optional<SwatchTexture> parseTextureContainer(const QByteArray &bytes, QString *error) {
     if (bytes.size() < 8 || readLeU32(bytes, 0) != kBundleMagic) {
         setError(error, QStringLiteral("not a Grub bundle (bad magic)"));
         return std::nullopt;
@@ -531,20 +557,31 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
     int pos = 6;
     quint32 blobCount = 0;
     if (verMajor > 1 || (verMajor == 1 && verMinor >= 1)) {
+        if (bytes.size() < 20) {
+            setError(error, QStringLiteral("swatchbin bundle header truncated"));
+            return std::nullopt;
+        }
         pos += 2 + 4 + 4; // int16 padding, u32 headerSize, u32 totalSize
         blobCount = readLeU32(bytes, pos);
         pos += 4;
     } else {
+        if (bytes.size() < 16) {
+            setError(error, QStringLiteral("swatchbin bundle header truncated"));
+            return std::nullopt;
+        }
         blobCount = readLeU16(bytes, pos);
         pos += 2 + 8;
     }
 
     const int blobHeadersStart = pos;
     for (quint32 i = 0; i < blobCount; ++i) {
-        const int header = blobHeadersStart + static_cast<int>(i) * kBlobInfoSize;
-        if (header + kBlobInfoSize > bytes.size()) {
-            break;
+        const qint64 header64 = static_cast<qint64>(blobHeadersStart)
+            + static_cast<qint64>(i) * kBlobInfoSize;
+        if (!rangeWithin(header64, kBlobInfoSize, bytes.size())) {
+            setError(error, QStringLiteral("swatchbin blob table truncated"));
+            return std::nullopt;
         }
+        const int header = static_cast<int>(header64);
         if (readLeU32(bytes, header) != kTagTXCB) {
             continue;
         }
@@ -558,60 +595,201 @@ std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QStrin
 
         int txchData = -1;
         for (quint32 m = 0; m < metadataCount; ++m) {
-            const int recordBase = static_cast<int>(metadataOffset) + static_cast<int>(m) * kMetadataInfoSize;
-            if (recordBase + kMetadataInfoSize > bytes.size()) {
-                break;
+            const qint64 recordBase64 = static_cast<qint64>(metadataOffset)
+                + static_cast<qint64>(m) * kMetadataInfoSize;
+            if (!rangeWithin(recordBase64, kMetadataInfoSize, bytes.size())) {
+                setError(error, QStringLiteral("swatchbin metadata table truncated"));
+                return std::nullopt;
             }
+            const int recordBase = static_cast<int>(recordBase64);
             if (readLeU32(bytes, recordBase) == kTagTXCH) {
-                txchData = recordBase + readLeU16(bytes, recordBase + 6);
+                const qint64 txchData64 = recordBase64 + readLeU16(bytes, recordBase + 6);
+                if (!rangeWithin(txchData64, 0x40, bytes.size())) {
+                    setError(error, QStringLiteral("swatchbin TXCH header truncated"));
+                    return std::nullopt;
+                }
+                txchData = static_cast<int>(txchData64);
                 break;
             }
         }
-        if (txchData < 0 || txchData + 64 > bytes.size()) {
+        if (txchData < 0) {
             setError(error, QStringLiteral("swatchbin missing TXCH header"));
             return std::nullopt;
         }
 
         const int width = static_cast<int>(readLeU32(bytes, txchData + 0x18));
         const int height = static_cast<int>(readLeU32(bytes, txchData + 0x1C));
+        const int arraySize = static_cast<int>(readLeU32(bytes, txchData + 0x20));
         const quint16 packed = readLeU16(bytes, txchData + 0x24);
         const int platform = packed >> 14;
+        const int sliceCount = packed & 0x3FFF;
+        const int mipCount = static_cast<quint8>(bytes[txchData + 0x26]);
+        const quint8 textureType = static_cast<quint8>(bytes[txchData + 0x27]);
         const qint32 transcoding = static_cast<qint32>(readLeU32(bytes, txchData + 0x28));
         const quint32 slicesOffset = readLeU32(bytes, txchData + 0x38);
 
-        if (platform != 0) {
-            setError(error, QStringLiteral("swatchbin is Xbox/Durango format (tiled); not supported"));
-            return std::nullopt;
-        }
-        if (width <= 0 || height <= 0 || slicesOffset == 0) {
+        if (width <= 0 || height <= 0 || arraySize <= 0 || sliceCount <= 0
+            || mipCount <= 0 || slicesOffset == 0) {
             setError(error, QStringLiteral("swatchbin has no decodable slice"));
             return std::nullopt;
         }
 
-        const int sliceEnc = static_cast<int>(readLeU32(bytes, txchData + static_cast<int>(slicesOffset)));
-        int formatEncoded = sliceEnc;
-        if (transcoding > 1) {
-            formatEncoded = transcoding - 2;
-        }
-
-        if (static_cast<int>(dataOffset) < 0 || static_cast<qint64>(dataOffset) + sizeToRead > bytes.size()) {
+        if (!rangeWithin(dataOffset, sizeToRead, bytes.size())) {
             setError(error, QStringLiteral("swatchbin pixel data out of range"));
             return std::nullopt;
         }
 
-        TextureSurface surface;
-        surface.width = width;
-        surface.height = height;
-        surface.formatEncoded = formatEncoded;
-        surface.pixels = bytes.mid(static_cast<int>(dataOffset), static_cast<int>(sizeToRead));
-        return surface;
+        SwatchTexture texture;
+        texture.width = width;
+        texture.height = height;
+        texture.arraySize = arraySize;
+        texture.platform = platform;
+        texture.sliceCount = sliceCount;
+        texture.mipCount = mipCount;
+        texture.textureType = textureType;
+        texture.transcoding = transcoding;
+        texture.sliceTableOffset = slicesOffset;
+        texture.payload = bytes.mid(static_cast<qsizetype>(dataOffset),
+                                    static_cast<qsizetype>(sizeToRead));
+        texture.slices.reserve(static_cast<size_t>(sliceCount));
+
+        const qint64 sliceTable = static_cast<qint64>(txchData) + slicesOffset;
+        if (!rangeWithin(sliceTable, static_cast<qint64>(sliceCount) * 12, bytes.size())) {
+            setError(error, QStringLiteral("swatchbin slice table truncated"));
+            return std::nullopt;
+        }
+        for (int sliceIndex = 0; sliceIndex < sliceCount; ++sliceIndex) {
+            const int sliceRecord = static_cast<int>(sliceTable + static_cast<qint64>(sliceIndex) * 12);
+            const quint32 rawEncoding = readLeU32(bytes, sliceRecord);
+            const quint32 descriptorOffset = readLeU32(bytes, sliceRecord + 4);
+
+            SwatchTextureSlice slice;
+            slice.encodedFormat = transcoding > 1
+                ? static_cast<quint32>(transcoding - 2)
+                : rawEncoding;
+            slice.encoding = static_cast<SwatchEncoding>(slice.encodedFormat);
+            slice.descriptorOffset = descriptorOffset;
+            slice.nextSliceOffset = readLeU32(bytes, sliceRecord + 8);
+            slice.mipLevels.reserve(static_cast<size_t>(mipCount));
+
+            const qint64 descriptorTable = static_cast<qint64>(txchData) + descriptorOffset;
+            if (descriptorOffset == 0
+                || !rangeWithin(descriptorTable, static_cast<qint64>(mipCount) * 12, bytes.size())) {
+                setError(error, QStringLiteral("swatchbin mip table truncated"));
+                return std::nullopt;
+            }
+            for (int mipIndex = 0; mipIndex < mipCount; ++mipIndex) {
+                const int descriptor = static_cast<int>(
+                    descriptorTable + static_cast<qint64>(mipIndex) * 12);
+                SwatchMipPayload mip;
+                mip.byteLength = readLeU32(bytes, descriptor);
+                mip.byteOffset = readLeU32(bytes, descriptor + 4);
+                mip.nextDescriptorOffset = readLeU32(bytes, descriptor + 8);
+                if (!rangeWithin(mip.byteOffset, mip.byteLength, texture.payload.size())) {
+                    setError(error, QStringLiteral("swatchbin mip payload out of range"));
+                    return std::nullopt;
+                }
+                slice.mipLevels.push_back(mip);
+            }
+            texture.slices.push_back(std::move(slice));
+        }
+
+        return texture;
     }
 
     setError(error, QStringLiteral("no TXCB texture blob found in swatchbin"));
     return std::nullopt;
 }
 
+std::optional<TextureSurface> readTextureSurface(const QByteArray &bytes, QString *error) {
+    const auto texture = parseTextureContainer(bytes, error);
+    if (!texture) {
+        return std::nullopt;
+    }
+    if (texture->platform != 0) {
+        setError(error, QStringLiteral("swatchbin is Xbox/Durango format (tiled); not supported"));
+        return std::nullopt;
+    }
+
+    TextureSurface surface;
+    surface.width = texture->width;
+    surface.height = texture->height;
+    surface.formatEncoded = static_cast<int>(texture->slices.front().encodedFormat);
+    surface.pixels = texture->mipBytes(0, 0);
+    return surface;
+}
+
 } // namespace
+
+QByteArray SwatchTexture::mipBytes(int sliceIndex, int mipIndex) const {
+    if (sliceIndex < 0 || sliceIndex >= static_cast<int>(slices.size())) {
+        return {};
+    }
+    const SwatchTextureSlice &slice = slices[static_cast<size_t>(sliceIndex)];
+    if (mipIndex < 0 || mipIndex >= static_cast<int>(slice.mipLevels.size())) {
+        return {};
+    }
+    const SwatchMipPayload &mip = slice.mipLevels[static_cast<size_t>(mipIndex)];
+    return payload.mid(static_cast<qsizetype>(mip.byteOffset),
+                       static_cast<qsizetype>(mip.byteLength));
+}
+
+std::optional<SwatchTexture> parseSwatchTexture(const QByteArray &bytes, QString *error) {
+    return parseTextureContainer(bytes, error);
+}
+
+SwatchHdrImage decodeSwatchHdrImage(
+    const SwatchTexture &texture, int sliceIndex, int mipIndex, QString *error) {
+    if (texture.platform != 0) {
+        setError(error, QStringLiteral("swatchbin HDR image is tiled for a non-PC platform"));
+        return {};
+    }
+    if (sliceIndex < 0 || sliceIndex >= static_cast<int>(texture.slices.size())) {
+        setError(error, QStringLiteral("swatchbin HDR slice index out of range"));
+        return {};
+    }
+    const SwatchTextureSlice &slice = texture.slices[static_cast<size_t>(sliceIndex)];
+    if (mipIndex < 0 || mipIndex >= static_cast<int>(slice.mipLevels.size())) {
+        setError(error, QStringLiteral("swatchbin HDR mip index out of range"));
+        return {};
+    }
+    if (slice.encoding != SwatchEncoding::R16G16B16A16Float) {
+        setError(error, QStringLiteral("swatchbin encoding %1 is not CPU-decodable RGBA16F")
+                            .arg(slice.encodedFormat));
+        return {};
+    }
+
+    int mipWidth = texture.width;
+    int mipHeight = texture.height;
+    for (int level = 0; level < mipIndex; ++level) {
+        mipWidth = (std::max)(1, mipWidth / 2);
+        mipHeight = (std::max)(1, mipHeight / 2);
+    }
+    const qint64 expectedBytes = static_cast<qint64>(mipWidth) * mipHeight * 8;
+    const QByteArray data = texture.mipBytes(sliceIndex, mipIndex);
+    if (data.size() != expectedBytes) {
+        setError(error, QStringLiteral("swatchbin RGBA16F mip has %1 bytes; expected %2")
+                            .arg(data.size()).arg(expectedBytes));
+        return {};
+    }
+
+    SwatchHdrImage image;
+    image.width = mipWidth;
+    image.height = mipHeight;
+    image.rgba.resize(static_cast<size_t>(mipWidth) * mipHeight * 4);
+    for (size_t component = 0; component < image.rgba.size(); ++component) {
+        image.rgba[component] = halfToFloat(
+            readLeU16(data, static_cast<int>(component * sizeof(quint16))));
+    }
+    return image;
+}
+
+SwatchHdrImage decodeSwatchHdrImage(
+    const QByteArray &bytes, int sliceIndex, int mipIndex, QString *error) {
+    const auto texture = parseSwatchTexture(bytes, error);
+    return texture ? decodeSwatchHdrImage(*texture, sliceIndex, mipIndex, error)
+                   : SwatchHdrImage{};
+}
 
 SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error) {
     const auto surface = readTextureSurface(bytes, error);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core_types.h"
+#include "garage_render_settings.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "model_geometry.h"
@@ -14,6 +15,7 @@
 
 namespace fh6 {
 struct ModelMaterialTexture;
+struct SwatchTexture;
 }
 
 namespace gui {
@@ -36,6 +38,15 @@ public:
     void setPaintTextureRegions(const QVector<QVector4D> &regions);
     void clearLivery();
 
+    bool setEnvironmentMaps(
+        const fh6::SwatchTexture &diffuseCubemap,
+        const fh6::SwatchTexture &specularCubemap,
+        QString *error = nullptr);
+    void clearEnvironmentMaps();
+    bool hasEnvironmentMaps() const {
+        return diffuseEnvironmentTexture_ != 0 && specularEnvironmentTexture_ != 0;
+    }
+
     void setDebugMode(int mode) { debugMode_ = mode; }
     int debugMode() const { return debugMode_; }
 
@@ -45,7 +56,10 @@ public:
                 const QColor &basePaint,
                 const fh6::LiveryPaintState *paintState,
                 const fh6::ManufacturerColorPalette *manufacturerColors,
-                const fh6::PaintFinishLibrary *paintFinishes);
+                const fh6::PaintFinishLibrary *paintFinishes,
+                const GarageRenderSettings::Lighting &lighting,
+                const GarageRenderSettings::Environment &environment,
+                bool linearOutput);
 
 private:
     struct MeshBuffers {
@@ -90,7 +104,7 @@ private:
         GLuint surface = 0;
     };
 
-    GLuint uploadSwatchTexture(const fh6::SwatchImage &image);
+    GLuint uploadSwatchTexture(const fh6::SwatchImage &image, bool srgb);
     const FinishTextureEntry *ensurePaintFinishTextures(int code, const fh6::PaintFinishRender &render);
     void clearPaintFinishTextures();
 
@@ -107,6 +121,9 @@ private:
     bool initialized_ = false;
 
     GLuint sideMaskArray_ = 0;
+    GLuint diffuseEnvironmentTexture_ = 0;
+    GLuint specularEnvironmentTexture_ = 0;
+    float specularEnvironmentMaxLod_ = 0.0f;
     int sideCount_ = 0;
     int debugMode_ = 0;
     QVector<QVector4D> sideAxis_;
@@ -140,6 +157,24 @@ private:
     int metallicLocation_ = -1;
     int emissiveLocation_ = -1;
     int eyePositionLocation_ = -1;
+    int linearOutputLocation_ = -1;
+    int primaryLightDirectionLocation_ = -1;
+    int secondaryLightDirectionLocation_ = -1;
+    int directLightWeightsLocation_ = -1;
+    int lightChromaticityLocation_ = -1;
+    int directDiffuseScaleLocation_ = -1;
+    int directSpecularScaleLocation_ = -1;
+    int ambientColorLocation_ = -1;
+    int ambientScaleLocation_ = -1;
+    int environmentLowColorLocation_ = -1;
+    int environmentHighColorLocation_ = -1;
+    int environmentDiffuseScaleLocation_ = -1;
+    int environmentSpecularLowScaleLocation_ = -1;
+    int environmentSpecularHighScaleLocation_ = -1;
+    int diffuseEnvironmentLocation_ = -1;
+    int specularEnvironmentLocation_ = -1;
+    int hasEnvironmentMapsLocation_ = -1;
+    int specularEnvironmentMaxLodLocation_ = -1;
     int nativeDiffuseLocation_ = -1;
     int nativeAlphaLocation_ = -1;
     int nativeNormalLocation_ = -1;

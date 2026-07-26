@@ -1,5 +1,6 @@
 #include "car_preview_widget.h"
 
+#include "color_space.h"
 #include "car_scene.h"
 #include "editor_state.h"
 #include "gui_assets.h"
@@ -30,6 +31,58 @@ constexpr int kLiveryBaseTexHeight = 1024;
 constexpr int kLiverySectionMaskSlots[fh6::kLiverySideCount] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 };
+
+constexpr char kPostProcessVertexShader[] = R"(#version 330 core
+out vec2 v_uv;
+
+void main()
+{
+    const vec2 positions[3] = vec2[3](
+        vec2(-1.0, -1.0),
+        vec2(3.0, -1.0),
+        vec2(-1.0, 3.0));
+    vec2 position = positions[gl_VertexID];
+    v_uv = position * 0.5 + 0.5;
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+)";
+
+constexpr char kPostProcessFragmentShader[] = R"(#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D scene_texture;
+uniform float exposure;
+uniform float filmic_white;
+
+out vec4 out_color;
+
+vec3 hableCurve(vec3 x)
+{
+    const float A = 0.151;
+    const float B = 0.05;
+    const float C = 0.566;
+    const float D = 0.21;
+    const float E = 0.003;
+    const float F = 0.141;
+    return ((x * (A * x + C * B) + D * E)
+            / (x * (A * x + B) + D * F)) - E / F;
+}
+
+vec3 linearToSrgb(vec3 color)
+{
+    vec3 low = color * 12.92;
+    vec3 high = 1.055 * pow(max(color, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+    return mix(high, low, lessThanEqual(color, vec3(0.0031308)));
+}
+
+void main()
+{
+    vec4 scene = texture(scene_texture, v_uv);
+    vec3 exposed = max(scene.rgb, vec3(0.0)) * exp2(exposure);
+    vec3 mapped = hableCurve(exposed) / hableCurve(vec3(filmic_white));
+    out_color = vec4(linearToSrgb(max(mapped, vec3(0.0))), scene.a);
+}
+)";
 
 bool transposedSection(int maskSlot) {
     return maskSlot == 5 || maskSlot == 6 || maskSlot == 7;
@@ -899,8 +952,22 @@ std::shared_ptr<PreparedCar> prepareCar(
 
 } // namespace
 
+QString CarPreviewWidget::postProcessShaderSelfTest() {
+    QOpenGLShaderProgram program;
+    if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, kPostProcessVertexShader)
+        || !program.addShaderFromSourceCode(QOpenGLShader::Fragment, kPostProcessFragmentShader)
+        || !program.link()) {
+        return program.log();
+    }
+
+    return QString();
+}
+
 CarPreviewWidget::CarPreviewWidget(QWidget *parent)
-    : QOpenGLWidget(parent) {
+    : QOpenGLWidget(parent),
+      yaw_(renderSettings_.camera.yawRadians),
+      pitch_(renderSettings_.camera.pitchRadians),
+      distance_(renderSettings_.camera.initialDistance) {
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
@@ -909,8 +976,58 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     format.setSamples(4);
     setFormat(format);
     setFocusPolicy(Qt::StrongFocus);
+    setContextMenuPolicy(Qt::ActionsContextMenu);
 
-    referenceNote_ = new QLabel(QStringLiteral("Only for reference, ingame render may differ"), this);
+    auto *lightDirectionGroup = new QActionGroup(this);
+    lightDirectionGroup->setExclusive(true);
+    auto *oppositeXmlDirection = new QAction(
+        QStringLiteral("Light direction A — opposite XML sign"), lightDirectionGroup);
+    oppositeXmlDirection->setCheckable(true);
+    oppositeXmlDirection->setChecked(
+        renderSettings_.lighting.directionCandidate == LightDirectionCandidate::OppositeXmlDirection);
+    connect(oppositeXmlDirection, &QAction::triggered, this, [this]() {
+        setLightDirectionCandidate(LightDirectionCandidate::OppositeXmlDirection);
+    });
+    addAction(oppositeXmlDirection);
+    auto *xmlDirection = new QAction(
+        QStringLiteral("Light direction B — XML sign"), lightDirectionGroup);
+    xmlDirection->setCheckable(true);
+    xmlDirection->setChecked(
+        renderSettings_.lighting.directionCandidate == LightDirectionCandidate::XmlDirection);
+    connect(xmlDirection, &QAction::triggered, this, [this]() {
+        setLightDirectionCandidate(LightDirectionCandidate::XmlDirection);
+    });
+    addAction(xmlDirection);
+    auto *bothDirections = new QAction(
+        QStringLiteral("Light direction A+B — balanced"), lightDirectionGroup);
+    bothDirections->setCheckable(true);
+    bothDirections->setChecked(
+        renderSettings_.lighting.directionCandidate == LightDirectionCandidate::BothDirections);
+    connect(bothDirections, &QAction::triggered, this, [this]() {
+        setLightDirectionCandidate(LightDirectionCandidate::BothDirections);
+    });
+    addAction(bothDirections);
+
+    auto *environmentGroup = new QActionGroup(this);
+    environmentGroup->setExclusive(true);
+    auto *gameEnvironment = new QAction(
+        QStringLiteral("Environment — game probes"), environmentGroup);
+    gameEnvironment->setCheckable(true);
+    gameEnvironment->setChecked(gameEnvironmentEnabled_);
+    connect(gameEnvironment, &QAction::triggered, this, [this]() {
+        setGameEnvironmentEnabled(true);
+    });
+    addAction(gameEnvironment);
+    auto *analyticEnvironment = new QAction(
+        QStringLiteral("Environment — analytic fallback"), environmentGroup);
+    analyticEnvironment->setCheckable(true);
+    analyticEnvironment->setChecked(!gameEnvironmentEnabled_);
+    connect(analyticEnvironment, &QAction::triggered, this, [this]() {
+        setGameEnvironmentEnabled(false);
+    });
+    addAction(analyticEnvironment);
+
+    referenceNote_ = new QLabel(this);
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
     referenceNote_->setStyleSheet(QStringLiteral(
         "QLabel {"
@@ -921,12 +1038,14 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
         " font-size: 10px;"
         "}"));
     referenceNote_->move(8, 6);
+    updateReferenceNote();
     referenceNote_->adjustSize();
     referenceNote_->raise();
 }
 
 CarPreviewWidget::~CarPreviewWidget() {
     makeCurrent();
+    releasePostProcessing();
     carRenderer_.release();
     shapeRenderer_.release();
     doneCurrent();
@@ -1226,6 +1345,8 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds) 
 
 void CarPreviewWidget::initializeGL() {
     context()->functions()->glEnable(GL_MULTISAMPLE);
+    logGlCapabilities();
+    initializePostProcessing();
     geometryLoaded_ = geometry_.loadDefault();
     shapeRenderer_.initialize();
     if (geometryLoaded_ && shapeRenderer_.isInitialized()) {
@@ -1246,6 +1367,28 @@ void CarPreviewWidget::paintGL() {
         return;
     }
     QOpenGLFunctions *functions = ctx->functions();
+
+    if (environmentUploadPending_ && carRenderer_.isInitialized()) {
+        QString error;
+        const bool uploaded = gameEnvironmentEnabled_ && environmentResources_.valid()
+            && carRenderer_.setEnvironmentMaps(
+                environmentResources_.diffuseCubemap,
+                environmentResources_.specularCubemap, &error);
+        if (!uploaded) {
+            carRenderer_.clearEnvironmentMaps();
+            if (gameEnvironmentEnabled_ && error.isEmpty()) {
+                error = environmentResources_.error;
+            }
+            if (gameEnvironmentEnabled_ && !error.isEmpty()) {
+                qWarning().noquote() << "Garage environment fallback:" << error;
+            }
+        }
+        environmentSourceLabel_ = uploaded
+            ? QStringLiteral("Game probes")
+            : QStringLiteral("Analytic env");
+        environmentUploadPending_ = false;
+        updateReferenceNote();
+    }
 
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
         carRenderer_.uploadModel(model_);
@@ -1379,26 +1522,21 @@ void CarPreviewWidget::paintGL() {
         liveryTexture = liveryTexture_;
     }
 
-    const qreal dpr = devicePixelRatioF();
-    const int pw = std::max(1, static_cast<int>(std::lround(width() * dpr)));
-    const int ph = std::max(1, static_cast<int>(std::lround(height() * dpr)));
-    functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
-    functions->glViewport(0, 0, pw, ph);
-    if (transparentBackground_) {
-        functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    } else {
-        functions->glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
-    }
-    functions->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    const QSize framebufferSize = physicalFramebufferSize();
 
     if (!carRenderer_.hasModel()) {
+        functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+        functions->glViewport(0, 0, framebufferSize.width(), framebufferSize.height());
+        clearRenderTarget(false);
         return;
     }
-    carRenderer_.render(
-        cameraView(), cameraProjection(), liveryTexture, basePaint_,
-        project_ != nullptr ? &project_->liveryPaint : nullptr,
-        manufacturerColors_.colors.isEmpty() ? nullptr : &manufacturerColors_,
-        paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
+    if (renderSettings_.postProcessing.hdrEnabled && renderCarHdr(liveryTexture, framebufferSize)) {
+        return;
+    }
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    functions->glViewport(0, 0, framebufferSize.width(), framebufferSize.height());
+    clearRenderTarget(false);
+    renderCar(liveryTexture, false);
 }
 
 void CarPreviewWidget::setGameFolder(const QString &folder) {
@@ -1409,6 +1547,8 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
     const quint64 generation = ++paintFinishLoadGeneration_;
     if (folder.isEmpty()) {
         paintFinishes_.clear();
+        environmentResources_ = {};
+        environmentUploadPending_ = true;
         update();
         return;
     }
@@ -1416,16 +1556,21 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
     QThreadPool::globalInstance()->start([guard, folder, generation]() {
         auto library = std::make_shared<fh6::PaintFinishLibrary>();
         library->load(folder);
+        auto environment = std::make_shared<fh6::GarageEnvironmentResources>(
+            fh6::loadGarageEnvironmentResources(folder));
         if (!guard) {
             return;
         }
         QMetaObject::invokeMethod(
             guard,
-            [guard, library = std::move(library), generation]() mutable {
+            [guard, library = std::move(library), environment = std::move(environment),
+             generation]() mutable {
                 if (!guard || guard->paintFinishLoadGeneration_ != generation) {
                     return;
                 }
                 guard->paintFinishes_.replace(std::move(*library));
+                guard->environmentResources_ = std::move(*environment);
+                guard->environmentUploadPending_ = true;
                 guard->update();
             },
             Qt::QueuedConnection);
@@ -1464,7 +1609,7 @@ QMatrix4x4 CarPreviewWidget::cameraProjection() const {
     const float nearPlane = std::max(0.01f, modelRadius_ * 0.02f);
     const float farPlane = modelRadius_ * 8.0f + distance_ * 2.0f;
     QMatrix4x4 projection;
-    projection.perspective(45.0f, aspect, nearPlane, farPlane);
+    projection.perspective(renderSettings_.camera.fovDegrees, aspect, nearPlane, farPlane);
     return projection;
 }
 
@@ -1479,15 +1624,363 @@ QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const
     return transform;
 }
 
+QSize CarPreviewWidget::physicalFramebufferSize() const {
+    const qreal dpr = devicePixelRatioF();
+
+    return QSize(
+        std::max(1, static_cast<int>(std::lround(width() * dpr))),
+        std::max(1, static_cast<int>(std::lround(height() * dpr))));
+}
+
 void CarPreviewWidget::fitCameraToModel() {
     const fh6::ModelVec3 &mn = model_.boundsMin;
     const fh6::ModelVec3 &mx = model_.boundsMax;
     target_ = QVector3D(-(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
     const QVector3D extent(mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
     modelRadius_ = std::max(0.001f, 0.5f * extent.length());
-    distance_ = modelRadius_ * 2.6f;
-    yaw_ = 0.6f;
-    pitch_ = 0.25f;
+    resetComparisonCamera();
+}
+
+void CarPreviewWidget::resetComparisonCamera() {
+    distance_ = modelRadius_ * renderSettings_.camera.distanceRadiusScale;
+    yaw_ = renderSettings_.camera.yawRadians;
+    pitch_ = renderSettings_.camera.pitchRadians;
+}
+
+void CarPreviewWidget::setLightDirectionCandidate(LightDirectionCandidate candidate) {
+    if (renderSettings_.lighting.directionCandidate == candidate) {
+        return;
+    }
+    renderSettings_.lighting.directionCandidate = candidate;
+    updateReferenceNote();
+    update();
+}
+
+void CarPreviewWidget::setGameEnvironmentEnabled(bool enabled) {
+    if (gameEnvironmentEnabled_ == enabled) {
+        return;
+    }
+    gameEnvironmentEnabled_ = enabled;
+    environmentUploadPending_ = true;
+    update();
+}
+
+void CarPreviewWidget::updateReferenceNote() {
+    if (referenceNote_ == nullptr) {
+        return;
+    }
+    QString candidate;
+    switch (renderSettings_.lighting.directionCandidate) {
+    case LightDirectionCandidate::OppositeXmlDirection:
+        candidate = QStringLiteral("A");
+        break;
+    case LightDirectionCandidate::XmlDirection:
+        candidate = QStringLiteral("B");
+        break;
+    case LightDirectionCandidate::BothDirections:
+        candidate = QStringLiteral("A+B");
+        break;
+    }
+    referenceNote_->setText(QStringLiteral(
+        "Only for reference, ingame render may differ · Light %1 · %2")
+                                .arg(candidate, environmentSourceLabel_));
+    referenceNote_->adjustSize();
+}
+
+void CarPreviewWidget::logGlCapabilities() const {
+    static const bool enabled = qEnvironmentVariableIsSet("FLS_GL_DIAG");
+    QOpenGLContext *glContext = context();
+    if (!enabled || glContext == nullptr) {
+        return;
+    }
+    QOpenGLFunctions *functions = glContext->functions();
+    const QSurfaceFormat actualFormat = glContext->format();
+    const QSize framebufferSize(
+        std::max(1, static_cast<int>(std::lround(width() * devicePixelRatioF()))),
+        std::max(1, static_cast<int>(std::lround(height() * devicePixelRatioF()))));
+    GLint maxTextureUnits = 0;
+    GLint maxCombinedTextureUnits = 0;
+    GLint maxCubeMapSize = 0;
+    GLint max3dTextureSize = 0;
+    GLint maxSamples = 0;
+
+    functions->glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxTextureUnits);
+    functions->glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &maxCombinedTextureUnits);
+    functions->glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &maxCubeMapSize);
+    functions->glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max3dTextureSize);
+    functions->glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+
+    qDebug().nospace()
+        << "[car-preview-gl] version=" << actualFormat.majorVersion() << '.' << actualFormat.minorVersion()
+        << " profile=" << static_cast<int>(actualFormat.profile())
+        << " samples=" << actualFormat.samples()
+        << " maxSamples=" << maxSamples
+        << " depth=" << actualFormat.depthBufferSize()
+        << " alpha=" << actualFormat.alphaBufferSize()
+        << " framebuffer=" << framebufferSize.width() << 'x' << framebufferSize.height()
+        << " textureUnits=" << maxTextureUnits
+        << " combinedTextureUnits=" << maxCombinedTextureUnits
+        << " maxCubeMap=" << maxCubeMapSize
+        << " max3dTexture=" << max3dTextureSize;
+}
+
+void CarPreviewWidget::initializePostProcessing() {
+    if (postProcessInitialized_) {
+        return;
+    }
+    if (!postProcessProgram_.addShaderFromSourceCode(QOpenGLShader::Vertex, kPostProcessVertexShader)
+        || !postProcessProgram_.addShaderFromSourceCode(QOpenGLShader::Fragment, kPostProcessFragmentShader)
+        || !postProcessProgram_.link()) {
+        qWarning().noquote() << "Car preview post-process shader failed to build:"
+                             << postProcessProgram_.log();
+        postProcessProgram_.removeAllShaders();
+        return;
+    }
+    if (!postProcessVao_.create()) {
+        qWarning() << "Car preview post-process VAO failed to initialize";
+        postProcessProgram_.removeAllShaders();
+        return;
+    }
+    postSceneTextureLocation_ = postProcessProgram_.uniformLocation("scene_texture");
+    postExposureLocation_ = postProcessProgram_.uniformLocation("exposure");
+    postFilmicWhiteLocation_ = postProcessProgram_.uniformLocation("filmic_white");
+    postProcessInitialized_ = true;
+}
+
+void CarPreviewWidget::releasePostProcessing() {
+    releaseHdrFramebuffers();
+    if (postProcessVao_.isCreated()) {
+        postProcessVao_.destroy();
+    }
+    postProcessProgram_.removeAllShaders();
+    postSceneTextureLocation_ = -1;
+    postExposureLocation_ = -1;
+    postFilmicWhiteLocation_ = -1;
+    postProcessInitialized_ = false;
+}
+
+void CarPreviewWidget::releaseHdrFramebuffers() {
+    QOpenGLContext *glContext = context();
+    if (glContext != nullptr) {
+        QOpenGLExtraFunctions *functions = glContext->extraFunctions();
+        functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+        if (hdrSceneColor_ != 0) {
+            functions->glDeleteRenderbuffers(1, &hdrSceneColor_);
+        }
+        if (hdrSceneDepth_ != 0) {
+            functions->glDeleteRenderbuffers(1, &hdrSceneDepth_);
+        }
+        if (hdrSceneFramebuffer_ != 0) {
+            functions->glDeleteFramebuffers(1, &hdrSceneFramebuffer_);
+        }
+        if (hdrResolveTexture_ != 0) {
+            functions->glDeleteTextures(1, &hdrResolveTexture_);
+        }
+        if (hdrResolveFramebuffer_ != 0) {
+            functions->glDeleteFramebuffers(1, &hdrResolveFramebuffer_);
+        }
+    }
+    hdrFramebufferSize_ = {};
+    hdrSceneFramebuffer_ = 0;
+    hdrSceneColor_ = 0;
+    hdrSceneDepth_ = 0;
+    hdrResolveFramebuffer_ = 0;
+    hdrResolveTexture_ = 0;
+    hdrSampleCount_ = 0;
+}
+
+bool CarPreviewWidget::ensureHdrFramebuffers(const QSize &size) {
+    QOpenGLContext *glContext = context();
+    if (glContext == nullptr || size.isEmpty()) {
+        return false;
+    }
+    QOpenGLExtraFunctions *functions = glContext->extraFunctions();
+    GLint drawFramebuffer = 0;
+    GLint readFramebuffer = 0;
+    GLint renderbuffer = 0;
+    GLint textureBinding = 0;
+
+    functions->glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
+    functions->glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
+    functions->glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer);
+    functions->glGetIntegerv(GL_TEXTURE_BINDING_2D, &textureBinding);
+    const auto restoreBindings = [&]() {
+        functions->glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(textureBinding));
+        functions->glBindRenderbuffer(GL_RENDERBUFFER, static_cast<GLuint>(renderbuffer));
+        functions->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(drawFramebuffer));
+        functions->glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(readFramebuffer));
+    };
+    GLint maximumSamples = 0;
+    functions->glGetIntegerv(GL_MAX_SAMPLES, &maximumSamples);
+    const int sampleCount = std::clamp(
+        std::max(1, glContext->format().samples()), 1, std::max(1, maximumSamples));
+    if (hdrSceneFramebuffer_ != 0 && hdrResolveFramebuffer_ != 0
+        && hdrFramebufferSize_ == size && hdrSampleCount_ == sampleCount) {
+        return true;
+    }
+
+    releaseHdrFramebuffers();
+
+    functions->glGenFramebuffers(1, &hdrSceneFramebuffer_);
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrSceneFramebuffer_);
+    functions->glGenRenderbuffers(1, &hdrSceneColor_);
+    functions->glBindRenderbuffer(GL_RENDERBUFFER, hdrSceneColor_);
+    functions->glRenderbufferStorageMultisample(
+        GL_RENDERBUFFER, sampleCount, GL_RGBA16F, size.width(), size.height());
+    functions->glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, hdrSceneColor_);
+    functions->glGenRenderbuffers(1, &hdrSceneDepth_);
+    functions->glBindRenderbuffer(GL_RENDERBUFFER, hdrSceneDepth_);
+    functions->glRenderbufferStorageMultisample(
+        GL_RENDERBUFFER, sampleCount, GL_DEPTH_COMPONENT24, size.width(), size.height());
+    functions->glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, hdrSceneDepth_);
+    const GLenum sceneStatus = functions->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+    functions->glGenFramebuffers(1, &hdrResolveFramebuffer_);
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrResolveFramebuffer_);
+    functions->glGenTextures(1, &hdrResolveTexture_);
+    functions->glBindTexture(GL_TEXTURE_2D, hdrResolveTexture_);
+    functions->glTexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGBA16F, size.width(), size.height(), 0,
+        GL_RGBA, GL_FLOAT, nullptr);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    functions->glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hdrResolveTexture_, 0);
+    const GLenum resolveStatus = functions->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+    if (sceneStatus != GL_FRAMEBUFFER_COMPLETE || resolveStatus != GL_FRAMEBUFFER_COMPLETE) {
+        qWarning().noquote()
+            << QStringLiteral("Car preview HDR framebuffer incomplete: scene=0x%1 resolve=0x%2")
+                   .arg(sceneStatus, 0, 16)
+                   .arg(resolveStatus, 0, 16);
+        releaseHdrFramebuffers();
+        restoreBindings();
+        return false;
+    }
+    hdrFramebufferSize_ = size;
+    hdrSampleCount_ = sampleCount;
+    restoreBindings();
+
+    return true;
+}
+
+void CarPreviewWidget::clearRenderTarget(bool linearColor) const {
+    QOpenGLFunctions *functions = context()->functions();
+    functions->glDepthMask(GL_TRUE);
+    if (transparentBackground_) {
+        functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    } else {
+        const QVector3D authoredBackground = renderSettings_.environment.backgroundColor;
+        const QVector3D background = linearColor
+            ? srgbToLinear(authoredBackground)
+            : authoredBackground;
+        functions->glClearColor(background.x(), background.y(), background.z(), 1.0f);
+    }
+    functions->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+void CarPreviewWidget::renderCar(GLuint liveryTexture, bool linearOutput) {
+    carRenderer_.render(
+        cameraView(), cameraProjection(), liveryTexture, basePaint_,
+        project_ != nullptr ? &project_->liveryPaint : nullptr,
+        manufacturerColors_.colors.isEmpty() ? nullptr : &manufacturerColors_,
+        paintFinishes_.loaded() ? &paintFinishes_ : nullptr,
+        renderSettings_.lighting,
+        renderSettings_.environment,
+        linearOutput);
+}
+
+bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
+    if (!postProcessInitialized_ || !ensureHdrFramebuffers(size)) {
+        return false;
+    }
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+    const GLboolean depthEnabled = functions->glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean blendEnabled = functions->glIsEnabled(GL_BLEND);
+    const GLboolean cullEnabled = functions->glIsEnabled(GL_CULL_FACE);
+    const GLboolean framebufferSrgbEnabled = functions->glIsEnabled(GL_FRAMEBUFFER_SRGB);
+    GLboolean depthWriteEnabled = GL_TRUE;
+    GLint activeTexture = 0;
+    GLint textureBinding = 0;
+    GLint currentProgram = 0;
+    GLint vertexArray = 0;
+    GLint drawFramebuffer = 0;
+    GLint readFramebuffer = 0;
+    GLint viewport[4] = {};
+
+    functions->glGetBooleanv(GL_DEPTH_WRITEMASK, &depthWriteEnabled);
+    functions->glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glGetIntegerv(GL_TEXTURE_BINDING_2D, &textureBinding);
+    functions->glGetIntegerv(GL_CURRENT_PROGRAM, &currentProgram);
+    functions->glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vertexArray);
+    functions->glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
+    functions->glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
+    functions->glGetIntegerv(GL_VIEWPORT, viewport);
+    const auto restoreCapability = [functions](GLenum capability, GLboolean enabled) {
+        if (enabled == GL_TRUE) {
+            functions->glEnable(capability);
+        } else {
+            functions->glDisable(capability);
+        }
+    };
+    const auto restoreState = [&]() {
+        functions->glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(textureBinding));
+        functions->glActiveTexture(static_cast<GLenum>(activeTexture));
+        functions->glUseProgram(static_cast<GLuint>(currentProgram));
+        functions->glBindVertexArray(static_cast<GLuint>(vertexArray));
+        functions->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(drawFramebuffer));
+        functions->glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(readFramebuffer));
+        functions->glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        functions->glDepthMask(depthWriteEnabled);
+        restoreCapability(GL_DEPTH_TEST, depthEnabled);
+        restoreCapability(GL_BLEND, blendEnabled);
+        restoreCapability(GL_CULL_FACE, cullEnabled);
+        restoreCapability(GL_FRAMEBUFFER_SRGB, framebufferSrgbEnabled);
+    };
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrSceneFramebuffer_);
+    functions->glViewport(0, 0, size.width(), size.height());
+    clearRenderTarget(true);
+    renderCar(liveryTexture, true);
+
+    functions->glBindFramebuffer(GL_READ_FRAMEBUFFER, hdrSceneFramebuffer_);
+    functions->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hdrResolveFramebuffer_);
+    functions->glBlitFramebuffer(
+        0, 0, size.width(), size.height(),
+        0, 0, size.width(), size.height(),
+        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    functions->glViewport(0, 0, size.width(), size.height());
+    functions->glDisable(GL_DEPTH_TEST);
+    functions->glDisable(GL_BLEND);
+    functions->glDisable(GL_CULL_FACE);
+    functions->glDisable(GL_FRAMEBUFFER_SRGB);
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, hdrResolveTexture_);
+    if (!postProcessProgram_.bind()) {
+        qWarning() << "Car preview post-process shader failed to bind";
+        renderSettings_.postProcessing.hdrEnabled = false;
+        restoreState();
+        return false;
+    }
+    postProcessProgram_.setUniformValue(postSceneTextureLocation_, 0);
+    postProcessProgram_.setUniformValue(postExposureLocation_, renderSettings_.postProcessing.exposure);
+    postProcessProgram_.setUniformValue(
+        postFilmicWhiteLocation_, renderSettings_.postProcessing.filmicWhite);
+    postProcessVao_.bind();
+    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
+    postProcessVao_.release();
+    postProcessProgram_.release();
+
+    restoreState();
+
+    return true;
 }
 
 void CarPreviewWidget::invalidateCachedLivery() {

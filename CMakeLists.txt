@@ -33,6 +33,8 @@ add_library(fls_core STATIC
     src/core/core_types.h
     src/core/game_paths.cpp
     src/core/game_paths.h
+    src/core/garage_environment.cpp
+    src/core/garage_environment.h
     src/core/fh6_core.cpp
     src/core/fh6_core.h
     src/core/fm_codec.cpp
@@ -267,6 +269,26 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(BUILD_TESTING)
+    add_executable(fls_swatchbin_tests
+        tools/swatchbin_test.cpp
+    )
+    target_link_libraries(fls_swatchbin_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME swatchbin_parser COMMAND fls_swatchbin_tests)
+
+    set(FLS_SWATCH_EVIDENCE_DIR
+        "${CMAKE_SOURCE_DIR}/tools/temp/evidence/m3_swatch_layout/inputs")
+    if(EXISTS "${FLS_SWATCH_EVIDENCE_DIR}/SphericalFrames_0001.swatchbin"
+       AND EXISTS "${FLS_SWATCH_EVIDENCE_DIR}/Lighting_0001.swatchbin"
+       AND EXISTS "${FLS_SWATCH_EVIDENCE_DIR}/GroundLighting_base.swatchbin"
+       AND EXISTS "${FLS_SWATCH_EVIDENCE_DIR}/CubemapProbeDiffuse_Thumbnail.swatchbin"
+       AND EXISTS "${FLS_SWATCH_EVIDENCE_DIR}/CubemapProbeSpecular_Thumbnail.swatchbin")
+        add_test(NAME swatchbin_game_evidence
+            COMMAND fls_swatchbin_tests "${FLS_SWATCH_EVIDENCE_DIR}")
+    endif()
+
     add_executable(fls_guide_preprocess_metadata_tests
         tools/guide_preprocess_metadata_test.cpp
     )
