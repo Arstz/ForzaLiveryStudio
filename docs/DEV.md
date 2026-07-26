@@ -29,7 +29,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   path with a slow analytic greedy cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, stays within
   the contour tolerance, and inserts a measured partial result when progress
-  stalls. Bucket-derived Pen contours use the same selected mode.
+  stalls. Its status-bar progress reports exact covered area and an approximate
+  ETA derived from observed placement timing and gain decay. Bucket-derived Pen
+  contours use the same selected mode.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated
   Primitive catalog. Selection follows the authored point structure, ranks

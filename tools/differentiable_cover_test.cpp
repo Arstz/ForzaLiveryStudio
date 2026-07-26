@@ -237,8 +237,13 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     options.restarts =
         restartsOk && requestedRestarts >= 0 ? requestedRestarts : 0;
     options.seed = 0x5a17;
+    QVector<cover::FillProgress> progress;
     const cover::FillResult first =
-        cover::analyticCoverFill(input, catalog, options);
+        cover::analyticCoverFill(
+            input, catalog, options, {},
+            [&progress](const cover::FillProgress &update) {
+                progress.push_back(update);
+            });
     const cover::FillResult second =
         cover::analyticCoverFill(input, catalog, options);
     if (!check(first.error.isEmpty() && second.error.isEmpty(),
@@ -253,8 +258,57 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                           <= first.placements.size() * options.epsSpill + 1e-6,
                   "logged contour solver exceeded spill tolerance")
         || !check(first.placements.size() == second.placements.size(),
-                  "logged contour solver placement count is not repeatable")) {
+                  "logged contour solver placement count is not repeatable")
+        || !check(std::isfinite(first.profile.totalWallSeconds)
+                      && first.profile.totalWallSeconds > 0.0
+                      && std::isfinite(
+                          first.profile.candidateBatchWallSeconds)
+                      && first.profile.candidateBatchWallSeconds > 0.0
+                      && std::isfinite(
+                          first.profile.adamEvaluationWorkerSeconds)
+                      && first.profile.adamEvaluationWorkerSeconds > 0.0
+                      && std::isfinite(
+                          first.profile.legalizationWorkerSeconds)
+                      && first.profile.legalizationWorkerSeconds > 0.0,
+                  "logged contour solver profiling times are invalid")
+        || !check(first.profile.greedySteps > 0
+                      && first.profile.workerThreads > 0
+                      && first.profile.candidateJobs > 0
+                      && first.profile.adamEvaluations > 0
+                      && first.profile.legalizationEvaluations > 0,
+                  "logged contour solver profiling counts are invalid")
+        || !check(!progress.isEmpty() && progress.front().placementCount == 0,
+                  "logged contour solver did not report initial progress")
+        || !check(progress.back().placementCount == first.placements.size(),
+                  "logged contour solver progress placement count is incomplete")
+        || !check(std::any_of(
+                      progress.cbegin(), progress.cend(),
+                      [](const cover::FillProgress &update) {
+                          return std::isfinite(update.etaSeconds)
+                              && update.etaSeconds >= 0.0;
+                      }),
+                  "logged contour solver did not produce an ETA")) {
         return false;
+    }
+    for (int i = 0; i < progress.size(); ++i) {
+        const cover::FillProgress &update = progress[i];
+        if (!check(std::isfinite(update.targetArea)
+                       && std::isfinite(update.coveredArea)
+                       && std::isfinite(update.residualArea)
+                       && std::isfinite(update.elapsedSeconds)
+                       && (update.etaSeconds < 0.0
+                           || std::isfinite(update.etaSeconds)),
+                   "logged contour solver progress metrics are invalid")
+            || !check(i == 0
+                          || (update.placementCount
+                                  >= progress[i - 1].placementCount
+                              && update.coveredArea
+                                  >= progress[i - 1].coveredArea
+                              && update.residualArea
+                                  <= progress[i - 1].residualArea),
+                      "logged contour solver progress is not monotonic")) {
+            return false;
+        }
     }
     for (int i = 0; i < first.placements.size(); ++i) {
         if (!check(repeatablePlacement(first.placements[i], second.placements[i]),

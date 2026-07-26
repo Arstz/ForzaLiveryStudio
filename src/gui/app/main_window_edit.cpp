@@ -16,6 +16,7 @@
 #include <QtGui>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -46,9 +47,29 @@ std::array<quint8, 4> colorBytes(const QColor &color) {
     };
 }
 
+QString approximateDuration(double seconds) {
+    if (!std::isfinite(seconds) || seconds < 0.0) {
+        return {};
+    }
+    const qint64 rounded = static_cast<qint64>(std::ceil(seconds));
+    if (rounded < 60) {
+        return QStringLiteral("%1s").arg(rounded);
+    }
+    if (rounded < 3600) {
+        return QStringLiteral("%1m %2s")
+            .arg(rounded / 60)
+            .arg(rounded % 60, 2, 10, QLatin1Char('0'));
+    }
+
+    return QStringLiteral("%1h %2m")
+        .arg(rounded / 3600)
+        .arg((rounded % 3600) / 60, 2, 10, QLatin1Char('0'));
+}
+
 void writePenFillLog(const PenFillRequest &request,
                      const PenFillResult &result,
-                     const QString &strategy) {
+                     const QString &strategy,
+                     const cover::FillProfile *profile = nullptr) {
     QJsonArray points;
     for (const PenPoint &point : request.points) {
         QJsonObject pointObject;
@@ -76,6 +97,46 @@ void writePenFillLog(const PenFillRequest &request,
     resultObject.insert(QStringLiteral("outsideArea"), result.outsideArea);
     resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
     resultObject.insert(QStringLiteral("error"), result.error);
+    if (profile != nullptr) {
+        QJsonObject profileObject;
+        profileObject.insert(
+            QStringLiteral("totalWallSeconds"), profile->totalWallSeconds);
+        profileObject.insert(
+            QStringLiteral("greedySetupWallSeconds"),
+            profile->greedySetupWallSeconds);
+        profileObject.insert(
+            QStringLiteral("candidateBatchWallSeconds"),
+            profile->candidateBatchWallSeconds);
+        profileObject.insert(
+            QStringLiteral("candidateWorkerSeconds"),
+            profile->candidateWorkerSeconds);
+        profileObject.insert(
+            QStringLiteral("adamEvaluationWorkerSeconds"),
+            profile->adamEvaluationWorkerSeconds);
+        profileObject.insert(
+            QStringLiteral("legalizationWorkerSeconds"),
+            profile->legalizationWorkerSeconds);
+        profileObject.insert(
+            QStringLiteral("residualUpdateWallSeconds"),
+            profile->residualUpdateWallSeconds);
+        profileObject.insert(
+            QStringLiteral("finalMeasurementWallSeconds"),
+            profile->finalMeasurementWallSeconds);
+        profileObject.insert(
+            QStringLiteral("candidateJobs"),
+            static_cast<qint64>(profile->candidateJobs));
+        profileObject.insert(
+            QStringLiteral("adamEvaluations"),
+            static_cast<qint64>(profile->adamEvaluations));
+        profileObject.insert(
+            QStringLiteral("legalizationEvaluations"),
+            static_cast<qint64>(profile->legalizationEvaluations));
+        profileObject.insert(
+            QStringLiteral("greedySteps"), profile->greedySteps);
+        profileObject.insert(
+            QStringLiteral("workerThreads"), profile->workerThreads);
+        resultObject.insert(QStringLiteral("profile"), profileObject);
+    }
 
     QJsonObject root;
     root.insert(QStringLiteral("request"), requestObject);
@@ -97,9 +158,24 @@ PenFillResult differentiablePenFill(
     const cover::FillInput &input,
     const QVector<cover::ShapeMesh> &catalog,
     const cover::FillOptions &options,
-    const std::function<bool()> &cancelled) {
+    const std::function<bool()> &cancelled,
+    const std::function<void(int, double, double, double)> &progress,
+    cover::FillProfile *profile) {
     const cover::FillResult fill =
-        cover::analyticCoverFill(input, catalog, options, cancelled);
+        cover::analyticCoverFill(
+            input, catalog, options, cancelled,
+            [&progress](const cover::FillProgress &fillProgress) {
+                if (progress) {
+                    progress(
+                        fillProgress.placementCount,
+                        fillProgress.targetArea,
+                        fillProgress.coveredArea,
+                        fillProgress.etaSeconds);
+                }
+            });
+    if (profile != nullptr) {
+        *profile = fill.profile;
+    }
     PenFillResult result;
     result.targetArea = fill.coveredArea + fill.residualArea;
     result.coveredArea = fill.coveredArea;
@@ -167,6 +243,10 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         input.mustCover = polygons;
         input.mayCover = polygons;
         cover::FillOptions options;
+        generatedFillProgress_->setRange(0, 0);
+        generatedFillProgress_->setFormat(
+            QStringLiteral("Differentiable fill | estimating ETA"));
+        generatedFillProgress_->show();
         canvas_->setPenFillRunning(
             true, QStringLiteral("Optimizing differentiable Pen fill…"));
         statusBar()->showMessage(
@@ -178,10 +258,14 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
             : QStringLiteral("differentiable-pen");
         startGeneratedFillTask(
             [request = std::move(request), input = std::move(input),
-             catalog, options, strategy](const std::function<bool()> &cancelled) {
+             catalog, options, strategy](
+                const std::function<bool()> &cancelled,
+                const GeneratedFillProgress &progress) {
+                cover::FillProfile profile;
                 PenFillResult result =
-                    differentiablePenFill(input, catalog, options, cancelled);
-                writePenFillLog(request, result, strategy);
+                    differentiablePenFill(
+                        input, catalog, options, cancelled, progress, &profile);
+                writePenFillLog(request, result, strategy, &profile);
 
                 return result;
             });
@@ -204,7 +288,8 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         ? QStringLiteral("bucket-hybrid-quadratic-rdp")
         : QStringLiteral("pen");
     startGeneratedFillTask([request = std::move(request), strategy](
-                               const std::function<bool()> &cancelled) {
+                               const std::function<bool()> &cancelled,
+                               const GeneratedFillProgress &) {
         PenFillResult result = fillPenPath(request, cancelled);
         writePenFillLog(request, result, strategy);
 
@@ -238,7 +323,9 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     statusBar()->showMessage(QStringLiteral("Filling lining path… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
-    startGeneratedFillTask([request = std::move(request)](const std::function<bool()> &cancelled) {
+    startGeneratedFillTask([request = std::move(request)](
+                               const std::function<bool()> &cancelled,
+                               const GeneratedFillProgress &) {
         return fillLiningPath(request, cancelled);
     });
 }
@@ -265,9 +352,27 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
 
     QPointer<MainWindow> guard(this);
     auto *task = QRunnable::create([guard, generation, fill = std::move(fill), token]() mutable {
-        PenFillResult result = fill([token]() {
-            return token->load(std::memory_order_relaxed);
-        });
+        PenFillResult result = fill(
+            [token]() {
+                return token->load(std::memory_order_relaxed);
+            },
+            [guard, generation](int placementCount, double targetArea,
+                                double coveredArea, double etaSeconds) {
+                if (guard.isNull()) {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    guard.data(),
+                    [guard, generation, placementCount, targetArea,
+                     coveredArea, etaSeconds]() {
+                        if (!guard.isNull()) {
+                            guard->updateGeneratedFillProgress(
+                                generation, placementCount, targetArea,
+                                coveredArea, etaSeconds);
+                        }
+                    },
+                    Qt::QueuedConnection);
+            });
         if (guard.isNull()) {
             return;
         }
@@ -284,6 +389,9 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
 }
 
 void MainWindow::clearGeneratedFillState() {
+    if (generatedFillProgress_ != nullptr) {
+        generatedFillProgress_->hide();
+    }
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();
     generatedFillTool_.clear();
@@ -307,6 +415,43 @@ void MainWindow::cancelGeneratedFill() {
     }
     statusBar()->showMessage(QStringLiteral("%1 cancelled").arg(generatedFillLabel_), 1500);
     clearGeneratedFillState();
+}
+
+void MainWindow::updateGeneratedFillProgress(quint64 generation,
+                                             int placementCount,
+                                             double targetArea,
+                                             double coveredArea,
+                                             double etaSeconds) {
+    if (generation != generatedFillGeneration_
+        || generatedFillCancel_ == nullptr
+        || generatedFillTool_ != QStringLiteral("differentiable")
+        || generatedFillProgress_ == nullptr
+        || !std::isfinite(targetArea) || targetArea <= 0.0
+        || !std::isfinite(coveredArea)) {
+        return;
+    }
+
+    constexpr int kProgressResolution = 1000;
+    const double fraction =
+        std::clamp(coveredArea / targetArea, 0.0, 1.0);
+    const QString percentage =
+        QString::number(fraction * 100.0, 'f', 1);
+    const QString duration = approximateDuration(etaSeconds);
+    const QString format = duration.isEmpty()
+        ? QStringLiteral("Diff fill %1% | estimating ETA | %2 shapes")
+              .arg(percentage)
+              .arg(placementCount)
+        : QStringLiteral("Diff fill %1% | ETA ~%2 | %3 shapes")
+              .arg(percentage, duration)
+              .arg(placementCount);
+
+    generatedFillProgress_->setRange(0, kProgressResolution);
+    generatedFillProgress_->setValue(
+        std::clamp(
+            static_cast<int>(std::lround(fraction * kProgressResolution)),
+            0, kProgressResolution));
+    generatedFillProgress_->setFormat(format);
+    generatedFillProgress_->show();
 }
 
 void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {

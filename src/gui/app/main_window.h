@@ -157,7 +157,10 @@ private:
     void startLiningFill(const QVector<PenPoint> &points,
                          double width,
                          const std::optional<QColor> &fillColor = std::nullopt);
-    using GeneratedFillFunction = std::function<PenFillResult(const std::function<bool()> &)>;
+    using GeneratedFillProgress =
+        std::function<void(int, double, double, double)>;
+    using GeneratedFillFunction = std::function<PenFillResult(
+        const std::function<bool()> &, const GeneratedFillProgress &)>;
     void prepareGeneratedFill(const std::optional<QColor> &fillColor,
                               const QString &label,
                               const QString &tool);
@@ -165,6 +168,9 @@ private:
     void clearGeneratedFillState();
     void cancelActiveFills();
     void cancelGeneratedFill();
+    void updateGeneratedFillProgress(quint64 generation, int placementCount,
+                                     double targetArea, double coveredArea,
+                                     double etaSeconds);
     void finishGeneratedFill(quint64 generation, PenFillResult result);
     void cancelRegionFill();
     void updateRegionFillProgress(quint64 generation, const QString &phase,
@@ -301,6 +307,7 @@ private:
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;
+    QProgressBar *generatedFillProgress_ = nullptr;
     int regionMergeAreaThreshold_ = 12;
     std::shared_ptr<std::atomic_bool> regionFillCancel_;
     quint64 regionFillGeneration_ = 0;

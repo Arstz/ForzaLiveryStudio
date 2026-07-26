@@ -353,6 +353,16 @@ shape id, for repeatability). Return it as the step's placement.
   `residualArea > epsArea`. The caller inserts it, clears the active contour, and
   reports the uncovered world-unit area plus the stopping reason. A zero-placement
   result inserts nothing and leaves the active contour available.
+- **Progress:** report exact covered-area progress after every accepted placement.
+  The status bar estimates remaining time from measured placement duration and
+  recent gain decay. It remains explicitly approximate because the residual loop
+  has no predetermined placement count.
+- **Profiling:** every differentiable run records total wall time, greedy setup,
+  parallel candidate-batch wall time, cumulative candidate worker time, Adam
+  evaluation time, legalization time, exact residual updates, final measurement,
+  evaluation counts, and worker configuration in `pen_fill.log`. Cumulative
+  worker durations overlap while jobs execute in parallel and are not elapsed
+  wall time.
 
 ---
 
@@ -405,9 +415,26 @@ struct FillOptions {
     bool   useRouter     = true;                  // §7.1
 };
 
+struct FillProfile {
+    double totalWallSeconds = 0.0;
+    double greedySetupWallSeconds = 0.0;
+    double candidateBatchWallSeconds = 0.0;
+    double candidateWorkerSeconds = 0.0;
+    double adamEvaluationWorkerSeconds = 0.0;
+    double legalizationWorkerSeconds = 0.0;
+    double residualUpdateWallSeconds = 0.0;
+    double finalMeasurementWallSeconds = 0.0;
+    uint64_t candidateJobs = 0;
+    uint64_t adamEvaluations = 0;
+    uint64_t legalizationEvaluations = 0;
+    int greedySteps = 0;
+    int workerThreads = 0;
+};
+
 struct FillResult {
     std::vector<Placement> placements;
     Polygons residual;
+    FillProfile profile;
     double residualArea = 0.0;
     double coveredArea = 0.0;
     double outsideArea = 0.0;
@@ -417,16 +444,29 @@ struct FillResult {
     QString error;
 };
 
+struct FillProgress {
+    int placementCount = 0;
+    double targetArea = 0.0;
+    double coveredArea = 0.0;
+    double residualArea = 0.0;
+    double elapsedSeconds = 0.0;
+    double etaSeconds = -1.0;
+};
+
 FillResult analyticCoverFill(const FillInput& in,
                              const std::vector<ShapeMesh>& catalog,
                              const FillOptions& opt,
-                             const std::function<bool()>& cancelled = {});
+                             const std::function<bool()>& cancelled = {},
+                             const std::function<void(const FillProgress&)>&
+                                 progress = {});
 
 } // namespace cover
 ```
 
 Colour is not in `Placement` — the caller stamps the region colour onto every
 returned placement when building decals.
+`FillProgress::etaSeconds` remains negative until the accepted gains provide
+enough decay information for an estimate.
 
 ---
 

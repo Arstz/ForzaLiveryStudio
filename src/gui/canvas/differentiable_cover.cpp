@@ -71,6 +71,19 @@ struct CandidateJob {
     CandidateInitialization initialization;
 };
 
+struct CandidateProfile {
+    qint64 totalNanoseconds = 0;
+    qint64 adamEvaluationNanoseconds = 0;
+    qint64 legalizationNanoseconds = 0;
+    std::uint64_t adamEvaluations = 0;
+    std::uint64_t legalizationEvaluations = 0;
+};
+
+struct CandidateJobResult {
+    Candidate candidate;
+    CandidateProfile profile;
+};
+
 struct QueueNode {
     int index = 0;
     double distance = 0.0;
@@ -967,10 +980,14 @@ Candidate legalCandidate(const ShapeMesh &shape,
                          const Polygons &residual,
                          const Polygons &mayCover,
                          const EvaluationBounds &subjectBounds,
-                         const FillOptions &options) {
+                         const FillOptions &options,
+                         CandidateProfile *profile) {
+    QElapsedTimer timer;
+    timer.start();
     Candidate result;
     result.shapeId = shape.id;
     for (int step = 0; step <= kLegalShrinkSteps; ++step) {
+        ++profile->legalizationEvaluations;
         const AreaGradient evaluation =
             areaGradient(shape, transform, residual, mayCover, subjectBounds);
         if (finiteGradient(evaluation)
@@ -980,6 +997,7 @@ Candidate legalCandidate(const ShapeMesh &shape,
             result.covered = evaluation.covered;
             result.spill = std::max(0.0, evaluation.spill);
             result.valid = true;
+            profile->legalizationNanoseconds += timer.nsecsElapsed();
 
             return result;
         }
@@ -988,18 +1006,23 @@ Candidate legalCandidate(const ShapeMesh &shape,
         transform.c *= kLegalShrinkFactor;
         transform.d *= kLegalShrinkFactor;
     }
+    profile->legalizationNanoseconds += timer.nsecsElapsed();
 
     return result;
 }
 
-Candidate optimizeCandidate(const ShapeMesh &shape,
-                            const Polygons &residual,
-                            const Polygons &mayCover,
-                            const EvaluationBounds &subjectBounds,
-                            const FillOptions &options,
-                            const DistanceSeed &seed,
-                            const CandidateInitialization &initialization,
-                            const std::function<bool()> &cancelled) {
+CandidateJobResult optimizeCandidate(
+    const ShapeMesh &shape,
+    const Polygons &residual,
+    const Polygons &mayCover,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options,
+    const DistanceSeed &seed,
+    const CandidateInitialization &initialization,
+    const std::function<bool()> &cancelled) {
+    QElapsedTimer jobTimer;
+    jobTimer.start();
+    CandidateJobResult result;
     std::array<double, kGradientCount> values = affineValues(
         initialTransform(shape, seed,
                          initialization.angleOffset,
@@ -1007,18 +1030,25 @@ Candidate optimizeCandidate(const ShapeMesh &shape,
                          initialization.translationOffset));
     std::array<double, kGradientCount> firstMoment{};
     std::array<double, kGradientCount> secondMoment{};
-    Candidate best = legalCandidate(
+    result.candidate = legalCandidate(
         shape, affineFromValues(values), residual, mayCover,
-        subjectBounds, options);
+        subjectBounds, options, &result.profile);
     double beta1Power = 1.0;
     double beta2Power = 1.0;
     for (int iteration = 1; iteration <= options.adamIterations; ++iteration) {
         if (cancelled && cancelled()) {
-            return {};
+            result.candidate = {};
+            result.profile.totalNanoseconds = jobTimer.nsecsElapsed();
+            return result;
         }
         const Affine transform = affineFromValues(values);
+        QElapsedTimer evaluationTimer;
+        evaluationTimer.start();
         const AreaGradient evaluation =
             areaGradient(shape, transform, residual, mayCover, subjectBounds);
+        result.profile.adamEvaluationNanoseconds +=
+            evaluationTimer.nsecsElapsed();
+        ++result.profile.adamEvaluations;
         if (!finiteGradient(evaluation)) {
             break;
         }
@@ -1059,13 +1089,14 @@ Candidate optimizeCandidate(const ShapeMesh &shape,
         }
         const Candidate candidate = legalCandidate(
             shape, affineFromValues(values), residual, mayCover,
-            subjectBounds, options);
-        if (betterCandidate(candidate, best)) {
-            best = candidate;
+            subjectBounds, options, &result.profile);
+        if (betterCandidate(candidate, result.candidate)) {
+            result.candidate = candidate;
         }
     }
+    result.profile.totalNanoseconds = jobTimer.nsecsElapsed();
 
-    return best;
+    return result;
 }
 
 CandidateInitialization candidateInitialization(
@@ -1175,6 +1206,55 @@ bool validOptions(const FillOptions &options) {
         && options.adamLearningRate > 0.0;
 }
 
+double estimatedRemainingSeconds(const QVector<double> &gains,
+                                 double elapsedSeconds,
+                                 double epsGain) {
+    constexpr int kEstimateWindow = 8;
+    constexpr double kMinimumDecay = 0.01;
+    if (gains.size() < 2 || elapsedSeconds <= 0.0) {
+        return -1.0;
+    }
+
+    const int gainCount = static_cast<int>(gains.size());
+    const int first = std::max(0, gainCount - kEstimateWindow);
+    const int count = gainCount - first;
+    double sumX = 0.0;
+    double sumY = 0.0;
+    double sumXy = 0.0;
+    double sumXx = 0.0;
+    for (int offset = 0; offset < count; ++offset) {
+        const double gain = gains[first + offset];
+        if (!std::isfinite(gain) || gain <= 0.0) {
+            return -1.0;
+        }
+        const double x = static_cast<double>(offset);
+        const double y = std::log(gain);
+        sumX += x;
+        sumY += y;
+        sumXy += x * y;
+        sumXx += x * x;
+    }
+    const double denominator =
+        static_cast<double>(count) * sumXx - sumX * sumX;
+    if (denominator <= 0.0) {
+        return -1.0;
+    }
+    const double slope =
+        (static_cast<double>(count) * sumXy - sumX * sumY) / denominator;
+    if (!std::isfinite(slope) || slope >= -kMinimumDecay) {
+        return -1.0;
+    }
+
+    const double currentGain = gains.back();
+    const double remainingAccepted = std::max(
+        0.0, std::ceil((std::log(epsGain) - std::log(currentGain)) / slope));
+    const double secondsPerStep =
+        elapsedSeconds / static_cast<double>(gains.size());
+    const double estimate = (remainingAccepted + 1.0) * secondsPerStep;
+
+    return std::isfinite(estimate) && estimate >= 0.0 ? estimate : -1.0;
+}
+
 } // namespace
 
 QVector<ShapeMesh> buildShapeCatalog(const ShapeGeometryStore &geometry,
@@ -1252,7 +1332,8 @@ FillResult analyticCoverFill(
     const FillInput &input,
     const QVector<ShapeMesh> &catalog,
     const FillOptions &options,
-    const std::function<bool()> &cancelled) {
+    const std::function<bool()> &cancelled,
+    const std::function<void(const FillProgress &)> &progress) {
     FillResult result;
     const Polygons mustCover = normalizedInputPolygons(input.mustCover);
     const Polygons mayCover = normalizedInputPolygons(input.mayCover);
@@ -1273,6 +1354,19 @@ FillResult analyticCoverFill(
 
     result.residual = mustCover;
     const double targetArea = polygonSetArea(mustCover);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QVector<double> acceptedGains;
+    if (progress) {
+        progress({
+            0,
+            targetArea,
+            0.0,
+            targetArea,
+            0.0,
+            -1.0,
+        });
+    }
     const std::uint64_t seedValue = options.seed == 0
         ? derivedSeed(mustCover) : options.seed;
     std::mt19937_64 random(seedValue);
@@ -1280,15 +1374,21 @@ FillResult analyticCoverFill(
     QThreadPool candidatePool;
     candidatePool.setMaxThreadCount(
         std::max(1, QThread::idealThreadCount() - 1));
+    result.profile.workerThreads = candidatePool.maxThreadCount();
     while (polygonSetArea(result.residual) > options.epsArea
            && result.placements.size() < options.budget) {
         if (cancelled && cancelled()) {
             result.cancelled = true;
             result.residualArea = polygonSetArea(result.residual);
             result.coveredArea = targetArea - result.residualArea;
+            result.profile.totalWallSeconds =
+                static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
             return result;
         }
 
+        ++result.profile.greedySteps;
+        QElapsedTimer setupTimer;
+        setupTimer.start();
         const EvaluationBounds subjectBounds{
             individualPolygonBounds(result.residual),
             individualPolygonBounds(mayCover),
@@ -1307,7 +1407,12 @@ FillResult analyticCoverFill(
                 });
             }
         }
-        std::vector<Candidate> jobResults(jobs.size());
+        result.profile.greedySetupWallSeconds +=
+            static_cast<double>(setupTimer.nsecsElapsed()) * 1e-9;
+        result.profile.candidateJobs += jobs.size();
+        std::vector<CandidateJobResult> jobResults(jobs.size());
+        QElapsedTimer candidateBatchTimer;
+        candidateBatchTimer.start();
         for (size_t jobIndex = 0; jobIndex < jobs.size(); ++jobIndex) {
             candidatePool.start([&, jobIndex]() {
                 const CandidateJob &job = jobs[jobIndex];
@@ -1317,16 +1422,32 @@ FillResult analyticCoverFill(
             });
         }
         candidatePool.waitForDone();
+        result.profile.candidateBatchWallSeconds +=
+            static_cast<double>(candidateBatchTimer.nsecsElapsed()) * 1e-9;
         Candidate best;
-        for (const Candidate &candidate : jobResults) {
-            if (betterCandidate(candidate, best)) {
-                best = candidate;
+        for (const CandidateJobResult &jobResult : jobResults) {
+            result.profile.candidateWorkerSeconds +=
+                static_cast<double>(jobResult.profile.totalNanoseconds) * 1e-9;
+            result.profile.adamEvaluationWorkerSeconds +=
+                static_cast<double>(
+                    jobResult.profile.adamEvaluationNanoseconds) * 1e-9;
+            result.profile.legalizationWorkerSeconds +=
+                static_cast<double>(
+                    jobResult.profile.legalizationNanoseconds) * 1e-9;
+            result.profile.adamEvaluations +=
+                jobResult.profile.adamEvaluations;
+            result.profile.legalizationEvaluations +=
+                jobResult.profile.legalizationEvaluations;
+            if (betterCandidate(jobResult.candidate, best)) {
+                best = jobResult.candidate;
             }
         }
         if (cancelled && cancelled()) {
             result.cancelled = true;
             result.residualArea = polygonSetArea(result.residual);
             result.coveredArea = targetArea - result.residualArea;
+            result.profile.totalWallSeconds =
+                static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
             return result;
         }
         if (!best.valid) {
@@ -1334,6 +1455,8 @@ FillResult analyticCoverFill(
             break;
         }
 
+        QElapsedTimer residualTimer;
+        residualTimer.start();
         const Polygons footprint{transformedBoundary(
             *std::find_if(catalog.cbegin(), catalog.cend(),
                           [&best](const ShapeMesh &shape) {
@@ -1344,6 +1467,8 @@ FillResult analyticCoverFill(
         const double previousArea = polygonSetArea(result.residual);
         const double nextArea = polygonSetArea(nextResidual);
         const double exactGain = previousArea - nextArea;
+        result.profile.residualUpdateWallSeconds +=
+            static_cast<double>(residualTimer.nsecsElapsed()) * 1e-9;
         if (!std::isfinite(exactGain) || exactGain < options.epsGain) {
             result.stalled = true;
             break;
@@ -1356,8 +1481,24 @@ FillResult analyticCoverFill(
         });
         footprints += footprint;
         result.residual = std::move(nextResidual);
+        acceptedGains.push_back(exactGain);
+        if (progress) {
+            const double elapsedSeconds =
+                static_cast<double>(elapsed.elapsed()) / 1000.0;
+            progress({
+                static_cast<int>(result.placements.size()),
+                targetArea,
+                std::max(0.0, targetArea - nextArea),
+                nextArea,
+                elapsedSeconds,
+                estimatedRemainingSeconds(
+                    acceptedGains, elapsedSeconds, options.epsGain),
+            });
+        }
     }
 
+    QElapsedTimer finalTimer;
+    finalTimer.start();
     result.residualArea = polygonSetArea(result.residual);
     result.coveredArea = std::max(0.0, targetArea - result.residualArea);
     result.budgetHit = result.placements.size() >= options.budget
@@ -1366,6 +1507,10 @@ FillResult analyticCoverFill(
         const Polygons coverage = unionPolygons(footprints);
         result.outsideArea = polygonSetArea(differencePolygons(coverage, mayCover));
     }
+    result.profile.finalMeasurementWallSeconds =
+        static_cast<double>(finalTimer.nsecsElapsed()) * 1e-9;
+    result.profile.totalWallSeconds =
+        static_cast<double>(elapsed.nsecsElapsed()) * 1e-9;
 
     return result;
 }

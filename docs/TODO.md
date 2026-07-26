@@ -4,6 +4,8 @@ Small changes:
     -Cursor on layer drag in Layers widget is rendered only left half visible
 
 Medium changes:
+    -Termination of the fill should still place the shapes generated
+    -Deprecate advancing front algorithm, cleanup references
     -Handle files that were passed as params on application launch, if 3so -> open project if image pass the image as a Guidelayer to a new project
     -Add dragging layer in Layers widget to scroll the list if near upper or lower borders
 

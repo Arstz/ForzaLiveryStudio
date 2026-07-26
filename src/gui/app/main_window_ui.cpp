@@ -43,6 +43,12 @@ void MainWindow::setupCanvas() {
         startLiningFill(points, width, fillColor);
     });
     canvas_->setLiningFillCancelCallback([this]() { cancelGeneratedFill(); });
+    generatedFillProgress_ = new QProgressBar(statusBar());
+    generatedFillProgress_->setTextVisible(true);
+    generatedFillProgress_->setMinimumWidth(260);
+    generatedFillProgress_->setMaximumWidth(380);
+    generatedFillProgress_->hide();
+    statusBar()->addPermanentWidget(generatedFillProgress_);
     regionFillProgress_ = new QProgressBar(statusBar());
     regionFillProgress_->setTextVisible(true);
     regionFillProgress_->setFormat(QStringLiteral("Fill Regions %v/%m"));

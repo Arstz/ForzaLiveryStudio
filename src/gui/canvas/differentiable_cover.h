@@ -77,16 +77,42 @@ struct FillOptions {
     bool useRouter = true;
 };
 
+struct FillProfile {
+    double totalWallSeconds = 0.0;
+    double greedySetupWallSeconds = 0.0;
+    double candidateBatchWallSeconds = 0.0;
+    double candidateWorkerSeconds = 0.0;
+    double adamEvaluationWorkerSeconds = 0.0;
+    double legalizationWorkerSeconds = 0.0;
+    double residualUpdateWallSeconds = 0.0;
+    double finalMeasurementWallSeconds = 0.0;
+    std::uint64_t candidateJobs = 0;
+    std::uint64_t adamEvaluations = 0;
+    std::uint64_t legalizationEvaluations = 0;
+    int greedySteps = 0;
+    int workerThreads = 0;
+};
+
 struct FillResult {
     QVector<Placement> placements;
     Polygons residual;
     QString error;
+    FillProfile profile;
     double residualArea = 0.0;
     double coveredArea = 0.0;
     double outsideArea = 0.0;
     bool budgetHit = false;
     bool stalled = false;
     bool cancelled = false;
+};
+
+struct FillProgress {
+    int placementCount = 0;
+    double targetArea = 0.0;
+    double coveredArea = 0.0;
+    double residualArea = 0.0;
+    double elapsedSeconds = 0.0;
+    double etaSeconds = -1.0;
 };
 
 struct AreaGradient {
@@ -112,7 +138,8 @@ FillResult analyticCoverFill(
     const FillInput &input,
     const QVector<ShapeMesh> &catalog,
     const FillOptions &options = {},
-    const std::function<bool()> &cancelled = {});
+    const std::function<bool()> &cancelled = {},
+    const std::function<void(const FillProgress &)> &progress = {});
 
 QTransform toQTransform(const Affine &transform);
 
