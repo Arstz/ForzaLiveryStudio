@@ -29,6 +29,7 @@ namespace {
 
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
+constexpr int kCameraTransitionDurationMs = 500;
 constexpr int kLiverySectionMaskSlots[fh6::kLiverySideCount] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 };
@@ -1106,7 +1107,8 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     : QOpenGLWidget(parent),
       yaw_(renderSettings_.camera.yawRadians),
       pitch_(renderSettings_.camera.pitchRadians),
-      distance_(renderSettings_.camera.initialDistance) {
+      distance_(renderSettings_.camera.initialDistance),
+      fovDegrees_(renderSettings_.camera.fovDegrees) {
     QSurfaceFormat format;
     format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
@@ -1192,6 +1194,46 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
         update();
     });
     addAction(colorGrade);
+
+    auto *comparisonCamera = new QAction(QStringLiteral("Camera — comparison orbit"), this);
+    connect(comparisonCamera, &QAction::triggered, this, [this]() {
+        resetComparisonCamera();
+        update();
+    });
+    addAction(comparisonCamera);
+
+    const auto addCameraPreset = [this](const QString &label, GarageCameraPreset preset) {
+        auto *action = new QAction(label, this);
+        connect(action, &QAction::triggered, this, [this, preset]() {
+            beginCameraTransition(preset);
+        });
+        addAction(action);
+    };
+    addCameraPreset(QStringLiteral("Camera — Paint Car colour"), GarageCameraPreset::PaintColor);
+    addCameraPreset(QStringLiteral("Camera — livery front"), GarageCameraPreset::LiveryFront);
+    addCameraPreset(QStringLiteral("Camera — livery back"), GarageCameraPreset::LiveryBack);
+    addCameraPreset(
+        QStringLiteral("Camera — glass front"), GarageCameraPreset::LiveryGlassFront);
+    addCameraPreset(
+        QStringLiteral("Camera — glass back"), GarageCameraPreset::LiveryGlassBack);
+
+    cameraTransitionAnimation_ = new QVariantAnimation(this);
+    cameraTransitionAnimation_->setDuration(kCameraTransitionDurationMs);
+    cameraTransitionAnimation_->setStartValue(0.0f);
+    cameraTransitionAnimation_->setEndValue(1.0f);
+    connect(
+        cameraTransitionAnimation_, &QVariantAnimation::valueChanged, this,
+        [this](const QVariant &value) {
+            const float amount = boundedCameraEase(value.toFloat());
+
+            activeCameraFrame_ = interpolateCameraFrame(
+                cameraTransitionFrom_, cameraTransitionTo_, amount);
+            activeCameraFrameEnabled_ = true;
+            update();
+        });
+    connect(
+        cameraTransitionAnimation_, &QVariantAnimation::finished,
+        this, &CarPreviewWidget::finishCameraTransition);
 
     referenceNote_ = new QLabel(this);
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1784,22 +1826,26 @@ void CarPreviewWidget::setLoadCarTextures(bool enabled) {
 }
 
 QMatrix4x4 CarPreviewWidget::cameraView() const {
-    const float cp = std::cos(pitch_);
-    const float sp = std::sin(pitch_);
-    const float cy = std::cos(yaw_);
-    const float sy = std::sin(yaw_);
-    const QVector3D eye = target_ + distance_ * QVector3D(cp * sy, sp, cp * cy);
+    const GarageCameraFrame frame = currentCameraFrame();
+    const QVector3D forward = garageCameraForward(frame);
+    const QVector3D up = garageCameraUp(frame);
     QMatrix4x4 view;
-    view.lookAt(eye, target_, QVector3D(0.0f, 1.0f, 0.0f));
+
+    view.lookAt(frame.position, frame.position + forward, up);
+
     return view;
 }
 
 QMatrix4x4 CarPreviewWidget::cameraProjection() const {
+    const GarageCameraFrame frame = currentCameraFrame();
     const float aspect = height() > 0 ? static_cast<float>(width()) / static_cast<float>(height()) : 1.0f;
     const float nearPlane = std::max(0.01f, modelRadius_ * 0.02f);
-    const float farPlane = modelRadius_ * 8.0f + distance_ * 2.0f;
+    const float farPlane = modelRadius_ * 8.0f
+        + (frame.position - modelCenter_).length() * 2.0f;
     QMatrix4x4 projection;
-    projection.perspective(renderSettings_.camera.fovDegrees, aspect, nearPlane, farPlane);
+
+    projection.perspective(frame.fovDegrees, aspect, nearPlane, farPlane);
+
     return projection;
 }
 
@@ -1822,19 +1868,85 @@ QSize CarPreviewWidget::physicalFramebufferSize() const {
         std::max(1, static_cast<int>(std::lround(height() * dpr))));
 }
 
+GarageCameraFrame CarPreviewWidget::currentCameraFrame() const {
+    if (activeCameraFrameEnabled_) {
+        return activeCameraFrame_;
+    }
+    const float cosPitch = std::cos(pitch_);
+    const float sinPitch = std::sin(pitch_);
+    const float cosYaw = std::cos(yaw_);
+    const float sinYaw = std::sin(yaw_);
+    const QVector3D position = target_
+        + distance_ * QVector3D(cosPitch * sinYaw, sinPitch, cosPitch * cosYaw);
+    const QVector3D forward = (target_ - position).normalized();
+
+    return {
+        position,
+        QQuaternion::fromDirection(forward, QVector3D(0.0f, 1.0f, 0.0f)).normalized(),
+        fovDegrees_,
+    };
+}
+
 void CarPreviewWidget::fitCameraToModel() {
     const fh6::ModelVec3 &mn = model_.boundsMin;
     const fh6::ModelVec3 &mx = model_.boundsMax;
-    target_ = QVector3D(-(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
+    modelCenter_ = QVector3D(
+        -(mn.x + mx.x) * 0.5f,
+        (mn.y + mx.y) * 0.5f,
+        (mn.z + mx.z) * 0.5f);
     const QVector3D extent(mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
     modelRadius_ = std::max(0.001f, 0.5f * extent.length());
     resetComparisonCamera();
 }
 
 void CarPreviewWidget::resetComparisonCamera() {
+    cameraTransitionAnimation_->stop();
+    activeCameraFrameEnabled_ = false;
+    target_ = modelCenter_;
     distance_ = modelRadius_ * renderSettings_.camera.distanceRadiusScale;
     yaw_ = renderSettings_.camera.yawRadians;
     pitch_ = renderSettings_.camera.pitchRadians;
+    fovDegrees_ = renderSettings_.camera.fovDegrees;
+}
+
+void CarPreviewWidget::beginCameraTransition(GarageCameraPreset preset) {
+    cameraTransitionFrom_ = currentCameraFrame();
+    cameraTransitionTo_ = garageCameraFrame(preset);
+    activeCameraFrame_ = cameraTransitionFrom_;
+    activeCameraFrameEnabled_ = true;
+    cameraTransitionAnimation_->stop();
+    cameraTransitionAnimation_->start();
+}
+
+void CarPreviewWidget::finishCameraTransition() {
+    activeCameraFrame_ = cameraTransitionTo_;
+    syncOrbitToCameraFrame(activeCameraFrame_);
+    activeCameraFrameEnabled_ = false;
+    update();
+}
+
+void CarPreviewWidget::stopCameraTransitionForManualControl() {
+    if (!activeCameraFrameEnabled_) {
+        return;
+    }
+    cameraTransitionAnimation_->stop();
+    syncOrbitToCameraFrame(activeCameraFrame_);
+    activeCameraFrameEnabled_ = false;
+}
+
+void CarPreviewWidget::syncOrbitToCameraFrame(const GarageCameraFrame &frame) {
+    const QVector3D forward = garageCameraForward(frame);
+    const float minimumDistance = modelRadius_ * 0.1f;
+    const float maximumDistance = modelRadius_ * 40.0f;
+    const float projectedDistance = QVector3D::dotProduct(
+        modelCenter_ - frame.position, forward);
+
+    distance_ = std::clamp(projectedDistance, minimumDistance, maximumDistance);
+    target_ = frame.position + forward * distance_;
+    const QVector3D orbitDirection = (frame.position - target_).normalized();
+    yaw_ = std::atan2(orbitDirection.x(), orbitDirection.z());
+    pitch_ = std::asin(std::clamp(orbitDirection.y(), -1.0f, 1.0f));
+    fovDegrees_ = frame.fovDegrees;
 }
 
 void CarPreviewWidget::setLightDirectionCandidate(LightDirectionCandidate candidate) {
@@ -2547,6 +2659,7 @@ void CarPreviewWidget::invalidateCachedLivery() {
 }
 
 void CarPreviewWidget::mousePressEvent(QMouseEvent *event) {
+    stopCameraTransitionForManualControl();
     lastMousePos_ = event->pos();
 }
 
@@ -2568,6 +2681,7 @@ void CarPreviewWidget::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void CarPreviewWidget::wheelEvent(QWheelEvent *event) {
+    stopCameraTransitionForManualControl();
     const double steps = event->angleDelta().y() / 120.0;
     distance_ = std::clamp(distance_ * static_cast<float>(std::pow(0.88, steps)),
                            modelRadius_ * 0.1f, modelRadius_ * 40.0f);

@@ -2,6 +2,7 @@
 
 #include "car_model_renderer.h"
 #include "core_types.h"
+#include "garage_camera_presets.h"
 #include "garage_render_settings.h"
 #include "garage_environment.h"
 #include "garage_ground_renderer.h"
@@ -84,8 +85,13 @@ private:
     QSize liveryTextureSize() const;
     QTransform liveryWorldToScreen(const QSize &textureSize) const;
     QSize physicalFramebufferSize() const;
+    GarageCameraFrame currentCameraFrame() const;
     void fitCameraToModel();
     void resetComparisonCamera();
+    void beginCameraTransition(GarageCameraPreset preset);
+    void finishCameraTransition();
+    void stopCameraTransitionForManualControl();
+    void syncOrbitToCameraFrame(const GarageCameraFrame &frame);
     void setLightDirectionCandidate(LightDirectionCandidate candidate);
     void setGameEnvironmentEnabled(bool enabled);
     void updateReferenceNote();
@@ -118,6 +124,9 @@ private:
     QOpenGLShaderProgram postProcessProgram_;
     QOpenGLVertexArrayObject postProcessVao_;
     QSize hdrFramebufferSize_;
+    GarageCameraFrame cameraTransitionFrom_;
+    GarageCameraFrame cameraTransitionTo_;
+    GarageCameraFrame activeCameraFrame_;
     fh6::PaintFinishLibrary paintFinishes_;
     fh6::GarageEnvironmentResources environmentResources_;
     fh6::GarageColorLut colorLut_;
@@ -187,12 +196,16 @@ private:
     bool colorLutUploadPending_ = false;
 
     QLabel *referenceNote_ = nullptr;
+    QVariantAnimation *cameraTransitionAnimation_ = nullptr;
 
+    QVector3D modelCenter_;
     QVector3D target_;
     float modelRadius_ = 1.0f;
     float yaw_;
     float pitch_;
     float distance_;
+    float fovDegrees_;
+    bool activeCameraFrameEnabled_ = false;
     QPoint lastMousePos_;
 };
 

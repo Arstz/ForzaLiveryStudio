@@ -182,6 +182,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/canvas_tools.h
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
+    src/gui/canvas/garage_camera_presets.cpp
+    src/gui/canvas/garage_camera_presets.h
     src/gui/canvas/garage_ground_renderer.cpp
     src/gui/canvas/garage_ground_renderer.h
     src/gui/canvas/advancing_front.cpp
@@ -274,6 +276,25 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(BUILD_TESTING)
+    add_executable(fls_garage_camera_tests
+        src/gui/canvas/garage_camera_presets.cpp
+        tools/garage_camera_test.cpp
+    )
+    target_include_directories(fls_garage_camera_tests PRIVATE
+        src/gui/canvas
+    )
+    target_link_libraries(fls_garage_camera_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+    )
+    add_test(NAME garage_camera_math COMMAND fls_garage_camera_tests)
+    set(FLS_GARAGE_CAMERA_EVIDENCE
+        "${CMAKE_SOURCE_DIR}/tools/temp/decrypted/extracted/UICarTargetCameraPresets.xml")
+    if(EXISTS "${FLS_GARAGE_CAMERA_EVIDENCE}")
+        add_test(NAME garage_camera_game_evidence
+            COMMAND fls_garage_camera_tests "${FLS_GARAGE_CAMERA_EVIDENCE}")
+    endif()
+
     add_executable(fls_garage_lut_tests
         tools/garage_lut_test.cpp
     )
