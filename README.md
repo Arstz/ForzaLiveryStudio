@@ -1,6 +1,6 @@
 # Forza Livery Studio
 
-I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion. Preferred communication is via [Discord Channel](https://discord.gg/zshDeRDBW), but you can leave the issue here as well.
+I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion. Preferred communication is via [Discord Channel](https://discord.gg/s5B2tExv3k), but you can leave the issue here as well.
 
 ## Features
 
