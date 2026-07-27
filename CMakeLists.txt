@@ -36,6 +36,8 @@ add_library(fls_core STATIC
     src/core/game_paths.h
     src/core/garage_environment.cpp
     src/core/garage_environment.h
+    src/core/garage_lut.cpp
+    src/core/garage_lut.h
     src/core/fh6_core.cpp
     src/core/fh6_core.h
     src/core/fm_codec.cpp
@@ -272,6 +274,24 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(BUILD_TESTING)
+    add_executable(fls_garage_lut_tests
+        tools/garage_lut_test.cpp
+    )
+    target_link_libraries(fls_garage_lut_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME garage_lut_parser COMMAND fls_garage_lut_tests)
+    set(FLS_GARAGE_LUT_EVIDENCE
+        "${CMAKE_SOURCE_DIR}/tools/temp/evidence/m6_tuning/captured_lut_match/Forte_BaseFilmStock_Corrected.lut")
+    if(EXISTS "${FLS_GARAGE_LUT_EVIDENCE}")
+        file(SIZE "${FLS_GARAGE_LUT_EVIDENCE}" FLS_GARAGE_LUT_EVIDENCE_SIZE)
+        if(FLS_GARAGE_LUT_EVIDENCE_SIZE GREATER 0)
+            add_test(NAME garage_lut_game_evidence
+                COMMAND fls_garage_lut_tests "${FLS_GARAGE_LUT_EVIDENCE}")
+        endif()
+    endif()
+
     add_executable(fls_model_material_tests
         tools/model_material_test.cpp
     )

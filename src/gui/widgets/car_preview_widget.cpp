@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstring>
 #include <optional>
+#include <utility>
 
 namespace gui {
 namespace {
@@ -47,11 +48,102 @@ void main()
 }
 )";
 
-constexpr char kPostProcessFragmentShader[] = R"(#version 330 core
+constexpr char kBloomExtractFragmentShader[] = R"(#version 330 core
 in vec2 v_uv;
 
 uniform sampler2D scene_texture;
 uniform float exposure;
+uniform float bloom_cutoff;
+
+out vec4 out_color;
+
+void main()
+{
+    vec3 exposed = max(texture(scene_texture, v_uv).rgb, vec3(0.0)) * exp2(exposure);
+    float luminance = dot(exposed, vec3(0.2126, 0.7152, 0.0722));
+    float contribution = max(luminance - bloom_cutoff, 0.0) / max(luminance, 0.0001);
+    out_color = vec4(exposed * contribution, 0.0);
+}
+)";
+
+constexpr char kBloomBlurFragmentShader[] = R"(#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D source_texture;
+uniform vec2 texel_step;
+
+out vec4 out_color;
+
+void main()
+{
+    vec3 color = texture(source_texture, v_uv).rgb * 0.227027;
+    color += texture(source_texture, v_uv + texel_step * 1.384615).rgb * 0.316216;
+    color += texture(source_texture, v_uv - texel_step * 1.384615).rgb * 0.316216;
+    color += texture(source_texture, v_uv + texel_step * 3.230769).rgb * 0.070270;
+    color += texture(source_texture, v_uv - texel_step * 3.230769).rgb * 0.070270;
+    out_color = vec4(color, 0.0);
+}
+)";
+
+constexpr char kBloomCompositeFragmentShader[] = R"(#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D scene_texture;
+uniform sampler2D bloom_texture;
+uniform float exposure;
+uniform float bloom_scale;
+uniform int bloom_enabled;
+
+out vec4 out_color;
+
+void main()
+{
+    vec4 scene = texture(scene_texture, v_uv);
+    vec3 exposed = max(scene.rgb, vec3(0.0)) * exp2(exposure);
+    vec3 bloom = bloom_enabled != 0 ? texture(bloom_texture, v_uv).rgb : vec3(0.0);
+    out_color = vec4(exposed + bloom * bloom_scale, scene.a);
+}
+)";
+
+constexpr char kColorGradeFragmentShader[] = R"(#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D scene_texture;
+uniform sampler3D color_lut;
+uniform float lut_dimension;
+uniform float lut_scale;
+uniform int lut_enabled;
+
+out vec4 out_color;
+
+vec3 pqEncode(vec3 value)
+{
+    const float m1 = 0.1593017578125;
+    const float m2 = 78.84375;
+    const float c1 = 0.8359375;
+    const float c2 = 18.8515625;
+    const float c3 = 18.6875;
+    vec3 powered = pow(clamp(value, vec3(0.0), vec3(1.0)), vec3(m1));
+    return pow((c1 + c2 * powered) / (1.0 + c3 * powered), vec3(m2));
+}
+
+void main()
+{
+    vec4 scene = texture(scene_texture, v_uv);
+    if (lut_enabled == 0) {
+        out_color = scene;
+        return;
+    }
+    vec3 encoded = pqEncode(max(scene.rgb, vec3(0.0)) / lut_scale);
+    vec3 coordinate = (encoded * (lut_dimension - 1.0) + 0.5) / lut_dimension;
+    out_color = vec4(texture(color_lut, coordinate).rgb, scene.a);
+}
+)";
+
+constexpr char kPostProcessFragmentShader[] = R"(#version 330 core
+in vec2 v_uv;
+
+uniform sampler2D scene_texture;
 uniform float filmic_white;
 
 out vec4 out_color;
@@ -78,11 +170,28 @@ vec3 linearToSrgb(vec3 color)
 void main()
 {
     vec4 scene = texture(scene_texture, v_uv);
-    vec3 exposed = max(scene.rgb, vec3(0.0)) * exp2(exposure);
-    vec3 mapped = hableCurve(exposed) / hableCurve(vec3(filmic_white));
+    vec3 mapped = hableCurve(max(scene.rgb, vec3(0.0))) / hableCurve(vec3(filmic_white));
     out_color = vec4(linearToSrgb(max(mapped, vec3(0.0))), scene.a);
 }
 )";
+
+enum class PostProcessPass {
+    BloomExtract,
+    BloomBlurHorizontal,
+    BloomBlurVertical,
+    BloomComposite,
+    ColorGrade,
+    DisplayOutput,
+};
+
+constexpr std::array<PostProcessPass, 6> kPostProcessOrder = {
+    PostProcessPass::BloomExtract,
+    PostProcessPass::BloomBlurHorizontal,
+    PostProcessPass::BloomBlurVertical,
+    PostProcessPass::BloomComposite,
+    PostProcessPass::ColorGrade,
+    PostProcessPass::DisplayOutput,
+};
 
 bool transposedSection(int maskSlot) {
     return maskSlot == 5 || maskSlot == 6 || maskSlot == 7;
@@ -974,11 +1083,20 @@ std::shared_ptr<PreparedCar> prepareCar(
 } // namespace
 
 QString CarPreviewWidget::postProcessShaderSelfTest() {
-    QOpenGLShaderProgram program;
-    if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, kPostProcessVertexShader)
-        || !program.addShaderFromSourceCode(QOpenGLShader::Fragment, kPostProcessFragmentShader)
-        || !program.link()) {
-        return program.log();
+    const std::array<std::pair<const char *, const char *>, 5> shaders = {{
+        {"bloom extract", kBloomExtractFragmentShader},
+        {"bloom blur", kBloomBlurFragmentShader},
+        {"bloom composite", kBloomCompositeFragmentShader},
+        {"colour grade", kColorGradeFragmentShader},
+        {"display output", kPostProcessFragmentShader},
+    }};
+    for (const auto &[name, fragmentShader] : shaders) {
+        QOpenGLShaderProgram program;
+        if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, kPostProcessVertexShader)
+            || !program.addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShader)
+            || !program.link()) {
+            return QStringLiteral("%1: %2").arg(QString::fromLatin1(name), program.log());
+        }
     }
 
     return QString();
@@ -1056,6 +1174,24 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
         update();
     });
     addAction(ground);
+
+    auto *bloom = new QAction(QStringLiteral("HDR bloom"), this);
+    bloom->setCheckable(true);
+    bloom->setChecked(renderSettings_.postProcessing.bloomEnabled);
+    connect(bloom, &QAction::toggled, this, [this](bool enabled) {
+        renderSettings_.postProcessing.bloomEnabled = enabled;
+        update();
+    });
+    addAction(bloom);
+
+    auto *colorGrade = new QAction(QStringLiteral("Paint Car colour grade"), this);
+    colorGrade->setCheckable(true);
+    colorGrade->setChecked(renderSettings_.postProcessing.colorGradeEnabled);
+    connect(colorGrade, &QAction::toggled, this, [this](bool enabled) {
+        renderSettings_.postProcessing.colorGradeEnabled = enabled;
+        update();
+    });
+    addAction(colorGrade);
 
     referenceNote_ = new QLabel(this);
     referenceNote_->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1378,6 +1514,7 @@ void CarPreviewWidget::initializeGL() {
     context()->functions()->glEnable(GL_MULTISAMPLE);
     logGlCapabilities();
     initializePostProcessing();
+    colorLutUploadPending_ = colorLut_.valid();
     geometryLoaded_ = geometry_.loadDefault();
     shapeRenderer_.initialize();
     if (geometryLoaded_ && shapeRenderer_.isInitialized()) {
@@ -1399,6 +1536,14 @@ void CarPreviewWidget::paintGL() {
         return;
     }
     QOpenGLFunctions *functions = ctx->functions();
+
+    if (colorLutUploadPending_) {
+        const bool uploaded = uploadColorLut();
+        if (!uploaded && !colorLutError_.isEmpty()) {
+            qWarning().noquote() << "Garage colour-grade fallback:" << colorLutError_;
+        }
+        colorLutUploadPending_ = false;
+    }
 
     if (environmentUploadPending_ && carRenderer_.isInitialized()) {
         QString error;
@@ -1581,29 +1726,41 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
     if (folder.isEmpty()) {
         paintFinishes_.clear();
         environmentResources_ = {};
+        colorLut_ = {};
+        colorLutError_.clear();
         environmentUploadPending_ = true;
+        colorLutUploadPending_ = true;
         update();
         return;
     }
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start([guard, folder, generation]() {
+        QString colorLutError;
         auto library = std::make_shared<fh6::PaintFinishLibrary>();
         library->load(folder);
         auto environment = std::make_shared<fh6::GarageEnvironmentResources>(
             fh6::loadGarageEnvironmentResources(folder));
+        auto colorLut = std::make_shared<std::optional<fh6::GarageColorLut>>(
+            fh6::loadGarageColorLut(folder, &colorLutError));
         if (!guard) {
             return;
         }
         QMetaObject::invokeMethod(
             guard,
             [guard, library = std::move(library), environment = std::move(environment),
+             colorLut = std::move(colorLut), colorLutError = std::move(colorLutError),
              generation]() mutable {
                 if (!guard || guard->paintFinishLoadGeneration_ != generation) {
                     return;
                 }
                 guard->paintFinishes_.replace(std::move(*library));
                 guard->environmentResources_ = std::move(*environment);
+                guard->colorLut_ = colorLut->has_value()
+                    ? std::move(colorLut->value())
+                    : fh6::GarageColorLut{};
+                guard->colorLutError_ = std::move(colorLutError);
                 guard->environmentUploadPending_ = true;
+                guard->colorLutUploadPending_ = true;
                 guard->update();
             },
             Qt::QueuedConnection);
@@ -1761,33 +1918,92 @@ void CarPreviewWidget::initializePostProcessing() {
     if (postProcessInitialized_) {
         return;
     }
-    if (!postProcessProgram_.addShaderFromSourceCode(QOpenGLShader::Vertex, kPostProcessVertexShader)
-        || !postProcessProgram_.addShaderFromSourceCode(QOpenGLShader::Fragment, kPostProcessFragmentShader)
-        || !postProcessProgram_.link()) {
-        qWarning().noquote() << "Car preview post-process shader failed to build:"
-                             << postProcessProgram_.log();
+    const auto buildProgram = [](QOpenGLShaderProgram &program, const char *name,
+                                 const char *fragmentShader) {
+        if (program.addShaderFromSourceCode(QOpenGLShader::Vertex, kPostProcessVertexShader)
+            && program.addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShader)
+            && program.link()) {
+            return true;
+        }
+        qWarning().noquote()
+            << QStringLiteral("Car preview %1 shader failed to build:").arg(QString::fromLatin1(name))
+            << program.log();
+
+        return false;
+    };
+    const bool programsBuilt =
+        buildProgram(bloomExtractProgram_, "bloom extract", kBloomExtractFragmentShader)
+        && buildProgram(bloomBlurProgram_, "bloom blur", kBloomBlurFragmentShader)
+        && buildProgram(bloomCompositeProgram_, "bloom composite", kBloomCompositeFragmentShader)
+        && buildProgram(colorGradeProgram_, "colour grade", kColorGradeFragmentShader)
+        && buildProgram(postProcessProgram_, "display output", kPostProcessFragmentShader);
+    if (!programsBuilt) {
+        bloomExtractProgram_.removeAllShaders();
+        bloomBlurProgram_.removeAllShaders();
+        bloomCompositeProgram_.removeAllShaders();
+        colorGradeProgram_.removeAllShaders();
         postProcessProgram_.removeAllShaders();
         return;
     }
     if (!postProcessVao_.create()) {
         qWarning() << "Car preview post-process VAO failed to initialize";
+        bloomExtractProgram_.removeAllShaders();
+        bloomBlurProgram_.removeAllShaders();
+        bloomCompositeProgram_.removeAllShaders();
+        colorGradeProgram_.removeAllShaders();
         postProcessProgram_.removeAllShaders();
         return;
     }
+    bloomSceneTextureLocation_ = bloomExtractProgram_.uniformLocation("scene_texture");
+    bloomExposureLocation_ = bloomExtractProgram_.uniformLocation("exposure");
+    bloomCutoffLocation_ = bloomExtractProgram_.uniformLocation("bloom_cutoff");
+    bloomBlurTextureLocation_ = bloomBlurProgram_.uniformLocation("source_texture");
+    bloomBlurTexelStepLocation_ = bloomBlurProgram_.uniformLocation("texel_step");
+    bloomCompositeSceneLocation_ = bloomCompositeProgram_.uniformLocation("scene_texture");
+    bloomCompositeTextureLocation_ = bloomCompositeProgram_.uniformLocation("bloom_texture");
+    bloomCompositeExposureLocation_ = bloomCompositeProgram_.uniformLocation("exposure");
+    bloomCompositeScaleLocation_ = bloomCompositeProgram_.uniformLocation("bloom_scale");
+    bloomCompositeEnabledLocation_ = bloomCompositeProgram_.uniformLocation("bloom_enabled");
+    colorGradeSceneLocation_ = colorGradeProgram_.uniformLocation("scene_texture");
+    colorGradeLutLocation_ = colorGradeProgram_.uniformLocation("color_lut");
+    colorGradeDimensionLocation_ = colorGradeProgram_.uniformLocation("lut_dimension");
+    colorGradeScaleLocation_ = colorGradeProgram_.uniformLocation("lut_scale");
+    colorGradeEnabledLocation_ = colorGradeProgram_.uniformLocation("lut_enabled");
     postSceneTextureLocation_ = postProcessProgram_.uniformLocation("scene_texture");
-    postExposureLocation_ = postProcessProgram_.uniformLocation("exposure");
     postFilmicWhiteLocation_ = postProcessProgram_.uniformLocation("filmic_white");
     postProcessInitialized_ = true;
 }
 
 void CarPreviewWidget::releasePostProcessing() {
     releaseHdrFramebuffers();
+    if (colorLutTexture_ != 0 && context() != nullptr) {
+        context()->functions()->glDeleteTextures(1, &colorLutTexture_);
+    }
+    colorLutTexture_ = 0;
     if (postProcessVao_.isCreated()) {
         postProcessVao_.destroy();
     }
+    bloomExtractProgram_.removeAllShaders();
+    bloomBlurProgram_.removeAllShaders();
+    bloomCompositeProgram_.removeAllShaders();
+    colorGradeProgram_.removeAllShaders();
     postProcessProgram_.removeAllShaders();
+    bloomSceneTextureLocation_ = -1;
+    bloomExposureLocation_ = -1;
+    bloomCutoffLocation_ = -1;
+    bloomBlurTextureLocation_ = -1;
+    bloomBlurTexelStepLocation_ = -1;
+    bloomCompositeSceneLocation_ = -1;
+    bloomCompositeTextureLocation_ = -1;
+    bloomCompositeExposureLocation_ = -1;
+    bloomCompositeScaleLocation_ = -1;
+    bloomCompositeEnabledLocation_ = -1;
+    colorGradeSceneLocation_ = -1;
+    colorGradeLutLocation_ = -1;
+    colorGradeDimensionLocation_ = -1;
+    colorGradeScaleLocation_ = -1;
+    colorGradeEnabledLocation_ = -1;
     postSceneTextureLocation_ = -1;
-    postExposureLocation_ = -1;
     postFilmicWhiteLocation_ = -1;
     postProcessInitialized_ = false;
 }
@@ -1812,6 +2028,22 @@ void CarPreviewWidget::releaseHdrFramebuffers() {
         if (hdrResolveFramebuffer_ != 0) {
             functions->glDeleteFramebuffers(1, &hdrResolveFramebuffer_);
         }
+        if (hdrCompositeTexture_ != 0) {
+            functions->glDeleteTextures(1, &hdrCompositeTexture_);
+        }
+        if (hdrCompositeFramebuffer_ != 0) {
+            functions->glDeleteFramebuffers(1, &hdrCompositeFramebuffer_);
+        }
+        if (hdrGradeTexture_ != 0) {
+            functions->glDeleteTextures(1, &hdrGradeTexture_);
+        }
+        if (hdrGradeFramebuffer_ != 0) {
+            functions->glDeleteFramebuffers(1, &hdrGradeFramebuffer_);
+        }
+        functions->glDeleteTextures(
+            static_cast<GLsizei>(bloomTextures_.size()), bloomTextures_.data());
+        functions->glDeleteFramebuffers(
+            static_cast<GLsizei>(bloomFramebuffers_.size()), bloomFramebuffers_.data());
     }
     hdrFramebufferSize_ = {};
     hdrSceneFramebuffer_ = 0;
@@ -1819,7 +2051,77 @@ void CarPreviewWidget::releaseHdrFramebuffers() {
     hdrSceneDepth_ = 0;
     hdrResolveFramebuffer_ = 0;
     hdrResolveTexture_ = 0;
+    hdrCompositeFramebuffer_ = 0;
+    hdrCompositeTexture_ = 0;
+    hdrGradeFramebuffer_ = 0;
+    hdrGradeTexture_ = 0;
+    bloomFramebuffers_ = {};
+    bloomTextures_ = {};
     hdrSampleCount_ = 0;
+}
+
+bool CarPreviewWidget::uploadColorLut() {
+    QOpenGLContext *glContext = context();
+    if (glContext == nullptr) {
+        return false;
+    }
+    QOpenGLExtraFunctions *functions = glContext->extraFunctions();
+    GLint activeTexture = 0;
+    GLint maximumSize = 0;
+    GLint textureBinding = 0;
+
+    functions->glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+    functions->glActiveTexture(GL_TEXTURE1);
+    functions->glGetIntegerv(GL_TEXTURE_BINDING_3D, &textureBinding);
+    const GLuint previousColorLut = colorLutTexture_;
+    if (colorLutTexture_ != 0) {
+        functions->glDeleteTextures(1, &colorLutTexture_);
+        colorLutTexture_ = 0;
+        if (textureBinding == static_cast<GLint>(previousColorLut)) {
+            textureBinding = 0;
+        }
+    }
+    const auto restoreBinding = [&]() {
+        functions->glBindTexture(GL_TEXTURE_3D, static_cast<GLuint>(textureBinding));
+        functions->glActiveTexture(static_cast<GLenum>(activeTexture));
+    };
+    if (!colorLut_.valid()) {
+        restoreBinding();
+        return false;
+    }
+    functions->glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &maximumSize);
+    if (colorLut_.dimension > maximumSize) {
+        colorLutError_ = QStringLiteral("LUT dimension %1 exceeds GL limit %2")
+                             .arg(colorLut_.dimension)
+                             .arg(maximumSize);
+        restoreBinding();
+        return false;
+    }
+
+    while (functions->glGetError() != GL_NO_ERROR) {
+    }
+    functions->glGenTextures(1, &colorLutTexture_);
+    functions->glBindTexture(GL_TEXTURE_3D, colorLutTexture_);
+    functions->glTexImage3D(
+        GL_TEXTURE_3D, 0, GL_RGBA16F,
+        colorLut_.dimension, colorLut_.dimension, colorLut_.dimension,
+        0, GL_RGBA, GL_FLOAT, colorLut_.rgba.data());
+    functions->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    functions->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    functions->glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    const GLenum error = functions->glGetError();
+    restoreBinding();
+    if (error != GL_NO_ERROR) {
+        functions->glDeleteTextures(1, &colorLutTexture_);
+        colorLutTexture_ = 0;
+        colorLutError_ = QStringLiteral("OpenGL LUT upload failed with error 0x%1").arg(error, 0, 16);
+        return false;
+    }
+    colorLutError_.clear();
+
+    return true;
 }
 
 bool CarPreviewWidget::ensureHdrFramebuffers(const QSize &size) {
@@ -1848,6 +2150,8 @@ bool CarPreviewWidget::ensureHdrFramebuffers(const QSize &size) {
     const int sampleCount = std::clamp(
         std::max(1, glContext->format().samples()), 1, std::max(1, maximumSamples));
     if (hdrSceneFramebuffer_ != 0 && hdrResolveFramebuffer_ != 0
+        && hdrCompositeFramebuffer_ != 0 && hdrGradeFramebuffer_ != 0
+        && bloomFramebuffers_[0] != 0 && bloomFramebuffers_[1] != 0
         && hdrFramebufferSize_ == size && hdrSampleCount_ == sampleCount) {
         return true;
     }
@@ -1885,11 +2189,50 @@ bool CarPreviewWidget::ensureHdrFramebuffers(const QSize &size) {
         GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hdrResolveTexture_, 0);
     const GLenum resolveStatus = functions->glCheckFramebufferStatus(GL_FRAMEBUFFER);
 
-    if (sceneStatus != GL_FRAMEBUFFER_COMPLETE || resolveStatus != GL_FRAMEBUFFER_COMPLETE) {
+    const auto createColorTarget = [functions](const QSize &targetSize, GLuint &framebuffer,
+                                                GLuint &texture) {
+        functions->glGenFramebuffers(1, &framebuffer);
+        functions->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        functions->glGenTextures(1, &texture);
+        functions->glBindTexture(GL_TEXTURE_2D, texture);
+        functions->glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_RGBA16F, targetSize.width(), targetSize.height(), 0,
+            GL_RGBA, GL_FLOAT, nullptr);
+        functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        functions->glFramebufferTexture2D(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
+        return functions->glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    };
+    const float bloomResolutionScale = std::clamp(
+        renderSettings_.postProcessing.bloomResolutionScale, 0.125f, 1.0f);
+    const QSize bloomSize(
+        std::max(1, static_cast<int>(std::lround(size.width() * bloomResolutionScale))),
+        std::max(1, static_cast<int>(std::lround(size.height() * bloomResolutionScale))));
+    const GLenum compositeStatus = createColorTarget(
+        size, hdrCompositeFramebuffer_, hdrCompositeTexture_);
+    const GLenum gradeStatus = createColorTarget(size, hdrGradeFramebuffer_, hdrGradeTexture_);
+    const GLenum bloomStatus0 = createColorTarget(
+        bloomSize, bloomFramebuffers_[0], bloomTextures_[0]);
+    const GLenum bloomStatus1 = createColorTarget(
+        bloomSize, bloomFramebuffers_[1], bloomTextures_[1]);
+
+    if (sceneStatus != GL_FRAMEBUFFER_COMPLETE || resolveStatus != GL_FRAMEBUFFER_COMPLETE
+        || compositeStatus != GL_FRAMEBUFFER_COMPLETE || gradeStatus != GL_FRAMEBUFFER_COMPLETE
+        || bloomStatus0 != GL_FRAMEBUFFER_COMPLETE || bloomStatus1 != GL_FRAMEBUFFER_COMPLETE) {
         qWarning().noquote()
-            << QStringLiteral("Car preview HDR framebuffer incomplete: scene=0x%1 resolve=0x%2")
+            << QStringLiteral(
+                   "Car preview HDR framebuffer incomplete: scene=0x%1 resolve=0x%2 "
+                   "composite=0x%3 grade=0x%4 bloomA=0x%5 bloomB=0x%6")
                    .arg(sceneStatus, 0, 16)
-                   .arg(resolveStatus, 0, 16);
+                   .arg(resolveStatus, 0, 16)
+                   .arg(compositeStatus, 0, 16)
+                   .arg(gradeStatus, 0, 16)
+                   .arg(bloomStatus0, 0, 16)
+                   .arg(bloomStatus1, 0, 16);
         releaseHdrFramebuffers();
         restoreBindings();
         return false;
@@ -1937,6 +2280,153 @@ void CarPreviewWidget::renderCar(GLuint liveryTexture, bool linearOutput) {
         linearOutput);
 }
 
+bool CarPreviewWidget::renderBloomExtract(const QSize &size) {
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+    const float resolutionScale = std::clamp(
+        renderSettings_.postProcessing.bloomResolutionScale, 0.125f, 1.0f);
+    const QSize bloomSize(
+        std::max(1, static_cast<int>(std::lround(size.width() * resolutionScale))),
+        std::max(1, static_cast<int>(std::lround(size.height() * resolutionScale))));
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, bloomFramebuffers_[0]);
+    functions->glViewport(0, 0, bloomSize.width(), bloomSize.height());
+    if (!renderSettings_.postProcessing.bloomEnabled) {
+        functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        functions->glClear(GL_COLOR_BUFFER_BIT);
+        return true;
+    }
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, hdrResolveTexture_);
+    if (!bloomExtractProgram_.bind()) {
+        return false;
+    }
+    bloomExtractProgram_.setUniformValue(bloomSceneTextureLocation_, 0);
+    bloomExtractProgram_.setUniformValue(
+        bloomExposureLocation_, renderSettings_.postProcessing.exposure);
+    bloomExtractProgram_.setUniformValue(
+        bloomCutoffLocation_,
+        renderSettings_.postProcessing.bloomCutoff
+            * garage_render_defaults::kBloomCapturedCutoffFactor);
+    postProcessVao_.bind();
+    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
+    postProcessVao_.release();
+    bloomExtractProgram_.release();
+
+    return true;
+}
+
+bool CarPreviewWidget::renderBloomBlur(
+    const QSize &size, int sourceIndex, int targetIndex, bool horizontal) {
+    if (!renderSettings_.postProcessing.bloomEnabled) {
+        return true;
+    }
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+    const float resolutionScale = std::clamp(
+        renderSettings_.postProcessing.bloomResolutionScale, 0.125f, 1.0f);
+    const QSize bloomSize(
+        std::max(1, static_cast<int>(std::lround(size.width() * resolutionScale))),
+        std::max(1, static_cast<int>(std::lround(size.height() * resolutionScale))));
+    const QVector2D texelStep = horizontal
+        ? QVector2D(1.0f / bloomSize.width(), 0.0f)
+        : QVector2D(0.0f, 1.0f / bloomSize.height());
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, bloomFramebuffers_[targetIndex]);
+    functions->glViewport(0, 0, bloomSize.width(), bloomSize.height());
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, bloomTextures_[sourceIndex]);
+    if (!bloomBlurProgram_.bind()) {
+        return false;
+    }
+    bloomBlurProgram_.setUniformValue(bloomBlurTextureLocation_, 0);
+    bloomBlurProgram_.setUniformValue(bloomBlurTexelStepLocation_, texelStep);
+    postProcessVao_.bind();
+    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
+    postProcessVao_.release();
+    bloomBlurProgram_.release();
+
+    return true;
+}
+
+bool CarPreviewWidget::renderBloomComposite(const QSize &size) {
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrCompositeFramebuffer_);
+    functions->glViewport(0, 0, size.width(), size.height());
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, hdrResolveTexture_);
+    functions->glActiveTexture(GL_TEXTURE1);
+    functions->glBindTexture(GL_TEXTURE_2D, bloomTextures_[0]);
+    if (!bloomCompositeProgram_.bind()) {
+        return false;
+    }
+    bloomCompositeProgram_.setUniformValue(bloomCompositeSceneLocation_, 0);
+    bloomCompositeProgram_.setUniformValue(bloomCompositeTextureLocation_, 1);
+    bloomCompositeProgram_.setUniformValue(
+        bloomCompositeExposureLocation_, renderSettings_.postProcessing.exposure);
+    bloomCompositeProgram_.setUniformValue(
+        bloomCompositeScaleLocation_,
+        renderSettings_.postProcessing.bloomScale
+            * garage_render_defaults::kBloomCapturedScaleFactor);
+    bloomCompositeProgram_.setUniformValue(
+        bloomCompositeEnabledLocation_, renderSettings_.postProcessing.bloomEnabled ? 1 : 0);
+    postProcessVao_.bind();
+    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
+    postProcessVao_.release();
+    bloomCompositeProgram_.release();
+
+    return true;
+}
+
+bool CarPreviewWidget::renderColorGrade(const QSize &size) {
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+    const bool colorGradeEnabled = renderSettings_.postProcessing.colorGradeEnabled
+        && colorLutTexture_ != 0 && colorLut_.valid();
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrGradeFramebuffer_);
+    functions->glViewport(0, 0, size.width(), size.height());
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, hdrCompositeTexture_);
+    functions->glActiveTexture(GL_TEXTURE1);
+    functions->glBindTexture(GL_TEXTURE_3D, colorLutTexture_);
+    if (!colorGradeProgram_.bind()) {
+        return false;
+    }
+    colorGradeProgram_.setUniformValue(colorGradeSceneLocation_, 0);
+    colorGradeProgram_.setUniformValue(colorGradeLutLocation_, 1);
+    colorGradeProgram_.setUniformValue(
+        colorGradeDimensionLocation_, static_cast<float>(std::max(1, colorLut_.dimension)));
+    colorGradeProgram_.setUniformValue(
+        colorGradeScaleLocation_, colorLut_.valid() ? colorLut_.scale : 1.0f);
+    colorGradeProgram_.setUniformValue(colorGradeEnabledLocation_, colorGradeEnabled ? 1 : 0);
+    postProcessVao_.bind();
+    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
+    postProcessVao_.release();
+    colorGradeProgram_.release();
+
+    return true;
+}
+
+bool CarPreviewWidget::renderDisplayOutput(const QSize &size) {
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+
+    functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
+    functions->glViewport(0, 0, size.width(), size.height());
+    functions->glActiveTexture(GL_TEXTURE0);
+    functions->glBindTexture(GL_TEXTURE_2D, hdrGradeTexture_);
+    if (!postProcessProgram_.bind()) {
+        return false;
+    }
+    postProcessProgram_.setUniformValue(postSceneTextureLocation_, 0);
+    postProcessProgram_.setUniformValue(
+        postFilmicWhiteLocation_, renderSettings_.postProcessing.filmicWhite);
+    postProcessVao_.bind();
+    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
+    postProcessVao_.release();
+    postProcessProgram_.release();
+
+    return true;
+}
+
 bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
     if (!postProcessInitialized_ || !ensureHdrFramebuffers(size)) {
         return false;
@@ -1948,7 +2438,8 @@ bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
     const GLboolean framebufferSrgbEnabled = functions->glIsEnabled(GL_FRAMEBUFFER_SRGB);
     GLboolean depthWriteEnabled = GL_TRUE;
     GLint activeTexture = 0;
-    GLint textureBinding = 0;
+    std::array<GLint, 2> texture2dBindings = {};
+    std::array<GLint, 2> texture3dBindings = {};
     GLint currentProgram = 0;
     GLint vertexArray = 0;
     GLint drawFramebuffer = 0;
@@ -1957,8 +2448,11 @@ bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
 
     functions->glGetBooleanv(GL_DEPTH_WRITEMASK, &depthWriteEnabled);
     functions->glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
-    functions->glActiveTexture(GL_TEXTURE0);
-    functions->glGetIntegerv(GL_TEXTURE_BINDING_2D, &textureBinding);
+    for (int unit = 0; unit < static_cast<int>(texture2dBindings.size()); ++unit) {
+        functions->glActiveTexture(GL_TEXTURE0 + unit);
+        functions->glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture2dBindings[unit]);
+        functions->glGetIntegerv(GL_TEXTURE_BINDING_3D, &texture3dBindings[unit]);
+    }
     functions->glGetIntegerv(GL_CURRENT_PROGRAM, &currentProgram);
     functions->glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vertexArray);
     functions->glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
@@ -1972,7 +2466,13 @@ bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
         }
     };
     const auto restoreState = [&]() {
-        functions->glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(textureBinding));
+        for (int unit = 0; unit < static_cast<int>(texture2dBindings.size()); ++unit) {
+            functions->glActiveTexture(GL_TEXTURE0 + unit);
+            functions->glBindTexture(
+                GL_TEXTURE_2D, static_cast<GLuint>(texture2dBindings[unit]));
+            functions->glBindTexture(
+                GL_TEXTURE_3D, static_cast<GLuint>(texture3dBindings[unit]));
+        }
         functions->glActiveTexture(static_cast<GLenum>(activeTexture));
         functions->glUseProgram(static_cast<GLuint>(currentProgram));
         functions->glBindVertexArray(static_cast<GLuint>(vertexArray));
@@ -1999,30 +2499,43 @@ bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
         0, 0, size.width(), size.height(),
         GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-    functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
-    functions->glViewport(0, 0, size.width(), size.height());
     functions->glDisable(GL_DEPTH_TEST);
     functions->glDisable(GL_BLEND);
     functions->glDisable(GL_CULL_FACE);
     functions->glDisable(GL_FRAMEBUFFER_SRGB);
-    functions->glActiveTexture(GL_TEXTURE0);
-    functions->glBindTexture(GL_TEXTURE_2D, hdrResolveTexture_);
-    if (!postProcessProgram_.bind()) {
-        qWarning() << "Car preview post-process shader failed to bind";
-        renderSettings_.postProcessing.hdrEnabled = false;
-        restoreState();
-        return false;
+    bool stackRendered = true;
+    for (PostProcessPass pass : kPostProcessOrder) {
+        switch (pass) {
+        case PostProcessPass::BloomExtract:
+            stackRendered = renderBloomExtract(size);
+            break;
+        case PostProcessPass::BloomBlurHorizontal:
+            stackRendered = renderBloomBlur(size, 0, 1, true);
+            break;
+        case PostProcessPass::BloomBlurVertical:
+            stackRendered = renderBloomBlur(size, 1, 0, false);
+            break;
+        case PostProcessPass::BloomComposite:
+            stackRendered = renderBloomComposite(size);
+            break;
+        case PostProcessPass::ColorGrade:
+            stackRendered = renderColorGrade(size);
+            break;
+        case PostProcessPass::DisplayOutput:
+            stackRendered = renderDisplayOutput(size);
+            break;
+        }
+        if (!stackRendered) {
+            break;
+        }
     }
-    postProcessProgram_.setUniformValue(postSceneTextureLocation_, 0);
-    postProcessProgram_.setUniformValue(postExposureLocation_, renderSettings_.postProcessing.exposure);
-    postProcessProgram_.setUniformValue(
-        postFilmicWhiteLocation_, renderSettings_.postProcessing.filmicWhite);
-    postProcessVao_.bind();
-    functions->glDrawArrays(GL_TRIANGLES, 0, 3);
-    postProcessVao_.release();
-    postProcessProgram_.release();
 
     restoreState();
+    if (!stackRendered) {
+        qWarning() << "Car preview post-process pass failed to bind";
+        renderSettings_.postProcessing.hdrEnabled = false;
+        return false;
+    }
 
     return true;
 }

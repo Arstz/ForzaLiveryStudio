@@ -5,6 +5,7 @@
 #include "garage_render_settings.h"
 #include "garage_environment.h"
 #include "garage_ground_renderer.h"
+#include "garage_lut.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "native_shape_renderer.h"
@@ -15,6 +16,7 @@
 #include <QtGui>
 #include <QtOpenGLWidgets>
 
+#include <array>
 #include <functional>
 #include <memory>
 
@@ -91,7 +93,13 @@ private:
     void initializePostProcessing();
     void releasePostProcessing();
     void releaseHdrFramebuffers();
+    bool uploadColorLut();
     bool ensureHdrFramebuffers(const QSize &size);
+    bool renderBloomExtract(const QSize &size);
+    bool renderBloomBlur(const QSize &size, int sourceIndex, int targetIndex, bool horizontal);
+    bool renderBloomComposite(const QSize &size);
+    bool renderColorGrade(const QSize &size);
+    bool renderDisplayOutput(const QSize &size);
     void clearRenderTarget(bool linearColor) const;
     void renderGround(bool linearOutput);
     void renderCar(GLuint liveryTexture, bool linearOutput);
@@ -103,11 +111,17 @@ private:
     CarModelRenderer carRenderer_;
     GarageGroundRenderer groundRenderer_;
     GarageRenderSettings renderSettings_;
+    QOpenGLShaderProgram bloomExtractProgram_;
+    QOpenGLShaderProgram bloomBlurProgram_;
+    QOpenGLShaderProgram bloomCompositeProgram_;
+    QOpenGLShaderProgram colorGradeProgram_;
     QOpenGLShaderProgram postProcessProgram_;
     QOpenGLVertexArrayObject postProcessVao_;
     QSize hdrFramebufferSize_;
     fh6::PaintFinishLibrary paintFinishes_;
     fh6::GarageEnvironmentResources environmentResources_;
+    fh6::GarageColorLut colorLut_;
+    QString colorLutError_;
     QString gameFolder_;
     quint64 paintFinishLoadGeneration_ = 0;
     bool environmentUploadPending_ = false;
@@ -140,15 +154,37 @@ private:
     GLuint hdrSceneDepth_ = 0;
     GLuint hdrResolveFramebuffer_ = 0;
     GLuint hdrResolveTexture_ = 0;
+    GLuint hdrCompositeFramebuffer_ = 0;
+    GLuint hdrCompositeTexture_ = 0;
+    GLuint hdrGradeFramebuffer_ = 0;
+    GLuint hdrGradeTexture_ = 0;
+    std::array<GLuint, 2> bloomFramebuffers_ = {};
+    std::array<GLuint, 2> bloomTextures_ = {};
+    GLuint colorLutTexture_ = 0;
     int liveryTextureScale_ = 4;
     int hdrSampleCount_ = 0;
+    int bloomSceneTextureLocation_ = -1;
+    int bloomExposureLocation_ = -1;
+    int bloomCutoffLocation_ = -1;
+    int bloomBlurTextureLocation_ = -1;
+    int bloomBlurTexelStepLocation_ = -1;
+    int bloomCompositeSceneLocation_ = -1;
+    int bloomCompositeTextureLocation_ = -1;
+    int bloomCompositeExposureLocation_ = -1;
+    int bloomCompositeScaleLocation_ = -1;
+    int bloomCompositeEnabledLocation_ = -1;
+    int colorGradeSceneLocation_ = -1;
+    int colorGradeLutLocation_ = -1;
+    int colorGradeDimensionLocation_ = -1;
+    int colorGradeScaleLocation_ = -1;
+    int colorGradeEnabledLocation_ = -1;
     int postSceneTextureLocation_ = -1;
-    int postExposureLocation_ = -1;
     int postFilmicWhiteLocation_ = -1;
 
     QColor basePaint_ = QColor(180, 182, 190);
     bool transparentBackground_ = false;
     bool postProcessInitialized_ = false;
+    bool colorLutUploadPending_ = false;
 
     QLabel *referenceNote_ = nullptr;
 

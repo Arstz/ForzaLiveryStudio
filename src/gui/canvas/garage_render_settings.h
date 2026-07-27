@@ -23,6 +23,8 @@ inline const QVector3D kEnvironmentHighColor(0.58f, 0.64f, 0.72f);
 inline const QVector3D kBackgroundColor(0.09f, 0.10f, 0.12f);
 inline const QVector3D kGroundColor(0.115f, 0.125f, 0.145f);
 inline constexpr bool kHdrEnabled = true;
+inline constexpr bool kBloomEnabled = true;
+inline constexpr bool kColorGradeEnabled = true;
 inline constexpr bool kGroundEnabled = true;
 inline constexpr float kDirectDiffuseScale = 3.0f;
 inline constexpr float kDirectSpecularScale = 2.0f;
@@ -32,6 +34,11 @@ inline constexpr float kEnvironmentSpecularLowScale = 0.15f;
 inline constexpr float kEnvironmentSpecularHighScale = 0.95f;
 inline constexpr float kExposure = -0.4f;
 inline constexpr float kFilmicWhite = 1.5f;
+inline constexpr float kBloomCutoff = 0.32f;
+inline constexpr float kBloomScale = 0.25f;
+inline constexpr float kBloomCapturedCutoffFactor = 0.18654813f;
+inline constexpr float kBloomCapturedScaleFactor = 0.03427996f;
+inline constexpr float kBloomResolutionScale = 0.5f;
 inline constexpr float kShadowOpacity = 0.35f;
 inline constexpr float kGroundPlaneSizeScale = 4.0f;
 inline constexpr float kGroundVerticalOffsetScale = 0.003f;
@@ -96,8 +103,13 @@ struct GarageRenderSettings {
 
     struct PostProcessing {
         bool hdrEnabled = garage_render_defaults::kHdrEnabled;
+        bool bloomEnabled = garage_render_defaults::kBloomEnabled;
+        bool colorGradeEnabled = garage_render_defaults::kColorGradeEnabled;
         float exposure = garage_render_defaults::kExposure;
         float filmicWhite = garage_render_defaults::kFilmicWhite;
+        float bloomCutoff = garage_render_defaults::kBloomCutoff;
+        float bloomScale = garage_render_defaults::kBloomScale;
+        float bloomResolutionScale = garage_render_defaults::kBloomResolutionScale;
     };
 
     struct Ground {
