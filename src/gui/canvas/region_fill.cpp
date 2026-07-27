@@ -16,10 +16,8 @@ void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers) {
             return 0;
         case RegionFillVariant::Dangerous:
             return 1;
-        case RegionFillVariant::AdvancingFront:
-            return 2;
         }
-        return 3;
+        return 2;
     };
     std::stable_sort(layers->begin(), layers->end(),
                      [variantRank](const RegionFillLayer &left,

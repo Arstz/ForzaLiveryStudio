@@ -5,7 +5,7 @@ closed, single-colour contour with **as few affine primitive decals as possible*
 Bucket Fill is included because it converts its traced mask into the same editable
 Pen contour before filling. The implementation is a standalone C++ alternative to
 the existing deterministic Pen fill. Existing fill algorithms in `pen_fill.cpp`,
-`polygon_mesh.cpp`, `advancing_front.cpp`, and `region_fill.cpp` are out of scope
+`polygon_mesh.cpp`, and `region_fill.cpp` are out of scope
 to reuse; only the caller's contour and the raw shape-geometry asset in §4 are
 shared.
 
