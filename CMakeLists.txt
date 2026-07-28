@@ -68,6 +68,8 @@ add_library(fls_core STATIC
     src/core/model_geometry.h
     src/core/model_material.cpp
     src/core/model_material.h
+    src/core/original_shader_garage.cpp
+    src/core/original_shader_garage.h
     src/core/paint_finish_catalog.cpp
     src/core/paint_finish_catalog.h
     src/core/project_codec.cpp
@@ -278,6 +280,44 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(BUILD_TESTING)
+    add_executable(fls_original_shader_garage_tests
+        tools/original_shader_garage_test.cpp
+    )
+    target_link_libraries(fls_original_shader_garage_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME original_shader_garage_contract
+        COMMAND fls_original_shader_garage_tests)
+
+    set(FLS_ORIGINAL_SHADER_GAME_DIR "" CACHE PATH
+        "Optional FH6 install root for original-shader garage evidence tests")
+    if(EXISTS "${FLS_ORIGINAL_SHADER_GAME_DIR}/media/_library/Homespace.zip")
+        add_test(NAME original_shader_garage_game_evidence
+            COMMAND fls_original_shader_garage_tests
+                "${FLS_ORIGINAL_SHADER_GAME_DIR}")
+    endif()
+
+    add_executable(fls_garage_panorama_tests
+        tools/garage_panorama_test.cpp
+    )
+    target_link_libraries(fls_garage_panorama_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME garage_panorama_contract COMMAND fls_garage_panorama_tests)
+    set(FLS_GARAGE_PANORAMA_METADATA_EVIDENCE
+        "${CMAKE_SOURCE_DIR}/tools/temp/evidence/m10_background/FrameData.xml")
+    set(FLS_GARAGE_PANORAMA_TEXTURE_EVIDENCE
+        "${CMAKE_SOURCE_DIR}/tools/temp/evidence/m3_swatch_layout/inputs/SphericalFrames_0001.swatchbin")
+    if(EXISTS "${FLS_GARAGE_PANORAMA_METADATA_EVIDENCE}"
+       AND EXISTS "${FLS_GARAGE_PANORAMA_TEXTURE_EVIDENCE}")
+        add_test(NAME garage_panorama_game_evidence
+            COMMAND fls_garage_panorama_tests
+                "${FLS_GARAGE_PANORAMA_METADATA_EVIDENCE}"
+                "${FLS_GARAGE_PANORAMA_TEXTURE_EVIDENCE}")
+    endif()
+
     add_executable(fls_garage_camera_tests
         src/gui/canvas/garage_camera_presets.cpp
         tools/garage_camera_test.cpp

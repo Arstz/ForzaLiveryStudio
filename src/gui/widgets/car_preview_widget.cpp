@@ -1169,7 +1169,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     addAction(analyticEnvironment);
 
     auto *panoramaBackground = new QAction(
-        QStringLiteral("Background — garage HDR panorama"), this);
+        QStringLiteral("Background — HDR sky panorama (experimental)"), this);
     panoramaBackground->setCheckable(true);
     panoramaBackground->setChecked(panoramaBackgroundEnabled_);
     connect(panoramaBackground, &QAction::toggled, this, [this](bool enabled) {
@@ -1632,11 +1632,11 @@ void CarPreviewWidget::paintGL() {
                 error = environmentResources_.panoramaError;
             }
             if (panoramaBackgroundEnabled_ && !error.isEmpty()) {
-                qWarning().noquote() << "Garage panorama fallback:" << error;
+                qWarning().noquote() << "HDR sky panorama fallback:" << error;
             }
         }
         backgroundSourceLabel_ = uploaded
-            ? QStringLiteral("Garage panorama")
+            ? QStringLiteral("HDR sky panorama")
             : QStringLiteral("Analytic background");
         panoramaUploadPending_ = false;
         updateReferenceNote();

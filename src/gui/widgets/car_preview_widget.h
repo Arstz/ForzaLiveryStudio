@@ -140,7 +140,7 @@ private:
     bool environmentUploadPending_ = false;
     bool panoramaUploadPending_ = false;
     bool gameEnvironmentEnabled_ = true;
-    bool panoramaBackgroundEnabled_ = true;
+    bool panoramaBackgroundEnabled_ = false;
     QString environmentSourceLabel_ = QStringLiteral("Analytic env");
     QString backgroundSourceLabel_ = QStringLiteral("Analytic background");
     bool geometryLoaded_ = false;

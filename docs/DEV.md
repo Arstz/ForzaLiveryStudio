@@ -502,10 +502,17 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     folder of materialbins.
   - `game_paths.*`: resolves resource locations (media dir, `Cars`, the paint
     materials/textures archives) from one game install folder.
-  - `garage_environment.*` / `garage_lut.*`: load the Paint Car scene's HDR
-    panorama, diffuse/specular environment probes, and colour-grade LUT from the
-    configured game install. Panorama metadata and texture loading are independent
-    of the lighting probes so either path can fall back without disabling the other.
+  - `garage_environment.*` / `garage_lut.*`: load the configured game's HDR sky
+    panorama, Paint Car diffuse/specular environment probes, and colour-grade LUT.
+    Panorama metadata and texture loading are independent of the lighting probes so
+    either path can fall back without disabling the other. The sky panorama is an
+    experimental background option rather than a reconstruction of the visible garage.
+  - `original_shader_garage.*`: renderer-neutral loader for the experimental Windows
+    original-DXIL path. It decodes the four currently supported homespace geometry
+    packages, exact floor/default CubemapLightScenario shader pairs, the independently
+    verified seven-slot shader-default material table, and garage lighting probes from
+    a configured game install. Glass stays explicitly excluded until one exact material
+    family is evidenced. The Qt widget does not parse these game formats.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
     part's transform (× its own skeleton bone) into a merged `CarModel`. Stock
@@ -582,12 +589,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     and locator landmarks. The renderer uploads only each part's highest LOD.
     The preview scene support also owns captured camera presets, the ground/contact-shadow
     pass, and shared lighting/post-process defaults. `GaragePanoramaRenderer` uploads the
-    compressed unsigned-BC6H garage texture and reconstructs view rays into the game's two
+    compressed unsigned-BC6H HDR sky texture and reconstructs view rays into the game's two
     side-by-side azimuthal-equidistant hemisphere disks using the resource's spherical-power
     and frame-scale metadata. It draws in linear HDR from camera rotation only, before the
-    ground and car; the analytic background remains available when the panorama is disabled
-    or cannot be loaded. Visible background selection is independent of the environment maps
-    used to light the car.
+    ground and car. The analytic background is the default and remains available when the
+    experimental panorama is disabled or cannot be loaded. Visible background selection is
+    independent of the environment maps used to light the car.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
   `layer_state_delegate.*`, `color_palette_widget.*`, `shapes_browser_widget.*`,
   `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,
@@ -609,10 +616,10 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     Manufacturer paint selectors resolve through the loaded car's paint palette
     and shared material tuning. Decoded
     material defaults and native textures are held in bounded process-wide caches.
-    Its HDR scene path composes the optional garage panorama, ground/contact shadow,
+    Its HDR scene path composes the optional experimental HDR sky panorama, ground/contact shadow,
     car, bloom, filmic output transform, and optional Paint Car colour-grade LUT. The
     context menu exposes comparison lighting, game-probe/analytic environment selection,
-    panorama and post-process toggles, and captured garage camera presets. The reference
+    sky-panorama and post-process toggles, and captured garage camera presets. The reference
     note reports the active light, environment, and visible-background sources.
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with
@@ -645,6 +652,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `parseHeader()` / `buildHeader()` / `defaultDraftHeader()`
 - `paintFinishTable()` / `PaintFinishLibrary::load()` / `findPaintFinish()`
 - `gameMediaDir()` / `gameCarsDir()` / `gamePaintMaterialsArchive()`
+- `loadOriginalShaderGarageScene()`
 
 ## Privacy Policy Build Flag
 

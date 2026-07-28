@@ -6,7 +6,9 @@
 #include <QDir>
 #include <QXmlStreamReader>
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace fh6 {
 namespace {
@@ -44,8 +46,18 @@ std::optional<SwatchTexture> parseResource(
     return texture;
 }
 
-bool parsePanoramaMetadata(
+} // namespace
+
+bool parseGaragePanoramaMetadata(
     const QByteArray &bytes, GaragePanoramaResources *panorama, QString *error) {
+    if (panorama == nullptr) {
+        if (error != nullptr) {
+            *error = QStringLiteral("garage panorama metadata destination is null");
+        }
+        return false;
+    }
+
+    GaragePanoramaResources parsed;
     QXmlStreamReader xml(bytes);
     bool foundRoot = false;
     bool foundFrame = false;
@@ -59,9 +71,9 @@ bool parsePanoramaMetadata(
             bool modeOk = false;
             bool powerOk = false;
             bool rotationOk = false;
-            panorama->sphericalMode = attributes.value(QStringLiteral("spherical")).toInt(&modeOk);
-            panorama->sphericalPower = attributes.value(QStringLiteral("sphericalpower")).toFloat(&powerOk);
-            panorama->rotation = attributes.value(QStringLiteral("rotation")).toFloat(&rotationOk);
+            parsed.sphericalMode = attributes.value(QStringLiteral("spherical")).toInt(&modeOk);
+            parsed.sphericalPower = attributes.value(QStringLiteral("sphericalpower")).toFloat(&powerOk);
+            parsed.rotation = attributes.value(QStringLiteral("rotation")).toFloat(&rotationOk);
             if (!modeOk || !powerOk || !rotationOk) {
                 if (error != nullptr) {
                     *error = QStringLiteral("FrameData.xml has invalid spherical metadata");
@@ -69,9 +81,9 @@ bool parsePanoramaMetadata(
                 return false;
             }
             foundRoot = true;
-        } else if (foundRoot && xml.name() == QStringLiteral("Frame")) {
+        } else if (foundRoot && !foundFrame && xml.name() == QStringLiteral("Frame")) {
             bool scaleOk = false;
-            panorama->frameScale = xml.attributes().value(QStringLiteral("scale")).toFloat(&scaleOk);
+            parsed.frameScale = xml.attributes().value(QStringLiteral("scale")).toFloat(&scaleOk);
             if (!scaleOk) {
                 if (error != nullptr) {
                     *error = QStringLiteral("FrameData.xml has an invalid frame scale");
@@ -79,16 +91,15 @@ bool parsePanoramaMetadata(
                 return false;
             }
             foundFrame = true;
-            break;
         }
     }
     if (xml.hasError() || !foundRoot || !foundFrame
-        || !std::isfinite(panorama->sphericalPower)
-        || !std::isfinite(panorama->rotation)
-        || !std::isfinite(panorama->frameScale)
-        || panorama->sphericalMode != 2
-        || panorama->sphericalPower < 0.0f || panorama->sphericalPower > 1.0f
-        || panorama->rotation != 0.0f || panorama->frameScale <= 0.0f) {
+        || !std::isfinite(parsed.sphericalPower)
+        || !std::isfinite(parsed.rotation)
+        || !std::isfinite(parsed.frameScale)
+        || parsed.sphericalMode != 2
+        || parsed.sphericalPower < 0.0f || parsed.sphericalPower > 1.0f
+        || parsed.rotation != 0.0f || parsed.frameScale <= 0.0f) {
         if (error != nullptr) {
             *error = xml.hasError()
                 ? QStringLiteral("FrameData.xml: %1").arg(xml.errorString())
@@ -96,10 +107,15 @@ bool parsePanoramaMetadata(
         }
         return false;
     }
+    parsed.texture = std::move(panorama->texture);
+    *panorama = std::move(parsed);
+    if (error != nullptr) {
+        error->clear();
+    }
     return true;
 }
 
-bool validatePanorama(const SwatchTexture &texture, QString *error) {
+bool validateGaragePanoramaTexture(const SwatchTexture &texture, QString *error) {
     if (texture.platform != 0 || texture.arraySize != 1 || texture.sliceCount != 1
         || texture.mipCount != 1 || texture.width != texture.height * 2
         || texture.slices.size() != 1
@@ -119,8 +135,48 @@ bool validatePanorama(const SwatchTexture &texture, QString *error) {
         }
         return false;
     }
+    if (error != nullptr) {
+        error->clear();
+    }
     return true;
 }
+
+std::array<float, 2> garagePanoramaUv(
+    const std::array<float, 3> &direction, float sphericalPower) {
+    constexpr float pi = 3.14159265358979323846f;
+    const float length = std::sqrt(
+        direction[0] * direction[0]
+        + direction[1] * direction[1]
+        + direction[2] * direction[2]);
+    if (length <= 0.0f) {
+        return {0.25f, 0.5f};
+    }
+
+    const float x = direction[0] / length;
+    const float y = direction[1] / length;
+    const float z = direction[2] / length;
+    const float theta = std::acos(std::clamp(std::abs(y), 0.0f, 1.0f));
+    const float polar = theta * (2.0f / pi);
+    const float power = std::clamp(sphericalPower, 0.0f, 1.0f);
+    const float radius = theta * (1.0f / pi)
+        * ((1.0f - power) + polar * power);
+    const float horizontalLength = std::sqrt(x * x + z * z);
+    const float diskX = horizontalLength > 0.000001f
+        ? z * radius / horizontalLength
+        : 0.0f;
+    const float diskY = horizontalLength > 0.000001f
+        ? -x * radius / horizontalLength
+        : 0.0f;
+    float u = (diskX + 0.5f) * 0.5f;
+    float v = diskY + 0.5f;
+    if (y < 0.0f) {
+        u += 0.5f;
+        v = 1.0f - v;
+    }
+    return {u, v};
+}
+
+namespace {
 
 void loadPanorama(
     const QString &garageArchive, GarageEnvironmentResources *resources) {
@@ -131,7 +187,7 @@ void loadPanorama(
         resources->panoramaError = QStringLiteral("garage panorama metadata: %1").arg(error);
         return;
     }
-    if (!parsePanoramaMetadata(
+    if (!parseGaragePanoramaMetadata(
             metadataBytes, &resources->panorama, &resources->panoramaError)) {
         return;
     }
@@ -145,7 +201,8 @@ void loadPanorama(
     auto panorama = parseResource(
         panoramaBytes, QStringLiteral("SphericalFrames/0001.swatchbin"),
         &resources->panoramaError);
-    if (!panorama || !validatePanorama(*panorama, &resources->panoramaError)) {
+    if (!panorama
+        || !validateGaragePanoramaTexture(*panorama, &resources->panoramaError)) {
         return;
     }
     resources->panorama.texture = std::move(*panorama);
