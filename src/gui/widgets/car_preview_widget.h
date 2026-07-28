@@ -7,6 +7,7 @@
 #include "garage_environment.h"
 #include "garage_ground_renderer.h"
 #include "garage_lut.h"
+#include "garage_panorama_renderer.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "native_shape_renderer.h"
@@ -94,6 +95,7 @@ private:
     void syncOrbitToCameraFrame(const GarageCameraFrame &frame);
     void setLightDirectionCandidate(LightDirectionCandidate candidate);
     void setGameEnvironmentEnabled(bool enabled);
+    void setPanoramaBackgroundEnabled(bool enabled);
     void updateReferenceNote();
     void logGlCapabilities() const;
     void initializePostProcessing();
@@ -107,6 +109,7 @@ private:
     bool renderColorGrade(const QSize &size);
     bool renderDisplayOutput(const QSize &size);
     void clearRenderTarget(bool linearColor) const;
+    void renderBackground(bool linearOutput);
     void renderGround(bool linearOutput);
     void renderCar(GLuint liveryTexture, bool linearOutput);
     bool renderCarHdr(GLuint liveryTexture, const QSize &size);
@@ -116,6 +119,7 @@ private:
     ShapeGeometryStore geometry_;
     CarModelRenderer carRenderer_;
     GarageGroundRenderer groundRenderer_;
+    GaragePanoramaRenderer panoramaRenderer_;
     GarageRenderSettings renderSettings_;
     QOpenGLShaderProgram bloomExtractProgram_;
     QOpenGLShaderProgram bloomBlurProgram_;
@@ -134,8 +138,11 @@ private:
     QString gameFolder_;
     quint64 paintFinishLoadGeneration_ = 0;
     bool environmentUploadPending_ = false;
+    bool panoramaUploadPending_ = false;
     bool gameEnvironmentEnabled_ = true;
+    bool panoramaBackgroundEnabled_ = true;
     QString environmentSourceLabel_ = QStringLiteral("Analytic env");
+    QString backgroundSourceLabel_ = QStringLiteral("Analytic background");
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;

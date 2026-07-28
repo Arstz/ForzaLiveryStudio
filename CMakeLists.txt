@@ -186,6 +186,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/garage_camera_presets.h
     src/gui/canvas/garage_ground_renderer.cpp
     src/gui/canvas/garage_ground_renderer.h
+    src/gui/canvas/garage_panorama_renderer.cpp
+    src/gui/canvas/garage_panorama_renderer.h
     src/gui/canvas/advancing_front.cpp
     src/gui/canvas/advancing_front.h
     src/gui/canvas/bucket_fill.cpp

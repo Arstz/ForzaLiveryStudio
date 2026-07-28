@@ -1168,6 +1168,15 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     });
     addAction(analyticEnvironment);
 
+    auto *panoramaBackground = new QAction(
+        QStringLiteral("Background — garage HDR panorama"), this);
+    panoramaBackground->setCheckable(true);
+    panoramaBackground->setChecked(panoramaBackgroundEnabled_);
+    connect(panoramaBackground, &QAction::toggled, this, [this](bool enabled) {
+        setPanoramaBackgroundEnabled(enabled);
+    });
+    addAction(panoramaBackground);
+
     auto *ground = new QAction(QStringLiteral("Ground and contact shadow"), this);
     ground->setCheckable(true);
     ground->setChecked(renderSettings_.ground.enabled);
@@ -1254,6 +1263,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
 CarPreviewWidget::~CarPreviewWidget() {
     makeCurrent();
     releasePostProcessing();
+    panoramaRenderer_.release();
     groundRenderer_.release();
     carRenderer_.release();
     shapeRenderer_.release();
@@ -1564,6 +1574,7 @@ void CarPreviewWidget::initializeGL() {
     }
     carRenderer_.initialize();
     groundRenderer_.initialize();
+    panoramaRenderer_.initialize();
     liveryTexture_ = 0;
     liveLiveryFullDirty_ = true;
     liveryDirty_ = true;
@@ -1606,6 +1617,28 @@ void CarPreviewWidget::paintGL() {
             ? QStringLiteral("Game probes")
             : QStringLiteral("Analytic env");
         environmentUploadPending_ = false;
+        updateReferenceNote();
+    }
+
+    if (panoramaUploadPending_ && panoramaRenderer_.isInitialized()) {
+        QString error;
+        const bool uploaded = panoramaBackgroundEnabled_
+            && environmentResources_.panorama.valid()
+            && panoramaRenderer_.setPanorama(
+                environmentResources_.panorama.texture, &error);
+        if (!uploaded) {
+            panoramaRenderer_.clearPanorama();
+            if (panoramaBackgroundEnabled_ && error.isEmpty()) {
+                error = environmentResources_.panoramaError;
+            }
+            if (panoramaBackgroundEnabled_ && !error.isEmpty()) {
+                qWarning().noquote() << "Garage panorama fallback:" << error;
+            }
+        }
+        backgroundSourceLabel_ = uploaded
+            ? QStringLiteral("Garage panorama")
+            : QStringLiteral("Analytic background");
+        panoramaUploadPending_ = false;
         updateReferenceNote();
     }
 
@@ -1755,6 +1788,7 @@ void CarPreviewWidget::paintGL() {
     functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
     functions->glViewport(0, 0, framebufferSize.width(), framebufferSize.height());
     clearRenderTarget(false);
+    renderBackground(false);
     renderGround(false);
     renderCar(liveryTexture, false);
 }
@@ -1771,6 +1805,7 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
         colorLut_ = {};
         colorLutError_.clear();
         environmentUploadPending_ = true;
+        panoramaUploadPending_ = true;
         colorLutUploadPending_ = true;
         update();
         return;
@@ -1802,6 +1837,7 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
                     : fh6::GarageColorLut{};
                 guard->colorLutError_ = std::move(colorLutError);
                 guard->environmentUploadPending_ = true;
+                guard->panoramaUploadPending_ = true;
                 guard->colorLutUploadPending_ = true;
                 guard->update();
             },
@@ -1967,6 +2003,15 @@ void CarPreviewWidget::setGameEnvironmentEnabled(bool enabled) {
     update();
 }
 
+void CarPreviewWidget::setPanoramaBackgroundEnabled(bool enabled) {
+    if (panoramaBackgroundEnabled_ == enabled) {
+        return;
+    }
+    panoramaBackgroundEnabled_ = enabled;
+    panoramaUploadPending_ = true;
+    update();
+}
+
 void CarPreviewWidget::updateReferenceNote() {
     if (referenceNote_ == nullptr) {
         return;
@@ -1984,8 +2029,10 @@ void CarPreviewWidget::updateReferenceNote() {
         break;
     }
     referenceNote_->setText(QStringLiteral(
-        "Only for reference, ingame render may differ · Light %1 · %2")
-                                .arg(candidate, environmentSourceLabel_));
+        "Only for reference, ingame render may differ · Light %1 · %2 · %3")
+                                .arg(
+                                    candidate, environmentSourceLabel_,
+                                    backgroundSourceLabel_));
     referenceNote_->adjustSize();
 }
 
@@ -2381,6 +2428,17 @@ void CarPreviewWidget::renderGround(bool linearOutput) {
         linearOutput);
 }
 
+void CarPreviewWidget::renderBackground(bool linearOutput) {
+    if (!linearOutput || transparentBackground_ || !panoramaBackgroundEnabled_
+        || !environmentResources_.panorama.valid()) {
+        return;
+    }
+    panoramaRenderer_.render(
+        cameraView(), cameraProjection(),
+        environmentResources_.panorama.sphericalPower,
+        environmentResources_.panorama.frameScale);
+}
+
 void CarPreviewWidget::renderCar(GLuint liveryTexture, bool linearOutput) {
     carRenderer_.render(
         cameraView(), cameraProjection(), liveryTexture, basePaint_,
@@ -2601,6 +2659,7 @@ bool CarPreviewWidget::renderCarHdr(GLuint liveryTexture, const QSize &size) {
     functions->glBindFramebuffer(GL_FRAMEBUFFER, hdrSceneFramebuffer_);
     functions->glViewport(0, 0, size.width(), size.height());
     clearRenderTarget(true);
+    renderBackground(true);
     renderGround(true);
     renderCar(liveryTexture, true);
 

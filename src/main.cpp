@@ -3,6 +3,7 @@
 #include "image_io.h"
 #include "car_model_renderer.h"
 #include "car_preview_widget.h"
+#include "garage_panorama_renderer.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -83,6 +84,9 @@ int main(int argc, char *argv[]) {
             }
             if (log.isEmpty()) {
                 log = gui::GarageGroundRenderer::shaderSelfTest();
+            }
+            if (log.isEmpty()) {
+                log = gui::GaragePanoramaRenderer::shaderSelfTest();
             }
             result = log.isEmpty() ? QStringLiteral("SHADER OK") : QStringLiteral("SHADER FAIL\n") + log;
         }
