@@ -7,6 +7,9 @@ namespace gui {
 namespace {
 
 bool matchesSeed(QRgb pixel, QRgb seed, int tolerance) {
+    if (qAlpha(seed) == 0) {
+        return qAlpha(pixel) == 0;
+    }
     if (qAlpha(pixel) == 0) {
         return false;
     }
@@ -39,10 +42,7 @@ BucketFillResult floodGuideRegion(const QImage &source,
     }
     const QRgb seedPixel = reinterpret_cast<const QRgb *>(image.constScanLine(seed.y()))[seed.x()];
     result.seedColor = QColor::fromRgba(seedPixel);
-    if (qAlpha(seedPixel) == 0) {
-        result.error = QStringLiteral("The hovered guide pixel is transparent");
-        return result;
-    }
+    result.transparentTarget = qAlpha(seedPixel) == 0;
 
     const int width = image.width();
     const int height = image.height();
@@ -116,9 +116,13 @@ QImage bucketMaskPreview(const BucketFillResult &fill, const QColor &color) {
     if (!fill.valid()) {
         return {};
     }
+    QColor previewColor = fill.transparentTarget
+        ? kTransparentBucketColor
+        : color;
+    previewColor.setAlpha(color.alpha());
     QImage preview(fill.imageSize, QImage::Format_ARGB32_Premultiplied);
     preview.fill(Qt::transparent);
-    const QRgb previewPixel = qPremultiply(color.rgba());
+    const QRgb previewPixel = qPremultiply(previewColor.rgba());
     for (int y = fill.bounds.top(); y <= fill.bounds.bottom(); ++y) {
         QRgb *row = reinterpret_cast<QRgb *>(preview.scanLine(y));
         const size_t offset = static_cast<size_t>(y) * fill.imageSize.width();

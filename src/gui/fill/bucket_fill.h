@@ -8,14 +8,17 @@
 
 namespace gui {
 
+inline const QColor kTransparentBucketColor(255, 0, 255);
+
 struct BucketFillResult {
     QSize imageSize;
     std::vector<std::uint8_t> mask;
     QRect bounds;
     QColor seedColor;
     QColor averageColor;
-    int area = 0;
     QString error;
+    int area = 0;
+    bool transparentTarget = false;
 
     bool valid() const {
         return error.isEmpty()

@@ -310,7 +310,10 @@ bool PenTool::handlePress(QMouseEvent *event) {
         return false;
     }
     ProjectCanvas &c = canvas_;
-    const QPointF world = c.screenToWorld(event->position());
+    const QPointF world =
+        c.snappedPenPosition(
+            c.screenToWorld(event->position()),
+            event->modifiers());
 
     if (c.pen_.closed) {
         c.refreshPenInteractionHint(event->position(), event->modifiers());
@@ -447,7 +450,23 @@ bool PenTool::handleDoubleClick(QMouseEvent *event) {
         event->accept();
         return true;
     }
-    const QPointF world = c.screenToWorld(event->position());
+    const QPointF pointerWorld =
+        c.screenToWorld(event->position());
+    const bool completesSoftPoint =
+        c.pen_.points.size() >= 2
+        && c.pen_.points.back().kind
+            == PenPointKind::Soft;
+    const QPointF world =
+        completesSoftPoint
+            ? c.snappedPenPosition(
+                  pointerWorld,
+                  c.pen_.points[
+                      c.pen_.points.size() - 2]
+                      .position,
+                  event->modifiers())
+            : c.snappedPenPosition(
+                  pointerWorld,
+                  event->modifiers());
     c.beginPathEdit(c.pen_);
     if (!c.pen_.points.isEmpty()
         && QLineF(world, c.pen_.points.back().position).length()

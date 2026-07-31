@@ -601,11 +601,25 @@ void bucketFloodIsContiguousAndToleranceBounded(TestContext *test)
     test->expect(tolerant.mask[4] == 0,
                  "matching pixels beyond a nonmatching barrier should stay unselected");
 
-    image.setPixelColor(0, 1, Qt::transparent);
+    image.setPixel(0, 0, qRgba(200, 10, 50, 0));
+    image.setPixel(0, 1, qRgba(5, 230, 90, 0));
     const gui::BucketFillResult transparent =
-        gui::floodGuideRegion(image, QPoint(0, 1), 255);
-    test->expect(!transparent.valid() && transparent.error.contains("transparent"),
-                 "transparent seed pixels should be rejected");
+        gui::floodGuideRegion(image, QPoint(0, 1), 0);
+    test->expect(
+        transparent.valid()
+            && transparent.transparentTarget
+            && transparent.area == 2,
+        "transparent seed pixels should select their contiguous transparent region");
+    const QImage transparentPreview =
+        gui::bucketMaskPreview(transparent);
+    const QColor transparentPreviewColor =
+        transparentPreview.pixelColor(0, 0);
+    test->expect(
+        !transparentPreview.isNull()
+            && transparentPreviewColor.red() == 255
+            && transparentPreviewColor.green() == 0
+            && transparentPreviewColor.blue() == 255,
+        "transparent bucket regions should use the mask preview color");
 
     const QImage preview = gui::bucketMaskPreview(tolerant);
     test->expect(!preview.isNull() && qAlpha(preview.pixel(0, 0)) > 0

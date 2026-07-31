@@ -153,7 +153,8 @@ private:
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
     void startPenFill(const QVector<PenPoint> &points,
-                      const std::optional<QColor> &fillColor = std::nullopt);
+                      const std::optional<QColor> &fillColor = std::nullopt,
+                      bool fillMask = false);
     void startLiningFill(const QVector<PenPoint> &points,
                          double width,
                          const std::optional<QColor> &fillColor = std::nullopt);
@@ -163,7 +164,8 @@ private:
         const std::function<bool()> &, const GeneratedFillProgress &)>;
     void prepareGeneratedFill(const std::optional<QColor> &fillColor,
                               const QString &label,
-                              const QString &tool);
+                              const QString &tool,
+                              bool fillMask = false);
     void startGeneratedFillTask(GeneratedFillFunction fill);
     void clearGeneratedFillState();
     void cancelActiveFills();
@@ -313,6 +315,7 @@ private:
     int generatedFillPlacementCount_ = 0;
     double generatedFillTargetArea_ = 0.0;
     double generatedFillCoveredArea_ = 0.0;
+    bool generatedFillMask_ = false;
     bool generatedFillKeepPartialOnCancel_ = false;
     int regionMergeAreaThreshold_ = 12;
     std::shared_ptr<std::atomic_bool> regionFillCancel_;

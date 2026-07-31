@@ -478,7 +478,8 @@ PenFillResult differentialContourFill(
 } // namespace
 
 void MainWindow::startPenFill(const QVector<PenPoint> &points,
-                              const std::optional<QColor> &fillColor) {
+                              const std::optional<QColor> &fillColor,
+                              bool fillMask) {
     if (!ensureProjectForInsertion() || canvas_ == nullptr) {
         if (canvas_ != nullptr) {
             canvas_->setPenFillRunning(false);
@@ -492,7 +493,9 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
     const QString fillTool = differential
         ? QStringLiteral("differential")
         : QStringLiteral("analytic");
-    prepareGeneratedFill(fillColor, fillLabel, fillTool);
+    prepareGeneratedFill(
+        fillColor, fillLabel, fillTool,
+        fillMask);
     PenFillRequest request;
     request.points = points;
     if (differential) {
@@ -623,7 +626,8 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
 
 void MainWindow::prepareGeneratedFill(const std::optional<QColor> &fillColor,
                                       const QString &label,
-                                      const QString &tool) {
+                                      const QString &tool,
+                                      bool fillMask) {
     cancelActiveFills();
     updateLastSelectedShapeDefaults();
     generatedFillColor_ = fillColor.has_value() && fillColor->isValid()
@@ -634,6 +638,7 @@ void MainWindow::prepareGeneratedFill(const std::optional<QColor> &fillColor,
     generatedFillInsertionEntries_ = selectedEntryIds();
     generatedFillLabel_ = label;
     generatedFillTool_ = tool;
+    generatedFillMask_ = fillMask;
 }
 
 void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
@@ -700,6 +705,7 @@ void MainWindow::clearGeneratedFillState() {
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();
     generatedFillTool_.clear();
+    generatedFillMask_ = false;
     generatedFillKeepPartialOnCancel_ = false;
 }
 
@@ -899,6 +905,7 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
         shape->setVectorShape(static_cast<quint16>(placement.first));
         shape->transform = fls::decomposeTransform2D(generatedShapeMatrix(placement.second));
         shape->color = generatedFillColor_;
+        shape->mask = generatedFillMask_;
         generatedIds.insert(shape->id);
         group->append(std::move(shape));
     }

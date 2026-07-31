@@ -78,7 +78,10 @@ public:
     std::optional<QColor> colorAtScreenPoint(const QPointF &point) const;
     void setPipetteColorPickedCallback(std::function<void(const QColor &)> callback);
     void setPenFillRequestedCallback(
-        std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> callback);
+        std::function<void(
+            const QVector<PenPoint> &,
+            const std::optional<QColor> &,
+            bool)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
@@ -396,6 +399,15 @@ private:
     void appendPointEditHints(QStringList &lines, const QVector<PenPoint> &points,
                               int hoverPoint, const PenCurveHit &hoverCurve) const;
     PenCurveHit penCurveAtScreen(const QPointF &screenPoint) const;
+    QPointF snappedPenPosition(
+        const QPointF &worldPosition,
+        Qt::KeyboardModifiers modifiers,
+        double *angleDegrees = nullptr) const;
+    QPointF snappedPenPosition(
+        const QPointF &worldPosition,
+        const QPointF &origin,
+        Qt::KeyboardModifiers modifiers,
+        double *angleDegrees = nullptr) const;
     void normalizePenPointOrder();
     void validatePenInteraction();
     void refreshPenInteractionHint(const QPointF &screenPoint,
@@ -435,7 +447,10 @@ private:
     CanvasOptions options_;
     bool spaceDown_ = false;
     std::function<void(const QColor &)> pipetteColorPickedCallback_;
-    std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> penFillRequestedCallback_;
+    std::function<void(
+        const QVector<PenPoint> &,
+        const std::optional<QColor> &,
+        bool)> penFillRequestedCallback_;
     std::function<void()> penFillCancelCallback_;
     std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> liningFillRequestedCallback_;
     std::function<void()> liningFillCancelCallback_;

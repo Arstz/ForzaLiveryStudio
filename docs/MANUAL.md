@@ -60,13 +60,15 @@ Click a layer to sample its color, will apply it to the current selection. You c
 
 ### Pen
 
-Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. A closed contour can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. 
+Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. A closed contour can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. Snapping to 15 degree interval can be achieved while `Shift` is held.
 
 ### Bucket
 
 Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Some larger contours may take longer. For best results try to maximize tolerance and hard point count.
 
 >Both Bucket and Pen is not a replacement for every contour, and can have unpredictable results on finer details. For basic shapes like fonts it is still reccommended to use other means. Use both if you want to speed up the process but be aware that they might consume more shapes than if done manually.
+
+>Clicking with Bucket tool on transparent pixels will still generate a contour but it will be filled with masked shapes instead upon confirmation.
 
 >Enable Differential contour fill in the `Options` menu to conserve shapes, the algortihm takes more time and is not deterministic. GPU acceration will be used if available, priority CUDA->DirectX->CPU. You can adjust shape ids in `assets\differential_shapes.json`, ids are displayed in decimal.
 

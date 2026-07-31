@@ -24,6 +24,7 @@ struct PathInteractionState {
     QVector<PenPoint> points;
     std::optional<QColor> fillColor;
     bool closed = false;
+    bool fillMask = false;
 };
 
 struct PathInteraction {
@@ -38,6 +39,7 @@ struct PathInteraction {
     int hoverPoint = -1;
     int dragPoint = -1;
     bool closed = false;
+    bool fillMask = false;
     bool fillRunning = false;
     QVector<PathInteractionState> undoStack;
     QVector<PathInteractionState> redoStack;
@@ -58,6 +60,7 @@ struct PathInteraction {
         fillMessage.clear();
         resetHover();
         closed = false;
+        fillMask = false;
         fillRunning = false;
         undoStack.clear();
         redoStack.clear();

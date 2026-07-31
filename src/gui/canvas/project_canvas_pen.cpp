@@ -8,6 +8,11 @@ namespace gui {
 namespace {
 
 constexpr int kCurveHitSamples = 32;
+constexpr double kPenAngleIntervalDegrees = 15.0;
+constexpr double kRadiansToDegrees =
+    180.0 / 3.14159265358979323846;
+constexpr double kDegreesToRadians =
+    3.14159265358979323846 / 180.0;
 
 QPointF quadraticPoint(const PenBoundarySegment &segment, double t) {
     if (!segment.curved) {
@@ -132,6 +137,71 @@ PenCurveHit ProjectCanvas::penCurveAtScreen(const QPointF &screenPoint) const {
     return best;
 }
 
+QPointF ProjectCanvas::snappedPenPosition(
+    const QPointF &worldPosition,
+    Qt::KeyboardModifiers modifiers,
+    double *angleDegrees) const {
+    if (angleDegrees != nullptr) {
+        *angleDegrees =
+            std::numeric_limits<double>::quiet_NaN();
+    }
+    if (!(modifiers & Qt::ShiftModifier)
+        || pen_.points.isEmpty()
+        || pen_.closed) {
+        return worldPosition;
+    }
+
+    return snappedPenPosition(
+        worldPosition,
+        pen_.points.back().position,
+        modifiers,
+        angleDegrees);
+}
+
+QPointF ProjectCanvas::snappedPenPosition(
+    const QPointF &worldPosition,
+    const QPointF &origin,
+    Qt::KeyboardModifiers modifiers,
+    double *angleDegrees) const {
+    if (angleDegrees != nullptr) {
+        *angleDegrees =
+            std::numeric_limits<double>::quiet_NaN();
+    }
+    if (!(modifiers & Qt::ShiftModifier)) {
+        return worldPosition;
+    }
+
+    const QPointF delta =
+        worldPosition - origin;
+    const double length =
+        std::hypot(delta.x(), delta.y());
+    if (length <= std::numeric_limits<double>::epsilon()) {
+        return origin;
+    }
+    const double rawDegrees =
+        std::atan2(delta.y(), delta.x())
+        * kRadiansToDegrees;
+    double snappedDegrees =
+        std::round(
+            rawDegrees
+            / kPenAngleIntervalDegrees)
+        * kPenAngleIntervalDegrees;
+    snappedDegrees =
+        std::fmod(
+            snappedDegrees + 360.0,
+            360.0);
+    if (angleDegrees != nullptr) {
+        *angleDegrees = snappedDegrees;
+    }
+    const double radians =
+        snappedDegrees * kDegreesToRadians;
+
+    return origin
+        + QPointF(
+            std::cos(radians) * length,
+            std::sin(radians) * length);
+}
+
 void ProjectCanvas::normalizePenPointOrder() {
     if (pen_.points.isEmpty() || pen_.points.front().kind == PenPointKind::Hard) {
         return;
@@ -164,11 +234,34 @@ void ProjectCanvas::validatePenInteraction() {
 
 void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
                                               Qt::KeyboardModifiers modifiers) {
-    pen_.hoverWorld = screenToWorld(screenPoint);
+    const bool nearStart =
+        !pen_.closed
+        && pen_.points.size() >= 3
+        && QLineF(
+               screenPoint,
+               worldToScreen(
+                   pen_.points.front().position))
+               .length()
+            <= kPenCloseRadius;
+    double angleDegrees =
+        std::numeric_limits<double>::quiet_NaN();
+    pen_.hoverWorld = nearStart
+        ? pen_.points.front().position
+        : snappedPenPosition(
+              screenToWorld(screenPoint),
+              modifiers,
+              &angleDegrees);
     pen_.hoverPoint = -1;
     pen_.hoverCurve = {};
     if (!pen_.closed) {
-        clearCursorHint();
+        if (std::isfinite(angleDegrees)) {
+            setCursorHint(
+                screenPoint,
+                {QStringLiteral("Angle: %1 deg")
+                     .arg(angleDegrees, 0, 'f', 0)});
+        } else {
+            clearCursorHint();
+        }
         update();
         return;
     }
@@ -184,7 +277,6 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
         lines.push_back(pen_.error);
     }
     appendPointEditHints(lines, pen_.points, pen_.hoverPoint, pen_.hoverCurve);
-    Q_UNUSED(modifiers);
     setCursorHint(screenPoint, lines);
     update();
 }

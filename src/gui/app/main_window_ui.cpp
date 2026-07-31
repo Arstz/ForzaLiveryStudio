@@ -32,8 +32,11 @@ void MainWindow::setupCanvas() {
         statusBar()->showMessage(geometryError);
     }
     canvas_->setPenFillRequestedCallback(
-        [this](const QVector<PenPoint> &points, const std::optional<QColor> &fillColor) {
-        startPenFill(points, fillColor);
+        [this](const QVector<PenPoint> &points,
+               const std::optional<QColor> &fillColor,
+               bool fillMask) {
+        startPenFill(
+            points, fillColor, fillMask);
     });
     canvas_->setPenFillCancelCallback(
         [this]() { cancelGeneratedFill(true); });

@@ -270,7 +270,11 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
     beginPathEdit(pen_);
     pen_.points = std::move(worldPoints);
     normalizePenPointOrder();
-    pen_.fillColor = bucket_.fill.averageColor;
+    pen_.fillColor = bucket_.fill.transparentTarget
+        ? kTransparentBucketColor
+        : bucket_.fill.averageColor;
+    pen_.fillMask =
+        bucket_.fill.transparentTarget;
     pen_.closed = true;
     pen_.hoverWorld = pen_.points.front().position;
     pen_.crossings.clear();
