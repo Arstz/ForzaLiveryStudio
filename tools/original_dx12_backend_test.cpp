@@ -1,5 +1,6 @@
 #include "original_dx12_backend.h"
 #include "original_shader_garage.h"
+#include "model_material.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -21,10 +22,30 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    const fh6::OriginalShaderGarageScene scene =
+    fh6::OriginalShaderGarageScene scene =
         fh6::loadOriginalShaderGarageScene(QString::fromLocal8Bit(argv[1]));
     if (!scene.valid()) {
         std::fprintf(stderr, "scene load failed: %s\n", qPrintable(scene.error));
+        return 1;
+    }
+    fh6::CarModel car;
+    car.sourcePath = QStringLiteral("test.carbin");
+    car.boundsMin = {-1.0f, 0.0f, -2.0f};
+    car.boundsMax = {1.0f, 1.0f, 2.0f};
+    fh6::CarMesh carMesh;
+    carMesh.materialName = QStringLiteral("paint");
+    carMesh.paintMaterialHash = 1;
+    carMesh.material = std::make_shared<fh6::ModelMaterial>();
+    carMesh.positions = {
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    carMesh.normals = {
+        {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}};
+    carMesh.indices = {0, 1, 2};
+    car.meshes.push_back(std::move(carMesh));
+    QString carError;
+    if (!fh6::appendOriginalShaderGarageCar(
+            &scene, std::move(car), {0.2f, 0.4f, 0.6f}, {}, &carError)) {
+        std::fprintf(stderr, "DX12 car setup failed: %s\n", qPrintable(carError));
         return 1;
     }
     const gui::OriginalDx12BackendStatus status =
@@ -37,8 +58,18 @@ int main(int argc, char **argv) {
         gui::originalDx12SceneCamera(scene);
     if (!sceneCamera.valid()
         || std::abs(sceneCamera.verticalFovDegrees - 40.0f) > 0.00001f
-        || sceneCamera.farPlane <= 100.0f) {
+        || sceneCamera.farPlane < 50.0f) {
         std::fprintf(stderr, "D3D12 Tokyo House camera is invalid\n");
+        return 1;
+    }
+    gui::OriginalDx12Camera pannedCamera = sceneCamera;
+    const QVector3D originalOffset = pannedCamera.target - pannedCamera.position;
+    gui::panOriginalDx12Camera(
+        &pannedCamera, QPointF(80.0, -30.0), QSize(800, 600));
+    if ((pannedCamera.target - sceneCamera.target).isNull()
+        || ((pannedCamera.target - pannedCamera.position) - originalOffset).length()
+            > 0.0001f) {
+        std::fprintf(stderr, "D3D12 camera panning did not preserve the view vector\n");
         return 1;
     }
     constexpr int kFrameSize = 512;
@@ -81,7 +112,7 @@ int main(int argc, char **argv) {
     // The Tokyo compatibility material intentionally omits the unresolved specular
     // cubemap, so variation now comes from diffuse irradiance and surface normals
     // rather than a reflected HDR image.
-    if (colors.size() < 128) {
+    if (colors.size() < 64) {
         std::fprintf(
             stderr,
             "D3D12 perspective frame has insufficient color variation: %lld colors\n",

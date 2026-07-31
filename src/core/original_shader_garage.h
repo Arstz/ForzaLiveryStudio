@@ -36,6 +36,7 @@ struct OriginalShaderGarageDraw {
     CarModel geometry;
     ModelMat4 placement;
     std::shared_ptr<const OriginalShaderMaterialTexture> diffuseTexture;
+    int diffuseUvChannel = 0;
 
     bool valid() const {
         return !name.isEmpty() && !geometry.meshes.empty()
@@ -53,18 +54,36 @@ struct OriginalShaderMaterialTexture {
     }
 };
 
+struct OriginalShaderLighting {
+    ModelVec3 direction;
+    ModelVec3 directColor;
+    ModelVec3 ambientColor;
+    QString source;
+};
+
+struct OriginalShaderPointLight {
+    ModelMat4 transform;
+    quint32 presetHash = 0;
+};
+
 // Fully decoded, renderer-neutral input for the experimental original-DXIL
-// garage path. Tokyo House geometry is exact; materialStatus records the remaining
-// shader/texture limitations without substituting guessed game assets.
+// garage path. The House 8 shell, car locator, and roof light transforms are
+// exact; status fields record unresolved layout-catalog and shader limitations
+// without substituting guessed game assets.
 struct OriginalShaderGarageScene {
     std::vector<OriginalShaderGarageDraw> draws;
     OriginalShaderProgram defaultProgram;
     OriginalShaderProgram floorProgram;
     std::array<OriginalShaderMaterialTexture, 7> materialTextures;
     GarageEnvironmentResources environment;
+    OriginalShaderLighting lighting;
+    std::vector<OriginalShaderPointLight> authoredLights;
+    ModelMat4 carPlacement;
     QString name;
     QString geometryStatus;
     QString materialStatus;
+    QString lightingStatus;
+    QString carStatus;
     QString glassStatus;
     QString error;
 
@@ -74,5 +93,10 @@ struct OriginalShaderGarageScene {
 };
 
 OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolder);
+
+bool appendOriginalShaderGarageCar(
+    OriginalShaderGarageScene *scene, CarModel car,
+    const std::array<float, 3> &paintColor,
+    const SwatchImage &livery = {}, QString *error = nullptr);
 
 } // namespace fh6

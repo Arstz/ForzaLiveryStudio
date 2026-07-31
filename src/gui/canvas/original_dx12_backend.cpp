@@ -44,7 +44,14 @@ OriginalDx12Camera originalDx12SceneCamera(
     QVector3D maximum(
         std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
         std::numeric_limits<float>::lowest());
+    const bool hasCar = std::any_of(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return draw.name.startsWith(QStringLiteral("car/"));
+        });
     for (const fh6::OriginalShaderGarageDraw &draw : scene.draws) {
+        if (hasCar && !draw.name.startsWith(QStringLiteral("car/"))) {
+            continue;
+        }
         const fh6::ModelVec3 low = draw.geometry.boundsMin;
         const fh6::ModelVec3 high = draw.geometry.boundsMax;
         for (int mask = 0; mask < 8; ++mask) {
@@ -71,8 +78,32 @@ OriginalDx12Camera originalDx12SceneCamera(
     camera.position = camera.target
         + QVector3D(0.65f, 0.28f, 1.0f).normalized() * distance;
     camera.nearPlane = std::max(0.05f, radius * 0.002f);
-    camera.farPlane = distance + radius * 4.0f;
+    camera.farPlane = hasCar ? 60.0f : distance + radius * 4.0f;
     return camera;
+}
+
+void panOriginalDx12Camera(
+    OriginalDx12Camera *camera, const QPointF &pixelDelta,
+    const QSize &viewportSize) {
+    if (camera == nullptr || !camera->valid() || viewportSize.height() <= 0) {
+        return;
+    }
+    const QVector3D forward = (camera->target - camera->position).normalized();
+    QVector3D right = QVector3D::crossProduct(forward, camera->up).normalized();
+    if (right.isNull()) {
+        return;
+    }
+    const QVector3D viewUp = QVector3D::crossProduct(right, forward).normalized();
+    constexpr float kDegreesToRadians =
+        static_cast<float>(3.14159265358979323846 / 180.0);
+    const float worldPerPixel =
+        2.0f * (camera->target - camera->position).length()
+        * std::tan(camera->verticalFovDegrees * 0.5f * kDegreesToRadians)
+        / static_cast<float>(viewportSize.height());
+    const QVector3D movement = right * (-pixelDelta.x() * worldPerPixel)
+        + viewUp * (pixelDelta.y() * worldPerPixel);
+    camera->position += movement;
+    camera->target += movement;
 }
 
 #ifdef Q_OS_WIN
@@ -190,7 +221,8 @@ D3D12_RESOURCE_BARRIER transition(
 }
 
 Geometry prepareGeometry(
-    const fh6::CarModel &model, const fh6::ModelMat4 &placement) {
+    const fh6::CarModel &model, const fh6::ModelMat4 &placement,
+    int diffuseUvChannel = 0) {
     Geometry result;
     for (const fh6::CarMesh &mesh : model.meshes) {
         const auto transformedUv = [&mesh](std::size_t channel, std::size_t vertex) {
@@ -215,8 +247,10 @@ Geometry prepareGeometry(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
         std::vector<std::array<float, 3>> bitangents(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
-        if (!mesh.uvChannels.empty()) {
-            const auto &uvs = mesh.uvChannels[0];
+        const std::size_t tangentUvChannel = diffuseUvChannel >= 0
+            ? static_cast<std::size_t>(diffuseUvChannel) : 0;
+        if (tangentUvChannel < mesh.uvChannels.size()) {
+            const auto &uvs = mesh.uvChannels[tangentUvChannel];
             for (std::size_t triangle = 0;
                  triangle + 2 < mesh.indices.size(); triangle += 3) {
                 const std::array<std::uint32_t, 3> indices = {
@@ -242,9 +276,9 @@ Geometry prepareGeometry(
                 const std::array<float, 3> edge2 = {
                     position2.x - position0.x, position2.y - position0.y,
                     position2.z - position0.z};
-                const fh6::ModelVec2 uv0 = transformedUv(0, indices[0]);
-                const fh6::ModelVec2 uv1 = transformedUv(0, indices[1]);
-                const fh6::ModelVec2 uv2 = transformedUv(0, indices[2]);
+                const fh6::ModelVec2 uv0 = transformedUv(tangentUvChannel, indices[0]);
+                const fh6::ModelVec2 uv1 = transformedUv(tangentUvChannel, indices[1]);
+                const fh6::ModelVec2 uv2 = transformedUv(tangentUvChannel, indices[2]);
                 const float deltaU1 = uv1.u - uv0.u;
                 const float deltaV1 = uv1.v - uv0.v;
                 const float deltaU2 = uv2.u - uv0.u;
@@ -311,7 +345,7 @@ Geometry prepareGeometry(
                     + cross[1] * bitangents[index][1]
                     + cross[2] * bitangents[index][2]
                 < 0.0f ? -1.0f : 1.0f;
-            const fh6::ModelVec2 uv = transformedUv(0, index);
+            const fh6::ModelVec2 uv = transformedUv(tangentUvChannel, index);
             fh6::ModelVec2 uv2 = uv;
             if (mesh.uvChannels.size() > 2 && index < mesh.uvChannels[2].size()) {
                 uv2 = transformedUv(2, index);
@@ -567,7 +601,8 @@ Matrix4 cameraViewProjection(
 }
 
 std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
-    const OriginalDx12Camera &camera, const QSize &frameSize) {
+    const OriginalDx12Camera &camera, const QSize &frameSize,
+    const fh6::OriginalShaderLighting &lighting) {
     std::array<std::vector<std::uint8_t>, 8> data;
     constexpr std::array<std::size_t, 8> sizes = {
         256, 256, 512, 11264, 18432, 256, 65536, 65536};
@@ -601,16 +636,16 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[3], 112, 0, 1.0f);
     writeFloat(&data[3], 112, 2, 1.0f);
     writeFloat(&data[3], 164, 0, 1.0f);
-    writeFloat(&data[4], 0, 0, -0.197420f);
-    writeFloat(&data[4], 0, 1, -0.302618f);
-    writeFloat(&data[4], 0, 2, 0.932442f);
-    writeFloat(&data[4], 1, 0, 0.900001f);
-    writeFloat(&data[4], 1, 1, 0.900000f);
-    writeFloat(&data[4], 1, 2, 0.750001f);
+    writeFloat(&data[4], 0, 0, lighting.direction.x);
+    writeFloat(&data[4], 0, 1, lighting.direction.y);
+    writeFloat(&data[4], 0, 2, lighting.direction.z);
+    writeFloat(&data[4], 1, 0, lighting.directColor.x);
+    writeFloat(&data[4], 1, 1, lighting.directColor.y);
+    writeFloat(&data[4], 1, 2, lighting.directColor.z);
     writeFloat(&data[4], 1, 3, 1.0f);
-    writeFloat(&data[4], 2, 0, 0.142109f);
-    writeFloat(&data[4], 2, 1, 0.175171f);
-    writeFloat(&data[4], 2, 2, 0.197850f);
+    writeFloat(&data[4], 2, 0, lighting.ambientColor.x);
+    writeFloat(&data[4], 2, 1, lighting.ambientColor.y);
+    writeFloat(&data[4], 2, 2, lighting.ambientColor.z);
     writeFloat(&data[4], 2, 3, 1.0f);
     writeFloat(&data[4], 55, 1, 1.0f);
     writeUint(&data[4], 1136, 2, 1);
@@ -1207,7 +1242,8 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     draws.reserve(scene.draws.size());
     for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
         DrawResources draw;
-        draw.geometry = prepareGeometry(source.geometry, source.placement);
+        draw.geometry = prepareGeometry(
+            source.geometry, source.placement, source.diffuseUvChannel);
         draw.family = source.family;
         draw.diffuseTexture = source.diffuseTexture;
         const UINT64 vertexBytes =
@@ -1240,7 +1276,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     }
 
     const std::array<std::vector<std::uint8_t>, 8> constantData =
-        shaderConstantData(camera, size);
+        shaderConstantData(camera, size, scene.lighting);
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
     for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
         constantBuffers[index] =
@@ -1346,8 +1382,8 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         diffuseCube.texture.Get(), &diffuseView, cpuHandleAt(0));
     // Tokyo House does not use the homespace material contract. Leaving the
     // specular-cubemap SRV null prevents that compatibility shader from projecting
-    // the garage lightprobe across unresolved building surfaces. The diffuse cube
-    // remains bound so neutral fallback materials retain readable irradiance.
+    // the garage lightprobe across unresolved building surfaces. The uniform
+    // diffuse cube keeps neutral fallback materials readable.
 
     const ComPtr<ID3D12Resource> target = createTarget(device.Get(), size);
     const ComPtr<ID3D12Resource> depthTarget =
@@ -1568,6 +1604,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     std::vector<UploadedTexture> materialTextures;
     std::vector<UploadedTexture> authoredDiffuseTextures;
     UploadedTexture diffuseCube;
+    fh6::OriginalShaderLighting lighting;
     QString adapterName;
     QString failure;
     HANDLE completionEvent = nullptr;
@@ -1640,6 +1677,7 @@ struct OriginalDx12ViewportRenderer::Impl {
         const fh6::OriginalShaderGarageScene &scene, quintptr nativeWindow,
         const QSize &size, const OriginalDx12Camera &camera) {
         viewportSize = size;
+        lighting = scene.lighting;
         ComPtr<ID3D12Debug> debug;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
             debug->EnableDebugLayer();
@@ -1728,7 +1766,8 @@ struct OriginalDx12ViewportRenderer::Impl {
         draws.reserve(scene.draws.size());
         for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
             DrawResources draw;
-            draw.geometry = prepareGeometry(source.geometry, source.placement);
+            draw.geometry = prepareGeometry(
+                source.geometry, source.placement, source.diffuseUvChannel);
             draw.family = source.family;
             draw.diffuseTexture = source.diffuseTexture;
             const UINT64 vertexBytes = static_cast<UINT64>(
@@ -1760,7 +1799,7 @@ struct OriginalDx12ViewportRenderer::Impl {
             draws.push_back(std::move(draw));
         }
 
-        const auto constants = shaderConstantData(camera, size);
+        const auto constants = shaderConstantData(camera, size, lighting);
         for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
             constantBuffers[index] =
                 createConstantBuffer(device.Get(), constants[index]);
@@ -1921,7 +1960,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     }
 
     bool renderFrame(const OriginalDx12Camera &camera) {
-        const auto constants = shaderConstantData(camera, viewportSize);
+        const auto constants = shaderConstantData(camera, viewportSize, lighting);
         if (!uploadBuffer(
                 constantBuffers[3].Get(), constants[3].data(), constants[3].size())) {
             failure = QStringLiteral("D3D12 viewport camera upload failed");

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QImage>
+#include <QPointF>
 #include <QSize>
 #include <QString>
 #include <QVector3D>
@@ -58,6 +59,10 @@ OriginalDx12BackendStatus probeOriginalDx12Backend(
 
 OriginalDx12Camera originalDx12SceneCamera(
     const fh6::OriginalShaderGarageScene &scene);
+
+void panOriginalDx12Camera(
+    OriginalDx12Camera *camera, const QPointF &pixelDelta,
+    const QSize &viewportSize);
 
 OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     const fh6::OriginalShaderGarageScene &scene, const QSize &size,

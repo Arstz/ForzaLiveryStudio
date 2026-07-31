@@ -66,27 +66,35 @@ void OriginalDx12Viewport::mousePressEvent(QMouseEvent *event) {
         event->accept();
         return;
     }
-    if (event->button() == Qt::LeftButton) {
+    if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) {
         lastMousePosition_ = event->position().toPoint();
     }
     QWindow::mousePressEvent(event);
 }
 
 void OriginalDx12Viewport::mouseMoveEvent(QMouseEvent *event) {
-    if ((event->buttons() & Qt::LeftButton) == 0) {
+    const bool pan = (event->buttons() & Qt::MiddleButton) != 0
+        || ((event->buttons() & Qt::LeftButton) != 0
+            && (event->modifiers() & Qt::ShiftModifier) != 0);
+    const bool orbit = (event->buttons() & Qt::LeftButton) != 0 && !pan;
+    if (!pan && !orbit) {
         QWindow::mouseMoveEvent(event);
         return;
     }
     const QPoint position = event->position().toPoint();
     const QPoint delta = position - lastMousePosition_;
     lastMousePosition_ = position;
-    constexpr float kOrbitRadiansPerPixel = 0.006f;
-    constexpr float kMaximumPitch = 1.45f;
-    cameraYawRadians_ -= delta.x() * kOrbitRadiansPerPixel;
-    cameraPitchRadians_ = std::clamp(
-        cameraPitchRadians_ + delta.y() * kOrbitRadiansPerPixel,
-        -kMaximumPitch, kMaximumPitch);
-    updateCameraPosition();
+    if (pan) {
+        panOriginalDx12Camera(&camera_, delta, size());
+    } else {
+        constexpr float kOrbitRadiansPerPixel = 0.006f;
+        constexpr float kMaximumPitch = 1.45f;
+        cameraYawRadians_ -= delta.x() * kOrbitRadiansPerPixel;
+        cameraPitchRadians_ = std::clamp(
+            cameraPitchRadians_ + delta.y() * kOrbitRadiansPerPixel,
+            -kMaximumPitch, kMaximumPitch);
+        updateCameraPosition();
+    }
     renderFrame();
     event->accept();
 }

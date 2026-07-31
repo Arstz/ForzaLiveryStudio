@@ -99,6 +99,7 @@ private:
     void setPanoramaBackgroundEnabled(bool enabled);
     void setOriginalDx12Enabled(bool enabled);
     void startOriginalDx12Frame();
+    fh6::SwatchImage captureCompositedLivery();
     void updateReferenceNote();
     void logGlCapabilities() const;
     void initializePostProcessing();
@@ -175,6 +176,7 @@ private:
     QSet<QString> dirtySectionIds_;
     QHash<QString, CachedProjectedLiverySection> projectedSectionCache_;
     GLuint liveryTexture_ = 0;
+    QSize liveryTexturePixelSize_;
     GLuint hdrSceneFramebuffer_ = 0;
     GLuint hdrSceneColor_ = 0;
     GLuint hdrSceneDepth_ = 0;

@@ -682,6 +682,19 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `gameMediaDir()` / `gameCarsDir()` / `gamePaintMaterialsArchive()`
 - `loadOriginalShaderGarageScene()`
 
+The experimental Tokyo House scene loader uses House 8's exact main-car locator
+and the shared six-piece `garage_customiser` interior (floor, roof, and four
+walls). It resolves every retained draw's authored general-scene base-colour or
+emissive swatch through `generalsceneassets.manifest` and the ZIP64
+`swatchbins.zip`, and reads all 20 artificial-light transforms from the roof's
+`lightsmodels.lightdb`. The remaining light preset fields still use explicit
+compatibility constants. The default layout contains 331 instances and 49
+catalog GUIDs, but the installed layout/database files do not include the GUID to
+model mapping; unresolved furniture is therefore not replaced by guessed props.
+The DX12 path reloads the selected car with textures enabled, composites the
+current livery atlas over the base paint on authored livery UVs, and supports
+middle-drag or Shift+left-drag panning in addition to orbit and wheel zoom.
+
 ## Privacy Policy Build Flag
 
 `FH6_PRIVACY_POLICY` defaults to `ON` for public builds. When enabled, imports
