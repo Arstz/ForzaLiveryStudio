@@ -508,11 +508,15 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     either path can fall back without disabling the other. The sky panorama is an
     experimental background option rather than a reconstruction of the visible garage.
   - `original_shader_garage.*`: renderer-neutral loader for the experimental Windows
-    original-DXIL path. It decodes the four currently supported homespace geometry
-    packages, exact floor/default CubemapLightScenario shader pairs, the independently
-    verified seven-slot shader-default material table, and garage lighting probes from
-    a configured game install. Glass stays explicitly excluded until one exact material
-    family is evidenced. The Qt widget does not parse these game formats.
+    original-DXIL path. It extracts the Tokyo City Docks player-home LOD0 modelbin
+    and authored summer base-colour swatches directly from the Brio PGZP v101 archive.
+    Texture hashes are resolved against normalized `ChunkContentsMiniZip0.txt` build
+    paths, and each visible material mesh retains its own decoded diffuse image. Lower
+    LODs, the deferred-decal pass, and glass are excluded until their exact render-state
+    and texture contracts can be used. The Qt widget does not parse these game formats.
+  - `pgzp_extract.*`: selected-entry reader for ForzaTech PGZP v101 archives. It maps
+    companion-manifest order to directory entries and reads stored or raw-LZ4 payloads
+    without copying game assets into the repository.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
     part's transform (× its own skeleton bone) into a merged `CarModel`. Stock
@@ -595,6 +599,30 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     ground and car. The analytic background is the default and remains available when the
     experimental panorama is disabled or cannot be loaded. Visible background selection is
     independent of the environment maps used to light the car.
+    `original_dx12_backend.*` owns the Windows-only original-DXIL capability boundary.
+    It selects a hardware adapter, requires Shader Model 6.6 and resource binding tier 3,
+    and creates the independently reflected root signature and recovered homespace PSOs. Its
+    diagnostic frame path uploads the tracked scene geometry, per-mesh authored diffuse
+    textures, neutral shader defaults, diffuse irradiance, and constant tables; renders the highest-detail Tokyo House
+    geometry into a depth-tested HDR target; and returns a validated Qt image after GPU
+    readback. Its camera contract writes a left-handed D3D view-projection matrix into the
+    exact `b2` rows proven to feed `SV_Position` in both vertex shaders. The initial frame
+    is derived from the loaded scene bounds so the larger exterior remains framed. The
+    deterministic readback remains an automated diagnostic. The Windows preview can
+    instead create a native child window backed by a persistent double-buffered D3D12
+    swap chain. Geometry,
+    textures, cubemaps, descriptors, and PSOs remain resident while camera constants update
+    for left-drag orbit and wheel zoom; resize recreates only swap-chain and depth targets.
+    A load, device, shader, presentation, or validation failure leaves the loaded project
+    intact and returns the preview to OpenGL. The original focus-car and livery bindings are
+    not part of this garage-only viewport. The complete Tokyo asset family has eight exact
+    material identities and five exact shader identities. All 80 model-instance texture
+    hashes resolve through the Brio manifest normalization, and all 12 visible LOD0 draws
+    bind their authored summer base-colour swatches. Normal/RCSM/emissive slots remain on
+    neutral defaults, and the incompatible homespace specular probe is deliberately not
+    bound. D3D12 Agility is an explicit
+    `FLS_D3D12_AGILITY_DIR` build option; opted-in targets copy the SDK DLLs beside the
+    executable, while default builds retain safe OpenGL fallback behavior.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
   `layer_state_delegate.*`, `color_palette_widget.*`, `shapes_browser_widget.*`,
   `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,

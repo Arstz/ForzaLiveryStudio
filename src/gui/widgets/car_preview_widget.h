@@ -32,6 +32,7 @@ struct Project;
 namespace gui {
 
 class EditorState;
+class OriginalDx12Viewport;
 
 class CarPreviewWidget final : public QOpenGLWidget {
     Q_OBJECT
@@ -96,6 +97,8 @@ private:
     void setLightDirectionCandidate(LightDirectionCandidate candidate);
     void setGameEnvironmentEnabled(bool enabled);
     void setPanoramaBackgroundEnabled(bool enabled);
+    void setOriginalDx12Enabled(bool enabled);
+    void startOriginalDx12Frame();
     void updateReferenceNote();
     void logGlCapabilities() const;
     void initializePostProcessing();
@@ -143,6 +146,13 @@ private:
     bool panoramaBackgroundEnabled_ = false;
     QString environmentSourceLabel_ = QStringLiteral("Analytic env");
     QString backgroundSourceLabel_ = QStringLiteral("Analytic background");
+    QString originalDx12Error_;
+    QAction *originalDx12Action_ = nullptr;
+    OriginalDx12Viewport *originalDx12Viewport_ = nullptr;
+    QWidget *originalDx12Container_ = nullptr;
+    quint64 originalDx12Generation_ = 0;
+    bool originalDx12Requested_ = false;
+    bool originalDx12Pending_ = false;
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;

@@ -72,6 +72,8 @@ add_library(fls_core STATIC
     src/core/original_shader_garage.h
     src/core/paint_finish_catalog.cpp
     src/core/paint_finish_catalog.h
+    src/core/pgzp_extract.cpp
+    src/core/pgzp_extract.h
     src/core/project_codec.cpp
     src/core/project_codec.h
     src/core/raster_decals.cpp
@@ -107,6 +109,37 @@ option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 option(FH6_ENABLE_IMGGEN_MENU "Expose experimental ImgGen menu" OFF)
 option(ENFORCE_SHAPE_LIMITS "Enforce per-section livery shape limits during export" ON)
+
+if(WIN32)
+    set(FLS_D3D12_AGILITY_DIR "" CACHE PATH
+        "Optional D3D12 Agility SDK directory containing D3D12Core.dll")
+    set(FLS_D3D12_AGILITY_VERSION 619 CACHE STRING
+        "D3D12 Agility SDK version exported by opted-in targets")
+
+    function(fls_enable_d3d12_agility target_name)
+        if(NOT FLS_D3D12_AGILITY_DIR)
+            return()
+        endif()
+        if(NOT EXISTS "${FLS_D3D12_AGILITY_DIR}/D3D12Core.dll"
+           OR NOT EXISTS "${FLS_D3D12_AGILITY_DIR}/d3d12SDKLayers.dll")
+            message(FATAL_ERROR
+                "FLS_D3D12_AGILITY_DIR must contain D3D12Core.dll and d3d12SDKLayers.dll")
+        endif()
+        target_sources(${target_name} PRIVATE
+            src/gui/canvas/d3d12_agility_exports.cpp)
+        target_compile_definitions(${target_name} PRIVATE
+            FLS_D3D12_AGILITY_VERSION=${FLS_D3D12_AGILITY_VERSION})
+        add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:${target_name}>/D3D12"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FLS_D3D12_AGILITY_DIR}/D3D12Core.dll"
+                "$<TARGET_FILE_DIR:${target_name}>/D3D12/D3D12Core.dll"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FLS_D3D12_AGILITY_DIR}/d3d12SDKLayers.dll"
+                "$<TARGET_FILE_DIR:${target_name}>/D3D12/d3d12SDKLayers.dll")
+    endfunction()
+endif()
 
 target_compile_definitions(fls_core
     PUBLIC
@@ -190,6 +223,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/garage_ground_renderer.h
     src/gui/canvas/garage_panorama_renderer.cpp
     src/gui/canvas/garage_panorama_renderer.h
+    src/gui/canvas/original_dx12_backend.cpp
+    src/gui/canvas/original_dx12_backend.h
     src/gui/canvas/advancing_front.cpp
     src/gui/canvas/advancing_front.h
     src/gui/canvas/bucket_fill.cpp
@@ -222,6 +257,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/project_canvas_events.cpp
     src/gui/widgets/car_preview_widget.cpp
     src/gui/widgets/car_preview_widget.h
+    src/gui/widgets/original_dx12_viewport.cpp
+    src/gui/widgets/original_dx12_viewport.h
     src/gui/widgets/clipboard_buffer_widget.cpp
     src/gui/widgets/clipboard_buffer_widget.h
     src/gui/widgets/color_palette_widget.cpp
@@ -279,6 +316,12 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
         FH6_ENABLE_IMGGEN_MENU=$<BOOL:${FH6_ENABLE_IMGGEN_MENU}>
 )
 
+if(WIN32)
+    target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
+        d3d12 dxgi dxguid)
+    fls_enable_d3d12_agility(${FORZA_LIVERY_STUDIO_TARGET})
+endif()
+
 if(BUILD_TESTING)
     add_executable(fls_original_shader_garage_tests
         tools/original_shader_garage_test.cpp
@@ -295,6 +338,21 @@ if(BUILD_TESTING)
     if(EXISTS "${FLS_ORIGINAL_SHADER_GAME_DIR}/media/_library/Homespace.zip")
         add_test(NAME original_shader_garage_game_evidence
             COMMAND fls_original_shader_garage_tests
+                "${FLS_ORIGINAL_SHADER_GAME_DIR}")
+    endif()
+
+    if(WIN32 AND EXISTS "${FLS_ORIGINAL_SHADER_GAME_DIR}/media/_library/Homespace.zip")
+        add_executable(fls_original_dx12_backend_tests
+            src/gui/canvas/original_dx12_backend.cpp
+            tools/original_dx12_backend_test.cpp
+        )
+        target_include_directories(fls_original_dx12_backend_tests PRIVATE
+            src/gui/canvas)
+        target_link_libraries(fls_original_dx12_backend_tests PRIVATE
+            fls_core Qt6::Core Qt6::Gui d3d12 dxgi dxguid)
+        fls_enable_d3d12_agility(fls_original_dx12_backend_tests)
+        add_test(NAME original_dx12_exact_pipeline
+            COMMAND fls_original_dx12_backend_tests
                 "${FLS_ORIGINAL_SHADER_GAME_DIR}")
     endif()
 

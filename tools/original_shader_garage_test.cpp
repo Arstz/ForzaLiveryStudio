@@ -35,17 +35,43 @@ int main(int argc, char **argv) {
     if (!require(scene.valid(), qPrintable(scene.error))) {
         return 1;
     }
-    ok &= require(scene.draws.size() == 4, "scene must contain four supported draws");
-    ok &= require(scene.totalVertices() == 53417, "supported scene vertex count changed");
-    ok &= require(scene.totalTriangles() == 59753, "supported scene triangle count changed");
+    ok &= require(scene.name == QStringLiteral("Tokyo House"), "scene identity changed");
+    ok &= require(scene.draws.size() == 12, "scene must contain twelve Tokyo material draws");
+    ok &= require(scene.totalVertices() == 16652, "Tokyo House vertex count changed");
+    ok &= require(scene.totalTriangles() == 13179, "Tokyo House triangle count changed");
     ok &= require(scene.defaultProgram.valid(), "default DXIL pair is invalid");
     ok &= require(scene.floorProgram.valid(), "floor DXIL pair is invalid");
     ok &= require(scene.environment.valid(), "garage lighting resources are invalid");
+    const fh6::ModelVec3 placedOrigin =
+        scene.draws.front().placement.transformPoint({});
+    const fh6::ModelVec3 placedForward =
+        scene.draws.front().placement.transformVector({0.0f, 0.0f, 1.0f});
+    ok &= require(
+        qFuzzyIsNull(placedOrigin.x) && qFuzzyIsNull(placedOrigin.y)
+            && qFuzzyIsNull(placedOrigin.z),
+        "Tokyo House placement translation changed");
+    ok &= require(
+        qFuzzyIsNull(placedForward.x) && qFuzzyIsNull(placedForward.y)
+            && qFuzzyCompare(placedForward.z, 1.0f),
+        "Tokyo House placement orientation changed");
+    ok &= require(
+        scene.materialStatus.contains(QStringLiteral("12/12")),
+        "authored diffuse coverage must remain explicit");
     ok &= require(
         scene.glassStatus.contains(QStringLiteral("excluded")),
-        "glass ambiguity must remain explicit");
+        "glass limitation must remain explicit");
     for (const auto &texture : scene.materialTextures) {
         ok &= require(texture.valid(), "material fallback texture is invalid");
+    }
+    for (const auto &draw : scene.draws) {
+        ok &= require(
+            draw.diffuseTexture != nullptr && draw.diffuseTexture->valid(),
+            "Tokyo draw is missing its authored diffuse texture");
+        ok &= require(
+            draw.diffuseTexture != nullptr
+                && draw.diffuseTexture->sourceEntry.contains(
+                    QStringLiteral("_bclr_"), Qt::CaseInsensitive),
+            "Tokyo draw diffuse is not an authored base-colour swatch");
     }
 
     if (ok) {

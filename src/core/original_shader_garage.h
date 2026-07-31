@@ -8,6 +8,7 @@
 #include <QString>
 
 #include <array>
+#include <memory>
 #include <vector>
 
 namespace fh6 {
@@ -26,11 +27,15 @@ struct OriginalShaderProgram {
     }
 };
 
+struct OriginalShaderMaterialTexture;
+
 struct OriginalShaderGarageDraw {
     QString name;
     QString source;
     OriginalShaderSurfaceFamily family = OriginalShaderSurfaceFamily::Default;
     CarModel geometry;
+    ModelMat4 placement;
+    std::shared_ptr<const OriginalShaderMaterialTexture> diffuseTexture;
 
     bool valid() const {
         return !name.isEmpty() && !geometry.meshes.empty()
@@ -49,14 +54,17 @@ struct OriginalShaderMaterialTexture {
 };
 
 // Fully decoded, renderer-neutral input for the experimental original-DXIL
-// homespace path. It deliberately excludes glass until its material instance can be
-// mapped to one exact shader family without guessing.
+// garage path. Tokyo House geometry is exact; materialStatus records the remaining
+// shader/texture limitations without substituting guessed game assets.
 struct OriginalShaderGarageScene {
     std::vector<OriginalShaderGarageDraw> draws;
     OriginalShaderProgram defaultProgram;
     OriginalShaderProgram floorProgram;
     std::array<OriginalShaderMaterialTexture, 7> materialTextures;
     GarageEnvironmentResources environment;
+    QString name;
+    QString geometryStatus;
+    QString materialStatus;
     QString glassStatus;
     QString error;
 

@@ -1,5 +1,9 @@
 #include "car_preview_widget.h"
 
+#include "original_dx12_backend.h"
+#include "original_dx12_viewport.h"
+#include "original_shader_garage.h"
+
 #include "color_space.h"
 #include "car_scene.h"
 #include "editor_state.h"
@@ -1177,6 +1181,45 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     });
     addAction(panoramaBackground);
 
+#ifdef Q_OS_WIN
+    originalDx12Action_ = new QAction(
+        QStringLiteral("Renderer — Tokyo House DXIL (experimental)"), this);
+    originalDx12Action_->setCheckable(true);
+    originalDx12Action_->setToolTip(QStringLiteral(
+        "Display the interactive native D3D12 Tokyo House viewport. Geometry is "
+        "exact and authored summer base-colour textures are bound per material. "
+        "Normal, RCSM, emissive, glass, and decal passes are still under development."));
+    connect(
+        originalDx12Action_, &QAction::toggled,
+        this, &CarPreviewWidget::setOriginalDx12Enabled);
+    addAction(originalDx12Action_);
+
+    originalDx12Viewport_ = new OriginalDx12Viewport();
+    originalDx12Container_ = QWidget::createWindowContainer(
+        originalDx12Viewport_, this);
+    originalDx12Container_->hide();
+    originalDx12Viewport_->setFailureCallback([this](const QString &error) {
+        originalDx12Requested_ = false;
+        originalDx12Pending_ = false;
+        originalDx12Error_ = error;
+        if (originalDx12Action_ != nullptr) {
+            const QSignalBlocker blocker(originalDx12Action_);
+            originalDx12Action_->setChecked(false);
+        }
+        if (originalDx12Container_ != nullptr) {
+            originalDx12Container_->hide();
+        }
+        qWarning().noquote() << "Original-DXIL renderer fallback:" << error;
+        updateReferenceNote();
+        update();
+    });
+    originalDx12Viewport_->setContextMenuCallback([this](const QPoint &position) {
+        QMenu menu;
+        menu.addActions(actions());
+        menu.exec(position);
+    });
+#endif
+
     auto *ground = new QAction(QStringLiteral("Ground and contact shadow"), this);
     ground->setCheckable(true);
     ground->setChecked(renderSettings_.ground.enabled);
@@ -1261,6 +1304,11 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
 }
 
 CarPreviewWidget::~CarPreviewWidget() {
+#ifdef Q_OS_WIN
+    if (originalDx12Viewport_ != nullptr) {
+        originalDx12Viewport_->clearScene();
+    }
+#endif
     makeCurrent();
     releasePostProcessing();
     panoramaRenderer_.release();
@@ -1581,6 +1629,11 @@ void CarPreviewWidget::initializeGL() {
 }
 
 void CarPreviewWidget::resizeGL(int, int) {
+#ifdef Q_OS_WIN
+    if (originalDx12Container_ != nullptr) {
+        originalDx12Container_->setGeometry(rect());
+    }
+#endif
 }
 
 void CarPreviewWidget::paintGL() {
@@ -1798,6 +1851,9 @@ void CarPreviewWidget::setGameFolder(const QString &folder) {
         return;
     }
     gameFolder_ = folder;
+    if (originalDx12Requested_) {
+        startOriginalDx12Frame();
+    }
     const quint64 generation = ++paintFinishLoadGeneration_;
     if (folder.isEmpty()) {
         paintFinishes_.clear();
@@ -2012,6 +2068,100 @@ void CarPreviewWidget::setPanoramaBackgroundEnabled(bool enabled) {
     update();
 }
 
+void CarPreviewWidget::setOriginalDx12Enabled(bool enabled) {
+    if (enabled == originalDx12Requested_) {
+        return;
+    }
+    originalDx12Requested_ = enabled;
+    ++originalDx12Generation_;
+    originalDx12Error_.clear();
+    originalDx12Pending_ = false;
+    if (enabled) {
+        startOriginalDx12Frame();
+    } else {
+#ifdef Q_OS_WIN
+        if (originalDx12Viewport_ != nullptr) {
+            originalDx12Viewport_->clearScene();
+        }
+        if (originalDx12Container_ != nullptr) {
+            originalDx12Container_->hide();
+        }
+#endif
+        updateReferenceNote();
+        update();
+    }
+}
+
+void CarPreviewWidget::startOriginalDx12Frame() {
+    const quint64 generation = ++originalDx12Generation_;
+    const QString folder = gameFolder_;
+    originalDx12Error_.clear();
+    originalDx12Pending_ = true;
+    updateReferenceNote();
+    update();
+    if (folder.isEmpty()) {
+        originalDx12Pending_ = false;
+        originalDx12Requested_ = false;
+        originalDx12Error_ = QStringLiteral("no game installation is configured");
+        if (originalDx12Action_ != nullptr) {
+            const QSignalBlocker blocker(originalDx12Action_);
+            originalDx12Action_->setChecked(false);
+        }
+        qWarning().noquote()
+            << "Original-DXIL renderer fallback:" << originalDx12Error_;
+        updateReferenceNote();
+        return;
+    }
+    QPointer<CarPreviewWidget> guard(this);
+    QThreadPool::globalInstance()->start([guard, folder, generation]() {
+        fh6::OriginalShaderGarageScene scene =
+            fh6::loadOriginalShaderGarageScene(folder);
+        auto sceneResult =
+            std::make_shared<fh6::OriginalShaderGarageScene>(std::move(scene));
+        if (!guard) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            guard,
+            [guard, sceneResult = std::move(sceneResult), generation]() mutable {
+                if (!guard || generation != guard->originalDx12Generation_
+                    || !guard->originalDx12Requested_) {
+                    return;
+                }
+                guard->originalDx12Pending_ = false;
+                if (sceneResult->valid()) {
+                    guard->originalDx12Error_.clear();
+#ifdef Q_OS_WIN
+                    guard->originalDx12Container_->setGeometry(guard->rect());
+                    guard->originalDx12Viewport_->setScene(
+                        std::move(sceneResult));
+                    guard->originalDx12Container_->show();
+                    guard->originalDx12Container_->raise();
+#endif
+                } else {
+                    guard->originalDx12Requested_ = false;
+                    guard->originalDx12Error_ = sceneResult->error.isEmpty()
+                        ? QStringLiteral("original-DXIL scene validation failed")
+                        : std::move(sceneResult->error);
+                    if (guard->originalDx12Action_ != nullptr) {
+                        const QSignalBlocker blocker(guard->originalDx12Action_);
+                        guard->originalDx12Action_->setChecked(false);
+                    }
+#ifdef Q_OS_WIN
+                    guard->originalDx12Viewport_->clearScene();
+                    guard->originalDx12Container_->hide();
+#endif
+                    qWarning().noquote()
+                        << "Original-DXIL renderer fallback:"
+                        << guard->originalDx12Error_;
+                }
+                guard->updateReferenceNote();
+                guard->update();
+            },
+            Qt::QueuedConnection);
+    });
+}
+
 void CarPreviewWidget::updateReferenceNote() {
     if (referenceNote_ == nullptr) {
         return;
@@ -2028,10 +2178,18 @@ void CarPreviewWidget::updateReferenceNote() {
         candidate = QStringLiteral("A+B");
         break;
     }
+    QString renderer = QStringLiteral("OpenGL car");
+    if (originalDx12Pending_) {
+        renderer = QStringLiteral("Loading Tokyo House DXIL…");
+    } else if (originalDx12Requested_) {
+        renderer = QStringLiteral("Tokyo House DXIL · authored diffuse");
+    } else if (!originalDx12Error_.isEmpty()) {
+        renderer = QStringLiteral("OpenGL fallback");
+    }
     referenceNote_->setText(QStringLiteral(
-        "Only for reference, ingame render may differ · Light %1 · %2 · %3")
+        "Only for reference, ingame render may differ · %1 · Light %2 · %3 · %4")
                                 .arg(
-                                    candidate, environmentSourceLabel_,
+                                    renderer, candidate, environmentSourceLabel_,
                                     backgroundSourceLabel_));
     referenceNote_->adjustSize();
 }
