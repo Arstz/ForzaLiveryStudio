@@ -4,6 +4,7 @@
 #include "garage_lut.h"
 #include "livery_masks.h"
 #include "model_geometry.h"
+#include "model_material.h"
 #include "swatchbin.h"
 
 #include <QByteArray>
@@ -44,6 +45,9 @@ struct OriginalShaderGarageDraw {
     std::shared_ptr<const OriginalShaderMaterialTexture> diffuseTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> alphaTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> normalTexture;
+    std::shared_ptr<const OriginalShaderMaterialTexture> weaveMaskTexture;
+    std::shared_ptr<const OriginalShaderMaterialTexture> weaveNormalTexture;
+    std::shared_ptr<const OriginalShaderMaterialTexture> clearCoatNormalTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> surfaceTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> emissiveTexture;
     int diffuseUvChannel = 0;
@@ -58,6 +62,12 @@ struct OriginalShaderGarageDraw {
     float vTiling = 1.0f;
     float detailUTiling = 1.0f;
     float detailVTiling = 1.0f;
+    float normalIntensity = 1.0f;
+    float weaveNormalIntensity = 1.0f;
+    float clearCoatNormalUTiling = 1.0f;
+    float clearCoatNormalVTiling = 1.0f;
+    std::array<float, 3> weaveColorTintA = {1.0f, 1.0f, 1.0f};
+    std::array<float, 3> weaveColorTintB = {1.0f, 1.0f, 1.0f};
     std::array<float, 3> clearCoatTint = {1.0f, 1.0f, 1.0f};
     float clearCoatCoverage = 0.0f;
     float clearCoatRoughness = 0.1f;
@@ -67,6 +77,8 @@ struct OriginalShaderGarageDraw {
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
+    ModelMaterialSampler sampler;
+    ModelShaderFamily shaderFamily = ModelShaderFamily::Generic;
 
     bool valid() const {
         return !name.isEmpty() && !geometry.meshes.empty()
@@ -78,6 +90,7 @@ struct OriginalShaderMaterialTexture {
     QString semantic;
     QString sourceEntry;
     SwatchImage image;
+    std::vector<SwatchImage> authoredMips;
 
     bool valid() const {
         return !semantic.isEmpty() && !sourceEntry.isEmpty() && image.valid();

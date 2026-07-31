@@ -269,6 +269,7 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         && std::isfinite(parameter.scalar)) {
         material.automotivePaint.hasNormalIntensity = true;
         material.automotivePaint.normalIntensity = parameter.scalar;
+        material.normalIntensity = parameter.scalar;
     }
     if (finiteVector
         && parameter.nameHash == material_hashes::parameter::kNormalMap00UvTiling) {
@@ -290,6 +291,35 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         && parameter.nameHash == material_hashes::parameter::kUvOrientation
         && std::isfinite(parameter.scalar)) {
         material.uvOrientationDegrees = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kWeaveNormalIntensity
+        && std::isfinite(parameter.scalar)) {
+        material.weaveNormalIntensity = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kClearCoatNormalUTiling
+        && std::isfinite(parameter.scalar)) {
+        material.clearCoatNormalUTiling = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kClearCoatNormalVTiling
+        && std::isfinite(parameter.scalar)) {
+        material.clearCoatNormalVTiling = parameter.scalar;
+    }
+    if (finiteVector
+        && parameter.nameHash == material_hashes::parameter::kWeaveColorTintA) {
+        std::copy_n(parameter.vector.cbegin(), 3, material.weaveColorTintA.begin());
+    }
+    if (finiteVector
+        && parameter.nameHash == material_hashes::parameter::kWeaveColorTintB) {
+        std::copy_n(parameter.vector.cbegin(), 3, material.weaveColorTintB.begin());
+    }
+    if (parameter.type == ModelMaterialParameterType::Sampler) {
+        material.sampler.authored = true;
+        material.sampler.addressU = parameter.samplerAddressU;
+        material.sampler.addressV = parameter.samplerAddressV;
+        material.sampler.filter = parameter.samplerFilter;
     }
     if (parameter.type == ModelMaterialParameterType::Float
         && material_hashes::contains(
@@ -411,7 +441,8 @@ std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     const ModelMaterial &defaults, const ModelMaterial &instance) {
     auto merged = std::make_shared<ModelMaterial>();
     merged->name = instance.name;
-    merged->resourcePath = instance.resourcePath;
+    merged->resourcePath = instance.resourcePath.isEmpty()
+        ? defaults.resourcePath : instance.resourcePath;
     merged->linkedPaths = defaults.linkedPaths;
     merged->linkedPaths.append(instance.linkedPaths);
     merged->parameters.reserve(defaults.parameters.size() + instance.parameters.size());
@@ -425,6 +456,31 @@ std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
         merged->parameters.push_back(parameter);
     }
     return merged;
+}
+
+ModelShaderFamily modelShaderFamily(const ModelMaterial &material) {
+    QString identity = material.resourcePath;
+    for (const QString &path : material.linkedPaths) {
+        identity += QLatin1Char('|') + path;
+    }
+    identity = identity.toLower();
+    identity.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (identity.contains(QStringLiteral("car_carbonfiber"))
+        || identity.contains(QStringLiteral("/carbonfiber/carbonfiber.materialbin"))) {
+        return ModelShaderFamily::CarbonFiber;
+    }
+    if (identity.contains(QStringLiteral("carpaint"))
+        || identity.contains(QStringLiteral("car_paint"))) {
+        return ModelShaderFamily::AutomotivePaint;
+    }
+    if (identity.contains(QStringLiteral("glass"))) {
+        return ModelShaderFamily::Glass;
+    }
+    if (identity.contains(QStringLiteral("emissive"))
+        || identity.contains(QStringLiteral("lights"))) {
+        return ModelShaderFamily::Emissive;
+    }
+    return ModelShaderFamily::Generic;
 }
 
 } // namespace fh6

@@ -5,6 +5,7 @@
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "model_geometry.h"
+#include "model_material.h"
 #include "paint_finish_catalog.h"
 
 #include <QtGui>
@@ -13,10 +14,7 @@
 #include <memory>
 #include <vector>
 
-namespace fh6 {
-struct ModelMaterialTexture;
-struct SwatchTexture;
-}
+namespace fh6 { struct SwatchTexture; }
 
 namespace gui {
 
@@ -87,11 +85,22 @@ private:
         GLuint diffuseTexture = 0;
         GLuint alphaTexture = 0;
         GLuint normalTexture = 0;
+        GLuint weaveMaskTexture = 0;
+        GLuint weaveNormalTexture = 0;
+        GLuint clearCoatNormalTexture = 0;
         GLuint surfaceTexture = 0;
         GLuint emissiveTexture = 0;
         GLuint paintNormalMap00Texture = 0;
         GLuint paintNormalMap0Texture = 0;
         GLuint orangePeelNormalTexture = 0;
+        float normalIntensity = 1.0f;
+        float weaveNormalIntensity = 1.0f;
+        float clearCoatNormalUTiling = 1.0f;
+        float clearCoatNormalVTiling = 1.0f;
+        QVector3D weaveColorTintA;
+        QVector3D weaveColorTintB;
+        fh6::ModelMaterialSampler sampler;
+        fh6::ModelShaderFamily shaderFamily = fh6::ModelShaderFamily::Generic;
         QVector3D center;
         QMatrix4x4 model;
     };
@@ -185,11 +194,17 @@ private:
     int nativeDiffuseLocation_ = -1;
     int nativeAlphaLocation_ = -1;
     int nativeNormalLocation_ = -1;
+    int weaveMaskLocation_ = -1;
+    int weaveNormalLocation_ = -1;
+    int clearCoatNormalMapLocation_ = -1;
     int nativeSurfaceLocation_ = -1;
     int nativeEmissiveLocation_ = -1;
     int hasNativeDiffuseLocation_ = -1;
     int hasNativeAlphaLocation_ = -1;
     int hasNativeNormalLocation_ = -1;
+    int hasWeaveMaskLocation_ = -1;
+    int hasWeaveNormalLocation_ = -1;
+    int hasClearCoatNormalMapLocation_ = -1;
     int hasNativeSurfaceLocation_ = -1;
     int hasNativeEmissiveLocation_ = -1;
     int finishPatternLocation_ = -1;
@@ -220,6 +235,12 @@ private:
     int clearCoatIntensityLocation_ = -1;
     int clearCoatTintLocation_ = -1;
     int clearCoatOnLiveryLocation_ = -1;
+    int normalIntensityLocation_ = -1;
+    int weaveNormalIntensityLocation_ = -1;
+    int clearCoatNormalTilingLocation_ = -1;
+    int weaveColorTintALocation_ = -1;
+    int weaveColorTintBLocation_ = -1;
+    int shaderFamilyLocation_ = -1;
 };
 
 } // namespace gui

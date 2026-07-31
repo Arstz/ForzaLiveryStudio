@@ -606,9 +606,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     the recovered environment and car DXIL families require different bindless constant,
     sampler, vertex-input, and multiple-render-target contracts and must not be presented as
     interchangeable programs behind the homespace root bindings. The material path uploads
-    each draw's authored base-colour, normal, RCSM/RMAO, and emissive maps plus decoded
-    tint, gloss, metalness, opacity, and tiling. Livery paint uses the car's projection UV
-    channel while its normal and surface detail remains on material UV0. The diagnostic
+    each draw's authored base-colour, base normal, carbon weave mask/normal,
+    clear-coat normal, RCSM/RMAO, and emissive maps plus decoded tint, gloss,
+    metalness, opacity, normal strengths, and tiling. Livery paint uses the car's
+    projection UV channel while surface detail remains on the shader-selected material
+    UV channel. Authored tangent streams, mip chains, and sampler address/filter state
+    are retained; missing tangents or mips alone use generated fallbacks. The diagnostic
     frame renders the decoded Tokyo House enclosure, props, and car into a depth-tested
     HDR target and returns a validated Qt image after GPU readback. Its
     camera contract writes a left-handed D3D view-projection matrix for column-vector shader
@@ -627,7 +630,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     colours instead of unrelated projected swatches. Cars are separately prepared with native swatches enabled and append their diffuse,
     normal, surface, emissive, paint colour, and composited livery resources. Transparent
     car swatch classification recognizes the game's `_bclr_`, `_rcsm_`, and `_emis_`
-    naming, carbon weave uses transformed UV0 with the shared material's authored 32x U/V tiling, and only each mesh group's
+    naming, carbon weave uses transformed UV1 with the shared material's authored U/V tiling, and only each mesh group's
     highest-detail LOD is submitted. Garage and car glass use a second alpha-blended pass
     after opaque geometry with depth writes disabled. The staged-space diffuse irradiance,
     mipmapped BC6H specular probe, `Homespace.lut`, decoded artificial-light presets, and
@@ -731,11 +734,16 @@ factory `livery_sticker` geometry in both preview renderers. Genuine badges and 
 remain. Alpha-mapped window/lamp glass renders after opaque geometry with depth
 writes disabled. Missing car or garage diffuse inputs use the deployed
 magenta/black `MissingTexture.png` checker; decoded procedural materials remain
-procedural. Decoded DX12 material maps receive a full filtered mip chain, including
-renormalized normal-map mips. Carbon follows the material contract used by ForzaTechStudio:
-UV0 receives its decoded channel transform followed by the material's authored U/V tiling.
-Both documented scalar hash pairs are recognized, and the shared carbon material supplies
-32x U/V tiling. Material sampling remains anisotropic.
+procedural. Decoded material maps retain their authored mip chain; a filtered chain,
+including renormalized normal-map mips, is generated only when the source has none.
+Carbon follows the decoded linked `car_carbonfiber` shader family: UV1 receives its
+channel transform, orientation, and authored U/V tiling, while separate weave mask,
+weave normal, base normal, and clear-coat normal layers consume their decoded intensity
+and tint parameters. Both preview renderers prefer the matching authored tangent channel
+and otherwise reconstruct a tangent frame. Per-material sampler address and filter state
+is applied in OpenGL and via a shader-visible DX12 sampler table. Automotive-paint, glass,
+emissive, carbon, and generic linked families are classified explicitly; SurfaceFX
+weather/damage layering is intentionally outside this livery-editor preview contract.
 DX12 automotive paint now consumes decoded clear-coat coverage, roughness, tint,
 and livery-coating flags and uses the same environment-BRDF approximation as the
 OpenGL path. The viewport supports middle-drag or Shift+left-drag panning in

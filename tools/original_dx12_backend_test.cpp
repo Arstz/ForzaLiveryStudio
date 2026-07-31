@@ -119,6 +119,13 @@ int main(int argc, char **argv) {
             qPrintable(firstFrame.error), qPrintable(secondFrame.error));
         return 1;
     }
+    if (firstFrame.debugWarnings != 0 || secondFrame.debugWarnings != 0) {
+        std::fprintf(
+            stderr, "D3D12 debug warning: %s / %s\n",
+            qPrintable(firstFrame.debugWarningDetail),
+            qPrintable(secondFrame.debugWarningDetail));
+        return 1;
+    }
     const QByteArray firstBytes(
         reinterpret_cast<const char *>(firstFrame.image.constBits()),
         firstFrame.image.sizeInBytes());
@@ -200,10 +207,10 @@ int main(int argc, char **argv) {
     DestroyWindow(window);
 #endif
     std::printf(
-        "D3D12 exact frame on %s: changed=%llu colors=%lld hash=%s warnings=%d\n",
+        "D3D12 exact frame on %s: changed=%llu colors=%lld hash=%s warnings=%d first=%s\n",
         qPrintable(firstFrame.adapter),
         static_cast<unsigned long long>(firstFrame.changedPixels),
         static_cast<long long>(colors.size()), firstHash.constData(),
-        firstFrame.debugWarnings);
+        firstFrame.debugWarnings, qPrintable(firstFrame.debugWarningDetail));
     return 0;
 }

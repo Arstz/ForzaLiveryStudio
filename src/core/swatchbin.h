@@ -106,6 +106,10 @@ SwatchImage loadSwatchImage(const QString &path, QString *error = nullptr);
 
 SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error = nullptr);
 
+SwatchImage decodeSwatchImage(
+    const SwatchTexture &texture, int sliceIndex, int mipIndex,
+    QString *error = nullptr);
+
 std::optional<SwatchTexture> parseSwatchTexture(
     const QByteArray &bytes, QString *error = nullptr);
 

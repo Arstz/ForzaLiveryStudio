@@ -18,7 +18,7 @@
 namespace fh6 {
 namespace {
 
-constexpr quint32 kGarageCacheVersion = 2;
+constexpr quint32 kGarageCacheVersion = 3;
 constexpr quint64 kMaximumCachedElements = 100000000;
 constexpr char kGarageCacheMagic[] = "FLS-TOKYO-GARAGE";
 
@@ -91,11 +91,29 @@ bool readImage(QDataStream &stream, SwatchImage *image) {
 void writeTexture(QDataStream &stream, const OriginalShaderMaterialTexture &texture) {
     stream << texture.semantic << texture.sourceEntry;
     writeImage(stream, texture.image);
+    stream << static_cast<quint32>(texture.authoredMips.size());
+    for (const SwatchImage &mip : texture.authoredMips) {
+        writeImage(stream, mip);
+    }
 }
 
 bool readTexture(QDataStream &stream, OriginalShaderMaterialTexture *texture) {
+    quint32 mipCount = 0;
     stream >> texture->semantic >> texture->sourceEntry;
-    return readImage(stream, &texture->image);
+    if (!readImage(stream, &texture->image)) {
+        return false;
+    }
+    stream >> mipCount;
+    if (mipCount > 64) {
+        return false;
+    }
+    texture->authoredMips.resize(mipCount);
+    for (SwatchImage &mip : texture->authoredMips) {
+        if (!readImage(stream, &mip)) {
+            return false;
+        }
+    }
+    return stream.status() == QDataStream::Ok;
 }
 
 void writeSwatchTexture(QDataStream &stream, const SwatchTexture &texture) {
@@ -151,6 +169,10 @@ void writeCarModel(QDataStream &stream, const CarModel &model) {
                << mesh.materialId << mesh.paintMaterialHash;
         writePodVector(stream, mesh.positions);
         writePodVector(stream, mesh.normals);
+        stream << static_cast<quint32>(mesh.tangentChannels.size());
+        for (const std::vector<ModelVec4> &channel : mesh.tangentChannels) {
+            writePodVector(stream, channel);
+        }
         stream << static_cast<quint32>(mesh.uvChannels.size());
         for (const std::vector<ModelVec2> &channel : mesh.uvChannels) {
             writePodVector(stream, channel);
@@ -178,12 +200,23 @@ bool readCarModel(QDataStream &stream, CarModel *model) {
     }
     model->meshes.resize(meshCount);
     for (CarMesh &mesh : model->meshes) {
+        quint32 tangentChannelCount = 0;
         quint32 uvChannelCount = 0;
         stream >> mesh.name >> mesh.sourceModelPath >> mesh.materialName
                >> mesh.materialId >> mesh.paintMaterialHash;
         if (!readPodVector(stream, &mesh.positions)
             || !readPodVector(stream, &mesh.normals)) {
             return false;
+        }
+        stream >> tangentChannelCount;
+        if (tangentChannelCount > 32) {
+            return false;
+        }
+        mesh.tangentChannels.resize(tangentChannelCount);
+        for (std::vector<ModelVec4> &channel : mesh.tangentChannels) {
+            if (!readPodVector(stream, &channel)) {
+                return false;
+            }
         }
         stream >> uvChannelCount;
         if (uvChannelCount > 32) {
@@ -235,6 +268,9 @@ void writeScene(QDataStream &stream, const OriginalShaderGarageScene &scene) {
         collectTexture(draw.diffuseTexture, &textureIndices, &textures);
         collectTexture(draw.alphaTexture, &textureIndices, &textures);
         collectTexture(draw.normalTexture, &textureIndices, &textures);
+        collectTexture(draw.weaveMaskTexture, &textureIndices, &textures);
+        collectTexture(draw.weaveNormalTexture, &textureIndices, &textures);
+        collectTexture(draw.clearCoatNormalTexture, &textureIndices, &textures);
         collectTexture(draw.surfaceTexture, &textureIndices, &textures);
         collectTexture(draw.emissiveTexture, &textureIndices, &textures);
     }
@@ -254,6 +290,9 @@ void writeScene(QDataStream &stream, const OriginalShaderGarageScene &scene) {
         stream << textureIndices.value(draw.diffuseTexture.get(), -1)
                << textureIndices.value(draw.alphaTexture.get(), -1)
                << textureIndices.value(draw.normalTexture.get(), -1)
+               << textureIndices.value(draw.weaveMaskTexture.get(), -1)
+               << textureIndices.value(draw.weaveNormalTexture.get(), -1)
+               << textureIndices.value(draw.clearCoatNormalTexture.get(), -1)
                << textureIndices.value(draw.surfaceTexture.get(), -1)
                << textureIndices.value(draw.emissiveTexture.get(), -1)
                << draw.diffuseUvChannel << draw.materialUvChannel
@@ -262,12 +301,18 @@ void writeScene(QDataStream &stream, const OriginalShaderGarageScene &scene) {
         for (const float value : draw.emissiveColor) stream << value;
         stream << draw.opacity << draw.gloss << draw.metallic
                << draw.uTiling << draw.vTiling
-               << draw.detailUTiling << draw.detailVTiling;
+               << draw.detailUTiling << draw.detailVTiling
+               << draw.normalIntensity << draw.weaveNormalIntensity
+               << draw.clearCoatNormalUTiling << draw.clearCoatNormalVTiling;
+        for (const float value : draw.weaveColorTintA) stream << value;
+        for (const float value : draw.weaveColorTintB) stream << value;
         for (const float value : draw.clearCoatTint) stream << value;
         stream << draw.clearCoatCoverage << draw.clearCoatRoughness
                << draw.rawMaterialUv << draw.translucent << draw.hidden
                << draw.clearCoatOnLivery << draw.liveryBaseTexture
-               << draw.liveryAllowedSides;
+               << draw.liveryAllowedSides << draw.sampler.authored
+               << draw.sampler.addressU << draw.sampler.addressV
+               << draw.sampler.filter << static_cast<qint32>(draw.shaderFamily);
     }
     for (const OriginalShaderMaterialTexture &texture : scene.materialTextures) {
         writeTexture(stream, texture);
@@ -328,7 +373,7 @@ bool readScene(QDataStream &stream, OriginalShaderGarageScene *scene) {
     scene->draws.resize(drawCount);
     for (OriginalShaderGarageDraw &draw : scene->draws) {
         qint32 family = 0;
-        std::array<qint32, 5> textureReferences{};
+        std::array<qint32, 8> textureReferences{};
         stream >> draw.name >> draw.source >> family;
         draw.family = static_cast<OriginalShaderSurfaceFamily>(family);
         if (!readCarModel(stream, &draw.geometry)
@@ -341,18 +386,29 @@ bool readScene(QDataStream &stream, OriginalShaderGarageScene *scene) {
         draw.diffuseTexture = textureAt(textures, textureReferences[0]);
         draw.alphaTexture = textureAt(textures, textureReferences[1]);
         draw.normalTexture = textureAt(textures, textureReferences[2]);
-        draw.surfaceTexture = textureAt(textures, textureReferences[3]);
-        draw.emissiveTexture = textureAt(textures, textureReferences[4]);
+        draw.weaveMaskTexture = textureAt(textures, textureReferences[3]);
+        draw.weaveNormalTexture = textureAt(textures, textureReferences[4]);
+        draw.clearCoatNormalTexture = textureAt(textures, textureReferences[5]);
+        draw.surfaceTexture = textureAt(textures, textureReferences[6]);
+        draw.emissiveTexture = textureAt(textures, textureReferences[7]);
         for (float &value : draw.baseColor) stream >> value;
         for (float &value : draw.emissiveColor) stream >> value;
         stream >> draw.opacity >> draw.gloss >> draw.metallic
                >> draw.uTiling >> draw.vTiling
-               >> draw.detailUTiling >> draw.detailVTiling;
+               >> draw.detailUTiling >> draw.detailVTiling
+               >> draw.normalIntensity >> draw.weaveNormalIntensity
+               >> draw.clearCoatNormalUTiling >> draw.clearCoatNormalVTiling;
+        for (float &value : draw.weaveColorTintA) stream >> value;
+        for (float &value : draw.weaveColorTintB) stream >> value;
         for (float &value : draw.clearCoatTint) stream >> value;
+        qint32 shaderFamily = 0;
         stream >> draw.clearCoatCoverage >> draw.clearCoatRoughness
                >> draw.rawMaterialUv >> draw.translucent >> draw.hidden
                >> draw.clearCoatOnLivery >> draw.liveryBaseTexture
-               >> draw.liveryAllowedSides;
+               >> draw.liveryAllowedSides >> draw.sampler.authored
+               >> draw.sampler.addressU >> draw.sampler.addressV
+               >> draw.sampler.filter >> shaderFamily;
+        draw.shaderFamily = static_cast<ModelShaderFamily>(shaderFamily);
     }
     for (OriginalShaderMaterialTexture &texture : scene->materialTextures) {
         if (!readTexture(stream, &texture)) {

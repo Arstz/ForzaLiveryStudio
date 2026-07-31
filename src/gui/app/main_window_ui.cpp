@@ -651,6 +651,10 @@ void MainWindow::importCarModel() {
         return;
     }
     statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    if (carPreviewDock_ != nullptr) {
+        carPreviewDock_->show();
+        carPreviewDock_->raise();
+    }
     carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
         if (!loaded) {
             statusBar()->showMessage(

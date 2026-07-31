@@ -429,6 +429,24 @@ int main(int argc, char **argv) {
     carbonMesh.material->uTiling = 32.0f;
     carbonMesh.material->vTiling = 32.0f;
     carbonMesh.material->uvOrientationDegrees = 90.0f;
+    carbonMesh.material->normalIntensity = 0.8f;
+    carbonMesh.material->weaveNormalIntensity = 0.35f;
+    carbonMesh.material->clearCoatNormalUTiling = 6.0f;
+    carbonMesh.material->clearCoatNormalVTiling = 7.0f;
+    carbonMesh.material->sampler = {true, 2, 3, 0};
+    auto carbonLayer = std::make_shared<fh6::ModelMaterialTexture>();
+    carbonLayer->path = QStringLiteral("car/carbon_layer.swatchbin");
+    carbonLayer->image.width = 2;
+    carbonLayer->image.height = 2;
+    carbonLayer->image.rgba.assign(16, 128);
+    fh6::SwatchImage carbonMip;
+    carbonMip.width = 1;
+    carbonMip.height = 1;
+    carbonMip.rgba = {128, 128, 255, 255};
+    carbonLayer->authoredMips.push_back(carbonMip);
+    carbonMesh.material->weaveMaskTexture = carbonLayer;
+    carbonMesh.material->weaveNormalTexture = carbonLayer;
+    carbonMesh.material->clearCoatNormalTexture = carbonLayer;
     carbonMesh.positions = {
         {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {0.0f, 2.0f, 0.0f}};
     carbonMesh.uvChannels.resize(2);
@@ -450,7 +468,17 @@ int main(int argc, char **argv) {
             && scene.draws.back().materialUvChannel == 1
             && std::abs(scene.draws.back().materialUvRotationDegrees - 90.0f) < 0.0001f
             && std::abs(scene.draws.back().uTiling - 32.0f) < 0.0001f
-            && std::abs(scene.draws.back().vTiling - 32.0f) < 0.0001f,
+            && std::abs(scene.draws.back().vTiling - 32.0f) < 0.0001f
+            && scene.draws.back().shaderFamily == fh6::ModelShaderFamily::CarbonFiber
+            && scene.draws.back().weaveMaskTexture != nullptr
+            && scene.draws.back().weaveNormalTexture != nullptr
+            && scene.draws.back().clearCoatNormalTexture != nullptr
+            && scene.draws.back().weaveNormalTexture->authoredMips.size() == 1
+            && std::abs(scene.draws.back().normalIntensity - 0.8f) < 0.0001f
+            && std::abs(scene.draws.back().weaveNormalIntensity - 0.35f) < 0.0001f
+            && scene.draws.back().sampler.authored
+            && scene.draws.back().sampler.addressU == 2
+            && scene.draws.back().sampler.addressV == 3,
         "DX12 carbon weave must use authored transformed UV1, rotation, and tiling");
 
     if (ok) {

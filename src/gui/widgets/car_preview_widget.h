@@ -156,6 +156,8 @@ private:
     bool originalDx12Requested_ = false;
     bool originalDx12Pending_ = false;
     bool originalDx12LiveryRefreshPending_ = false;
+    bool carLoadPending_ = false;
+    bool carMaterialsPending_ = false;
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;
@@ -164,6 +166,7 @@ private:
     fh6::CarModel model_;
     fh6::ManufacturerColorPalette manufacturerColors_;
     bool modelUploadPending_ = false;
+    bool modelRefitPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
     quint64 carLoadGeneration_ = 0;

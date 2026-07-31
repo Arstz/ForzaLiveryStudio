@@ -25,6 +25,7 @@ layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec2 in_material_uv;
+layout(location = 4) in vec4 in_tangent;
 
 uniform mat4 mvp;
 uniform mat4 model;
@@ -33,6 +34,7 @@ out vec3 v_normal;
 out vec3 v_world;
 out vec2 v_uv;
 out vec2 v_material_uv;
+out vec4 v_tangent;
 
 void main()
 {
@@ -42,6 +44,9 @@ void main()
     v_world = world.xyz;
     v_uv = in_uv;
     v_material_uv = in_material_uv;
+    mat3 model3 = mat3(model);
+    v_tangent = vec4(normalize(model3 * in_tangent.xyz),
+                     in_tangent.w * sign(determinant(model3)));
 }
 )";
 
@@ -50,6 +55,7 @@ in vec3 v_normal;
 in vec3 v_world;
 in vec2 v_uv;
 in vec2 v_material_uv;
+in vec4 v_tangent;
 
 uniform sampler2D livery_tex;
 uniform sampler2DArray side_masks;
@@ -93,11 +99,17 @@ uniform float material_alpha;
 uniform sampler2D native_diffuse;
 uniform sampler2D native_alpha;
 uniform sampler2D native_normal;
+uniform sampler2D weave_mask;
+uniform sampler2D weave_normal;
+uniform sampler2D clear_coat_normal_map;
 uniform sampler2D native_surface;
 uniform sampler2D native_emissive;
 uniform int has_native_diffuse;
 uniform int has_native_alpha;
 uniform int has_native_normal;
+uniform int has_weave_mask;
+uniform int has_weave_normal;
+uniform int has_clear_coat_normal_map;
 uniform int has_native_surface;
 uniform int has_native_emissive;
 uniform sampler2D finish_pattern;
@@ -128,6 +140,12 @@ uniform float clear_coat_roughness;
 uniform float clear_coat_intensity;
 uniform vec3 clear_coat_tint;
 uniform int clear_coat_on_livery;
+uniform float native_normal_intensity;
+uniform float weave_normal_intensity;
+uniform vec2 clear_coat_normal_tiling;
+uniform vec3 weave_color_tint_a;
+uniform vec3 weave_color_tint_b;
+uniform int shader_family;
 
 out vec4 out_color;
 
@@ -308,6 +326,19 @@ vec3 applyNormalMap(vec3 surfaceNormal, sampler2D normalTexture, vec3 position,
         * mappedNormal(normalTexture, uv, intensity));
 }
 
+vec3 applyAuthoredNormalMap(vec3 surfaceNormal, sampler2D normalTexture,
+                            vec2 uv, float intensity)
+{
+    vec3 tangent = v_tangent.xyz - surfaceNormal * dot(surfaceNormal, v_tangent.xyz);
+    if (dot(tangent, tangent) < 0.000001) {
+        return applyNormalMap(surfaceNormal, normalTexture, v_world, uv, intensity);
+    }
+    tangent = normalize(tangent);
+    vec3 bitangent = normalize(cross(surfaceNormal, tangent)) * v_tangent.w;
+    return normalize(mat3(tangent, bitangent, surfaceNormal)
+        * mappedNormal(normalTexture, uv, intensity));
+}
+
 vec3 finishBaseColor(vec2 uv, vec3 paint)
 {
     if (has_finish_pattern == 0) {
@@ -351,7 +382,12 @@ void main()
     vec3 baseNormal = geometricNormal;
     vec2 materialUv = v_material_uv;
     if (has_native_normal == 1) {
-        baseNormal = applyNormalMap(baseNormal, native_normal, v_world, materialUv, 1.0);
+        baseNormal = applyAuthoredNormalMap(
+            baseNormal, native_normal, materialUv, native_normal_intensity);
+    }
+    if (shader_family == 2 && has_weave_normal == 1) {
+        baseNormal = applyAuthoredNormalMap(
+            baseNormal, weave_normal, materialUv, weave_normal_intensity);
     }
     vec3 viewDir = normalize(eye_position - v_world);
     float edge = pow(1.0 - max(dot(baseNormal, viewDir), 0.0),
@@ -365,6 +401,10 @@ void main()
         vec4 nativeColor = texture(native_diffuse, materialUv);
         surfacePaint *= nativeColor.rgb;
         outputAlpha *= nativeColor.a;
+    }
+    if (shader_family == 2 && has_weave_mask == 1) {
+        float weave = texture(weave_mask, materialUv).r;
+        surfacePaint *= mix(weave_color_tint_a, weave_color_tint_b, weave);
     }
     if (has_native_alpha == 1) {
         outputAlpha *= texture(native_alpha, materialUv).r;
@@ -508,6 +548,12 @@ void main()
     vec3 coatNormal = geometricNormal;
     bool hasCoatDetailNormal = false;
     vec2 paintDetailUv = finishUvValid ? finishUv : materialUv;
+    if (has_clear_coat_normal_map == 1) {
+        coatNormal = applyAuthoredNormalMap(
+            geometricNormal, clear_coat_normal_map,
+            materialUv * clear_coat_normal_tiling, native_normal_intensity);
+        hasCoatDetailNormal = true;
+    }
     if (finishUvValid) {
         vec2 finishTiledUv = fract(paintDetailUv * finish_tiling);
         if (has_finish_surface == 1) {
@@ -878,11 +924,17 @@ void CarModelRenderer::initialize() {
     nativeDiffuseLocation_ = program_.uniformLocation("native_diffuse");
     nativeAlphaLocation_ = program_.uniformLocation("native_alpha");
     nativeNormalLocation_ = program_.uniformLocation("native_normal");
+    weaveMaskLocation_ = program_.uniformLocation("weave_mask");
+    weaveNormalLocation_ = program_.uniformLocation("weave_normal");
+    clearCoatNormalMapLocation_ = program_.uniformLocation("clear_coat_normal_map");
     nativeSurfaceLocation_ = program_.uniformLocation("native_surface");
     nativeEmissiveLocation_ = program_.uniformLocation("native_emissive");
     hasNativeDiffuseLocation_ = program_.uniformLocation("has_native_diffuse");
     hasNativeAlphaLocation_ = program_.uniformLocation("has_native_alpha");
     hasNativeNormalLocation_ = program_.uniformLocation("has_native_normal");
+    hasWeaveMaskLocation_ = program_.uniformLocation("has_weave_mask");
+    hasWeaveNormalLocation_ = program_.uniformLocation("has_weave_normal");
+    hasClearCoatNormalMapLocation_ = program_.uniformLocation("has_clear_coat_normal_map");
     hasNativeSurfaceLocation_ = program_.uniformLocation("has_native_surface");
     hasNativeEmissiveLocation_ = program_.uniformLocation("has_native_emissive");
     finishPatternLocation_ = program_.uniformLocation("finish_pattern");
@@ -914,6 +966,12 @@ void CarModelRenderer::initialize() {
     clearCoatIntensityLocation_ = program_.uniformLocation("clear_coat_intensity");
     clearCoatTintLocation_ = program_.uniformLocation("clear_coat_tint");
     clearCoatOnLiveryLocation_ = program_.uniformLocation("clear_coat_on_livery");
+    normalIntensityLocation_ = program_.uniformLocation("native_normal_intensity");
+    weaveNormalIntensityLocation_ = program_.uniformLocation("weave_normal_intensity");
+    clearCoatNormalTilingLocation_ = program_.uniformLocation("clear_coat_normal_tiling");
+    weaveColorTintALocation_ = program_.uniformLocation("weave_color_tint_a");
+    weaveColorTintBLocation_ = program_.uniformLocation("weave_color_tint_b");
+    shaderFamilyLocation_ = program_.uniformLocation("shader_family");
     initialized_ = true;
 }
 
@@ -980,11 +1038,17 @@ void CarModelRenderer::release() {
     nativeDiffuseLocation_ = -1;
     nativeAlphaLocation_ = -1;
     nativeNormalLocation_ = -1;
+    weaveMaskLocation_ = -1;
+    weaveNormalLocation_ = -1;
+    clearCoatNormalMapLocation_ = -1;
     nativeSurfaceLocation_ = -1;
     nativeEmissiveLocation_ = -1;
     hasNativeDiffuseLocation_ = -1;
     hasNativeAlphaLocation_ = -1;
     hasNativeNormalLocation_ = -1;
+    hasWeaveMaskLocation_ = -1;
+    hasWeaveNormalLocation_ = -1;
+    hasClearCoatNormalMapLocation_ = -1;
     hasNativeSurfaceLocation_ = -1;
     hasNativeEmissiveLocation_ = -1;
     finishPatternLocation_ = -1;
@@ -1015,6 +1079,12 @@ void CarModelRenderer::release() {
     clearCoatIntensityLocation_ = -1;
     clearCoatTintLocation_ = -1;
     clearCoatOnLiveryLocation_ = -1;
+    normalIntensityLocation_ = -1;
+    weaveNormalIntensityLocation_ = -1;
+    clearCoatNormalTilingLocation_ = -1;
+    weaveColorTintALocation_ = -1;
+    weaveColorTintBLocation_ = -1;
+    shaderFamilyLocation_ = -1;
 }
 
 bool CarModelRenderer::isInitialized() const {
@@ -1978,6 +2048,9 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         requiredTextureKeys.insert(key);
         if (!materialTextureCache_.contains(key)) {
             missingTextureBytes += static_cast<qsizetype>(texture->image.rgba.size());
+            for (const fh6::SwatchImage &mip : texture->authoredMips) {
+                missingTextureBytes += static_cast<qsizetype>(mip.rgba.size());
+            }
         }
     };
     for (const fh6::CarMesh &mesh : model.meshes) {
@@ -1987,6 +2060,9 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         requireTexture(mesh.material->diffuseTexture, true);
         requireTexture(mesh.material->alphaTexture, false);
         requireTexture(mesh.material->normalTexture, false);
+        requireTexture(mesh.material->weaveMaskTexture, false);
+        requireTexture(mesh.material->weaveNormalTexture, false);
+        requireTexture(mesh.material->clearCoatNormalTexture, false);
         requireTexture(mesh.material->surfaceTexture, false);
         requireTexture(mesh.material->emissiveTexture, true);
     }
@@ -2046,12 +2122,28 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             GL_TEXTURE_2D, 0, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
             texture->image.width, texture->image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
             texture->image.rgba.data());
-        extra->glGenerateMipmap(GL_TEXTURE_2D);
+        int level = 1;
+        for (const fh6::SwatchImage &mip : texture->authoredMips) {
+            if (!mip.valid()) {
+                continue;
+            }
+            functions->glTexImage2D(
+                GL_TEXTURE_2D, level++, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
+                mip.width, mip.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip.rgba.data());
+        }
+        if (level == 1) {
+            extra->glGenerateMipmap(GL_TEXTURE_2D);
+        } else {
+            functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, level - 1);
+        }
         functions->glBindTexture(GL_TEXTURE_2D, 0);
         MaterialTextureCacheEntry entry;
         entry.source = texture;
         entry.id = id;
         entry.bytes = static_cast<qsizetype>(texture->image.rgba.size());
+        for (const fh6::SwatchImage &mip : texture->authoredMips) {
+            entry.bytes += static_cast<qsizetype>(mip.rgba.size());
+        }
         materialTextureCacheBytes_ += entry.bytes;
         materialTextureCache_.insert(key, std::move(entry));
         return id;
@@ -2093,9 +2185,14 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             : nullptr;
         const fh6::TexCoordTransform &materialUvTransform =
             mesh.texCoordTransforms[materialUvIndex];
+        const std::vector<fh6::ModelVec4> *materialTangents =
+            materialUvIndex < static_cast<int>(mesh.tangentChannels.size())
+            && mesh.tangentChannels[materialUvIndex].size() == mesh.positions.size()
+            ? &mesh.tangentChannels[materialUvIndex]
+            : nullptr;
 
         std::vector<float> interleaved;
-        interleaved.reserve(mesh.positions.size() * 10);
+        interleaved.reserve(mesh.positions.size() * 14);
         for (size_t i = 0; i < mesh.positions.size(); ++i) {
             const fh6::ModelVec3 &p = mesh.positions[i];
             const fh6::ModelVec3 &n = i < mesh.normals.size() ? mesh.normals[i] : fh6::ModelVec3{0.0f, 1.0f, 0.0f};
@@ -2129,6 +2226,15 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             } else {
                 interleaved.push_back(0.0f);
                 interleaved.push_back(0.0f);
+            }
+            if (materialTangents != nullptr) {
+                const fh6::ModelVec4 &tangent = (*materialTangents)[i];
+                interleaved.push_back(tangent.x);
+                interleaved.push_back(tangent.y);
+                interleaved.push_back(tangent.z);
+                interleaved.push_back(tangent.w);
+            } else {
+                interleaved.insert(interleaved.end(), {0.0f, 0.0f, 0.0f, 1.0f});
             }
         }
 
@@ -2169,6 +2275,18 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
             buffers->gloss = mesh.material->gloss;
             buffers->automotivePaint = mesh.material->automotivePaint;
+            buffers->normalIntensity = mesh.material->normalIntensity;
+            buffers->weaveNormalIntensity = mesh.material->weaveNormalIntensity;
+            buffers->clearCoatNormalUTiling = mesh.material->clearCoatNormalUTiling;
+            buffers->clearCoatNormalVTiling = mesh.material->clearCoatNormalVTiling;
+            buffers->weaveColorTintA = QVector3D(
+                mesh.material->weaveColorTintA[0], mesh.material->weaveColorTintA[1],
+                mesh.material->weaveColorTintA[2]);
+            buffers->weaveColorTintB = QVector3D(
+                mesh.material->weaveColorTintB[0], mesh.material->weaveColorTintB[1],
+                mesh.material->weaveColorTintB[2]);
+            buffers->sampler = mesh.material->sampler;
+            buffers->shaderFamily = fh6::modelShaderFamily(*mesh.material);
             if (mesh.material->hasMetallic) {
                 buffers->metallic = mesh.material->metallic;
             }
@@ -2177,6 +2295,12 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 buffers->diffuseTexture = uploadTexture(mesh.material->diffuseTexture, true);
                 buffers->alphaTexture = uploadTexture(mesh.material->alphaTexture, false);
                 buffers->normalTexture = uploadTexture(mesh.material->normalTexture, false);
+                buffers->weaveMaskTexture =
+                    uploadTexture(mesh.material->weaveMaskTexture, false);
+                buffers->weaveNormalTexture =
+                    uploadTexture(mesh.material->weaveNormalTexture, false);
+                buffers->clearCoatNormalTexture =
+                    uploadTexture(mesh.material->clearCoatNormalTexture, false);
                 buffers->surfaceTexture = uploadTexture(mesh.material->surfaceTexture, false);
                 buffers->emissiveTexture = uploadTexture(mesh.material->emissiveTexture, true);
                 buffers->paintNormalMap00Texture =
@@ -2326,7 +2450,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         buffers->ibo.bind();
         buffers->ibo.allocate(mesh.indices.data(), static_cast<int>(mesh.indices.size() * sizeof(quint32)));
 
-        constexpr int stride = 10 * sizeof(float);
+        constexpr int stride = 14 * sizeof(float);
         program_.enableAttributeArray(0);
         program_.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
         program_.enableAttributeArray(1);
@@ -2335,6 +2459,8 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         program_.setAttributeBuffer(2, GL_FLOAT, 6 * sizeof(float), 2, stride);
         program_.enableAttributeArray(3);
         program_.setAttributeBuffer(3, GL_FLOAT, 8 * sizeof(float), 2, stride);
+        program_.enableAttributeArray(4);
+        program_.setAttributeBuffer(4, GL_FLOAT, 10 * sizeof(float), 4, stride);
 
         buffers->vao.release();
         buffers->vbo.release();
@@ -2855,10 +2981,41 @@ void CarModelRenderer::render(
         program_.setUniformValue(useDirectUvLocation_, mesh.hasDirectLiveryUv ? 1 : 0);
         program_.setUniformValue(allowedSidesLocation_, mesh.allowedSides);
         program_.setUniformValue(materialAlphaLocation_, mesh.alpha);
+        program_.setUniformValue(normalIntensityLocation_, std::max(mesh.normalIntensity, 0.0f));
+        program_.setUniformValue(
+            weaveNormalIntensityLocation_, std::max(mesh.weaveNormalIntensity, 0.0f));
+        program_.setUniformValue(
+            clearCoatNormalTilingLocation_,
+            QVector2D(mesh.clearCoatNormalUTiling, mesh.clearCoatNormalVTiling));
+        program_.setUniformValue(weaveColorTintALocation_, mesh.weaveColorTintA);
+        program_.setUniformValue(weaveColorTintBLocation_, mesh.weaveColorTintB);
+        program_.setUniformValue(shaderFamilyLocation_, static_cast<int>(mesh.shaderFamily));
+        const auto applyMaterialSampler = [&](GLuint texture) {
+            if (texture == 0 || !mesh.sampler.authored) {
+                return;
+            }
+            const auto addressMode = [](qint32 value) {
+                if (value == 2) return GLint(GL_MIRRORED_REPEAT);
+                if (value >= 3) return GLint(GL_CLAMP_TO_EDGE);
+                return GLint(GL_REPEAT);
+            };
+            functions->glTexParameteri(
+                GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, addressMode(mesh.sampler.addressU));
+            functions->glTexParameteri(
+                GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, addressMode(mesh.sampler.addressV));
+            functions->glTexParameteri(
+                GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                mesh.sampler.filter == 0 ? GL_NEAREST : GL_LINEAR);
+            functions->glTexParameteri(
+                GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                mesh.sampler.filter == 0 ? GL_NEAREST_MIPMAP_NEAREST
+                                         : GL_LINEAR_MIPMAP_LINEAR);
+        };
         const auto bindMaterialTexture = [&](int unit, GLuint texture, int samplerLocation,
                                              int enabledLocation) {
             functions->glActiveTexture(GL_TEXTURE0 + unit);
             functions->glBindTexture(GL_TEXTURE_2D, texture);
+            applyMaterialSampler(texture);
             program_.setUniformValue(samplerLocation, unit);
             program_.setUniformValue(enabledLocation, texture != 0 ? 1 : 0);
         };
@@ -2868,14 +3025,26 @@ void CarModelRenderer::render(
         bindMaterialTexture(5, mesh.surfaceTexture, nativeSurfaceLocation_, hasNativeSurfaceLocation_);
         bindMaterialTexture(6, mesh.emissiveTexture, nativeEmissiveLocation_, hasNativeEmissiveLocation_);
         const FinishTextureEntry *finishTextures =
-            (finish != nullptr && finish->valid) ? ensurePaintFinishTextures(static_cast<int>(paint->finish), *finish)
-                                                 : nullptr;
+            (mesh.shaderFamily != fh6::ModelShaderFamily::CarbonFiber
+             && finish != nullptr && finish->valid)
+            ? ensurePaintFinishTextures(static_cast<int>(paint->finish), *finish) : nullptr;
         bindMaterialTexture(7, finishTextures != nullptr ? finishTextures->pattern : 0,
                             finishPatternLocation_, hasFinishPatternLocation_);
         bindMaterialTexture(8, finishTextures != nullptr ? finishTextures->normal : 0,
                             finishNormalLocation_, hasFinishNormalLocation_);
         bindMaterialTexture(9, finishTextures != nullptr ? finishTextures->surface : 0,
                             finishSurfaceLocation_, hasFinishSurfaceLocation_);
+        if (mesh.shaderFamily == fh6::ModelShaderFamily::CarbonFiber) {
+            bindMaterialTexture(7, mesh.weaveMaskTexture,
+                                weaveMaskLocation_, hasWeaveMaskLocation_);
+            bindMaterialTexture(8, mesh.weaveNormalTexture,
+                                weaveNormalLocation_, hasWeaveNormalLocation_);
+        } else {
+            program_.setUniformValue(hasWeaveMaskLocation_, 0);
+            program_.setUniformValue(hasWeaveNormalLocation_, 0);
+        }
+        bindMaterialTexture(15, mesh.clearCoatNormalTexture,
+                            clearCoatNormalMapLocation_, hasClearCoatNormalMapLocation_);
         bindMaterialTexture(12,
                             finishTextures != nullptr && finishTextures->normalMap00 != 0
                                 ? finishTextures->normalMap00

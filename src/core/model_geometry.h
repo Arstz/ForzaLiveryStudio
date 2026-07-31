@@ -24,6 +24,13 @@ struct ModelVec3 {
     float z = 0.0f;
 };
 
+struct ModelVec4 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
 struct TexCoordTransform {
     float offsetU = 0.0f;
     float scaleU = 1.0f;
@@ -56,6 +63,7 @@ struct CarMesh {
     quint64 paintMaterialHash = 0;
     std::vector<ModelVec3> positions;
     std::vector<ModelVec3> normals;
+    std::vector<std::vector<ModelVec4>> tangentChannels;
     std::vector<std::vector<ModelVec2>> uvChannels;
     std::vector<quint32> indices;
     ModelMat4 boneTransform;

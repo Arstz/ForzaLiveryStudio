@@ -55,6 +55,15 @@ fh6::ModelMaterialParameter texture(quint32 hash, const char *path) {
     return parameter;
 }
 
+fh6::ModelMaterialParameter sampler(qint32 addressU, qint32 addressV, qint32 filter) {
+    fh6::ModelMaterialParameter parameter;
+    parameter.type = fh6::ModelMaterialParameterType::Sampler;
+    parameter.samplerAddressU = addressU;
+    parameter.samplerAddressV = addressV;
+    parameter.samplerFilter = filter;
+    return parameter;
+}
+
 void testAutomotivePaintRetentionAndOverrides() {
     using namespace fh6::material_hashes::parameter;
 
@@ -79,6 +88,12 @@ void testAutomotivePaintRetentionAndOverrides() {
         scalar(kTextureTilingU[1], 32.0f),
         scalar(kTextureTilingV[1], 24.0f),
         scalar(kUvOrientation, 45.0f),
+        scalar(kWeaveNormalIntensity, 0.42f),
+        scalar(kClearCoatNormalUTiling, 7.0f),
+        scalar(kClearCoatNormalVTiling, 9.0f),
+        vector(kWeaveColorTintA, {0.01f, 0.02f, 0.03f, 1.0f}),
+        vector(kWeaveColorTintB, {0.10f, 0.20f, 0.30f, 1.0f}),
+        sampler(2, 3, 0),
         texture(kNormalMap00Texture, "fine.swatchbin"),
         texture(kNormalMap0Texture, "coarse.swatchbin"),
         texture(kOrangePeelNormalTexture, "orange.swatchbin"),
@@ -120,11 +135,34 @@ void testAutomotivePaintRetentionAndOverrides() {
     CHECK(near(merged->uTiling, 32.0f));
     CHECK(near(merged->vTiling, 24.0f));
     CHECK(near(merged->uvOrientationDegrees, 90.0f));
+    CHECK(near(merged->normalIntensity, 0.75f));
+    CHECK(near(merged->weaveNormalIntensity, 0.42f));
+    CHECK(near(merged->clearCoatNormalUTiling, 7.0f));
+    CHECK(near(merged->clearCoatNormalVTiling, 9.0f));
+    CHECK(near(merged->weaveColorTintA[2], 0.03f));
+    CHECK(near(merged->weaveColorTintB[1], 0.20f));
+    CHECK(merged->sampler.authored && merged->sampler.addressU == 2
+          && merged->sampler.addressV == 3 && merged->sampler.filter == 0);
 
     // Clear-coat roughness must not overwrite the independently retained base gloss.
     CHECK(near(merged->gloss, 0.45f));
     // Preserve the legacy coarse flake summary while retaining exact coverage separately.
     CHECK(near(merged->flakeAmount, 0.6f));
+}
+
+void testLinkedShaderFamily() {
+    fh6::ModelMaterial carbon;
+    carbon.linkedPaths.push_back(QStringLiteral(
+        "Game:/Media/Cars/_library/shaders/car_carbonfiber.shaderbin"));
+    CHECK(fh6::modelShaderFamily(carbon) == fh6::ModelShaderFamily::CarbonFiber);
+    fh6::ModelMaterial carbonInstance;
+    const auto merged = fh6::mergeModelMaterialDefaults(carbon, carbonInstance);
+    CHECK(merged != nullptr
+          && fh6::modelShaderFamily(*merged) == fh6::ModelShaderFamily::CarbonFiber);
+    fh6::ModelMaterial glass;
+    glass.resourcePath = QStringLiteral(
+        "Game:/Media/Cars/_library/materials/glass/windowglass.materialbin");
+    CHECK(fh6::modelShaderFamily(glass) == fh6::ModelShaderFamily::Glass);
 }
 
 std::shared_ptr<fh6::ModelMaterial> loadMaterial(const QDir &directory, const char *name) {
@@ -174,6 +212,7 @@ void testGameEvidence(const QString &path) {
 
 int main(int argc, char **argv) {
     testAutomotivePaintRetentionAndOverrides();
+    testLinkedShaderFamily();
     if (argc >= 2) {
         testGameEvidence(QString::fromLocal8Bit(argv[1]));
     }

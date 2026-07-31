@@ -48,6 +48,22 @@ struct ModelMaterialParameter {
 struct ModelMaterialTexture {
     QString path;
     SwatchImage image;
+    std::vector<SwatchImage> authoredMips;
+};
+
+struct ModelMaterialSampler {
+    bool authored = false;
+    qint32 addressU = 1;
+    qint32 addressV = 1;
+    qint32 filter = 1;
+};
+
+enum class ModelShaderFamily {
+    Generic,
+    AutomotivePaint,
+    CarbonFiber,
+    Glass,
+    Emissive,
 };
 
 struct ModelMaterial {
@@ -64,6 +80,13 @@ struct ModelMaterial {
     float uTiling = 1.0f;
     float vTiling = 1.0f;
     float uvOrientationDegrees = 0.0f;
+    float normalIntensity = 1.0f;
+    float weaveNormalIntensity = 1.0f;
+    float clearCoatNormalUTiling = 1.0f;
+    float clearCoatNormalVTiling = 1.0f;
+    std::array<float, 3> weaveColorTintA = {0.035f, 0.04f, 0.045f};
+    std::array<float, 3> weaveColorTintB = {0.09f, 0.10f, 0.11f};
+    ModelMaterialSampler sampler;
     bool resolvedFromLibrary = false; // params merged from the shared _library material
     bool hasMetallic = false;
     float metallic = 0.0f;
@@ -75,6 +98,9 @@ struct ModelMaterial {
     std::shared_ptr<const ModelMaterialTexture> diffuseTexture;
     std::shared_ptr<const ModelMaterialTexture> alphaTexture;
     std::shared_ptr<const ModelMaterialTexture> normalTexture;
+    std::shared_ptr<const ModelMaterialTexture> weaveMaskTexture;
+    std::shared_ptr<const ModelMaterialTexture> weaveNormalTexture;
+    std::shared_ptr<const ModelMaterialTexture> clearCoatNormalTexture;
     std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
     std::shared_ptr<const ModelMaterialTexture> paintNormalMap00Texture;
@@ -88,5 +114,7 @@ std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes);
 
 std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     const ModelMaterial &defaults, const ModelMaterial &instance);
+
+ModelShaderFamily modelShaderFamily(const ModelMaterial &material);
 
 } // namespace fh6

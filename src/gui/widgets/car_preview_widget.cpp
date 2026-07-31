@@ -621,6 +621,11 @@ public:
         Entry entry;
         entry.texture = texture;
         entry.bytes = texture ? static_cast<qsizetype>(texture->image.rgba.size()) : 0;
+        if (texture) {
+            for (const fh6::SwatchImage &mip : texture->authoredMips) {
+                entry.bytes += static_cast<qsizetype>(mip.rgba.size());
+            }
+        }
         entry.lastUse = ++clock_;
         entries_.insert(key, std::move(entry));
         bytes_ += entries_.value(key).bytes;
@@ -667,6 +672,9 @@ enum class NativeTextureSlot {
     Diffuse,
     Alpha,
     Normal,
+    WeaveMask,
+    WeaveNormal,
+    ClearCoatNormal,
     Surface,
     Emissive,
     PaintNormalMap00,
@@ -686,6 +694,15 @@ NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter
     }
     if (parameter.nameHash == fh6::material_hashes::parameter::kOrangePeelNormalTexture) {
         return NativeTextureSlot::OrangePeelNormal;
+    }
+    if (parameter.nameHash == fh6::material_hashes::parameter::kWeaveMaskTexture) {
+        return NativeTextureSlot::WeaveMask;
+    }
+    if (parameter.nameHash == fh6::material_hashes::parameter::kWeaveNormalTexture) {
+        return NativeTextureSlot::WeaveNormal;
+    }
+    if (parameter.nameHash == fh6::material_hashes::parameter::kClearCoatNormalTexture) {
+        return NativeTextureSlot::ClearCoatNormal;
     }
     if (parameter.nameHash == fh6::material_hashes::parameter::kNormalTexture
         || path.contains(QStringLiteral("normal"))
@@ -769,6 +786,15 @@ void assignNativeTexture(fh6::ModelMaterial &material,
         break;
     case NativeTextureSlot::Normal:
         material.normalTexture = texture;
+        break;
+    case NativeTextureSlot::WeaveMask:
+        material.weaveMaskTexture = texture;
+        break;
+    case NativeTextureSlot::WeaveNormal:
+        material.weaveNormalTexture = texture;
+        break;
+    case NativeTextureSlot::ClearCoatNormal:
+        material.clearCoatNormalTexture = texture;
         break;
     case NativeTextureSlot::Surface:
         material.surfaceTexture = texture;
@@ -910,7 +936,9 @@ void resolveExteriorMaterials(
             continue;
         }
         visited.insert(mesh.material.get());
-        bool hasNormal = false;
+        bool hasWeaveMask = false;
+        bool hasWeaveNormal = false;
+        bool hasSurface = false;
         for (const fh6::ModelMaterialParameter &parameter : mesh.material->parameters) {
             if (parameter.type != fh6::ModelMaterialParameterType::Texture2D
                 || parameter.texturePath.isEmpty()) {
@@ -928,27 +956,35 @@ void resolveExteriorMaterials(
                     .contains(QStringLiteral("globaltexture/swatches/flat_texture"))) {
                 continue;
             }
-            if (slot == NativeTextureSlot::Normal) {
-                hasNormal = true;
+            if (slot == NativeTextureSlot::WeaveMask) {
+                hasWeaveMask = true;
+            } else if (slot == NativeTextureSlot::WeaveNormal) {
+                hasWeaveNormal = true;
+            } else if (slot == NativeTextureSlot::Surface) {
+                hasSurface = true;
             }
             appendPending(mesh.material, slot, parameter.texturePath);
         }
-        // The car_carbonfiber shader bakes its weave into the shader, so the plain carbonfiber
-        // materialbin names no maps at all (only 32x tiling): a mesh using it arrives with no
-        // normal and renders as flat gloss. Supply the shader's canonical twin-twill weave
-        // normal/rmao — the very swatches the carbonfiber_livery variant lists explicitly — so
-        // structural carbon reads as carbon. The material's own 32x tiling turns it into a weave.
-        if (!hasNormal
-            && normalizedTexturePath(mesh.material->resourcePath)
-                   .contains(QStringLiteral("/carbonfiber/carbonfiber"))) {
-            appendPending(mesh.material, NativeTextureSlot::Normal,
+        if (fh6::modelShaderFamily(*mesh.material)
+            == fh6::ModelShaderFamily::CarbonFiber) {
+            if (!hasWeaveMask) {
+                appendPending(mesh.material, NativeTextureSlot::WeaveMask,
+                          QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
+                                         "\\twin_twill_weave\\swatches\\twin_twill_weave_mask_kvd6k3y"
+                                         ".swatchbin"));
+            }
+            if (!hasWeaveNormal) {
+                appendPending(mesh.material, NativeTextureSlot::WeaveNormal,
                           QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
                                          "\\twin_twill_weave\\swatches\\twin_twill_weave_normal_5eewzs7"
                                          ".swatchbin"));
-            appendPending(mesh.material, NativeTextureSlot::Surface,
+            }
+            if (!hasSurface) {
+                appendPending(mesh.material, NativeTextureSlot::Surface,
                           QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
                                          "\\twin_twill_weave\\swatches\\twin_twill_weave_rmao_x9t8d8u"
                                          ".swatchbin"));
+            }
         }
     }
 
@@ -1006,11 +1042,23 @@ void resolveExteriorMaterials(
                 }
             }
             if (!bytes.isEmpty()) {
-                fh6::SwatchImage image = fh6::decodeSwatchImage(bytes);
-                if (image.valid()) {
+                QString textureError;
+                const auto source = fh6::parseSwatchTexture(bytes, &textureError);
+                fh6::SwatchImage image = source
+                    ? fh6::decodeSwatchImage(*source, 0, 0, &textureError)
+                    : fh6::SwatchImage{};
+                if (source && image.valid()) {
                     auto decoded = std::make_shared<fh6::ModelMaterialTexture>();
                     decoded->path = item.path;
                     decoded->image = std::move(image);
+                    for (int mipIndex = 1; mipIndex < source->mipCount; ++mipIndex) {
+                        fh6::SwatchImage mip = fh6::decodeSwatchImage(
+                            *source, 0, mipIndex, &textureError);
+                        if (!mip.valid()) {
+                            break;
+                        }
+                        decoded->authoredMips.push_back(std::move(mip));
+                    }
                     texture = std::move(decoded);
                 }
             }
@@ -1113,7 +1161,8 @@ struct PreparedCar {
 };
 
 std::shared_ptr<PreparedCar> prepareCar(
-    const QString &path, bool loadCarTextures, QString *error) {
+    const QString &path, bool loadCarTextures, QString *error,
+    bool cacheResult = true) {
     static QMutex loadMutex;
     static QHash<QString, std::shared_ptr<PreparedCar>> preparedCarCache;
     static QStringList preparedCarCacheOrder;
@@ -1236,11 +1285,13 @@ std::shared_ptr<PreparedCar> prepareCar(
         prepared->liveryMasksDir = masksDir;
     }
 
-    constexpr int kPreparedCarCacheEntries = 2;
-    preparedCarCache.insert(cacheKey, prepared);
-    preparedCarCacheOrder.push_back(cacheKey);
-    while (preparedCarCacheOrder.size() > kPreparedCarCacheEntries) {
-        preparedCarCache.remove(preparedCarCacheOrder.takeFirst());
+    if (cacheResult) {
+        constexpr int kPreparedCarCacheEntries = 2;
+        preparedCarCache.insert(cacheKey, prepared);
+        preparedCarCacheOrder.push_back(cacheKey);
+        while (preparedCarCacheOrder.size() > kPreparedCarCacheEntries) {
+            preparedCarCache.remove(preparedCarCacheOrder.takeFirst());
+        }
     }
 
     return prepared;
@@ -1494,25 +1545,37 @@ CarPreviewWidget::~CarPreviewWidget() {
 void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback) {
     const bool loadCarTextures = loadCarTextures_;
     const quint64 generation = ++carLoadGeneration_;
+    carLoadPending_ = true;
+    carMaterialsPending_ = loadCarTextures;
+    updateReferenceNote();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
         [guard, path, loadCarTextures, generation, callback = std::move(callback)]() mutable {
-            QString error;
-            std::shared_ptr<PreparedCar> prepared =
-                prepareCar(path, loadCarTextures, &error);
-            if (!guard) {
-                return;
-            }
-            QMetaObject::invokeMethod(
-                guard,
-                [guard, prepared = std::move(prepared), error = std::move(error),
-                 generation, callback = std::move(callback)]() mutable {
+            const auto publish = [guard, generation](
+                                     std::shared_ptr<PreparedCar> prepared,
+                                     QString error, bool materialsPending,
+                                     bool restartDx12, bool refreshLivery,
+                                     CarLoadCallback completion = {}) {
+                if (!guard) {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    guard,
+                    [guard, prepared = std::move(prepared), error = std::move(error),
+                     materialsPending, restartDx12, refreshLivery, generation,
+                     completion = std::move(completion)]() mutable {
                     if (!guard || guard->carLoadGeneration_ != generation) {
                         return;
                     }
                     if (!prepared) {
-                        if (callback) {
-                            callback(false, error);
+                        guard->carLoadPending_ = false;
+                        guard->carMaterialsPending_ = false;
+                        guard->updateReferenceNote();
+                        if (completion) {
+                            completion(false, error);
+                        } else if (!error.isEmpty()) {
+                            qWarning().noquote()
+                                << "Car material upgrade failed:" << error;
                         }
                         return;
                     }
@@ -1524,19 +1587,59 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->liveryMasks_ = prepared->liveryMasks;
                     guard->liveryMasksDir_ = prepared->liveryMasksDir;
                     guard->modelUploadPending_ = true;
+                    guard->modelRefitPending_ =
+                        guard->modelRefitPending_ || refreshLivery;
                     guard->liveryMasksPending_ = true;
-                    guard->invalidateCachedLivery();
+                    if (refreshLivery) {
+                        guard->invalidateCachedLivery();
+                    }
+                    guard->carLoadPending_ = false;
+                    guard->carMaterialsPending_ = materialsPending;
+                    guard->updateReferenceNote();
                     guard->update();
-                    if (callback) {
-                        callback(true, {});
+                    if (restartDx12 && guard->originalDx12Requested_) {
+                        guard->startOriginalDx12Frame();
+                    }
+                    if (completion) {
+                        completion(true, {});
                     }
                 },
-                Qt::QueuedConnection);
+                    Qt::QueuedConnection);
+            };
+
+            QString error;
+            if (loadCarTextures) {
+                // Native swatch decoding can take a substantial amount of time on
+                // first load. Publish the complete geometry and material metadata
+                // first so the preview does not remain blank while textures decode.
+                std::shared_ptr<PreparedCar> geometry =
+                    prepareCar(path, false, &error, false);
+                if (!geometry) {
+                    publish(
+                        {}, std::move(error), false, false, false,
+                        std::move(callback));
+                    return;
+                }
+                publish(std::move(geometry), {}, true, true, true, std::move(callback));
+
+                error.clear();
+                std::shared_ptr<PreparedCar> textured = prepareCar(path, true, &error);
+                publish(std::move(textured), std::move(error), false, false, false);
+                return;
+            }
+
+            std::shared_ptr<PreparedCar> prepared = prepareCar(path, false, &error);
+            publish(
+                std::move(prepared), std::move(error), false, true, true,
+                std::move(callback));
         });
 }
 
 void CarPreviewWidget::cancelCarLoad() {
     ++carLoadGeneration_;
+    carLoadPending_ = false;
+    carMaterialsPending_ = false;
+    updateReferenceNote();
 }
 
 bool CarPreviewWidget::hasModel() const {
@@ -1577,8 +1680,17 @@ void CarPreviewWidget::clearModel() {
     liveryMasks_ = {};
     liveryMasksDir_.clear();
     modelUploadPending_ = false;
+    modelRefitPending_ = false;
     liveryMasksPending_ = false;
     invalidateCachedLivery();
+#ifdef Q_OS_WIN
+    if (originalDx12Requested_ && originalDx12Viewport_ != nullptr) {
+        ++originalDx12Generation_;
+        originalDx12Pending_ = false;
+        originalDx12Viewport_->clearScene();
+        originalDx12Container_->hide();
+    }
+#endif
     if (carRenderer_.isInitialized()) {
         makeCurrent();
         carRenderer_.clearModel();
@@ -1871,27 +1983,35 @@ void CarPreviewWidget::paintGL() {
         updateReferenceNote();
     }
 
+    bool paintMappingReset = false;
     if (modelUploadPending_ && carRenderer_.isInitialized()) {
         carRenderer_.uploadModel(model_);
         modelUploadPending_ = false;
-        fitCameraToModel();
+        if (modelRefitPending_) {
+            fitCameraToModel();
+        }
+        modelRefitPending_ = false;
+        paintMappingReset = true;
     }
     if (liveryMasksPending_ && carRenderer_.isInitialized()) {
         carRenderer_.setLivery(model_, liveryMasks_);
         liveryMasksPending_ = false;
+        paintMappingReset = true;
     }
 
     GLuint liveryTexture = 0;
     if (project_ != nullptr && geometryLoaded_ && shapeRenderer_.isInitialized()) {
-        if (liveryDirty_ || liveryTexture_ == 0) {
-            const QSize texSize = liveryTextureSize();
-            const bool projectImportedLivery = project_->isLivery && liveryMasks_.valid();
-            const PackedLiveryLayout paintLayout = projectImportedLivery
-                ? packedLiveryLayout(liveryMasks_, texSize)
-                : PackedLiveryLayout{};
-            const QSize paintTextureSize = paintLayout.valid ? paintLayout.textureSize : texSize;
+        const QSize texSize = liveryTextureSize();
+        const bool projectImportedLivery = project_->isLivery && liveryMasks_.valid();
+        const PackedLiveryLayout paintLayout = projectImportedLivery
+            ? packedLiveryLayout(liveryMasks_, texSize)
+            : PackedLiveryLayout{};
+        const QSize paintTextureSize = paintLayout.valid ? paintLayout.textureSize : texSize;
+        if (paintMappingReset || liveryDirty_ || liveryTexture_ == 0) {
             carRenderer_.setPaintTextureRegions(
                 paintLayout.valid ? paintLayout.uvRegions : QVector<QVector4D>{});
+        }
+        if (liveryDirty_ || liveryTexture_ == 0) {
             const bool fullRebuild = liveLiveryFullDirty_ || liveryTexture_ == 0
                 || projectedSectionCache_.isEmpty() || dirtySectionIds_.isEmpty();
             QVector<ProjectedLiverySection> projectedSections;
@@ -2531,6 +2651,11 @@ void CarPreviewWidget::updateReferenceNote() {
         renderer = QStringLiteral("Tokyo garage + car DX12 · authored PBR maps");
     } else if (!originalDx12Error_.isEmpty()) {
         renderer = QStringLiteral("OpenGL fallback");
+    }
+    if (carLoadPending_) {
+        renderer += QStringLiteral(" · loading car…");
+    } else if (carMaterialsPending_) {
+        renderer += QStringLiteral(" · loading full materials…");
     }
     referenceNote_->setText(QStringLiteral(
         "Only for reference, ingame render may differ · %1 · Light %2 · %3 · %4")

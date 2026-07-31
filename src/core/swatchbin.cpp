@@ -812,33 +812,59 @@ SwatchMask decodeSwatchMask(const QByteArray &bytes, QString *error) {
 }
 
 SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error) {
-    const auto surface = readTextureSurface(bytes, error);
-    if (!surface) {
+    const auto texture = parseTextureContainer(bytes, error);
+    if (!texture) {
         return {};
     }
 
-    switch (static_cast<Encoding>(surface->formatEncoded)) {
+    return decodeSwatchImage(*texture, 0, 0, error);
+}
+
+SwatchImage decodeSwatchImage(
+    const SwatchTexture &texture, int sliceIndex, int mipIndex, QString *error) {
+    if (texture.platform != 0) {
+        setError(error, QStringLiteral("swatchbin is tiled for a non-PC platform"));
+        return {};
+    }
+    if (sliceIndex < 0 || sliceIndex >= static_cast<int>(texture.slices.size())) {
+        setError(error, QStringLiteral("swatchbin slice index out of range"));
+        return {};
+    }
+    const SwatchTextureSlice &slice = texture.slices[static_cast<size_t>(sliceIndex)];
+    if (mipIndex < 0 || mipIndex >= static_cast<int>(slice.mipLevels.size())) {
+        setError(error, QStringLiteral("swatchbin mip index out of range"));
+        return {};
+    }
+    int width = texture.width;
+    int height = texture.height;
+    for (int level = 0; level < mipIndex; ++level) {
+        width = (std::max)(1, width / 2);
+        height = (std::max)(1, height / 2);
+    }
+    const QByteArray pixels = texture.mipBytes(sliceIndex, mipIndex);
+
+    switch (static_cast<Encoding>(slice.encodedFormat)) {
     case Encoding::Bc1:
     case Encoding::Bc2:
     case Encoding::Bc3:
-        return decodeBcSurface(surface->pixels, surface->width, surface->height,
-                               static_cast<Encoding>(surface->formatEncoded), error);
+        return decodeBcSurface(
+            pixels, width, height, static_cast<Encoding>(slice.encodedFormat), error);
     case Encoding::UnsignedBc5:
     case Encoding::SignedBc5:
-        return decodeBc5Surface(surface->pixels, surface->width, surface->height, error);
+        return decodeBc5Surface(pixels, width, height, error);
     case Encoding::Bc7:
     case Encoding::Bc7HighQuality:
-        return decodeBc7Surface(surface->pixels, surface->width, surface->height, error);
+        return decodeBc7Surface(pixels, width, height, error);
     case Encoding::R8G8B8A8:
-        return decodeRgba8Surface(surface->pixels, surface->width, surface->height, error);
+        return decodeRgba8Surface(pixels, width, height, error);
     case Encoding::R8:
     case Encoding::A8:
-        return decodeChannelSurface(surface->pixels, surface->width, surface->height, 1, error);
+        return decodeChannelSurface(pixels, width, height, 1, error);
     case Encoding::R8G8:
-        return decodeChannelSurface(surface->pixels, surface->width, surface->height, 2, error);
+        return decodeChannelSurface(pixels, width, height, 2, error);
     default:
         setError(error, QStringLiteral("swatchbin encoding %1 not supported as a color image")
-                            .arg(surface->formatEncoded));
+                            .arg(slice.encodedFormat));
         return {};
     }
 }

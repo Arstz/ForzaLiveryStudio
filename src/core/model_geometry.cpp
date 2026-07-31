@@ -201,6 +201,39 @@ ModelVec3 readNormal(const char *p, int format, float wFromPos) {
     return {0.0f, 1.0f, 0.0f};
 }
 
+ModelVec4 readTangent(const char *p, int format) {
+    if (format == 6) {
+        const ModelVec3 direction = normalize({
+            readLeFloatRaw(p, 0), readLeFloatRaw(p, 4), readLeFloatRaw(p, 8)});
+        return {direction.x, direction.y, direction.z, 1.0f};
+    }
+    if (format == 10) {
+        const ModelVec3 direction = normalize({
+            halfToFloat(readLeU16Raw(p, 0)), halfToFloat(readLeU16Raw(p, 2)),
+            halfToFloat(readLeU16Raw(p, 4))});
+        return {direction.x, direction.y, direction.z,
+                halfToFloat(readLeU16Raw(p, 6))};
+    }
+    if (format == 13) {
+        const ModelVec3 direction = normalize({
+            snorm16(static_cast<qint16>(readLeU16Raw(p, 0))),
+            snorm16(static_cast<qint16>(readLeU16Raw(p, 2))),
+            snorm16(static_cast<qint16>(readLeU16Raw(p, 4)))});
+        return {direction.x, direction.y, direction.z,
+                snorm16(static_cast<qint16>(readLeU16Raw(p, 6)))};
+    }
+    if (format == 24) {
+        const quint32 packed = readLeU32Raw(p, 0);
+        const ModelVec3 direction = normalize({
+            ((packed >> 0) & 0x3ff) / 1023.0f * 2.0f - 1.0f,
+            ((packed >> 10) & 0x3ff) / 1023.0f * 2.0f - 1.0f,
+            ((packed >> 20) & 0x3ff) / 1023.0f * 2.0f - 1.0f});
+        const float handedness = ((packed >> 30) & 0x3) / 3.0f * 2.0f - 1.0f;
+        return {direction.x, direction.y, direction.z, handedness};
+    }
+    return {};
+}
+
 ModelVec2 readUv(const char *p, int format) {
     if (format == 35) { // R16G16_UNORM
         return {readLeU16Raw(p, 0) / 65535.0f, readLeU16Raw(p, 2) / 65535.0f};
@@ -723,6 +756,19 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
             if (semantic == QStringLiteral("NORMAL")) {
                 readAttribute(elem, [&](const char *p, int i) {
                     out.normals[i] = readNormal(p, elem.desc->format, posW[i]);
+                });
+            } else if (semantic == QStringLiteral("TANGENT")) {
+                const int channel = elem.desc->semanticIndex;
+                if (channel < 0) {
+                    continue;
+                }
+                if (static_cast<int>(out.tangentChannels.size()) <= channel) {
+                    out.tangentChannels.resize(channel + 1);
+                }
+                out.tangentChannels[channel].assign(vertexCount, {});
+                readAttribute(elem, [&](const char *p, int i) {
+                    out.tangentChannels[channel][i] = readTangent(
+                        p, elem.desc->format);
                 });
             } else if (semantic == QStringLiteral("TEXCOORD")) {
                 const int channel = elem.desc->semanticIndex;

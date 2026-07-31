@@ -33,6 +33,28 @@ namespace {
 
 constexpr float kCleanGarageSurfaceFrequency = 0.5f;
 
+bool decodeTextureWithAuthoredMips(
+    const QByteArray &bytes, SwatchImage *base,
+    std::vector<SwatchImage> *mips, QString *error) {
+    const std::optional<SwatchTexture> source = parseSwatchTexture(bytes, error);
+    if (!source.has_value()) {
+        return false;
+    }
+    *base = decodeSwatchImage(*source, 0, 0, error);
+    if (!base->valid()) {
+        return false;
+    }
+    mips->clear();
+    for (int level = 1; level < source->mipCount; ++level) {
+        SwatchImage mip = decodeSwatchImage(*source, 0, level, error);
+        if (!mip.valid()) {
+            break;
+        }
+        mips->push_back(std::move(mip));
+    }
+    return true;
+}
+
 float worldFrequencyTiling(
     const CarMesh &mesh, float frequency, float fallback,
     float minimum, float maximum) {
@@ -238,9 +260,11 @@ loadAuthoredDiffuseTextures(
     QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>> textures;
     for (auto iterator = diffuseEntries.cbegin(); iterator != diffuseEntries.cend(); ++iterator) {
         QString decodeError;
-        SwatchImage image = decodeSwatchImage(
-            payloads.value(iterator->archiveLeaf.toLower()), &decodeError);
-        if (!image.valid()) {
+        SwatchImage image;
+        std::vector<SwatchImage> mips;
+        if (!decodeTextureWithAuthoredMips(
+                payloads.value(iterator->archiveLeaf.toLower()),
+                &image, &mips, &decodeError)) {
             if (error != nullptr) {
                 *error = QStringLiteral("%1: %2")
                              .arg(iterator->canonicalPath, decodeError);
@@ -251,6 +275,7 @@ loadAuthoredDiffuseTextures(
         texture->semantic = QStringLiteral("DiffuseTexture");
         texture->sourceEntry = iterator->canonicalPath;
         texture->image = std::move(image);
+        texture->authoredMips = std::move(mips);
         textures.insert(iterator.key(), std::move(texture));
     }
     return textures;
@@ -450,8 +475,10 @@ loadTrackSceneTextures(
         const quint32 hash = hashByEntry.value(entry.requestedName.toLower());
         const QString sourceEntry = resolved.value(hash).canonicalPath;
         QString decodeError;
-        SwatchImage image = decodeSwatchImage(entry.bytes, &decodeError);
-        if (!image.valid()) {
+        SwatchImage image;
+        std::vector<SwatchImage> mips;
+        if (!decodeTextureWithAuthoredMips(
+                entry.bytes, &image, &mips, &decodeError)) {
             // Keep the scene usable and expose unresolved colour maps with the
             // diagnostic checker. Auxiliary compressed maps may be skipped.
             continue;
@@ -460,6 +487,7 @@ loadTrackSceneTextures(
         texture->semantic = textureSemantic(sourceEntry);
         texture->sourceEntry = sourceEntry;
         texture->image = std::move(image);
+        texture->authoredMips = std::move(mips);
         textures.insert(hash, std::move(texture));
     }
     return textures;
@@ -526,8 +554,10 @@ loadGeneralSceneTextures(
         const quint32 hash = hashByEntry.value(iterator.key());
         const QString sourceEntry = resolved.value(hash).canonicalPath;
         QString decodeError;
-        SwatchImage image = decodeSwatchImage(iterator.value(), &decodeError);
-        if (!image.valid()) {
+        SwatchImage image;
+        std::vector<SwatchImage> mips;
+        if (!decodeTextureWithAuthoredMips(
+                iterator.value(), &image, &mips, &decodeError)) {
             // A few auxiliary maps use encodings that the preview decoder cannot
             // upload. Keep the other authored slots on that material active.
             continue;
@@ -536,6 +566,7 @@ loadGeneralSceneTextures(
         texture->semantic = textureSemantic(sourceEntry);
         texture->sourceEntry = sourceEntry;
         texture->image = std::move(image);
+        texture->authoredMips = std::move(mips);
         textures.insert(hash, std::move(texture));
     }
     return textures;
@@ -1442,6 +1473,14 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
                 draw.vTiling = mesh.material->vTiling;
                 draw.detailUTiling = mesh.material->uTiling;
                 draw.detailVTiling = mesh.material->vTiling;
+                draw.normalIntensity = mesh.material->normalIntensity;
+                draw.weaveNormalIntensity = mesh.material->weaveNormalIntensity;
+                draw.clearCoatNormalUTiling = mesh.material->clearCoatNormalUTiling;
+                draw.clearCoatNormalVTiling = mesh.material->clearCoatNormalVTiling;
+                draw.weaveColorTintA = mesh.material->weaveColorTintA;
+                draw.weaveColorTintB = mesh.material->weaveColorTintB;
+                draw.sampler = mesh.material->sampler;
+                draw.shaderFamily = modelShaderFamily(*mesh.material);
             }
             if (cleanFloorShell || cleanPaintedShell || cleanConcreteShell) {
                 draw.rawMaterialUv = true;
@@ -1595,15 +1634,16 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
                 QString::fromLatin1(resource.semantic)), error);
             return scene;
         }
-        SwatchImage image = decodeSwatchImage(bytes, &error);
-        if (!image.valid()) {
+        SwatchImage image;
+        std::vector<SwatchImage> mips;
+        if (!decodeTextureWithAuthoredMips(bytes, &image, &mips, &error)) {
             fail(&scene, QStringLiteral("%1 fallback").arg(
                 QString::fromLatin1(resource.semantic)), error);
             return scene;
         }
         scene.materialTextures[index] = {
             QString::fromLatin1(resource.semantic),
-            QString::fromLatin1(resource.entry), std::move(image)};
+            QString::fromLatin1(resource.entry), std::move(image), std::move(mips)};
     }
 
     scene.environment = loadGarageEnvironmentResources(gameFolder);
@@ -1775,6 +1815,7 @@ bool appendOriginalShaderGarageCar(
         texture->sourceEntry = native->path.isEmpty()
             ? QStringLiteral("car://decoded-material-map") : native->path;
         texture->image = native->image;
+        texture->authoredMips = native->authoredMips;
         decodedTextures.insert(native.get(), texture);
         return texture;
     };
@@ -1959,6 +2000,21 @@ bool appendOriginalShaderGarageCar(
             ? copyNativeTexture(
                   mesh.material->alphaTexture, QStringLiteral("AlphaTexture"))
             : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        auto weaveMask = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->weaveMaskTexture,
+                  QStringLiteral("WeaveMaskTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        auto weaveNormal = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->weaveNormalTexture,
+                  QStringLiteral("WeaveNormalTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        auto clearCoatNormal = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->clearCoatNormalTexture,
+                  QStringLiteral("ClearCoatNormalTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
         normalDraws += normal != nullptr ? 1 : 0;
         surfaceDraws += surface != nullptr ? 1 : 0;
         emissiveDraws += emissive != nullptr ? 1 : 0;
@@ -1977,6 +2033,9 @@ bool appendOriginalShaderGarageCar(
         draw.diffuseTexture = std::move(diffuse);
         draw.alphaTexture = std::move(alpha);
         draw.normalTexture = std::move(normal);
+        draw.weaveMaskTexture = std::move(weaveMask);
+        draw.weaveNormalTexture = std::move(weaveNormal);
+        draw.clearCoatNormalTexture = std::move(clearCoatNormal);
         draw.surfaceTexture = std::move(surface);
         draw.emissiveTexture = std::move(emissive);
         draw.diffuseUvChannel = diffuseUvChannel;
@@ -2005,6 +2064,14 @@ bool appendOriginalShaderGarageCar(
             draw.vTiling = usesLivery ? 1.0f : mesh.material->vTiling;
             draw.detailUTiling = mesh.material->uTiling;
             draw.detailVTiling = mesh.material->vTiling;
+            draw.normalIntensity = mesh.material->normalIntensity;
+            draw.weaveNormalIntensity = mesh.material->weaveNormalIntensity;
+            draw.clearCoatNormalUTiling = mesh.material->clearCoatNormalUTiling;
+            draw.clearCoatNormalVTiling = mesh.material->clearCoatNormalVTiling;
+            draw.weaveColorTintA = mesh.material->weaveColorTintA;
+            draw.weaveColorTintB = mesh.material->weaveColorTintB;
+            draw.sampler = mesh.material->sampler;
+            draw.shaderFamily = modelShaderFamily(*mesh.material);
         }
         if (glassSurface && draw.opacity >= 0.995f) {
             draw.opacity = isWindowGlassMaterial(mesh) ? 0.42f : 0.20f;

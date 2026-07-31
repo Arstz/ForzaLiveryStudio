@@ -104,6 +104,11 @@ void testSyntheticContainer() {
     expect(texture->mipBytes(0, 0).size() == 64, "fixture mip span is exposed");
     expect(texture->mipBytes(1, 0).isEmpty() && texture->mipBytes(0, 1).isEmpty(),
            "invalid mip span indices are rejected");
+    const fh6::SwatchImage decoded = fh6::decodeSwatchImage(*texture, 0, 0, &error);
+    expect(decoded.valid() && decoded.width == 4 && decoded.height == 4,
+           "parsed swatch mip can be decoded without reparsing the container");
+    expect(!fh6::decodeSwatchImage(*texture, 0, 1, &error).valid(),
+           "parsed swatch decoder rejects an unavailable mip level");
 
     QByteArray truncatedSlice = bytes.left(0x7F);
     expect(!fh6::parseSwatchTexture(truncatedSlice, &error), "truncated slice table is rejected");

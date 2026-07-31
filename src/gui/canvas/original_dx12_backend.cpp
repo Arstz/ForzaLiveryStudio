@@ -120,7 +120,7 @@ constexpr DXGI_FORMAT kTargetFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
 constexpr std::array<float, 4> kClearColor = {0.125f, 0.25f, 0.5f, 1.0f};
 constexpr UINT kFixedDescriptorCount = 176;
 constexpr UINT kMaterialDescriptorStart = 124;
-constexpr UINT kMaterialDescriptorCount = 16;
+constexpr UINT kMaterialDescriptorCount = 19;
 
 struct Vertex {
     float position[3];
@@ -142,10 +142,14 @@ struct DrawResources {
     D3D12_VERTEX_BUFFER_VIEW vertexView{};
     D3D12_INDEX_BUFFER_VIEW indexView{};
     UINT materialDescriptorStart = kMaterialDescriptorStart;
+    UINT samplerDescriptorIndex = 0;
     ComPtr<ID3D12Resource> materialConstants;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> diffuseTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> alphaTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> normalTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> weaveMaskTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> weaveNormalTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> clearCoatNormalTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> surfaceTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> emissiveTexture;
     std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
@@ -157,6 +161,12 @@ struct DrawResources {
     float vTiling = 1.0f;
     float detailUTiling = 1.0f;
     float detailVTiling = 1.0f;
+    float normalIntensity = 1.0f;
+    float weaveNormalIntensity = 1.0f;
+    float clearCoatNormalUTiling = 1.0f;
+    float clearCoatNormalVTiling = 1.0f;
+    std::array<float, 3> weaveColorTintA = {1.0f, 1.0f, 1.0f};
+    std::array<float, 3> weaveColorTintB = {1.0f, 1.0f, 1.0f};
     std::array<float, 3> clearCoatTint = {1.0f, 1.0f, 1.0f};
     float clearCoatCoverage = 0.0f;
     float clearCoatRoughness = 0.1f;
@@ -164,6 +174,8 @@ struct DrawResources {
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
+    fh6::ModelMaterialSampler sampler;
+    fh6::ModelShaderFamily shaderFamily = fh6::ModelShaderFamily::Generic;
     int liverySideCount = 0;
     std::array<std::array<float, 4>, fh6::kLiverySideCount> liverySourceRegions{};
     std::array<std::array<float, 4>, fh6::kLiverySideCount> liveryPaintRegions{};
@@ -287,6 +299,16 @@ Geometry prepareGeometry(
         };
         const fh6::ModelMat4 transform =
             fh6::matMul(mesh.boneTransform, placement);
+        const bool hasAuthoredTangents =
+            detailUvChannel < mesh.tangentChannels.size()
+            && mesh.tangentChannels[detailUvChannel].size() == mesh.positions.size();
+        const float transformDeterminant =
+            transform.m[0] * (transform.m[5] * transform.m[10]
+                              - transform.m[6] * transform.m[9])
+            - transform.m[1] * (transform.m[4] * transform.m[10]
+                                - transform.m[6] * transform.m[8])
+            + transform.m[2] * (transform.m[4] * transform.m[9]
+                                - transform.m[5] * transform.m[8]);
         const std::uint32_t base = static_cast<std::uint32_t>(result.vertices.size());
         std::vector<std::array<float, 3>> tangents(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
@@ -363,6 +385,16 @@ Geometry prepareGeometry(
                 normal.z /= normalLength;
             }
             std::array<float, 3> tangent = tangents[index];
+            float authoredHandedness = 1.0f;
+            if (hasAuthoredTangents) {
+                const fh6::ModelVec4 &authored =
+                    mesh.tangentChannels[detailUvChannel][index];
+                const fh6::ModelVec3 transformed =
+                    transform.transformVector({authored.x, authored.y, authored.z});
+                tangent = {transformed.x, transformed.y, transformed.z};
+                authoredHandedness = authored.w
+                    * (transformDeterminant < 0.0f ? -1.0f : 1.0f);
+            }
             const float normalDotTangent = normal.x * tangent[0]
                 + normal.y * tangent[1] + normal.z * tangent[2];
             tangent[0] -= normal.x * normalDotTangent;
@@ -386,10 +418,12 @@ Geometry prepareGeometry(
                 normal.y * tangent[2] - normal.z * tangent[1],
                 normal.z * tangent[0] - normal.x * tangent[2],
                 normal.x * tangent[1] - normal.y * tangent[0]};
-            const float handedness = cross[0] * bitangents[index][0]
+            const float generatedHandedness = cross[0] * bitangents[index][0]
                     + cross[1] * bitangents[index][1]
                     + cross[2] * bitangents[index][2]
                 < 0.0f ? -1.0f : 1.0f;
+            const float handedness = hasAuthoredTangents
+                ? authoredHandedness : generatedHandedness;
             const std::size_t baseUvChannel = diffuseUvChannel >= 0
                 ? static_cast<std::size_t>(diffuseUvChannel) : 0;
             const fh6::ModelVec2 uv = transformedUv(
@@ -425,7 +459,8 @@ D3D12_SHADER_RESOURCE_VIEW_DESC texture2DView(
 UploadedTexture uploadRgba8Texture(
     ID3D12Device *device, ID3D12GraphicsCommandList *commands,
     const fh6::SwatchImage &image, bool generateMipmaps = true,
-    bool normalMap = false) {
+    bool normalMap = false,
+    const std::vector<fh6::SwatchImage> *authoredMips = nullptr) {
     if (!image.valid()) {
         return {};
     }
@@ -435,7 +470,18 @@ UploadedTexture uploadRgba8Texture(
     mipData.push_back(image.rgba);
     mipWidths.push_back(static_cast<UINT>(image.width));
     mipHeights.push_back(static_cast<UINT>(image.height));
-    while (generateMipmaps
+    if (authoredMips != nullptr) {
+        for (const fh6::SwatchImage &mip : *authoredMips) {
+            if (!mip.valid()) {
+                continue;
+            }
+            mipData.push_back(mip.rgba);
+            mipWidths.push_back(static_cast<UINT>(mip.width));
+            mipHeights.push_back(static_cast<UINT>(mip.height));
+        }
+    }
+    const bool hasAuthoredMips = mipData.size() > 1;
+    while (generateMipmaps && !hasAuthoredMips
            && (mipWidths.back() > 1 || mipHeights.back() > 1)) {
         const UINT sourceWidth = mipWidths.back();
         const UINT sourceHeight = mipHeights.back();
@@ -1101,6 +1147,18 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     writeFloat(&data, 40, 0, draw.clearCoatTint[0]);
     writeFloat(&data, 40, 1, draw.clearCoatTint[1]);
     writeFloat(&data, 40, 2, draw.clearCoatTint[2]);
+    writeFloat(&data, 41, 0, draw.normalIntensity);
+    writeFloat(&data, 41, 1, draw.weaveNormalIntensity);
+    writeFloat(&data, 41, 2, draw.clearCoatNormalUTiling);
+    writeFloat(&data, 41, 3, draw.clearCoatNormalVTiling);
+    for (UINT component = 0; component < 3; ++component) {
+        writeFloat(&data, 42, component, draw.weaveColorTintA[component]);
+        writeFloat(&data, 43, component, draw.weaveColorTintB[component]);
+    }
+    writeUint(&data, 44, 0, static_cast<quint32>(draw.shaderFamily));
+    writeUint(&data, 44, 1, draw.weaveMaskTexture != nullptr ? 1u : 0u);
+    writeUint(&data, 44, 2, draw.weaveNormalTexture != nullptr ? 1u : 0u);
+    writeUint(&data, 44, 3, draw.clearCoatNormalTexture != nullptr ? 1u : 0u);
     return data;
 }
 
@@ -1333,17 +1391,45 @@ void configureSampler(D3D12_STATIC_SAMPLER_DESC *sampler, UINT shaderRegister) {
     sampler->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 }
 
+D3D12_SAMPLER_DESC materialSamplerDescription(
+    const fh6::ModelMaterialSampler &source) {
+    D3D12_SAMPLER_DESC sampler{};
+    sampler.Filter = source.authored && source.filter == 0
+        ? D3D12_FILTER_MIN_MAG_MIP_POINT
+        : source.authored && source.filter == 1
+        ? D3D12_FILTER_MIN_MAG_MIP_LINEAR
+        : D3D12_FILTER_ANISOTROPIC;
+    const auto addressMode = [](qint32 value) {
+        switch (value) {
+        case 2: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+        case 3: return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        case 4: return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        case 5: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+        default: return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        }
+    };
+    sampler.AddressU = addressMode(source.addressU);
+    sampler.AddressV = addressMode(source.addressV);
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxAnisotropy = sampler.Filter == D3D12_FILTER_ANISOTROPIC ? 16 : 1;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = FLT_MAX;
+    return sampler;
+}
+
 ComPtr<ID3D12RootSignature> createRootSignature(
     ID3D12Device *device, QString *error) {
     constexpr std::array<Binding, 8> cbvs = {{
         {1, 2}, {1, 0}, {9, 0}, {2, 0},
         {3, 0}, {0, 2}, {0, 1}, {0, 3},
     }};
-    std::array<D3D12_DESCRIPTOR_RANGE, 4> ranges{};
+    std::array<D3D12_DESCRIPTOR_RANGE, 5> ranges{};
     ranges[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 124, 0, 0, 0};
     ranges[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 1, 0};
     ranges[2] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, UINT_MAX, 0, 6, 0};
     ranges[3] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 0, 12, 0};
+    ranges[4] = {D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0, 0};
 
     std::array<D3D12_ROOT_PARAMETER, cbvs.size() + ranges.size()> parameters{};
     for (std::size_t index = 0; index < cbvs.size(); ++index) {
@@ -1360,7 +1446,7 @@ ComPtr<ID3D12RootSignature> createRootSignature(
         parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     }
 
-    constexpr std::array<UINT, 7> samplerRegisters = {0, 1, 2, 3, 5, 10, 12};
+    constexpr std::array<UINT, 6> samplerRegisters = {1, 2, 3, 5, 10, 12};
     std::array<D3D12_STATIC_SAMPLER_DESC, samplerRegisters.size()> samplers{};
     for (std::size_t index = 0; index < samplers.size(); ++index) {
         configureSampler(&samplers[index], samplerRegisters[index]);
@@ -1621,6 +1707,10 @@ cbuffer MaterialData : register(b0, space3) {
     float4 liveryFacing[11];
     float4 clearCoatParameters;
     float4 clearCoatTint;
+    float4 normalParameters;
+    float4 weaveColorTintA;
+    float4 weaveColorTintB;
+    uint4 materialFamilyParameters;
 };
 TextureCube<float4> diffuseEnvironment : register(t0);
 TextureCube<float4> specularEnvironment : register(t1);
@@ -1631,6 +1721,9 @@ Texture2D<float4> surfaceTexture : register(t2, space1);
 Texture2D<float4> emissiveTexture : register(t3, space1);
 Texture2D<float4> liveryMasks[11] : register(t4, space1);
 Texture2D<float4> alphaTexture : register(t15, space1);
+Texture2D<float4> weaveMaskTexture : register(t16, space1);
+Texture2D<float4> weaveNormalTexture : register(t17, space1);
+Texture2D<float4> clearCoatNormalTexture : register(t18, space1);
 SamplerState materialSampler : register(s0);
 SamplerState liverySampler : register(s12);
 
@@ -1744,6 +1837,16 @@ float2 canvasToUv(float2 canvas) {
                   (512.0 - canvas.y) / 1024.0);
 }
 
+float3 applyMappedNormal(
+    float3 normal, float4 tangent, float3 sampled, float intensity) {
+    float3 t = normalize(tangent.xyz - normal * dot(normal, tangent.xyz));
+    float3 b = normalize(cross(normal, t) * tangent.w);
+    sampled = sampled * 2.0 - 1.0;
+    sampled.xy *= max(intensity, 0.0);
+    sampled.z = sqrt(max(1.0 - dot(sampled.xy, sampled.xy), 0.0));
+    return normalize(t * sampled.x + b * sampled.y + normal * sampled.z);
+}
+
 float4 PSMain(PixelInput input) : SV_Target0 {
     float2 uv = input.uv * textureParameters.yz;
     float2 detailUv = input.detailUv * detailTextureParameters.xy;
@@ -1794,14 +1897,32 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         authoredBase.rgb = pow(max(authoredBase.rgb, 0.0), 2.2);
         albedo = baseColor.rgb * authoredBase.rgb;
     }
+    if (materialFamilyParameters.x == 2u && materialFamilyParameters.y != 0u) {
+        float weave = weaveMaskTexture.Sample(materialSampler, detailUv).r;
+        albedo *= lerp(weaveColorTintA.rgb, weaveColorTintB.rgb, weave);
+    }
     albedo = saturate(albedo);
 
     float3 n = normalize(input.normal);
     if (surfaceParameters.z > 0.5) {
-        float3 t = normalize(input.tangent.xyz);
-        float3 b = normalize(cross(n, t) * input.tangent.w);
-        float3 sampledNormal = normalTexture.Sample(materialSampler, detailUv).xyz * 2.0 - 1.0;
-        n = normalize(t * sampledNormal.x + b * sampledNormal.y + n * sampledNormal.z);
+        n = applyMappedNormal(
+            n, input.tangent,
+            normalTexture.Sample(materialSampler, detailUv).xyz,
+            normalParameters.x);
+    }
+    if (materialFamilyParameters.x == 2u && materialFamilyParameters.z != 0u) {
+        n = applyMappedNormal(
+            n, input.tangent,
+            weaveNormalTexture.Sample(materialSampler, detailUv).xyz,
+            normalParameters.y);
+    }
+    float3 coatNormal = normalize(input.normal);
+    if (materialFamilyParameters.w != 0u) {
+        coatNormal = applyMappedNormal(
+            coatNormal, input.tangent,
+            clearCoatNormalTexture.Sample(
+                materialSampler, detailUv * normalParameters.zw).xyz,
+            normalParameters.x);
     }
 
     float roughness = saturate(1.0 - surfaceParameters.x);
@@ -1843,7 +1964,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         * lerp(1.0, clearCoatParameters.z, saturate(liveryCoverage));
     float coatRoughness = clamp(clearCoatParameters.y, 0.04, 1.0);
     float3 clearCoatDirect = evaluateDirectClearCoat(
-        n, v, l, coatRoughness) * directColor.rgb;
+        coatNormal, v, l, coatRoughness) * directColor.rgb;
     [loop]
     for (uint pointIndex = 0;
          pointIndex < min((uint)panoramaParameters.w, 32u); ++pointIndex) {
@@ -1879,7 +2000,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         color += (pointDiffuse + pointSpecular)
             * pointLightColorIntensity[pointIndex].rgb * radiance * pointNdotL;
         clearCoatDirect += evaluateDirectClearCoat(
-                n, v, pointDirection, coatRoughness)
+                coatNormal, v, pointDirection, coatRoughness)
             * pointLightColorIntensity[pointIndex].rgb * radiance;
     }
     float3 environmentFresnel = fresnelSchlickRoughness(
@@ -1891,15 +2012,17 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         * environmentBrdfApproximation(f0, roughness, ndotv)
         * specularOcclusion(ndotv, ao, roughness);
     if (coatIntensity > 0.01) {
+        float coatNdotV = saturate(dot(coatNormal, v));
         float3 coatFresnel = fresnelSchlickRoughness(
-            ndotv, float3(0.04, 0.04, 0.04), coatRoughness);
+            coatNdotV, float3(0.04, 0.04, 0.04), coatRoughness);
+        float3 coatReflected = reflect(-v, coatNormal);
         float3 coatReflection = specularEnvironment.SampleLevel(
-            materialSampler, reflected, coatRoughness * 9.0).rgb;
+            materialSampler, coatReflected, coatRoughness * 9.0).rgb;
         color += clearCoatDirect * clearCoatTint.rgb * coatIntensity;
         color += coatReflection * coatFresnel * clearCoatTint.rgb
             * lerp(0.15, 0.95, 1.0 - coatRoughness) * coatIntensity;
         color += clearCoatTint.rgb
-            * (pow(1.0 - ndotv, 4.0) * 0.06 * coatIntensity);
+            * (pow(1.0 - coatNdotV, 4.0) * 0.06 * coatIntensity);
     }
     float3 emission = emissiveColorAndMap.rgb;
     if (emissiveColorAndMap.w > 0.5) {
@@ -2279,6 +2402,9 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.diffuseTexture = source.diffuseTexture;
         draw.alphaTexture = source.alphaTexture;
         draw.normalTexture = source.normalTexture;
+        draw.weaveMaskTexture = source.weaveMaskTexture;
+        draw.weaveNormalTexture = source.weaveNormalTexture;
+        draw.clearCoatNormalTexture = source.clearCoatNormalTexture;
         draw.surfaceTexture = source.surfaceTexture;
         draw.emissiveTexture = source.emissiveTexture;
         draw.baseColor = source.baseColor;
@@ -2290,6 +2416,14 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.vTiling = source.vTiling;
         draw.detailUTiling = source.detailUTiling;
         draw.detailVTiling = source.detailVTiling;
+        draw.normalIntensity = source.normalIntensity;
+        draw.weaveNormalIntensity = source.weaveNormalIntensity;
+        draw.clearCoatNormalUTiling = source.clearCoatNormalUTiling;
+        draw.clearCoatNormalVTiling = source.clearCoatNormalVTiling;
+        draw.weaveColorTintA = source.weaveColorTintA;
+        draw.weaveColorTintB = source.weaveColorTintB;
+        draw.sampler = source.sampler;
+        draw.shaderFamily = source.shaderFamily;
         draw.clearCoatTint = source.clearCoatTint;
         draw.clearCoatCoverage = source.clearCoatCoverage;
         draw.clearCoatRoughness = source.clearCoatRoughness;
@@ -2383,12 +2517,45 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         handle.ptr += static_cast<UINT64>(index) * shaderDescriptorStride;
         return handle;
     };
+    D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDescription{};
+    samplerHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+    samplerHeapDescription.NumDescriptors = std::max(1u, static_cast<UINT>(draws.size()));
+    samplerHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> samplerHeap;
+    result = device->CreateDescriptorHeap(
+        &samplerHeapDescription, IID_PPV_ARGS(&samplerHeap));
+    if (FAILED(result)) {
+        frame.error = QStringLiteral("DX12 material sampler heap creation failed: %1")
+            .arg(hresultText(result));
+        return frame;
+    }
+    const UINT samplerDescriptorStride = device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    const fh6::ModelMaterialSampler defaultSampler;
+    for (UINT index = 0; index < samplerHeapDescription.NumDescriptors; ++index) {
+        D3D12_CPU_DESCRIPTOR_HANDLE handle =
+            samplerHeap->GetCPUDescriptorHandleForHeapStart();
+        handle.ptr += static_cast<SIZE_T>(index) * samplerDescriptorStride;
+        const D3D12_SAMPLER_DESC description = materialSamplerDescription(
+            index < draws.size() ? draws[index].sampler : defaultSampler);
+        device->CreateSampler(&description, handle);
+        if (index < draws.size()) {
+            draws[index].samplerDescriptorIndex = index;
+        }
+    }
+    const auto samplerGpuHandleAt = [&](UINT index) {
+        D3D12_GPU_DESCRIPTOR_HANDLE handle =
+            samplerHeap->GetGPUDescriptorHandleForHeapStart();
+        handle.ptr += static_cast<UINT64>(index) * samplerDescriptorStride;
+        return handle;
+    };
 
     std::vector<UploadedTexture> materialTextures;
     materialTextures.reserve(scene.materialTextures.size());
     for (std::size_t index = 0; index < scene.materialTextures.size(); ++index) {
         UploadedTexture texture = uploadRgba8Texture(
-            device.Get(), commands.Get(), scene.materialTextures[index].image);
+            device.Get(), commands.Get(), scene.materialTextures[index].image,
+            true, false, &scene.materialTextures[index].authoredMips);
         if (texture.texture == nullptr) {
             frame.error = QStringLiteral("original-DXIL material texture upload failed");
             return frame;
@@ -2401,7 +2568,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         materialTextures.push_back(std::move(texture));
     }
     std::vector<UploadedTexture> authoredMaterialTextures;
-    authoredMaterialTextures.reserve(draws.size() * 5);
+    authoredMaterialTextures.reserve(draws.size() * 8);
     std::unordered_map<const fh6::OriginalShaderMaterialTexture *, std::size_t>
         authoredTextureIndices;
     std::array<UploadedTexture, fh6::kLiverySideCount> liveryMaskTextures;
@@ -2436,10 +2603,12 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             materialTextures[1].texture.Get(), &fallbackView,
             cpuHandleAt(draw.materialDescriptorStart + 15u));
         const std::array<std::pair<
-            std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 5>
+            std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 8>
             sources = {{{draw.diffuseTexture, 0u}, {draw.normalTexture, 1u},
                         {draw.surfaceTexture, 2u}, {draw.emissiveTexture, 3u},
-                        {draw.alphaTexture, 15u}}};
+                        {draw.alphaTexture, 15u}, {draw.weaveMaskTexture, 16u},
+                        {draw.weaveNormalTexture, 17u},
+                        {draw.clearCoatNormalTexture, 18u}}};
         for (const auto &[source, slot] : sources) {
             if (source == nullptr || !source->valid()) {
                 continue;
@@ -2451,7 +2620,8 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
                     QStringLiteral("car://composited-livery"));
                 UploadedTexture texture = uploadRgba8Texture(
                     device.Get(), commands.Get(), source->image,
-                    !liveLivery, slot == 1u);
+                    !liveLivery, slot == 1u || slot == 17u || slot == 18u,
+                    &source->authoredMips);
                 if (texture.texture == nullptr) {
                     frame.error = QStringLiteral(
                         "DX12 authored material texture upload failed");
@@ -2593,8 +2763,8 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     commands->ClearDepthStencilView(
         depthView, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     commands->SetGraphicsRootSignature(rootSignature.Get());
-    ID3D12DescriptorHeap *heaps[] = {shaderHeap.Get()};
-    commands->SetDescriptorHeaps(1, heaps);
+    ID3D12DescriptorHeap *heaps[] = {shaderHeap.Get(), samplerHeap.Get()};
+    commands->SetDescriptorHeaps(2, heaps);
     for (UINT index = 0; index < constantBuffers.size(); ++index) {
         commands->SetGraphicsRootConstantBufferView(
             index, constantBuffers[index]->GetGPUVirtualAddress());
@@ -2602,6 +2772,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     commands->SetGraphicsRootDescriptorTable(8, gpuHandleAt(0));
     commands->SetGraphicsRootDescriptorTable(10, gpuHandleAt(140));
     commands->SetGraphicsRootDescriptorTable(11, gpuHandleAt(156));
+    commands->SetGraphicsRootDescriptorTable(12, samplerGpuHandleAt(0));
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commands->SetPipelineState(panoramaPipeline.Get());
     commands->DrawInstanced(3, 1, 0, 0);
@@ -2615,6 +2786,8 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             }
             commands->SetGraphicsRootDescriptorTable(
                 9, gpuHandleAt(draw.materialDescriptorStart));
+            commands->SetGraphicsRootDescriptorTable(
+                12, samplerGpuHandleAt(draw.samplerDescriptorIndex));
             commands->SetGraphicsRootConstantBufferView(
                 7, draw.materialConstants->GetGPUVirtualAddress());
             commands->IASetVertexBuffers(0, 1, &draw.vertexView);
@@ -2718,6 +2891,10 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             infoQueue.Get(), D3D12_MESSAGE_SEVERITY_ERROR);
         frame.debugWarnings = countMessages(
             infoQueue.Get(), D3D12_MESSAGE_SEVERITY_WARNING);
+        if (frame.debugWarnings > 0) {
+            frame.debugWarningDetail = firstMessage(
+                infoQueue.Get(), D3D12_MESSAGE_SEVERITY_WARNING);
+        }
     }
     if (frame.nonFiniteComponents > 0) {
         frame.error = QStringLiteral("original-DXIL frame contains non-finite values");
@@ -2756,6 +2933,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12GraphicsCommandList> liveryCommands;
     ComPtr<IDXGISwapChain3> swapChain;
     ComPtr<ID3D12DescriptorHeap> shaderHeap;
+    ComPtr<ID3D12DescriptorHeap> samplerHeap;
     ComPtr<ID3D12DescriptorHeap> targetHeap;
     ComPtr<ID3D12DescriptorHeap> depthHeap;
     ComPtr<ID3D12Resource> depthTarget;
@@ -2782,6 +2960,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     HANDLE completionEvent = nullptr;
     QSize viewportSize;
     UINT shaderDescriptorStride = 0;
+    UINT samplerDescriptorStride = 0;
     UINT targetDescriptorStride = 0;
     UINT64 fenceValue = 0;
     bool liveryCommandsInFlight = false;
@@ -2982,6 +3161,9 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.diffuseTexture = source.diffuseTexture;
             draw.alphaTexture = source.alphaTexture;
             draw.normalTexture = source.normalTexture;
+            draw.weaveMaskTexture = source.weaveMaskTexture;
+            draw.weaveNormalTexture = source.weaveNormalTexture;
+            draw.clearCoatNormalTexture = source.clearCoatNormalTexture;
             draw.surfaceTexture = source.surfaceTexture;
             draw.emissiveTexture = source.emissiveTexture;
             draw.baseColor = source.baseColor;
@@ -2993,6 +3175,14 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.vTiling = source.vTiling;
             draw.detailUTiling = source.detailUTiling;
             draw.detailVTiling = source.detailVTiling;
+            draw.normalIntensity = source.normalIntensity;
+            draw.weaveNormalIntensity = source.weaveNormalIntensity;
+            draw.clearCoatNormalUTiling = source.clearCoatNormalUTiling;
+            draw.clearCoatNormalVTiling = source.clearCoatNormalVTiling;
+            draw.weaveColorTintA = source.weaveColorTintA;
+            draw.weaveColorTintB = source.weaveColorTintB;
+            draw.sampler = source.sampler;
+            draw.shaderFamily = source.shaderFamily;
             draw.clearCoatTint = source.clearCoatTint;
             draw.clearCoatCoverage = source.clearCoatCoverage;
             draw.clearCoatRoughness = source.clearCoatRoughness;
@@ -3072,6 +3262,32 @@ struct OriginalDx12ViewportRenderer::Impl {
         createNullDescriptors(
             device.Get(), shaderHeap.Get(), shaderDescriptorStride,
             descriptorCount);
+        D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDescription{};
+        samplerHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        samplerHeapDescription.NumDescriptors =
+            std::max(1u, static_cast<UINT>(draws.size()));
+        samplerHeapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        result = device->CreateDescriptorHeap(
+            &samplerHeapDescription, IID_PPV_ARGS(&samplerHeap));
+        if (FAILED(result)) {
+            failure = QStringLiteral("D3D12 viewport sampler heap creation failed: %1")
+                .arg(hresultText(result));
+            return false;
+        }
+        samplerDescriptorStride = device->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        const fh6::ModelMaterialSampler defaultSampler;
+        for (UINT index = 0; index < samplerHeapDescription.NumDescriptors; ++index) {
+            D3D12_CPU_DESCRIPTOR_HANDLE handle =
+                samplerHeap->GetCPUDescriptorHandleForHeapStart();
+            handle.ptr += static_cast<SIZE_T>(index) * samplerDescriptorStride;
+            const D3D12_SAMPLER_DESC description = materialSamplerDescription(
+                index < draws.size() ? draws[index].sampler : defaultSampler);
+            device->CreateSampler(&description, handle);
+            if (index < draws.size()) {
+                draws[index].samplerDescriptorIndex = index;
+            }
+        }
         auto cpuHandleAt = [&](UINT index) {
             D3D12_CPU_DESCRIPTOR_HANDLE handle =
                 shaderHeap->GetCPUDescriptorHandleForHeapStart();
@@ -3081,7 +3297,8 @@ struct OriginalDx12ViewportRenderer::Impl {
         materialTextures.reserve(scene.materialTextures.size());
         for (std::size_t index = 0; index < scene.materialTextures.size(); ++index) {
             UploadedTexture texture = uploadRgba8Texture(
-                device.Get(), commands.Get(), scene.materialTextures[index].image);
+                device.Get(), commands.Get(), scene.materialTextures[index].image,
+                true, false, &scene.materialTextures[index].authoredMips);
             if (texture.texture == nullptr) {
                 failure = QStringLiteral("D3D12 viewport material upload failed");
                 return false;
@@ -3093,7 +3310,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 cpuHandleAt(kMaterialDescriptorStart + static_cast<UINT>(index)));
             materialTextures.push_back(std::move(texture));
         }
-        authoredMaterialTextures.reserve(draws.size() * 5);
+        authoredMaterialTextures.reserve(draws.size() * 8);
         std::unordered_map<const fh6::OriginalShaderMaterialTexture *, std::size_t>
             authoredTextureIndices;
         if (scene.liveryMapping.valid()) {
@@ -3127,10 +3344,12 @@ struct OriginalDx12ViewportRenderer::Impl {
                 materialTextures[1].texture.Get(), &fallbackView,
                 cpuHandleAt(draw.materialDescriptorStart + 15u));
             const std::array<std::pair<
-                std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 5>
+                std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 8>
                 sources = {{{draw.diffuseTexture, 0u}, {draw.normalTexture, 1u},
                             {draw.surfaceTexture, 2u}, {draw.emissiveTexture, 3u},
-                            {draw.alphaTexture, 15u}}};
+                            {draw.alphaTexture, 15u}, {draw.weaveMaskTexture, 16u},
+                            {draw.weaveNormalTexture, 17u},
+                            {draw.clearCoatNormalTexture, 18u}}};
             for (const auto &[source, slot] : sources) {
                 if (source == nullptr || !source->valid()) {
                     continue;
@@ -3142,7 +3361,8 @@ struct OriginalDx12ViewportRenderer::Impl {
                         QStringLiteral("car://composited-livery"));
                     UploadedTexture texture = uploadRgba8Texture(
                         device.Get(), commands.Get(), source->image,
-                        !liveLivery, slot == 1u);
+                        !liveLivery, slot == 1u || slot == 17u || slot == 18u,
+                        &source->authoredMips);
                     if (texture.texture == nullptr) {
                         failure = QStringLiteral(
                             "D3D12 viewport authored material upload failed");
@@ -3384,8 +3604,8 @@ struct OriginalDx12ViewportRenderer::Impl {
         commands->ClearDepthStencilView(
             depthView, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         commands->SetGraphicsRootSignature(rootSignature.Get());
-        ID3D12DescriptorHeap *heaps[] = {shaderHeap.Get()};
-        commands->SetDescriptorHeaps(1, heaps);
+        ID3D12DescriptorHeap *heaps[] = {shaderHeap.Get(), samplerHeap.Get()};
+        commands->SetDescriptorHeaps(2, heaps);
         for (UINT index = 0; index < constantBuffers.size(); ++index) {
             commands->SetGraphicsRootConstantBufferView(
                 index, constantBuffers[index]->GetGPUVirtualAddress());
@@ -3396,9 +3616,16 @@ struct OriginalDx12ViewportRenderer::Impl {
             handle.ptr += static_cast<UINT64>(index) * shaderDescriptorStride;
             return handle;
         };
+        const auto samplerGpuHandleAt = [&](UINT index) {
+            D3D12_GPU_DESCRIPTOR_HANDLE handle =
+                samplerHeap->GetGPUDescriptorHandleForHeapStart();
+            handle.ptr += static_cast<UINT64>(index) * samplerDescriptorStride;
+            return handle;
+        };
         commands->SetGraphicsRootDescriptorTable(8, gpuHandleAt(0));
         commands->SetGraphicsRootDescriptorTable(10, gpuHandleAt(140));
         commands->SetGraphicsRootDescriptorTable(11, gpuHandleAt(156));
+        commands->SetGraphicsRootDescriptorTable(12, samplerGpuHandleAt(0));
         commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commands->SetPipelineState(panoramaPipeline.Get());
         commands->DrawInstanced(3, 1, 0, 0);
@@ -3412,6 +3639,8 @@ struct OriginalDx12ViewportRenderer::Impl {
                 }
                 commands->SetGraphicsRootDescriptorTable(
                     9, gpuHandleAt(draw.materialDescriptorStart));
+                commands->SetGraphicsRootDescriptorTable(
+                    12, samplerGpuHandleAt(draw.samplerDescriptorIndex));
                 commands->SetGraphicsRootConstantBufferView(
                     7, draw.materialConstants->GetGPUVirtualAddress());
                 commands->IASetVertexBuffers(0, 1, &draw.vertexView);

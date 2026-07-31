@@ -32,6 +32,7 @@ struct OriginalDx12FrameResult {
     float finiteMaximum = 0.0f;
     int debugErrors = 0;
     int debugWarnings = 0;
+    QString debugWarningDetail;
 
     bool valid() const {
         return !image.isNull() && error.isEmpty() && changedPixels > 0

@@ -107,6 +107,11 @@ inline constexpr quint32 kNormalMap00UvTiling = 0x9A7DB1FA;
 inline constexpr quint32 kNormalMap0UvTiling = 0xFD6BB566;
 inline constexpr quint32 kOrangePeelStrength = 0xAB378776;
 inline constexpr quint32 kUvOrientation = 0x8B7343AB;
+inline constexpr quint32 kWeaveColorTintA = 0xB0338A61;
+inline constexpr quint32 kWeaveColorTintB = 0x29D1EC60;
+inline constexpr quint32 kWeaveNormalIntensity = 0x4D033DB0;
+inline constexpr quint32 kClearCoatNormalUTiling = 0x5968BA4B;
+inline constexpr quint32 kClearCoatNormalVTiling = 0xB3EE6729;
 inline constexpr std::array<quint32, 2> kTextureTilingU = {
     0x19A7D8F1, 0xB01AEE8E,
 };
@@ -129,6 +134,9 @@ inline constexpr quint32 kSurfaceTexture = 0x8D9C56EF;
 inline constexpr quint32 kNormalMap00Texture = 0xA0256751;
 inline constexpr quint32 kNormalMap0Texture = 0x8FC670E1;
 inline constexpr quint32 kOrangePeelNormalTexture = 0x8C7FDE22;
+inline constexpr quint32 kWeaveMaskTexture = 0xBAA9FAA5;
+inline constexpr quint32 kWeaveNormalTexture = 0xEC13FF23;
+inline constexpr quint32 kClearCoatNormalTexture = 0xD8999797;
 
 inline constexpr std::array<quint32, 4> kDetailNormalTexture = {
     0xEC13FF23, 0x87078E77, 0xB59BE3AB, 0xB61760D8,
