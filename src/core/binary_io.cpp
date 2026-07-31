@@ -5,7 +5,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace fh6::detail {
+namespace fls::detail {
 
 quint32 readLeU32(const QByteArray &bytes, int offset) {
     if (offset < 0 || offset + 4 > bytes.size()) {
@@ -66,4 +66,4 @@ bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> byte
     return true;
 }
 
-} // namespace fh6::detail
+} // namespace fls::detail

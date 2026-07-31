@@ -18,7 +18,7 @@ constexpr int kBucketRdpCurveSamples = 32;
 using namespace pc_detail;
 
 bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
-                                       const fh6::scene::GuideLayer **guide,
+                                       const fls::scene::GuideLayer **guide,
                                        QTransform *guideWorld,
                                        QImage *image,
                                        QPoint *imagePoint,
@@ -46,9 +46,9 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
     }
 
     const QString selectedId = *selected.cbegin();
-    const fh6::scene::GuideLayer *foundGuide = nullptr;
+    const fls::scene::GuideLayer *foundGuide = nullptr;
     QTransform foundWorld;
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &candidate,
+    forEachSceneGuide([&](const fls::scene::GuideLayer &candidate,
                           const QTransform &world,
                           const QString &sectionGroupId) {
         if (candidate.id == selectedId && isSectionActive(sectionGroupId)) {
@@ -126,7 +126,7 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
 
 bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
     updateViewTransform();
-    const fh6::scene::GuideLayer *guide = nullptr;
+    const fls::scene::GuideLayer *guide = nullptr;
     QImage image;
     QPoint seed;
     QString error;
@@ -198,7 +198,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
         return false;
     }
 
-    const fh6::scene::GuideLayer *guide = nullptr;
+    const fls::scene::GuideLayer *guide = nullptr;
     QTransform guideWorld;
     QImage image;
     QPoint seed;
@@ -303,9 +303,9 @@ void ProjectCanvas::drawBucketOverlay(QPainter &painter) {
         return;
     }
 
-    const fh6::scene::GuideLayer *guide = nullptr;
+    const fls::scene::GuideLayer *guide = nullptr;
     QTransform guideWorld;
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &candidate,
+    forEachSceneGuide([&](const fls::scene::GuideLayer &candidate,
                           const QTransform &world,
                           const QString &sectionGroupId) {
         if (candidate.id == bucket_.guideId && isSectionActive(sectionGroupId)) {

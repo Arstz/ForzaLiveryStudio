@@ -7,7 +7,7 @@
 namespace gui {
 namespace {
 
-bool visualEqual(const fh6::scene::Shape &a, const fh6::scene::Shape &b) {
+bool visualEqual(const fls::scene::Shape &a, const fls::scene::Shape &b) {
     if (a.isRaster() != b.isRaster()) {
         return false;
     }
@@ -19,7 +19,7 @@ bool visualEqual(const fh6::scene::Shape &a, const fh6::scene::Shape &b) {
     return a.shapeId == b.shapeId;
 }
 
-bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transform2D &b) {
+bool transformEqual(const fls::scene::Transform2D &a, const fls::scene::Transform2D &b) {
     return a.x == b.x
         && a.y == b.y
         && a.scaleX == b.scaleX
@@ -28,8 +28,8 @@ bool transformEqual(const fh6::scene::Transform2D &a, const fh6::scene::Transfor
         && a.skew == b.skew;
 }
 
-bool rasterContentEqual(const fh6::scene::RasterContainer *a,
-                        const fh6::scene::RasterContainer *b) {
+bool rasterContentEqual(const fls::scene::RasterContainer *a,
+                        const fls::scene::RasterContainer *b) {
     if (a == nullptr || b == nullptr) {
         return a == b;
     }
@@ -41,7 +41,7 @@ bool rasterContentEqual(const fh6::scene::RasterContainer *a,
         && a->format == b->format;
 }
 
-bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
+bool nodeEqual(const fls::scene::Layer &a, const fls::scene::Layer &b) {
     if (a.kind() != b.kind()
         || a.id != b.id
         || a.name != b.name
@@ -52,9 +52,9 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
         return false;
     }
     switch (a.kind()) {
-    case fh6::scene::LayerKind::Shape: {
-        const auto &sa = static_cast<const fh6::scene::Shape &>(a);
-        const auto &sb = static_cast<const fh6::scene::Shape &>(b);
+    case fls::scene::LayerKind::Shape: {
+        const auto &sa = static_cast<const fls::scene::Shape &>(a);
+        const auto &sb = static_cast<const fls::scene::Shape &>(b);
         return visualEqual(sa, sb)
             && sa.color == sb.color
             && sa.mask == sb.mask
@@ -64,9 +64,9 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
             && sa.flags == sb.flags
             && sa.sourceLogoId == sb.sourceLogoId;
     }
-    case fh6::scene::LayerKind::Guide: {
-        const auto &ga = static_cast<const fh6::scene::GuideLayer &>(a);
-        const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
+    case fls::scene::LayerKind::Guide: {
+        const auto &ga = static_cast<const fls::scene::GuideLayer &>(a);
+        const auto &gb = static_cast<const fls::scene::GuideLayer &>(b);
         if (ga.sourcePath != gb.sourcePath
             || ga.preprocessColorCount != gb.preprocessColorCount
             || !rasterContentEqual(ga.image.get(), gb.image.get())) {
@@ -75,9 +75,9 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
 
         return true;
     }
-    case fh6::scene::LayerKind::Group: {
-        const auto &ga = static_cast<const fh6::scene::Group &>(a);
-        const auto &gb = static_cast<const fh6::scene::Group &>(b);
+    case fls::scene::LayerKind::Group: {
+        const auto &ga = static_cast<const fls::scene::Group &>(a);
+        const auto &gb = static_cast<const fls::scene::Group &>(b);
         if (ga.isLiverySection != gb.isLiverySection
             || ga.liverySectionSlot != gb.liverySectionSlot
             || ga.sourceAbsPos != gb.sourceAbsPos
@@ -104,13 +104,13 @@ bool nodeEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
     return false;
 }
 
-bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
+bool structureEqual(const fls::scene::Layer &a, const fls::scene::Layer &b) {
     if (a.kind() != b.kind() || a.id != b.id || a.name != b.name || a.visible != b.visible || a.locked != b.locked) {
         return false;
     }
-    if (a.kind() == fh6::scene::LayerKind::Group) {
-        const auto &ga = static_cast<const fh6::scene::Group &>(a);
-        const auto &gb = static_cast<const fh6::scene::Group &>(b);
+    if (a.kind() == fls::scene::LayerKind::Group) {
+        const auto &ga = static_cast<const fls::scene::Group &>(a);
+        const auto &gb = static_cast<const fls::scene::Group &>(b);
         if (ga.children.size() != gb.children.size()
             || ga.isLiverySection != gb.isLiverySection
             || ga.liverySectionSlot != gb.liverySectionSlot) {
@@ -122,29 +122,29 @@ bool structureEqual(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
             }
         }
     }
-    if (a.kind() == fh6::scene::LayerKind::Shape) {
-        const auto &sa = static_cast<const fh6::scene::Shape &>(a);
-        const auto &sb = static_cast<const fh6::scene::Shape &>(b);
+    if (a.kind() == fls::scene::LayerKind::Shape) {
+        const auto &sa = static_cast<const fls::scene::Shape &>(a);
+        const auto &sb = static_cast<const fls::scene::Shape &>(b);
         return visualEqual(sa, sb) && sa.mask == sb.mask;
     }
     return true;
 }
 
-bool previewChange(const fh6::scene::Layer &a, const fh6::scene::Layer &b) {
-    if (a.kind() == fh6::scene::LayerKind::Shape) {
-        const auto &sa = static_cast<const fh6::scene::Shape &>(a);
-        const auto &sb = static_cast<const fh6::scene::Shape &>(b);
+bool previewChange(const fls::scene::Layer &a, const fls::scene::Layer &b) {
+    if (a.kind() == fls::scene::LayerKind::Shape) {
+        const auto &sa = static_cast<const fls::scene::Shape &>(a);
+        const auto &sb = static_cast<const fls::scene::Shape &>(b);
         return sa.color != sb.color || sa.shapeId != sb.shapeId || sa.rasterId != sb.rasterId;
     }
-    if (a.kind() == fh6::scene::LayerKind::Guide) {
-        const auto &ga = static_cast<const fh6::scene::GuideLayer &>(a);
-        const auto &gb = static_cast<const fh6::scene::GuideLayer &>(b);
+    if (a.kind() == fls::scene::LayerKind::Guide) {
+        const auto &ga = static_cast<const fls::scene::GuideLayer &>(a);
+        const auto &gb = static_cast<const fls::scene::GuideLayer &>(b);
         return ga.preprocessColorCount != gb.preprocessColorCount
             || !rasterContentEqual(ga.image.get(), gb.image.get());
     }
-    if (a.kind() == fh6::scene::LayerKind::Group) {
-        const auto &ga = static_cast<const fh6::scene::Group &>(a);
-        const auto &gb = static_cast<const fh6::scene::Group &>(b);
+    if (a.kind() == fls::scene::LayerKind::Group) {
+        const auto &ga = static_cast<const fls::scene::Group &>(a);
+        const auto &gb = static_cast<const fls::scene::Group &>(b);
         for (int i = 0; i < static_cast<int>(ga.children.size()); ++i) {
             if (previewChange(*ga.children[i], *gb.children[i])) {
                 return true;
@@ -225,7 +225,7 @@ void EditorState::beginTransformCommand(const QVector<QString> &targetIds) {
         if (id.isEmpty() || seen.contains(id)) {
             continue;
         }
-        fh6::scene::Layer *node = sceneNode(id);
+        fls::scene::Layer *node = sceneNode(id);
         if (node == nullptr) {
             continue;
         }
@@ -247,7 +247,7 @@ void EditorState::commitTransformCommand() {
     QVector<ProjectTransformEdit> changed;
     changed.reserve(pendingEdit_->transforms.size());
     for (ProjectTransformEdit edit : pendingEdit_->transforms) {
-        fh6::scene::Layer *node = sceneNode(edit.nodeId);
+        fls::scene::Layer *node = sceneNode(edit.nodeId);
         if (node == nullptr) {
             pendingEdit_.reset();
             noteProjectStructureChanged();
@@ -333,7 +333,7 @@ ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapsho
 
 void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter) {
     for (const ProjectTransformEdit &edit : edits) {
-        if (fh6::scene::Layer *node = sceneNode(edit.nodeId)) {
+        if (fls::scene::Layer *node = sceneNode(edit.nodeId)) {
             node->transform = useAfter ? edit.after : edit.before;
         }
     }

@@ -23,7 +23,8 @@ try {
     cmake -S . -B build `
         -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
         -DVCPKG_TARGET_TRIPLET=x64-windows `
-        -DFH6_BUILD_HELPER_TOOLS=OFF
+        -DFLS_BUILD_HELPER_TOOLS=OFF `
+        -DFLS_BUILD_TESTS=OFF
 } finally {
     Pop-Location
 }

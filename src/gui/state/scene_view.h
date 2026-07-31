@@ -11,13 +11,13 @@
 namespace gui {
 
 struct SceneRenderEntry {
-    const fh6::scene::Layer *node = nullptr;
-    const fh6::scene::Shape *shape = nullptr;
-    const fh6::scene::GuideLayer *guide = nullptr;
+    const fls::scene::Layer *node = nullptr;
+    const fls::scene::Shape *shape = nullptr;
+    const fls::scene::GuideLayer *guide = nullptr;
     QString nodeId;
     QString parentGroupId;
     QString sectionGroupId;
-    fh6::scene::LayerKind kind = fh6::scene::LayerKind::Shape;
+    fls::scene::LayerKind kind = fls::scene::LayerKind::Shape;
     QTransform worldTransform;
     QVector<QString> ancestorGroupIds;
     int drawOrder = 0;
@@ -25,28 +25,28 @@ struct SceneRenderEntry {
 
 // Matrix3 is column-vector (m[row][col]); QTransform is row-vector. Element mapping:
 // m11=m[0][0], m12=m[1][0], m21=m[0][1], m22=m[1][1], dx=m[0][2], dy=m[1][2].
-inline QTransform toQTransform(const fh6::Matrix3 &m) {
+inline QTransform toQTransform(const fls::Matrix3 &m) {
     return QTransform(m.m[0][0], m.m[1][0], m.m[0][1], m.m[1][1], m.m[0][2], m.m[1][2]);
 }
 
-inline QTransform sceneWorldTransform(const fh6::scene::Layer &node) {
+inline QTransform sceneWorldTransform(const fls::scene::Layer &node) {
     return toQTransform(node.worldMatrix());
 }
 
-inline QTransform sceneLocalTransform(const fh6::scene::Layer &node) {
+inline QTransform sceneLocalTransform(const fls::scene::Layer &node) {
     return toQTransform(node.transform.matrix());
 }
 
-inline QSizeF sceneNodeSize(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry) {
-    if (node.kind() == fh6::scene::LayerKind::Shape) {
-        const auto &shape = static_cast<const fh6::scene::Shape &>(node);
+inline QSizeF sceneNodeSize(const fls::scene::Layer &node, const ShapeGeometryStore &geometry) {
+    if (node.kind() == fls::scene::LayerKind::Shape) {
+        const auto &shape = static_cast<const fls::scene::Shape &>(node);
         if (shape.raster) {
             return QSizeF(shape.rasterWidth, shape.rasterHeight);
         }
         return geometry.shapeSize(shape.shapeId);
     }
-    if (node.kind() == fh6::scene::LayerKind::Guide) {
-        const auto &guide = static_cast<const fh6::scene::GuideLayer &>(node);
+    if (node.kind() == fls::scene::LayerKind::Guide) {
+        const auto &guide = static_cast<const fls::scene::GuideLayer &>(node);
         return guide.image != nullptr ? QSizeF(guide.image->width, guide.image->height) : QSizeF();
     }
     return QSizeF();
@@ -56,7 +56,7 @@ inline QRectF sceneLocalRect(const QSizeF &size) {
     return QRectF(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
 }
 
-inline QRectF sceneLocalRect(const fh6::scene::Layer &node, const ShapeGeometryStore &geometry) {
+inline QRectF sceneLocalRect(const fls::scene::Layer &node, const ShapeGeometryStore &geometry) {
     return sceneLocalRect(sceneNodeSize(node, geometry));
 }
 
@@ -76,18 +76,18 @@ private:
     bool hasBounds_ = false;
 };
 
-template <typename LayerType, fh6::scene::LayerKind Kind>
-QVector<const LayerType *> sceneLeaves(const fh6::scene::Group &root) {
+template <typename LayerType, fls::scene::LayerKind Kind>
+QVector<const LayerType *> sceneLeaves(const fls::scene::Group &root) {
     QVector<const LayerType *> leaves;
-    std::function<void(const fh6::scene::Layer &)> collect = [&](const fh6::scene::Layer &node) {
+    std::function<void(const fls::scene::Layer &)> collect = [&](const fls::scene::Layer &node) {
         if (node.kind() == Kind) {
             leaves.push_back(static_cast<const LayerType *>(&node));
             return;
         }
-        if (node.kind() != fh6::scene::LayerKind::Group) {
+        if (node.kind() != fls::scene::LayerKind::Group) {
             return;
         }
-        for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+        for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
             collect(*child);
         }
     };
@@ -98,12 +98,12 @@ QVector<const LayerType *> sceneLeaves(const fh6::scene::Group &root) {
     return leaves;
 }
 
-inline QVector<const fh6::scene::Shape *> sceneShapeLeaves(const fh6::scene::Group &root) {
-    return sceneLeaves<fh6::scene::Shape, fh6::scene::LayerKind::Shape>(root);
+inline QVector<const fls::scene::Shape *> sceneShapeLeaves(const fls::scene::Group &root) {
+    return sceneLeaves<fls::scene::Shape, fls::scene::LayerKind::Shape>(root);
 }
 
-inline QVector<const fh6::scene::GuideLayer *> sceneGuideLeaves(const fh6::scene::Group &root) {
-    return sceneLeaves<fh6::scene::GuideLayer, fh6::scene::LayerKind::Guide>(root);
+inline QVector<const fls::scene::GuideLayer *> sceneGuideLeaves(const fls::scene::Group &root) {
+    return sceneLeaves<fls::scene::GuideLayer, fls::scene::LayerKind::Guide>(root);
 }
 
 } // namespace gui

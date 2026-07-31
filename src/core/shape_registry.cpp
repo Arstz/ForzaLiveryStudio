@@ -59,7 +59,7 @@ const ShapeRange *rangeForShape(quint16 shapeId) {
 
 } // namespace
 
-namespace fh6::detail {
+namespace fls::detail {
 
 quint16 canonicalShapeId(quint16 encodedShapeId) {
     // Wire aliases are normalized to the shared asset registry.
@@ -79,4 +79,4 @@ QString shapeName(quint16 shapeId) {
     return QStringLiteral("0x%1").arg(shapeId, 0, 16);
 }
 
-} // namespace fh6::detail
+} // namespace fls::detail

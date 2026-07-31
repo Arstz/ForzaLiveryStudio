@@ -13,7 +13,7 @@
 namespace gui {
 
 struct ProjectEditSnapshot {
-    fh6::Project project;
+    fls::Project project;
 };
 
 struct ProjectSelectionSnapshot {
@@ -35,8 +35,8 @@ enum class ProjectEditRefresh {
 
 struct ProjectTransformEdit {
     QString nodeId;
-    fh6::scene::Transform2D before;
-    fh6::scene::Transform2D after;
+    fls::scene::Transform2D before;
+    fls::scene::Transform2D after;
 };
 
 struct ProjectEditCommand {
@@ -57,7 +57,7 @@ struct ProjectClipboard {
     ProjectClipboard &operator=(ProjectClipboard &&other) noexcept = default;
 
     QVector<QString> rootIds;
-    std::vector<std::unique_ptr<fh6::scene::Layer>> nodes;
+    std::vector<std::unique_ptr<fls::scene::Layer>> nodes;
 };
 
 class EditorState final : public QObject {
@@ -66,17 +66,17 @@ class EditorState final : public QObject {
 public:
     explicit EditorState(QObject *parent = nullptr);
 
-    fh6::Project *project();
-    const fh6::Project *project() const;
+    fls::Project *project();
+    const fls::Project *project() const;
     bool hasProject() const;
-    void setProject(fh6::Project project);
+    void setProject(fls::Project project);
 
     bool isModified() const;
     void setModified(bool modified);
 
-    QVector<fh6::scene::Shape *> selectedLayers();
-    QVector<fh6::scene::GuideLayer *> selectedGuideLayers();
-    QVector<fh6::scene::Group *> selectedGroups(const QVector<QString> &entryIds);
+    QVector<fls::scene::Shape *> selectedLayers();
+    QVector<fls::scene::GuideLayer *> selectedGuideLayers();
+    QVector<fls::scene::Group *> selectedGroups(const QVector<QString> &entryIds);
     bool isLayerLocked(const QString &layerId) const;
     QSet<QString> lockedLayerIds() const;
     QVector<QString> leafLayerIdsForEntry(const QString &entryId) const;
@@ -101,8 +101,8 @@ public:
                                  const QTransform &worldT);
     QVector<QString> fullySelectedTopGroupIds() const;
 
-    const fh6::scene::Group *sceneRoot() const;
-    fh6::scene::Layer *sceneNode(const QString &id) const;
+    const fls::scene::Group *sceneRoot() const;
+    fls::scene::Layer *sceneNode(const QString &id) const;
 
     QSet<QString> selectedLayerIds() const;
     void setSelectedLayerIds(const QSet<QString> &ids);
@@ -148,7 +148,7 @@ public:
     bool duplicateEntriesInPlace(const QVector<QString> &entryIds,
                                  QSet<QString> *newLayerSelection = nullptr,
                                  QSet<QString> *newGuideLayerSelection = nullptr);
-    void insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries);
+    void insertLayerAboveSelection(std::unique_ptr<fls::scene::Layer> layer, const QVector<QString> &selectedEntries);
     void groupEntries(const QVector<QString> &entryIds);
     void ungroupEntries(const QVector<QString> &entryIds, bool flatten);
     bool reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow);
@@ -160,8 +160,8 @@ public:
     QSet<QString> existingGuideLayerIds(const QSet<QString> &ids) const;
     QString parentGroupForEntry(const QString &entryId) const;
     QString topmostGroupForEntry(const QString &entryId) const;
-    fh6::scene::Group *groupForId(const QString &groupId);
-    const fh6::scene::Group *groupForId(const QString &groupId) const;
+    fls::scene::Group *groupForId(const QString &groupId);
+    const fls::scene::Group *groupForId(const QString &groupId) const;
     QString uniqueLayerId() const;
     QString uniqueGuideLayerId() const;
     QString uniqueGroupId() const;
@@ -172,7 +172,7 @@ public:
                            bool renameCopies, QVector<QString> *newRootEntryIds);
     void pruneEmptyGroups();
 
-    fh6::Project project_;
+    fls::Project project_;
     bool hasProject_ = false;
     QString activeSectionId_;
     QSet<QString> selectedLayerIds_;
@@ -204,11 +204,11 @@ private:
     };
 
     struct ProjectIndexCache {
-        QHash<QString, fh6::scene::Shape *> layers;
-        QHash<QString, fh6::scene::GuideLayer *> guides;
-        QHash<QString, fh6::scene::Group *> groups;
-        QHash<QString, fh6::scene::Layer *> nodes;
-        QHash<QString, fh6::scene::Group *> parentGroupByChild;
+        QHash<QString, fls::scene::Shape *> layers;
+        QHash<QString, fls::scene::GuideLayer *> guides;
+        QHash<QString, fls::scene::Group *> groups;
+        QHash<QString, fls::scene::Layer *> nodes;
+        QHash<QString, fls::scene::Group *> parentGroupByChild;
         QHash<QString, QString> parentByChild;
         QHash<QString, int> orderByChild;
         mutable QHash<QString, QVector<QString>> leafIdsByEntry;
@@ -243,12 +243,12 @@ private:
     void restoreSelection(const ProjectSelectionSnapshot &selection);
     void refreshAfterHistoryCommand(ProjectEditRefresh refresh);
     EntryInsertionPoint insertionPointAboveSelection(const QVector<QString> &selectedEntries) const;
-    std::unique_ptr<fh6::scene::Layer> takeEntry(const QString &entryId);
+    std::unique_ptr<fls::scene::Layer> takeEntry(const QString &entryId);
     QString uniqueId(const QString &prefix, int startingIndex) const;
 
     mutable std::optional<ProjectIndexCache> indexCache_;
 
-    mutable QHash<QString, fh6::scene::Layer *> sceneNodeById_;
+    mutable QHash<QString, fls::scene::Layer *> sceneNodeById_;
     mutable bool renderCacheDirty_ = true;
     mutable QVector<SceneRenderEntry> renderEntries_;
     mutable QHash<QString, int> renderEntryByNodeId_;

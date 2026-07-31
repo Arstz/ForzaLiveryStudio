@@ -26,10 +26,10 @@ class PropertyPanel final : public QWidget {
 public:
     explicit PropertyPanel(EditorState *state, QWidget *parent = nullptr);
 
-    void setLayers(const QVector<fh6::scene::Shape *> &layers);
-    void setSelection(const QVector<fh6::scene::Shape *> &layers,
-                      const QVector<fh6::scene::GuideLayer *> &guides,
-                      const QVector<fh6::scene::Group *> &groups);
+    void setLayers(const QVector<fls::scene::Shape *> &layers);
+    void setSelection(const QVector<fls::scene::Shape *> &layers,
+                      const QVector<fls::scene::GuideLayer *> &guides,
+                      const QVector<fls::scene::Group *> &groups);
     void refreshTransformFields();
     void refreshTransformFieldsFromBox(const QPointF &center,
                                        double width,
@@ -57,10 +57,10 @@ private:
                            const QVector<QString> &groupIds);
 
     QDoubleSpinBox *floatBox(double low, double high);
-    void setSingleLayer(const fh6::scene::Shape *layer);
-    void setSingleGuide(const fh6::scene::GuideLayer *guide);
-    void setMultipleLayers(const QVector<fh6::scene::Shape *> &layers);
-    void setMultipleGuides(const QVector<fh6::scene::GuideLayer *> &guides);
+    void setSingleLayer(const fls::scene::Shape *layer);
+    void setSingleGuide(const fls::scene::GuideLayer *guide);
+    void setMultipleLayers(const QVector<fls::scene::Shape *> &layers);
+    void setMultipleGuides(const QVector<fls::scene::GuideLayer *> &guides);
     void clearMixedStyles();
     void applyChanged(QWidget *sender);
     void propagateLinkedScale(QDoubleSpinBox *source, QDoubleSpinBox *target);
@@ -88,9 +88,9 @@ private:
     std::function<QSizeF(int)> spriteSizeFn_;
     std::function<QRectF(int)> shapeVisualBoundsFn_;
     std::function<std::optional<QColor>()> guideColorSampleFn_;
-    QVector<fh6::scene::Shape *> layers_;
-    QVector<fh6::scene::GuideLayer *> guides_;
-    QVector<fh6::scene::Group *> groups_;
+    QVector<fls::scene::Shape *> layers_;
+    QVector<fls::scene::GuideLayer *> guides_;
+    QVector<fls::scene::Group *> groups_;
     bool loading_ = false;
     bool applyingChange_ = false;
     QHash<QWidget *, double> baselines_;

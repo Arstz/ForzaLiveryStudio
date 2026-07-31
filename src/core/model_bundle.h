@@ -8,7 +8,7 @@
 #include <optional>
 #include <vector>
 
-namespace fh6 {
+namespace fls {
 
 namespace bundle_tags {
 constexpr quint32 Bundle = 0x47727562;        // "Grub"
@@ -55,4 +55,4 @@ struct ModelBundle {
 
 ModelBundle parseModelBundle(const QByteArray &bytes);
 
-} // namespace fh6
+} // namespace fls

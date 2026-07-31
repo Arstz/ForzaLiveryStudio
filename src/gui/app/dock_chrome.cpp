@@ -9,9 +9,9 @@
 namespace gui {
 namespace {
 
-constexpr const char *kDockIconNameProperty = "fh6DockIconName";
-constexpr const char *kDockIconLabelProperty = "fh6DockIconLabel";
-constexpr const char *kDockTitleLayoutProperty = "fh6DockTitleLayout";
+constexpr const char *kDockIconNameProperty = "flsDockIconName";
+constexpr const char *kDockIconLabelProperty = "flsDockIconLabel";
+constexpr const char *kDockTitleLayoutProperty = "flsDockTitleLayout";
 
 QToolButton *dockTitleButton(QWidget *parent, QStyle::StandardPixmap icon, const QString &toolTip) {
     auto *button = new QToolButton(parent);

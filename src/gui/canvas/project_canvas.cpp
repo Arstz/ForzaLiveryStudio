@@ -68,7 +68,7 @@ ProjectCanvas::ProjectCanvas(QWidget *parent)
 
 ProjectCanvas::~ProjectCanvas() = default;
 
-void ProjectCanvas::setProject(fh6::Project *project) {
+void ProjectCanvas::setProject(fls::Project *project) {
     cancelPenInteraction();
     cancelLiningInteraction();
     clearBucketPreview();
@@ -177,7 +177,7 @@ void ProjectCanvas::invalidateGuideImageCache() {
     sectionCanvasCache_.clear();
 }
 
-const fh6::scene::Group *ProjectCanvas::sceneTree() const {
+const fls::scene::Group *ProjectCanvas::sceneTree() const {
     if (state_ != nullptr) {
         return state_->sceneRoot();
     }
@@ -195,7 +195,7 @@ bool ProjectCanvas::isSectionActive(const QString &sectionGroupId) const {
 }
 
 void ProjectCanvas::forEachSceneShape(
-    const std::function<bool(const fh6::scene::Shape &, const QTransform &, int)> &visit,
+    const std::function<bool(const fls::scene::Shape &, const QTransform &, int)> &visit,
     bool reverse) const {
     if (state_ != nullptr) {
         const QVector<SceneRenderEntry> &entries = state_->renderEntries();
@@ -211,15 +211,15 @@ void ProjectCanvas::forEachSceneShape(
         }
         return;
     }
-    const fh6::scene::Group *root = sceneTree();
+    const fls::scene::Group *root = sceneTree();
     if (root == nullptr) {
         return;
     }
-    const QVector<const fh6::scene::Shape *> leaves = sceneShapeLeaves(*root);
+    const QVector<const fls::scene::Shape *> leaves = sceneShapeLeaves(*root);
     const int n = leaves.size();
     for (int i = 0; i < n; ++i) {
         const int index = reverse ? n - 1 - i : i;
-        const fh6::scene::Shape &shape = *leaves[index];
+        const fls::scene::Shape &shape = *leaves[index];
         if (!visit(shape, sceneWorldTransform(shape), index)) {
             return;
         }
@@ -227,7 +227,7 @@ void ProjectCanvas::forEachSceneShape(
 }
 
 void ProjectCanvas::forEachSceneGuide(
-    const std::function<bool(const fh6::scene::GuideLayer &, const QTransform &, const QString &)> &visit,
+    const std::function<bool(const fls::scene::GuideLayer &, const QTransform &, const QString &)> &visit,
     bool reverse) const {
     if (state_ != nullptr) {
         const QVector<SceneRenderEntry> &entries = state_->renderEntries();
@@ -243,14 +243,14 @@ void ProjectCanvas::forEachSceneGuide(
         }
         return;
     }
-    const fh6::scene::Group *root = sceneTree();
+    const fls::scene::Group *root = sceneTree();
     if (root == nullptr) {
         return;
     }
-    const QVector<const fh6::scene::GuideLayer *> guides = sceneGuideLeaves(*root);
+    const QVector<const fls::scene::GuideLayer *> guides = sceneGuideLeaves(*root);
     const int n = guides.size();
     for (int i = 0; i < n; ++i) {
-        const fh6::scene::GuideLayer &guide = *guides[reverse ? n - 1 - i : i];
+        const fls::scene::GuideLayer &guide = *guides[reverse ? n - 1 - i : i];
         if (!visit(guide, sceneWorldTransform(guide), QString())) {
             return;
         }
@@ -491,7 +491,7 @@ QVector<PenPrimitive> ProjectCanvas::penPrimitiveCatalog() const {
     return buildPenPrimitiveCatalog(geometry_);
 }
 
-QVector<cover::ShapeMesh> ProjectCanvas::differentiableCoverCatalog(QString *error) const {
+QVector<cover::ShapeMesh> ProjectCanvas::differentialCoverCatalog(QString *error) const {
     return cover::buildShapeCatalog(geometry_, error);
 }
 
@@ -751,13 +751,13 @@ QPointF ProjectCanvas::viewCenterWorld() {
 
 QRectF ProjectCanvas::projectBounds() const {
     BoundsAccumulator acc;
-    forEachSceneShape([&](const fh6::scene::Shape &shape, const QTransform &world, int) {
+    forEachSceneShape([&](const fls::scene::Shape &shape, const QTransform &world, int) {
         if (shape.visible) {
             acc.add(world, flatEntryVisualRect(shape, geometry_));
         }
         return true;
     }, /*reverse=*/false);
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
         const QSizeF size = sceneNodeSize(guide, geometry_);
         if (guide.visible && size.width() > 0 && size.height() > 0 && isSectionActive(sectionGroupId)) {
             acc.add(world, sceneLocalRect(size));

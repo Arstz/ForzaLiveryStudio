@@ -8,7 +8,7 @@
 #include <QString>
 #include <QVector>
 
-namespace fh6 {
+namespace fls {
 
 inline constexpr int kFM2023SectionCount = 7;
 extern const LiverySlotDef kFM2023LiverySlots[7];
@@ -33,4 +33,4 @@ VinylGroup decodeFM2023RawGroup(const QByteArray &payload);
 
 Project importFM2023Asset(const QString &folderOrFile);
 
-} // namespace fh6
+} // namespace fls

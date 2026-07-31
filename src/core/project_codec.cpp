@@ -21,11 +21,11 @@
 
 #include <zlib.h>
 
-#ifndef FH6_PRIVACY_POLICY
-#define FH6_PRIVACY_POLICY 1
+#ifndef FLS_PRIVACY_POLICY
+#define FLS_PRIVACY_POLICY 1
 #endif
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 quint8 byteFromJson(const QJsonArray &array, int index) {
@@ -264,7 +264,7 @@ QByteArray readOptionalFile(const QString &path) {
 }
 
 void enforcePrivacyPolicyForCGroup(const QByteArray &payload) {
-#if FH6_PRIVACY_POLICY
+#if FLS_PRIVACY_POLICY
     const int gyvl = payload.indexOf(QByteArray("gyvl", 4));
     const int markerOffset = gyvl + 0x1d;
     if (gyvl >= 0 && markerOffset < payload.size()
@@ -277,7 +277,7 @@ void enforcePrivacyPolicyForCGroup(const QByteArray &payload) {
 }
 
 void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery) {
-#if FH6_PRIVACY_POLICY
+#if FLS_PRIVACY_POLICY
     const int vlrc = livery.raw.indexOf(QByteArray("vlrc", 4));
     if (vlrc >= 0 && vlrc + 12 <= livery.raw.size()
         && detail::readLeU32(livery.raw, vlrc + 8) == 1) {
@@ -1020,7 +1020,10 @@ Project importCLivery(const QString &folderOrFile) {
 
 Project projectFromJson(const QJsonObject &object) {
     if (object.contains(QStringLiteral("format"))) {
-        if (object.value(QStringLiteral("format")).toString() != QLatin1String(ProjectJsonFormat)) {
+        const QString format =
+            object.value(QStringLiteral("format")).toString();
+        if (format != QLatin1String(ProjectJsonFormat)
+            && format != QLatin1String(LegacyProjectJsonFormat)) {
             throw std::runtime_error("not an editor project");
         }
         if (object.value(QStringLiteral("version")).toInt(0) > ProjectJsonVersion) {
@@ -1387,4 +1390,4 @@ void exportCLivery(const Project &project, const QString &outputFolder) {
     }
 }
 
-} // namespace fh6
+} // namespace fls

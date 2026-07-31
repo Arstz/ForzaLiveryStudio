@@ -12,7 +12,7 @@
 #include <memory>
 #include <vector>
 
-namespace fh6::scene {
+namespace fls::scene {
 
 enum class LayerKind { Shape, Guide, Group };
 
@@ -132,4 +132,4 @@ public:
     std::unique_ptr<Layer> takeAt(int index);
 };
 
-} // namespace fh6::scene
+} // namespace fls::scene

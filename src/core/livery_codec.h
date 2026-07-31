@@ -12,7 +12,7 @@
 #define ENFORCE_SHAPE_LIMITS 1
 #endif
 
-namespace fh6 {
+namespace fls {
 
 inline constexpr bool kEnforceLiveryShapeLimits = ENFORCE_SHAPE_LIMITS != 0;
 
@@ -35,4 +35,4 @@ LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw);
 QByteArray buildLiveryGyvl(const Project &project,
                            std::array<int, 11> *outSectionCounts = nullptr);
 
-} // namespace fh6
+} // namespace fls

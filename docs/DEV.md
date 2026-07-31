@@ -25,7 +25,7 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
-  A persistent, default-off **Differentiable Pen Fill** option replaces that commit
+  A persistent, default-off **Differential Contour Fill** option replaces that commit
   path with a slow analytic greedy cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, stays within
   the contour tolerance, and inserts a measured partial result when progress
@@ -33,8 +33,9 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   legalization first. Direct3D 11 legalization with double-precision CPU Adam is
   the next backend, followed by the parallel CPU evaluator. Exact CPU candidate
   verification remains authoritative, and backend failure advances automatically.
-  Its status-bar progress reports exact covered area and an approximate ETA
-  derived from observed placement timing and gain decay. Bucket-derived Pen
+  Its status-bar progress reports exact covered area and updates elapsed time
+  independently of placement completion.
+  Bucket-derived Pen
   contours use the same selected mode.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated
@@ -316,11 +317,13 @@ complete remnants between populated section slots.
 
 The scripts use `VCPKG_ROOT`, defaulting to `C:\vcpkg` or `C:\vcpkg\vcpkg`,
 and target `x64-windows`. Build output is written to `build\Release`.
-Public builds enable `FH6_PRIVACY_POLICY` by default, which blocks importing
+Test executables are excluded by default. Configure with
+`-DFLS_BUILD_TESTS=ON` when they are required.
+Public builds enable `FLS_PRIVACY_POLICY` by default, which blocks importing
 locked game content. Private development builds can opt out at configure time:
 
 ```powershell
-cmake -S . -B build -DFH6_PRIVACY_POLICY=OFF
+cmake -S . -B build -DFLS_PRIVACY_POLICY=OFF
 ```
 
 Livery export shape-limit enforcement is controlled by `ENFORCE_SHAPE_LIMITS`
@@ -352,11 +355,11 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
 CMake will automatically detect Qt6 and ZLIB from system packages.
-Public builds enable `FH6_PRIVACY_POLICY` by default, which blocks importing
+Public builds enable `FLS_PRIVACY_POLICY` by default, which blocks importing
 locked game content. Private development builds can opt out with:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DFH6_PRIVACY_POLICY=OFF
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DFLS_PRIVACY_POLICY=OFF
 ```
 
 **Build:**
@@ -403,7 +406,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
   `gen_xpm.ps1`, `gen_xpm.py`) plus optional dev-only console harnesses
   (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind
-  `FH6_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
+  `FLS_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
   scripts are Windows-only; on Linux, use CMake directly.
 - `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and consolidated
   format notes for Forza Horizon and Forza Motorsport containers, groups,
@@ -427,7 +430,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     weighting, and section-root boundary guards before converting the decoded tree
     into scene layers.
   - `layer.*` / `visual_container.h`: the unified scene-object hierarchy in
-    namespace `fh6::scene` — `Layer` (id, `Transform2D`, opacity, visibility/lock,
+    namespace `fls::scene` — `Layer` (id, `Transform2D`, opacity, visibility/lock,
     parent) subclassed by `Shape` / `GuideLayer` / `Group`. A group carries its own
     transform and owns its children (`std::vector<unique_ptr<Layer>>`), so transforms
     compose down the tree (`worldMatrix()`); leaf visuals are stored separately as a
@@ -558,7 +561,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 
 ## Privacy Policy Build Flag
 
-`FH6_PRIVACY_POLICY` defaults to `ON` for public builds. When enabled, imports
+`FLS_PRIVACY_POLICY` defaults to `ON` for public builds. When enabled, imports
 reject locked payloads only: `C_group` byte `0x1D == 0x21` and `C_livery`
 little-endian `u32` at offset `0x08 == 1`. Published header metadata is not used as a
 denial signal because legitimate users may edit their own published items.

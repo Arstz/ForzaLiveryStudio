@@ -53,7 +53,7 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     setMetadata({}, false, false);
 }
 
-void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool importedDraft, bool hasProject) {
+void HeaderMetadataWidget::setMetadata(const fls::HeaderMetadata &seed, bool importedDraft, bool hasProject) {
     seed_ = seed;
     importedDraft_ = importedDraft;
 
@@ -75,8 +75,8 @@ void HeaderMetadataWidget::setMetadata(const fh6::HeaderMetadata &seed, bool imp
     hint_->setVisible(!hasProject);
 }
 
-fh6::HeaderMetadata HeaderMetadataWidget::metadata() const {
-    fh6::HeaderMetadata meta = seed_;
+fls::HeaderMetadata HeaderMetadataWidget::metadata() const {
+    fls::HeaderMetadata meta = seed_;
     meta.name = nameEdit_->text();
     meta.creatorName = creatorEdit_->text();
     meta.year = static_cast<quint16>(yearSpin_->value());

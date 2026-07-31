@@ -7,7 +7,7 @@
 
 #include <algorithm>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 constexpr qsizetype HeaderSize = 16;
@@ -130,4 +130,4 @@ const RasterDecalPack &sharedRasterDecals() {
     return pack;
 }
 
-} // namespace fh6
+} // namespace fls

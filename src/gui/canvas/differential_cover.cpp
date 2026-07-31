@@ -1,5 +1,5 @@
-#include "differentiable_cover.h"
-#include "differentiable_cover_gpu.h"
+#include "differential_cover.h"
+#include "differential_cover_gpu.h"
 #include "polygon_mesh.h"
 
 #include <clipper2/clipper.engine.h>
@@ -2588,7 +2588,6 @@ bool prunePlacements(
                     currentState->residualArea,
                     static_cast<double>(
                         elapsed->elapsed()) / 1000.0,
-                    -1.0,
                 });
             }
             break;
@@ -2632,55 +2631,6 @@ bool validOptions(const FillOptions &options) {
         && std::isfinite(
             options.inactivityTimeoutSeconds)
         && options.inactivityTimeoutSeconds >= 0.0;
-}
-
-double estimatedRemainingSeconds(const QVector<double> &gains,
-                                 double elapsedSeconds,
-                                 double epsGain) {
-    constexpr int kEstimateWindow = 8;
-    constexpr double kMinimumDecay = 0.01;
-    if (gains.size() < 2 || elapsedSeconds <= 0.0) {
-        return -1.0;
-    }
-
-    const int gainCount = static_cast<int>(gains.size());
-    const int first = std::max(0, gainCount - kEstimateWindow);
-    const int count = gainCount - first;
-    double sumX = 0.0;
-    double sumY = 0.0;
-    double sumXy = 0.0;
-    double sumXx = 0.0;
-    for (int offset = 0; offset < count; ++offset) {
-        const double gain = gains[first + offset];
-        if (!std::isfinite(gain) || gain <= 0.0) {
-            return -1.0;
-        }
-        const double x = static_cast<double>(offset);
-        const double y = std::log(gain);
-        sumX += x;
-        sumY += y;
-        sumXy += x * y;
-        sumXx += x * x;
-    }
-    const double denominator =
-        static_cast<double>(count) * sumXx - sumX * sumX;
-    if (denominator <= 0.0) {
-        return -1.0;
-    }
-    const double slope =
-        (static_cast<double>(count) * sumXy - sumX * sumY) / denominator;
-    if (!std::isfinite(slope) || slope >= -kMinimumDecay) {
-        return -1.0;
-    }
-
-    const double currentGain = gains.back();
-    const double remainingAccepted = std::max(
-        0.0, std::ceil((std::log(epsGain) - std::log(currentGain)) / slope));
-    const double secondsPerStep =
-        elapsedSeconds / static_cast<double>(gains.size());
-    const double estimate = (remainingAccepted + 1.0) * secondsPerStep;
-
-    return std::isfinite(estimate) && estimate >= 0.0 ? estimate : -1.0;
 }
 
 void mergeRepairProfile(
@@ -2813,17 +2763,17 @@ FillResult analyticCoverFillInternal(
     const Polygons mustCover = normalizedInputPolygons(input.mustCover);
     const Polygons mayCover = normalizedInputPolygons(input.mayCover);
     if (mustCover.isEmpty() || mayCover.isEmpty()) {
-        result.error = QStringLiteral("Differentiable cover input is empty");
+        result.error = QStringLiteral("Differential cover input is empty");
         return result;
     }
     if (!validOptions(options)) {
-        result.error = QStringLiteral("Differentiable cover options are invalid");
+        result.error = QStringLiteral("Differential cover options are invalid");
         return result;
     }
     if (catalog.isEmpty()
         || std::any_of(catalog.cbegin(), catalog.cend(),
                        [](const ShapeMesh &shape) { return !shape.valid(); })) {
-        result.error = QStringLiteral("Differentiable cover catalog is invalid");
+        result.error = QStringLiteral("Differential cover catalog is invalid");
         return result;
     }
 
@@ -2834,7 +2784,6 @@ FillResult analyticCoverFillInternal(
     result.profile.hardEdgeCandidates = hardCandidates.size();
     QElapsedTimer elapsed;
     elapsed.start();
-    QVector<double> acceptedGains;
     if (progress) {
         progress({
             0,
@@ -2842,7 +2791,6 @@ FillResult analyticCoverFillInternal(
             0.0,
             targetArea,
             0.0,
-            -1.0,
         });
     }
     const std::uint64_t seedValue = options.seed == 0
@@ -3086,7 +3034,6 @@ FillResult analyticCoverFillInternal(
         });
         result.residual = std::move(selection.residual);
         const double nextArea = polygonSetArea(result.residual);
-        acceptedGains.push_back(selection.exactGain);
         if (progress) {
             const double elapsedSeconds =
                 static_cast<double>(elapsed.elapsed()) / 1000.0;
@@ -3096,8 +3043,6 @@ FillResult analyticCoverFillInternal(
                 std::max(0.0, targetArea - nextArea),
                 nextArea,
                 elapsedSeconds,
-                estimatedRemainingSeconds(
-                    acceptedGains, elapsedSeconds, options.epsGain),
             });
         }
     }
@@ -3169,7 +3114,6 @@ FillResult analyticCoverFillInternal(
                             targetArea - combinedCovered),
                         static_cast<double>(
                             elapsed.elapsed()) / 1000.0,
-                        update.etaSeconds,
                     });
                 };
             QElapsedTimer repairTimer;
@@ -3241,7 +3185,6 @@ FillResult analyticCoverFillInternal(
             result.residualArea,
             static_cast<double>(
                 elapsed.elapsed()) / 1000.0,
-            -1.0,
         });
     }
 
@@ -3329,7 +3272,7 @@ FillResult analyticCoverFill(
     return result;
 }
 
-#ifdef FH6_DIFFERENTIABLE_COVER_TESTS
+#ifdef FLS_DIFFERENTIAL_COVER_TESTS
 double placementUnionAreaForTesting(
     const QVector<Placement> &placements,
     const QVector<ShapeMesh> &catalog) {

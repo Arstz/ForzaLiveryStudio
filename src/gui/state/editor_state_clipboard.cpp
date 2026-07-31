@@ -11,10 +11,10 @@ namespace {
 template <typename LayerType, typename Fn>
 void walkNode(LayerType &node, const Fn &fn) {
     fn(node);
-    if (node.kind() == fh6::scene::LayerKind::Group) {
+    if (node.kind() == fls::scene::LayerKind::Group) {
         using GroupType = std::conditional_t<std::is_const_v<LayerType>,
-                                             const fh6::scene::Group,
-                                             fh6::scene::Group>;
+                                             const fls::scene::Group,
+                                             fls::scene::Group>;
         for (const auto &child : static_cast<GroupType &>(node).children) {
             LayerType &childNode = *child;
             walkNode(childNode, fn);
@@ -22,21 +22,21 @@ void walkNode(LayerType &node, const Fn &fn) {
     }
 }
 
-void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &layers, QSet<QString> &guides) {
-    if (node.kind() == fh6::scene::LayerKind::Shape) {
+void collectLeafIds(const fls::scene::Layer &node, QSet<QString> &layers, QSet<QString> &guides) {
+    if (node.kind() == fls::scene::LayerKind::Shape) {
         layers.insert(node.id);
-    } else if (node.kind() == fh6::scene::LayerKind::Guide) {
+    } else if (node.kind() == fls::scene::LayerKind::Guide) {
         guides.insert(node.id);
     } else {
-        for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+        for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
             collectLeafIds(*child, layers, guides);
         }
     }
 }
 
-fh6::scene::Group *defaultInsertionTarget(EditorState &state) {
+fls::scene::Group *defaultInsertionTarget(EditorState &state) {
     if (state.project_.isLivery && !state.activeSectionId_.isEmpty()) {
-        if (fh6::scene::Group *section = state.groupForId(state.activeSectionId_);
+        if (fls::scene::Group *section = state.groupForId(state.activeSectionId_);
             section != nullptr && section->isLiverySection) {
             return section;
         }
@@ -64,7 +64,7 @@ bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectCl
     ProjectClipboard copied;
     copied.rootIds = ordered;
     for (const QString &entryId : ordered) {
-        fh6::scene::Layer *node = cache.nodes.value(entryId, nullptr);
+        fls::scene::Layer *node = cache.nodes.value(entryId, nullptr);
         if (node == nullptr || entryHasLockedLayer(entryId) || node->locked) {
             return false;
         }
@@ -138,7 +138,7 @@ void EditorState::removeEntries(const QVector<QString> &entryIds) {
     }
     const QVector<QString> entries = normalizeEntrySelection(entryIds);
     for (const QString &entryId : entries) {
-        if (fh6::scene::Group *group = groupForId(entryId); group != nullptr && group->isLiverySection) {
+        if (fls::scene::Group *group = groupForId(entryId); group != nullptr && group->isLiverySection) {
             continue;
         }
         takeEntry(entryId);
@@ -168,19 +168,19 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         if (!root) {
             continue;
         }
-        walkNode(static_cast<const fh6::scene::Layer &>(*root), [&](const fh6::scene::Layer &node) {
+        walkNode(static_cast<const fls::scene::Layer &>(*root), [&](const fls::scene::Layer &node) {
             QString prefix;
             int *counter = nullptr;
             switch (node.kind()) {
-            case fh6::scene::LayerKind::Shape:
+            case fls::scene::LayerKind::Shape:
                 prefix = QStringLiteral("layer_copy");
                 counter = &nextLayerIndex;
                 break;
-            case fh6::scene::LayerKind::Guide:
+            case fls::scene::LayerKind::Guide:
                 prefix = QStringLiteral("guide_copy");
                 counter = &nextGuideIndex;
                 break;
-            case fh6::scene::LayerKind::Group:
+            case fls::scene::LayerKind::Group:
                 prefix = QStringLiteral("group_copy");
                 counter = &nextGroupIndex;
                 break;
@@ -194,7 +194,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         });
     }
 
-    fh6::scene::Group *target = haveTarget ? groupForId(parentId) : defaultInsertionTarget(*this);
+    fls::scene::Group *target = haveTarget ? groupForId(parentId) : defaultInsertionTarget(*this);
     if (target == nullptr) {
         target = project_.root.get();
         insertAt = static_cast<int>(target->children.size());
@@ -209,14 +209,14 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         if (!root) {
             continue;
         }
-        std::unique_ptr<fh6::scene::Layer> node = root->clone();
-        walkNode(*node, [&](fh6::scene::Layer &entry) {
+        std::unique_ptr<fls::scene::Layer> node = root->clone();
+        walkNode(*node, [&](fls::scene::Layer &entry) {
             entry.id = idMap.value(entry.id, entry.id);
             if (renameCopies) {
                 entry.name = copyName(entry.name);
             }
-            if (entry.kind() == fh6::scene::LayerKind::Group) {
-                auto &group = static_cast<fh6::scene::Group &>(entry);
+            if (entry.kind() == fls::scene::LayerKind::Group) {
+                auto &group = static_cast<fls::scene::Group &>(entry);
                 group.sourceParentId.clear();
                 group.sourcePreviousSiblingId.clear();
                 group.sourceChildren.clear();
@@ -234,7 +234,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         if (newGuideLayerSelection != nullptr) {
             *newGuideLayerSelection += insertedGuides;
         }
-        if (node->kind() == fh6::scene::LayerKind::Guide && target != project_.root.get()) {
+        if (node->kind() == fls::scene::LayerKind::Guide && target != project_.root.get()) {
             project_.root->insert(insertGuideAt++, std::move(node));
         } else {
             target->insert(insertAt++, std::move(node));
@@ -261,12 +261,12 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                       newLayerSelection, newGuideLayerSelection, renameCopies, newRootEntryIds);
 }
 
-void EditorState::insertLayerAboveSelection(std::unique_ptr<fh6::scene::Layer> layer, const QVector<QString> &selectedEntries) {
+void EditorState::insertLayerAboveSelection(std::unique_ptr<fls::scene::Layer> layer, const QVector<QString> &selectedEntries) {
     if (!layer || !project_.root) {
         return;
     }
     const EntryInsertionPoint insertionPoint = insertionPointAboveSelection(selectedEntries);
-    fh6::scene::Group *target = insertionPoint.hasTarget ? groupForId(insertionPoint.parentId)
+    fls::scene::Group *target = insertionPoint.hasTarget ? groupForId(insertionPoint.parentId)
                                                         : defaultInsertionTarget(*this);
     if (target == nullptr) {
         target = project_.root.get();

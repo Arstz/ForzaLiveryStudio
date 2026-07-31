@@ -119,7 +119,7 @@ void main()
 }
 )";
 
-QTransform layerTransform(const fh6::scene::Shape &layer) {
+QTransform layerTransform(const fls::scene::Shape &layer) {
     QTransform transform;
     transform.translate(layer.x, layer.y);
     transform.rotate(layer.rotation);
@@ -128,7 +128,7 @@ QTransform layerTransform(const fh6::scene::Shape &layer) {
     return transform;
 }
 
-QTransform rendererSceneLocalTransform(const fh6::scene::Layer &node) {
+QTransform rendererSceneLocalTransform(const fls::scene::Layer &node) {
     QTransform transform;
     transform.translate(node.transform.x, node.transform.y);
     transform.rotate(node.transform.rotation);
@@ -355,7 +355,7 @@ void NativeShapeRenderer::uploadGeometry(const ShapeGeometryStore &geometry) {
 }
 
 void NativeShapeRenderer::render(
-    const fh6::Project &project,
+    const fls::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
     const QSize &size,
@@ -386,19 +386,19 @@ void NativeShapeRenderer::render(
         functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         const QColor color = QColor::fromHsvF(std::clamp(flashHue, 0.0, 1.0), 1.0, 1.0);
         if (project.root) {
-            std::function<void(const fh6::scene::Layer &, const QTransform &)> flashWalk =
-                [&](const fh6::scene::Layer &node, const QTransform &parentWorld) {
+            std::function<void(const fls::scene::Layer &, const QTransform &)> flashWalk =
+                [&](const fls::scene::Layer &node, const QTransform &parentWorld) {
                     const QTransform world = rendererSceneLocalTransform(node) * parentWorld;
-                    if (node.kind() == fh6::scene::LayerKind::Group) {
-                        for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+                    if (node.kind() == fls::scene::LayerKind::Group) {
+                        for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
                             flashWalk(*child, world);
                         }
                         return;
                     }
-                    if (node.kind() != fh6::scene::LayerKind::Shape) {
+                    if (node.kind() != fls::scene::LayerKind::Shape) {
                         return;
                     }
-                    const auto &layer = static_cast<const fh6::scene::Shape &>(node);
+                    const auto &layer = static_cast<const fls::scene::Shape &>(node);
                     if (!flashingLayerIds.contains(layer.id) || layer.raster) {
                         return;
                     }
@@ -475,7 +475,7 @@ void NativeShapeRenderer::render(
         functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         const QColor color = QColor::fromHsvF(std::clamp(flashHue, 0.0, 1.0), 1.0, 1.0);
         for (const SceneRenderEntry &entry : entries) {
-            const fh6::scene::Shape *layer = entry.shape;
+            const fls::scene::Shape *layer = entry.shape;
             if (layer == nullptr || !flashingLayerIds.contains(layer->id) || layer->raster) {
                 continue;
             }
@@ -503,7 +503,7 @@ void NativeShapeRenderer::render(
 
 bool NativeShapeRenderer::drawSceneToFbo(
     QOpenGLFunctions *functions,
-    const fh6::Project &project,
+    const fls::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
     const QSize &size) {
@@ -587,7 +587,7 @@ bool NativeShapeRenderer::drawRenderEntries(
     };
 
     for (const SceneRenderEntry &entry : entries) {
-        const fh6::scene::Shape *shape = entry.shape;
+        const fls::scene::Shape *shape = entry.shape;
         if (shape == nullptr || !shape->visible) {
             continue;
         }
@@ -602,9 +602,9 @@ bool NativeShapeRenderer::drawRenderEntries(
             }
         }
 
-        const bool isRaster = shape->visual && shape->visual->kind() == fh6::scene::VisualKind::Raster;
+        const bool isRaster = shape->visual && shape->visual->kind() == fls::scene::VisualKind::Raster;
         if (isRaster) {
-            const auto *raster = static_cast<const fh6::scene::RasterContainer *>(shape->visual.get());
+            const auto *raster = static_cast<const fls::scene::RasterContainer *>(shape->visual.get());
             activateRaster();
             drew = drawRasterLayer(functions, raster->rasterId, shape->color, shape->mask,
                                    QSize(raster->width, raster->height), entry.worldTransform)
@@ -613,8 +613,8 @@ bool NativeShapeRenderer::drawRenderEntries(
         }
 
         quint16 shapeId = 0;
-        if (shape->visual && shape->visual->kind() == fh6::scene::VisualKind::Vector) {
-            shapeId = static_cast<const fh6::scene::VectorContainer *>(shape->visual.get())->shapeId;
+        if (shape->visual && shape->visual->kind() == fls::scene::VisualKind::Vector) {
+            shapeId = static_cast<const fls::scene::VectorContainer *>(shape->visual.get())->shapeId;
         }
         ShapeRange range = ranges_.value(shapeId);
         if (range.vertexCount <= 0) {
@@ -651,14 +651,14 @@ bool NativeShapeRenderer::drawRenderEntries(
 
 bool NativeShapeRenderer::drawProjectLayers(
     QOpenGLFunctions *functions,
-    const fh6::Project &project,
+    const fls::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
     const QSize &size) {
     if (!project.root) {
         return false;
     }
-    const fh6::scene::Group &root = *project.root;
+    const fls::scene::Group &root = *project.root;
 
     functions->glEnable(GL_BLEND);
 
@@ -709,20 +709,20 @@ bool NativeShapeRenderer::drawProjectLayers(
         active = ActiveProgram::Raster;
     };
 
-    std::function<void(const fh6::scene::Layer &, const QTransform &)> walk =
-        [&](const fh6::scene::Layer &node, const QTransform &parentWorld) {
+    std::function<void(const fls::scene::Layer &, const QTransform &)> walk =
+        [&](const fls::scene::Layer &node, const QTransform &parentWorld) {
             const QTransform world = rendererSceneLocalTransform(node) * parentWorld;
-            if (node.kind() == fh6::scene::LayerKind::Group) {
-                const auto &group = static_cast<const fh6::scene::Group &>(node);
+            if (node.kind() == fls::scene::LayerKind::Group) {
+                const auto &group = static_cast<const fls::scene::Group &>(node);
                 for (const auto &child : group.children) {
                     walk(*child, world);
                 }
                 return;
             }
-            if (node.kind() != fh6::scene::LayerKind::Shape) {
+            if (node.kind() != fls::scene::LayerKind::Shape) {
                 return;
             }
-            const auto &shape = static_cast<const fh6::scene::Shape &>(node);
+            const auto &shape = static_cast<const fls::scene::Shape &>(node);
             if (!shape.visible) {
                 return;
             }
@@ -737,9 +737,9 @@ bool NativeShapeRenderer::drawProjectLayers(
                 }
             }
 
-            const bool isRaster = shape.visual && shape.visual->kind() == fh6::scene::VisualKind::Raster;
+            const bool isRaster = shape.visual && shape.visual->kind() == fls::scene::VisualKind::Raster;
             if (isRaster) {
-                const auto *raster = static_cast<const fh6::scene::RasterContainer *>(shape.visual.get());
+                const auto *raster = static_cast<const fls::scene::RasterContainer *>(shape.visual.get());
                 activateRaster();
                 drew = drawRasterLayer(functions, raster->rasterId, shape.color, shape.mask,
                                        QSize(raster->width, raster->height), world)
@@ -748,8 +748,8 @@ bool NativeShapeRenderer::drawProjectLayers(
             }
 
             quint16 shapeId = 0;
-            if (shape.visual && shape.visual->kind() == fh6::scene::VisualKind::Vector) {
-                shapeId = static_cast<const fh6::scene::VectorContainer *>(shape.visual.get())->shapeId;
+            if (shape.visual && shape.visual->kind() == fls::scene::VisualKind::Vector) {
+                shapeId = static_cast<const fls::scene::VectorContainer *>(shape.visual.get())->shapeId;
             }
             ShapeRange range = ranges_.value(shapeId);
             if (range.vertexCount <= 0) {
@@ -861,7 +861,7 @@ GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, qui
         return 0;
     }
 
-    const fh6::RasterDecal decal = rasterPack_.decal(rasterId);
+    const fls::RasterDecal decal = rasterPack_.decal(rasterId);
     if (!decal.valid()) {
         return 0;
     }
@@ -891,7 +891,7 @@ GLuint NativeShapeRenderer::ensureRasterTexture(QOpenGLFunctions *functions, qui
 }
 
 GLuint NativeShapeRenderer::renderSceneToTexture(
-    const fh6::Project &project,
+    const fls::Project &project,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
     const QSize &size) {
@@ -906,7 +906,7 @@ GLuint NativeShapeRenderer::renderSceneToTexture(
 }
 
 GLuint NativeShapeRenderer::renderScenesToTexture(
-    const QVector<fh6::Project> &projects,
+    const QVector<fls::Project> &projects,
     const QVector<QRect> &clipRects,
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,

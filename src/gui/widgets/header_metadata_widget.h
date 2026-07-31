@@ -18,16 +18,16 @@ class HeaderMetadataWidget final : public QWidget {
 public:
     explicit HeaderMetadataWidget(QWidget *parent = nullptr);
 
-    void setMetadata(const fh6::HeaderMetadata &seed, bool importedDraft, bool hasProject);
+    void setMetadata(const fls::HeaderMetadata &seed, bool importedDraft, bool hasProject);
 
-    fh6::HeaderMetadata metadata() const;
+    fls::HeaderMetadata metadata() const;
 
     bool rebuildRequested() const;
 
     void setApplyCallback(std::function<void()> callback);
 
 private:
-    fh6::HeaderMetadata seed_;
+    fls::HeaderMetadata seed_;
     QLineEdit *nameEdit_ = nullptr;
     QLineEdit *creatorEdit_ = nullptr;
     QSpinBox *yearSpin_ = nullptr;

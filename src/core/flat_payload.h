@@ -4,8 +4,8 @@
 
 #include <QByteArray>
 
-namespace fh6 {
+namespace fls {
 
 QByteArray buildFlatPayload(const Project &project);
 
-} // namespace fh6
+} // namespace fls

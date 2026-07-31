@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <variant>
 
-namespace fh6 {
+namespace fls {
 namespace {
 using detail::readLeFloat;
 using detail::readLeU16;
@@ -1365,4 +1365,4 @@ QVector<QString> validateTree(const VinylGroup &root) {
     return VinylTreeDecoder{}.validateTree(root);
 }
 
-} // namespace fh6
+} // namespace fls

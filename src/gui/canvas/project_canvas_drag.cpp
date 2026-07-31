@@ -18,13 +18,13 @@ QTransform entryStartTransform(const Start &start) {
     return transform;
 }
 
-QTransform parentWorldTransform(const fh6::scene::Layer &node) {
-    const fh6::scene::Layer *parent = node.parent();
+QTransform parentWorldTransform(const fls::scene::Layer &node) {
+    const fls::scene::Layer *parent = node.parent();
     return parent != nullptr ? sceneWorldTransform(*parent) : QTransform();
 }
 
 template <typename Start>
-QTransform localResultForWorldTransform(const fh6::scene::Layer &node,
+QTransform localResultForWorldTransform(const fls::scene::Layer &node,
                                         const Start &start,
                                         const QTransform &worldTransform) {
     const QTransform startLocal = entryStartTransform(start);
@@ -99,7 +99,7 @@ void assignDecomposition(Item *item, const ScaleDecomposition &dec) {
     item->rotation = dec.rotation;
     item->scaleX = dec.scaleX;
     item->scaleY = dec.scaleY;
-    if constexpr (std::is_same_v<Item, fh6::scene::Shape>) {
+    if constexpr (std::is_same_v<Item, fls::scene::Shape>) {
         item->skew = dec.skew;
     }
 }
@@ -111,8 +111,8 @@ void ProjectCanvas::cycleFlipSelection() {
     if (state_ == nullptr || project_ == nullptr) {
         return;
     }
-    const QVector<fh6::scene::Shape *> selectedShapeLeaves = selectedLayers();
-    const QVector<fh6::scene::GuideLayer *> selectedGuideLeaves = selectedGuideLayers();
+    const QVector<fls::scene::Shape *> selectedShapeLeaves = selectedLayers();
+    const QVector<fls::scene::GuideLayer *> selectedGuideLeaves = selectedGuideLayers();
     if (selectedShapeLeaves.isEmpty() && selectedGuideLeaves.isEmpty()) {
         return;
     }
@@ -123,14 +123,14 @@ void ProjectCanvas::cycleFlipSelection() {
     QSet<QString> groupedGuideIds;
     collectDragGroups(groupIds, groupStartFrames, groupedLayerIds, groupedGuideIds);
 
-    QVector<fh6::scene::Shape *> layers;
-    QVector<fh6::scene::GuideLayer *> guides;
-    for (fh6::scene::Shape *layer : selectedShapeLeaves) {
+    QVector<fls::scene::Shape *> layers;
+    QVector<fls::scene::GuideLayer *> guides;
+    for (fls::scene::Shape *layer : selectedShapeLeaves) {
         if (!groupedLayerIds.contains(layer->id)) {
             layers.push_back(layer);
         }
     }
-    for (fh6::scene::GuideLayer *guide : selectedGuideLeaves) {
+    for (fls::scene::GuideLayer *guide : selectedGuideLeaves) {
         if (!groupedGuideIds.contains(guide->id)) {
             guides.push_back(guide);
         }
@@ -165,7 +165,7 @@ void ProjectCanvas::cycleFlipSelection() {
     const auto applyFlip = [&worldFlip, toggleHorizontal](auto *item) {
         using Item = std::remove_pointer_t<decltype(item)>;
         const double skew = [] (const Item *entry) {
-            if constexpr (std::is_same_v<Item, fh6::scene::Shape>) {
+            if constexpr (std::is_same_v<Item, fls::scene::Shape>) {
                 return entry->skew;
             }
             return 0.0;
@@ -184,10 +184,10 @@ void ProjectCanvas::cycleFlipSelection() {
             assignDecomposition(item, decomposition);
         }
     };
-    for (fh6::scene::Shape *layer : layers) {
+    for (fls::scene::Shape *layer : layers) {
         applyFlip(layer);
     }
-    for (fh6::scene::GuideLayer *guide : guides) {
+    for (fls::scene::GuideLayer *guide : guides) {
         applyFlip(guide);
     }
 
@@ -213,7 +213,7 @@ void ProjectCanvas::collectDragGroups(QVector<QString> &groupIds,
         for (const QString &leafId : state_->leafLayerIdsForEntry(id)) {
             groupedLayerIds.insert(leafId);
         }
-        if (const fh6::scene::Group *group = state_->groupForId(id)) {
+        if (const fls::scene::Group *group = state_->groupForId(id)) {
             collectGuideIds(*group, groupedGuideIds);
         }
     }
@@ -231,7 +231,7 @@ void ProjectCanvas::captureDragStarts() {
     }
     drag_.layers.clear();
     drag_.guides.clear();
-    for (fh6::scene::Shape *layer : selectedLayers()) {
+    for (fls::scene::Shape *layer : selectedLayers()) {
         if (!groupedLayerIds.contains(layer->id)) {
             drag_.layers.push_back(layer);
             drag_.starts.insert(layer->id,
@@ -240,7 +240,7 @@ void ProjectCanvas::captureDragStarts() {
                                  static_cast<double>(layer->color[ColorByteAlpha]) / 255.0});
         }
     }
-    for (fh6::scene::GuideLayer *guide : selectedGuideLayers()) {
+    for (fls::scene::GuideLayer *guide : selectedGuideLayers()) {
         if (!groupedGuideIds.contains(guide->id)) {
             drag_.guides.push_back(guide);
             drag_.guideStarts.insert(guide->id,
@@ -303,10 +303,10 @@ void ProjectCanvas::applyWorldTransformToDragItems(const QTransform &worldTransf
             assignDecomposition(item, dec);
         }
     };
-    for (fh6::scene::Shape *layer : drag_.layers) {
+    for (fls::scene::Shape *layer : drag_.layers) {
         applyItem(layer, drag_.starts.value(layer->id));
     }
-    for (fh6::scene::GuideLayer *guide : drag_.guides) {
+    for (fls::scene::GuideLayer *guide : drag_.guides) {
         applyItem(guide, drag_.guideStarts.value(guide->id));
     }
     if (!drag_.groupStartFrames.isEmpty()) {
@@ -337,14 +337,14 @@ bool ProjectCanvas::nudgeSelection(const QPointF &delta) {
     QSet<QString> groupedGuideIds;
     collectDragGroups(groupIds, groupStartFrames, groupedLayerIds, groupedGuideIds);
 
-    QVector<fh6::scene::Shape *> layers;
-    QVector<fh6::scene::GuideLayer *> guides;
-    for (fh6::scene::Shape *layer : selectedLayers()) {
+    QVector<fls::scene::Shape *> layers;
+    QVector<fls::scene::GuideLayer *> guides;
+    for (fls::scene::Shape *layer : selectedLayers()) {
         if (!groupedLayerIds.contains(layer->id)) {
             layers.push_back(layer);
         }
     }
-    for (fh6::scene::GuideLayer *guide : selectedGuideLayers()) {
+    for (fls::scene::GuideLayer *guide : selectedGuideLayers()) {
         if (!groupedGuideIds.contains(guide->id)) {
             guides.push_back(guide);
         }
@@ -356,14 +356,14 @@ bool ProjectCanvas::nudgeSelection(const QPointF &delta) {
     state_->beginTransformCommand(buildTransformTargetIds(groupIds, layers, guides));
 
     const QTransform worldMove = QTransform::fromTranslate(delta.x(), delta.y());
-    for (fh6::scene::Shape *layer : layers) {
+    for (fls::scene::Shape *layer : layers) {
         const EntryStart start{layer->x, layer->y, layer->scaleX, layer->scaleY, layer->rotation, layer->skew};
         const ScaleDecomposition dec = decomposeScaleResult(localResultForWorldTransform(*layer, start, worldMove), start.skew);
         if (dec.ok) {
             assignDecomposition(layer, dec);
         }
     }
-    for (fh6::scene::GuideLayer *guide : guides) {
+    for (fls::scene::GuideLayer *guide : guides) {
         const EntryStart start{guide->x, guide->y, guide->scaleX, guide->scaleY, guide->rotation, 0.0};
         const ScaleDecomposition dec = decomposeScaleResult(localResultForWorldTransform(*guide, start, worldMove), start.skew);
         if (dec.ok) {
@@ -386,8 +386,8 @@ namespace {
 
 struct MoveUnit {
     QString groupId;
-    fh6::scene::Shape *layer = nullptr;
-    fh6::scene::GuideLayer *guide = nullptr;
+    fls::scene::Shape *layer = nullptr;
+    fls::scene::GuideLayer *guide = nullptr;
 };
 
 } // namespace
@@ -402,22 +402,22 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
     }
 
     QVector<QString> groupIds;
-    QVector<fh6::scene::Shape *> looseLayers;
-    QVector<fh6::scene::GuideLayer *> looseGuides;
+    QVector<fls::scene::Shape *> looseLayers;
+    QVector<fls::scene::GuideLayer *> looseGuides;
     QVector<MoveUnit> units;
     QVector<QRectF> bounds;
 
     const auto addGroupUnit = [&](const QString &id) {
-        fh6::scene::Layer *node = state_->sceneNode(id);
-        if (node == nullptr || node->kind() != fh6::scene::LayerKind::Group) {
+        fls::scene::Layer *node = state_->sceneNode(id);
+        if (node == nullptr || node->kind() != fls::scene::LayerKind::Group) {
             return;
         }
-        const auto &group = static_cast<const fh6::scene::Group &>(*node);
+        const auto &group = static_cast<const fls::scene::Group &>(*node);
         BoundsAccumulator acc;
-        for (const fh6::scene::Shape *shape : sceneShapeLeaves(group)) {
+        for (const fls::scene::Shape *shape : sceneShapeLeaves(group)) {
             acc.add(sceneWorldTransform(*shape), flatEntryVisualRect(*shape, geometry_));
         }
-        for (const fh6::scene::GuideLayer *guide : sceneGuideLeaves(group)) {
+        for (const fls::scene::GuideLayer *guide : sceneGuideLeaves(group)) {
             acc.add(sceneWorldTransform(*guide), flatEntryRect(*guide));
         }
         if (!acc.hasBounds()) {
@@ -427,12 +427,12 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
         units.push_back({id, nullptr, nullptr});
         bounds.push_back(acc.bounds());
     };
-    const auto addLayerUnit = [&](fh6::scene::Shape *layer) {
+    const auto addLayerUnit = [&](fls::scene::Shape *layer) {
         looseLayers.push_back(layer);
         units.push_back({QString(), layer, nullptr});
         bounds.push_back(sceneWorldTransform(*layer).mapRect(flatEntryVisualRect(*layer, geometry_)));
     };
-    const auto addGuideUnit = [&](fh6::scene::GuideLayer *guide) {
+    const auto addGuideUnit = [&](fls::scene::GuideLayer *guide) {
         looseGuides.push_back(guide);
         units.push_back({QString(), nullptr, guide});
         bounds.push_back(sceneWorldTransform(*guide).mapRect(flatEntryRect(*guide)));
@@ -446,21 +446,21 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
     for (const QString &groupId : selGroupIds) {
         addGroupUnit(groupId);
     }
-    for (fh6::scene::Shape *layer : selectedLayers()) {
+    for (fls::scene::Shape *layer : selectedLayers()) {
         if (!groupedLayerIds.contains(layer->id)) {
             addLayerUnit(layer);
         }
     }
-    for (fh6::scene::GuideLayer *guide : selectedGuideLayers()) {
+    for (fls::scene::GuideLayer *guide : selectedGuideLayers()) {
         if (!groupedGuideIds.contains(guide->id)) {
             addGuideUnit(guide);
         }
     }
 
     if (descendSoleGroup && units.size() == 1 && !units.front().groupId.isEmpty()) {
-        fh6::scene::Layer *node = state_->sceneNode(units.front().groupId);
-        if (node != nullptr && node->kind() == fh6::scene::LayerKind::Group) {
-            const auto &group = static_cast<fh6::scene::Group &>(*node);
+        fls::scene::Layer *node = state_->sceneNode(units.front().groupId);
+        if (node != nullptr && node->kind() == fls::scene::LayerKind::Group) {
+            const auto &group = static_cast<fls::scene::Group &>(*node);
             groupIds.clear();
             looseLayers.clear();
             looseGuides.clear();
@@ -468,14 +468,14 @@ bool ProjectCanvas::applyAlignDistribute(const std::function<QVector<QPointF>(co
             bounds.clear();
             for (const auto &child : group.children) {
                 switch (child->kind()) {
-                case fh6::scene::LayerKind::Group:
+                case fls::scene::LayerKind::Group:
                     addGroupUnit(child->id);
                     break;
-                case fh6::scene::LayerKind::Shape:
-                    addLayerUnit(static_cast<fh6::scene::Shape *>(child.get()));
+                case fls::scene::LayerKind::Shape:
+                    addLayerUnit(static_cast<fls::scene::Shape *>(child.get()));
                     break;
-                case fh6::scene::LayerKind::Guide:
-                    addGuideUnit(static_cast<fh6::scene::GuideLayer *>(child.get()));
+                case fls::scene::LayerKind::Guide:
+                    addGuideUnit(static_cast<fls::scene::GuideLayer *>(child.get()));
                     break;
                 }
             }
@@ -705,10 +705,10 @@ void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMult
             assignDecomposition(item, dec);
         }
     };
-    for (fh6::scene::Shape *layer : drag_.layers) {
+    for (fls::scene::Shape *layer : drag_.layers) {
         apply(layer, drag_.starts.value(layer->id));
     }
-    for (fh6::scene::GuideLayer *guide : drag_.guides) {
+    for (fls::scene::GuideLayer *guide : drag_.guides) {
         apply(guide, drag_.guideStarts.value(guide->id));
     }
     if (!preMultiply && !drag_.groupStartFrames.isEmpty()) {
@@ -749,7 +749,7 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint) {
 
     const QPointF current = screenToWorld(screenPoint);
     const double delta = current.x() - drag_.startWorld.x();
-    for (fh6::scene::Shape *layer : drag_.layers) {
+    for (fls::scene::Shape *layer : drag_.layers) {
         const EntryStart startState = drag_.starts.value(layer->id);
         const QSizeF size = flatEntrySize(*layer, geometry_.shapeSize(layer->shapeId));
         layer->skew = startState.skew + delta / std::max(size.width(), 1.0);
@@ -763,14 +763,14 @@ void ProjectCanvas::applyOpacityDrag(const QPointF &screenPoint) {
     const double delta = (screenPoint.x() - drag_.startScreen.x()) / 200.0;
     double displayedOpacity = 0.0;
     int itemCount = 0;
-    for (fh6::scene::Shape *layer : drag_.layers) {
+    for (fls::scene::Shape *layer : drag_.layers) {
         const double opacity = std::clamp(drag_.starts.value(layer->id).opacity + delta, 0.0, 1.0);
         layer->opacity = opacity;
         layer->color[ColorByteAlpha] = static_cast<quint8>(std::clamp(qRound(opacity * 255.0), 0, 255));
         displayedOpacity += opacity;
         ++itemCount;
     }
-    for (fh6::scene::GuideLayer *guide : drag_.guides) {
+    for (fls::scene::GuideLayer *guide : drag_.guides) {
         const double opacity = std::clamp(drag_.guideStarts.value(guide->id).opacity + delta, 0.0, 1.0);
         guide->opacity = opacity;
         displayedOpacity += opacity;

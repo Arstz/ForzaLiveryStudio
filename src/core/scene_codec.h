@@ -6,15 +6,15 @@
 
 #include <memory>
 
-namespace fh6 {
+namespace fls {
 struct Project;
 }
 
-namespace fh6::scene {
+namespace fls::scene {
 
-void ensureProjectSceneRoot(fh6::Project &project);
+void ensureProjectSceneRoot(fls::Project &project);
 
 QJsonObject sceneTreeToJson(const Group &root);
 std::unique_ptr<Group> sceneTreeFromJson(const QJsonObject &object);
 
-} // namespace fh6::scene
+} // namespace fls::scene

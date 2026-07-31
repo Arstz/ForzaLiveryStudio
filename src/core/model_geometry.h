@@ -9,7 +9,7 @@
 #include <optional>
 #include <vector>
 
-namespace fh6 {
+namespace fls {
 
 struct ModelMaterial;
 
@@ -90,4 +90,4 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error = nullptr);
 
 std::vector<SkeletonBone> loadSkeletonBones(const ModelBundle &bundle);
 
-} // namespace fh6
+} // namespace fls

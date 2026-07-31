@@ -6,7 +6,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 class Cursor {
@@ -301,4 +301,4 @@ std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     return merged;
 }
 
-} // namespace fh6
+} // namespace fls

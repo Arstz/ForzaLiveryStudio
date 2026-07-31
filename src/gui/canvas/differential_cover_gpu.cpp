@@ -1,4 +1,4 @@
-#include "differentiable_cover_gpu.h"
+#include "differential_cover_gpu.h"
 
 #include <QtCore>
 
@@ -1204,7 +1204,7 @@ public:
 class FallbackGpuEvaluator final : public GpuAreaEvaluator {
 public:
     explicit FallbackGpuEvaluator(const QVector<ShapeMesh> &catalog) {
-#ifdef FH6_HAS_CUDA
+#ifdef FLS_HAS_CUDA
         evaluators_.push_back(createCudaAreaEvaluator(catalog));
 #endif
 #ifdef Q_OS_WIN

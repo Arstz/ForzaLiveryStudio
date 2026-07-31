@@ -6,7 +6,7 @@
 #include <QString>
 #include <QStringList>
 
-namespace fh6 {
+namespace fls {
 
 bool extractZipArchive(const QString &zipPath, const QString &destinationDir, QString *error = nullptr);
 
@@ -15,4 +15,4 @@ QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QStrin
 QHash<QString, QByteArray> readZipEntries(
     const QString &zipPath, const QStringList &entryPaths, QString *error = nullptr);
 
-} // namespace fh6
+} // namespace fls

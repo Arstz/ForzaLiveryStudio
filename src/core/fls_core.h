@@ -10,7 +10,7 @@
 
 #include <array>
 
-namespace fh6 {
+namespace fls {
 
 double normalizeRotation(double value);
 Project projectFromJson(const QJsonObject &object);
@@ -30,4 +30,4 @@ Project importCLivery(const QString &folderOrFile);
 QByteArray readCGroupPayload(const QString &folderOrFile);
 void writeCGroupFile(const QString &path, const QByteArray &payload);
 
-} // namespace fh6
+} // namespace fls

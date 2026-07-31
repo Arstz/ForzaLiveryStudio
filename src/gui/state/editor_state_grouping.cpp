@@ -7,30 +7,30 @@
 namespace gui {
 namespace {
 
-void collectLeafIds(const fh6::scene::Layer &node, QSet<QString> &out) {
-    if (node.kind() == fh6::scene::LayerKind::Shape) {
+void collectLeafIds(const fls::scene::Layer &node, QSet<QString> &out) {
+    if (node.kind() == fls::scene::LayerKind::Shape) {
         out.insert(node.id);
         return;
     }
-    if (node.kind() == fh6::scene::LayerKind::Group) {
-        for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+    if (node.kind() == fls::scene::LayerKind::Group) {
+        for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
             collectLeafIds(*child, out);
         }
     }
 }
 
-void flattenLeaves(std::unique_ptr<fh6::scene::Layer> node, const fh6::Matrix3 &ancestorFrame,
-                   std::vector<std::unique_ptr<fh6::scene::Layer>> &out) {
+void flattenLeaves(std::unique_ptr<fls::scene::Layer> node, const fls::Matrix3 &ancestorFrame,
+                   std::vector<std::unique_ptr<fls::scene::Layer>> &out) {
     if (!node) {
         return;
     }
-    const fh6::Matrix3 frame = fh6::detail::multiply(ancestorFrame, node->transform.matrix());
-    if (node->kind() != fh6::scene::LayerKind::Group) {
-        node->transform = fh6::decomposeTransform2D(frame);
+    const fls::Matrix3 frame = fls::detail::multiply(ancestorFrame, node->transform.matrix());
+    if (node->kind() != fls::scene::LayerKind::Group) {
+        node->transform = fls::decomposeTransform2D(frame);
         out.push_back(std::move(node));
         return;
     }
-    auto *group = static_cast<fh6::scene::Group *>(node.get());
+    auto *group = static_cast<fls::scene::Group *>(node.get());
     while (!group->children.empty()) {
         flattenLeaves(group->takeAt(0), frame, out);
     }
@@ -46,8 +46,8 @@ bool isContiguous(const QVector<QString> &entries, const Cache &cache) {
     return true;
 }
 
-QVector<QString> childIds(const fh6::scene::Group &group,
-                          std::optional<fh6::scene::LayerKind> kind = std::nullopt) {
+QVector<QString> childIds(const fls::scene::Group &group,
+                          std::optional<fls::scene::LayerKind> kind = std::nullopt) {
     QVector<QString> ids;
     for (const auto &child : group.children) {
         if (!kind.has_value() || child->kind() == *kind) {
@@ -81,18 +81,18 @@ void EditorState::groupEntries(const QVector<QString> &entryIds) {
     if (!isContiguous(entries, cache)) {
         return;
     }
-    fh6::scene::Group *parent = groupForId(parentId);
+    fls::scene::Group *parent = groupForId(parentId);
     if (parent == nullptr) {
         return;
     }
     const int insertAt = cache.orderByChild.value(entries.front(), 0);
-    auto group = std::make_unique<fh6::scene::Group>();
+    auto group = std::make_unique<fls::scene::Group>();
     group->id = uniqueGroupId();
     group->name = QStringLiteral("Group");
 
     QSet<QString> selectedLeaves;
     for (int i = entries.size() - 1; i >= 0; --i) {
-        if (std::unique_ptr<fh6::scene::Layer> node = takeEntry(entries[i])) {
+        if (std::unique_ptr<fls::scene::Layer> node = takeEntry(entries[i])) {
             collectLeafIds(*node, selectedLeaves);
             group->insert(0, std::move(node));
         }
@@ -112,26 +112,26 @@ void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten)
     }
     QSet<QString> selectedLeaves;
     for (const QString &entryId : entries) {
-        fh6::scene::Group *parent = groupForId(parentGroupForEntry(entryId));
-        fh6::scene::Group *group = groupForId(entryId);
+        fls::scene::Group *parent = groupForId(parentGroupForEntry(entryId));
+        fls::scene::Group *group = groupForId(entryId);
         if (parent == nullptr || group == nullptr || group->isLiverySection) {
             continue;
         }
         const int row = projectIndexCache().orderByChild.value(entryId, -1);
-        std::unique_ptr<fh6::scene::Layer> removed = takeEntry(entryId);
+        std::unique_ptr<fls::scene::Layer> removed = takeEntry(entryId);
         if (!removed) {
             continue;
         }
-        std::vector<std::unique_ptr<fh6::scene::Layer>> replacement;
+        std::vector<std::unique_ptr<fls::scene::Layer>> replacement;
         if (flatten) {
-            flattenLeaves(std::move(removed), fh6::Matrix3{}, replacement);
+            flattenLeaves(std::move(removed), fls::Matrix3{}, replacement);
         } else {
-            const fh6::Matrix3 groupFrame = removed->transform.matrix();
-            auto *removedGroup = static_cast<fh6::scene::Group *>(removed.get());
+            const fls::Matrix3 groupFrame = removed->transform.matrix();
+            auto *removedGroup = static_cast<fls::scene::Group *>(removed.get());
             while (!removedGroup->children.empty()) {
-                std::unique_ptr<fh6::scene::Layer> child = removedGroup->takeAt(0);
-                child->transform = fh6::decomposeTransform2D(
-                    fh6::detail::multiply(groupFrame, child->transform.matrix()));
+                std::unique_ptr<fls::scene::Layer> child = removedGroup->takeAt(0);
+                child->transform = fls::decomposeTransform2D(
+                    fls::detail::multiply(groupFrame, child->transform.matrix()));
                 replacement.push_back(std::move(child));
             }
         }
@@ -149,7 +149,7 @@ bool EditorState::reorderEntries(const QString &parentGroupId, const QVector<QSt
     if (!hasProject_ || entryIds.isEmpty()) {
         return false;
     }
-    fh6::scene::Group *parent = groupForId(parentGroupId);
+    fls::scene::Group *parent = groupForId(parentGroupId);
     if (parent == nullptr) {
         return false;
     }
@@ -171,7 +171,7 @@ bool EditorState::reorderEntries(const QString &parentGroupId, const QVector<QSt
     }
     const QVector<QString> before = childIds(*parent);
     insertRow = std::clamp(insertRow, 0, static_cast<int>(parent->children.size()));
-    std::vector<std::unique_ptr<fh6::scene::Layer>> moving;
+    std::vector<std::unique_ptr<fls::scene::Layer>> moving;
     for (int i = static_cast<int>(parent->children.size()) - 1; i >= 0; --i) {
         if (movedSet.contains(parent->children[i]->id)) {
             if (i < insertRow) {
@@ -198,7 +198,7 @@ bool EditorState::reorderGuideLayers(const QVector<QString> &guideIds, int inser
     }
     QSet<QString> movedSet;
     for (const QString &id : guideIds) {
-        if (fh6::scene::GuideLayer *guide = projectIndexCache().guides.value(id, nullptr)) {
+        if (fls::scene::GuideLayer *guide = projectIndexCache().guides.value(id, nullptr)) {
             if (guide->locked || !parentGroupForEntry(id).isEmpty()) {
                 return false;
             }
@@ -209,12 +209,12 @@ bool EditorState::reorderGuideLayers(const QVector<QString> &guideIds, int inser
         return false;
     }
     auto *root = project_.root.get();
-    const QVector<QString> before = childIds(*root, fh6::scene::LayerKind::Guide);
-    std::vector<std::unique_ptr<fh6::scene::Layer>> guides;
+    const QVector<QString> before = childIds(*root, fls::scene::LayerKind::Guide);
+    std::vector<std::unique_ptr<fls::scene::Layer>> guides;
     int guideOrdinal = 0;
     int rootInsert = static_cast<int>(root->children.size());
     for (int i = static_cast<int>(root->children.size()) - 1; i >= 0; --i) {
-        if (root->children[i]->kind() != fh6::scene::LayerKind::Guide) {
+        if (root->children[i]->kind() != fls::scene::LayerKind::Guide) {
             continue;
         }
         if (guideOrdinal == insertRow) {
@@ -234,19 +234,19 @@ bool EditorState::reorderGuideLayers(const QVector<QString> &guideIds, int inser
     }
     selectedGuideLayerIds_ = movedSet;
     invalidateProjectIndexCache();
-    return before != childIds(*root, fh6::scene::LayerKind::Guide);
+    return before != childIds(*root, fls::scene::LayerKind::Guide);
 }
 
 void EditorState::pruneEmptyGroups() {
     if (!project_.root) {
         return;
     }
-    auto prune = [&](auto &self, fh6::scene::Group &group) -> void {
+    auto prune = [&](auto &self, fls::scene::Group &group) -> void {
         for (int i = static_cast<int>(group.children.size()) - 1; i >= 0; --i) {
-            if (group.children[i]->kind() != fh6::scene::LayerKind::Group) {
+            if (group.children[i]->kind() != fls::scene::LayerKind::Group) {
                 continue;
             }
-            auto &childGroup = static_cast<fh6::scene::Group &>(*group.children[i]);
+            auto &childGroup = static_cast<fls::scene::Group &>(*group.children[i]);
             self(self, childGroup);
             if (childGroup.children.empty() && !childGroup.isLiverySection) {
                 group.takeAt(i);
@@ -257,8 +257,8 @@ void EditorState::pruneEmptyGroups() {
     invalidateProjectIndexCache();
 }
 
-std::unique_ptr<fh6::scene::Layer> EditorState::takeEntry(const QString &entryId) {
-    fh6::scene::Group *parent = groupForId(parentGroupForEntry(entryId));
+std::unique_ptr<fls::scene::Layer> EditorState::takeEntry(const QString &entryId) {
+    fls::scene::Group *parent = groupForId(parentGroupForEntry(entryId));
     if (parent == nullptr) {
         return nullptr;
     }

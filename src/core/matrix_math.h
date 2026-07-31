@@ -4,11 +4,11 @@
 
 #include <array>
 
-namespace fh6::scene {
+namespace fls::scene {
 struct Transform2D;
 }
 
-namespace fh6 {
+namespace fls {
 
 double normalizeRotation(double value);
 Matrix3 affine(double a, double b, double c, double d, double e, double f);
@@ -22,4 +22,4 @@ namespace detail {
 Matrix3 multiply(const Matrix3 &left, const Matrix3 &right);
 }
 
-} // namespace fh6
+} // namespace fls

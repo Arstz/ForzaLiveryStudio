@@ -19,7 +19,7 @@ namespace {
 
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
-constexpr int kProjectedSectionToMaskSlot[fh6::kLiverySideCount] = {
+constexpr int kProjectedSectionToMaskSlot[fls::kLiverySideCount] = {
     0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
 };
 
@@ -28,28 +28,28 @@ bool transposedSection(int maskSlot) {
 }
 
 struct ProjectedLiverySection {
-    fh6::Project project;
+    fls::Project project;
     QRect clipRect;
 };
 
 struct PackedLiveryLayout {
-    std::array<QRect, fh6::kLiverySideCount> rects;
+    std::array<QRect, fls::kLiverySideCount> rects;
     QVector<QVector4D> uvRegions;
     QSize textureSize;
     bool valid = false;
 };
 
-PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSize &baseTextureSize) {
+PackedLiveryLayout packedLiveryLayout(const fls::LiveryMaskSet &masks, const QSize &baseTextureSize) {
     PackedLiveryLayout layout;
-    layout.uvRegions.resize(fh6::kLiverySideCount);
+    layout.uvRegions.resize(fls::kLiverySideCount);
     struct Item {
         int slot = 0;
         QSize size;
     };
     QVector<Item> items;
     const double scale = static_cast<double>(baseTextureSize.width()) / kLiveryBaseTexWidth;
-    for (int slot = 0; slot < fh6::kLiverySideCount; ++slot) {
-        const fh6::LiverySide &side = masks.sides[slot];
+    for (int slot = 0; slot < fls::kLiverySideCount; ++slot) {
+        const fls::LiverySide &side = masks.sides[slot];
         if (!side.valid) {
             continue;
         }
@@ -89,7 +89,7 @@ PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSi
     layout.textureSize = QSize(
         baseTextureSize.width(), std::max(baseTextureSize.height(), y + rowHeight + padding));
 
-    for (int slot = 0; slot < fh6::kLiverySideCount; ++slot) {
+    for (int slot = 0; slot < fls::kLiverySideCount; ++slot) {
         const QRect rect = layout.rects[slot];
         layout.uvRegions[slot] = QVector4D(
             static_cast<float>(rect.left()) / layout.textureSize.width(),
@@ -101,8 +101,8 @@ PackedLiveryLayout packedLiveryLayout(const fh6::LiveryMaskSet &masks, const QSi
     return layout;
 }
 
-fh6::Matrix3 fromQTransform(const QTransform &t) {
-    fh6::Matrix3 m;
+fls::Matrix3 fromQTransform(const QTransform &t) {
+    fls::Matrix3 m;
     m.m[0][0] = t.m11();
     m.m[1][0] = t.m12();
     m.m[0][1] = t.m21();
@@ -112,47 +112,47 @@ fh6::Matrix3 fromQTransform(const QTransform &t) {
     return m;
 }
 
-void collectProjectedShapes(const fh6::scene::Layer &node,
+void collectProjectedShapes(const fls::scene::Layer &node,
                             const QTransform &parentWorld,
                             double xOrigin,
                             double yOrigin,
-                            fh6::scene::Group &outRoot) {
+                            fls::scene::Group &outRoot) {
     const QTransform world = sceneLocalTransform(node) * parentWorld;
-    if (node.kind() == fh6::scene::LayerKind::Group) {
-        for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+    if (node.kind() == fls::scene::LayerKind::Group) {
+        for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
             collectProjectedShapes(*child, world, xOrigin, yOrigin, outRoot);
         }
         return;
     }
-    if (node.kind() != fh6::scene::LayerKind::Shape) {
+    if (node.kind() != fls::scene::LayerKind::Shape) {
         return;
     }
     auto copy = node.clone();
-    auto *shape = static_cast<fh6::scene::Shape *>(copy.get());
-    shape->transform = fh6::decomposeTransform2D(fromQTransform(world));
+    auto *shape = static_cast<fls::scene::Shape *>(copy.get());
+    shape->transform = fls::decomposeTransform2D(fromQTransform(world));
     shape->transform.x += xOrigin;
     shape->transform.y += yOrigin;
     shape->visible = true;
     outRoot.append(std::move(copy));
 }
 
-std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fh6::Project &project,
-                                                                  const fh6::scene::Group &section,
-                                                                  const fh6::LiveryMaskSet &masks,
+std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Project &project,
+                                                                  const fls::scene::Group &section,
+                                                                  const fls::LiveryMaskSet &masks,
                                                                   const QSize &texSize,
                                                                   const PackedLiveryLayout &layout) {
     if (!section.isLiverySection || !layout.valid) {
         return std::nullopt;
     }
     const int slot = section.liverySectionSlot;
-    if (slot < 0 || slot >= fh6::kLiverySideCount) {
+    if (slot < 0 || slot >= fls::kLiverySideCount) {
         return std::nullopt;
     }
     const int maskSlot = kProjectedSectionToMaskSlot[slot];
-    if (maskSlot < 0 || maskSlot >= fh6::kLiverySideCount) {
+    if (maskSlot < 0 || maskSlot >= fls::kLiverySideCount) {
         return std::nullopt;
     }
-    const fh6::LiverySide &side = masks.sides[maskSlot];
+    const fls::LiverySide &side = masks.sides[maskSlot];
     if (!side.valid) {
         return std::nullopt;
     }
@@ -208,7 +208,7 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
     return {};
 }
 
-std::optional<fh6::CarModel> loadArchivedModel(
+std::optional<fls::CarModel> loadArchivedModel(
     const QString &archivePath, const QString &modelName) {
     if (archivePath.isEmpty()) {
         return std::nullopt;
@@ -216,7 +216,7 @@ std::optional<fh6::CarModel> loadArchivedModel(
     QTemporaryDir extracted;
     QString error;
     if (!extracted.isValid()
-        || !fh6::extractZipArchive(archivePath, extracted.path(), &error)) {
+        || !fls::extractZipArchive(archivePath, extracted.path(), &error)) {
         return std::nullopt;
     }
     QDirIterator it(
@@ -224,25 +224,25 @@ std::optional<fh6::CarModel> loadArchivedModel(
     if (!it.hasNext()) {
         return std::nullopt;
     }
-    fh6::CarModel model = fh6::loadModelBin(it.next(), &error);
+    fls::CarModel model = fls::loadModelBin(it.next(), &error);
     return model.meshes.empty() ? std::nullopt
-                                : std::optional<fh6::CarModel>(std::move(model));
+                                : std::optional<fls::CarModel>(std::move(model));
 }
 
-void appendSharedTireB(fh6::CarModel &model, const QString &sourcePath) {
+void appendSharedTireB(fls::CarModel &model, const QString &sourcePath) {
     const QString leftArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tire_b.zip"));
     const QString rightArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tireR_b.zip"));
-    const std::optional<fh6::CarModel> left = loadArchivedModel(
+    const std::optional<fls::CarModel> left = loadArchivedModel(
         leftArchive, QStringLiteral("tireL_b.modelbin"));
-    std::optional<fh6::CarModel> right = loadArchivedModel(
+    std::optional<fls::CarModel> right = loadArchivedModel(
         rightArchive, QStringLiteral("tireR_b.modelbin"));
     if (!right) {
         right = loadArchivedModel(leftArchive, QStringLiteral("tireR_b.modelbin"));
     }
     if (left && right) {
-        fh6::appendApproximateTires(model, *left, *right);
+        fls::appendApproximateTires(model, *left, *right);
     }
 }
 
@@ -260,14 +260,14 @@ QString assetFileIdentity(const QString &path) {
         + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
 }
 
-QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &materialDefaultsCache() {
-    static QHash<QString, std::shared_ptr<fh6::ModelMaterial>> cache;
+QHash<QString, std::shared_ptr<fls::ModelMaterial>> &materialDefaultsCache() {
+    static QHash<QString, std::shared_ptr<fls::ModelMaterial>> cache;
     return cache;
 }
 
 class NativeTextureCache {
 public:
-    std::shared_ptr<const fh6::ModelMaterialTexture> find(const QString &key, bool &known) {
+    std::shared_ptr<const fls::ModelMaterialTexture> find(const QString &key, bool &known) {
         const auto it = entries_.find(key);
         known = it != entries_.end();
         if (!known) {
@@ -278,7 +278,7 @@ public:
     }
 
     void insert(const QString &key,
-                const std::shared_ptr<const fh6::ModelMaterialTexture> &texture) {
+                const std::shared_ptr<const fls::ModelMaterialTexture> &texture) {
         Entry entry;
         entry.texture = texture;
         entry.bytes = texture ? static_cast<qsizetype>(texture->image.rgba.size()) : 0;
@@ -309,7 +309,7 @@ public:
 
 private:
     struct Entry {
-        std::shared_ptr<const fh6::ModelMaterialTexture> texture;
+        std::shared_ptr<const fls::ModelMaterialTexture> texture;
         qsizetype bytes = 0;
         quint64 lastUse = 0;
     };
@@ -338,7 +338,7 @@ enum class NativeTextureSlot {
     Unknown,
 };
 
-NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter) {
+NativeTextureSlot nativeTextureSlot(const fls::ModelMaterialParameter &parameter) {
     QString path = parameter.texturePath.toLower();
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
     if (parameter.nameHash == 0xF9E8078D
@@ -408,9 +408,9 @@ QString localTexturePath(const QString &path, const QString &carRoot) {
     return {};
 }
 
-void assignNativeTexture(fh6::ModelMaterial &material,
+void assignNativeTexture(fls::ModelMaterial &material,
                          NativeTextureSlot slot,
-                         const std::shared_ptr<const fh6::ModelMaterialTexture> &texture) {
+                         const std::shared_ptr<const fls::ModelMaterialTexture> &texture) {
     switch (slot) {
     case NativeTextureSlot::Diffuse:
         material.diffuseTexture = texture;
@@ -433,17 +433,17 @@ void assignNativeTexture(fh6::ModelMaterial &material,
 }
 
 void resolveExteriorMaterials(
-    fh6::CarModel &model, const QString &sourcePath, const QString &carRoot) {
+    fls::CarModel &model, const QString &sourcePath, const QString &carRoot) {
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
         return;
     }
     const QString materialArchiveKey = assetFileIdentity(archivePath);
-    QHash<QString, std::shared_ptr<fh6::ModelMaterial>> &defaults = materialDefaultsCache();
+    QHash<QString, std::shared_ptr<fls::ModelMaterial>> &defaults = materialDefaultsCache();
     QStringList missingMaterialEntries;
     QSet<QString> requestedMaterials;
-    for (fh6::CarMesh &mesh : model.meshes) {
+    for (fls::CarMesh &mesh : model.meshes) {
         if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
             continue;
         }
@@ -458,32 +458,32 @@ void resolveExteriorMaterials(
         }
     }
     const QHash<QString, QByteArray> missingMaterialData =
-        fh6::readZipEntries(archivePath, missingMaterialEntries);
+        fls::readZipEntries(archivePath, missingMaterialEntries);
     for (const QString &entry : missingMaterialEntries) {
-        std::shared_ptr<fh6::ModelMaterial> decoded;
+        std::shared_ptr<fls::ModelMaterial> decoded;
         const QByteArray bytes = missingMaterialData.value(entry.toLower());
         if (!bytes.isEmpty()) {
             try {
-                decoded = fh6::decodeMaterialBundle(bytes);
+                decoded = fls::decodeMaterialBundle(bytes);
             } catch (const std::exception &) {
             }
         }
         defaults.insert(materialArchiveKey + QLatin1Char('|') + entry.toLower(), decoded);
     }
-    for (fh6::CarMesh &mesh : model.meshes) {
+    for (fls::CarMesh &mesh : model.meshes) {
         if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
             continue;
         }
         const QString entry = materialArchiveEntry(mesh.material->resourcePath);
-        const std::shared_ptr<fh6::ModelMaterial> materialDefaults =
+        const std::shared_ptr<fls::ModelMaterial> materialDefaults =
             defaults.value(materialArchiveKey + QLatin1Char('|') + entry.toLower());
         if (materialDefaults) {
-            mesh.material = fh6::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
+            mesh.material = fls::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
         }
     }
 
     struct PendingTexture {
-        std::shared_ptr<fh6::ModelMaterial> material;
+        std::shared_ptr<fls::ModelMaterial> material;
         NativeTextureSlot slot = NativeTextureSlot::Unknown;
         QString path;
         QString sharedEntry;
@@ -491,16 +491,16 @@ void resolveExteriorMaterials(
         QString cacheKey;
     };
     QVector<PendingTexture> pending;
-    QSet<const fh6::ModelMaterial *> visited;
-    for (fh6::CarMesh &mesh : model.meshes) {
+    QSet<const fls::ModelMaterial *> visited;
+    for (fls::CarMesh &mesh : model.meshes) {
         if (!mesh.material || visited.contains(mesh.material.get())
             || !isExteriorModelPath(mesh.sourceModelPath)
             || mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
             continue;
         }
         visited.insert(mesh.material.get());
-        for (const fh6::ModelMaterialParameter &parameter : mesh.material->parameters) {
-            if (parameter.type != fh6::ModelMaterialParameterType::Texture2D
+        for (const fls::ModelMaterialParameter &parameter : mesh.material->parameters) {
+            if (parameter.type != fls::ModelMaterialParameterType::Texture2D
                 || parameter.texturePath.isEmpty()) {
                 continue;
             }
@@ -557,13 +557,13 @@ void resolveExteriorMaterials(
     }
     const QHash<QString, QByteArray> sharedData = textureArchive.isEmpty()
         ? QHash<QString, QByteArray>{}
-        : fh6::readZipEntries(textureArchive, missingSharedEntries);
+        : fls::readZipEntries(textureArchive, missingSharedEntries);
     for (const PendingTexture &item : pending) {
         if (item.cacheKey.isEmpty()) {
             continue;
         }
         bool known = false;
-        std::shared_ptr<const fh6::ModelMaterialTexture> texture =
+        std::shared_ptr<const fls::ModelMaterialTexture> texture =
             textureCache.find(item.cacheKey, known);
         if (!known) {
             QByteArray bytes;
@@ -576,9 +576,9 @@ void resolveExteriorMaterials(
                 }
             }
             if (!bytes.isEmpty()) {
-                fh6::SwatchImage image = fh6::decodeSwatchImage(bytes);
+                fls::SwatchImage image = fls::decodeSwatchImage(bytes);
                 if (image.valid()) {
-                    auto decoded = std::make_shared<fh6::ModelMaterialTexture>();
+                    auto decoded = std::make_shared<fls::ModelMaterialTexture>();
                     decoded->path = item.path;
                     decoded->image = std::move(image);
                     texture = std::move(decoded);
@@ -639,7 +639,7 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
             }
             return false;
         }
-        if (!fh6::extractZipArchive(path, extracted->path(), error)) {
+        if (!fls::extractZipArchive(path, extracted->path(), error)) {
             return false;
         }
         loadPath = findCarbin(extracted->path());
@@ -651,9 +651,9 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
         }
     }
 
-    fh6::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
-        ? fh6::loadCarBin(loadPath, error)
-        : fh6::loadModelBin(loadPath, error);
+    fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+        ? fls::loadCarBin(loadPath, error)
+        : fls::loadModelBin(loadPath, error);
     if (model.meshes.empty()) {
         return false;
     }
@@ -670,7 +670,7 @@ bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
     const QDir carDir = QFileInfo(loadPath).absoluteDir();
     const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
     if (QFileInfo::exists(masksDir)) {
-        liveryMasks_ = fh6::loadLiveryMasks(masksDir);
+        liveryMasks_ = fls::loadLiveryMasks(masksDir);
         liveryMasksDir_ = masksDir;
     } else {
         liveryMasksDir_.clear();
@@ -713,7 +713,7 @@ void CarPreviewWidget::clearModel() {
     if (!hasModel() && !carRenderer_.hasModel()) {
         return;
     }
-    model_ = fh6::CarModel{};
+    model_ = fls::CarModel{};
     extractedCarDir_.reset();
     liveryMasks_ = {};
     liveryMasksDir_.clear();
@@ -732,7 +732,7 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
     if (!liveryMasks_.valid()) {
         return {};
     }
-    static const QColor kSideColors[fh6::kLiverySideCount] = {
+    static const QColor kSideColors[fls::kLiverySideCount] = {
         QColor(230, 60, 60),   // Front
         QColor(60, 200, 60),   // Back
         QColor(70, 120, 240),  // Top
@@ -747,7 +747,7 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
     };
 
     int w = 0, h = 0;
-    for (const fh6::LiverySide &side : liveryMasks_.sides) {
+    for (const fls::LiverySide &side : liveryMasks_.sides) {
         if (side.mask.valid()) {
             w = side.mask.width;
             h = side.mask.height;
@@ -761,13 +761,13 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
     QImage image(w, h, QImage::Format_ARGB32);
     image.fill(Qt::transparent);
     int firstSide = 0;
-    int lastSide = fh6::kLiverySideCount;
+    int lastSide = fls::kLiverySideCount;
     if (liverySectionSlot >= 0) {
-        if (liverySectionSlot >= fh6::kLiverySideCount) {
+        if (liverySectionSlot >= fls::kLiverySideCount) {
             return {};
         }
         firstSide = kProjectedSectionToMaskSlot[liverySectionSlot];
-        if (firstSide < 0 || firstSide >= fh6::kLiverySideCount) {
+        if (firstSide < 0 || firstSide >= fls::kLiverySideCount) {
             return {};
         }
         lastSide = firstSide + 1;
@@ -785,8 +785,8 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
         || liverySectionSlot == 7;
     bool drew = false;
     for (int s = firstSide; s < lastSide; ++s) {
-        const fh6::LiverySide &side = liveryMasks_.sides[s];
-        const fh6::SwatchMask &mask = side.mask;
+        const fls::LiverySide &side = liveryMasks_.sides[s];
+        const fls::SwatchMask &mask = side.mask;
         if (!mask.valid() || mask.width != w || mask.height != h) {
             continue;
         }
@@ -795,12 +795,12 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
         const double right = std::max(side.left, side.right);
         const double top = std::min(side.top, side.bottom);
         const double bottom = std::max(side.top, side.bottom);
-        const double sx = static_cast<double>(w) / (2.0 * fh6::kLiveryCanvasHalfWidth);
-        const double sy = static_cast<double>(h) / (2.0 * fh6::kLiveryCanvasHalfHeight);
-        const int x0 = std::clamp(static_cast<int>(std::floor((left + fh6::kLiveryCanvasHalfWidth) * sx)), 0, w);
-        const int x1 = std::clamp(static_cast<int>(std::ceil((right + fh6::kLiveryCanvasHalfWidth) * sx)), 0, w);
-        const int y0 = std::clamp(static_cast<int>(std::floor((fh6::kLiveryCanvasHalfHeight - bottom) * sy)), 0, h);
-        const int y1 = std::clamp(static_cast<int>(std::ceil((fh6::kLiveryCanvasHalfHeight - top) * sy)), 0, h);
+        const double sx = static_cast<double>(w) / (2.0 * fls::kLiveryCanvasHalfWidth);
+        const double sy = static_cast<double>(h) / (2.0 * fls::kLiveryCanvasHalfHeight);
+        const int x0 = std::clamp(static_cast<int>(std::floor((left + fls::kLiveryCanvasHalfWidth) * sx)), 0, w);
+        const int x1 = std::clamp(static_cast<int>(std::ceil((right + fls::kLiveryCanvasHalfWidth) * sx)), 0, w);
+        const int y0 = std::clamp(static_cast<int>(std::floor((fls::kLiveryCanvasHalfHeight - bottom) * sy)), 0, h);
+        const int y1 = std::clamp(static_cast<int>(std::ceil((fls::kLiveryCanvasHalfHeight - top) * sy)), 0, h);
         if (x1 <= x0 || y1 <= y0) {
             continue;
         }
@@ -809,19 +809,19 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
         const double originX = liverySectionSlot >= 0 ? side.xOrigin : 0.0;
         const double originY = liverySectionSlot >= 0 ? side.yOrigin : 0.0;
         for (int y = y0; y < y1; ++y) {
-            const double canvasY = fh6::kLiveryCanvasHalfHeight - (static_cast<double>(y) + 0.5) / sy;
+            const double canvasY = fls::kLiveryCanvasHalfHeight - (static_cast<double>(y) + 0.5) / sy;
             const uint8_t *cov = &mask.coverage[static_cast<size_t>(y) * w];
             for (int x = x0; x < x1; ++x) {
                 if (cov[x] < 32) {
                     continue;
                 }
-                const double canvasX = (static_cast<double>(x) + 0.5) / sx - fh6::kLiveryCanvasHalfWidth;
+                const double canvasX = (static_cast<double>(x) + 0.5) / sx - fls::kLiveryCanvasHalfWidth;
                 const double sectionX = transpose ? canvasY - originY : canvasX - originX;
                 const double sectionY = transpose ? canvasX - originX : canvasY - originY;
                 int outX = static_cast<int>(std::floor(
-                    (sectionX + fh6::kLiveryCanvasHalfWidth) * sx));
+                    (sectionX + fls::kLiveryCanvasHalfWidth) * sx));
                 int outY = static_cast<int>(std::floor(
-                    (sectionY + fh6::kLiveryCanvasHalfHeight) * sy));
+                    (sectionY + fls::kLiveryCanvasHalfHeight) * sy));
                 if (outX < 0 || outX >= w || outY < 0 || outY >= h) {
                     continue;
                 }
@@ -840,7 +840,7 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
     return drew ? image : QImage();
 }
 
-void CarPreviewWidget::setProject(fh6::Project *project) {
+void CarPreviewWidget::setProject(fls::Project *project) {
     project_ = project;
     invalidateCachedLivery();
     update();
@@ -979,10 +979,10 @@ void CarPreviewWidget::paintGL() {
             if (projectImportedLivery && project_->root) {
                 QSet<QString> liveSectionIds;
                 for (const auto &rootChild : project_->root->children) {
-                    if (rootChild->kind() != fh6::scene::LayerKind::Group) {
+                    if (rootChild->kind() != fls::scene::LayerKind::Group) {
                         continue;
                     }
-                    const auto *section = static_cast<const fh6::scene::Group *>(rootChild.get());
+                    const auto *section = static_cast<const fls::scene::Group *>(rootChild.get());
                     if (!section->isLiverySection) {
                         continue;
                     }
@@ -1015,7 +1015,7 @@ void CarPreviewWidget::paintGL() {
             }
             if (!projectedSections.isEmpty()) {
                 const auto collect = [](const QVector<ProjectedLiverySection> &sections,
-                                        QVector<fh6::Project> &projects, QVector<QRect> &clips) {
+                                        QVector<fls::Project> &projects, QVector<QRect> &clips) {
                     projects.reserve(sections.size());
                     clips.reserve(sections.size());
                     for (const ProjectedLiverySection &section : sections) {
@@ -1056,7 +1056,7 @@ void CarPreviewWidget::paintGL() {
                         }
                     }
                     if (!cluster.isEmpty() && cluster.size() < nonEmptyCount) {
-                        QVector<fh6::Project> clusterProjects;
+                        QVector<fls::Project> clusterProjects;
                         QVector<QRect> clusterClips;
                         collect(cluster, clusterProjects, clusterClips);
                         tex = shapeRenderer_.renderScenesToTexture(
@@ -1065,7 +1065,7 @@ void CarPreviewWidget::paintGL() {
                     }
                 }
                 if (tex == 0) {
-                    QVector<fh6::Project> sectionProjects;
+                    QVector<fls::Project> sectionProjects;
                     QVector<QRect> clipRects;
                     collect(projectedSections, sectionProjects, clipRects);
                     tex = shapeRenderer_.renderScenesToTexture(
@@ -1150,8 +1150,8 @@ QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const
 }
 
 void CarPreviewWidget::fitCameraToModel() {
-    const fh6::ModelVec3 &mn = model_.boundsMin;
-    const fh6::ModelVec3 &mx = model_.boundsMax;
+    const fls::ModelVec3 &mn = model_.boundsMin;
+    const fls::ModelVec3 &mx = model_.boundsMax;
     target_ = QVector3D((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
     const QVector3D extent(mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
     modelRadius_ = std::max(0.001f, 0.5f * extent.length());

@@ -6,7 +6,7 @@
 #include <QString>
 #include <QVector>
 
-namespace fh6 {
+namespace fls {
 
 struct LiverySlotDef {
     const char *name;
@@ -59,4 +59,4 @@ VinylGroup buildTree(const QByteArray &layerData, const QByteArray &fullPayload)
 QVector<LiverySection> buildLiverySections(const QByteArray &body, const QVector<int> &sectionCounts);
 QVector<QString> validateTree(const VinylGroup &root);
 
-} // namespace fh6
+} // namespace fls

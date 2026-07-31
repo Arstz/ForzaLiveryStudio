@@ -2,7 +2,7 @@
 
 #include "layer.h"
 
-namespace fh6 {
+namespace fls {
 
 const LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) const {
     for (const LiveryPaintMaterial &material : materials) {
@@ -71,4 +71,4 @@ Project &Project::operator=(const Project &other) {
 Project::Project(Project &&other) noexcept = default;
 Project &Project::operator=(Project &&other) noexcept = default;
 
-} // namespace fh6
+} // namespace fls

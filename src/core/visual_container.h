@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace fh6::scene {
+namespace fls::scene {
 
 enum class VisualKind { Vector, Raster };
 
@@ -49,4 +49,4 @@ public:
     }
 };
 
-} // namespace fh6::scene
+} // namespace fls::scene

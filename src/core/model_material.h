@@ -11,7 +11,7 @@
 #include <memory>
 #include <vector>
 
-namespace fh6 {
+namespace fls {
 
 enum class ModelMaterialParameterType : quint8 {
     Vector = 0,
@@ -76,4 +76,4 @@ std::shared_ptr<ModelMaterial> decodeMaterialBundle(const QByteArray &bytes);
 std::shared_ptr<ModelMaterial> mergeModelMaterialDefaults(
     const ModelMaterial &defaults, const ModelMaterial &instance);
 
-} // namespace fh6
+} // namespace fls

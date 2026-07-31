@@ -11,12 +11,12 @@
 namespace gui {
 
 struct ProjectLookup {
-    QHash<QString, const fh6::scene::Shape *> layers;
-    QHash<QString, const fh6::scene::GuideLayer *> guides;
-    QHash<QString, const fh6::scene::Group *> groups;
+    QHash<QString, const fls::scene::Shape *> layers;
+    QHash<QString, const fls::scene::GuideLayer *> guides;
+    QHash<QString, const fls::scene::Group *> groups;
 };
 
-QImage renderProjectPreviewImage(const fh6::Project &project, const QSize &size);
+QImage renderProjectPreviewImage(const fls::Project &project, const QSize &size);
 
 class LayerTreeModel final : public QStandardItemModel {
 public:
@@ -37,11 +37,11 @@ public:
     void setGeneratePreviewsWithTransformations(bool enabled);
     void setPreviewBackground(const PreviewBackground &background, UiTheme theme);
     bool generatePreviewsWithTransformations() const;
-    void setProject(const fh6::Project *project);
-    void setProjectSection(const fh6::Project *project, const QString &sectionGroupId);
+    void setProject(const fls::Project *project);
+    void setProjectSection(const fls::Project *project, const QString &sectionGroupId);
     void clearSectionCache();
-    void refreshStateRoles(const fh6::Project *project);
-    void refreshPreviews(const fh6::Project *project);
+    void refreshStateRoles(const fls::Project *project);
+    void refreshPreviews(const fls::Project *project);
 
     Qt::ItemFlags flags(const QModelIndex &index) const override;
     Qt::DropActions supportedDragActions() const override;
@@ -52,11 +52,11 @@ public:
 
 private:
     QStandardItem *itemForId(const ProjectLookup &lookup, const QString &id, bool ancestorLocked = false) const;
-    QIcon previewIconForNode(const fh6::scene::Layer &node) const;
-    void populateGroup(const ProjectLookup &lookup, const fh6::scene::Group &group);
+    QIcon previewIconForNode(const fls::scene::Layer &node) const;
+    void populateGroup(const ProjectLookup &lookup, const fls::scene::Group &group);
     void cacheDisplayedSectionRows();
-    bool updateItemState(QStandardItem &item, const fh6::scene::Layer &node, bool ancestorLocked) const;
-    void updateItemPreview(QStandardItem &item, const fh6::scene::Layer &node) const;
+    bool updateItemState(QStandardItem &item, const fls::scene::Layer &node, bool ancestorLocked) const;
+    void updateItemPreview(QStandardItem &item, const fls::scene::Layer &node) const;
     void refreshStateRolesForParent(const ProjectLookup &lookup, const QModelIndex &parent, bool ancestorLocked);
     void refreshPreviewsForParent(const ProjectLookup &lookup, const QModelIndex &parent);
 

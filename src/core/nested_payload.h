@@ -7,10 +7,10 @@
 
 #include <functional>
 
-namespace fh6 {
+namespace fls {
 
 using SpriteSizeFn = std::function<QSizeF(quint16)>;
 
 QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &spriteSize = {});
 
-} // namespace fh6
+} // namespace fls

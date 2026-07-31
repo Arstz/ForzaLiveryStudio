@@ -1,4 +1,4 @@
-# Analytic Differentiable Cover — Minimal-Shape Fill of a Pen Contour
+# Analytic Differential Cover — Minimal-Shape Fill of a Pen Contour
 
 Design + handoff spec for an **opt-in, high-quality Pen fill mode** that covers one
 closed, single-colour contour with **as few affine primitive decals as possible**.
@@ -25,7 +25,7 @@ and maintenance specification for the standalone module.
   the optimizer can reach without leaving it. Colour is the Pen or Bucket colour.
 - **Objective:** minimise the **number of placements** while maximizing legal
   coverage. Complete coverage is preferred but is not a success requirement.
-- **Mode:** a persistent **Differentiable Pen Fill** tool option, off by default.
+- **Mode:** a persistent **Differential Contour Fill** tool option, off by default.
   When enabled, the normal Pen commit uses this module instead of the deterministic
   Pen fill. It does not refine or wrap the existing result. Runs must be
   repeatable (§9).
@@ -264,7 +264,7 @@ machinery is required.
    evaluation.
 3. Parallel double-precision CPU evaluation.
 
-CUDA is an optional build capability controlled by `FH6_ENABLE_CUDA`. When a CUDA
+CUDA is an optional build capability controlled by `FLS_ENABLE_CUDA`. When a CUDA
 compiler is found, the build compiles the clipping kernel for the GPU
 architectures supported by that toolkit and deploys the CUDA runtime beside the
 application. The residual and catalog geometry stay in device buffers for a
@@ -461,15 +461,12 @@ The repair result is not pruned again.
   `residualArea > epsArea`. The caller inserts it, clears the active contour, and
   reports the uncovered world-unit area plus the stopping reason. A zero-placement
   result inserts nothing and leaves the active contour available. Cancelling an
-  active differentiable fill retains and inserts the best exact cover completed
+  active differential fill retains and inserts the best exact cover completed
   before cancellation.
 - **Progress:** report exact covered-area progress after every accepted placement
-  and every accepted prune operation.
-  The status bar estimates remaining time from measured placement duration and
-  recent gain decay. It remains explicitly approximate because the residual loop
-  has no predetermined placement count. The ETA becomes indeterminate during
-  backward elimination.
-- **Profiling:** every differentiable run records total wall time, greedy setup,
+  and every accepted prune operation. Elapsed wall time updates independently
+  throughout the run.
+- **Profiling:** every differential run records total wall time, greedy setup,
   parallel candidate-batch wall time, cumulative candidate worker time, Adam
   evaluation time, legalization time, exact residual updates, final measurement,
   evaluation counts, worker configuration, evaluation backend, GPU adapter,
@@ -600,7 +597,6 @@ struct FillProgress {
     double coveredArea = 0.0;
     double residualArea = 0.0;
     double elapsedSeconds = 0.0;
-    double etaSeconds = -1.0;
 };
 
 FillResult analyticCoverFill(const FillInput& in,
@@ -615,9 +611,6 @@ FillResult analyticCoverFill(const FillInput& in,
 
 Colour is not in `Placement` — the caller stamps the region colour onto every
 returned placement when building decals.
-`FillProgress::etaSeconds` remains negative until the accepted gains provide
-enough decay information for an estimate.
-
 ---
 
 ## 11. Implementation and validation layout
@@ -646,7 +639,7 @@ enough decay information for an estimate.
    local survivor adjustment, fixed acceptance limits, convergence, and one
    additive repair cover of newly exposed residual.
 9. **Pen commit integration** sits behind the persistent, default-off
-   Differentiable Pen Fill option. Bucket requires no separate solver integration
+   Differential Contour Fill option. Bucket requires no separate solver integration
    because its traced region already becomes an editable Pen contour.
 
 The optimizer caches subject bounds for the duration of each greedy step, rejects

@@ -24,7 +24,7 @@ public:
     void release();
     bool isInitialized() const;
     void uploadGeometry(const ShapeGeometryStore &geometry);
-    void render(const fh6::Project &project,
+    void render(const fls::Project &project,
                 const ShapeGeometryStore &geometry,
                 const QTransform &worldToScreen,
                 const QSize &size,
@@ -41,11 +41,11 @@ public:
                 double flashStrength,
                 bool clearBackground = true);
 
-    GLuint renderSceneToTexture(const fh6::Project &project,
+    GLuint renderSceneToTexture(const fls::Project &project,
                                 const ShapeGeometryStore &geometry,
                                 const QTransform &worldToScreen,
                                 const QSize &size);
-    GLuint renderScenesToTexture(const QVector<fh6::Project> &projects,
+    GLuint renderScenesToTexture(const QVector<fls::Project> &projects,
                                  const QVector<QRect> &clipRects,
                                  const ShapeGeometryStore &geometry,
                                  const QTransform &worldToScreen,
@@ -61,12 +61,12 @@ private:
     void setUniformRows(int row0Location, int row1Location, const QTransform &transform);
     ShapeRange fallbackRange(int shapeId, const ShapeGeometryStore &geometry);
     bool drawSceneToFbo(QOpenGLFunctions *functions,
-                        const fh6::Project &project,
+                        const fls::Project &project,
                         const ShapeGeometryStore &geometry,
                         const QTransform &worldToScreen,
                         const QSize &size);
     bool drawProjectLayers(QOpenGLFunctions *functions,
-                           const fh6::Project &project,
+                           const fls::Project &project,
                            const ShapeGeometryStore &geometry,
                            const QTransform &worldToScreen,
                            const QSize &size);
@@ -116,7 +116,7 @@ private:
     int rasterTintLocation_ = -1;
     int rasterTextureLocation_ = -1;
     int compositeTextureLocation_ = -1;
-    fh6::RasterDecalPack rasterPack_;
+    fls::RasterDecalPack rasterPack_;
     QString rasterPackError_;
     QHash<quint32, GLuint> rasterTextures_;
     QHash<quint32, QSize> rasterTextureSizes_;

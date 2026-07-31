@@ -10,7 +10,7 @@
 
 #include <zlib.h>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 QString resolveCGroupPath(const QString &folderOrFile) {
@@ -95,4 +95,4 @@ void writeCGroupFile(const QString &path, const QByteArray &payload) {
     }
 }
 
-} // namespace fh6
+} // namespace fls

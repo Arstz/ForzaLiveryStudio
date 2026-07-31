@@ -151,7 +151,6 @@ struct FillProgress {
     double coveredArea = 0.0;
     double residualArea = 0.0;
     double elapsedSeconds = 0.0;
-    double etaSeconds = -1.0;
 };
 
 struct AreaGradient {
@@ -182,7 +181,7 @@ FillResult analyticCoverFill(
 
 QTransform toQTransform(const Affine &transform);
 
-#ifdef FH6_DIFFERENTIABLE_COVER_TESTS
+#ifdef FLS_DIFFERENTIAL_COVER_TESTS
 double placementUnionAreaForTesting(
     const QVector<Placement> &placements,
     const QVector<ShapeMesh> &catalog);

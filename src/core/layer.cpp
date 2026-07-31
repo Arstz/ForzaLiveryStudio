@@ -5,7 +5,7 @@
 #include <cmath>
 #include <utility>
 
-namespace fh6::scene {
+namespace fls::scene {
 
 namespace {
 constexpr double Pi = 3.14159265358979323846;
@@ -152,4 +152,4 @@ std::unique_ptr<Layer> Group::takeAt(int index) {
     return child;
 }
 
-} // namespace fh6::scene
+} // namespace fls::scene

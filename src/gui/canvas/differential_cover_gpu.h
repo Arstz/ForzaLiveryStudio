@@ -1,6 +1,6 @@
 #pragma once
 
-#include "differentiable_cover.h"
+#include "differential_cover.h"
 
 #include <memory>
 
@@ -38,7 +38,7 @@ public:
 std::unique_ptr<GpuAreaEvaluator> createGpuAreaEvaluator(
     const QVector<ShapeMesh> &catalog);
 
-#ifdef FH6_HAS_CUDA
+#ifdef FLS_HAS_CUDA
 std::unique_ptr<GpuAreaEvaluator> createCudaAreaEvaluator(
     const QVector<ShapeMesh> &catalog);
 #endif

@@ -5,7 +5,7 @@
 #include <cmath>
 #include <variant>
 
-namespace fh6 {
+namespace fls {
 namespace {
 using detail::multiply;
 
@@ -62,4 +62,4 @@ QVector<FlattenedLayer> flattenGroup(const VinylGroup &root) {
     return VinylFlattener{}.flattenGroup(root);
 }
 
-} // namespace fh6
+} // namespace fls

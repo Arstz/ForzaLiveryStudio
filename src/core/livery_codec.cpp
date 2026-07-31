@@ -17,7 +17,7 @@
 #include <optional>
 #include <stdexcept>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 QString resolveLiveryPath(const QString &folderOrFile) {
@@ -1023,4 +1023,4 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
     return chunk;
 }
 
-} // namespace fh6
+} // namespace fls

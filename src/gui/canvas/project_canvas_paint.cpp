@@ -613,7 +613,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
     }
 
     int loadedCount = 0;
-    forEachSceneShape([&](const fh6::scene::Shape &, const QTransform &, int) {
+    forEachSceneShape([&](const fls::scene::Shape &, const QTransform &, int) {
         ++loadedCount;
         return true;
     }, false);
@@ -726,8 +726,8 @@ double ProjectCanvas::selectionFlashStrength() const {
     return progress.has_value() ? 0.18 + 0.72 * std::sin(*progress * kPi) : 0.0;
 }
 
-QImage ProjectCanvas::guideImage(const fh6::scene::GuideLayer &guide) const {
-    const fh6::scene::RasterContainer *img = guide.image.get();
+QImage ProjectCanvas::guideImage(const fls::scene::GuideLayer &guide) const {
+    const fls::scene::RasterContainer *img = guide.image.get();
     const int width = img != nullptr ? img->width : 0;
     const int height = img != nullptr ? img->height : 0;
     const QString format = img != nullptr ? img->format : QString();
@@ -802,7 +802,7 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter) {
     }
     painter.save();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
         if (!guide.visible || guide.opacity <= 0.0 || !isSectionActive(sectionGroupId)) {
             return true;
         }
@@ -827,7 +827,7 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter) {
 
 bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
                                                   QString *message) {
-    const QVector<fh6::scene::GuideLayer *> guides = selectedGuideLayers();
+    const QVector<fls::scene::GuideLayer *> guides = selectedGuideLayers();
     if (guides.isEmpty()) {
         if (message != nullptr) {
             *message = QStringLiteral("Select a guide layer first");
@@ -840,7 +840,7 @@ bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
         }
         return false;
     }
-    const fh6::scene::GuideLayer *guide = guides.front();
+    const fls::scene::GuideLayer *guide = guides.front();
     const QImage image = guideImage(*guide);
     if (image.isNull()) {
         if (message != nullptr) {
@@ -1715,7 +1715,7 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
     QTransform guideWorld;
     QSizeF guideSize;
     bool found = false;
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
         if (guide.id != region_.guideId || !isSectionActive(sectionGroupId)) {
             return true;
         }
@@ -1782,7 +1782,7 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter) {
     QTransform guideWorld;
     QSizeF guideSize;
     bool found = false;
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
         if (guide.id != region_.guideId || !isSectionActive(sectionGroupId)) {
             return true;
         }

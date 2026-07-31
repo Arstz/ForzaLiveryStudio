@@ -13,7 +13,7 @@ QVector<ProjectCanvas::HitEntry> ProjectCanvas::hitEntries() {
     }
     updateViewTransform();
     hitCache_.clear();
-    forEachSceneShape([&](const fh6::scene::Shape &shape, const QTransform &world, int drawOrder) {
+    forEachSceneShape([&](const fls::scene::Shape &shape, const QTransform &world, int drawOrder) {
         if (shape.visible) {
             const QPolygonF polygon = screenQuad(world, sceneLocalRect(shape, geometry_));
             hitCache_.push_back({drawOrder, shape.id, polygon, polygon.boundingRect()});
@@ -30,7 +30,7 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point) {
     }
     updateViewTransform();
     QString hit;
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
         if (!guide.visible || !isSectionActive(sectionGroupId)) {
             return true;
         }
@@ -50,7 +50,7 @@ std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &poin
     }
     const_cast<ProjectCanvas *>(this)->updateViewTransform();
     std::optional<QColor> result;
-    forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
         if (!guide.visible || !isSectionActive(sectionGroupId)) {
             return true;
         }
@@ -89,7 +89,7 @@ std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &poin
     if (project_ == nullptr) {
         return std::nullopt;
     }
-    const fh6::scene::Group *root = sceneTree();
+    const fls::scene::Group *root = sceneTree();
     if (root == nullptr) {
         return std::nullopt;
     }
@@ -98,7 +98,7 @@ std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &poin
             continue;
         }
         if (state_ != nullptr) {
-            if (auto *shape = dynamic_cast<const fh6::scene::Shape *>(state_->sceneNode(entry.layerId))) {
+            if (auto *shape = dynamic_cast<const fls::scene::Shape *>(state_->sceneNode(entry.layerId))) {
                 return QColor(shape->color[ColorByteRed],
                               shape->color[ColorByteGreen],
                               shape->color[ColorByteBlue],
@@ -106,7 +106,7 @@ std::optional<QColor> ProjectCanvas::layerColorAtScreenPoint(const QPointF &poin
             }
             continue;
         }
-        for (const fh6::scene::Shape *shape : sceneShapeLeaves(*root)) {
+        for (const fls::scene::Shape *shape : sceneShapeLeaves(*root)) {
             if (shape->id == entry.layerId) {
                 return QColor(shape->color[ColorByteRed],
                               shape->color[ColorByteGreen],
@@ -169,7 +169,7 @@ const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const {
         if (project_ != nullptr && state_ != nullptr) {
             const QSet<QString> selected = state_->selectedLayerIds();
             if (!selected.isEmpty()) {
-                forEachSceneShape([&](const fh6::scene::Shape &shape, const QTransform &world, int) {
+                forEachSceneShape([&](const fls::scene::Shape &shape, const QTransform &world, int) {
                     if (selected.contains(shape.id)) {
                         acc.add(world, flatEntryVisualRect(shape, geometry_));
                     }
@@ -178,7 +178,7 @@ const QRectF &ProjectCanvas::cachedSelectionWorldBounds() const {
             }
             const QSet<QString> selectedGuides = state_->selectedGuideLayerIds();
             if (!selectedGuides.isEmpty()) {
-                forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &) {
+                forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &) {
                     if (selectedGuides.contains(guide.id)) {
                         acc.add(world, flatEntryRect(guide));
                     }
@@ -219,7 +219,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
         for (const QString &leafId : state_->leafLayerIdsForEntry(groupId)) {
             effective.groupedLayerIds.insert(leafId);
         }
-        if (const fh6::scene::Group *group = state_->groupForId(groupId)) {
+        if (const fls::scene::Group *group = state_->groupForId(groupId)) {
             collectGuideIds(*group, effective.groupedGuideIds);
         }
     }
@@ -252,7 +252,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
     if (count == 1) {
         if (!effective.groupIds.isEmpty()) {
             const QString id = effective.groupIds.front();
-            if (auto *group = dynamic_cast<fh6::scene::Group *>(state_->sceneNode(id))) {
+            if (auto *group = dynamic_cast<fls::scene::Group *>(state_->sceneNode(id))) {
                 const QTransform groupWorld = sceneWorldTransform(*group);
                 bool invertible = false;
                 const QTransform groupWorldInverse = groupWorld.inverted(&invertible);
@@ -277,7 +277,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
             }
         } else if (!effective.looseLayerIds.isEmpty()) {
             const QString id = *effective.looseLayerIds.constBegin();
-            if (auto *layer = dynamic_cast<fh6::scene::Shape *>(state_->sceneNode(id))) {
+            if (auto *layer = dynamic_cast<fls::scene::Shape *>(state_->sceneNode(id))) {
                 box.valid = true;
                 box.localRect = flatEntryVisualRect(*layer, geometry_);
                 box.localToWorld = sceneWorldTransform(*layer);
@@ -285,7 +285,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
             }
         } else {
             const QString id = *effective.looseGuideIds.constBegin();
-            if (auto *guide = dynamic_cast<fh6::scene::GuideLayer *>(state_->sceneNode(id))) {
+            if (auto *guide = dynamic_cast<fls::scene::GuideLayer *>(state_->sceneNode(id))) {
                 box.valid = true;
                 box.localRect = flatEntryRect(*guide);
                 box.localToWorld = sceneWorldTransform(*guide);
@@ -303,13 +303,13 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
     bool hasPrimary = false;
     if (project_->root) {
         for (const QString &groupId : effective.groupIds) {
-            if (const auto *group = dynamic_cast<const fh6::scene::Group *>(state_->sceneNode(groupId))) {
+            if (const auto *group = dynamic_cast<const fls::scene::Group *>(state_->sceneNode(groupId))) {
                 primaryRotation = group->rotation;
                 hasPrimary = true;
                 break;
             }
         }
-        for (const fh6::scene::Shape *layer : sceneShapeLeaves(*project_->root)) {
+        for (const fls::scene::Shape *layer : sceneShapeLeaves(*project_->root)) {
             if (!hasPrimary && effective.looseLayerIds.contains(layer->id)) {
                 primaryRotation = layer->rotation;
                 hasPrimary = true;
@@ -318,7 +318,7 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
         }
     }
     if (!hasPrimary && project_->root) {
-        for (const fh6::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
+        for (const fls::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
             if (effective.looseGuideIds.contains(guide->id)) {
                 primaryRotation = guide->rotation;
                 hasPrimary = true;
@@ -368,13 +368,13 @@ ProjectCanvas::SelectionBox ProjectCanvas::currentSelectionBox() const {
         }
     };
     if (project_->root) {
-        for (const fh6::scene::Shape *layer : sceneShapeLeaves(*project_->root)) {
+        for (const fls::scene::Shape *layer : sceneShapeLeaves(*project_->root)) {
             if (!selLayers.contains(layer->id)) {
                 continue;
             }
             accumulate(sceneWorldTransform(*layer), flatEntryVisualRect(*layer, geometry_));
         }
-        for (const fh6::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
+        for (const fls::scene::GuideLayer *guide : sceneGuideLeaves(*project_->root)) {
             if (!selGuides.contains(guide->id)) {
                 continue;
             }
@@ -434,16 +434,16 @@ bool ProjectCanvas::boxContainsScreenPoint(const SelectionBox &box, const QPoint
 
 QRectF ProjectCanvas::selectedWorldBounds() const {
     BoundsAccumulator acc;
-    for (const fh6::scene::Shape *layer : selectedLayers()) {
+    for (const fls::scene::Shape *layer : selectedLayers()) {
         acc.add(flatEntryTransform(*layer), flatEntryVisualRect(*layer, geometry_));
     }
-    for (const fh6::scene::GuideLayer *guide : selectedGuideLayers()) {
+    for (const fls::scene::GuideLayer *guide : selectedGuideLayers()) {
         acc.add(flatEntryTransform(*guide), flatEntryRect(*guide));
     }
     return acc.bounds();
 }
 
-QVector<fh6::scene::Shape *> ProjectCanvas::selectedLayers() const {
+QVector<fls::scene::Shape *> ProjectCanvas::selectedLayers() const {
     if (state_ == nullptr) {
         return {};
     }
@@ -453,8 +453,8 @@ QVector<fh6::scene::Shape *> ProjectCanvas::selectedLayers() const {
             return {};
         }
     }
-    QVector<fh6::scene::Shape *> result;
-    for (fh6::scene::Shape *layer : state_->selectedLayers()) {
+    QVector<fls::scene::Shape *> result;
+    for (fls::scene::Shape *layer : state_->selectedLayers()) {
         if (!locked.contains(layer->id)) {
             result.push_back(layer);
         }
@@ -462,11 +462,11 @@ QVector<fh6::scene::Shape *> ProjectCanvas::selectedLayers() const {
     return result;
 }
 
-QVector<fh6::scene::GuideLayer *> ProjectCanvas::selectedGuideLayers() const {
+QVector<fls::scene::GuideLayer *> ProjectCanvas::selectedGuideLayers() const {
     if (state_ == nullptr) {
         return {};
     }
-    for (fh6::scene::GuideLayer *guide : state_->selectedGuideLayers()) {
+    for (fls::scene::GuideLayer *guide : state_->selectedGuideLayers()) {
         if (guide->locked) {
             return {};
         }

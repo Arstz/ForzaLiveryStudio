@@ -12,11 +12,11 @@
 #include <optional>
 #include <variant>
 
-namespace fh6::scene {
+namespace fls::scene {
 class Group;
 }
 
-namespace fh6 {
+namespace fls {
 
 struct LiveryPaintColor {
     bool enabled = false;
@@ -144,4 +144,4 @@ struct FlattenedLayer {
     Matrix3 groupMatrix;
 };
 
-} // namespace fh6
+} // namespace fls

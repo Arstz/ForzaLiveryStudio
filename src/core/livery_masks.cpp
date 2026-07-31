@@ -4,7 +4,7 @@
 #include <QFile>
 #include <QXmlStreamReader>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 struct SideDef {
@@ -115,4 +115,4 @@ LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error) {
     return set;
 }
 
-} // namespace fh6
+} // namespace fls

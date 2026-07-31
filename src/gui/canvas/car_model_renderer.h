@@ -10,7 +10,7 @@
 #include <memory>
 #include <vector>
 
-namespace fh6 {
+namespace fls {
 struct ModelMaterialTexture;
 }
 
@@ -26,10 +26,10 @@ public:
     bool isInitialized() const;
     bool hasModel() const;
 
-    void uploadModel(const fh6::CarModel &model);
+    void uploadModel(const fls::CarModel &model);
     void clearModel();
 
-    void setLivery(const fh6::CarModel &model, const fh6::LiveryMaskSet &masks);
+    void setLivery(const fls::CarModel &model, const fls::LiveryMaskSet &masks);
     void setPaintTextureRegions(const QVector<QVector4D> &regions);
     void clearLivery();
 
@@ -40,7 +40,7 @@ public:
                 const QMatrix4x4 &projection,
                 GLuint liveryTexture,
                 const QColor &basePaint,
-                const fh6::LiveryPaintState *paintState);
+                const fls::LiveryPaintState *paintState);
 
 private:
     struct MeshBuffers {
@@ -70,12 +70,12 @@ private:
     };
 
     struct MaterialTextureCacheEntry {
-        std::shared_ptr<const fh6::ModelMaterialTexture> source;
+        std::shared_ptr<const fls::ModelMaterialTexture> source;
         GLuint id = 0;
         qsizetype bytes = 0;
     };
 
-    static constexpr int kLiverySideCount = fh6::kLiverySideCount;
+    static constexpr int kLiverySideCount = fls::kLiverySideCount;
 
     QOpenGLShaderProgram program_;
     std::vector<std::unique_ptr<MeshBuffers>> meshes_;

@@ -13,20 +13,20 @@
 namespace gui {
 namespace {
 
-QColor layerColor(const fh6::scene::Shape &layer) {
+QColor layerColor(const fls::scene::Shape &layer) {
     return QColor(layer.color[2], layer.color[1], layer.color[0], std::clamp<int>(layer.color[3], 0, 255));
 }
 
 template <typename Fn>
 void forEachClipboardShape(const ProjectClipboard &clipboard, const Fn &fn) {
-    auto walk = [&](auto &self, const fh6::scene::Layer &node, const QTransform &parentWorld) -> void {
+    auto walk = [&](auto &self, const fls::scene::Layer &node, const QTransform &parentWorld) -> void {
         const QTransform world = sceneLocalTransform(node) * parentWorld;
-        if (node.kind() == fh6::scene::LayerKind::Shape) {
-            fn(static_cast<const fh6::scene::Shape &>(node), world);
+        if (node.kind() == fls::scene::LayerKind::Shape) {
+            fn(static_cast<const fls::scene::Shape &>(node), world);
             return;
         }
-        if (node.kind() == fh6::scene::LayerKind::Group) {
-            for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+        if (node.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
                 self(self, *child, world);
             }
         }
@@ -41,7 +41,7 @@ void forEachClipboardShape(const ProjectClipboard &clipboard, const Fn &fn) {
 
 int shapeCount(const ProjectClipboard &clipboard) {
     int count = 0;
-    forEachClipboardShape(clipboard, [&](const fh6::scene::Shape &, const QTransform &) {
+    forEachClipboardShape(clipboard, [&](const fls::scene::Shape &, const QTransform &) {
         ++count;
     });
 
@@ -97,7 +97,7 @@ void ClipboardBufferWidget::paintEvent(QPaintEvent *event) {
     painter.drawRect(previewRect.adjusted(0, 0, -1, -1));
 
     BoundsAccumulator boundsAccumulator;
-    forEachClipboardShape(*clipboard_, [&](const fh6::scene::Shape &shape, const QTransform &world) {
+    forEachClipboardShape(*clipboard_, [&](const fls::scene::Shape &shape, const QTransform &world) {
         if (shape.visible) {
             boundsAccumulator.add(world, sceneLocalRect(sceneNodeSize(shape, geometry_)));
         }
@@ -115,7 +115,7 @@ void ClipboardBufferWidget::paintEvent(QPaintEvent *event) {
     painter.scale(scale, -scale);
     painter.translate(-bounds.center());
     painter.setPen(Qt::NoPen);
-    forEachClipboardShape(*clipboard_, [&](const fh6::scene::Shape &shape, const QTransform &world) {
+    forEachClipboardShape(*clipboard_, [&](const fls::scene::Shape &shape, const QTransform &world) {
         if (shape.visible) {
             paintLayer(painter, shape, world);
         }
@@ -124,7 +124,7 @@ void ClipboardBufferWidget::paintEvent(QPaintEvent *event) {
 }
 
 void ClipboardBufferWidget::paintLayer(QPainter &painter,
-                                       const fh6::scene::Shape &layer,
+                                       const fls::scene::Shape &layer,
                                        const QTransform &world) const {
     painter.save();
     painter.setTransform(world, true);
@@ -132,7 +132,7 @@ void ClipboardBufferWidget::paintLayer(QPainter &painter,
     painter.setCompositionMode(layer.mask ? QPainter::CompositionMode_DestinationOut : QPainter::CompositionMode_SourceOver);
 
     if (layer.raster) {
-        const fh6::RasterDecal decal = fh6::sharedRasterDecals().decal(layer.rasterId);
+        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(layer.rasterId);
         if (decal.valid()) {
             const QImage decalImage(reinterpret_cast<const uchar *>(decal.rgba.constData()),
                                     decal.width,

@@ -16,11 +16,11 @@
 #include <map>
 #include <stdexcept>
 
-namespace fh6 {
+namespace fls {
 
-using fh6::detail::readLeFloat;
-using fh6::detail::readLeU16;
-using fh6::detail::readLeU32;
+using fls::detail::readLeFloat;
+using fls::detail::readLeU16;
+using fls::detail::readLeU32;
 
 namespace {
 
@@ -779,4 +779,4 @@ void appendApproximateTires(
     }
 }
 
-} // namespace fh6
+} // namespace fls

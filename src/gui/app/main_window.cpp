@@ -6,6 +6,12 @@ namespace gui {
 
 using namespace mw_detail;
 
+namespace {
+
+constexpr int kGeneratedFillElapsedIntervalMs = 250;
+
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent) {
     theme_ = loadUiTheme();
@@ -17,6 +23,11 @@ MainWindow::MainWindow(QWidget *parent)
     state_ = new EditorState(this);
     autosaveTimer_ = new QTimer(this);
     connect(autosaveTimer_, &QTimer::timeout, this, &MainWindow::autosaveProject);
+    generatedFillElapsedTimer_ = new QTimer(this);
+    generatedFillElapsedTimer_->setInterval(
+        kGeneratedFillElapsedIntervalMs);
+    connect(generatedFillElapsedTimer_, &QTimer::timeout,
+            this, &MainWindow::refreshGeneratedFillElapsedTime);
 
     setupCanvas();
     setupTreeView();

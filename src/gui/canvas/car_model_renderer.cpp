@@ -330,7 +330,7 @@ bool isBodyPaintMaterial(const QString &material) {
     return name.startsWith(QStringLiteral("carpaint")) || name.startsWith(QStringLiteral("car_paint"));
 }
 
-bool isWindowGlassMaterial(const fh6::CarMesh &mesh) {
+bool isWindowGlassMaterial(const fls::CarMesh &mesh) {
     const QString name = mesh.materialName.toLower();
     if (name.isEmpty()
         || name.contains(QStringLiteral("screw"))
@@ -362,7 +362,7 @@ bool isInteriorWindowShell(const QString &rawName) {
     return name.startsWith(QStringLiteral("glass")) && name.contains(QStringLiteral("int"));
 }
 
-QString materialIdentity(const fh6::CarMesh &mesh) {
+QString materialIdentity(const fls::CarMesh &mesh) {
     QString identity = mesh.materialName.toLower();
     if (mesh.material) {
         identity += QLatin1Char('|') + mesh.material->name.toLower();
@@ -372,7 +372,7 @@ QString materialIdentity(const fh6::CarMesh &mesh) {
     return identity;
 }
 
-QString materialResourceIdentity(const fh6::CarMesh &mesh) {
+QString materialResourceIdentity(const fls::CarMesh &mesh) {
     if (!mesh.material) {
         return {};
     }
@@ -381,7 +381,7 @@ QString materialResourceIdentity(const fh6::CarMesh &mesh) {
     return resource;
 }
 
-bool isLampSurface(const fh6::CarMesh &mesh) {
+bool isLampSurface(const fls::CarMesh &mesh) {
     const QString name = mesh.name.toLower();
     const QString material = materialIdentity(mesh);
     const bool lampGlass = name.startsWith(QStringLiteral("glass"))
@@ -397,7 +397,7 @@ bool isLampSurface(const fh6::CarMesh &mesh) {
         || material.contains(QStringLiteral("/lamp/"));
 }
 
-bool isLampEmitterMaterial(const fh6::CarMesh &mesh) {
+bool isLampEmitterMaterial(const fls::CarMesh &mesh) {
     const QString material = materialIdentity(mesh);
     return material.contains(QStringLiteral("lights"))
         || material.contains(QStringLiteral("lightbulb"))
@@ -444,7 +444,7 @@ float linearToDisplay(float value) {
         : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
 }
 
-std::optional<MaterialFallback> exteriorMaterialFallback(const fh6::CarMesh &mesh) {
+std::optional<MaterialFallback> exteriorMaterialFallback(const fls::CarMesh &mesh) {
     const QString resource = materialResourceIdentity(mesh);
     const QString material = resource.isEmpty() ? materialIdentity(mesh) : resource;
     if (material.contains(QStringLiteral("mirror_left"))
@@ -646,7 +646,7 @@ void CarModelRenderer::clearLivery() {
 namespace {
 
 // Model space uses +X right, +Y up, and +Z front.
-const QVector3D kFacing[fh6::kLiverySideCount] = {
+const QVector3D kFacing[fls::kLiverySideCount] = {
     QVector3D(0.0f, 0.0f, 1.0f),  // Front (+Z)
     QVector3D(0.0f, 0.0f, -1.0f), // Back  (-Z)
     QVector3D(0.0f, 1.0f, 0.0f),  // Top
@@ -660,7 +660,7 @@ const QVector3D kFacing[fh6::kLiverySideCount] = {
     QVector3D(1.0f, 0.0f, 0.0f),  // Right window
 };
 
-float axisOf(const fh6::ModelVec3 &v, int axis) {
+float axisOf(const fls::ModelVec3 &v, int axis) {
     return axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
 }
 
@@ -687,16 +687,16 @@ QString lodBase(const QString &name) {
     return idx < 0 ? name : name.left(idx);
 }
 
-QString lodGroup(const fh6::CarMesh &mesh) {
+QString lodGroup(const fls::CarMesh &mesh) {
     const QString base = lodBase(mesh.name);
     return mesh.modelInstanceId >= 0
         ? QString::number(mesh.modelInstanceId) + QLatin1Char('|') + base
         : base;
 }
 
-std::vector<char> highestLodFlags(const std::vector<fh6::CarMesh> &meshes) {
+std::vector<char> highestLodFlags(const std::vector<fls::CarMesh> &meshes) {
     QHash<QString, int> best;
-    for (const fh6::CarMesh &mesh : meshes) {
+    for (const fls::CarMesh &mesh : meshes) {
         const int rank = lodRank(mesh.name);
         const QString group = lodGroup(mesh);
         auto it = best.find(group);
@@ -747,7 +747,7 @@ enum CarPartType {
     kSideSkirtsPart = 37,
 };
 
-quint64 fallbackPaintHash(const fh6::CarMesh &mesh) {
+quint64 fallbackPaintHash(const fls::CarMesh &mesh) {
     const QString identity = mesh.name.toLower() + QLatin1Char('|') + mesh.materialName.toLower();
     if (isWindowGlassMaterial(mesh)) {
         return 0x9582FD1BA2FFF9A4ull;
@@ -776,7 +776,7 @@ struct WheelMaterialFallback {
     float metallic = 0.0f;
 };
 
-std::optional<WheelMaterialFallback> wheelMaterialFallback(const fh6::CarMesh &mesh) {
+std::optional<WheelMaterialFallback> wheelMaterialFallback(const fls::CarMesh &mesh) {
     if (!mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)) {
         return std::nullopt;
     }
@@ -813,7 +813,7 @@ int allowedWindowSidesForPart(const QString &rawName) {
     return 0;
 }
 
-int projectionSidesForMesh(const fh6::CarMesh &mesh) {
+int projectionSidesForMesh(const fls::CarMesh &mesh) {
     int sides = 0;
     if (isBodyPaintMaterial(mesh.materialName)) {
         if (isSpoilerMesh(mesh.name)) {
@@ -846,8 +846,8 @@ int projectionSidesForMesh(const fh6::CarMesh &mesh) {
     return sides;
 }
 
-std::optional<fh6::ModelVec3> locatorPosition(const fh6::CarModel &model, const char *name) {
-    for (const fh6::CarLocator &locator : model.locators) {
+std::optional<fls::ModelVec3> locatorPosition(const fls::CarModel &model, const char *name) {
+    for (const fls::CarLocator &locator : model.locators) {
         if (locator.name.compare(QLatin1String(name), Qt::CaseInsensitive) == 0) {
             return locator.position;
         }
@@ -855,11 +855,11 @@ std::optional<fh6::ModelVec3> locatorPosition(const fh6::CarModel &model, const 
     return std::nullopt;
 }
 
-std::optional<float> wheelAxleMidpointZ(const fh6::CarModel &model) {
+std::optional<float> wheelAxleMidpointZ(const fls::CarModel &model) {
     std::vector<float> locatorSamples;
     for (const char *name : {"carLocator_wheelLF", "carLocator_wheelLR",
                              "carLocator_wheelRF", "carLocator_wheelRR"}) {
-        if (const std::optional<fh6::ModelVec3> position = locatorPosition(model, name)) {
+        if (const std::optional<fls::ModelVec3> position = locatorPosition(model, name)) {
             locatorSamples.push_back(position->z);
         }
     }
@@ -872,13 +872,13 @@ std::optional<float> wheelAxleMidpointZ(const fh6::CarModel &model) {
     }
 
     std::vector<float> samples;
-    for (const fh6::CarMesh &mesh : model.meshes) {
+    for (const fls::CarMesh &mesh : model.meshes) {
         if (!mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
             || mesh.positions.empty()) {
             continue;
         }
         double sum = 0.0;
-        for (const fh6::ModelVec3 &position : mesh.positions) {
+        for (const fls::ModelVec3 &position : mesh.positions) {
             sum += mesh.boneTransform.transformPoint(position).z;
         }
         samples.push_back(static_cast<float>(sum / mesh.positions.size()));
@@ -917,12 +917,12 @@ std::optional<float> wheelAxleMidpointZ(const fh6::CarModel &model) {
 }
 
 std::optional<std::pair<float, float>> longitudinalLocatorRange(
-    const fh6::CarModel &model, const fh6::LiverySide &side) {
+    const fls::CarModel &model, const fls::LiverySide &side) {
     if (side.xAxis != 2) {
         return std::nullopt;
     }
-    const std::optional<fh6::ModelVec3> front = locatorPosition(model, "carLocator_bumperF");
-    const std::optional<fh6::ModelVec3> rear = locatorPosition(model, "carLocator_bumperR");
+    const std::optional<fls::ModelVec3> front = locatorPosition(model, "carLocator_bumperF");
+    const std::optional<fls::ModelVec3> rear = locatorPosition(model, "carLocator_bumperR");
     if (!front.has_value() || !rear.has_value()) {
         return std::nullopt;
     }
@@ -946,8 +946,8 @@ struct ProjectionAlignment {
 
 ProjectionAlignment alignProjectionToMask(
     int sideIndex,
-    const fh6::LiverySide &side,
-    const std::vector<fh6::CarMesh> &meshes,
+    const fls::LiverySide &side,
+    const std::vector<fls::CarMesh> &meshes,
     const std::vector<char> &keepLod,
     float axlo,
     float axhi,
@@ -980,7 +980,7 @@ ProjectionAlignment alignProjectionToMask(
     painter.setBrush(Qt::white);
     painter.setRenderHint(QPainter::Antialiasing, false);
 
-    const auto signedAxis = [&](const fh6::ModelVec3 &point, bool xAxis) {
+    const auto signedAxis = [&](const fls::ModelVec3 &point, bool xAxis) {
         const int axis = xAxis ? side.xAxis : side.yAxis;
         const float sign = xAxis ? side.xSign * side.xScale : side.ySign * side.yScale;
         return sign * axisOf(point, axis);
@@ -1003,7 +1003,7 @@ ProjectionAlignment alignProjectionToMask(
     result.pivotX = projectionPivot(true);
     result.pivotY = projectionPivot(false);
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
-        const fh6::CarMesh &mesh = meshes[mi];
+        const fls::CarMesh &mesh = meshes[mi];
         if (!keepLod[mi] || (projectionSidesForMesh(mesh) & (1 << sideIndex)) == 0) {
             continue;
         }
@@ -1018,12 +1018,12 @@ ProjectionAlignment alignProjectionToMask(
                     valid = false;
                     break;
                 }
-                const fh6::ModelVec3 point = mesh.boneTransform.transformPoint(mesh.positions[index]);
+                const fls::ModelVec3 point = mesh.boneTransform.transformPoint(mesh.positions[index]);
                 const float x = (signedAxis(point, true) - axlo) / axisWidth;
                 const float y = (signedAxis(point, false) - aylo) / axisHeight;
                 triangle[corner] = QPointF(x * (rasterWidth - 1), y * (rasterHeight - 1));
                 if (index < mesh.normals.size()) {
-                    const fh6::ModelVec3 normal =
+                    const fls::ModelVec3 normal =
                         mesh.boneTransform.transformVector(mesh.normals[index]);
                     facing += normal.x * kFacing[sideIndex].x()
                         + normal.y * kFacing[sideIndex].y()
@@ -1217,7 +1217,7 @@ ProjectionAlignment alignProjectionToMask(
     return result;
 }
 
-std::vector<uint8_t> upsampleCoverageMask(const fh6::SwatchMask &mask, int dstW, int dstH) {
+std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW, int dstH) {
     if (!mask.valid() || dstW <= 0 || dstH <= 0) {
         return {};
     }
@@ -1256,7 +1256,7 @@ std::vector<uint8_t> upsampleCoverageMask(const fh6::SwatchMask &mask, int dstW,
 
 } // namespace
 
-void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMaskSet &masks) {
+void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMaskSet &masks) {
     clearLivery();
     if (!initialized_ || !masks.valid()) {
         return;
@@ -1268,7 +1268,7 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
 
     int sourceW = 0, sourceH = 0;
     for (int s = 0; s < kLiverySideCount; ++s) {
-        const fh6::SwatchMask &m = masks.sides[s].mask;
+        const fls::SwatchMask &m = masks.sides[s].mask;
         if (m.valid()) {
             sourceW = m.width;
             sourceH = m.height;
@@ -1281,7 +1281,7 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
     const int texW = sourceW * kMaskTextureScale;
     const int texH = sourceH * kMaskTextureScale;
 
-    const auto sgn = [](const fh6::LiverySide &L, int which) {
+    const auto sgn = [](const fls::LiverySide &L, int which) {
         return which == 0 ? L.xSign * L.xScale : L.ySign * L.yScale;
     };
     float axlo[kLiverySideCount], axhi[kLiverySideCount], aylo[kLiverySideCount], ayhi[kLiverySideCount];
@@ -1289,13 +1289,13 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
         axlo[s] = aylo[s] = std::numeric_limits<float>::max();
         axhi[s] = ayhi[s] = std::numeric_limits<float>::lowest();
     }
-    const std::vector<fh6::CarMesh> &projectionMeshes = model.liveryProjectionMeshes.empty()
+    const std::vector<fls::CarMesh> &projectionMeshes = model.liveryProjectionMeshes.empty()
         ? model.meshes
         : model.liveryProjectionMeshes;
     const std::vector<char> keepLod = highestLodFlags(projectionMeshes);
     const std::optional<float> longitudinalPivotZ = wheelAxleMidpointZ(model);
     for (size_t mi = 0; mi < projectionMeshes.size(); ++mi) {
-        const fh6::CarMesh &mesh = projectionMeshes[mi];
+        const fls::CarMesh &mesh = projectionMeshes[mi];
         if (!keepLod[mi] || mesh.positions.empty()) {
             continue;
         }
@@ -1303,13 +1303,13 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
         if (candidateSides == 0) {
             continue;
         }
-        for (const fh6::ModelVec3 &position : mesh.positions) {
-            const fh6::ModelVec3 wp = mesh.boneTransform.transformPoint(position);
+        for (const fls::ModelVec3 &position : mesh.positions) {
+            const fls::ModelVec3 wp = mesh.boneTransform.transformPoint(position);
             for (int side = 0; side < kLiverySideCount; ++side) {
                 if ((candidateSides & (1 << side)) == 0) {
                     continue;
                 }
-                const fh6::LiverySide &liverySide = masks.sides[side];
+                const fls::LiverySide &liverySide = masks.sides[side];
                 const float ax = sgn(liverySide, 0) * axisOf(wp, liverySide.xAxis);
                 const float ay = sgn(liverySide, 1) * axisOf(wp, liverySide.yAxis);
                 axlo[side] = std::min(axlo[side], ax);
@@ -1351,8 +1351,8 @@ void CarModelRenderer::setLivery(const fh6::CarModel &model, const fh6::LiveryMa
     defaultSidePaintRegion_.reserve(kLiverySideCount);
     sideFacing_.reserve(kLiverySideCount);
     for (int s = 0; s < kLiverySideCount; ++s) {
-        const fh6::LiverySide &side = masks.sides[s];
-        const fh6::SwatchMask &m = side.mask;
+        const fls::LiverySide &side = masks.sides[s];
+        const fls::SwatchMask &m = side.mask;
         const bool haveMask = m.valid() && m.width == sourceW && m.height == sourceH;
         std::vector<uint8_t> upsampled;
         const uint8_t *maskData = empty.data();
@@ -1408,20 +1408,20 @@ void CarModelRenderer::setPaintTextureRegions(const QVector<QVector4D> &regions)
     sidePaintRegion_ = regions.size() == sideCount_ ? regions : defaultSidePaintRegion_;
 }
 
-void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
+void CarModelRenderer::uploadModel(const fls::CarModel &model) {
     if (!initialized_) {
         return;
     }
     clearModel();
 
-    const auto textureKey = [](const std::shared_ptr<const fh6::ModelMaterialTexture> &texture,
+    const auto textureKey = [](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                bool srgb) {
         return QString::number(reinterpret_cast<quintptr>(texture.get()), 16)
             + (srgb ? QLatin1String("|s") : QLatin1String("|l"));
     };
     QSet<QString> requiredTextureKeys;
     qsizetype missingTextureBytes = 0;
-    const auto requireTexture = [&](const std::shared_ptr<const fh6::ModelMaterialTexture> &texture,
+    const auto requireTexture = [&](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                     bool srgb) {
         if (!texture || !texture->image.valid()) {
             return;
@@ -1435,7 +1435,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             missingTextureBytes += static_cast<qsizetype>(texture->image.rgba.size());
         }
     };
-    for (const fh6::CarMesh &mesh : model.meshes) {
+    for (const fls::CarMesh &mesh : model.meshes) {
         if (!mesh.material) {
             continue;
         }
@@ -1464,7 +1464,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         }
     }
 
-    const auto uploadTexture = [&](const std::shared_ptr<const fh6::ModelMaterialTexture> &texture,
+    const auto uploadTexture = [&](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                    bool srgb) {
         if (!texture || !texture->image.valid()) {
             return GLuint{0};
@@ -1505,7 +1505,7 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
 
     const std::vector<char> keepLod = highestLodFlags(model.meshes);
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
-        const fh6::CarMesh &mesh = model.meshes[mi];
+        const fls::CarMesh &mesh = model.meshes[mi];
         const QString materialName = mesh.materialName.toLower();
         if (mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
             && materialName != QStringLiteral("rim") && materialName != QStringLiteral("rim2")) {
@@ -1518,25 +1518,25 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
             continue;
         }
 
-        const std::vector<fh6::ModelVec2> *uv = nullptr;
+        const std::vector<fls::ModelVec2> *uv = nullptr;
         if (mesh.liveryUvChannel >= 0
             && mesh.liveryUvChannel < static_cast<int>(mesh.uvChannels.size())
             && mesh.uvChannels[mesh.liveryUvChannel].size() == mesh.positions.size()) {
             uv = &mesh.uvChannels[mesh.liveryUvChannel];
         }
         const bool hasDirectLiveryUv = uv != nullptr && mesh.liveryUvChannel == 3;
-        const fh6::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
-        const std::vector<fh6::ModelVec2> *materialUv =
+        const fls::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
+        const std::vector<fls::ModelVec2> *materialUv =
             !mesh.uvChannels.empty() && mesh.uvChannels[0].size() == mesh.positions.size()
             ? &mesh.uvChannels[0]
             : nullptr;
-        const fh6::TexCoordTransform &materialUvTransform = mesh.texCoordTransforms[0];
+        const fls::TexCoordTransform &materialUvTransform = mesh.texCoordTransforms[0];
 
         std::vector<float> interleaved;
         interleaved.reserve(mesh.positions.size() * 10);
         for (size_t i = 0; i < mesh.positions.size(); ++i) {
-            const fh6::ModelVec3 &p = mesh.positions[i];
-            const fh6::ModelVec3 &n = i < mesh.normals.size() ? mesh.normals[i] : fh6::ModelVec3{0.0f, 1.0f, 0.0f};
+            const fls::ModelVec3 &p = mesh.positions[i];
+            const fls::ModelVec3 &n = i < mesh.normals.size() ? mesh.normals[i] : fls::ModelVec3{0.0f, 1.0f, 0.0f};
             interleaved.push_back(p.x);
             interleaved.push_back(p.y);
             interleaved.push_back(p.z);
@@ -1700,8 +1700,8 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                                     m[3], m[7], m[11], m[15]);
 
         QVector3D center;
-        for (const fh6::ModelVec3 &p : mesh.positions) {
-            const fh6::ModelVec3 wp = mesh.boneTransform.transformPoint(p);
+        for (const fls::ModelVec3 &p : mesh.positions) {
+            const fls::ModelVec3 wp = mesh.boneTransform.transformPoint(p);
             center += QVector3D(wp.x, wp.y, wp.z);
         }
         center /= static_cast<float>(mesh.positions.size());
@@ -1741,7 +1741,7 @@ void CarModelRenderer::render(
     const QMatrix4x4 &projection,
     GLuint liveryTexture,
     const QColor &basePaint,
-    const fh6::LiveryPaintState *paintState) {
+    const fls::LiveryPaintState *paintState) {
     if (!initialized_ || meshes_.empty()) {
         return;
     }
@@ -1794,10 +1794,10 @@ void CarModelRenderer::render(
         float secondaryMix = 0.0f;
         float gloss = mesh.gloss;
         float metallic = mesh.metallic;
-        const fh6::LiveryPaintMaterial *paint = paintState != nullptr
+        const fls::LiveryPaintMaterial *paint = paintState != nullptr
             ? paintState->find(mesh.paintMaterialHash)
             : nullptr;
-        const auto decodedColor = [](const fh6::LiveryPaintColor &color) {
+        const auto decodedColor = [](const fls::LiveryPaintColor &color) {
             return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
         };
         if (paint != nullptr) {

@@ -1,5 +1,5 @@
-#include "differentiable_cover.h"
-#include "differentiable_cover_gpu.h"
+#include "differential_cover.h"
+#include "differential_cover_gpu.h"
 #include "pen_fill.h"
 
 #include <QtCore>
@@ -119,7 +119,7 @@ bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
     std::unique_ptr<cover::GpuAreaEvaluator> gpu =
         cover::createGpuAreaEvaluator(catalog);
     if (gpu->available()) {
-#ifdef FH6_HAS_CUDA
+#ifdef FLS_HAS_CUDA
         if (!check(
                 gpu->stats().backend.contains(QStringLiteral("CUDA")),
                 "CUDA was not selected as the first GPU backend")) {
@@ -433,17 +433,17 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     cover::FillOptions options;
     bool budgetOk = false;
     const int requestedBudget =
-        qEnvironmentVariableIntValue("FH6_DIFFERENTIABLE_TEST_BUDGET", &budgetOk);
+        qEnvironmentVariableIntValue("FLS_DIFFERENTIAL_TEST_BUDGET", &budgetOk);
     options.budget = budgetOk && requestedBudget > 0 ? requestedBudget : 2;
     bool iterationsOk = false;
     const int requestedIterations =
-        qEnvironmentVariableIntValue("FH6_DIFFERENTIABLE_TEST_ITERATIONS",
+        qEnvironmentVariableIntValue("FLS_DIFFERENTIAL_TEST_ITERATIONS",
                                      &iterationsOk);
     options.adamIterations =
         iterationsOk && requestedIterations > 0 ? requestedIterations : 12;
     bool restartsOk = false;
     const int requestedRestarts =
-        qEnvironmentVariableIntValue("FH6_DIFFERENTIABLE_TEST_RESTARTS",
+        qEnvironmentVariableIntValue("FLS_DIFFERENTIAL_TEST_RESTARTS",
                                      &restartsOk);
     options.restarts =
         restartsOk && requestedRestarts >= 0 ? requestedRestarts : 0;
@@ -451,7 +451,7 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     bool repeatOk = false;
     const int requestedRepeat =
         qEnvironmentVariableIntValue(
-            "FH6_DIFFERENTIABLE_TEST_REPEAT", &repeatOk);
+            "FLS_DIFFERENTIAL_TEST_REPEAT", &repeatOk);
     const bool repeat = !repeatOk || requestedRepeat != 0;
     QVector<cover::FillProgress> progress;
     const cover::FillResult first =
@@ -515,13 +515,8 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                   "logged contour solver did not report initial progress")
         || !check(progress.back().placementCount == first.placements.size(),
                   "logged contour solver progress placement count is incomplete")
-        || !check(std::any_of(
-                      progress.cbegin(), progress.cend(),
-                      [](const cover::FillProgress &update) {
-                          return std::isfinite(update.etaSeconds)
-                              && update.etaSeconds >= 0.0;
-                      }),
-                  "logged contour solver did not produce an ETA")) {
+        || !check(progress.back().elapsedSeconds >= 0.0,
+                  "logged contour solver did not report elapsed time")) {
         return false;
     }
     enum class ProgressPhase {
@@ -551,8 +546,7 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                        && std::isfinite(update.coveredArea)
                        && std::isfinite(update.residualArea)
                        && std::isfinite(update.elapsedSeconds)
-                       && (update.etaSeconds < 0.0
-                           || std::isfinite(update.etaSeconds)),
+                       && update.elapsedSeconds >= 0.0,
                    "logged contour solver progress metrics are invalid")
             || !check(
                 i == 0
@@ -638,6 +632,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    std::cout << "Differentiable cover tests passed\n";
+    std::cout << "Differential cover tests passed\n";
     return 0;
 }

@@ -23,7 +23,7 @@ namespace gui {
 
 using namespace mw_detail;
 
-void MainWindow::setProject(fh6::Project project) {
+void MainWindow::setProject(fls::Project project) {
     state_->setProject(std::move(project));
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
@@ -49,7 +49,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     if (carPreview_ == nullptr || state_ == nullptr || !state_->hasProject_) {
         return;
     }
-    const fh6::Project &project = state_->project_;
+    const fls::Project &project = state_->project_;
     if (!project.isLivery) {
         return;
     }
@@ -179,11 +179,11 @@ void MainWindow::rebuildSectionBar() {
         return;
     }
     QVector<LiverySectionBar::SectionInfo> sections;
-    for (fh6::scene::Group *group : liverySections(state_->project_)) {
+    for (fls::scene::Group *group : liverySections(state_->project_)) {
         const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(group->id).size());
         sections.push_back({group->id, group->name, shapeCount,
-                            fh6::kEnforceLiveryShapeLimits
-                                && shapeCount > fh6::liverySectionShapeLimit(group->liverySectionSlot)});
+                            fls::kEnforceLiveryShapeLimits
+                                && shapeCount > fls::liverySectionShapeLimit(group->liverySectionSlot)});
     }
     sectionBar_->setSections(sections);
 }
@@ -215,9 +215,9 @@ void MainWindow::prebakeLiverySectionCaches() {
     }
 
     QVector<QString> sectionIds;
-    const QVector<fh6::scene::Group *> sections = liverySections(state_->project_);
+    const QVector<fls::scene::Group *> sections = liverySections(state_->project_);
     sectionIds.reserve(sections.size());
-    for (const fh6::scene::Group *group : sections) {
+    for (const fls::scene::Group *group : sections) {
         sectionIds.push_back(group->id);
     }
 
@@ -247,9 +247,9 @@ QString MainWindow::activeLiverySectionId() const {
     if (state_ == nullptr || !state_->hasProject_ || !state_->project_.isLivery) {
         return {};
     }
-    const QVector<fh6::scene::Group *> sections = liverySections(state_->project_);
+    const QVector<fls::scene::Group *> sections = liverySections(state_->project_);
     const bool activeSectionExists = std::any_of(
-        sections.cbegin(), sections.cend(), [this](const fh6::scene::Group *group) {
+        sections.cbegin(), sections.cend(), [this](const fls::scene::Group *group) {
             return group->id == state_->activeSectionId_;
         });
     if (activeSectionExists) {
@@ -270,7 +270,7 @@ int MainWindow::activeLiverySectionSlot() const {
     if (sectionId.isEmpty()) {
         return -1;
     }
-    for (const fh6::scene::Group *section : liverySections(state_->project_)) {
+    for (const fls::scene::Group *section : liverySections(state_->project_)) {
         if (section->id == sectionId) {
             return section->liverySectionSlot;
         }
@@ -284,7 +284,7 @@ void MainWindow::applyLiverySectionVisibility(const QString &sectionGroupId) {
     }
     const QVector<QString> activeLeaves = state_->leafLayerIdsForEntry(sectionGroupId);
     const QSet<QString> activeSet(activeLeaves.begin(), activeLeaves.end());
-    forEachShape(state_->project_, [&](fh6::scene::Shape &layer) {
+    forEachShape(state_->project_, [&](fls::scene::Shape &layer) {
         layer.visible = activeSet.contains(layer.id);
     });
 }
@@ -302,15 +302,15 @@ void MainWindow::updateStatus() {
     int shapeCount = 0;
     int guideCount = 0;
     int groupCount = 0;
-    forEachLayer(state_->project_, [&](fh6::scene::Layer &node) {
+    forEachLayer(state_->project_, [&](fls::scene::Layer &node) {
         switch (node.kind()) {
-        case fh6::scene::LayerKind::Shape:
+        case fls::scene::LayerKind::Shape:
             ++shapeCount;
             break;
-        case fh6::scene::LayerKind::Guide:
+        case fls::scene::LayerKind::Guide:
             ++guideCount;
             break;
-        case fh6::scene::LayerKind::Group:
+        case fls::scene::LayerKind::Group:
             ++groupCount;
             break;
         }
@@ -348,11 +348,11 @@ void MainWindow::updateColorPaletteWidget() {
 }
 
 void MainWindow::updateLastSelectedShapeDefaults() {
-    const QVector<fh6::scene::Shape *> selected = state_->selectedLayers();
+    const QVector<fls::scene::Shape *> selected = state_->selectedLayers();
     if (selected.isEmpty() || selected.front() == nullptr) {
         return;
     }
-    const fh6::scene::Shape *layer = selected.front();
+    const fls::scene::Shape *layer = selected.front();
     lastSelectedShapeColor_ = layer->color;
     lastSelectedShapeScaleX_ = layer->scaleX;
     lastSelectedShapeScaleY_ = layer->scaleY;
@@ -541,13 +541,13 @@ bool MainWindow::ensureProjectForInsertion() {
     }
     rememberImportDirectory(folder, QStringLiteral("newProject"));
 
-    fh6::Project project;
+    fls::Project project;
     project.name = QFileInfo(folder).fileName();
     if (project.name.isEmpty()) {
         project.name = QStringLiteral("Untitled");
     }
     project.sourceFolder = folder;
-    project.headerMetadata = fh6::defaultDraftHeader(project.name, creatorName_);
+    project.headerMetadata = fls::defaultDraftHeader(project.name, creatorName_);
     setProject(std::move(project));
     return true;
 }
@@ -634,12 +634,12 @@ void MainWindow::setCreatorNameDialog() {
     statusBar()->showMessage(QStringLiteral("Creator name updated"), 5000);
 }
 
-fh6::HeaderMetadata &MainWindow::ensureProjectHeaderMetadata() {
+fls::HeaderMetadata &MainWindow::ensureProjectHeaderMetadata() {
     if (!state_->project_.headerMetadata) {
         try {
-            state_->project_.headerMetadata = fh6::parseHeader(state_->project_.sourceHeader);
+            state_->project_.headerMetadata = fls::parseHeader(state_->project_.sourceHeader);
         } catch (const std::exception &) {
-            state_->project_.headerMetadata = fh6::defaultDraftHeader(
+            state_->project_.headerMetadata = fls::defaultDraftHeader(
                 state_->project_.name, creatorName_, static_cast<quint32>(state_->project_.carId));
         }
     }

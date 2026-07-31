@@ -11,11 +11,11 @@
 #include <algorithm>
 #include <limits>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
-using fh6::detail::readLeU16;
-using fh6::detail::readLeU32;
+using fls::detail::readLeU16;
+using fls::detail::readLeU32;
 
 constexpr quint32 kEndOfCentralDirectory = 0x06054b50;
 constexpr quint32 kCentralDirectoryHeader = 0x02014b50;
@@ -431,4 +431,4 @@ QByteArray readZipEntry(const QString &zipPath, const QString &entryPath, QStrin
     return readZipEntries(zipPath, QStringList{key}, error).value(key.toLower());
 }
 
-} // namespace fh6
+} // namespace fls

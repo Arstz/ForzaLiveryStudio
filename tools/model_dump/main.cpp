@@ -19,7 +19,7 @@
 #include <memory>
 #include <string>
 
-using namespace fh6;
+using namespace fls;
 
 static bool isPaintMaterial(const QString &material)
 {
@@ -449,7 +449,7 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     const QStringList args = app.arguments();
     if (args.size() < 2) {
-        std::fprintf(stderr, "usage: fh6_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv]\n");
+        std::fprintf(stderr, "usage: fls_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv]\n");
         return 2;
     }
 

@@ -4,7 +4,7 @@
 
 #include <QVector>
 
-namespace fh6 {
+namespace fls {
 
 class VinylFlattener {
 public:
@@ -13,4 +13,4 @@ public:
 
 QVector<FlattenedLayer> flattenGroup(const VinylGroup &root);
 
-} // namespace fh6
+} // namespace fls

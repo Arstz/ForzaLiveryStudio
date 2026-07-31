@@ -25,7 +25,7 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    void paintLayer(QPainter &painter, const fh6::scene::Shape &layer, const QTransform &world) const;
+    void paintLayer(QPainter &painter, const fls::scene::Shape &layer, const QTransform &world) const;
 
     const ProjectClipboard *clipboard_ = nullptr;
     ShapeGeometryStore geometry_;

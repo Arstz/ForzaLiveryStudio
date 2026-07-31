@@ -2,9 +2,11 @@
 
 #include "car_registry.h"
 #include "fm_codec.h"
+#include "gui_assets.h"
 #include "header_codec.h"
 #include "image_io.h"
 #include "livery_codec.h"
+#include "theme_manager.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -14,6 +16,23 @@
 
 namespace gui {
 namespace {
+
+constexpr int kPathRole = Qt::UserRole;
+constexpr int kAssetRole = Qt::UserRole + 1;
+constexpr int kMotorsportRole = Qt::UserRole + 2;
+constexpr int kBaseTextRole = Qt::UserRole + 3;
+constexpr int kNameRole = Qt::UserRole + 4;
+constexpr int kKindRole = Qt::UserRole + 5;
+constexpr int kThumbnailRole = Qt::UserRole + 6;
+constexpr int kGridWidth = 184;
+constexpr int kGridMargin = 2;
+constexpr int kTilePadding = 4;
+constexpr int kLabelHeight = 42;
+constexpr int kCompactIconExtent = 28;
+constexpr int kCompactIconGap = 6;
+constexpr int kThumbnailCacheWidth = 512;
+constexpr int kAssetRowHeight = 86;
+constexpr int kFolderRowPadding = 12;
 
 enum class AssetKind {
     None,
@@ -85,10 +104,10 @@ QString findThumbnail(const QDir &directory) {
 QString liveryCarName(AssetKind kind, const QString &path) {
     try {
         if (kind == AssetKind::HorizonLivery) {
-            return sharedCarRegistry().displayName(fh6::readLiveryPayload(path).carId);
+            return sharedCarRegistry().displayName(fls::readLiveryPayload(path).carId);
         }
         if (kind == AssetKind::MotorsportLivery) {
-            return sharedCarRegistry().displayName(fh6::readFM2023LiveryPayload(path).carId);
+            return sharedCarRegistry().displayName(fls::readFM2023LiveryPayload(path).carId);
         }
     } catch (const std::exception &) {
     }
@@ -104,7 +123,7 @@ void readHeaderMetadata(const QString &headerPath, AssetInfo &asset) {
         return;
     }
     try {
-        const fh6::HeaderMetadata metadata = fh6::parseHeader(file.readAll());
+        const fls::HeaderMetadata metadata = fls::parseHeader(file.readAll());
         asset.name = metadata.name.trimmed();
         asset.creator = metadata.creatorName.trimmed();
         if (metadata.year != 0 && metadata.month != 0) {
@@ -140,9 +159,9 @@ AssetInfo inspectAsset(const QString &path) {
         QFile dataFile(data);
         if (dataFile.open(QIODevice::ReadOnly)) {
             const QByteArray bytes = dataFile.readAll();
-            if (fh6::isFM2023Livery(bytes)) {
+            if (fls::isFM2023Livery(bytes)) {
                 asset.kind = AssetKind::MotorsportLivery;
-            } else if (fh6::isRawGyvl(bytes)) {
+            } else if (fls::isRawGyvl(bytes)) {
                 asset.kind = AssetKind::MotorsportGroup;
             }
         }
@@ -177,10 +196,166 @@ QImage readThumbnail(const QString &path) {
         return {};
     }
     const QImage image = readThumbnailImage(path);
-    return image.isNull()
-        ? QImage()
-        : image.scaled(QSize(112, 76), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (image.isNull() || image.width() <= kThumbnailCacheWidth) {
+        return image;
+    }
+
+    return image.scaledToWidth(
+        kThumbnailCacheWidth, Qt::SmoothTransformation);
 }
+
+class ImportAssetGridDelegate final : public QStyledItemDelegate {
+public:
+    explicit ImportAssetGridDelegate(QListWidget *view)
+        : QStyledItemDelegate(view),
+          view_(view) {}
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override {
+        if (view_ == nullptr
+            || view_->viewMode() != QListView::IconMode) {
+            return QStyledItemDelegate::sizeHint(option, index);
+        }
+
+        const QImage thumbnail =
+            index.data(kThumbnailRole).value<QImage>();
+        const int frameInset = kGridMargin + kTilePadding;
+        const int contentWidth = kGridWidth - 2 * frameInset;
+        const int previewHeight = thumbnail.isNull()
+            ? 0
+            : qRound(
+                  static_cast<qreal>(thumbnail.height()) * contentWidth
+                  / thumbnail.width());
+        return QSize(
+            kGridWidth,
+            2 * frameInset + previewHeight + kLabelHeight);
+    }
+
+    void paint(QPainter *painter,
+               const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override {
+        if (view_ == nullptr
+            || view_->viewMode() != QListView::IconMode) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        const bool dark = isDarkTheme(currentUiTheme());
+        const bool hovered =
+            option.state.testFlag(QStyle::State_MouseOver);
+        const bool selected =
+            option.state.testFlag(QStyle::State_Selected);
+        const QColor tileBase =
+            dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
+        const QColor tileHover =
+            dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
+        const QColor stroke =
+            dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
+        const QColor activeStroke =
+            dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
+        const QColor previewBase =
+            dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
+        const QColor labelColor =
+            dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
+        const QRect tileRect =
+            option.rect.adjusted(
+                kGridMargin, kGridMargin,
+                -kGridMargin, -kGridMargin);
+        const QRect contentRect =
+            tileRect.adjusted(
+                kTilePadding, kTilePadding,
+                -kTilePadding, -kTilePadding);
+        const QImage thumbnail =
+            index.data(kThumbnailRole).value<QImage>();
+        QRect previewRect;
+        QRect labelRect;
+        QRect iconRect;
+        if (!thumbnail.isNull()) {
+            const int previewHeight =
+                contentRect.height() - kLabelHeight;
+            previewRect = QRect(
+                contentRect.left(), contentRect.top(),
+                contentRect.width(), previewHeight);
+            labelRect = QRect(
+                contentRect.left(), previewRect.bottom() + 1,
+                contentRect.width(), kLabelHeight);
+        } else {
+            iconRect = QRect(
+                contentRect.left(),
+                contentRect.center().y() - kCompactIconExtent / 2,
+                kCompactIconExtent, kCompactIconExtent);
+            labelRect = QRect(
+                iconRect.right() + 1 + kCompactIconGap,
+                contentRect.top(),
+                contentRect.width() - kCompactIconExtent - kCompactIconGap,
+                contentRect.height());
+        }
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->fillRect(
+            tileRect,
+            hovered || selected ? tileHover : tileBase);
+        painter->setPen(QPen(
+            hovered || selected ? activeStroke : stroke, 1));
+        painter->drawRect(tileRect.adjusted(0, 0, -1, -1));
+
+        if (!thumbnail.isNull()) {
+            painter->fillRect(previewRect, previewBase);
+            const QImage fitted = thumbnail.scaledToWidth(
+                previewRect.width(), Qt::SmoothTransformation);
+            painter->drawImage(previewRect.topLeft(), fitted);
+        } else {
+            const QPixmap icon = index.data(Qt::DecorationRole)
+                                     .value<QIcon>()
+                                     .pixmap(
+                                         kCompactIconExtent,
+                                         kCompactIconExtent);
+            painter->drawPixmap(
+                iconRect.center().x() - icon.width() / 2,
+                iconRect.center().y() - icon.height() / 2,
+                icon);
+        }
+
+        const QStringList lines =
+            index.data(Qt::DisplayRole).toString().split(QLatin1Char('\n'));
+        const QFontMetrics metrics(painter->font());
+        painter->setPen(labelColor);
+        if (!lines.isEmpty()) {
+            const QString title =
+                metrics.elidedText(
+                    lines.front(), Qt::ElideRight, labelRect.width());
+            painter->drawText(
+                QRect(labelRect.left(), labelRect.top() + 3,
+                      labelRect.width(), metrics.height()),
+                (thumbnail.isNull() ? Qt::AlignLeft : Qt::AlignHCenter)
+                    | Qt::AlignTop,
+                title);
+        }
+        if (lines.size() > 1) {
+            QFont detailFont = painter->font();
+            detailFont.setPointSizeF(
+                std::max(1.0, detailFont.pointSizeF() - 1.0));
+            painter->setFont(detailFont);
+            const QFontMetrics detailMetrics(detailFont);
+            const QString details =
+                detailMetrics.elidedText(
+                    lines.mid(1).join(QStringLiteral("  |  ")),
+                    Qt::ElideRight, labelRect.width());
+            painter->drawText(
+                QRect(labelRect.left(),
+                      labelRect.bottom() - detailMetrics.height(),
+                      labelRect.width(), detailMetrics.height()),
+                (thumbnail.isNull() ? Qt::AlignLeft : Qt::AlignHCenter)
+                    | Qt::AlignBottom,
+                details);
+        }
+        painter->restore();
+    }
+
+private:
+    QListWidget *view_ = nullptr;
+};
 
 class ImportAssetDialog final : public QDialog {
 public:
@@ -221,6 +396,20 @@ public:
         searchEdit_->setClearButtonEnabled(true);
         typeFilter_ = new QComboBox(this);
         typeFilter_->addItems({QStringLiteral("All"), QStringLiteral("Livery"), QStringLiteral("Group")});
+        gridViewButton_ = new QToolButton(this);
+        gridViewButton_->setCheckable(true);
+        gridViewButton_->setAutoRaise(true);
+        gridViewButton_->setIcon(assetIcon(QStringLiteral("ViewGrid.xpm")));
+        gridViewButton_->setToolTip(QStringLiteral("Grid view"));
+        listViewButton_ = new QToolButton(this);
+        listViewButton_->setCheckable(true);
+        listViewButton_->setAutoRaise(true);
+        listViewButton_->setIcon(assetIcon(QStringLiteral("ViewList.xpm")));
+        listViewButton_->setToolTip(QStringLiteral("List view"));
+        auto *viewButtonGroup = new QButtonGroup(this);
+        viewButtonGroup->setExclusive(true);
+        viewButtonGroup->addButton(gridViewButton_);
+        viewButtonGroup->addButton(listViewButton_);
         QSettings settings;
         searchEdit_->setText(settings.value(QStringLiteral("import/sourceBrowserSearch")).toString());
         const int savedTypeFilter = settings.value(QStringLiteral("import/sourceBrowserType"), 0).toInt();
@@ -229,15 +418,18 @@ public:
         }
         filters->addWidget(searchEdit_, 1);
         filters->addWidget(typeFilter_);
+        filters->addWidget(gridViewButton_);
+        filters->addWidget(listViewButton_);
         layout->addLayout(filters);
 
         list_ = new QListWidget(this);
-        list_->setViewMode(QListView::ListMode);
         list_->setIconSize(QSize(112, 76));
-        list_->setSpacing(2);
         list_->setSelectionMode(QAbstractItemView::SingleSelection);
-        list_->setAlternatingRowColors(true);
+        list_->setItemDelegate(new ImportAssetGridDelegate(list_));
         layout->addWidget(list_, 1);
+        setGridView(settings.value(
+            QStringLiteral("import/sourceBrowserGridView"), true).toBool(),
+            false);
 
         hint_ = new QLabel(QStringLiteral("Open a folder or select an import asset."), this);
         hint_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -269,6 +461,12 @@ public:
             QSettings().setValue(QStringLiteral("import/sourceBrowserType"), index);
             applyFilters();
         });
+        connect(gridViewButton_, &QToolButton::clicked, this, [this]() {
+            setGridView(true);
+        });
+        connect(listViewButton_, &QToolButton::clicked, this, [this]() {
+            setGridView(false);
+        });
         connect(list_, &QListWidget::currentItemChanged, this,
                 [this](QListWidgetItem *current, QListWidgetItem *) { updateSelection(current); });
         connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
@@ -299,18 +497,51 @@ public:
     }
 
 private:
-    static constexpr int kPathRole = Qt::UserRole;
-    static constexpr int kAssetRole = Qt::UserRole + 1;
-    static constexpr int kMotorsportRole = Qt::UserRole + 2;
-    static constexpr int kBaseTextRole = Qt::UserRole + 3;
-    static constexpr int kNameRole = Qt::UserRole + 4;
-    static constexpr int kKindRole = Qt::UserRole + 5;
-
     struct AssetDetailsRequest {
         QString assetPath;
         QString thumbnailPath;
         AssetKind kind = AssetKind::None;
     };
+
+    void setGridView(bool enabled, bool persist = true) {
+        gridViewButton_->setChecked(enabled);
+        listViewButton_->setChecked(!enabled);
+        list_->setViewMode(enabled ? QListView::IconMode : QListView::ListMode);
+        list_->setFlow(enabled ? QListView::LeftToRight : QListView::TopToBottom);
+        list_->setWrapping(enabled);
+        list_->setResizeMode(enabled ? QListView::Adjust : QListView::Fixed);
+        list_->setMovement(QListView::Static);
+        list_->setSpacing(enabled ? 2 : 0);
+        list_->setGridSize({});
+        list_->setUniformItemSizes(false);
+        list_->setWordWrap(false);
+        list_->setAlternatingRowColors(!enabled);
+        for (int row = 0; row < list_->count(); ++row) {
+            updateItemSizeHint(list_->item(row));
+        }
+        list_->doItemsLayout();
+        if (persist) {
+            QSettings().setValue(
+                QStringLiteral("import/sourceBrowserGridView"), enabled);
+        }
+    }
+
+    void updateItemSizeHint(QListWidgetItem *item) const {
+        if (item == nullptr) {
+            return;
+        }
+        if (list_->viewMode() == QListView::IconMode) {
+            item->setSizeHint({});
+            return;
+        }
+        const int folderIconExtent =
+            style()->pixelMetric(QStyle::PM_LargeIconSize);
+        item->setSizeHint(QSize(
+            0,
+            item->data(kAssetRole).toBool()
+                ? kAssetRowHeight
+                : folderIconExtent + kFolderRowPadding));
+    }
 
     void navigate(const QString &path, bool recordHistory = true) {
         const QFileInfo info(path);
@@ -379,7 +610,7 @@ private:
             item->setData(kNameRole, name);
             item->setData(kKindRole, static_cast<int>(asset.kind));
             item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
-            item->setSizeHint(QSize(0, asset.valid() ? 86 : folderIconExtent + 12));
+            updateItemSizeHint(item);
         }
 
         const QString parent = QFileInfo(currentDirectory_).absolutePath();
@@ -481,7 +712,9 @@ private:
             QListWidgetItem *item = list_->item(row);
             if (item->data(kPathRole).toString() == assetPath) {
                 if (!image.isNull()) {
+                    item->setData(kThumbnailRole, image);
                     item->setIcon(QIcon(QPixmap::fromImage(image)));
+                    list_->doItemsLayout();
                 }
                 if (!car.isEmpty()) {
                     item->setText(item->data(kBaseTextRole).toString()
@@ -535,6 +768,8 @@ private:
     QLineEdit *pathEdit_ = nullptr;
     QLineEdit *searchEdit_ = nullptr;
     QComboBox *typeFilter_ = nullptr;
+    QToolButton *gridViewButton_ = nullptr;
+    QToolButton *listViewButton_ = nullptr;
     QListWidget *list_ = nullptr;
     QLabel *hint_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;

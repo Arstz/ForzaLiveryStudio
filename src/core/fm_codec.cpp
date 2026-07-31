@@ -2,7 +2,7 @@
 
 #include "binary_io.h"
 #include "cgroup_codec.h"
-#include "fh6_core.h"
+#include "fls_core.h"
 #include "layer.h"
 #include "matrix_math.h"
 #include "scene_codec.h"
@@ -20,7 +20,7 @@
 #include <stdexcept>
 #include <variant>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 using detail::readLeFloat;
@@ -571,29 +571,29 @@ const LiverySlotDef kFM2023LiverySlots[7] = {
     {"FrontWindshield", 90.0},
 };
 
-} // namespace fh6
+} // namespace fls
 
-bool fh6::isFM2023Livery(const QByteArray &fileData) {
+bool fls::isFM2023Livery(const QByteArray &fileData) {
     return isFM2023LiveryImpl(fileData);
 }
 
-bool fh6::isRawGyvl(const QByteArray &fileData) {
+bool fls::isRawGyvl(const QByteArray &fileData) {
     return isRawGyvlImpl(fileData);
 }
 
-fh6::FM2023LiveryPayload fh6::readFM2023LiveryPayload(const QString &folderOrFile) {
+fls::FM2023LiveryPayload fls::readFM2023LiveryPayload(const QString &folderOrFile) {
     return readFM2023LiveryPayloadImpl(folderOrFile);
 }
 
-QVector<fh6::LiverySection> fh6::decodeFM2023LiverySections(const FM2023LiveryPayload &payload) {
+QVector<fls::LiverySection> fls::decodeFM2023LiverySections(const FM2023LiveryPayload &payload) {
     return buildFM2023LiverySections(payload.gyvlBody, payload.sectionCounts);
 }
 
-fh6::VinylGroup fh6::decodeFM2023RawGroup(const QByteArray &payload) {
+fls::VinylGroup fls::decodeFM2023RawGroup(const QByteArray &payload) {
     return decodeFM2023RawGroupImpl(payload, nullptr);
 }
 
-fh6::Project fh6::importFM2023Asset(const QString &folderOrFile) {
+fls::Project fls::importFM2023Asset(const QString &folderOrFile) {
     const QFileInfo info(folderOrFile);
     QString dataPath;
     if (info.isDir()) {

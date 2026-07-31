@@ -6,7 +6,7 @@
 
 #include <array>
 
-namespace fh6 {
+namespace fls {
 
 constexpr int kLiverySideCount = 11;
 
@@ -42,4 +42,4 @@ struct LiveryMaskSet {
 
 LiveryMaskSet loadLiveryMasks(const QString &dir, QString *error = nullptr);
 
-} // namespace fh6
+} // namespace fls

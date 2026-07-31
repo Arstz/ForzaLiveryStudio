@@ -1,4 +1,4 @@
-#include "fh6_core.h"
+#include "fls_core.h"
 #include "fm_codec.h"
 #include "header_codec.h"
 #include "vinyl_decoder.h"
@@ -21,7 +21,7 @@
 #include <cmath>
 #include <cstdio>
 
-using namespace fh6;
+using namespace fls;
 
 namespace {
 
@@ -1173,7 +1173,7 @@ int main(int argc, char *argv[])
 
     if (generateSyntheticMode) {
         if (args.size() < 3) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --generate-synthetic <sourceFolder> <outputRoot>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --generate-synthetic <sourceFolder> <outputRoot>\n");
             return 2;
         }
         try {
@@ -1187,7 +1187,7 @@ int main(int argc, char *argv[])
 
     if (bodyRangeMode) {
         if (args.size() < 4) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --body-range <liveryFolder> <start> <length>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --body-range <liveryFolder> <start> <length>\n");
             return 2;
         }
         bool startOk = false;
@@ -1210,7 +1210,7 @@ int main(int argc, char *argv[])
     const bool fmStatsMode = args.removeAll(QStringLiteral("--fm-stats")) > 0;
     if (fmStatsMode) {
         if (args.size() < 2) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --fm-stats <assetFolder>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --fm-stats <assetFolder>\n");
             return 2;
         }
         try {
@@ -1267,7 +1267,7 @@ int main(int argc, char *argv[])
 
     if (paintMode) {
         if (args.size() < 2) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --paint <liveryFolder>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --paint <liveryFolder>\n");
             return 2;
         }
         const LiveryPayload payload = readLiveryPayload(args[1]);
@@ -1296,7 +1296,7 @@ int main(int argc, char *argv[])
 
     if (exportReencodedMode) {
         if (args.size() < 3) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --export-reencoded <liveryFolder> <outputFolder>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --export-reencoded <liveryFolder> <outputFolder>\n");
             return 2;
         }
         const QString folder = args[1];
@@ -1350,7 +1350,7 @@ int main(int argc, char *argv[])
 
     if (roundtripMode) {
         if (args.size() < 2) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --roundtrip <liveryFolder>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --roundtrip <liveryFolder>\n");
             return 2;
         }
         const QString folder = args[1];
@@ -1390,7 +1390,7 @@ int main(int argc, char *argv[])
 
     if (transitionsMode) {
         if (args.size() < 2) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --transitions <liveryFolder>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --transitions <liveryFolder>\n");
             return 2;
         }
         const LiveryPayload payload = readLiveryPayload(args[1]);
@@ -1404,7 +1404,7 @@ int main(int argc, char *argv[])
 
     if (sectionTerminalsMode) {
         if (args.size() < 2) {
-            std::fprintf(stderr, "usage: fh6_livery_compare --section-terminals <liveryFolder>\n");
+            std::fprintf(stderr, "usage: fls_livery_compare --section-terminals <liveryFolder>\n");
             return 2;
         }
         const LiveryPayload payload = readLiveryPayload(args[1]);
@@ -1415,7 +1415,7 @@ int main(int argc, char *argv[])
 
     if (args.size() < 3) {
         std::fprintf(stderr,
-            "usage: fh6_livery_compare <liveryFolder> <sectionsFolder> [section] [--verbose]\n");
+            "usage: fls_livery_compare <liveryFolder> <sectionsFolder> [section] [--verbose]\n");
         return 2;
     }
     const QString liveryFolder = args[1];

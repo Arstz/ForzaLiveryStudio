@@ -4,7 +4,7 @@
 
 #include "car_preview_widget.h"
 #include "car_registry.h"
-#include "fh6_core.h"
+#include "fls_core.h"
 #include "fm_codec.h"
 #include "gui_constants.h"
 #include "header_metadata_widget.h"
@@ -47,16 +47,16 @@ QString generatedGroupId(int index) {
     return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
 }
 
-fh6::Project createNewProject(bool livery, const QString &creatorName, int carId) {
-    fh6::Project project;
+fls::Project createNewProject(bool livery, const QString &creatorName, int carId) {
+    fls::Project project;
     project.name = QStringLiteral("Untitled");
     project.isLivery = livery;
     project.carId = livery ? carId : 0;
-    project.headerMetadata = fh6::defaultDraftHeader(project.name, creatorName,
+    project.headerMetadata = fls::defaultDraftHeader(project.name, creatorName,
                                                       static_cast<quint32>(project.carId));
     if (livery && project.root) {
         for (int slot = 0; slot < static_cast<int>(std::size(kEmptyLiverySectionNames)); ++slot) {
-            auto section = std::make_unique<fh6::scene::Group>();
+            auto section = std::make_unique<fls::scene::Group>();
             section->id = generatedGroupId(slot + 1);
             section->name = QString::fromLatin1(kEmptyLiverySectionNames[slot]);
             section->isLiverySection = true;
@@ -67,14 +67,14 @@ fh6::Project createNewProject(bool livery, const QString &creatorName, int carId
     return project;
 }
 
-bool containsRasterLogo(const fh6::scene::Layer &node) {
-    if (node.kind() == fh6::scene::LayerKind::Shape) {
-        return static_cast<const fh6::scene::Shape &>(node).raster;
+bool containsRasterLogo(const fls::scene::Layer &node) {
+    if (node.kind() == fls::scene::LayerKind::Shape) {
+        return static_cast<const fls::scene::Shape &>(node).raster;
     }
-    if (node.kind() != fh6::scene::LayerKind::Group) {
+    if (node.kind() != fls::scene::LayerKind::Group) {
         return false;
     }
-    const auto &group = static_cast<const fh6::scene::Group &>(node);
+    const auto &group = static_cast<const fls::scene::Group &>(node);
     for (const auto &child : group.children) {
         if (containsRasterLogo(*child)) {
             return true;
@@ -83,7 +83,7 @@ bool containsRasterLogo(const fh6::scene::Layer &node) {
     return false;
 }
 
-bool projectContainsRasterLogo(const fh6::Project &project) {
+bool projectContainsRasterLogo(const fls::Project &project) {
     if (!project.root) {
         return false;
     }
@@ -95,19 +95,19 @@ bool projectContainsRasterLogo(const fh6::Project &project) {
     return false;
 }
 
-fh6::HeaderMetadata effectiveHeaderMetadata(const fh6::Project &project,
+fls::HeaderMetadata effectiveHeaderMetadata(const fls::Project &project,
                                             const QString &creatorName) {
     if (project.headerMetadata) {
         return *project.headerMetadata;
     }
     if (!project.sourceHeader.isEmpty()) {
         try {
-            return fh6::parseHeader(project.sourceHeader);
+            return fls::parseHeader(project.sourceHeader);
         } catch (const std::exception &) {
         }
     }
 
-    return fh6::defaultDraftHeader(project.name, creatorName,
+    return fls::defaultDraftHeader(project.name, creatorName,
                                    static_cast<quint32>(project.carId));
 }
 
@@ -267,16 +267,16 @@ void MainWindow::updateWindowTitle() {
 }
 
 bool MainWindow::loadProject(const QString &path, QString *error) {
-    return loadImportedProject([&path]() { return fh6::importCGroupNested(path); },
+    return loadImportedProject([&path]() { return fls::importCGroupNested(path); },
                                QStringLiteral("Imported %1").arg(path), error);
 }
 
 bool MainWindow::loadLivery(const QString &path, QString *error) {
-    return loadImportedProject([&path]() { return fh6::importCLivery(path); },
+    return loadImportedProject([&path]() { return fls::importCLivery(path); },
                                QStringLiteral("Imported livery %1").arg(path), error);
 }
 
-bool MainWindow::loadImportedProject(const std::function<fh6::Project()> &load,
+bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
                                      const QString &statusMessage,
                                      QString *error) {
     try {
@@ -299,7 +299,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
         return false;
     }
     try {
-        fh6::Project exportProject = state_->project_;
+        fls::Project exportProject = state_->project_;
         if (exportProject.isLivery) {
             const QString targetFolder = projectExportFolder(folder, exportProject.name, true);
             QImage thumb;
@@ -313,7 +313,7 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
                     throw std::runtime_error("could not render bigThumb.webp from the car preview");
                 }
             }
-            fh6::exportCLivery(exportProject, targetFolder);
+            fls::exportCLivery(exportProject, targetFolder);
             if (!thumb.isNull()) {
                 if (!thumb.save(QDir(targetFolder).filePath(QStringLiteral("bigThumb.webp")), "WEBP")) {
                     throw std::runtime_error("could not write bigThumb.webp");
@@ -327,9 +327,9 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
         }
         const bool parsedSourceHeader = !exportProject.headerMetadata
             && !exportProject.sourceHeader.isEmpty();
-        fh6::HeaderMetadata meta = effectiveHeaderMetadata(exportProject, creatorName_);
+        fls::HeaderMetadata meta = effectiveHeaderMetadata(exportProject, creatorName_);
         if (parsedSourceHeader && meta.published) {
-            fh6::HeaderMetadata draft = fh6::defaultDraftHeader(exportProject.name, creatorName_);
+            fls::HeaderMetadata draft = fls::defaultDraftHeader(exportProject.name, creatorName_);
             draft.name = meta.name;
             meta = draft;
         }
@@ -341,10 +341,10 @@ bool MainWindow::exportFolderImpl(const QString &folder, QString *error) {
         const QString targetFolder = projectExportFolder(folder, exportProject.name, false);
         ShapeGeometryStore geometry;
         geometry.loadDefault();
-        const fh6::SpriteSizeFn spriteSize = [&geometry](quint16 id) {
+        const fls::SpriteSizeFn spriteSize = [&geometry](quint16 id) {
             return geometry.shapeSize(static_cast<int>(id));
         };
-        fh6::exportNestedProjectFolder(exportProject, targetFolder, exportProject.name, spriteSize);
+        fls::exportNestedProjectFolder(exportProject, targetFolder, exportProject.name, spriteSize);
         const QImage thumb = renderProjectPreviewImage(exportProject, QSize(256, 256));
         if (!QImageWriter::supportedImageFormats().contains("webp")) {
             throw std::runtime_error("Qt WEBP image writer is not available; ensure qwebp.dll is deployed in the imageformats plugin folder");
@@ -390,7 +390,7 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error) {
             ? path.chopped(4) + QStringLiteral("3so")
             : path;
 
-        const QByteArray bytes = fh6::encodeProjectDocument(state_->project_);
+        const QByteArray bytes = fls::encodeProjectDocument(state_->project_);
         QFile file(targetPath);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             throw std::runtime_error(("could not open project file for writing: " + targetPath).toStdString());
@@ -421,7 +421,7 @@ bool MainWindow::loadProjectJson(const QString &path, QString *error) {
         if (!file.open(QIODevice::ReadOnly)) {
             throw std::runtime_error(("could not open project file: " + path).toStdString());
         }
-        setProject(fh6::decodeProjectDocument(file.readAll()));
+        setProject(fls::decodeProjectDocument(file.readAll()));
         projectJsonPath_ = path;
         rememberRecentProjectJson(path);
         statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 5000);
@@ -501,7 +501,7 @@ void MainWindow::preprocessSelectedGuide() {
         statusBar()->showMessage(QStringLiteral("Open or create a project first"), 3500);
         return;
     }
-    const QVector<fh6::scene::GuideLayer *> guides = state_->selectedGuideLayers();
+    const QVector<fls::scene::GuideLayer *> guides = state_->selectedGuideLayers();
     if (guides.size() != 1) {
         statusBar()->showMessage(guides.isEmpty()
                                      ? QStringLiteral("Select a guide layer first")
@@ -509,7 +509,7 @@ void MainWindow::preprocessSelectedGuide() {
                                  3500);
         return;
     }
-    fh6::scene::GuideLayer *guide = guides.front();
+    fls::scene::GuideLayer *guide = guides.front();
     if (guide == nullptr || guide->locked) {
         statusBar()->showMessage(QStringLiteral("Unlock the selected guide layer first"), 3500);
         return;
@@ -564,13 +564,13 @@ void MainWindow::preprocessSelectedGuide() {
         return;
     }
 
-    fh6::scene::Layer *node = state_->sceneNode(guideId);
-    if (node == nullptr || node->kind() != fh6::scene::LayerKind::Guide) {
+    fls::scene::Layer *node = state_->sceneNode(guideId);
+    if (node == nullptr || node->kind() != fls::scene::LayerKind::Guide) {
         QMessageBox::critical(this, QStringLiteral("Preprocess Image"),
                               QStringLiteral("The selected guide layer is no longer available."));
         return;
     }
-    guide = static_cast<fh6::scene::GuideLayer *>(node);
+    guide = static_cast<fls::scene::GuideLayer *>(node);
     if (guide->locked) {
         statusBar()->showMessage(QStringLiteral("The selected guide layer is locked"), 3500);
         return;
@@ -578,7 +578,7 @@ void MainWindow::preprocessSelectedGuide() {
 
     state_->beginProjectEdit();
     if (!guide->image) {
-        guide->image = std::make_unique<fh6::scene::RasterContainer>();
+        guide->image = std::make_unique<fls::scene::RasterContainer>();
     }
     guide->image->width = processed.width();
     guide->image->height = processed.height();
@@ -768,7 +768,7 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
 
 bool MainWindow::importFM2023Folder(const QString &path, QString *error) {
     rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
-    return loadImportedProject([&path]() { return fh6::importFM2023Asset(path); },
+    return loadImportedProject([&path]() { return fls::importFM2023Asset(path); },
                                QStringLiteral("Imported %1").arg(path), error);
 }
 
@@ -962,7 +962,7 @@ void MainWindow::refreshHeaderMetadataWidget() {
         return;
     }
 
-    fh6::HeaderMetadata meta = effectiveHeaderMetadata(state_->project_, creatorName_);
+    fls::HeaderMetadata meta = effectiveHeaderMetadata(state_->project_, creatorName_);
     if (meta.name.isEmpty()) {
         meta.name = state_->project_.name;
     }
@@ -989,7 +989,7 @@ void MainWindow::applyHeaderMetadata() {
         return;
     }
 
-    fh6::HeaderMetadata meta = headerMetadata_->metadata();
+    fls::HeaderMetadata meta = headerMetadata_->metadata();
     meta.carId = static_cast<quint32>(state_->project_.carId);
     const bool importedDraft = !state_->project_.sourceHeader.isEmpty();
     const bool rebuild = headerMetadata_->rebuildRequested();

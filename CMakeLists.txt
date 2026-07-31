@@ -2,15 +2,14 @@ cmake_minimum_required(VERSION 3.24)
 
 project(ForzaLiveryStudio LANGUAGES CXX C)
 
-include(CTest)
 include(CheckLanguage)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(FH6_ENABLE_CUDA "Build the optional CUDA differentiable optimizer" ON)
-if(FH6_ENABLE_CUDA)
+option(FLS_ENABLE_CUDA "Build the optional CUDA differential optimizer" ON)
+if(FLS_ENABLE_CUDA)
     check_language(CUDA)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
@@ -18,9 +17,9 @@ if(FH6_ENABLE_CUDA)
         set(CMAKE_CUDA_STANDARD 20)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
         if(WIN32)
-            file(GLOB FH6_CUDART_DLLS
+            file(GLOB FLS_CUDART_DLLS
                 "${CUDAToolkit_BIN_DIR}/x64/cudart64_*.dll")
-            list(GET FH6_CUDART_DLLS 0 FH6_CUDART_DLL)
+            list(GET FLS_CUDART_DLLS 0 FLS_CUDART_DLL)
         endif()
     endif()
 endif()
@@ -54,8 +53,8 @@ add_library(fls_core STATIC
     src/core/cgroup_codec.h
     src/core/core_types.cpp
     src/core/core_types.h
-    src/core/fh6_core.cpp
-    src/core/fh6_core.h
+    src/core/fls_core.cpp
+    src/core/fls_core.h
     src/core/fm_codec.cpp
     src/core/fm_codec.h
     src/core/header_codec.cpp
@@ -111,39 +110,44 @@ endif()
 
 target_include_directories(fls_core PUBLIC src/core)
 
-option(FH6_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
-option(FH6_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
-option(FH6_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
+option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
+option(FLS_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
+option(FLS_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
+option(FLS_BUILD_TESTS "Build test executables" OFF)
 option(ENFORCE_SHAPE_LIMITS "Enforce per-section livery shape limits during export" ON)
+
+if(FLS_BUILD_TESTS)
+    enable_testing()
+endif()
 
 target_compile_definitions(fls_core
     PUBLIC
-        FH6_PRIVACY_POLICY=$<BOOL:${FH6_PRIVACY_POLICY}>
+        FLS_PRIVACY_POLICY=$<BOOL:${FLS_PRIVACY_POLICY}>
         ENFORCE_SHAPE_LIMITS=$<BOOL:${ENFORCE_SHAPE_LIMITS}>
 )
 
-if(FH6_BUILD_HELPER_TOOLS AND FH6_BUILD_LIVERY_COMPARE)
+if(FLS_BUILD_HELPER_TOOLS AND FLS_BUILD_LIVERY_COMPARE)
     # Console harness: diff a decoded C_livery against the in-game per-section
     # C_group exports (the ground truth for group decoding). Core-only, no GUI deps.
-    add_executable(fh6_livery_compare
+    add_executable(fls_livery_compare
         tools/livery_compare/main.cpp
     )
-    target_link_libraries(fh6_livery_compare PRIVATE fls_core Qt6::Core)
+    target_link_libraries(fls_livery_compare PRIVATE fls_core Qt6::Core)
 endif()
 
-if(FH6_BUILD_HELPER_TOOLS)
+if(FLS_BUILD_HELPER_TOOLS)
     # Console harness: decode a .modelbin and print mesh/vertex/index counts and bounds
     # to sanity-check the geometry decoder against ForzaTechStudio. Core-only, no GUI.
-    add_executable(fh6_model_dump
+    add_executable(fls_model_dump
         tools/model_dump/main.cpp
     )
-    target_link_libraries(fh6_model_dump PRIVATE fls_core Qt6::Core)
+    target_link_libraries(fls_model_dump PRIVATE fls_core Qt6::Core)
 
     # Console harness: decode built-in decal swatchbins into one indexed RGBA pack.
-    add_executable(fh6_pack_decals
+    add_executable(fls_pack_decals
         tools/pack_decals/main.cpp
     )
-    target_link_libraries(fh6_pack_decals PRIVATE fls_core Qt6::Core)
+    target_link_libraries(fls_pack_decals PRIVATE fls_core Qt6::Core)
 
 endif()
 
@@ -187,10 +191,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/car_model_renderer.h
     src/gui/canvas/bucket_fill.cpp
     src/gui/canvas/bucket_fill.h
-    src/gui/canvas/differentiable_cover.cpp
-    src/gui/canvas/differentiable_cover.h
-    src/gui/canvas/differentiable_cover_gpu.cpp
-    src/gui/canvas/differentiable_cover_gpu.h
+    src/gui/canvas/differential_cover.cpp
+    src/gui/canvas/differential_cover.h
+    src/gui/canvas/differential_cover_gpu.cpp
+    src/gui/canvas/differential_cover_gpu.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
@@ -255,12 +259,12 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
 
 if(CMAKE_CUDA_COMPILER)
     target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
-        src/gui/canvas/differentiable_cover_cuda.cpp
-        src/gui/canvas/differentiable_cover_cuda.cu
-        src/gui/canvas/differentiable_cover_cuda_kernel.h
+        src/gui/canvas/differential_cover_cuda.cpp
+        src/gui/canvas/differential_cover_cuda.cu
+        src/gui/canvas/differential_cover_cuda_kernel.h
     )
     target_compile_definitions(
-        ${FORZA_LIVERY_STUDIO_TARGET} PRIVATE FH6_HAS_CUDA=1)
+        ${FORZA_LIVERY_STUDIO_TARGET} PRIVATE FLS_HAS_CUDA=1)
     target_compile_options(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
         $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
@@ -275,7 +279,7 @@ if(CMAKE_CUDA_COMPILER)
     if(WIN32)
         add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${FH6_CUDART_DLL}"
+                "${FLS_CUDART_DLL}"
                 "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>"
         )
     endif()
@@ -300,7 +304,7 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::OpenGLWidgets
 )
 
-if(BUILD_TESTING)
+if(FLS_BUILD_TESTS)
     add_executable(fls_guide_preprocess_metadata_tests
         tools/guide_preprocess_metadata_test.cpp
     )
@@ -346,64 +350,64 @@ if(BUILD_TESTING)
     )
     add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
 
-    add_executable(fls_differentiable_cover_tests
-        tools/differentiable_cover_test.cpp
-        src/gui/canvas/differentiable_cover.cpp
-        src/gui/canvas/differentiable_cover_gpu.cpp
+    add_executable(fls_differential_cover_tests
+        tools/differential_cover_test.cpp
+        src/gui/canvas/differential_cover.cpp
+        src/gui/canvas/differential_cover_gpu.cpp
         src/gui/canvas/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
-    target_include_directories(fls_differentiable_cover_tests PRIVATE
+    target_include_directories(fls_differential_cover_tests PRIVATE
         src/gui/canvas
         src/gui/widgets
     )
     target_compile_definitions(
-        fls_differentiable_cover_tests
-        PRIVATE FH6_DIFFERENTIABLE_COVER_TESTS=1)
-    target_link_libraries(fls_differentiable_cover_tests PRIVATE
+        fls_differential_cover_tests
+        PRIVATE FLS_DIFFERENTIAL_COVER_TESTS=1)
+    target_link_libraries(fls_differential_cover_tests PRIVATE
         clipper2
         Qt6::Core
         Qt6::Gui
         ZLIB::ZLIB
     )
     if(CMAKE_CUDA_COMPILER)
-        target_sources(fls_differentiable_cover_tests PRIVATE
-            src/gui/canvas/differentiable_cover_cuda.cpp
-            src/gui/canvas/differentiable_cover_cuda.cu
-            src/gui/canvas/differentiable_cover_cuda_kernel.h
+        target_sources(fls_differential_cover_tests PRIVATE
+            src/gui/canvas/differential_cover_cuda.cpp
+            src/gui/canvas/differential_cover_cuda.cu
+            src/gui/canvas/differential_cover_cuda_kernel.h
         )
         target_compile_definitions(
-            fls_differentiable_cover_tests PRIVATE FH6_HAS_CUDA=1)
-        target_compile_options(fls_differentiable_cover_tests PRIVATE
+            fls_differential_cover_tests PRIVATE FLS_HAS_CUDA=1)
+        target_compile_options(fls_differential_cover_tests PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>
         )
         target_link_libraries(
-            fls_differentiable_cover_tests PRIVATE CUDA::cudart)
-        set_target_properties(fls_differentiable_cover_tests PROPERTIES
+            fls_differential_cover_tests PRIVATE CUDA::cudart)
+        set_target_properties(fls_differential_cover_tests PROPERTIES
             CUDA_ARCHITECTURES native
             CUDA_RUNTIME_LIBRARY Shared
         )
         if(WIN32)
             add_custom_command(
-                TARGET fls_differentiable_cover_tests POST_BUILD
+                TARGET fls_differential_cover_tests POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${FH6_CUDART_DLL}"
-                    "$<TARGET_FILE_DIR:fls_differentiable_cover_tests>"
+                    "${FLS_CUDART_DLL}"
+                    "$<TARGET_FILE_DIR:fls_differential_cover_tests>"
             )
         endif()
     endif()
     if(WIN32)
-        target_link_libraries(fls_differentiable_cover_tests PRIVATE
+        target_link_libraries(fls_differential_cover_tests PRIVATE
             d3d11
             d3dcompiler
         )
     endif()
-    add_test(NAME differentiable_cover COMMAND fls_differentiable_cover_tests)
+    add_test(NAME differential_cover COMMAND fls_differential_cover_tests)
 endif()
 
-set(FH6_GUI_ASSETS
+set(FLS_GUI_ASSETS
     Cursor.xpm
     CursorPipette.xpm
     MenuCopy.xpm
@@ -457,6 +461,8 @@ set(FH6_GUI_ASSETS
     ToolScaleX.xpm
     ToolScaleY.xpm
     ToolTransformSkew.xpm
+    ViewGrid.xpm
+    ViewList.xpm
     WidgetBuffer.xpm
     WidgetLayers.xpm
     WidgetProject.xpm
@@ -464,9 +470,9 @@ set(FH6_GUI_ASSETS
     WidgetShapesBrowser.xpm
 )
 
-set(FH6_GUI_ASSET_SOURCES)
-foreach(asset_name IN LISTS FH6_GUI_ASSETS)
-    list(APPEND FH6_GUI_ASSET_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/${asset_name}")
+set(FLS_GUI_ASSET_SOURCES)
+foreach(asset_name IN LISTS FLS_GUI_ASSETS)
+    list(APPEND FLS_GUI_ASSET_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/${asset_name}")
 endforeach()
 
 add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
@@ -475,7 +481,7 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        ${FH6_GUI_ASSET_SOURCES}
+        ${FLS_GUI_ASSET_SOURCES}
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector"
@@ -498,18 +504,18 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMENT "Deploying used GUI assets"
 )
 
-if(NOT FH6_BUILD_HELPER_TOOLS)
+if(NOT FLS_BUILD_HELPER_TOOLS)
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E rm -f
-            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_livery_compare.exe"
-            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_model_dump.exe"
-            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_pack_decals.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_compare.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_model_dump.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_pack_decals.exe"
         COMMENT "Removing disabled helper tools from release output"
     )
-elseif(NOT FH6_BUILD_LIVERY_COMPARE)
+elseif(NOT FLS_BUILD_LIVERY_COMPARE)
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E rm -f
-            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fh6_livery_compare.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_compare.exe"
         COMMENT "Removing disabled livery compare helper from release output"
     )
 endif()

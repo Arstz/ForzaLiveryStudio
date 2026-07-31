@@ -1,7 +1,7 @@
 #pragma once
 
 #include "bucket_fill.h"
-#include "differentiable_cover.h"
+#include "differential_cover.h"
 #include "canvas_camera.h"
 #include "core_types.h"
 #include "layer.h"
@@ -38,7 +38,7 @@ public:
     explicit ProjectCanvas(QWidget *parent = nullptr);
     ~ProjectCanvas() override;
 
-    void setProject(fh6::Project *project);
+    void setProject(fls::Project *project);
     void setEditorState(EditorState *state);
     bool loadGeometry(QString *error = nullptr);
     QSizeF shapeSize(int shapeId) const;
@@ -81,7 +81,7 @@ public:
         std::function<void(const QVector<PenPoint> &, const std::optional<QColor> &)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
-    QVector<cover::ShapeMesh> differentiableCoverCatalog(QString *error = nullptr) const;
+    QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
     void setLiningFillRequestedCallback(
@@ -222,8 +222,8 @@ private:
         QHash<QString, EntryStart> starts;
         QHash<QString, EntryStart> guideStarts;
         QHash<QString, QTransform> groupStartFrames;
-        QVector<fh6::scene::Shape *> layers;
-        QVector<fh6::scene::GuideLayer *> guides;
+        QVector<fls::scene::Shape *> layers;
+        QVector<fls::scene::GuideLayer *> guides;
         QVector<QString> groupIds;
         DragMode mode = DragMode::None;
         bool duplicated = false;
@@ -297,11 +297,11 @@ private:
     QPointF worldToScreen(const QPointF &point) const;
     QPointF screenToWorld(const QPointF &point) const;
     QPolygonF screenQuad(const QTransform &entryToWorld, const QRectF &localRect) const;
-    const fh6::scene::Group *sceneTree() const;
+    const fls::scene::Group *sceneTree() const;
     bool isSectionActive(const QString &sectionGroupId) const;
-    void forEachSceneShape(const std::function<bool(const fh6::scene::Shape &, const QTransform &, int)> &visit,
+    void forEachSceneShape(const std::function<bool(const fls::scene::Shape &, const QTransform &, int)> &visit,
                            bool reverse) const;
-    void forEachSceneGuide(const std::function<bool(const fh6::scene::GuideLayer &, const QTransform &, const QString &)> &visit,
+    void forEachSceneGuide(const std::function<bool(const fls::scene::GuideLayer &, const QTransform &, const QString &)> &visit,
                            bool reverse) const;
     QVector<HitEntry> hitEntries();
     QVector<QString> layersAtScreenPoint(const QPointF &point);
@@ -313,8 +313,8 @@ private:
     SelectionBox currentSelectionBox() const;
     QTransform boxToScreen(const SelectionBox &box) const;
     bool boxContainsScreenPoint(const SelectionBox &box, const QPointF &screenPoint) const;
-    QVector<fh6::scene::Shape *> selectedLayers() const;
-    QVector<fh6::scene::GuideLayer *> selectedGuideLayers() const;
+    QVector<fls::scene::Shape *> selectedLayers() const;
+    QVector<fls::scene::GuideLayer *> selectedGuideLayers() const;
     void captureDragStarts();
     void collectDragGroups(QVector<QString> &groupIds,
                            QHash<QString, QTransform> &startFrames,
@@ -377,7 +377,7 @@ private:
     QString guideAtScreenPoint(const QPointF &point);
     void drawGuideLayers(QPainter &painter);
     void drawRegionOverlay(QPainter &painter);
-    QImage guideImage(const fh6::scene::GuideLayer &guide) const;
+    QImage guideImage(const fls::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;
     void storeSectionCanvasCache(const QString &key);
     void setPathFillRunning(PathInteraction &path, bool running, const QString &message);
@@ -414,7 +414,7 @@ private:
     void clearBucketPreview();
     void drawBucketOverlay(QPainter &painter);
     bool bucketGuideContext(const QPointF &screenPoint,
-                            const fh6::scene::GuideLayer **guide,
+                            const fls::scene::GuideLayer **guide,
                             QTransform *guideWorld,
                             QImage *image,
                             QPoint *imagePoint,
@@ -422,7 +422,7 @@ private:
 
 
     EditorState *state_ = nullptr;
-    fh6::Project *project_ = nullptr;
+    fls::Project *project_ = nullptr;
     ShapeGeometryStore geometry_;
     bool geometryLoaded_ = false;
     QString tool_ = QStringLiteral("select");

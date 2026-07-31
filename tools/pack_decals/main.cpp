@@ -53,8 +53,8 @@ QByteArray buildPack(const QVector<DecalImage> &images)
     QByteArray out;
     out.reserve(static_cast<int>(dataOffset));
     appendBytes(out, "FH6RAST1", 8);
-    fh6::detail::appendLeU32(out, kVersion);
-    fh6::detail::appendLeU32(out, count);
+    fls::detail::appendLeU32(out, kVersion);
+    fls::detail::appendLeU32(out, count);
 
     QVector<quint32> offsets;
     offsets.reserve(images.size());
@@ -65,12 +65,12 @@ QByteArray buildPack(const QVector<DecalImage> &images)
 
     for (int i = 0; i < images.size(); ++i) {
         const DecalImage &image = images[i];
-        fh6::detail::appendLeU32(out, image.id);
-        fh6::detail::appendLeU32(out, image.width);
-        fh6::detail::appendLeU32(out, image.height);
-        fh6::detail::appendLeU32(out, offsets[i]);
-        fh6::detail::appendLeU32(out, static_cast<quint32>(image.rgba.size()));
-        fh6::detail::appendLeU32(out, 0); // RGBA8, top-left origin
+        fls::detail::appendLeU32(out, image.id);
+        fls::detail::appendLeU32(out, image.width);
+        fls::detail::appendLeU32(out, image.height);
+        fls::detail::appendLeU32(out, offsets[i]);
+        fls::detail::appendLeU32(out, static_cast<quint32>(image.rgba.size()));
+        fls::detail::appendLeU32(out, 0); // RGBA8, top-left origin
     }
 
     for (const DecalImage &image : images) {
@@ -86,7 +86,7 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     const QStringList args = app.arguments();
     if (args.size() != 3) {
-        std::fprintf(stderr, "usage: fh6_pack_decals <textures-folder> <output-bin>\n");
+        std::fprintf(stderr, "usage: fls_pack_decals <textures-folder> <output-bin>\n");
         return 2;
     }
 
@@ -118,7 +118,7 @@ int main(int argc, char *argv[])
         quint32 id = 0;
         parseDecalId(info.fileName(), &id);
         QString error;
-        const fh6::SwatchImage image = fh6::loadSwatchImage(info.absoluteFilePath(), &error);
+        const fls::SwatchImage image = fls::loadSwatchImage(info.absoluteFilePath(), &error);
         if (!image.valid()) {
             std::fprintf(stderr, "failed to decode %s: %s\n",
                          qPrintable(info.fileName()),

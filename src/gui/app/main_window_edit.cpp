@@ -4,7 +4,7 @@
 
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
-#include "differentiable_cover.h"
+#include "differential_cover.h"
 #include "image_io.h"
 #include "layer_tree_view.h"
 #include "perf_utils.h"
@@ -27,8 +27,8 @@ using namespace mw_detail;
 
 namespace {
 
-fh6::Matrix3 generatedShapeMatrix(const QTransform &transform) {
-    fh6::Matrix3 matrix;
+fls::Matrix3 generatedShapeMatrix(const QTransform &transform) {
+    fls::Matrix3 matrix;
     matrix.m[0][0] = transform.m11();
     matrix.m[0][1] = transform.m21();
     matrix.m[0][2] = transform.dx();
@@ -47,11 +47,11 @@ std::array<quint8, 4> colorBytes(const QColor &color) {
     };
 }
 
-QString approximateDuration(double seconds) {
+QString elapsedDuration(double seconds) {
     if (!std::isfinite(seconds) || seconds < 0.0) {
         return {};
     }
-    const qint64 rounded = static_cast<qint64>(std::ceil(seconds));
+    const qint64 rounded = static_cast<qint64>(std::floor(seconds));
     if (rounded < 60) {
         return QStringLiteral("%1s").arg(rounded);
     }
@@ -234,12 +234,12 @@ void writePenFillLog(const PenFillRequest &request,
     qWarning().noquote() << "Pen fill log written to" << path;
 }
 
-PenFillResult differentiablePenFill(
+PenFillResult differentialContourFill(
     const cover::FillInput &input,
     const QVector<cover::ShapeMesh> &catalog,
     const cover::FillOptions &options,
     const std::function<bool()> &cancelled,
-    const std::function<void(int, double, double, double)> &progress,
+    const std::function<void(int, double, double)> &progress,
     cover::FillProfile *profile) {
     const cover::FillResult fill =
         cover::analyticCoverFill(
@@ -249,8 +249,7 @@ PenFillResult differentiablePenFill(
                     progress(
                         fillProgress.placementCount,
                         fillProgress.targetArea,
-                        fillProgress.coveredArea,
-                        fillProgress.etaSeconds);
+                        fillProgress.coveredArea);
                 }
             });
     if (profile != nullptr) {
@@ -287,20 +286,20 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         }
         return;
     }
-    const bool differentiable = loadBehaviorSettings().differentiablePenFill;
-    const QString fillLabel = differentiable
-        ? QStringLiteral("Differentiable Pen fill")
-        : QStringLiteral("Pen fill");
-    const QString fillTool = differentiable
-        ? QStringLiteral("differentiable")
-        : QStringLiteral("pen");
+    const bool differential = loadBehaviorSettings().differentialContourFill;
+    const QString fillLabel = differential
+        ? QStringLiteral("Differential contour fill")
+        : QStringLiteral("Analytic contour fill");
+    const QString fillTool = differential
+        ? QStringLiteral("differential")
+        : QStringLiteral("analytic");
     prepareGeneratedFill(fillColor, fillLabel, fillTool);
     PenFillRequest request;
     request.points = points;
-    if (differentiable) {
+    if (differential) {
         QString catalogError;
         const QVector<cover::ShapeMesh> catalog =
-            canvas_->differentiableCoverCatalog(&catalogError);
+            canvas_->differentialCoverCatalog(&catalogError);
         const PenContour contour = buildPenContour(
             request.points, request.boundaryTolerance * 0.25);
         const cover::Polygons polygons = contour.valid()
@@ -315,7 +314,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
                        ? QStringLiteral("The active contour is unavailable")
                        : contour.error);
             statusBar()->showMessage(
-                QStringLiteral("Differentiable Pen fill failed: %1").arg(reason),
+                QStringLiteral("Differential contour fill failed: %1").arg(reason),
                 4000);
             return;
         }
@@ -335,17 +334,17 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         cover::FillOptions options;
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(
-            QStringLiteral("Differentiable fill | estimating ETA"));
+            QStringLiteral("Differential fill | Elapsed 0s"));
         generatedFillProgress_->show();
         canvas_->setPenFillRunning(
-            true, QStringLiteral("Optimizing differentiable Pen fill…"));
+            true, QStringLiteral("Optimizing differential contour fill…"));
         statusBar()->showMessage(
-            QStringLiteral("Optimizing differentiable Pen fill… Press %1 to cancel")
+            QStringLiteral("Optimizing differential contour fill… Press %1 to cancel")
                 .arg(interactionShortcutText(
                     KeyInteraction::CanvasCancelInteraction)));
         const QString strategy = fillColor.has_value()
-            ? QStringLiteral("differentiable-bucket")
-            : QStringLiteral("differentiable-pen");
+            ? QStringLiteral("differential-bucket")
+            : QStringLiteral("differential-pen");
         startGeneratedFillTask(
             [request = std::move(request), input = std::move(input),
              catalog, options, strategy](
@@ -353,7 +352,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
                 const GeneratedFillProgress &progress) {
                 cover::FillProfile profile;
                 PenFillResult result =
-                    differentiablePenFill(
+                    differentialContourFill(
                         input, catalog, options, cancelled, progress, &profile);
                 writePenFillLog(request, result, strategy, &profile);
 
@@ -370,13 +369,13 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         return;
     }
 
-    canvas_->setPenFillRunning(true, QStringLiteral("Filling Pen path…"));
-    statusBar()->showMessage(QStringLiteral("Filling Pen path… Press %1 to cancel")
+    canvas_->setPenFillRunning(true, QStringLiteral("Running analytic contour fill…"));
+    statusBar()->showMessage(QStringLiteral("Running analytic contour fill… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     const QString strategy = fillColor.has_value()
-        ? QStringLiteral("bucket-hybrid-quadratic-rdp")
-        : QStringLiteral("pen");
+        ? QStringLiteral("analytic-bucket-hybrid-quadratic-rdp")
+        : QStringLiteral("analytic-pen");
     startGeneratedFillTask([request = std::move(request), strategy](
                                const std::function<bool()> &cancelled,
                                const GeneratedFillProgress &) {
@@ -439,6 +438,13 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
     const quint64 generation = ++generatedFillGeneration_;
     const auto token = std::make_shared<std::atomic_bool>(false);
     generatedFillCancel_ = token;
+    if (generatedFillTool_ == QStringLiteral("differential")) {
+        generatedFillPlacementCount_ = 0;
+        generatedFillTargetArea_ = 0.0;
+        generatedFillCoveredArea_ = 0.0;
+        generatedFillElapsed_.restart();
+        generatedFillElapsedTimer_->start();
+    }
 
     QPointer<MainWindow> guard(this);
     auto *task = QRunnable::create([guard, generation, fill = std::move(fill), token]() mutable {
@@ -447,18 +453,18 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
                 return token->load(std::memory_order_relaxed);
             },
             [guard, generation](int placementCount, double targetArea,
-                                double coveredArea, double etaSeconds) {
+                                double coveredArea) {
                 if (guard.isNull()) {
                     return;
                 }
                 QMetaObject::invokeMethod(
                     guard.data(),
                     [guard, generation, placementCount, targetArea,
-                     coveredArea, etaSeconds]() {
+                     coveredArea]() {
                         if (!guard.isNull()) {
                             guard->updateGeneratedFillProgress(
                                 generation, placementCount, targetArea,
-                                coveredArea, etaSeconds);
+                                coveredArea);
                         }
                     },
                     Qt::QueuedConnection);
@@ -479,9 +485,16 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
 }
 
 void MainWindow::clearGeneratedFillState() {
+    if (generatedFillElapsedTimer_ != nullptr) {
+        generatedFillElapsedTimer_->stop();
+    }
+    generatedFillElapsed_.invalidate();
     if (generatedFillProgress_ != nullptr) {
         generatedFillProgress_->hide();
     }
+    generatedFillPlacementCount_ = 0;
+    generatedFillTargetArea_ = 0.0;
+    generatedFillCoveredArea_ = 0.0;
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();
     generatedFillTool_.clear();
@@ -501,9 +514,10 @@ void MainWindow::cancelGeneratedFill(bool keepPartial) {
     const bool finalizePartial =
         keepPartial
         && generatedFillTool_
-            == QStringLiteral("differentiable");
+            == QStringLiteral("differential");
     if (finalizePartial) {
         generatedFillKeepPartialOnCancel_ = true;
+        generatedFillElapsedTimer_->stop();
         statusBar()->showMessage(
             QStringLiteral(
                 "Finalizing %1 with generated shapes")
@@ -511,7 +525,7 @@ void MainWindow::cancelGeneratedFill(bool keepPartial) {
         if (generatedFillProgress_ != nullptr) {
             generatedFillProgress_->setFormat(
                 QStringLiteral(
-                    "Finalizing differentiable fill"));
+                    "Finalizing differential fill"));
         }
         return;
     }
@@ -525,42 +539,72 @@ void MainWindow::cancelGeneratedFill(bool keepPartial) {
     clearGeneratedFillState();
 }
 
+void MainWindow::refreshGeneratedFillElapsedTime() {
+    if (generatedFillCancel_ == nullptr
+        || generatedFillKeepPartialOnCancel_
+        || generatedFillTool_ != QStringLiteral("differential")
+        || generatedFillProgress_ == nullptr
+        || !generatedFillElapsed_.isValid()) {
+        return;
+    }
+
+    constexpr int kProgressResolution = 1000;
+    const double elapsedSeconds =
+        static_cast<double>(generatedFillElapsed_.elapsed()) / 1000.0;
+    const QString duration = elapsedDuration(elapsedSeconds);
+    if (!std::isfinite(generatedFillTargetArea_)
+        || generatedFillTargetArea_ <= 0.0
+        || !std::isfinite(generatedFillCoveredArea_)) {
+        generatedFillProgress_->setRange(0, 0);
+        generatedFillProgress_->setFormat(
+            QStringLiteral(
+                "Differential fill | Elapsed %1 | %2 shapes")
+                .arg(duration)
+                .arg(generatedFillPlacementCount_));
+        generatedFillProgress_->show();
+        return;
+    }
+
+    const double fraction =
+        std::clamp(
+            generatedFillCoveredArea_ / generatedFillTargetArea_,
+            0.0, 1.0);
+    const QString percentage =
+        QString::number(fraction * 100.0, 'f', 1);
+    const QString format =
+        QStringLiteral(
+            "Differential fill %1% | Elapsed %2 | %3 shapes")
+            .arg(percentage, duration)
+            .arg(generatedFillPlacementCount_);
+
+    generatedFillProgress_->setRange(0, kProgressResolution);
+    generatedFillProgress_->setValue(
+        std::clamp(
+            static_cast<int>(
+                std::lround(fraction * kProgressResolution)),
+            0, kProgressResolution));
+    generatedFillProgress_->setFormat(format);
+    generatedFillProgress_->show();
+}
+
 void MainWindow::updateGeneratedFillProgress(quint64 generation,
                                              int placementCount,
                                              double targetArea,
-                                             double coveredArea,
-                                             double etaSeconds) {
+                                             double coveredArea) {
     if (generation != generatedFillGeneration_
         || generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
-        || generatedFillTool_ != QStringLiteral("differentiable")
+        || generatedFillTool_ != QStringLiteral("differential")
         || generatedFillProgress_ == nullptr
         || !std::isfinite(targetArea) || targetArea <= 0.0
         || !std::isfinite(coveredArea)) {
         return;
     }
 
-    constexpr int kProgressResolution = 1000;
-    const double fraction =
-        std::clamp(coveredArea / targetArea, 0.0, 1.0);
-    const QString percentage =
-        QString::number(fraction * 100.0, 'f', 1);
-    const QString duration = approximateDuration(etaSeconds);
-    const QString format = duration.isEmpty()
-        ? QStringLiteral("Diff fill %1% | estimating ETA | %2 shapes")
-              .arg(percentage)
-              .arg(placementCount)
-        : QStringLiteral("Diff fill %1% | ETA ~%2 | %3 shapes")
-              .arg(percentage, duration)
-              .arg(placementCount);
-
-    generatedFillProgress_->setRange(0, kProgressResolution);
-    generatedFillProgress_->setValue(
-        std::clamp(
-            static_cast<int>(std::lround(fraction * kProgressResolution)),
-            0, kProgressResolution));
-    generatedFillProgress_->setFormat(format);
-    generatedFillProgress_->show();
+    generatedFillPlacementCount_ = placementCount;
+    generatedFillTargetArea_ = targetArea;
+    generatedFillCoveredArea_ = coveredArea;
+    refreshGeneratedFillElapsedTime();
 }
 
 void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
@@ -575,12 +619,12 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
             canvas_->setPenFillRunning(false);
         }
     }
-    const bool differentiable =
+    const bool differential =
         generatedFillTool_
-        == QStringLiteral("differentiable");
+        == QStringLiteral("differential");
     const bool retainPartial =
         result.cancelled
-        && differentiable
+        && differential
         && !result.placements.isEmpty()
         && (result.timedOut
             || generatedFillKeepPartialOnCancel_);
@@ -606,17 +650,17 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
     const QString groupName = lining
         ? QStringLiteral("Lining")
-        : (differentiable
-               ? QStringLiteral("Differentiable Fill")
-               : QStringLiteral("Pen Fill"));
+        : (differential
+               ? QStringLiteral("Differential Contour Fill")
+               : QStringLiteral("Analytic Contour Fill"));
     insertGeneratedFill(groupName, groupName, placements);
-    if (differentiable) {
+    if (differential) {
         const double residualArea =
             std::max(0.0, result.targetArea - result.coveredArea);
         if (residualArea > cover::kDefaultEpsArea) {
             statusBar()->showMessage(
                 QStringLiteral(
-                    "Created Differentiable Fill with %1 shapes; %2 world² remains uncovered")
+                    "Created Differential Contour Fill with %1 shapes; %2 world² remains uncovered")
                     .arg(placements.size())
                     .arg(residualArea, 0, 'g', 10),
                 5000);
@@ -640,18 +684,18 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
         return;
     }
 
-    auto group = std::make_unique<fh6::scene::Group>();
+    auto group = std::make_unique<fls::scene::Group>();
     group->id = state_->uniqueGroupId();
     const QString groupId = group->id;
     group->name = groupName;
     QSet<QString> generatedIds;
     generatedIds.reserve(placements.size());
     for (const auto &placement : placements) {
-        auto shape = std::make_unique<fh6::scene::Shape>();
+        auto shape = std::make_unique<fls::scene::Shape>();
         shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
-        shape->name = fh6::detail::shapeName(static_cast<quint16>(placement.first));
+        shape->name = fls::detail::shapeName(static_cast<quint16>(placement.first));
         shape->setVectorShape(static_cast<quint16>(placement.first));
-        shape->transform = fh6::decomposeTransform2D(generatedShapeMatrix(placement.second));
+        shape->transform = fls::decomposeTransform2D(generatedShapeMatrix(placement.second));
         shape->color = generatedFillColor_;
         generatedIds.insert(shape->id);
         group->append(std::move(shape));
@@ -659,13 +703,13 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
 
     state_->beginProjectEdit();
     state_->insertLayerAboveSelection(std::move(group), generatedFillInsertionEntries_);
-    if (fh6::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
+    if (fls::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
         const QString parentId = state_->parentGroupForEntry(groupId);
-        if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
-            const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
+        if (const fls::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
+            const fls::Matrix3 parentInverse = fls::invertAffine(parent->worldMatrix());
             for (const auto &child : inserted->children) {
-                child->transform = fh6::decomposeTransform2D(
-                    fh6::detail::multiply(parentInverse, child->transform.matrix()));
+                child->transform = fls::decomposeTransform2D(
+                    fls::detail::multiply(parentInverse, child->transform.matrix()));
             }
         }
     }
@@ -695,7 +739,7 @@ void MainWindow::insertGeneratedRegionVariants(
         return;
     }
 
-    auto group = std::make_unique<fh6::scene::Group>();
+    auto group = std::make_unique<fls::scene::Group>();
     group->id = state_->uniqueGroupId();
     const QString groupId = group->id;
     group->name = groupName;
@@ -711,27 +755,27 @@ void MainWindow::insertGeneratedRegionVariants(
     if (shapeCount == 0) {
         return;
     }
-    std::unique_ptr<fh6::scene::GuideLayer> differenceGuide;
+    std::unique_ptr<fls::scene::GuideLayer> differenceGuide;
     QString differenceGuideParentId;
     if (!differenceHeatmap.isNull()) {
-        const fh6::scene::Layer *sourceNode = state_->sceneNode(sourceGuideId);
+        const fls::scene::Layer *sourceNode = state_->sceneNode(sourceGuideId);
         if (sourceNode != nullptr
-            && sourceNode->kind() == fh6::scene::LayerKind::Guide) {
+            && sourceNode->kind() == fls::scene::LayerKind::Guide) {
             const auto *sourceGuide =
-                static_cast<const fh6::scene::GuideLayer *>(sourceNode);
+                static_cast<const fls::scene::GuideLayer *>(sourceNode);
             const QImage storedHeatmap = differenceHeatmap.convertToFormat(
                 QImage::Format_ARGB32_Premultiplied);
             QString heatmapFormat;
             const QByteArray encodedHeatmap =
                 encodeGuideImage(storedHeatmap, &heatmapFormat);
             if (!encodedHeatmap.isEmpty()) {
-                differenceGuide = std::make_unique<fh6::scene::GuideLayer>();
+                differenceGuide = std::make_unique<fls::scene::GuideLayer>();
                 differenceGuide->id = state_->uniqueGuideLayerId();
                 differenceGuide->name = QStringLiteral("Dangerous Differences");
                 differenceGuide->transform = sourceGuide->transform;
                 differenceGuide->opacity = 1.0;
                 differenceGuide->image =
-                    std::make_unique<fh6::scene::RasterContainer>();
+                    std::make_unique<fls::scene::RasterContainer>();
                 differenceGuide->image->encoded = encodedHeatmap;
                 differenceGuide->image->pixels = QByteArray(
                     reinterpret_cast<const char *>(storedHeatmap.constBits()),
@@ -747,7 +791,7 @@ void MainWindow::insertGeneratedRegionVariants(
     const bool differenceGuideCreated = differenceGuide != nullptr;
     generatedIds.reserve(shapeCount);
     for (const GeneratedRegionVariant &variant : variants) {
-        auto variantGroup = std::make_unique<fh6::scene::Group>();
+        auto variantGroup = std::make_unique<fls::scene::Group>();
         variantGroup->id = QStringLiteral("group_%1").arg(
             QUuid::createUuid().toString(QUuid::WithoutBraces));
         variantGroup->name = variant.name;
@@ -757,18 +801,18 @@ void MainWindow::insertGeneratedRegionVariants(
             if (region.shapes.isEmpty()) {
                 continue;
             }
-            auto regionGroup = std::make_unique<fh6::scene::Group>();
+            auto regionGroup = std::make_unique<fls::scene::Group>();
             regionGroup->id = QStringLiteral("group_%1").arg(
                 QUuid::createUuid().toString(QUuid::WithoutBraces));
             regionGroup->name = QStringLiteral("Region %1").arg(++variantRegionCount);
             for (const GeneratedRegionShape &placement : region.shapes) {
-                auto shape = std::make_unique<fh6::scene::Shape>();
+                auto shape = std::make_unique<fls::scene::Shape>();
                 shape->id = QStringLiteral("layer_%1").arg(
                     QUuid::createUuid().toString(QUuid::WithoutBraces));
-                shape->name = fh6::detail::shapeName(
+                shape->name = fls::detail::shapeName(
                     static_cast<quint16>(placement.shapeId));
                 shape->setVectorShape(static_cast<quint16>(placement.shapeId));
-                shape->transform = fh6::decomposeTransform2D(
+                shape->transform = fls::decomposeTransform2D(
                     generatedShapeMatrix(placement.transform));
                 shape->color = {placement.color[0], placement.color[1],
                                 placement.color[2], placement.color[3]};
@@ -784,23 +828,23 @@ void MainWindow::insertGeneratedRegionVariants(
 
     state_->beginProjectEdit();
     state_->insertLayerAboveSelection(std::move(group), insertionEntries);
-    if (fh6::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
+    if (fls::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
         const QString parentId = state_->parentGroupForEntry(groupId);
-        if (const fh6::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
-            const fh6::Matrix3 parentInverse = fh6::invertAffine(parent->worldMatrix());
+        if (const fls::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
+            const fls::Matrix3 parentInverse = fls::invertAffine(parent->worldMatrix());
             for (const auto &variantNode : inserted->children) {
-                if (variantNode->kind() != fh6::scene::LayerKind::Group) {
+                if (variantNode->kind() != fls::scene::LayerKind::Group) {
                     continue;
                 }
-                auto *variantGroup = static_cast<fh6::scene::Group *>(variantNode.get());
+                auto *variantGroup = static_cast<fls::scene::Group *>(variantNode.get());
                 for (const auto &regionNode : variantGroup->children) {
-                    if (regionNode->kind() != fh6::scene::LayerKind::Group) {
+                    if (regionNode->kind() != fls::scene::LayerKind::Group) {
                         continue;
                     }
-                    auto *regionGroup = static_cast<fh6::scene::Group *>(regionNode.get());
+                    auto *regionGroup = static_cast<fls::scene::Group *>(regionNode.get());
                     for (const auto &shape : regionGroup->children) {
-                        shape->transform = fh6::decomposeTransform2D(
-                            fh6::detail::multiply(parentInverse,
+                        shape->transform = fls::decomposeTransform2D(
+                            fls::detail::multiply(parentInverse,
                                                   shape->transform.matrix()));
                     }
                 }
@@ -808,7 +852,7 @@ void MainWindow::insertGeneratedRegionVariants(
         }
     }
     if (differenceGuide != nullptr) {
-        fh6::scene::Group *differenceParent = differenceGuideParentId.isEmpty()
+        fls::scene::Group *differenceParent = differenceGuideParentId.isEmpty()
             ? state_->project_.root.get()
             : state_->groupForId(differenceGuideParentId);
         if (differenceParent == nullptr) {
@@ -836,11 +880,11 @@ void MainWindow::insertGeneratedRegionVariants(
                              3500);
 }
 
-fh6::Project *MainWindow::project() {
+fls::Project *MainWindow::project() {
     return state_->project();
 }
 
-QVector<fh6::scene::Group *> MainWindow::selectedGroups() {
+QVector<fls::scene::Group *> MainWindow::selectedGroups() {
     return state_->selectedGroups(state_->fullySelectedTopGroupIds());
 }
 
@@ -876,7 +920,7 @@ void MainWindow::deleteSelectedLayers() {
             return;
         }
     }
-    for (fh6::scene::GuideLayer *guide : state_->selectedGuideLayers()) {
+    for (fls::scene::GuideLayer *guide : state_->selectedGuideLayers()) {
         if (guide->locked) {
             statusBar()->showMessage(QStringLiteral("Selection contains locked layers"), 3000);
             return;
@@ -973,9 +1017,9 @@ void MainWindow::insertShape(int shapeId) {
     }
 
     const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
-    auto layer = std::make_unique<fh6::scene::Shape>();
+    auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = state_->uniqueLayerId();
-    layer->name = fh6::detail::shapeName(static_cast<quint16>(shapeId));
+    layer->name = fls::detail::shapeName(static_cast<quint16>(shapeId));
     layer->setVectorShape(static_cast<quint16>(shapeId));
     layer->x = center.x();
     layer->y = center.y();
@@ -1004,14 +1048,14 @@ void MainWindow::insertShape(int shapeId) {
 }
 
 void MainWindow::replaceSelectedShape(int shapeId) {
-    const QVector<fh6::scene::Shape *> selected = state_->selectedLayers();
+    const QVector<fls::scene::Shape *> selected = state_->selectedLayers();
     if (selected.size() != 1 || !state_->selectedGuideLayerIds().isEmpty()
         || selected.front() == nullptr) {
         statusBar()->showMessage(QStringLiteral("Select one shape to replace"), 2000);
         return;
     }
 
-    fh6::scene::Shape *layer = selected.front();
+    fls::scene::Shape *layer = selected.front();
     if (!layer->isRaster() && layer->shapeId == shapeId) {
         statusBar()->showMessage(QStringLiteral("Selected shape already uses this geometry"), 1500);
         return;
@@ -1034,7 +1078,7 @@ void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
     }
 
     const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
-    auto layer = std::make_unique<fh6::scene::Shape>();
+    auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = state_->uniqueLayerId();
     layer->name = QStringLiteral("Logo %1").arg(rasterId);
     layer->setRasterShape(rasterId, width, height);
@@ -1131,9 +1175,9 @@ void MainWindow::placeTextDialog() {
     QVector<QString> newIds;
     newIds.reserve(line.glyphs.size());
     for (const PlacedTextGlyph &glyph : line.glyphs) {
-        auto layer = std::make_unique<fh6::scene::Shape>();
+        auto layer = std::make_unique<fls::scene::Shape>();
         layer->id = state_->uniqueLayerId();
-        layer->name = fh6::detail::shapeName(static_cast<quint16>(glyph.shapeId));
+        layer->name = fls::detail::shapeName(static_cast<quint16>(glyph.shapeId));
         layer->setVectorShape(static_cast<quint16>(glyph.shapeId));
         layer->x = startX + glyph.originX;
         layer->y = center.y();
@@ -1146,7 +1190,7 @@ void MainWindow::placeTextDialog() {
     if (newIds.size() > 1) {
         state_->groupEntries(newIds);
         const QString parent = state_->parentGroupForEntry(newIds.front());
-        if (fh6::scene::Group *group = state_->groupForId(parent); group != nullptr) {
+        if (fls::scene::Group *group = state_->groupForId(parent); group != nullptr) {
             group->name = groupName;
         }
     } else {
@@ -1219,13 +1263,13 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     }
     ProjectClipboard placement;
     if (clipboard.nodes.size() == 1 && clipboard.nodes.front()
-        && clipboard.nodes.front()->kind() == fh6::scene::LayerKind::Group) {
-        std::unique_ptr<fh6::scene::Layer> root = clipboard.nodes.front()->clone();
+        && clipboard.nodes.front()->kind() == fls::scene::LayerKind::Group) {
+        std::unique_ptr<fls::scene::Layer> root = clipboard.nodes.front()->clone();
         root->name = name;
         placement.rootIds = {root->id};
         placement.nodes.push_back(std::move(root));
     } else {
-        auto root = std::make_unique<fh6::scene::Group>();
+        auto root = std::make_unique<fls::scene::Group>();
         root->id = QStringLiteral("custom_group_root");
         root->name = name;
         for (const auto &node : clipboard.nodes) {
@@ -1249,7 +1293,7 @@ void MainWindow::insertCustomGroup(const QString &name, const ProjectClipboard &
     QRectF insertedBounds;
     bool hasInsertedBounds = false;
     for (const QString &id : layerSelection) {
-        auto *layer = dynamic_cast<fh6::scene::Shape *>(state_->sceneNode(id));
+        auto *layer = dynamic_cast<fls::scene::Shape *>(state_->sceneNode(id));
         if (layer == nullptr) {
             continue;
         }
@@ -1316,14 +1360,14 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     }
 
     const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
-    auto guide = std::make_unique<fh6::scene::GuideLayer>();
+    auto guide = std::make_unique<fls::scene::GuideLayer>();
     guide->id = state_->uniqueGuideLayerId();
     guide->name = QFileInfo(path).completeBaseName();
     if (guide->name.isEmpty()) {
         guide->name = QStringLiteral("Guide");
     }
     guide->sourcePath = QFileInfo(path).absoluteFilePath();
-    guide->image = std::make_unique<fh6::scene::RasterContainer>();
+    guide->image = std::make_unique<fls::scene::RasterContainer>();
     guide->image->encoded = embedBytes;
     guide->image->pixels = QByteArray(reinterpret_cast<const char *>(image.constBits()), image.sizeInBytes());
     guide->image->format = embedFormat;
@@ -1337,7 +1381,7 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     const QString guideId = guide->id;
     const QString guideName = guide->name;
     const QString sectionId = state_->project_.isLivery ? activeLiverySectionId() : QString();
-    fh6::scene::Group *parent = sectionId.isEmpty() ? nullptr : state_->groupForId(sectionId);
+    fls::scene::Group *parent = sectionId.isEmpty() ? nullptr : state_->groupForId(sectionId);
     if (parent == nullptr) {
         parent = state_->project_.root.get();
     }
@@ -1390,7 +1434,7 @@ void MainWindow::groupOrUngroupSelection() {
         return;
     }
     const QString parentId = state_->parentGroupForEntry(entries.front());
-    const fh6::scene::Group *parentGroup = state_->groupForId(parentId);
+    const fls::scene::Group *parentGroup = state_->groupForId(parentId);
     if (parentGroup == nullptr) {
         statusBar()->showMessage(QStringLiteral("Selection cannot be grouped"), 3000);
         return;

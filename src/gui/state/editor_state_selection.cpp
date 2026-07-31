@@ -17,7 +17,7 @@ QVector<LayerType *> selectedNodes(const QSet<QString> &ids, const QHash<QString
 
 }
 
-QVector<fh6::scene::Shape *> EditorState::selectedLayers() {
+QVector<fls::scene::Shape *> EditorState::selectedLayers() {
     if (!hasProject_) {
         return {};
     }
@@ -25,7 +25,7 @@ QVector<fh6::scene::Shape *> EditorState::selectedLayers() {
     return selectedNodes(selectedLayerIds_, projectIndexCache().layers);
 }
 
-QVector<fh6::scene::GuideLayer *> EditorState::selectedGuideLayers() {
+QVector<fls::scene::GuideLayer *> EditorState::selectedGuideLayers() {
     if (!hasProject_) {
         return {};
     }
@@ -33,15 +33,15 @@ QVector<fh6::scene::GuideLayer *> EditorState::selectedGuideLayers() {
     return selectedNodes(selectedGuideLayerIds_, projectIndexCache().guides);
 }
 
-QVector<fh6::scene::Group *> EditorState::selectedGroups(const QVector<QString> &entryIds) {
-    QVector<fh6::scene::Group *> result;
+QVector<fls::scene::Group *> EditorState::selectedGroups(const QVector<QString> &entryIds) {
+    QVector<fls::scene::Group *> result;
     if (!hasProject_) {
         return result;
     }
     const QVector<QString> entries = normalizeEntrySelection(entryIds);
     const ProjectIndexCache &cache = projectIndexCache();
     for (const QString &entryId : entries) {
-        if (fh6::scene::Group *group = cache.groups.value(entryId, nullptr)) {
+        if (fls::scene::Group *group = cache.groups.value(entryId, nullptr)) {
             result.push_back(group);
         }
     }

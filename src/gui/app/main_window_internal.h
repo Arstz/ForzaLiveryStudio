@@ -100,12 +100,12 @@ inline bool isProjectDocumentFile(const QFileInfo &info) {
     return info.isFile() && isProjectFile;
 }
 
-inline QString entryNameForId(const fh6::Project &project, const QString &id) {
+inline QString entryNameForId(const fls::Project &project, const QString &id) {
     if (!project.root) {
         return {};
     }
     QString name;
-    std::function<void(const fh6::scene::Layer &)> walk = [&](const fh6::scene::Layer &node) {
+    std::function<void(const fls::scene::Layer &)> walk = [&](const fls::scene::Layer &node) {
         if (!name.isEmpty()) {
             return;
         }
@@ -113,8 +113,8 @@ inline QString entryNameForId(const fh6::Project &project, const QString &id) {
             name = node.name;
             return;
         }
-        if (node.kind() == fh6::scene::LayerKind::Group) {
-            for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+        if (node.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
                 walk(*child);
             }
         }
@@ -126,14 +126,14 @@ inline QString entryNameForId(const fh6::Project &project, const QString &id) {
 }
 
 template <typename Fn>
-void forEachLayer(fh6::Project &project, Fn fn) {
+void forEachLayer(fls::Project &project, Fn fn) {
     if (!project.root) {
         return;
     }
-    std::function<void(fh6::scene::Layer &)> walk = [&](fh6::scene::Layer &node) {
+    std::function<void(fls::scene::Layer &)> walk = [&](fls::scene::Layer &node) {
         fn(node);
-        if (node.kind() == fh6::scene::LayerKind::Group) {
-            for (const auto &child : static_cast<fh6::scene::Group &>(node).children) {
+        if (node.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<fls::scene::Group &>(node).children) {
                 walk(*child);
             }
         }
@@ -144,31 +144,31 @@ void forEachLayer(fh6::Project &project, Fn fn) {
 }
 
 template <typename Fn>
-void forEachShape(fh6::Project &project, Fn fn) {
-    forEachLayer(project, [&](fh6::scene::Layer &node) {
-        if (node.kind() == fh6::scene::LayerKind::Shape) {
-            fn(static_cast<fh6::scene::Shape &>(node));
+void forEachShape(fls::Project &project, Fn fn) {
+    forEachLayer(project, [&](fls::scene::Layer &node) {
+        if (node.kind() == fls::scene::LayerKind::Shape) {
+            fn(static_cast<fls::scene::Shape &>(node));
         }
     });
 }
 
 template <typename Fn>
-void forEachGuide(fh6::Project &project, Fn fn) {
-    forEachLayer(project, [&](fh6::scene::Layer &node) {
-        if (node.kind() == fh6::scene::LayerKind::Guide) {
-            fn(static_cast<fh6::scene::GuideLayer &>(node));
+void forEachGuide(fls::Project &project, Fn fn) {
+    forEachLayer(project, [&](fls::scene::Layer &node) {
+        if (node.kind() == fls::scene::LayerKind::Guide) {
+            fn(static_cast<fls::scene::GuideLayer &>(node));
         }
     });
 }
 
-inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project) {
-    QVector<fh6::scene::Group *> sections;
+inline QVector<fls::scene::Group *> liverySections(fls::Project &project) {
+    QVector<fls::scene::Group *> sections;
     if (!project.root) {
         return sections;
     }
     for (const auto &child : project.root->children) {
-        if (child->kind() == fh6::scene::LayerKind::Group) {
-            auto *group = static_cast<fh6::scene::Group *>(child.get());
+        if (child->kind() == fls::scene::LayerKind::Group) {
+            auto *group = static_cast<fls::scene::Group *>(child.get());
             if (group->isLiverySection) {
                 sections.push_back(group);
             }
@@ -177,7 +177,7 @@ inline QVector<fh6::scene::Group *> liverySections(fh6::Project &project) {
     return sections;
 }
 
-inline QRectF shapeWorldBounds(const fh6::scene::Shape &shape, const QSizeF &size) {
+inline QRectF shapeWorldBounds(const fls::scene::Shape &shape, const QSizeF &size) {
     QTransform transform;
     transform.translate(shape.x, shape.y);
     transform.rotate(shape.rotation);

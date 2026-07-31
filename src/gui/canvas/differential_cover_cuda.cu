@@ -1,4 +1,4 @@
-#include "differentiable_cover_cuda_kernel.h"
+#include "differential_cover_cuda_kernel.h"
 
 #include <cmath>
 

@@ -4,7 +4,7 @@
 #include <QString>
 #include <QtGlobal>
 
-namespace fh6 {
+namespace fls {
 
 struct HeaderMetadata {
     quint32 formatVersion = 7;
@@ -31,4 +31,4 @@ QByteArray buildHeader(const HeaderMetadata &meta);
 
 HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId = 0);
 
-} // namespace fh6
+} // namespace fls

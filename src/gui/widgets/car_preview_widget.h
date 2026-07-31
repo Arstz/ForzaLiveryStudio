@@ -16,7 +16,7 @@
 class QTemporaryDir;
 class QLabel;
 
-namespace fh6 {
+namespace fls {
 struct Project;
 }
 
@@ -37,7 +37,7 @@ public:
 
     QImage unwrapOverlay(int liverySectionSlot = -1) const;
 
-    void setProject(fh6::Project *project);
+    void setProject(fls::Project *project);
     void setEditorState(EditorState *state);
 
     QColor basePaint() const;
@@ -63,7 +63,7 @@ protected:
 
 private:
     struct CachedProjectedLiverySection {
-        fh6::Project project;
+        fls::Project project;
         QRect clipRect;
     };
 
@@ -79,16 +79,16 @@ private:
     CarModelRenderer carRenderer_;
     bool geometryLoaded_ = false;
 
-    fh6::Project *project_ = nullptr;
+    fls::Project *project_ = nullptr;
     EditorState *state_ = nullptr;
 
-    fh6::CarModel model_;
+    fls::CarModel model_;
     bool modelUploadPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
     bool loadCarTextures_ = false;
 
-    fh6::LiveryMaskSet liveryMasks_;
+    fls::LiveryMaskSet liveryMasks_;
     QString liveryMasksDir_;
     bool liveryMasksPending_ = false;
 

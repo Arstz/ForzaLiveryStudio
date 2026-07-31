@@ -7,7 +7,7 @@
 
 #include <stdexcept>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 constexpr int CreatorTagSize = 8;   // tag1[4] + tag2[2] + sep[2]
@@ -183,4 +183,4 @@ HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorNam
     return meta;
 }
 
-} // namespace fh6
+} // namespace fls

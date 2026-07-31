@@ -10,7 +10,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace fh6 {
+namespace fls {
 namespace {
 
 constexpr int kMaxDirectChildren = 0xffff;
@@ -490,4 +490,4 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
     return payload;
 }
 
-} // namespace fh6
+} // namespace fls

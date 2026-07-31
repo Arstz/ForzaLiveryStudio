@@ -4,7 +4,7 @@
 
 #include <cmath>
 
-namespace fh6 {
+namespace fls {
 
 namespace detail {
 Matrix3 multiply(const Matrix3 &left, const Matrix3 &right) {
@@ -129,4 +129,4 @@ scene::Transform2D decomposeTransform2D(const Matrix3 &matrix) {
     return transform;
 }
 
-} // namespace fh6
+} // namespace fls

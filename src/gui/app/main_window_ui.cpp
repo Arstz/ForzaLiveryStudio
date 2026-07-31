@@ -523,9 +523,9 @@ void MainWindow::setupOptionsMenu() {
     };
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
-    addBehaviorOption(optionsMenu, QStringLiteral("Differentiable Pen Fill"),
-                      QStringLiteral("toggle_differentiable_pen_fill"),
-                      &BehaviorSettings::differentiablePenFill);
+    addBehaviorOption(optionsMenu, QStringLiteral("Differential Contour Fill"),
+                      QStringLiteral("toggle_differential_contour_fill"),
+                      &BehaviorSettings::differentialContourFill);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
     addBehaviorOption(optionsMenu, QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
     addBehaviorOption(optionsMenu, QStringLiteral("Allow Move Outside Bounding Box"),
@@ -820,7 +820,7 @@ void MainWindow::applyTheme(UiTheme theme, bool save) {
         refreshDockTitleIcon(dock);
     }
     for (QLabel *label : findChildren<QLabel *>()) {
-        const QString iconName = label->property("fh6PropertyIconName").toString();
+        const QString iconName = label->property("flsPropertyIconName").toString();
         if (!iconName.isEmpty()) {
             label->setPixmap(assetIcon(iconName).pixmap(14, 14));
         }

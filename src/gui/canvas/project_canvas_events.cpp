@@ -54,7 +54,7 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers) {
     }
     if (state_ != nullptr) {
         QSet<QString> guideIds;
-        forEachSceneGuide([&](const fh6::scene::GuideLayer &guide, const QTransform &world, const QString &) {
+        forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &) {
             if (guide.visible) {
                 const QRectF bounds = screenQuad(world, sceneLocalRect(guide, geometry_)).boundingRect();
                 if (drag_.marqueeRect.contains(bounds.center())) {

@@ -6,10 +6,11 @@
 #include <QJsonObject>
 #include <QString>
 
-namespace fh6 {
+namespace fls {
 
 inline constexpr int ProjectJsonVersion = 2;
-inline constexpr char ProjectJsonFormat[] = "fh6_editor_project";
+inline constexpr char ProjectJsonFormat[] = "fls_editor_project";
+inline constexpr char LegacyProjectJsonFormat[] = "fh6_editor_project";
 
 Project projectFromJson(const QJsonObject &object);
 QJsonObject projectToJson(const Project &project);
@@ -27,4 +28,4 @@ Project importFM2023Asset(const QString &folderOrFile);
 QByteArray encodeCLiveryPayload(const Project &project);
 void exportCLivery(const Project &project, const QString &outputFolder);
 
-} // namespace fh6
+} // namespace fls

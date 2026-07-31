@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace fh6 {
+namespace fls {
 
 struct SwatchMask {
     int width = 0;
@@ -33,4 +33,4 @@ SwatchImage loadSwatchImage(const QString &path, QString *error = nullptr);
 
 SwatchImage decodeSwatchImage(const QByteArray &bytes, QString *error = nullptr);
 
-} // namespace fh6
+} // namespace fls

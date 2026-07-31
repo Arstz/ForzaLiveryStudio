@@ -76,7 +76,7 @@ QColor previewColor(const QColor &ink, double alpha) {
 
 QJsonObject clipboardToJson(const ProjectClipboard &clipboard) {
     QJsonObject object;
-    fh6::scene::Group root;
+    fls::scene::Group root;
     root.id = QStringLiteral("__root__");
     root.name = QStringLiteral("Project");
     for (const auto &node : clipboard.nodes) {
@@ -84,12 +84,12 @@ QJsonObject clipboardToJson(const ProjectClipboard &clipboard) {
             root.append(node->clone());
         }
     }
-    object.insert(QStringLiteral("root"), fh6::scene::sceneTreeToJson(root));
+    object.insert(QStringLiteral("root"), fls::scene::sceneTreeToJson(root));
     return object;
 }
 
-std::unique_ptr<fh6::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &object) {
-    auto layer = std::make_unique<fh6::scene::Shape>();
+std::unique_ptr<fls::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &object) {
+    auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = object.value(QStringLiteral("id")).toString();
     layer->name = object.value(QStringLiteral("name")).toString(QStringLiteral("Shape"));
     layer->transform.x = object.value(QStringLiteral("x")).toDouble(0.0);
@@ -117,12 +117,12 @@ std::unique_ptr<fh6::scene::Shape> legacyCustomShapeFromJson(const QJsonObject &
     return layer;
 }
 
-std::unique_ptr<fh6::scene::Layer> legacyCustomNodeFromJson(const QString &id,
+std::unique_ptr<fls::scene::Layer> legacyCustomNodeFromJson(const QString &id,
                                                             const QHash<QString, QJsonObject> &shapes,
                                                             const QHash<QString, QJsonObject> &groups,
                                                             QSet<QString> &consumedShapes) {
     if (const auto groupIt = groups.constFind(id); groupIt != groups.constEnd()) {
-        auto group = std::make_unique<fh6::scene::Group>();
+        auto group = std::make_unique<fls::scene::Group>();
         const QJsonObject object = groupIt.value();
         group->id = object.value(QStringLiteral("id")).toString();
         group->name = object.value(QStringLiteral("name")).toString(QStringLiteral("Group"));
@@ -183,23 +183,23 @@ ProjectClipboard clipboardFromJson(const QJsonObject &object) {
     if (!rootValue.isObject()) {
         return legacyCustomClipboardFromJson(object);
     }
-    std::unique_ptr<fh6::scene::Group> root = fh6::scene::sceneTreeFromJson(rootValue.toObject());
+    std::unique_ptr<fls::scene::Group> root = fls::scene::sceneTreeFromJson(rootValue.toObject());
     while (root && !root->children.empty()) {
-        std::unique_ptr<fh6::scene::Layer> node = root->takeAt(0);
+        std::unique_ptr<fls::scene::Layer> node = root->takeAt(0);
         clipboard.rootIds.push_back(node->id);
         clipboard.nodes.push_back(std::move(node));
     }
     return clipboard;
 }
 
-void forEachClipboardShape(const ProjectClipboard &clipboard, const std::function<void(const fh6::scene::Shape &)> &fn) {
-    std::function<void(const fh6::scene::Layer &)> walk = [&](const fh6::scene::Layer &node) {
-        if (node.kind() == fh6::scene::LayerKind::Shape) {
-            fn(static_cast<const fh6::scene::Shape &>(node));
+void forEachClipboardShape(const ProjectClipboard &clipboard, const std::function<void(const fls::scene::Shape &)> &fn) {
+    std::function<void(const fls::scene::Layer &)> walk = [&](const fls::scene::Layer &node) {
+        if (node.kind() == fls::scene::LayerKind::Shape) {
+            fn(static_cast<const fls::scene::Shape &>(node));
             return;
         }
-        if (node.kind() == fh6::scene::LayerKind::Group) {
-            for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+        if (node.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
                 walk(*child);
             }
         }
@@ -213,7 +213,7 @@ void forEachClipboardShape(const ProjectClipboard &clipboard, const std::functio
 
 int clipboardShapeCount(const ProjectClipboard &clipboard) {
     int count = 0;
-    forEachClipboardShape(clipboard, [&](const fh6::scene::Shape &) { ++count; });
+    forEachClipboardShape(clipboard, [&](const fls::scene::Shape &) { ++count; });
     return count;
 }
 
@@ -221,7 +221,7 @@ bool clipboardEmpty(const ProjectClipboard &clipboard) {
     return clipboard.nodes.empty();
 }
 
-QTransform customNodeTransform(const fh6::scene::Layer &node) {
+QTransform customNodeTransform(const fls::scene::Layer &node) {
     QTransform transform;
     transform.translate(node.transform.x, node.transform.y);
     transform.rotate(node.transform.rotation);
@@ -231,7 +231,7 @@ QTransform customNodeTransform(const fh6::scene::Layer &node) {
 }
 
 void forEachClipboardRoot(const ProjectClipboard &clipboard,
-                          const std::function<void(const fh6::scene::Layer &)> &fn) {
+                          const std::function<void(const fls::scene::Layer &)> &fn) {
     for (const auto &node : clipboard.nodes) {
         if (node) {
             fn(*node);
@@ -529,14 +529,14 @@ QImage renderShapePreviewImage(const ShapeGeometryStore &geometry, int shapeId, 
     return image;
 }
 
-QColor customLayerColor(const fh6::scene::Shape &layer, double alphaScale = 1.0) {
+QColor customLayerColor(const fls::scene::Shape &layer, double alphaScale = 1.0) {
     return QColor(layer.color[2],
                   layer.color[1],
                   layer.color[0],
                   std::clamp(static_cast<int>(std::round(layer.color[3] * alphaScale)), 0, 255));
 }
 
-QRectF customLayerBounds(const fh6::scene::Shape &layer,
+QRectF customLayerBounds(const fls::scene::Shape &layer,
                          const ShapeGeometryStore &geometry,
                          const QTransform &parentWorld) {
     const QSizeF size = layer.raster ? QSizeF(layer.rasterWidth, layer.rasterHeight)
@@ -545,17 +545,17 @@ QRectF customLayerBounds(const fh6::scene::Shape &layer,
     return (customNodeTransform(layer) * parentWorld).mapRect(local);
 }
 
-QRectF customNodeBounds(const fh6::scene::Layer &node,
+QRectF customNodeBounds(const fls::scene::Layer &node,
                         const ShapeGeometryStore &geometry,
                         const QTransform &parentWorld) {
     const QTransform world = customNodeTransform(node) * parentWorld;
-    if (node.kind() == fh6::scene::LayerKind::Shape) {
-        return customLayerBounds(static_cast<const fh6::scene::Shape &>(node), geometry, parentWorld);
+    if (node.kind() == fls::scene::LayerKind::Shape) {
+        return customLayerBounds(static_cast<const fls::scene::Shape &>(node), geometry, parentWorld);
     }
-    if (node.kind() != fh6::scene::LayerKind::Group) {
+    if (node.kind() != fls::scene::LayerKind::Group) {
         return {};
     }
-    const auto &group = static_cast<const fh6::scene::Group &>(node);
+    const auto &group = static_cast<const fls::scene::Group &>(node);
     QRectF bounds;
     bool hasBounds = false;
     for (const auto &child : group.children) {
@@ -569,7 +569,7 @@ QRectF customNodeBounds(const fh6::scene::Layer &node,
     return bounds;
 }
 
-void blendCustomPreviewPixel(QImage &image, int x, int y, const fh6::scene::Shape &layer, double alphaScale) {
+void blendCustomPreviewPixel(QImage &image, int x, int y, const fls::scene::Shape &layer, double alphaScale) {
     const double sourceAlpha = std::clamp((layer.color[3] / 255.0) * alphaScale, 0.0, 1.0);
     if (sourceAlpha <= 0.0) {
         return;
@@ -600,7 +600,7 @@ void rasterizeCustomPreviewTriangle(QImage &image,
                                     double alpha0,
                                     double alpha1,
                                     double alpha2,
-                                    const fh6::scene::Shape &layer) {
+                                    const fls::scene::Shape &layer) {
     const double minX = std::floor(std::min({p0.x(), p1.x(), p2.x()}));
     const double maxX = std::ceil(std::max({p0.x(), p1.x(), p2.x()}));
     const double minY = std::floor(std::min({p0.y(), p1.y(), p2.y()}));
@@ -630,7 +630,7 @@ void rasterizeCustomPreviewTriangle(QImage &image,
 }
 
 void paintCustomPreviewLayer(QImage &image,
-                             const fh6::scene::Shape &layer,
+                             const fls::scene::Shape &layer,
                              const ShapeGeometryStore &geometry,
                              const QTransform &worldToPreview,
                              const QTransform &parentWorld) {
@@ -670,23 +670,23 @@ void paintCustomPreviewLayer(QImage &image,
 }
 
 void paintCustomPreviewNode(QImage &image,
-                            const fh6::scene::Layer &node,
+                            const fls::scene::Layer &node,
                             const ShapeGeometryStore &geometry,
                             const QTransform &worldToPreview,
                             const QTransform &parentWorld) {
-    if (node.kind() == fh6::scene::LayerKind::Shape) {
+    if (node.kind() == fls::scene::LayerKind::Shape) {
         paintCustomPreviewLayer(image,
-                                static_cast<const fh6::scene::Shape &>(node),
+                                static_cast<const fls::scene::Shape &>(node),
                                 geometry,
                                 worldToPreview,
                                 parentWorld);
         return;
     }
-    if (node.kind() != fh6::scene::LayerKind::Group) {
+    if (node.kind() != fls::scene::LayerKind::Group) {
         return;
     }
     const QTransform world = customNodeTransform(node) * parentWorld;
-    for (const auto &child : static_cast<const fh6::scene::Group &>(node).children) {
+    for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
         paintCustomPreviewNode(image, *child, geometry, worldToPreview, world);
     }
 }
@@ -697,7 +697,7 @@ QImage renderCustomGroupPreviewImage(const CustomShapeGroup &group, const ShapeG
     }
     QRectF bounds;
     bool hasBounds = false;
-    forEachClipboardRoot(group.clipboard, [&](const fh6::scene::Layer &node) {
+    forEachClipboardRoot(group.clipboard, [&](const fls::scene::Layer &node) {
         const QRectF entry = customNodeBounds(node, geometry, QTransform());
         if (!entry.isValid() || entry.isEmpty()) {
             return;
@@ -718,7 +718,7 @@ QImage renderCustomGroupPreviewImage(const CustomShapeGroup &group, const ShapeG
     worldToPreview.scale(scale, -scale);
     worldToPreview.translate(-bounds.center().x(), -bounds.center().y());
 
-    forEachClipboardRoot(group.clipboard, [&](const fh6::scene::Layer &node) {
+    forEachClipboardRoot(group.clipboard, [&](const fls::scene::Layer &node) {
         paintCustomPreviewNode(image, node, geometry, worldToPreview, QTransform());
     });
     return image;
@@ -858,7 +858,7 @@ void LogoTile::drawPreview(QPainter &painter, const QRect &rect) {
         painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
         return;
     }
-    const fh6::RasterDecal decal = fh6::sharedRasterDecals().decal(rasterId_);
+    const fls::RasterDecal decal = fls::sharedRasterDecals().decal(rasterId_);
     if (!decal.valid() || rect.isEmpty()) {
         return;
     }
@@ -887,7 +887,7 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     : QWidget(parent) {
     geometryLoaded_ = geometry_.loadDefault();
     names_.loadDefault();
-    const fh6::RasterDecalPack &logoPack = fh6::sharedRasterDecals();
+    const fls::RasterDecalPack &logoPack = fls::sharedRasterDecals();
     if (logoPack.isLoaded()) {
         for (quint32 id : logoPack.ids()) {
             const QSize size = logoPack.decalSize(id);
@@ -1384,7 +1384,7 @@ QString ShapesBrowserWidget::categoryNameForShape(int shapeId, const ShapeGeomet
     if (prefix.isEmpty()) {
         prefix = QStringLiteral("Other");
     }
-    const QString registryName = fh6::detail::shapeName(static_cast<quint16>(shapeId));
+    const QString registryName = fls::detail::shapeName(static_cast<quint16>(shapeId));
     const QString display = displayCategoryName(registryName);
     return display.isEmpty() || display.startsWith(QStringLiteral("0x")) ? prefix : display;
 }
@@ -1394,7 +1394,7 @@ QString ShapesBrowserWidget::nameForShape(int shapeId, const ShapeGeometry &geom
     if (!visionName.isEmpty()) {
         return visionName;
     }
-    const QString registryName = fh6::detail::shapeName(static_cast<quint16>(shapeId));
+    const QString registryName = fls::detail::shapeName(static_cast<quint16>(shapeId));
     if (!registryName.startsWith(QStringLiteral("0x"))) {
         return registryName;
     }

@@ -1,5 +1,5 @@
-#include "differentiable_cover_gpu.h"
-#include "differentiable_cover_cuda_kernel.h"
+#include "differential_cover_gpu.h"
+#include "differential_cover_cuda_kernel.h"
 
 #include <QtCore>
 

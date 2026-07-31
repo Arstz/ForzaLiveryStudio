@@ -6,7 +6,7 @@
 #include <QString>
 #include <QVector>
 
-namespace fh6 {
+namespace fls {
 
 struct RasterDecal {
     quint32 id = 0;
@@ -44,4 +44,4 @@ private:
 
 const RasterDecalPack &sharedRasterDecals();
 
-} // namespace fh6
+} // namespace fls

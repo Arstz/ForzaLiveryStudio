@@ -139,7 +139,7 @@ private:
                                    const QString &id,
                                    const QString &label,
                                    const QKeySequence &shortcut) const;
-    void setProject(fh6::Project project);
+    void setProject(fls::Project project);
     void updateStatus();
     void updateClipboardWidget();
     void updateColorPaletteWidget();
@@ -148,8 +148,8 @@ private:
     void syncTreeSelectionFromIds();
     void revealTreeIndex(const QModelIndex &index);
     QVector<QString> selectedEntryIds() const;
-    fh6::Project *project();
-    QVector<fh6::scene::Group *> selectedGroups();
+    fls::Project *project();
+    QVector<fls::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
     void startPenFill(const QVector<PenPoint> &points,
@@ -158,7 +158,7 @@ private:
                          double width,
                          const std::optional<QColor> &fillColor = std::nullopt);
     using GeneratedFillProgress =
-        std::function<void(int, double, double, double)>;
+        std::function<void(int, double, double)>;
     using GeneratedFillFunction = std::function<PenFillResult(
         const std::function<bool()> &, const GeneratedFillProgress &)>;
     void prepareGeneratedFill(const std::optional<QColor> &fillColor,
@@ -168,9 +168,9 @@ private:
     void clearGeneratedFillState();
     void cancelActiveFills();
     void cancelGeneratedFill(bool keepPartial = false);
+    void refreshGeneratedFillElapsedTime();
     void updateGeneratedFillProgress(quint64 generation, int placementCount,
-                                     double targetArea, double coveredArea,
-                                     double etaSeconds);
+                                     double targetArea, double coveredArea);
     void finishGeneratedFill(quint64 generation, PenFillResult result);
     void cancelRegionFill();
     void updateRegionFillProgress(quint64 generation, const QString &phase,
@@ -188,10 +188,10 @@ private:
         const QString &sourceGuideId);
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
-    bool loadImportedProject(const std::function<fh6::Project()> &load,
+    bool loadImportedProject(const std::function<fls::Project()> &load,
                              const QString &statusMessage,
                              QString *error);
-    fh6::HeaderMetadata &ensureProjectHeaderMetadata();
+    fls::HeaderMetadata &ensureProjectHeaderMetadata();
     enum class ExternalDropKind {
         Unsupported,
         ProjectJson,
@@ -302,13 +302,18 @@ private:
     double lastSelectedShapeScaleX_ = 1.0;
     double lastSelectedShapeScaleY_ = 1.0;
     std::shared_ptr<std::atomic_bool> generatedFillCancel_;
-    quint64 generatedFillGeneration_ = 0;
-    bool generatedFillKeepPartialOnCancel_ = false;
     QVector<QString> generatedFillInsertionEntries_;
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;
+    QElapsedTimer generatedFillElapsed_;
+    QTimer *generatedFillElapsedTimer_ = nullptr;
     QProgressBar *generatedFillProgress_ = nullptr;
+    quint64 generatedFillGeneration_ = 0;
+    int generatedFillPlacementCount_ = 0;
+    double generatedFillTargetArea_ = 0.0;
+    double generatedFillCoveredArea_ = 0.0;
+    bool generatedFillKeepPartialOnCancel_ = false;
     int regionMergeAreaThreshold_ = 12;
     std::shared_ptr<std::atomic_bool> regionFillCancel_;
     quint64 regionFillGeneration_ = 0;

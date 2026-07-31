@@ -8,7 +8,7 @@
 
 #include <algorithm>
 
-namespace fh6::scene {
+namespace fls::scene {
 namespace {
 
 QString hex(const QByteArray &bytes) {
@@ -261,7 +261,7 @@ std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o) {
 
 } // namespace
 
-void ensureProjectSceneRoot(fh6::Project &project) {
+void ensureProjectSceneRoot(fls::Project &project) {
     if (!project.root) {
         project.root = std::make_unique<Group>();
     }
@@ -296,4 +296,4 @@ std::unique_ptr<Group> sceneTreeFromJson(const QJsonObject &object) {
     return root;
 }
 
-} // namespace fh6::scene
+} // namespace fls::scene

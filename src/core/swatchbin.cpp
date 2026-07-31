@@ -15,10 +15,10 @@
 #  include <wrl/client.h>
 #endif
 
-namespace fh6 {
+namespace fls {
 
-using fh6::detail::readLeU16;
-using fh6::detail::readLeU32;
+using fls::detail::readLeU16;
+using fls::detail::readLeU32;
 
 namespace {
 
@@ -683,4 +683,4 @@ SwatchImage loadSwatchImage(const QString &path, QString *error) {
     return decodeSwatchImage(file.readAll(), error);
 }
 
-} // namespace fh6
+} // namespace fls
