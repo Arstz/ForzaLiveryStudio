@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fill_contour.h"
 #include "shape_geometry_store.h"
 
 #include <QtCore>
@@ -58,12 +59,7 @@ struct Placement {
 
 using Polygons = QVector<QPolygonF>;
 
-struct ContourSpan {
-    QPointF start;
-    QPointF control;
-    QPointF end;
-    bool curved = false;
-};
+using ContourSpan = FillBoundarySegment;
 
 struct FillInput {
     Polygons mustCover;

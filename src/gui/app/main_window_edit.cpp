@@ -402,15 +402,7 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         cover::FillInput input;
         input.mustCover = polygons;
         input.mayCover = polygons;
-        input.boundarySpans.reserve(contour.segments.size());
-        for (const PenBoundarySegment &segment : contour.segments) {
-            input.boundarySpans.push_back({
-                segment.start,
-                segment.control,
-                segment.end,
-                segment.curved,
-            });
-        }
+        input.boundarySpans = contour.segments;
         cover::FillOptions options;
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(

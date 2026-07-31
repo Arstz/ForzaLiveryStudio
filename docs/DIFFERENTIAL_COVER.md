@@ -3,14 +3,13 @@
 Design + handoff spec for an **opt-in, high-quality Pen fill mode** that covers one
 closed, single-colour contour with **as few affine primitive decals as possible**.
 Bucket Fill is included because it converts its traced mask into the same editable
-Pen contour before filling. The implementation is a standalone C++ alternative to
-the existing deterministic Pen fill. Existing fill algorithms in `pen_fill.cpp`,
-`polygon_mesh.cpp`, and `region_fill.cpp` are out of scope
-to reuse; only the caller's contour and the raw shape-geometry asset in §4 are
-shared.
+Pen contour before filling. The implementation is an independent C++ alternative
+to the existing deterministic Pen fill. Fill implementations are grouped under
+`src/gui/fill`; the solvers share contour and polygon-mesh infrastructure while
+retaining separate selection and optimization policies.
 
 Status: **implemented on the `image_gen` branch.** This document is the behavior
-and maintenance specification for the standalone module.
+and maintenance specification for the differential-cover subsystem.
 
 ---
 
@@ -624,6 +623,28 @@ returned placement when building decals.
 ---
 
 ## 11. Implementation and validation layout
+
+The implementation is divided by responsibility:
+
+- `differential_cover.cpp` owns solver orchestration, progress, cancellation,
+  timeout handling, and repair dispatch.
+- `differential_cover_geometry.cpp` owns catalog construction, polygon
+  conversion, exact booleans, and the differentiable area kernel.
+- `differential_cover_candidates.cpp` owns initialization, routing, CPU/GPU
+  optimization dispatch, legalization, and candidate selection.
+- `differential_cover_metrics.cpp` owns placement unions, exact cover state, and
+  incremental placement gains.
+- `differential_cover_strategies.cpp` owns coherent structural and mesh plans.
+- `differential_cover_postprocess.cpp` owns pruning, survivor adjustment, and
+  profile merging.
+- `differential_cover_gpu.cpp` and the CUDA sources own accelerated evaluators.
+- `differential_cover_internal.h` is the private contract between those units;
+  public callers use only `differential_cover.h`.
+
+Future cover measurements belong in the metrics unit so every selection path
+and post-processing stage compares the same snapshot. Candidate objective
+extensions belong in the candidate unit, and coherent-plan policy remains in
+the strategy unit.
 
 1. **Catalog adapter** — `ShapeGeometryStore` loads `shape_geometry.json.gz`; the
    cover module reconstructs indexed `ShapeMesh` data for the configured ids, validates

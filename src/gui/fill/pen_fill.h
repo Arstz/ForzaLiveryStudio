@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fill_contour.h"
 #include "shape_geometry_store.h"
 
 #include <QtCore>
@@ -19,12 +20,7 @@ struct PenPoint {
     PenPointKind kind = PenPointKind::Soft;
 };
 
-struct PenBoundarySegment {
-    QPointF start;
-    QPointF control;
-    QPointF end;
-    bool curved = false;
-};
+using PenBoundarySegment = FillBoundarySegment;
 
 struct PenContour {
     QPainterPath path;

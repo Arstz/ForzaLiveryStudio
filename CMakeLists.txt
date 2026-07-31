@@ -189,28 +189,36 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/canvas_tools.h
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
-    src/gui/canvas/bucket_fill.cpp
-    src/gui/canvas/bucket_fill.h
-    src/gui/canvas/differential_cover.cpp
-    src/gui/canvas/differential_cover.h
-    src/gui/canvas/differential_cover_gpu.cpp
-    src/gui/canvas/differential_cover_gpu.h
+    src/gui/fill/bucket_fill.cpp
+    src/gui/fill/bucket_fill.h
+    src/gui/fill/differential_cover.cpp
+    src/gui/fill/differential_cover.h
+    src/gui/fill/differential_cover_candidates.cpp
+    src/gui/fill/differential_cover_geometry.cpp
+    src/gui/fill/differential_cover_gpu.cpp
+    src/gui/fill/differential_cover_gpu.h
+    src/gui/fill/differential_cover_internal.h
+    src/gui/fill/differential_cover_metrics.cpp
+    src/gui/fill/differential_cover_postprocess.cpp
+    src/gui/fill/differential_cover_strategies.cpp
+    src/gui/fill/fill_contour.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
     src/gui/canvas/native_shape_renderer.h
-    src/gui/canvas/lining_fill.cpp
-    src/gui/canvas/lining_fill.h
-    src/gui/canvas/pen_fill.cpp
-    src/gui/canvas/pen_fill.h
-    src/gui/canvas/polygon_mesh.cpp
-    src/gui/canvas/polygon_mesh.h
-    src/gui/canvas/region_extract.cpp
-    src/gui/canvas/region_extract.h
-    src/gui/canvas/region_fill.cpp
-    src/gui/canvas/region_fill.h
-    src/gui/canvas/region_layer_plan.cpp
-    src/gui/canvas/region_layer_plan.h
+    src/gui/fill/lining_fill.cpp
+    src/gui/fill/lining_fill.h
+    src/gui/fill/pen_fill.cpp
+    src/gui/fill/pen_fill.h
+    src/gui/fill/polygon_mesh.cpp
+    src/gui/fill/polygon_mesh.h
+    src/gui/fill/region_extract.cpp
+    src/gui/fill/region_extract.h
+    src/gui/fill/region_fill.cpp
+    src/gui/fill/region_fill.h
+    src/gui/fill/region_fill_batch.cpp
+    src/gui/fill/region_layer_plan.cpp
+    src/gui/fill/region_layer_plan.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas_bucket.cpp
     src/gui/canvas/project_canvas_pen.cpp
@@ -259,9 +267,9 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
 
 if(CMAKE_CUDA_COMPILER)
     target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
-        src/gui/canvas/differential_cover_cuda.cpp
-        src/gui/canvas/differential_cover_cuda.cu
-        src/gui/canvas/differential_cover_cuda_kernel.h
+        src/gui/fill/differential_cover_cuda.cpp
+        src/gui/fill/differential_cover_cuda.cu
+        src/gui/fill/differential_cover_cuda_kernel.h
     )
     target_compile_definitions(
         ${FORZA_LIVERY_STUDIO_TARGET} PRIVATE FLS_HAS_CUDA=1)
@@ -290,6 +298,7 @@ target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
     src/gui/app
     src/gui/state
     src/gui/canvas
+    src/gui/fill
     src/gui/widgets
 )
 
@@ -329,17 +338,19 @@ if(FLS_BUILD_TESTS)
 
     add_executable(fls_region_pen_conversion_tests
         tools/region_pen_conversion_test.cpp
-        src/gui/canvas/bucket_fill.cpp
-        src/gui/canvas/lining_fill.cpp
-        src/gui/canvas/pen_fill.cpp
-        src/gui/canvas/polygon_mesh.cpp
-        src/gui/canvas/region_extract.cpp
-        src/gui/canvas/region_fill.cpp
-        src/gui/canvas/region_layer_plan.cpp
+        src/gui/fill/bucket_fill.cpp
+        src/gui/fill/lining_fill.cpp
+        src/gui/fill/pen_fill.cpp
+        src/gui/fill/polygon_mesh.cpp
+        src/gui/fill/region_extract.cpp
+        src/gui/fill/region_fill.cpp
+        src/gui/fill/region_fill_batch.cpp
+        src/gui/fill/region_layer_plan.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_region_pen_conversion_tests PRIVATE
         src/gui/canvas
+        src/gui/fill
         src/gui/widgets
     )
     target_link_libraries(fls_region_pen_conversion_tests PRIVATE
@@ -352,13 +363,19 @@ if(FLS_BUILD_TESTS)
 
     add_executable(fls_differential_cover_tests
         tools/differential_cover_test.cpp
-        src/gui/canvas/differential_cover.cpp
-        src/gui/canvas/differential_cover_gpu.cpp
-        src/gui/canvas/polygon_mesh.cpp
+        src/gui/fill/differential_cover.cpp
+        src/gui/fill/differential_cover_candidates.cpp
+        src/gui/fill/differential_cover_geometry.cpp
+        src/gui/fill/differential_cover_gpu.cpp
+        src/gui/fill/differential_cover_metrics.cpp
+        src/gui/fill/differential_cover_postprocess.cpp
+        src/gui/fill/differential_cover_strategies.cpp
+        src/gui/fill/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_differential_cover_tests PRIVATE
         src/gui/canvas
+        src/gui/fill
         src/gui/widgets
     )
     target_compile_definitions(
@@ -372,9 +389,9 @@ if(FLS_BUILD_TESTS)
     )
     if(CMAKE_CUDA_COMPILER)
         target_sources(fls_differential_cover_tests PRIVATE
-            src/gui/canvas/differential_cover_cuda.cpp
-            src/gui/canvas/differential_cover_cuda.cu
-            src/gui/canvas/differential_cover_cuda_kernel.h
+            src/gui/fill/differential_cover_cuda.cpp
+            src/gui/fill/differential_cover_cuda.cu
+            src/gui/fill/differential_cover_cuda_kernel.h
         )
         target_compile_definitions(
             fls_differential_cover_tests PRIVATE FLS_HAS_CUDA=1)
