@@ -21,7 +21,8 @@ and maintenance specification for the differential-cover subsystem.
   distance-transform initializer.
 - **Output:** an ordered list of **placements**, each a catalog shape id + a 2-D
   **affine transform** (6 DoF), whose opaque union covers as much of the contour as
-  the optimizer can reach without leaving it. Colour is the Pen or Bucket colour.
+  the optimizer can reach within its configured contour tolerance. Colour is the
+  Pen or Bucket colour.
 - **Objective:** minimise the **number of placements** while maximizing legal
   coverage. Complete coverage is preferred but is not a success requirement.
 - **Mode:** a persistent **Differential Contour Fill** tool option, off by default.
@@ -73,7 +74,7 @@ The Pen caller provides one contour:
 | Name | Type | Meaning |
 | --- | --- | --- |
 | `mustCover` | polygon set | The flattened active contour. |
-| `mayCover` | polygon set | Identical to `mustCover`; this mode has no legal overspill. |
+| `mayCover` | polygon set | The outward legality envelope derived from the contour tolerance. |
 | `colour` | RGBA | The region colour, copied onto every placement. |
 | `mask` *(optional)* | binary raster + bbox | Rasterized `mustCover`, for the distance-transform initializer (§7.3). Can be rasterized from `mustCover` internally instead. |
 | `boundarySpans` | ordered line/quadratic spans | Original contour topology used to measure straight-boundary dominance and build hard-edge candidates. |
@@ -83,8 +84,10 @@ whatever convention the chosen boolean library uses — pick one and enforce it)
 Coordinates and all area thresholds are in canvas world units. The solver must
 not normalize by zoom, guide scale, or a canonical raster resolution.
 
-> The geometric contract is: maximize coverage of `mustCover` while keeping every
-> accepted placement within the equal `mayCover` polygon up to `epsSpill`.
+> The geometric contract is: maximize coverage of `mustCover`, charge spill
+> against that original target, and keep the placement union inside `mayCover`.
+> Weighted contour coverage uses only numerical area tolerance at that envelope;
+> the regular analytic path retains its configured `epsSpill` allowance.
 
 ---
 
@@ -185,7 +188,7 @@ struct Jet { double v; double g[6]; };      // v = value, g = d v / d θ
 The candidate shape's triangle vertices are **linear in θ**, so their jets are
 exact and trivial to seed: for local vertex `u`,
 `T(u).x = a·ux + c·uy + e` → its jet gradient is `(ux,0,uy,0,1,0)`, etc. Subject
-(residual / `mayCover`) vertices are **constants** during a single primitive's
+(residual / target) vertices are **constants** during a single primitive's
 optimization → jets with zero gradient. Propagating jets through the clip and
 shoelace yields `covered.v` and `covered.g[]` in one pass.
 
@@ -210,18 +213,21 @@ areas; the clip is linear over the subject's subpaths.
 ### 5.4 Spill area
 
 ```
-spill_out(θ) = area(T(S)) − area(T(S) ∩ mayCover)
-            = area(S)·|det(θ)|  −  Σ_tri area( T(tri) ∩ mayCover )
+spill_out(θ) = area(T(S)) − area(T(S) ∩ mustCover)
+            = area(S)·|det(θ)|  −  Σ_tri area( T(tri) ∩ mustCover )
 ```
 
 Both terms are jets (the first via `|det|`, the second via §5.3 against
-`mayCover`). `spill_out` is the area of the placement lying **outside** the active
-contour; the objective drives it toward 0.
+`mustCover`). `spill_out` is the area of the placement lying **outside** the active
+contour; the objective drives it toward 0. Exact legalization separately rejects
+coverage outside `mayCover`.
 
 ### 5.5 Per-placement objective
 
 ```
-score(θ) = covered(θ, residual)  −  λ_spill · spill_out(θ)
+score(θ) = covered(θ, residual)
+         − λ_spill · spill_out(θ)
+         + boundedFeaturePotential(θ)
 ```
 
 Maximize by gradient ascent (Adam is fine; §7.4). `covered` pulls the shape to
@@ -257,7 +263,11 @@ application. The residual and catalog geometry stay in device buffers for a
 greedy step. Covered/spill values and all six partials are evaluated in double
 precision on CUDA for both Adam and legalization. Adam's small state update
 remains in stable host order, and task results are reduced in stable order on the
-CPU.
+CPU. Weighted jobs add their compact feature-potential gradient during that
+host update and preserve the assigned anchor while CUDA evaluates shrink
+batches. Optimized transforms are legalized at fixed checkpoints and when a
+trajectory terminates; exact job winners are then verified against the outward
+envelope on the CPU.
 
 The Direct3D evaluator compiles the analytic clipping kernel for shader model 5.
 It uses single precision, so it remains an acceleration and screening layer:
@@ -277,6 +287,10 @@ Evaluation requests that exceed a backend dispatch capacity are divided into
 smaller batches and evaluated recursively on that backend. Batching preserves
 every requested candidate and calculation; it is not a placement clock,
 calculation cap, or reduced optimizer budget.
+
+Feature-weighted requests currently use the parallel CPU evaluator. The CUDA
+and Direct3D paths remain active for unweighted comparison runs until their
+feature-potential values and gradients have parity tests.
 
 ---
 
@@ -352,7 +366,7 @@ Before greedy optimization, line-like contour spans are clustered into two
 nonparallel affine axes. Eligible contours are snapped into the corresponding
 oblique coordinate frame, divided into occupied grid cells, and solved as a
 deterministic minimum rectangle cover. Each rectangle is translated and shrunk
-independently until its exact spill is legal against the original contour.
+independently until its exact footprint is legal against the outward envelope.
 
 A rectangle plan covering at least 98 percent of the target completes directly.
 A legal plan covering at least 90 percent also completes when the residual's
@@ -399,8 +413,10 @@ Good init is what makes the optimizer fast and local-minimum-free:
   on small gradient norm.
 - Optionally 1–3 random restarts (jitter θ) and keep the best `score`; makes the
   step robust to kinks without a framework.
-- Reject a candidate whose final `spill_out > ε_spill` (it would paint outside
-  the contour tolerance) or whose `covered < ε_gain`.
+- Reject a candidate whose `covered < epsGain`. Legalization uses the configured
+  outside-area allowance for the regular analytic path and numerical area
+  tolerance for the weighted contour envelope. Spill against `mustCover` remains
+  an objective and reporting term.
 - CUDA evaluates the double-precision Adam gradients and legalization batches
   when available. Direct3D accelerates legalization while all but one available
   CPU thread evaluates Adam. GPU candidates are verified by the CPU kernel before
@@ -410,12 +426,14 @@ Good init is what makes the optimizer fast and local-minimum-free:
 
 ### 7.5 Select
 
-Compute exact residual subtraction for competitive candidates. Preserve the
-verified optimizer coverage as the primary ranking used by the greedy loop.
-Residual complexity, measured from normalized perimeter, connected-component
-count, and hole count, breaks optimizer-coverage ties in favor of a residual that
-is easier to cover on later steps. Remaining ties use shape id for repeatability.
-The accepted placement stores its exact subtraction gain.
+Compute exact residual subtraction for every legal candidate, find the maximum
+gain, and discard candidates below the configured `areaWindowRatio`. Rank the
+remaining candidates by newly represented exposed-union feature weight,
+boundary distance, residual complexity, exact gain, Tversky similarity, shape
+id, and affine transform. A candidate cannot lose feature weight already
+represented by the current union. The accepted placement stores its exact
+subtraction gain, newly represented feature ids, and exposed contour-arc
+contribution.
 
 ### 7.6 Redundancy pruning and local adjustment
 
@@ -442,6 +460,11 @@ ceiling is fixed from the completed greedy cover. Repeated removals therefore
 cannot accumulate loss beyond those fixed limits. Survivor adjustment uses the
 selected CUDA, Direct3D, or CPU optimizer without a placement clock, calculation
 cap, or separate iteration reduction.
+
+Weighted pruning also compares complete metric snapshots. It preserves the
+accepted represented-feature weight, Tversky floor, outward-distance limit, and
+legality-envelope constraint. Final ownership is reassigned from the exposed
+placement union.
 
 When the pruned result is below the compact coverage threshold, compute the exact
 repair target as `postPruneResidual - prePruneResidual`. Run one additive greedy
@@ -477,7 +500,8 @@ shape-count tradeoff. The repair result is not pruned again.
   evaluation counts, worker configuration, evaluation backend, GPU adapter,
   GPU failure reason, GPU batch and intersection-task counts, and cumulative GPU
   evaluation wall time in `pen_fill.log`. It also records whole-component jobs,
-  generated hard-edge candidates, complexity selections, and accepted placements
+  generated hard-edge candidates, feature-aware jobs and rejections, complexity
+  selections, and accepted placements
   from component-local, whole-component, and hard-edge routes. Prune wall time,
   passes, attempts, survivor optimizations, adjusted placements, and removed
   placements are recorded separately. The pre-prune and post-prune residual
@@ -487,7 +511,9 @@ shape-count tradeoff. The repair result is not pruned again.
   Structural diagnostics record the decision reason, explained boundary
   fraction, grid and rectangle counts, coverage, residual, spill, and whether the
   plan completed or seeded the run. Final shape IDs, covered areas, and affine
-  transforms are recorded with the result.
+  transforms, owned feature ids, exposed contour arcs, exact area terms,
+  Tversky similarity, boundary distances, outward distance, Boundary F-score,
+  and feature/tangent errors are recorded with the result.
 
 ---
 
@@ -522,7 +548,7 @@ struct Placement {
 struct FillInput {
     // Exact polygons in canvas world space; outer CCW, holes CW.
     Polygons mustCover;
-    Polygons mayCover;                            // equal for Pen mode
+    Polygons mayCover;                            // outward legality envelope
     QVector<ContourSpan> boundarySpans;
     // Optional prebuilt raster of mustCover for the DT initializer.
     QImage mask;
@@ -539,9 +565,16 @@ struct FillOptions {
     double adamLr        = 0.05;
     int    restarts      = 2;
     double inactivityTimeoutSeconds = 60.0;
+    double boundaryTolerance = 0.1;
+    double areaWindowRatio = 0.875;
+    double tverskyAlpha = 0.35;
+    double tverskyBeta = 1.0;
+    double featureWeight = 1.0;
+    int    featureRestarts = 12;
     uint64_t seed        = 0;                     // 0 → derive from region
     bool   useRouter     = true;                  // §7.1
-    bool   useGpu        = true;                  // §5.7
+    bool   useGpu        = true;                  // optimizer backend, §5.7
+    bool   useWeightedContour = false;
 };
 
 struct FillProfile {
@@ -571,6 +604,12 @@ struct FillProfile {
     uint64_t gpuIntersectionTasks = 0;
     uint64_t wholeComponentJobs = 0;
     uint64_t hardEdgeCandidates = 0;
+    uint64_t featureCandidateJobs = 0;
+    uint64_t featureCandidateRejections = 0;
+    uint64_t selectionInsufficientGainRejections = 0;
+    uint64_t selectionEnvelopeRejections = 0;
+    uint64_t selectionOutwardDistanceRejections = 0;
+    uint64_t selectionFeatureRejections = 0;
     uint64_t pruneAttempts = 0;
     uint64_t pruneOptimizations = 0;
     int greedySteps = 0;
@@ -590,6 +629,7 @@ struct FillResult {
     std::vector<Placement> placements;
     Polygons residual;
     FillProfile profile;
+    CoverErrorMetrics metrics;
     double residualArea = 0.0;
     double coveredArea = 0.0;
     double outsideArea = 0.0;
@@ -628,12 +668,14 @@ The implementation is divided by responsibility:
 
 - `differential_cover.cpp` owns solver orchestration, progress, cancellation,
   timeout handling, and repair dispatch.
-- `differential_cover_geometry.cpp` owns catalog construction, polygon
-  conversion, exact booleans, and the differentiable area kernel.
+- `differential_cover_geometry.cpp` owns catalog construction, target and shape
+  feature extraction, legality-envelope construction, polygon conversion, exact
+  booleans, and the differentiable area kernel.
 - `differential_cover_candidates.cpp` owns initialization, routing, CPU/GPU
   optimization dispatch, legalization, and candidate selection.
-- `differential_cover_metrics.cpp` owns placement unions, exact cover state, and
-  incremental placement gains.
+- `differential_cover_metrics.cpp` owns placement unions, exact cover state,
+  area/Tversky summaries, boundary distances, exposed feature matching and
+  ownership, and incremental placement gains.
 - `differential_cover_strategies.cpp` owns coherent structural and mesh plans.
 - `differential_cover_postprocess.cpp` owns pruning, survivor adjustment, and
   profile merging.
@@ -679,9 +721,9 @@ transforms each triangle only once when evaluating covered and legal area. These
 are exact work-reduction paths: they do not change iteration counts, restarts,
 candidate routing, placement budget, or stopping thresholds.
 
-Validate by rasterizing the returned union and checking: (a) reported coverage
-matches the union, (b) it stays within `mayCover` up to `epsSpill`, and (c) its
-placement and residual counts are repeatable.
+Validate the returned union by checking: (a) reported coverage matches the
+union, (b) it stays within `mayCover` up to `epsSpill`, (c) boundary and feature
+metrics remain finite, and (d) placement and residual counts are repeatable.
 
 Use `build/Release/pen_fill.log` as the integration reference contour. The test
 loads its request points, rebuilds the same Bucket-derived Pen contour in world
@@ -726,6 +768,6 @@ reference implementations to crib correctness from:
 - **Kinks on difficult residuals.** Expected benign (§5.6); restarts are the
   escape hatch. If a contour defeats the optimizer, return the measured partial
   result rather than looping.
-- **Strict containment.** Pen mode supplies no leeway, so shape-count reduction is
-  limited by the contour boundary. `epsSpill` is the only accepted numerical
-  tolerance outside it.
+- **Controlled spill.** The contour tolerance supplies a bounded outward
+  envelope. Spill remains measured against the original target, and the maximum
+  outward distance and outside-envelope area remain hard constraints.

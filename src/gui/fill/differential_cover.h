@@ -21,16 +21,47 @@ inline constexpr int kDefaultAdamIterations = 200;
 inline constexpr double kDefaultAdamLearningRate = 0.05;
 inline constexpr int kDefaultRestarts = 2;
 inline constexpr double kDefaultInactivityTimeoutSeconds = 60.0;
+inline constexpr double kDefaultBoundaryTolerance = 0.1;
+inline constexpr double kDefaultAreaWindowRatio = 0.875;
+inline constexpr double kDefaultTverskyAlpha = 0.35;
+inline constexpr double kDefaultTverskyBeta = 1.0;
+inline constexpr double kDefaultFeatureWeight = 1.0;
+inline constexpr int kDefaultFeatureRestarts = 12;
 
 struct Vec2 {
     double x = 0.0;
     double y = 0.0;
 };
 
+enum class ContourFeatureKind {
+    Corner,
+    SmoothJunction,
+};
+
+struct ContourFeature {
+    QPointF position;
+    QPointF incomingTangent;
+    QPointF outgoingTangent;
+    double captureRadius = 0.0;
+    double weight = 0.0;
+    int id = 0;
+    ContourFeatureKind kind = ContourFeatureKind::Corner;
+};
+
+struct ShapeFeature {
+    Vec2 position;
+    Vec2 incomingTangent;
+    Vec2 outgoingTangent;
+    double arcPosition = 0.0;
+    int boundaryIndex = 0;
+    ContourFeatureKind kind = ContourFeatureKind::Corner;
+};
+
 struct ShapeMesh {
     QVector<Vec2> vertices;
     QVector<std::array<int, 3>> triangles;
     QVector<Vec2> boundary;
+    QVector<ShapeFeature> features;
     QString error;
     int id = 0;
     double area = 0.0;
@@ -55,6 +86,8 @@ struct Placement {
     Affine transform;
     int shapeId = 0;
     double coveredArea = 0.0;
+    QVector<int> ownedFeatureIds;
+    double exposedContourArc = 0.0;
 };
 
 using Polygons = QVector<QPolygonF>;
@@ -80,14 +113,44 @@ struct FillOptions {
     double adamLearningRate = kDefaultAdamLearningRate;
     double inactivityTimeoutSeconds =
         kDefaultInactivityTimeoutSeconds;
+    double boundaryTolerance = kDefaultBoundaryTolerance;
+    double areaWindowRatio = kDefaultAreaWindowRatio;
+    double tverskyAlpha = kDefaultTverskyAlpha;
+    double tverskyBeta = kDefaultTverskyBeta;
+    double featureWeight = kDefaultFeatureWeight;
+    int featureRestarts = kDefaultFeatureRestarts;
     std::uint64_t seed = 0;
     bool useRouter = true;
     bool useGpu = true;
+    bool useWeightedContour = false;
+};
+
+struct CoverErrorMetrics {
+    double missingArea = 0.0;
+    double outsideTargetArea = 0.0;
+    double outsideEnvelopeArea = 0.0;
+    double tversky = 0.0;
+    double meanBoundaryDistance = 0.0;
+    double boundaryDistanceRms = 0.0;
+    double boundaryDistance95 = 0.0;
+    double maximumOutwardDistance = 0.0;
+    double boundaryFScore = 0.0;
+    double representedFeatureWeight = 0.0;
+    double totalFeatureWeight = 0.0;
+    double meanFeatureDistance = 0.0;
+    double featureDistance95 = 0.0;
+    double maximumFeatureDistance = 0.0;
+    double meanTangentError = 0.0;
+    double maximumTangentError = 0.0;
+    int representedFeatures = 0;
+    int totalFeatures = 0;
+    int placementCount = 0;
 };
 
 struct FillProfile {
     QString structuralReason;
     QString meshReason;
+    double areaWindowRatio = 0.0;
     double totalWallSeconds = 0.0;
     double greedySetupWallSeconds = 0.0;
     double candidateBatchWallSeconds = 0.0;
@@ -123,6 +186,12 @@ struct FillProfile {
     std::uint64_t gpuIntersectionTasks = 0;
     std::uint64_t wholeComponentJobs = 0;
     std::uint64_t hardEdgeCandidates = 0;
+    std::uint64_t featureCandidateJobs = 0;
+    std::uint64_t featureCandidateRejections = 0;
+    std::uint64_t selectionInsufficientGainRejections = 0;
+    std::uint64_t selectionEnvelopeRejections = 0;
+    std::uint64_t selectionOutwardDistanceRejections = 0;
+    std::uint64_t selectionFeatureRejections = 0;
     std::uint64_t pruneAttempts = 0;
     std::uint64_t pruneOptimizations = 0;
     int greedySteps = 0;
@@ -130,6 +199,7 @@ struct FillProfile {
     int localComponentPlacements = 0;
     int wholeComponentPlacements = 0;
     int hardEdgePlacements = 0;
+    int featureSelectedPlacements = 0;
     int prunedPlacements = 0;
     int adjustedPlacements = 0;
     int prunePasses = 0;
@@ -150,6 +220,7 @@ struct FillResult {
     Polygons residual;
     QString error;
     FillProfile profile;
+    CoverErrorMetrics metrics;
     double residualArea = 0.0;
     double coveredArea = 0.0;
     double outsideArea = 0.0;
@@ -194,6 +265,21 @@ FillResult analyticCoverFill(
     const std::function<void(const FillProgress &)> &progress = {});
 
 QTransform toQTransform(const Affine &transform);
+
+QVector<ContourFeature> extractContourFeatures(
+    const QVector<ContourSpan> &spans,
+    double boundaryTolerance);
+
+Polygons expandedCoverEnvelope(
+    const Polygons &target,
+    double distance);
+
+CoverErrorMetrics evaluateCoverMetrics(
+    const Polygons &target,
+    const Polygons &legalEnvelope,
+    const Polygons &coverage,
+    const QVector<ContourFeature> &features,
+    const FillOptions &options);
 
 #ifdef FLS_DIFFERENTIAL_COVER_TESTS
 double placementUnionAreaForTesting(

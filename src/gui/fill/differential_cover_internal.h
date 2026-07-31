@@ -31,6 +31,7 @@ constexpr double kMinimumAffineScale = 1e-6;
 constexpr double kLegalShrinkFactor = 0.9;
 constexpr int kLegalShrinkSteps = 64;
 constexpr int kGpuLegalizationBatchSteps = 8;
+constexpr int kGpuLegalizationInterval = 8;
 constexpr double kHardBoundaryFraction = 0.6;
 constexpr double kComplexityGainWindow = 1.0;
 constexpr double kLocalRouterAdvantage = 0.75;
@@ -55,6 +56,14 @@ constexpr int kStructuralSearchNodeLimit = 100000;
 constexpr double kMeshMinimumCompactCoverageRatio = 0.98;
 constexpr double kMeshMinimumLegalScale = 0.9;
 constexpr double kMeshLegalScaleStep = 0.0005;
+constexpr double kCornerAngleTolerance = 0.13962634015954636;
+constexpr double kShapeCornerSalience = 0.17453292519943295;
+constexpr double kFeatureTangentSigma = 0.35;
+constexpr double kMinimumFeatureArcFraction = 0.25;
+constexpr int kMaximumBoundarySamples = 2048;
+constexpr int kCatalogSmoothFeatureCount = 8;
+constexpr double kEnvelopeDistanceEpsilon = 1e-5;
+constexpr double kEnvelopeAreaEpsilon = 1.0 / kClipperScale;
 
 struct Jet {
     std::array<double, kGradientCount> gradient{};
@@ -77,6 +86,7 @@ enum class CandidateOrigin {
     LocalComponent,
     WholeComponent,
     HardEdge,
+    Feature,
 };
 
 struct Candidate {
@@ -84,8 +94,14 @@ struct Candidate {
     int shapeId = 0;
     double covered = 0.0;
     double spill = 0.0;
+    double featureReward = 0.0;
     CandidateOrigin origin = CandidateOrigin::Greedy;
     bool valid = false;
+};
+
+struct CandidateFeatureAssignment {
+    ShapeFeature source;
+    ContourFeature target;
 };
 
 struct CandidateInitialization {
@@ -96,6 +112,7 @@ struct CandidateInitialization {
 
 struct CandidateJob {
     const ShapeMesh *shape = nullptr;
+    QVector<CandidateFeatureAssignment> featureAssignments;
     CandidateInitialization initialization;
     Affine transform;
     CandidateOrigin origin = CandidateOrigin::Greedy;
@@ -154,8 +171,17 @@ struct ResidualComplexity {
 
 struct CandidateSelection {
     Candidate candidate;
+    Polygons coverage;
     Polygons residual;
+    QVector<int> representedFeatureIds;
+    QVector<int> newlyRepresentedFeatureIds;
     double exactGain = 0.0;
+    double exposedContourArc = 0.0;
+    int insufficientGainRejections = 0;
+    int envelopeRejections = 0;
+    int outwardDistanceRejections = 0;
+    int featureRejections = 0;
+    int featureCandidateRejections = 0;
     bool complexityPreferred = false;
     bool valid = false;
 };
@@ -181,6 +207,14 @@ struct ExactCoverState {
     double residualArea = 0.0;
     double coveredArea = 0.0;
     double outsideArea = 0.0;
+};
+
+struct FeatureMatchSummary {
+    QVector<int> representedIds;
+    QVector<double> distances;
+    QVector<double> tangentErrors;
+    double representedWeight = 0.0;
+    double totalWeight = 0.0;
 };
 
 struct StructuralEdge {
@@ -268,12 +302,26 @@ Polygons intersectionPolygons(const Polygons &subjects,
 Polygons unionPolygons(const Polygons &subjects);
 ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry);
 Polygons normalizedInputPolygons(const Polygons &polygons);
+QVector<ShapeFeature> shapeFeatures(
+    const QVector<Vec2> &boundary);
 
 DistanceSeed distanceSeed(const Polygons &polygons);
 QRectF shapeBounds(const ShapeMesh &shape);
 QVector<CandidateJob> wholeComponentJobs(
     const Polygons &residual,
     const QVector<ShapeMesh> &catalog);
+QVector<CandidateJob> featureAwareJobs(
+    const QVector<const ShapeMesh *> &shapes,
+    const QVector<ContourFeature> &targetFeatures,
+    const QVector<int> &representedFeatureIds,
+    const DistanceSeed &seed,
+    int maximumJobs);
+QVector<CandidateFeatureAssignment>
+placementFeatureAssignments(
+    const ShapeMesh &shape,
+    const Affine &transform,
+    const QVector<int> &featureIds,
+    const QVector<ContourFeature> &targetFeatures);
 const ShapeMesh *shapeById(const QVector<ShapeMesh> &catalog,
                            int shapeId);
 QVector<FixedCandidate> hardEdgeCandidates(
@@ -285,14 +333,18 @@ bool lexicographicTransformLess(const Affine &left,
 Candidate legalCandidate(const ShapeMesh &shape,
                          Affine transform,
                          const Polygons &residual,
-                         const Polygons &mayCover,
+                         const Polygons &target,
+                         const Polygons &legalEnvelope,
                          const EvaluationBounds &subjectBounds,
                          const FillOptions &options,
-                         CandidateProfile *profile);
+                         CandidateProfile *profile,
+                         const QVector<CandidateFeatureAssignment>
+                             &featureAssignments = {});
 CandidateJobResult optimizeCandidate(
     const CandidateJob &job,
     const Polygons &residual,
-    const Polygons &mayCover,
+    const Polygons &target,
+    const Polygons &legalEnvelope,
     const EvaluationBounds &subjectBounds,
     const FillOptions &options,
     const DistanceSeed &seed,
@@ -302,7 +354,8 @@ std::array<double, kGradientCount> affineValues(
 bool optimizeCandidatesGpu(
     const std::vector<CandidateJob> &jobs,
     const Polygons &residual,
-    const Polygons &mayCover,
+    const Polygons &target,
+    const Polygons &legalEnvelope,
     const EvaluationBounds &subjectBounds,
     const FillOptions &options,
     const DistanceSeed &seed,
@@ -327,15 +380,21 @@ QVector<const ShapeMesh *> routedShapes(
     bool useRouter);
 Candidate fixedCandidate(const FixedCandidate &fixed,
                          const Polygons &residual,
-                         const Polygons &mayCover,
+                         const Polygons &target,
+                         const Polygons &legalEnvelope,
                          const EvaluationBounds &subjectBounds,
                          const FillOptions &options,
                          CandidateProfile *profile);
 CandidateSelection selectCandidate(
     const QVector<Candidate> &candidates,
     const QVector<ShapeMesh> &catalog,
+    const Polygons &target,
+    const Polygons &legalEnvelope,
+    const Polygons &currentCoverage,
     const Polygons &residual,
-    double epsGain);
+    const QVector<ContourFeature> &features,
+    const FeatureMatchSummary &currentFeatureMatches,
+    const FillOptions &options);
 
 Polygons placementFootprints(
     const QVector<Placement> &placements,
@@ -350,6 +409,25 @@ void refreshPlacementGains(
     QVector<Placement> *placements,
     const QVector<ShapeMesh> &catalog,
     const Polygons &mustCover);
+FeatureMatchSummary matchContourFeatures(
+    const Polygons &coverage,
+    const QVector<ContourFeature> &features);
+double permittedOutsideEnvelopeArea(
+    const FillOptions &options);
+bool legalEnvelopeArea(
+    double outsideEnvelopeArea,
+    const FillOptions &options);
+bool legalOutwardDistance(
+    double maximumOutwardDistance,
+    const FillOptions &options);
+double exposedFeatureArc(
+    const Polygons &coverage,
+    const ContourFeature &feature);
+void assignFeatureOwnership(
+    QVector<Placement> *placements,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &coverage,
+    const QVector<ContourFeature> &features);
 MeshCoverPlan meshCoverPlan(
     const QVector<FixedCandidate> &candidates,
     const QVector<ShapeMesh> &catalog,
@@ -373,6 +451,7 @@ bool prunePlacements(
     const QVector<ShapeMesh> &catalog,
     const Polygons &mustCover,
     const Polygons &mayCover,
+    const QVector<ContourFeature> &features,
     double targetArea,
     const FillOptions &options,
     GpuAreaEvaluator *gpuEvaluator,

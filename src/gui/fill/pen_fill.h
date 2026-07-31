@@ -44,6 +44,8 @@ struct PenPlacement {
     QTransform transform;
     double area = 0.0;
     bool coreEllipse = false;
+    QVector<int> ownedFeatureIds;
+    double exposedContourArc = 0.0;
 };
 
 struct PenFillRequest {

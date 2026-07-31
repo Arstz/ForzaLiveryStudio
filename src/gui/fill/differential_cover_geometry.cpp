@@ -667,6 +667,127 @@ bool boundaryIsConvex(const QVector<Vec2> &boundary) {
     return true;
 }
 
+Vec2 normalizedVector(const Vec2 &vector) {
+    const double length = std::hypot(vector.x, vector.y);
+    if (length <= kGeometryEpsilon) {
+        return {};
+    }
+
+    return {vector.x / length, vector.y / length};
+}
+
+double vectorAngle(const Vec2 &left, const Vec2 &right) {
+    const double cosine = std::clamp(
+        left.x * right.x + left.y * right.y,
+        -1.0, 1.0);
+
+    return std::acos(cosine);
+}
+
+QVector<ShapeFeature> shapeFeatures(
+    const QVector<Vec2> &boundary) {
+    QVector<ShapeFeature> result;
+    if (boundary.size() < 3) {
+        return result;
+    }
+
+    QVector<double> cumulativeLength(
+        boundary.size() + 1, 0.0);
+    for (int index = 0; index < boundary.size(); ++index) {
+        const Vec2 &left = boundary[index];
+        const Vec2 &right =
+            boundary[(index + 1) % boundary.size()];
+        cumulativeLength[index + 1] =
+            cumulativeLength[index]
+            + std::hypot(
+                right.x - left.x,
+                right.y - left.y);
+    }
+    const double perimeter = cumulativeLength.back();
+    if (perimeter <= kGeometryEpsilon) {
+        return result;
+    }
+
+    QSet<int> retainedIndices;
+    for (int index = 0; index < boundary.size(); ++index) {
+        const Vec2 incoming = normalizedVector({
+            boundary[index].x
+                - boundary[
+                    (index + boundary.size() - 1)
+                    % boundary.size()].x,
+            boundary[index].y
+                - boundary[
+                    (index + boundary.size() - 1)
+                    % boundary.size()].y,
+        });
+        const Vec2 outgoing = normalizedVector({
+            boundary[(index + 1) % boundary.size()].x
+                - boundary[index].x,
+            boundary[(index + 1) % boundary.size()].y
+                - boundary[index].y,
+        });
+        if (vectorAngle(incoming, outgoing)
+            >= kShapeCornerSalience) {
+            retainedIndices.insert(index);
+        }
+    }
+    for (int sample = 0;
+         sample < kCatalogSmoothFeatureCount; ++sample) {
+        const double targetLength =
+            perimeter
+            * static_cast<double>(sample)
+            / static_cast<double>(
+                kCatalogSmoothFeatureCount);
+        const auto found = std::upper_bound(
+            cumulativeLength.cbegin(),
+            cumulativeLength.cend(),
+            targetLength);
+        const int index = std::clamp(
+            static_cast<int>(
+                found - cumulativeLength.cbegin())
+                - 1,
+            0,
+            static_cast<int>(
+                boundary.size()) - 1);
+        retainedIndices.insert(index);
+    }
+
+    QVector<int> orderedIndices =
+        retainedIndices.values();
+    std::sort(
+        orderedIndices.begin(),
+        orderedIndices.end());
+    result.reserve(orderedIndices.size());
+    for (const int index : orderedIndices) {
+        const int previous =
+            (index + boundary.size() - 1)
+            % boundary.size();
+        const int next =
+            (index + 1) % boundary.size();
+        const Vec2 incoming = normalizedVector({
+            boundary[index].x - boundary[previous].x,
+            boundary[index].y - boundary[previous].y,
+        });
+        const Vec2 outgoing = normalizedVector({
+            boundary[next].x - boundary[index].x,
+            boundary[next].y - boundary[index].y,
+        });
+        result.push_back({
+            boundary[index],
+            incoming,
+            outgoing,
+            cumulativeLength[index] / perimeter,
+            index,
+            vectorAngle(incoming, outgoing)
+                    >= kShapeCornerSalience
+                ? ContourFeatureKind::Corner
+                : ContourFeatureKind::SmoothJunction,
+        });
+    }
+
+    return result;
+}
+
 ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry) {
     ShapeMesh result;
     result.id = shapeId;
@@ -756,6 +877,13 @@ ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry) {
     }
     result.area = boundaryArea;
     result.convex = boundaryIsConvex(result.boundary);
+    result.features =
+        shapeFeatures(result.boundary);
+    if (result.features.isEmpty()) {
+        result.error =
+            QStringLiteral("shape %1 has no salient boundary features")
+                .arg(shapeId);
+    }
 
     return result;
 }
@@ -984,6 +1112,155 @@ QTransform toQTransform(const Affine &transform) {
     return QTransform(transform.a, transform.b,
                       transform.c, transform.d,
                       transform.e, transform.f);
+}
+
+QPointF normalizedPoint(const QPointF &vector) {
+    const double length =
+        std::hypot(vector.x(), vector.y());
+    if (length <= kGeometryEpsilon) {
+        return {};
+    }
+
+    return vector / length;
+}
+
+double contourSpanLength(const ContourSpan &span) {
+    constexpr int kCurveSamples = 8;
+    if (!span.curved) {
+        return QLineF(span.start, span.end).length();
+    }
+
+    double result = 0.0;
+    QPointF previous = span.start;
+    for (int sample = 1;
+         sample <= kCurveSamples; ++sample) {
+        const double parameter =
+            static_cast<double>(sample)
+            / static_cast<double>(kCurveSamples);
+        const double inverse = 1.0 - parameter;
+        const QPointF point =
+            span.start * (inverse * inverse)
+            + span.control
+                * (2.0 * inverse * parameter)
+            + span.end * (parameter * parameter);
+        result += QLineF(previous, point).length();
+        previous = point;
+    }
+
+    return result;
+}
+
+QVector<ContourFeature> extractContourFeatures(
+    const QVector<ContourSpan> &spans,
+    double boundaryTolerance) {
+    QVector<ContourFeature> result;
+    if (spans.size() < 2
+        || !std::isfinite(boundaryTolerance)
+        || boundaryTolerance <= 0.0) {
+        return result;
+    }
+
+    QVector<double> lengths;
+    lengths.reserve(spans.size());
+    double perimeter = 0.0;
+    for (const ContourSpan &span : spans) {
+        const double length =
+            contourSpanLength(span);
+        lengths.push_back(length);
+        perimeter += length;
+    }
+    if (perimeter <= kGeometryEpsilon) {
+        return result;
+    }
+
+    result.reserve(spans.size());
+    double totalWeight = 0.0;
+    for (int index = 0;
+         index < spans.size(); ++index) {
+        const ContourSpan &previous =
+            spans[
+                (index + spans.size() - 1)
+                % spans.size()];
+        const ContourSpan &next = spans[index];
+        const QPointF incoming =
+            normalizedPoint(
+                previous.end
+                - (previous.curved
+                       ? previous.control
+                       : previous.start));
+        const QPointF outgoing =
+            normalizedPoint(
+                (next.curved
+                     ? next.control
+                     : next.end)
+                - next.start);
+        const double angle = std::acos(
+            std::clamp(
+                QPointF::dotProduct(
+                    incoming, outgoing),
+                -1.0, 1.0));
+        const double localScale =
+            (lengths[
+                 (index + lengths.size() - 1)
+                 % lengths.size()]
+             + lengths[index])
+            * 0.5;
+        const double maximumRadius =
+            std::max(
+                boundaryTolerance,
+                std::min(
+                    boundaryTolerance * 4.0,
+                    localScale * 0.25));
+        const double captureRadius =
+            std::clamp(
+                localScale * 0.1,
+                boundaryTolerance,
+                maximumRadius);
+        const double weight =
+            localScale / perimeter;
+        result.push_back({
+            next.start,
+            incoming,
+            outgoing,
+            captureRadius,
+            weight,
+            index,
+            angle >= kCornerAngleTolerance
+                ? ContourFeatureKind::Corner
+                : ContourFeatureKind::SmoothJunction,
+        });
+        totalWeight += weight;
+    }
+    if (totalWeight > kGeometryEpsilon) {
+        for (ContourFeature &feature : result) {
+            feature.weight /= totalWeight;
+        }
+    }
+
+    return result;
+}
+
+Polygons expandedCoverEnvelope(
+    const Polygons &target,
+    double distance) {
+    if (!std::isfinite(distance)
+        || distance <= 0.0) {
+        return normalizedInputPolygons(target);
+    }
+    const QPainterPath targetPath =
+        painterPathFromPolygons(target);
+    QPainterPathStroker stroker;
+    stroker.setWidth(distance * 2.0);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setCapStyle(Qt::RoundCap);
+    const QPainterPath expanded =
+        targetPath.united(
+            stroker.createStroke(
+                targetPath));
+
+    return unionPolygons(
+        polygonsFromPainterPath(
+            expanded));
 }
 
 } // namespace gui::cover

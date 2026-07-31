@@ -60,6 +60,36 @@ bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
             return false;
         }
     }
+    for (const cover::ShapeMesh &catalogShape :
+         catalog) {
+        if (!check(
+                !catalogShape.features.isEmpty(),
+                "catalog shape has no salient features")) {
+            return false;
+        }
+        int previousBoundaryIndex = -1;
+        for (const cover::ShapeFeature &feature :
+             catalogShape.features) {
+            if (!check(
+                    std::isfinite(
+                        feature.position.x)
+                        && std::isfinite(
+                            feature.position.y)
+                        && feature.boundaryIndex
+                            > previousBoundaryIndex,
+                    "catalog features are invalid or unordered")) {
+                return false;
+            }
+            previousBoundaryIndex =
+                feature.boundaryIndex;
+        }
+        std::cout
+            << "shape "
+            << catalogShape.id
+            << ": "
+            << catalogShape.features.size()
+            << " salient features\n";
+    }
     const cover::ShapeMesh *shape = shapeById(catalog, 101);
     if (!check(shape != nullptr && shape->valid(),
                "square analytic geometry is unavailable")) {
@@ -190,6 +220,296 @@ bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
     }
 
     return true;
+}
+
+QVector<cover::ContourSpan> contourSpans(
+    const QPolygonF &polygon) {
+    QVector<cover::ContourSpan> result;
+    result.reserve(polygon.size());
+    for (int index = 0;
+         index < polygon.size(); ++index) {
+        result.push_back({
+            polygon[index],
+            {},
+            polygon[
+                (index + 1)
+                % polygon.size()],
+            false,
+        });
+    }
+
+    return result;
+}
+
+bool sameFeature(
+    const cover::ContourFeature &left,
+    const cover::ContourFeature &right) {
+    return left.position == right.position
+        && left.incomingTangent
+            == right.incomingTangent
+        && left.outgoingTangent
+            == right.outgoingTangent
+        && left.captureRadius
+            == right.captureRadius
+        && left.weight == right.weight
+        && left.id == right.id
+        && left.kind == right.kind;
+}
+
+bool testWeightedMetrics() {
+    constexpr double kExtent = 10.0;
+    constexpr double kShift = 1.0;
+    const QPolygonF targetPolygon{
+        QPointF(0.0, 0.0),
+        QPointF(kExtent, 0.0),
+        QPointF(kExtent, kExtent),
+        QPointF(0.0, kExtent),
+    };
+    const cover::Polygons target{
+        targetPolygon,
+    };
+    const QVector<cover::ContourFeature>
+        firstFeatures =
+            cover::extractContourFeatures(
+                contourSpans(targetPolygon),
+                kShift);
+    const QVector<cover::ContourFeature>
+        secondFeatures =
+            cover::extractContourFeatures(
+                contourSpans(targetPolygon),
+                kShift);
+    if (!check(
+            firstFeatures.size() == 4
+                && secondFeatures.size()
+                    == firstFeatures.size()
+                && std::equal(
+                    firstFeatures.cbegin(),
+                    firstFeatures.cend(),
+                    secondFeatures.cbegin(),
+                    sameFeature),
+            "target feature extraction is not deterministic")) {
+        return false;
+    }
+    double totalWeight = 0.0;
+    for (int index = 0;
+         index < firstFeatures.size();
+         ++index) {
+        totalWeight +=
+            firstFeatures[index].weight;
+        if (!check(
+                firstFeatures[index].id
+                        == index
+                    && firstFeatures[index].kind
+                        == cover::ContourFeatureKind::Corner,
+                "square target feature is invalid")) {
+            return false;
+        }
+    }
+    if (!check(
+            std::abs(totalWeight - 1.0)
+                <= 1e-12,
+            "target feature weights are not normalized")) {
+        return false;
+    }
+
+    cover::FillOptions options;
+    options.boundaryTolerance = kShift;
+    const cover::Polygons envelope =
+        cover::expandedCoverEnvelope(
+            target, kShift);
+    const cover::CoverErrorMetrics identical =
+        cover::evaluateCoverMetrics(
+            target, envelope, target,
+            firstFeatures, options);
+    if (!check(
+            identical.missingArea <= 1e-9
+                && identical.outsideTargetArea
+                    <= 1e-9
+                && identical.outsideEnvelopeArea
+                    <= 1e-9
+                && std::abs(
+                    identical.tversky - 1.0)
+                    <= 1e-12
+                && identical.meanBoundaryDistance
+                    <= 1e-9
+                && identical.representedFeatures
+                    == firstFeatures.size(),
+            "identical weighted-cover metrics are invalid")) {
+        return false;
+    }
+    const cover::CoverErrorMetrics empty =
+        cover::evaluateCoverMetrics(
+            target, envelope, {},
+            firstFeatures, options);
+    if (!check(
+            std::isfinite(
+                empty.meanBoundaryDistance)
+                && std::isfinite(
+                    empty.boundaryDistanceRms)
+                && std::isfinite(
+                    empty.boundaryDistance95)
+                && std::isfinite(
+                    empty.meanFeatureDistance)
+                && std::isfinite(
+                    empty.featureDistance95)
+                && std::isfinite(
+                    empty.maximumFeatureDistance),
+            "empty weighted-cover metrics are not finite")) {
+        return false;
+    }
+
+    const cover::Polygons inward{
+        QPolygonF{
+            QPointF(0.0, 0.0),
+            QPointF(kExtent - kShift, 0.0),
+            QPointF(
+                kExtent - kShift,
+                kExtent),
+            QPointF(0.0, kExtent),
+        },
+    };
+    const cover::Polygons outward{
+        QPolygonF{
+            QPointF(0.0, 0.0),
+            QPointF(kExtent + kShift, 0.0),
+            QPointF(
+                kExtent + kShift,
+                kExtent),
+            QPointF(0.0, kExtent),
+        },
+    };
+    const cover::CoverErrorMetrics missing =
+        cover::evaluateCoverMetrics(
+            target, envelope, inward,
+            firstFeatures, options);
+    const cover::CoverErrorMetrics spill =
+        cover::evaluateCoverMetrics(
+            target, envelope, outward,
+            firstFeatures, options);
+
+    return check(
+        std::abs(missing.missingArea - 10.0)
+                <= 1e-9
+            && std::abs(
+                spill.outsideTargetArea
+                - 10.0)
+                <= 1e-9
+            && spill.outsideEnvelopeArea
+                <= 1e-9
+            && spill.maximumOutwardDistance
+                <= kShift + 1e-9
+            && spill.tversky
+                > missing.tversky,
+        "weighted metrics do not prefer bounded spill over an equal gap");
+}
+
+bool testWeightedSquare(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr double kExtent = 50.0;
+    const QPolygonF polygon{
+        QPointF(-kExtent, -kExtent),
+        QPointF(kExtent, -kExtent),
+        QPointF(kExtent, kExtent),
+        QPointF(-kExtent, kExtent),
+    };
+    cover::FillInput input;
+    input.mustCover = {polygon};
+    input.boundarySpans =
+        contourSpans(polygon);
+    cover::FillOptions options;
+    options.boundaryTolerance = 0.5;
+    options.useGpu = false;
+    options.useWeightedContour = true;
+    input.mayCover =
+        cover::expandedCoverEnvelope(
+            input.mustCover,
+            options.boundaryTolerance);
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options);
+    std::cout
+        << "weighted square metrics: "
+        << result.metrics.representedFeatures
+        << "/"
+        << result.metrics.totalFeatures
+        << " features, Tversky "
+        << result.metrics.tversky
+        << ", boundary p95 "
+        << result.metrics.boundaryDistance95
+        << ", maximum feature error "
+        << result.metrics.maximumFeatureDistance
+        << ", maximum outward distance "
+        << result.metrics.maximumOutwardDistance
+        << '\n';
+
+    return check(
+        result.error.isEmpty()
+            && !result.placements.isEmpty()
+            && result.metrics.totalFeatures == 4
+            && result.metrics.representedFeatures
+                == 4
+            && result.metrics.outsideEnvelopeArea
+                <= options.epsSpill + 1e-9
+            && result.metrics.maximumOutwardDistance
+                <= options.boundaryTolerance
+                    + 1e-9,
+        "weighted square did not retain its contour metrics");
+}
+
+bool testWeightedCandidatePath(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr double kExtent = 40.0;
+    constexpr double kBow = 12.0;
+    const QPolygonF polygon{
+        QPointF(-kExtent, -kExtent),
+        QPointF(kExtent, -kExtent),
+        QPointF(kExtent, kExtent),
+        QPointF(-kExtent, kExtent),
+    };
+    QVector<cover::ContourSpan> spans =
+        contourSpans(polygon);
+    spans[0].curved = true;
+    spans[0].control =
+        QPointF(0.0, -kExtent - kBow);
+    spans[1].curved = true;
+    spans[1].control =
+        QPointF(kExtent + kBow, 0.0);
+    spans[2].curved = true;
+    spans[2].control =
+        QPointF(0.0, kExtent + kBow);
+    spans[3].curved = true;
+    spans[3].control =
+        QPointF(-kExtent - kBow, 0.0);
+
+    cover::FillInput input;
+    input.mustCover = {polygon};
+    input.boundarySpans = spans;
+    cover::FillOptions options;
+    options.budget = 1;
+    options.adamIterations = 4;
+    options.restarts = 0;
+    options.featureRestarts = 2;
+    options.boundaryTolerance = 0.5;
+    options.inactivityTimeoutSeconds = 0.0;
+    options.useGpu = false;
+    options.useWeightedContour = true;
+    input.mayCover =
+        cover::expandedCoverEnvelope(
+            input.mustCover,
+            options.boundaryTolerance);
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options);
+
+    return check(
+        result.error.isEmpty()
+            && result.profile.featureCandidateJobs
+                == 2
+            && result.profile.evaluationBackend
+                == QStringLiteral(
+                    "CPU weighted contour")
+            && result.metrics.totalFeatures == 4,
+        "weighted analytic path did not run feature jobs");
 }
 
 bool testReflectedPlacementUnion(
@@ -898,6 +1218,182 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
     return true;
 }
 
+bool testWeightedLoggedContour(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr double kBoundaryTolerance = 0.1;
+    constexpr double kEnvelopeAreaTolerance = 1e-6;
+    QVector<PenPoint> points;
+    bool available = false;
+    if (!loadLoggedContour(&points, &available)) {
+        return false;
+    }
+    if (!available) {
+        return true;
+    }
+
+    QVector<cover::ContourSpan> boundarySpans;
+    const QPainterPath contour =
+        loggedContourPath(
+            points, &boundarySpans);
+    const cover::Polygons polygons =
+        cover::polygonsFromPainterPath(
+            contour);
+    if (!check(
+            !polygons.isEmpty(),
+            "weighted logged Pen contour did not flatten")) {
+        return false;
+    }
+
+    cover::FillInput input;
+    input.mustCover = polygons;
+    input.boundarySpans = boundarySpans;
+    cover::FillOptions options;
+    const auto configuredInteger =
+        [](const char *name, int fallback) {
+            bool valid = false;
+            const int value =
+                qEnvironmentVariableIntValue(
+                    name, &valid);
+            return valid && value >= 0
+                ? value
+                : fallback;
+        };
+    options.budget = configuredInteger(
+        "FLS_DIFFERENTIAL_WEIGHTED_TEST_BUDGET",
+        2);
+    options.adamIterations = configuredInteger(
+        "FLS_DIFFERENTIAL_WEIGHTED_TEST_ITERATIONS",
+        12);
+    options.restarts = configuredInteger(
+        "FLS_DIFFERENTIAL_WEIGHTED_TEST_RESTARTS",
+        0);
+    options.featureRestarts = configuredInteger(
+        "FLS_DIFFERENTIAL_WEIGHTED_TEST_FEATURE_RESTARTS",
+        2);
+    options.boundaryTolerance =
+        kBoundaryTolerance;
+    const auto configuredDouble =
+        [](const char *name, double fallback) {
+            bool valid = false;
+            const double value =
+                qEnvironmentVariable(name)
+                    .toDouble(&valid);
+            return valid
+                ? value
+                : fallback;
+        };
+    options.areaWindowRatio =
+        configuredDouble(
+            "FLS_DIFFERENTIAL_WEIGHTED_TEST_AREA_WINDOW",
+            options.areaWindowRatio);
+    options.featureWeight =
+        configuredDouble(
+            "FLS_DIFFERENTIAL_WEIGHTED_TEST_FEATURE_WEIGHT",
+            options.featureWeight);
+    options.inactivityTimeoutSeconds = 0.0;
+    options.useGpu = true;
+    options.useWeightedContour = true;
+    input.mayCover =
+        cover::expandedCoverEnvelope(
+            input.mustCover,
+            options.boundaryTolerance);
+    bool targetResidualValid = false;
+    const double targetResidual =
+        qEnvironmentVariable(
+            "FLS_DIFFERENTIAL_WEIGHTED_TEST_TARGET_RESIDUAL")
+            .toDouble(
+                &targetResidualValid);
+    std::atomic_bool stopRequested = false;
+    int targetPlacementCount = 0;
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options,
+            [&stopRequested]() {
+                return stopRequested.load(
+                    std::memory_order_relaxed);
+            },
+            [&](const cover::FillProgress &progress) {
+                if (targetResidualValid
+                    && progress.placementCount > 0
+                    && progress.residualArea
+                        <= targetResidual) {
+                    targetPlacementCount =
+                        progress.placementCount;
+                    stopRequested.store(
+                        true,
+                        std::memory_order_relaxed);
+                }
+            });
+    const bool finiteMetrics =
+        std::isfinite(
+            result.metrics.meanBoundaryDistance)
+        && std::isfinite(
+            result.metrics.boundaryDistanceRms)
+        && std::isfinite(
+            result.metrics.boundaryDistance95)
+        && std::isfinite(
+            result.metrics.meanFeatureDistance)
+        && std::isfinite(
+            result.metrics.featureDistance95)
+        && std::isfinite(
+            result.metrics.maximumFeatureDistance);
+    const bool gpuProfileValid =
+        result.profile.evaluationBackend
+                == QStringLiteral(
+                    "CPU weighted contour")
+            || (result.profile.gpuBatches > 0
+                && result.profile
+                       .gpuEvaluationWallSeconds
+                    > 0.0);
+
+    std::cout
+        << "weighted logged contour: "
+        << result.placements.size()
+        << " placements, "
+        << result.coveredArea
+        << " covered, "
+        << qPrintable(
+               result.profile
+                   .evaluationBackend)
+        << ", "
+        << result.residualArea
+        << " residual, "
+        << result.profile.totalWallSeconds
+        << " seconds, "
+        << result.profile.gpuBatches
+        << " GPU batches, "
+        << result.profile
+               .selectionEnvelopeRejections
+        << " envelope rejections, "
+        << result.profile
+               .selectionOutwardDistanceRejections
+        << " distance rejections, "
+        << result.profile
+               .selectionFeatureRejections
+        << " feature rejections\n";
+    if (targetResidualValid) {
+        std::cout
+            << "weighted logged contour target: "
+            << targetPlacementCount
+            << " placements at residual "
+            << targetResidual
+            << '\n';
+    }
+
+    return check(
+        result.error.isEmpty()
+            && !result.placements.isEmpty()
+            && finiteMetrics
+            && gpuProfileValid
+            && result.metrics.outsideEnvelopeArea
+                <= kEnvelopeAreaTolerance
+                    + 1e-9
+            && result.metrics.maximumOutwardDistance
+                <= options.boundaryTolerance
+                    + 1e-5,
+        "weighted logged contour produced no legal placement");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -913,12 +1409,16 @@ int main(int argc, char **argv) {
     if (!check(error.isEmpty(),
                qPrintable(QStringLiteral("catalog build failed: %1").arg(error)))
         || !testCatalogAndGradient(catalog)
+        || !testWeightedMetrics()
+        || !testWeightedSquare(catalog)
+        || !testWeightedCandidatePath(catalog)
         || !testReflectedPlacementUnion(catalog)
         || !testPartialTermination(catalog)
         || !testStructuralT(catalog)
         || !testApproximateStructuralT(catalog)
         || !testCompactPolygonMesh(catalog)
-        || !testLoggedContour(catalog)) {
+        || !testLoggedContour(catalog)
+        || !testWeightedLoggedContour(catalog)) {
         return 1;
     }
 

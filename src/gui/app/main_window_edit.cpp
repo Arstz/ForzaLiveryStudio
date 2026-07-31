@@ -69,7 +69,8 @@ QString elapsedDuration(double seconds) {
 void writePenFillLog(const PenFillRequest &request,
                      const PenFillResult &result,
                      const QString &strategy,
-                     const cover::FillProfile *profile = nullptr) {
+                     const cover::FillProfile *profile = nullptr,
+                     const cover::CoverErrorMetrics *metrics = nullptr) {
     QJsonArray points;
     for (const PenPoint &point : request.points) {
         QJsonObject pointObject;
@@ -111,6 +112,18 @@ void writePenFillLog(const PenFillRequest &request,
         placementObject.insert(
             QStringLiteral("coveredArea"),
             placement.area);
+        QJsonArray ownedFeatureIds;
+        for (const int featureId :
+             placement.ownedFeatureIds) {
+            ownedFeatureIds.push_back(
+                featureId);
+        }
+        placementObject.insert(
+            QStringLiteral("ownedFeatureIds"),
+            ownedFeatureIds);
+        placementObject.insert(
+            QStringLiteral("exposedContourArc"),
+            placement.exposedContourArc);
         placementObject.insert(
             QStringLiteral("transform"),
             QJsonArray{
@@ -135,6 +148,9 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("meshReason"),
             profile->meshReason);
+        profileObject.insert(
+            QStringLiteral("areaWindowRatio"),
+            profile->areaWindowRatio);
         profileObject.insert(
             QStringLiteral("totalWallSeconds"), profile->totalWallSeconds);
         profileObject.insert(
@@ -238,6 +254,38 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("hardEdgeCandidates"),
             static_cast<qint64>(profile->hardEdgeCandidates));
         profileObject.insert(
+            QStringLiteral("featureCandidateJobs"),
+            static_cast<qint64>(
+                profile->featureCandidateJobs));
+        profileObject.insert(
+            QStringLiteral("featureCandidateRejections"),
+            static_cast<qint64>(
+                profile->featureCandidateRejections));
+        profileObject.insert(
+            QStringLiteral(
+                "selectionInsufficientGainRejections"),
+            static_cast<qint64>(
+                profile
+                    ->selectionInsufficientGainRejections));
+        profileObject.insert(
+            QStringLiteral(
+                "selectionEnvelopeRejections"),
+            static_cast<qint64>(
+                profile
+                    ->selectionEnvelopeRejections));
+        profileObject.insert(
+            QStringLiteral(
+                "selectionOutwardDistanceRejections"),
+            static_cast<qint64>(
+                profile
+                    ->selectionOutwardDistanceRejections));
+        profileObject.insert(
+            QStringLiteral(
+                "selectionFeatureRejections"),
+            static_cast<qint64>(
+                profile
+                    ->selectionFeatureRejections));
+        profileObject.insert(
             QStringLiteral("pruneAttempts"),
             static_cast<qint64>(profile->pruneAttempts));
         profileObject.insert(
@@ -257,6 +305,9 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("hardEdgePlacements"),
             profile->hardEdgePlacements);
+        profileObject.insert(
+            QStringLiteral("featureSelectedPlacements"),
+            profile->featureSelectedPlacements);
         profileObject.insert(
             QStringLiteral("prunedPlacements"),
             profile->prunedPlacements);
@@ -297,6 +348,66 @@ void writePenFillLog(const PenFillRequest &request,
             profile->meshAccepted);
         resultObject.insert(QStringLiteral("profile"), profileObject);
     }
+    if (metrics != nullptr) {
+        QJsonObject metricsObject;
+        metricsObject.insert(
+            QStringLiteral("missingArea"),
+            metrics->missingArea);
+        metricsObject.insert(
+            QStringLiteral("outsideTargetArea"),
+            metrics->outsideTargetArea);
+        metricsObject.insert(
+            QStringLiteral("outsideEnvelopeArea"),
+            metrics->outsideEnvelopeArea);
+        metricsObject.insert(
+            QStringLiteral("tverskySimilarity"),
+            metrics->tversky);
+        metricsObject.insert(
+            QStringLiteral("meanBoundaryDistance"),
+            metrics->meanBoundaryDistance);
+        metricsObject.insert(
+            QStringLiteral("boundaryDistanceRms"),
+            metrics->boundaryDistanceRms);
+        metricsObject.insert(
+            QStringLiteral("boundaryDistance95"),
+            metrics->boundaryDistance95);
+        metricsObject.insert(
+            QStringLiteral("maximumOutwardDistance"),
+            metrics->maximumOutwardDistance);
+        metricsObject.insert(
+            QStringLiteral("boundaryFScore"),
+            metrics->boundaryFScore);
+        metricsObject.insert(
+            QStringLiteral("representedFeatureCount"),
+            metrics->representedFeatures);
+        metricsObject.insert(
+            QStringLiteral("targetFeatureCount"),
+            metrics->totalFeatures);
+        metricsObject.insert(
+            QStringLiteral("representedFeatureWeight"),
+            metrics->representedFeatureWeight);
+        metricsObject.insert(
+            QStringLiteral("totalFeatureWeight"),
+            metrics->totalFeatureWeight);
+        metricsObject.insert(
+            QStringLiteral("meanFeatureDistance"),
+            metrics->meanFeatureDistance);
+        metricsObject.insert(
+            QStringLiteral("featureDistance95"),
+            metrics->featureDistance95);
+        metricsObject.insert(
+            QStringLiteral("maximumFeatureDistance"),
+            metrics->maximumFeatureDistance);
+        metricsObject.insert(
+            QStringLiteral("meanTangentError"),
+            metrics->meanTangentError);
+        metricsObject.insert(
+            QStringLiteral("maximumTangentError"),
+            metrics->maximumTangentError);
+        resultObject.insert(
+            QStringLiteral("coverMetrics"),
+            metricsObject);
+    }
 
     QJsonObject root;
     root.insert(QStringLiteral("request"), requestObject);
@@ -320,7 +431,8 @@ PenFillResult differentialContourFill(
     const cover::FillOptions &options,
     const std::function<bool()> &cancelled,
     const std::function<void(int, double, double)> &progress,
-    cover::FillProfile *profile) {
+    cover::FillProfile *profile,
+    cover::CoverErrorMetrics *metrics) {
     const cover::FillResult fill =
         cover::analyticCoverFill(
             input, catalog, options, cancelled,
@@ -334,6 +446,9 @@ PenFillResult differentialContourFill(
             });
     if (profile != nullptr) {
         *profile = fill.profile;
+    }
+    if (metrics != nullptr) {
+        *metrics = fill.metrics;
     }
     PenFillResult result;
     result.targetArea = fill.coveredArea + fill.residualArea;
@@ -350,6 +465,10 @@ PenFillResult differentialContourFill(
         item.shapeId = placement.shapeId;
         item.transform = cover::toQTransform(placement.transform);
         item.area = placement.coveredArea;
+        item.ownedFeatureIds =
+            placement.ownedFeatureIds;
+        item.exposedContourArc =
+            placement.exposedContourArc;
         result.placements.push_back(item);
     }
 
@@ -401,9 +520,15 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
 
         cover::FillInput input;
         input.mustCover = polygons;
-        input.mayCover = polygons;
         input.boundarySpans = contour.segments;
         cover::FillOptions options;
+        options.boundaryTolerance =
+            request.boundaryTolerance;
+        options.useWeightedContour = true;
+        input.mayCover =
+            cover::expandedCoverEnvelope(
+                polygons,
+                options.boundaryTolerance);
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(
             QStringLiteral("Differential fill | Elapsed 0s"));
@@ -423,10 +548,15 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
                 const std::function<bool()> &cancelled,
                 const GeneratedFillProgress &progress) {
                 cover::FillProfile profile;
+                cover::CoverErrorMetrics metrics;
                 PenFillResult result =
                     differentialContourFill(
-                        input, catalog, options, cancelled, progress, &profile);
-                writePenFillLog(request, result, strategy, &profile);
+                        input, catalog, options,
+                        cancelled, progress,
+                        &profile, &metrics);
+                writePenFillLog(
+                    request, result, strategy,
+                    &profile, &metrics);
 
                 return result;
             });

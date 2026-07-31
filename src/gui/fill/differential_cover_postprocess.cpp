@@ -135,7 +135,9 @@ Candidate optimizeExistingPlacement(
     const Placement &placement,
     const QVector<ShapeMesh> &catalog,
     const Polygons &subject,
-    const Polygons &mayCover,
+    const Polygons &target,
+    const Polygons &legalEnvelope,
+    const QVector<ContourFeature> &features,
     const FillOptions &options,
     GpuAreaEvaluator *gpuEvaluator,
     QThreadPool *candidatePool,
@@ -150,12 +152,18 @@ Candidate optimizeExistingPlacement(
     }
     CandidateJob job;
     job.shape = shape;
+    job.featureAssignments =
+        placementFeatureAssignments(
+            *shape,
+            placement.transform,
+            placement.ownedFeatureIds,
+            features);
     job.transform = placement.transform;
     job.hasTransform = true;
     const std::vector<CandidateJob> jobs{job};
     const EvaluationBounds subjectBounds{
         individualPolygonBounds(subject),
-        individualPolygonBounds(mayCover),
+        individualPolygonBounds(target),
     };
     const DistanceSeed seed = distanceSeed(subject);
     ++profile->candidateJobs;
@@ -166,10 +174,13 @@ Candidate optimizeExistingPlacement(
     bool gpuCancelled = false;
     if (gpuEvaluator != nullptr
         && gpuEvaluator->available()
-        && gpuEvaluator->setSubjects(subject, mayCover)) {
+        && gpuEvaluator->setSubjects(
+            subject, target)) {
         std::vector<Candidate> gpuResults;
         usedGpu = optimizeCandidatesGpu(
-            jobs, subject, mayCover, subjectBounds,
+            jobs, subject,
+            target, legalEnvelope,
+            subjectBounds,
             options, seed, gpuEvaluator, candidatePool,
             profile, cancelled, &gpuResults,
             &gpuCancelled);
@@ -178,7 +189,9 @@ Candidate optimizeExistingPlacement(
             CandidateProfile exactProfile;
             result = legalCandidate(
                 *shape, gpuResults.front().transform,
-                subject, mayCover, subjectBounds,
+                subject, target,
+                legalEnvelope,
+                subjectBounds,
                 options, &exactProfile);
             accumulateCandidateProfile(
                 exactProfile, profile);
@@ -187,7 +200,9 @@ Candidate optimizeExistingPlacement(
     if (!usedGpu && !gpuCancelled) {
         const CandidateJobResult cpuResult =
             optimizeCandidate(
-                job, subject, mayCover, subjectBounds,
+                job, subject, target,
+                legalEnvelope,
+                subjectBounds,
                 options, seed, cancelled);
         result = cpuResult.candidate;
         accumulateCandidateProfile(
@@ -221,12 +236,36 @@ bool sameTransform(
 
 bool acceptablePruneState(
     const ExactCoverState &state,
+    const CoverErrorMetrics &metrics,
+    const CoverErrorMetrics &acceptedMetrics,
     double residualLimit,
-    double outsideLimit) {
+    double outsideLimit,
+    double targetArea,
+    const FillOptions &options) {
+    const double tverskyAllowance =
+        options.epsArea
+        / std::max(
+            targetArea,
+            kGeometryEpsilon);
+
     return state.residualArea
             <= residualLimit + kGeometryEpsilon
         && state.outsideArea
-            <= outsideLimit + kGeometryEpsilon;
+            <= outsideLimit + kGeometryEpsilon
+        && legalEnvelopeArea(
+            metrics.outsideEnvelopeArea,
+            options)
+        && legalOutwardDistance(
+            metrics.maximumOutwardDistance,
+            options)
+        && metrics.representedFeatureWeight
+            >= acceptedMetrics
+                   .representedFeatureWeight
+                - kGeometryEpsilon
+        && metrics.tversky
+            >= acceptedMetrics.tversky
+                - tverskyAllowance
+                - kGeometryEpsilon;
 }
 
 bool prunePlacements(
@@ -235,6 +274,7 @@ bool prunePlacements(
     const QVector<ShapeMesh> &catalog,
     const Polygons &mustCover,
     const Polygons &mayCover,
+    const QVector<ContourFeature> &features,
     double targetArea,
     const FillOptions &options,
     GpuAreaEvaluator *gpuEvaluator,
@@ -254,6 +294,11 @@ bool prunePlacements(
                    - kStructuralMinimumCompactCoverageRatio));
     const double outsideLimit =
         currentState->outsideArea + options.epsSpill;
+    const CoverErrorMetrics acceptedMetrics =
+        evaluateCoverMetrics(
+            mustCover, mayCover,
+            currentState->coverage,
+            features, options);
     while (!placements->isEmpty()) {
         if (cancelled && cancelled()) {
             profile->pruneWallSeconds +=
@@ -290,11 +335,20 @@ bool prunePlacements(
                 exactCoverState(
                     trial, catalog, mustCover,
                     mayCover, targetArea);
+            CoverErrorMetrics trialMetrics =
+                evaluateCoverMetrics(
+                    mustCover, mayCover,
+                    trialState.coverage,
+                    features, options);
             QSet<int> adjustedIndices;
             if (!acceptablePruneState(
                     trialState,
+                    trialMetrics,
+                    acceptedMetrics,
                     residualLimit,
-                    outsideLimit)) {
+                    outsideLimit,
+                    targetArea,
+                    options)) {
                 const QVector<PruneNeighbor> neighbors =
                     pruneNeighbors(
                         removedFootprint, trialState);
@@ -313,7 +367,9 @@ bool prunePlacements(
                         optimizeExistingPlacement(
                             trial[neighbor.index],
                             catalog, fixedResidual,
-                            mayCover, options,
+                            mustCover, mayCover,
+                            features,
+                            options,
                             gpuEvaluator, candidatePool,
                             profile, cancelled,
                             &optimizationCancelled);
@@ -337,33 +393,63 @@ bool prunePlacements(
                             adjustedTrial, catalog,
                             mustCover, mayCover,
                             targetArea);
+                    const CoverErrorMetrics
+                        adjustedMetrics =
+                            evaluateCoverMetrics(
+                                mustCover,
+                                mayCover,
+                                adjustedState.coverage,
+                                features,
+                                options);
                     if (adjustedState.residualArea
                             >= trialState.residualArea
                                 - kGeometryEpsilon
                         || adjustedState.outsideArea
                             > outsideLimit
-                                + kGeometryEpsilon) {
+                                + kGeometryEpsilon
+                        || !acceptablePruneState(
+                            adjustedState,
+                            adjustedMetrics,
+                            acceptedMetrics,
+                            residualLimit,
+                            outsideLimit,
+                            targetArea,
+                            options)) {
                         continue;
                     }
                     trial = std::move(adjustedTrial);
                     trialState = std::move(adjustedState);
+                    trialMetrics =
+                        adjustedMetrics;
                     adjustedIndices.insert(neighbor.index);
                     if (acceptablePruneState(
                             trialState,
+                            trialMetrics,
+                            acceptedMetrics,
                             residualLimit,
-                            outsideLimit)) {
+                            outsideLimit,
+                            targetArea,
+                            options)) {
                         break;
                     }
                 }
             }
             if (!acceptablePruneState(
                     trialState,
+                    trialMetrics,
+                    acceptedMetrics,
                     residualLimit,
-                    outsideLimit)) {
+                    outsideLimit,
+                    targetArea,
+                    options)) {
                 continue;
             }
             *placements = std::move(trial);
             *currentState = std::move(trialState);
+            assignFeatureOwnership(
+                placements, catalog,
+                currentState->coverage,
+                features);
             refreshPlacementGains(
                 placements, catalog, mustCover);
             ++profile->prunedPlacements;
@@ -420,7 +506,24 @@ bool validOptions(const FillOptions &options) {
         && options.adamLearningRate > 0.0
         && std::isfinite(
             options.inactivityTimeoutSeconds)
-        && options.inactivityTimeoutSeconds >= 0.0;
+        && options.inactivityTimeoutSeconds >= 0.0
+        && std::isfinite(
+            options.boundaryTolerance)
+        && options.boundaryTolerance > 0.0
+        && std::isfinite(
+            options.areaWindowRatio)
+        && options.areaWindowRatio > 0.0
+        && options.areaWindowRatio <= 1.0
+        && std::isfinite(
+            options.tverskyAlpha)
+        && options.tverskyAlpha >= 0.0
+        && std::isfinite(
+            options.tverskyBeta)
+        && options.tverskyBeta > 0.0
+        && std::isfinite(
+            options.featureWeight)
+        && options.featureWeight >= 0.0
+        && options.featureRestarts >= 0;
 }
 
 void mergeRepairProfile(
@@ -453,6 +556,18 @@ void mergeRepairProfile(
         repair.wholeComponentJobs;
     profile->hardEdgeCandidates +=
         repair.hardEdgeCandidates;
+    profile->featureCandidateJobs +=
+        repair.featureCandidateJobs;
+    profile->featureCandidateRejections +=
+        repair.featureCandidateRejections;
+    profile->selectionInsufficientGainRejections +=
+        repair.selectionInsufficientGainRejections;
+    profile->selectionEnvelopeRejections +=
+        repair.selectionEnvelopeRejections;
+    profile->selectionOutwardDistanceRejections +=
+        repair.selectionOutwardDistanceRejections;
+    profile->selectionFeatureRejections +=
+        repair.selectionFeatureRejections;
     profile->complexitySelections +=
         repair.complexitySelections;
     profile->localComponentPlacements +=
@@ -461,6 +576,8 @@ void mergeRepairProfile(
         repair.wholeComponentPlacements;
     profile->hardEdgePlacements +=
         repair.hardEdgePlacements;
+    profile->featureSelectedPlacements +=
+        repair.featureSelectedPlacements;
     profile->workerThreads = std::max(
         profile->workerThreads,
         repair.workerThreads);
