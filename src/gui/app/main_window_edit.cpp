@@ -101,8 +101,40 @@ void writePenFillLog(const PenFillRequest &request,
     resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
     resultObject.insert(QStringLiteral("timedOut"), result.timedOut);
     resultObject.insert(QStringLiteral("error"), result.error);
+    QJsonArray placements;
+    for (const PenPlacement &placement :
+         result.placements) {
+        QJsonObject placementObject;
+        placementObject.insert(
+            QStringLiteral("shapeId"),
+            placement.shapeId);
+        placementObject.insert(
+            QStringLiteral("coveredArea"),
+            placement.area);
+        placementObject.insert(
+            QStringLiteral("transform"),
+            QJsonArray{
+                placement.transform.m11(),
+                placement.transform.m12(),
+                placement.transform.m21(),
+                placement.transform.m22(),
+                placement.transform.dx(),
+                placement.transform.dy(),
+            });
+        placements.push_back(
+            placementObject);
+    }
+    resultObject.insert(
+        QStringLiteral("placements"),
+        placements);
     if (profile != nullptr) {
         QJsonObject profileObject;
+        profileObject.insert(
+            QStringLiteral("structuralReason"),
+            profile->structuralReason);
+        profileObject.insert(
+            QStringLiteral("meshReason"),
+            profile->meshReason);
         profileObject.insert(
             QStringLiteral("totalWallSeconds"), profile->totalWallSeconds);
         profileObject.insert(
@@ -150,6 +182,33 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("repairCoveredArea"),
             profile->repairCoveredArea);
+        profileObject.insert(
+            QStringLiteral("structuralExplainedBoundaryFraction"),
+            profile->structuralExplainedBoundaryFraction);
+        profileObject.insert(
+            QStringLiteral("structuralCoverageRatio"),
+            profile->structuralCoverageRatio);
+        profileObject.insert(
+            QStringLiteral("structuralResidualArea"),
+            profile->structuralResidualArea);
+        profileObject.insert(
+            QStringLiteral("structuralResidualThickness"),
+            profile->structuralResidualThickness);
+        profileObject.insert(
+            QStringLiteral("structuralOutsideArea"),
+            profile->structuralOutsideArea);
+        profileObject.insert(
+            QStringLiteral("meshCoverageRatio"),
+            profile->meshCoverageRatio);
+        profileObject.insert(
+            QStringLiteral("meshResidualArea"),
+            profile->meshResidualArea);
+        profileObject.insert(
+            QStringLiteral("meshOutsideArea"),
+            profile->meshOutsideArea);
+        profileObject.insert(
+            QStringLiteral("meshScale"),
+            profile->meshScale);
         profileObject.insert(
             QStringLiteral("evaluationBackend"),
             profile->evaluationBackend);
@@ -214,7 +273,28 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("repairPlacements"),
             profile->repairPlacements);
         profileObject.insert(
+            QStringLiteral("structuralGridCells"),
+            profile->structuralGridCells);
+        profileObject.insert(
+            QStringLiteral("structuralRectangleCandidates"),
+            profile->structuralRectangleCandidates);
+        profileObject.insert(
+            QStringLiteral("structuralRectangles"),
+            profile->structuralRectangles);
+        profileObject.insert(
+            QStringLiteral("meshPlacements"),
+            profile->meshPlacements);
+        profileObject.insert(
             QStringLiteral("workerThreads"), profile->workerThreads);
+        profileObject.insert(
+            QStringLiteral("structuralAccepted"),
+            profile->structuralAccepted);
+        profileObject.insert(
+            QStringLiteral("structuralSeeded"),
+            profile->structuralSeeded);
+        profileObject.insert(
+            QStringLiteral("meshAccepted"),
+            profile->meshAccepted);
         resultObject.insert(QStringLiteral("profile"), profileObject);
     }
 

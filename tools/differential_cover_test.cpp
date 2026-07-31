@@ -298,6 +298,240 @@ bool testPartialTermination(
         "inactive cover did not time out");
 }
 
+bool testStructuralT(
+    const QVector<cover::ShapeMesh> &catalog) {
+    const QPointF origin(30.0, -40.0);
+    const QPointF firstAxis(80.0, 12.0);
+    const QPointF secondAxis(18.0, 95.0);
+    const auto mapPoint =
+        [&](double first, double second) {
+            return origin
+                + firstAxis * first
+                + secondAxis * second;
+        };
+    const QPolygonF contour{
+        mapPoint(1.0, 0.0),
+        mapPoint(2.0, 0.0),
+        mapPoint(2.0, 2.0),
+        mapPoint(4.0, 2.0),
+        mapPoint(4.0, 3.0),
+        mapPoint(0.0, 3.0),
+        mapPoint(0.0, 2.0),
+        mapPoint(1.0, 2.0),
+    };
+    cover::FillInput input;
+    input.mustCover = {contour};
+    input.mayCover = {contour};
+    input.boundarySpans.reserve(
+        contour.size());
+    for (int index = 0;
+         index < contour.size(); ++index) {
+        input.boundarySpans.push_back({
+            contour[index],
+            {},
+            contour[
+                (index + 1)
+                % contour.size()],
+            false,
+        });
+    }
+    cover::FillOptions options;
+    options.budget = 2;
+    options.useGpu = false;
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options);
+    if (!check(
+            result.error.isEmpty(),
+            "structural T returned an error")
+        || !check(
+            result.profile.structuralAccepted,
+            "structural T was not accepted")
+        || !check(
+            result.placements.size() == 2,
+            "structural T did not use two rectangles")
+        || !check(
+            std::all_of(
+                result.placements.cbegin(),
+                result.placements.cend(),
+                [](const cover::Placement &placement) {
+                    return placement.shapeId == 101;
+                }),
+            "structural T used a non-rectangle shape")
+        || !check(
+            result.residualArea
+                <= options.epsArea + 1e-6,
+            "structural T left residual area")
+        || !check(
+            result.outsideArea
+                <= options.epsSpill + 1e-6,
+            "structural T exceeded spill tolerance")) {
+        return false;
+    }
+
+    return true;
+}
+
+bool testApproximateStructuralT(
+    const QVector<cover::ShapeMesh> &catalog) {
+    const QPointF origin(-20.0, 15.0);
+    const QPointF firstAxis(75.0, -8.0);
+    const QPointF secondAxis(22.0, 90.0);
+    const auto mapPoint =
+        [&](double first, double second) {
+            return origin
+                + firstAxis * first
+                + secondAxis * second;
+        };
+    const QPolygonF vertices{
+        mapPoint(1.0, 0.0),
+        mapPoint(2.0, 0.005),
+        mapPoint(2.005, 2.0),
+        mapPoint(4.0, 2.01),
+        mapPoint(4.0, 3.0),
+        mapPoint(0.0, 3.005),
+        mapPoint(-0.005, 2.0),
+        mapPoint(0.995, 1.995),
+    };
+    QVector<cover::ContourSpan>
+        boundarySpans;
+    boundarySpans.reserve(vertices.size());
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    path.moveTo(vertices.front());
+    for (int index = 0;
+         index < vertices.size(); ++index) {
+        const QPointF start =
+            vertices[index];
+        const QPointF end =
+            vertices[
+                (index + 1)
+                % vertices.size()];
+        if (index == 4) {
+            const QPointF control =
+                mapPoint(2.0, 3.015);
+            boundarySpans.push_back({
+                start,
+                control,
+                end,
+                true,
+            });
+            path.quadTo(control, end);
+        } else {
+            boundarySpans.push_back({
+                start,
+                {},
+                end,
+                false,
+            });
+            path.lineTo(end);
+        }
+    }
+    path.closeSubpath();
+    cover::FillInput input;
+    input.mustCover =
+        cover::polygonsFromPainterPath(path);
+    input.mayCover = input.mustCover;
+    input.boundarySpans =
+        boundarySpans;
+    cover::FillOptions options;
+    options.budget = 2;
+    options.useGpu = false;
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options);
+    std::cout
+        << "approximate structural T: "
+        << qPrintable(
+               result.profile.structuralReason)
+        << ", rectangles="
+        << result.profile.structuralRectangles
+        << ", coverage="
+        << result.profile.structuralCoverageRatio
+        << ", residual="
+        << result.profile.structuralResidualArea
+        << ", residual thickness="
+        << result.profile.structuralResidualThickness
+        << ", outside="
+        << result.profile.structuralOutsideArea
+        << '\n';
+
+    return check(
+        result.error.isEmpty()
+            && result.profile.structuralAccepted
+            && result.placements.size() == 2
+            && result.profile.structuralCoverageRatio
+                >= 0.98
+            && result.outsideArea
+                <= options.epsSpill + 1e-6,
+        "approximate structural T was not reduced to two rectangles");
+}
+
+bool testCompactPolygonMesh(
+    const QVector<cover::ShapeMesh> &catalog) {
+    const QPointF origin(45.0, -70.0);
+    const QPointF firstAxis(55.0, 13.0);
+    const QPointF secondAxis(-11.0, 60.0);
+    const auto mapPoint =
+        [&](double first, double second) {
+            return origin
+                + firstAxis * first
+                + secondAxis * second;
+        };
+    const QPolygonF contour{
+        mapPoint(-3.0, 0.0),
+        mapPoint(-1.0, 0.0),
+        mapPoint(0.0, 2.0),
+        mapPoint(1.0, 0.0),
+        mapPoint(3.0, 0.0),
+        mapPoint(1.0, 3.0),
+        mapPoint(1.0, 6.0),
+        mapPoint(-1.0, 6.0),
+        mapPoint(-1.0, 3.0),
+    };
+    cover::FillInput input;
+    input.mustCover = {contour};
+    input.mayCover = input.mustCover;
+    input.boundarySpans.reserve(
+        contour.size());
+    for (int index = 0;
+         index < contour.size(); ++index) {
+        input.boundarySpans.push_back({
+            contour[index],
+            {},
+            contour[
+                (index + 1)
+                % contour.size()],
+            false,
+        });
+    }
+    cover::FillOptions options;
+    options.budget = 20;
+    options.useGpu = false;
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options);
+
+    return check(
+        result.error.isEmpty()
+            && !result.profile.structuralAccepted
+            && result.profile.meshAccepted
+            && result.profile.meshPlacements
+                == result.placements.size()
+            && result.profile.meshCoverageRatio
+                >= 0.98
+            && result.profile.evaluationBackend
+                == QStringLiteral("Polygon mesh")
+            && std::all_of(
+                result.placements.cbegin(),
+                result.placements.cend(),
+                [](const cover::Placement &placement) {
+                    return placement.shapeId == 101
+                        || placement.shapeId == 103;
+                }),
+        "multi-axis contour did not use its compact polygon mesh");
+}
+
 bool loadLoggedContour(QVector<PenPoint> *points, bool *available) {
     const QString path = QDir(QCoreApplication::applicationDirPath())
                              .filePath(QStringLiteral("pen_fill.log"));
@@ -464,6 +698,27 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
         repeat
         ? cover::analyticCoverFill(input, catalog, options)
         : first;
+    const bool structural =
+        first.profile.structuralAccepted;
+    const bool mesh =
+        first.profile.meshAccepted;
+    const bool compactPlan =
+        structural || mesh;
+    std::cout
+        << "logged contour structural: "
+        << qPrintable(
+               first.profile.structuralReason)
+        << ", rectangles="
+        << first.profile.structuralRectangles
+        << ", coverage="
+        << first.profile.structuralCoverageRatio
+        << ", residual="
+        << first.profile.structuralResidualArea
+        << ", residual thickness="
+        << first.profile.structuralResidualThickness
+        << ", outside="
+        << first.profile.structuralOutsideArea
+        << '\n';
     if (!check(first.error.isEmpty() && second.error.isEmpty(),
                "logged contour solver returned an error")
         || !check(!first.placements.isEmpty(),
@@ -481,15 +736,26 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                       && first.profile.totalWallSeconds > 0.0
                       && std::isfinite(
                           first.profile.candidateBatchWallSeconds)
-                      && first.profile.candidateBatchWallSeconds > 0.0,
+                      && (compactPlan
+                              || first.profile.candidateBatchWallSeconds
+                                  > 0.0),
                   "logged contour solver profiling times are invalid")
-        || !check(first.profile.greedySteps > 0
-                      && first.profile.workerThreads > 0
-                      && first.profile.candidateJobs > 0
-                      && first.profile.adamEvaluations > 0
-                      && first.profile.legalizationEvaluations > 0
-                      && first.profile.prunePasses > 0
-                      && first.profile.pruneAttempts > 0
+        || !check((compactPlan
+                       ? ((structural
+                               && first.profile.structuralRectangles > 0
+                               && first.profile.structuralCoverageRatio
+                                   >= 0.9)
+                          || (mesh
+                              && first.profile.meshPlacements > 0
+                              && first.profile.meshCoverageRatio
+                                  >= 0.98))
+                       : (first.profile.greedySteps > 0
+                          && first.profile.workerThreads > 0
+                          && first.profile.candidateJobs > 0
+                          && first.profile.adamEvaluations > 0
+                          && first.profile.legalizationEvaluations > 0
+                          && first.profile.prunePasses > 0
+                          && first.profile.pruneAttempts > 0))
                       && std::isfinite(first.profile.pruneWallSeconds)
                       && first.profile.pruneWallSeconds >= 0.0
                       && std::isfinite(
@@ -503,13 +769,20 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                           <= first.profile.repairTargetArea + 1e-6,
                    "logged contour solver profiling counts are invalid")
         || !check(
-            first.profile.evaluationBackend
-                    != QStringLiteral("CPU")
-                ? (first.profile.gpuBatches > 0
-                   && first.profile.gpuEvaluationWallSeconds > 0.0
-                   && !first.profile.gpuAdapter.isEmpty())
-                : (first.profile.adamEvaluationWorkerSeconds > 0.0
-                   && first.profile.legalizationWorkerSeconds > 0.0),
+            compactPlan
+                ? ((structural
+                        && first.profile.evaluationBackend
+                            == QStringLiteral("Structural cover"))
+                   || (mesh
+                       && first.profile.evaluationBackend
+                           == QStringLiteral("Polygon mesh")))
+                : (first.profile.evaluationBackend
+                           != QStringLiteral("CPU")
+                       ? (first.profile.gpuBatches > 0
+                          && first.profile.gpuEvaluationWallSeconds > 0.0
+                          && !first.profile.gpuAdapter.isEmpty())
+                       : (first.profile.adamEvaluationWorkerSeconds > 0.0
+                          && first.profile.legalizationWorkerSeconds > 0.0)),
             "logged contour solver backend profiling is invalid")
         || !check(!progress.isEmpty() && progress.front().placementCount == 0,
                   "logged contour solver did not report initial progress")
@@ -590,6 +863,20 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
               << " hard-edge placements from "
               << first.profile.hardEdgeCandidates
               << " hard-edge candidates, "
+              << first.profile.structuralRectangles
+              << " structural rectangles ("
+              << qPrintable(
+                     first.profile.structuralReason)
+              << "), "
+              << first.profile.meshPlacements
+              << " mesh placements ("
+              << qPrintable(
+                     first.profile.meshReason)
+              << ", coverage "
+              << first.profile.meshCoverageRatio
+              << ", scale "
+              << first.profile.meshScale
+              << "), "
               << first.profile.prunedPlacements
               << " pruned placements after "
               << first.profile.pruneAttempts
@@ -628,6 +915,9 @@ int main(int argc, char **argv) {
         || !testCatalogAndGradient(catalog)
         || !testReflectedPlacementUnion(catalog)
         || !testPartialTermination(catalog)
+        || !testStructuralT(catalog)
+        || !testApproximateStructuralT(catalog)
+        || !testCompactPolygonMesh(catalog)
         || !testLoggedContour(catalog)) {
         return 1;
     }

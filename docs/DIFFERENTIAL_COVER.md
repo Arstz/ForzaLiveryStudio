@@ -349,6 +349,19 @@ inflation from weak component-local gains.
 
 ### 7.2 Structural prepasses
 
+Before greedy optimization, line-like contour spans are clustered into two
+nonparallel affine axes. Eligible contours are snapped into the corresponding
+oblique coordinate frame, divided into occupied grid cells, and solved as a
+deterministic minimum rectangle cover. Each rectangle is translated and shrunk
+independently until its exact spill is legal against the original contour.
+
+A rectangle plan covering at least 98 percent of the target completes directly.
+A legal plan covering at least 90 percent also completes when the residual's
+maximum inscribed radius is within the coordinate snapping tolerance. This
+distinguishes boundary detail from a missing structural region. Other legal
+plans above the same coverage floor seed the greedy solver with their residual.
+The configured catalog must contain Square for this pass.
+
 The first greedy step adds one oriented-bounds initialization for every
 catalog-shape/component pair. This gives affine-equivalent or near-equivalent
 components an opportunity to be removed with one placement before the local
@@ -356,13 +369,15 @@ medial-axis search dominates.
 
 The original contour spans also provide a straight-boundary ratio. A
 hard-edge-dominated contour produces fixed polygon-mesh candidates using the
-catalog's square and triangle geometry. Mixed contours retain rectangular
-candidates, while a completely straight contour may retain both. Every fixed
-candidate passes the same exact coverage and spill checks as an optimized
-candidate.
+catalog's square and triangle geometry. Mixed contours retain every mesh
+candidate. The complete mesh is first legalized coherently by scaling every
+piece around the target center, preserving shared seams. A legal mesh covering
+at least 98 percent completes directly. When that plan is unavailable, its
+pieces pass through the same exact coverage and spill checks as optimized
+candidates.
 
-These are candidate-generation passes, not forced placements. They compete with
-the differentiable candidates through the common exact selector.
+Incomplete structural and mesh results remain candidate-generation passes. They
+compete with differentiable candidates through the common exact selector.
 
 ### 7.3 Initialization (per optimized candidate) — medial axis, **not** triangulation
 
@@ -422,16 +437,19 @@ After the greedy loop stops, run an exact backward-elimination pass:
    outside-area limits, then recompute unique areas and restart. Stop only when
    an entire pass removes nothing or cancellation is requested.
 
-The coverage floor and outside-area ceiling are fixed from the completed greedy
-cover. Repeated removals therefore cannot accumulate tolerance loss. Survivor
-adjustment uses the selected CUDA, Direct3D, or CPU optimizer without a placement
-clock, calculation cap, or separate iteration reduction.
+The coverage floor is the greater of the completed greedy cover minus the
+absolute area tolerance and the compact-cover threshold. The outside-area
+ceiling is fixed from the completed greedy cover. Repeated removals therefore
+cannot accumulate loss beyond those fixed limits. Survivor adjustment uses the
+selected CUDA, Direct3D, or CPU optimizer without a placement clock, calculation
+cap, or separate iteration reduction.
 
-After pruning converges, compute the exact repair target as
-`postPruneResidual - prePruneResidual`. Run one additive greedy cover on that
-target using the normal catalog, routing, optimizer, legality checks, and
-remaining placement budget. Append the resulting placements to the pruned cover.
-The repair result is not pruned again.
+When the pruned result is below the compact coverage threshold, compute the exact
+repair target as `postPruneResidual - prePruneResidual`. Run one additive greedy
+cover on that target using the normal catalog, routing, optimizer, legality
+checks, and remaining placement budget. Append the resulting placements to the
+pruned cover. A result meeting the compact threshold retains its accepted
+shape-count tradeoff. The repair result is not pruned again.
 
 ---
 
@@ -467,6 +485,10 @@ The repair result is not pruned again.
   areas, repair-target area, repair placements, repaired area, remaining newly
   exposed area, and repair wall time are also recorded. Cumulative worker
   durations overlap while jobs execute in parallel and are not elapsed wall time.
+  Structural diagnostics record the decision reason, explained boundary
+  fraction, grid and rectangle counts, coverage, residual, spill, and whether the
+  plan completed or seeded the run. Final shape IDs, covered areas, and affine
+  transforms are recorded with the result.
 
 ---
 

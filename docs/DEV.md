@@ -29,7 +29,14 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   path with a slow analytic greedy cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, stays within
   the contour tolerance, and inserts a measured partial result when progress
-  stalls. An optional double-precision CUDA path evaluates the optimizer and
+  stalls. A deterministic structural pass recognizes boundaries dominated by
+  two affine axes, constructs a minimum rectangle cover on an oblique grid, and
+  legalizes it against the original contour. Compact covers complete directly;
+  thin boundary residuals are retained without adding low-value placements, and
+  other partial covers seed residual fitting. Multi-axis hard boundaries also
+  evaluate their complete square-and-triangle mesh as one coherent plan before
+  individual mesh pieces compete with analytic candidates.
+  An optional double-precision CUDA path evaluates the optimizer and
   legalization first. Direct3D 11 legalization with double-precision CPU Adam is
   the next backend, followed by the parallel CPU evaluator. Exact CPU candidate
   verification remains authoritative, and backend failure advances automatically.

@@ -90,6 +90,8 @@ struct FillOptions {
 };
 
 struct FillProfile {
+    QString structuralReason;
+    QString meshReason;
     double totalWallSeconds = 0.0;
     double greedySetupWallSeconds = 0.0;
     double candidateBatchWallSeconds = 0.0;
@@ -106,6 +108,15 @@ struct FillProfile {
     double repairTargetArea = 0.0;
     double postRepairNewGapArea = 0.0;
     double repairCoveredArea = 0.0;
+    double structuralExplainedBoundaryFraction = 0.0;
+    double structuralCoverageRatio = 0.0;
+    double structuralResidualArea = 0.0;
+    double structuralResidualThickness = 0.0;
+    double structuralOutsideArea = 0.0;
+    double meshCoverageRatio = 0.0;
+    double meshResidualArea = 0.0;
+    double meshOutsideArea = 0.0;
+    double meshScale = 0.0;
     QString evaluationBackend;
     QString gpuAdapter;
     QString gpuError;
@@ -128,7 +139,14 @@ struct FillProfile {
     int prunePasses = 0;
     int repairSteps = 0;
     int repairPlacements = 0;
+    int structuralGridCells = 0;
+    int structuralRectangleCandidates = 0;
+    int structuralRectangles = 0;
+    int meshPlacements = 0;
     int workerThreads = 0;
+    bool structuralAccepted = false;
+    bool structuralSeeded = false;
+    bool meshAccepted = false;
 };
 
 struct FillResult {
