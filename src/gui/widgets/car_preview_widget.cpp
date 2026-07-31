@@ -15,6 +15,7 @@
 #include "zip_extract.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -498,6 +499,54 @@ QString materialArchiveEntry(QString resourcePath) {
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
 }
 
+// A few FH6 modelbins carry a generic/inherited MaterialResource path even though the
+// per-mesh slot names the material family explicitly.  Trusting that path makes leather,
+// plastic, fabric, wood, and reflector meshes inherit carbon-fibre, BlackHole, label, or
+// digital-screen defaults.  Bind only the unambiguous slot families to their real shared
+// materialbins; the instance parameters are still merged afterwards and remain authoritative.
+QString semanticMaterialArchiveEntry(QString materialName) {
+    materialName = materialName.section(QLatin1Char('|'), 0, 0).toLower();
+    if (materialName.contains(QStringLiteral("plastic"))) {
+        return QStringLiteral("_fmnext/plastic/plastic.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("leather"))) {
+        return QStringLiteral("_fmnext/leather/leather.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("fabric_002"))) {
+        return QStringLiteral("interior_fabric/fabric_002.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("fabric"))) {
+        return QStringLiteral("_fmnext/fabric/cloth.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("stitch"))) {
+        return QStringLiteral("_fmnext/detail/stitch_ch1.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("reflector"))) {
+        return QStringLiteral("_fmnext/reflector/reflector.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("wood"))) {
+        return QStringLiteral("_fmnext/wood/wood.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("gls_clear"))) {
+        return QStringLiteral("exterior_glass/gls_clear.materialbin");
+    }
+    if (materialName.contains(QStringLiteral("titanium"))) {
+        return QStringLiteral("_fmnext/metal/titanium.materialbin");
+    }
+    if (materialName.startsWith(QStringLiteral("metal_"))) {
+        return QStringLiteral("_fmnext/metal/aluminum_ch1.materialbin");
+    }
+    if (materialName == QStringLiteral("frame")) {
+        return QStringLiteral("specificuse/frame.materialbin");
+    }
+    return {};
+}
+
+QString resolvedMaterialArchiveEntry(const fh6::CarMesh &mesh) {
+    const QString semantic = semanticMaterialArchiveEntry(mesh.materialName);
+    return semantic.isEmpty() ? materialArchiveEntry(mesh.material->resourcePath) : semantic;
+}
+
 // Wheel and tire modelbins reference their materials only by slot name (rim, hub, tread…),
 // not by a materialbin path, so the shared-library binding is a fixed convention. Map the
 // slot name to its _library materialbin so the normal material resolver can pick it up.
@@ -612,13 +661,6 @@ NativeTextureCache &nativeTextureCache() {
     return cache;
 }
 
-bool isLibraryMaterialPath(QString path) {
-    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive)
-        || path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)
-        || path.contains(QStringLiteral("/tires/"), Qt::CaseInsensitive);
-}
-
 enum class NativeTextureSlot {
     Diffuse,
     Alpha,
@@ -650,6 +692,8 @@ NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter
     }
     if (parameter.nameHash == fh6::material_hashes::parameter::kSurfaceTexture
         || path.contains(QStringLiteral("rmao"))
+        || path.contains(QStringLiteral("_rcsm_"))
+        || path.contains(QStringLiteral("_extra_"))
         || path.contains(QStringLiteral("roughmetal"))
         || path.contains(QStringLiteral("metalrough"))) {
         return NativeTextureSlot::Surface;
@@ -657,11 +701,17 @@ NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter
     if (fh6::material_hashes::contains(
             fh6::material_hashes::parameter::kEmissiveTexture, parameter.nameHash)
         || path.contains(QStringLiteral("emissive"))
+        || path.contains(QStringLiteral("_emis_"))
         || path.contains(QStringLiteral("emission"))) {
         return NativeTextureSlot::Emissive;
     }
     if (parameter.nameHash == fh6::material_hashes::parameter::kColorTexture
         || path.contains(QStringLiteral("basecolor"))
+        || path.contains(QStringLiteral("_bclr_"))
+        || path.contains(QStringLiteral("_diff_"))
+        || path.contains(QStringLiteral("_diffuse_"))
+        || path.contains(QStringLiteral("_albedo_"))
+        || path.contains(QStringLiteral("_color_"))
         || path.contains(QStringLiteral("diffuse"))
         || path.contains(QStringLiteral("albedo"))) {
         return NativeTextureSlot::Diffuse;
@@ -784,10 +834,10 @@ void resolveExteriorMaterials(
     QStringList missingMaterialEntries;
     QSet<QString> requestedMaterials;
     for (fh6::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
+        if (!mesh.material) {
             continue;
         }
-        const QString entry = materialArchiveEntry(mesh.material->resourcePath);
+        const QString entry = resolvedMaterialArchiveEntry(mesh);
         if (entry.isEmpty()) {
             continue;
         }
@@ -811,14 +861,18 @@ void resolveExteriorMaterials(
         defaults.insert(materialArchiveKey + QLatin1Char('|') + entry.toLower(), decoded);
     }
     for (fh6::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
+        if (!mesh.material) {
             continue;
         }
-        const QString entry = materialArchiveEntry(mesh.material->resourcePath);
+        const QString entry = resolvedMaterialArchiveEntry(mesh);
         const std::shared_ptr<fh6::ModelMaterial> materialDefaults =
             defaults.value(materialArchiveKey + QLatin1Char('|') + entry.toLower());
         if (materialDefaults) {
             mesh.material = fh6::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
+            if (!semanticMaterialArchiveEntry(mesh.materialName).isEmpty()) {
+                mesh.material->resourcePath =
+                    QStringLiteral("game:/media/cars/_library/materials/") + entry;
+            }
             mesh.material->resolvedFromLibrary = true;
         }
     }
@@ -850,9 +904,7 @@ void resolveExteriorMaterials(
     };
     QSet<const fh6::ModelMaterial *> visited;
     for (fh6::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || visited.contains(mesh.material.get())
-            || !isLibraryMaterialPath(mesh.sourceModelPath)
-            || mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
+        if (!mesh.material || visited.contains(mesh.material.get())) {
             continue;
         }
         visited.insert(mesh.material.get());
@@ -869,7 +921,8 @@ void resolveExteriorMaterials(
             // Flat placeholder swatches (e.g. the wheel paint's green base) are solid colours the
             // game replaces with the chosen paint; loaded as real maps they tint painted parts
             // (green rims) and skew their shading, so drop them and let the paint colour stand.
-            if (normalizedTexturePath(parameter.texturePath)
+            if (slot == NativeTextureSlot::Diffuse
+                && normalizedTexturePath(parameter.texturePath)
                     .contains(QStringLiteral("globaltexture/swatches/flat_texture"))) {
                 continue;
             }
@@ -962,6 +1015,31 @@ void resolveExteriorMaterials(
             textureCache.insert(item.cacheKey, texture);
         }
         assignNativeTextureOrFallback(*item.material, item.slot, texture);
+    }
+    // Do not let an actually unresolved material masquerade as a neutral grey panel.
+    // Procedural materials that resolved from the shared library remain untouched;
+    // anonymous slots and missing materialbins use the deployed diagnostic checker.
+    for (fh6::CarMesh &mesh : model.meshes) {
+        if (!mesh.material) {
+            mesh.material = std::make_shared<fh6::ModelMaterial>();
+            mesh.material->diffuseTexture = missingColorTexture();
+            continue;
+        }
+        if (mesh.material->diffuseTexture != nullptr) {
+            continue;
+        }
+        const QString slot = mesh.materialName.section(QLatin1Char('|'), 0, 0).toLower();
+        const QString entry = resolvedMaterialArchiveEntry(mesh);
+        const bool anonymousSlot = slot.isEmpty()
+            || slot.startsWith(QStringLiteral("material__"));
+        const bool unresolvedMaterial = !entry.isEmpty()
+            && !mesh.material->resolvedFromLibrary;
+        const bool authoredProceduralMaterial = mesh.material->resolvedFromLibrary
+            && mesh.material->hasBaseColor;
+        if (!authoredProceduralMaterial
+            && (anonymousSlot || unresolvedMaterial || !mesh.material->resolvedFromLibrary)) {
+            mesh.material->diffuseTexture = missingColorTexture();
+        }
     }
     textureCache.trim();
 }
@@ -1069,6 +1147,59 @@ std::shared_ptr<PreparedCar> prepareCar(
     appendSharedTireB(model, path, wheelSizing);
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
+    if (qEnvironmentVariableIsSet("FLS_DUMP_CAR_MATERIALS")) {
+        int resolvedMaterials = 0;
+        int diffuseMaps = 0;
+        int normalMaps = 0;
+        int surfaceMaps = 0;
+        int emissiveMaps = 0;
+        int paintNormalMaps = 0;
+        QStringList proceduralMaterials;
+        QSet<const fh6::ModelMaterial *> visited;
+        for (const fh6::CarMesh &mesh : model.meshes) {
+            if (!mesh.material || visited.contains(mesh.material.get())) {
+                continue;
+            }
+            visited.insert(mesh.material.get());
+            resolvedMaterials += mesh.material->resolvedFromLibrary ? 1 : 0;
+            diffuseMaps += mesh.material->diffuseTexture != nullptr ? 1 : 0;
+            normalMaps += mesh.material->normalTexture != nullptr ? 1 : 0;
+            surfaceMaps += mesh.material->surfaceTexture != nullptr ? 1 : 0;
+            emissiveMaps += mesh.material->emissiveTexture != nullptr ? 1 : 0;
+            paintNormalMaps += mesh.material->paintNormalMap00Texture != nullptr
+                    || mesh.material->paintNormalMap0Texture != nullptr
+                ? 1 : 0;
+            if (mesh.material->diffuseTexture == nullptr
+                && !mesh.material->hasBaseColor) {
+                proceduralMaterials.push_back(QStringLiteral(
+                    "%1 | %2 | %3")
+                    .arg(mesh.name, mesh.materialName,
+                         mesh.material->resourcePath));
+            }
+        }
+        const QString summary = QStringLiteral(
+            "Car material resolution: %1 unique, %2 library defaults, %3 "
+            "diffuse, %4 normal, %5 surface, %6 emissive, %7 "
+            "automotive-paint normal maps")
+            .arg(visited.size()).arg(resolvedMaterials).arg(diffuseMaps)
+            .arg(normalMaps).arg(surfaceMaps).arg(emissiveMaps)
+            .arg(paintNormalMaps);
+        qInfo().noquote() << summary;
+        const QString outputPath = qEnvironmentVariable("FLS_DUMP_CAR_MATERIALS");
+        if (outputPath != QStringLiteral("1")) {
+            QFile output(outputPath);
+            if (output.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+                output.write(summary.toUtf8());
+                output.write("\n");
+                proceduralMaterials.sort(Qt::CaseInsensitive);
+                for (const QString &material : proceduralMaterials) {
+                    output.write("procedural-no-base: ");
+                    output.write(material.toUtf8());
+                    output.write("\n");
+                }
+            }
+        }
+    }
 
     const QDir carDir = QFileInfo(loadPath).absoluteDir();
     auto prepared = std::make_shared<PreparedCar>();
@@ -1184,12 +1315,12 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
 
 #ifdef Q_OS_WIN
     originalDx12Action_ = new QAction(
-        QStringLiteral("Renderer — Tokyo House DXIL (experimental)"), this);
+        QStringLiteral("Renderer — Tokyo House DX12 (experimental)"), this);
     originalDx12Action_->setCheckable(true);
     originalDx12Action_->setToolTip(QStringLiteral(
         "Display the interactive native D3D12 Tokyo garage and loaded car. Geometry "
-        "and authored base-colour textures are bound per supported material. "
-        "Normal, RCSM, emissive, glass, and decal passes are still under development."));
+        "and authored base-colour, normal, surface, emissive, and livery textures are "
+        "bound per supported opaque material. Glass remains under development."));
     connect(
         originalDx12Action_, &QAction::toggled,
         this, &CarPreviewWidget::setOriginalDx12Enabled);
@@ -2127,18 +2258,14 @@ fh6::SwatchImage CarPreviewWidget::captureCompositedLivery() {
         return result;
     }
 
-    QImage composited(overlay.size(), QImage::Format_RGBA8888);
-    composited.fill(basePaint_);
-    {
-        QPainter painter(&composited);
-        painter.drawImage(QPoint(), overlay);
-    }
-    result.width = composited.width();
-    result.height = composited.height();
-    result.rgba.resize(static_cast<std::size_t>(composited.sizeInBytes()));
+    // Preserve the overlay alpha. DX12 applies the same mask/region remap as
+    // the OpenGL car shader and composites this over the per-material paint.
+    result.width = overlay.width();
+    result.height = overlay.height();
+    result.rgba.resize(static_cast<std::size_t>(overlay.sizeInBytes()));
     std::memcpy(
-        result.rgba.data(), composited.constBits(),
-        static_cast<std::size_t>(composited.sizeInBytes()));
+        result.rgba.data(), overlay.constBits(),
+        static_cast<std::size_t>(overlay.sizeInBytes()));
     return result;
 }
 
@@ -2147,10 +2274,14 @@ void CarPreviewWidget::startOriginalDx12Frame() {
     const QString folder = gameFolder_;
     const QString carPath = loadedCarPath_;
     fh6::SwatchImage livery = captureCompositedLivery();
+    const QSize liveryBaseSize = liveryTextureSize();
+    const bool importedLivery = project_ != nullptr && project_->isLivery;
+    const fh6::LiveryPaintState paintState = project_ != nullptr
+        ? project_->liveryPaint : fh6::LiveryPaintState{};
     const std::array<float, 3> paintColor = {
-        static_cast<float>(basePaint_.redF()),
-        static_cast<float>(basePaint_.greenF()),
-        static_cast<float>(basePaint_.blueF())};
+        std::pow(static_cast<float>(basePaint_.redF()), 2.2f),
+        std::pow(static_cast<float>(basePaint_.greenF()), 2.2f),
+        std::pow(static_cast<float>(basePaint_.blueF()), 2.2f)};
     originalDx12Error_.clear();
     originalDx12Pending_ = true;
     updateReferenceNote();
@@ -2182,23 +2313,51 @@ void CarPreviewWidget::startOriginalDx12Frame() {
     }
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
-        [guard, folder, carPath, generation, paintColor,
+        [guard, folder, carPath, generation, paintColor, paintState, liveryBaseSize,
+         importedLivery,
          livery = std::move(livery)]() mutable {
+            const std::shared_ptr<const fh6::ModelMaterialTexture> missing =
+                missingColorTexture();
             fh6::OriginalShaderGarageScene scene =
-                fh6::loadOriginalShaderGarageScene(folder);
+                fh6::loadOriginalShaderGarageScene(
+                    folder, missing != nullptr ? missing->image : fh6::SwatchImage{});
             if (scene.valid()) {
                 QString carError;
+                fh6::PaintFinishLibrary paintFinishes;
+                paintFinishes.load(folder);
                 // The OpenGL preview may intentionally keep texture decoding off.
                 // DX12 needs a separately prepared model with native material
                 // swatches resolved, irrespective of that preview preference.
                 const std::shared_ptr<PreparedCar> prepared =
                     prepareCar(carPath, true, &carError);
+                std::array<std::array<float, 4>, fh6::kLiverySideCount>
+                    paintRegions{};
+                const auto *paintRegionsPointer = static_cast<const decltype(paintRegions) *>(nullptr);
+                if (prepared != nullptr && importedLivery
+                    && prepared->liveryMasks.valid()) {
+                    const PackedLiveryLayout layout = packedLiveryLayout(
+                        prepared->liveryMasks, liveryBaseSize);
+                    if (layout.valid
+                        && layout.uvRegions.size() == fh6::kLiverySideCount) {
+                        for (int side = 0; side < fh6::kLiverySideCount; ++side) {
+                            const QVector4D region = layout.uvRegions[side];
+                            paintRegions[side] = {
+                                region.x(), region.y(), region.z(), region.w()};
+                        }
+                        paintRegionsPointer = &paintRegions;
+                    }
+                }
                 if (prepared == nullptr
                     || !fh6::appendOriginalShaderGarageCar(
                         &scene,
                         prepared != nullptr ? std::move(prepared->model)
                                             : fh6::CarModel{},
-                        paintColor, livery, &carError)) {
+                        paintColor, livery,
+                        prepared != nullptr ? &prepared->liveryMasks : nullptr,
+                        paintRegionsPointer, &paintState,
+                        prepared != nullptr ? &prepared->manufacturerColors : nullptr,
+                        paintFinishes.loaded() ? &paintFinishes : nullptr,
+                        &carError)) {
                     scene.error = QStringLiteral("DX12 car: %1").arg(carError);
                 }
             }
@@ -2266,9 +2425,9 @@ void CarPreviewWidget::updateReferenceNote() {
     }
     QString renderer = QStringLiteral("OpenGL car");
     if (originalDx12Pending_) {
-        renderer = QStringLiteral("Loading Tokyo House DXIL…");
+        renderer = QStringLiteral("Loading Tokyo House DX12…");
     } else if (originalDx12Requested_) {
-        renderer = QStringLiteral("Tokyo garage + car DXIL · authored diffuse");
+        renderer = QStringLiteral("Tokyo garage + car DX12 · authored PBR maps");
     } else if (!originalDx12Error_.isEmpty()) {
         renderer = QStringLiteral("OpenGL fallback");
     }

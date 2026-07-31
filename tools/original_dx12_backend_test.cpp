@@ -6,6 +6,7 @@
 #include <QCryptographicHash>
 #include <QSet>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -28,23 +29,58 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "scene load failed: %s\n", qPrintable(scene.error));
         return 1;
     }
+    if (qEnvironmentVariableIsSet("FLS_DX12_HIDE_HOMESPACE_SHELL")) {
+        std::erase_if(scene.draws, [](const fh6::OriginalShaderGarageDraw &draw) {
+            return draw.source.contains(
+                QStringLiteral("whitebox\\homespace"), Qt::CaseInsensitive)
+                || draw.source.contains(
+                    QStringLiteral("whitebox/homespace"), Qt::CaseInsensitive)
+                || draw.source.contains(
+                    QStringLiteral("garage_customiser"), Qt::CaseInsensitive);
+        });
+    }
     fh6::CarModel car;
     car.sourcePath = QStringLiteral("test.carbin");
     car.boundsMin = {-1.0f, 0.0f, -2.0f};
     car.boundsMax = {1.0f, 1.0f, 2.0f};
     fh6::CarMesh carMesh;
-    carMesh.materialName = QStringLiteral("paint");
+    carMesh.materialName = QStringLiteral("carpaint_standard");
     carMesh.paintMaterialHash = 1;
+    carMesh.liveryUvChannel = 3;
     carMesh.material = std::make_shared<fh6::ModelMaterial>();
     carMesh.positions = {
         {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
     carMesh.normals = {
         {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}};
+    carMesh.uvChannels.resize(4);
+    carMesh.uvChannels[0] = {
+        {4.0f, 4.0f}, {4.0f, 4.0f}, {4.0f, 4.0f}};
+    carMesh.uvChannels[3] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
     carMesh.indices = {0, 1, 2};
     car.meshes.push_back(std::move(carMesh));
+    fh6::SwatchImage livery;
+    livery.width = 2;
+    livery.height = 2;
+    livery.rgba = {
+        255, 24, 16, 255, 255, 24, 16, 255,
+        255, 24, 16, 255, 255, 24, 16, 255};
+    fh6::LiveryMaskSet liveryMasks;
+    liveryMasks.loaded = true;
+    liveryMasks.loadedMasks = 1;
+    fh6::LiverySide &frontMask = liveryMasks.sides[0];
+    frontMask.valid = true;
+    frontMask.left = -1024.0f;
+    frontMask.right = 1024.0f;
+    frontMask.top = 512.0f;
+    frontMask.bottom = -512.0f;
+    frontMask.mask.width = 1;
+    frontMask.mask.height = 1;
+    frontMask.mask.coverage = {255};
     QString carError;
     if (!fh6::appendOriginalShaderGarageCar(
-            &scene, std::move(car), {0.2f, 0.4f, 0.6f}, {}, &carError)) {
+            &scene, std::move(car), {0.2f, 0.4f, 0.6f}, livery,
+            &liveryMasks, nullptr, nullptr, nullptr, nullptr, &carError)) {
         std::fprintf(stderr, "DX12 car setup failed: %s\n", qPrintable(carError));
         return 1;
     }
@@ -99,10 +135,15 @@ int main(int argc, char **argv) {
         return 1;
     }
     QSet<quint32> colors;
+    bool renderedRedLivery = false;
     const auto *pixels = reinterpret_cast<const quint32 *>(firstFrame.image.constBits());
     const qsizetype pixelCount = firstFrame.image.sizeInBytes() / sizeof(quint32);
     for (qsizetype index = 0; index < pixelCount; ++index) {
         colors.insert(pixels[index]);
+        const auto *rgba = firstFrame.image.constBits() + index * 4;
+        renderedRedLivery = renderedRedLivery
+            || (rgba[0] > 80 && rgba[0] > rgba[1] * 2
+                && rgba[0] > rgba[2] * 2);
     }
     if (firstHash != secondHash
         || firstFrame.changedPixels != secondFrame.changedPixels) {
@@ -117,6 +158,10 @@ int main(int argc, char **argv) {
             stderr,
             "D3D12 perspective frame has insufficient color variation: %lld colors\n",
             static_cast<long long>(colors.size()));
+        return 1;
+    }
+    if (!renderedRedLivery) {
+        std::fprintf(stderr, "D3D12 frame did not render the composited livery atlas\n");
         return 1;
     }
 #ifdef Q_OS_WIN

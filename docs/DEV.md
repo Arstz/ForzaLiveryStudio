@@ -508,12 +508,12 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     either path can fall back without disabling the other. The sky panorama is an
     experimental background option rather than a reconstruction of the visible garage.
   - `original_shader_garage.*`: renderer-neutral loader for the experimental Windows
-    original-DXIL path. It extracts the Tokyo City Docks player-home LOD0 modelbin
-    and authored summer base-colour swatches directly from the Brio PGZP v101 archive.
-    Texture hashes are resolved against normalized `ChunkContentsMiniZip0.txt` build
-    paths, and each visible material mesh retains its own decoded diffuse image. Lower
-    LODs, the deferred-decal pass, and glass are excluded until their exact render-state
-    and texture contracts can be used. The Qt widget does not parse these game formats.
+    original-DXIL path. It loads the coordinate-matched garage-customiser enclosure,
+    the exact House 8 prop layout, and their authored general-scene material maps.
+    It also resolves selected-car material maps and composes the current livery on
+    authored livery UVs. The separate Tokyo City Docks player-home LOD geometry is
+    an open-world exterior and is not substituted for this garage-layout scene. The
+    Qt widget does not parse these game formats.
   - `pgzp_extract.*`: selected-entry reader for ForzaTech PGZP v101 archives. It maps
     companion-manifest order to directory entries and reads stored or raw-LZ4 payloads
     without copying game assets into the repository.
@@ -599,28 +599,37 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     ground and car. The analytic background is the default and remains available when the
     experimental panorama is disabled or cannot be loaded. Visible background selection is
     independent of the environment maps used to light the car.
-    `original_dx12_backend.*` owns the Windows-only original-DXIL capability boundary.
+    `original_dx12_backend.*` owns the Windows-only experimental DX12 capability boundary.
     It selects a hardware adapter, requires Shader Model 6.6 and resource binding tier 3,
-    and creates the independently reflected root signature and recovered homespace PSOs. Its
-    diagnostic frame path uploads the tracked scene geometry, per-mesh authored diffuse
-    textures, neutral shader defaults, diffuse irradiance, and constant tables; renders the highest-detail Tokyo House
-    geometry into a depth-tested HDR target; and returns a validated Qt image after GPU
-    readback. Its camera contract writes a left-handed D3D view-projection matrix into the
-    exact `b2` rows proven to feed `SV_Position` in both vertex shaders. The initial frame
-    is derived from the loaded scene bounds so the larger exterior remains framed. The
-    deterministic readback remains an automated diagnostic. The Windows preview can
+    and creates the independently reflected root signature and recovered homespace PSOs as
+    compatibility probes. Live draws currently use a matching DX12 PBR material program:
+    the recovered environment and car DXIL families require different bindless constant,
+    sampler, vertex-input, and multiple-render-target contracts and must not be presented as
+    interchangeable programs behind the homespace root bindings. The material path uploads
+    each draw's authored base-colour, normal, RCSM/RMAO, and emissive maps plus decoded
+    tint, gloss, metalness, opacity, and tiling. Livery paint uses the car's projection UV
+    channel while its normal and surface detail remains on material UV0. The diagnostic
+    frame renders the 18 draws decoded from the five-piece WSHome scene into a depth-tested
+    HDR target and returns a validated Qt image after GPU readback. Its
+    camera contract writes a left-handed D3D view-projection matrix for column-vector shader
+    multiplication. When a car is present, the initial frame is derived from the placed car
+    bounds; otherwise it frames the shell. The deterministic readback remains an automated
+    diagnostic and asserts that a composited livery atlas reaches the rendered frame. The Windows preview can
     instead create a native child window backed by a persistent double-buffered D3D12
     swap chain. Geometry,
     textures, cubemaps, descriptors, and PSOs remain resident while camera constants update
     for left-drag orbit and wheel zoom; resize recreates only swap-chain and depth targets.
     A load, device, shader, presentation, or validation failure leaves the loaded project
-    intact and returns the preview to OpenGL. The original focus-car and livery bindings are
-    not part of this garage-only viewport. The complete Tokyo asset family has eight exact
-    material identities and five exact shader identities. All 80 model-instance texture
-    hashes resolve through the Brio manifest normalization, and all 12 visible LOD0 draws
-    bind their authored summer base-colour swatches. Normal/RCSM/emissive slots remain on
-    neutral defaults, and the incompatible homespace specular probe is deliberately not
-    bound. D3D12 Agility is an explicit
+    intact and returns the preview to OpenGL. The stripped WSHome packages retain material
+    identities but no usable material UV stream, so their surfaces use decoded/material-class
+    colours instead of unrelated projected swatches. Cars are separately prepared with native swatches enabled and append their diffuse,
+    normal, surface, emissive, paint colour, and composited livery resources. Transparent
+    car swatch classification recognizes the game's `_bclr_`, `_rcsm_`, and `_emis_`
+    naming, carbon weave uses raw UV0 with its authored tiling, and only each mesh group's
+    highest-detail LOD is submitted. Garage and car glass use a second alpha-blended pass
+    after opaque geometry with depth writes disabled. Authored homespace cubemap and
+    photometric payloads remain unavailable, so the documented compatibility lighting
+    constants and neutral diffuse probe remain active. D3D12 Agility is an explicit
     `FLS_D3D12_AGILITY_DIR` build option; opted-in targets copy the SDK DLLs beside the
     executable, while default builds retain safe OpenGL fallback behavior.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
@@ -639,7 +648,9 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     exterior/wheel/tire mesh's shared `_library` material:
     `resolveExteriorMaterials` merges the material defaults always and loads the
     swatchbin textures only when the opt-in setting is on; `assignSharedSlotMaterials`
-    synthesizes a materialbin path for wheel slot names that carry none. Resolved
+    synthesizes a materialbin path for wheel slot names that carry none. Unambiguous
+    semantic slots such as leather, plastic, fabric, stitch, wood, reflector, and clear
+    glass override incorrect generic inherited paths before defaults are merged. Resolved
     materials are flagged so the renderer prefers them over name heuristics.
     Manufacturer paint selectors resolve through the loaded car's paint palette
     and shared material tuning. Decoded
@@ -682,18 +693,30 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `gameMediaDir()` / `gameCarsDir()` / `gamePaintMaterialsArchive()`
 - `loadOriginalShaderGarageScene()`
 
-The experimental Tokyo House scene loader uses House 8's exact main-car locator
-and the shared six-piece `garage_customiser` interior (floor, roof, and four
-walls). It resolves every retained draw's authored general-scene base-colour or
-emissive swatch through `generalsceneassets.manifest` and the ZIP64
-`swatchbins.zip`, and reads all 20 artificial-light transforms from the roof's
-`lightsmodels.lightdb`. The remaining light preset fields still use explicit
-compatibility constants. The default layout contains 331 instances and 49
-catalog GUIDs, but the installed layout/database files do not include the GUID to
-model mapping; unresolved furniture is therefore not replaced by guessed props.
-The DX12 path reloads the selected car with textures enabled, composites the
-current livery atlas over the base paint on authored livery UVs, and supports
-middle-drag or Shift+left-drag panning in addition to orbit and wheel zoom.
+The experimental Tokyo House scene loader uses the six-piece
+`garage_customiser` enclosure (floor, roof, and walls A-D). Its authored X/Z
+bounds match the decrypted `Default-House8.xml` layout; the smaller
+`whitebox/homespace` shell does not and leaves many of the layout props outside.
+The generated `tokyo_house_layout_generated.h` table maps the layout's 49 UUID
+prop types to ObjectModel asset records using lowercase-UUID FNV-1a-64, and
+retains all 331 matrices. Five gameplay locators are not drawn; the remaining
+326 prop instances and the main car locator are used verbatim.
+
+House 8 selects `StagedSpaces_Garage_09`, which aliases the
+`Forte_Garage_01` HDR environment. DX12 uploads its BC6H panorama and diffuse
+probe. The enclosure roof contributes 20 enabled 9 m, intensity-500000 spot
+lights. The garage floodlight archive contributes three local light records per
+stand; its LDFB preset table marks one as an active 10 m, intensity-5000 white
+spot, so seven placed stands add seven more compatibility-PBR spot lights. DX12
+uploads up to 32 active authored lights. The DX12 path reloads the selected car
+with textures enabled, composites the current livery atlas over the base paint
+on authored livery UVs, and omits separate factory `livery_sticker` geometry
+while a custom livery is active. Genuine badges and manufacturer-colour surfaces
+remain. Alpha-mapped window/lamp glass renders after opaque geometry with depth
+writes disabled. Missing car or garage diffuse inputs use the deployed
+magenta/black `MissingTexture.png` checker; decoded procedural materials remain
+procedural. The viewport supports middle-drag or Shift+left-drag panning in
+addition to orbit and wheel zoom.
 
 ## Privacy Policy Build Flag
 

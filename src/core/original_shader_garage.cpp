@@ -2,9 +2,13 @@
 
 #include "game_paths.h"
 #include "binary_io.h"
+#include "core_types.h"
+#include "manufacturer_colors.h"
 #include "model_bundle.h"
 #include "model_material.h"
+#include "paint_finish_catalog.h"
 #include "pgzp_extract.h"
+#include "tokyo_house_layout_generated.h"
 #include "zip_extract.h"
 
 #include <QDir>
@@ -19,16 +23,13 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <limits>
+#include <optional>
 #include <utility>
 
 namespace fh6 {
 
 namespace {
-
-constexpr auto kTokyoHouseLod0 =
-    "bld_cty_dcks_playerhome_01_a_cluster004.i.modelbin";
-constexpr auto kTokyoHousePlinthLod0 =
-    "plnth_section112_plaza_01_cluster004.i.modelbin";
 
 struct GarageShellResource {
     const char *directory;
@@ -36,6 +37,8 @@ struct GarageShellResource {
     OriginalShaderSurfaceFamily family;
 };
 
+// Default-House8.xml is authored directly in this enclosure's coordinate space:
+// its instance extents match these six pieces to within the wall thickness.
 constexpr std::array<GarageShellResource, 6> kGarageShellResources = {{
     {"bld_gbl_grge_custom_02_floor_a", "bld_gbl_grge_custom_02_floor_a.i.zip",
      OriginalShaderSurfaceFamily::Floor},
@@ -50,6 +53,9 @@ constexpr std::array<GarageShellResource, 6> kGarageShellResources = {{
     {"bld_gbl_grge_custom_02_walls_d", "bld_gbl_grge_custom_02_wall_d.i.zip",
      OriginalShaderSurfaceFamily::Default},
 }};
+
+constexpr std::uint64_t kMainCarLocator = 9143969636317885086ull;
+constexpr std::uint64_t kFloodLightProp = 8157816743302734859ull;
 
 struct ProgramResource {
     const char *vertex;
@@ -295,8 +301,153 @@ bool isEmissiveTexture(const QString &path) {
         || path.contains(QStringLiteral("_emissive_"), Qt::CaseInsensitive);
 }
 
+bool isNormalTexture(const QString &path) {
+    return path.contains(QStringLiteral("_nrml_"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("_normal_"), Qt::CaseInsensitive);
+}
+
+bool isSurfaceTexture(const QString &path) {
+    return path.contains(QStringLiteral("_rcsm_"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("_rmao_"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("_roughmetal"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("_extra_"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("_mask_"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("_mod_"), Qt::CaseInsensitive);
+}
+
+QString textureSemantic(const QString &path) {
+    if (isEmissiveTexture(path)) {
+        return QStringLiteral("EmissiveTexture");
+    }
+    if (isNormalTexture(path)) {
+        return QStringLiteral("NormalTexture");
+    }
+    if (isSurfaceTexture(path)) {
+        return QStringLiteral("SurfaceTexture");
+    }
+    return QStringLiteral("DiffuseTexture");
+}
+
+// Track model instances store AssetManifest.xml SourceHash values. They are not
+// CRC32s of the source path, despite occupying the same material parameter field
+// used by path hashes elsewhere. Resolve the authoritative manifest mapping first,
+// then use ChunkContentsMiniZip0.txt only to locate the PGZP payload leaf.
+QHash<quint32, ManifestTexture> resolveTrackSceneTextures(
+    const QString &assetManifestPath, const QSet<quint32> &targets, QString *error) {
+    QHash<quint32, ManifestTexture> resolved;
+    QFile manifest(assetManifestPath);
+    if (!manifest.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("cannot open %1: %2")
+                         .arg(assetManifestPath, manifest.errorString());
+        }
+        return resolved;
+    }
+    QXmlStreamReader xml(&manifest);
+    while (!xml.atEnd() && resolved.size() < targets.size()) {
+        xml.readNext();
+        if (!xml.isStartElement()
+            || xml.name().compare(QLatin1String("Texture"), Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        bool validHash = false;
+        const qlonglong signedHash = xml.attributes()
+                                         .value(QLatin1String("SourceHash"))
+                                         .toString()
+                                         .toLongLong(&validHash);
+        const quint32 sourceHash = static_cast<quint32>(signedHash);
+        if (!validHash || !targets.contains(sourceHash) || resolved.contains(sourceHash)) {
+            continue;
+        }
+        QString source = xml.attributes().value(QLatin1String("Source")).toString();
+        if (source.isEmpty()) {
+            continue;
+        }
+        source.replace(QLatin1Char('/'), QLatin1Char('\\'));
+        QString archiveLeaf = pathLeaf(source);
+        if (archiveLeaf.endsWith(QStringLiteral(".swatch"), Qt::CaseInsensitive)) {
+            archiveLeaf.chop(7);
+        }
+        archiveLeaf += QStringLiteral("_quality1.pb");
+        resolved.insert(sourceHash, {
+            QStringLiteral("game:\\media\\") + source + QStringLiteral(".swatchbin"),
+            archiveLeaf});
+    }
+    if (xml.hasError() && error != nullptr) {
+        *error = QStringLiteral("%1: %2").arg(assetManifestPath, xml.errorString());
+    }
+    return resolved;
+}
+
 QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>>
-loadGeneralSceneDiffuseTextures(
+loadTrackSceneTextures(
+    const QString &archive, const QString &chunkManifest,
+    const QString &assetManifest, const std::vector<CarModel> &geometry,
+    QString *error) {
+    QSet<quint32> targetHashes;
+    for (const CarModel &model : geometry) {
+        for (const CarMesh &mesh : model.meshes) {
+            if (mesh.material == nullptr) {
+                continue;
+            }
+            for (const ModelMaterialParameter &parameter : mesh.material->parameters) {
+                if (parameter.type == ModelMaterialParameterType::Texture2D
+                    && parameter.texturePathHash != 0) {
+                    targetHashes.insert(parameter.texturePathHash);
+                }
+            }
+        }
+    }
+    const QHash<quint32, ManifestTexture> resolved =
+        resolveTrackSceneTextures(assetManifest, targetHashes, error);
+    QStringList requested;
+    QHash<QString, quint32> hashByEntry;
+    for (auto iterator = resolved.cbegin(); iterator != resolved.cend(); ++iterator) {
+        if (!isBaseColourTexture(iterator->canonicalPath)
+            && !isEmissiveTexture(iterator->canonicalPath)
+            && !isNormalTexture(iterator->canonicalPath)
+            && !isSurfaceTexture(iterator->canonicalPath)) {
+            continue;
+        }
+        if (!hashByEntry.contains(iterator->archiveLeaf.toLower())) {
+            requested.push_back(iterator->archiveLeaf);
+        }
+        hashByEntry.insert(iterator->archiveLeaf.toLower(), iterator.key());
+    }
+    if (requested.isEmpty()) {
+        if (error != nullptr && error->isEmpty()) {
+            *error = QStringLiteral("none of %1 Tokyo texture SourceHash values resolved")
+                         .arg(targetHashes.size());
+        }
+        return {};
+    }
+    std::vector<PgzpExtractedEntry> extracted =
+        extractPgzpEntries(archive, chunkManifest, requested, error);
+    if (extracted.size() != static_cast<std::size_t>(requested.size())) {
+        return {};
+    }
+    QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>> textures;
+    for (PgzpExtractedEntry &entry : extracted) {
+        const quint32 hash = hashByEntry.value(entry.requestedName.toLower());
+        const QString sourceEntry = resolved.value(hash).canonicalPath;
+        QString decodeError;
+        SwatchImage image = decodeSwatchImage(entry.bytes, &decodeError);
+        if (!image.valid()) {
+            // Keep the scene usable and expose unresolved colour maps with the
+            // diagnostic checker. Auxiliary compressed maps may be skipped.
+            continue;
+        }
+        auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+        texture->semantic = textureSemantic(sourceEntry);
+        texture->sourceEntry = sourceEntry;
+        texture->image = std::move(image);
+        textures.insert(hash, std::move(texture));
+    }
+    return textures;
+}
+
+QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>>
+loadGeneralSceneTextures(
     const QString &archive, const QString &manifest,
     const std::vector<CarModel> &geometry, QString *error) {
     QSet<quint32> targetHashes;
@@ -319,11 +470,16 @@ loadGeneralSceneDiffuseTextures(
     QHash<QString, quint32> hashByEntry;
     for (auto iterator = resolved.cbegin(); iterator != resolved.cend(); ++iterator) {
         if (!isBaseColourTexture(iterator->canonicalPath)
-            && !isEmissiveTexture(iterator->canonicalPath)) {
+            && !isEmissiveTexture(iterator->canonicalPath)
+            && !isNormalTexture(iterator->canonicalPath)
+            && !isSurfaceTexture(iterator->canonicalPath)) {
             continue;
         }
-        requested.push_back(iterator->archiveLeaf);
-        hashByEntry.insert(iterator->archiveLeaf.toLower(), iterator.key());
+        const QString leaf = iterator->archiveLeaf.toLower();
+        if (!hashByEntry.contains(leaf)) {
+            requested.push_back(iterator->archiveLeaf);
+        }
+        hashByEntry.insert(leaf, iterator.key());
     }
     if (requested.isEmpty()) {
         if (error != nullptr) {
@@ -335,9 +491,6 @@ loadGeneralSceneDiffuseTextures(
     }
     const QHash<QString, QByteArray> payloads =
         readZipEntries(archive, requested, error);
-    if (payloads.size() != requested.size()) {
-        return {};
-    }
     QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>> textures;
     for (auto iterator = payloads.cbegin(); iterator != payloads.cend(); ++iterator) {
         const quint32 hash = hashByEntry.value(iterator.key());
@@ -345,19 +498,12 @@ loadGeneralSceneDiffuseTextures(
         QString decodeError;
         SwatchImage image = decodeSwatchImage(iterator.value(), &decodeError);
         if (!image.valid()) {
-            // Some authored emissive light maps use a non-colour image encoding
-            // that the current swatch decoder cannot upload yet. The same mesh
-            // still has its authored base-colour dependency.
-            if (isEmissiveTexture(sourceEntry)) {
-                continue;
-            }
-            if (error != nullptr) {
-                *error = QStringLiteral("%1: %2").arg(iterator.key(), decodeError);
-            }
-            return {};
+            // A few auxiliary maps use encodings that the preview decoder cannot
+            // upload. Keep the other authored slots on that material active.
+            continue;
         }
         auto texture = std::make_shared<OriginalShaderMaterialTexture>();
-        texture->semantic = QStringLiteral("DiffuseTexture");
+        texture->semantic = textureSemantic(sourceEntry);
         texture->sourceEntry = sourceEntry;
         texture->image = std::move(image);
         textures.insert(hash, std::move(texture));
@@ -374,19 +520,72 @@ std::shared_ptr<const OriginalShaderMaterialTexture> meshDiffuseTexture(
     const bool emissiveMaterial = mesh.materialName.contains(
         QStringLiteral("emissive"), Qt::CaseInsensitive);
     for (int pass = 0; pass < 2; ++pass) {
+        const QString wantedSemantic = (emissiveMaterial == (pass == 0))
+            ? QStringLiteral("EmissiveTexture")
+            : QStringLiteral("DiffuseTexture");
+        std::shared_ptr<const OriginalShaderMaterialTexture> best;
+        int bestScore = std::numeric_limits<int>::min();
         for (const ModelMaterialParameter &parameter : mesh.material->parameters) {
-        if (parameter.type != ModelMaterialParameterType::Texture2D) {
-            continue;
+            if (parameter.type != ModelMaterialParameterType::Texture2D) {
+                continue;
+            }
+            const auto found = textures.constFind(parameter.texturePathHash);
+            if (found != textures.cend()
+                && found.value()->semantic == wantedSemantic) {
+                const QString &path = found.value()->sourceEntry;
+                const int score = path.contains(
+                                      QStringLiteral("_xsummerx_"),
+                                      Qt::CaseInsensitive)
+                    ? 2
+                    : (path.contains(QStringLiteral("_xwinterx_"),
+                                     Qt::CaseInsensitive)
+                           ? 0
+                           : 1);
+                if (score > bestScore) {
+                    best = found.value();
+                    bestScore = score;
+                }
+            }
         }
-        const auto found = textures.constFind(parameter.texturePathHash);
-        if (found != textures.cend()
-            && (!emissiveMaterial || pass != 0
-                || isEmissiveTexture(found.value()->sourceEntry))) {
-            return found.value();
-        }
+        if (best != nullptr) {
+            return best;
         }
     }
     return {};
+}
+
+std::shared_ptr<const OriginalShaderMaterialTexture> meshTexture(
+    const CarMesh &mesh,
+    const QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>> &textures,
+    const QString &semantic) {
+    if (mesh.material == nullptr) {
+        return {};
+    }
+    std::shared_ptr<const OriginalShaderMaterialTexture> best;
+    int bestScore = std::numeric_limits<int>::min();
+    for (auto parameter = mesh.material->parameters.crbegin();
+         parameter != mesh.material->parameters.crend(); ++parameter) {
+        if (parameter->type != ModelMaterialParameterType::Texture2D) {
+            continue;
+        }
+        const auto found = textures.constFind(parameter->texturePathHash);
+        if (found != textures.cend() && found.value()->semantic == semantic) {
+            const QString &path = found.value()->sourceEntry;
+            const int score = path.contains(
+                                  QStringLiteral("_xsummerx_"),
+                                  Qt::CaseInsensitive)
+                ? 2
+                : (path.contains(QStringLiteral("_xwinterx_"),
+                                 Qt::CaseInsensitive)
+                       ? 0
+                       : 1);
+            if (score > bestScore) {
+                best = found.value();
+                bestScore = score;
+            }
+        }
+    }
+    return best;
 }
 
 ModelMat4 rebasePlinth(
@@ -399,6 +598,36 @@ ModelMat4 rebasePlinth(
     placement.m[14] = (building.boundsMin.z + building.boundsMax.z
                            - plinth.boundsMin.z - plinth.boundsMax.z)
         * 0.5f;
+    return placement;
+}
+
+ModelMat4 tokyoCarPlacement(const CarModel &building) {
+    ModelMat4 placement;
+    // The editable House-8 layout is in HomespaceLocator space, while the bespoke
+    // building model is in chunk-local space. Anchor the focus car to the decoded
+    // LOD0 shutter (the garage opening) and leave one car length of apron clearance.
+    for (const CarMesh &mesh : building.meshes) {
+        if (!mesh.materialName.contains(
+                QStringLiteral("SHUTTER"), Qt::CaseInsensitive)
+            || mesh.positions.empty()) {
+            continue;
+        }
+        ModelVec3 minimum = mesh.boneTransform.transformPoint(mesh.positions.front());
+        ModelVec3 maximum = minimum;
+        for (const ModelVec3 &position : mesh.positions) {
+            const ModelVec3 point = mesh.boneTransform.transformPoint(position);
+            minimum.x = std::min(minimum.x, point.x);
+            minimum.y = std::min(minimum.y, point.y);
+            minimum.z = std::min(minimum.z, point.z);
+            maximum.x = std::max(maximum.x, point.x);
+            maximum.y = std::max(maximum.y, point.y);
+            maximum.z = std::max(maximum.z, point.z);
+        }
+        placement.m[12] = (minimum.x + maximum.x) * 0.5f;
+        placement.m[13] = building.boundsMin.y + 0.78f;
+        placement.m[14] = maximum.z + 4.0f;
+        return placement;
+    }
     return placement;
 }
 
@@ -436,27 +665,6 @@ bool loadProgram(
     return !program->pixelShader.isEmpty();
 }
 
-SwatchTexture neutralDiffuseCubemap() {
-    SwatchTexture texture;
-    texture.width = 1;
-    texture.height = 1;
-    texture.arraySize = 1;
-    texture.platform = 0;
-    texture.sliceCount = 6;
-    texture.mipCount = 1;
-    constexpr std::array<char, 8> pixel = {
-        0x00, 0x34, 0x00, 0x34, 0x00, 0x34, 0x00, 0x3c};
-    for (int face = 0; face < texture.sliceCount; ++face) {
-        const quint32 offset = static_cast<quint32>(texture.payload.size());
-        texture.payload.append(pixel.data(), pixel.size());
-        SwatchTextureSlice slice;
-        slice.encoding = SwatchEncoding::R16G16B16A16Float;
-        slice.mipLevels.push_back({offset, 8, 0xFFFFFFFFu});
-        texture.slices.push_back(std::move(slice));
-    }
-    return texture;
-}
-
 SwatchImage solidColorImage(const std::array<float, 3> &color) {
     SwatchImage image;
     image.width = 1;
@@ -472,12 +680,269 @@ SwatchImage solidColorImage(const std::array<float, 3> &color) {
     return image;
 }
 
+struct CarMaterialFallback {
+    std::array<float, 3> color;
+    float gloss = 0.45f;
+    float metallic = 0.0f;
+    float minimumColor = 0.0f;
+};
+
+QString carMaterialIdentity(const CarMesh &mesh) {
+    QString identity = mesh.materialName.toLower();
+    if (mesh.material != nullptr) {
+        identity += QLatin1Char('|') + mesh.material->name.toLower();
+        identity += QLatin1Char('|') + mesh.material->resourcePath.toLower();
+    }
+    identity.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return identity;
+}
+
+std::optional<CarMaterialFallback> carMaterialFallback(const CarMesh &mesh) {
+    QString source = mesh.sourceModelPath.toLower();
+    source.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    QString slot = mesh.materialName.toLower();
+    const int separator = slot.indexOf(QLatin1Char('|'));
+    if (separator >= 0) {
+        slot.truncate(separator);
+    }
+    const bool tire = source.contains(QStringLiteral("/tires/"))
+        || mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive);
+    if (tire) {
+        return CarMaterialFallback{{0.018f, 0.019f, 0.021f}, 0.22f, 0.0f};
+    }
+    const bool wheel = source.contains(QStringLiteral("/wheels/"))
+        || mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive);
+    if (wheel) {
+        if (slot == QStringLiteral("black")) {
+            return CarMaterialFallback{{0.015f, 0.015f, 0.018f}, 0.25f, 0.0f};
+        }
+        if (slot == QStringLiteral("rim") || slot == QStringLiteral("rim2")
+            || slot == QStringLiteral("rim3")) {
+            return CarMaterialFallback{{0.32f, 0.34f, 0.37f}, 0.78f, 0.85f};
+        }
+        if (slot == QStringLiteral("inner_rim") || slot == QStringLiteral("hub")) {
+            return CarMaterialFallback{{0.12f, 0.13f, 0.15f}, 0.48f, 0.65f};
+        }
+        if (slot == QStringLiteral("lug") || slot == QStringLiteral("lip")
+            || slot == QStringLiteral("valve_cap")) {
+            return CarMaterialFallback{{0.38f, 0.40f, 0.43f}, 0.72f, 0.80f};
+        }
+        if (slot.contains(QStringLiteral("badge"))
+            || slot.contains(QStringLiteral("emblem"))) {
+            return CarMaterialFallback{{0.46f, 0.49f, 0.53f}, 0.86f, 0.78f};
+        }
+    }
+
+    const QString identity = carMaterialIdentity(mesh);
+    // Prefer the authored slot family over a generic inherited resource path.  Some embedded
+    // interiors name leather/plastic/fabric here while their MaterialResource points at a
+    // carbon-fibre or BlackHole base; those paths are not the visible surface classification.
+    if (slot.contains(QStringLiteral("leather"))) {
+        return CarMaterialFallback{{0.045f, 0.040f, 0.038f}, 0.38f, 0.0f};
+    }
+    if (slot.contains(QStringLiteral("fabric"))
+        || slot.contains(QStringLiteral("alcantara"))
+        || slot.contains(QStringLiteral("carpet"))
+        || slot.contains(QStringLiteral("cloth"))
+        || slot.contains(QStringLiteral("felt"))) {
+        return CarMaterialFallback{{0.025f, 0.027f, 0.030f}, 0.16f, 0.0f};
+    }
+    if (slot.contains(QStringLiteral("stitch"))) {
+        return CarMaterialFallback{{0.22f, 0.20f, 0.18f}, 0.28f, 0.0f};
+    }
+    if (slot.contains(QStringLiteral("wood"))) {
+        return CarMaterialFallback{{0.20f, 0.085f, 0.030f}, 0.52f, 0.0f};
+    }
+    if (slot.contains(QStringLiteral("reflector"))) {
+        return CarMaterialFallback{{0.52f, 0.12f, 0.055f}, 0.82f, 0.20f};
+    }
+    if (slot.contains(QStringLiteral("plastic"))) {
+        return CarMaterialFallback{{0.025f, 0.027f, 0.030f}, 0.30f, 0.0f};
+    }
+    if (slot == QStringLiteral("frame")) {
+        return CarMaterialFallback{{0.075f, 0.080f, 0.088f}, 0.48f, 0.55f};
+    }
+    if (slot.startsWith(QStringLiteral("metal_"))) {
+        return CarMaterialFallback{{0.30f, 0.32f, 0.35f}, 0.72f, 0.88f};
+    }
+    if (identity.contains(QStringLiteral("mirror_left"))
+        || identity.contains(QStringLiteral("mirror_right"))) {
+        return CarMaterialFallback{{0.42f, 0.48f, 0.56f}, 0.98f, 0.82f};
+    }
+    if (identity.contains(QStringLiteral("chrome"))) {
+        return CarMaterialFallback{{0.68f, 0.71f, 0.76f}, 0.96f, 1.0f};
+    }
+    if (identity.contains(QStringLiteral("gold"))) {
+        return CarMaterialFallback{{0.64f, 0.43f, 0.10f}, 0.86f, 0.92f};
+    }
+    if (identity.contains(QStringLiteral("aluminum"))) {
+        return CarMaterialFallback{{0.42f, 0.44f, 0.46f}, 0.62f, 0.82f};
+    }
+    if (identity.contains(QStringLiteral("titanium"))) {
+        return CarMaterialFallback{{0.30f, 0.31f, 0.34f}, 0.68f, 0.88f};
+    }
+    if (identity.contains(QStringLiteral("gunmetal"))
+        || identity.contains(QStringLiteral("anodizedmetal"))) {
+        return CarMaterialFallback{{0.10f, 0.11f, 0.13f}, 0.72f, 0.86f};
+    }
+    if (identity.contains(QStringLiteral("steel"))
+        || identity.contains(QStringLiteral("metallic"))) {
+        return CarMaterialFallback{{0.28f, 0.30f, 0.33f}, 0.70f, 0.84f};
+    }
+    if (identity.contains(QStringLiteral("paintedmetal"))) {
+        return CarMaterialFallback{{0.055f, 0.058f, 0.064f}, 0.58f, 0.45f};
+    }
+    if (identity.contains(QStringLiteral("carbon"))) {
+        return CarMaterialFallback{{0.085f, 0.092f, 0.10f}, 0.78f, 0.0f, 0.08f};
+    }
+    if (identity.contains(QStringLiteral("rubber"))) {
+        return CarMaterialFallback{{0.018f, 0.019f, 0.021f}, 0.18f, 0.0f};
+    }
+    if (identity.contains(QStringLiteral("blackframe"))
+        || identity.contains(QStringLiteral("blackhole"))
+        || identity.contains(QStringLiteral("grille"))) {
+        return CarMaterialFallback{{0.008f, 0.009f, 0.011f}, 0.22f, 0.05f};
+    }
+    if (identity.contains(QStringLiteral("plastic"))) {
+        return CarMaterialFallback{{0.025f, 0.027f, 0.030f}, 0.30f, 0.0f};
+    }
+    if (identity.contains(QStringLiteral("badge"))) {
+        return CarMaterialFallback{{0.46f, 0.49f, 0.53f}, 0.86f, 0.78f};
+    }
+    if (identity.contains(QStringLiteral("plate"))) {
+        return CarMaterialFallback{{0.78f, 0.79f, 0.75f}, 0.35f, 0.0f};
+    }
+    return std::nullopt;
+}
+
+CarMaterialFallback homespaceMaterialFallback(const CarMesh &mesh) {
+    const QString name = mesh.materialName.toLower();
+    if (name.contains(QStringLiteral("wood"))) {
+        return {{0.30f, 0.14f, 0.055f}, 0.42f, 0.0f};
+    }
+    if (name.contains(QStringLiteral("porcelain"))) {
+        return {{0.025f, 0.028f, 0.032f}, 0.72f, 0.02f};
+    }
+    if (name.contains(QStringLiteral("stone"))) {
+        return {{0.19f, 0.20f, 0.22f}, 0.30f, 0.0f};
+    }
+    if (name.contains(QStringLiteral("black"))
+        && name.contains(QStringLiteral("metal"))) {
+        return {{0.025f, 0.028f, 0.033f}, 0.76f, 0.72f};
+    }
+    if (name.contains(QStringLiteral("grey"))
+        && name.contains(QStringLiteral("metal"))) {
+        return {{0.22f, 0.24f, 0.27f}, 0.70f, 0.75f};
+    }
+    if (name.contains(QStringLiteral("perforated"))) {
+        return {{0.10f, 0.11f, 0.13f}, 0.62f, 0.68f};
+    }
+    if (name.contains(QStringLiteral("ceiling_light"))
+        || name.contains(QStringLiteral("led_strip"))) {
+        return {{0.72f, 0.68f, 0.56f}, 0.82f, 0.15f};
+    }
+    if (name.contains(QStringLiteral("garage_door_motor"))) {
+        return {{0.055f, 0.060f, 0.068f}, 0.48f, 0.50f};
+    }
+    if (name.contains(QStringLiteral("feature"))) {
+        return {{0.20f, 0.12f, 0.075f}, 0.34f, 0.0f};
+    }
+    if (name.contains(QStringLiteral("tent"))) {
+        return {{0.12f, 0.13f, 0.15f}, 0.20f, 0.0f};
+    }
+    return {{0.16f, 0.17f, 0.19f}, 0.40f, 0.0f};
+}
+
 quint32 solidColorKey(const std::array<float, 3> &color) {
     const SwatchImage image = solidColorImage(color);
     return static_cast<quint32>(image.rgba[0])
         | (static_cast<quint32>(image.rgba[1]) << 8)
         | (static_cast<quint32>(image.rgba[2]) << 16)
         | 0xff000000u;
+}
+
+constexpr int kStandaloneLodRank = 500;
+
+int lodRank(const QString &name) {
+    const int marker = name.lastIndexOf(QStringLiteral("_LOD"));
+    if (marker < 0) {
+        return kStandaloneLodRank;
+    }
+    const QString suffix = name.mid(marker + 4);
+    if (suffix.startsWith(QLatin1Char('S'), Qt::CaseInsensitive)) {
+        bool valid = false;
+        const int level = suffix.mid(1).toInt(&valid);
+        return 1000 - (valid ? level : 0);
+    }
+    bool valid = false;
+    const int level = suffix.toInt(&valid);
+    return valid ? 100 - level : kStandaloneLodRank;
+}
+
+QString lodGroup(const CarMesh &mesh) {
+    const int marker = mesh.name.lastIndexOf(QStringLiteral("_LOD"));
+    const QString base = marker < 0 ? mesh.name : mesh.name.left(marker);
+    return mesh.modelInstanceId >= 0
+        ? QString::number(mesh.modelInstanceId) + QLatin1Char('|') + base
+        : base;
+}
+
+std::vector<char> highestLodFlags(const std::vector<CarMesh> &meshes) {
+    QHash<QString, int> bestRanks;
+    for (const CarMesh &mesh : meshes) {
+        const QString group = lodGroup(mesh);
+        const int rank = lodRank(mesh.name);
+        auto found = bestRanks.find(group);
+        if (found == bestRanks.end() || rank > found.value()) {
+            bestRanks.insert(group, rank);
+        }
+    }
+    std::vector<char> keep(meshes.size(), 0);
+    for (std::size_t index = 0; index < meshes.size(); ++index) {
+        keep[index] = lodRank(meshes[index].name)
+                == bestRanks.value(lodGroup(meshes[index]))
+            ? 1 : 0;
+    }
+    return keep;
+}
+
+bool isInteriorWindowShell(QString name) {
+    name = name.toLower();
+    const int separator = name.indexOf(QLatin1Char('|'));
+    if (separator >= 0) {
+        name.truncate(separator);
+    }
+    return name.startsWith(QStringLiteral("glass"))
+        && name.contains(QStringLiteral("int"));
+}
+
+bool isWindowGlassMaterial(const CarMesh &mesh) {
+    const QString name = mesh.materialName.toLower();
+    if (name.isEmpty() || name.contains(QStringLiteral("screw"))
+        || name.contains(QStringLiteral("frame"))
+        || name.contains(QStringLiteral("label"))
+        || name.contains(QStringLiteral("bulb"))
+        || name.contains(QStringLiteral("light"))) {
+        return false;
+    }
+    QString resource = mesh.material != nullptr
+        ? mesh.material->resourcePath.toLower() : QString();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const bool glassResource = resource.isEmpty()
+        || resource.contains(QStringLiteral("/glass/"));
+    return name.contains(QStringLiteral("window"))
+        || name.contains(QStringLiteral("windshield"))
+        || name.contains(QStringLiteral("windsheild"))
+        || (name.contains(QStringLiteral("blackglass")) && glassResource);
+}
+
+bool isGlassSurface(const CarMesh &mesh) {
+    QString resource = mesh.material != nullptr
+        ? mesh.material->resourcePath.toLower() : QString();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return isWindowGlassMaterial(mesh)
+        || mesh.materialName.contains(QStringLiteral("glass"), Qt::CaseInsensitive)
+        || resource.contains(QStringLiteral("/glass/"));
 }
 
 bool decodeGarageLights(
@@ -516,6 +981,101 @@ bool decodeGarageLights(
     return true;
 }
 
+bool decodeGarageLightPresets(
+    const QByteArray &bytes, std::vector<OriginalShaderPointLight> *lights,
+    QString *error) {
+    const qsizetype header = bytes.indexOf(QByteArray("LDFB", 4));
+    if (header < 0 || header + 16 > bytes.size()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("lightdb: invalid LDFB preset header");
+        }
+        return false;
+    }
+    const quint32 version = detail::readLeU32(bytes, header + 8);
+    const quint32 count = detail::readLeU32(bytes, header + 12);
+    if (version < 2 || count == 0
+        || header + 16 + static_cast<qsizetype>(count) * 4 > bytes.size()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("lightdb: unsupported preset table");
+        }
+        return false;
+    }
+    qsizetype cursor = header + 16 + static_cast<qsizetype>(count) * 4;
+    int matched = 0;
+    for (quint32 index = 0; index < count; ++index) {
+        if (cursor + 8 > bytes.size()) {
+            break;
+        }
+        const qsizetype blockStart = cursor;
+        const quint32 blockSize = detail::readLeU32(bytes, cursor);
+        const quint32 parameterCount = detail::readLeU32(bytes, cursor + 4);
+        cursor += 8;
+        const quint32 hash = detail::readLeU32(
+            bytes, header + 16 + static_cast<qsizetype>(index) * 4);
+        std::vector<OriginalShaderPointLight *> matchingLights;
+        for (OriginalShaderPointLight &candidate : *lights) {
+            if (candidate.presetHash == hash) {
+                matchingLights.push_back(&candidate);
+            }
+        }
+        for (quint32 parameter = 0;
+             parameter < parameterCount && cursor + 2 <= bytes.size();
+             ++parameter) {
+            const quint8 id = static_cast<quint8>(bytes[cursor]);
+            const quint8 length = static_cast<quint8>(bytes[cursor + 1]);
+            cursor += 2;
+            if (cursor + length > bytes.size()) {
+                break;
+            }
+            for (OriginalShaderPointLight *light : matchingLights) {
+                auto readFloat = [&]() {
+                    const quint32 bits = detail::readLeU32(bytes, cursor);
+                    float value = 0.0f;
+                    std::memcpy(&value, &bits, sizeof(value));
+                    return value;
+                };
+                if (id == 0x00 && length == 1) {
+                    light->enabled = bytes[cursor] != 0;
+                } else if (id == 0x01 && length == 4) {
+                    light->type = detail::readLeU32(bytes, cursor);
+                } else if (id == 0x02 && length == 12) {
+                    float *components[] = {
+                        &light->color.x, &light->color.y, &light->color.z};
+                    for (int component = 0; component < 3; ++component) {
+                        const quint32 bits = detail::readLeU32(
+                            bytes, cursor + component * 4);
+                        std::memcpy(components[component], &bits, sizeof(float));
+                    }
+                } else if (id == 0x03 && length == 4) {
+                    light->range = readFloat();
+                } else if (id == 0x04 && length == 4) {
+                    light->intensity = readFloat();
+                } else if (id == 0x05 && length == 4) {
+                    light->penumbraAngleDegrees = readFloat();
+                } else if (id == 0x06 && length == 4) {
+                    light->coneAngleDegrees = readFloat();
+                }
+            }
+            cursor += length;
+        }
+        matched += static_cast<int>(matchingLights.size());
+        if (blockSize < 8 || blockStart + blockSize > bytes.size()) {
+            if (error != nullptr) {
+                *error = QStringLiteral("lightdb: malformed preset block");
+            }
+            return false;
+        }
+        cursor = blockStart + blockSize;
+    }
+    if (matched == 0) {
+        if (error != nullptr) {
+            *error = QStringLiteral("lightdb: no light-model preset hashes matched");
+        }
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool OriginalShaderGarageScene::valid() const {
@@ -527,7 +1087,7 @@ bool OriginalShaderGarageScene::valid() const {
         && std::all_of(
             materialTextures.cbegin(), materialTextures.cend(),
             [](const auto &texture) { return texture.valid(); })
-        && environment.diffuseCubemap.valid();
+        && environment.valid() && environment.panorama.valid();
 }
 
 long long OriginalShaderGarageScene::totalVertices() const {
@@ -546,29 +1106,30 @@ long long OriginalShaderGarageScene::totalTriangles() const {
     return total;
 }
 
-OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolder) {
+OriginalShaderGarageScene loadOriginalShaderGarageScene(
+    const QString &gameFolder, const SwatchImage &missingTexture) {
     OriginalShaderGarageScene scene;
     scene.name = QStringLiteral("Tokyo House");
-    // First fixed prop in DefaultGarageLayouts/Default-House8.xml. The fixed
-    // main-car locator is common to every authored default garage layout.
-    scene.carPlacement.m = {
-        0.999851f, 0.0f, 0.017252f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        -0.017252f, 0.0f, 0.999851f, 0.0f,
-        -2.291748f, 0.023865f, 0.546875f, 1.0f};
+    for (const tokyo_house_layout::PropInstance &instance
+         : tokyo_house_layout::kInstances) {
+        if (instance.id == kMainCarLocator) {
+            scene.carPlacement.m = instance.transform;
+            break;
+        }
+    }
     scene.geometryStatus = QStringLiteral(
-        "Exact six-piece garage_customiser shell used by the House 8 default "
-        "garage layout; opaque LOD0 floor, roof, and four walls loaded");
-    scene.materialStatus = QStringLiteral("Garage customiser material textures are loading");
+        "Garage customiser enclosure and exact Default-House8 prop layout are loading");
+    scene.materialStatus = QStringLiteral(
+        "Garage customiser and House 8 general-scene material bindings are loading");
     scene.lighting = {
         {-0.197420f, -0.302618f, 0.932442f},
         {0.900001f, 0.900000f, 0.750001f},
         {0.142109f, 0.175171f, 0.197850f},
         QStringLiteral("homespace compatibility light constants")};
     scene.lightingStatus = QStringLiteral(
-        "Garage customiser roof lighting database is loading");
+        "House 8 artificial-light records are loading");
     scene.glassStatus = QStringLiteral(
-        "Tokyo House glass excluded until exact transparent shader and texture bindings are active");
+        "Garage and car glass use the DX12 translucent material pass");
     scene.carStatus = QStringLiteral(
         "House 8 main-car locator loaded from Default-House8.xml");
 
@@ -580,8 +1141,8 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolde
 
     const QString stripped = QDir(media).filePath(QStringLiteral("Stripped/gs"));
     const QString shellDirectory = QDir(stripped).filePath(QStringLiteral(
-        "tracks/brio/scene/models/buildings/global/garage_customiser"));
-    const QString manifest =
+        "Tracks/Brio/scene/models/buildings/global/garage_customiser"));
+    const QString generalManifest =
         QDir(stripped).filePath(QStringLiteral("generalsceneassets.manifest"));
     const QString swatchArchive =
         QDir(stripped).filePath(QStringLiteral("swatchbins.zip"));
@@ -589,69 +1150,140 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolde
     std::vector<CarModel> geometry;
     std::vector<QString> sources;
     std::vector<OriginalShaderSurfaceFamily> families;
-    geometry.reserve(kGarageShellResources.size());
-    sources.reserve(kGarageShellResources.size());
-    families.reserve(kGarageShellResources.size());
+    QHash<quint64, std::size_t> geometryByProp;
+    geometry.reserve(kGarageShellResources.size() + tokyo_house_layout::kAssets.size());
+    sources.reserve(geometry.capacity());
+    families.reserve(geometry.capacity());
+    QString roofLightArchive;
     for (const GarageShellResource &resource : kGarageShellResources) {
-        const QString archive = QDir(shellDirectory).filePath(QStringLiteral("%1/%2")
-            .arg(QString::fromLatin1(resource.directory),
-                 QString::fromLatin1(resource.archive)));
-        const QByteArray bytes = readZipEntry(
-            archive, QStringLiteral("000.i.modelbin"), &error);
+        const QString archive = QDir(shellDirectory).filePath(
+            QStringLiteral("%1/%2")
+                .arg(QString::fromLatin1(resource.directory),
+                     QString::fromLatin1(resource.archive)));
         const QString source = QStringLiteral("%1!/000.i.modelbin").arg(archive);
-        CarModel model = decodeModelBytes(bytes, source, &error);
+        CarModel model = decodeModelBytes(
+            readZipEntry(archive, QStringLiteral("000.i.modelbin"), &error),
+            source, &error);
         if (model.meshes.empty()) {
-            fail(&scene, QStringLiteral("garage customiser shell geometry"), error);
+            fail(&scene, QStringLiteral("garage customiser enclosure model"), error);
             return scene;
         }
-        model.meshes.erase(
-            std::remove_if(
-                model.meshes.begin(), model.meshes.end(),
-                [](const CarMesh &mesh) {
-                    return mesh.materialName.contains(
-                        QStringLiteral("glass"), Qt::CaseInsensitive);
-                }),
-            model.meshes.end());
+        if (QString::fromLatin1(resource.directory).contains(
+                QStringLiteral("roof"), Qt::CaseInsensitive)) {
+            roofLightArchive = archive;
+        }
         sources.push_back(source);
         geometry.push_back(std::move(model));
         families.push_back(resource.family);
     }
+    const std::size_t shellModelCount = geometry.size();
+    QString floodLightArchive;
+    for (const tokyo_house_layout::PropAsset &asset
+         : tokyo_house_layout::kAssets) {
+        const QString relative = QString::fromLatin1(asset.archive);
+        if (relative.contains(QStringLiteral("/Locators/"), Qt::CaseInsensitive)) {
+            continue;
+        }
+        const QString archive = QDir(stripped).filePath(relative);
+        const QString source = QStringLiteral("%1!/000.i.modelbin").arg(archive);
+        error.clear();
+        CarModel model = decodeModelBytes(
+            readZipEntry(archive, QStringLiteral("000.i.modelbin"), &error),
+            source, &error);
+        if (model.meshes.empty()) {
+            fail(&scene, QStringLiteral("House 8 prop model %1").arg(relative), error);
+            return scene;
+        }
+        geometryByProp.insert(asset.id, geometry.size());
+        sources.push_back(source);
+        geometry.push_back(std::move(model));
+        families.push_back(OriginalShaderSurfaceFamily::Default);
+        if (asset.id == kFloodLightProp) {
+            floodLightArchive = archive;
+        }
+    }
     error.clear();
-    const auto authoredDiffuse = loadGeneralSceneDiffuseTextures(
-        swatchArchive, manifest, geometry, &error);
-    if (authoredDiffuse.isEmpty()) {
-        fail(&scene, QStringLiteral("garage customiser material textures"), error);
-        return scene;
+    const auto authoredTextures = loadGeneralSceneTextures(
+        swatchArchive, generalManifest, geometry, &error);
+    std::size_t estimatedDraws = 0;
+    for (std::size_t index = 0; index < shellModelCount; ++index) {
+        estimatedDraws += geometry[index].meshes.size();
     }
-    std::size_t meshCount = 0;
-    for (const CarModel &model : geometry) {
-        meshCount += model.meshes.size();
+    for (const tokyo_house_layout::PropInstance &instance
+         : tokyo_house_layout::kInstances) {
+        const auto found = geometryByProp.constFind(instance.id);
+        if (found != geometryByProp.cend()) {
+            estimatedDraws += geometry[found.value()].meshes.size();
+        }
     }
-    scene.draws.reserve(meshCount);
-    const std::vector<ModelMat4> placements(geometry.size());
+    scene.draws.reserve(estimatedDraws);
     QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>>
         solidTextures;
+    std::shared_ptr<const OriginalShaderMaterialTexture> missingDiagnostic;
+    if (missingTexture.valid()) {
+        auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+        texture->semantic = QStringLiteral("DiffuseTexture");
+        texture->sourceEntry = QStringLiteral("raster/MissingTexture.png");
+        texture->image = missingTexture;
+        missingDiagnostic = std::move(texture);
+    }
     int texturedDraws = 0;
+    int normalDraws = 0;
+    int surfaceDraws = 0;
+    int emissiveDraws = 0;
     int materialFallbackDraws = 0;
-    for (std::size_t modelIndex = 0; modelIndex < geometry.size(); ++modelIndex) {
-        CarModel &model = geometry[modelIndex];
+    int unresolvedDraws = 0;
+    const auto appendModel = [&](
+                                 const std::size_t modelIndex,
+                                 const ModelMat4 &placement) {
+        const CarModel &model = geometry[modelIndex];
         const ModelVec3 boundsMin = model.boundsMin;
         const ModelVec3 boundsMax = model.boundsMax;
         const QString modelSource = model.sourcePath;
-        for (CarMesh &mesh : model.meshes) {
+        for (const CarMesh &mesh : model.meshes) {
             CarModel singleMesh;
             singleMesh.sourcePath = modelSource;
             singleMesh.boundsMin = boundsMin;
             singleMesh.boundsMax = boundsMax;
             const QString drawName = mesh.materialName;
-            auto diffuseTexture = meshDiffuseTexture(mesh, authoredDiffuse);
+            auto diffuseTexture = meshDiffuseTexture(mesh, authoredTextures);
+            bool generatedSolidBase = false;
+            const CarMaterialFallback fallback = homespaceMaterialFallback(mesh);
             if (diffuseTexture != nullptr) {
                 ++texturedDraws;
-            } else {
-                std::array<float, 3> color = {0.55f, 0.55f, 0.55f};
-                if (mesh.material != nullptr && mesh.material->hasBaseColor) {
-                    color = mesh.material->baseColor;
+            } else if (mesh.material != nullptr && mesh.material->hasBaseColor) {
+                const quint32 key = solidColorKey(mesh.material->baseColor);
+                diffuseTexture = solidTextures.value(key);
+                if (diffuseTexture == nullptr) {
+                    auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+                    texture->semantic = QStringLiteral("DiffuseTexture");
+                    texture->sourceEntry = QStringLiteral("material://base-colour/%1")
+                        .arg(key, 8, 16, QLatin1Char('0'));
+                    texture->image = solidColorImage(mesh.material->baseColor);
+                    diffuseTexture = texture;
+                    solidTextures.insert(key, std::move(texture));
                 }
+                generatedSolidBase = true;
+                ++materialFallbackDraws;
+            } else if (isGlassSurface(mesh)) {
+                const quint32 key = solidColorKey(fallback.color);
+                diffuseTexture = solidTextures.value(key);
+                if (diffuseTexture == nullptr) {
+                    auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+                    texture->semantic = QStringLiteral("DiffuseTexture");
+                    texture->sourceEntry = QStringLiteral("material://glass/%1")
+                        .arg(key, 8, 16, QLatin1Char('0'));
+                    texture->image = solidColorImage(fallback.color);
+                    diffuseTexture = texture;
+                    solidTextures.insert(key, std::move(texture));
+                }
+                generatedSolidBase = true;
+                ++materialFallbackDraws;
+            } else if (missingDiagnostic != nullptr) {
+                diffuseTexture = missingDiagnostic;
+                ++unresolvedDraws;
+            } else {
+                std::array<float, 3> color = fallback.color;
                 const quint32 key = solidColorKey(color);
                 diffuseTexture = solidTextures.value(key);
                 if (diffuseTexture == nullptr) {
@@ -663,41 +1295,163 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolde
                     diffuseTexture = texture;
                     solidTextures.insert(key, std::move(texture));
                 }
+                generatedSolidBase = true;
                 ++materialFallbackDraws;
             }
-            singleMesh.meshes.push_back(std::move(mesh));
-            scene.draws.push_back({
-                drawName, sources[modelIndex],
-                families[modelIndex],
-                std::move(singleMesh), placements[modelIndex],
-                std::move(diffuseTexture)});
+            auto normalTexture = meshTexture(
+                mesh, authoredTextures, QStringLiteral("NormalTexture"));
+            auto surfaceTexture = meshTexture(
+                mesh, authoredTextures, QStringLiteral("SurfaceTexture"));
+            auto emissiveTexture = meshTexture(
+                mesh, authoredTextures, QStringLiteral("EmissiveTexture"));
+            normalDraws += normalTexture != nullptr ? 1 : 0;
+            surfaceDraws += surfaceTexture != nullptr ? 1 : 0;
+            emissiveDraws += emissiveTexture != nullptr ? 1 : 0;
+            OriginalShaderGarageDraw draw;
+            draw.name = drawName;
+            draw.source = sources[modelIndex];
+            draw.family = families[modelIndex];
+            draw.placement = placement;
+            draw.diffuseTexture = std::move(diffuseTexture);
+            draw.normalTexture = std::move(normalTexture);
+            draw.surfaceTexture = std::move(surfaceTexture);
+            draw.emissiveTexture = std::move(emissiveTexture);
+            draw.translucent = isGlassSurface(mesh);
+            if (mesh.material != nullptr) {
+                draw.baseColor = generatedSolidBase
+                    ? std::array<float, 3>{1.0f, 1.0f, 1.0f}
+                    : mesh.material->hasBaseColor
+                    ? mesh.material->baseColor
+                    : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+                draw.emissiveColor = mesh.material->emissiveColor;
+                draw.opacity = mesh.material->opacity;
+                draw.gloss = mesh.material->gloss;
+                draw.metallic = mesh.material->hasMetallic
+                    ? mesh.material->metallic : 0.0f;
+                draw.uTiling = mesh.material->uTiling;
+                draw.vTiling = mesh.material->vTiling;
+                draw.detailUTiling = mesh.material->uTiling;
+                draw.detailVTiling = mesh.material->vTiling;
+            }
+            if (mesh.material == nullptr || !mesh.material->hasMetallic) {
+                draw.gloss = fallback.gloss;
+                draw.metallic = fallback.metallic;
+            }
+            if (draw.translucent) {
+                draw.opacity = std::min(draw.opacity, 0.22f);
+                draw.gloss = std::max(draw.gloss, 0.90f);
+            }
+            singleMesh.meshes.push_back(mesh);
+            draw.geometry = std::move(singleMesh);
+            scene.draws.push_back(std::move(draw));
         }
+    };
+    for (std::size_t index = 0; index < shellModelCount; ++index) {
+        appendModel(index, ModelMat4{});
+    }
+    int visiblePropInstances = 0;
+    for (const tokyo_house_layout::PropInstance &instance
+         : tokyo_house_layout::kInstances) {
+        const auto found = geometryByProp.constFind(instance.id);
+        if (found == geometryByProp.cend()) {
+            continue;
+        }
+        ModelMat4 placement;
+        placement.m = instance.transform;
+        appendModel(found.value(), placement);
+        ++visiblePropInstances;
     }
     scene.materialStatus = QStringLiteral(
-        "Authored general-scene base-colour/emissive swatches bound for %1/%2 garage "
-        "customiser draws; %3 draws use their decoded material base colour; "
-        "normal/RCSM slots still use neutral shader defaults")
+        "Authored general-scene maps bound for %1/%2 garage/House-8 draws "
+        "(%3 normal, %4 RCSM/extra, %5 emissive); %6 procedural/base-colour "
+        "draws and %7 visibly unresolved checker draws")
         .arg(texturedDraws)
         .arg(scene.draws.size())
-        .arg(materialFallbackDraws);
+        .arg(normalDraws)
+        .arg(surfaceDraws)
+        .arg(emissiveDraws)
+        .arg(materialFallbackDraws)
+        .arg(unresolvedDraws);
+    scene.geometryStatus = QStringLiteral(
+        "Six-piece garage_customiser enclosure whose X/Z bounds match the "
+        "Default-House8.xml instance extents, plus %1 visible House 8 instances; "
+        "5 gameplay locators are non-rendered")
+        .arg(visiblePropInstances);
 
-    const QString roofArchive = QDir(shellDirectory).filePath(QStringLiteral(
-        "bld_gbl_grge_custom_02_roof_a/bld_gbl_grge_custom_02_roof_a.i.zip"));
-    error.clear();
-    const QByteArray lightModels = readZipEntry(
-        roofArchive,
-        QStringLiteral("bld_gbl_grge_custom_02_roof_a.lightsmodels.lightdb"),
-        &error);
-    if (!decodeGarageLights(lightModels, &scene.authoredLights, &error)) {
-        fail(&scene, QStringLiteral("garage customiser artificial lights"), error);
+    if (floodLightArchive.isEmpty()) {
+        fail(&scene, QStringLiteral("House 8 floodlight model"),
+             QStringLiteral("catalog entry is missing"));
         return scene;
     }
+    error.clear();
+    std::vector<OriginalShaderPointLight> localLights;
+    const QByteArray lightModels = readZipEntry(
+        floodLightArchive,
+        QStringLiteral("prp_el_garage_lights_flood_a.lightsmodels.lightdb"),
+        &error);
+    if (!decodeGarageLights(lightModels, &localLights, &error)) {
+        fail(&scene, QStringLiteral("House 8 floodlight records"), error);
+        return scene;
+    }
+    error.clear();
+    const QByteArray lightPresets = readZipEntry(
+        floodLightArchive,
+        QStringLiteral("prp_el_garage_lights_flood_a.lightspresets.lightdb"),
+        &error);
+    if (!decodeGarageLightPresets(lightPresets, &localLights, &error)) {
+        fail(&scene, QStringLiteral("House 8 floodlight presets"), error);
+        return scene;
+    }
+    if (!roofLightArchive.isEmpty()) {
+        error.clear();
+        std::vector<OriginalShaderPointLight> roofLights;
+        const QByteArray roofModels = readZipEntry(
+            roofLightArchive,
+            QStringLiteral("bld_gbl_grge_custom_02_roof_a.lightsmodels.lightdb"),
+            &error);
+        if (!decodeGarageLights(roofModels, &roofLights, &error)) {
+            fail(&scene, QStringLiteral("garage roof light records"), error);
+            return scene;
+        }
+        error.clear();
+        const QByteArray roofPresets = readZipEntry(
+            roofLightArchive,
+            QStringLiteral("bld_gbl_grge_custom_02_roof_a.lightspresets.lightdb"),
+            &error);
+        if (!decodeGarageLightPresets(roofPresets, &roofLights, &error)) {
+            fail(&scene, QStringLiteral("garage roof light presets"), error);
+            return scene;
+        }
+        scene.authoredLights.insert(
+            scene.authoredLights.end(), roofLights.cbegin(), roofLights.cend());
+    }
+    const int roofLightRecords = static_cast<int>(scene.authoredLights.size());
+    int floodLightInstances = 0;
+    for (const tokyo_house_layout::PropInstance &instance
+         : tokyo_house_layout::kInstances) {
+        if (instance.id != kFloodLightProp) {
+            continue;
+        }
+        ModelMat4 placement;
+        placement.m = instance.transform;
+        for (const OriginalShaderPointLight &local : localLights) {
+            OriginalShaderPointLight placed = local;
+            placed.transform = matMul(local.transform, placement);
+            scene.authoredLights.push_back(std::move(placed));
+        }
+        ++floodLightInstances;
+    }
+    const int enabledLights = static_cast<int>(std::count_if(
+        scene.authoredLights.cbegin(), scene.authoredLights.cend(),
+        [](const OriginalShaderPointLight &light) { return light.enabled; }));
     scene.lightingStatus = QStringLiteral(
-        "%1 exact artificial-light transforms and preset hash 0x%2 loaded from "
-        "the garage customiser roof lightdb; compatibility shader constants "
-        "remain active while the preset-field binding is decoded")
+        "%1 garage-roof light records plus %2 House 8 floodlight instances "
+        "produce %3 light records; %4 active presets include authored colour, "
+        "range, intensity, and cone values")
+        .arg(roofLightRecords)
+        .arg(floodLightInstances)
         .arg(scene.authoredLights.size())
-        .arg(scene.authoredLights.front().presetHash, 8, 16, QLatin1Char('0'));
+        .arg(enabledLights);
 
     const QString shaderArchive = QDir(media).filePath(QStringLiteral("_library/Homespace.zip"));
     error.clear();
@@ -733,8 +1487,13 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolde
             QString::fromLatin1(resource.entry), std::move(image)};
     }
 
-    scene.environment.diffuseCubemap = neutralDiffuseCubemap();
-    scene.environment.error.clear();
+    scene.environment = loadGarageEnvironmentResources(gameFolder);
+    if (!scene.environment.valid() || !scene.environment.panorama.valid()) {
+        fail(&scene, QStringLiteral("StagedSpaces_Garage_09 / Forte_Garage_01"),
+             !scene.environment.error.isEmpty()
+                 ? scene.environment.error : scene.environment.panoramaError);
+        return scene;
+    }
 
     scene.error.clear();
     return scene;
@@ -743,6 +1502,11 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(const QString &gameFolde
 bool appendOriginalShaderGarageCar(
     OriginalShaderGarageScene *scene, CarModel car,
     const std::array<float, 3> &paintColor, const SwatchImage &livery,
+    const LiveryMaskSet *liveryMasks,
+    const std::array<std::array<float, 4>, kLiverySideCount> *paintRegions,
+    const LiveryPaintState *paintState,
+    const ManufacturerColorPalette *manufacturerColors,
+    const PaintFinishLibrary *paintFinishes,
     QString *error) {
     if (error != nullptr) {
         error->clear();
@@ -756,14 +1520,24 @@ bool appendOriginalShaderGarageCar(
 
     QHash<const ModelMaterialTexture *,
           std::shared_ptr<const OriginalShaderMaterialTexture>> decodedTextures;
+    QHash<QString, std::shared_ptr<const OriginalShaderMaterialTexture>> finishTextures;
     QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>> solidTextures;
     const ModelVec3 boundsMin = car.boundsMin;
     const ModelVec3 boundsMax = car.boundsMax;
     const QString source = car.sourcePath;
     const std::size_t firstDraw = scene->draws.size();
-    int texturedDraws = 0;
+    int opaqueDraws = 0;
     int liveryDraws = 0;
-    int excludedGlass = 0;
+    int nativeBaseDraws = 0;
+    int solidBaseDraws = 0;
+    int unresolvedCheckerDraws = 0;
+    int normalDraws = 0;
+    int surfaceDraws = 0;
+    int emissiveDraws = 0;
+    int translucentDraws = 0;
+    int excludedLowerLod = 0;
+    int excludedInteriorShell = 0;
+    int excludedFactoryLiveryStickers = 0;
     std::shared_ptr<const OriginalShaderMaterialTexture> liveryTexture;
     if (livery.valid()) {
         auto texture = std::make_shared<OriginalShaderMaterialTexture>();
@@ -772,43 +1546,197 @@ bool appendOriginalShaderGarageCar(
         texture->image = livery;
         liveryTexture = std::move(texture);
     }
-    for (CarMesh &mesh : car.meshes) {
+    if (liveryTexture != nullptr && liveryMasks != nullptr
+        && liveryMasks->valid()) {
+        constexpr std::array<std::array<float, 3>, kLiverySideCount> kFacing = {{
+            {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f},
+            {0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f},
+            {0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+        }};
+        scene->liveryMapping.sideCount = kLiverySideCount;
+        scene->liveryMapping.facing = kFacing;
+        for (int sideIndex = 0; sideIndex < kLiverySideCount; ++sideIndex) {
+            const LiverySide &side = liveryMasks->sides[sideIndex];
+            scene->liveryMapping.sourceRegions[sideIndex] = {
+                side.left, side.right, side.top, side.bottom};
+            scene->liveryMapping.paintRegions[sideIndex] = paintRegions != nullptr
+                ? (*paintRegions)[sideIndex]
+                : std::array<float, 4>{
+                      (side.left + kLiveryCanvasHalfWidth)
+                          / (2.0f * kLiveryCanvasHalfWidth),
+                      (side.right + kLiveryCanvasHalfWidth)
+                          / (2.0f * kLiveryCanvasHalfWidth),
+                      (kLiveryCanvasHalfHeight - side.top)
+                          / (2.0f * kLiveryCanvasHalfHeight),
+                      (kLiveryCanvasHalfHeight - side.bottom)
+                          / (2.0f * kLiveryCanvasHalfHeight)};
+            const SwatchMask &mask = side.mask;
+            if (!mask.valid()) {
+                continue;
+            }
+            OriginalShaderMaterialTexture &mappedMask =
+                scene->liveryMapping.masks[sideIndex];
+            mappedMask.semantic = QStringLiteral("LiveryMask%1").arg(sideIndex);
+            mappedMask.sourceEntry = QStringLiteral("car://livery-mask/%1")
+                .arg(sideIndex);
+            mappedMask.image.width = mask.width;
+            mappedMask.image.height = mask.height;
+            mappedMask.image.rgba.resize(mask.coverage.size() * 4);
+            for (std::size_t pixel = 0; pixel < mask.coverage.size(); ++pixel) {
+                const std::uint8_t coverage = mask.coverage[pixel];
+                mappedMask.image.rgba[pixel * 4 + 0] = coverage;
+                mappedMask.image.rgba[pixel * 4 + 1] = coverage;
+                mappedMask.image.rgba[pixel * 4 + 2] = coverage;
+                mappedMask.image.rgba[pixel * 4 + 3] = 255;
+            }
+        }
+    }
+    const auto copyNativeTexture = [&](const std::shared_ptr<const ModelMaterialTexture> &native,
+                                       const QString &semantic)
+        -> std::shared_ptr<const OriginalShaderMaterialTexture> {
+        if (native == nullptr || !native->image.valid()) {
+            return {};
+        }
+        const auto found = decodedTextures.constFind(native.get());
+        if (found != decodedTextures.cend()) {
+            return found.value();
+        }
+        auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+        texture->semantic = semantic;
+        texture->sourceEntry = native->path.isEmpty()
+            ? QStringLiteral("car://decoded-material-map") : native->path;
+        texture->image = native->image;
+        decodedTextures.insert(native.get(), texture);
+        return texture;
+    };
+    const auto copyFinishTexture = [&](const SwatchImage &image, const QString &semantic,
+                                       const QString &sourceEntry)
+        -> std::shared_ptr<const OriginalShaderMaterialTexture> {
+        if (!image.valid()) {
+            return {};
+        }
+        const QString key = semantic + QLatin1Char('|') + sourceEntry;
+        const auto found = finishTextures.constFind(key);
+        if (found != finishTextures.cend()) {
+            return found.value();
+        }
+        auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+        texture->semantic = semantic;
+        texture->sourceEntry = sourceEntry;
+        texture->image = image;
+        finishTextures.insert(key, texture);
+        return texture;
+    };
+    bool liveryCustomPainted = false;
+    if (paintState != nullptr) {
+        liveryCustomPainted = std::any_of(
+            paintState->materials.cbegin(), paintState->materials.cend(),
+            [](const LiveryPaintMaterial &paint) { return paint.primary.enabled; });
+    }
+    const std::vector<char> keepLod = highestLodFlags(car.meshes);
+    for (std::size_t meshIndex = 0; meshIndex < car.meshes.size(); ++meshIndex) {
+        CarMesh &mesh = car.meshes[meshIndex];
+        if (!keepLod[meshIndex]) {
+            ++excludedLowerLod;
+            continue;
+        }
+        if (isInteriorWindowShell(mesh.name)
+            || mesh.materialName.startsWith(
+                QStringLiteral("InteriorLOD"), Qt::CaseInsensitive)) {
+            ++excludedInteriorShell;
+            continue;
+        }
         const QString materialPath = mesh.material != nullptr
             ? mesh.material->resourcePath
             : QString();
-        if (mesh.materialName.contains(QStringLiteral("glass"), Qt::CaseInsensitive)
-            || materialPath.contains(QStringLiteral("glass"), Qt::CaseInsensitive)) {
-            ++excludedGlass;
+        QString normalizedMaterialPath = materialPath;
+        normalizedMaterialPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        // Some race cars use raised polygons shaped like their factory sponsor
+        // graphics. Repainting those polygons with a custom atlas preserves the
+        // old logo silhouettes even though the body panel below is correct.
+        // Custom liveries replace this sticker layer; badge/symbol materials stay.
+        if (liveryTexture != nullptr
+            && normalizedMaterialPath.contains(
+                QStringLiteral("/carpaint_default/livery_sticker.materialbin"),
+                Qt::CaseInsensitive)) {
+            ++excludedFactoryLiveryStickers;
             continue;
         }
+        const bool glassSurface = isGlassSurface(mesh);
 
+        const QString lowerMaterialName = mesh.materialName.toLower();
+        const bool bodyPaint = lowerMaterialName.startsWith(QStringLiteral("carpaint"))
+            || lowerMaterialName.startsWith(QStringLiteral("car_paint"));
+        const bool paintSurface = bodyPaint;
         const bool usesLivery = liveryTexture != nullptr
-            && mesh.paintMaterialHash != 0 && mesh.liveryUvChannel >= 0;
+            && bodyPaint && mesh.liveryUvChannel == 3;
+        const std::optional<CarMaterialFallback> fallback =
+            carMaterialFallback(mesh);
+        const LiveryPaintMaterial *paint = paintState != nullptr
+            ? paintState->find(mesh.paintMaterialHash) : nullptr;
+        const ManufacturerColor *manufacturerColor =
+            paint != nullptr && manufacturerColors != nullptr && !liveryCustomPainted
+            ? manufacturerColors->find(paint->manufacturerSelector) : nullptr;
+        const PaintFinishRender *paintFinish =
+            paint != nullptr && paintFinishes != nullptr
+            ? paintFinishes->find(static_cast<int>(paint->finish)) : nullptr;
+        std::array<float, 3> resolvedPaintColor = paintColor;
+        if (manufacturerColor != nullptr) {
+            resolvedPaintColor = manufacturerColor->primary;
+        }
+        if (paint != nullptr && paint->primary.enabled) {
+            for (int channel = 0; channel < 3; ++channel) {
+                const float srgb = paint->primary.bgra[2 - channel] / 255.0f;
+                resolvedPaintColor[channel] = std::pow(srgb, 2.2f);
+            }
+        }
+        const bool rawMaterialUv = normalizedMaterialPath.contains(
+            QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive);
+        bool generatedSolidBase = false;
+        const auto finishPattern = bodyPaint && paintFinish != nullptr
+                && paintFinish->selfColored
+            ? copyFinishTexture(
+                  paintFinish->patternImage, QStringLiteral("DiffuseTexture"),
+                  QStringLiteral("car://paint-finish/%1/pattern").arg(paint->finish))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
         std::shared_ptr<const OriginalShaderMaterialTexture> diffuse =
             usesLivery ? liveryTexture : nullptr;
         const std::shared_ptr<const ModelMaterialTexture> nativeDiffuse =
             mesh.material != nullptr ? mesh.material->diffuseTexture : nullptr;
         if (diffuse != nullptr) {
             ++liveryDraws;
+        } else if (finishPattern != nullptr) {
+            diffuse = finishPattern;
+            ++nativeBaseDraws;
         } else if (nativeDiffuse != nullptr && nativeDiffuse->image.valid()) {
             const auto found = decodedTextures.constFind(nativeDiffuse.get());
             if (found != decodedTextures.cend()) {
                 diffuse = found.value();
             } else {
-                auto texture = std::make_shared<OriginalShaderMaterialTexture>();
-                texture->semantic = QStringLiteral("DiffuseTexture");
-                texture->sourceEntry = nativeDiffuse->path.isEmpty()
-                    ? QStringLiteral("car://native-diffuse")
-                    : nativeDiffuse->path;
-                texture->image = nativeDiffuse->image;
-                diffuse = texture;
-                decodedTextures.insert(nativeDiffuse.get(), std::move(texture));
+                diffuse = copyNativeTexture(
+                    nativeDiffuse, QStringLiteral("DiffuseTexture"));
+            }
+            ++nativeBaseDraws;
+            if (nativeDiffuse->path.contains(
+                    QStringLiteral("MissingTexture.png"), Qt::CaseInsensitive)) {
+                ++unresolvedCheckerDraws;
             }
         } else {
-            std::array<float, 3> color = paintColor;
-            if (mesh.paintMaterialHash == 0 && mesh.material != nullptr
-                && mesh.material->hasBaseColor) {
+            std::array<float, 3> color = bodyPaint
+                ? resolvedPaintColor : std::array<float, 3>{0.55f, 0.55f, 0.55f};
+            const bool hasAuthoredColor = !bodyPaint && mesh.material != nullptr
+                && mesh.material->hasBaseColor;
+            if (hasAuthoredColor) {
                 color = mesh.material->baseColor;
+            }
+            if (!bodyPaint && fallback != std::nullopt) {
+                const float brightestColor = std::max({color[0], color[1], color[2]});
+                if (!hasAuthoredColor || brightestColor < fallback->minimumColor) {
+                    color = fallback->color;
+                }
             }
             const quint32 key = solidColorKey(color);
             const auto found = solidTextures.constFind(key);
@@ -823,7 +1751,52 @@ bool appendOriginalShaderGarageCar(
                 diffuse = texture;
                 solidTextures.insert(key, std::move(texture));
             }
+            generatedSolidBase = true;
+            ++solidBaseDraws;
         }
+
+        auto normal = bodyPaint && paintFinish != nullptr
+            ? copyFinishTexture(
+                  paintFinish->hasDetailNormal()
+                      ? paintFinish->detailNormalImage
+                      : (paintFinish->hasNormalMap00()
+                            ? paintFinish->normalMap00Image
+                            : (paintFinish->hasNormalMap0()
+                                  ? paintFinish->normalMap0Image
+                                  : paintFinish->orangePeelNormalImage)),
+                  QStringLiteral("NormalTexture"),
+                  QStringLiteral("car://paint-finish/%1/normal").arg(paint->finish))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        if (normal == nullptr && mesh.material != nullptr) {
+            normal =
+                copyNativeTexture(
+                    mesh.material->normalTexture != nullptr
+                        ? mesh.material->normalTexture
+                        : (mesh.material->paintNormalMap00Texture != nullptr
+                              ? mesh.material->paintNormalMap00Texture
+                              : mesh.material->paintNormalMap0Texture),
+                    QStringLiteral("NormalTexture"));
+        }
+        auto surface = bodyPaint && paintFinish != nullptr
+            ? copyFinishTexture(
+                  paintFinish->roughMetalAoImage, QStringLiteral("SurfaceTexture"),
+                  QStringLiteral("car://paint-finish/%1/surface").arg(paint->finish))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        if (surface == nullptr && mesh.material != nullptr) {
+            surface = copyNativeTexture(
+                mesh.material->surfaceTexture, QStringLiteral("SurfaceTexture"));
+        }
+        auto emissive = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->emissiveTexture, QStringLiteral("EmissiveTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        auto alpha = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->alphaTexture, QStringLiteral("AlphaTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        normalDraws += normal != nullptr ? 1 : 0;
+        surfaceDraws += surface != nullptr ? 1 : 0;
+        emissiveDraws += emissive != nullptr ? 1 : 0;
 
         CarModel singleMesh;
         singleMesh.sourcePath = source;
@@ -831,12 +1804,106 @@ bool appendOriginalShaderGarageCar(
         singleMesh.boundsMax = boundsMax;
         const QString drawName = QStringLiteral("car/%1").arg(mesh.materialName);
         const int diffuseUvChannel = usesLivery ? mesh.liveryUvChannel : 0;
+        OriginalShaderGarageDraw draw;
+        draw.name = drawName;
+        draw.source = source;
+        draw.family = OriginalShaderSurfaceFamily::Default;
+        draw.placement = scene->carPlacement;
+        draw.diffuseTexture = std::move(diffuse);
+        draw.alphaTexture = std::move(alpha);
+        draw.normalTexture = std::move(normal);
+        draw.surfaceTexture = std::move(surface);
+        draw.emissiveTexture = std::move(emissive);
+        draw.diffuseUvChannel = diffuseUvChannel;
+        draw.rawMaterialUv = rawMaterialUv;
+        draw.baseColor = generatedSolidBase
+            ? std::array<float, 3>{1.0f, 1.0f, 1.0f}
+            : (paintSurface ? resolvedPaintColor
+                            : std::array<float, 3>{1.0f, 1.0f, 1.0f});
+        if (mesh.material != nullptr) {
+            if (!usesLivery && !generatedSolidBase && !paintSurface
+                && mesh.material->hasBaseColor) {
+                draw.baseColor = mesh.material->baseColor;
+            }
+            draw.emissiveColor = mesh.material->emissiveColor;
+            draw.opacity = mesh.material->opacity;
+            draw.gloss = mesh.material->gloss;
+            draw.metallic = mesh.material->hasMetallic
+                ? mesh.material->metallic : 0.0f;
+            draw.uTiling = usesLivery ? 1.0f : mesh.material->uTiling;
+            draw.vTiling = usesLivery ? 1.0f : mesh.material->vTiling;
+            draw.detailUTiling = mesh.material->uTiling;
+            draw.detailVTiling = mesh.material->vTiling;
+            if (rawMaterialUv) {
+                if (draw.uTiling <= 1.5f) {
+                    draw.uTiling = 32.0f;
+                }
+                if (draw.vTiling <= 1.5f) {
+                    draw.vTiling = 32.0f;
+                }
+                if (draw.detailUTiling <= 1.5f) {
+                    draw.detailUTiling = 32.0f;
+                }
+                if (draw.detailVTiling <= 1.5f) {
+                    draw.detailVTiling = 32.0f;
+                }
+            }
+        }
+        if (glassSurface && draw.opacity >= 0.995f) {
+            draw.opacity = isWindowGlassMaterial(mesh) ? 0.42f : 0.20f;
+        }
+        draw.translucent = glassSurface || draw.opacity < 0.995f
+            || draw.alphaTexture != nullptr;
+        translucentDraws += draw.translucent ? 1 : 0;
+        if (!bodyPaint && fallback != std::nullopt
+            && (mesh.material == nullptr || !mesh.material->resolvedFromLibrary)) {
+            draw.gloss = fallback->gloss;
+            draw.metallic = fallback->metallic;
+        }
+        if (bodyPaint && paintFinish != nullptr && paintFinish->valid) {
+            draw.gloss = paintFinish->gloss;
+            draw.metallic = paintFinish->metallic;
+        } else if (bodyPaint && manufacturerColor != nullptr
+                   && manufacturerColor->material != nullptr) {
+            draw.gloss = manufacturerColor->material->gloss;
+            if (manufacturerColor->material->hasMetallic) {
+                draw.metallic = manufacturerColor->material->metallic;
+            }
+        }
+        if (usesLivery) {
+            constexpr quint32 kAllBodySides = 0x1fu;
+            const QString lowerMeshName = mesh.name.toLower();
+            draw.liveryBaseTexture = true;
+            if (!lowerMeshName.contains(QStringLiteral("mirror"))
+                && (lowerMeshName.contains(QStringLiteral("spoiler"))
+                    || lowerMeshName.contains(QStringLiteral("wing")))) {
+                draw.liveryAllowedSides = 1u << 5;
+            } else if (lowerMeshName.startsWith(QStringLiteral("trunk"))) {
+                draw.liveryAllowedSides = (1u << 1) | (1u << 2);
+            } else {
+                switch (mesh.carPartType) {
+                case 34: // front bumper
+                    draw.liveryAllowedSides = (1u << 0) | (1u << 3) | (1u << 4);
+                    break;
+                case 35: // rear bumper
+                    draw.liveryAllowedSides = (1u << 1) | (1u << 3) | (1u << 4);
+                    break;
+                case 36: // hood
+                    draw.liveryAllowedSides = 1u << 2;
+                    break;
+                case 37: // side skirts
+                    draw.liveryAllowedSides = (1u << 3) | (1u << 4);
+                    break;
+                default:
+                    draw.liveryAllowedSides = kAllBodySides;
+                    break;
+                }
+            }
+        }
         singleMesh.meshes.push_back(std::move(mesh));
-        scene->draws.push_back({
-            drawName, source, OriginalShaderSurfaceFamily::Default,
-            std::move(singleMesh), scene->carPlacement, std::move(diffuse),
-            diffuseUvChannel});
-        ++texturedDraws;
+        draw.geometry = std::move(singleMesh);
+        scene->draws.push_back(std::move(draw));
+        ++opaqueDraws;
     }
     if (scene->draws.size() == firstDraw) {
         if (error != nullptr) {
@@ -845,11 +1912,23 @@ bool appendOriginalShaderGarageCar(
         return false;
     }
     scene->carStatus = QStringLiteral(
-        "DX12 car added with %1 opaque material draws; %2 use the composited "
-        "livery atlas; %3 glass draws excluded")
-        .arg(texturedDraws)
+        "DX12 car added with %1 material draws: %2 livery, %3 native base-colour, "
+        "%4 solid material-colour, %5 visibly unresolved checker, %6 normal, "
+        "%7 surface, and %8 emissive maps; %9 translucent/glass draws included; "
+        "%10 lower-LOD, %11 coarse-interior, and %12 factory-livery sticker "
+        "draws excluded")
+        .arg(opaqueDraws)
         .arg(liveryDraws)
-        .arg(excludedGlass);
+        .arg(nativeBaseDraws)
+        .arg(solidBaseDraws)
+        .arg(unresolvedCheckerDraws)
+        .arg(normalDraws)
+        .arg(surfaceDraws)
+        .arg(emissiveDraws)
+        .arg(translucentDraws)
+        .arg(excludedLowerLod)
+        .arg(excludedInteriorShell)
+        .arg(excludedFactoryLiveryStickers);
     return true;
 }
 

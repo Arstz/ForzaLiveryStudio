@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <d3d12.h>
+#include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
@@ -23,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -140,7 +142,28 @@ struct DrawResources {
     D3D12_VERTEX_BUFFER_VIEW vertexView{};
     D3D12_INDEX_BUFFER_VIEW indexView{};
     UINT materialDescriptorStart = kMaterialDescriptorStart;
+    ComPtr<ID3D12Resource> materialConstants;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> diffuseTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> alphaTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> normalTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> surfaceTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> emissiveTexture;
+    std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
+    std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
+    float opacity = 1.0f;
+    float gloss = 0.45f;
+    float metallic = 0.0f;
+    float uTiling = 1.0f;
+    float vTiling = 1.0f;
+    float detailUTiling = 1.0f;
+    float detailVTiling = 1.0f;
+    bool translucent = false;
+    bool liveryBaseTexture = false;
+    quint32 liveryAllowedSides = 0;
+    int liverySideCount = 0;
+    std::array<std::array<float, 4>, fh6::kLiverySideCount> liverySourceRegions{};
+    std::array<std::array<float, 4>, fh6::kLiverySideCount> liveryPaintRegions{};
+    std::array<std::array<float, 3>, fh6::kLiverySideCount> liveryFacing{};
     fh6::OriginalShaderSurfaceFamily family =
         fh6::OriginalShaderSurfaceFamily::Default;
 };
@@ -222,17 +245,19 @@ D3D12_RESOURCE_BARRIER transition(
 
 Geometry prepareGeometry(
     const fh6::CarModel &model, const fh6::ModelMat4 &placement,
-    int diffuseUvChannel = 0) {
+    int diffuseUvChannel = 0, bool rawMaterialUv = false) {
     Geometry result;
     for (const fh6::CarMesh &mesh : model.meshes) {
-        const auto transformedUv = [&mesh](std::size_t channel, std::size_t vertex) {
+        const auto transformedUv = [&mesh](
+                                       std::size_t channel, std::size_t vertex,
+                                       bool raw = false) {
             fh6::ModelVec2 uv{};
             if (channel >= mesh.uvChannels.size()
                 || vertex >= mesh.uvChannels[channel].size()) {
                 return uv;
             }
             uv = mesh.uvChannels[channel][vertex];
-            if (channel < mesh.texCoordTransforms.size()) {
+            if (!raw && channel < mesh.texCoordTransforms.size()) {
                 const fh6::TexCoordTransform &transform =
                     mesh.texCoordTransforms[channel];
                 uv.u = uv.u * transform.scaleU + transform.offsetU;
@@ -247,8 +272,9 @@ Geometry prepareGeometry(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
         std::vector<std::array<float, 3>> bitangents(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
-        const std::size_t tangentUvChannel = diffuseUvChannel >= 0
-            ? static_cast<std::size_t>(diffuseUvChannel) : 0;
+        // Detail maps use material UV0 even when the base colour comes from
+        // the car's separate livery-projection UV channel.
+        constexpr std::size_t tangentUvChannel = 0;
         if (tangentUvChannel < mesh.uvChannels.size()) {
             const auto &uvs = mesh.uvChannels[tangentUvChannel];
             for (std::size_t triangle = 0;
@@ -276,9 +302,12 @@ Geometry prepareGeometry(
                 const std::array<float, 3> edge2 = {
                     position2.x - position0.x, position2.y - position0.y,
                     position2.z - position0.z};
-                const fh6::ModelVec2 uv0 = transformedUv(tangentUvChannel, indices[0]);
-                const fh6::ModelVec2 uv1 = transformedUv(tangentUvChannel, indices[1]);
-                const fh6::ModelVec2 uv2 = transformedUv(tangentUvChannel, indices[2]);
+                const fh6::ModelVec2 uv0 = transformedUv(
+                    tangentUvChannel, indices[0], rawMaterialUv);
+                const fh6::ModelVec2 uv1 = transformedUv(
+                    tangentUvChannel, indices[1], rawMaterialUv);
+                const fh6::ModelVec2 uv2 = transformedUv(
+                    tangentUvChannel, indices[2], rawMaterialUv);
                 const float deltaU1 = uv1.u - uv0.u;
                 const float deltaV1 = uv1.v - uv0.v;
                 const float deltaU2 = uv2.u - uv0.u;
@@ -345,11 +374,11 @@ Geometry prepareGeometry(
                     + cross[1] * bitangents[index][1]
                     + cross[2] * bitangents[index][2]
                 < 0.0f ? -1.0f : 1.0f;
-            const fh6::ModelVec2 uv = transformedUv(tangentUvChannel, index);
-            fh6::ModelVec2 uv2 = uv;
-            if (mesh.uvChannels.size() > 2 && index < mesh.uvChannels[2].size()) {
-                uv2 = transformedUv(2, index);
-            }
+            const std::size_t baseUvChannel = diffuseUvChannel >= 0
+                ? static_cast<std::size_t>(diffuseUvChannel) : 0;
+            const fh6::ModelVec2 uv = transformedUv(
+                baseUvChannel, index, rawMaterialUv && baseUvChannel == 0);
+            const fh6::ModelVec2 uv2 = transformedUv(0, index, rawMaterialUv);
             result.vertices.push_back({
                 {position.x, position.y, position.z},
                 {normal.x, normal.y, normal.z},
@@ -535,6 +564,76 @@ UploadedTexture uploadCubeTexture(
     return result;
 }
 
+UploadedTexture uploadBc6Panorama(
+    ID3D12Device *device, ID3D12GraphicsCommandList *commands,
+    const fh6::SwatchTexture &source) {
+    if (!source.valid() || source.platform != 0 || source.sliceCount != 1
+        || source.mipCount != 1 || source.slices.size() != 1
+        || source.slices[0].encoding != fh6::SwatchEncoding::UnsignedBc6H) {
+        return {};
+    }
+    D3D12_RESOURCE_DESC description{};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Width = static_cast<UINT64>(source.width);
+    description.Height = static_cast<UINT>(source.height);
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_BC6H_UF16;
+    description.SampleDesc.Count = 1;
+    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const D3D12_HEAP_PROPERTIES defaultHeap =
+        heapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    UploadedTexture result;
+    if (FAILED(device->CreateCommittedResource(
+            &defaultHeap, D3D12_HEAP_FLAG_NONE, &description,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&result.texture)))) {
+        return {};
+    }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT rows = 0;
+    UINT64 rowSize = 0;
+    UINT64 uploadSize = 0;
+    device->GetCopyableFootprints(
+        &description, 0, 1, 0, &footprint, &rows, &rowSize, &uploadSize);
+    const QByteArray bytes = source.mipBytes(0, 0);
+    if (bytes.size() != static_cast<qsizetype>(rowSize * rows)) {
+        return {};
+    }
+    result.upload = createBuffer(
+        device, uploadSize, D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ);
+    if (result.upload == nullptr) {
+        return {};
+    }
+    void *mapped = nullptr;
+    const D3D12_RANGE noRead{0, 0};
+    if (FAILED(result.upload->Map(0, &noRead, &mapped))) {
+        return {};
+    }
+    for (UINT row = 0; row < rows; ++row) {
+        std::memcpy(
+            static_cast<std::uint8_t *>(mapped) + footprint.Offset
+                + static_cast<UINT64>(row) * footprint.Footprint.RowPitch,
+            bytes.constData() + static_cast<qsizetype>(row * rowSize),
+            static_cast<std::size_t>(rowSize));
+    }
+    result.upload->Unmap(0, nullptr);
+    D3D12_TEXTURE_COPY_LOCATION destination{};
+    destination.pResource = result.texture.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION upload{};
+    upload.pResource = result.upload.Get();
+    upload.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    upload.PlacedFootprint = footprint;
+    commands->CopyTextureRegion(&destination, 0, 0, 0, &upload, nullptr);
+    const D3D12_RESOURCE_BARRIER barrier = transition(
+        result.texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    commands->ResourceBarrier(1, &barrier);
+    return result;
+}
+
 void writeFloat(
     std::vector<std::uint8_t> *bytes, UINT registerIndex,
     UINT component, float value) {
@@ -602,10 +701,12 @@ Matrix4 cameraViewProjection(
 
 std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     const OriginalDx12Camera &camera, const QSize &frameSize,
-    const fh6::OriginalShaderLighting &lighting) {
+    const fh6::OriginalShaderLighting &lighting,
+    const std::vector<fh6::OriginalShaderPointLight> &authoredLights,
+    const fh6::GaragePanoramaResources &panorama) {
     std::array<std::vector<std::uint8_t>, 8> data;
     constexpr std::array<std::size_t, 8> sizes = {
-        256, 256, 512, 11264, 18432, 256, 65536, 65536};
+        256, 256, 512, 11264, 18432, 2304, 65536, 65536};
     for (std::size_t index = 0; index < data.size(); ++index) {
         data[index].resize(sizes[index], 0);
     }
@@ -620,6 +721,84 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[2], 14, 2, 1.0f);
     const Matrix4 viewProjection = cameraViewProjection(
         camera, static_cast<float>(frameSize.width()) / frameSize.height());
+    for (UINT row = 0; row < 4; ++row) {
+        for (UINT component = 0; component < 4; ++component) {
+            writeFloat(&data[5], row, component, viewProjection[row][component]);
+        }
+    }
+    writeFloat(&data[5], 4, 0, camera.position.x());
+    writeFloat(&data[5], 4, 1, camera.position.y());
+    writeFloat(&data[5], 4, 2, camera.position.z());
+    writeFloat(&data[5], 4, 3, 1.0f);
+    writeFloat(&data[5], 5, 0, lighting.direction.x);
+    writeFloat(&data[5], 5, 1, lighting.direction.y);
+    writeFloat(&data[5], 5, 2, lighting.direction.z);
+    writeFloat(&data[5], 6, 0, lighting.directColor.x);
+    writeFloat(&data[5], 6, 1, lighting.directColor.y);
+    writeFloat(&data[5], 6, 2, lighting.directColor.z);
+    writeFloat(&data[5], 6, 3, 1.0f);
+    writeFloat(&data[5], 7, 0, lighting.ambientColor.x);
+    writeFloat(&data[5], 7, 1, lighting.ambientColor.y);
+    writeFloat(&data[5], 7, 2, lighting.ambientColor.z);
+    writeFloat(&data[5], 7, 3, 1.0f);
+    const QVector3D forward = (camera.target - camera.position).normalized();
+    const QVector3D right = QVector3D::crossProduct(
+        camera.up.normalized(), forward).normalized();
+    const QVector3D up = QVector3D::crossProduct(forward, right);
+    const std::array<QVector3D, 3> cameraAxes = {forward, right, up};
+    for (UINT axis = 0; axis < cameraAxes.size(); ++axis) {
+        writeFloat(&data[5], 8 + axis, 0, cameraAxes[axis].x());
+        writeFloat(&data[5], 8 + axis, 1, cameraAxes[axis].y());
+        writeFloat(&data[5], 8 + axis, 2, cameraAxes[axis].z());
+    }
+    writeFloat(
+        &data[5], 9, 3,
+        static_cast<float>(frameSize.width()) / frameSize.height());
+    constexpr float kPi = 3.14159265358979323846f;
+    writeFloat(&data[5], 11, 0, panorama.sphericalPower);
+    writeFloat(&data[5], 11, 1, panorama.frameScale);
+    writeFloat(&data[5], 11, 2, std::tan(camera.verticalFovDegrees * kPi / 360.0f));
+    UINT activeLightCount = 0;
+    for (const fh6::OriginalShaderPointLight &light : authoredLights) {
+        if (!light.enabled || light.range <= 0.0f || light.intensity <= 0.0f
+            || activeLightCount >= 32) {
+            continue;
+        }
+        const fh6::ModelVec3 position = light.transform.transformPoint({});
+        fh6::ModelVec3 direction = light.transform.transformVector({0.0f, 0.0f, -1.0f});
+        const float directionLength = std::sqrt(
+            direction.x * direction.x + direction.y * direction.y
+            + direction.z * direction.z);
+        if (directionLength > 0.000001f) {
+            direction.x /= directionLength;
+            direction.y /= directionLength;
+            direction.z /= directionLength;
+        }
+        const UINT positionRow = 12 + activeLightCount;
+        const UINT colorRow = 44 + activeLightCount;
+        const UINT directionRow = 76 + activeLightCount;
+        const UINT spotRow = 108 + activeLightCount;
+        writeFloat(&data[5], positionRow, 0, position.x);
+        writeFloat(&data[5], positionRow, 1, position.y);
+        writeFloat(&data[5], positionRow, 2, position.z);
+        writeFloat(&data[5], positionRow, 3, light.range);
+        writeFloat(&data[5], colorRow, 0, light.color.x);
+        writeFloat(&data[5], colorRow, 1, light.color.y);
+        writeFloat(&data[5], colorRow, 2, light.color.z);
+        writeFloat(&data[5], colorRow, 3, light.intensity);
+        writeFloat(&data[5], directionRow, 0, direction.x);
+        writeFloat(&data[5], directionRow, 1, direction.y);
+        writeFloat(&data[5], directionRow, 2, direction.z);
+        const float outer = std::cos(
+            light.coneAngleDegrees * 0.5f * kPi / 180.0f);
+        const float inner = std::cos(
+            std::max(0.0f, light.coneAngleDegrees - light.penumbraAngleDegrees)
+            * 0.5f * kPi / 180.0f);
+        writeFloat(&data[5], directionRow, 3, outer);
+        writeFloat(&data[5], spotRow, 0, inner);
+        ++activeLightCount;
+    }
+    writeFloat(&data[5], 11, 3, static_cast<float>(activeLightCount));
     for (UINT row = 0; row < 4; ++row) {
         for (UINT component = 0; component < 4; ++component) {
             writeFloat(
@@ -666,6 +845,47 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[7], 5, 0, 0.5f);
     writeFloat(&data[7], 5, 1, 0.5f);
 
+    return data;
+}
+
+std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
+    std::vector<std::uint8_t> data(768, 0);
+    writeFloat(&data, 0, 0, draw.baseColor[0]);
+    writeFloat(&data, 0, 1, draw.baseColor[1]);
+    writeFloat(&data, 0, 2, draw.baseColor[2]);
+    writeFloat(&data, 0, 3, draw.opacity);
+    writeFloat(&data, 1, 0, draw.emissiveColor[0]);
+    writeFloat(&data, 1, 1, draw.emissiveColor[1]);
+    writeFloat(&data, 1, 2, draw.emissiveColor[2]);
+    writeFloat(&data, 1, 3, draw.emissiveTexture != nullptr ? 1.0f : 0.0f);
+    writeFloat(&data, 2, 0, std::clamp(draw.gloss, 0.0f, 1.0f));
+    writeFloat(&data, 2, 1, std::clamp(draw.metallic, 0.0f, 1.0f));
+    writeFloat(&data, 2, 2, draw.normalTexture != nullptr ? 1.0f : 0.0f);
+    writeFloat(&data, 2, 3, draw.surfaceTexture != nullptr ? 1.0f : 0.0f);
+    writeFloat(&data, 3, 0, draw.diffuseTexture != nullptr ? 1.0f : 0.0f);
+    writeFloat(&data, 3, 1, draw.uTiling);
+    writeFloat(&data, 3, 2, draw.vTiling);
+    writeFloat(&data, 3, 3, draw.alphaTexture != nullptr ? 1.0f : 0.0f);
+    writeFloat(&data, 4, 0, draw.detailUTiling);
+    writeFloat(&data, 4, 1, draw.detailVTiling);
+    writeUint(&data, 5, 0, draw.liveryBaseTexture ? 1u : 0u);
+    writeUint(&data, 5, 1, draw.liveryAllowedSides);
+    writeUint(&data, 5, 2, static_cast<quint32>(draw.liverySideCount));
+    for (int side = 0; side < fh6::kLiverySideCount; ++side) {
+        for (int component = 0; component < 4; ++component) {
+            writeFloat(
+                &data, 6 + side, component,
+                draw.liverySourceRegions[side][component]);
+            writeFloat(
+                &data, 17 + side, component,
+                draw.liveryPaintRegions[side][component]);
+        }
+        for (int component = 0; component < 3; ++component) {
+            writeFloat(
+                &data, 28 + side, component,
+                draw.liveryFacing[side][component]);
+        }
+    }
     return data;
 }
 
@@ -960,11 +1180,13 @@ ComPtr<ID3D12RootSignature> createRootSignature(
     return signature;
 }
 
-D3D12_BLEND_DESC blendDescription() {
+D3D12_BLEND_DESC blendDescription(bool translucent = false) {
     D3D12_BLEND_DESC description{};
     D3D12_RENDER_TARGET_BLEND_DESC target{};
-    target.SrcBlend = D3D12_BLEND_ONE;
-    target.DestBlend = D3D12_BLEND_ZERO;
+    target.BlendEnable = translucent ? TRUE : FALSE;
+    target.SrcBlend = translucent ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
+    target.DestBlend = translucent
+        ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
     target.BlendOp = D3D12_BLEND_OP_ADD;
     target.SrcBlendAlpha = D3D12_BLEND_ONE;
     target.DestBlendAlpha = D3D12_BLEND_ZERO;
@@ -988,12 +1210,413 @@ D3D12_RASTERIZER_DESC rasterizerDescription() {
     return description;
 }
 
-D3D12_DEPTH_STENCIL_DESC depthDescription() {
+D3D12_DEPTH_STENCIL_DESC depthDescription(bool writeDepth = true) {
     D3D12_DEPTH_STENCIL_DESC description{};
     description.DepthEnable = TRUE;
-    description.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    description.DepthWriteMask = writeDepth
+        ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
     description.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     return description;
+}
+
+ComPtr<ID3D12PipelineState> createPanoramaPipeline(
+    ID3D12Device *device, ID3D12RootSignature *rootSignature,
+    QString *error, DXGI_FORMAT targetFormat = kTargetFormat) {
+    static constexpr const char *kShader = R"hlsl(
+cbuffer FrameData : register(b0, space2) {
+    row_major float4x4 viewProjection;
+    float4 cameraPosition;
+    float4 lightDirection;
+    float4 directColor;
+    float4 ambientColor;
+    float4 cameraForward;
+    float4 cameraRight;
+    float4 cameraUp;
+    float4 panoramaParameters;
+};
+Texture2D<float4> panoramaTexture : register(t120);
+SamplerState panoramaSampler : register(s0);
+
+struct PixelInput {
+    float4 position : SV_Position;
+    float2 ndc : TEXCOORD0;
+};
+
+PixelInput VSMain(uint vertexId : SV_VertexID) {
+    const float2 positions[3] = {
+        float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0)};
+    PixelInput output;
+    output.ndc = positions[vertexId];
+    output.position = float4(output.ndc, 1.0, 1.0);
+    return output;
+}
+
+float4 PSMain(PixelInput input) : SV_Target0 {
+    float3 direction = normalize(
+        cameraForward.xyz
+        + cameraRight.xyz * input.ndc.x * cameraRight.w * panoramaParameters.z
+        + cameraUp.xyz * input.ndc.y * panoramaParameters.z);
+    float theta = acos(saturate(abs(direction.y)));
+    float polar = theta * (2.0 / 3.14159265358979323846);
+    float radius = theta * (1.0 / 3.14159265358979323846)
+        * lerp(1.0, polar, saturate(panoramaParameters.x));
+    float2 horizontal = float2(direction.z, -direction.x);
+    float horizontalLength = length(horizontal);
+    float2 disk = horizontalLength > 0.000001
+        ? horizontal * (radius / horizontalLength) : float2(0.0, 0.0);
+    float2 uv = float2((disk.x + 0.5) * 0.5, disk.y + 0.5);
+    if (direction.y < 0.0) {
+        uv.x += 0.5;
+        uv.y = 1.0 - uv.y;
+    }
+    float3 color = panoramaTexture.SampleLevel(panoramaSampler, uv, 0).rgb
+        / max(panoramaParameters.y, 0.000001);
+    return float4(max(color, 0.0), 1.0);
+}
+)hlsl";
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+    ComPtr<ID3DBlob> diagnostics;
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    HRESULT result = D3DCompile(
+        kShader, std::strlen(kShader), "tokyo_panorama.hlsl", nullptr, nullptr,
+        "VSMain", "vs_5_1", flags, 0, &vertexShader, &diagnostics);
+    if (FAILED(result)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 panorama vertex shader compilation failed");
+        return {};
+    }
+    diagnostics.Reset();
+    result = D3DCompile(
+        kShader, std::strlen(kShader), "tokyo_panorama.hlsl", nullptr, nullptr,
+        "PSMain", "ps_5_1", flags, 0, &pixelShader, &diagnostics);
+    if (FAILED(result)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 panorama pixel shader compilation failed");
+        return {};
+    }
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+    description.pRootSignature = rootSignature;
+    description.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+    description.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
+    description.BlendState = blendDescription(false);
+    description.SampleMask = UINT_MAX;
+    description.RasterizerState = rasterizerDescription();
+    description.DepthStencilState = depthDescription(false);
+    description.DepthStencilState.DepthEnable = FALSE;
+    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    description.NumRenderTargets = 1;
+    description.RTVFormats[0] = targetFormat;
+    description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    description.SampleDesc.Count = 1;
+    ComPtr<ID3D12PipelineState> pipeline;
+    result = device->CreateGraphicsPipelineState(
+        &description, IID_PPV_ARGS(&pipeline));
+    if (FAILED(result)) {
+        *error = QStringLiteral("DX12 panorama pipeline creation failed: %1")
+            .arg(hresultText(result));
+        return {};
+    }
+    return pipeline;
+}
+
+ComPtr<ID3D12PipelineState> createMaterialPipeline(
+    ID3D12Device *device, ID3D12RootSignature *rootSignature,
+    QString *error, DXGI_FORMAT targetFormat = kTargetFormat,
+    bool translucent = false) {
+    static constexpr const char *kShader = R"hlsl(
+cbuffer FrameData : register(b0, space2) {
+    row_major float4x4 viewProjection;
+    float4 cameraPosition;
+    float4 lightDirection;
+    float4 directColor;
+    float4 ambientColor;
+    float4 cameraForward;
+    float4 cameraRight;
+    float4 cameraUp;
+    float4 panoramaParameters;
+    float4 pointLightPositionRange[32];
+    float4 pointLightColorIntensity[32];
+    float4 pointLightDirectionOuter[32];
+    float4 pointLightInner[32];
+};
+cbuffer MaterialData : register(b0, space3) {
+    float4 baseColor;
+    float4 emissiveColorAndMap;
+    float4 surfaceParameters;
+    float4 textureParameters;
+    float4 detailTextureParameters;
+    uint4 liveryParameters;
+    float4 liverySourceRegions[11];
+    float4 liveryPaintRegions[11];
+    float4 liveryFacing[11];
+};
+TextureCube<float4> diffuseEnvironment : register(t0);
+Texture2D<float4> baseColorTexture : register(t0, space1);
+Texture2D<float4> normalTexture : register(t1, space1);
+Texture2D<float4> surfaceTexture : register(t2, space1);
+Texture2D<float4> emissiveTexture : register(t3, space1);
+Texture2D<float4> liveryMasks[11] : register(t4, space1);
+Texture2D<float4> alphaTexture : register(t15, space1);
+SamplerState materialSampler : register(s0);
+
+struct VertexInput {
+    float3 position : POSITION;
+    float3 normal : NORMAL;
+    float4 tangent : TANGENT;
+    float2 uv : TEXCOORD0;
+    float2 uv2 : TEXCOORD2;
+};
+struct PixelInput {
+    float4 position : SV_Position;
+    float3 worldPosition : WORLDPOS;
+    float3 normal : NORMAL;
+    float4 tangent : TANGENT;
+    float2 uv : TEXCOORD0;
+    float2 detailUv : TEXCOORD2;
+};
+
+PixelInput VSMain(VertexInput input) {
+    PixelInput output;
+    output.position = mul(viewProjection, float4(input.position, 1.0));
+    output.worldPosition = input.position;
+    output.normal = input.normal;
+    output.tangent = input.tangent;
+    output.uv = input.uv;
+    output.detailUv = input.uv2;
+    return output;
+}
+
+float3 fresnelSchlick(float cosine, float3 f0) {
+    return f0 + (1.0 - f0) * pow(saturate(1.0 - cosine), 5.0);
+}
+
+float2 canvasToUv(float2 canvas) {
+    return float2((canvas.x + 1024.0) / 2048.0,
+                  (512.0 - canvas.y) / 1024.0);
+}
+
+float4 PSMain(PixelInput input) : SV_Target0 {
+    float2 uv = input.uv * textureParameters.yz;
+    float2 detailUv = input.detailUv * detailTextureParameters.xy;
+    float4 authoredBase = float4(1, 1, 1, 1);
+    float3 albedo = baseColor.rgb;
+    if (liveryParameters.x != 0) {
+        float2 atlasUv = float2(input.uv.x * 0.5, input.uv.y);
+        float2 paintUv = float2(atlasUv.x, 1.0 - atlasUv.y);
+        float bestCoverage = 0.0;
+        int coveredSide = -1;
+        [loop]
+        for (uint side = 0; side < min(liveryParameters.z, 11u); ++side) {
+            if ((liveryParameters.y & (1u << side)) == 0
+                || dot(liveryFacing[side].xyz, normalize(input.normal)) <= 0.0) {
+                continue;
+            }
+            float coverage = liveryMasks[side].Sample(materialSampler, atlasUv).r;
+            if (coverage > bestCoverage) {
+                bestCoverage = coverage;
+                coveredSide = int(side);
+            }
+        }
+        if (coveredSide >= 0) {
+            float4 sourceRegion = liverySourceRegions[coveredSide];
+            float2 sourceStart = canvasToUv(float2(sourceRegion.x, sourceRegion.z));
+            float2 sourceEnd = canvasToUv(float2(sourceRegion.y, sourceRegion.w));
+            float2 sourceRange = sourceEnd - sourceStart;
+            if (abs(sourceRange.x) > 0.000001 && abs(sourceRange.y) > 0.000001) {
+                float2 sectionUv = (atlasUv - sourceStart) / sourceRange;
+                if (coveredSide == 5 || coveredSide == 6 || coveredSide == 7) {
+                    sectionUv = sectionUv.yx;
+                }
+                float4 paintRegion = liveryPaintRegions[coveredSide];
+                paintUv = float2(
+                    lerp(paintRegion.x, paintRegion.y, sectionUv.x),
+                    lerp(paintRegion.z, paintRegion.w, sectionUv.y));
+            }
+        }
+        authoredBase = bestCoverage > 0.5
+            ? baseColorTexture.Sample(materialSampler, paintUv)
+            : float4(0, 0, 0, 0);
+        float3 liveryColor = pow(max(authoredBase.rgb, 0.0), 2.2);
+        albedo = lerp(baseColor.rgb, liveryColor, authoredBase.a);
+    } else if (textureParameters.x > 0.5) {
+        authoredBase = baseColorTexture.Sample(materialSampler, uv);
+        authoredBase.rgb = pow(max(authoredBase.rgb, 0.0), 2.2);
+        albedo = baseColor.rgb * authoredBase.rgb;
+    }
+    albedo = saturate(albedo);
+
+    float3 n = normalize(input.normal);
+    if (surfaceParameters.z > 0.5) {
+        float3 t = normalize(input.tangent.xyz);
+        float3 b = normalize(cross(n, t) * input.tangent.w);
+        float3 sampledNormal = normalTexture.Sample(materialSampler, detailUv).xyz * 2.0 - 1.0;
+        n = normalize(t * sampledNormal.x + b * sampledNormal.y + n * sampledNormal.z);
+    }
+
+    float roughness = saturate(1.0 - surfaceParameters.x);
+    float metallic = saturate(surfaceParameters.y);
+    float ao = 1.0;
+    if (surfaceParameters.w > 0.5) {
+        float3 rmao = surfaceTexture.Sample(materialSampler, detailUv).rgb;
+        roughness = saturate(rmao.r);
+        metallic = saturate(rmao.g);
+        ao = saturate(rmao.b);
+    }
+    roughness = max(roughness, 0.045);
+
+    float3 v = normalize(cameraPosition.xyz - input.worldPosition);
+    float3 l = normalize(-lightDirection.xyz);
+    float3 h = normalize(v + l);
+    float ndotl = saturate(dot(n, l));
+    float ndotv = saturate(dot(n, v));
+    float ndoth = saturate(dot(n, h));
+    float vdoth = saturate(dot(v, h));
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float denominator = ndoth * ndoth * (alpha2 - 1.0) + 1.0;
+    float distribution = alpha2 / max(3.14159265 * denominator * denominator, 0.0001);
+    float k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+    float geometryV = ndotv / max(ndotv * (1.0 - k) + k, 0.0001);
+    float geometryL = ndotl / max(ndotl * (1.0 - k) + k, 0.0001);
+    float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    float3 fresnel = fresnelSchlick(vdoth, f0);
+    float3 specular = distribution * geometryV * geometryL * fresnel
+        / max(4.0 * ndotv * ndotl, 0.0001);
+    float3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo / 3.14159265;
+    float3 environment = diffuseEnvironment.SampleLevel(materialSampler, n, 0).rgb;
+    float3 color = (diffuse + specular) * directColor.rgb * ndotl;
+    [loop]
+    for (uint pointIndex = 0;
+         pointIndex < min((uint)panoramaParameters.w, 32u); ++pointIndex) {
+        float3 toLight = pointLightPositionRange[pointIndex].xyz
+            - input.worldPosition;
+        float distanceToLight = length(toLight);
+        float3 pointDirection = toLight / max(distanceToLight, 0.0001);
+        float rangeFade = saturate(
+            1.0 - distanceToLight / pointLightPositionRange[pointIndex].w);
+        rangeFade *= rangeFade;
+        float coneCosine = dot(
+            -pointDirection, pointLightDirectionOuter[pointIndex].xyz);
+        float spot = smoothstep(
+            pointLightDirectionOuter[pointIndex].w,
+            pointLightInner[pointIndex].x, coneCosine);
+        float pointNdotL = saturate(dot(n, pointDirection));
+        float3 pointHalf = normalize(v + pointDirection);
+        float pointNdotH = saturate(dot(n, pointHalf));
+        float pointVdotH = saturate(dot(v, pointHalf));
+        float pointDenominator = pointNdotH * pointNdotH * (alpha2 - 1.0) + 1.0;
+        float pointDistribution = alpha2 / max(
+            3.14159265 * pointDenominator * pointDenominator, 0.0001);
+        float pointGeometryL = pointNdotL
+            / max(pointNdotL * (1.0 - k) + k, 0.0001);
+        float3 pointFresnel = fresnelSchlick(pointVdotH, f0);
+        float3 pointSpecular = pointDistribution * geometryV * pointGeometryL
+            * pointFresnel / max(4.0 * ndotv * pointNdotL, 0.0001);
+        float3 pointDiffuse = (1.0 - pointFresnel) * (1.0 - metallic)
+            * albedo / 3.14159265;
+        float inverseSquare = rcp(max(distanceToLight * distanceToLight, 0.25));
+        float radiance = pointLightColorIntensity[pointIndex].w
+            * 0.001 * inverseSquare * rangeFade * spot;
+        color += (pointDiffuse + pointSpecular)
+            * pointLightColorIntensity[pointIndex].rgb * radiance * pointNdotL;
+    }
+    color += albedo * (ambientColor.rgb + environment * 0.35) * ao;
+    float3 emission = emissiveColorAndMap.rgb;
+    if (emissiveColorAndMap.w > 0.5) {
+        float3 authoredEmission = emissiveTexture.Sample(materialSampler, detailUv).rgb;
+        emission += pow(max(authoredEmission, 0.0), 2.2);
+    }
+    color += emission;
+    float outputAlpha = baseColor.a;
+    if (liveryParameters.x == 0 && textureParameters.x > 0.5) {
+        outputAlpha *= authoredBase.a;
+    }
+    if (textureParameters.w > 0.5) {
+        outputAlpha *= alphaTexture.Sample(materialSampler, detailUv).r;
+    }
+    if (outputAlpha < 0.02) {
+        discard;
+    }
+    return float4(max(color, 0.0), saturate(outputAlpha));
+}
+)hlsl";
+
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+    ComPtr<ID3DBlob> diagnostics;
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#ifndef NDEBUG
+    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+    flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
+#endif
+    HRESULT result = D3DCompile(
+        kShader, std::strlen(kShader), "original_material_preview.hlsl",
+        nullptr, nullptr, "VSMain", "vs_5_1", flags, 0,
+        &vertexShader, &diagnostics);
+    if (FAILED(result)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 material vertex shader compilation failed");
+        return {};
+    }
+    diagnostics.Reset();
+    result = D3DCompile(
+        kShader, std::strlen(kShader), "original_material_preview.hlsl",
+        nullptr, nullptr, "PSMain", "ps_5_1", flags, 0,
+        &pixelShader, &diagnostics);
+    if (FAILED(result)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 material pixel shader compilation failed");
+        return {};
+    }
+
+    constexpr std::array<D3D12_INPUT_ELEMENT_DESC, 5> inputLayout = {{
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 40,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 2, DXGI_FORMAT_R32G32_FLOAT, 0, 48,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    }};
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+    description.pRootSignature = rootSignature;
+    description.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+    description.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
+    description.BlendState = blendDescription(translucent);
+    description.SampleMask = UINT_MAX;
+    description.RasterizerState = rasterizerDescription();
+    description.DepthStencilState = depthDescription(!translucent);
+    description.InputLayout = {inputLayout.data(), static_cast<UINT>(inputLayout.size())};
+    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    description.NumRenderTargets = 1;
+    description.RTVFormats[0] = targetFormat;
+    description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    description.SampleDesc.Count = 1;
+    ComPtr<ID3D12PipelineState> pipeline;
+    result = device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&pipeline));
+    if (FAILED(result)) {
+        *error = QStringLiteral("DX12 material pipeline creation failed: %1")
+            .arg(hresultText(result));
+        return {};
+    }
+    return pipeline;
 }
 
 ComPtr<ID3D12PipelineState> createExactPipeline(
@@ -1117,7 +1740,16 @@ OriginalDx12BackendStatus probeOriginalDx12Backend(
         device.Get(), rootSignature.Get(), scene.floorProgram, &status.error);
     const ComPtr<ID3D12PipelineState> defaultPipeline = createExactPipeline(
         device.Get(), rootSignature.Get(), scene.defaultProgram, &status.error);
-    if (floorPipeline == nullptr || defaultPipeline == nullptr) {
+    const ComPtr<ID3D12PipelineState> materialPipeline = createMaterialPipeline(
+        device.Get(), rootSignature.Get(), &status.error);
+    const ComPtr<ID3D12PipelineState> translucentMaterialPipeline =
+        createMaterialPipeline(
+            device.Get(), rootSignature.Get(), &status.error, kTargetFormat, true);
+    const ComPtr<ID3D12PipelineState> panoramaPipeline = createPanoramaPipeline(
+        device.Get(), rootSignature.Get(), &status.error);
+    if (floorPipeline == nullptr || defaultPipeline == nullptr
+        || materialPipeline == nullptr || translucentMaterialPipeline == nullptr
+        || panoramaPipeline == nullptr) {
         return status;
     }
 
@@ -1204,8 +1836,21 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         ? createExactPipeline(
               device.Get(), rootSignature.Get(), scene.defaultProgram, &setupError)
         : ComPtr<ID3D12PipelineState>{};
+    const ComPtr<ID3D12PipelineState> materialPipeline = rootSignature != nullptr
+        ? createMaterialPipeline(device.Get(), rootSignature.Get(), &setupError)
+        : ComPtr<ID3D12PipelineState>{};
+    const ComPtr<ID3D12PipelineState> translucentMaterialPipeline =
+        rootSignature != nullptr
+        ? createMaterialPipeline(
+              device.Get(), rootSignature.Get(), &setupError, kTargetFormat, true)
+        : ComPtr<ID3D12PipelineState>{};
+    const ComPtr<ID3D12PipelineState> panoramaPipeline = rootSignature != nullptr
+        ? createPanoramaPipeline(
+              device.Get(), rootSignature.Get(), &setupError, kTargetFormat)
+        : ComPtr<ID3D12PipelineState>{};
     if (rootSignature == nullptr || floorPipeline == nullptr
-        || defaultPipeline == nullptr) {
+        || defaultPipeline == nullptr || materialPipeline == nullptr
+        || translucentMaterialPipeline == nullptr || panoramaPipeline == nullptr) {
         frame.error = setupError;
         return frame;
     }
@@ -1243,9 +1888,32 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
         DrawResources draw;
         draw.geometry = prepareGeometry(
-            source.geometry, source.placement, source.diffuseUvChannel);
+            source.geometry, source.placement, source.diffuseUvChannel,
+            source.rawMaterialUv);
         draw.family = source.family;
         draw.diffuseTexture = source.diffuseTexture;
+        draw.alphaTexture = source.alphaTexture;
+        draw.normalTexture = source.normalTexture;
+        draw.surfaceTexture = source.surfaceTexture;
+        draw.emissiveTexture = source.emissiveTexture;
+        draw.baseColor = source.baseColor;
+        draw.emissiveColor = source.emissiveColor;
+        draw.opacity = source.opacity;
+        draw.gloss = source.gloss;
+        draw.metallic = source.metallic;
+        draw.uTiling = source.uTiling;
+        draw.vTiling = source.vTiling;
+        draw.detailUTiling = source.detailUTiling;
+        draw.detailVTiling = source.detailVTiling;
+        draw.translucent = source.translucent;
+        draw.liveryBaseTexture = source.liveryBaseTexture;
+        draw.liveryAllowedSides = source.liveryAllowedSides;
+        if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
+            draw.liverySideCount = scene.liveryMapping.sideCount;
+            draw.liverySourceRegions = scene.liveryMapping.sourceRegions;
+            draw.liveryPaintRegions = scene.liveryMapping.paintRegions;
+            draw.liveryFacing = scene.liveryMapping.facing;
+        }
         const UINT64 vertexBytes =
             static_cast<UINT64>(draw.geometry.vertices.size() * sizeof(Vertex));
         const UINT64 indexBytes = static_cast<UINT64>(
@@ -1272,11 +1940,19 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.indexView = {
             draw.indexBuffer->GetGPUVirtualAddress(),
             static_cast<UINT>(indexBytes), DXGI_FORMAT_R32_UINT};
+        draw.materialConstants = createConstantBuffer(
+            device.Get(), materialConstantData(draw));
+        if (draw.materialConstants == nullptr) {
+            frame.error = QStringLiteral("DX12 material constant upload failed");
+            return frame;
+        }
         draws.push_back(std::move(draw));
     }
 
     const std::array<std::vector<std::uint8_t>, 8> constantData =
-        shaderConstantData(camera, size, scene.lighting);
+        shaderConstantData(
+            camera, size, scene.lighting, scene.authoredLights,
+            scene.environment.panorama);
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
     for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
         constantBuffers[index] =
@@ -1334,35 +2010,79 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             cpuHandleAt(kMaterialDescriptorStart + static_cast<UINT>(index)));
         materialTextures.push_back(std::move(texture));
     }
-    std::vector<UploadedTexture> authoredDiffuseTextures;
-    authoredDiffuseTextures.reserve(draws.size());
+    std::vector<UploadedTexture> authoredMaterialTextures;
+    authoredMaterialTextures.reserve(draws.size() * 5);
+    std::unordered_map<const fh6::OriginalShaderMaterialTexture *, std::size_t>
+        authoredTextureIndices;
+    std::array<UploadedTexture, fh6::kLiverySideCount> liveryMaskTextures;
+    if (scene.liveryMapping.valid()) {
+        for (int side = 0; side < fh6::kLiverySideCount; ++side) {
+            if (!scene.liveryMapping.masks[side].valid()) {
+                continue;
+            }
+            liveryMaskTextures[side] = uploadRgba8Texture(
+                device.Get(), commands.Get(),
+                scene.liveryMapping.masks[side].image);
+            if (liveryMaskTextures[side].texture == nullptr) {
+                frame.error = QStringLiteral("DX12 livery mask upload failed");
+                return frame;
+            }
+        }
+    }
     for (std::size_t drawIndex = 0; drawIndex < draws.size(); ++drawIndex) {
         DrawResources &draw = draws[drawIndex];
         draw.materialDescriptorStart = kFixedDescriptorCount
             + static_cast<UINT>(drawIndex) * kMaterialDescriptorCount;
         const D3D12_SHADER_RESOURCE_VIEW_DESC fallbackView =
             texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
-        for (std::size_t index = 0; index < materialTextures.size(); ++index) {
+        constexpr std::array<std::size_t, 4> fallbackIndices = {1, 6, 0, 4};
+        for (std::size_t index = 0; index < fallbackIndices.size(); ++index) {
             device->CreateShaderResourceView(
-                materialTextures[index].texture.Get(), &fallbackView,
+                materialTextures[fallbackIndices[index]].texture.Get(), &fallbackView,
                 cpuHandleAt(
                     draw.materialDescriptorStart + static_cast<UINT>(index)));
         }
-        if (draw.diffuseTexture == nullptr || !draw.diffuseTexture->valid()) {
-            continue;
-        }
-        UploadedTexture texture = uploadRgba8Texture(
-            device.Get(), commands.Get(), draw.diffuseTexture->image);
-        if (texture.texture == nullptr) {
-            frame.error = QStringLiteral("Tokyo diffuse texture upload failed");
-            return frame;
-        }
-        const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-            texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
         device->CreateShaderResourceView(
-            texture.texture.Get(), &view,
-            cpuHandleAt(draw.materialDescriptorStart + 1));
-        authoredDiffuseTextures.push_back(std::move(texture));
+            materialTextures[1].texture.Get(), &fallbackView,
+            cpuHandleAt(draw.materialDescriptorStart + 15u));
+        const std::array<std::pair<
+            std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 5>
+            sources = {{{draw.diffuseTexture, 0u}, {draw.normalTexture, 1u},
+                        {draw.surfaceTexture, 2u}, {draw.emissiveTexture, 3u},
+                        {draw.alphaTexture, 15u}}};
+        for (const auto &[source, slot] : sources) {
+            if (source == nullptr || !source->valid()) {
+                continue;
+            }
+            const auto [found, inserted] = authoredTextureIndices.emplace(
+                source.get(), authoredMaterialTextures.size());
+            if (inserted) {
+                UploadedTexture texture = uploadRgba8Texture(
+                    device.Get(), commands.Get(), source->image);
+                if (texture.texture == nullptr) {
+                    frame.error = QStringLiteral(
+                        "DX12 authored material texture upload failed");
+                    return frame;
+                }
+                authoredMaterialTextures.push_back(std::move(texture));
+            }
+            const D3D12_SHADER_RESOURCE_VIEW_DESC view =
+                texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+            device->CreateShaderResourceView(
+                authoredMaterialTextures[found->second].texture.Get(), &view,
+                cpuHandleAt(draw.materialDescriptorStart + static_cast<UINT>(slot)));
+        }
+        if (draw.liveryBaseTexture && scene.liveryMapping.valid()) {
+            for (int side = 0; side < fh6::kLiverySideCount; ++side) {
+                if (liveryMaskTextures[side].texture == nullptr) {
+                    continue;
+                }
+                device->CreateShaderResourceView(
+                    liveryMaskTextures[side].texture.Get(), &fallbackView,
+                    cpuHandleAt(draw.materialDescriptorStart + 4u
+                                + static_cast<UINT>(side)));
+            }
+        }
     }
     UploadedTexture diffuseCube = uploadCubeTexture(
         device.Get(), commands.Get(), scene.environment.diffuseCubemap,
@@ -1380,6 +2100,16 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         diffuseCube.texture->GetDesc().MipLevels;
     device->CreateShaderResourceView(
         diffuseCube.texture.Get(), &diffuseView, cpuHandleAt(0));
+    UploadedTexture panoramaTexture = uploadBc6Panorama(
+        device.Get(), commands.Get(), scene.environment.panorama.texture);
+    if (panoramaTexture.texture == nullptr) {
+        frame.error = QStringLiteral("Tokyo staged-space panorama upload failed");
+        return frame;
+    }
+    const D3D12_SHADER_RESOURCE_VIEW_DESC panoramaView =
+        texture2DView(DXGI_FORMAT_BC6H_UF16);
+    device->CreateShaderResourceView(
+        panoramaTexture.texture.Get(), &panoramaView, cpuHandleAt(120));
     // Tokyo House does not use the homespace material contract. Leaving the
     // specular-cubemap SRV null prevents that compatibility shader from projecting
     // the garage lightprobe across unresolved building surfaces. The uniform
@@ -1455,16 +2185,25 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     commands->SetGraphicsRootDescriptorTable(10, gpuHandleAt(140));
     commands->SetGraphicsRootDescriptorTable(11, gpuHandleAt(156));
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    for (const DrawResources &draw : draws) {
-        commands->SetGraphicsRootDescriptorTable(
-            9, gpuHandleAt(draw.materialDescriptorStart));
+    commands->SetPipelineState(panoramaPipeline.Get());
+    commands->DrawInstanced(3, 1, 0, 0);
+    for (const bool translucentPass : {false, true}) {
         commands->SetPipelineState(
-            draw.family == fh6::OriginalShaderSurfaceFamily::Floor
-                ? floorPipeline.Get() : defaultPipeline.Get());
-        commands->IASetVertexBuffers(0, 1, &draw.vertexView);
-        commands->IASetIndexBuffer(&draw.indexView);
-        commands->DrawIndexedInstanced(
-            static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
+            translucentPass ? translucentMaterialPipeline.Get()
+                            : materialPipeline.Get());
+        for (const DrawResources &draw : draws) {
+            if (draw.translucent != translucentPass) {
+                continue;
+            }
+            commands->SetGraphicsRootDescriptorTable(
+                9, gpuHandleAt(draw.materialDescriptorStart));
+            commands->SetGraphicsRootConstantBufferView(
+                7, draw.materialConstants->GetGPUVirtualAddress());
+            commands->IASetVertexBuffers(0, 1, &draw.vertexView);
+            commands->IASetIndexBuffer(&draw.indexView);
+            commands->DrawIndexedInstanced(
+                static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
+        }
     }
     const D3D12_RESOURCE_BARRIER targetBarrier = transition(
         target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -1589,6 +2328,9 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12RootSignature> rootSignature;
     ComPtr<ID3D12PipelineState> floorPipeline;
     ComPtr<ID3D12PipelineState> defaultPipeline;
+    ComPtr<ID3D12PipelineState> materialPipeline;
+    ComPtr<ID3D12PipelineState> translucentMaterialPipeline;
+    ComPtr<ID3D12PipelineState> panoramaPipeline;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -1602,9 +2344,13 @@ struct OriginalDx12ViewportRenderer::Impl {
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
     std::vector<DrawResources> draws;
     std::vector<UploadedTexture> materialTextures;
-    std::vector<UploadedTexture> authoredDiffuseTextures;
+    std::vector<UploadedTexture> authoredMaterialTextures;
+    std::array<UploadedTexture, fh6::kLiverySideCount> liveryMaskTextures;
     UploadedTexture diffuseCube;
+    UploadedTexture panoramaTexture;
     fh6::OriginalShaderLighting lighting;
+    std::vector<fh6::OriginalShaderPointLight> authoredLights;
+    fh6::GaragePanoramaResources panorama;
     QString adapterName;
     QString failure;
     HANDLE completionEvent = nullptr;
@@ -1678,6 +2424,8 @@ struct OriginalDx12ViewportRenderer::Impl {
         const QSize &size, const OriginalDx12Camera &camera) {
         viewportSize = size;
         lighting = scene.lighting;
+        authoredLights = scene.authoredLights;
+        panorama = scene.environment.panorama;
         ComPtr<ID3D12Debug> debug;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
             debug->EnableDebugLayer();
@@ -1718,8 +2466,25 @@ struct OriginalDx12ViewportRenderer::Impl {
                   device.Get(), rootSignature.Get(), scene.defaultProgram, &failure,
                   DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
             : ComPtr<ID3D12PipelineState>{};
+        materialPipeline = rootSignature != nullptr
+            ? createMaterialPipeline(
+                  device.Get(), rootSignature.Get(), &failure,
+                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+            : ComPtr<ID3D12PipelineState>{};
+        translucentMaterialPipeline = rootSignature != nullptr
+            ? createMaterialPipeline(
+                  device.Get(), rootSignature.Get(), &failure,
+                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, true)
+            : ComPtr<ID3D12PipelineState>{};
+        panoramaPipeline = rootSignature != nullptr
+            ? createPanoramaPipeline(
+                  device.Get(), rootSignature.Get(), &failure,
+                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+            : ComPtr<ID3D12PipelineState>{};
         if (rootSignature == nullptr || floorPipeline == nullptr
-            || defaultPipeline == nullptr) {
+            || defaultPipeline == nullptr || materialPipeline == nullptr
+            || translucentMaterialPipeline == nullptr
+            || panoramaPipeline == nullptr) {
             return false;
         }
         D3D12_COMMAND_QUEUE_DESC queueDescription{};
@@ -1767,9 +2532,32 @@ struct OriginalDx12ViewportRenderer::Impl {
         for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
             DrawResources draw;
             draw.geometry = prepareGeometry(
-                source.geometry, source.placement, source.diffuseUvChannel);
+                source.geometry, source.placement, source.diffuseUvChannel,
+                source.rawMaterialUv);
             draw.family = source.family;
             draw.diffuseTexture = source.diffuseTexture;
+            draw.alphaTexture = source.alphaTexture;
+            draw.normalTexture = source.normalTexture;
+            draw.surfaceTexture = source.surfaceTexture;
+            draw.emissiveTexture = source.emissiveTexture;
+            draw.baseColor = source.baseColor;
+            draw.emissiveColor = source.emissiveColor;
+            draw.opacity = source.opacity;
+            draw.gloss = source.gloss;
+            draw.metallic = source.metallic;
+            draw.uTiling = source.uTiling;
+            draw.vTiling = source.vTiling;
+            draw.detailUTiling = source.detailUTiling;
+            draw.detailVTiling = source.detailVTiling;
+            draw.translucent = source.translucent;
+            draw.liveryBaseTexture = source.liveryBaseTexture;
+            draw.liveryAllowedSides = source.liveryAllowedSides;
+            if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
+                draw.liverySideCount = scene.liveryMapping.sideCount;
+                draw.liverySourceRegions = scene.liveryMapping.sourceRegions;
+                draw.liveryPaintRegions = scene.liveryMapping.paintRegions;
+                draw.liveryFacing = scene.liveryMapping.facing;
+            }
             const UINT64 vertexBytes = static_cast<UINT64>(
                 draw.geometry.vertices.size() * sizeof(Vertex));
             const UINT64 indexBytes = static_cast<UINT64>(
@@ -1796,10 +2584,17 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.indexView = {
                 draw.indexBuffer->GetGPUVirtualAddress(),
                 static_cast<UINT>(indexBytes), DXGI_FORMAT_R32_UINT};
+            draw.materialConstants = createConstantBuffer(
+                device.Get(), materialConstantData(draw));
+            if (draw.materialConstants == nullptr) {
+                failure = QStringLiteral("D3D12 viewport material constants failed");
+                return false;
+            }
             draws.push_back(std::move(draw));
         }
 
-        const auto constants = shaderConstantData(camera, size, lighting);
+        const auto constants = shaderConstantData(
+            camera, size, lighting, authoredLights, panorama);
         for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
             constantBuffers[index] =
                 createConstantBuffer(device.Get(), constants[index]);
@@ -1847,34 +2642,78 @@ struct OriginalDx12ViewportRenderer::Impl {
                 cpuHandleAt(kMaterialDescriptorStart + static_cast<UINT>(index)));
             materialTextures.push_back(std::move(texture));
         }
-        authoredDiffuseTextures.reserve(draws.size());
+        authoredMaterialTextures.reserve(draws.size() * 5);
+        std::unordered_map<const fh6::OriginalShaderMaterialTexture *, std::size_t>
+            authoredTextureIndices;
+        if (scene.liveryMapping.valid()) {
+            for (int side = 0; side < fh6::kLiverySideCount; ++side) {
+                if (!scene.liveryMapping.masks[side].valid()) {
+                    continue;
+                }
+                liveryMaskTextures[side] = uploadRgba8Texture(
+                    device.Get(), commands.Get(),
+                    scene.liveryMapping.masks[side].image);
+                if (liveryMaskTextures[side].texture == nullptr) {
+                    failure = QStringLiteral("D3D12 viewport livery mask upload failed");
+                    return false;
+                }
+            }
+        }
         for (std::size_t drawIndex = 0; drawIndex < draws.size(); ++drawIndex) {
             DrawResources &draw = draws[drawIndex];
             draw.materialDescriptorStart = kFixedDescriptorCount
                 + static_cast<UINT>(drawIndex) * kMaterialDescriptorCount;
             const D3D12_SHADER_RESOURCE_VIEW_DESC fallbackView =
                 texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
-            for (std::size_t index = 0; index < materialTextures.size(); ++index) {
+            constexpr std::array<std::size_t, 4> fallbackIndices = {1, 6, 0, 4};
+            for (std::size_t index = 0; index < fallbackIndices.size(); ++index) {
                 device->CreateShaderResourceView(
-                    materialTextures[index].texture.Get(), &fallbackView,
+                    materialTextures[fallbackIndices[index]].texture.Get(), &fallbackView,
                     cpuHandleAt(
                         draw.materialDescriptorStart + static_cast<UINT>(index)));
             }
-            if (draw.diffuseTexture == nullptr || !draw.diffuseTexture->valid()) {
-                continue;
-            }
-            UploadedTexture texture = uploadRgba8Texture(
-                device.Get(), commands.Get(), draw.diffuseTexture->image);
-            if (texture.texture == nullptr) {
-                failure = QStringLiteral("D3D12 viewport Tokyo diffuse upload failed");
-                return false;
-            }
-            const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-                texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
             device->CreateShaderResourceView(
-                texture.texture.Get(), &view,
-                cpuHandleAt(draw.materialDescriptorStart + 1));
-            authoredDiffuseTextures.push_back(std::move(texture));
+                materialTextures[1].texture.Get(), &fallbackView,
+                cpuHandleAt(draw.materialDescriptorStart + 15u));
+            const std::array<std::pair<
+                std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 5>
+                sources = {{{draw.diffuseTexture, 0u}, {draw.normalTexture, 1u},
+                            {draw.surfaceTexture, 2u}, {draw.emissiveTexture, 3u},
+                            {draw.alphaTexture, 15u}}};
+            for (const auto &[source, slot] : sources) {
+                if (source == nullptr || !source->valid()) {
+                    continue;
+                }
+                const auto [found, inserted] = authoredTextureIndices.emplace(
+                    source.get(), authoredMaterialTextures.size());
+                if (inserted) {
+                    UploadedTexture texture = uploadRgba8Texture(
+                        device.Get(), commands.Get(), source->image);
+                    if (texture.texture == nullptr) {
+                        failure = QStringLiteral(
+                            "D3D12 viewport authored material upload failed");
+                        return false;
+                    }
+                    authoredMaterialTextures.push_back(std::move(texture));
+                }
+                const D3D12_SHADER_RESOURCE_VIEW_DESC view =
+                    texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+                device->CreateShaderResourceView(
+                    authoredMaterialTextures[found->second].texture.Get(), &view,
+                    cpuHandleAt(
+                        draw.materialDescriptorStart + static_cast<UINT>(slot)));
+            }
+            if (draw.liveryBaseTexture && scene.liveryMapping.valid()) {
+                for (int side = 0; side < fh6::kLiverySideCount; ++side) {
+                    if (liveryMaskTextures[side].texture == nullptr) {
+                        continue;
+                    }
+                    device->CreateShaderResourceView(
+                        liveryMaskTextures[side].texture.Get(), &fallbackView,
+                        cpuHandleAt(draw.materialDescriptorStart + 4u
+                                    + static_cast<UINT>(side)));
+                }
+            }
         }
         diffuseCube = uploadCubeTexture(
             device.Get(), commands.Get(), scene.environment.diffuseCubemap,
@@ -1891,6 +2730,16 @@ struct OriginalDx12ViewportRenderer::Impl {
         diffuseView.TextureCube.MipLevels = diffuseCube.texture->GetDesc().MipLevels;
         device->CreateShaderResourceView(
             diffuseCube.texture.Get(), &diffuseView, cpuHandleAt(0));
+        panoramaTexture = uploadBc6Panorama(
+            device.Get(), commands.Get(), scene.environment.panorama.texture);
+        if (panoramaTexture.texture == nullptr) {
+            failure = QStringLiteral("Tokyo staged-space panorama upload failed");
+            return false;
+        }
+        const D3D12_SHADER_RESOURCE_VIEW_DESC panoramaView =
+            texture2DView(DXGI_FORMAT_BC6H_UF16);
+        device->CreateShaderResourceView(
+            panoramaTexture.texture.Get(), &panoramaView, cpuHandleAt(120));
         // Keep the specular-cubemap descriptor null for the Tokyo compatibility
         // material; see the offscreen path above.
 
@@ -1960,9 +2809,12 @@ struct OriginalDx12ViewportRenderer::Impl {
     }
 
     bool renderFrame(const OriginalDx12Camera &camera) {
-        const auto constants = shaderConstantData(camera, viewportSize, lighting);
+        const auto constants = shaderConstantData(
+            camera, viewportSize, lighting, authoredLights, panorama);
         if (!uploadBuffer(
-                constantBuffers[3].Get(), constants[3].data(), constants[3].size())) {
+                constantBuffers[3].Get(), constants[3].data(), constants[3].size())
+            || !uploadBuffer(
+                constantBuffers[5].Get(), constants[5].data(), constants[5].size())) {
             failure = QStringLiteral("D3D12 viewport camera upload failed");
             return false;
         }
@@ -2015,16 +2867,25 @@ struct OriginalDx12ViewportRenderer::Impl {
         commands->SetGraphicsRootDescriptorTable(10, gpuHandleAt(140));
         commands->SetGraphicsRootDescriptorTable(11, gpuHandleAt(156));
         commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        for (const DrawResources &draw : draws) {
-            commands->SetGraphicsRootDescriptorTable(
-                9, gpuHandleAt(draw.materialDescriptorStart));
+        commands->SetPipelineState(panoramaPipeline.Get());
+        commands->DrawInstanced(3, 1, 0, 0);
+        for (const bool translucentPass : {false, true}) {
             commands->SetPipelineState(
-                draw.family == fh6::OriginalShaderSurfaceFamily::Floor
-                    ? floorPipeline.Get() : defaultPipeline.Get());
-            commands->IASetVertexBuffers(0, 1, &draw.vertexView);
-            commands->IASetIndexBuffer(&draw.indexView);
-            commands->DrawIndexedInstanced(
-                static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
+                translucentPass ? translucentMaterialPipeline.Get()
+                                : materialPipeline.Get());
+            for (const DrawResources &draw : draws) {
+                if (draw.translucent != translucentPass) {
+                    continue;
+                }
+                commands->SetGraphicsRootDescriptorTable(
+                    9, gpuHandleAt(draw.materialDescriptorStart));
+                commands->SetGraphicsRootConstantBufferView(
+                    7, draw.materialConstants->GetGPUVirtualAddress());
+                commands->IASetVertexBuffers(0, 1, &draw.vertexView);
+                commands->IASetIndexBuffer(&draw.indexView);
+                commands->DrawIndexedInstanced(
+                    static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
+            }
         }
         const D3D12_RESOURCE_BARRIER endBarrier = transition(
             backBuffers[bufferIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,

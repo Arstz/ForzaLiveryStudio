@@ -318,7 +318,7 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 
 if(WIN32)
     target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
-        d3d12 dxgi dxguid)
+        d3d12 dxgi dxguid d3dcompiler)
     fls_enable_d3d12_agility(${FORZA_LIVERY_STUDIO_TARGET})
 endif()
 
@@ -349,7 +349,7 @@ if(BUILD_TESTING)
         target_include_directories(fls_original_dx12_backend_tests PRIVATE
             src/gui/canvas)
         target_link_libraries(fls_original_dx12_backend_tests PRIVATE
-            fls_core Qt6::Core Qt6::Gui d3d12 dxgi dxguid)
+            fls_core Qt6::Core Qt6::Gui d3d12 dxgi dxguid d3dcompiler)
         fls_enable_d3d12_agility(fls_original_dx12_backend_tests)
         add_test(NAME original_dx12_exact_pipeline
             COMMAND fls_original_dx12_backend_tests
