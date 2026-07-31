@@ -287,12 +287,19 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         material.automotivePaint.orangePeelStrength = parameter.scalar;
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && parameter.nameHash == material_hashes::parameter::kTextureTilingU
+        && parameter.nameHash == material_hashes::parameter::kUvOrientation
+        && std::isfinite(parameter.scalar)) {
+        material.uvOrientationDegrees = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
+        && material_hashes::contains(
+            material_hashes::parameter::kTextureTilingU, parameter.nameHash)
         && std::isfinite(parameter.scalar)) {
         material.uTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
     }
     if (parameter.type == ModelMaterialParameterType::Float
-        && parameter.nameHash == material_hashes::parameter::kTextureTilingV
+        && material_hashes::contains(
+            material_hashes::parameter::kTextureTilingV, parameter.nameHash)
         && std::isfinite(parameter.scalar)) {
         material.vTiling = std::abs(parameter.scalar) > 0.000001f ? parameter.scalar : 1.0f;
     }

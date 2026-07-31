@@ -689,6 +689,11 @@ QString materialResourceIdentity(const fh6::CarMesh &mesh) {
     return resource;
 }
 
+bool usesCarbonFiberShader(const fh6::CarMesh &mesh) {
+    return materialResourceIdentity(mesh).contains(
+        QStringLiteral("/carbonfiber/carbonfiber.materialbin"));
+}
+
 bool isLampSurface(const fh6::CarMesh &mesh) {
     const QString name = mesh.name.toLower();
     const QString material = materialIdentity(mesh);
@@ -2028,6 +2033,15 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        if (context->hasExtension(QByteArrayLiteral("GL_EXT_texture_filter_anisotropic"))) {
+            constexpr GLenum kMaximumAnisotropy = 0x84ff;
+            constexpr GLenum kTextureAnisotropy = 0x84fe;
+            GLfloat maximumAnisotropy = 1.0f;
+            functions->glGetFloatv(kMaximumAnisotropy, &maximumAnisotropy);
+            functions->glTexParameterf(
+                GL_TEXTURE_2D, kTextureAnisotropy,
+                std::min(maximumAnisotropy, 16.0f));
+        }
         functions->glTexImage2D(
             GL_TEXTURE_2D, 0, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
             texture->image.width, texture->image.height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
@@ -2064,35 +2078,21 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         }
         const bool hasDirectLiveryUv = uv != nullptr && mesh.liveryUvChannel == 3;
         const fh6::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
-        int materialUvIndex = 0;
+        const int materialUvIndex = usesCarbonFiberShader(mesh)
+                && mesh.uvChannels.size() > 1
+                && mesh.uvChannels[1].size() == mesh.positions.size()
+            ? 1 : 0;
         float materialUTiling = mesh.material ? mesh.material->uTiling : 1.0f;
         float materialVTiling = mesh.material ? mesh.material->vTiling : 1.0f;
-        bool rawMaterialUv = false;
-        // The car_carbonfiber shader (into which resolveExteriorMaterials injects the twin-twill
-        // weave) samples its weave on RAW UV channel 0 tiled by the material's U/V tiling. Decompiled
-        // from the game PS+VS (see docs/SHADER_ANALYSIS.md "Carbon Weave UV & Tiling"): the pixel
-        // shader samples the weave at raw TEXCOORD0; the vertex shader builds TEXCOORD0 = channel0 *
-        // (U_Tiling, V_Tiling) with U_Tiling=V_Tiling=32 for carbonfiber.materialbin (the ID15 variant
-        // bakes 75). We must NOT apply channel 0's decoded transform — for carbon that is a ~0.03
-        // livery-atlas packing the game replaces with the tiling — so sample channel 0 raw × tiling.
-        QString carbonResource = mesh.material ? mesh.material->resourcePath : QString();
-        carbonResource.replace(QLatin1Char('\\'), QLatin1Char('/'));
-        if (carbonResource.contains(QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive)) {
-            materialUvIndex = 0;
-            rawMaterialUv = true;
-            // Match the finer authored ID15 twin-twill scale.  The shared 32x
-            // default is visibly oversized on most exterior carbon panels.
-            materialUTiling = std::max(materialUTiling, 75.0f);
-            materialVTiling = std::max(materialVTiling, 75.0f);
-        }
+        const float materialUvRotation = mesh.material
+            ? mesh.material->uvOrientationDegrees * 0.01745329251994329577f : 0.0f;
         const std::vector<fh6::ModelVec2> *materialUv =
             materialUvIndex < static_cast<int>(mesh.uvChannels.size())
             && mesh.uvChannels[materialUvIndex].size() == mesh.positions.size()
             ? &mesh.uvChannels[materialUvIndex]
             : nullptr;
-        const fh6::TexCoordTransform identityUvTransform;
         const fh6::TexCoordTransform &materialUvTransform =
-            rawMaterialUv ? identityUvTransform : mesh.texCoordTransforms[materialUvIndex];
+            mesh.texCoordTransforms[materialUvIndex];
 
         std::vector<float> interleaved;
         interleaved.reserve(mesh.positions.size() * 10);
@@ -2113,14 +2113,19 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
                 interleaved.push_back(0.0f);
             }
             if (materialUv != nullptr) {
-                // The car_carbonfiber weave rides raw TEXCOORD0 (V NOT flipped); every other native
-                // material samples with the usual V-flip. Flipping the weave mirrors the twill
-                // diagonal (/ vs \), which reads as the wrong orientation.
-                const float mv = rawMaterialUv ? (*materialUv)[i].v : (1.0f - (*materialUv)[i].v);
-                interleaved.push_back(((*materialUv)[i].u * materialUvTransform.scaleU
-                                       + materialUvTransform.offsetU) * materialUTiling);
-                interleaved.push_back((mv * materialUvTransform.scaleV
-                                       + materialUvTransform.offsetV) * materialVTiling);
+                // Match ForzaTechStudio's material contract: flip source V, apply the
+                // decoded channel transform, then apply the material's authored tiling.
+                const float mv = 1.0f - (*materialUv)[i].v;
+                const float transformedU = (*materialUv)[i].u
+                        * materialUvTransform.scaleU + materialUvTransform.offsetU;
+                const float transformedV = mv * materialUvTransform.scaleV
+                    + materialUvTransform.offsetV;
+                const float cosine = std::cos(materialUvRotation);
+                const float sine = std::sin(materialUvRotation);
+                interleaved.push_back(
+                    (cosine * transformedU - sine * transformedV) * materialUTiling);
+                interleaved.push_back(
+                    (sine * transformedU + cosine * transformedV) * materialVTiling);
             } else {
                 interleaved.push_back(0.0f);
                 interleaved.push_back(0.0f);

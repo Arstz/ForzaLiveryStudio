@@ -21,6 +21,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QOpenGLExtraFunctions>
 #include <QPainter>
 #include <QSet>
 
@@ -35,6 +36,7 @@ namespace {
 
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
+constexpr int kDx12LiveryTextureScale = 2;
 constexpr int kCameraTransitionDurationMs = 500;
 constexpr int kLiverySectionMaskSlots[fh6::kLiverySideCount] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
@@ -1113,7 +1115,17 @@ struct PreparedCar {
 std::shared_ptr<PreparedCar> prepareCar(
     const QString &path, bool loadCarTextures, QString *error) {
     static QMutex loadMutex;
+    static QHash<QString, std::shared_ptr<PreparedCar>> preparedCarCache;
+    static QStringList preparedCarCacheOrder;
     QMutexLocker lock(&loadMutex);
+    const QString cacheKey = assetFileIdentity(path)
+        + (loadCarTextures ? QStringLiteral("|textures") : QStringLiteral("|geometry"));
+    const auto cached = preparedCarCache.constFind(cacheKey);
+    if (cached != preparedCarCache.cend()) {
+        preparedCarCacheOrder.removeAll(cacheKey);
+        preparedCarCacheOrder.push_back(cacheKey);
+        return cached.value();
+    }
     QString loadPath = path;
     std::unique_ptr<QTemporaryDir> extracted;
     if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
@@ -1222,6 +1234,13 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (QFileInfo::exists(masksDir)) {
         prepared->liveryMasks = fh6::loadLiveryMasks(masksDir);
         prepared->liveryMasksDir = masksDir;
+    }
+
+    constexpr int kPreparedCarCacheEntries = 2;
+    preparedCarCache.insert(cacheKey, prepared);
+    preparedCarCacheOrder.push_back(cacheKey);
+    while (preparedCarCacheOrder.size() > kPreparedCarCacheEntries) {
+        preparedCarCache.remove(preparedCarCacheOrder.takeFirst());
     }
 
     return prepared;
@@ -1341,7 +1360,8 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
         originalDx12Viewport_, this);
     originalDx12Container_->hide();
     originalDx12RefreshTimer_.setSingleShot(true);
-    originalDx12RefreshTimer_.setInterval(75);
+    // Coalesce edits in one event-loop pass without adding visible latency.
+    originalDx12RefreshTimer_.setInterval(0);
     connect(&originalDx12RefreshTimer_, &QTimer::timeout, this, [this]() {
         if (originalDx12Requested_) {
             const fh6::SwatchImage livery = captureCompositedLivery();
@@ -1497,12 +1517,12 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                         return;
                     }
 
-                    guard->model_ = std::move(prepared->model);
-                    guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
-                    guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
-                    guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
-                    guard->liveryMasks_ = std::move(prepared->liveryMasks);
-                    guard->liveryMasksDir_ = std::move(prepared->liveryMasksDir);
+                    guard->model_ = prepared->model;
+                    guard->manufacturerColors_ = prepared->manufacturerColors;
+                    guard->extractedCarDir_.reset();
+                    guard->loadedCarPath_ = prepared->loadedCarPath;
+                    guard->liveryMasks_ = prepared->liveryMasks;
+                    guard->liveryMasksDir_ = prepared->liveryMasksDir;
                     guard->modelUploadPending_ = true;
                     guard->liveryMasksPending_ = true;
                     guard->invalidateCachedLivery();
@@ -2261,26 +2281,65 @@ fh6::SwatchImage CarPreviewWidget::captureCompositedLivery() {
         return result;
     }
     makeCurrent();
-    QOpenGLFunctions *functions = context()->functions();
-    GLint previousFramebuffer = 0;
-    functions->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
-    GLuint framebuffer = 0;
-    functions->glGenFramebuffers(1, &framebuffer);
-    functions->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    QOpenGLExtraFunctions *functions = context()->extraFunctions();
+    const int captureScale = std::min(
+        liveryTextureScale_, kDx12LiveryTextureScale);
+    const QSize captureSize(
+        kLiveryBaseTexWidth * captureScale,
+        kLiveryBaseTexHeight * captureScale);
+    GLint previousReadFramebuffer = 0;
+    GLint previousDrawFramebuffer = 0;
+    GLint previousPackAlignment = 0;
+    functions->glGetIntegerv(
+        GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+    functions->glGetIntegerv(
+        GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFramebuffer);
+    functions->glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+    GLuint framebuffers[2] = {};
+    GLuint captureTexture = 0;
+    functions->glGenFramebuffers(2, framebuffers);
+    functions->glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[0]);
     functions->glFramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, liveryTexture_, 0);
+        GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+        liveryTexture_, 0);
     QImage overlay;
-    if (functions->glCheckFramebufferStatus(GL_FRAMEBUFFER)
-        == GL_FRAMEBUFFER_COMPLETE) {
-        overlay = QImage(liveryTexturePixelSize_, QImage::Format_RGBA8888);
+    if (functions->glCheckFramebufferStatus(GL_READ_FRAMEBUFFER)
+            == GL_FRAMEBUFFER_COMPLETE) {
+        functions->glGenTextures(1, &captureTexture);
+        functions->glBindTexture(GL_TEXTURE_2D, captureTexture);
+        functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        functions->glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_RGBA8, captureSize.width(), captureSize.height(),
+            0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        functions->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[1]);
+        functions->glFramebufferTexture2D(
+            GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+            captureTexture, 0);
+    }
+    if (captureTexture != 0
+        && functions->glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)
+            == GL_FRAMEBUFFER_COMPLETE) {
+        functions->glBlitFramebuffer(
+            0, 0, liveryTexturePixelSize_.width(), liveryTexturePixelSize_.height(),
+            0, 0, captureSize.width(), captureSize.height(),
+            GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        functions->glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[1]);
+        overlay = QImage(captureSize, QImage::Format_RGBA8888);
         functions->glPixelStorei(GL_PACK_ALIGNMENT, 1);
         functions->glReadPixels(
             0, 0, overlay.width(), overlay.height(), GL_RGBA,
             GL_UNSIGNED_BYTE, overlay.bits());
     }
+    functions->glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
     functions->glBindFramebuffer(
-        GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
-    functions->glDeleteFramebuffers(1, &framebuffer);
+        GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+    functions->glBindFramebuffer(
+        GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previousDrawFramebuffer));
+    if (captureTexture != 0) {
+        functions->glDeleteTextures(1, &captureTexture);
+    }
+    functions->glDeleteFramebuffers(2, framebuffers);
     doneCurrent();
     if (overlay.isNull()) {
         return result;
@@ -2361,7 +2420,7 @@ void CarPreviewWidget::startOriginalDx12Frame() {
             const std::shared_ptr<const fh6::ModelMaterialTexture> missing =
                 missingColorTexture();
             fh6::OriginalShaderGarageScene scene =
-                fh6::loadOriginalShaderGarageScene(
+                fh6::loadCachedOriginalShaderGarageScene(
                     folder, missing != nullptr ? missing->image : fh6::SwatchImage{});
             if (scene.valid()) {
                 QString carError;
@@ -2392,7 +2451,7 @@ void CarPreviewWidget::startOriginalDx12Frame() {
                 if (prepared == nullptr
                     || !fh6::appendOriginalShaderGarageCar(
                         &scene,
-                        prepared != nullptr ? std::move(prepared->model)
+                        prepared != nullptr ? prepared->model
                                             : fh6::CarModel{},
                         paintColor, livery,
                         prepared != nullptr ? &prepared->liveryMasks : nullptr,

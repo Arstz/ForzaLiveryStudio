@@ -106,8 +106,13 @@ inline constexpr quint32 kNormalIntensity = 0xCD6B029B;
 inline constexpr quint32 kNormalMap00UvTiling = 0x9A7DB1FA;
 inline constexpr quint32 kNormalMap0UvTiling = 0xFD6BB566;
 inline constexpr quint32 kOrangePeelStrength = 0xAB378776;
-inline constexpr quint32 kTextureTilingU = 0x19A7D8F1;
-inline constexpr quint32 kTextureTilingV = 0x4A3D8375;
+inline constexpr quint32 kUvOrientation = 0x8B7343AB;
+inline constexpr std::array<quint32, 2> kTextureTilingU = {
+    0x19A7D8F1, 0xB01AEE8E,
+};
+inline constexpr std::array<quint32, 2> kTextureTilingV = {
+    0x4A3D8375, 0x3E95E96D,
+};
 inline constexpr quint32 kTextureTiling = 0xB99646E7;
 
 inline constexpr std::array<quint32, 2> kMetallic = {

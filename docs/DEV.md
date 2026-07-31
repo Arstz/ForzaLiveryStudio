@@ -627,7 +627,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     colours instead of unrelated projected swatches. Cars are separately prepared with native swatches enabled and append their diffuse,
     normal, surface, emissive, paint colour, and composited livery resources. Transparent
     car swatch classification recognizes the game's `_bclr_`, `_rcsm_`, and `_emis_`
-    naming, carbon weave uses raw UV0 with the finer authored 75x twin-twill scale, and only each mesh group's
+    naming, carbon weave uses transformed UV0 with the shared material's authored 32x U/V tiling, and only each mesh group's
     highest-detail LOD is submitted. Garage and car glass use a second alpha-blended pass
     after opaque geometry with depth writes disabled. The staged-space diffuse irradiance,
     mipmapped BC6H specular probe, `Homespace.lut`, decoded artificial-light presets, and
@@ -712,16 +712,40 @@ lights. The garage floodlight archive contributes three local light records per
 stand; its LDFB preset table marks one as an active 10 m, intensity-5000 white
 spot, so seven placed stands add seven more compatibility-PBR spot lights. DX12
 uploads up to 32 active authored lights using the PVSL fixture +Z emission axis.
+Their authored intensity is converted at a quarter of the former compatibility
+scale to avoid clipping the staged-space exposure. The installed shell archive
+contains only its summer material set, not named clean/bought/restored variants.
+For the clean presentation, the renderer hides the separate distressed decal
+overlays and remaps the opaque wall-atlas surfaces to complete game-authored
+painted-metal and polished-concrete tiling sets. Their UV frequency is normalized
+in world space; emissive, glass, trim, floor, roof, and prop material bindings remain
+authored. The DX12 display path applies the same 1.5-white Hable highlight shoulder
+as the OpenGL HDR path after Homespace LUT grading.
 The car is raised from the locator by its highest-detail tire/wheel contact point
 and its footprint supplies the floor contact shadow. The DX12 path loads the selected car
 with textures enabled, composites the current livery atlas over the base paint
-on authored livery UVs, updates that atlas in place during editing, and omits separate
+on authored livery UVs, and updates that atlas in place on the next event-loop pass
+during editing. Live updates are GPU-downsampled to twice the base sampling resolution
+before readback and use a dedicated ordered upload command list. The preview omits separate
 factory `livery_sticker` geometry in both preview renderers. Genuine badges and manufacturer-colour surfaces
 remain. Alpha-mapped window/lamp glass renders after opaque geometry with depth
 writes disabled. Missing car or garage diffuse inputs use the deployed
 magenta/black `MissingTexture.png` checker; decoded procedural materials remain
-procedural. The viewport supports middle-drag or Shift+left-drag panning in
+procedural. Decoded DX12 material maps receive a full filtered mip chain, including
+renormalized normal-map mips. Carbon follows the material contract used by ForzaTechStudio:
+UV0 receives its decoded channel transform followed by the material's authored U/V tiling.
+Both documented scalar hash pairs are recognized, and the shared carbon material supplies
+32x U/V tiling. Material sampling remains anisotropic.
+DX12 automotive paint now consumes decoded clear-coat coverage, roughness, tint,
+and livery-coating flags and uses the same environment-BRDF approximation as the
+OpenGL path. The viewport supports middle-drag or Shift+left-drag panning in
 addition to orbit and wheel zoom.
+
+The decoded base Tokyo garage is stored in the Qt cache location under `garage/` as a
+versioned, game-install-fingerprinted binary. Geometry and decoded material images are
+compressed and shared texture references are deduplicated. Car geometry and textures use
+a two-entry process-memory cache so enabling DX12 does not immediately decode the same car
+a second time; no persistent per-car cache is created.
 
 ## Privacy Policy Build Flag
 

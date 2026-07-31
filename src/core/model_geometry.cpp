@@ -406,6 +406,55 @@ ModelMat4 matMul(const ModelMat4 &a, const ModelMat4 &b) {
     return out;
 }
 
+float meshUvWorldDensity(const CarMesh &mesh, std::size_t channel) {
+    if (channel >= mesh.uvChannels.size()) {
+        return 0.0f;
+    }
+    const std::vector<ModelVec2> &uvs = mesh.uvChannels[channel];
+    double worldArea = 0.0;
+    double uvArea = 0.0;
+    for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
+        const std::array<quint32, 3> indices = {
+            mesh.indices[triangle], mesh.indices[triangle + 1],
+            mesh.indices[triangle + 2]};
+        if (indices[0] >= mesh.positions.size()
+            || indices[1] >= mesh.positions.size()
+            || indices[2] >= mesh.positions.size()
+            || indices[0] >= uvs.size() || indices[1] >= uvs.size()
+            || indices[2] >= uvs.size()) {
+            continue;
+        }
+        const ModelVec3 p0 = mesh.boneTransform.transformPoint(mesh.positions[indices[0]]);
+        const ModelVec3 p1 = mesh.boneTransform.transformPoint(mesh.positions[indices[1]]);
+        const ModelVec3 p2 = mesh.boneTransform.transformPoint(mesh.positions[indices[2]]);
+        const ModelVec3 first = {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+        const ModelVec3 second = {p2.x - p0.x, p2.y - p0.y, p2.z - p0.z};
+        const ModelVec3 cross = {
+            first.y * second.z - first.z * second.y,
+            first.z * second.x - first.x * second.z,
+            first.x * second.y - first.y * second.x};
+        const double triangleWorldArea = std::sqrt(
+            static_cast<double>(cross.x) * cross.x
+            + static_cast<double>(cross.y) * cross.y
+            + static_cast<double>(cross.z) * cross.z);
+        const ModelVec2 uv0 = uvs[indices[0]];
+        const ModelVec2 uv1 = uvs[indices[1]];
+        const ModelVec2 uv2 = uvs[indices[2]];
+        const double triangleUvArea = std::abs(
+            static_cast<double>(uv1.u - uv0.u) * (uv2.v - uv0.v)
+            - static_cast<double>(uv1.v - uv0.v) * (uv2.u - uv0.u));
+        if (triangleWorldArea > 1e-12 && triangleUvArea > 1e-12) {
+            worldArea += triangleWorldArea;
+            uvArea += triangleUvArea;
+        }
+    }
+    if (worldArea <= 1e-12 || uvArea <= 1e-12) {
+        return 0.0f;
+    }
+
+    return static_cast<float>(std::sqrt(uvArea / worldArea));
+}
+
 std::vector<SkeletonBone> loadSkeletonBones(const ModelBundle &bundle) {
     const auto skeletonBlobs = bundle.blobsWithTag(bundle_tags::Skeleton);
     if (skeletonBlobs.empty()) {

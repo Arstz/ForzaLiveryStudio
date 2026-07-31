@@ -2,6 +2,9 @@
 #include "model_material.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QFileInfo>
+#include <QTemporaryDir>
 
 #include <algorithm>
 #include <cmath>
@@ -33,8 +36,11 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
 
+    QTemporaryDir garageCache;
+    ok &= require(garageCache.isValid(), "temporary garage cache directory is invalid");
+    qputenv("FLS_GARAGE_CACHE_DIR", garageCache.path().toUtf8());
     fh6::OriginalShaderGarageScene scene =
-        fh6::loadOriginalShaderGarageScene(QString::fromLocal8Bit(argv[1]));
+        fh6::loadCachedOriginalShaderGarageScene(QString::fromLocal8Bit(argv[1]));
     if (!require(scene.valid(), qPrintable(scene.error))) {
         return 1;
     }
@@ -42,6 +48,28 @@ int main(int argc, char **argv) {
         "original shader garage: %lld vertices, %lld triangles, %zu draws\n%s\n",
         scene.totalVertices(), scene.totalTriangles(), scene.draws.size(),
         qPrintable(scene.materialStatus));
+    const QString cachePath = fh6::originalShaderGarageCachePath(
+        QString::fromLocal8Bit(argv[1]));
+    ok &= require(
+        QFileInfo(cachePath).size() > 0
+            && scene.materialStatus.contains(QStringLiteral("cache refreshed")),
+        "Tokyo garage cache was not written");
+    {
+        QElapsedTimer cacheTimer;
+        cacheTimer.start();
+        const fh6::OriginalShaderGarageScene cached =
+            fh6::loadCachedOriginalShaderGarageScene(
+                QString::fromLocal8Bit(argv[1]));
+        std::printf(
+            "Tokyo garage cache: %.2f MiB, %lld ms read\n",
+            QFileInfo(cachePath).size() / (1024.0 * 1024.0),
+            static_cast<long long>(cacheTimer.elapsed()));
+        ok &= require(
+            cached.valid() && cached.draws.size() == scene.draws.size()
+                && cached.totalVertices() == scene.totalVertices()
+                && cached.materialStatus.contains(QStringLiteral("cache hit")),
+            "Tokyo garage cache roundtrip changed the scene");
+    }
     if (qEnvironmentVariableIsSet("FLS_DUMP_GARAGE_MATERIALS")) {
         for (const fh6::OriginalShaderGarageDraw &draw : scene.draws) {
             const fh6::CarMesh &mesh = draw.geometry.meshes.front();
@@ -165,6 +193,52 @@ int main(int argc, char **argv) {
     ok &= require(
         enclosure != scene.draws.cend(),
         "Tokyo scene is missing its coordinate-matched garage enclosure");
+    const auto distressedOverlay = std::find_if(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return draw.hidden && draw.source.contains(
+                QStringLiteral("garage_customiser"), Qt::CaseInsensitive);
+        });
+    ok &= require(
+        distressedOverlay != scene.draws.cend(),
+        "Tokyo clean presentation must hide the shell's distressed decal overlays");
+    const auto cleanPaintedShell = std::find_if(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return draw.name == QStringLiteral("BLD_GBL_GRGE_CUSTOM_02_A")
+                && draw.diffuseTexture != nullptr
+                && draw.diffuseTexture->sourceEntry.contains(
+                    QStringLiteral("tex_gbl_tile_mtl_paint_a"),
+                    Qt::CaseInsensitive);
+        });
+    const auto cleanConcreteShell = std::find_if(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return draw.name == QStringLiteral("BLD_GBL_GRGE_CUSTOM_02_B")
+                && draw.diffuseTexture != nullptr
+                && draw.diffuseTexture->sourceEntry.contains(
+                    QStringLiteral("tex_gbl_grnd_concrete_pol_a"),
+                    Qt::CaseInsensitive);
+        });
+    const auto cleanFloorShell = std::find_if(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return draw.family == fh6::OriginalShaderSurfaceFamily::Floor
+                && !draw.hidden && draw.diffuseTexture != nullptr
+                && draw.diffuseTexture->sourceEntry.contains(
+                    QStringLiteral("tex_el_tile_concrete_polished_a"),
+                    Qt::CaseInsensitive);
+        });
+    ok &= require(
+        cleanPaintedShell != scene.draws.cend()
+            && cleanPaintedShell->rawMaterialUv
+            && cleanPaintedShell->normalTexture != nullptr
+            && cleanPaintedShell->surfaceTexture != nullptr
+            && cleanConcreteShell != scene.draws.cend()
+            && cleanConcreteShell->rawMaterialUv
+            && cleanConcreteShell->normalTexture != nullptr
+            && cleanConcreteShell->surfaceTexture != nullptr
+            && cleanFloorShell != scene.draws.cend()
+            && cleanFloorShell->rawMaterialUv
+            && cleanFloorShell->normalTexture != nullptr
+            && cleanFloorShell->surfaceTexture != nullptr,
+        "Tokyo shell must use complete clean tiling material sets");
     const auto floodlight = std::find_if(
         scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
             return draw.source.contains(
@@ -185,6 +259,13 @@ int main(int argc, char **argv) {
     carMesh.paintMaterialHash = 1;
     carMesh.liveryUvChannel = 3;
     carMesh.material = std::make_shared<fh6::ModelMaterial>();
+    carMesh.material->gloss = 0.85f;
+    carMesh.material->automotivePaint.hasClearCoatCoverage = true;
+    carMesh.material->automotivePaint.clearCoatCoverage = 0.72f;
+    carMesh.material->automotivePaint.hasClearCoatRoughness = true;
+    carMesh.material->automotivePaint.clearCoatRoughness = 0.08f;
+    carMesh.material->automotivePaint.hasClearCoatTint = true;
+    carMesh.material->automotivePaint.clearCoatTint = {0.9f, 0.95f, 1.0f, 1.0f};
     auto normalTexture = std::make_shared<fh6::ModelMaterialTexture>();
     normalTexture->path = QStringLiteral("car/test_nrml.swatchbin");
     normalTexture->image.width = 1;
@@ -256,6 +337,10 @@ int main(int argc, char **argv) {
             && scene.draws.back().vTiling == 1.0f
             && scene.draws.back().detailUTiling == 2.0f
             && scene.draws.back().detailVTiling == 3.0f
+            && std::abs(scene.draws.back().clearCoatCoverage - 0.72f) < 0.00001f
+            && std::abs(scene.draws.back().clearCoatRoughness - 0.08f) < 0.00001f
+            && scene.draws.back().clearCoatTint
+                == std::array<float, 3>{0.9f, 0.95f, 1.0f}
             && scene.carStatus.contains(QStringLiteral("1 lower-LOD"))
             && scene.carStatus.contains(QStringLiteral("1 factory-livery sticker")),
         "DX12 car livery/detail maps or factory-sticker exclusion changed");
@@ -330,6 +415,43 @@ int main(int argc, char **argv) {
             && std::abs(wheelDraw.gloss - 0.78f) < 0.00001f
             && std::abs(wheelDraw.metallic - 0.85f) < 0.00001f,
         "DX12 wheel fallback must not inherit the body-paint colour");
+
+    fh6::CarModel carbonCar;
+    carbonCar.sourcePath = QStringLiteral("carbon-test.carbin");
+    carbonCar.boundsMin = {0.0f, 0.0f, 0.0f};
+    carbonCar.boundsMax = {2.0f, 2.0f, 0.0f};
+    fh6::CarMesh carbonMesh;
+    carbonMesh.name = QStringLiteral("radiator_carbon_LODS0");
+    carbonMesh.materialName = QStringLiteral("carbonfiber");
+    carbonMesh.material = std::make_shared<fh6::ModelMaterial>();
+    carbonMesh.material->resourcePath = QStringLiteral(
+        "Game:/Media/Cars/_library/materials/carbonfiber/carbonfiber.materialbin");
+    carbonMesh.material->uTiling = 32.0f;
+    carbonMesh.material->vTiling = 32.0f;
+    carbonMesh.material->uvOrientationDegrees = 90.0f;
+    carbonMesh.positions = {
+        {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {0.0f, 2.0f, 0.0f}};
+    carbonMesh.uvChannels.resize(2);
+    carbonMesh.uvChannels[0] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}};
+    carbonMesh.uvChannels[1] = {
+        {0.25f, 0.5f}, {0.75f, 0.5f}, {0.25f, 0.75f}};
+    carbonMesh.indices = {0, 1, 2};
+    carbonCar.meshes.push_back(std::move(carbonMesh));
+    const std::size_t drawsBeforeCarbon = scene.draws.size();
+    ok &= require(
+        fh6::appendOriginalShaderGarageCar(
+            &scene, std::move(carbonCar), {0.2f, 0.4f, 0.6f}, {},
+            nullptr, nullptr, nullptr, nullptr, nullptr, &carError),
+        qPrintable(carError));
+    ok &= require(
+        scene.draws.size() == drawsBeforeCarbon + 1
+            && !scene.draws.back().rawMaterialUv
+            && scene.draws.back().materialUvChannel == 1
+            && std::abs(scene.draws.back().materialUvRotationDegrees - 90.0f) < 0.0001f
+            && std::abs(scene.draws.back().uTiling - 32.0f) < 0.0001f
+            && std::abs(scene.draws.back().vTiling - 32.0f) < 0.0001f,
+        "DX12 carbon weave must use authored transformed UV1, rotation, and tiling");
 
     if (ok) {
         std::printf("original shader garage validation passed\n");

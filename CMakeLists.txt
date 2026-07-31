@@ -70,6 +70,7 @@ add_library(fls_core STATIC
     src/core/model_material.h
     src/core/original_shader_garage.cpp
     src/core/original_shader_garage.h
+    src/core/original_shader_garage_cache.cpp
     src/core/paint_finish_catalog.cpp
     src/core/paint_finish_catalog.h
     src/core/pgzp_extract.cpp

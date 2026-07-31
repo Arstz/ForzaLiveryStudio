@@ -31,6 +31,25 @@ namespace fh6 {
 
 namespace {
 
+constexpr float kCleanGarageSurfaceFrequency = 0.5f;
+
+float worldFrequencyTiling(
+    const CarMesh &mesh, float frequency, float fallback,
+    float minimum, float maximum) {
+    const float uvDensity = meshUvWorldDensity(mesh, 0);
+    if (uvDensity <= 0.0f) {
+        return fallback;
+    }
+
+    return std::clamp(frequency / uvDensity, minimum, maximum);
+}
+
+constexpr float kClearCoatGlossFloor = 0.35f;
+constexpr float kClearCoatGlossRange = 0.6f;
+constexpr float kClearCoatMetalCoverage = 0.25f;
+constexpr float kClearCoatMinRoughness = 0.04f;
+constexpr float kClearCoatMaxRoughness = 0.4f;
+
 struct GarageShellResource {
     const char *directory;
     const char *archive;
@@ -464,6 +483,17 @@ loadGeneralSceneTextures(
             }
         }
     }
+    // House 8's clean/restored floor is not referenced by the distressed shell
+    // material. Pull its complete authored stack explicitly from the same general
+    // scene archive so replacement includes normal and packed surface data too.
+    constexpr std::array<const char *, 3> kCleanFloorTexturePaths = {{
+        "game:\\media\\tracks\\brio\\textures\\assets\\el\\_ws\\tex_el_tile_concrete_polished_a\\swatches\\tex_el_tile_concrete_polished_a_bclr_a9a9207d-31b5-4920-b1ef-623bc8431398.swatchbin",
+        "game:\\media\\tracks\\brio\\textures\\assets\\el\\_ws\\tex_el_tile_concrete_polished_a\\swatches\\tex_el_tile_concrete_polished_a_extra_6e18ac65-e7f2-4a86-a04e-df89fdf8956f.swatchbin",
+        "game:\\media\\tracks\\brio\\textures\\assets\\el\\_ws\\tex_el_tile_concrete_polished_a\\swatches\\tex_el_tile_concrete_polished_a_nrml_e93b1adb-fe05-4c71-bfbf-e34523ecacf2.swatchbin",
+    }};
+    for (const char *path : kCleanFloorTexturePaths) {
+        targetHashes.insert(forzaPathHash(QString::fromLatin1(path)));
+    }
     const QHash<quint32, ManifestTexture> resolved =
         resolveGeneralSceneTextures(manifest, targetHashes, error);
     QStringList requested;
@@ -588,6 +618,19 @@ std::shared_ptr<const OriginalShaderMaterialTexture> meshTexture(
     return best;
 }
 
+std::shared_ptr<const OriginalShaderMaterialTexture> authoredTextureByStem(
+    const QHash<quint32, std::shared_ptr<const OriginalShaderMaterialTexture>> &textures,
+    const QString &stem, const QString &semantic) {
+    for (auto texture = textures.cbegin(); texture != textures.cend(); ++texture) {
+        if (texture.value()->semantic == semantic
+            && texture.value()->sourceEntry.contains(stem, Qt::CaseInsensitive)) {
+            return texture.value();
+        }
+    }
+
+    return {};
+}
+
 ModelMat4 rebasePlinth(
     const CarModel &building, const CarModel &plinth) {
     ModelMat4 placement;
@@ -695,6 +738,15 @@ QString carMaterialIdentity(const CarMesh &mesh) {
     }
     identity.replace(QLatin1Char('\\'), QLatin1Char('/'));
     return identity;
+}
+
+bool usesCarbonFiberShader(const CarMesh &mesh) {
+    if (mesh.material == nullptr) {
+        return false;
+    }
+    QString resource = mesh.material->resourcePath.toLower();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return resource.contains(QStringLiteral("/carbonfiber/carbonfiber.materialbin"));
 }
 
 std::optional<CarMaterialFallback> carMaterialFallback(const CarMesh &mesh) {
@@ -1205,6 +1257,27 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
     error.clear();
     const auto authoredTextures = loadGeneralSceneTextures(
         swatchArchive, generalManifest, geometry, &error);
+    const QString paintedMetalStem = QStringLiteral("tex_gbl_tile_mtl_paint_a");
+    const QString polishedConcreteStem = QStringLiteral("tex_gbl_grnd_concrete_pol_a");
+    const QString cleanFloorStem = QStringLiteral("tex_el_tile_concrete_polished_a");
+    const auto cleanPaintedDiffuse = authoredTextureByStem(
+        authoredTextures, paintedMetalStem, QStringLiteral("DiffuseTexture"));
+    const auto cleanPaintedNormal = authoredTextureByStem(
+        authoredTextures, paintedMetalStem, QStringLiteral("NormalTexture"));
+    const auto cleanPaintedSurface = authoredTextureByStem(
+        authoredTextures, paintedMetalStem, QStringLiteral("SurfaceTexture"));
+    const auto cleanConcreteDiffuse = authoredTextureByStem(
+        authoredTextures, polishedConcreteStem, QStringLiteral("DiffuseTexture"));
+    const auto cleanConcreteNormal = authoredTextureByStem(
+        authoredTextures, polishedConcreteStem, QStringLiteral("NormalTexture"));
+    const auto cleanConcreteSurface = authoredTextureByStem(
+        authoredTextures, polishedConcreteStem, QStringLiteral("SurfaceTexture"));
+    const auto cleanFloorDiffuse = authoredTextureByStem(
+        authoredTextures, cleanFloorStem, QStringLiteral("DiffuseTexture"));
+    const auto cleanFloorNormal = authoredTextureByStem(
+        authoredTextures, cleanFloorStem, QStringLiteral("NormalTexture"));
+    const auto cleanFloorSurface = authoredTextureByStem(
+        authoredTextures, cleanFloorStem, QStringLiteral("SurfaceTexture"));
     std::size_t estimatedDraws = 0;
     for (std::size_t index = 0; index < shellModelCount; ++index) {
         estimatedDraws += geometry[index].meshes.size();
@@ -1233,6 +1306,7 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
     int emissiveDraws = 0;
     int materialFallbackDraws = 0;
     int unresolvedDraws = 0;
+    int cleanShellDraws = 0;
     const auto appendModel = [&](
                                  const std::size_t modelIndex,
                                  const ModelMat4 &placement) {
@@ -1304,6 +1378,41 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
                 mesh, authoredTextures, QStringLiteral("SurfaceTexture"));
             auto emissiveTexture = meshTexture(
                 mesh, authoredTextures, QStringLiteral("EmissiveTexture"));
+            const QString lowerMaterialName = mesh.materialName.toLower();
+            const bool shellSurface = modelIndex < shellModelCount;
+            const bool shellDecal = lowerMaterialName.contains(
+                    QStringLiteral("decal_comm"))
+                || lowerMaterialName.contains(QStringLiteral("decal_urb"));
+            const bool shellAlphaOverlay = lowerMaterialName.endsWith(
+                QStringLiteral("_b_alpha"));
+            const bool cleanFloorShell = modelIndex < shellModelCount
+                && families[modelIndex] == OriginalShaderSurfaceFamily::Floor
+                && !shellDecal && !shellAlphaOverlay
+                && !lowerMaterialName.contains(QStringLiteral("emissive"));
+            const bool cleanConcreteShell = modelIndex < shellModelCount
+                && mesh.materialName == QStringLiteral("BLD_GBL_GRGE_CUSTOM_02_B");
+            const bool cleanPaintedShell = shellSurface
+                && !cleanFloorShell && !cleanConcreteShell
+                && !shellDecal && !shellAlphaOverlay
+                && !isGlassSurface(mesh)
+                && !lowerMaterialName.contains(QStringLiteral("grnd_concrete"))
+                && !lowerMaterialName.contains(QStringLiteral("emissive"));
+            if (cleanFloorShell && cleanFloorDiffuse != nullptr) {
+                diffuseTexture = cleanFloorDiffuse;
+                normalTexture = cleanFloorNormal;
+                surfaceTexture = cleanFloorSurface;
+                ++cleanShellDraws;
+            } else if (cleanPaintedShell && cleanPaintedDiffuse != nullptr) {
+                diffuseTexture = cleanPaintedDiffuse;
+                normalTexture = cleanPaintedNormal;
+                surfaceTexture = cleanPaintedSurface;
+                ++cleanShellDraws;
+            } else if (cleanConcreteShell && cleanConcreteDiffuse != nullptr) {
+                diffuseTexture = cleanConcreteDiffuse;
+                normalTexture = cleanConcreteNormal;
+                surfaceTexture = cleanConcreteSurface;
+                ++cleanShellDraws;
+            }
             normalDraws += normalTexture != nullptr ? 1 : 0;
             surfaceDraws += surfaceTexture != nullptr ? 1 : 0;
             emissiveDraws += emissiveTexture != nullptr ? 1 : 0;
@@ -1317,6 +1426,7 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
             draw.surfaceTexture = std::move(surfaceTexture);
             draw.emissiveTexture = std::move(emissiveTexture);
             draw.translucent = isGlassSurface(mesh);
+            draw.hidden = shellDecal || shellAlphaOverlay;
             if (mesh.material != nullptr) {
                 draw.baseColor = generatedSolidBase
                     ? std::array<float, 3>{1.0f, 1.0f, 1.0f}
@@ -1332,6 +1442,14 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
                 draw.vTiling = mesh.material->vTiling;
                 draw.detailUTiling = mesh.material->uTiling;
                 draw.detailVTiling = mesh.material->vTiling;
+            }
+            if (cleanFloorShell || cleanPaintedShell || cleanConcreteShell) {
+                draw.rawMaterialUv = true;
+                draw.uTiling = worldFrequencyTiling(
+                    mesh, kCleanGarageSurfaceFrequency, 1.0f, 0.25f, 128.0f);
+                draw.vTiling = draw.uTiling;
+                draw.detailUTiling = draw.uTiling;
+                draw.detailVTiling = draw.uTiling;
             }
             if (mesh.material == nullptr || !mesh.material->hasMetallic) {
                 draw.gloss = fallback.gloss;
@@ -1364,14 +1482,15 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
     scene.materialStatus = QStringLiteral(
         "Authored general-scene maps bound for %1/%2 garage/House-8 draws "
         "(%3 normal, %4 RCSM/extra, %5 emissive); %6 procedural/base-colour "
-        "draws and %7 visibly unresolved checker draws")
+        "draws, %7 visibly unresolved checker draws, and %8 clean shell surfaces")
         .arg(texturedDraws)
         .arg(scene.draws.size())
         .arg(normalDraws)
         .arg(surfaceDraws)
         .arg(emissiveDraws)
         .arg(materialFallbackDraws)
-        .arg(unresolvedDraws);
+        .arg(unresolvedDraws)
+        .arg(cleanShellDraws);
     scene.geometryStatus = QStringLiteral(
         "Six-piece garage_customiser enclosure whose X/Z bounds match the "
         "Default-House8.xml instance extents, plus %1 visible House 8 instances; "
@@ -1741,8 +1860,6 @@ bool appendOriginalShaderGarageCar(
                 resolvedPaintColor[channel] = std::pow(srgb, 2.2f);
             }
         }
-        const bool rawMaterialUv = normalizedMaterialPath.contains(
-            QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive);
         bool generatedSolidBase = false;
         const auto finishPattern = bodyPaint && paintFinish != nullptr
                 && paintFinish->selfColored
@@ -1863,7 +1980,13 @@ bool appendOriginalShaderGarageCar(
         draw.surfaceTexture = std::move(surface);
         draw.emissiveTexture = std::move(emissive);
         draw.diffuseUvChannel = diffuseUvChannel;
-        draw.rawMaterialUv = rawMaterialUv;
+        if (usesCarbonFiberShader(mesh)
+            && mesh.uvChannels.size() > 1
+            && mesh.uvChannels[1].size() == mesh.positions.size()) {
+            draw.materialUvChannel = 1;
+            draw.materialUvRotationDegrees = mesh.material->uvOrientationDegrees;
+        }
+        draw.rawMaterialUv = false;
         draw.baseColor = generatedSolidBase
             ? std::array<float, 3>{1.0f, 1.0f, 1.0f}
             : (paintSurface ? resolvedPaintColor
@@ -1882,15 +2005,6 @@ bool appendOriginalShaderGarageCar(
             draw.vTiling = usesLivery ? 1.0f : mesh.material->vTiling;
             draw.detailUTiling = mesh.material->uTiling;
             draw.detailVTiling = mesh.material->vTiling;
-            if (rawMaterialUv) {
-                // ID15's authored 75x twin-twill scale is the useful reference
-                // for this texture.  The shared 32x default makes each bundle
-                // of fibres visibly oversized on the exterior parts.
-                draw.uTiling = std::max(draw.uTiling, 75.0f);
-                draw.vTiling = std::max(draw.vTiling, 75.0f);
-                draw.detailUTiling = std::max(draw.detailUTiling, 75.0f);
-                draw.detailVTiling = std::max(draw.detailVTiling, 75.0f);
-            }
         }
         if (glassSurface && draw.opacity >= 0.995f) {
             draw.opacity = isWindowGlassMaterial(mesh) ? 0.42f : 0.20f;
@@ -1911,6 +2025,50 @@ bool appendOriginalShaderGarageCar(
             draw.gloss = manufacturerColor->material->gloss;
             if (manufacturerColor->material->hasMetallic) {
                 draw.metallic = manufacturerColor->material->metallic;
+            }
+        }
+        if (bodyPaint) {
+            const bool bareMetal = paintFinish != nullptr && paintFinish->valid
+                && paintFinish->category == PaintFinishCategory::Metal;
+            draw.clearCoatCoverage = std::clamp(
+                (draw.gloss - kClearCoatGlossFloor) / kClearCoatGlossRange,
+                0.0f, 1.0f);
+            if (bareMetal) {
+                draw.clearCoatCoverage *= kClearCoatMetalCoverage;
+            }
+            draw.clearCoatRoughness = std::clamp(
+                1.0f - draw.gloss,
+                kClearCoatMinRoughness, kClearCoatMaxRoughness);
+            const AutomotivePaintParameters *automotivePaint = nullptr;
+            if (paintFinish != nullptr && paintFinish->valid) {
+                automotivePaint = &paintFinish->automotivePaint;
+            } else if (manufacturerColor != nullptr
+                       && manufacturerColor->material != nullptr) {
+                automotivePaint = &manufacturerColor->material->automotivePaint;
+            } else if (mesh.material != nullptr) {
+                automotivePaint = &mesh.material->automotivePaint;
+            }
+            if (automotivePaint != nullptr) {
+                if (automotivePaint->hasClearCoatCoverage) {
+                    draw.clearCoatCoverage = std::clamp(
+                        automotivePaint->clearCoatCoverage, 0.0f, 1.0f);
+                } else if (automotivePaint->hasClearCoatRoughness) {
+                    draw.clearCoatCoverage = bareMetal
+                        ? kClearCoatMetalCoverage : 1.0f;
+                }
+                if (automotivePaint->hasClearCoatRoughness) {
+                    draw.clearCoatRoughness = std::clamp(
+                        automotivePaint->clearCoatRoughness,
+                        kClearCoatMinRoughness, 1.0f);
+                }
+                if (automotivePaint->hasClearCoatTint) {
+                    std::copy_n(
+                        automotivePaint->clearCoatTint.cbegin(), 3,
+                        draw.clearCoatTint.begin());
+                }
+                if (automotivePaint->hasClearCoatOnLivery) {
+                    draw.clearCoatOnLivery = automotivePaint->clearCoatOnLivery;
+                }
             }
         }
         if (usesLivery) {

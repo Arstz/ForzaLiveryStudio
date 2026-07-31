@@ -66,6 +66,8 @@ struct CarMesh {
     bool stockPart = true;
 };
 
+float meshUvWorldDensity(const CarMesh &mesh, std::size_t channel);
+
 struct CarLocator {
     QString name;
     ModelVec3 position;

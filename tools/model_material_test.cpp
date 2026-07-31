@@ -76,6 +76,9 @@ void testAutomotivePaintRetentionAndOverrides() {
         vector(kNormalMap00UvTiling, {12.0f, 13.0f, 0.1f, 0.2f}),
         vector(kNormalMap0UvTiling, {4.0f, 5.0f, 0.3f, 0.4f}),
         scalar(kOrangePeelStrength, 0.35f),
+        scalar(kTextureTilingU[1], 32.0f),
+        scalar(kTextureTilingV[1], 24.0f),
+        scalar(kUvOrientation, 45.0f),
         texture(kNormalMap00Texture, "fine.swatchbin"),
         texture(kNormalMap0Texture, "coarse.swatchbin"),
         texture(kOrangePeelNormalTexture, "orange.swatchbin"),
@@ -85,6 +88,7 @@ void testAutomotivePaintRetentionAndOverrides() {
         boolean(kGlancingFlopEnabled, false),
         scalar(kClearcoatCoverage, 0.25f),
         boolean(kClearcoatOnLivery, false),
+        scalar(kUvOrientation, 90.0f),
         texture(kNormalMap0Texture, "coarse_override.swatchbin"),
     };
 
@@ -113,6 +117,9 @@ void testAutomotivePaintRetentionAndOverrides() {
     CHECK(paint.normalMap00Texture == QStringLiteral("fine.swatchbin"));
     CHECK(paint.normalMap0Texture == QStringLiteral("coarse_override.swatchbin"));
     CHECK(paint.orangePeelNormalTexture == QStringLiteral("orange.swatchbin"));
+    CHECK(near(merged->uTiling, 32.0f));
+    CHECK(near(merged->vTiling, 24.0f));
+    CHECK(near(merged->uvOrientationDegrees, 90.0f));
 
     // Clear-coat roughness must not overwrite the independently retained base gloss.
     CHECK(near(merged->gloss, 0.45f));

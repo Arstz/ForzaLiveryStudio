@@ -47,6 +47,8 @@ struct OriginalShaderGarageDraw {
     std::shared_ptr<const OriginalShaderMaterialTexture> surfaceTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> emissiveTexture;
     int diffuseUvChannel = 0;
+    int materialUvChannel = 0;
+    float materialUvRotationDegrees = 0.0f;
     std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
     std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
     float opacity = 1.0f;
@@ -56,8 +58,13 @@ struct OriginalShaderGarageDraw {
     float vTiling = 1.0f;
     float detailUTiling = 1.0f;
     float detailVTiling = 1.0f;
+    std::array<float, 3> clearCoatTint = {1.0f, 1.0f, 1.0f};
+    float clearCoatCoverage = 0.0f;
+    float clearCoatRoughness = 0.1f;
     bool rawMaterialUv = false;
     bool translucent = false;
+    bool hidden = false;
+    bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
 
@@ -139,6 +146,11 @@ struct OriginalShaderGarageScene {
 
 OriginalShaderGarageScene loadOriginalShaderGarageScene(
     const QString &gameFolder, const SwatchImage &missingTexture = {});
+
+OriginalShaderGarageScene loadCachedOriginalShaderGarageScene(
+    const QString &gameFolder, const SwatchImage &missingTexture = {});
+
+QString originalShaderGarageCachePath(const QString &gameFolder);
 
 bool appendOriginalShaderGarageCar(
     OriginalShaderGarageScene *scene, CarModel car,

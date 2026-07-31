@@ -157,7 +157,11 @@ struct DrawResources {
     float vTiling = 1.0f;
     float detailUTiling = 1.0f;
     float detailVTiling = 1.0f;
+    std::array<float, 3> clearCoatTint = {1.0f, 1.0f, 1.0f};
+    float clearCoatCoverage = 0.0f;
+    float clearCoatRoughness = 0.1f;
     bool translucent = false;
+    bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
     int liverySideCount = 0;
@@ -171,6 +175,7 @@ struct DrawResources {
 struct UploadedTexture {
     ComPtr<ID3D12Resource> texture;
     ComPtr<ID3D12Resource> upload;
+    UINT mipLevels = 1;
 };
 
 QString hresultText(HRESULT result) {
@@ -245,7 +250,8 @@ D3D12_RESOURCE_BARRIER transition(
 
 Geometry prepareGeometry(
     const fh6::CarModel &model, const fh6::ModelMat4 &placement,
-    int diffuseUvChannel = 0, bool rawMaterialUv = false) {
+    int diffuseUvChannel = 0, bool rawMaterialUv = false,
+    int materialUvChannel = 0, float materialUvRotationDegrees = 0.0f) {
     Geometry result;
     for (const fh6::CarMesh &mesh : model.meshes) {
         const auto transformedUv = [&mesh](
@@ -265,6 +271,20 @@ Geometry prepareGeometry(
             }
             return uv;
         };
+        const std::size_t detailUvChannel = materialUvChannel >= 0
+            ? static_cast<std::size_t>(materialUvChannel) : 0;
+        const float materialUvRotation =
+            materialUvRotationDegrees * 0.01745329251994329577f;
+        const float materialUvCosine = std::cos(materialUvRotation);
+        const float materialUvSine = std::sin(materialUvRotation);
+        const auto detailUv = [&](std::size_t vertex) {
+            const fh6::ModelVec2 uv = transformedUv(
+                detailUvChannel, vertex,
+                rawMaterialUv && detailUvChannel == 0);
+            return fh6::ModelVec2{
+                materialUvCosine * uv.u - materialUvSine * uv.v,
+                materialUvSine * uv.u + materialUvCosine * uv.v};
+        };
         const fh6::ModelMat4 transform =
             fh6::matMul(mesh.boneTransform, placement);
         const std::uint32_t base = static_cast<std::uint32_t>(result.vertices.size());
@@ -272,11 +292,10 @@ Geometry prepareGeometry(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
         std::vector<std::array<float, 3>> bitangents(
             mesh.positions.size(), {0.0f, 0.0f, 0.0f});
-        // Detail maps use material UV0 even when the base colour comes from
-        // the car's separate livery-projection UV channel.
-        constexpr std::size_t tangentUvChannel = 0;
-        if (tangentUvChannel < mesh.uvChannels.size()) {
-            const auto &uvs = mesh.uvChannels[tangentUvChannel];
+        // The original carbon-fibre shader uses transformed UV1 plus its
+        // UV_Orientation parameter; ordinary materials retain UV0.
+        if (detailUvChannel < mesh.uvChannels.size()) {
+            const auto &uvs = mesh.uvChannels[detailUvChannel];
             for (std::size_t triangle = 0;
                  triangle + 2 < mesh.indices.size(); triangle += 3) {
                 const std::array<std::uint32_t, 3> indices = {
@@ -302,12 +321,9 @@ Geometry prepareGeometry(
                 const std::array<float, 3> edge2 = {
                     position2.x - position0.x, position2.y - position0.y,
                     position2.z - position0.z};
-                const fh6::ModelVec2 uv0 = transformedUv(
-                    tangentUvChannel, indices[0], rawMaterialUv);
-                const fh6::ModelVec2 uv1 = transformedUv(
-                    tangentUvChannel, indices[1], rawMaterialUv);
-                const fh6::ModelVec2 uv2 = transformedUv(
-                    tangentUvChannel, indices[2], rawMaterialUv);
+                const fh6::ModelVec2 uv0 = detailUv(indices[0]);
+                const fh6::ModelVec2 uv1 = detailUv(indices[1]);
+                const fh6::ModelVec2 uv2 = detailUv(indices[2]);
                 const float deltaU1 = uv1.u - uv0.u;
                 const float deltaV1 = uv1.v - uv0.v;
                 const float deltaU2 = uv2.u - uv0.u;
@@ -378,7 +394,7 @@ Geometry prepareGeometry(
                 ? static_cast<std::size_t>(diffuseUvChannel) : 0;
             const fh6::ModelVec2 uv = transformedUv(
                 baseUvChannel, index, rawMaterialUv && baseUvChannel == 0);
-            const fh6::ModelVec2 uv2 = transformedUv(0, index, rawMaterialUv);
+            const fh6::ModelVec2 uv2 = detailUv(index);
             result.vertices.push_back({
                 {position.x, position.y, position.z},
                 {normal.x, normal.y, normal.z},
@@ -395,28 +411,87 @@ Geometry prepareGeometry(
     return result;
 }
 
-D3D12_SHADER_RESOURCE_VIEW_DESC texture2DView(DXGI_FORMAT format) {
+D3D12_SHADER_RESOURCE_VIEW_DESC texture2DView(
+    DXGI_FORMAT format, UINT mipLevels = 1) {
     D3D12_SHADER_RESOURCE_VIEW_DESC view{};
     view.Format = format;
     view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    view.Texture2D.MipLevels = 1;
+    view.Texture2D.MipLevels = mipLevels;
 
     return view;
 }
 
 UploadedTexture uploadRgba8Texture(
     ID3D12Device *device, ID3D12GraphicsCommandList *commands,
-    const fh6::SwatchImage &image) {
+    const fh6::SwatchImage &image, bool generateMipmaps = true,
+    bool normalMap = false) {
     if (!image.valid()) {
         return {};
     }
+    std::vector<std::vector<std::uint8_t>> mipData;
+    std::vector<UINT> mipWidths;
+    std::vector<UINT> mipHeights;
+    mipData.push_back(image.rgba);
+    mipWidths.push_back(static_cast<UINT>(image.width));
+    mipHeights.push_back(static_cast<UINT>(image.height));
+    while (generateMipmaps
+           && (mipWidths.back() > 1 || mipHeights.back() > 1)) {
+        const UINT sourceWidth = mipWidths.back();
+        const UINT sourceHeight = mipHeights.back();
+        const UINT width = std::max(1u, sourceWidth / 2u);
+        const UINT height = std::max(1u, sourceHeight / 2u);
+        const auto &source = mipData.back();
+        std::vector<std::uint8_t> filtered(
+            static_cast<std::size_t>(width) * height * 4u);
+        for (UINT y = 0; y < height; ++y) {
+            for (UINT x = 0; x < width; ++x) {
+                float average[4]{};
+                for (UINT sampleY = 0; sampleY < 2; ++sampleY) {
+                    for (UINT sampleX = 0; sampleX < 2; ++sampleX) {
+                        const UINT sourceX = std::min(sourceWidth - 1, x * 2 + sampleX);
+                        const UINT sourceY = std::min(sourceHeight - 1, y * 2 + sampleY);
+                        const std::size_t sourceOffset =
+                            (static_cast<std::size_t>(sourceY) * sourceWidth + sourceX) * 4u;
+                        for (UINT channel = 0; channel < 4; ++channel) {
+                            average[channel] += source[sourceOffset + channel] * 0.25f;
+                        }
+                    }
+                }
+                if (normalMap) {
+                    float nx = average[0] / 127.5f - 1.0f;
+                    float ny = average[1] / 127.5f - 1.0f;
+                    float nz = average[2] / 127.5f - 1.0f;
+                    const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
+                    if (length > 0.00001f) {
+                        nx /= length;
+                        ny /= length;
+                        nz /= length;
+                    }
+                    average[0] = (nx * 0.5f + 0.5f) * 255.0f;
+                    average[1] = (ny * 0.5f + 0.5f) * 255.0f;
+                    average[2] = (nz * 0.5f + 0.5f) * 255.0f;
+                }
+                const std::size_t destinationOffset =
+                    (static_cast<std::size_t>(y) * width + x) * 4u;
+                for (UINT channel = 0; channel < 4; ++channel) {
+                    filtered[destinationOffset + channel] =
+                        static_cast<std::uint8_t>(std::clamp(
+                            average[channel], 0.0f, 255.0f));
+                }
+            }
+        }
+        mipWidths.push_back(width);
+        mipHeights.push_back(height);
+        mipData.push_back(std::move(filtered));
+    }
+
     D3D12_RESOURCE_DESC description{};
     description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     description.Width = static_cast<UINT64>(image.width);
     description.Height = static_cast<UINT>(image.height);
     description.DepthOrArraySize = 1;
-    description.MipLevels = 1;
+    description.MipLevels = static_cast<UINT16>(mipData.size());
     description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     description.SampleDesc.Count = 1;
     description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -430,12 +505,14 @@ UploadedTexture uploadRgba8Texture(
             IID_PPV_ARGS(&result.texture)))) {
         return {};
     }
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-    UINT rows = 0;
-    UINT64 rowSize = 0;
+    result.mipLevels = static_cast<UINT>(mipData.size());
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(result.mipLevels);
+    std::vector<UINT> rows(result.mipLevels);
+    std::vector<UINT64> rowSizes(result.mipLevels);
     UINT64 uploadSize = 0;
     device->GetCopyableFootprints(
-        &description, 0, 1, 0, &footprint, &rows, &rowSize, &uploadSize);
+        &description, 0, result.mipLevels, 0, footprints.data(), rows.data(),
+        rowSizes.data(), &uploadSize);
     result.upload = createBuffer(
         device, uploadSize, D3D12_HEAP_TYPE_UPLOAD,
         D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -447,23 +524,28 @@ UploadedTexture uploadRgba8Texture(
     if (FAILED(result.upload->Map(0, &noRead, &mapped))) {
         return {};
     }
-    const std::size_t sourcePitch = static_cast<std::size_t>(image.width) * 4;
-    for (UINT row = 0; row < rows; ++row) {
-        std::memcpy(
-            static_cast<std::uint8_t *>(mapped) + footprint.Offset
-                + static_cast<UINT64>(row) * footprint.Footprint.RowPitch,
-            image.rgba.data() + static_cast<std::size_t>(row) * sourcePitch,
-            sourcePitch);
+    for (UINT mip = 0; mip < result.mipLevels; ++mip) {
+        const std::size_t sourcePitch = static_cast<std::size_t>(mipWidths[mip]) * 4u;
+        for (UINT row = 0; row < rows[mip]; ++row) {
+            std::memcpy(
+                static_cast<std::uint8_t *>(mapped) + footprints[mip].Offset
+                    + static_cast<UINT64>(row) * footprints[mip].Footprint.RowPitch,
+                mipData[mip].data() + static_cast<std::size_t>(row) * sourcePitch,
+                sourcePitch);
+        }
     }
     result.upload->Unmap(0, nullptr);
-    D3D12_TEXTURE_COPY_LOCATION destination{};
-    destination.pResource = result.texture.Get();
-    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    D3D12_TEXTURE_COPY_LOCATION source{};
-    source.pResource = result.upload.Get();
-    source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    source.PlacedFootprint = footprint;
-    commands->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    for (UINT mip = 0; mip < result.mipLevels; ++mip) {
+        D3D12_TEXTURE_COPY_LOCATION destination{};
+        destination.pResource = result.texture.Get();
+        destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        destination.SubresourceIndex = mip;
+        D3D12_TEXTURE_COPY_LOCATION source{};
+        source.pResource = result.upload.Get();
+        source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        source.PlacedFootprint = footprints[mip];
+        commands->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    }
     const D3D12_RESOURCE_BARRIER barrier = transition(
         result.texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1013,6 +1095,12 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
                 draw.liveryFacing[side][component]);
         }
     }
+    writeFloat(&data, 39, 0, draw.clearCoatCoverage);
+    writeFloat(&data, 39, 1, draw.clearCoatRoughness);
+    writeFloat(&data, 39, 2, draw.clearCoatOnLivery ? 1.0f : 0.0f);
+    writeFloat(&data, 40, 0, draw.clearCoatTint[0]);
+    writeFloat(&data, 40, 1, draw.clearCoatTint[1]);
+    writeFloat(&data, 40, 2, draw.clearCoatTint[2]);
     return data;
 }
 
@@ -1225,6 +1313,8 @@ QString firstMessage(
 void configureSampler(D3D12_STATIC_SAMPLER_DESC *sampler, UINT shaderRegister) {
     sampler->Filter = shaderRegister == 10
         ? D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR
+        : shaderRegister == 0
+        ? D3D12_FILTER_ANISOTROPIC
         : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1234,7 +1324,7 @@ void configureSampler(D3D12_STATIC_SAMPLER_DESC *sampler, UINT shaderRegister) {
         sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     }
-    sampler->MaxAnisotropy = 1;
+    sampler->MaxAnisotropy = shaderRegister == 0 ? 16 : 1;
     sampler->ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     sampler->BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
     sampler->MinLOD = 0.0f;
@@ -1387,11 +1477,24 @@ float3 pqEncode(float3 value) {
     return pow((c1 + c2 * powered) / (1.0 + c3 * powered), m2);
 }
 
+float3 hableCurve(float3 value) {
+    const float a = 0.151;
+    const float b = 0.05;
+    const float c = 0.566;
+    const float d = 0.21;
+    const float e = 0.003;
+    const float f = 0.141;
+    return ((value * (a * value + c * b) + d * e)
+            / (value * (a * value + b) + d * f)) - e / f;
+}
+
 float3 applyColorGrade(float3 color) {
     float dimension = max(colorGradeParameters.x, 2.0);
     float3 encoded = pqEncode(max(color, 0.0) / max(colorGradeParameters.y, 0.0001));
     float3 coordinate = (encoded * (dimension - 1.0) + 0.5) / dimension;
-    return colorGradeLut.SampleLevel(panoramaSampler, coordinate, 0).rgb;
+    float3 graded = colorGradeLut.SampleLevel(
+        panoramaSampler, coordinate, 0).rgb;
+    return hableCurve(max(graded, 0.0)) / hableCurve(float3(1.5, 1.5, 1.5));
 }
 
 struct PixelInput {
@@ -1516,6 +1619,8 @@ cbuffer MaterialData : register(b0, space3) {
     float4 liverySourceRegions[11];
     float4 liveryPaintRegions[11];
     float4 liveryFacing[11];
+    float4 clearCoatParameters;
+    float4 clearCoatTint;
 };
 TextureCube<float4> diffuseEnvironment : register(t0);
 TextureCube<float4> specularEnvironment : register(t1);
@@ -1560,6 +1665,50 @@ float3 fresnelSchlick(float cosine, float3 f0) {
     return f0 + (1.0 - f0) * pow(saturate(1.0 - cosine), 5.0);
 }
 
+float3 fresnelSchlickRoughness(
+    float cosine, float3 f0, float roughness) {
+    return f0 + (max(1.0 - roughness, f0) - f0)
+        * pow(saturate(1.0 - cosine), 5.0);
+}
+
+float3 environmentBrdfApproximation(
+    float3 f0, float roughness, float ndotv) {
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * ndotv)) * r.x + r.y;
+    float2 scaleBias = float2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * scaleBias.x + scaleBias.y;
+}
+
+float specularOcclusion(float ndotv, float ao, float roughness) {
+    return saturate(
+        pow(ndotv + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
+}
+
+float3 evaluateDirectClearCoat(
+    float3 n, float3 v, float3 l, float roughness) {
+    float ndotl = saturate(dot(n, l));
+    float ndotv = saturate(dot(n, v));
+    if (ndotl <= 0.0) {
+        return 0.0;
+    }
+    float3 h = normalize(v + l);
+    float ndoth = saturate(dot(n, h));
+    float vdoth = saturate(dot(v, h));
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float denominator = ndoth * ndoth * (alpha2 - 1.0) + 1.0;
+    float distribution = alpha2
+        / max(3.14159265 * denominator * denominator, 0.0001);
+    float k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+    float geometryV = ndotv / max(ndotv * (1.0 - k) + k, 0.0001);
+    float geometryL = ndotl / max(ndotl * (1.0 - k) + k, 0.0001);
+    float3 fresnel = fresnelSchlick(vdoth, float3(0.04, 0.04, 0.04));
+    return distribution * geometryV * geometryL * fresnel
+        / max(4.0 * ndotv * ndotl, 0.0001) * ndotl;
+}
+
 float3 pqEncode(float3 value) {
     const float m1 = 0.1593017578125;
     const float m2 = 78.84375;
@@ -1570,11 +1719,24 @@ float3 pqEncode(float3 value) {
     return pow((c1 + c2 * powered) / (1.0 + c3 * powered), m2);
 }
 
+float3 hableCurve(float3 value) {
+    const float a = 0.151;
+    const float b = 0.05;
+    const float c = 0.566;
+    const float d = 0.21;
+    const float e = 0.003;
+    const float f = 0.141;
+    return ((value * (a * value + c * b) + d * e)
+            / (value * (a * value + b) + d * f)) - e / f;
+}
+
 float3 applyColorGrade(float3 color) {
     float dimension = max(colorGradeParameters.x, 2.0);
     float3 encoded = pqEncode(max(color, 0.0) / max(colorGradeParameters.y, 0.0001));
     float3 coordinate = (encoded * (dimension - 1.0) + 0.5) / dimension;
-    return colorGradeLut.SampleLevel(materialSampler, coordinate, 0).rgb;
+    float3 graded = colorGradeLut.SampleLevel(
+        materialSampler, coordinate, 0).rgb;
+    return hableCurve(max(graded, 0.0)) / hableCurve(float3(1.5, 1.5, 1.5));
 }
 
 float2 canvasToUv(float2 canvas) {
@@ -1586,6 +1748,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     float2 uv = input.uv * textureParameters.yz;
     float2 detailUv = input.detailUv * detailTextureParameters.xy;
     float4 authoredBase = float4(1, 1, 1, 1);
+    float liveryCoverage = 0.0;
     float3 albedo = baseColor.rgb;
     if (liveryParameters.x != 0) {
         float2 atlasUv = float2(input.uv.x * 0.5, input.uv.y);
@@ -1625,6 +1788,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
             : float4(0, 0, 0, 0);
         float3 liveryColor = pow(max(authoredBase.rgb, 0.0), 2.2);
         albedo = lerp(baseColor.rgb, liveryColor, authoredBase.a);
+        liveryCoverage = authoredBase.a;
     } else if (textureParameters.x > 0.5) {
         authoredBase = baseColorTexture.Sample(materialSampler, uv);
         authoredBase.rgb = pow(max(authoredBase.rgb, 0.0), 2.2);
@@ -1675,6 +1839,11 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     float3 reflectedEnvironment = specularEnvironment.SampleLevel(
         materialSampler, reflected, roughness * 9.0).rgb;
     float3 color = (diffuse + specular) * directColor.rgb * ndotl;
+    float coatIntensity = saturate(clearCoatParameters.x)
+        * lerp(1.0, clearCoatParameters.z, saturate(liveryCoverage));
+    float coatRoughness = clamp(clearCoatParameters.y, 0.04, 1.0);
+    float3 clearCoatDirect = evaluateDirectClearCoat(
+        n, v, l, coatRoughness) * directColor.rgb;
     [loop]
     for (uint pointIndex = 0;
          pointIndex < min((uint)panoramaParameters.w, 32u); ++pointIndex) {
@@ -1706,13 +1875,32 @@ float4 PSMain(PixelInput input) : SV_Target0 {
             * albedo / 3.14159265;
         float inverseSquare = rcp(max(distanceToLight * distanceToLight, 0.25));
         float radiance = pointLightColorIntensity[pointIndex].w
-            * 0.001 * inverseSquare * rangeFade * spot;
+            * 0.00025 * inverseSquare * rangeFade * spot;
         color += (pointDiffuse + pointSpecular)
             * pointLightColorIntensity[pointIndex].rgb * radiance * pointNdotL;
+        clearCoatDirect += evaluateDirectClearCoat(
+                n, v, pointDirection, coatRoughness)
+            * pointLightColorIntensity[pointIndex].rgb * radiance;
     }
-    color += albedo * (ambientColor.rgb + environment * 0.35) * ao;
-    color += reflectedEnvironment * fresnelSchlick(ndotv, f0)
-        * (1.0 - roughness * 0.65) * ao;
+    float3 environmentFresnel = fresnelSchlickRoughness(
+        ndotv, f0, roughness);
+    color += albedo * ambientColor.rgb * ao;
+    color += albedo * environment * 0.35
+        * (1.0 - environmentFresnel) * (1.0 - metallic) * ao;
+    color += reflectedEnvironment
+        * environmentBrdfApproximation(f0, roughness, ndotv)
+        * specularOcclusion(ndotv, ao, roughness);
+    if (coatIntensity > 0.01) {
+        float3 coatFresnel = fresnelSchlickRoughness(
+            ndotv, float3(0.04, 0.04, 0.04), coatRoughness);
+        float3 coatReflection = specularEnvironment.SampleLevel(
+            materialSampler, reflected, coatRoughness * 9.0).rgb;
+        color += clearCoatDirect * clearCoatTint.rgb * coatIntensity;
+        color += coatReflection * coatFresnel * clearCoatTint.rgb
+            * lerp(0.15, 0.95, 1.0 - coatRoughness) * coatIntensity;
+        color += clearCoatTint.rgb
+            * (pow(1.0 - ndotv, 4.0) * 0.06 * coatIntensity);
+    }
     float3 emission = emissiveColorAndMap.rgb;
     if (emissiveColorAndMap.w > 0.5) {
         float3 authoredEmission = emissiveTexture.Sample(materialSampler, detailUv).rgb;
@@ -2079,10 +2267,14 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     std::vector<DrawResources> draws;
     draws.reserve(scene.draws.size());
     for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
+        if (source.hidden) {
+            continue;
+        }
         DrawResources draw;
         draw.geometry = prepareGeometry(
             source.geometry, source.placement, source.diffuseUvChannel,
-            source.rawMaterialUv);
+            source.rawMaterialUv, source.materialUvChannel,
+            source.materialUvRotationDegrees);
         draw.family = source.family;
         draw.diffuseTexture = source.diffuseTexture;
         draw.alphaTexture = source.alphaTexture;
@@ -2098,6 +2290,10 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.vTiling = source.vTiling;
         draw.detailUTiling = source.detailUTiling;
         draw.detailVTiling = source.detailVTiling;
+        draw.clearCoatTint = source.clearCoatTint;
+        draw.clearCoatCoverage = source.clearCoatCoverage;
+        draw.clearCoatRoughness = source.clearCoatRoughness;
+        draw.clearCoatOnLivery = source.clearCoatOnLivery;
         draw.translucent = source.translucent;
         draw.liveryBaseTexture = source.liveryBaseTexture;
         draw.liveryAllowedSides = source.liveryAllowedSides;
@@ -2198,7 +2394,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             return frame;
         }
         const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-            texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+            texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM, texture.mipLevels);
         device->CreateShaderResourceView(
             texture.texture.Get(), &view,
             cpuHandleAt(kMaterialDescriptorStart + static_cast<UINT>(index)));
@@ -2216,7 +2412,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             }
             liveryMaskTextures[side] = uploadRgba8Texture(
                 device.Get(), commands.Get(),
-                scene.liveryMapping.masks[side].image);
+                scene.liveryMapping.masks[side].image, false);
             if (liveryMaskTextures[side].texture == nullptr) {
                 frame.error = QStringLiteral("DX12 livery mask upload failed");
                 return frame;
@@ -2251,8 +2447,11 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             const auto [found, inserted] = authoredTextureIndices.emplace(
                 source.get(), authoredMaterialTextures.size());
             if (inserted) {
+                const bool liveLivery = source->sourceEntry.startsWith(
+                    QStringLiteral("car://composited-livery"));
                 UploadedTexture texture = uploadRgba8Texture(
-                    device.Get(), commands.Get(), source->image);
+                    device.Get(), commands.Get(), source->image,
+                    !liveLivery, slot == 1u);
                 if (texture.texture == nullptr) {
                     frame.error = QStringLiteral(
                         "DX12 authored material texture upload failed");
@@ -2261,7 +2460,9 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
                 authoredMaterialTextures.push_back(std::move(texture));
             }
             const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-                texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+                texture2DView(
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    authoredMaterialTextures[found->second].mipLevels);
             device->CreateShaderResourceView(
                 authoredMaterialTextures[found->second].texture.Get(), &view,
                 cpuHandleAt(draw.materialDescriptorStart + static_cast<UINT>(slot)));
@@ -2551,6 +2752,8 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
+    ComPtr<ID3D12CommandAllocator> liveryAllocator;
+    ComPtr<ID3D12GraphicsCommandList> liveryCommands;
     ComPtr<IDXGISwapChain3> swapChain;
     ComPtr<ID3D12DescriptorHeap> shaderHeap;
     ComPtr<ID3D12DescriptorHeap> targetHeap;
@@ -2581,6 +2784,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     UINT shaderDescriptorStride = 0;
     UINT targetDescriptorStride = 0;
     UINT64 fenceValue = 0;
+    bool liveryCommandsInFlight = false;
 
     ~Impl() {
         waitForGpu();
@@ -2606,6 +2810,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 .arg(hresultText(result));
             return false;
         }
+        liveryCommandsInFlight = false;
 
         return true;
     }
@@ -2745,6 +2950,18 @@ struct OriginalDx12ViewportRenderer::Impl {
                 0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(),
                 floorPipeline.Get(), IID_PPV_ARGS(&commands));
         }
+        if (SUCCEEDED(result)) {
+            result = device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&liveryAllocator));
+        }
+        if (SUCCEEDED(result)) {
+            result = device->CreateCommandList(
+                0, D3D12_COMMAND_LIST_TYPE_DIRECT, liveryAllocator.Get(),
+                nullptr, IID_PPV_ARGS(&liveryCommands));
+        }
+        if (SUCCEEDED(result)) {
+            result = liveryCommands->Close();
+        }
         if (FAILED(result)) {
             failure = QStringLiteral("D3D12 viewport command setup failed: %1")
                 .arg(hresultText(result));
@@ -2753,10 +2970,14 @@ struct OriginalDx12ViewportRenderer::Impl {
 
         draws.reserve(scene.draws.size());
         for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
+            if (source.hidden) {
+                continue;
+            }
             DrawResources draw;
             draw.geometry = prepareGeometry(
                 source.geometry, source.placement, source.diffuseUvChannel,
-                source.rawMaterialUv);
+                source.rawMaterialUv, source.materialUvChannel,
+                source.materialUvRotationDegrees);
             draw.family = source.family;
             draw.diffuseTexture = source.diffuseTexture;
             draw.alphaTexture = source.alphaTexture;
@@ -2772,6 +2993,10 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.vTiling = source.vTiling;
             draw.detailUTiling = source.detailUTiling;
             draw.detailVTiling = source.detailVTiling;
+            draw.clearCoatTint = source.clearCoatTint;
+            draw.clearCoatCoverage = source.clearCoatCoverage;
+            draw.clearCoatRoughness = source.clearCoatRoughness;
+            draw.clearCoatOnLivery = source.clearCoatOnLivery;
             draw.translucent = source.translucent;
             draw.liveryBaseTexture = source.liveryBaseTexture;
             draw.liveryAllowedSides = source.liveryAllowedSides;
@@ -2862,7 +3087,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 return false;
             }
             const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-                texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+                texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM, texture.mipLevels);
             device->CreateShaderResourceView(
                 texture.texture.Get(), &view,
                 cpuHandleAt(kMaterialDescriptorStart + static_cast<UINT>(index)));
@@ -2878,7 +3103,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 }
                 liveryMaskTextures[side] = uploadRgba8Texture(
                     device.Get(), commands.Get(),
-                    scene.liveryMapping.masks[side].image);
+                    scene.liveryMapping.masks[side].image, false);
                 if (liveryMaskTextures[side].texture == nullptr) {
                     failure = QStringLiteral("D3D12 viewport livery mask upload failed");
                     return false;
@@ -2913,8 +3138,11 @@ struct OriginalDx12ViewportRenderer::Impl {
                 const auto [found, inserted] = authoredTextureIndices.emplace(
                     source.get(), authoredMaterialTextures.size());
                 if (inserted) {
+                    const bool liveLivery = source->sourceEntry.startsWith(
+                        QStringLiteral("car://composited-livery"));
                     UploadedTexture texture = uploadRgba8Texture(
-                        device.Get(), commands.Get(), source->image);
+                        device.Get(), commands.Get(), source->image,
+                        !liveLivery, slot == 1u);
                     if (texture.texture == nullptr) {
                         failure = QStringLiteral(
                             "D3D12 viewport authored material upload failed");
@@ -2923,7 +3151,9 @@ struct OriginalDx12ViewportRenderer::Impl {
                     authoredMaterialTextures.push_back(std::move(texture));
                 }
                 const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-                    texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+                    texture2DView(
+                        DXGI_FORMAT_R8G8B8A8_UNORM,
+                        authoredMaterialTextures[found->second].mipLevels);
                 device->CreateShaderResourceView(
                     authoredMaterialTextures[found->second].texture.Get(), &view,
                     cpuHandleAt(
@@ -3035,7 +3265,8 @@ struct OriginalDx12ViewportRenderer::Impl {
     }
 
     bool replaceLivery(const fh6::SwatchImage &source) {
-        if (liveryDescriptorIndices.empty() || !waitForGpu()) {
+        if (liveryDescriptorIndices.empty()
+            || (liveryCommandsInFlight && !waitForGpu())) {
             return false;
         }
         fh6::SwatchImage transparent;
@@ -3046,9 +3277,9 @@ struct OriginalDx12ViewportRenderer::Impl {
             transparent.rgba = {0, 0, 0, 0};
             image = &transparent;
         }
-        HRESULT result = allocator->Reset();
+        HRESULT result = liveryAllocator->Reset();
         if (SUCCEEDED(result)) {
-            result = commands->Reset(allocator.Get(), nullptr);
+            result = liveryCommands->Reset(liveryAllocator.Get(), nullptr);
         }
         if (FAILED(result)) {
             failure = QStringLiteral("D3D12 livery command reset failed: %1")
@@ -3056,13 +3287,13 @@ struct OriginalDx12ViewportRenderer::Impl {
             return false;
         }
         UploadedTexture replacement = uploadRgba8Texture(
-            device.Get(), commands.Get(), *image);
+            device.Get(), liveryCommands.Get(), *image, false);
         if (replacement.texture == nullptr) {
             failure = QStringLiteral("D3D12 live livery upload failed");
             return false;
         }
         const D3D12_SHADER_RESOURCE_VIEW_DESC view =
-            texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM);
+            texture2DView(DXGI_FORMAT_R8G8B8A8_UNORM, replacement.mipLevels);
         for (const UINT descriptorIndex : liveryDescriptorIndices) {
             D3D12_CPU_DESCRIPTOR_HANDLE handle =
                 shaderHeap->GetCPUDescriptorHandleForHeapStart();
@@ -3071,17 +3302,15 @@ struct OriginalDx12ViewportRenderer::Impl {
             device->CreateShaderResourceView(
                 replacement.texture.Get(), &view, handle);
         }
-        result = commands->Close();
+        result = liveryCommands->Close();
         if (FAILED(result)) {
             failure = QStringLiteral("D3D12 livery command recording failed: %1")
                 .arg(hresultText(result));
             return false;
         }
-        ID3D12CommandList *lists[] = {commands.Get()};
+        ID3D12CommandList *lists[] = {liveryCommands.Get()};
         queue->ExecuteCommandLists(1, lists);
-        if (!waitForGpu()) {
-            return false;
-        }
+        liveryCommandsInFlight = true;
         liveLiveryTexture = std::move(replacement);
         return true;
     }
