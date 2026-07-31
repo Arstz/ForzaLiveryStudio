@@ -33,6 +33,7 @@ constexpr int kCompactIconGap = 6;
 constexpr int kThumbnailCacheWidth = 512;
 constexpr int kAssetRowHeight = 86;
 constexpr int kFolderRowPadding = 12;
+constexpr bool kShowGenericForzaFoldersDefault = true;
 
 enum class AssetKind {
     None,
@@ -435,10 +436,20 @@ public:
         hint_->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(hint_);
 
-        buttons_ = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel, this);
+        auto *footer = new QHBoxLayout();
+        showGenericForzaFolders_ = new QCheckBox(
+            QStringLiteral("Show generic forza folders"), this);
+        showGenericForzaFolders_->setChecked(settings.value(
+            QStringLiteral("import/showGenericForzaFolders"),
+            kShowGenericForzaFoldersDefault).toBool());
+        buttons_ = new QDialogButtonBox(
+            QDialogButtonBox::Open | QDialogButtonBox::Cancel, this);
         buttons_->button(QDialogButtonBox::Open)->setText(QStringLiteral("Import"));
         buttons_->button(QDialogButtonBox::Open)->setEnabled(false);
-        layout->addWidget(buttons_);
+        footer->addWidget(showGenericForzaFolders_);
+        footer->addStretch(1);
+        footer->addWidget(buttons_);
+        layout->addLayout(footer);
 
         connect(backButton_, &QToolButton::clicked, this, [this]() { goBack(); });
         connect(upButton_, &QToolButton::clicked, this, [this]() { goUp(); });
@@ -467,6 +478,15 @@ public:
         connect(listViewButton_, &QToolButton::clicked, this, [this]() {
             setGridView(false);
         });
+        connect(
+            showGenericForzaFolders_,
+            &QCheckBox::toggled,
+            this,
+            [this](bool enabled) {
+                QSettings().setValue(
+                    QStringLiteral("import/showGenericForzaFolders"), enabled);
+                refresh();
+            });
         connect(list_, &QListWidget::currentItemChanged, this,
                 [this](QListWidgetItem *current, QListWidgetItem *) { updateSelection(current); });
         connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
@@ -485,7 +505,14 @@ public:
         if (inspectAsset(startDirectory).valid()) {
             startDirectory = QFileInfo(startDirectory).absolutePath();
         }
+        restoreGeometry(settings.value(
+            QStringLiteral("import/sourceBrowserGeometry")).toByteArray());
         navigate(startDirectory);
+    }
+
+    ~ImportAssetDialog() override {
+        QSettings().setValue(
+            QStringLiteral("import/sourceBrowserGeometry"), saveGeometry());
     }
 
     ImportAssetSelection selection() const {
@@ -573,11 +600,26 @@ private:
         const QFileInfoList folders = directory.entryInfoList(
             QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
             QDir::Name | QDir::IgnoreCase | QDir::DirsFirst);
+        const bool containersRoot = directory.dirName().compare(
+            QStringLiteral("ContainersRoot"), Qt::CaseInsensitive) == 0;
+        const bool showGenericForzaFolders =
+            showGenericForzaFolders_->isChecked();
         QVector<AssetDetailsRequest> detailsRequests;
         const int folderIconExtent = style()->pixelMetric(QStyle::PM_LargeIconSize);
         const QIcon folderIcon(style()->standardIcon(QStyle::SP_DirIcon)
                                    .pixmap(folderIconExtent, folderIconExtent));
         for (const QFileInfo &folder : folders) {
+            const bool userAssetFolder =
+                folder.fileName().startsWith(
+                    QStringLiteral("Livery_"), Qt::CaseInsensitive)
+                || folder.fileName().startsWith(
+                    QStringLiteral("LayerGroup_"), Qt::CaseInsensitive);
+            if (containersRoot
+                && !showGenericForzaFolders
+                && !userAssetFolder) {
+                continue;
+            }
+
             const AssetInfo asset = inspectAsset(folder.absoluteFilePath());
             QString name = folder.fileName();
             QString text = name;
@@ -636,7 +678,9 @@ private:
     }
 
     void applyFilters() {
-        if (list_ == nullptr || searchEdit_ == nullptr || typeFilter_ == nullptr) {
+        if (list_ == nullptr
+            || searchEdit_ == nullptr
+            || typeFilter_ == nullptr) {
             return;
         }
         const QString search = searchEdit_->text().trimmed();
@@ -770,6 +814,7 @@ private:
     QComboBox *typeFilter_ = nullptr;
     QToolButton *gridViewButton_ = nullptr;
     QToolButton *listViewButton_ = nullptr;
+    QCheckBox *showGenericForzaFolders_ = nullptr;
     QListWidget *list_ = nullptr;
     QLabel *hint_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;
