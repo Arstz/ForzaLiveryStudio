@@ -1,6 +1,8 @@
 Small changes:
+    -With shift held snap Pen tool to 15 degree intervals relative to previous node, display hint text with degrees
 
 Medium changes:
+    -Allow for the bucket tool to fill if transparent pixel is the target and can produce a valid closed contour. If so fill the contour as usual, set all shapes color to magenta, and apply mask flag. 
 
 Big changes:
     -Add speedpaint caching for telemetry

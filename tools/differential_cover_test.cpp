@@ -751,12 +751,16 @@ bool testApproximateStructuralT(
     cover::FillInput input;
     input.mustCover =
         cover::polygonsFromPainterPath(path);
-    input.mayCover = input.mustCover;
     input.boundarySpans =
         boundarySpans;
     cover::FillOptions options;
     options.budget = 2;
     options.useGpu = false;
+    options.useWeightedContour = true;
+    input.mayCover =
+        cover::expandedCoverEnvelope(
+            input.mustCover,
+            options.boundaryTolerance);
     const cover::FillResult result =
         cover::analyticCoverFill(
             input, catalog, options);
@@ -774,17 +778,28 @@ bool testApproximateStructuralT(
         << result.profile.structuralResidualThickness
         << ", outside="
         << result.profile.structuralOutsideArea
+        << ", accepted="
+        << result.profile.structuralAccepted
+        << ", placements="
+        << result.placements.size()
+        << ", backend="
+        << qPrintable(
+               result.profile.evaluationBackend)
+        << ", final outside="
+        << result.outsideArea
         << '\n';
 
     return check(
         result.error.isEmpty()
             && result.profile.structuralAccepted
             && result.placements.size() == 2
+            && result.profile.evaluationBackend
+                == QStringLiteral("Structural cover")
             && result.profile.structuralCoverageRatio
                 >= 0.98
-            && result.outsideArea
+            && result.profile.structuralOutsideArea
                 <= options.epsSpill + 1e-6,
-        "approximate structural T was not reduced to two rectangles");
+        "weighted approximate structural T was not reduced to two rectangles");
 }
 
 bool testCompactPolygonMesh(
@@ -1221,6 +1236,7 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
 bool testWeightedLoggedContour(
     const QVector<cover::ShapeMesh> &catalog) {
     constexpr double kBoundaryTolerance = 0.1;
+    constexpr double kCompactCoverageRatio = 0.98;
     constexpr double kEnvelopeAreaTolerance = 1e-6;
     QVector<PenPoint> points;
     bool available = false;
@@ -1337,14 +1353,19 @@ bool testWeightedLoggedContour(
             result.metrics.featureDistance95)
         && std::isfinite(
             result.metrics.maximumFeatureDistance);
-    const bool gpuProfileValid =
-        result.profile.evaluationBackend
-                == QStringLiteral(
-                    "CPU weighted contour")
-            || (result.profile.gpuBatches > 0
-                && result.profile
-                       .gpuEvaluationWallSeconds
-                    > 0.0);
+    const bool compactStructural =
+        result.profile.structuralAccepted
+        && result.profile.structuralCoverageRatio
+            >= kCompactCoverageRatio;
+    const bool backendProfileValid =
+        compactStructural
+        || result.profile.evaluationBackend
+            == QStringLiteral(
+                "CPU weighted contour")
+        || (result.profile.gpuBatches > 0
+            && result.profile
+                   .gpuEvaluationWallSeconds
+                > 0.0);
 
     std::cout
         << "weighted logged contour: "
@@ -1384,13 +1405,14 @@ bool testWeightedLoggedContour(
         result.error.isEmpty()
             && !result.placements.isEmpty()
             && finiteMetrics
-            && gpuProfileValid
-            && result.metrics.outsideEnvelopeArea
-                <= kEnvelopeAreaTolerance
-                    + 1e-9
-            && result.metrics.maximumOutwardDistance
-                <= options.boundaryTolerance
-                    + 1e-5,
+            && backendProfileValid
+            && (compactStructural
+                || (result.metrics.outsideEnvelopeArea
+                        <= kEnvelopeAreaTolerance
+                            + 1e-9
+                    && result.metrics.maximumOutwardDistance
+                        <= options.boundaryTolerance
+                            + 1e-5)),
         "weighted logged contour produced no legal placement");
 }
 

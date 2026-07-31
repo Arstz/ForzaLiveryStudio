@@ -9,7 +9,8 @@ to the existing deterministic Pen fill. Fill implementations are grouped under
 retaining separate selection and optimization policies.
 
 Status: **implemented on the `image_gen` branch.** This document is the behavior
-and maintenance specification for the differential-cover subsystem.
+and maintenance specification for the differential-cover subsystem, including
+the feature-weighted contour path.
 
 ---
 
@@ -288,9 +289,10 @@ smaller batches and evaluated recursively on that backend. Batching preserves
 every requested candidate and calculation; it is not a placement clock,
 calculation cap, or reduced optimizer budget.
 
-Feature-weighted requests currently use the parallel CPU evaluator. The CUDA
-and Direct3D paths remain active for unweighted comparison runs until their
-feature-potential values and gradients have parity tests.
+Feature-weighted requests use the CUDA area and spill kernel when available,
+then add the compact feature-potential gradient during the stable host-side
+Adam update. Direct3D retains CPU Adam evaluation and accelerates batched
+legalization. Exact CPU geometry remains authoritative for both paths.
 
 ---
 
@@ -369,11 +371,13 @@ deterministic minimum rectangle cover. Each rectangle is translated and shrunk
 independently until its exact footprint is legal against the outward envelope.
 
 A rectangle plan covering at least 98 percent of the target completes directly.
-A legal plan covering at least 90 percent also completes when the residual's
-maximum inscribed radius is within the coordinate snapping tolerance. This
-distinguishes boundary detail from a missing structural region. Other legal
-plans above the same coverage floor seed the greedy solver with their residual.
-The configured catalog must contain Square for this pass.
+This compact-cover threshold is temporarily authoritative even when the raw
+authored features do not match the snapped rectangle union. A legal plan covering
+at least 90 percent also completes when the residual's maximum inscribed radius
+is within the coordinate snapping tolerance and the weighted contour metrics
+remain valid. This distinguishes boundary detail from a missing structural
+region. Other legal plans above the same coverage floor seed the greedy solver
+with their residual. The configured catalog must contain Square for this pass.
 
 The first greedy step adds one oriented-bounds initialization for every
 catalog-shape/component pair. This gives affine-equivalent or near-equivalent
@@ -472,6 +476,80 @@ cover on that target using the normal catalog, routing, optimizer, legality
 checks, and remaining placement budget. Append the resulting placements to the
 pruned cover. A result meeting the compact threshold retains its accepted
 shape-count tradeoff. The repair result is not pruned again.
+
+### 7.7 Feature-weighted contour policy
+
+The GUI differential mode enables feature-weighted selection. The unweighted
+configuration remains available for focused comparisons. Both configurations
+use the same residual loop, catalog, exact polygon booleans, placement budget,
+and final measurement.
+
+The weighted path keeps four geometric regions distinct:
+
+- `mustCover` is the original target and supplies covered and missing area.
+- `residual` is the part of that target not covered by the current union.
+- `mayCover` is the outward legality envelope derived from
+  `boundaryTolerance`.
+- `coverage` is the exact union of accepted placement footprints.
+
+Spill is measured against `mustCover`. Coverage outside `mayCover` and an
+exposed boundary farther than `boundaryTolerance` from the target are hard
+rejections, subject to the temporary compact structural policy in §7.2.
+Tversky similarity uses a lower penalty for spill than for missing area, but it
+is a ranking and reporting metric rather than a replacement for either hard
+constraint.
+
+Target features are extracted from the ordered contour spans before flattening.
+Every hard point records its position, incident tangents, local-scale capture
+radius, normalized arc-length weight, stable contour id, and corner or smooth
+junction kind. Catalog features are derived from the simplified authored shape
+boundary so tessellation vertices do not become false landmarks.
+
+Only target features not represented by the current exposed union contribute
+their full bounded feature potential. Feature-aware initializations align one
+compatible source feature or an adjacent pair with unsatisfied target features.
+After exact candidate evaluation, the area-competition window removes
+candidates whose gain is not competitive with the largest legal gain. The
+remaining candidates are ranked by newly represented feature weight, boundary
+distance, residual complexity, exact gain, Tversky similarity, and deterministic
+shape and transform ordering. A feature claim requires exposed contour arc near
+the feature; a hidden placement edge cannot satisfy it.
+
+Candidate acceptance and pruning recompute feature matches from the complete
+placement union. Pruning preserves represented feature weight, the accepted
+Tversky floor, the legality envelope, and the maximum outward-distance limit.
+Feature ownership stored on placements is diagnostic state and is reassigned
+from the final exposed union.
+
+Final metrics include exact missing and outside areas, Tversky similarity,
+symmetric boundary mean, RMS, 95th percentile, maximum outward distance,
+Boundary F-score, represented and total feature weight, feature-distance
+summaries, tangent errors, and placement count. These values remain separate so
+one aggregate score cannot hide a failed constraint.
+
+#### Planned structural refinement
+
+The compact structural exception in §7.2 is an interim shape-count policy.
+Replacing it requires a structural legalizer that preserves the authored
+contour while retaining the minimum rectangle decomposition:
+
+1. Carry target features and their snapped support-line associations into the
+   structural plan.
+2. Score rectangle translations and scales as one coherent union, ranking
+   represented features before residual-area improvements.
+3. Keep feature anchors active during legalization and discard an anchor when
+   no legal transform retains it.
+4. Distinguish envelope, outward-distance, and feature-weight rejection in the
+   structural profile instead of reporting one combined reason.
+5. Record the structural plan's complete common metric snapshot in
+   `pen_fill.log`.
+6. Tune the feature tolerance and compact-plan comparison against a fixed
+   contour corpus before removing the 98 percent exception.
+
+The corpus must cover varied point density, curvature, concavity, scale, and
+orientation. It records placement count, exact areas, boundary and feature
+errors, runtime, backend, and repeatability for both weighted and unweighted
+runs.
 
 ---
 

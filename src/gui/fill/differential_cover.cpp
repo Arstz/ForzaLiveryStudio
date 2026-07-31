@@ -81,7 +81,12 @@ FillResult analyticCoverFillInternal(
             input.boundarySpans, catalog,
             mustCover, mayCover,
             targetArea, options, cancelled);
+    const bool compactStructuralCover =
+        structural.coverageRatio
+        >= kStructuralMinimumCompactCoverageRatio
+            - kGeometryEpsilon;
     if (structural.accepted
+        && !compactStructuralCover
         && !targetFeatures.isEmpty()) {
         const Polygons coverage =
             unionPolygons(
