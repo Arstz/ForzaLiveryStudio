@@ -2080,13 +2080,10 @@ void CarModelRenderer::uploadModel(const fh6::CarModel &model) {
         if (carbonResource.contains(QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive)) {
             materialUvIndex = 0;
             rawMaterialUv = true;
-            // Force the shader's U_Tiling if the shared-library merge didn't resolve it (leaving 1).
-            if (materialUTiling <= 1.5f) {
-                materialUTiling = 32.0f;
-            }
-            if (materialVTiling <= 1.5f) {
-                materialVTiling = 32.0f;
-            }
+            // Match the finer authored ID15 twin-twill scale.  The shared 32x
+            // default is visibly oversized on most exterior carbon panels.
+            materialUTiling = std::max(materialUTiling, 75.0f);
+            materialVTiling = std::max(materialVTiling, 75.0f);
         }
         const std::vector<fh6::ModelVec2> *materialUv =
             materialUvIndex < static_cast<int>(mesh.uvChannels.size())

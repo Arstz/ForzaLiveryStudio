@@ -94,6 +94,10 @@ int main(int argc, char **argv) {
         scene.environment.specularCubemap.valid(),
         "Tokyo staged-space specular probe is invalid");
     ok &= require(
+        scene.colorLut.valid() && scene.colorLut.dimension == 32
+            && std::abs(scene.colorLut.scale - 100.0f) < 0.0001f,
+        "Tokyo Homespace colour-grade LUT changed");
+    ok &= require(
         scene.environment.panorama.valid()
             && scene.environment.panorama.texture.width == 8192
             && scene.environment.panorama.texture.height == 4096,
@@ -121,6 +125,11 @@ int main(int argc, char **argv) {
                    }) == 20
             && scene.lightingStatus.contains(QStringLiteral("27 active")),
         "Tokyo authored roof/floodlight presets changed");
+    const fh6::ModelVec3 roofEmission =
+        scene.authoredLights.front().transform.transformVector({0.0f, 0.0f, 1.0f});
+    ok &= require(
+        roofEmission.y < -0.99f,
+        "Tokyo roof fixture +Z emission axis no longer points into the garage");
     const fh6::ModelVec3 placedOrigin =
         scene.draws.front().placement.transformPoint({});
     const fh6::ModelVec3 placedForward =

@@ -1087,7 +1087,7 @@ bool OriginalShaderGarageScene::valid() const {
         && std::all_of(
             materialTextures.cbegin(), materialTextures.cend(),
             [](const auto &texture) { return texture.valid(); })
-        && environment.valid() && environment.panorama.valid();
+        && environment.valid() && environment.panorama.valid() && colorLut.valid();
 }
 
 long long OriginalShaderGarageScene::totalVertices() const {
@@ -1494,6 +1494,14 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
                  ? scene.environment.error : scene.environment.panoramaError);
         return scene;
     }
+    QString colorLutError;
+    const std::optional<GarageColorLut> colorLut =
+        loadGarageColorLut(gameFolder, &colorLutError);
+    if (!colorLut.has_value()) {
+        fail(&scene, QStringLiteral("Homespace colour grade"), colorLutError);
+        return scene;
+    }
+    scene.colorLut = *colorLut;
 
     scene.error.clear();
     return scene;
@@ -1525,6 +1533,33 @@ bool appendOriginalShaderGarageCar(
     const ModelVec3 boundsMin = car.boundsMin;
     const ModelVec3 boundsMax = car.boundsMax;
     const QString source = car.sourcePath;
+    // House 8's car locator is on the finished floor, while car model origins
+    // are not guaranteed to be at tire contact.  Seat the highest-detail wheel
+    // and tire geometry on that plane instead of burying it below the floor.
+    float contactY = std::numeric_limits<float>::max();
+    const std::vector<char> contactLod = highestLodFlags(car.meshes);
+    for (std::size_t meshIndex = 0; meshIndex < car.meshes.size(); ++meshIndex) {
+        const CarMesh &mesh = car.meshes[meshIndex];
+        if (!contactLod[meshIndex]) {
+            continue;
+        }
+        QString identity = mesh.name + QLatin1Char('|') + mesh.sourceModelPath;
+        identity.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (!identity.contains(QStringLiteral("wheel"), Qt::CaseInsensitive)
+            && !identity.contains(QStringLiteral("tire"), Qt::CaseInsensitive)
+            && !identity.contains(QStringLiteral("tyre"), Qt::CaseInsensitive)) {
+            continue;
+        }
+        for (const ModelVec3 &position : mesh.positions) {
+            contactY = std::min(
+                contactY, mesh.boneTransform.transformPoint(position).y);
+        }
+    }
+    if (!std::isfinite(contactY)) {
+        contactY = boundsMin.y;
+    }
+    ModelMat4 groundedCarPlacement = scene->carPlacement;
+    groundedCarPlacement.m[13] -= contactY;
     const std::size_t firstDraw = scene->draws.size();
     int opaqueDraws = 0;
     int liveryDraws = 0;
@@ -1544,6 +1579,18 @@ bool appendOriginalShaderGarageCar(
         texture->semantic = QStringLiteral("DiffuseTexture");
         texture->sourceEntry = QStringLiteral("car://composited-livery");
         texture->image = livery;
+        liveryTexture = std::move(texture);
+    } else if (liveryMasks != nullptr && liveryMasks->valid()
+               && paintRegions != nullptr) {
+        // Keep the projection path alive for an empty imported livery so the
+        // interactive DX12 viewport can replace this texture without rebuilding
+        // the entire garage and car scene.
+        auto texture = std::make_shared<OriginalShaderMaterialTexture>();
+        texture->semantic = QStringLiteral("DiffuseTexture");
+        texture->sourceEntry = QStringLiteral("car://composited-livery");
+        texture->image.width = 1;
+        texture->image.height = 1;
+        texture->image.rgba = {0, 0, 0, 0};
         liveryTexture = std::move(texture);
     }
     if (liveryTexture != nullptr && liveryMasks != nullptr
@@ -1657,9 +1704,10 @@ bool appendOriginalShaderGarageCar(
         // Some race cars use raised polygons shaped like their factory sponsor
         // graphics. Repainting those polygons with a custom atlas preserves the
         // old logo silhouettes even though the body panel below is correct.
-        // Custom liveries replace this sticker layer; badge/symbol materials stay.
-        if (liveryTexture != nullptr
-            && normalizedMaterialPath.contains(
+        // The editor livery is authoritative, including an intentionally empty
+        // one, so this factory sticker layer is never part of the preview.
+        // Genuine badge/symbol materials stay.
+        if (normalizedMaterialPath.contains(
                 QStringLiteral("/carpaint_default/livery_sticker.materialbin"),
                 Qt::CaseInsensitive)) {
             ++excludedFactoryLiveryStickers;
@@ -1808,7 +1856,7 @@ bool appendOriginalShaderGarageCar(
         draw.name = drawName;
         draw.source = source;
         draw.family = OriginalShaderSurfaceFamily::Default;
-        draw.placement = scene->carPlacement;
+        draw.placement = groundedCarPlacement;
         draw.diffuseTexture = std::move(diffuse);
         draw.alphaTexture = std::move(alpha);
         draw.normalTexture = std::move(normal);
@@ -1835,18 +1883,13 @@ bool appendOriginalShaderGarageCar(
             draw.detailUTiling = mesh.material->uTiling;
             draw.detailVTiling = mesh.material->vTiling;
             if (rawMaterialUv) {
-                if (draw.uTiling <= 1.5f) {
-                    draw.uTiling = 32.0f;
-                }
-                if (draw.vTiling <= 1.5f) {
-                    draw.vTiling = 32.0f;
-                }
-                if (draw.detailUTiling <= 1.5f) {
-                    draw.detailUTiling = 32.0f;
-                }
-                if (draw.detailVTiling <= 1.5f) {
-                    draw.detailVTiling = 32.0f;
-                }
+                // ID15's authored 75x twin-twill scale is the useful reference
+                // for this texture.  The shared 32x default makes each bundle
+                // of fibres visibly oversized on the exterior parts.
+                draw.uTiling = std::max(draw.uTiling, 75.0f);
+                draw.vTiling = std::max(draw.vTiling, 75.0f);
+                draw.detailUTiling = std::max(draw.detailUTiling, 75.0f);
+                draw.detailVTiling = std::max(draw.detailVTiling, 75.0f);
             }
         }
         if (glassSurface && draw.opacity >= 0.995f) {

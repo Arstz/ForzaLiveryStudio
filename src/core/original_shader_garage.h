@@ -1,6 +1,7 @@
 #pragma once
 
 #include "garage_environment.h"
+#include "garage_lut.h"
 #include "livery_masks.h"
 #include "model_geometry.h"
 #include "swatchbin.h"
@@ -118,6 +119,7 @@ struct OriginalShaderGarageScene {
     OriginalShaderProgram floorProgram;
     std::array<OriginalShaderMaterialTexture, 7> materialTextures;
     GarageEnvironmentResources environment;
+    GarageColorLut colorLut;
     OriginalShaderLighting lighting;
     std::vector<OriginalShaderPointLight> authoredLights;
     OriginalShaderLiveryMapping liveryMapping;

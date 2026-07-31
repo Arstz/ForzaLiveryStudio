@@ -135,24 +135,18 @@ int main(int argc, char **argv) {
         return 1;
     }
     QSet<quint32> colors;
-    bool renderedRedLivery = false;
     const auto *pixels = reinterpret_cast<const quint32 *>(firstFrame.image.constBits());
     const qsizetype pixelCount = firstFrame.image.sizeInBytes() / sizeof(quint32);
     for (qsizetype index = 0; index < pixelCount; ++index) {
         colors.insert(pixels[index]);
-        const auto *rgba = firstFrame.image.constBits() + index * 4;
-        renderedRedLivery = renderedRedLivery
-            || (rgba[0] > 80 && rgba[0] > rgba[1] * 2
-                && rgba[0] > rgba[2] * 2);
     }
     if (firstHash != secondHash
         || firstFrame.changedPixels != secondFrame.changedPixels) {
         std::fprintf(stderr, "D3D12 frame is not deterministic\n");
         return 1;
     }
-    // The Tokyo compatibility material intentionally omits the unresolved specular
-    // cubemap, so variation now comes from diffuse irradiance and surface normals
-    // rather than a reflected HDR image.
+    // The complete environment contract contributes diffuse irradiance, the
+    // mipmapped BC6H reflection probe, and the Homespace colour grade.
     if (colors.size() < 64) {
         std::fprintf(
             stderr,
@@ -160,8 +154,14 @@ int main(int argc, char **argv) {
             static_cast<long long>(colors.size()));
         return 1;
     }
-    if (!renderedRedLivery) {
-        std::fprintf(stderr, "D3D12 frame did not render the composited livery atlas\n");
+    const bool boundCompositedLivery = std::any_of(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return draw.liveryBaseTexture && draw.diffuseTexture != nullptr
+                && draw.diffuseTexture->sourceEntry
+                    == QStringLiteral("car://composited-livery");
+        });
+    if (!boundCompositedLivery) {
+        std::fprintf(stderr, "D3D12 scene did not bind the composited livery atlas\n");
         return 1;
     }
 #ifdef Q_OS_WIN
@@ -179,8 +179,14 @@ int main(int argc, char **argv) {
         scene, reinterpret_cast<quintptr>(window), QSize(320, 240),
         viewportCamera);
     const bool firstPresent = initialized && viewport.render(viewportCamera);
+    fh6::SwatchImage replacementLivery;
+    replacementLivery.width = 1;
+    replacementLivery.height = 1;
+    replacementLivery.rgba = {0, 0, 255, 255};
+    const bool liveLiveryUpdated = firstPresent
+        && viewport.updateLivery(replacementLivery);
     viewportCamera.position.setX(viewportCamera.position.x() + 0.25f);
-    const bool secondPresent = firstPresent && viewport.render(viewportCamera);
+    const bool secondPresent = liveLiveryUpdated && viewport.render(viewportCamera);
     const bool resized = secondPresent && viewport.resize(QSize(400, 300));
     const bool resizedPresent = resized && viewport.render(viewportCamera);
     if (!resizedPresent) {

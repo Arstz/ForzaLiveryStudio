@@ -34,6 +34,14 @@ void OriginalDx12Viewport::clearScene() {
     scene_.reset();
 }
 
+bool OriginalDx12Viewport::updateLivery(const fh6::SwatchImage &livery) {
+    if (!renderer_.ready() || !renderer_.updateLivery(livery)) {
+        return false;
+    }
+    renderFrame();
+    return true;
+}
+
 void OriginalDx12Viewport::setFailureCallback(
     std::function<void(const QString &)> callback) {
     failureCallback_ = std::move(callback);

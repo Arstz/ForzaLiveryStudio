@@ -18,7 +18,10 @@ constexpr int kBytesPerChannel = 2;
 constexpr quint32 kReservedHeaderValue = 0;
 constexpr quint32 kMinimumDimension = 2;
 constexpr quint32 kMaximumDimension = 256;
-constexpr char kPaintCarColorLutEntry[] = "Forte_BaseFilmStock_Corrected.lut";
+// The staged homespace explicitly selects this grade.  The generic Forte film
+// stock is used by the outdoor paint-car scene and gives the Tokyo interior a
+// noticeably different white balance.
+constexpr char kHomespaceColorLutEntry[] = "Homespace.lut";
 
 void setError(QString *error, const QString &message) {
     if (error != nullptr) {
@@ -160,9 +163,9 @@ std::optional<GarageColorLut> loadGarageColorLut(const QString &gameFolder, QStr
     const QString archive = QDir(mediaDir).filePath(QStringLiteral("colourgrades.zip"));
     QString zipError;
     const QByteArray bytes = readZipEntry(
-        archive, QString::fromLatin1(kPaintCarColorLutEntry), &zipError);
+        archive, QString::fromLatin1(kHomespaceColorLutEntry), &zipError);
     if (bytes.isEmpty()) {
-        setError(error, QStringLiteral("Paint Car colour LUT: %1").arg(zipError));
+        setError(error, QStringLiteral("Homespace colour LUT: %1").arg(zipError));
         return std::nullopt;
     }
 

@@ -1147,6 +1147,16 @@ std::shared_ptr<PreparedCar> prepareCar(
     appendSharedTireB(model, path, wheelSizing);
     assignSharedSlotMaterials(model);
     resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
+    const auto isFactoryLiverySticker = [](const fh6::CarMesh &mesh) {
+        QString resource = mesh.material != nullptr
+            ? mesh.material->resourcePath : QString();
+        resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        return resource.contains(
+            QStringLiteral("/carpaint_default/livery_sticker.materialbin"),
+            Qt::CaseInsensitive);
+    };
+    std::erase_if(model.meshes, isFactoryLiverySticker);
+    std::erase_if(model.liveryProjectionMeshes, isFactoryLiverySticker);
     if (qEnvironmentVariableIsSet("FLS_DUMP_CAR_MATERIALS")) {
         int resolvedMaterials = 0;
         int diffuseMaps = 0;
@@ -1330,6 +1340,17 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     originalDx12Container_ = QWidget::createWindowContainer(
         originalDx12Viewport_, this);
     originalDx12Container_->hide();
+    originalDx12RefreshTimer_.setSingleShot(true);
+    originalDx12RefreshTimer_.setInterval(75);
+    connect(&originalDx12RefreshTimer_, &QTimer::timeout, this, [this]() {
+        if (originalDx12Requested_) {
+            const fh6::SwatchImage livery = captureCompositedLivery();
+            if (originalDx12Viewport_ == nullptr
+                || !originalDx12Viewport_->updateLivery(livery)) {
+                startOriginalDx12Frame();
+            }
+        }
+    });
     originalDx12Viewport_->setFailureCallback([this](const QString &error) {
         originalDx12Requested_ = false;
         originalDx12Pending_ = false;
@@ -1370,7 +1391,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     });
     addAction(bloom);
 
-    auto *colorGrade = new QAction(QStringLiteral("Paint Car colour grade"), this);
+    auto *colorGrade = new QAction(QStringLiteral("Homespace colour grade"), this);
     colorGrade->setCheckable(true);
     colorGrade->setChecked(renderSettings_.postProcessing.colorGradeEnabled);
     connect(colorGrade, &QAction::toggled, this, [this](bool enabled) {
@@ -1702,11 +1723,13 @@ void CarPreviewWidget::setLiveryTextureScale(int scale) {
     liveryTexture_ = 0;
     liveryDirty_ = true;
     liveLiveryFullDirty_ = true;
+    originalDx12LiveryRefreshPending_ = originalDx12Requested_;
     update();
 }
 
 void CarPreviewWidget::markLiveryDirty() {
     liveLiveryFullDirty_ = true;
+    originalDx12LiveryRefreshPending_ = originalDx12Requested_;
     invalidateCachedLivery();
     update();
 }
@@ -1739,6 +1762,7 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds) 
     dirtySectionIds_.unite(sections);
     liveLiveryFullDirty_ = false;
     liveryDirty_ = true;
+    originalDx12LiveryRefreshPending_ = originalDx12Requested_;
     update();
 }
 
@@ -1957,6 +1981,10 @@ void CarPreviewWidget::paintGL() {
             liveryDirty_ = false;
             liveLiveryFullDirty_ = false;
             dirtySectionIds_.clear();
+            if (originalDx12LiveryRefreshPending_) {
+                originalDx12LiveryRefreshPending_ = false;
+                originalDx12RefreshTimer_.start();
+            }
         }
         liveryTexture = liveryTexture_;
     }
@@ -2255,6 +2283,20 @@ fh6::SwatchImage CarPreviewWidget::captureCompositedLivery() {
     functions->glDeleteFramebuffers(1, &framebuffer);
     doneCurrent();
     if (overlay.isNull()) {
+        return result;
+    }
+
+    bool hasVisiblePixel = false;
+    for (int y = 0; y < overlay.height() && !hasVisiblePixel; ++y) {
+        const uchar *row = overlay.constScanLine(y);
+        for (int x = 0; x < overlay.width(); ++x) {
+            if (row[x * 4 + 3] != 0) {
+                hasVisiblePixel = true;
+                break;
+            }
+        }
+    }
+    if (!hasVisiblePixel) {
         return result;
     }
 

@@ -10,6 +10,7 @@
 
 namespace fh6 {
 struct OriginalShaderGarageScene;
+struct SwatchImage;
 }
 
 namespace gui {
@@ -85,6 +86,7 @@ public:
         const QSize &size, const OriginalDx12Camera &camera);
     bool resize(const QSize &size);
     bool render(const OriginalDx12Camera &camera);
+    bool updateLivery(const fh6::SwatchImage &livery);
     void release();
 
     bool ready() const;

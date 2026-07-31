@@ -152,8 +152,10 @@ private:
     OriginalDx12Viewport *originalDx12Viewport_ = nullptr;
     QWidget *originalDx12Container_ = nullptr;
     quint64 originalDx12Generation_ = 0;
+    QTimer originalDx12RefreshTimer_;
     bool originalDx12Requested_ = false;
     bool originalDx12Pending_ = false;
+    bool originalDx12LiveryRefreshPending_ = false;
     bool geometryLoaded_ = false;
 
     fh6::Project *project_ = nullptr;

@@ -16,6 +16,7 @@ public:
 
     void setScene(std::shared_ptr<const fh6::OriginalShaderGarageScene> scene);
     void clearScene();
+    bool updateLivery(const fh6::SwatchImage &livery);
     void setFailureCallback(std::function<void(const QString &)> callback);
     void setContextMenuCallback(std::function<void(const QPoint &)> callback);
 

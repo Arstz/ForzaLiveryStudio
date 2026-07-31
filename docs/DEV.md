@@ -609,7 +609,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     each draw's authored base-colour, normal, RCSM/RMAO, and emissive maps plus decoded
     tint, gloss, metalness, opacity, and tiling. Livery paint uses the car's projection UV
     channel while its normal and surface detail remains on material UV0. The diagnostic
-    frame renders the 18 draws decoded from the five-piece WSHome scene into a depth-tested
+    frame renders the decoded Tokyo House enclosure, props, and car into a depth-tested
     HDR target and returns a validated Qt image after GPU readback. Its
     camera contract writes a left-handed D3D view-projection matrix for column-vector shader
     multiplication. When a car is present, the initial frame is derived from the placed car
@@ -619,17 +619,19 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     swap chain. Geometry,
     textures, cubemaps, descriptors, and PSOs remain resident while camera constants update
     for left-drag orbit and wheel zoom; resize recreates only swap-chain and depth targets.
+    Livery edits replace the resident atlas resource after a short debounce rather than
+    rebuilding the scene.
     A load, device, shader, presentation, or validation failure leaves the loaded project
     intact and returns the preview to OpenGL. The stripped WSHome packages retain material
     identities but no usable material UV stream, so their surfaces use decoded/material-class
     colours instead of unrelated projected swatches. Cars are separately prepared with native swatches enabled and append their diffuse,
     normal, surface, emissive, paint colour, and composited livery resources. Transparent
     car swatch classification recognizes the game's `_bclr_`, `_rcsm_`, and `_emis_`
-    naming, carbon weave uses raw UV0 with its authored tiling, and only each mesh group's
+    naming, carbon weave uses raw UV0 with the finer authored 75x twin-twill scale, and only each mesh group's
     highest-detail LOD is submitted. Garage and car glass use a second alpha-blended pass
-    after opaque geometry with depth writes disabled. Authored homespace cubemap and
-    photometric payloads remain unavailable, so the documented compatibility lighting
-    constants and neutral diffuse probe remain active. D3D12 Agility is an explicit
+    after opaque geometry with depth writes disabled. The staged-space diffuse irradiance,
+    mipmapped BC6H specular probe, `Homespace.lut`, decoded artificial-light presets, and
+    a car-footprint contact shadow are bound by the compatibility material path. D3D12 Agility is an explicit
     `FLS_D3D12_AGILITY_DIR` build option; opted-in targets copy the SDK DLLs beside the
     executable, while default builds retain safe OpenGL fallback behavior.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
@@ -703,15 +705,18 @@ retains all 331 matrices. Five gameplay locators are not drawn; the remaining
 326 prop instances and the main car locator are used verbatim.
 
 House 8 selects `StagedSpaces_Garage_09`, which aliases the
-`Forte_Garage_01` HDR environment. DX12 uploads its BC6H panorama and diffuse
-probe. The enclosure roof contributes 20 enabled 9 m, intensity-500000 spot
+`Forte_Garage_01` HDR environment. DX12 uploads its BC6H panorama, diffuse
+irradiance probe, mipmapped specular reflection probe, and the homespace 32³ LUT.
+The enclosure roof contributes 20 enabled 9 m, intensity-500000 spot
 lights. The garage floodlight archive contributes three local light records per
 stand; its LDFB preset table marks one as an active 10 m, intensity-5000 white
 spot, so seven placed stands add seven more compatibility-PBR spot lights. DX12
-uploads up to 32 active authored lights. The DX12 path reloads the selected car
+uploads up to 32 active authored lights using the PVSL fixture +Z emission axis.
+The car is raised from the locator by its highest-detail tire/wheel contact point
+and its footprint supplies the floor contact shadow. The DX12 path loads the selected car
 with textures enabled, composites the current livery atlas over the base paint
-on authored livery UVs, and omits separate factory `livery_sticker` geometry
-while a custom livery is active. Genuine badges and manufacturer-colour surfaces
+on authored livery UVs, updates that atlas in place during editing, and omits separate
+factory `livery_sticker` geometry in both preview renderers. Genuine badges and manufacturer-colour surfaces
 remain. Alpha-mapped window/lamp glass renders after opaque geometry with depth
 writes disabled. Missing car or garage diffuse inputs use the deployed
 magenta/black `MissingTexture.png` checker; decoded procedural materials remain
