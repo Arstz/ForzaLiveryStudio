@@ -373,8 +373,9 @@ Build output is written to `build/ForzaLiveryStudio`.
 ### Runtime Assets
 
 Runtime assets live in `assets/` (repo root). The build copies that folder next
-to the editor executable, including `assets/vector/shape_geometry.json.gz` and
-`assets/vector/shape_names.json`.
+to the editor executable. Differential fill reads its shape IDs from
+`assets/differential_shapes.json`, icons live in `assets/icons/`, and vector data
+lives in `assets/vector/`.
 
 ## Run
 
@@ -401,8 +402,8 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
 - `src/`  EC++ sources (`core/` library, `gui/` editor split into
   `app/ state/ canvas/ widgets/`, and `main.cpp`). The core library target is
   `fls_core`.
-- `assets/`  Eruntime XPM icons and `vector/` shape data, copied next to the
-  executable at build time.
+- `assets/`  Eruntime configuration, `icons/`, and vector data, copied next to
+  the executable at build time.
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
   `gen_xpm.ps1`, `gen_xpm.py`) plus optional dev-only console harnesses
   (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind

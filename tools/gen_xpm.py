@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the editor's XPM icons from their source PNGs.
 
-The GUI loads its toolbar/menu/cursor art from ``assets/*.xpm`` at runtime
+The GUI loads its toolbar/menu/cursor art from ``assets/icons/*.xpm`` at runtime
 (Qt reads the XPM string data). This script rebuilds those XPMs from the matching
 ``*.png`` files so you can edit the PNGs and regenerate in one step.
 
@@ -16,7 +16,7 @@ Usage (from anywhere - paths resolve next to this script):
     python gen_xpm.py            # rebuild every PNG that already has an .xpm
     python gen_xpm.py --all      # also create .xpm for PNGs that don't have one yet
     python gen_xpm.py --check    # report what would change; exit 1 if anything is stale
-    python gen_xpm.py <dir>      # use a different assets directory
+    python gen_xpm.py <dir>      # use a different icons directory
 
 Requires Pillow:  python -m pip install pillow
 """
@@ -88,24 +88,24 @@ def main(argv):
     positional = [a for a in argv if not a.startswith("-")]
     here = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(here)
-    assets = positional[0] if positional else os.path.join(repo_root, "assets")
-    if not os.path.isdir(assets):
-        sys.exit("assets directory not found: %s" % assets)
+    icons = positional[0] if positional else os.path.join(repo_root, "assets", "icons")
+    if not os.path.isdir(icons):
+        sys.exit("icons directory not found: %s" % icons)
 
-    pngs = sorted(n[:-4] for n in os.listdir(assets) if n.lower().endswith(".png"))
+    pngs = sorted(n[:-4] for n in os.listdir(icons) if n.lower().endswith(".png"))
     if not pngs:
-        sys.exit("no PNG files found in %s" % assets)
+        sys.exit("no PNG files found in %s" % icons)
 
     stale = 0
     written = 0
     skipped = 0
     for base in pngs:
-        xpm_path = os.path.join(assets, base + ".xpm")
+        xpm_path = os.path.join(icons, base + ".xpm")
         if not generate_all and not os.path.exists(xpm_path):
             skipped += 1
             print("  skip (png only, use --all): %s" % base)
             continue
-        (w, h, n, cpp), data = render_xpm(os.path.join(assets, base + ".png"), base)
+        (w, h, n, cpp), data = render_xpm(os.path.join(icons, base + ".png"), base)
         current = open(xpm_path, "rb").read() if os.path.exists(xpm_path) else None
         if current == data:
             continue

@@ -51,7 +51,7 @@ bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
         2103, 2104, 2133,
     };
     if (!check(catalog.size() == kExpectedCatalogSize,
-               "analytic catalog did not load twelve shapes")) {
+               "default analytic catalog did not load twelve shapes")) {
         return false;
     }
     for (const int shapeId : kExpandedShapeIds) {

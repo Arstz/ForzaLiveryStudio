@@ -19,10 +19,6 @@
 namespace gui::cover {
 namespace {
 
-constexpr std::array<int, 12> kShapeIds = {
-    101, 102, 103, 109, 127, 129, 130, 139, 2103, 2104,
-    2123, 2133,
-};
 constexpr double kGeometryEpsilon = 1e-10;
 constexpr double kClipperScale = 1000000.0;
 constexpr int kGradientCount = 6;
@@ -49,6 +45,107 @@ constexpr double kLocalSelectionComplexityRatio = 0.95;
 constexpr double kComponentComplexityWeight = 8.0;
 constexpr double kHoleComplexityWeight = 16.0;
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kMaximumShapeId = 65535;
+
+QStringList differentialShapeAssetPaths() {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString cwd = QDir::currentPath();
+    return {
+        QDir(appDir).filePath(QStringLiteral("assets/differential_shapes.json")),
+        QDir(cwd).filePath(QStringLiteral("assets/differential_shapes.json")),
+        QDir(cwd).filePath(QStringLiteral("cpp-port/assets/differential_shapes.json")),
+    };
+}
+
+QVector<int> loadDifferentialShapeIdsFromFile(const QString &path,
+                                              QString *error) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("could not open differential shape catalog: %1")
+                         .arg(path);
+        }
+        return {};
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        if (error != nullptr) {
+            *error = QStringLiteral("invalid differential shape catalog: %1")
+                         .arg(parseError.errorString());
+        }
+        return {};
+    }
+    if (!document.isObject()) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "differential shape catalog root must be an object");
+        }
+        return {};
+    }
+
+    const QJsonValue shapeIdsValue =
+        document.object().value(QStringLiteral("shape_ids"));
+    if (!shapeIdsValue.isArray() || shapeIdsValue.toArray().isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "differential shape catalog must contain a non-empty shape_ids array");
+        }
+        return {};
+    }
+
+    const QJsonArray shapeIdsArray = shapeIdsValue.toArray();
+    QVector<int> result;
+    QSet<int> seenShapeIds;
+    result.reserve(shapeIdsArray.size());
+    seenShapeIds.reserve(shapeIdsArray.size());
+    for (qsizetype index = 0; index < shapeIdsArray.size(); ++index) {
+        const QJsonValue value = shapeIdsArray.at(index);
+        const int shapeId = value.toInt(-1);
+        const double numericShapeId = value.toDouble(-1.0);
+        if (!value.isDouble()
+            || numericShapeId != static_cast<double>(shapeId)
+            || shapeId <= 0
+            || shapeId > kMaximumShapeId) {
+            if (error != nullptr) {
+                *error = QStringLiteral(
+                    "differential shape catalog entry %1 is not a valid shape id")
+                             .arg(index);
+            }
+            return {};
+        }
+        if (seenShapeIds.contains(shapeId)) {
+            if (error != nullptr) {
+                *error = QStringLiteral(
+                    "differential shape catalog contains duplicate shape id %1")
+                             .arg(shapeId);
+            }
+            return {};
+        }
+        seenShapeIds.insert(shapeId);
+        result.push_back(shapeId);
+    }
+    if (error != nullptr) {
+        error->clear();
+    }
+
+    return result;
+}
+
+QVector<int> loadDifferentialShapeIds(QString *error) {
+    for (const QString &path : differentialShapeAssetPaths()) {
+        if (QFile::exists(path)) {
+            return loadDifferentialShapeIdsFromFile(path, error);
+        }
+    }
+    if (error != nullptr) {
+        *error = QStringLiteral("differential_shapes.json was not found");
+    }
+
+    return {};
+}
 
 struct Jet {
     std::array<double, kGradientCount> gradient{};
@@ -2683,9 +2780,14 @@ void mergeRepairProfile(
 
 QVector<ShapeMesh> buildShapeCatalog(const ShapeGeometryStore &geometry,
                                      QString *error) {
+    const QVector<int> shapeIds = loadDifferentialShapeIds(error);
+    if (shapeIds.isEmpty()) {
+        return {};
+    }
+
     QVector<ShapeMesh> result;
-    result.reserve(kShapeIds.size());
-    for (const int shapeId : kShapeIds) {
+    result.reserve(shapeIds.size());
+    for (const int shapeId : shapeIds) {
         const ShapeGeometry *source = geometry.shape(shapeId);
         if (source == nullptr) {
             if (error != nullptr) {

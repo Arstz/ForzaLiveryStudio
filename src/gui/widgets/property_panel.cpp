@@ -1715,7 +1715,7 @@ bool PropertyPanel::beginValueLabelDrag(const QString &property, QDoubleSpinBox 
         }
     }
 
-    QPixmap pixmap(assetPath(QStringLiteral("ToolScaleY.xpm")));
+    QPixmap pixmap(iconAssetPath(QStringLiteral("ToolScaleY.xpm")));
     if (!pixmap.isNull()) {
         pixmap = pixmap.scaled(21, 21, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         QApplication::setOverrideCursor(QCursor(pixmap, pixmap.width() / 2, pixmap.height() / 2));

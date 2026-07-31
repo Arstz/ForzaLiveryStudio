@@ -106,22 +106,9 @@ Shapes live in `assets/vector/shape_geometry.json.gz`. Structure:
 }
 ```
 
-The twelve shapes the fill uses:
-
-| id | name | verts | tris | convex? |
-| --- | --- | --- | --- | --- |
-| 101 | square | 4 | 2 | yes |
-| 102 | circle | 48 | 46 | yes |
-| 103 | triangle | 3 | 1 | yes |
-| 109 | half circle | 33 | 31 | yes |
-| 127 | fang | 78 | 76 | **no** |
-| 129 | half crescent | 50 | 48 | **no** |
-| 130 | quarter circle | 17 | 15 | yes |
-| 139 | garlic | 65 | 63 | **no** |
-| 2103 | rang | 49 | 47 | **no** |
-| 2104 | rounded triangle | 24 | 22 | yes |
-| 2123 | tooth | 56 | 54 | **no** |
-| 2133 | pill | 30 | 28 | yes |
+The fill catalog is the `shape_ids` array in
+`assets/differential_shapes.json`. It is loaded when a differential fill starts,
+so the deployed asset can be edited without rebuilding the application.
 
 Catalog shapes must be solid, compact residual fillers. Silhouettes with interior
 voids or several sharp appendages are excluded because their containment-constrained
@@ -341,8 +328,9 @@ the most residual this step.
 
 ### 7.1 Candidate shapes — global and component-local routing
 
-Do **not** optimize all 12 shapes every step. Rank the catalog against the residual
-descriptor and optimize only the three closest shapes, then keep the best:
+Do **not** optimize every catalog shape on each step. Rank the catalog against
+the residual descriptor and optimize only the three closest shapes, then keep
+the best:
 
 - Compute the residual and catalog bounding-box aspect ratios and occupied-area
   fractions.
@@ -616,7 +604,7 @@ returned placement when building decals.
 ## 11. Implementation and validation layout
 
 1. **Catalog adapter** — `ShapeGeometryStore` loads `shape_geometry.json.gz`; the
-   cover module reconstructs indexed `ShapeMesh` data for the twelve ids, validates
+   cover module reconstructs indexed `ShapeMesh` data for the configured ids, validates
    the §4 invariants, and recovers each boundary loop.
 2. **Jet type + differentiable clip kernel (§5)** — `Jet` with 6 partials;
    Sutherland–Hodgman clip of a constant subject against a moving convex triangle;

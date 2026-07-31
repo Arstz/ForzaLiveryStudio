@@ -1,4 +1,4 @@
-# Regenerate assets/*.xpm from the source PNGs. Thin wrapper over gen_xpm.py
+# Regenerate assets/icons/*.xpm from the source PNGs. Thin wrapper over gen_xpm.py
 # so it fits alongside configure.ps1 / build.ps1 / run.ps1.
 #
 #   .\gen_xpm.ps1            # rebuild every PNG that already has an .xpm

@@ -408,6 +408,7 @@ if(FLS_BUILD_TESTS)
 endif()
 
 set(FLS_GUI_ASSETS
+    CompVisibility.xpm
     Cursor.xpm
     CursorPipette.xpm
     MenuCopy.xpm
@@ -417,6 +418,7 @@ set(FLS_GUI_ASSETS
     MenuExportFlat.xpm
     MenuFoldAllGroups.xpm
     MenuGroup.xpm
+    MenuNewProject.xpm
     ImportCar.xpm
     ImportGuide.xpm
     MenuOpenCGroup.xpm
@@ -472,7 +474,7 @@ set(FLS_GUI_ASSETS
 
 set(FLS_GUI_ASSET_SOURCES)
 foreach(asset_name IN LISTS FLS_GUI_ASSETS)
-    list(APPEND FLS_GUI_ASSET_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/${asset_name}")
+    list(APPEND FLS_GUI_ASSET_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/${asset_name}")
 endforeach()
 
 add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
@@ -481,8 +483,13 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/differential_shapes.json"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/icons"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         ${FLS_GUI_ASSET_SOURCES}
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/icons"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different

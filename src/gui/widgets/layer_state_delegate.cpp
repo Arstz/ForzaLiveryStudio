@@ -17,7 +17,7 @@ namespace {
 constexpr int kPositionGap = 6;
 
 QPixmap badgePixmap(const QString &fileName) {
-    QPixmap pixmap(assetPath(fileName));
+    QPixmap pixmap(iconAssetPath(fileName));
     if (pixmap.isNull()) {
         return {};
     }
