@@ -92,12 +92,11 @@ bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
         return false;
     }
     const QPointF local = screenToLocal.map(screenPoint);
-    const double imageX = (local.x() + guideSize.width() * 0.5)
-        * foundImage.width() / guideSize.width();
-    const double imageY = (local.y() + guideSize.height() * 0.5)
-        * foundImage.height() / guideSize.height();
-    const QPoint pixel(static_cast<int>(std::floor(imageX)),
-                       static_cast<int>(std::floor(imageY)));
+    const QPointF imagePosition = pc_detail::guideLocalToImage(local,
+                                                               foundImage.size(),
+                                                               guideSize);
+    const QPoint pixel(static_cast<int>(std::floor(imagePosition.x())),
+                       static_cast<int>(std::floor(imagePosition.y())));
     if (!QRect(QPoint(0, 0), foundImage.size()).contains(pixel)) {
         if (error != nullptr) {
             *error = QStringLiteral("Hover inside the selected guide image");
@@ -239,11 +238,8 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
     QVector<PenLoop> imageLoops = std::move(conversion.loops);
 
     const QSizeF guideSize = sceneNodeSize(*guide, geometry_);
-    QTransform imageToLocal;
-    imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
-    imageToLocal.scale(guideSize.width() / image.width(),
-                       guideSize.height() / image.height());
-    const QTransform imageToWorld = imageToLocal * guideWorld;
+    const QTransform imageToWorld = pc_detail::guideImageToLocal(image.size(), guideSize)
+        * guideWorld;
 
     QVector<PenLoop> worldLoops = std::move(imageLoops);
     for (PenLoop &loop : worldLoops) {
@@ -325,15 +321,13 @@ void ProjectCanvas::drawBucketOverlay(QPainter &painter) {
     }
 
     const QSizeF guideSize = sceneNodeSize(*guide, geometry_);
-    QTransform imageToLocal;
-    imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
-    imageToLocal.scale(guideSize.width() / bucket_.previewImage.width(),
-                       guideSize.height() / bucket_.previewImage.height());
 
     painter.save();
     painter.setOpacity(1.0);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    painter.setTransform(imageToLocal * guideWorld * camera_.matrix(), false);
+    painter.setTransform(pc_detail::guideImageToLocal(bucket_.previewImage.size(), guideSize)
+                             * guideWorld * camera_.matrix(),
+                         false);
     painter.drawImage(QPointF(0.0, 0.0), bucket_.previewImage);
     painter.restore();
 }

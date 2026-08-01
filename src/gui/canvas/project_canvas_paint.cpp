@@ -749,13 +749,14 @@ QImage ProjectCanvas::guideImage(const fls::scene::GuideLayer &guide) const {
     const QString format = img != nullptr ? img->format : QString();
     const QByteArray &pixelBytes = img != nullptr ? img->pixels : QByteArray();
     const QByteArray &encodedBytes = img != nullptr ? img->encoded : QByteArray();
-    const QString cacheKey = QStringLiteral("%1|%2|%3|%4|%5|%6")
+    const QString cacheKey = QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
         .arg(guide.id)
         .arg(width)
         .arg(height)
         .arg(format)
         .arg(pixelBytes.isEmpty() ? encodedBytes.size() : pixelBytes.size())
-        .arg(QString::number(reinterpret_cast<quintptr>(img), 16));
+        .arg(QString::number(reinterpret_cast<quintptr>(img), 16))
+        .arg(guide.imageTopDown ? 1 : 0);
     const auto cached = guideImageCache_.constFind(cacheKey);
     if (cached != guideImageCache_.constEnd()) {
         return cached.value();
@@ -772,6 +773,9 @@ QImage ProjectCanvas::guideImage(const fls::scene::GuideLayer &guide) const {
     }
     if (!image.isNull()) {
         image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        if (!guide.imageTopDown) {
+            image = image.mirrored(false, true);
+        }
     }
     guideImageCache_.insert(cacheKey, image);
     return image;
@@ -833,8 +837,10 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter) {
         }
         painter.save();
         painter.setOpacity(std::clamp(guide.opacity, 0.0, 1.0));
-        painter.setTransform(world * camera_.matrix(), true);
-        painter.drawImage(localRect, image);
+        painter.setTransform(pc_detail::guideImageToLocal(image.size(), size)
+                                 * world * camera_.matrix(),
+                             false);
+        painter.drawImage(QPointF(), image);
         painter.restore();
         return true;
     }, /*reverse=*/false);
@@ -996,8 +1002,6 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
         return result;
     }
 
-    // Same image-pixel -> world mapping the overlay uses to draw, minus the
-    // world->screen step: image -> guide local -> world.
     QTransform guideWorld;
     QSizeF guideSize;
     bool found = false;
@@ -1013,11 +1017,8 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
     if (!found || guideSize.width() <= 0.0 || guideSize.height() <= 0.0) {
         return result;
     }
-    QTransform imageToLocal;
-    imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
-    imageToLocal.scale(guideSize.width() / imageSize.width(),
-                       guideSize.height() / imageSize.height());
-    const QTransform imageToWorld = imageToLocal * guideWorld;
+    const QTransform imageToWorld = pc_detail::guideImageToLocal(imageSize, guideSize)
+        * guideWorld;
     result.push_back({QStringLiteral("Safe"), {}, true});
     result.push_back({QStringLiteral("Dangerous"), {}, false});
 
@@ -1081,12 +1082,8 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter) {
         return;
     }
 
-    // Image-pixel space -> guide local space (matches drawImage(localRect, image)).
-    QTransform imageToLocal;
-    imageToLocal.translate(-guideSize.width() * 0.5, -guideSize.height() * 0.5);
-    imageToLocal.scale(guideSize.width() / imageSize.width(),
-                       guideSize.height() / imageSize.height());
-    const QTransform imageToScreen = imageToLocal * guideWorld * camera_.matrix();
+    const QTransform imageToScreen = pc_detail::guideImageToLocal(imageSize, guideSize)
+        * guideWorld * camera_.matrix();
 
     static const QColor kDebugPalette[] = {
         QColor(228, 87, 86), QColor(88, 163, 222), QColor(126, 194, 106),

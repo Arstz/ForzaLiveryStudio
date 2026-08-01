@@ -72,6 +72,20 @@ inline QRectF flatEntryRect(const fls::scene::GuideLayer &guide) {
     return sceneLocalRect(size);
 }
 
+inline QTransform guideImageToLocal(const QSize &imageSize, const QSizeF &guideSize) {
+    QTransform transform;
+    transform.translate(-guideSize.width() * 0.5, guideSize.height() * 0.5);
+    transform.scale(guideSize.width() / imageSize.width(),
+                    -guideSize.height() / imageSize.height());
+    return transform;
+}
+
+inline QPointF guideLocalToImage(const QPointF &point,
+                                 const QSize &imageSize,
+                                 const QSizeF &guideSize) {
+    return guideImageToLocal(imageSize, guideSize).inverted().map(point);
+}
+
 struct EffectiveSelection {
     QVector<QString> groupIds;
     QSet<QString> groupedLayerIds;

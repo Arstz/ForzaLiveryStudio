@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include "theme_manager.h"
+#include "system_integration.h"
 #include "image_io.h"
 #include "car_model_renderer.h"
 
@@ -86,8 +87,10 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    gui::configureSystemIntegration(app);
     gui::MainWindow window;
     openStartupFiles(window, QCoreApplication::arguments().mid(1));
     window.show();
+    gui::applySystemWindowIcon(window);
     return QApplication::exec();
 }

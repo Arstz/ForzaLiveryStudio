@@ -378,7 +378,7 @@ QIcon guideIcon(const fls::scene::GuideLayer &guide,
             image.loadFromData(guide.image->encoded, guide.image->format.toLatin1().constData());
         }
     }
-    if (!image.isNull()) {
+    if (!image.isNull() && !guide.imageTopDown) {
         image = image.mirrored(false, true);
     }
     QImage composed(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
@@ -430,6 +430,7 @@ quint64 contentSignature(const fls::scene::Layer &node, QHash<QString, quint64> 
         seed = mixHash(seed, guide.image ? guide.image->height : 0);
         seed = mixHash(seed, guide.image ? hashString(guide.image->format) : 0);
         seed = mixHash(seed, guide.image ? static_cast<quint64>(qHash(guide.image->encoded)) : 0);
+        seed = mixHash(seed, guide.imageTopDown ? 1 : 0);
         break;
     }
     case fls::scene::LayerKind::Group: {

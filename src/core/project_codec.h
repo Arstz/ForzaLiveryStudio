@@ -8,7 +8,7 @@
 
 namespace fls {
 
-inline constexpr int ProjectJsonVersion = 2;
+inline constexpr int ProjectJsonVersion = 3;
 inline constexpr char ProjectJsonFormat[] = "fls_editor_project";
 inline constexpr char LegacyProjectJsonFormat[] = "fh6_editor_project";
 

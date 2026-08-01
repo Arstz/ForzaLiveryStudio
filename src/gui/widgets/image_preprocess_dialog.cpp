@@ -257,10 +257,7 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
     resize(1100, 680);
     setMinimumSize(820, 560);
 
-    // Guide pixels are stored in canvas/world orientation. The canvas' Y axis
-    // flips them for display, so do the same in this conventional Qt dialog.
-    // The accepted result is mirrored back before it leaves the dialog.
-    displaySource_ = source_.mirrored(false, true);
+    displaySource_ = source_;
     const int previewMaxSide = 720;
     previewSource_ = displaySource_.size().boundedTo(QSize(previewMaxSide, previewMaxSide)) == displaySource_.size()
         ? displaySource_
@@ -598,7 +595,7 @@ void ImagePreprocessDialog::beginFullResolutionProcessing() {
 }
 
 void ImagePreprocessDialog::finishFullResolutionProcessing(const ImagePreprocessResult &result) {
-    result_ = result.image.mirrored(false, true);
+    result_ = result.image;
     retainedColorCount_ = result.retainedColorCount;
     retainedPalette_ = result.retainedPalette;
     if (result_.isNull()) {

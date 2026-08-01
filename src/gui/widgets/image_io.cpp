@@ -86,8 +86,6 @@ QImage readImageWithWic(const QString &path, QString *error) {
                                    image.bits());
         if (FAILED(hr)) {
             image = {};
-        } else {
-            image = image.mirrored(false, true);
         }
     }
 
@@ -158,9 +156,6 @@ QImage readGuideImage(const QString &path, QByteArray *format, QString *error) {
     QImage image = reader.read();
     if (!image.isNull()) {
         const QByteArray decodedFormat = reader.format();
-        if (decodedFormat.compare(QByteArrayLiteral("webp"), Qt::CaseInsensitive) == 0) {
-            image = image.mirrored(false, true);
-        }
         if (format != nullptr) {
             *format = decodedFormat;
         }
@@ -195,7 +190,7 @@ QImage readThumbnailImage(const QString &path, QString *error) {
 #ifdef Q_OS_WIN
     image = readImageWithWic(path, error);
     if (!image.isNull()) {
-        return image.mirrored(false, true).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }
 #endif
 

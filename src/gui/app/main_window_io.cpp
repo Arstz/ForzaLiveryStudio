@@ -521,6 +521,9 @@ void MainWindow::preprocessSelectedGuide() {
         source.loadFromData(guide->image->encoded, guide->image->format.toLatin1().constData());
         source = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }
+    if (!source.isNull() && !guide->imageTopDown) {
+        source = source.mirrored(false, true);
+    }
     if (source.isNull()) {
         statusBar()->showMessage(QStringLiteral("Could not decode the selected guide image"), 4000);
         return;
@@ -577,6 +580,7 @@ void MainWindow::preprocessSelectedGuide() {
     guide->image->encoded = encoded;
     guide->image->pixels = QByteArray(reinterpret_cast<const char *>(processed.constBits()),
                                       processed.sizeInBytes());
+    guide->imageTopDown = true;
     guide->preprocessColorCount = std::clamp(dialog.retainedColorCount(), 0, 256);
     const int retainedColors = guide->preprocessColorCount;
     int addedSwatches = 0;

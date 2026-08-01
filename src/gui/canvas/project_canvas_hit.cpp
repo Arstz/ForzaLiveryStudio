@@ -70,8 +70,9 @@ std::optional<QColor> ProjectCanvas::guideColorAtScreenPoint(const QPointF &poin
         }
         const QSizeF guideSize = sceneNodeSize(guide, geometry_);
         const QPointF local = screenToLocal.map(point);
-        const int x = static_cast<int>(std::floor(local.x() + guideSize.width() * 0.5));
-        const int y = static_cast<int>(std::floor(local.y() + guideSize.height() * 0.5));
+        const QPointF imagePoint = pc_detail::guideLocalToImage(local, image.size(), guideSize);
+        const int x = static_cast<int>(std::floor(imagePoint.x()));
+        const int y = static_cast<int>(std::floor(imagePoint.y()));
         if (x < 0 || y < 0 || x >= image.width() || y >= image.height()) {
             return true;
         }

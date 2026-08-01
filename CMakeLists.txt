@@ -189,6 +189,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/app/perf_utils.h
     src/gui/app/settings_dialog.cpp
     src/gui/app/settings_dialog.h
+    src/gui/app/system_integration.cpp
+    src/gui/app/system_integration.h
     src/gui/app/theme_manager.cpp
     src/gui/app/theme_manager.h
     src/gui/key_bindings.cpp
@@ -550,6 +552,16 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/MissingTexture.png"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/MissingTexture.png"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/system"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File big dark.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File big.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File small dark.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File small.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/Logo dark.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/Logo.png"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/system"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
@@ -578,7 +590,7 @@ elseif(NOT FLS_BUILD_LIVERY_COMPARE)
 endif()
 
 if(WIN32)
-    target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32)
+    target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32 shell32)
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

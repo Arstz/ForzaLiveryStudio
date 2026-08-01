@@ -122,6 +122,9 @@ QJsonObject guideToJson(const GuideLayer &g) {
         image.insert(QStringLiteral("height"), g.image->height);
         image.insert(QStringLiteral("image_bytes"), b64(g.image->encoded));
     }
+    image.insert(QStringLiteral("orientation"),
+                 g.imageTopDown ? QStringLiteral("top_down")
+                                : QStringLiteral("bottom_up"));
     o.insert(QStringLiteral("image"), image);
     return o;
 }
@@ -217,6 +220,8 @@ std::unique_ptr<GuideLayer> guideFromJson(const QJsonObject &o) {
     raster->height = image.value(QStringLiteral("height")).toInt(0);
     raster->encoded = unb64(image.value(QStringLiteral("image_bytes")));
     guide->image = std::move(raster);
+    guide->imageTopDown = image.value(QStringLiteral("orientation")).toString()
+        == QLatin1String("top_down");
     return guide;
 }
 

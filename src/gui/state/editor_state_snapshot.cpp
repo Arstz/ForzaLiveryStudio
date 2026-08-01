@@ -69,6 +69,7 @@ bool nodeEqual(const fls::scene::Layer &a, const fls::scene::Layer &b) {
         const auto &gb = static_cast<const fls::scene::GuideLayer &>(b);
         if (ga.sourcePath != gb.sourcePath
             || ga.preprocessColorCount != gb.preprocessColorCount
+            || ga.imageTopDown != gb.imageTopDown
             || !rasterContentEqual(ga.image.get(), gb.image.get())) {
             return false;
         }
@@ -140,6 +141,7 @@ bool previewChange(const fls::scene::Layer &a, const fls::scene::Layer &b) {
         const auto &ga = static_cast<const fls::scene::GuideLayer &>(a);
         const auto &gb = static_cast<const fls::scene::GuideLayer &>(b);
         return ga.preprocessColorCount != gb.preprocessColorCount
+            || ga.imageTopDown != gb.imageTopDown
             || !rasterContentEqual(ga.image.get(), gb.image.get());
     }
     if (a.kind() == fls::scene::LayerKind::Group) {
