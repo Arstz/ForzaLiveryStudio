@@ -19,7 +19,7 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette returns to the previously used tool after a successful pick.
-  Pen builds a simple closed hard/soft quadratic contour,
+  Pen builds a closed hard/soft quadratic compound contour with editable interior cutouts,
   fits affine vector primitives along curved boundaries, and prepares an interior
   boundary before meshing the remaining area.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
@@ -54,7 +54,7 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
-  selected mask, and samples the traced boundary before cyclic RDP at epsilon 2.0
+  selected mask, preserves its outer and interior boundaries, and samples each traced boundary before cyclic RDP at epsilon 2.0
   in source-image pixels. Each retained span is reconstructed as a least-squares
   quadratic when its bow reaches 0.75 pixels and remains straight otherwise. Invalid
   hybrid contours recover through the conservative Pen conversion. The later Pen

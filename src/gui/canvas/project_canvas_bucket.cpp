@@ -9,10 +9,6 @@
 namespace gui {
 namespace {
 
-constexpr double kBucketRdpEpsilon = 2.0;
-constexpr double kBucketMinimumCurveBow = 0.75;
-constexpr int kBucketRdpCurveSamples = 32;
-
 } // namespace
 
 using namespace pc_detail;
@@ -190,7 +186,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
     if (!updateBucketPreview(screenPoint) || !bucket_.fill.valid()) {
         return false;
     }
-    if (!pen_.points.isEmpty()) {
+    if (!pen_.points.isEmpty() || !pen_.cutouts.isEmpty()) {
         setCursorHint(screenPoint,
                       {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
                        QStringLiteral("Finish or cancel the existing Pen path first")});
@@ -225,25 +221,22 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
         return false;
     }
 
-    const QPolygonF sourceContour = regionOuterContour(traced, kBucketRdpCurveSamples);
-    QVector<PenPoint> imagePoints = simplifyClosedPolygonRdpHybridQuadratic(
-        sourceContour, kBucketRdpEpsilon, kBucketMinimumCurveBow);
-    if (!buildPenContour(imagePoints).valid()) {
-        RegionPenConversionOptions conversionOptions;
-        conversionOptions.comparisonImageSize = image.size();
-        const RegionPenConversionResult conversion =
-            regionOutlineToPenPoints(traced, conversionOptions);
-        if (!conversion.valid()) {
-            setCursorHint(screenPoint,
-                          {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
-                           conversion.error.isEmpty()
-                               ? QStringLiteral("The traced region is not a valid Pen contour")
-                               : conversion.error});
-            update();
-            return false;
-        }
-        imagePoints = conversion.points;
+    RegionPenLoopConversionOptions conversionOptions;
+    conversionOptions.fallback.comparisonImageSize = image.size();
+    conversionOptions.discardedCutoutAreaCeiling = 5.0;
+    conversionOptions.discardedCutoutBoundaryClearance = 2.0;
+    RegionPenLoopConversionResult conversion =
+        regionOutlineToPenLoops(traced, conversionOptions);
+    if (!conversion.valid()) {
+        setCursorHint(screenPoint,
+                      {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
+                       conversion.error.isEmpty()
+                           ? QStringLiteral("The traced region is not a valid Pen contour")
+                           : conversion.error});
+        update();
+        return false;
     }
+    QVector<PenLoop> imageLoops = std::move(conversion.loops);
 
     const QSizeF guideSize = sceneNodeSize(*guide, geometry_);
     QTransform imageToLocal;
@@ -252,11 +245,13 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
                        guideSize.height() / image.height());
     const QTransform imageToWorld = imageToLocal * guideWorld;
 
-    QVector<PenPoint> worldPoints = std::move(imagePoints);
-    for (PenPoint &point : worldPoints) {
-        point.position = imageToWorld.map(point.position);
+    QVector<PenLoop> worldLoops = std::move(imageLoops);
+    for (PenLoop &loop : worldLoops) {
+        for (PenPoint &point : loop.points) {
+            point.position = imageToWorld.map(point.position);
+        }
     }
-    const PenContour worldContour = buildPenContour(worldPoints);
+    const PenContour worldContour = buildPenContour(worldLoops);
     if (!worldContour.valid()) {
         setCursorHint(screenPoint,
                       {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
@@ -268,7 +263,13 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
     }
 
     beginPathEdit(pen_);
-    pen_.points = std::move(worldPoints);
+    pen_.points = std::move(worldLoops.front().points);
+    pen_.cutouts.clear();
+    for (int loopIndex = 1; loopIndex < worldLoops.size(); ++loopIndex) {
+        pen_.cutouts.push_back(std::move(worldLoops[loopIndex].points));
+    }
+    pen_.activeCutout = pen_.cutouts.isEmpty() ? -1 : pen_.cutouts.size() - 1;
+    pen_.cutoutClosed = true;
     normalizePenPointOrder();
     pen_.fillColor = bucket_.fill.transparentTarget
         ? kTransparentBucketColor

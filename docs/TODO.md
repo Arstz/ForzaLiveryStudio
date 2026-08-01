@@ -1,6 +1,9 @@
 Small changes:
+    -Omit "Horizon group", "Horizon livery" etc strings from showing in the import exprorer. 
+    -Ruler ticks are not contained by the rurels, overflowing into canvas.
 
 Medium changes:
+    -Add an Shift held overload to Bucket tool, with Shift held discard the inner holes in the contour.
 
 Big changes:
     -Add speedpaint caching for telemetry

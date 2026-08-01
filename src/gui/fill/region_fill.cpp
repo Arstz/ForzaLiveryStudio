@@ -137,6 +137,23 @@ QPolygonF flattenSubpath(const Subpath &subpath, int curveSamples = 8) {
     return polygon;
 }
 
+QPainterPath subpathPainterPath(const Subpath &subpath) {
+    QPainterPath result;
+    result.setFillRule(Qt::WindingFill);
+    result.moveTo(subpath.start);
+    for (const Op &op : subpath.ops) {
+        if (op.kind == Op::Line) {
+            result.lineTo(op.end);
+        } else {
+            result.cubicTo(op.control1, op.control2, op.end);
+        }
+    }
+    if (subpath.closed) {
+        result.closeSubpath();
+    }
+    return result;
+}
+
 double perpendicularDistance(const QPointF &point, const QPointF &a, const QPointF &b) {
     const QPointF ab = b - a;
     const double lengthSquared = ab.x() * ab.x() + ab.y() * ab.y();
@@ -1391,6 +1408,139 @@ QPolygonF regionOuterContour(const QPainterPath &outline, int curveSamples) {
     }
 
     return largestFlattenedContour(outline, curveSamples);
+}
+
+QVector<QPolygonF> regionContours(const QPainterPath &outline, int curveSamples) {
+    QVector<QPolygonF> result;
+    if (curveSamples < 1) {
+        return result;
+    }
+    const QVector<Subpath> subpaths = toSubpaths(outline);
+    result.reserve(subpaths.size());
+    for (const Subpath &subpath : subpaths) {
+        QPolygonF polygon = flattenSubpath(subpath, curveSamples);
+        while (polygon.size() > 1
+               && QLineF(polygon.back(), polygon.front()).length() <= 1e-6) {
+            polygon.removeLast();
+        }
+        if (polygon.size() >= 3) {
+            result.push_back(std::move(polygon));
+        }
+    }
+
+    return result;
+}
+
+double closedPolylineSeparation(const QPolygonF &left, const QPolygonF &right) {
+    if (left.size() < 3 || right.size() < 3) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double result = std::numeric_limits<double>::infinity();
+    for (const QPointF &point : left) {
+        result = std::min(result, pointToClosedPolylineDistance(point, right));
+    }
+    for (const QPointF &point : right) {
+        result = std::min(result, pointToClosedPolylineDistance(point, left));
+    }
+    return result;
+}
+
+RegionPenLoopConversionResult regionOutlineToPenLoops(
+    const QPainterPath &outline,
+    const RegionPenLoopConversionOptions &options) {
+    RegionPenLoopConversionResult result;
+    if (outline.isEmpty()
+        || options.curveSamples < 1
+        || !std::isfinite(options.simplifyEpsilon)
+        || options.simplifyEpsilon <= 0.0
+        || !std::isfinite(options.minimumCurveBow)
+        || options.minimumCurveBow < 0.0
+        || !std::isfinite(options.discardedCutoutAreaCeiling)
+        || options.discardedCutoutAreaCeiling < 0.0
+        || !std::isfinite(options.discardedCutoutBoundaryClearance)
+        || options.discardedCutoutBoundaryClearance < 0.0) {
+        result.error = QStringLiteral("The region has no fillable contour");
+        return result;
+    }
+
+    struct LoopCandidate {
+        Subpath subpath;
+        QPolygonF sampled;
+        double area = 0.0;
+    };
+    QVector<LoopCandidate> candidates;
+    for (Subpath &subpath : toSubpaths(
+             outline, options.fallback.closureTolerance)) {
+        QPolygonF sampled = flattenSubpath(subpath, options.curveSamples);
+        while (sampled.size() > 1
+               && QLineF(sampled.back(), sampled.front()).length() <= 1e-6) {
+            sampled.removeLast();
+        }
+        const double area = std::abs(signedArea(sampled));
+        if (area > kGeometryEpsilon) {
+            candidates.push_back({std::move(subpath), std::move(sampled), area});
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const LoopCandidate &left,
+                                                        const LoopCandidate &right) {
+        return left.area > right.area;
+    });
+    if (candidates.isEmpty()) {
+        result.error = QStringLiteral("The region has no fillable contour");
+        return result;
+    }
+
+    result.loops.reserve(candidates.size());
+    for (int candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
+        const LoopCandidate &candidate = candidates[candidateIndex];
+        if (candidateIndex > 0) {
+            const bool belowAreaCeiling = options.discardedCutoutAreaCeiling > 0.0
+                && candidate.area
+                    <= options.discardedCutoutAreaCeiling + kGeometryEpsilon;
+            const bool withinBoundaryGate = !belowAreaCeiling
+                && options.discardedCutoutBoundaryClearance > 0.0
+                && closedPolylineSeparation(candidate.sampled,
+                                            candidates.front().sampled)
+                    <= options.discardedCutoutBoundaryClearance + kGeometryEpsilon;
+            if (belowAreaCeiling || withinBoundaryGate) {
+                ++result.discardedCutoutCount;
+                if (belowAreaCeiling) {
+                    ++result.discardedCutoutAreaCount;
+                } else {
+                    ++result.discardedCutoutBoundaryCount;
+                }
+                continue;
+            }
+        }
+        const Subpath &subpath = candidate.subpath;
+        QVector<PenPoint> points = simplifyClosedPolygonRdpHybridQuadratic(
+            candidate.sampled, options.simplifyEpsilon, options.minimumCurveBow);
+        if (!buildPenContour(points).valid()) {
+            const RegionPenConversionResult conversion = regionOutlineToPenPoints(
+                subpathPainterPath(subpath), options.fallback);
+            if (!conversion.valid()) {
+                result.error = conversion.error.isEmpty()
+                    ? QStringLiteral("The traced region boundary is invalid")
+                    : conversion.error;
+                result.loops.clear();
+                return result;
+            }
+            points = conversion.points;
+        }
+        result.loops.push_back({
+            std::move(points),
+            candidateIndex == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout,
+        });
+    }
+
+    const PenContour compound = buildPenContour(result.loops);
+    if (!compound.valid()) {
+        result.error = compound.error.isEmpty()
+            ? QStringLiteral("The traced region is not a valid Pen contour")
+            : compound.error;
+        result.loops.clear();
+    }
+    return result;
 }
 
 PenFillResult fillPolygonMesh(const QPolygonF &polygon,

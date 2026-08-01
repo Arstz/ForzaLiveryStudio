@@ -1,7 +1,7 @@
 # Analytic Differential Cover — Minimal-Shape Fill of a Pen Contour
 
 Design + handoff spec for an **opt-in, high-quality Pen fill mode** that covers one
-closed, single-colour contour with **as few affine primitive decals as possible**.
+closed, single-colour compound contour with **as few affine primitive decals as possible**.
 Bucket Fill is included because it converts its traced mask into the same editable
 Pen contour before filling. The implementation is an independent C++ alternative
 to the existing deterministic Pen fill. Fill implementations are grouped under
@@ -16,7 +16,7 @@ the feature-weighted contour path.
 
 ## 1. Goal and scope
 
-- **Input:** the current valid closed Pen contour, either hand-authored or produced
+- **Input:** the current valid closed Pen compound contour, either hand-authored or produced
   by Bucket Fill. The caller flattens the contour into an oriented polygon in
   canvas world coordinates and may also provide a rasterized copy for the
   distance-transform initializer.
@@ -70,7 +70,7 @@ colour. Overlap can lower the shape count without changing the result.
 
 ## 3. Inputs
 
-The Pen caller provides one contour:
+The Pen caller provides one compound contour:
 
 | Name | Type | Meaning |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ The Pen caller provides one contour:
 | `mayCover` | polygon set | The outward legality envelope derived from the contour tolerance. |
 | `colour` | RGBA | The region colour, copied onto every placement. |
 | `mask` *(optional)* | binary raster + bbox | Rasterized `mustCover`, for the distance-transform initializer (§7.3). Can be rasterized from `mustCover` internally instead. |
-| `boundarySpans` | ordered line/quadratic spans | Original contour topology used to measure straight-boundary dominance and build hard-edge candidates. |
+| `boundaryLoops` | ordered line/quadratic span loops | Original compound-contour topology used to measure straight-boundary dominance and build hard-edge candidates. |
 
 Polygons are simple, closed, with explicit orientation (outer CCW, holes CW, or
 whatever convention the chosen boolean library uses — pick one and enforce it).
@@ -627,7 +627,7 @@ struct FillInput {
     // Exact polygons in canvas world space; outer CCW, holes CW.
     Polygons mustCover;
     Polygons mayCover;                            // outward legality envelope
-    QVector<ContourSpan> boundarySpans;
+    QVector<QVector<ContourSpan>> boundaryLoops;
     // Optional prebuilt raster of mustCover for the DT initializer.
     QImage mask;
     QRectF maskBounds;

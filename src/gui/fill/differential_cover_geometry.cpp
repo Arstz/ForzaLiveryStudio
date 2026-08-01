@@ -240,6 +240,18 @@ double polygonSetArea(const Polygons &polygons) {
     return std::abs(result);
 }
 
+void orientPolygonSet(Polygons *polygons) {
+    double signedSetArea = 0.0;
+    for (const QPolygonF &polygon : *polygons) {
+        signedSetArea += signedArea(polygon);
+    }
+    if (signedSetArea < 0.0) {
+        for (QPolygonF &polygon : *polygons) {
+            std::reverse(polygon.begin(), polygon.end());
+        }
+    }
+}
+
 QPolygonF normalizedPolygon(QPolygonF polygon) {
     while (polygon.size() > 1
            && QLineF(polygon.front(), polygon.back()).length() <= kGeometryEpsilon) {
@@ -897,9 +909,7 @@ Polygons normalizedInputPolygons(const Polygons &polygons) {
             result.push_back(std::move(polygon));
         }
     }
-    if (result.size() == 1 && signedArea(result.front()) < 0.0) {
-        std::reverse(result.front().begin(), result.front().end());
-    }
+    orientPolygonSet(&result);
 
     return result;
 }
@@ -1078,9 +1088,7 @@ Polygons polygonsFromPainterPath(const QPainterPath &path) {
             result.push_back(std::move(polygon));
         }
     }
-    if (result.size() == 1 && signedArea(result.front()) < 0.0) {
-        std::reverse(result.front().begin(), result.front().end());
-    }
+    orientPolygonSet(&result);
 
     return result;
 }

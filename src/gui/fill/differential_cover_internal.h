@@ -437,7 +437,7 @@ MeshCoverPlan meshCoverPlan(
     const FillOptions &options,
     const std::function<bool()> &cancelled);
 StructuralCoverPlan structuralCoverPlan(
-    const QVector<ContourSpan> &boundarySpans,
+    const QVector<QVector<ContourSpan>> &boundaryLoops,
     const QVector<ShapeMesh> &catalog,
     const Polygons &mustCover,
     const Polygons &mayCover,

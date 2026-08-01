@@ -98,6 +98,7 @@ struct FillInput {
     Polygons mustCover;
     Polygons mayCover;
     QVector<ContourSpan> boundarySpans;
+    QVector<QVector<ContourSpan>> boundaryLoops;
     QImage mask;
     QRectF maskBounds;
 };

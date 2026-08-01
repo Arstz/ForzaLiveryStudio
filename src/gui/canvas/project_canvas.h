@@ -79,7 +79,7 @@ public:
     void setPipetteColorPickedCallback(std::function<void(const QColor &)> callback);
     void setPenFillRequestedCallback(
         std::function<void(
-            const QVector<PenPoint> &,
+            const QVector<PenLoop> &,
             const std::optional<QColor> &,
             bool)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
@@ -409,6 +409,10 @@ private:
         Qt::KeyboardModifiers modifiers,
         double *angleDegrees = nullptr) const;
     void normalizePenPointOrder();
+    void normalizePenPointOrder(QVector<PenPoint> &points);
+    QVector<PenPoint> &penPointsForLoop(int loopIndex);
+    const QVector<PenPoint> &penPointsForLoop(int loopIndex) const;
+    QVector<PenLoop> currentPenLoops() const;
     void validatePenInteraction();
     void refreshPenInteractionHint(const QPointF &screenPoint,
                                    Qt::KeyboardModifiers modifiers);
@@ -448,7 +452,7 @@ private:
     bool spaceDown_ = false;
     std::function<void(const QColor &)> pipetteColorPickedCallback_;
     std::function<void(
-        const QVector<PenPoint> &,
+        const QVector<PenLoop> &,
         const std::optional<QColor> &,
         bool)> penFillRequestedCallback_;
     std::function<void()> penFillCancelCallback_;

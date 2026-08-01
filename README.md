@@ -76,14 +76,14 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 The import/export for groups is fully supported, core functionality in place. Source-backed liveries can be imported, previewed in 3D on a car model. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import/export may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
 
-| Version     | Group          | Livery |
-|-------------|----------------|--------| 
+| Version     | Group          | Livery        |
+|-------------|----------------|---------------| 
 | Horizon 6   | Import/Export  | Import/Export |
-| Motosport 23| Import         | Import |
+| Motosport 23| Import         | Import        |
 
 ## Documentation
 
-- [**User Manual**](docs/MANUAL.md) - keyboard shortcuts, tools, panels, and recommended pipelines.
+- [**User Manual**](docs/MANUAL.md) - tools, panels, and recommended pipelines.
 - [**Developer Guide**](docs/DEV.md) - build steps, repository layout, code map, and core entry points.
 - [**C_group Binary Format**](docs/CGROUP.md) - technical reference for the vinyl group binary payload.
 - [**C_livery Binary Format**](docs/CLIVERY.md) - technical reference for the livery binary container and embedded groups.

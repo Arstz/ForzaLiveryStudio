@@ -485,10 +485,20 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
         return false;
     }
     if (interaction == KeyInteraction::CanvasRemovePathPoint
-        && tool_ == QStringLiteral("pen") && !pen_.fillRunning && !pen_.closed) {
-        if (!pen_.points.isEmpty()) {
+        && tool_ == QStringLiteral("pen") && !pen_.fillRunning
+        && (!pen_.closed || !pen_.cutoutClosed)) {
+        QVector<PenPoint> &points = pen_.closed
+            ? pen_.cutouts[pen_.activeCutout]
+            : pen_.points;
+        if (!points.isEmpty()) {
             beginPathEdit(pen_);
-            pen_.points.removeLast();
+            points.removeLast();
+            if (points.isEmpty() && pen_.closed) {
+                pen_.cutouts.removeAt(pen_.activeCutout);
+                pen_.activeCutout = pen_.cutouts.isEmpty()
+                    ? -1 : pen_.cutouts.size() - 1;
+                pen_.cutoutClosed = true;
+            }
             pen_.crossings.clear();
             pen_.error.clear();
             commitPathEdit(pen_);
@@ -518,7 +528,8 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
         return true;
     }
     if (interaction == KeyInteraction::CanvasCommitInteraction
-        && tool_ == QStringLiteral("pen") && pen_.closed && !pen_.fillRunning) {
+        && tool_ == QStringLiteral("pen") && pen_.closed
+        && pen_.cutoutClosed && !pen_.fillRunning) {
         closePenPath();
 
         return true;

@@ -15,8 +15,10 @@ const QRectF kDefaultProjectBounds(-128.0, -128.0, 256.0, 256.0);
 PathInteractionState capturePathState(const PathInteraction &path) {
     return {
         path.points,
+        path.cutouts,
         path.fillColor,
         path.closed,
+        path.cutoutClosed,
         path.fillMask,
     };
 }
@@ -25,6 +27,8 @@ bool pathStatesEqual(const PathInteractionState &left, const PathInteractionStat
     if (left.closed != right.closed
         || left.fillMask != right.fillMask
         || left.fillColor != right.fillColor
+        || left.cutoutClosed != right.cutoutClosed
+        || left.cutouts.size() != right.cutouts.size()
         || left.points.size() != right.points.size()) {
         return false;
     }
@@ -32,6 +36,20 @@ bool pathStatesEqual(const PathInteractionState &left, const PathInteractionStat
         if (left.points[i].position != right.points[i].position
             || left.points[i].kind != right.points[i].kind) {
             return false;
+        }
+    }
+    for (qsizetype loopIndex = 0; loopIndex < left.cutouts.size(); ++loopIndex) {
+        if (left.cutouts[loopIndex].size() != right.cutouts[loopIndex].size()) {
+            return false;
+        }
+        for (qsizetype pointIndex = 0;
+             pointIndex < left.cutouts[loopIndex].size(); ++pointIndex) {
+            const PenPoint &leftPoint = left.cutouts[loopIndex][pointIndex];
+            const PenPoint &rightPoint = right.cutouts[loopIndex][pointIndex];
+            if (leftPoint.position != rightPoint.position
+                || leftPoint.kind != rightPoint.kind) {
+                return false;
+            }
         }
     }
     return true;
@@ -486,7 +504,7 @@ void ProjectCanvas::setPipetteColorPickedCallback(std::function<void(const QColo
 
 void ProjectCanvas::setPenFillRequestedCallback(
     std::function<void(
-        const QVector<PenPoint> &,
+        const QVector<PenLoop> &,
         const std::optional<QColor> &,
         bool)> callback) {
     penFillRequestedCallback_ = std::move(callback);
@@ -529,6 +547,7 @@ void ProjectCanvas::discardPathInteraction(PathInteraction &path,
     const bool wasRunning = path.fillRunning;
     beginPathEdit(path);
     path.points.clear();
+    path.cutouts.clear();
     path.crossings.clear();
     path.fillColor.reset();
     path.fillMask = false;
@@ -536,6 +555,8 @@ void ProjectCanvas::discardPathInteraction(PathInteraction &path,
     path.fillMessage.clear();
     path.resetHover();
     path.closed = false;
+    path.cutoutClosed = true;
+    path.activeCutout = -1;
     path.fillRunning = false;
     commitPathEdit(path);
     clearCursorHint();
@@ -591,8 +612,11 @@ bool ProjectCanvas::applyPathHistory(PathInteraction &path, bool undo) {
     destination.push_back(capturePathState(path));
     const PathInteractionState next = source.takeLast();
     path.points = next.points;
+    path.cutouts = next.cutouts;
     path.fillColor = next.fillColor;
     path.closed = next.closed;
+    path.cutoutClosed = next.cutoutClosed;
+    path.activeCutout = path.cutouts.isEmpty() ? -1 : path.cutouts.size() - 1;
     path.fillMask = next.fillMask;
     refreshPathAfterHistory(path);
     return true;
@@ -678,7 +702,7 @@ void ProjectCanvas::adjustLiningWidth(double delta, const QPointF &screenPoint) 
 
 void ProjectCanvas::closePenPath() {
     const double worldPerPixel = camera_.worldPerPixel();
-    const PenContour contour = buildPenContour(pen_.points, worldPerPixel * 0.25);
+    const PenContour contour = buildPenContour(currentPenLoops(), worldPerPixel * 0.25);
     if (!contour.valid()) {
         pen_.crossings = contour.crossings;
         pen_.error = contour.error.isEmpty() ? QStringLiteral("Invalid Pen path") : contour.error;
@@ -694,7 +718,7 @@ void ProjectCanvas::closePenPath() {
         update();
         return;
     }
-    const QVector<PenPoint> points = pen_.points;
+    const QVector<PenLoop> loops = currentPenLoops();
     const std::optional<QColor> fillColor = pen_.fillColor;
     const bool fillMask = pen_.fillMask;
     pen_.resetHover();
@@ -705,7 +729,7 @@ void ProjectCanvas::closePenPath() {
     pen_.fillMessage = QStringLiteral("Filling Pen path…");
     update();
     penFillRequestedCallback_(
-        points, fillColor, fillMask);
+        loops, fillColor, fillMask);
 }
 
 void ProjectCanvas::requestLiningFill() {

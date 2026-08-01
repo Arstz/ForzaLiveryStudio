@@ -98,38 +98,48 @@ void ProjectCanvas::appendPointEditHints(QStringList &lines,
 
 PenCurveHit ProjectCanvas::penCurveAtScreen(const QPointF &screenPoint) const {
     PenCurveHit best;
-    if (!pen_.closed || pen_.points.size() < 3
-        || pen_.points.front().kind != PenPointKind::Hard) {
+    if (!pen_.closed || !pen_.cutoutClosed) {
         return best;
     }
-
-    QPointF current = pen_.points.front().position;
-    int index = 1;
-    while (index <= pen_.points.size()) {
-        const int nextIndex = index % pen_.points.size();
-        const PenPoint &next = pen_.points[nextIndex];
-        PenBoundarySegment segment;
-        segment.start = current;
-        int insertIndex = nextIndex == 0 ? pen_.points.size() : nextIndex;
-        if (next.kind == PenPointKind::Hard) {
-            segment.end = next.position;
-            segment.curved = false;
-            current = next.position;
-            ++index;
-        } else {
-            const int afterIndex = (index + 1) % pen_.points.size();
-            const PenPoint &after = pen_.points[afterIndex];
-            segment.control = next.position;
-            segment.end = after.kind == PenPointKind::Hard
-                ? after.position
-                : (next.position + after.position) * 0.5;
-            segment.curved = true;
-            insertIndex = std::min(nextIndex + 1, static_cast<int>(pen_.points.size()));
-            current = segment.end;
-            index += after.kind == PenPointKind::Hard ? 2 : 1;
+    const auto scanLoop = [&](const QVector<PenPoint> &points, int loopIndex) {
+        if (points.size() < 3 || points.front().kind != PenPointKind::Hard) {
+            return;
         }
-
-        accumulateCurveHit(segment, insertIndex, screenPoint, best);
+        QPointF current = points.front().position;
+        int index = 1;
+        while (index <= points.size()) {
+            const int nextIndex = index % points.size();
+            const PenPoint &next = points[nextIndex];
+            PenBoundarySegment segment;
+            segment.start = current;
+            int insertIndex = nextIndex == 0 ? points.size() : nextIndex;
+            if (next.kind == PenPointKind::Hard) {
+                segment.end = next.position;
+                segment.curved = false;
+                current = next.position;
+                ++index;
+            } else {
+                const int afterIndex = (index + 1) % points.size();
+                const PenPoint &after = points[afterIndex];
+                segment.control = next.position;
+                segment.end = after.kind == PenPointKind::Hard
+                    ? after.position
+                    : (next.position + after.position) * 0.5;
+                segment.curved = true;
+                insertIndex = std::min(nextIndex + 1, static_cast<int>(points.size()));
+                current = segment.end;
+                index += after.kind == PenPointKind::Hard ? 2 : 1;
+            }
+            const double previousDistance = best.screenDistance;
+            accumulateCurveHit(segment, insertIndex, screenPoint, best);
+            if (best.screenDistance < previousDistance) {
+                best.loopIndex = loopIndex;
+            }
+        }
+    };
+    scanLoop(pen_.points, -1);
+    for (int loopIndex = 0; loopIndex < pen_.cutouts.size(); ++loopIndex) {
+        scanLoop(pen_.cutouts[loopIndex], loopIndex);
     }
     if (best.screenDistance > kPenEditRadius) {
         return {};
@@ -145,15 +155,18 @@ QPointF ProjectCanvas::snappedPenPosition(
         *angleDegrees =
             std::numeric_limits<double>::quiet_NaN();
     }
+    const QVector<PenPoint> &points = pen_.cutoutClosed
+        ? pen_.points
+        : pen_.cutouts[pen_.activeCutout];
     if (!(modifiers & Qt::ShiftModifier)
-        || pen_.points.isEmpty()
-        || pen_.closed) {
+        || points.isEmpty()
+        || (pen_.closed && pen_.cutoutClosed)) {
         return worldPosition;
     }
 
     return snappedPenPosition(
         worldPosition,
-        pen_.points.back().position,
+        points.back().position,
         modifiers,
         angleDegrees);
 }
@@ -203,27 +216,54 @@ QPointF ProjectCanvas::snappedPenPosition(
 }
 
 void ProjectCanvas::normalizePenPointOrder() {
-    if (pen_.points.isEmpty() || pen_.points.front().kind == PenPointKind::Hard) {
+    normalizePenPointOrder(pen_.points);
+    for (QVector<PenPoint> &cutout : pen_.cutouts) {
+        normalizePenPointOrder(cutout);
+    }
+}
+
+void ProjectCanvas::normalizePenPointOrder(QVector<PenPoint> &points) {
+    if (points.isEmpty() || points.front().kind == PenPointKind::Hard) {
         return;
     }
-    const auto firstHard = std::find_if(pen_.points.begin(),
-                                        pen_.points.end(),
+    const auto firstHard = std::find_if(points.begin(),
+                                        points.end(),
                                         [](const PenPoint &point) {
         return point.kind == PenPointKind::Hard;
     });
-    if (firstHard != pen_.points.end()) {
-        std::rotate(pen_.points.begin(), firstHard, pen_.points.end());
+    if (firstHard != points.end()) {
+        std::rotate(points.begin(), firstHard, points.end());
     }
+}
+
+QVector<PenPoint> &ProjectCanvas::penPointsForLoop(int loopIndex) {
+    return loopIndex < 0 ? pen_.points : pen_.cutouts[loopIndex];
+}
+
+const QVector<PenPoint> &ProjectCanvas::penPointsForLoop(int loopIndex) const {
+    return loopIndex < 0 ? pen_.points : pen_.cutouts[loopIndex];
+}
+
+QVector<PenLoop> ProjectCanvas::currentPenLoops() const {
+    QVector<PenLoop> result;
+    if (!pen_.points.isEmpty()) {
+        result.push_back({pen_.points, PenLoopKind::Outer});
+    }
+    for (const QVector<PenPoint> &cutout : pen_.cutouts) {
+        result.push_back({cutout, PenLoopKind::Cutout});
+    }
+
+    return result;
 }
 
 void ProjectCanvas::validatePenInteraction() {
     pen_.crossings.clear();
     pen_.error.clear();
-    if (!pen_.closed) {
+    if (!pen_.closed || !pen_.cutoutClosed) {
         return;
     }
     const double worldPerPixel = 1.0 / std::max(camera_.scale(), 1e-8);
-    const PenContour contour = buildPenContour(pen_.points, worldPerPixel * 0.25);
+    const PenContour contour = buildPenContour(currentPenLoops(), worldPerPixel * 0.25);
     if (!contour.valid()) {
         pen_.crossings = contour.crossings;
         pen_.error = contour.error.isEmpty()
@@ -234,26 +274,31 @@ void ProjectCanvas::validatePenInteraction() {
 
 void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
                                               Qt::KeyboardModifiers modifiers) {
+    const bool drawingCutout = pen_.closed && !pen_.cutoutClosed;
+    const QVector<PenPoint> &drawingPoints = drawingCutout
+        ? pen_.cutouts[pen_.activeCutout]
+        : pen_.points;
     const bool nearStart =
-        !pen_.closed
-        && pen_.points.size() >= 3
+        (!pen_.closed || drawingCutout)
+        && drawingPoints.size() >= 3
         && QLineF(
                screenPoint,
                worldToScreen(
-                   pen_.points.front().position))
+                   drawingPoints.front().position))
                .length()
             <= kPenCloseRadius;
     double angleDegrees =
         std::numeric_limits<double>::quiet_NaN();
     pen_.hoverWorld = nearStart
-        ? pen_.points.front().position
+        ? drawingPoints.front().position
         : snappedPenPosition(
               screenToWorld(screenPoint),
               modifiers,
               &angleDegrees);
     pen_.hoverPoint = -1;
+    pen_.hoverLoop = -1;
     pen_.hoverCurve = {};
-    if (!pen_.closed) {
+    if (!pen_.closed || drawingCutout) {
         if (std::isfinite(angleDegrees)) {
             setCursorHint(
                 screenPoint,
@@ -266,9 +311,27 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
         return;
     }
 
-    pen_.hoverPoint = pointAtScreen(pen_.points, screenPoint);
+    double bestDistance = kPenEditRadius + 1.0;
+    const auto scanPoints = [&](const QVector<PenPoint> &points, int loopIndex) {
+        const int pointIndex = pointAtScreen(points, screenPoint);
+        if (pointIndex < 0) {
+            return;
+        }
+        const double distance = QLineF(
+            screenPoint, worldToScreen(points[pointIndex].position)).length();
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            pen_.hoverPoint = pointIndex;
+            pen_.hoverLoop = loopIndex;
+        }
+    };
+    scanPoints(pen_.points, -1);
+    for (int loopIndex = 0; loopIndex < pen_.cutouts.size(); ++loopIndex) {
+        scanPoints(pen_.cutouts[loopIndex], loopIndex);
+    }
     if (pen_.hoverPoint < 0) {
         pen_.hoverCurve = penCurveAtScreen(screenPoint);
+        pen_.hoverLoop = pen_.hoverCurve.loopIndex;
     }
 
     QStringList lines{QStringLiteral("Press %1 to fill")
@@ -276,7 +339,15 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
     if (!pen_.error.isEmpty()) {
         lines.push_back(pen_.error);
     }
-    appendPointEditHints(lines, pen_.points, pen_.hoverPoint, pen_.hoverCurve);
+    if (pen_.hoverPoint < 0 && !pen_.hoverCurve.valid()) {
+        lines.push_back(QString());
+        lines.push_back(QStringLiteral("Ctrl+LMB inside: Add cutout"));
+    } else {
+        appendPointEditHints(lines,
+                             penPointsForLoop(pen_.hoverLoop),
+                             pen_.hoverPoint,
+                             pen_.hoverCurve);
+    }
     setCursorHint(screenPoint, lines);
     update();
 }

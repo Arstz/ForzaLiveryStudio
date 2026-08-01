@@ -641,9 +641,19 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
             image.setPixelColor(x, y, QColor(30, 40, 180));
         }
     }
+    for (int y = 5; y <= 10; ++y) {
+        for (int x = 4; x <= 5; ++x) {
+            image.setPixelColor(x, y, QColor(30, 40, 180));
+        }
+    }
+    image.setPixelColor(14, 6, QColor(30, 40, 180));
+    for (int y = 13; y <= 14; ++y) {
+        image.setPixelColor(5, y, QColor(30, 40, 180));
+        image.setPixelColor(6, y, QColor(30, 40, 180));
+    }
 
     const gui::BucketFillResult fill =
-        gui::floodGuideRegion(image, QPoint(5, 5), 0);
+        gui::floodGuideRegion(image, QPoint(7, 5), 0);
     test->expect(fill.valid(), "bucket mask should be valid before tracing");
     test->expect(fill.averageColor == QColor(220, 50, 40),
                  "end-to-end bucket fill should retain its region average color");
@@ -654,19 +664,82 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
                                                      image.height(),
                                                      fill.bounds,
                                                      traceOptions);
+    test->expect(gui::regionContours(traced, 32).size() == 5,
+                  "unfiltered Potrace output should expose small and boundary-adjacent internal contours");
     test->expect(!traced.isEmpty(), "Potrace should vectorize the bucket mask");
-    constexpr double kBucketRdpEpsilon = 2.0;
-    constexpr double kBucketMinimumCurveBow = 0.75;
-    constexpr int kBucketRdpCurveSamples = 32;
-    const QPolygonF sourceContour =
-        gui::regionOuterContour(traced, kBucketRdpCurveSamples);
-    const QVector<gui::PenPoint> points =
-        gui::simplifyClosedPolygonRdpHybridQuadratic(
-            sourceContour, kBucketRdpEpsilon, kBucketMinimumCurveBow);
-    test->expect(points.size() < sourceContour.size(),
-                 "Bucket hybrid quadratic RDP should reduce the traced contour");
-    test->expect(gui::buildPenContour(points).valid(),
-                 "the hybrid quadratic Bucket contour should be consumable by Pen");
+    gui::RegionPenLoopConversionOptions conversionOptions;
+    conversionOptions.fallback.comparisonImageSize = image.size();
+    conversionOptions.discardedCutoutAreaCeiling = 5.0;
+    conversionOptions.discardedCutoutBoundaryClearance = 2.0;
+    const gui::RegionPenLoopConversionResult conversion =
+        gui::regionOutlineToPenLoops(traced, conversionOptions);
+    const gui::PenContour contour = gui::buildPenContour(conversion.loops);
+    if (!contour.valid()) {
+        std::cerr << "Bucket compound contour error: "
+                  << contour.error.toStdString() << '\n';
+    }
+    test->expect(conversion.valid() && conversion.loops.size() == 2,
+                 "Bucket tracing should retain the outer and cutout boundaries");
+    test->expect(conversion.discardedCutoutCount == 3,
+                  "Bucket tracing should discard small and boundary-adjacent internal contours");
+    if (conversion.discardedCutoutAreaCount != 2
+        || conversion.discardedCutoutBoundaryCount != 1) {
+        std::cerr << "Bucket rejection counts: area="
+                  << conversion.discardedCutoutAreaCount
+                  << ", boundary=" << conversion.discardedCutoutBoundaryCount << '\n';
+    }
+    test->expect(conversion.discardedCutoutAreaCount == 2,
+                 "Bucket tracing should discard one-pixel and two-by-two-pixel internal contours by area");
+    test->expect(conversion.discardedCutoutBoundaryCount == 1,
+                 "Bucket tracing should independently discard internal contours near the outer boundary");
+    test->expect(contour.valid(),
+                 "the compound Bucket contour should be consumable by Pen");
+    test->expect(contour.path.contains(QPointF(7.0, 5.0))
+                     && !contour.path.contains(QPointF(10.0, 10.0)),
+                 "the compound Bucket contour should preserve its negative space");
+
+    int pointCount = 0;
+    int sampledPointCount = 0;
+    for (const QPolygonF &sampled : gui::regionContours(traced, 32)) {
+        sampledPointCount += sampled.size();
+    }
+    bool potraceCutoutCurveRetained = false;
+    for (const gui::PenLoop &loop : conversion.loops) {
+        pointCount += loop.points.size();
+        potraceCutoutCurveRetained = potraceCutoutCurveRetained
+            || (loop.kind == gui::PenLoopKind::Cutout
+                && std::any_of(loop.points.cbegin(), loop.points.cend(),
+                               [](const gui::PenPoint &point) {
+                return point.kind == gui::PenPointKind::Soft;
+            }));
+    }
+    test->expect(pointCount <= 32,
+                 "Bucket tracing should bound the confirmed Pen contour complexity");
+    test->expect(pointCount * 2 < sampledPointCount,
+                 "Bucket tracing should optimize away most Potrace samples");
+    test->expect(potraceCutoutCurveRetained,
+                 "Bucket tracing should retain the Potrace curve around its cutout");
+
+    gui::PenFillRequest request;
+    request.loops = conversion.loops;
+    request.primitives = penPrimitiveCatalog(test);
+    request.boundaryTolerance = 0.1;
+    QElapsedTimer timer;
+    timer.start();
+    const gui::PenFillResult result = gui::fillPenPath(
+        request, [&timer]() { return timer.elapsed() > 3000; });
+    const QPainterPath coverage = placementCoverage(result, request.primitives);
+    test->expect(!result.cancelled && result.error.isEmpty(),
+                 "confirming a Bucket contour with negative space should finish filling");
+    test->expect(!coverage.contains(QPointF(10.0, 10.0)),
+                 "the confirmed Bucket fill should leave its negative space empty");
+    test->expect(std::any_of(result.placements.cbegin(), result.placements.cend(),
+                             [](const gui::PenPlacement &placement) {
+                 return placement.shapeId != 101
+                     && placement.shapeId != 103
+                     && !placement.coreEllipse;
+             }),
+                 "the confirmed Bucket fill should fit a curve Primitive to its Potrace boundary");
 }
 
 void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {

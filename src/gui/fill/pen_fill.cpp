@@ -375,6 +375,42 @@ QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, d
     return crossings;
 }
 
+QVector<QPointF> contourPairCrossings(
+    const QVector<PenBoundarySegment> &left,
+    const QVector<PenBoundarySegment> &right,
+    double tolerance) {
+    QVector<QPointF> crossings;
+    for (const PenBoundarySegment &leftSegment : left) {
+        const QVector<QPointF> leftPoints = sampleSegment(leftSegment, kCurveSamples);
+        for (const PenBoundarySegment &rightSegment : right) {
+            const QVector<QPointF> rightPoints = sampleSegment(rightSegment, kCurveSamples);
+            for (int leftIndex = 0; leftIndex + 1 < leftPoints.size(); ++leftIndex) {
+                for (int rightIndex = 0; rightIndex + 1 < rightPoints.size(); ++rightIndex) {
+                    QPointF crossing;
+                    if (!lineIntersection(leftPoints[leftIndex],
+                                          leftPoints[leftIndex + 1],
+                                          rightPoints[rightIndex],
+                                          rightPoints[rightIndex + 1],
+                                          tolerance * 0.1,
+                                          &crossing)) {
+                        continue;
+                    }
+                    const bool duplicate = std::any_of(
+                        crossings.cbegin(), crossings.cend(),
+                        [&](const QPointF &existing) {
+                            return QLineF(existing, crossing).length() <= tolerance * 2.0;
+                        });
+                    if (!duplicate) {
+                        crossings.push_back(crossing);
+                    }
+                }
+            }
+        }
+    }
+
+    return crossings;
+}
+
 QTransform affineFromTriangles(const QPointF &a,
                                const QPointF &b,
                                const QPointF &c,
@@ -1423,7 +1459,114 @@ PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessToler
         result.path = {};
         result.segments.clear();
         result.error = QStringLiteral("The Pen path has no fillable area");
+        return result;
     }
+    result.loops.push_back({result.path, result.segments, PenLoopKind::Outer});
+    return result;
+}
+
+PenContour buildPenContour(const QVector<PenLoop> &loops, double flatnessTolerance) {
+    PenContour result;
+    if (loops.isEmpty()) {
+        result.error = QStringLiteral("A Pen contour needs an outer path");
+        return result;
+    }
+
+    int outerIndex = -1;
+    for (int loopIndex = 0; loopIndex < loops.size(); ++loopIndex) {
+        if (loops[loopIndex].kind != PenLoopKind::Outer) {
+            continue;
+        }
+        if (outerIndex >= 0) {
+            result.error = QStringLiteral("A Pen contour can only have one outer path");
+            return result;
+        }
+        outerIndex = loopIndex;
+    }
+    if (outerIndex < 0) {
+        result.error = QStringLiteral("A Pen contour needs an outer path");
+        return result;
+    }
+    if (outerIndex != 0) {
+        result.error = QStringLiteral("The outer Pen path must be the first boundary");
+        return result;
+    }
+
+    result.loops.reserve(loops.size());
+    for (int loopIndex = 0; loopIndex < loops.size(); ++loopIndex) {
+        PenContour loop = buildPenContour(loops[loopIndex].points, flatnessTolerance);
+        if (!loop.valid()) {
+            result.crossings += loop.crossings;
+            result.error = loop.error.isEmpty()
+                ? QStringLiteral("Invalid Pen contour boundary")
+                : loop.error;
+            return result;
+        }
+        result.loops.push_back({loop.path, loop.segments, loops[loopIndex].kind});
+        result.segments += loop.segments;
+    }
+
+    const PenContourLoop &outer = result.loops[outerIndex];
+    for (int leftIndex = 0; leftIndex < result.loops.size(); ++leftIndex) {
+        if (leftIndex == outerIndex) {
+            continue;
+        }
+        const PenContourLoop &cutout = result.loops[leftIndex];
+        if (cutout.kind != PenLoopKind::Cutout
+            || cutout.segments.isEmpty()
+            || !outer.path.contains(cutout.segments.front().start)) {
+            result.error = QStringLiteral("A Pen cutout must be inside the outer path");
+            return result;
+        }
+        for (int rightIndex = leftIndex + 1;
+             rightIndex < result.loops.size(); ++rightIndex) {
+            if (rightIndex == outerIndex) {
+                continue;
+            }
+            if (cutout.path.intersects(result.loops[rightIndex].path)
+                || cutout.path.contains(result.loops[rightIndex].segments.front().start)
+                || result.loops[rightIndex].path.contains(cutout.segments.front().start)) {
+                result.error = QStringLiteral("Pen cutouts cannot overlap or contain one another");
+                return result;
+            }
+        }
+    }
+
+    for (int leftIndex = 0; leftIndex < result.loops.size(); ++leftIndex) {
+        for (int rightIndex = leftIndex + 1;
+             rightIndex < result.loops.size(); ++rightIndex) {
+            result.crossings += contourPairCrossings(
+                result.loops[leftIndex].segments,
+                result.loops[rightIndex].segments,
+                std::max(flatnessTolerance, 1e-5));
+        }
+    }
+    if (!result.crossings.isEmpty()) {
+        result.error = QStringLiteral("Pen contour boundaries cross");
+        return result;
+    }
+
+    const auto flattenedLoop = [](const PenContourLoop &loop) {
+        PenContour contour;
+        contour.segments = loop.segments;
+        return flattenedContour(contour, 16);
+    };
+    const double outerOrientation = signedArea(flattenedLoop(result.loops[outerIndex]));
+    result.path.setFillRule(Qt::WindingFill);
+    for (int loopIndex = 0; loopIndex < result.loops.size(); ++loopIndex) {
+        const PenContourLoop &loop = result.loops[loopIndex];
+        const QPolygonF flattened = flattenedLoop(loop);
+        const bool sameOrientation = signedArea(flattened) * outerOrientation >= 0.0;
+        const bool reverse = loop.kind == PenLoopKind::Cutout
+            ? sameOrientation
+            : !sameOrientation;
+        result.path.addPath(reverse ? loop.path.toReversed() : loop.path);
+    }
+    if (pathArea(result.path) <= kEpsilon) {
+        result.path = {};
+        result.error = QStringLiteral("The Pen contour has no fillable area");
+    }
+
     return result;
 }
 
@@ -1489,7 +1632,236 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             primitives.push_back(primitive);
         }
     }
+    QVector<PenLoop> loops = request.loops;
+    if (loops.isEmpty() && !request.points.isEmpty()) {
+        loops.push_back({request.points, PenLoopKind::Outer});
+    }
+    const PenContour contour = buildPenContour(
+        loops, request.boundaryTolerance * 0.25);
+    if (!contour.valid()) {
+        result.error = contour.error.isEmpty() ? QStringLiteral("Invalid Pen contour") : contour.error;
+        return result;
+    }
+    int pointCount = 0;
+    for (const PenLoop &loop : loops) {
+        pointCount += loop.points.size();
+    }
+    result.targetArea = pathArea(contour.path);
+    result.shapeLimit = pointCount * 2;
     const PolygonMeshSources meshSources = penMeshSources(primitives);
+    if (loops.size() > 1) {
+        QVector<CurvePrimitive> outwardCaps;
+        QVector<CurvePrimitive> inwardCaps;
+        for (const PenPrimitive &primitive : primitives) {
+            if (!isCurveShape(primitive.shapeId)) {
+                continue;
+            }
+            CurvePrimitive candidate{&primitive, primitiveArcProfiles(primitive)};
+            outwardCaps.push_back(candidate);
+            if (primitive.shapeId == kFangShapeId
+                || primitive.shapeId == kConcaveArcShapeId
+                || primitive.shapeId == kGarlicShapeId
+                || primitive.shapeId == kToothShapeId) {
+                inwardCaps.push_back(std::move(candidate));
+            }
+        }
+        if (!meshSources.valid() || outwardCaps.isEmpty() || inwardCaps.isEmpty()) {
+            result.error = QStringLiteral("Pen Primitive geometry is unavailable");
+            return result;
+        }
+
+        QVector<QVector<QPointF>> coreContours;
+        coreContours.reserve(contour.loops.size());
+        QPainterPath coverage;
+        coverage.setFillRule(Qt::WindingFill);
+        for (const PenContourLoop &loop : contour.loops) {
+            PenContour loopContour;
+            loopContour.segments = loop.segments;
+            const QPolygonF flattened = flattenedContour(loopContour, 16);
+            double orientationSign = signedArea(flattened) >= 0.0 ? 1.0 : -1.0;
+            if (loop.kind == PenLoopKind::Cutout) {
+                orientationSign *= -1.0;
+            }
+            const QVector<PenBoundarySegment> segments =
+                curvatureOrderedSegments(loop.segments, orientationSign);
+            bool selectionCancelled = false;
+            const QVector<CurveSpanPlacement> curveSpans = selectCurveSpans(
+                outwardCaps,
+                segments,
+                contour.path,
+                result.targetArea,
+                orientationSign,
+                request.boundaryTolerance,
+                cancelled,
+                &selectionCancelled);
+            if (selectionCancelled) {
+                result.cancelled = true;
+                result.error = QStringLiteral("Pen curve-span selection timed out");
+                return result;
+            }
+
+            QVector<bool> spanCovered(segments.size(), false);
+            QVector<int> spanAtStart(segments.size(), -1);
+            for (int spanIndex = 0; spanIndex < curveSpans.size(); ++spanIndex) {
+                const CurveSpanPlacement &span = curveSpans[spanIndex];
+                spanAtStart[span.first] = spanIndex;
+                for (int segmentIndex = span.first;
+                     segmentIndex <= span.last;
+                     ++segmentIndex) {
+                    spanCovered[segmentIndex] = true;
+                }
+            }
+
+            QVector<std::optional<InwardCurvePlacement>> inwardCurves(segments.size());
+            QVector<int> inwardCandidates;
+            for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
+                if (segments[segmentIndex].curved
+                    && !spanCovered[segmentIndex]
+                    && !isOutwardCurve(segments[segmentIndex], orientationSign)) {
+                    inwardCandidates.push_back(segmentIndex);
+                }
+            }
+            std::sort(inwardCandidates.begin(), inwardCandidates.end(),
+                      [&](int left, int right) {
+                const PenBoundarySegment &a = segments[left];
+                const PenBoundarySegment &b = segments[right];
+                const double aImportance = QLineF(a.start, a.end).length()
+                    * std::max(std::sqrt(distanceSquaredToSegment(
+                                   a.control, a.start, a.end)),
+                               request.boundaryTolerance * 0.25);
+                const double bImportance = QLineF(b.start, b.end).length()
+                    * std::max(std::sqrt(distanceSquaredToSegment(
+                                   b.control, b.start, b.end)),
+                               request.boundaryTolerance * 0.25);
+                if (std::abs(aImportance - bImportance) > kEpsilon) {
+                    return aImportance > bImportance;
+                }
+                return left < right;
+            });
+            const int maximumInwardEvaluations = curveEvaluationBudget(segments.size());
+            for (int candidateIndex = 0;
+                 candidateIndex < std::min(maximumInwardEvaluations,
+                                           static_cast<int>(inwardCandidates.size()));
+                 ++candidateIndex) {
+                if (cancelled && cancelled()) {
+                    result.cancelled = true;
+                    result.error = QStringLiteral("Pen inward-curve selection timed out");
+                    return result;
+                }
+                const int segmentIndex = inwardCandidates[candidateIndex];
+                inwardCurves[segmentIndex] = inwardCurvePlacement(
+                    inwardCaps,
+                    segments[segmentIndex],
+                    contour.path,
+                    result.targetArea,
+                    request.boundaryTolerance);
+            }
+
+            QVector<QPointF> corePoints;
+            corePoints.push_back(segments.front().start);
+            for (int segmentIndex = 0; segmentIndex < segments.size();) {
+                const int spanIndex = spanAtStart[segmentIndex];
+                if (spanIndex >= 0) {
+                    const CurveSpanPlacement &span = curveSpans[spanIndex];
+                    result.placements.push_back(span.curve.placement);
+                    coverage = coverage.united(span.curve.path);
+                    corePoints.push_back(segments[span.last].end);
+                    segmentIndex = span.last + 1;
+                    continue;
+                }
+                const PenBoundarySegment &segment = segments[segmentIndex];
+                if (inwardCurves[segmentIndex]) {
+                    result.placements.push_back(inwardCurves[segmentIndex]->curve.placement);
+                    coverage = coverage.united(inwardCurves[segmentIndex]->curve.path);
+                    corePoints.push_back(inwardCurves[segmentIndex]->coreMiddle);
+                } else if (segment.curved
+                           && !chordInsideTarget(segment.start,
+                                                 segment.end,
+                                                 contour.path)) {
+                    const auto point = interiorCorePoint(segment, contour.path);
+                    corePoints.push_back(point ? *point : segment.control);
+                }
+                corePoints.push_back(segment.end);
+                ++segmentIndex;
+            }
+            QVector<QPointF> normalized;
+            normalized.reserve(corePoints.size());
+            for (const QPointF &point : std::as_const(corePoints)) {
+                if (normalized.isEmpty()
+                    || QLineF(normalized.back(), point).length() > kEpsilon) {
+                    normalized.push_back(point);
+                }
+            }
+            if (normalized.size() > 1
+                && QLineF(normalized.front(), normalized.back()).length() <= kEpsilon) {
+                normalized.removeLast();
+            }
+            if (normalized.size() < 3) {
+                result.error = QStringLiteral("The Pen contour left no polygonal core");
+                result.placements.clear();
+                return result;
+            }
+            coreContours.push_back(std::move(normalized));
+        }
+
+        PolygonMeshRequest meshRequest;
+        meshRequest.sources = meshSources;
+        meshRequest.mergeSquares = false;
+        meshRequest.contours = std::move(coreContours);
+        const PolygonMeshResult mesh = meshPolygon(meshRequest, cancelled);
+        if (mesh.cancelled || (cancelled && cancelled())) {
+            result.placements.clear();
+            result.cancelled = true;
+            result.error = QStringLiteral("Pen core mesh timed out");
+            return result;
+        }
+        if (!mesh.error.isEmpty()) {
+            result.placements.clear();
+            result.error = QStringLiteral("Could not fill the Pen core: %1").arg(mesh.error);
+            return result;
+        }
+        const QVector<PolygonMeshPlacement> corePlacements = optimizePolygonMeshWithEllipses(
+            mesh.placements, meshSources, mesh.contour, cancelled);
+        for (const PolygonMeshPlacement &placement : corePlacements) {
+            const PenPrimitive *primitive = primitiveForId(primitives, placement.shapeId);
+            if (primitive == nullptr) {
+                result.placements.clear();
+                result.error = QStringLiteral("Pen core selected unavailable Primitive %1")
+                    .arg(placement.shapeId);
+                return result;
+            }
+            result.placements.push_back({
+                placement.shapeId,
+                placement.transform,
+                primitive->area * std::abs(placement.transform.determinant()),
+                placement.shapeId == kCircleShapeId,
+            });
+            coverage = coverage.united(
+                placement.transform.map(primitive->silhouette));
+        }
+        if (result.placements.size() > result.shapeLimit) {
+            result.error = QStringLiteral("Pen fill exceeded its shape limit");
+            result.placements.clear();
+            return result;
+        }
+        if (request.discardNegligiblePlacements
+            && !discardNegligiblePlacements(&result.placements,
+                                            &coverage,
+                                            primitives,
+                                            contour.path,
+                                            result.targetArea,
+                                            request.boundaryTolerance,
+                                            cancelled)) {
+            result.placements.clear();
+            result.cancelled = true;
+            result.error = QStringLiteral("Pen placement cleanup timed out");
+            return result;
+        }
+        result.coveredArea = pathArea(coverage.intersected(contour.path));
+        result.outsideArea = pathArea(coverage.subtracted(contour.path));
+        result.unfilled = contour.path.subtracted(coverage);
+        return result;
+    }
     QVector<CurvePrimitive> outwardCaps;
     QVector<CurvePrimitive> inwardCaps;
     for (const PenPrimitive &primitive : primitives) {
@@ -1509,13 +1881,6 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.error = QStringLiteral("Pen Primitive geometry is unavailable");
         return result;
     }
-    const PenContour contour = buildPenContour(request.points, request.boundaryTolerance * 0.25);
-    if (!contour.valid()) {
-        result.error = contour.error.isEmpty() ? QStringLiteral("Invalid Pen contour") : contour.error;
-        return result;
-    }
-    result.targetArea = pathArea(contour.path);
-    result.shapeLimit = request.points.size() * 2;
     const QPolygonF flattened = flattenedContour(contour, 16);
     const double orientationSign = signedArea(flattened) >= 0.0 ? 1.0 : -1.0;
     const QVector<PenBoundarySegment> segments = curvatureOrderedSegments(contour.segments,

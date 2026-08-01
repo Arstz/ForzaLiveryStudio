@@ -152,7 +152,7 @@ private:
     QVector<fls::scene::Group *> selectedGroups();
     void refreshSelectionProperties();
     void refreshPropertyBoxFieldsFromCanvas();
-    void startPenFill(const QVector<PenPoint> &points,
+    void startPenFill(const QVector<PenLoop> &loops,
                       const std::optional<QColor> &fillColor = std::nullopt,
                       bool fillMask = false);
     void startLiningFill(const QVector<PenPoint> &points,

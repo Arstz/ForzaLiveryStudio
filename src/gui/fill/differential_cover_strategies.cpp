@@ -342,13 +342,15 @@ QPolygonF simplifyStructuralPolygon(QPolygonF polygon) {
 }
 
 QVector<double> structuralSupportCoordinates(
-    const QPolygonF &polygon,
+    const QVector<QPolygonF> &polygons,
     bool firstCoordinate) {
     QVector<double> result;
-    result.reserve(polygon.size());
-    for (const QPointF &point : polygon) {
-        result.push_back(
-            firstCoordinate ? point.x() : point.y());
+    for (const QPolygonF &polygon : polygons) {
+        result.reserve(result.size() + polygon.size());
+        for (const QPointF &point : polygon) {
+            result.push_back(
+                firstCoordinate ? point.x() : point.y());
+        }
     }
     std::sort(result.begin(), result.end());
     result.erase(
@@ -363,7 +365,7 @@ QVector<double> structuralSupportCoordinates(
 }
 
 QVector<StructuralRectangle> structuralRectangles(
-    const QPolygonF &polygon,
+    const QVector<QPolygonF> &polygons,
     const QVector<double> &firstCoordinates,
     const QVector<double> &secondCoordinates,
     quint64 *occupiedMask,
@@ -384,8 +386,12 @@ QVector<StructuralRectangle> structuralRectangles(
                 (secondCoordinates[second]
                  + secondCoordinates[second + 1])
                     * 0.5);
-            if (polygon.containsPoint(
-                    center, Qt::OddEvenFill)) {
+            int containingPolygons = 0;
+            for (const QPolygonF &polygon : polygons) {
+                containingPolygons += polygon.containsPoint(
+                    center, Qt::OddEvenFill) ? 1 : 0;
+            }
+            if (containingPolygons % 2 != 0) {
                 const int bit =
                     second * firstCells + first;
                 *occupiedMask |= quint64{1} << bit;
@@ -780,7 +786,7 @@ std::optional<Affine> legalStructuralRectangle(
 }
 
 StructuralCoverPlan structuralCoverPlan(
-    const QVector<ContourSpan> &boundarySpans,
+    const QVector<QVector<ContourSpan>> &boundaryLoops,
     const QVector<ShapeMesh> &catalog,
     const Polygons &mustCover,
     const Polygons &mayCover,
@@ -795,7 +801,11 @@ StructuralCoverPlan structuralCoverPlan(
             QStringLiteral("Square is unavailable");
         return result;
     }
-    if (boundarySpans.size() < 4) {
+    int boundarySpanCount = 0;
+    for (const QVector<ContourSpan> &loop : boundaryLoops) {
+        boundarySpanCount += loop.size();
+    }
+    if (boundaryLoops.isEmpty() || boundarySpanCount < 4) {
         result.reason =
             QStringLiteral("too few boundary spans");
         return result;
@@ -803,10 +813,12 @@ StructuralCoverPlan structuralCoverPlan(
 
     QVector<QPointF> vertices;
     QVector<StructuralEdge> edges;
-    vertices.reserve(boundarySpans.size());
-    edges.reserve(boundarySpans.size());
-    for (const ContourSpan &span : boundarySpans) {
-        vertices.push_back(span.start);
+    vertices.reserve(boundarySpanCount);
+    edges.reserve(boundarySpanCount);
+    for (const QVector<ContourSpan> &loop : boundaryLoops) {
+        for (const ContourSpan &span : loop) {
+            vertices.push_back(span.start);
+        }
     }
     const QRectF bounds =
         polygonBounds(mustCover);
@@ -817,36 +829,38 @@ StructuralCoverPlan structuralCoverPlan(
             kStructuralMinimumCoordinateTolerance,
             diagonal
                 * kStructuralCoordinateToleranceFraction);
-    for (const ContourSpan &span : boundarySpans) {
-        const QPointF chord =
-            span.end - span.start;
-        const double length =
-            std::hypot(chord.x(), chord.y());
-        if (length <= kGeometryEpsilon) {
-            result.reason =
-                QStringLiteral("degenerate boundary span");
-            return result;
-        }
-        double maximumBow = 0.0;
-        if (span.curved) {
-            maximumBow =
-                std::abs(
-                    pointCross(
-                        chord,
-                        span.control - span.start))
-                / length * 0.5;
-            if (maximumBow
-                > coordinateTolerance) {
+    for (const QVector<ContourSpan> &loop : boundaryLoops) {
+        for (const ContourSpan &span : loop) {
+            const QPointF chord =
+                span.end - span.start;
+            const double length =
+                std::hypot(chord.x(), chord.y());
+            if (length <= kGeometryEpsilon) {
                 result.reason =
-                    QStringLiteral("boundary curvature exceeds structural tolerance");
+                    QStringLiteral("degenerate boundary span");
                 return result;
             }
+            double maximumBow = 0.0;
+            if (span.curved) {
+                maximumBow =
+                    std::abs(
+                        pointCross(
+                            chord,
+                            span.control - span.start))
+                    / length * 0.5;
+                if (maximumBow
+                    > coordinateTolerance) {
+                    result.reason =
+                        QStringLiteral("boundary curvature exceeds structural tolerance");
+                    return result;
+                }
+            }
+            edges.push_back({
+                canonicalDirection(chord),
+                length,
+                maximumBow,
+            });
         }
-        edges.push_back({
-            canonicalDirection(chord),
-            length,
-            maximumBow,
-        });
     }
 
     const StructuralAxes axes =
@@ -884,47 +898,43 @@ StructuralCoverPlan structuralCoverPlan(
         clusteredCoordinates(
             rawSecondCoordinates,
             basisTolerance);
-    QPolygonF snapped;
-    snapped.reserve(coordinateVertices.size());
-    for (const QPointF &coordinate :
-         coordinateVertices) {
-        snapped.push_back({
-            nearestCoordinate(
-                coordinate.x(), firstClusters),
-            nearestCoordinate(
-                coordinate.y(), secondClusters),
-        });
-    }
-    snapped =
-        simplifyStructuralPolygon(
-            std::move(snapped));
-    if (snapped.size() < 4) {
-        result.reason =
-            QStringLiteral("snapped boundary collapsed");
-        return result;
-    }
-    for (int index = 0;
-         index < snapped.size(); ++index) {
-        const QPointF &left = snapped[index];
-        const QPointF &right =
-            snapped[(index + 1)
-                    % snapped.size()];
-        if (sameCoordinate(
-                left.x(), right.x())
-            == sameCoordinate(
-                left.y(), right.y())) {
-            result.reason =
-                QStringLiteral("snapped boundary is not axis aligned");
+    QVector<QPolygonF> snappedLoops;
+    snappedLoops.reserve(boundaryLoops.size());
+    int vertexOffset = 0;
+    for (const QVector<ContourSpan> &loop : boundaryLoops) {
+        QPolygonF snapped;
+        snapped.reserve(loop.size());
+        for (int index = 0; index < loop.size(); ++index) {
+            const QPointF &coordinate = coordinateVertices[vertexOffset + index];
+            snapped.push_back({
+                nearestCoordinate(coordinate.x(), firstClusters),
+                nearestCoordinate(coordinate.y(), secondClusters),
+            });
+        }
+        vertexOffset += loop.size();
+        snapped = simplifyStructuralPolygon(std::move(snapped));
+        if (snapped.size() < 4) {
+            result.reason = QStringLiteral("snapped boundary collapsed");
             return result;
         }
+        for (int index = 0; index < snapped.size(); ++index) {
+            const QPointF &left = snapped[index];
+            const QPointF &right = snapped[(index + 1) % snapped.size()];
+            if (sameCoordinate(left.x(), right.x())
+                == sameCoordinate(left.y(), right.y())) {
+                result.reason = QStringLiteral("snapped boundary is not axis aligned");
+                return result;
+            }
+        }
+        snappedLoops.push_back(std::move(snapped));
     }
 
     const QVector<double> firstCoordinates =
         structuralSupportCoordinates(
-            snapped, true);
+            snappedLoops, true);
     const QVector<double> secondCoordinates =
         structuralSupportCoordinates(
-            snapped, false);
+            snappedLoops, false);
     if (firstCoordinates.size() < 2
         || secondCoordinates.size() < 2
         || firstCoordinates.size()
@@ -951,7 +961,7 @@ StructuralCoverPlan structuralCoverPlan(
     const QVector<StructuralRectangle>
         rectangles =
             structuralRectangles(
-                snapped,
+                snappedLoops,
                 firstCoordinates,
                 secondCoordinates,
                 &occupiedMask,

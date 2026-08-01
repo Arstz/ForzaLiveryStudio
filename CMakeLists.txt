@@ -370,6 +370,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/differential_cover_metrics.cpp
         src/gui/fill/differential_cover_postprocess.cpp
         src/gui/fill/differential_cover_strategies.cpp
+        src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )

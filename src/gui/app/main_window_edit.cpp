@@ -71,16 +71,29 @@ void writePenFillLog(const PenFillRequest &request,
                      const QString &strategy,
                      const cover::FillProfile *profile = nullptr,
                      const cover::CoverErrorMetrics *metrics = nullptr) {
-    QJsonArray points;
-    for (const PenPoint &point : request.points) {
-        QJsonObject pointObject;
-        pointObject.insert(QStringLiteral("kind"),
-                           point.kind == PenPointKind::Hard
-                               ? QStringLiteral("hard")
-                               : QStringLiteral("soft"));
-        pointObject.insert(QStringLiteral("position"),
-                           QJsonArray{point.position.x(), point.position.y()});
-        points.push_back(pointObject);
+    QJsonArray loops;
+    const QVector<PenLoop> requestLoops = request.loops.isEmpty()
+        ? QVector<PenLoop>{{request.points, PenLoopKind::Outer}}
+        : request.loops;
+    for (const PenLoop &loop : requestLoops) {
+        QJsonArray points;
+        for (const PenPoint &point : loop.points) {
+            QJsonObject pointObject;
+            pointObject.insert(QStringLiteral("kind"),
+                               point.kind == PenPointKind::Hard
+                                   ? QStringLiteral("hard")
+                                   : QStringLiteral("soft"));
+            pointObject.insert(QStringLiteral("position"),
+                               QJsonArray{point.position.x(), point.position.y()});
+            points.push_back(pointObject);
+        }
+        QJsonObject loopObject;
+        loopObject.insert(QStringLiteral("kind"),
+                          loop.kind == PenLoopKind::Outer
+                              ? QStringLiteral("outer")
+                              : QStringLiteral("cutout"));
+        loopObject.insert(QStringLiteral("points"), points);
+        loops.push_back(loopObject);
     }
 
     QJsonObject requestObject;
@@ -88,7 +101,7 @@ void writePenFillLog(const PenFillRequest &request,
     requestObject.insert(QStringLiteral("boundaryTolerance"), request.boundaryTolerance);
     requestObject.insert(QStringLiteral("discardNegligiblePlacements"),
                          request.discardNegligiblePlacements);
-    requestObject.insert(QStringLiteral("points"), points);
+    requestObject.insert(QStringLiteral("loops"), loops);
 
     QJsonObject resultObject;
     resultObject.insert(QStringLiteral("shapeCount"), result.placements.size());
@@ -477,7 +490,7 @@ PenFillResult differentialContourFill(
 
 } // namespace
 
-void MainWindow::startPenFill(const QVector<PenPoint> &points,
+void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                               const std::optional<QColor> &fillColor,
                               bool fillMask) {
     if (!ensureProjectForInsertion() || canvas_ == nullptr) {
@@ -497,13 +510,13 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
         fillColor, fillLabel, fillTool,
         fillMask);
     PenFillRequest request;
-    request.points = points;
+    request.loops = loops;
     if (differential) {
         QString catalogError;
         const QVector<cover::ShapeMesh> catalog =
             canvas_->differentialCoverCatalog(&catalogError);
         const PenContour contour = buildPenContour(
-            request.points, request.boundaryTolerance * 0.25);
+            request.loops, request.boundaryTolerance * 0.25);
         const cover::Polygons polygons = contour.valid()
             ? cover::polygonsFromPainterPath(contour.path)
             : cover::Polygons{};
@@ -523,7 +536,9 @@ void MainWindow::startPenFill(const QVector<PenPoint> &points,
 
         cover::FillInput input;
         input.mustCover = polygons;
-        input.boundarySpans = contour.segments;
+        for (const PenContourLoop &loop : contour.loops) {
+            input.boundaryLoops.push_back(loop.segments);
+        }
         cover::FillOptions options;
         options.boundaryTolerance =
             request.boundaryTolerance;

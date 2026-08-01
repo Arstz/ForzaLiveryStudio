@@ -20,11 +20,28 @@ struct PenPoint {
     PenPointKind kind = PenPointKind::Soft;
 };
 
+enum class PenLoopKind {
+    Outer,
+    Cutout,
+};
+
+struct PenLoop {
+    QVector<PenPoint> points;
+    PenLoopKind kind = PenLoopKind::Outer;
+};
+
 using PenBoundarySegment = FillBoundarySegment;
+
+struct PenContourLoop {
+    QPainterPath path;
+    QVector<PenBoundarySegment> segments;
+    PenLoopKind kind = PenLoopKind::Outer;
+};
 
 struct PenContour {
     QPainterPath path;
     QVector<PenBoundarySegment> segments;
+    QVector<PenContourLoop> loops;
     QVector<QPointF> crossings;
     QString error;
 
@@ -50,6 +67,7 @@ struct PenPlacement {
 
 struct PenFillRequest {
     QVector<PenPoint> points;
+    QVector<PenLoop> loops;
     QVector<PenPrimitive> primitives;
     double boundaryTolerance = 0.1;
     bool discardNegligiblePlacements = true;
@@ -68,6 +86,7 @@ struct PenFillResult {
 };
 
 PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessTolerance = 0.01);
+PenContour buildPenContour(const QVector<PenLoop> &loops, double flatnessTolerance = 0.01);
 PenPrimitive buildPenPrimitive(int shapeId, const ShapeGeometry &geometry);
 QVector<PenPrimitive> buildPenPrimitiveCatalog(const ShapeGeometryStore &geometry,
                                                int firstShapeId = 101,

@@ -884,9 +884,25 @@ bool loadLoggedContour(QVector<PenPoint> *points, bool *available) {
                "pen_fill.log is invalid")) {
         return false;
     }
-    const QJsonArray sourcePoints =
-        document.object().value(QStringLiteral("request")).toObject()
-            .value(QStringLiteral("points")).toArray();
+    const QJsonObject request =
+        document.object().value(QStringLiteral("request")).toObject();
+    QJsonArray sourcePoints = request.value(QStringLiteral("points")).toArray();
+    if (sourcePoints.isEmpty()) {
+        const QJsonArray sourceLoops = request.value(QStringLiteral("loops")).toArray();
+        if (sourceLoops.size() != 1) {
+            *available = false;
+            std::cout << "compound pen_fill.log is unavailable to legacy logged-contour tests; skipped\n";
+            return true;
+        }
+        for (const QJsonValue &value : sourceLoops) {
+            const QJsonObject loop = value.toObject();
+            if (loop.value(QStringLiteral("kind")).toString()
+                == QStringLiteral("outer")) {
+                sourcePoints = loop.value(QStringLiteral("points")).toArray();
+                break;
+            }
+        }
+    }
     for (const QJsonValue &value : sourcePoints) {
         const QJsonObject object = value.toObject();
         const QJsonArray position =
@@ -1416,6 +1432,124 @@ bool testWeightedLoggedContour(
         "weighted logged contour produced no legal placement");
 }
 
+QVector<PenLoop> letterOLoops() {
+    const auto hardLoop = [](std::initializer_list<QPointF> positions,
+                             PenLoopKind kind) {
+        PenLoop loop;
+        loop.kind = kind;
+        loop.points.reserve(static_cast<qsizetype>(positions.size()));
+        for (const QPointF &position : positions) {
+            loop.points.push_back({position, PenPointKind::Hard});
+        }
+        return loop;
+    };
+
+    return {
+        hardLoop({
+            QPointF(-40.0, -50.0),
+            QPointF(40.0, -50.0),
+            QPointF(40.0, 50.0),
+            QPointF(-40.0, 50.0),
+        }, PenLoopKind::Outer),
+        hardLoop({
+            QPointF(-18.0, -30.0),
+            QPointF(-18.0, 30.0),
+            QPointF(18.0, 30.0),
+            QPointF(18.0, -30.0),
+        }, PenLoopKind::Cutout),
+    };
+}
+
+bool testLetterONegativeSpace(
+    const ShapeGeometryStore &geometry,
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr double kMinimumCoverageRatio = 0.99;
+    constexpr double kMaximumOutsideArea = 1.0;
+    const QVector<PenLoop> loops = letterOLoops();
+    const PenContour contour = buildPenContour(loops);
+    if (!check(contour.valid()
+                   && contour.loops.size() == 2
+                   && contour.path.contains(QPointF(30.0, 0.0))
+                   && !contour.path.contains(QPointF(0.0, 0.0)),
+               "letter O compound contour did not preserve its negative space")) {
+        return false;
+    }
+
+    PenFillRequest penRequest;
+    penRequest.loops = loops;
+    penRequest.primitives = buildPenPrimitiveCatalog(geometry);
+    const PenFillResult penResult = fillPenPath(penRequest);
+    if (!check(penResult.error.isEmpty()
+                   && !penResult.placements.isEmpty()
+                   && penResult.coveredArea
+                       >= penResult.targetArea * kMinimumCoverageRatio
+                   && penResult.outsideArea <= kMaximumOutsideArea,
+               "regular Pen fill did not fill the letter O while preserving its cutout")) {
+        std::cerr << "regular O fill: "
+                  << qPrintable(penResult.error) << ", "
+                  << penResult.coveredArea << " / "
+                  << penResult.targetArea << " covered, "
+                  << penResult.outsideArea << " outside\n";
+        return false;
+    }
+
+    cover::FillInput input;
+    input.mustCover = cover::polygonsFromPainterPath(contour.path);
+    for (const PenContourLoop &loop : contour.loops) {
+        input.boundaryLoops.push_back(loop.segments);
+    }
+    cover::FillOptions options;
+    options.budget = 12;
+    options.adamIterations = 40;
+    options.restarts = 0;
+    options.featureRestarts = 0;
+    options.inactivityTimeoutSeconds = 10.0;
+    options.useGpu = false;
+    input.mayCover = cover::expandedCoverEnvelope(
+        input.mustCover, options.boundaryTolerance);
+    const cover::FillResult differential = cover::analyticCoverFill(
+        input, catalog, options);
+    if (!check(differential.error.isEmpty()
+                   && !differential.placements.isEmpty()
+                   && differential.profile.structuralAccepted
+                   && differential.coveredArea
+                       >= penResult.targetArea * kMinimumCoverageRatio
+                   && differential.outsideArea <= kMaximumOutsideArea,
+               "differential fill did not fill the letter O while preserving its cutout")) {
+        std::cerr << "differential O fill: "
+                  << qPrintable(differential.error) << ", "
+                  << differential.coveredArea << " / "
+                  << penResult.targetArea << " covered, "
+                  << differential.outsideArea << " outside\n";
+        return false;
+    }
+
+    QVector<PenLoop> reversedLoops = loops;
+    for (PenLoop &loop : reversedLoops) {
+        std::reverse(loop.points.begin(), loop.points.end());
+    }
+    const PenContour reversedContour = buildPenContour(reversedLoops);
+    cover::FillInput reversedInput;
+    reversedInput.mustCover =
+        cover::polygonsFromPainterPath(reversedContour.path);
+    reversedInput.mayCover = cover::expandedCoverEnvelope(
+        reversedInput.mustCover, options.boundaryTolerance);
+    const cover::FillResult reversedDifferential =
+        cover::analyticCoverFill(reversedInput, catalog, options);
+    if (!check(reversedContour.valid()
+                   && reversedDifferential.error.isEmpty()
+                   && !reversedDifferential.placements.isEmpty()
+                   && reversedDifferential.coveredArea > 0.0,
+               "differential fill did not normalize reversed compound winding")) {
+        std::cerr << "reversed differential O fill: "
+                  << qPrintable(reversedDifferential.error) << ", "
+                  << reversedDifferential.coveredArea << " covered\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1439,6 +1573,7 @@ int main(int argc, char **argv) {
         || !testStructuralT(catalog)
         || !testApproximateStructuralT(catalog)
         || !testCompactPolygonMesh(catalog)
+        || !testLetterONegativeSpace(geometry, catalog)
         || !testLoggedContour(catalog)
         || !testWeightedLoggedContour(catalog)) {
         return 1;

@@ -33,6 +33,7 @@ struct PolygonMeshPlacement {
 
 struct PolygonMeshRequest {
     QVector<QPointF> points;
+    QVector<QVector<QPointF>> contours;
     PolygonMeshSources sources;
     bool mergeSquares = true;
 };

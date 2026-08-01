@@ -95,6 +95,25 @@ struct RegionPenConversionResult {
     bool valid() const { return error.isEmpty() && points.size() >= 3; }
 };
 
+struct RegionPenLoopConversionOptions {
+    RegionPenConversionOptions fallback;
+    double simplifyEpsilon = 2.0;
+    double minimumCurveBow = 0.75;
+    double discardedCutoutAreaCeiling = 0.0;
+    double discardedCutoutBoundaryClearance = 0.0;
+    int curveSamples = 32;
+};
+
+struct RegionPenLoopConversionResult {
+    QVector<PenLoop> loops;
+    QString error;
+    int discardedCutoutCount = 0;
+    int discardedCutoutAreaCount = 0;
+    int discardedCutoutBoundaryCount = 0;
+
+    bool valid() const { return error.isEmpty() && !loops.isEmpty(); }
+};
+
 struct RegionFillContourStats {
     int originalPointCount = 0;
     int optimizedPointCount = 0;
@@ -138,6 +157,12 @@ QPolygonF simplifyClosedPolygonCorridor(
 QPolygonF regionOuterContour(const QPainterPath &outline);
 
 QPolygonF regionOuterContour(const QPainterPath &outline, int curveSamples);
+
+QVector<QPolygonF> regionContours(const QPainterPath &outline, int curveSamples);
+
+RegionPenLoopConversionResult regionOutlineToPenLoops(
+    const QPainterPath &outline,
+    const RegionPenLoopConversionOptions &options = {});
 
 PenFillResult fillPolygonMesh(const QPolygonF &polygon,
                               const PolygonMeshSources &sources,

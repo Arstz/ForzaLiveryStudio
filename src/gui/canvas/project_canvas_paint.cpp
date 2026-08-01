@@ -12,10 +12,20 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     if (pen_.points.isEmpty()) {
         return {};
     }
-    if (closeToStart && pen_.points.size() >= 3) {
-        return buildPenContour(pen_.points).path;
+    if (pen_.closed && pen_.cutoutClosed) {
+        return buildPenContour(currentPenLoops()).path;
     }
-    QVector<PenPoint> previewPoints = pen_.points;
+    const bool drawingCutout = pen_.closed && !pen_.cutoutClosed;
+    const QVector<PenPoint> &activePoints = drawingCutout
+        ? pen_.cutouts[pen_.activeCutout]
+        : pen_.points;
+    if (closeToStart && activePoints.size() >= 3) {
+        if (!drawingCutout) {
+            return buildPenContour(activePoints).path;
+        }
+        return buildPenContour(currentPenLoops()).path;
+    }
+    QVector<PenPoint> previewPoints = activePoints;
     previewPoints.push_back({pen_.hoverWorld, PenPointKind::Soft});
     QPainterPath path;
     path.moveTo(previewPoints.front().position);
@@ -37,7 +47,15 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
         path.quadTo(next.position, end);
         index += after.kind == PenPointKind::Hard ? 2 : 1;
     }
-    return path;
+    if (!drawingCutout) {
+        return path;
+    }
+    QPainterPath result = buildPenContour(pen_.points).path;
+    for (int loopIndex = 0; loopIndex < pen_.cutouts.size() - 1; ++loopIndex) {
+        result.addPath(buildPenContour(pen_.cutouts[loopIndex]).path);
+    }
+    result.addPath(path);
+    return result;
 }
 
 void ProjectCanvas::drawPenOverlay(QPainter &painter) {
@@ -68,10 +86,14 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
         return;
     }
 
-    const bool nearStart = !pen_.closed && pen_.points.size() >= 3
-        && QLineF(worldToScreen(pen_.hoverWorld), worldToScreen(pen_.points.front().position)).length()
+    const bool drawingCutout = pen_.closed && !pen_.cutoutClosed;
+    const QVector<PenPoint> &activePoints = drawingCutout
+        ? pen_.cutouts[pen_.activeCutout]
+        : pen_.points;
+    const bool nearStart = (!pen_.closed || drawingCutout) && activePoints.size() >= 3
+        && QLineF(worldToScreen(pen_.hoverWorld), worldToScreen(activePoints.front().position)).length()
                <= kPenCloseRadius;
-    const bool closed = pen_.closed || nearStart;
+    const bool closed = (pen_.closed && pen_.cutoutClosed) || nearStart;
     const QPainterPath worldPath = penPreviewPath(closed);
     const QPainterPath screenPath = camera_.matrix().map(worldPath);
     QColor fill(83, 164, 255, closed ? 50 : 25);
@@ -86,31 +108,41 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(screenPath);
 
-    if (!closed && !pen_.points.isEmpty()) {
+    if (!closed && !activePoints.isEmpty()) {
         QPen guide(QColor(190, 195, 205, 180), 1.0, Qt::DashLine);
         guide.setCosmetic(true);
         painter.setPen(guide);
-        painter.drawLine(worldToScreen(pen_.points.back().position), worldToScreen(pen_.hoverWorld));
+        painter.drawLine(worldToScreen(activePoints.back().position), worldToScreen(pen_.hoverWorld));
     }
 
-    for (int i = 0; i < pen_.points.size(); ++i) {
-        const PenPoint &point = pen_.points[i];
-        const QPointF screen = worldToScreen(point.position);
-        const bool hovered = pen_.closed && i == pen_.hoverPoint;
-        const double radius = (i == 0 ? 5.5 : 4.5) + (hovered ? 1.5 : 0.0);
-        painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),
-                            hovered ? 2.5 : 2.0));
-        painter.setBrush(point.kind == PenPointKind::Hard
-                             ? QColor(232, 72, 72)
-                             : QColor(238, 240, 244));
-        painter.drawEllipse(screen, radius, radius);
-        if (i == 0) {
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(closed ? QColor(120, 220, 135) : QColor(83, 164, 255), 1.5));
-            painter.drawEllipse(screen, kPenCloseRadius, kPenCloseRadius);
+    const auto drawLoopPoints = [&](const QVector<PenPoint> &points, int loopIndex) {
+        for (int i = 0; i < points.size(); ++i) {
+            const PenPoint &point = points[i];
+            const QPointF screen = worldToScreen(point.position);
+            const bool hovered = pen_.cutoutClosed
+                && loopIndex == pen_.hoverLoop && i == pen_.hoverPoint;
+            const double radius = (i == 0 ? 5.5 : 4.5) + (hovered ? 1.5 : 0.0);
+            painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),
+                                hovered ? 2.5 : 2.0));
+            painter.setBrush(point.kind == PenPointKind::Hard
+                                 ? QColor(232, 72, 72)
+                                 : QColor(238, 240, 244));
+            painter.drawEllipse(screen, radius, radius);
+            const bool activeStart = i == 0
+                && ((!pen_.closed && loopIndex < 0)
+                    || (drawingCutout && loopIndex == pen_.activeCutout));
+            if (activeStart) {
+                painter.setBrush(Qt::NoBrush);
+                painter.setPen(QPen(nearStart ? QColor(120, 220, 135) : QColor(83, 164, 255), 1.5));
+                painter.drawEllipse(screen, kPenCloseRadius, kPenCloseRadius);
+            }
         }
+    };
+    drawLoopPoints(pen_.points, -1);
+    for (int loopIndex = 0; loopIndex < pen_.cutouts.size(); ++loopIndex) {
+        drawLoopPoints(pen_.cutouts[loopIndex], loopIndex);
     }
-    if (pen_.closed && pen_.hoverPoint < 0 && pen_.hoverCurve.valid()) {
+    if (pen_.closed && pen_.cutoutClosed && pen_.hoverPoint < 0 && pen_.hoverCurve.valid()) {
         const QPointF screen = worldToScreen(pen_.hoverCurve.worldPosition);
         painter.setPen(QPen(QColor(18, 20, 24), 2.0));
         painter.setBrush(QColor(120, 220, 135));

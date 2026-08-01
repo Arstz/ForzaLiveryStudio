@@ -22,12 +22,21 @@ FillResult analyticCoverFillInternal(
         options.areaWindowRatio;
     const Polygons mustCover = normalizedInputPolygons(input.mustCover);
     const Polygons mayCover = normalizedInputPolygons(input.mayCover);
-    const QVector<ContourFeature> targetFeatures =
-        options.useWeightedContour
-        ? extractContourFeatures(
-              input.boundarySpans,
-              options.boundaryTolerance)
-        : QVector<ContourFeature>{};
+    QVector<QVector<ContourSpan>> boundaryLoops = input.boundaryLoops;
+    if (boundaryLoops.isEmpty() && !input.boundarySpans.isEmpty()) {
+        boundaryLoops.push_back(input.boundarySpans);
+    }
+    QVector<ContourFeature> targetFeatures;
+    if (options.useWeightedContour) {
+        for (const QVector<ContourSpan> &loop : boundaryLoops) {
+            QVector<ContourFeature> features = extractContourFeatures(
+                loop, options.boundaryTolerance);
+            for (ContourFeature &feature : features) {
+                feature.id = targetFeatures.size();
+                targetFeatures.push_back(std::move(feature));
+            }
+        }
+    }
     if (mustCover.isEmpty() || mayCover.isEmpty()) {
         result.error = QStringLiteral("Differential cover input is empty");
         return result;
@@ -78,7 +87,7 @@ FillResult analyticCoverFillInternal(
     }
     StructuralCoverPlan structural =
         structuralCoverPlan(
-            input.boundarySpans, catalog,
+            boundaryLoops, catalog,
             mustCover, mayCover,
             targetArea, options, cancelled);
     const bool compactStructuralCover =
@@ -204,7 +213,9 @@ FillResult analyticCoverFillInternal(
     }
     const QVector<FixedCandidate> hardCandidates =
         hardEdgeCandidates(
-            input.boundarySpans,
+            boundaryLoops.isEmpty()
+                ? QVector<ContourSpan>{}
+                : boundaryLoops.front(),
             catalog, cancelled);
     result.profile.hardEdgeCandidates =
         hardCandidates.size();

@@ -60,11 +60,11 @@ Click a layer to sample its color, will apply it to the current selection. You c
 
 ### Pen
 
-Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. A closed contour can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. Snapping to 15 degree interval can be achieved while `Shift` is held.
+Pen tool will place a single hard point (red) to start a contour on left click. Subsequent left clicks will place a soft point (white) on single click or hard point on double click. Contour will be completed once you close it by clicking on starting point again. `Control` + left click inside a closed contour starts an interior cutout. A closed boundary can be further refined by adding point via `Control` + left click and removed via right click. To drag an existing point hold `Alt` and left click. Snapping to 15 degree interval can be achieved while `Shift` is held.
 
 ### Bucket
 
-Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Some larger contours may take longer. For best results try to maximize tolerance and hard point count.
+Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. Outer and interior traced boundaries remain editable when the tool changes to Pen. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Some larger contours may take longer. For best results try to maximize tolerance and hard point count.
 
 >Both Bucket and Pen is not a replacement for every contour, and can have unpredictable results on finer details. For basic shapes like fonts it is still reccommended to use other means. Use both if you want to speed up the process but be aware that they might consume more shapes than if done manually.
 
