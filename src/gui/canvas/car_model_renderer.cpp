@@ -1,7 +1,9 @@
 #include "car_model_renderer.h"
 
+#include "material_hashes.h"
 #include "model_material.h"
 
+#include <QDebug>
 #include <QHash>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -78,6 +80,17 @@ uniform int has_native_alpha;
 uniform int has_native_normal;
 uniform int has_native_surface;
 uniform int has_native_emissive;
+uniform sampler2D finish_pattern;
+uniform sampler2D finish_normal;
+uniform sampler2D finish_surface;
+uniform int has_finish_pattern;
+uniform int has_finish_normal;
+uniform int has_finish_surface;
+uniform int finish_self_colored;
+uniform float finish_tiling;
+uniform float finish_flake;
+uniform float clear_coat_roughness;
+uniform float clear_coat_intensity;
 
 out vec4 out_color;
 
@@ -94,6 +107,42 @@ const vec3 DEBUG_LEFT_GLASS_COLOR = vec3(1.0, 0.9, 0.4);
 const vec3 DEBUG_RIGHT_GLASS_COLOR = vec3(1.0, 0.5, 1.0);
 const vec3 ENVIRONMENT_LOW_COLOR = vec3(0.025, 0.028, 0.035);
 const vec3 ENVIRONMENT_HIGH_COLOR = vec3(0.58, 0.64, 0.72);
+
+const float PI = 3.14159265359;
+
+float distributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    return a2 / (PI * denom * denom);
+}
+
+float geometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    return geometrySchlickGGX(NdotV, roughness) * geometrySchlickGGX(NdotL, roughness);
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
 
 vec3 sideColor(int s)
 {
@@ -134,9 +183,41 @@ mat3 materialTangentFrame(vec3 normal, vec3 position, vec2 uv)
     return mat3(tangent * scale, bitangent * scale, normal);
 }
 
+vec3 finishBaseColor(vec2 uv, vec3 paint)
+{
+    if (has_finish_pattern == 0) {
+        return paint;
+    }
+    vec3 pattern = texture(finish_pattern, fract(uv * finish_tiling)).rgb;
+    return finish_self_colored == 1 ? pattern : paint * pattern;
+}
+
+// Procedural metal-flake sparkle: quantise world space into tiny cells, keep only the
+// cells dense enough to hold a flake, and light each one when its (randomly offset)
+// facing lines up with the highlight so the sparkle twinkles as the view moves.
+float finishGlitter(vec3 worldPos, float facing)
+{
+    if (finish_flake <= 0.0) {
+        return 0.0;
+    }
+    vec3 cell = floor(worldPos * 900.0);
+    float rnd = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    float rnd2 = fract(rnd * 251.7);
+    // Sparse: only a fraction of cells hold a flake, and each lights only very close to
+    // the highlight so the result reads as occasional sparkle, not salt-and-pepper noise.
+    float active = step(1.0 - 0.3 * finish_flake, rnd);
+    float lit = smoothstep(0.92, 1.0, facing + (rnd2 - 0.5) * 0.05);
+    return active * lit;
+}
+
 void main()
 {
+    // Surfaces drawn double-sided are seen from behind as often as in front — a wheel barrel is
+    // only ever viewed from inside — so light the side that is actually facing the eye.
     vec3 n = normalize(v_normal);
+    if (!gl_FrontFacing) {
+        n = -n;
+    }
     vec2 materialUv = v_material_uv;
     if (has_native_normal == 1) {
         vec3 mappedNormal = texture(native_normal, materialUv).xyz * 2.0 - 1.0;
@@ -159,6 +240,8 @@ void main()
         discard;
     }
     vec3 albedo = surfacePaint;
+    vec2 finishUv = vec2(0.0);
+    bool finishUvValid = false;
     if (has_livery == 1 && side_count > 0) {
         if (use_direct_uv == 1) {
             vec2 atlasUv = vec2(v_uv.x * 0.5, v_uv.y);
@@ -190,14 +273,6 @@ void main()
                     if (coveredSide == 5 || coveredSide == 6 || coveredSide == 7) {
                         sectionUv = sectionUv.yx;
                     }
-                    if (coveredSide == 2 || coveredSide == 4 || coveredSide == 10) {
-                        sectionUv.y = 1.0 - sectionUv.y;
-                    } else {
-                        sectionUv.x = 1.0 - sectionUv.x;
-                    }
-                    if (coveredSide == 7) {
-                        sectionUv.y = 1.0 - sectionUv.y;
-                    }
                     vec4 paintRegion = side_paint_region[coveredSide];
                     paintUv = vec2(mix(paintRegion.x, paintRegion.y, sectionUv.x),
                                    mix(paintRegion.z, paintRegion.w, sectionUv.y));
@@ -211,9 +286,14 @@ void main()
                 out_color = vec4(sideColor(coveredSide), 1.0);
                 return;
             }
+            if (coveredSide >= 0) {
+                finishUv = paintUv;
+                finishUvValid = true;
+                albedo = finishBaseColor(paintUv, surfacePaint);
+            }
             if (coverage > 0.5) {
                 vec4 paint = texture(livery_tex, paintUv);
-                albedo = surfacePaint * (1.0 - paint.a) + paint.rgb;
+                albedo = albedo * (1.0 - paint.a) + paint.rgb;
             }
         } else {
         float bestScore = -1.0;
@@ -251,12 +331,6 @@ void main()
             if (s == 5 || s == 6 || s == 7) {
                 sectionUv = sectionUv.yx;
             }
-            sectionUv = (s == 2 || s == 4 || s == 10)
-                ? vec2(sectionUv.x, 1.0 - sectionUv.y)
-                : vec2(1.0 - sectionUv.x, sectionUv.y);
-            if (s == 7) {
-                sectionUv.y = 1.0 - sectionUv.y;
-            }
             vec2 paintUv = vec2(mix(paintRegion.x, paintRegion.y, sectionUv.x),
                                 mix(paintRegion.z, paintRegion.w, sectionUv.y));
             if (facing >= bestScore) {
@@ -274,9 +348,14 @@ void main()
             out_color = vec4(sideColor(bestSide), 1.0);
             return;
         }
+        if (bestSide >= 0) {
+            finishUv = bestUv;
+            finishUvValid = true;
+            albedo = finishBaseColor(bestUv, surfacePaint);
+        }
         if (bestCoverage > 0.5) {
             vec4 paint = texture(livery_tex, bestUv);
-            albedo = surfacePaint * (1.0 - paint.a) + paint.rgb;
+            albedo = albedo * (1.0 - paint.a) + paint.rgb;
         }
         }
     }
@@ -289,34 +368,64 @@ void main()
         surfaceMetallic = packedSurface.g;
         surfaceAo = packedSurface.b;
     }
+    if (finishUvValid) {
+        vec2 finishTiledUv = fract(finishUv * finish_tiling);
+        if (has_finish_surface == 1) {
+            vec3 packedFinish = texture(finish_surface, finishTiledUv).rgb;
+            surfaceGloss = 1.0 - packedFinish.r;
+            surfaceMetallic = packedFinish.g;
+            surfaceAo = packedFinish.b;
+        }
+        if (has_finish_normal == 1) {
+            vec3 mapped = texture(finish_normal, finishTiledUv).xyz * 2.0 - 1.0;
+            mapped.z = sqrt(max(1.0 - dot(mapped.xy, mapped.xy), 0.0));
+            n = normalize(materialTangentFrame(n, v_world, finishTiledUv) * mapped);
+        }
+    }
     vec3 nativeEmission = has_native_emissive == 1
         ? texture(native_emissive, materialUv).rgb
         : vec3(0.0);
     vec3 l = normalize(vec3(0.4, 0.8, 0.6));
-    vec3 h = normalize(l + viewDir);
-    float ambient = 0.35 * mix(0.35, 1.0, surfaceAo);
-    float diffuse = max(dot(n, l), 0.0);
-    float shininess = mix(8.0, 128.0, surfaceGloss);
-    float specular = pow(max(dot(n, h), 0.0), shininess);
-    float specularStrength = mix(0.08, 0.62, surfaceMetallic);
-    vec3 specularColor = mix(vec3(1.0), albedo, surfaceMetallic);
-    float nDotV = max(dot(n, viewDir), 0.0);
-    vec3 fresnelBase = mix(vec3(0.04), albedo, surfaceMetallic);
-    vec3 fresnel = fresnelBase
-        + (vec3(1.0) - fresnelBase) * pow(1.0 - nDotV, 5.0);
-    vec3 reflected = reflect(-viewDir, n);
-    vec3 environment = mix(ENVIRONMENT_LOW_COLOR,
-                           ENVIRONMENT_HIGH_COLOR,
-                           clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0));
-    vec3 environmentSpecular = environment * fresnel
-        * mix(0.12, 0.82, surfaceGloss)
-        * mix(0.55, 1.0, surfaceAo);
-    vec3 lit = albedo * (ambient + (1.0 - ambient) * diffuse)
-        + specularColor * specular * specularStrength
-        + environmentSpecular
-        + material_emissive
-        + nativeEmission;
-    out_color = vec4(lit, outputAlpha);
+    vec3 v = viewDir;
+    float NdotV = max(dot(n, v), 0.0);
+    vec3 F0 = mix(vec3(0.04), albedo, surfaceMetallic);
+    float roughness = 1.0 - surfaceGloss;
+    roughness = clamp(roughness, 0.04, 1.0);
+    float NdotL = max(dot(n, l), 0.0);
+    vec3 H = normalize(l + v);
+    float D = distributionGGX(n, H, roughness);
+    float G = geometrySmith(n, v, l, roughness);
+    vec3 F = fresnelSchlick(max(dot(H, v), 0.0), F0);
+    vec3 kS = F;
+    vec3 kD = (vec3(1.0) - kS) * (1.0 - surfaceMetallic);
+    vec3 diffuse = kD * albedo / PI;
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+    vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL;
+    vec3 ambient = vec3(0.03) * albedo * surfaceAo;
+    vec3 color = ambient + lo;
+    vec3 reflected = reflect(-v, n);
+    float envUp = reflected.y * 0.5 + 0.5;
+    vec3 envColor = mix(ENVIRONMENT_LOW_COLOR, ENVIRONMENT_HIGH_COLOR, clamp(envUp, 0.0, 1.0));
+    vec3 Fenv = fresnelSchlickRoughness(NdotV, F0, roughness);
+    vec3 envSpecular = envColor * Fenv * mix(0.15, 0.95, surfaceGloss) * surfaceAo;
+    vec3 envDiffuse = albedo * envColor * 0.15 * (1.0 - surfaceMetallic);
+    color += envDiffuse + envSpecular;
+    float glitter = finishGlitter(v_world, max(dot(n, H), 0.0));
+    color += vec3(glitter * finish_flake * 1.4) * Fenv;
+    if (clear_coat_intensity > 0.01) {
+        float ccRoughness = clamp(clear_coat_roughness, 0.04, 1.0);
+        float ccD = distributionGGX(n, H, ccRoughness);
+        float ccG = geometrySmith(n, v, l, ccRoughness);
+        vec3 ccF = fresnelSchlick(max(dot(H, v), 0.0), vec3(0.04));
+        vec3 ccSpecular = (ccD * ccG * ccF) / max(4.0 * NdotV * NdotL, 0.001);
+        color += ccSpecular * vec3(3.0) * NdotL * clear_coat_intensity;
+        vec3 ccEnvF = fresnelSchlickRoughness(NdotV, vec3(0.04), ccRoughness);
+        color += envColor * ccEnvF * mix(0.15, 0.95, 1.0 - ccRoughness) * clear_coat_intensity;
+        float ccFresnelEdge = pow(1.0 - NdotV, 4.0);
+        color += vec3(ccFresnelEdge * 0.06 * clear_coat_intensity);
+    }
+    color += material_emissive + nativeEmission;
+    out_color = vec4(color, outputAlpha);
 }
 )";
 
@@ -360,6 +469,15 @@ bool isInteriorWindowShell(const QString &rawName) {
         name = name.left(pipe);
     }
     return name.startsWith(QStringLiteral("glass")) && name.contains(QStringLiteral("int"));
+}
+
+// The interior ships as detailed parts (dash, seats, roll cage…) plus a single coarse whole-cabin
+// stand-in — material InteriorLOD* — that the game only swaps in at distance. That stand-in is
+// authored at the base LOD level, so the LOD filter keeps it, and up close it renders as a pale
+// low-poly shell overlapping the real interior (the "torpedo" clipping). Drop it so only the
+// detailed interior shows.
+bool isCoarseInteriorLod(const fls::CarMesh &mesh) {
+    return mesh.materialName.startsWith(QStringLiteral("InteriorLOD"), Qt::CaseInsensitive);
 }
 
 QString materialIdentity(const fls::CarMesh &mesh) {
@@ -499,6 +617,17 @@ std::optional<MaterialFallback> exteriorMaterialFallback(const fls::CarMesh &mes
 
 } // namespace
 
+QString CarModelRenderer::shaderSelfTest() {
+    QOpenGLShaderProgram program;
+    if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader)
+        || !program.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader)
+        || !program.link()) {
+        return program.log();
+    }
+
+    return QString();
+}
+
 CarModelRenderer::CarModelRenderer() = default;
 
 CarModelRenderer::~CarModelRenderer() {
@@ -512,6 +641,7 @@ void CarModelRenderer::initialize() {
     if (!program_.addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader)
         || !program_.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader)
         || !program_.link()) {
+        qWarning().noquote() << "CarModelRenderer shader failed to build:" << program_.log();
         return;
     }
     mvpLocation_ = program_.uniformLocation("mvp");
@@ -547,6 +677,17 @@ void CarModelRenderer::initialize() {
     hasNativeNormalLocation_ = program_.uniformLocation("has_native_normal");
     hasNativeSurfaceLocation_ = program_.uniformLocation("has_native_surface");
     hasNativeEmissiveLocation_ = program_.uniformLocation("has_native_emissive");
+    finishPatternLocation_ = program_.uniformLocation("finish_pattern");
+    finishNormalLocation_ = program_.uniformLocation("finish_normal");
+    finishSurfaceLocation_ = program_.uniformLocation("finish_surface");
+    hasFinishPatternLocation_ = program_.uniformLocation("has_finish_pattern");
+    hasFinishNormalLocation_ = program_.uniformLocation("has_finish_normal");
+    hasFinishSurfaceLocation_ = program_.uniformLocation("has_finish_surface");
+    finishSelfColoredLocation_ = program_.uniformLocation("finish_self_colored");
+    finishTilingLocation_ = program_.uniformLocation("finish_tiling");
+    finishFlakeLocation_ = program_.uniformLocation("finish_flake");
+    clearCoatRoughnessLocation_ = program_.uniformLocation("clear_coat_roughness");
+    clearCoatIntensityLocation_ = program_.uniformLocation("clear_coat_intensity");
     initialized_ = true;
 }
 
@@ -564,6 +705,7 @@ void CarModelRenderer::release() {
         materialTextureCache_.clear();
         materialTextureCacheBytes_ = 0;
     }
+    clearPaintFinishTextures();
     clearLivery();
     program_.removeAllShaders();
     initialized_ = false;
@@ -600,6 +742,8 @@ void CarModelRenderer::release() {
     hasNativeNormalLocation_ = -1;
     hasNativeSurfaceLocation_ = -1;
     hasNativeEmissiveLocation_ = -1;
+    clearCoatRoughnessLocation_ = -1;
+    clearCoatIntensityLocation_ = -1;
 }
 
 bool CarModelRenderer::isInitialized() const {
@@ -659,6 +803,15 @@ const QVector3D kFacing[fls::kLiverySideCount] = {
     QVector3D(-1.0f, 0.0f, 0.0f), // Left window
     QVector3D(1.0f, 0.0f, 0.0f),  // Right window
 };
+
+constexpr int kMaskSlotGeometrySides[fls::kLiverySideCount] = {
+    0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
+};
+
+fls::ModelVec3 mirroredCarSpace(fls::ModelVec3 value) {
+    value.x = -value.x;
+    return value;
+}
 
 float axisOf(const fls::ModelVec3 &v, int axis) {
     return axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
@@ -750,22 +903,22 @@ enum CarPartType {
 quint64 fallbackPaintHash(const fls::CarMesh &mesh) {
     const QString identity = mesh.name.toLower() + QLatin1Char('|') + mesh.materialName.toLower();
     if (isWindowGlassMaterial(mesh)) {
-        return 0x9582FD1BA2FFF9A4ull;
+        return fls::material_hashes::binding::kWindowGlass;
     }
     if (identity.contains(QStringLiteral("caliper")) || identity.contains(QStringLiteral("brake"))) {
-        return 0xA5495E0A43DF55B9ull;
+        return fls::material_hashes::binding::kBrakeCaliper;
     }
     if (isBodyPaintMaterial(mesh.materialName)) {
         if (isSpoilerMesh(mesh.name)) {
-            return 0xCD48110253EE319Aull;
+            return fls::material_hashes::binding::kSpoilerPaint;
         }
         if (mesh.carPartType == kHoodPart || identity.contains(QStringLiteral("hood"))) {
-            return 0x6AC1E9D87FE5D953ull;
+            return fls::material_hashes::binding::kHoodPaint;
         }
         if (identity.contains(QStringLiteral("mirror"))) {
-            return 0x1E5FF0F50C741122ull;
+            return fls::material_hashes::binding::kMirrorPaint;
         }
-        return 0xF7DBE8A7C839A675ull;
+        return fls::material_hashes::binding::kBodyPaint;
     }
     return 0;
 }
@@ -956,6 +1109,8 @@ ProjectionAlignment alignProjectionToMask(
     const std::optional<float> &longitudinalPivotZ,
     bool lockLongitudinalX) {
     ProjectionAlignment result;
+    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
+
     if (!side.mask.valid() || axhi <= axlo || ayhi <= aylo) {
         return result;
     }
@@ -1004,7 +1159,7 @@ ProjectionAlignment alignProjectionToMask(
     result.pivotY = projectionPivot(false);
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const fls::CarMesh &mesh = meshes[mi];
-        if (!keepLod[mi] || (projectionSidesForMesh(mesh) & (1 << sideIndex)) == 0) {
+        if (!keepLod[mi] || (projectionSidesForMesh(mesh) & (1 << geometrySide)) == 0) {
             continue;
         }
         for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -1018,16 +1173,17 @@ ProjectionAlignment alignProjectionToMask(
                     valid = false;
                     break;
                 }
-                const fls::ModelVec3 point = mesh.boneTransform.transformPoint(mesh.positions[index]);
+                const fls::ModelVec3 point =
+                    mirroredCarSpace(mesh.boneTransform.transformPoint(mesh.positions[index]));
                 const float x = (signedAxis(point, true) - axlo) / axisWidth;
                 const float y = (signedAxis(point, false) - aylo) / axisHeight;
                 triangle[corner] = QPointF(x * (rasterWidth - 1), y * (rasterHeight - 1));
                 if (index < mesh.normals.size()) {
                     const fls::ModelVec3 normal =
-                        mesh.boneTransform.transformVector(mesh.normals[index]);
-                    facing += normal.x * kFacing[sideIndex].x()
-                        + normal.y * kFacing[sideIndex].y()
-                        + normal.z * kFacing[sideIndex].z();
+                        mirroredCarSpace(mesh.boneTransform.transformVector(mesh.normals[index]));
+                    facing += normal.x * kFacing[geometrySide].x()
+                        + normal.y * kFacing[geometrySide].y()
+                        + normal.z * kFacing[geometrySide].z();
                 } else {
                     haveNormals = false;
                 }
@@ -1304,9 +1460,10 @@ void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMa
             continue;
         }
         for (const fls::ModelVec3 &position : mesh.positions) {
-            const fls::ModelVec3 wp = mesh.boneTransform.transformPoint(position);
+            const fls::ModelVec3 wp =
+                mirroredCarSpace(mesh.boneTransform.transformPoint(position));
             for (int side = 0; side < kLiverySideCount; ++side) {
-                if ((candidateSides & (1 << side)) == 0) {
+                if ((candidateSides & (1 << kMaskSlotGeometrySides[side])) == 0) {
                     continue;
                 }
                 const fls::LiverySide &liverySide = masks.sides[side];
@@ -1397,7 +1554,7 @@ void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMa
             (512.0f - side.top) / 1024.0f,
             (512.0f - side.bottom) / 1024.0f));
 
-        sideFacing_.append(kFacing[s]);
+        sideFacing_.append(kFacing[kMaskSlotGeometrySides[s]]);
     }
     sidePaintRegion_ = defaultSidePaintRegion_;
     fns->glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
@@ -1413,6 +1570,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         return;
     }
     clearModel();
+    paintDiagnosticsLogged_ = false;
 
     const auto textureKey = [](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                bool srgb) {
@@ -1506,15 +1664,13 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
     const std::vector<char> keepLod = highestLodFlags(model.meshes);
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         const fls::CarMesh &mesh = model.meshes[mi];
-        const QString materialName = mesh.materialName.toLower();
-        if (mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive)
-            && materialName != QStringLiteral("rim") && materialName != QStringLiteral("rim2")) {
-            continue;
-        }
         if (!keepLod[mi] || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
         if (isInteriorWindowShell(mesh.name)) {
+            continue;
+        }
+        if (isCoarseInteriorLod(mesh)) {
             continue;
         }
 
@@ -1526,11 +1682,38 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         }
         const bool hasDirectLiveryUv = uv != nullptr && mesh.liveryUvChannel == 3;
         const fls::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
+        int materialUvIndex = 0;
+        float materialUTiling = mesh.material ? mesh.material->uTiling : 1.0f;
+        float materialVTiling = mesh.material ? mesh.material->vTiling : 1.0f;
+        bool rawMaterialUv = false;
+        // The car_carbonfiber shader (into which resolveExteriorMaterials injects the twin-twill
+        // weave) samples its weave on RAW UV channel 0 tiled by the material's U/V tiling. Decompiled
+        // from the game PS+VS (see docs/SHADER_ANALYSIS.md "Carbon Weave UV & Tiling"): the pixel
+        // shader samples the weave at raw TEXCOORD0; the vertex shader builds TEXCOORD0 = channel0 *
+        // (U_Tiling, V_Tiling) with U_Tiling=V_Tiling=32 for carbonfiber.materialbin (the ID15 variant
+        // bakes 75). We must NOT apply channel 0's decoded transform — for carbon that is a ~0.03
+        // livery-atlas packing the game replaces with the tiling — so sample channel 0 raw × tiling.
+        QString carbonResource = mesh.material ? mesh.material->resourcePath : QString();
+        carbonResource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (carbonResource.contains(QStringLiteral("carbonfiber/carbonfiber"), Qt::CaseInsensitive)) {
+            materialUvIndex = 0;
+            rawMaterialUv = true;
+            // Force the shader's U_Tiling if the shared-library merge didn't resolve it (leaving 1).
+            if (materialUTiling <= 1.5f) {
+                materialUTiling = 32.0f;
+            }
+            if (materialVTiling <= 1.5f) {
+                materialVTiling = 32.0f;
+            }
+        }
         const std::vector<fls::ModelVec2> *materialUv =
-            !mesh.uvChannels.empty() && mesh.uvChannels[0].size() == mesh.positions.size()
-            ? &mesh.uvChannels[0]
+            materialUvIndex < static_cast<int>(mesh.uvChannels.size())
+            && mesh.uvChannels[materialUvIndex].size() == mesh.positions.size()
+            ? &mesh.uvChannels[materialUvIndex]
             : nullptr;
-        const fls::TexCoordTransform &materialUvTransform = mesh.texCoordTransforms[0];
+        const fls::TexCoordTransform identityUvTransform;
+        const fls::TexCoordTransform &materialUvTransform =
+            rawMaterialUv ? identityUvTransform : mesh.texCoordTransforms[materialUvIndex];
 
         std::vector<float> interleaved;
         interleaved.reserve(mesh.positions.size() * 10);
@@ -1551,12 +1734,14 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
                 interleaved.push_back(0.0f);
             }
             if (materialUv != nullptr) {
-                const float uTiling = mesh.material ? mesh.material->uTiling : 1.0f;
-                const float vTiling = mesh.material ? mesh.material->vTiling : 1.0f;
+                // The car_carbonfiber weave rides raw TEXCOORD0 (V NOT flipped); every other native
+                // material samples with the usual V-flip. Flipping the weave mirrors the twill
+                // diagonal (/ vs \), which reads as the wrong orientation.
+                const float mv = rawMaterialUv ? (*materialUv)[i].v : (1.0f - (*materialUv)[i].v);
                 interleaved.push_back(((*materialUv)[i].u * materialUvTransform.scaleU
-                                       + materialUvTransform.offsetU) * uTiling);
-                interleaved.push_back(((1.0f - (*materialUv)[i].v) * materialUvTransform.scaleV
-                                       + materialUvTransform.offsetV) * vTiling);
+                                       + materialUvTransform.offsetU) * materialUTiling);
+                interleaved.push_back((mv * materialUvTransform.scaleV
+                                       + materialUvTransform.offsetV) * materialVTiling);
             } else {
                 interleaved.push_back(0.0f);
                 interleaved.push_back(0.0f);
@@ -1565,10 +1750,13 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
 
         auto buffers = std::make_unique<MeshBuffers>();
         buffers->materialColor = kDefaultMaterialColor;
+        buffers->name = mesh.name;
+        buffers->materialName = mesh.materialName;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
         int bodySides = 0;
-        if (isBodyPaintMaterial(mesh.materialName)) {
+        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName);
+        if (buffers->bodyPaint) {
             if (isSpoilerMesh(mesh.name)) {
                 bodySides = kSideSpoiler;
             } else if (isTrunkPanelMesh(mesh.name)) {
@@ -1596,6 +1784,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
                 mesh.material->emissiveColor[0], mesh.material->emissiveColor[1], mesh.material->emissiveColor[2]);
             buffers->emissiveIntensity = mesh.material->emissiveIntensity;
             buffers->gloss = mesh.material->gloss;
+            if (mesh.material->hasMetallic) {
+                buffers->metallic = mesh.material->metallic;
+            }
             buffers->alpha = mesh.material->opacity;
             if (materialUv != nullptr) {
                 buffers->diffuseTexture = uploadTexture(mesh.material->diffuseTexture, false);
@@ -1612,20 +1803,29 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         if (isBodyPaintMaterial(mesh.materialName)) {
             buffers->hasMaterialColor = false;
         }
+        // When the shared _library material was resolved, its gloss/metallic are the game's
+        // real tuning; the name-heuristic fallbacks then only fill in a base colour.
+        const bool libraryMaterial = mesh.material && mesh.material->resolvedFromLibrary;
         const std::optional<WheelMaterialFallback> wheel = wheelMaterialFallback(mesh);
         const std::optional<MaterialFallback> material = exteriorMaterialFallback(mesh);
         if (mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)) {
-            buffers->hasMaterialColor = true;
-            buffers->materialColor = kRubberColor;
-            buffers->gloss = 0.22f;
-            buffers->metallic = 0.0f;
+            if (!libraryMaterial || !mesh.material->hasBaseColor) {
+                buffers->hasMaterialColor = true;
+                buffers->materialColor = kRubberColor;
+            }
+            if (!libraryMaterial) {
+                buffers->gloss = 0.22f;
+                buffers->metallic = 0.0f;
+            }
         } else if (wheel) {
             if (!buffers->hasMaterialColor) {
                 buffers->hasMaterialColor = true;
                 buffers->materialColor = wheel->color;
             }
-            buffers->gloss = wheel->gloss;
-            buffers->metallic = wheel->metallic;
+            if (!libraryMaterial) {
+                buffers->gloss = wheel->gloss;
+                buffers->metallic = wheel->metallic;
+            }
         } else if (material) {
             const float brightestColor = std::max({buffers->materialColor.x(),
                                                    buffers->materialColor.y(),
@@ -1634,8 +1834,10 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
                 buffers->hasMaterialColor = true;
                 buffers->materialColor = material->color;
             }
-            buffers->gloss = material->gloss;
-            buffers->metallic = material->metallic;
+            if (!libraryMaterial) {
+                buffers->gloss = material->gloss;
+                buffers->metallic = material->metallic;
+            }
         }
         if (isLampSurface(mesh)) {
             const QString material = materialIdentity(mesh);
@@ -1691,17 +1893,32 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
             buffers->alpha = 0.42f;
         }
         buffers->translucent = buffers->alpha < 0.995f;
+        // Wheels/tires don't play well with back-face culling: the generated tires bake an
+        // X-mirror into their right-side vertices (flipping winding) and the wheel discs
+        // pair with motion-blur geometry, so cull them double-sided like before.
+        {
+            QString wheelPath = mesh.sourceModelPath.toLower();
+            wheelPath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+            buffers->doubleSided = wheelPath.contains(QStringLiteral("/wheels/"))
+                || wheelPath.contains(QStringLiteral("/tires/"))
+                || mesh.name.startsWith(QStringLiteral("tire"), Qt::CaseInsensitive)
+                || mesh.name.startsWith(QStringLiteral("wheel"), Qt::CaseInsensitive);
+        }
 
         // Bone matrices cross from row-vector to column-vector convention.
         const auto &m = mesh.boneTransform.m;
-        buffers->model = QMatrix4x4(m[0], m[4], m[8], m[12],
-                                    m[1], m[5], m[9], m[13],
-                                    m[2], m[6], m[10], m[14],
-                                    m[3], m[7], m[11], m[15]);
+        const QMatrix4x4 boneModel(m[0], m[4], m[8], m[12],
+                                  m[1], m[5], m[9], m[13],
+                                  m[2], m[6], m[10], m[14],
+                                  m[3], m[7], m[11], m[15]);
+        QMatrix4x4 horizontalMirror;
+        horizontalMirror.scale(-1.0f, 1.0f, 1.0f);
+        buffers->model = horizontalMirror * boneModel;
 
         QVector3D center;
         for (const fls::ModelVec3 &p : mesh.positions) {
-            const fls::ModelVec3 wp = mesh.boneTransform.transformPoint(p);
+            const fls::ModelVec3 wp =
+                mirroredCarSpace(mesh.boneTransform.transformPoint(p));
             center += QVector3D(wp.x, wp.y, wp.z);
         }
         center /= static_cast<float>(mesh.positions.size());
@@ -1736,12 +1953,175 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
     }
 }
 
+namespace {
+
+constexpr float kTwoToneSecondaryMix = 0.78f;
+constexpr float kFlakeSecondaryMix = 0.6f;
+constexpr float kFlakeSecondaryMixMax = 0.45f;
+constexpr float kFlakeBaseTint = 0.7f;
+constexpr float kFlakeBaseTintMax = 0.9f;
+constexpr float kManufacturerFlakeBaseMetallic = 0.45f;
+constexpr float kManufacturerFlakeMetallicGain = 0.5f;
+
+// Automotive paint carries a clear lacquer coat over the colour; matte finishes below the
+// gloss floor read as bare, and bare metals keep only a faint residual coat.
+constexpr float kClearCoatGlossFloor = 0.35f;
+constexpr float kClearCoatGlossRange = 0.6f;
+constexpr float kClearCoatMetalCoverage = 0.25f;
+constexpr float kClearCoatMinRoughness = 0.04f;
+constexpr float kClearCoatMaxRoughness = 0.4f;
+
+struct ClearCoat {
+    float coverage = 0.0f;
+    float roughness = kClearCoatMinRoughness;
+};
+
+ClearCoat bodyClearCoat(bool bodyPaint, const fls::PaintFinishRender *finish, float gloss) {
+    if (!bodyPaint) {
+        return {};
+    }
+    const bool bareMetal = finish != nullptr && finish->valid
+        && finish->category == fls::PaintFinishCategory::Metal;
+    ClearCoat coat;
+    coat.coverage = std::clamp((gloss - kClearCoatGlossFloor) / kClearCoatGlossRange, 0.0f, 1.0f);
+    if (bareMetal) {
+        coat.coverage *= kClearCoatMetalCoverage;
+    }
+    coat.roughness = std::clamp(1.0f - gloss, kClearCoatMinRoughness, kClearCoatMaxRoughness);
+
+    return coat;
+}
+
+// Approximates a finish's shading when the painttype material library is unavailable,
+// preserving the earlier hardcoded behaviour for the most common finish codes.
+void applyLegacyPaintFinish(const fls::LiveryPaintMaterial &paint, float &secondaryMix,
+                            float &gloss, float &metallic) {
+    switch (paint.finish) {
+    case 1:
+        gloss = 0.88f;
+        break;
+    case 2:
+        gloss = 0.55f;
+        break;
+    case 3:
+        gloss = 0.12f;
+        break;
+    case 4:
+        gloss = 0.78f;
+        metallic = 0.85f;
+        break;
+    case 50:
+        gloss = 0.12f;
+        secondaryMix = paint.secondary.enabled ? kTwoToneSecondaryMix : 0.0f;
+        break;
+    case 51:
+        gloss = 0.95f;
+        secondaryMix = paint.secondary.enabled ? kTwoToneSecondaryMix : 0.0f;
+        break;
+    case 52:
+        gloss = 0.55f;
+        secondaryMix = paint.secondary.enabled ? kTwoToneSecondaryMix : 0.0f;
+        break;
+    default:
+        break;
+    }
+}
+
+void applyPaintFinish(const fls::LiveryPaintMaterial &paint, const fls::PaintFinishRender *finish,
+                      QVector3D &primary, QVector3D &secondary, float &secondaryMix, float &gloss,
+                      float &metallic) {
+    if (finish == nullptr || !finish->valid) {
+        applyLegacyPaintFinish(paint, secondaryMix, gloss, metallic);
+        return;
+    }
+    gloss = finish->gloss;
+    metallic = finish->metallic;
+    if (finish->usesSecondary && paint.secondary.enabled) {
+        secondaryMix = kTwoToneSecondaryMix;
+    } else if (finish->flakeAmount > 0.0f && paint.secondary.enabled) {
+        // Dense flake finishes (metallic glitter) read as the flake colour, with the darker
+        // base coat only peeking through between sparkles.
+        const float tint =
+            std::clamp(0.45f + finish->flakeAmount * kFlakeBaseTint, 0.0f, kFlakeBaseTintMax);
+        primary = primary * (1.0f - tint) + secondary * tint;
+        secondaryMix = std::clamp(finish->flakeAmount * kFlakeSecondaryMix, 0.0f, kFlakeSecondaryMixMax);
+    }
+    if (finish->hasMaterialColor
+        && (finish->selfColored || finish->category == fls::PaintFinishCategory::Metal)) {
+        primary = QVector3D(finish->materialColor[0], finish->materialColor[1], finish->materialColor[2]);
+        secondary = primary;
+    }
+}
+
+} // namespace
+
+GLuint CarModelRenderer::uploadSwatchTexture(const fls::SwatchImage &image) {
+    if (!image.valid()) {
+        return 0;
+    }
+    QOpenGLContext *context = QOpenGLContext::currentContext();
+    if (context == nullptr) {
+        return 0;
+    }
+    QOpenGLExtraFunctions *functions = context->extraFunctions();
+    GLuint texture = 0;
+    functions->glGenTextures(1, &texture);
+    functions->glBindTexture(GL_TEXTURE_2D, texture);
+    functions->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0, GL_RGBA,
+                            GL_UNSIGNED_BYTE, image.rgba.data());
+    functions->glGenerateMipmap(GL_TEXTURE_2D);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    functions->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    functions->glBindTexture(GL_TEXTURE_2D, 0);
+
+    return texture;
+}
+
+const CarModelRenderer::FinishTextureEntry *CarModelRenderer::ensurePaintFinishTextures(
+    int code, const fls::PaintFinishRender &render) {
+    const auto existing = finishTextureCache_.constFind(code);
+    if (existing != finishTextureCache_.constEnd()) {
+        return &existing.value();
+    }
+    FinishTextureEntry entry;
+    entry.pattern = uploadSwatchTexture(render.patternImage);
+    entry.normal = uploadSwatchTexture(render.detailNormalImage);
+    entry.surface = uploadSwatchTexture(render.roughMetalAoImage);
+
+    return &*finishTextureCache_.insert(code, entry);
+}
+
+void CarModelRenderer::clearPaintFinishTextures() {
+    if (!finishTextureCache_.isEmpty()) {
+        if (QOpenGLContext *context = QOpenGLContext::currentContext()) {
+            QVector<GLuint> ids;
+            ids.reserve(finishTextureCache_.size() * 3);
+            for (const FinishTextureEntry &entry : std::as_const(finishTextureCache_)) {
+                for (GLuint id : {entry.pattern, entry.normal, entry.surface}) {
+                    if (id != 0) {
+                        ids.push_back(id);
+                    }
+                }
+            }
+            if (!ids.isEmpty()) {
+                context->functions()->glDeleteTextures(ids.size(), ids.constData());
+            }
+        }
+        finishTextureCache_.clear();
+    }
+    paintFinishTracked_ = false;
+}
+
 void CarModelRenderer::render(
     const QMatrix4x4 &view,
     const QMatrix4x4 &projection,
     GLuint liveryTexture,
     const QColor &basePaint,
-    const fls::LiveryPaintState *paintState) {
+    const fls::LiveryPaintState *paintState,
+    const fls::ManufacturerColorPalette *manufacturerColors,
+    const fls::PaintFinishLibrary *paintFinishes) {
     if (!initialized_ || meshes_.empty()) {
         return;
     }
@@ -1753,7 +2133,16 @@ void CarModelRenderer::render(
 
     functions->glEnable(GL_DEPTH_TEST);
     functions->glDepthFunc(GL_LEQUAL);
-    functions->glDisable(GL_CULL_FACE);
+    // Every mesh is drawn through an X-mirror (model matrix scale -1 on X), which reverses
+    // triangle winding, so front faces are clockwise on screen.
+    functions->glFrontFace(GL_CW);
+
+    if (paintFinishes != nullptr
+        && (!paintFinishTracked_ || paintFinishes->generation() != paintFinishGeneration_)) {
+        clearPaintFinishTextures();
+        paintFinishGeneration_ = paintFinishes->generation();
+        paintFinishTracked_ = true;
+    }
 
     program_.bind();
     const QVector3D fallbackColor(
@@ -1787,19 +2176,114 @@ void CarModelRenderer::render(
         functions->glActiveTexture(GL_TEXTURE0);
     }
 
+    // Manufacturer (factory) colours are the car's default paint. They only belong on an
+    // uncustomised car: the moment the livery assigns any explicit primary colour, the whole car
+    // is custom-painted, and materials left blank must inherit the chosen base paint rather than a
+    // factory tint. A blank paint record is all-zero, so its manufacturerSelector reads 0 — which
+    // would otherwise resolve to palette slot 0 (this car's golden yellow) and bleed onto every
+    // livery panel. A blank record carries no colour either. Every blank-record mesh is a livery-
+    // canvas panel (name "…Livery…") the game paints over, so with the livery off there is no single
+    // right base for it — but material and part don't discriminate (the maroon rocker line and the
+    // grey hood both carry blank carPaint_secondary on grey-dominant parts). What DOES discriminate
+    // is position: a canvas panel should read as the real paint physically next to it. So collect
+    // the painted panels' centres/colours and give each blank panel its nearest painted neighbour.
+    bool liveryCustomPainted = false;
+    QVector3D liveryPrimaryColor = fallbackColor;
+    struct PaintedPanel {
+        QVector3D center;
+        QVector3D color;
+        float weight;
+    };
+    std::vector<PaintedPanel> paintedPanels;
+    if (paintState != nullptr) {
+        QHash<quint32, int> primaryCounts;
+        int bestPrimary = 0;
+        for (const std::unique_ptr<MeshBuffers> &meshPtr : meshes_) {
+            const MeshBuffers &m = *meshPtr;
+            const fls::LiveryPaintMaterial *paint =
+                m.bodyPaint ? paintState->find(m.paintMaterialHash) : nullptr;
+            if (paint == nullptr || !paint->primary.enabled) {
+                continue;
+            }
+            liveryCustomPainted = true;
+            const quint32 key = (quint32(paint->primary.bgra[0]) << 16)
+                | (quint32(paint->primary.bgra[1]) << 8) | quint32(paint->primary.bgra[2]);
+            const QVector3D color(paint->primary.bgra[2] / 255.0f,
+                                  paint->primary.bgra[1] / 255.0f,
+                                  paint->primary.bgra[0] / 255.0f);
+            const int weight = std::max(1, m.indexCount);
+            paintedPanels.push_back({m.center, color, static_cast<float>(weight)});
+            primaryCounts[key] += weight;
+            if (primaryCounts[key] > bestPrimary) {
+                bestPrimary = primaryCounts[key];
+                liveryPrimaryColor = color;
+            }
+        }
+    }
+
     const QMatrix4x4 viewProjection = projection * view;
     const auto drawMesh = [&](MeshBuffers &mesh) {
         QVector3D primary = mesh.hasMaterialColor ? mesh.materialColor : fallbackColor;
+        // A custom-painted body panel with no explicit colour of its own (the livery-canvas layer)
+        // takes the colour of the painted panel around it, so it reads as the paint nearby rather
+        // than a car-wide guess (grey on the maroon rocker, or maroon on the grey hood). Rank by
+        // distance²/panelArea so a big adjacent panel (the grey roof/body skin) wins over a small
+        // accent that merely happens to be close (a maroon pillar sliver) — otherwise thin accents
+        // bleed across whole canvas regions (e.g. the roof).
+        if (mesh.bodyPaint && liveryCustomPainted) {
+            primary = liveryPrimaryColor;
+            float bestScore = std::numeric_limits<float>::max();
+            for (const PaintedPanel &panel : paintedPanels) {
+                const float score = (panel.center - mesh.center).lengthSquared() / panel.weight;
+                if (score < bestScore) {
+                    bestScore = score;
+                    primary = panel.color;
+                }
+            }
+        }
         QVector3D secondary = primary;
         float secondaryMix = 0.0f;
         float gloss = mesh.gloss;
         float metallic = mesh.metallic;
+        float manufacturerFlake = 0.0f;
         const fls::LiveryPaintMaterial *paint = paintState != nullptr
             ? paintState->find(mesh.paintMaterialHash)
+            : nullptr;
+        const fls::ManufacturerColor *manufacturerColor =
+            paint != nullptr && manufacturerColors != nullptr && !liveryCustomPainted
+            ? manufacturerColors->find(paint->manufacturerSelector)
+            : nullptr;
+        const fls::PaintFinishRender *finish = (paint != nullptr && paintFinishes != nullptr)
+            ? paintFinishes->find(static_cast<int>(paint->finish))
             : nullptr;
         const auto decodedColor = [](const fls::LiveryPaintColor &color) {
             return QVector3D(color.bgra[2] / 255.0f, color.bgra[1] / 255.0f, color.bgra[0] / 255.0f);
         };
+        const auto decodedManufacturerColor = [](const std::array<float, 3> &color) {
+            return QVector3D(
+                linearToDisplay(color[0]),
+                linearToDisplay(color[1]),
+                linearToDisplay(color[2]));
+        };
+        if (manufacturerColor != nullptr) {
+            primary = decodedManufacturerColor(manufacturerColor->primary);
+            secondary = manufacturerColor->secondaryEnabled
+                ? decodedManufacturerColor(manufacturerColor->secondary)
+                : primary;
+            if (manufacturerColor->material) {
+                gloss = manufacturerColor->material->gloss;
+                if (manufacturerColor->material->hasMetallic) {
+                    metallic = manufacturerColor->material->metallic;
+                }
+                manufacturerFlake = manufacturerColor->material->flakeAmount;
+                if (manufacturerFlake > 0.0f) {
+                    metallic = std::max(
+                        metallic,
+                        kManufacturerFlakeBaseMetallic
+                            + kManufacturerFlakeMetallicGain * manufacturerFlake);
+                }
+            }
+        }
         if (paint != nullptr) {
             if (paint->primary.enabled) {
                 primary = decodedColor(paint->primary);
@@ -1807,61 +2291,27 @@ void CarModelRenderer::render(
             if (paint->secondary.enabled) {
                 secondary = decodedColor(paint->secondary);
             }
-            switch (paint->finish) {
-            case 1:
-                gloss = 0.88f;
-                break;
-            case 2:
-                gloss = 0.55f;
-                break;
-            case 3:
-                gloss = 0.12f;
-                break;
-            case 4:
-                gloss = 0.78f;
-                metallic = 0.85f;
-                secondaryMix = paint->secondary.enabled ? 0.20f : 0.0f;
-                break;
-            case 50:
-                gloss = 0.12f;
-                secondaryMix = paint->secondary.enabled ? 0.78f : 0.0f;
-                break;
-            case 51:
-                gloss = 0.95f;
-                secondaryMix = paint->secondary.enabled ? 0.78f : 0.0f;
-                break;
-            case 52:
-                gloss = 0.55f;
-                secondaryMix = paint->secondary.enabled ? 0.78f : 0.0f;
-                break;
-            case 69:
-                gloss = 0.92f;
-                metallic = 0.35f;
-                break;
-            case 70:
-                gloss = 0.80f;
-                metallic = 0.75f;
-                secondaryMix = paint->secondary.enabled ? 0.12f : 0.0f;
-                break;
-            case 71:
-                gloss = 0.84f;
-                metallic = 0.85f;
-                secondaryMix = paint->secondary.enabled ? 0.24f : 0.0f;
-                break;
-            case 72:
-                gloss = 0.90f;
-                metallic = 1.0f;
-                secondaryMix = paint->secondary.enabled ? 0.34f : 0.0f;
-                break;
-            default:
-                break;
-            }
+            applyPaintFinish(*paint, finish, primary, secondary, secondaryMix, gloss, metallic);
         }
         program_.setUniformValue(basePaintLocation_, primary);
         program_.setUniformValue(secondaryPaintLocation_, secondary);
         program_.setUniformValue(secondaryMixLocation_, secondaryMix);
         program_.setUniformValue(glossLocation_, gloss);
         program_.setUniformValue(metallicLocation_, metallic);
+        const ClearCoat clearCoat = bodyClearCoat(mesh.bodyPaint, finish, gloss);
+        program_.setUniformValue(clearCoatRoughnessLocation_, clearCoat.roughness);
+        program_.setUniformValue(clearCoatIntensityLocation_, clearCoat.coverage);
+        // Opt-in trace of the paint/finish each mesh resolves to, for diagnosing mis-shaded parts.
+        static const bool paintDiagnostics = qEnvironmentVariableIsSet("FLS_PAINT_DIAG");
+        if (paintDiagnostics && !paintDiagnosticsLogged_
+            && (paint != nullptr || mesh.diffuseTexture != 0)) {
+            qDebug().nospace().noquote()
+                << "[paint] " << mesh.name << " mat=" << mesh.materialName
+                << " painted=" << (paint != nullptr)
+                << " nativeDiffuse=" << (mesh.diffuseTexture != 0)
+                << " finish=" << (paint != nullptr ? int(paint->finish) : -1)
+                << " primary=(" << primary.x() << "," << primary.y() << "," << primary.z() << ")";
+        }
         program_.setUniformValue(
             emissiveLocation_, mesh.emissiveColor * std::max(0.0f, mesh.emissiveIntensity));
         program_.setUniformValue(hasLiveryLocation_, (hasLivery && mesh.applyLivery) ? 1 : 0);
@@ -1880,6 +2330,21 @@ void CarModelRenderer::render(
         bindMaterialTexture(4, mesh.normalTexture, nativeNormalLocation_, hasNativeNormalLocation_);
         bindMaterialTexture(5, mesh.surfaceTexture, nativeSurfaceLocation_, hasNativeSurfaceLocation_);
         bindMaterialTexture(6, mesh.emissiveTexture, nativeEmissiveLocation_, hasNativeEmissiveLocation_);
+        const FinishTextureEntry *finishTextures =
+            (finish != nullptr && finish->valid) ? ensurePaintFinishTextures(static_cast<int>(paint->finish), *finish)
+                                                 : nullptr;
+        bindMaterialTexture(7, finishTextures != nullptr ? finishTextures->pattern : 0,
+                            finishPatternLocation_, hasFinishPatternLocation_);
+        bindMaterialTexture(8, finishTextures != nullptr ? finishTextures->normal : 0,
+                            finishNormalLocation_, hasFinishNormalLocation_);
+        bindMaterialTexture(9, finishTextures != nullptr ? finishTextures->surface : 0,
+                            finishSurfaceLocation_, hasFinishSurfaceLocation_);
+        program_.setUniformValue(finishSelfColoredLocation_,
+                                 (finish != nullptr && finish->selfColored) ? 1 : 0);
+        program_.setUniformValue(finishTilingLocation_, 1.0f);
+        program_.setUniformValue(
+            finishFlakeLocation_,
+            finish != nullptr ? finish->flakeAmount : manufacturerFlake);
         functions->glActiveTexture(GL_TEXTURE0);
         program_.setUniformValue(mvpLocation_, viewProjection * mesh.model);
         program_.setUniformValue(modelLocation_, mesh.model);
@@ -1890,11 +2355,24 @@ void CarModelRenderer::render(
 
     functions->glDisable(GL_BLEND);
     functions->glDepthMask(GL_TRUE);
+    // Cull back faces on solid geometry so recessed cavities (intakes, grilles) stop
+    // z-fighting against their own interior faces.
+    functions->glEnable(GL_CULL_FACE);
+    functions->glCullFace(GL_BACK);
     for (const auto &mesh : meshes_) {
-        if (!mesh->translucent) {
+        if (mesh->translucent) {
+            continue;
+        }
+        if (mesh->doubleSided) {
+            functions->glDisable(GL_CULL_FACE);
+            drawMesh(*mesh);
+            functions->glEnable(GL_CULL_FACE);
+        } else {
             drawMesh(*mesh);
         }
     }
+    // Translucent surfaces (glass, lenses) stay double-sided.
+    functions->glDisable(GL_CULL_FACE);
 
     std::vector<MeshBuffers *> translucentMeshes;
     translucentMeshes.reserve(meshes_.size());
@@ -1918,6 +2396,8 @@ void CarModelRenderer::render(
         functions->glDepthMask(GL_TRUE);
         functions->glDisable(GL_BLEND);
     }
+
+    paintDiagnosticsLogged_ = true;
 
     if (hasLivery) {
         functions->glActiveTexture(GL_TEXTURE1);

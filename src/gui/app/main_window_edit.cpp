@@ -27,6 +27,24 @@ using namespace mw_detail;
 
 namespace {
 
+int stripRasterLayers(std::vector<std::unique_ptr<fls::scene::Layer>> &nodes) {
+    int removed = 0;
+    for (auto it = nodes.begin(); it != nodes.end();) {
+        fls::scene::Layer *node = it->get();
+        if (node != nullptr && node->kind() == fls::scene::LayerKind::Shape
+            && static_cast<fls::scene::Shape *>(node)->raster) {
+            it = nodes.erase(it);
+            ++removed;
+            continue;
+        }
+        if (node != nullptr && node->kind() == fls::scene::LayerKind::Group) {
+            removed += stripRasterLayers(static_cast<fls::scene::Group *>(node)->children);
+        }
+        ++it;
+    }
+    return removed;
+}
+
 fls::Matrix3 generatedShapeMatrix(const QTransform &transform) {
     fls::Matrix3 matrix;
     matrix.m[0][0] = transform.m11();
@@ -1195,16 +1213,35 @@ void MainWindow::pasteClipboard() {
         return;
     }
 
+    ProjectClipboard pasteBuffer = *state_->clipboard();
+    int strippedLogos = 0;
+    if (!state_->project_.isLivery) {
+        strippedLogos = stripRasterLayers(pasteBuffer.nodes);
+    }
+    if (pasteBuffer.nodes.empty()) {
+        statusBar()->showMessage(
+            QStringLiteral("Logos can only be used in livery projects; nothing to paste"), 3000);
+        return;
+    }
+
     state_->beginProjectEdit();
     QSet<QString> newLayerSelection;
     QSet<QString> newGuideSelection;
-    state_->insertClipboardAboveSelection(*state_->clipboard(), selectedEntryIds(), &newLayerSelection, &newGuideSelection);
+    state_->insertClipboardAboveSelection(pasteBuffer, selectedEntryIds(), &newLayerSelection, &newGuideSelection);
     state_->selectedLayerIds_ = newLayerSelection;
     state_->selectedGuideLayerIds_ = newGuideSelection;
     state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
     state_->noteProjectStructureChanged();
-    statusBar()->showMessage(QStringLiteral("Pasted selection"), 1500);
+    if (strippedLogos > 0) {
+        statusBar()->showMessage(
+            QStringLiteral("Pasted selection (%1 logo%2 removed — not allowed in Group projects)")
+                .arg(strippedLogos)
+                .arg(strippedLogos == 1 ? QString() : QStringLiteral("s")),
+            3000);
+    } else {
+        statusBar()->showMessage(QStringLiteral("Pasted selection"), 1500);
+    }
 }
 
 void MainWindow::stampSelection() {

@@ -14,7 +14,7 @@ The prebuilt binaries should contain ForzaLiveryStudio.exe launch it and you wil
 
 There are 2 project types avaliable in the editor `Group` and `Livery`. Currently editor supports only 1 project opened per instance. By default the editor creates an empty group project. Importing an existing file from supported titles can be done via `File->Import`, this will  To create a livery you would need to press `File->New Project`, this would create a new project based on the asset oppened if group->group project, if livery->livery project. Exporting the project is done with `File->Export`, select a folder you wish to save into the folder will be named according to project metadata configured. I reccommend saving to ContainersRoot directory directly. The editor will export to Forza Horizon 6 format as the only supported, if support for other games is needed it is possible on request, contact the dev team on Github or Discord.
 
-### Metadata 
+### Metadata
 
 Metadata is located in `Header` widget, it will be loaded from the imported assets or created by default on new project with the creator name last used. The file would be exported as a local instance, to publish you would need to re-save it ingame and publish with Forza itself. All fields are reactive, car is changed via the button.
 
@@ -22,7 +22,7 @@ Metadata is located in `Header` widget, it will be loaded from the imported asse
 
 To place shapes interact with `Shapes` widget. Left click would create a new shape and right would change the selected shape to the clicked one. Add and remove shapes to favourites via clicking on the star icon, shapes can be renamed by editing `assets/vector/shape_names.json` located in your install location.
 
-### Guides
+### Guide layers
 
 Using raster images as your guide is very straightforward, you can import one to your project by clicking `File->Import Guide Layer` or dropping the file into editor window directly. Guide layers have opacity and can be freely transformed. You can toggle their visibility and draw order (on top/on bottom) via `Option->Guides`.
 
@@ -48,7 +48,7 @@ A separate tool for rotation only, if you prefer to do rotation separately or gl
 
 ### Opacity and Skew
 
-These tools are opt-in via `Settings` widget, used to control opacity and skew by dragging horizontally. If setting enabled it would remove separate skew anchor from the Transform tool.  
+These tools are opt-in via `Settings` widget, used to control opacity and skew by dragging horizontally. If setting enabled it would remove separate skew anchor from the Transform tool.
 
 ### Transform
 

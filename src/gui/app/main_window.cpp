@@ -38,8 +38,9 @@ MainWindow::MainWindow(QWidget *parent)
     connectEditorStateSignals();
     setupFileMenu();
     setupEditMenu();
-    setupProjectMenu();
+#if FLS_ENABLE_IMGGEN_MENU
     setupImgGenMenu();
+#endif
     setupOptionsMenu();
     setupToolbar();
     setupWindowMenu();

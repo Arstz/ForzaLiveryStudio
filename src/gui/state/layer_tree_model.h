@@ -39,6 +39,7 @@ public:
     bool generatePreviewsWithTransformations() const;
     void setProject(const fls::Project *project);
     void setProjectSection(const fls::Project *project, const QString &sectionGroupId);
+    void resetSections();
     void clearSectionCache();
     void refreshStateRoles(const fls::Project *project);
     void refreshPreviews(const fls::Project *project);

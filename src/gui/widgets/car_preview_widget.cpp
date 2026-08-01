@@ -2,16 +2,24 @@
 
 #include "car_scene.h"
 #include "editor_state.h"
+#include "gui_assets.h"
+#include "material_hashes.h"
 #include "matrix_math.h"
 #include "model_material.h"
 #include "scene_view.h"
 #include "zip_extract.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QSet>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <optional>
 
 namespace gui {
@@ -19,8 +27,8 @@ namespace {
 
 constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
-constexpr int kProjectedSectionToMaskSlot[fls::kLiverySideCount] = {
-    0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
+constexpr int kLiverySectionMaskSlots[fls::kLiverySideCount] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 };
 
 bool transposedSection(int maskSlot) {
@@ -148,10 +156,7 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Pro
     if (slot < 0 || slot >= fls::kLiverySideCount) {
         return std::nullopt;
     }
-    const int maskSlot = kProjectedSectionToMaskSlot[slot];
-    if (maskSlot < 0 || maskSlot >= fls::kLiverySideCount) {
-        return std::nullopt;
-    }
+    const int maskSlot = kLiverySectionMaskSlots[slot];
     const fls::LiverySide &side = masks.sides[maskSlot];
     if (!side.valid) {
         return std::nullopt;
@@ -175,8 +180,12 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Pro
     const double packedOriginX = (originPixelX - layout.textureSize.width() * 0.5) / scale;
     const double packedOriginY = (originPixelY - layout.textureSize.height() * 0.5) / scale;
     QTransform projectionTransform;
-    if (slot == 5 || slot == 6) {
+    if (slot == 4 || slot == 10) {
+        projectionTransform.scale(-1.0, -1.0);
+    } else if (slot == 6) {
         projectionTransform.scale(-1.0, 1.0);
+    } else if (slot == 7) {
+        projectionTransform.scale(1.0, -1.0);
     }
     collectProjectedShapes(
         section, projectionTransform, packedOriginX, packedOriginY, *projected.project.root);
@@ -208,6 +217,62 @@ QString findSharedCarAsset(const QString &sourcePath, const QString &relativePat
     return {};
 }
 
+// Stock tyre spec per car, from assets/cars/wheel_sizes.json. The wheel/tire models are
+// normalised, so this is what sizes them per car (see docs/GAMEDATA.md). Lazily loaded once.
+fls::WheelSizing wheelSizingForModelCode(const QString &modelCode) {
+    static const auto table = [] {
+        QHash<QString, fls::WheelSizing> sizes;
+        fls::WheelSizing fallback;
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString cwd = QDir::currentPath();
+        const QStringList candidates = {
+            QDir(appDir).filePath(QStringLiteral("assets/cars/wheel_sizes.json")),
+            QDir(cwd).filePath(QStringLiteral("assets/cars/wheel_sizes.json")),
+            QDir(cwd).filePath(QStringLiteral("cpp-port/assets/cars/wheel_sizes.json")),
+        };
+        for (const QString &path : candidates) {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly)) {
+                continue;
+            }
+            const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+            const auto parseAxle = [](const QJsonValue &value, fls::AxleSizing def) {
+                const QJsonObject o = value.toObject();
+                fls::AxleSizing axle = def;
+                axle.tireWidthMillimetres = static_cast<float>(
+                    o.value(QStringLiteral("width")).toDouble(def.tireWidthMillimetres));
+                axle.tireAspectPercent = static_cast<float>(
+                    o.value(QStringLiteral("aspect")).toDouble(def.tireAspectPercent));
+                axle.rimDiameterInches = static_cast<float>(
+                    o.value(QStringLiteral("rim")).toDouble(def.rimDiameterInches));
+                axle.trackOuterMetres = static_cast<float>(
+                    o.value(QStringLiteral("track")).toDouble(def.trackOuterMetres));
+                axle.rideHeightMetres = static_cast<float>(
+                    o.value(QStringLiteral("ride")).toDouble(def.rideHeightMetres));
+                return axle;
+            };
+            const auto parse = [&parseAxle](const QJsonObject &o, fls::WheelSizing def) {
+                fls::WheelSizing w;
+                w.front = parseAxle(o.value(QStringLiteral("front")), def.front);
+                w.rear = parseAxle(o.value(QStringLiteral("rear")), def.rear);
+                return w;
+            };
+            if (root.value(QStringLiteral("_default")).isObject()) {
+                fallback = parse(root.value(QStringLiteral("_default")).toObject(), fallback);
+            }
+            for (auto it = root.begin(); it != root.end(); ++it) {
+                if (it.key().startsWith(QLatin1Char('_')) || !it.value().isObject()) {
+                    continue;
+                }
+                sizes.insert(it.key().toLower(), parse(it.value().toObject(), fallback));
+            }
+            break;
+        }
+        return std::make_pair(sizes, fallback);
+    }();
+    return table.first.value(modelCode.toLower(), table.second);
+}
+
 std::optional<fls::CarModel> loadArchivedModel(
     const QString &archivePath, const QString &modelName) {
     if (archivePath.isEmpty()) {
@@ -229,20 +294,32 @@ std::optional<fls::CarModel> loadArchivedModel(
                                 : std::optional<fls::CarModel>(std::move(model));
 }
 
-void appendSharedTireB(fls::CarModel &model, const QString &sourcePath) {
+void appendSharedTireB(
+    fls::CarModel &model, const QString &sourcePath, const fls::WheelSizing &wheels) {
     const QString leftArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tire_b.zip"));
     const QString rightArchive = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/scene/tires/tireR_b.zip"));
-    const std::optional<fls::CarModel> left = loadArchivedModel(
+    std::optional<fls::CarModel> left = loadArchivedModel(
         leftArchive, QStringLiteral("tireL_b.modelbin"));
     std::optional<fls::CarModel> right = loadArchivedModel(
         rightArchive, QStringLiteral("tireR_b.modelbin"));
     if (!right) {
         right = loadArchivedModel(leftArchive, QStringLiteral("tireR_b.modelbin"));
     }
+    // Tag the shared tire meshes with a /tires/ path so their rubber material resolves from
+    // the _library like the exterior parts (appendApproximateTires copies these meshes).
+    const auto tagTires = [](std::optional<fls::CarModel> &tire, const QString &path) {
+        if (tire) {
+            for (fls::CarMesh &mesh : tire->meshes) {
+                mesh.sourceModelPath = path;
+            }
+        }
+    };
+    tagTires(left, QStringLiteral("_library/scene/tires/tireL_b.modelbin"));
+    tagTires(right, QStringLiteral("_library/scene/tires/tireR_b.modelbin"));
     if (left && right) {
-        fls::appendApproximateTires(model, *left, *right);
+        fls::appendApproximateTires(model, *left, *right, wheels);
     }
 }
 
@@ -251,6 +328,49 @@ QString materialArchiveEntry(QString resourcePath) {
     const int materials = resourcePath.indexOf(
         QStringLiteral("/materials/"), 0, Qt::CaseInsensitive);
     return materials < 0 ? QString() : resourcePath.mid(materials + 11);
+}
+
+// Wheel and tire modelbins reference their materials only by slot name (rim, hub, tread…),
+// not by a materialbin path, so the shared-library binding is a fixed convention. Map the
+// slot name to its _library materialbin so the normal material resolver can pick it up.
+QString sharedSlotMaterialEntry(const QString &materialName) {
+    const QString n = materialName.toLower();
+    if (n == QStringLiteral("rim") || n == QStringLiteral("rim2")) {
+        return QStringLiteral("_fmnext/wheel/wheelpaint.materialbin");
+    }
+    if (n == QStringLiteral("black")) {
+        return QStringLiteral("_fmnext/specialcase/blackhole.materialbin");
+    }
+    if (n == QStringLiteral("lip") || n == QStringLiteral("hub") || n == QStringLiteral("lug")
+        || n == QStringLiteral("inner_rim") || n == QStringLiteral("detail")
+        || n == QStringLiteral("detail2") || n == QStringLiteral("valve_cap")) {
+        return QStringLiteral("wheelmaterials/aluminum_machined_satin.materialbin");
+    }
+    return QString();
+}
+
+// Give wheel/tire meshes a synthetic materialbin resourcePath (from their slot name) unless
+// they already carry a resolvable one, so resolveExteriorMaterials loads the real tuning.
+void assignSharedSlotMaterials(fls::CarModel &model) {
+    for (fls::CarMesh &mesh : model.meshes) {
+        if (!mesh.material) {
+            continue;
+        }
+        QString path = mesh.sourceModelPath.toLower();
+        path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        const bool wheel = path.contains(QStringLiteral("/wheels/"));
+        // Tires stay on the solid rubber fallback for now: the shared tire materials decode
+        // with sub-1 opacity, which renders the approximated tires see-through.
+        if (!wheel || !materialArchiveEntry(mesh.material->resourcePath).isEmpty()) {
+            continue;
+        }
+        const QString entry = sharedSlotMaterialEntry(mesh.materialName);
+        if (entry.isEmpty()) {
+            continue;
+        }
+        mesh.material->resourcePath =
+            QStringLiteral("game:/media/cars/_library/materials/") + entry;
+    }
 }
 
 QString assetFileIdentity(const QString &path) {
@@ -324,9 +444,11 @@ NativeTextureCache &nativeTextureCache() {
     return cache;
 }
 
-bool isExteriorModelPath(QString path) {
+bool isLibraryMaterialPath(QString path) {
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive);
+    return path.contains(QStringLiteral("/exterior/"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/tires/"), Qt::CaseInsensitive);
 }
 
 enum class NativeTextureSlot {
@@ -341,36 +463,31 @@ enum class NativeTextureSlot {
 NativeTextureSlot nativeTextureSlot(const fls::ModelMaterialParameter &parameter) {
     QString path = parameter.texturePath.toLower();
     path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    if (parameter.nameHash == 0xF9E8078D
+    if (parameter.nameHash == fls::material_hashes::parameter::kNormalTexture
         || path.contains(QStringLiteral("normal"))
         || path.contains(QStringLiteral("nrml"))) {
         return NativeTextureSlot::Normal;
     }
-    if (parameter.nameHash == 0x8D9C56EF
+    if (parameter.nameHash == fls::material_hashes::parameter::kSurfaceTexture
         || path.contains(QStringLiteral("rmao"))
         || path.contains(QStringLiteral("roughmetal"))
         || path.contains(QStringLiteral("metalrough"))) {
         return NativeTextureSlot::Surface;
     }
-    if (parameter.nameHash == 0x4E0D5E89
-        || parameter.nameHash == 0x6161E552
-        || parameter.nameHash == 0x020B22EB
-        || parameter.nameHash == 0x212B4B48
-        || parameter.nameHash == 0x3CB4DFCB
+    if (fls::material_hashes::contains(
+            fls::material_hashes::parameter::kEmissiveTexture, parameter.nameHash)
         || path.contains(QStringLiteral("emissive"))
         || path.contains(QStringLiteral("emission"))) {
         return NativeTextureSlot::Emissive;
     }
-    if (parameter.nameHash == 0x85E937A9
+    if (parameter.nameHash == fls::material_hashes::parameter::kColorTexture
         || path.contains(QStringLiteral("basecolor"))
         || path.contains(QStringLiteral("diffuse"))
         || path.contains(QStringLiteral("albedo"))) {
         return NativeTextureSlot::Diffuse;
     }
-    if (parameter.nameHash == 0x698CA64F
-        || parameter.nameHash == 0x57D9D49E
-        || parameter.nameHash == 0x66E53F62
-        || parameter.nameHash == 0x2FDCDBF0
+    if (fls::material_hashes::contains(
+            fls::material_hashes::parameter::kAlphaTexture, parameter.nameHash)
         || path.contains(QStringLiteral("opacity"))
         || path.contains(QStringLiteral("opac"))
         || path.contains(QStringLiteral("alpha"))) {
@@ -432,8 +549,42 @@ void assignNativeTexture(fls::ModelMaterial &material,
     }
 }
 
+std::shared_ptr<const fls::ModelMaterialTexture> missingColorTexture() {
+    static const std::shared_ptr<const fls::ModelMaterialTexture> texture = []() {
+        QImage image(assetPath(QStringLiteral("raster/MissingTexture.png")));
+        image = image.convertToFormat(QImage::Format_RGBA8888);
+        if (image.isNull()) {
+            return std::shared_ptr<const fls::ModelMaterialTexture>{};
+        }
+        auto result = std::make_shared<fls::ModelMaterialTexture>();
+        result->path = QStringLiteral("raster/MissingTexture.png");
+        result->image.width = image.width();
+        result->image.height = image.height();
+        result->image.rgba.resize(static_cast<size_t>(image.width()) * image.height() * 4);
+        for (int row = 0; row < image.height(); ++row) {
+            std::memcpy(
+                result->image.rgba.data() + static_cast<size_t>(row) * image.width() * 4,
+                image.constScanLine(row),
+                static_cast<size_t>(image.width()) * 4);
+        }
+        return std::shared_ptr<const fls::ModelMaterialTexture>(std::move(result));
+    }();
+
+    return texture;
+}
+
+void assignNativeTextureOrFallback(
+    fls::ModelMaterial &material,
+    NativeTextureSlot slot,
+    const std::shared_ptr<const fls::ModelMaterialTexture> &texture) {
+    assignNativeTexture(
+        material, slot,
+        texture || slot != NativeTextureSlot::Diffuse ? texture : missingColorTexture());
+}
+
 void resolveExteriorMaterials(
-    fls::CarModel &model, const QString &sourcePath, const QString &carRoot) {
+    fls::CarModel &model, const QString &sourcePath, const QString &carRoot,
+    bool includeTextures) {
     const QString archivePath = findSharedCarAsset(
         sourcePath, QStringLiteral("_library/Materials.zip"));
     if (archivePath.isEmpty()) {
@@ -444,7 +595,7 @@ void resolveExteriorMaterials(
     QStringList missingMaterialEntries;
     QSet<QString> requestedMaterials;
     for (fls::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
+        if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
             continue;
         }
         const QString entry = materialArchiveEntry(mesh.material->resourcePath);
@@ -471,7 +622,7 @@ void resolveExteriorMaterials(
         defaults.insert(materialArchiveKey + QLatin1Char('|') + entry.toLower(), decoded);
     }
     for (fls::CarMesh &mesh : model.meshes) {
-        if (!mesh.material || !isExteriorModelPath(mesh.sourceModelPath)) {
+        if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
             continue;
         }
         const QString entry = materialArchiveEntry(mesh.material->resourcePath);
@@ -479,7 +630,12 @@ void resolveExteriorMaterials(
             defaults.value(materialArchiveKey + QLatin1Char('|') + entry.toLower());
         if (materialDefaults) {
             mesh.material = fls::mergeModelMaterialDefaults(*materialDefaults, *mesh.material);
+            mesh.material->resolvedFromLibrary = true;
         }
+    }
+
+    if (!includeTextures) {
+        return;
     }
 
     struct PendingTexture {
@@ -491,14 +647,27 @@ void resolveExteriorMaterials(
         QString cacheKey;
     };
     QVector<PendingTexture> pending;
+    const auto appendPending = [&](const std::shared_ptr<fls::ModelMaterial> &material,
+                                   NativeTextureSlot slot, const QString &path) {
+        PendingTexture item;
+        item.material = material;
+        item.slot = slot;
+        item.path = path;
+        item.sharedEntry = sharedTextureEntry(item.path);
+        if (item.sharedEntry.isEmpty()) {
+            item.localPath = localTexturePath(item.path, carRoot);
+        }
+        pending.push_back(std::move(item));
+    };
     QSet<const fls::ModelMaterial *> visited;
     for (fls::CarMesh &mesh : model.meshes) {
         if (!mesh.material || visited.contains(mesh.material.get())
-            || !isExteriorModelPath(mesh.sourceModelPath)
+            || !isLibraryMaterialPath(mesh.sourceModelPath)
             || mesh.materialName.startsWith(QStringLiteral("carPaint"), Qt::CaseInsensitive)) {
             continue;
         }
         visited.insert(mesh.material.get());
+        bool hasNormal = false;
         for (const fls::ModelMaterialParameter &parameter : mesh.material->parameters) {
             if (parameter.type != fls::ModelMaterialParameterType::Texture2D
                 || parameter.texturePath.isEmpty()) {
@@ -508,15 +677,34 @@ void resolveExteriorMaterials(
             if (slot == NativeTextureSlot::Unknown) {
                 continue;
             }
-            PendingTexture item;
-            item.material = mesh.material;
-            item.slot = slot;
-            item.path = parameter.texturePath;
-            item.sharedEntry = sharedTextureEntry(item.path);
-            if (item.sharedEntry.isEmpty()) {
-                item.localPath = localTexturePath(item.path, carRoot);
+            // Flat placeholder swatches (e.g. the wheel paint's green base) are solid colours the
+            // game replaces with the chosen paint; loaded as real maps they tint painted parts
+            // (green rims) and skew their shading, so drop them and let the paint colour stand.
+            if (normalizedTexturePath(parameter.texturePath)
+                    .contains(QStringLiteral("globaltexture/swatches/flat_texture"))) {
+                continue;
             }
-            pending.push_back(std::move(item));
+            if (slot == NativeTextureSlot::Normal) {
+                hasNormal = true;
+            }
+            appendPending(mesh.material, slot, parameter.texturePath);
+        }
+        // The car_carbonfiber shader bakes its weave into the shader, so the plain carbonfiber
+        // materialbin names no maps at all (only 32x tiling): a mesh using it arrives with no
+        // normal and renders as flat gloss. Supply the shader's canonical twin-twill weave
+        // normal/rmao — the very swatches the carbonfiber_livery variant lists explicitly — so
+        // structural carbon reads as carbon. The material's own 32x tiling turns it into a weave.
+        if (!hasNormal
+            && normalizedTexturePath(mesh.material->resourcePath)
+                   .contains(QStringLiteral("/carbonfiber/carbonfiber"))) {
+            appendPending(mesh.material, NativeTextureSlot::Normal,
+                          QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
+                                         "\\twin_twill_weave\\swatches\\twin_twill_weave_normal_5eewzs7"
+                                         ".swatchbin"));
+            appendPending(mesh.material, NativeTextureSlot::Surface,
+                          QStringLiteral("Game:\\Media\\cars\\_library\\textures\\_fmnext\\carbonfiber"
+                                         "\\twin_twill_weave\\swatches\\twin_twill_weave_rmao_x9t8d8u"
+                                         ".swatchbin"));
         }
     }
 
@@ -545,9 +733,7 @@ void resolveExteriorMaterials(
         bool known = false;
         const auto texture = textureCache.find(item.cacheKey, known);
         if (known) {
-            if (texture) {
-                assignNativeTexture(*item.material, item.slot, texture);
-            }
+            assignNativeTextureOrFallback(*item.material, item.slot, texture);
             item.cacheKey.clear();
         } else if (!item.sharedEntry.isEmpty()
                    && !requestedSharedEntries.contains(item.sharedEntry.toLower())) {
@@ -586,11 +772,129 @@ void resolveExteriorMaterials(
             }
             textureCache.insert(item.cacheKey, texture);
         }
-        if (texture) {
-            assignNativeTexture(*item.material, item.slot, texture);
-        }
+        assignNativeTextureOrFallback(*item.material, item.slot, texture);
     }
     textureCache.trim();
+}
+
+fls::ManufacturerColorPalette loadManufacturerColors(
+    const QString &carRoot, const QString &sourcePath) {
+    QFile file(QDir(carRoot).filePath(QStringLiteral("ManufacturerColors.bin")));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+
+    fls::ManufacturerColorPalette palette;
+    try {
+        palette = fls::decodeManufacturerColors(file.readAll());
+    } catch (const std::exception &) {
+        return {};
+    }
+
+    const QString archivePath = findSharedCarAsset(
+        sourcePath, QStringLiteral("_library/Materials.zip"));
+    if (archivePath.isEmpty()) {
+        return palette;
+    }
+
+    const QString archiveKey = assetFileIdentity(archivePath);
+    QHash<QString, std::shared_ptr<fls::ModelMaterial>> &defaults = materialDefaultsCache();
+    QStringList missingEntries;
+    QSet<QString> requestedEntries;
+    for (const fls::ManufacturerColor &color : std::as_const(palette.colors)) {
+        const QString entry = materialArchiveEntry(color.materialPath);
+        const QString lowerEntry = entry.toLower();
+        const QString key = archiveKey + QLatin1Char('|') + lowerEntry;
+        if (!entry.isEmpty() && !defaults.contains(key)
+            && !requestedEntries.contains(lowerEntry)) {
+            requestedEntries.insert(lowerEntry);
+            missingEntries.push_back(entry);
+        }
+    }
+
+    const QHash<QString, QByteArray> materialData =
+        fls::readZipEntries(archivePath, missingEntries);
+    for (const QString &entry : missingEntries) {
+        std::shared_ptr<fls::ModelMaterial> material;
+        const QByteArray bytes = materialData.value(entry.toLower());
+        if (!bytes.isEmpty()) {
+            try {
+                material = fls::decodeMaterialBundle(bytes);
+            } catch (const std::exception &) {
+            }
+        }
+        defaults.insert(archiveKey + QLatin1Char('|') + entry.toLower(), material);
+    }
+    for (fls::ManufacturerColor &color : palette.colors) {
+        const QString entry = materialArchiveEntry(color.materialPath);
+        color.material = defaults.value(
+            archiveKey + QLatin1Char('|') + entry.toLower());
+    }
+
+    return palette;
+}
+
+struct PreparedCar {
+    fls::CarModel model;
+    fls::LiveryMaskSet liveryMasks;
+    fls::ManufacturerColorPalette manufacturerColors;
+    std::unique_ptr<QTemporaryDir> extractedCarDir;
+    QString loadedCarPath;
+    QString liveryMasksDir;
+};
+
+std::shared_ptr<PreparedCar> prepareCar(
+    const QString &path, bool loadCarTextures, QString *error) {
+    static QMutex loadMutex;
+    QMutexLocker lock(&loadMutex);
+    QString loadPath = path;
+    std::unique_ptr<QTemporaryDir> extracted;
+    if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
+        extracted = std::make_unique<QTemporaryDir>();
+        if (!extracted->isValid()) {
+            if (error != nullptr) {
+                *error = QStringLiteral("cannot create temporary directory for %1").arg(path);
+            }
+            return {};
+        }
+        if (!fls::extractZipArchive(path, extracted->path(), error)) {
+            return {};
+        }
+        loadPath = findCarbin(extracted->path());
+        if (loadPath.isEmpty()) {
+            if (error != nullptr) {
+                *error = QStringLiteral("zip: no .carbin found in %1").arg(QFileInfo(path).fileName());
+            }
+            return {};
+        }
+    }
+
+    const fls::WheelSizing wheelSizing =
+        wheelSizingForModelCode(QFileInfo(loadPath).completeBaseName());
+    fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+        ? fls::loadCarBin(loadPath, error, wheelSizing)
+        : fls::loadModelBin(loadPath, error);
+    if (model.meshes.empty()) {
+        return {};
+    }
+    appendSharedTireB(model, path, wheelSizing);
+    assignSharedSlotMaterials(model);
+    resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath(), loadCarTextures);
+
+    const QDir carDir = QFileInfo(loadPath).absoluteDir();
+    auto prepared = std::make_shared<PreparedCar>();
+    prepared->model = std::move(model);
+    prepared->manufacturerColors = loadManufacturerColors(carDir.absolutePath(), path);
+    prepared->extractedCarDir = std::move(extracted);
+    prepared->loadedCarPath = path;
+
+    const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
+    if (QFileInfo::exists(masksDir)) {
+        prepared->liveryMasks = fls::loadLiveryMasks(masksDir);
+        prepared->liveryMasksDir = masksDir;
+    }
+
+    return prepared;
 }
 
 } // namespace
@@ -628,58 +932,52 @@ CarPreviewWidget::~CarPreviewWidget() {
     doneCurrent();
 }
 
-bool CarPreviewWidget::loadCar(const QString &path, QString *error) {
-    QString loadPath = path;
-    std::unique_ptr<QTemporaryDir> extracted;
-    if (path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
-        extracted = std::make_unique<QTemporaryDir>();
-        if (!extracted->isValid()) {
-            if (error != nullptr) {
-                *error = QStringLiteral("cannot create temporary directory for %1").arg(path);
+void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback) {
+    const bool loadCarTextures = loadCarTextures_;
+    const quint64 generation = ++carLoadGeneration_;
+    QPointer<CarPreviewWidget> guard(this);
+    QThreadPool::globalInstance()->start(
+        [guard, path, loadCarTextures, generation, callback = std::move(callback)]() mutable {
+            QString error;
+            std::shared_ptr<PreparedCar> prepared =
+                prepareCar(path, loadCarTextures, &error);
+            if (!guard) {
+                return;
             }
-            return false;
-        }
-        if (!fls::extractZipArchive(path, extracted->path(), error)) {
-            return false;
-        }
-        loadPath = findCarbin(extracted->path());
-        if (loadPath.isEmpty()) {
-            if (error != nullptr) {
-                *error = QStringLiteral("zip: no .carbin found in %1").arg(QFileInfo(path).fileName());
-            }
-            return false;
-        }
-    }
+            QMetaObject::invokeMethod(
+                guard,
+                [guard, prepared = std::move(prepared), error = std::move(error),
+                 generation, callback = std::move(callback)]() mutable {
+                    if (!guard || guard->carLoadGeneration_ != generation) {
+                        return;
+                    }
+                    if (!prepared) {
+                        if (callback) {
+                            callback(false, error);
+                        }
+                        return;
+                    }
 
-    fls::CarModel model = loadPath.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
-        ? fls::loadCarBin(loadPath, error)
-        : fls::loadModelBin(loadPath, error);
-    if (model.meshes.empty()) {
-        return false;
-    }
-    appendSharedTireB(model, path);
-    if (loadCarTextures_) {
-        resolveExteriorMaterials(model, path, QFileInfo(loadPath).absolutePath());
-    }
-    model_ = std::move(model);
-    extractedCarDir_ = std::move(extracted);
-    loadedCarPath_ = path;
-    modelUploadPending_ = true;
+                    guard->model_ = std::move(prepared->model);
+                    guard->manufacturerColors_ = std::move(prepared->manufacturerColors);
+                    guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
+                    guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
+                    guard->liveryMasks_ = std::move(prepared->liveryMasks);
+                    guard->liveryMasksDir_ = std::move(prepared->liveryMasksDir);
+                    guard->modelUploadPending_ = true;
+                    guard->liveryMasksPending_ = true;
+                    guard->invalidateCachedLivery();
+                    guard->update();
+                    if (callback) {
+                        callback(true, {});
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+}
 
-    liveryMasks_ = {};
-    const QDir carDir = QFileInfo(loadPath).absoluteDir();
-    const QString masksDir = carDir.filePath(QStringLiteral("LiveryMasks"));
-    if (QFileInfo::exists(masksDir)) {
-        liveryMasks_ = fls::loadLiveryMasks(masksDir);
-        liveryMasksDir_ = masksDir;
-    } else {
-        liveryMasksDir_.clear();
-    }
-    liveryMasksPending_ = true;
-    invalidateCachedLivery();
-
-    update();
-    return true;
+void CarPreviewWidget::cancelCarLoad() {
+    ++carLoadGeneration_;
 }
 
 bool CarPreviewWidget::hasModel() const {
@@ -709,7 +1007,9 @@ QImage CarPreviewWidget::renderThumbnail(const QSize &size) {
 }
 
 void CarPreviewWidget::clearModel() {
+    cancelCarLoad();
     loadedCarPath_.clear();
+    manufacturerColors_ = {};
     if (!hasModel() && !carRenderer_.hasModel()) {
         return;
     }
@@ -766,20 +1066,16 @@ QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
         if (liverySectionSlot >= fls::kLiverySideCount) {
             return {};
         }
-        firstSide = kProjectedSectionToMaskSlot[liverySectionSlot];
-        if (firstSide < 0 || firstSide >= fls::kLiverySideCount) {
-            return {};
-        }
+        firstSide = kLiverySectionMaskSlots[liverySectionSlot];
         lastSide = firstSide + 1;
     }
-    const bool flipSectionX = liverySectionSlot >= 0
-        && liverySectionSlot != 2
-        && liverySectionSlot != 3
-        && liverySectionSlot != 9;
-    const bool flipSectionY = liverySectionSlot == 2
-        || liverySectionSlot == 3
+    const bool flipSectionX = liverySectionSlot == 4
+        || liverySectionSlot == 6
         || liverySectionSlot == 7
-        || liverySectionSlot == 9;
+        || liverySectionSlot == 10;
+    const bool flipSectionY = liverySectionSlot == 4
+        || liverySectionSlot == 7
+        || liverySectionSlot == 10;
     const bool transpose = liverySectionSlot == 5
         || liverySectionSlot == 6
         || liverySectionSlot == 7;
@@ -1100,7 +1396,40 @@ void CarPreviewWidget::paintGL() {
     }
     carRenderer_.render(
         cameraView(), cameraProjection(), liveryTexture, basePaint_,
-        project_ != nullptr ? &project_->liveryPaint : nullptr);
+        project_ != nullptr ? &project_->liveryPaint : nullptr,
+        manufacturerColors_.colors.isEmpty() ? nullptr : &manufacturerColors_,
+        paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
+}
+
+void CarPreviewWidget::setGameFolder(const QString &folder) {
+    if (folder == gameFolder_) {
+        return;
+    }
+    gameFolder_ = folder;
+    const quint64 generation = ++paintFinishLoadGeneration_;
+    if (folder.isEmpty()) {
+        paintFinishes_.clear();
+        update();
+        return;
+    }
+    QPointer<CarPreviewWidget> guard(this);
+    QThreadPool::globalInstance()->start([guard, folder, generation]() {
+        auto library = std::make_shared<fls::PaintFinishLibrary>();
+        library->load(folder);
+        if (!guard) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            guard,
+            [guard, library = std::move(library), generation]() mutable {
+                if (!guard || guard->paintFinishLoadGeneration_ != generation) {
+                    return;
+                }
+                guard->paintFinishes_.replace(std::move(*library));
+                guard->update();
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 void CarPreviewWidget::setLoadCarTextures(bool enabled) {
@@ -1112,10 +1441,11 @@ void CarPreviewWidget::setLoadCarTextures(bool enabled) {
         return;
     }
     const QString path = loadedCarPath_;
-    QString error;
-    if (!loadCar(path, &error)) {
-        qWarning().noquote() << error;
-    }
+    loadCarAsync(path, [](bool loaded, const QString &error) {
+        if (!loaded) {
+            qWarning().noquote() << error;
+        }
+    });
 }
 
 QMatrix4x4 CarPreviewWidget::cameraView() const {
@@ -1152,7 +1482,7 @@ QTransform CarPreviewWidget::liveryWorldToScreen(const QSize &textureSize) const
 void CarPreviewWidget::fitCameraToModel() {
     const fls::ModelVec3 &mn = model_.boundsMin;
     const fls::ModelVec3 &mx = model_.boundsMax;
-    target_ = QVector3D((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
+    target_ = QVector3D(-(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f);
     const QVector3D extent(mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
     modelRadius_ = std::max(0.001f, 0.5f * extent.length());
     distance_ = modelRadius_ * 2.6f;

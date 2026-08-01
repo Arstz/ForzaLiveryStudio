@@ -98,6 +98,7 @@ void ProjectCanvas::setProject(fls::Project *project) {
     cancelPenInteraction();
     cancelLiningInteraction();
     clearBucketPreview();
+    flipCycle_.reset();
     project_ = project;
     guidelines_.draggedOrientation = GuidelineOrientation::None;
     guidelines_.draggedIndex = -1;

@@ -75,6 +75,11 @@ markerless:        u16 count  u16 bitmap_blocks  reserved[2]  bitmap[]
 The bitmap contains one child-type bit per declared direct child. A `60` group
 supplies inherited mask state to its descendants.
 
+Both header fields are byte-scaled copies of each other under a one-byte shift,
+so a control byte in front of a markerless header can read as a header of its own
+whose child count is a whole multiple of 256. A markerless header that is such a
+shifted image of the header one byte later is rejected in favour of the later one.
+
 Livery transform markers terminate in `01`. The transform payload contains
 position, uniform scale, and rotation, followed by an optional signed Y-scale:
 

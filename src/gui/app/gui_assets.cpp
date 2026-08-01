@@ -46,19 +46,23 @@ QIcon themedAssetIcon(const QString &fileName, bool mirrored) {
 
 } // namespace
 
-QString iconAssetPath(const QString &fileName) {
+QString assetPath(const QString &fileName) {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     QStringList candidates;
-    candidates << QDir(appDir).filePath(QStringLiteral("assets/icons/%1").arg(fileName))
-               << QDir(cwd).filePath(QStringLiteral("assets/icons/%1").arg(fileName))
-               << QDir(cwd).filePath(QStringLiteral("cpp-port/assets/icons/%1").arg(fileName));
+    candidates << QDir(appDir).filePath(QStringLiteral("assets/%1").arg(fileName))
+               << QDir(cwd).filePath(QStringLiteral("assets/%1").arg(fileName))
+               << QDir(cwd).filePath(QStringLiteral("cpp-port/assets/%1").arg(fileName));
     for (const QString &path : candidates) {
         if (QFileInfo::exists(path)) {
             return path;
         }
     }
     return candidates.front();
+}
+
+QString iconAssetPath(const QString &fileName) {
+    return assetPath(QStringLiteral("icons/%1").arg(fileName));
 }
 
 QIcon assetIcon(const QString &fileName) {

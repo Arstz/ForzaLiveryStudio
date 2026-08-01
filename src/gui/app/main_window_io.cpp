@@ -384,28 +384,19 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error) {
     }
 
     try {
-        const bool wasLegacyJson =
-            QFileInfo(path).suffix().compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
-        const QString targetPath = wasLegacyJson
-            ? path.chopped(4) + QStringLiteral("3so")
-            : path;
-
         const QByteArray bytes = fls::encodeProjectDocument(state_->project_);
-        QFile file(targetPath);
+        QFile file(path);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            throw std::runtime_error(("could not open project file for writing: " + targetPath).toStdString());
+            throw std::runtime_error(("could not open project file for writing: " + path).toStdString());
         }
         if (file.write(bytes) != bytes.size()) {
             throw std::runtime_error("short write while saving project");
         }
         file.close();
-        if (wasLegacyJson) {
-            QFile::remove(path);
-        }
-        projectJsonPath_ = targetPath;
-        rememberRecentProjectJson(targetPath);
+        projectJsonPath_ = path;
+        rememberRecentProjectJson(path);
         state_->setModified(false);
-        statusBar()->showMessage(QStringLiteral("Saved %1").arg(targetPath), 5000);
+        statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -888,7 +879,7 @@ void MainWindow::loadProjectJsonDialog() {
     const QString path = QFileDialog::getOpenFileName(this,
                                                       QStringLiteral("Open Project"),
                                                       importDialogStartDirectory(this, QStringLiteral("projectJson")),
-                                                      QStringLiteral("Forza Project (*.3so *.json);;All files (*)"));
+                                                      QStringLiteral("Forza Project (*.3so);;All files (*)"));
     if (path.isEmpty()) {
         return;
     }
@@ -958,7 +949,7 @@ void MainWindow::refreshHeaderMetadataWidget() {
     }
 
     if (!state_->hasProject_) {
-        headerMetadata_->setMetadata({}, false, false);
+        headerMetadata_->setMetadata({}, {}, false, false);
         return;
     }
 
@@ -967,8 +958,9 @@ void MainWindow::refreshHeaderMetadataWidget() {
         meta.name = state_->project_.name;
     }
 
-    const bool importedDraft = !state_->project_.sourceHeader.isEmpty();
-    headerMetadata_->setMetadata(meta, importedDraft, true);
+    headerMetadata_->setMetadata(
+        meta, sharedCarRegistry().displayName(state_->project_.carId),
+        true, state_->project_.isLivery);
 }
 
 void MainWindow::showHeaderMetadataDock() {
@@ -991,16 +983,19 @@ void MainWindow::applyHeaderMetadata() {
 
     fls::HeaderMetadata meta = headerMetadata_->metadata();
     meta.carId = static_cast<quint32>(state_->project_.carId);
-    const bool importedDraft = !state_->project_.sourceHeader.isEmpty();
-    const bool rebuild = headerMetadata_->rebuildRequested();
+    const fls::HeaderMetadata current =
+        effectiveHeaderMetadata(state_->project_, creatorName_);
+    if (meta.name == current.name
+        && meta.creatorName == current.creatorName
+        && meta.year == current.year) {
+        return;
+    }
 
     state_->project_.name = meta.name;
     creatorName_ = meta.creatorName;
     QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
 
-    if (!importedDraft || rebuild) {
-        state_->project_.sourceHeader.clear();
-    }
+    state_->project_.sourceHeader.clear();
     state_->project_.headerMetadata = meta;
     state_->setModified(true);
     updateStatus();

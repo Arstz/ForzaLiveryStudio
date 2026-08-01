@@ -1,13 +1,13 @@
 Small changes:
-    -Omit "Horizon group", "Horizon livery" etc strings from showing in the import exprorer. 
-    -Ruler ticks are not contained by the rurels, overflowing into canvas.
+    -Decompose car_renderer
+    -Rename project related functions to drop json naming
+    -Deprecate double check for car model LOD
 
 Medium changes:
-    -Add an Shift held overload to Bucket tool, with Shift held discard the inner holes in the contour.
+    -FLS_BUILD_HELPER_TOOLS OFF should disable testing exe build as well
 
 Big changes:
-    -Add speedpaint caching for telemetry
-    -Apply proper car paint material from ingame files
+    -Add tuning details support for liveries
 
 Manual tasks:
     -Reorganize Setting and Options into categories, add hints for each in Settings with show hint on hover behaviour, detach to a json file for ease of editing

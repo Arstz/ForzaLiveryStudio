@@ -1,17 +1,21 @@
 #include "main_window.h"
 #include "theme_manager.h"
+#include "image_io.h"
+#include "car_model_renderer.h"
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
-#include <QImageReader>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
 
 namespace {
 
 bool isProjectPath(const QString &path) {
-    const QString suffix = QFileInfo(path).suffix();
-    return suffix.compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || suffix.compare(QStringLiteral("json"), Qt::CaseInsensitive) == 0;
+    const QFileInfo info(path);
+    return info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
+        || info.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
 }
 
 void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
@@ -26,7 +30,7 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
         const QString absolutePath = info.absoluteFilePath();
         if (projectPath.isEmpty() && isProjectPath(absolutePath)) {
             projectPath = absolutePath;
-        } else if (!QImageReader::imageFormat(absolutePath).isEmpty()) {
+        } else if (gui::supportedImageSuffixes().contains(info.suffix().toLower())) {
             imagePaths.push_back(absolutePath);
         } else {
             qWarning().noquote() << QStringLiteral("Unsupported startup file: %1").arg(absolutePath);
@@ -35,7 +39,11 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
 
     QString error;
     if (!projectPath.isEmpty()) {
-        if (!window.loadProjectJson(projectPath, &error)) {
+        const bool isLivery = QFileInfo(projectPath).fileName()
+                                  .compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
+        const bool opened = isLivery ? window.importAny(projectPath, &error)
+                                     : window.loadProjectJson(projectPath, &error);
+        if (!opened) {
             qWarning().noquote() << QStringLiteral("Could not open startup project %1: %2")
                                         .arg(projectPath, error);
             window.newProject();
@@ -61,6 +69,22 @@ int main(int argc, char *argv[]) {
     QCoreApplication::setOrganizationName(QStringLiteral("ForzaTools"));
     QCoreApplication::setApplicationName(QStringLiteral("ForzaLiveryStudio"));
     gui::applyUiTheme(app, gui::loadUiTheme());
+
+    if (QCoreApplication::arguments().contains(QStringLiteral("--shadertest"))) {
+        QOffscreenSurface surface;
+        surface.create();
+        QOpenGLContext context;
+        QString result = QStringLiteral("no GL context");
+        if (context.create() && context.makeCurrent(&surface)) {
+            const QString log = gui::CarModelRenderer::shaderSelfTest();
+            result = log.isEmpty() ? QStringLiteral("SHADER OK") : QStringLiteral("SHADER FAIL\n") + log;
+        }
+        QFile out(QStringLiteral("shader_selftest.txt"));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            out.write(result.toUtf8());
+        }
+        return 0;
+    }
 
     gui::MainWindow window;
     openStartupFiles(window, QCoreApplication::arguments().mid(1));

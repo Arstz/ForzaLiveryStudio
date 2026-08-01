@@ -1,6 +1,6 @@
 # Forza Livery Studio
 
-I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion.
+I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion. Preferred communication is via [Discord Channel](https://discord.gg/s5B2tExv3k), but you can leave the issue here as well.
 
 ## Features
 
@@ -25,10 +25,7 @@ All settings as well as custom groups are stored in your QSettings, in the regis
 
 ### Windows
 
-Requirements: Qt6 via vcpkg, Visual Studio 2022 with C++ support, zlib, and CMake 3.24+.
-
-Optional: NVIDIA CUDA Toolkit. When available, the build enables the CUDA differentiable-fill optimizer and deploys its runtime DLL automatically. Without CUDA, the application falls back
-to Direct3D 11 and then CPU evaluation.
+Requirements: Qt6 via vcpkg, C++ compiler, zlib.
 
 Run the build script:
 ```powershell
@@ -40,8 +37,6 @@ See [developer guide](docs/DEV.md) for detailed instructions.
 ### Linux (Arch)
 
 Requirements: Qt6, zlib, CMake 3.24+, C++20 compiler.
-
-Optional: NVIDIA CUDA Toolkit for CUDA-accelerated differentiable fill. Without CUDA, CPU evaluation is used.
 
 Install dependencies:
 
@@ -76,14 +71,14 @@ See [developer guide](docs/DEV.md) for detailed build and development instructio
 
 The import/export for groups is fully supported, core functionality in place. Source-backed liveries can be imported, previewed in 3D on a car model. The icons are handmade, we need a proper designer, I know they are ugly but at least we wont get sued. Livery import/export may have some shape transform mutations due to alingment issues, create an issue and attach a livery if that happens, we will investigate.
 
-| Version     | Group          | Livery        |
-|-------------|----------------|---------------| 
+| Version     | Group          | Livery |
+|-------------|----------------|--------| 
 | Horizon 6   | Import/Export  | Import/Export |
-| Motosport 23| Import         | Import        |
+| Motosport 23| Import         | Import |
 
 ## Documentation
 
-- [**User Manual**](docs/MANUAL.md) - tools, panels, and recommended pipelines.
+- [**User Manual**](docs/MANUAL.md) - keyboard shortcuts, tools, panels, and recommended pipelines.
 - [**Developer Guide**](docs/DEV.md) - build steps, repository layout, code map, and core entry points.
 - [**C_group Binary Format**](docs/CGROUP.md) - technical reference for the vinyl group binary payload.
 - [**C_livery Binary Format**](docs/CLIVERY.md) - technical reference for the livery binary container and embedded groups.
@@ -95,7 +90,7 @@ The import/export for groups is fully supported, core functionality in place. So
 - Did you use AI? - Yes. Initially all of project base has been built in python by hands, but due to performance limitations we decided to port the project to C++. To speed up porting we used AI.
 - When `[FeatureName]`? - Tomorrow.
 - Can I get banned for this? - No.
-- I want `[FeatureName]`, where to request? - Create an issue in this repo.
+- I want `[FeatureName]`, where to request? - in the discord channel "suggestions"
 - Why not Rust? -  https://youtu.be/8ue3PXu3W8Q
 
 ## Credits

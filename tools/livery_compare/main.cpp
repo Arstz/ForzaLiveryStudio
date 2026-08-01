@@ -3,6 +3,7 @@
 #include "header_codec.h"
 #include "vinyl_decoder.h"
 #include "livery_codec.h"
+#include "material_hashes.h"
 #include "cgroup_codec.h"
 #include "layer.h"
 #include "matrix_math.h"
@@ -1156,6 +1157,7 @@ int main(int argc, char *argv[])
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
+    const bool withoutSource = args.removeAll(QStringLiteral("--without-source")) > 0;
     const bool generateSyntheticMode = args.removeAll(QStringLiteral("--generate-synthetic")) > 0;
     const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
     const auto takeOption = [&args](const QString &name) {
@@ -1275,13 +1277,26 @@ int main(int argc, char *argv[])
                     static_cast<long long>(payload.paint.materials.size()),
                     static_cast<long long>(payload.raw.size()), payload.gyvlOffset,
                     static_cast<long long>(payload.body.size()));
-        for (const LiveryPaintMaterial &material : payload.paint.materials) {
-            if (!material.primary.enabled && !material.secondary.enabled
-                && material.manufacturerSelector == 0xffffffffu) {
-                continue;
+        const auto labelHash = [](quint64 hash) -> const char * {
+            using namespace material_hashes::binding;
+            for (int channel = 0; channel < 5; ++channel) {
+                if (hash == kFrontWheelPaint[channel]) {
+                    return "front-wheel";
+                }
+                if (hash == kRearWheelPaint[channel]) {
+                    return "rear-wheel";
+                }
             }
+            for (quint64 known : kLiveryMaterials) {
+                if (hash == known) {
+                    return "body";
+                }
+            }
+            return "";
+        };
+        for (const LiveryPaintMaterial &material : payload.paint.materials) {
             std::printf(
-                "  %016llX primary=%d:%02X%02X%02X%02X secondary=%d:%02X%02X%02X%02X selector=%u finish=%u\n",
+                "  %016llX primary=%d:%02X%02X%02X%02X secondary=%d:%02X%02X%02X%02X selector=%u finish=%u %s\n",
                 static_cast<unsigned long long>(material.materialHash),
                 material.primary.enabled ? 1 : 0,
                 material.primary.bgra[0], material.primary.bgra[1],
@@ -1289,14 +1304,16 @@ int main(int argc, char *argv[])
                 material.secondary.enabled ? 1 : 0,
                 material.secondary.bgra[0], material.secondary.bgra[1],
                 material.secondary.bgra[2], material.secondary.bgra[3],
-                material.manufacturerSelector, material.finish);
+                material.manufacturerSelector, material.finish, labelHash(material.materialHash));
         }
         return 0;
     }
 
     if (exportReencodedMode) {
         if (args.size() < 3) {
-            std::fprintf(stderr, "usage: fls_livery_compare --export-reencoded <liveryFolder> <outputFolder>\n");
+            std::fprintf(
+                stderr,
+                "usage: fls_livery_compare --export-reencoded [--without-source] <liveryFolder> <outputFolder>\n");
             return 2;
         }
         const QString folder = args[1];
@@ -1326,6 +1343,11 @@ int main(int argc, char *argv[])
                     project.name, creatorOption, static_cast<quint32>(project.carId));
             }
             project.headerMetadata->creatorName = creatorOption;
+        }
+        if (withoutSource) {
+            project.sourceFolder.clear();
+            project.sourceHeader.clear();
+            project.liverySource.clear();
         }
         if (nudgeFirstShape && (!project.root || !nudgeFirstBuiltInShape(*project.root))) {
             std::fprintf(stderr, "no built-in shape found to nudge\n");

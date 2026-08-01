@@ -592,6 +592,14 @@ void LayerTreeModel::setProjectSection(const fls::Project *project, const QStrin
     }
 }
 
+void LayerTreeModel::resetSections() {
+    clearSectionCache();
+    previewSignatureCache_.clear();
+    clear();
+    setHorizontalHeaderLabels({QStringLiteral("Layer")});
+    displayParentGroupId_.clear();
+}
+
 void LayerTreeModel::populateGroup(const ProjectLookup &lookup, const fls::scene::Group &group) {
     leafPositions_.clear();
     QStringList order;

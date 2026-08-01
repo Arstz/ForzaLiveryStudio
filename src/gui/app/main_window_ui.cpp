@@ -179,7 +179,8 @@ void MainWindow::setupDocks() {
                                      QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
 
     headerMetadata_ = new HeaderMetadataWidget(this);
-    headerMetadata_->setApplyCallback([this]() { applyHeaderMetadata(); });
+    headerMetadata_->setMetadataChangedCallback([this]() { applyHeaderMetadata(); });
+    headerMetadata_->setChangeTargetCarCallback([this]() { setTargetCarDialog(); });
     headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
                                        QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_, true);
     tabifyDockWidget(detailsDock, headerMetadataDock_);
@@ -251,6 +252,7 @@ void MainWindow::setupDocks() {
 
     carPreview_ = new CarPreviewWidget(this);
     carPreview_->setLoadCarTextures(behaviorSettings.loadCarTextures);
+    carPreview_->setGameFolder(behaviorSettings.gameFolder);
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
     keyBindings_->registerInteraction(
@@ -443,25 +445,6 @@ void MainWindow::distributeSelection(ProjectCanvas::DistributeAxis axis) {
     if (canvas_ == nullptr || !canvas_->distributeSelection(axis)) {
         statusBar()->showMessage(QStringLiteral("Select three or more layers or groups to distribute"), 2500);
     }
-}
-
-void MainWindow::setupProjectMenu() {
-    auto *projectMenu = menuBar()->addMenu(QStringLiteral("&Project"));
-    auto addProjectEntry = [this, projectMenu](const QString &text, const QString &id, const QString &iconName,
-                                               auto slot) {
-        QAction *action = iconName.isEmpty() ? projectMenu->addAction(text)
-                                             : projectMenu->addAction(assetIcon(iconName), text);
-        registerShortcutAction(action, id, text, iconName);
-        addAction(action);
-        connect(action, &QAction::triggered, this, slot);
-        return action;
-    };
-    addProjectEntry(QStringLiteral("&Target Car..."), QStringLiteral("set_target_car"),
-                    QStringLiteral("ImportCar.xpm"), &MainWindow::setTargetCarDialog);
-    addProjectEntry(QStringLiteral("Project &Name..."), QStringLiteral("set_project_name"),
-                    QString(), &MainWindow::setProjectNameDialog);
-    addProjectEntry(QStringLiteral("&Creator Name..."), QStringLiteral("set_creator_name"),
-                    QString(), &MainWindow::setCreatorNameDialog);
 }
 
 void MainWindow::setupImgGenMenu() {
@@ -680,17 +663,21 @@ void MainWindow::importCarModel() {
     if (path.isEmpty()) {
         return;
     }
-    QString error;
-    if (!carPreview_->loadCar(path, &error)) {
-        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("Failed to load car model") : error);
-        return;
-    }
-    if (carPreviewDock_ != nullptr) {
-        carPreviewDock_->show();
-        carPreviewDock_->raise();
-    }
-    updateCarUnwrapOverlay();
-    statusBar()->showMessage(QStringLiteral("Loaded car model: %1").arg(QFileInfo(path).fileName()));
+    statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
+        if (!loaded) {
+            statusBar()->showMessage(
+                error.isEmpty() ? QStringLiteral("Failed to load car model") : error);
+            return;
+        }
+        if (carPreviewDock_ != nullptr) {
+            carPreviewDock_->show();
+            carPreviewDock_->raise();
+        }
+        updateCarUnwrapOverlay();
+        statusBar()->showMessage(
+            QStringLiteral("Loaded car model: %1").arg(QFileInfo(path).fileName()));
+    });
 }
 
 void MainWindow::updateCarUnwrapOverlay() {
@@ -763,7 +750,9 @@ QAction *MainWindow::registerShortcutAction(QAction *action,
         : defaultSequence;
     keyBindings_->registerAction(id, action, currentSequence);
     refreshShortcutActionText(action, id, label, currentSequence);
-    shortcutActions_.push_back({id, label, defaultSequence, currentSequence, action});
+    QString settingsLabel = label;
+    settingsLabel.remove(QLatin1Char('&'));
+    shortcutActions_.push_back({id, settingsLabel, label, defaultSequence, currentSequence, action});
     return action;
 }
 
@@ -791,13 +780,26 @@ void MainWindow::applyShortcutSettings(const QVector<ShortcutSettingsItem> &item
         }
         binding.currentShortcut = it.value();
         keyBindings_->setActionSequence(binding.id, binding.currentShortcut);
-        refreshShortcutActionText(binding.action, binding.id, binding.label, binding.currentShortcut);
+        refreshShortcutActionText(binding.action, binding.id, binding.actionLabel, binding.currentShortcut);
         const QString settingsKey = QStringLiteral("shortcuts/%1").arg(binding.id);
         if (binding.currentShortcut == binding.defaultShortcut) {
             QSettings().remove(settingsKey);
         } else {
             QSettings().setValue(settingsKey, binding.currentShortcut.toString(QKeySequence::PortableText));
         }
+    }
+    if (toolBar_ != nullptr) {
+        for (QAction *action : toolBar_->actions()) {
+            if (auto *button = qobject_cast<QToolButton *>(toolBar_->widgetForAction(action))) {
+                button->adjustSize();
+                button->updateGeometry();
+            }
+        }
+        if (QLayout *layout = toolBar_->layout()) {
+            layout->invalidate();
+            layout->activate();
+        }
+        toolBar_->updateGeometry();
     }
 }
 
@@ -897,6 +899,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (carPreview_ != nullptr) {
         carPreview_->setLiveryTextureScale(settings.liveryTextureScale);
         carPreview_->setLoadCarTextures(settings.loadCarTextures);
+        carPreview_->setGameFolder(settings.gameFolder);
     }
     applyToolbarStyle(settings.verticalToolbar);
     configureAutosaveTimer(settings);
@@ -912,7 +915,7 @@ void MainWindow::configureAutosaveTimer(const BehaviorSettings &settings) {
     if (autosaveTimer_ == nullptr) {
         return;
     }
-    if (settings.autosaveIntervalMinutes <= 0) {
+    if (!settings.autosaveEnabled || settings.autosaveIntervalMinutes <= 0) {
         autosaveTimer_->stop();
         return;
     }

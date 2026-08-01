@@ -2,7 +2,9 @@
 
 #include "core_types.h"
 #include "livery_masks.h"
+#include "manufacturer_colors.h"
 #include "model_geometry.h"
+#include "paint_finish_catalog.h"
 
 #include <QtGui>
 #include <QtOpenGL>
@@ -24,6 +26,7 @@ public:
     void initialize();
     void release();
     bool isInitialized() const;
+    static QString shaderSelfTest();
     bool hasModel() const;
 
     void uploadModel(const fls::CarModel &model);
@@ -40,7 +43,9 @@ public:
                 const QMatrix4x4 &projection,
                 GLuint liveryTexture,
                 const QColor &basePaint,
-                const fls::LiveryPaintState *paintState);
+                const fls::LiveryPaintState *paintState,
+                const fls::ManufacturerColorPalette *manufacturerColors,
+                const fls::PaintFinishLibrary *paintFinishes);
 
 private:
     struct MeshBuffers {
@@ -50,8 +55,10 @@ private:
         int indexCount = 0;
         bool applyLivery = false;
         bool hasDirectLiveryUv = false;
+        bool bodyPaint = false;
         int allowedSides = 0;
         bool translucent = false;
+        bool doubleSided = false;
         float alpha = 1.0f;
         quint64 paintMaterialHash = 0;
         bool hasMaterialColor = false;
@@ -60,6 +67,8 @@ private:
         float emissiveIntensity = 0.0f;
         float gloss = 0.45f;
         float metallic = 0.0f;
+        QString name;
+        QString materialName;
         GLuint diffuseTexture = 0;
         GLuint alphaTexture = 0;
         GLuint normalTexture = 0;
@@ -75,12 +84,26 @@ private:
         qsizetype bytes = 0;
     };
 
+    struct FinishTextureEntry {
+        GLuint pattern = 0;
+        GLuint normal = 0;
+        GLuint surface = 0;
+    };
+
+    GLuint uploadSwatchTexture(const fls::SwatchImage &image);
+    const FinishTextureEntry *ensurePaintFinishTextures(int code, const fls::PaintFinishRender &render);
+    void clearPaintFinishTextures();
+
     static constexpr int kLiverySideCount = fls::kLiverySideCount;
 
     QOpenGLShaderProgram program_;
     std::vector<std::unique_ptr<MeshBuffers>> meshes_;
     QHash<QString, MaterialTextureCacheEntry> materialTextureCache_;
     qsizetype materialTextureCacheBytes_ = 0;
+    QHash<int, FinishTextureEntry> finishTextureCache_;
+    unsigned paintFinishGeneration_ = 0;
+    bool paintFinishTracked_ = false;
+    bool paintDiagnosticsLogged_ = false;
     bool initialized_ = false;
 
     GLuint sideMaskArray_ = 0;
@@ -127,6 +150,17 @@ private:
     int hasNativeNormalLocation_ = -1;
     int hasNativeSurfaceLocation_ = -1;
     int hasNativeEmissiveLocation_ = -1;
+    int finishPatternLocation_ = -1;
+    int finishNormalLocation_ = -1;
+    int finishSurfaceLocation_ = -1;
+    int hasFinishPatternLocation_ = -1;
+    int hasFinishNormalLocation_ = -1;
+    int hasFinishSurfaceLocation_ = -1;
+    int finishSelfColoredLocation_ = -1;
+    int finishTilingLocation_ = -1;
+    int finishFlakeLocation_ = -1;
+    int clearCoatRoughnessLocation_ = -1;
+    int clearCoatIntensityLocation_ = -1;
 };
 
 } // namespace gui

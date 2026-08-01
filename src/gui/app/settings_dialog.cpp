@@ -172,12 +172,19 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     liveryTextureScale_->setValue(std::clamp(behaviorSettings_.liveryTextureScale, 1, 8));
     generalLayout->addRow(QStringLiteral("3D livery texture scale"), liveryTextureScale_);
 
+    autosaveEnabledCheck_ = new QCheckBox(general);
+    autosaveEnabledCheck_->setChecked(behaviorSettings_.autosaveEnabled);
+    generalLayout->addRow(QStringLiteral("Auto Save"), autosaveEnabledCheck_);
+
     autosaveIntervalMinutes_ = new QSpinBox(general);
     autosaveIntervalMinutes_->setRange(0, 1440);
     autosaveIntervalMinutes_->setSingleStep(1);
     autosaveIntervalMinutes_->setSuffix(QStringLiteral(" min"));
     autosaveIntervalMinutes_->setSpecialValueText(QStringLiteral("Disabled"));
     autosaveIntervalMinutes_->setValue(std::clamp(behaviorSettings_.autosaveIntervalMinutes, 0, 1440));
+    autosaveIntervalMinutes_->setEnabled(autosaveEnabledCheck_->isChecked());
+    QObject::connect(autosaveEnabledCheck_, &QCheckBox::toggled,
+                     autosaveIntervalMinutes_, &QWidget::setEnabled);
     generalLayout->addRow(QStringLiteral("Autosave interval"), autosaveIntervalMinutes_);
 
     valueEditingWheelCheck_ = new QCheckBox(general);
@@ -198,21 +205,21 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         auto *rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(8);
-        carModelsFolder_ = new QLineEdit(row);
-        carModelsFolder_->setText(behaviorSettings_.carModelsFolder);
-        carModelsFolder_->setPlaceholderText(QStringLiteral("Folder of extracted car models"));
-        carModelsFolder_->setClearButtonEnabled(true);
+        gameFolder_ = new QLineEdit(row);
+        gameFolder_->setText(behaviorSettings_.gameFolder);
+        gameFolder_->setPlaceholderText(QStringLiteral("Forza game install folder"));
+        gameFolder_->setClearButtonEnabled(true);
         auto *browse = new QPushButton(QStringLiteral("Browse…"), row);
         QObject::connect(browse, &QPushButton::clicked, this, [this]() {
-            const QString start = carModelsFolder_->text().isEmpty() ? QString() : carModelsFolder_->text();
-            const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Car Models Folder"), start);
+            const QString start = gameFolder_->text().isEmpty() ? QString() : gameFolder_->text();
+            const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Forza Game Folder"), start);
             if (!picked.isEmpty()) {
-                carModelsFolder_->setText(picked);
+                gameFolder_->setText(picked);
             }
         });
-        rowLayout->addWidget(carModelsFolder_, 1);
+        rowLayout->addWidget(gameFolder_, 1);
         rowLayout->addWidget(browse);
-        generalLayout->addRow(QStringLiteral("Car models folder"), row);
+        generalLayout->addRow(QStringLiteral("Game folder"), row);
     }
 
     discardModelOnLiveryOpen_ = new QCheckBox(general);
@@ -327,7 +334,7 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     result.valueEditingWheelEnabled = valueEditingWheelCheck_->isChecked();
     result.verticalToolbar = verticalToolbarCheck_->isChecked();
     result.separateOpacityAndSkewTools = separateOpacityAndSkewToolsCheck_->isChecked();
-    result.carModelsFolder = carModelsFolder_->text().trimmed();
+    result.gameFolder = gameFolder_->text().trimmed();
     result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
     result.loadCarTextures = loadCarTextures_->isChecked();
 

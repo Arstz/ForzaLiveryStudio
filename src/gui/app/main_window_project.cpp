@@ -4,6 +4,7 @@
 
 #include "car_preview_widget.h"
 #include "car_registry.h"
+#include "game_paths.h"
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
 #include "header_codec.h"
@@ -11,19 +12,31 @@
 #include "livery_section_bar.h"
 #include "perf_utils.h"
 #include "property_panel.h"
+#include "shapes_browser_widget.h"
 
-#include <QInputDialog>
-#include <QLineEdit>
 #include <QMessageBox>
 
+#include <array>
 #include <exception>
 #include <functional>
+#include <utility>
 
 namespace gui {
 
 using namespace mw_detail;
 
+namespace {
+
+constexpr int kSectionBarLabelSlots[fls::kLiverySideCount] = {
+    0, 1, 2, 4, 3, 5, 6, 7, 8, 10, 9,
+};
+
+} // namespace
+
 void MainWindow::setProject(fls::Project project) {
+    if (carPreview_ != nullptr) {
+        carPreview_->cancelCarLoad();
+    }
     state_->setProject(std::move(project));
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
@@ -32,15 +45,22 @@ void MainWindow::setProject(fls::Project project) {
         canvas_->setProject(&state_->project_);
     }
     if (state_->project_.isLivery) {
+        treeModel_->resetSections();
         rebuildSectionBar();
         prebakeLiverySectionCaches();
     } else {
         sectionBar_->setSections({});
         treeModel_->setProject(&state_->project_);
     }
+    if (shapesBrowser_ != nullptr) {
+        shapesBrowser_->setLiveryContext(state_->project_.isLivery);
+    }
     updateColorPaletteWidget();
     updateClipboardWidget();
     updateStatus();
+    if (carUnwrapAction_ != nullptr) {
+        carUnwrapAction_->setChecked(state_->project_.isLivery);
+    }
     maybeAutoLoadCarForProject();
     updateCarUnwrapOverlay();
 }
@@ -70,23 +90,24 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
         return;
     }
 
-    QString folder = settings.carModelsFolder;
+    QString folder = fls::gameCarsDir(settings.gameFolder);
     if (folder.isEmpty() || !QDir(folder).exists()) {
-        if (!promptedForCarModelsFolder_) {
-            promptedForCarModelsFolder_ = true;
+        if (!promptedForGameFolder_) {
+            promptedForGameFolder_ = true;
             const QMessageBox::StandardButton choice = QMessageBox::question(
-                this, QStringLiteral("Car models folder"),
-                QStringLiteral("This livery targets \"%1\".\n\nChoose the folder that holds your extracted "
-                               "car models so the matching car can be loaded automatically? "
+                this, QStringLiteral("Game folder"),
+                QStringLiteral("This livery targets \"%1\".\n\nChoose your Forza game install folder so the "
+                               "matching car and its paint materials can be loaded automatically? "
                                "(You can also set it later under Settings.)")
                     .arg(modelName.isEmpty() ? modelCode : modelName),
                 QMessageBox::Yes | QMessageBox::No);
             if (choice == QMessageBox::Yes) {
-                const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Car Models Folder"));
+                const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Forza Game Folder"));
                 if (!picked.isEmpty()) {
-                    settings.carModelsFolder = picked;
+                    settings.gameFolder = picked;
                     saveBehaviorSettings(settings);
-                    folder = picked;
+                    carPreview_->setGameFolder(picked);
+                    folder = fls::gameCarsDir(picked);
                 }
             }
         }
@@ -101,16 +122,22 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
             QStringLiteral("No car model matching \"%1\" found in the car models folder").arg(modelCode), 4000);
         return;
     }
-    QString error;
-    if (!carPreview_->loadCar(path, &error)) {
-        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("Failed to auto-load car model") : error, 4000);
-        return;
-    }
-    if (carPreviewDock_ != nullptr) {
-        carPreviewDock_->show();
-        carPreviewDock_->raise();
-    }
-    statusBar()->showMessage(QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
+    statusBar()->showMessage(
+        QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
+        if (!loaded) {
+            statusBar()->showMessage(
+                error.isEmpty() ? QStringLiteral("Failed to auto-load car model") : error, 4000);
+            return;
+        }
+        if (carPreviewDock_ != nullptr) {
+            carPreviewDock_->show();
+            carPreviewDock_->raise();
+        }
+        updateCarUnwrapOverlay();
+        statusBar()->showMessage(
+            QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
+    });
 }
 
 QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const {
@@ -178,12 +205,29 @@ void MainWindow::rebuildSectionBar() {
     if (sectionBar_ == nullptr) {
         return;
     }
+    std::array<fls::scene::Group *, fls::kLiverySideCount> sectionsBySlot{};
+    const QVector<fls::scene::Group *> projectSections = liverySections(state_->project_);
+    for (fls::scene::Group *group : projectSections) {
+        if (group->liverySectionSlot >= 0 && group->liverySectionSlot < fls::kLiverySideCount) {
+            sectionsBySlot[group->liverySectionSlot] = group;
+        }
+    }
+
     QVector<LiverySectionBar::SectionInfo> sections;
-    for (fls::scene::Group *group : liverySections(state_->project_)) {
-        const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(group->id).size());
-        sections.push_back({group->id, group->name, shapeCount,
+    sections.reserve(projectSections.size());
+    for (fls::scene::Group *projectGroup : projectSections) {
+        const int projectSlot = projectGroup->liverySectionSlot;
+        fls::scene::Group *labelGroup = projectGroup;
+        if (projectSlot >= 0 && projectSlot < fls::kLiverySideCount) {
+            if (fls::scene::Group *mappedGroup = sectionsBySlot[kSectionBarLabelSlots[projectSlot]];
+                mappedGroup != nullptr) {
+                labelGroup = mappedGroup;
+            }
+        }
+        const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(projectGroup->id).size());
+        sections.push_back({projectGroup->id, labelGroup->name, shapeCount,
                             fls::kEnforceLiveryShapeLimits
-                                && shapeCount > fls::liverySectionShapeLimit(group->liverySectionSlot)});
+                                && shapeCount > fls::liverySectionShapeLimit(projectGroup->liverySectionSlot)});
     }
     sectionBar_->setSections(sections);
 }
@@ -569,82 +613,29 @@ void MainWindow::setTargetCarDialog() {
     if (carId == state_->project_.carId) {
         return;
     }
-    state_->project_.carId = carId;
+    fls::HeaderMetadata metadata;
     if (state_->project_.headerMetadata) {
-        state_->project_.headerMetadata->carId = static_cast<quint32>(carId);
+        metadata = *state_->project_.headerMetadata;
+    } else {
+        try {
+            metadata = fls::parseHeader(state_->project_.sourceHeader);
+        } catch (const std::exception &) {
+            metadata = fls::defaultDraftHeader(
+                state_->project_.name, creatorName_, static_cast<quint32>(carId));
+        }
     }
+    metadata.carId = static_cast<quint32>(carId);
+    metadata.published = false;
+    metadata.description.clear();
+    state_->project_.carId = carId;
+    state_->project_.sourceHeader.clear();
+    state_->project_.headerMetadata = std::move(metadata);
     state_->setModified(true);
     updateStatus();
+    refreshHeaderMetadataWidget();
     statusBar()->showMessage(
         QStringLiteral("Target car set to %1").arg(sharedCarRegistry().displayName(carId)), 5000);
     maybeAutoLoadCarForProject(true);
-}
-
-void MainWindow::setProjectNameDialog() {
-    if (!state_->hasProject_) {
-        QMessageBox::information(this, QStringLiteral("Project Name"),
-                                 QStringLiteral("Open a project to change its name."));
-        return;
-    }
-    bool ok = false;
-    const QString current = state_->project_.name;
-    const QString name = QInputDialog::getText(this, QStringLiteral("Project Name"),
-                                               QStringLiteral("Project name:"), QLineEdit::Normal, current, &ok);
-    if (!ok) {
-        return;
-    }
-    const QString trimmed = name.trimmed();
-    if (trimmed == current) {
-        return;
-    }
-    state_->project_.name = trimmed;
-    ensureProjectHeaderMetadata().name = trimmed;
-    state_->setModified(true);
-    updateStatus();
-    refreshHeaderMetadataWidget();
-    statusBar()->showMessage(QStringLiteral("Project name updated"), 5000);
-}
-
-void MainWindow::setCreatorNameDialog() {
-    if (!state_->hasProject_) {
-        QMessageBox::information(this, QStringLiteral("Creator Name"),
-                                 QStringLiteral("Open a project to change its creator."));
-        return;
-    }
-    bool ok = false;
-    QString current = state_->project_.headerMetadata ? state_->project_.headerMetadata->creatorName : QString();
-    if (current.isEmpty()) {
-        current = creatorName_;
-    }
-    const QString name = QInputDialog::getText(this, QStringLiteral("Creator Name"),
-                                               QStringLiteral("Creator name:"), QLineEdit::Normal, current, &ok);
-    if (!ok) {
-        return;
-    }
-    const QString trimmed = name.trimmed();
-    if (trimmed == current) {
-        return;
-    }
-    creatorName_ = trimmed;
-    QSettings().setValue(QStringLiteral("header/creatorName"), creatorName_);
-    ensureProjectHeaderMetadata().creatorName = trimmed;
-    state_->setModified(true);
-    updateStatus();
-    refreshHeaderMetadataWidget();
-    statusBar()->showMessage(QStringLiteral("Creator name updated"), 5000);
-}
-
-fls::HeaderMetadata &MainWindow::ensureProjectHeaderMetadata() {
-    if (!state_->project_.headerMetadata) {
-        try {
-            state_->project_.headerMetadata = fls::parseHeader(state_->project_.sourceHeader);
-        } catch (const std::exception &) {
-            state_->project_.headerMetadata = fls::defaultDraftHeader(
-                state_->project_.name, creatorName_, static_cast<quint32>(state_->project_.carId));
-        }
-    }
-
-    return *state_->project_.headerMetadata;
 }
 
 } // namespace gui

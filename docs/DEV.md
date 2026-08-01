@@ -2,7 +2,7 @@
 
 Standalone Qt6/C++ editor for Forza vinyl projects. It imports supported game
 assets, edits vector and guide layers, saves editor project containers, and
-exports grouped `C_group` folders and source-backed `C_livery` folders.
+exports grouped `C_group` folders and `C_livery` folders.
 
 ## Functionality
 
@@ -11,11 +11,13 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   header metadata and thumbnails, routes the selection to the matching decoder,
   and restores its last folder and filters when reopened.
 - Open/save editor projects as a `.3so` container: the editor project JSON
-  wrapped in a gzip stream. The document is the unified scene tree (v2: a recursive
-  `root` of kind-discriminated layer nodes); legacy v1 flat documents and plain-JSON
-  (`.json`) projects still load and are upgraded to v2 on save. Imported livery
-  paint-material colors, selectors, and finishes are stored as project metadata.
-- Drag/drop projects (`.3so`/`.json`), `C_group`/`C_livery` files/folders, and
+  wrapped in a gzip stream. The document is the unified scene tree (a recursive
+  `root` of kind-discriminated layer nodes). Packed `.3so` is the only recognized
+  project file; the legacy v1 flat and plain-`.json` documents are no longer
+  loaded. Imported livery paint-material colors, selectors, and finishes are stored
+  as project metadata. Periodic autosave is enabled by default and can be suspended
+  independently of its configured interval from Settings.
+- Drag/drop projects (`.3so`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette returns to the previously used tool after a successful pick.
@@ -71,7 +73,6 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Edit layer properties: name, shape ID, position, scale, rotation, skew,
   opacity, color, visibility, mask, and lock state. Direct numeric input accepts
   arithmetic expressions with parentheses and `+`, `-`, `*`, `/`, and `%`.
-  The Scale X/Y link applies the same proportional change to both axes.
 - Edit a group or multi-shape selection's position, scale, rotation, and skew as
   a unit: the values transform the selection's bounding box (about its centre)
   rather than each shape in place. A group also carries its own transform frame in
@@ -237,10 +238,10 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   the view centre and grouped into a new group named after the text. A Monospace
   flag (persisted in QSettings) instead advances every glyph by a fixed cell — the
   font's average glyph width, computed separately for upper- and lower-case.
-- Edit header metadata for exported projects, or edit individual project fields
-  directly from the **Project** menu: **Target Car…** (the car a livery is for),
-  **Project Name…**, and **Creator Name…** (the last also persists as the default
-  creator for new projects).
+- Edit project metadata from the Header dock. Name, creator, and year changes
+  rebuild the project header when input finishes. Livery projects also expose
+  their target car and a Change button there. The Project dock remains a
+  read-only summary.
 - Align and distribute the current selection from the **Edit** menu. **Align**
   (Top/Bottom/Left/Right/Horizontal Centre/Vertical Centre) snaps each selected
   top-level unit — a whole group counts as one unit, loose leaves individually —
@@ -251,8 +252,8 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
 - Export through one **Export…** action that writes a grouped (nested) `C_group`
   folder — preserving group structure, nesting, and masks — plus copied sidecars, a
   preview thumbnail, and draft/imported header handling. The same action exports
-  source-backed livery projects while preserving visible section group structure,
-  nesting, and masks. With a
+  imported and newly created livery projects while preserving visible section
+  group structure, nesting, and masks. With a
   car model loaded, livery export writes `bigThumb.webp` from the textured car render.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
@@ -277,18 +278,44 @@ exports grouped `C_group` folders and source-backed `C_livery` folders.
   layers are edited.
   A "reference only" note is pinned in the preview's corner because its material and
   lighting remain a simplified representation of the in-game renderer.
-  When a livery project is opened, the matching car model is auto-loaded from a
-  user-configured **car models folder** (matched by the livery's target car id → the
-  car registry's model code, searched recursively). If the folder is unset the app
-  prompts once to pick it; it can also be set in Settings. A **Discard current model on
-  livery open** option (on by default) controls whether opening a livery replaces the
-  currently loaded model or keeps it. Changing the target car always reloads the
-  matching preview model. Native car texture loading is an opt-in preview
-  setting and is disabled by default.
+  A livery's imported paint state carries, per paintable region, a game **finish**
+  code (a global paint-material enumeration). The preview resolves each code to its
+  real painttype material: the finish catalog decodes the matching `.materialbin`
+  (read from the game's paint-materials archive) into gloss, metallic, and
+  two-tone/self-coloured shading, and loads that material's pattern/normal/surface
+  swatchbin textures (carbon weave, camo, wood, damascus, brushed-metal, packed
+  roughness/metal/AO) from the game's textures archive. The car shader tiles the
+  pattern colour, packed surface, and detail normal over the region and composites
+  the livery on top. Unmapped codes fall back to a small built-in approximation. See
+  `GAMEDATA.md` for where the enumeration, materials, and textures live in the game
+  media folder.
+  Non-paint parts take their real shading from the game's shared `_library` materials:
+  each mesh's materialbin (gloss, F0→metallic, base colour) is decoded and merged in
+  whenever a car loads — this tuning is cheap and always applied, independent of the
+  opt-in texture setting, which now only gates the heavier `.swatchbin` texture uploads.
+  Name-based material heuristics remain as a fallback and yield to the real material
+  data when it resolves. Wheels and tires bind their materials by slot name (their
+  modelbins carry no materialbin path), mapped to the shared wheel/metal/rubber
+  materials; rims stay paintable from the livery paint state. Solid geometry is
+  back-face culled so recessed intakes/grilles stop z-fighting, while glass and the
+  approximated tires/wheel discs render double-sided.
+  When a livery project is opened, the matching car model is auto-loaded in the
+  background from the
+  configured **game folder** (matched by the livery's target car id → the car
+  registry's model code, searched recursively under `media/Cars`). If the folder is
+  unset the app prompts once to pick it; it can also be set in Settings. A **Discard
+  current model on livery open** option (on by default) controls whether opening a
+  livery replaces the currently loaded model or keeps it. Changing the target car
+  always reloads the matching preview model. Native car **texture** loading (the
+  `.swatchbin` pattern/normal/surface maps) is an opt-in preview setting and is
+  disabled by default; material tuning above loads regardless. Model, material,
+  mask, and enabled texture decoding run outside the UI thread.
 - Configure UI theme, canvas, preview-background and guideline colors, layout,
   keybinds, behavior options, guide
-  visibility borders, transform-drag anchors, nudge step sizes, the car models folder,
-  and the discard-model option. Every menu-bar action can be bound to a hotkey in the
+  visibility borders, transform-drag anchors, nudge step sizes, the game folder,
+  and the discard-model option. The single **game folder** (the Forza install root
+  or its `media` directory) is the source for auto-loaded car models and painttype
+  paint materials; every game resource path is derived from it. Every menu-bar action can be bound to a hotkey in the
   keybind settings, even those with no default shortcut.
   Buffer and layer-preview backgrounds independently support theme-default,
   checkerboard, and custom modes. The toolbar can use a vertical icon-only layout.
@@ -306,12 +333,12 @@ translation-only origin transform and shapes packed relative to it, mask groups 
 emitted as `60` records with per-shape trailing mask flags, and nested groups carry
 their own child-type bitmaps. It is not byte-identical to the game's own encoding.
 
-Livery (`C_livery`) export is available through the core and GUI for source-backed
-projects. Visible section groups are emitted as nested records with composed group and
-shape transforms. Mask ancestry and trailing shape-mask state remain represented. A
-terminal masked shape uses the trailing `01` marker after the section walk. Structured
-sections emit inherited mask leads, single-byte group-to-shape state transitions, and
-complete remnants between populated section slots.
+Livery (`C_livery`) export is available through the core and GUI for imported and
+newly created projects. Visible section groups are emitted as nested records with
+composed group and shape transforms. Mask ancestry and trailing shape-mask state
+remain represented. A terminal masked shape uses the trailing `01` marker after
+the section walk. Structured sections emit inherited mask leads, single-byte
+group-to-shape state transitions, and complete positional remnants.
 
 ## Build
 
@@ -413,11 +440,15 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   the executable at build time.
 - `tools/`  Ebuild/utility scripts (`configure.ps1`, `build.ps1`, `run.ps1`,
   `gen_xpm.ps1`, `gen_xpm.py`) plus optional dev-only console harnesses
-  (`livery_compare`, `model_dump`, `pack_decals`). The harnesses are gated behind
-  `FLS_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping. Note: the
-  scripts are Windows-only; on Linux, use CMake directly.
-- `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), and consolidated
-  format notes for Forza Horizon and Forza Motorsport containers, groups,
+  (`livery_compare`, `model_dump`, `pack_decals`, `finish_dump`). `finish_dump`
+  prints each livery paint-finish material's resolved render parameters
+  (`--library <gameFolder>`) or one materialbin's decoded parameters
+  (`--material <file>`), for tracing mis-shaded finishes. The harnesses are gated
+  behind `FLS_BUILD_HELPER_TOOLS` (OFF by default) and are not built for shipping.
+  Note: the scripts are Windows-only; on Linux, use CMake directly.
+- `docs/`  Ethis file, `MANUAL.md` (end-user shortcuts/tools), `GAMEDATA.md`
+  (the game media folder layout and where the resources the editor reads live), and
+  consolidated format notes for Forza Horizon and Forza Motorsport containers, groups,
   liveries, and headers.
 
 ## Code Map
@@ -456,9 +487,23 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     material resources, typed shader parameters, and per-mesh geometry dequant
     (positions/normals/UVs/indices, bone transforms, texture-coordinate transforms).
     Material defaults retain their native texture slots and UV tiling for preview use.
+    Decoded materials also expose derived paint fields (metallic from F0 reflectance,
+    flake amount, flake-normal texture) for painttype finishes.
     Resolved material defaults and decoded textures are retained in bounded runtime caches,
     while uploaded native textures are reused for the lifetime of the preview context.
     No proprietary DLL is required.
+  - `material_hashes.h`: shared paint-binding and material-parameter hash
+    catalogue used by container encoding, model decoding, texture selection, and
+    preview paint binding.
+  - `manufacturer_colors.*`: decodes the car-specific manufacturer paint
+    palette and its material bindings.
+  - `paint_finish_catalog.*`: the global livery-material enumeration (finish code →
+    display name → painttype `.materialbin` stem → category) plus `PaintFinishLibrary`,
+    which decodes each material into `PaintFinishRender` shading parameters keyed by
+    finish code. Reads materials from the game's paint-materials archive or a loose
+    folder of materialbins.
+  - `game_paths.*`: resolves resource locations (media dir, `Cars`, the paint
+    materials/textures archives) from one game install folder.
   - `car_scene.*`: `.carbin` reader (ported from CarbinParser) — parses the part
     list, resolves each referenced `.modelbin` next to the carbin, and bakes each
     part's transform (× its own skeleton bone) into a merged `CarModel`. Stock
@@ -522,7 +567,14 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     transformed mesh UV3, converts backing-texture coordinates into the mask atlas,
     resolves coverage from the swatch texture array, normalizes section coordinates,
     samples separate packed paint regions, and shades non-paint materials with native
-    diffuse, alpha, normal, surface, and emissive maps. Meshes without usable UV3 fall back to
+    diffuse, alpha, normal, surface, and emissive maps. Paintable regions take their
+    gloss/metallic/flake and two-tone/self-coloured shading from the finish resolved
+    through `PaintFinishLibrary` for the region's livery finish code; flake finishes add
+    a procedural per-cell sparkle gated to the highlight. Non-paint meshes prefer their
+    resolved `_library` material's gloss/metallic (falling back to name heuristics only
+    when unresolved). Solid meshes are back-face culled (the whole car draws through an
+    X-mirror, so front faces are `GL_CW`); wheels, tires, and translucent surfaces are
+    marked double-sided. Meshes without usable UV3 fall back to
     registered planar projection using the model scene, mask boundary, part metadata,
     and locator landmarks. It uploads only each part's highest LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
@@ -537,6 +589,15 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     from `EditorState` change signals. Imported `C_livery` sections are rendered into
     isolated packed regions derived from `Masks.xml`; section axes are normalized in the
     preview copy and sampling path without mutating decoded section/group transforms.
+    Its model preparation runs on a background worker and resolves each
+    exterior/wheel/tire mesh's shared `_library` material:
+    `resolveExteriorMaterials` merges the material defaults always and loads the
+    swatchbin textures only when the opt-in setting is on; `assignSharedSlotMaterials`
+    synthesizes a materialbin path for wheel slot names that carry none. Resolved
+    materials are flagged so the renderer prefers them over name heuristics.
+    Manufacturer paint selectors resolve through the loaded car's paint palette
+    and shared material tuning. Decoded
+    material defaults and native textures are held in bounded process-wide caches.
   - Dockable panels and their support: property editing (single/multi/group/
     guide, live color, numeric-label dragging, mixed values); the tree view with
     sibling-only drag/drop reordering, row badges, and thumbnails; the
@@ -561,11 +622,13 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
   `readFM2023LiveryPayload()` / `decodeFM2023LiverySections()`
 - `buildFlatPayload()` / `buildNestedPayload()`
 - `exportFlatProjectFolder()` / `exportNestedProjectFolder()`
-- `projectToJson()` / `projectFromJson()` (v2 scene-tree JSON; v1 flat loader kept)
+- `projectToJson()` / `projectFromJson()` (scene-tree JSON; requires a `root` node)
 - `Project::root` (`scene::Group`, canonical runtime scene tree)
 - `scene::sceneTreeToJson()` / `scene::sceneTreeFromJson()`
 - `encodeProjectDocument()` / `decodeProjectDocument()` (`.3so` gzip container)
 - `parseHeader()` / `buildHeader()` / `defaultDraftHeader()`
+- `paintFinishTable()` / `PaintFinishLibrary::load()` / `findPaintFinish()`
+- `gameMediaDir()` / `gameCarsDir()` / `gamePaintMaterialsArchive()`
 
 ## Privacy Policy Build Flag
 

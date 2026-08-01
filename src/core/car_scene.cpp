@@ -1,6 +1,7 @@
 #include "car_scene.h"
 
 #include "binary_io.h"
+#include "material_hashes.h"
 #include "model_bundle.h"
 #include "model_material.h"
 
@@ -11,6 +12,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -21,6 +23,44 @@ namespace fls {
 using fls::detail::readLeFloat;
 using fls::detail::readLeU16;
 using fls::detail::readLeU32;
+
+// The shared wheel and tyre models in _library/scene carry no size of their own: every one of
+// them is normalised to the same canonical rim radius, with the axial X spanning 0..1 across the
+// wheel width. The real dimensions come from the axle's tyre spec, read the way a sidewall states
+// it — section width, aspect ratio, rim diameter. These are shared by the wheel bake and the
+// approximated tyre.
+constexpr float kCanonRimRadial = 0.1397f;  // normalised rim outer == tyre inner bead
+constexpr float kMetresPerInch = 0.0254f;
+constexpr float kMetresPerMillimetre = 0.001f;
+constexpr float kPercent = 0.01f;
+constexpr float kMaxHubReach = 0.25f;  // furthest a corner part is moved to meet its hub
+
+float rimRadiusMetres(const AxleSizing &axle) {
+    return axle.rimDiameterInches * kMetresPerInch * 0.5f;
+}
+
+float tireWidthMetres(const AxleSizing &axle) {
+    return axle.tireWidthMillimetres * kMetresPerMillimetre;
+}
+
+float tireRadiusMetres(const AxleSizing &axle) {
+    return rimRadiusMetres(axle) + tireWidthMetres(axle) * axle.tireAspectPercent * kPercent;
+}
+
+float wheelRadialScale(const AxleSizing &axle) {
+    return rimRadiusMetres(axle) / kCanonRimRadial;
+}
+
+// Where the corner belongs in car space. The carbin places wheels in an authoring pose whose X
+// and Y are unreliable — some cars carry round placeholders — while its Z agrees with the stated
+// wheelbase, so only the two bad axes are replaced.
+float wheelCentreOffsetMetres(const AxleSizing &axle) {
+    return axle.trackOuterMetres * 0.5f - tireWidthMetres(axle) * 0.5f;
+}
+
+float wheelCentreHeightMetres(const AxleSizing &axle) {
+    return tireRadiusMetres(axle) - axle.rideHeightMetres;
+}
 
 namespace {
 
@@ -378,15 +418,89 @@ bool isWheelModelPath(QString path) {
     return path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive);
 }
 
-void bakeWheelTransform(CarMesh &mesh) {
-    constexpr float radialScale = 1.632857f;
+// Corner parts — wheel, rotor, caliper, suspension arm — name the bone of the corner they belong
+// to, so the suffix says which one and which side without relying on the placement itself.
+enum Corner { kCornerLF, kCornerRF, kCornerLR, kCornerRR, kCornerCount };
+
+int cornerFromBoneName(const QString &boneName) {
+    static const QLatin1String suffixes[kCornerCount] = {
+        QLatin1String("LF"), QLatin1String("RF"), QLatin1String("LR"), QLatin1String("RR")};
+    for (int corner = 0; corner < kCornerCount; ++corner) {
+        if (boneName.endsWith(suffixes[corner], Qt::CaseInsensitive)) {
+            return corner;
+        }
+    }
+    return -1;
+}
+
+bool isFrontCorner(int corner) {
+    return corner == kCornerLF || corner == kCornerRF;
+}
+
+bool isLeftCorner(int corner) {
+    return corner == kCornerLF || corner == kCornerLR;
+}
+
+bool isBrakeRotorPath(QString path) {
+    path.replace('\\', '/');
+    return path.contains(QStringLiteral("/rotors/"), Qt::CaseInsensitive);
+}
+
+// The rotor and its caliper ride on the hub, so they follow the rim rather than the pose the
+// carbin authored them against.
+bool isHubMountedPath(QString path) {
+    path.replace('\\', '/');
+    return path.contains(QStringLiteral("/rotors/"), Qt::CaseInsensitive)
+        || path.contains(QStringLiteral("/calipers/"), Qt::CaseInsensitive);
+}
+
+// Car-space X span of a model, taken from the bundle's own bounding box so the caller does not
+// have to decode geometry to find where a part reaches.
+bool modelSpanX(const ModelBundle &bundle, const ModelMat4 &instance, float &minX, float &maxX) {
+    for (const BundleBlobRecord *blob : bundle.blobsWithTag(bundle_tags::Model)) {
+        if (!blob->bbox) {
+            continue;
+        }
+        const std::array<float, 6> &box = *blob->bbox;
+        minX = std::numeric_limits<float>::max();
+        maxX = std::numeric_limits<float>::lowest();
+        for (int corner = 0; corner < 8; ++corner) {
+            const ModelVec3 point{(corner & 1) ? box[3] : box[0],
+                                  (corner & 2) ? box[4] : box[1],
+                                  (corner & 4) ? box[5] : box[2]};
+            const float x = instance.transformPoint(point).x;
+            minX = std::min(minX, x);
+            maxX = std::max(maxX, x);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Stand-ins the game draws instead of the wheel itself: the blur slots hold the full-radius discs
+// it swaps in for a spinning wheel, and the black slot a shell laid over the barrel to read as
+// unlit depth. Both sit on top of the geometry they stand for, so a static render wants neither.
+bool isWheelStandInSlot(const QString &materialName) {
+    return materialName.startsWith(QStringLiteral("blur"), Qt::CaseInsensitive)
+        || materialName.compare(QStringLiteral("black"), Qt::CaseInsensitive) == 0;
+}
+
+// The model's axial X runs from the outboard face at 0 to the inboard rim edge at 1, and the
+// plane the part transform positions is the wheel's mid-width, so X maps onto the axle directly.
+void bakeWheelTransform(CarMesh &mesh, const AxleSizing &axle) {
+    const float radialScale = wheelRadialScale(axle);
+    const float widthScale = tireWidthMetres(axle);
     for (ModelVec3 &position : mesh.positions) {
         position = mesh.boneTransform.transformPoint(
-            {-position.x, position.y * radialScale, -position.z * radialScale});
+            {(position.x - 0.5f) * widthScale,
+             position.y * radialScale,
+             position.z * radialScale});
     }
     for (ModelVec3 &normal : mesh.normals) {
         normal = mesh.boneTransform.transformVector(
-            {-normal.x, normal.y / radialScale, -normal.z / radialScale});
+            {normal.x / widthScale,
+             normal.y / radialScale,
+             normal.z / radialScale});
         const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
         if (length > 0.000001f) {
             normal.x /= length;
@@ -428,19 +542,13 @@ bool frontWheel(const PartInstance &part, const CarMesh &mesh) {
 }
 
 quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh) {
-    static constexpr quint64 Front[] = {
-        0xB8925E450764DE78ull, 0x15EDB6869EFC7F22ull, 0x2407D33BE191E83Dull,
-        0x564DF80BF320D318ull, 0x818BB1EF6C704F11ull,
-    };
-    static constexpr quint64 Rear[] = {
-        0x6613B1E8FA7AE743ull, 0x3A3CBDA8CF17E711ull, 0xC338EA21477FD950ull,
-        0x0F1580E714EA9063ull, 0x874E9585EAB6EF64ull,
-    };
     const int channel = wheelPaintChannel(mesh.materialName);
     if (channel < 0) {
         return 0;
     }
-    return frontWheel(part, mesh) ? Front[channel] : Rear[channel];
+    return frontWheel(part, mesh)
+        ? material_hashes::binding::kFrontWheelPaint[channel]
+        : material_hashes::binding::kRearWheelPaint[channel];
 }
 
 std::vector<CarLocator> loadCarLocators(const QString &carbinDir) {
@@ -505,6 +613,30 @@ QString resolvePath(const QString &gamePath, const QString &carbinDir, const QSt
     return QDir(carbinDir).filePath(tail);
 }
 
+// A part whose transform carries no translation is placed entirely by the bone it names, which
+// belongs to the car skeleton rather than the part's own bundle.
+bool placedByBoneAlone(const PartInstance &part) {
+    const ModelMat4 &t = part.transform;
+    return !part.boneName.isEmpty()
+        && part.boneName.compare(QStringLiteral("<root>"), Qt::CaseInsensitive) != 0
+        && std::abs(t.m[12]) < 0.000001f
+        && std::abs(t.m[13]) < 0.000001f
+        && std::abs(t.m[14]) < 0.000001f;
+}
+
+std::vector<SkeletonBone> loadCarSkeleton(
+    const QString &skeletonPath, const QString &carbinDir, const QString &mediaName) {
+    QFile file(resolvePath(skeletonPath, carbinDir, mediaName));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    try {
+        return loadSkeletonBones(parseModelBundle(file.readAll()));
+    } catch (const std::exception &) {
+        return {};
+    }
+}
+
 const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QString &name, qint16 id) {
     if (!name.isEmpty()) {
         for (const SkeletonBone &bone : bones) {
@@ -512,6 +644,12 @@ const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QStri
                 return &bone;
             }
         }
+        // A bone name was requested but this part's local model-bundle skeleton doesn't contain
+        // it: the numeric boneId indexes the *global* car skeleton, not this local one, so
+        // bones[id] here would attach the part to an unrelated local bone and misplace it (e.g.
+        // Ultima's spindleLF -> local root_boneTrunk flings the wheel/brake into the air). The
+        // part transform already carries the correct world placement, so fall back to no bone.
+        return nullptr;
     }
     if (id >= 0 && id < static_cast<qint16>(bones.size())) {
         return &bones[id];
@@ -521,7 +659,7 @@ const SkeletonBone *findBone(const std::vector<SkeletonBone> &bones, const QStri
 
 } // namespace
 
-CarModel loadCarBin(const QString &path, QString *error) {
+CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &wheels) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) {
@@ -545,7 +683,8 @@ CarModel loadCarBin(const QString &path, QString *error) {
     }
 
     const QString carbinDir = QFileInfo(path).absolutePath();
-    (void)skeletonPath;
+    const std::vector<SkeletonBone> carSkeleton =
+        loadCarSkeleton(skeletonPath, carbinDir, mediaName);
 
     CarModel car;
     car.sourcePath = path;
@@ -563,6 +702,63 @@ CarModel loadCarBin(const QString &path, QString *error) {
     }
     QSet<QString> loadedParts;
     int modelInstanceId = 0;
+
+    // Every part of a corner moves with its wheel, so the whole assembly stays together.
+    struct CornerPlacement {
+        ModelVec3 centre;
+        float shiftX = 0.0f;
+        float shiftY = 0.0f;
+        bool known = false;
+    };
+    std::array<CornerPlacement, kCornerCount> cornerPlacements;
+    for (const PartInstance &part : parts.projection) {
+        const int corner = cornerFromBoneName(part.boneName);
+        if (corner < 0 || cornerPlacements[corner].known || !isWheelModelPath(part.path)) {
+            continue;
+        }
+        const AxleSizing &axle = isFrontCorner(corner) ? wheels.front : wheels.rear;
+        const float side = isLeftCorner(corner) ? -1.0f : 1.0f;
+        CornerPlacement &placement = cornerPlacements[corner];
+        placement.centre = {side * wheelCentreOffsetMetres(axle),
+                            wheelCentreHeightMetres(axle),
+                            part.transform.m[14]};
+        placement.shiftX = placement.centre.x - part.transform.m[12];
+        placement.shiftY = placement.centre.y - part.transform.m[13];
+        placement.known = true;
+    }
+
+    // The rotor's outer face is the wheel's mounting plane, so it is seated on the rim's centre
+    // and the rest of the corner hangs off it: the caliper rides along, and the suspension arm
+    // reaches the rotor's inboard face.
+    std::array<float, kCornerCount> hubShiftX{};
+    std::array<float, kCornerCount> hubFaceX{};
+    std::array<bool, kCornerCount> hubFaceKnown{};
+    for (const PartInstance &part : parts.projection) {
+        const int corner = cornerFromBoneName(part.boneName);
+        if (corner < 0 || hubFaceKnown[corner] || !isBrakeRotorPath(part.path)
+            || !cornerPlacements[corner].known) {
+            continue;
+        }
+        QFile rotorFile(resolvePath(part.path, carbinDir, mediaName));
+        if (!rotorFile.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        const CornerPlacement &placement = cornerPlacements[corner];
+        ModelMat4 instance = part.transform;
+        instance.m[12] += placement.shiftX;
+        instance.m[13] += placement.shiftY;
+        float minX = 0.0f;
+        float maxX = 0.0f;
+        try {
+            if (modelSpanX(parseModelBundle(rotorFile.readAll()), instance, minX, maxX)) {
+                const bool left = isLeftCorner(corner);
+                hubShiftX[corner] = placement.centre.x - (left ? minX : maxX);
+                hubFaceX[corner] = (left ? maxX : minX) + hubShiftX[corner];
+                hubFaceKnown[corner] = true;
+            }
+        } catch (const std::exception &) {
+        }
+    }
 
     for (const PartInstance &part : parts.projection) {
         const int currentInstanceId = modelInstanceId++;
@@ -588,13 +784,48 @@ CarModel loadCarBin(const QString &path, QString *error) {
             continue;
         }
 
+        const bool boneOnly = placedByBoneAlone(part);
+        const int corner = cornerFromBoneName(part.boneName);
         ModelMat4 instance = part.transform;
         const std::vector<SkeletonBone> partSkeleton = loadSkeletonBones(bundle);
         if (const SkeletonBone *bone = findBone(partSkeleton, part.boneName, part.boneId)) {
             instance = matMul(part.transform, bone->world);
+        } else if (boneOnly) {
+            if (const SkeletonBone *carBone = findBone(carSkeleton, part.boneName, -1)) {
+                instance = carBone->world;
+            }
+        }
+        if (corner >= 0 && cornerPlacements[corner].known) {
+            const CornerPlacement &placement = cornerPlacements[corner];
+            if (boneOnly) {
+                instance.m[12] = placement.centre.x;
+                instance.m[13] = placement.centre.y;
+                instance.m[14] = placement.centre.z;
+            } else {
+                instance.m[12] += placement.shiftX;
+                instance.m[13] += placement.shiftY;
+            }
+        }
+        if (corner >= 0 && hubFaceKnown[corner] && isHubMountedPath(part.path)) {
+            instance.m[12] += hubShiftX[corner];
+        }
+        if (corner >= 0 && boneOnly && hubFaceKnown[corner]) {
+            float minX = 0.0f;
+            float maxX = 0.0f;
+            if (modelSpanX(bundle, instance, minX, maxX)) {
+                const float reach = hubFaceX[corner] - (isLeftCorner(corner) ? minX : maxX);
+                // A part that would have to travel this far to reach the hub spans more than one
+                // corner — a beam axle rather than an arm — and belongs where the corner put it.
+                if (std::abs(reach) <= kMaxHubReach) {
+                    instance.m[12] += reach;
+                }
+            }
         }
 
         for (CarMesh &mesh : model.meshes) {
+            if (isWheelModelPath(part.path) && isWheelStandInSlot(mesh.materialName)) {
+                continue;
+            }
             mesh.sourceModelPath = part.path;
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             mesh.carPartType = part.partType;
@@ -602,7 +833,8 @@ CarModel loadCarBin(const QString &path, QString *error) {
             mesh.stockPart = stock;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
-                bakeWheelTransform(mesh);
+                const bool front = corner >= 0 ? isFrontCorner(corner) : frontWheel(part, mesh);
+                bakeWheelTransform(mesh, front ? wheels.front : wheels.rear);
                 if (mesh.paintMaterialHash == 0) {
                     mesh.paintMaterialHash = wheelPaintHash(part, mesh);
                 }
@@ -641,7 +873,8 @@ CarModel loadCarBin(const QString &path, QString *error) {
 }
 
 void appendApproximateTires(
-    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate) {
+    CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate,
+    const WheelSizing &wheels) {
     struct MountBounds {
         float minX = std::numeric_limits<float>::max();
         float minY = minX;
@@ -678,6 +911,7 @@ void appendApproximateTires(
     struct TemplateBounds {
         float minX = std::numeric_limits<float>::max();
         float maxX = std::numeric_limits<float>::lowest();
+        float beadRadius = std::numeric_limits<float>::max();
         float radius = 0.0f;
     };
     const auto templateBounds = [](const CarModel &source) {
@@ -688,18 +922,17 @@ void appendApproximateTires(
             }
             for (const ModelVec3 &position : mesh.positions) {
                 const ModelVec3 p = mesh.boneTransform.transformPoint(position);
+                const float radius = std::hypot(p.y, p.z);
                 bounds.minX = std::min(bounds.minX, p.x);
                 bounds.maxX = std::max(bounds.maxX, p.x);
-                bounds.radius = std::max(bounds.radius, std::hypot(p.y, p.z));
+                bounds.beadRadius = std::min(bounds.beadRadius, radius);
+                bounds.radius = std::max(bounds.radius, radius);
             }
         }
         return bounds;
     };
     const TemplateBounds leftBounds = templateBounds(leftTemplate);
     const TemplateBounds rightBounds = templateBounds(rightTemplate);
-
-    constexpr float widthToRimRadius = 0.305f / 0.2286f;
-    constexpr float tireToRimRadius = 0.3201f / 0.2286f;
 
     for (const auto &[sourceInstanceId, bounds] : mounts) {
         (void)sourceInstanceId;
@@ -709,14 +942,16 @@ void appendApproximateTires(
         const float side = bounds.minX + bounds.maxX >= 0.0f ? 1.0f : -1.0f;
         const float centerY = (bounds.minY + bounds.maxY) * 0.5f;
         const float centerZ = (bounds.minZ + bounds.maxZ) * 0.5f;
-        const float rimRadius = std::max(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ) * 0.5f;
-        const float tireWidth = rimRadius * widthToRimRadius;
-        const float tireRadius = rimRadius * tireToRimRadius;
+        const AxleSizing &axle = centerZ >= 0.0f ? wheels.front : wheels.rear;
+        const float mountRadius = std::max(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ) * 0.5f;
+        const float rimRadius = rimRadiusMetres(axle);
+        const float tireWidth = tireWidthMetres(axle);
+        const float tireRadius = tireRadiusMetres(axle);
         std::vector<float> lipSamples;
         lipSamples.reserve(bounds.positions.size());
         for (const ModelVec3 &position : bounds.positions) {
             const float radius = std::hypot(position.y - centerY, position.z - centerZ);
-            if (radius >= rimRadius * 0.82f) {
+            if (radius >= mountRadius * 0.82f) {
                 lipSamples.push_back(side * position.x);
             }
         }
@@ -733,8 +968,17 @@ void appendApproximateTires(
             continue;
         }
         const float sourceCenterX = (sourceBounds.minX + sourceBounds.maxX) * 0.5f;
+        const float sidewallSpan = sourceBounds.radius - sourceBounds.beadRadius;
         const float axialScale = tireWidth / sourceWidth;
-        const float radialScale = tireRadius / sourceBounds.radius;
+        // The bead sits just clear of the rim in the shipped models; scaling it by the rim's own
+        // factor keeps that gap, where seating it flat on the rim radius makes the two surfaces
+        // coincide and fight.
+        const float beadSeatRadius = sourceBounds.beadRadius * rimRadius / kCanonRimRadial;
+        // The template's own bead-to-tread proportion only matches the axle's at one aspect
+        // ratio, so the sidewall is stretched to reach the tyre radius rather than scaled whole.
+        const float sidewallScale = sidewallSpan > 0.000001f
+            ? (tireRadius - beadSeatRadius) / sidewallSpan
+            : tireRadius / sourceBounds.radius;
         const int instanceId = nextInstanceId++;
 
         for (const CarMesh &sourceMesh : source.meshes) {
@@ -745,27 +989,38 @@ void appendApproximateTires(
             mesh.paintMaterialHash = 0;
             mesh.boneTransform = ModelMat4{};
 
-            for (ModelVec3 &position : mesh.positions) {
-                const ModelVec3 p = sourceMesh.boneTransform.transformPoint(position);
-                position = {
+            for (size_t i = 0; i < mesh.positions.size(); ++i) {
+                const ModelVec3 p = sourceMesh.boneTransform.transformPoint(sourceMesh.positions[i]);
+                const float sourceRadius = std::hypot(p.y, p.z);
+                const float hoopScale = sourceRadius > 0.000001f
+                    ? (beadSeatRadius + (sourceRadius - sourceBounds.beadRadius) * sidewallScale)
+                        / sourceRadius
+                    : 1.0f;
+
+                mesh.positions[i] = {
                     centerX - side * (p.x - sourceCenterX) * axialScale,
-                    centerY + p.y * radialScale,
-                    centerZ + p.z * radialScale,
+                    centerY + p.y * hoopScale,
+                    centerZ + p.z * hoopScale,
                 };
+                const ModelVec3 &position = mesh.positions[i];
                 car.boundsMin.x = std::min(car.boundsMin.x, position.x);
                 car.boundsMin.y = std::min(car.boundsMin.y, position.y);
                 car.boundsMin.z = std::min(car.boundsMin.z, position.z);
                 car.boundsMax.x = std::max(car.boundsMax.x, position.x);
                 car.boundsMax.y = std::max(car.boundsMax.y, position.y);
                 car.boundsMax.z = std::max(car.boundsMax.z, position.z);
-            }
-            for (ModelVec3 &normal : mesh.normals) {
-                normal = sourceMesh.boneTransform.transformVector(normal);
-                normal = {
-                    normal.x / (-side * axialScale),
-                    normal.y / radialScale,
-                    normal.z / radialScale,
-                };
+
+                if (i >= mesh.normals.size() || sourceRadius <= 0.000001f) {
+                    continue;
+                }
+                const ModelVec3 n = sourceMesh.boneTransform.transformVector(sourceMesh.normals[i]);
+                const float radialY = p.y / sourceRadius;
+                const float radialZ = p.z / sourceRadius;
+                const float alongRadius = (n.y * radialY + n.z * radialZ) / sidewallScale;
+                const float aroundRim = (n.y * -radialZ + n.z * radialY) / hoopScale;
+                ModelVec3 normal{n.x / (-side * axialScale),
+                                 alongRadius * radialY + aroundRim * -radialZ,
+                                 alongRadius * radialZ + aroundRim * radialY};
                 const float length = std::sqrt(
                     normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
                 if (length > 0.000001f) {
@@ -773,6 +1028,7 @@ void appendApproximateTires(
                     normal.y /= length;
                     normal.z /= length;
                 }
+                mesh.normals[i] = normal;
             }
             car.meshes.push_back(std::move(mesh));
         }

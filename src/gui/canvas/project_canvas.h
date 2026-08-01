@@ -334,6 +334,14 @@ private:
         double referenceRotation = 0.0;
     };
 
+    struct FlipCycleState {
+        QVector<QString> targetIds;
+        QHash<QString, fls::scene::Transform2D> baseline;
+        QHash<QString, fls::scene::Transform2D> expected;
+        QRectF bounds;
+        int step = 0;
+    };
+
     struct CanvasOptions {
         QColor canvasColor;
         QSize borderResolution = kDefaultVisibilityBorderResolution;
@@ -539,6 +547,7 @@ private:
     FlashState flash_;
     mutable QHash<QString, QImage> guideImageCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
+    std::optional<FlipCycleState> flipCycle_;
     QImage carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;
     RegionOverlayState region_;

@@ -106,8 +106,6 @@ private:
     void exportDialog();
     bool exportFolderImpl(const QString &folder, QString *error);
     void setTargetCarDialog();
-    void setProjectNameDialog();
-    void setCreatorNameDialog();
     void newProjectDialog();
     void saveProjectJsonDialog();
     void saveProjectJsonAsDialog();
@@ -193,7 +191,6 @@ private:
     bool loadImportedProject(const std::function<fls::Project()> &load,
                              const QString &statusMessage,
                              QString *error);
-    fls::HeaderMetadata &ensureProjectHeaderMetadata();
     enum class ExternalDropKind {
         Unsupported,
         ProjectJson,
@@ -221,7 +218,6 @@ private:
     void connectEditorStateSignals();
     void setupFileMenu();
     void setupEditMenu();
-    void setupProjectMenu();
     void setupImgGenMenu();
     void setupOptionsMenu();
     void setupToolbar();
@@ -264,7 +260,7 @@ private:
     QVector<QPersistentModelIndex> autoExpandedTreeIndexes_;
     QStringList autoExpandedGroupIds_;
     bool dockResizeCursorOverrideActive_ = false;
-    bool promptedForCarModelsFolder_ = false;
+    bool promptedForGameFolder_ = false;
     struct DockAreaCollapseState {
         Qt::DockWidgetArea area = Qt::NoDockWidgetArea;
         bool collapsed = false;
@@ -287,6 +283,7 @@ private:
     struct ShortcutAction {
         QString id;
         QString label;
+        QString actionLabel;
         QKeySequence defaultShortcut;
         QKeySequence currentShortcut;
         QAction *action = nullptr;

@@ -1,5 +1,6 @@
 #include "car_scene.h"
 #include "livery_masks.h"
+#include "manufacturer_colors.h"
 #include "model_geometry.h"
 #include "model_material.h"
 #include "swatchbin.h"
@@ -8,6 +9,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QString>
 #include <QTemporaryDir>
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <string>
@@ -377,6 +380,35 @@ static int dumpSwatchbin(const QString &path)
     return 0;
 }
 
+static int dumpManufacturerColors(const QString &carbinPath)
+{
+    const QString path =
+        QFileInfo(carbinPath).absoluteDir().filePath(QStringLiteral("ManufacturerColors.bin"));
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        std::fprintf(stderr, "could not open %s\n", qPrintable(path));
+        return 1;
+    }
+
+    try {
+        const ManufacturerColorPalette palette = decodeManufacturerColors(file.readAll());
+        std::printf("%s\n  colors: %lld\n", qPrintable(path),
+                    static_cast<long long>(palette.colors.size()));
+        for (qsizetype index = 0; index < palette.colors.size(); ++index) {
+            const ManufacturerColor &color = palette.colors[index];
+            std::printf("  [%lld] enabled=%d rgb=(%.5f,%.5f,%.5f) material=%s slots=%s\n",
+                        static_cast<long long>(index), color.enabled ? 1 : 0,
+                        color.primary[0], color.primary[1], color.primary[2],
+                        qPrintable(color.materialPath),
+                        qPrintable(color.materialSlots.join(QLatin1Char(','))));
+        }
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "failed to decode %s: %s\n", qPrintable(path), error.what());
+        return 1;
+    }
+    return 0;
+}
+
 static int dumpUv(const QString &carbinPath)
 {
     QString error;
@@ -444,12 +476,11 @@ static int dumpUv(const QString &carbinPath)
     return 0;
 }
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
     const QStringList args = app.arguments();
     if (args.size() < 2) {
-        std::fprintf(stderr, "usage: fls_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv]\n");
+        std::fprintf(stderr, "usage: fls_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv] [--manufacturer-colors]\n");
         return 2;
     }
 
@@ -463,6 +494,9 @@ int main(int argc, char *argv[])
     if (!resolveZipInput(path, tempDir)) {
         return 1;
     }
+    if (args.contains(QStringLiteral("--manufacturer-colors"))) {
+        return dumpManufacturerColors(path);
+    }
     if (args.contains(QStringLiteral("--uv"))) {
         return dumpUv(path);
     }
@@ -471,6 +505,85 @@ int main(int argc, char *argv[])
     }
     if (args.contains(QStringLiteral("--fit"))) {
         return fitLivery(path);
+    }
+    if (const int mi = args.indexOf(QStringLiteral("--mat")); mi >= 0 && mi + 1 < args.size()) {
+        const QString needle = args[mi + 1].toLower();
+        QString err;
+        const CarModel model = path.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+            ? loadCarBin(path, &err) : loadModelBin(path, &err);
+        QSet<QString> seen;
+        for (const CarMesh &mesh : model.meshes) {
+            if (!mesh.material || !mesh.materialName.toLower().contains(needle)) {
+                continue;
+            }
+            const QString key = mesh.materialName + QLatin1Char('|') + mesh.material->resourcePath;
+            if (seen.contains(key)) {
+                continue;
+            }
+            seen.insert(key);
+            std::printf("material '%s' resource='%s' fromLibrary=%d params=%lld uTiling=%.4f vTiling=%.4f gloss=%.3f\n",
+                        qPrintable(mesh.materialName), qPrintable(mesh.material->resourcePath),
+                        mesh.material->resolvedFromLibrary ? 1 : 0,
+                        static_cast<long long>(mesh.material->parameters.size()),
+                        mesh.material->uTiling, mesh.material->vTiling, mesh.material->gloss);
+            std::printf("  patternTex='%s'\n  detailNormalTex='%s'\n  roughMetalAoTex='%s'\n",
+                        qPrintable(mesh.material->patternTexture),
+                        qPrintable(mesh.material->detailNormalTexture),
+                        qPrintable(mesh.material->roughMetalAoTexture));
+            for (const ModelMaterialParameter &p : mesh.material->parameters) {
+                if (p.type == ModelMaterialParameterType::Texture2D) {
+                    std::printf("  tex   hash=%08X path=%s\n", p.nameHash, qPrintable(p.texturePath));
+                } else {
+                    std::printf("  param hash=%08X type=%d scalar=%.4f vec=(%.3f,%.3f,%.3f,%.3f)\n",
+                                p.nameHash, static_cast<int>(p.type), p.scalar,
+                                p.vector[0], p.vector[1], p.vector[2], p.vector[3]);
+                }
+            }
+        }
+        return 0;
+    }
+    WheelSizing rimSizing;
+    if (const int ri = args.indexOf(QStringLiteral("--rim")); ri >= 0 && ri + 1 < args.size()) {
+        const float d = args[ri + 1].toFloat();
+        rimSizing.front.rimDiameterInches = rimSizing.rear.rimDiameterInches = d;
+    }
+    if (args.contains(QStringLiteral("--radial"))) {
+        QString err;
+        const CarModel m = path.endsWith(QStringLiteral(".carbin"), Qt::CaseInsensitive)
+            ? loadCarBin(path, &err, rimSizing) : loadModelBin(path, &err);
+        // Isolate a single rim instance so the wheel size is readable (radial about its centre).
+        int rimInstance = -1; double cy = 0, cz = 0; int cn = 0;
+        for (const CarMesh &mesh : m.meshes) {
+            const QString mat = mesh.materialName.toLower();
+            if (mat != QStringLiteral("rim") && mat != QStringLiteral("rim2")) continue;
+            if (rimInstance < 0) rimInstance = mesh.modelInstanceId;
+            if (mesh.modelInstanceId != rimInstance) continue;
+            for (const ModelVec3 &p0 : mesh.positions) {
+                const ModelVec3 p = mesh.boneTransform.transformPoint(p0);
+                cy += p.y; cz += p.z; ++cn;
+            }
+        }
+        if (cn) { cy /= cn; cz /= cn; }
+        std::vector<float> rad; std::vector<float> xs;
+        for (const CarMesh &mesh : m.meshes) {
+            const QString mat = mesh.materialName.toLower();
+            const bool isRim = (mat == QStringLiteral("rim") || mat == QStringLiteral("rim2"))
+                && mesh.modelInstanceId == rimInstance;
+            if (rimInstance >= 0 && !isRim) continue;   // carbin: just the one rim
+            for (const ModelVec3 &p0 : mesh.positions) {
+                const ModelVec3 p = mesh.boneTransform.transformPoint(p0);
+                rad.push_back(std::hypot(p.y - static_cast<float>(cy), p.z - static_cast<float>(cz)));
+                xs.push_back(p.x);
+            }
+        }
+        std::sort(rad.begin(), rad.end()); std::sort(xs.begin(), xs.end());
+        auto pct = [](std::vector<float> &v, double q) {
+            return v.empty() ? 0.0f : v[static_cast<size_t>(q * (v.size() - 1))];
+        };
+        std::printf("radial: min=%.4f p02=%.4f p10=%.4f p50=%.4f p90=%.4f max=%.4f\n",
+                    pct(rad, 0), pct(rad, 0.02), pct(rad, 0.10), pct(rad, 0.5), pct(rad, 0.9), pct(rad, 1.0));
+        std::printf("X:      min=%.4f max=%.4f span=%.4f\n", pct(xs, 0), pct(xs, 1.0), pct(xs, 1.0) - pct(xs, 0));
+        return 0;
     }
 
     QString error;

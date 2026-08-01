@@ -9,11 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(FLS_ENABLE_CUDA "Build the optional CUDA differential optimizer" ON)
+set(FLS_CUDA_AVAILABLE OFF)
 if(FLS_ENABLE_CUDA)
     check_language(CUDA)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
         find_package(CUDAToolkit REQUIRED)
+        set(FLS_CUDA_AVAILABLE ON)
         set(CMAKE_CUDA_STANDARD 20)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
         if(WIN32)
@@ -53,6 +55,8 @@ add_library(fls_core STATIC
     src/core/cgroup_codec.h
     src/core/core_types.cpp
     src/core/core_types.h
+    src/core/game_paths.cpp
+    src/core/game_paths.h
     src/core/fls_core.cpp
     src/core/fls_core.h
     src/core/fm_codec.cpp
@@ -74,12 +78,17 @@ add_library(fls_core STATIC
     src/core/car_scene.h
     src/core/matrix_math.cpp
     src/core/matrix_math.h
+    src/core/material_hashes.h
+    src/core/manufacturer_colors.cpp
+    src/core/manufacturer_colors.h
     src/core/model_bundle.cpp
     src/core/model_bundle.h
     src/core/model_geometry.cpp
     src/core/model_geometry.h
     src/core/model_material.cpp
     src/core/model_material.h
+    src/core/paint_finish_catalog.cpp
+    src/core/paint_finish_catalog.h
     src/core/project_codec.cpp
     src/core/project_codec.h
     src/core/raster_decals.cpp
@@ -114,6 +123,7 @@ option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" 
 option(FLS_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FLS_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 option(FLS_BUILD_TESTS "Build test executables" OFF)
+option(FLS_ENABLE_IMGGEN_MENU "Expose experimental ImgGen menu" OFF)
 option(ENFORCE_SHAPE_LIMITS "Enforce per-section livery shape limits during export" ON)
 
 if(FLS_BUILD_TESTS)
@@ -148,6 +158,13 @@ if(FLS_BUILD_HELPER_TOOLS)
         tools/pack_decals/main.cpp
     )
     target_link_libraries(fls_pack_decals PRIVATE fls_core Qt6::Core)
+
+    # Console harness: decode livery paint-finish materials and print the resolved
+    # render parameters, to trace mis-shaded finishes back to their materialbin values.
+    add_executable(fls_finish_dump
+        tools/finish_dump/main.cpp
+    )
+    target_link_libraries(fls_finish_dump PRIVATE fls_core Qt6::Core)
 
 endif()
 
@@ -265,7 +282,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/widgets/shapes_browser_widget.h
 )
 
-if(CMAKE_CUDA_COMPILER)
+if(FLS_CUDA_AVAILABLE)
     target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
         src/gui/fill/differential_cover_cuda.cpp
         src/gui/fill/differential_cover_cuda.cu
@@ -311,6 +328,11 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::Widgets
         Qt6::OpenGL
         Qt6::OpenGLWidgets
+)
+
+target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
+    PRIVATE
+        FLS_ENABLE_IMGGEN_MENU=$<BOOL:${FLS_ENABLE_IMGGEN_MENU}>
 )
 
 if(FLS_BUILD_TESTS)
@@ -388,7 +410,7 @@ if(FLS_BUILD_TESTS)
         Qt6::Gui
         ZLIB::ZLIB
     )
-    if(CMAKE_CUDA_COMPILER)
+    if(FLS_CUDA_AVAILABLE)
         target_sources(fls_differential_cover_tests PRIVATE
             src/gui/fill/differential_cover_cuda.cpp
             src/gui/fill/differential_cover_cuda.cu
@@ -521,11 +543,20 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/decal_textures.bin"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/decal_textures.bin"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/logo_names.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/logo_names.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/MissingTexture.png"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/MissingTexture.png"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/car_ids.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/wheel_sizes.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/wheel_sizes.json"
     COMMENT "Deploying used GUI assets"
 )
 
@@ -535,6 +566,7 @@ if(NOT FLS_BUILD_HELPER_TOOLS)
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_compare.exe"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_model_dump.exe"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_pack_decals.exe"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_finish_dump.exe"
         COMMENT "Removing disabled helper tools from release output"
     )
 elseif(NOT FLS_BUILD_LIVERY_COMPARE)
