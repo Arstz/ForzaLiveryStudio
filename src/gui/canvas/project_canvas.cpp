@@ -13,7 +13,7 @@ namespace {
 const QRectF kDefaultProjectBounds(-128.0, -128.0, 256.0, 256.0);
 
 PathInteractionState capturePathState(const PathInteraction &path) {
-    return {
+    PathInteractionState state{
         path.points,
         path.cutouts,
         path.fillColor,
@@ -21,6 +21,8 @@ PathInteractionState capturePathState(const PathInteraction &path) {
         path.cutoutClosed,
         path.fillMask,
     };
+    state.cutouts.detach();
+    return state;
 }
 
 bool pathStatesEqual(const PathInteractionState &left, const PathInteractionState &right) {
@@ -535,6 +537,9 @@ void ProjectCanvas::setPathFillRunning(PathInteraction &path, bool running, cons
 void ProjectCanvas::cancelPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback) {
     const bool wasRunning = path.fillRunning;
     path.reset();
+    if (&path == &pen_) {
+        invalidatePenGeometryCache();
+    }
     clearCursorHint();
     if (wasRunning && cancelCallback != nullptr) {
         cancelCallback();
@@ -579,6 +584,9 @@ void ProjectCanvas::commitPathEdit(PathInteraction &path) {
     if (!pathStatesEqual(*path.pendingEdit, capturePathState(path))) {
         path.undoStack.push_back(std::move(*path.pendingEdit));
         path.redoStack.clear();
+        if (&path == &pen_) {
+            invalidatePenGeometryCache();
+        }
     }
     path.pendingEdit.reset();
 }
@@ -618,6 +626,9 @@ bool ProjectCanvas::applyPathHistory(PathInteraction &path, bool undo) {
     path.cutoutClosed = next.cutoutClosed;
     path.activeCutout = path.cutouts.isEmpty() ? -1 : path.cutouts.size() - 1;
     path.fillMask = next.fillMask;
+    if (&path == &pen_) {
+        invalidatePenGeometryCache();
+    }
     refreshPathAfterHistory(path);
     return true;
 }

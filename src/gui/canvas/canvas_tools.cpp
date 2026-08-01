@@ -448,6 +448,7 @@ bool PenTool::handleMove(QMouseEvent *event) {
     }
     c.penPointsForLoop(c.pen_.dragLoop)[c.pen_.dragPoint].position =
         c.screenToWorld(event->position()) + c.pen_.dragOffsetWorld;
+    c.invalidatePenGeometryCache();
     c.validatePenInteraction();
     c.refreshPenInteractionHint(event->position(), event->modifiers());
     c.updateCursorForPoint(event->position());
@@ -521,13 +522,8 @@ Qt::CursorShape PenTool::idleCursorShape(const QPointF &point) const {
     if (canvas_.pen_.closed
         && (QGuiApplication::keyboardModifiers() & Qt::AltModifier)
         && canvas_.pen_.cutoutClosed) {
-        if (canvas_.pointAtScreen(canvas_.pen_.points, point) >= 0) {
+        if (canvas_.penPointAtScreen(point).valid()) {
             return Qt::SizeAllCursor;
-        }
-        for (const QVector<PenPoint> &cutout : canvas_.pen_.cutouts) {
-            if (canvas_.pointAtScreen(cutout, point) >= 0) {
-                return Qt::SizeAllCursor;
-            }
         }
     }
     return Qt::CrossCursor;

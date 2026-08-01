@@ -189,6 +189,61 @@ private:
         QRectF screenBounds;
     };
 
+    struct CachedPenSegment {
+        PenBoundarySegment segment;
+        int insertIndex = -1;
+    };
+
+    struct CachedPenLoop {
+        QPainterPath path;
+        QPainterPath openPath;
+        QVector<CachedPenSegment> segments;
+        int loopIndex = -1;
+    };
+
+    struct PenGeometryCache {
+        QPainterPath worldPath;
+        QPainterPath completedWorldPath;
+        QPainterPath screenPath;
+        QPainterPath completedScreenPath;
+        QVector<CachedPenLoop> loops;
+        QTransform screenCamera;
+        quint64 screenRevision = std::numeric_limits<quint64>::max();
+        quint64 revision = std::numeric_limits<quint64>::max();
+    };
+
+    struct PenHitPointEntry {
+        QPointF screenPosition;
+        int pointIndex = -1;
+        int loopIndex = -1;
+    };
+
+    struct PenHitEdgeEntry {
+        QPointF screenStart;
+        QPointF screenEnd;
+        QPointF worldStart;
+        QPointF worldEnd;
+        int insertIndex = -1;
+        int loopIndex = -1;
+    };
+
+    struct PenHitCache {
+        QVector<PenHitPointEntry> points;
+        QVector<PenHitEdgeEntry> edges;
+        QHash<quint64, QVector<int>> pointCells;
+        QHash<quint64, QVector<int>> edgeCells;
+        QTransform camera;
+        quint64 revision = std::numeric_limits<quint64>::max();
+    };
+
+    struct PenPointHit {
+        int pointIndex = -1;
+        int loopIndex = -1;
+        double screenDistance = std::numeric_limits<double>::max();
+
+        bool valid() const { return pointIndex >= 0; }
+    };
+
     struct EntryStart {
         double x = 0.0;
         double y = 0.0;
@@ -393,6 +448,12 @@ private:
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
+    void invalidatePenGeometryCache();
+    const PenGeometryCache &penGeometryCache() const;
+    const QPainterPath &penScreenPath() const;
+    const QPainterPath &penCompletedScreenPath() const;
+    void rebuildPenHitCache() const;
+    PenPointHit penPointAtScreen(const QPointF &screenPoint) const;
     int pointAtScreen(const QVector<PenPoint> &points, const QPointF &screenPoint) const;
     void accumulateCurveHit(const PenBoundarySegment &segment, int insertIndex,
                             const QPointF &screenPoint, PenCurveHit &best) const;
@@ -461,6 +522,9 @@ private:
     std::function<void(double)> liningWidthChangedCallback_;
     PathInteraction pen_;
     PathInteraction lining_;
+    mutable PenGeometryCache penGeometryCache_;
+    mutable PenHitCache penHitCache_;
+    quint64 penGeometryRevision_ = 0;
     double liningWidth_ = kDefaultLiningWidth;
     BucketState bucket_;
     mutable SelectionFrame frame_;

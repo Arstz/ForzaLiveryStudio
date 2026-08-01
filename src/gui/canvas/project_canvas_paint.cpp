@@ -13,49 +13,29 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
         return {};
     }
     if (pen_.closed && pen_.cutoutClosed) {
-        return buildPenContour(currentPenLoops()).path;
+        return penGeometryCache().worldPath;
     }
     const bool drawingCutout = pen_.closed && !pen_.cutoutClosed;
     const QVector<PenPoint> &activePoints = drawingCutout
         ? pen_.cutouts[pen_.activeCutout]
         : pen_.points;
     if (closeToStart && activePoints.size() >= 3) {
-        if (!drawingCutout) {
-            return buildPenContour(activePoints).path;
-        }
-        return buildPenContour(currentPenLoops()).path;
+        return penGeometryCache().worldPath;
     }
-    QVector<PenPoint> previewPoints = activePoints;
-    previewPoints.push_back({pen_.hoverWorld, PenPointKind::Soft});
+    const int activeLoopIndex = drawingCutout ? pen_.activeCutout : -1;
     QPainterPath path;
-    path.moveTo(previewPoints.front().position);
-    int index = 1;
-    while (index < previewPoints.size()) {
-        const PenPoint &next = previewPoints[index];
-        if (next.kind == PenPointKind::Hard) {
-            path.lineTo(next.position);
-            ++index;
-            continue;
-        }
-        if (index + 1 >= previewPoints.size()) {
+    for (const CachedPenLoop &loop : penGeometryCache().loops) {
+        if (loop.loopIndex == activeLoopIndex) {
+            path = loop.openPath;
             break;
         }
-        const PenPoint &after = previewPoints[index + 1];
-        const QPointF end = after.kind == PenPointKind::Hard
-            ? after.position
-            : (next.position + after.position) * 0.5;
-        path.quadTo(next.position, end);
-        index += after.kind == PenPointKind::Hard ? 2 : 1;
     }
-    if (!drawingCutout) {
-        return path;
+    if (!activePoints.isEmpty()
+        && activePoints.back().kind == PenPointKind::Soft) {
+        path.quadTo(activePoints.back().position,
+                    (activePoints.back().position + pen_.hoverWorld) * 0.5);
     }
-    QPainterPath result = buildPenContour(pen_.points).path;
-    for (int loopIndex = 0; loopIndex < pen_.cutouts.size() - 1; ++loopIndex) {
-        result.addPath(buildPenContour(pen_.cutouts[loopIndex]).path);
-    }
-    result.addPath(path);
-    return result;
+    return path;
 }
 
 void ProjectCanvas::drawPenOverlay(QPainter &painter) {
@@ -95,18 +75,32 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
                <= kPenCloseRadius;
     const bool closed = (pen_.closed && pen_.cutoutClosed) || nearStart;
     const QPainterPath worldPath = penPreviewPath(closed);
-    const QPainterPath screenPath = camera_.matrix().map(worldPath);
+    const QPainterPath screenPath = closed
+        ? penScreenPath()
+        : camera_.matrix().map(worldPath);
     QColor fill(83, 164, 255, closed ? 50 : 25);
     QPen halo(QColor(15, 17, 20, 230), 4.0);
     halo.setCosmetic(true);
-    painter.setPen(halo);
-    painter.setBrush(fill);
-    painter.drawPath(screenPath);
     QPen pathPen(pen_.error.isEmpty() ? QColor(83, 164, 255) : QColor(235, 78, 78), 2.0);
     pathPen.setCosmetic(true);
-    painter.setPen(pathPen);
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPath(screenPath);
+    const auto drawFilledPath = [&](const QPainterPath &path) {
+        painter.setPen(halo);
+        painter.setBrush(fill);
+        painter.drawPath(path);
+        painter.setPen(pathPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+    };
+    const auto drawOpenPath = [&](const QPainterPath &path) {
+        painter.strokePath(path, halo);
+        painter.strokePath(path, pathPen);
+    };
+    if (drawingCutout && !closed) {
+        drawFilledPath(penCompletedScreenPath());
+        drawOpenPath(screenPath);
+    } else {
+        drawFilledPath(screenPath);
+    }
 
     if (!closed && !activePoints.isEmpty()) {
         QPen guide(QColor(190, 195, 205, 180), 1.0, Qt::DashLine);
