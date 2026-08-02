@@ -1,6 +1,5 @@
 Small changes:
-    -Decompose car_renderer
-    -Rename project related functions to drop json naming
+    -Automatically ungroup contour fills if they contain only 1 shape in group - group should have at least 2 children
     -Deprecate double check for car model LOD
 
 Medium changes:

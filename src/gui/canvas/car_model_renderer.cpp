@@ -401,7 +401,7 @@ void main()
     vec3 diffuse = kD * albedo / PI;
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
     vec3 lo = (diffuse + specular) * vec3(3.0) * NdotL;
-    vec3 ambient = vec3(0.03) * albedo * surfaceAo;
+    vec3 ambient = vec3(0.25) * albedo * surfaceAo;
     vec3 color = ambient + lo;
     vec3 reflected = reflect(-v, n);
     float envUp = reflected.y * 0.5 + 0.5;

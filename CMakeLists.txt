@@ -119,7 +119,7 @@ endif()
 
 target_include_directories(fls_core PUBLIC src/core)
 
-option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" OFF)
+option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
 option(FLS_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FLS_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 option(FLS_BUILD_TESTS "Build test executables" OFF)
@@ -456,6 +456,16 @@ if(FLS_BUILD_TESTS)
         )
     endif()
     add_test(NAME differential_cover COMMAND fls_differential_cover_tests)
+else()
+    add_custom_target(fls_remove_disabled_tests ALL
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_logo_encoder_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_guide_preprocess_metadata_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_image_preprocessor_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_region_pen_conversion_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_differential_cover_tests${CMAKE_EXECUTABLE_SUFFIX}"
+        COMMENT "Removing disabled tests from release output"
+    )
 endif()
 
 set(FLS_GUI_ASSETS

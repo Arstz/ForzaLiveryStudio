@@ -46,9 +46,7 @@ try {
         }
     }
 
-    if (-not (Test-Path "build\CMakeCache.txt")) {
-        & (Join-Path $PSScriptRoot "configure.ps1")
-    }
+    & (Join-Path $PSScriptRoot "configure.ps1")
 
     cmake --build build --config Release --parallel $parallelThreads
 } finally {

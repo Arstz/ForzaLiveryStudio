@@ -28,8 +28,10 @@ constexpr int kGridWidth = 184;
 constexpr int kGridMargin = 2;
 constexpr int kTilePadding = 4;
 constexpr int kLabelHeight = 42;
-constexpr int kCompactIconExtent = 28;
-constexpr int kCompactIconGap = 6;
+constexpr int kGridPreviewHeight = 97;
+constexpr int kGridHeight = 2 * (kGridMargin + kTilePadding)
+    + kGridPreviewHeight + kLabelHeight;
+constexpr int kFolderGridIconExtent = 64;
 constexpr int kThumbnailCacheWidth = 512;
 constexpr int kAssetRowHeight = 86;
 constexpr int kFolderRowPadding = 12;
@@ -214,29 +216,18 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &option,
                    const QModelIndex &index) const override {
         if (view_ == nullptr
-            || view_->viewMode() != QListView::IconMode) {
+            || !view_->property("flsGridMode").toBool()) {
             return QStyledItemDelegate::sizeHint(option, index);
         }
 
-        const QImage thumbnail =
-            index.data(kThumbnailRole).value<QImage>();
-        const int frameInset = kGridMargin + kTilePadding;
-        const int contentWidth = kGridWidth - 2 * frameInset;
-        const int previewHeight = thumbnail.isNull()
-            ? 0
-            : qRound(
-                  static_cast<qreal>(thumbnail.height()) * contentWidth
-                  / thumbnail.width());
-        return QSize(
-            kGridWidth,
-            2 * frameInset + previewHeight + kLabelHeight);
+        return QSize(kGridWidth, kGridHeight);
     }
 
     void paint(QPainter *painter,
                const QStyleOptionViewItem &option,
                const QModelIndex &index) const override {
         if (view_ == nullptr
-            || view_->viewMode() != QListView::IconMode) {
+            || !view_->property("flsGridMode").toBool()) {
             QStyledItemDelegate::paint(painter, option, index);
             return;
         }
@@ -272,24 +263,23 @@ public:
         QRect labelRect;
         QRect iconRect;
         if (!thumbnail.isNull()) {
-            const int previewHeight =
-                contentRect.height() - kLabelHeight;
             previewRect = QRect(
                 contentRect.left(), contentRect.top(),
-                contentRect.width(), previewHeight);
+                contentRect.width(), kGridPreviewHeight);
             labelRect = QRect(
                 contentRect.left(), previewRect.bottom() + 1,
                 contentRect.width(), kLabelHeight);
         } else {
+            previewRect = QRect(
+                contentRect.left(), contentRect.top(),
+                contentRect.width(), kGridPreviewHeight);
             iconRect = QRect(
-                contentRect.left(),
-                contentRect.center().y() - kCompactIconExtent / 2,
-                kCompactIconExtent, kCompactIconExtent);
+                previewRect.center().x() - kFolderGridIconExtent / 2,
+                previewRect.center().y() - kFolderGridIconExtent / 2,
+                kFolderGridIconExtent, kFolderGridIconExtent);
             labelRect = QRect(
-                iconRect.right() + 1 + kCompactIconGap,
-                contentRect.top(),
-                contentRect.width() - kCompactIconExtent - kCompactIconGap,
-                contentRect.height());
+                contentRect.left(), previewRect.bottom() + 1,
+                contentRect.width(), kLabelHeight);
         }
 
         painter->save();
@@ -303,15 +293,19 @@ public:
 
         if (!thumbnail.isNull()) {
             painter->fillRect(previewRect, previewBase);
-            const QImage fitted = thumbnail.scaledToWidth(
-                previewRect.width(), Qt::SmoothTransformation);
-            painter->drawImage(previewRect.topLeft(), fitted);
+            const QImage fitted = thumbnail.scaled(
+                previewRect.size(), Qt::KeepAspectRatio,
+                Qt::SmoothTransformation);
+            painter->drawImage(
+                QPoint(previewRect.center().x() - fitted.width() / 2,
+                       previewRect.center().y() - fitted.height() / 2),
+                fitted);
         } else {
             const QPixmap icon = index.data(Qt::DecorationRole)
                                      .value<QIcon>()
                                      .pixmap(
-                                         kCompactIconExtent,
-                                         kCompactIconExtent);
+                                         kFolderGridIconExtent,
+                                         kFolderGridIconExtent);
             painter->drawPixmap(
                 iconRect.center().x() - icon.width() / 2,
                 iconRect.center().y() - icon.height() / 2,
@@ -329,8 +323,7 @@ public:
             painter->drawText(
                 QRect(labelRect.left(), labelRect.top() + 3,
                       labelRect.width(), metrics.height()),
-                (thumbnail.isNull() ? Qt::AlignLeft : Qt::AlignHCenter)
-                    | Qt::AlignTop,
+                Qt::AlignHCenter | Qt::AlignTop,
                 title);
         }
         if (lines.size() > 1) {
@@ -347,8 +340,7 @@ public:
                 QRect(labelRect.left(),
                       labelRect.bottom() - detailMetrics.height(),
                       labelRect.width(), detailMetrics.height()),
-                (thumbnail.isNull() ? Qt::AlignLeft : Qt::AlignHCenter)
-                    | Qt::AlignBottom,
+                Qt::AlignHCenter | Qt::AlignBottom,
                 details);
         }
         painter->restore();
@@ -426,6 +418,7 @@ public:
         list_ = new QListWidget(this);
         list_->setIconSize(QSize(112, 76));
         list_->setSelectionMode(QAbstractItemView::SingleSelection);
+        list_->setDragDropMode(QAbstractItemView::NoDragDrop);
         list_->setItemDelegate(new ImportAssetGridDelegate(list_));
         layout->addWidget(list_, 1);
         setGridView(settings.value(
@@ -507,7 +500,7 @@ public:
         }
         restoreGeometry(settings.value(
             QStringLiteral("import/sourceBrowserGeometry")).toByteArray());
-        navigate(startDirectory);
+        initialDirectory_ = startDirectory;
     }
 
     ~ImportAssetDialog() override {
@@ -523,6 +516,21 @@ public:
         return result;
     }
 
+protected:
+    void showEvent(QShowEvent *event) override {
+        QDialog::showEvent(event);
+        if (!initialDirectory_.isEmpty()) {
+            const QString directory = initialDirectory_;
+            initialDirectory_.clear();
+            navigate(directory);
+        }
+        QTimer::singleShot(0, this, [this]() {
+            applyFilters();
+            list_->doItemsLayout();
+            list_->viewport()->update();
+        });
+    }
+
 private:
     struct AssetDetailsRequest {
         QString assetPath;
@@ -531,22 +539,33 @@ private:
     };
 
     void setGridView(bool enabled, bool persist = true) {
+        list_->setUpdatesEnabled(false);
         gridViewButton_->setChecked(enabled);
         listViewButton_->setChecked(!enabled);
-        list_->setViewMode(enabled ? QListView::IconMode : QListView::ListMode);
+        list_->setProperty("flsGridMode", enabled);
+        list_->setViewMode(QListView::ListMode);
         list_->setFlow(enabled ? QListView::LeftToRight : QListView::TopToBottom);
         list_->setWrapping(enabled);
         list_->setResizeMode(enabled ? QListView::Adjust : QListView::Fixed);
         list_->setMovement(QListView::Static);
         list_->setSpacing(enabled ? 2 : 0);
-        list_->setGridSize({});
-        list_->setUniformItemSizes(false);
+        list_->setGridSize(enabled ? QSize(kGridWidth, kGridHeight) : QSize());
+        list_->setUniformItemSizes(enabled);
         list_->setWordWrap(false);
         list_->setAlternatingRowColors(!enabled);
         for (int row = 0; row < list_->count(); ++row) {
-            updateItemSizeHint(list_->item(row));
+            QListWidgetItem *item = list_->item(row);
+            if (!enabled) {
+                const QImage thumbnail = item->data(kThumbnailRole).value<QImage>();
+                if (!thumbnail.isNull()) {
+                    item->setIcon(QIcon(QPixmap::fromImage(thumbnail)));
+                }
+            }
+            updateItemSizeHint(item);
         }
+        list_->setUpdatesEnabled(true);
         list_->doItemsLayout();
+        list_->viewport()->update();
         if (persist) {
             QSettings().setValue(
                 QStringLiteral("import/sourceBrowserGridView"), enabled);
@@ -557,8 +576,8 @@ private:
         if (item == nullptr) {
             return;
         }
-        if (list_->viewMode() == QListView::IconMode) {
-            item->setSizeHint({});
+        if (list_->property("flsGridMode").toBool()) {
+            item->setSizeHint(QSize(kGridWidth, kGridHeight));
             return;
         }
         const int folderIconExtent =
@@ -591,6 +610,7 @@ private:
 
     void refresh() {
         const quint64 generation = ++thumbnailGeneration_;
+        list_->setUpdatesEnabled(false);
         list_->clear();
         selectedPath_.clear();
         selectedMotorsport_ = false;
@@ -672,6 +692,9 @@ private:
             }
         }
         applyFilters();
+        list_->setUpdatesEnabled(true);
+        list_->doItemsLayout();
+        list_->viewport()->update();
         for (const AssetDetailsRequest &request : detailsRequests) {
             loadAssetDetails(request, generation);
         }
@@ -757,8 +780,9 @@ private:
             if (item->data(kPathRole).toString() == assetPath) {
                 if (!image.isNull()) {
                     item->setData(kThumbnailRole, image);
-                    item->setIcon(QIcon(QPixmap::fromImage(image)));
-                    list_->doItemsLayout();
+                    if (!list_->property("flsGridMode").toBool()) {
+                        item->setIcon(QIcon(QPixmap::fromImage(image)));
+                    }
                 }
                 if (!car.isEmpty()) {
                     item->setText(item->data(kBaseTextRole).toString()
@@ -818,6 +842,7 @@ private:
     QListWidget *list_ = nullptr;
     QLabel *hint_ = nullptr;
     QDialogButtonBox *buttons_ = nullptr;
+    QString initialDirectory_;
     QString currentDirectory_;
     QString selectedPath_;
     QStringList history_;
