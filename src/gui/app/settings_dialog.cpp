@@ -365,10 +365,6 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
     addSettingRow(editorPage, QStringLiteral("editor.visibility_borders"),
                   QStringLiteral("Show visibility borders"), visibilityBordersCheck_, tips);
-    positionLimitBorderCheck_ = new QCheckBox(editorPage.widget);
-    positionLimitBorderCheck_->setChecked(behaviorSettings_.positionLimitBorderEnabled);
-    addSettingRow(editorPage, QStringLiteral("editor.position_limit_border"),
-                  QStringLiteral("Position limit border"), positionLimitBorderCheck_, tips);
     generatePreviewsWithTransformations_ = new QCheckBox(editorPage.widget);
     generatePreviewsWithTransformations_->setChecked(
         behaviorSettings_.generatePreviewsWithTransformations);
@@ -547,7 +543,6 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     const QSize resolution = visibilityBorderResolution_->currentData().toSize();
 
     result.visibilityBordersEnabled = visibilityBordersCheck_->isChecked();
-    result.positionLimitBorderEnabled = positionLimitBorderCheck_->isChecked();
     result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_->isChecked();
     result.generatePreviewsWithTransformations = generatePreviewsWithTransformations_->isChecked();
     result.visibilityBorderResolution = resolution.isValid()

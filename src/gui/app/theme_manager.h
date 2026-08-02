@@ -47,7 +47,6 @@ struct BehaviorSettings {
     bool guidelinesLocked = false;
     QColor guidelineColor = QColor(0, 170, 255);
     bool visibilityBordersEnabled = true;
-    bool positionLimitBorderEnabled = false;
     bool valueEditingWheelEnabled = true;
     QSize visibilityBorderResolution = QSize(1920, 1080);
     double nudgeStep = 0.1;

@@ -134,7 +134,6 @@ BehaviorSettings loadBehaviorSettings() {
     result.guidelineColor = QColor(settings.value(QStringLiteral("ui/behavior/guidelineColor"),
                                                  result.guidelineColor.name(QColor::HexArgb)).toString());
     result.visibilityBordersEnabled = settings.value(QStringLiteral("ui/behavior/visibilityBordersEnabled"), result.visibilityBordersEnabled).toBool();
-    result.positionLimitBorderEnabled = settings.value(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), result.positionLimitBorderEnabled).toBool();
     result.valueEditingWheelEnabled = settings.value(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), result.valueEditingWheelEnabled).toBool();
     const QSize resolution = settings.value(QStringLiteral("ui/behavior/visibilityBorderResolution"), result.visibilityBorderResolution).toSize();
     result.visibilityBorderResolution = resolution.isValid() ? resolution : defaults.visibilityBorderResolution;
@@ -186,7 +185,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/guidelineColor"),
                        validColor(settings.guidelineColor, defaults.guidelineColor).name(QColor::HexArgb));
     qsettings.setValue(QStringLiteral("ui/behavior/visibilityBordersEnabled"), settings.visibilityBordersEnabled);
-    qsettings.setValue(QStringLiteral("ui/behavior/positionLimitBorderEnabled"), settings.positionLimitBorderEnabled);
+    qsettings.remove(QStringLiteral("ui/behavior/positionLimitBorderEnabled"));
     qsettings.setValue(QStringLiteral("ui/behavior/valueEditingWheelEnabled"), settings.valueEditingWheelEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/visibilityBorderResolution"), settings.visibilityBorderResolution);
     qsettings.setValue(QStringLiteral("ui/behavior/nudgeStep"), settings.nudgeStep);

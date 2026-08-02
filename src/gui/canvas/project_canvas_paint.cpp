@@ -251,11 +251,8 @@ constexpr double kSelectionFrameLineWidth = 1.0;
 constexpr double kHandleBorderWidth = 2.0;
 constexpr int kMarqueeFillAlpha = 32;
 const QColor kVisibilityViewportColor(70, 170, 230, 190);
-const QColor kVisibilityLooseColor(255, 210, 80, 160);
 constexpr double kVisibilityBorderHaloWidth = 3.0;
 constexpr double kVisibilityBorderLineWidth = 1.0;
-constexpr double kPositionLimitHalfWidth1080p = 1024.0;
-constexpr double kPositionLimitHalfHeight1080p = 604.0;
 
 const QColor kCursorHintBorderColor(0, 0, 0, 180);
 const QColor kCursorHintFillColor(20, 20, 22, 210);
@@ -398,7 +395,7 @@ void ProjectCanvas::drawCursorHint(QPainter &painter) {
 }
 
 void ProjectCanvas::drawVisibilityBorders(QPainter &painter) {
-    if (project_ == nullptr || (!options_.visibilityBordersEnabled && !options_.positionLimitBorderEnabled)) {
+    if (project_ == nullptr || !options_.visibilityBordersEnabled) {
         return;
     }
 
@@ -420,17 +417,7 @@ void ProjectCanvas::drawVisibilityBorders(QPainter &painter) {
                               -options_.borderResolution.height() * 0.5,
                               options_.borderResolution.width(),
                               options_.borderResolution.height());
-    if (options_.visibilityBordersEnabled) {
-        drawWorldRect(viewportRect, kVisibilityViewportColor, Qt::SolidLine);
-    }
-    if (options_.positionLimitBorderEnabled) {
-        const double scale = static_cast<double>(options_.borderResolution.height()) / 1080.0;
-        const QRectF positionLimitRect(-kPositionLimitHalfWidth1080p * scale,
-                                       -kPositionLimitHalfHeight1080p * scale,
-                                       kPositionLimitHalfWidth1080p * 2.0 * scale,
-                                       kPositionLimitHalfHeight1080p * 2.0 * scale);
-        drawWorldRect(positionLimitRect, kVisibilityLooseColor, Qt::DashLine);
-    }
+    drawWorldRect(viewportRect, kVisibilityViewportColor, Qt::SolidLine);
 }
 
 void ProjectCanvas::drawRulersAndGuidelines(QPainter &painter) {

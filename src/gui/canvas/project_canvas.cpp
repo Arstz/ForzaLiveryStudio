@@ -479,14 +479,6 @@ void ProjectCanvas::setVisibilityBordersEnabled(bool enabled) {
     update();
 }
 
-void ProjectCanvas::setPositionLimitBorderEnabled(bool enabled) {
-    if (options_.positionLimitBorderEnabled == enabled) {
-        return;
-    }
-    options_.positionLimitBorderEnabled = enabled;
-    update();
-}
-
 void ProjectCanvas::setVisibilityBorderResolution(const QSize &resolution) {
     const QSize validResolution = resolution.isValid() ? resolution : kDefaultVisibilityBorderResolution;
     if (options_.borderResolution == validResolution) {

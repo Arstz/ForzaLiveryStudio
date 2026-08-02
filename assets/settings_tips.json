@@ -1,31 +1,31 @@
 {
   "general.game_folder": {
     "hasTip": true,
-    "tip": "Folder containing the installed Forza game files used by model and asset import tools."
+    "tip": "Select the path to a valid Forza Horizon 6 install for model and texture loading."
   },
   "general.autosave_interval": {
     "hasTip": true,
     "tip": "Minutes between autosave attempts. Set to 0 to disable autosave."
   },
   "theme.theme": {
-    "hasTip": true,
-    "tip": "Selects the colors used by application windows and controls."
+    "hasTip": false,
+    "tip": ""
   },
   "theme.dark_canvas": {
-    "hasTip": true,
-    "tip": "Selects the canvas background used with the dark application theme."
+    "hasTip": false,
+    "tip": ""
   },
   "theme.light_canvas": {
-    "hasTip": true,
-    "tip": "Selects the canvas background used with the light application theme."
+    "hasTip": false,
+    "tip": ""
   },
   "theme.buffer_background": {
     "hasTip": true,
-    "tip": "Selects the background shown behind items in the clipboard buffer."
+    "tip": "Background color in Buffer widget."
   },
   "theme.layer_background": {
     "hasTip": true,
-    "tip": "Selects the background used for layer preview thumbnails."
+    "tip": "Background color in Layers widget previews."
   },
   "tools.display_anchors": {
     "hasTip": true,
@@ -40,40 +40,36 @@
     "tip": "Distance moved by Shift plus an arrow key in Move or Transform."
   },
   "tools.toolbar_view": {
-    "hasTip": true,
-    "tip": "Selects a horizontal toolbar with labels or a compact vertical icon toolbar."
+    "hasTip": false,
+    "tip": ""
   },
   "tools.separate_opacity_skew": {
     "hasTip": true,
-    "tip": "Shows Opacity and Skew as separate tools instead of transform modes."
+    "tip": "Skew anchor will be removed in favour of separate Skew tool."
   },
   "editor.guideline_color": {
-    "hasTip": true,
-    "tip": "Selects the color used to draw canvas guidelines."
+    "hasTip": false,
+    "tip": ""
   },
   "editor.visibility_borders": {
     "hasTip": true,
-    "tip": "Shows the configured output-resolution boundary on the canvas."
-  },
-  "editor.position_limit_border": {
-    "hasTip": true,
-    "tip": "Shows the position boundary used by the editor."
+    "tip": "Shapes outside the borders might not render properly ingame."
   },
   "editor.transformed_previews": {
     "hasTip": true,
-    "tip": "Includes layer and group transformations when generating tree previews."
+    "tip": "If on will generate previews with tranformations even for sole shapes."
   },
   "editor.border_resolution": {
-    "hasTip": true,
-    "tip": "Resolution represented by the canvas visibility border."
+    "hasTip": false,
+    "tip": ""
   },
   "editor.livery_texture_scale": {
     "hasTip": true,
-    "tip": "Multiplier used for the texture rendered in the 3D livery preview."
+    "tip": "Livery texture multiplier in the 3D preview widget, 4x - ingame user car, 1x - ingame other players cars."
   },
   "editor.value_wheel": {
     "hasTip": true,
-    "tip": "Allows the mouse wheel to change numeric property values."
+    "tip": "Allows the mouse wheel to change values in Properties widget."
   },
   "editor.discard_model": {
     "hasTip": true,
@@ -81,7 +77,7 @@
   },
   "editor.load_car_textures": {
     "hasTip": true,
-    "tip": "Loads available car material textures for the 3D preview."
+    "tip": "May degrade performance but allows for better car detail in 3D preview."
   },
   "keybinds.shortcuts": {
     "hasTip": false,
@@ -89,10 +85,10 @@
   },
   "system.icon_pack": {
     "hasTip": true,
-    "tip": "Selects the application window and .3so project icons after the application restarts."
+    "tip": "Change application and .3so files icons, restart needed."
   },
   "system.file_association": {
     "hasTip": true,
-    "tip": "Registers this executable as the handler for .3so project files for the current Windows user."
+    "tip": "Registers this executable as the handler for .3so project files for the current user."
   }
 }

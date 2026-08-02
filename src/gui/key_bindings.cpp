@@ -210,7 +210,6 @@ QKeySequence defaultShortcut(const QString &id) {
         {QStringLiteral("delete_all_guidelines"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_Semicolon)},
         {QStringLiteral("toggle_guide_layer_visibility"), {}},
         {QStringLiteral("toggle_guide_layers_on_top"), QKeySequence(Qt::Key_QuoteLeft)},
-        {QStringLiteral("toggle_visibility_borders"), {}},
         {QStringLiteral("toggle_transform_relative"), {}},
         {QStringLiteral("toggle_car_uv_unwrap"), {}},
         {QStringLiteral("tool_select"), QKeySequence(Qt::Key_S)},

@@ -71,7 +71,6 @@ public:
     void setGuidelineColor(const QColor &color);
     bool deleteAllGuidelines();
     void setVisibilityBordersEnabled(bool enabled);
-    void setPositionLimitBorderEnabled(bool enabled);
     void setVisibilityBorderResolution(const QSize &resolution);
     void setNudgeSteps(double normalStep, double shiftStep);
     std::optional<QColor> guideColorAtScreenPoint(const QPointF &point) const;
@@ -353,7 +352,6 @@ private:
         bool guideLayersVisible = true;
         bool guideLayersOnTop = true;
         bool visibilityBordersEnabled = true;
-        bool positionLimitBorderEnabled = false;
         double nudgeStep = kDefaultNudgeStep;
         double nudgeShiftStep = kDefaultNudgeShiftStep;
     };

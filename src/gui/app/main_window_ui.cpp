@@ -413,12 +413,12 @@ void MainWindow::setupEditMenu() {
         connect(action, &QAction::triggered, this, [this, edge]() { alignSelection(edge); });
         return action;
     };
-    addAlignEntry(QStringLiteral("&Top"), QStringLiteral("align_top"), ProjectCanvas::AlignEdge::Top);
-    addAlignEntry(QStringLiteral("&Bottom"), QStringLiteral("align_bottom"), ProjectCanvas::AlignEdge::Bottom);
-    addAlignEntry(QStringLiteral("&Left"), QStringLiteral("align_left"), ProjectCanvas::AlignEdge::Left);
-    addAlignEntry(QStringLiteral("&Right"), QStringLiteral("align_right"), ProjectCanvas::AlignEdge::Right);
-    addAlignEntry(QStringLiteral("Horizontal &Centre"), QStringLiteral("align_centre"), ProjectCanvas::AlignEdge::VCenter);
-    addAlignEntry(QStringLiteral("Vertical C&entre"), QStringLiteral("align_vertical_centre"), ProjectCanvas::AlignEdge::HCenter);
+    addAlignEntry(QStringLiteral("Align &Top"), QStringLiteral("align_top"), ProjectCanvas::AlignEdge::Top);
+    addAlignEntry(QStringLiteral("Align &Bottom"), QStringLiteral("align_bottom"), ProjectCanvas::AlignEdge::Bottom);
+    addAlignEntry(QStringLiteral("Align &Left"), QStringLiteral("align_left"), ProjectCanvas::AlignEdge::Left);
+    addAlignEntry(QStringLiteral("Align &Right"), QStringLiteral("align_right"), ProjectCanvas::AlignEdge::Right);
+    addAlignEntry(QStringLiteral("Align Horizontal &Centre"), QStringLiteral("align_centre"), ProjectCanvas::AlignEdge::VCenter);
+    addAlignEntry(QStringLiteral("Align Vertical C&entre"), QStringLiteral("align_vertical_centre"), ProjectCanvas::AlignEdge::HCenter);
 
     auto *distributeMenu = editMenu->addMenu(QStringLiteral("&Distribute"));
     auto addDistributeEntry = [this, distributeMenu](const QString &text, const QString &id,
@@ -429,9 +429,9 @@ void MainWindow::setupEditMenu() {
         connect(action, &QAction::triggered, this, [this, axis]() { distributeSelection(axis); });
         return action;
     };
-    addDistributeEntry(QStringLiteral("&Vertical"), QStringLiteral("distribute_vertical"),
+    addDistributeEntry(QStringLiteral("Distribute &Vertical"), QStringLiteral("distribute_vertical"),
                        ProjectCanvas::DistributeAxis::Vertical);
-    addDistributeEntry(QStringLiteral("&Horizontal"), QStringLiteral("distribute_horizontal"),
+    addDistributeEntry(QStringLiteral("Distribute &Horizontal"), QStringLiteral("distribute_horizontal"),
                        ProjectCanvas::DistributeAxis::Horizontal);
 }
 
@@ -539,7 +539,6 @@ void MainWindow::setupOptionsMenu() {
     addBehaviorOption(guidesMenu, QStringLiteral("Show Guide Layers On Top"), QStringLiteral("toggle_guide_layers_on_top"),
                       &BehaviorSettings::guideLayersOnTop);
 
-    addBehaviorOption(optionsMenu, QStringLiteral("Show Visibility Borders"), QStringLiteral("toggle_visibility_borders"), &BehaviorSettings::visibilityBordersEnabled);
     QAction *transformRelativeOption = optionsMenu->addAction(QStringLiteral("Transform Relative Mode"));
     transformRelativeOption->setCheckable(true);
     const TransformModeSettings initialTransformSettings = loadTransformModeSettings();
@@ -881,7 +880,6 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
         canvas_->setGuidelinesLocked(settings.guidelinesLocked);
         canvas_->setGuidelineColor(settings.guidelineColor);
         canvas_->setVisibilityBordersEnabled(settings.visibilityBordersEnabled);
-        canvas_->setPositionLimitBorderEnabled(settings.positionLimitBorderEnabled);
         canvas_->setVisibilityBorderResolution(settings.visibilityBorderResolution);
         canvas_->setNudgeSteps(settings.nudgeStep, settings.nudgeShiftStep);
         if (!settings.separateOpacityAndSkewTools
