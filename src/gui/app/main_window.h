@@ -121,6 +121,7 @@ private:
     bool restoreLayout();
     void resetLayout();
     void showSettingsDialog();
+    void restartApplication();
     void applyTheme(UiTheme theme, bool save = true);
     void refreshThemedIcons();
     void applyBehaviorSettings(const BehaviorSettings &settings, bool save = true);
@@ -261,6 +262,7 @@ private:
     QStringList autoExpandedGroupIds_;
     bool dockResizeCursorOverrideActive_ = false;
     bool promptedForGameFolder_ = false;
+    bool restartRequested_ = false;
     struct DockAreaCollapseState {
         Qt::DockWidgetArea area = Qt::NoDockWidgetArea;
         bool collapsed = false;

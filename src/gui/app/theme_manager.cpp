@@ -142,6 +142,10 @@ BehaviorSettings loadBehaviorSettings() {
     result.nudgeShiftStep = settings.value(QStringLiteral("ui/behavior/nudgeShiftStep"), result.nudgeShiftStep).toDouble();
     result.liveryTextureScale = settings.value(QStringLiteral("ui/behavior/liveryTextureScale"), result.liveryTextureScale).toInt();
     result.autosaveIntervalMinutes = settings.value(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), result.autosaveIntervalMinutes).toInt();
+    if (settings.contains(QStringLiteral("ui/behavior/autosaveEnabled"))
+        && !settings.value(QStringLiteral("ui/behavior/autosaveEnabled")).toBool()) {
+        result.autosaveIntervalMinutes = 0;
+    }
     result.gameFolder = settings.value(QStringLiteral("ui/behavior/gameFolder")).toString();
     result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), result.discardModelOnLiveryOpen).toBool();
     result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), result.loadCarTextures).toBool();
@@ -188,8 +192,8 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/nudgeStep"), settings.nudgeStep);
     qsettings.setValue(QStringLiteral("ui/behavior/nudgeShiftStep"), settings.nudgeShiftStep);
     qsettings.setValue(QStringLiteral("ui/behavior/liveryTextureScale"), std::clamp(settings.liveryTextureScale, 1, 8));
-    qsettings.setValue(QStringLiteral("ui/behavior/autosaveEnabled"), settings.autosaveEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/autosaveIntervalMinutes"), std::clamp(settings.autosaveIntervalMinutes, 0, 1440));
+    qsettings.remove(QStringLiteral("ui/behavior/autosaveEnabled"));
     qsettings.setValue(QStringLiteral("ui/behavior/gameFolder"), settings.gameFolder);
     qsettings.setValue(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), settings.discardModelOnLiveryOpen);
     qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);

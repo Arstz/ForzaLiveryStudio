@@ -1,5 +1,6 @@
 #include "settings_dialog.h"
 
+#include "gui_assets.h"
 #include "gui/key_bindings.h"
 
 #include <QtCore>
@@ -10,6 +11,147 @@
 
 namespace gui {
 namespace {
+
+struct SettingTip {
+    bool hasTip = false;
+    QString tip;
+};
+
+using SettingTips = QHash<QString, SettingTip>;
+
+SettingTips loadSettingTips() {
+    QFile file(assetPath(QStringLiteral("settings_tips.json")));
+    if (!file.open(QIODevice::ReadOnly)) {
+        qWarning().noquote() << QStringLiteral("Could not open settings tips: %1").arg(file.fileName());
+        return {};
+    }
+    QJsonParseError error{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        qWarning().noquote() << QStringLiteral("Could not parse settings tips: %1").arg(error.errorString());
+        return {};
+    }
+
+    SettingTips result;
+    const QJsonObject root = document.object();
+    for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+        const QJsonObject object = it.value().toObject();
+        result.insert(it.key(), {
+            object.value(QStringLiteral("hasTip")).toBool(false),
+            object.value(QStringLiteral("tip")).toString(),
+        });
+    }
+
+    return result;
+}
+
+QWidget *settingLabel(const QString &text,
+                      const QString &id,
+                      const SettingTips &tips,
+                      QWidget *parent) {
+    auto *container = new QWidget(parent);
+    auto *layout = new QHBoxLayout(container);
+    layout->setContentsMargins(0, 8, 0, 8);
+    layout->setSpacing(5);
+    auto *label = new QLabel(text, container);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    layout->addStretch(1);
+    const SettingTip tip = tips.value(id);
+    if (tip.hasTip && !tip.tip.isEmpty()) {
+        auto *help = new QToolButton(container);
+        help->setText(QStringLiteral("?"));
+        help->setAutoRaise(true);
+        help->setCursor(Qt::WhatsThisCursor);
+        help->setToolTip(tip.tip);
+        help->setAccessibleName(QStringLiteral("Help for %1").arg(text));
+        layout->addWidget(help);
+    }
+
+    return container;
+}
+
+struct SettingsPage {
+    QWidget *widget = nullptr;
+    QGridLayout *grid = nullptr;
+    int nextRow = 0;
+};
+
+struct SettingsSurface {
+    QWidget *page = nullptr;
+    QFrame *content = nullptr;
+    QVBoxLayout *layout = nullptr;
+};
+
+SettingsSurface createSettingsSurface(QStackedWidget *pages) {
+    auto *page = new QWidget(pages);
+    auto *pageLayout = new QVBoxLayout(page);
+    auto *scroll = new QScrollArea(page);
+    auto *content = new QFrame(scroll);
+    auto *contentLayout = new QVBoxLayout(content);
+    content->setFrameShape(QFrame::StyledPanel);
+    content->setBackgroundRole(QPalette::Base);
+    content->setAutoFillBackground(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setWidget(content);
+    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->addWidget(scroll);
+    pages->addWidget(page);
+
+    return {page, content, contentLayout};
+}
+
+void addSettingRow(SettingsPage &page,
+                   const QString &id,
+                   const QString &label,
+                   QWidget *field,
+                   const SettingTips &tips) {
+    if (page.nextRow > 0) {
+        auto *leftSeparator = new QFrame(page.widget);
+        auto *middleSeparator = new QFrame(page.widget);
+        auto *rightSeparator = new QFrame(page.widget);
+        leftSeparator->setFrameShape(QFrame::HLine);
+        leftSeparator->setFrameShadow(QFrame::Sunken);
+        middleSeparator->setFrameShape(QFrame::VLine);
+        middleSeparator->setFrameShadow(QFrame::Sunken);
+        rightSeparator->setFrameShape(QFrame::HLine);
+        rightSeparator->setFrameShadow(QFrame::Sunken);
+        page.grid->addWidget(leftSeparator, page.nextRow, 0);
+        page.grid->addWidget(middleSeparator, page.nextRow, 1);
+        page.grid->addWidget(rightSeparator, page.nextRow++, 2);
+    }
+    auto *verticalSeparator = new QFrame(page.widget);
+    auto *fieldContainer = new QWidget(page.widget);
+    auto *fieldLayout = new QHBoxLayout(fieldContainer);
+    verticalSeparator->setFrameShape(QFrame::VLine);
+    verticalSeparator->setFrameShadow(QFrame::Sunken);
+    fieldLayout->setContentsMargins(0, 8, 0, 8);
+    fieldLayout->addWidget(field, 1);
+    field->setSizePolicy(QSizePolicy::Expanding, field->sizePolicy().verticalPolicy());
+    page.grid->addWidget(settingLabel(label, id, tips, page.widget),
+                         page.nextRow, 0, Qt::AlignVCenter);
+    page.grid->addWidget(verticalSeparator, page.nextRow, 1);
+    page.grid->addWidget(fieldContainer, page.nextRow, 2);
+    ++page.nextRow;
+}
+
+SettingsPage createSettingsPage(QStackedWidget *pages) {
+    const SettingsSurface surface = createSettingsSurface(pages);
+    auto *grid = new QGridLayout;
+    grid->setColumnStretch(0, 3);
+    grid->setColumnMinimumWidth(1, 1);
+    grid->setColumnStretch(2, 7);
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(0);
+    surface.layout->addLayout(grid);
+    surface.layout->addStretch(1);
+
+    return {surface.content, grid, 0};
+}
 
 class ShortcutSequenceEdit final : public QKeySequenceEdit {
 public:
@@ -46,15 +188,59 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     , behaviorSettings_(behaviorSettings)
     , shortcuts_(shortcuts) {
     setWindowTitle(QStringLiteral("Settings"));
-    resize(620, 420);
+    resize(940, 680);
 
+    const SettingTips tips = loadSettingTips();
     auto *layout = new QVBoxLayout(this);
-    auto *tabs = new QTabWidget(this);
-    layout->addWidget(tabs, 1);
+    auto *contentLayout = new QHBoxLayout;
+    auto *navigation = new QListWidget(this);
+    auto *pages = new QStackedWidget(this);
+    navigation->addItems({QStringLiteral("General"), QStringLiteral("Theme"),
+                          QStringLiteral("Tools"), QStringLiteral("Editor"),
+                          QStringLiteral("Keybinds"), QStringLiteral("System")});
+    navigation->setCurrentRow(0);
+    navigation->setFixedWidth(150);
+    navigation->setSpacing(3);
+    navigation->setUniformItemSizes(true);
+    contentLayout->addWidget(navigation);
+    contentLayout->addWidget(pages, 1);
+    layout->addLayout(contentLayout, 1);
 
-    auto *general = new QWidget(tabs);
-    auto *generalLayout = new QFormLayout(general);
-    themeCombo_ = new QComboBox(general);
+    SettingsPage general = createSettingsPage(pages);
+    auto *gameFolderRow = new QWidget(general.widget);
+    auto *gameFolderLayout = new QHBoxLayout(gameFolderRow);
+    gameFolderLayout->setContentsMargins(0, 0, 0, 0);
+    gameFolderLayout->setSpacing(8);
+    gameFolder_ = new QLineEdit(gameFolderRow);
+    gameFolder_->setText(behaviorSettings_.gameFolder);
+    gameFolder_->setPlaceholderText(QStringLiteral("Forza game install folder"));
+    gameFolder_->setClearButtonEnabled(true);
+    auto *browse = new QPushButton(QStringLiteral("Browse"), gameFolderRow);
+    QObject::connect(browse, &QPushButton::clicked, this, [this]() {
+        const QString start = gameFolder_->text().isEmpty() ? QString() : gameFolder_->text();
+        const QString picked = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("Forza Game Folder"), start);
+        if (!picked.isEmpty()) {
+            gameFolder_->setText(picked);
+        }
+    });
+    gameFolderLayout->addWidget(gameFolder_, 1);
+    gameFolderLayout->addWidget(browse);
+    addSettingRow(general, QStringLiteral("general.game_folder"),
+                  QStringLiteral("Game folder"), gameFolderRow, tips);
+
+    autosaveIntervalMinutes_ = new QSpinBox(general.widget);
+    autosaveIntervalMinutes_->setRange(0, 1440);
+    autosaveIntervalMinutes_->setSingleStep(1);
+    autosaveIntervalMinutes_->setSuffix(QStringLiteral(" min"));
+    autosaveIntervalMinutes_->setSpecialValueText(QStringLiteral("Disabled"));
+    autosaveIntervalMinutes_->setValue(
+        std::clamp(behaviorSettings_.autosaveIntervalMinutes, 0, 1440));
+    addSettingRow(general, QStringLiteral("general.autosave_interval"),
+                  QStringLiteral("Autosave interval"), autosaveIntervalMinutes_, tips);
+
+    SettingsPage themePage = createSettingsPage(pages);
+    themeCombo_ = new QComboBox(themePage.widget);
     themeCombo_->addItem(QStringLiteral("Dark"), themeSettingsValue(UiTheme::Dark));
     themeCombo_->addItem(QStringLiteral("Light"), themeSettingsValue(UiTheme::Light));
     themeCombo_->setCurrentIndex(theme == UiTheme::Light ? 1 : 0);
@@ -65,10 +251,13 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         updateCanvasColorControls();
         updatePreviewBackgroundControls();
     });
-    generalLayout->addRow(QStringLiteral("Theme"), themeCombo_);
+    addSettingRow(themePage, QStringLiteral("theme.theme"),
+                  QStringLiteral("Theme"), themeCombo_, tips);
 
-    auto makeCanvasRow = [&](UiTheme rowTheme, QComboBox **modeOut, QPushButton **buttonOut) {
-        auto *row = new QWidget(general);
+    const auto makeCanvasRow = [&](UiTheme rowTheme,
+                                   QComboBox **modeOut,
+                                   QPushButton **buttonOut) {
+        auto *row = new QWidget(themePage.widget);
         auto *rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(8);
@@ -76,21 +265,29 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         mode->addItem(QStringLiteral("Theme default"), QStringLiteral("default"));
         mode->addItem(QStringLiteral("Custom"), QStringLiteral("custom"));
         auto *button = new QPushButton(row);
-        QObject::connect(mode, &QComboBox::currentIndexChanged, this, [this]() { updateCanvasColorControls(); });
-        QObject::connect(button, &QPushButton::clicked, this, [this, rowTheme]() { chooseCanvasColor(rowTheme); });
+        QObject::connect(mode, &QComboBox::currentIndexChanged,
+                         this, [this]() { updateCanvasColorControls(); });
+        QObject::connect(button, &QPushButton::clicked,
+                         this, [this, rowTheme]() { chooseCanvasColor(rowTheme); });
         rowLayout->addWidget(mode, 1);
         rowLayout->addWidget(button);
         *modeOut = mode;
         *buttonOut = button;
         return row;
     };
-    generalLayout->addRow(QStringLiteral("Dark canvas"), makeCanvasRow(UiTheme::Dark, &darkCanvasMode_, &darkCanvasColorButton_));
-    generalLayout->addRow(QStringLiteral("Light canvas"), makeCanvasRow(UiTheme::Light, &lightCanvasMode_, &lightCanvasColorButton_));
+    addSettingRow(themePage, QStringLiteral("theme.dark_canvas"),
+                  QStringLiteral("Dark canvas"),
+                  makeCanvasRow(UiTheme::Dark, &darkCanvasMode_, &darkCanvasColorButton_), tips);
+    addSettingRow(themePage, QStringLiteral("theme.light_canvas"),
+                  QStringLiteral("Light canvas"),
+                  makeCanvasRow(UiTheme::Light, &lightCanvasMode_, &lightCanvasColorButton_), tips);
     darkCanvasMode_->setCurrentIndex(canvasSettings_.darkMode == CanvasColorMode::Custom ? 1 : 0);
     lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
 
-    auto makePreviewBackgroundRow = [&](bool buffer, QComboBox **modeOut, QPushButton **buttonOut) {
-        auto *row = new QWidget(general);
+    const auto makeBackgroundRow = [&](bool buffer,
+                                       QComboBox **modeOut,
+                                       QPushButton **buttonOut) {
+        auto *row = new QWidget(themePage.widget);
         auto *rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(8);
@@ -109,52 +306,30 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         *buttonOut = button;
         return row;
     };
-    generalLayout->addRow(QStringLiteral("Buffer background"),
-                          makePreviewBackgroundRow(true, &bufferBackgroundMode_,
-                                                   &bufferBackgroundColorButton_));
-    generalLayout->addRow(QStringLiteral("Layer background"),
-                          makePreviewBackgroundRow(false, &layersBackgroundMode_,
-                                                   &layersBackgroundColorButton_));
+    addSettingRow(themePage, QStringLiteral("theme.buffer_background"),
+                  QStringLiteral("Buffer background"),
+                  makeBackgroundRow(true, &bufferBackgroundMode_, &bufferBackgroundColorButton_), tips);
+    addSettingRow(themePage, QStringLiteral("theme.layer_background"),
+                  QStringLiteral("Layer background"),
+                  makeBackgroundRow(false, &layersBackgroundMode_, &layersBackgroundColorButton_), tips);
     const auto backgroundModeIndex = [](PreviewBackgroundMode mode) {
         return mode == PreviewBackgroundMode::Checkerboard ? 1
             : mode == PreviewBackgroundMode::Custom ? 2 : 0;
     };
-    bufferBackgroundMode_->setCurrentIndex(backgroundModeIndex(previewBackgroundSettings_.buffer.mode));
-    layersBackgroundMode_->setCurrentIndex(backgroundModeIndex(previewBackgroundSettings_.layers.mode));
+    bufferBackgroundMode_->setCurrentIndex(
+        backgroundModeIndex(previewBackgroundSettings_.buffer.mode));
+    layersBackgroundMode_->setCurrentIndex(
+        backgroundModeIndex(previewBackgroundSettings_.layers.mode));
 
-    guidelineColorButton_ = new QPushButton(general);
-    QObject::connect(guidelineColorButton_, &QPushButton::clicked, this, &SettingsDialog::chooseGuidelineColor);
-    generalLayout->addRow(QStringLiteral("Guideline color"), guidelineColorButton_);
-    updateCanvasColorControls();
-    updatePreviewBackgroundControls();
-
-    visibilityBordersCheck_ = new QCheckBox(general);
-    visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
-    generalLayout->addRow(QStringLiteral("Show visibility borders"), visibilityBordersCheck_);
-
-    positionLimitBorderCheck_ = new QCheckBox(general);
-    positionLimitBorderCheck_->setChecked(behaviorSettings_.positionLimitBorderEnabled);
-    generalLayout->addRow(QStringLiteral("Position Limit Border"), positionLimitBorderCheck_);
-
-    displayAnchorsDuringTransformDrag_ = new QCheckBox(general);
-    displayAnchorsDuringTransformDrag_->setChecked(behaviorSettings_.displayAnchorsDuringTransformDrag);
-    generalLayout->addRow(QStringLiteral("Display anchors during transform drag"), displayAnchorsDuringTransformDrag_);
-
-    generatePreviewsWithTransformations_ = new QCheckBox(general);
-    generatePreviewsWithTransformations_->setChecked(behaviorSettings_.generatePreviewsWithTransformations);
-    generalLayout->addRow(QStringLiteral("Generate previews with transformations applied"), generatePreviewsWithTransformations_);
-
-    visibilityBorderResolution_ = new QComboBox(general);
-    const QVector<QSize> visibilityResolutions = {QSize(1920, 1080), QSize(2560, 1440), QSize(3840, 2160)};
-    for (const QSize &resolution : visibilityResolutions) {
-        visibilityBorderResolution_->addItem(QStringLiteral("%1x%2").arg(resolution.width()).arg(resolution.height()), resolution);
-    }
-    const int resolutionIndex = visibilityBorderResolution_->findData(behaviorSettings_.visibilityBorderResolution);
-    visibilityBorderResolution_->setCurrentIndex(resolutionIndex >= 0 ? resolutionIndex : 0);
-    generalLayout->addRow(QStringLiteral("Border resolution"), visibilityBorderResolution_);
-
-    auto makeNudgeSpinBox = [general](double value) {
-        auto *spin = new QDoubleSpinBox(general);
+    SettingsPage toolsPage = createSettingsPage(pages);
+    displayAnchorsDuringTransformDrag_ = new QCheckBox(toolsPage.widget);
+    displayAnchorsDuringTransformDrag_->setChecked(
+        behaviorSettings_.displayAnchorsDuringTransformDrag);
+    addSettingRow(toolsPage, QStringLiteral("tools.display_anchors"),
+                  QStringLiteral("Display anchors during transform drag"),
+                  displayAnchorsDuringTransformDrag_, tips);
+    const auto makeNudgeSpinBox = [toolsPage](double value) {
+        auto *spin = new QDoubleSpinBox(toolsPage.widget);
         spin->setDecimals(3);
         spin->setRange(0.001, 1000.0);
         spin->setSingleStep(0.1);
@@ -162,109 +337,161 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         return spin;
     };
     nudgeStep_ = makeNudgeSpinBox(behaviorSettings_.nudgeStep);
-    generalLayout->addRow(QStringLiteral("Arrow nudge step"), nudgeStep_);
+    addSettingRow(toolsPage, QStringLiteral("tools.nudge_small"),
+                  QStringLiteral("Arrow nudge small step"), nudgeStep_, tips);
     nudgeShiftStep_ = makeNudgeSpinBox(behaviorSettings_.nudgeShiftStep);
-    generalLayout->addRow(QStringLiteral("Shift arrow nudge step"), nudgeShiftStep_);
+    addSettingRow(toolsPage, QStringLiteral("tools.nudge_big"),
+                  QStringLiteral("Arrow nudge big step"), nudgeShiftStep_, tips);
+    toolbarViewCombo_ = new QComboBox(toolsPage.widget);
+    toolbarViewCombo_->addItem(QStringLiteral("Horizontal with labels"), false);
+    toolbarViewCombo_->addItem(QStringLiteral("Vertical icons only"), true);
+    toolbarViewCombo_->setCurrentIndex(behaviorSettings_.verticalToolbar ? 1 : 0);
+    addSettingRow(toolsPage, QStringLiteral("tools.toolbar_view"),
+                  QStringLiteral("Toolbar view"), toolbarViewCombo_, tips);
+    separateOpacityAndSkewToolsCheck_ = new QCheckBox(toolsPage.widget);
+    separateOpacityAndSkewToolsCheck_->setChecked(
+        behaviorSettings_.separateOpacityAndSkewTools);
+    addSettingRow(toolsPage, QStringLiteral("tools.separate_opacity_skew"),
+                  QStringLiteral("Separate opacity and skew tools"),
+                  separateOpacityAndSkewToolsCheck_, tips);
 
-    liveryTextureScale_ = new QSpinBox(general);
+    SettingsPage editorPage = createSettingsPage(pages);
+    guidelineColorButton_ = new QPushButton(editorPage.widget);
+    QObject::connect(guidelineColorButton_, &QPushButton::clicked,
+                     this, &SettingsDialog::chooseGuidelineColor);
+    addSettingRow(editorPage, QStringLiteral("editor.guideline_color"),
+                  QStringLiteral("Guideline color"), guidelineColorButton_, tips);
+    visibilityBordersCheck_ = new QCheckBox(editorPage.widget);
+    visibilityBordersCheck_->setChecked(behaviorSettings_.visibilityBordersEnabled);
+    addSettingRow(editorPage, QStringLiteral("editor.visibility_borders"),
+                  QStringLiteral("Show visibility borders"), visibilityBordersCheck_, tips);
+    positionLimitBorderCheck_ = new QCheckBox(editorPage.widget);
+    positionLimitBorderCheck_->setChecked(behaviorSettings_.positionLimitBorderEnabled);
+    addSettingRow(editorPage, QStringLiteral("editor.position_limit_border"),
+                  QStringLiteral("Position limit border"), positionLimitBorderCheck_, tips);
+    generatePreviewsWithTransformations_ = new QCheckBox(editorPage.widget);
+    generatePreviewsWithTransformations_->setChecked(
+        behaviorSettings_.generatePreviewsWithTransformations);
+    addSettingRow(editorPage, QStringLiteral("editor.transformed_previews"),
+                  QStringLiteral("Generate previews with transformations applied"),
+                  generatePreviewsWithTransformations_, tips);
+    visibilityBorderResolution_ = new QComboBox(editorPage.widget);
+    const QVector<QSize> visibilityResolutions = {
+        QSize(1920, 1080), QSize(2560, 1440), QSize(3840, 2160),
+    };
+    for (const QSize &resolution : visibilityResolutions) {
+        visibilityBorderResolution_->addItem(
+            QStringLiteral("%1x%2").arg(resolution.width()).arg(resolution.height()), resolution);
+    }
+    const int resolutionIndex = visibilityBorderResolution_->findData(
+        behaviorSettings_.visibilityBorderResolution);
+    visibilityBorderResolution_->setCurrentIndex(resolutionIndex >= 0 ? resolutionIndex : 0);
+    addSettingRow(editorPage, QStringLiteral("editor.border_resolution"),
+                  QStringLiteral("Border resolution"), visibilityBorderResolution_, tips);
+    liveryTextureScale_ = new QSpinBox(editorPage.widget);
     liveryTextureScale_->setRange(1, 8);
     liveryTextureScale_->setSingleStep(1);
     liveryTextureScale_->setValue(std::clamp(behaviorSettings_.liveryTextureScale, 1, 8));
-    generalLayout->addRow(QStringLiteral("3D livery texture scale"), liveryTextureScale_);
-
-    autosaveEnabledCheck_ = new QCheckBox(general);
-    autosaveEnabledCheck_->setChecked(behaviorSettings_.autosaveEnabled);
-    generalLayout->addRow(QStringLiteral("Auto Save"), autosaveEnabledCheck_);
-
-    autosaveIntervalMinutes_ = new QSpinBox(general);
-    autosaveIntervalMinutes_->setRange(0, 1440);
-    autosaveIntervalMinutes_->setSingleStep(1);
-    autosaveIntervalMinutes_->setSuffix(QStringLiteral(" min"));
-    autosaveIntervalMinutes_->setSpecialValueText(QStringLiteral("Disabled"));
-    autosaveIntervalMinutes_->setValue(std::clamp(behaviorSettings_.autosaveIntervalMinutes, 0, 1440));
-    autosaveIntervalMinutes_->setEnabled(autosaveEnabledCheck_->isChecked());
-    QObject::connect(autosaveEnabledCheck_, &QCheckBox::toggled,
-                     autosaveIntervalMinutes_, &QWidget::setEnabled);
-    generalLayout->addRow(QStringLiteral("Autosave interval"), autosaveIntervalMinutes_);
-
-    valueEditingWheelCheck_ = new QCheckBox(general);
+    addSettingRow(editorPage, QStringLiteral("editor.livery_texture_scale"),
+                  QStringLiteral("3D livery texture scale"), liveryTextureScale_, tips);
+    valueEditingWheelCheck_ = new QCheckBox(editorPage.widget);
     valueEditingWheelCheck_->setChecked(behaviorSettings_.valueEditingWheelEnabled);
-    generalLayout->addRow(QStringLiteral("Edit values with mouse wheel"), valueEditingWheelCheck_);
-
-    verticalToolbarCheck_ = new QCheckBox(general);
-    verticalToolbarCheck_->setChecked(behaviorSettings_.verticalToolbar);
-    generalLayout->addRow(QStringLiteral("Vertical icon-only toolbar"), verticalToolbarCheck_);
-
-    separateOpacityAndSkewToolsCheck_ = new QCheckBox(general);
-    separateOpacityAndSkewToolsCheck_->setChecked(behaviorSettings_.separateOpacityAndSkewTools);
-    generalLayout->addRow(QStringLiteral("Separate opacity and skew tools"),
-                          separateOpacityAndSkewToolsCheck_);
-
-    {
-        auto *row = new QWidget(general);
-        auto *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(8);
-        gameFolder_ = new QLineEdit(row);
-        gameFolder_->setText(behaviorSettings_.gameFolder);
-        gameFolder_->setPlaceholderText(QStringLiteral("Forza game install folder"));
-        gameFolder_->setClearButtonEnabled(true);
-        auto *browse = new QPushButton(QStringLiteral("Browse…"), row);
-        QObject::connect(browse, &QPushButton::clicked, this, [this]() {
-            const QString start = gameFolder_->text().isEmpty() ? QString() : gameFolder_->text();
-            const QString picked = QFileDialog::getExistingDirectory(this, QStringLiteral("Forza Game Folder"), start);
-            if (!picked.isEmpty()) {
-                gameFolder_->setText(picked);
-            }
-        });
-        rowLayout->addWidget(gameFolder_, 1);
-        rowLayout->addWidget(browse);
-        generalLayout->addRow(QStringLiteral("Game folder"), row);
-    }
-
-    discardModelOnLiveryOpen_ = new QCheckBox(general);
+    addSettingRow(editorPage, QStringLiteral("editor.value_wheel"),
+                  QStringLiteral("Edit values with mouse wheel"), valueEditingWheelCheck_, tips);
+    discardModelOnLiveryOpen_ = new QCheckBox(editorPage.widget);
     discardModelOnLiveryOpen_->setChecked(behaviorSettings_.discardModelOnLiveryOpen);
-    generalLayout->addRow(QStringLiteral("Discard current model on livery open"), discardModelOnLiveryOpen_);
-
-    loadCarTextures_ = new QCheckBox(general);
+    addSettingRow(editorPage, QStringLiteral("editor.discard_model"),
+                  QStringLiteral("Discard current model on livery open"),
+                  discardModelOnLiveryOpen_, tips);
+    loadCarTextures_ = new QCheckBox(editorPage.widget);
     loadCarTextures_->setChecked(behaviorSettings_.loadCarTextures);
-    generalLayout->addRow(QStringLiteral("Load car textures"), loadCarTextures_);
+    addSettingRow(editorPage, QStringLiteral("editor.load_car_textures"),
+                  QStringLiteral("Load car textures"), loadCarTextures_, tips);
 
-    tabs->addTab(general, QStringLiteral("General"));
-
-    auto *keybinds = new QWidget(tabs);
-    auto *keybindLayout = new QVBoxLayout(keybinds);
-    shortcutTable_ = new QTableWidget(shortcuts_.size(), 3, keybinds);
-    shortcutTable_->setHorizontalHeaderLabels({QStringLiteral("Action"), QStringLiteral("Shortcut"), QStringLiteral("Reset")});
-    shortcutTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    shortcutTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    shortcutTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    shortcutTable_->verticalHeader()->setVisible(false);
-    shortcutTable_->setSelectionMode(QAbstractItemView::NoSelection);
-    shortcutTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    SettingsPage keybindsPage = createSettingsPage(pages);
+    shortcutEdits_.reserve(shortcuts_.size());
     for (int row = 0; row < shortcuts_.size(); ++row) {
-        auto *name = new QTableWidgetItem(shortcuts_[row].label);
-        name->setFlags(name->flags() & ~Qt::ItemIsEditable);
-        shortcutTable_->setItem(row, 0, name);
-
-        auto *edit = new ShortcutSequenceEdit(shortcuts_[row].currentSequence, shortcutTable_);
-        shortcutTable_->setCellWidget(row, 1, edit);
-
-        auto *reset = new QPushButton(QStringLiteral("Reset"), shortcutTable_);
-        QObject::connect(reset, &QPushButton::clicked, this, [this, row]() { resetShortcutRow(row); });
-        shortcutTable_->setCellWidget(row, 2, reset);
+        auto *controls = new QWidget(keybindsPage.widget);
+        auto *controlsLayout = new QHBoxLayout(controls);
+        auto *edit = new ShortcutSequenceEdit(shortcuts_[row].currentSequence, controls);
+        auto *reset = new QPushButton(QStringLiteral("Reset"), controls);
+        controlsLayout->setContentsMargins(0, 0, 0, 0);
+        controlsLayout->setSpacing(8);
+        controlsLayout->addWidget(edit, 1);
+        controlsLayout->addWidget(reset);
+        shortcutEdits_.append(edit);
+        QObject::connect(reset, &QPushButton::clicked,
+                         this, [this, row]() { resetShortcutRow(row); });
+        addSettingRow(keybindsPage, QStringLiteral("keybinds.shortcuts"),
+                      shortcuts_[row].label, controls, tips);
     }
-    keybindLayout->addWidget(shortcutTable_, 1);
-    auto *resetAll = new QPushButton(QStringLiteral("Reset All"), keybinds);
-    QObject::connect(resetAll, &QPushButton::clicked, this, [this]() { resetAllShortcuts(); });
-    keybindLayout->addWidget(resetAll, 0, Qt::AlignLeft);
-    validationLabel_ = new QLabel(keybinds);
+    auto *resetControls = new QWidget(keybindsPage.widget);
+    auto *resetLayout = new QHBoxLayout(resetControls);
+    auto *resetAll = new QPushButton(QStringLiteral("Reset All"), resetControls);
+    validationLabel_ = new QLabel(resetControls);
     validationLabel_->setWordWrap(true);
     validationLabel_->setStyleSheet(QStringLiteral("color: #d07070;"));
-    keybindLayout->addWidget(validationLabel_);
-    tabs->addTab(keybinds, QStringLiteral("Keybinds"));
+    resetLayout->setContentsMargins(0, 0, 0, 0);
+    resetLayout->setSpacing(8);
+    resetLayout->addWidget(validationLabel_, 1);
+    resetLayout->addWidget(resetAll);
+    QObject::connect(resetAll, &QPushButton::clicked,
+                     this, [this]() { resetAllShortcuts(); });
+    addSettingRow(keybindsPage, QStringLiteral("keybinds.shortcuts"),
+                  QStringLiteral("All keybinds"), resetControls, tips);
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    SettingsPage systemPage = createSettingsPage(pages);
+    const SystemIconSet iconSet = loadSystemIconSet();
+    systemIconSetCombo_ = new QComboBox(systemPage.widget);
+    systemIconSetCombo_->addItem(
+        QStringLiteral("Light"), systemIconSetSettingsValue(SystemIconSet::Light));
+    systemIconSetCombo_->addItem(
+        QStringLiteral("Dark"), systemIconSetSettingsValue(SystemIconSet::Dark));
+    systemIconSetCombo_->setCurrentIndex(iconSet == SystemIconSet::Dark ? 1 : 0);
+    addSettingRow(systemPage, QStringLiteral("system.icon_pack"),
+                  QStringLiteral("Icon pack"), systemIconSetCombo_, tips);
+
+    auto *association = new QWidget(systemPage.widget);
+    auto *associationLayout = new QVBoxLayout(association);
+    associationLayout->setContentsMargins(0, 0, 0, 0);
+    projectFileAssociationCheck_ = new QCheckBox(
+        QStringLiteral("Associate .3so files with this application"), association);
+    projectFileAssociationStatus_ = new QLabel(association);
+    projectFileAssociationStatus_->setWordWrap(true);
+    const ProjectFileAssociationState associationState = projectFileAssociationState(iconSet);
+    projectFileAssociationCheck_->setChecked(
+        associationState != ProjectFileAssociationState::NotRegistered);
+    associationLayout->addWidget(projectFileAssociationCheck_);
+    associationLayout->addWidget(projectFileAssociationStatus_);
+    addSettingRow(systemPage, QStringLiteral("system.file_association"),
+                  QStringLiteral("File association"), association, tips);
+    const auto updateAssociationStatus = [this]() {
+        if (!projectFileAssociationCheck_->isChecked()) {
+            projectFileAssociationStatus_->setText(QStringLiteral("Not registered"));
+            return;
+        }
+        const ProjectFileAssociationState state =
+            projectFileAssociationState(selectedSystemIconSet());
+        projectFileAssociationStatus_->setText(
+            state == ProjectFileAssociationState::Registered
+                ? QStringLiteral("Registered to this application")
+                : state == ProjectFileAssociationState::NeedsRepair
+                    ? QStringLiteral("Registered; apply settings to update it")
+                    : QStringLiteral("Will be registered when settings are applied"));
+    };
+    QObject::connect(projectFileAssociationCheck_, &QCheckBox::toggled,
+                     this, [updateAssociationStatus](bool) { updateAssociationStatus(); });
+    QObject::connect(systemIconSetCombo_, &QComboBox::currentIndexChanged,
+                     this, [updateAssociationStatus](int) { updateAssociationStatus(); });
+    updateAssociationStatus();
+
+    updateCanvasColorControls();
+    updatePreviewBackgroundControls();
+    QObject::connect(navigation, &QListWidget::currentRowChanged,
+                     pages, &QStackedWidget::setCurrentIndex);
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     QObject::connect(buttons, &QDialogButtonBox::accepted, this, &SettingsDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, this, &SettingsDialog::reject);
     layout->addWidget(buttons);
@@ -277,17 +504,16 @@ UiTheme SettingsDialog::selectedTheme() const {
 CanvasColorSettings SettingsDialog::selectedCanvasSettings() const {
     CanvasColorSettings result = canvasSettings_;
     result.darkMode = darkCanvasMode_->currentData().toString() == QStringLiteral("custom")
-        ? CanvasColorMode::Custom
-        : CanvasColorMode::ThemeDefault;
+        ? CanvasColorMode::Custom : CanvasColorMode::ThemeDefault;
     result.lightMode = lightCanvasMode_->currentData().toString() == QStringLiteral("custom")
-        ? CanvasColorMode::Custom
-        : CanvasColorMode::ThemeDefault;
+        ? CanvasColorMode::Custom : CanvasColorMode::ThemeDefault;
     if (!result.darkCustom.isValid()) {
         result.darkCustom = defaultCanvasColor(UiTheme::Dark);
     }
     if (!result.lightCustom.isValid()) {
         result.lightCustom = defaultCanvasColor(UiTheme::Light);
     }
+
     return result;
 }
 
@@ -325,14 +551,13 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     result.displayAnchorsDuringTransformDrag = displayAnchorsDuringTransformDrag_->isChecked();
     result.generatePreviewsWithTransformations = generatePreviewsWithTransformations_->isChecked();
     result.visibilityBorderResolution = resolution.isValid()
-        ? resolution
-        : defaults.visibilityBorderResolution;
+        ? resolution : defaults.visibilityBorderResolution;
     result.nudgeStep = nudgeStep_->value();
     result.nudgeShiftStep = nudgeShiftStep_->value();
     result.liveryTextureScale = liveryTextureScale_->value();
     result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
     result.valueEditingWheelEnabled = valueEditingWheelCheck_->isChecked();
-    result.verticalToolbar = verticalToolbarCheck_->isChecked();
+    result.verticalToolbar = toolbarViewCombo_->currentData().toBool();
     result.separateOpacityAndSkewTools = separateOpacityAndSkewToolsCheck_->isChecked();
     result.gameFolder = gameFolder_->text().trimmed();
     result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
@@ -341,12 +566,19 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     return result;
 }
 
+SystemIconSet SettingsDialog::selectedSystemIconSet() const {
+    return systemIconSetFromSettingsValue(systemIconSetCombo_->currentData().toString());
+}
+
+bool SettingsDialog::projectFileAssociationEnabled() const {
+    return projectFileAssociationCheck_->isChecked();
+}
+
 QVector<ShortcutSettingsItem> SettingsDialog::shortcutItems() const {
     QVector<ShortcutSettingsItem> result = shortcuts_;
     for (int row = 0; row < result.size(); ++row) {
-        auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
-        if (edit != nullptr) {
-            result[row].currentSequence = edit->keySequence();
+        if (row < shortcutEdits_.size()) {
+            result[row].currentSequence = shortcutEdits_[row]->keySequence();
         }
     }
     return result;
@@ -357,13 +589,10 @@ void SettingsDialog::setThemeChangedCallback(std::function<void(UiTheme)> callba
 }
 
 void SettingsDialog::resetShortcutRow(int row) {
-    if (row < 0 || row >= shortcuts_.size()) {
+    if (row < 0 || row >= shortcuts_.size() || row >= shortcutEdits_.size()) {
         return;
     }
-    auto *edit = qobject_cast<QKeySequenceEdit *>(shortcutTable_->cellWidget(row, 1));
-    if (edit != nullptr) {
-        edit->setKeySequence(shortcuts_[row].defaultSequence);
-    }
+    shortcutEdits_[row]->setKeySequence(shortcuts_[row].defaultSequence);
 }
 
 void SettingsDialog::resetAllShortcuts() {
@@ -374,9 +603,12 @@ void SettingsDialog::resetAllShortcuts() {
 
 void SettingsDialog::chooseCanvasColor(UiTheme theme) {
     const QColor current = theme == UiTheme::Light
-        ? (canvasSettings_.lightCustom.isValid() ? canvasSettings_.lightCustom : defaultCanvasColor(UiTheme::Light))
-        : (canvasSettings_.darkCustom.isValid() ? canvasSettings_.darkCustom : defaultCanvasColor(UiTheme::Dark));
-    const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Canvas Color"));
+        ? (canvasSettings_.lightCustom.isValid()
+               ? canvasSettings_.lightCustom : defaultCanvasColor(UiTheme::Light))
+        : (canvasSettings_.darkCustom.isValid()
+               ? canvasSettings_.darkCustom : defaultCanvasColor(UiTheme::Dark));
+    const QColor picked = QColorDialog::getColor(
+        current, this, QStringLiteral("Canvas Color"));
     if (!picked.isValid()) {
         return;
     }
@@ -409,10 +641,9 @@ void SettingsDialog::choosePreviewBackgroundColor(bool buffer) {
 
 void SettingsDialog::chooseGuidelineColor() {
     const QColor current = behaviorSettings_.guidelineColor.isValid()
-        ? behaviorSettings_.guidelineColor
-        : QColor(0, 170, 255);
-    const QColor picked = QColorDialog::getColor(current, this, QStringLiteral("Guideline Color"),
-                                                 QColorDialog::ShowAlphaChannel);
+        ? behaviorSettings_.guidelineColor : QColor(0, 170, 255);
+    const QColor picked = QColorDialog::getColor(
+        current, this, QStringLiteral("Guideline Color"), QColorDialog::ShowAlphaChannel);
     if (!picked.isValid()) {
         return;
     }
@@ -421,7 +652,9 @@ void SettingsDialog::chooseGuidelineColor() {
 }
 
 void SettingsDialog::updateCanvasColorControls() {
-    const auto updateButton = [](QPushButton *button, const QColor &color, bool customEnabled) {
+    const auto updateButton = [](QPushButton *button,
+                                 const QColor &color,
+                                 bool customEnabled) {
         if (button == nullptr) {
             return;
         }
@@ -429,22 +662,28 @@ void SettingsDialog::updateCanvasColorControls() {
         button->setText(color.name(QColor::HexRgb).toUpper());
         button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
                                   .arg(color.name(QColor::HexRgb),
-                                       color.lightness() < 128 ? QStringLiteral("#ffffff") : QStringLiteral("#202225")));
+                                       color.lightness() < 128
+                                           ? QStringLiteral("#ffffff")
+                                           : QStringLiteral("#202225")));
     };
     const CanvasColorSettings settings = selectedCanvasSettings();
     updateButton(darkCanvasColorButton_,
-                 settings.darkMode == CanvasColorMode::Custom ? settings.darkCustom : defaultCanvasColor(UiTheme::Dark),
+                 settings.darkMode == CanvasColorMode::Custom
+                     ? settings.darkCustom : defaultCanvasColor(UiTheme::Dark),
                  settings.darkMode == CanvasColorMode::Custom);
     updateButton(lightCanvasColorButton_,
-                 settings.lightMode == CanvasColorMode::Custom ? settings.lightCustom : defaultCanvasColor(UiTheme::Light),
+                 settings.lightMode == CanvasColorMode::Custom
+                     ? settings.lightCustom : defaultCanvasColor(UiTheme::Light),
                  settings.lightMode == CanvasColorMode::Custom);
     updateButton(guidelineColorButton_,
-                 behaviorSettings_.guidelineColor.isValid() ? behaviorSettings_.guidelineColor : QColor(0, 170, 255),
+                 behaviorSettings_.guidelineColor.isValid()
+                     ? behaviorSettings_.guidelineColor : QColor(0, 170, 255),
                  true);
 }
 
 void SettingsDialog::updatePreviewBackgroundControls() {
-    const auto updateButton = [this](QPushButton *button, const PreviewBackground &background) {
+    const auto updateButton = [this](QPushButton *button,
+                                     const PreviewBackground &background) {
         if (button == nullptr) {
             return;
         }
@@ -455,8 +694,9 @@ void SettingsDialog::updatePreviewBackgroundControls() {
         button->setText(color.name(QColor::HexRgb).toUpper());
         button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
                                   .arg(color.name(QColor::HexRgb),
-                                       color.lightness() < 128 ? QStringLiteral("#ffffff")
-                                                               : QStringLiteral("#202225")));
+                                       color.lightness() < 128
+                                           ? QStringLiteral("#ffffff")
+                                           : QStringLiteral("#202225")));
     };
     const PreviewBackgroundSettings settings = selectedPreviewBackgroundSettings();
     updateButton(bufferBackgroundColorButton_, settings.buffer);
@@ -473,8 +713,10 @@ bool SettingsDialog::shortcutsAreValid() {
         const QString normalized = item.currentSequence.toString(QKeySequence::PortableText);
         const auto it = seen.constFind(normalized);
         if (it != seen.constEnd()) {
-            validationLabel_->setText(QStringLiteral("Shortcut %1 is assigned to both %2 and %3.")
-                                          .arg(item.currentSequence.toString(QKeySequence::NativeText), it.value(), item.label));
+            validationLabel_->setText(
+                QStringLiteral("Shortcut %1 is assigned to both %2 and %3.")
+                    .arg(item.currentSequence.toString(QKeySequence::NativeText),
+                         it.value(), item.label));
             return false;
         }
         seen.insert(normalized, item.label);

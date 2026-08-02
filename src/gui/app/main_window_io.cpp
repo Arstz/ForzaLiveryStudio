@@ -225,7 +225,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
-    if (confirmDiscardUnsavedChanges()) {
+    if (restartRequested_ || confirmDiscardUnsavedChanges()) {
         event->accept();
     } else {
         event->ignore();

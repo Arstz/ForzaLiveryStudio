@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
+#include <QTimer>
 
 namespace {
 
@@ -92,5 +93,8 @@ int main(int argc, char *argv[]) {
     openStartupFiles(window, QCoreApplication::arguments().mid(1));
     window.show();
     gui::applySystemWindowIcon(window);
+    QTimer::singleShot(0, &window, [&window]() {
+        gui::offerProjectFileAssociation(window);
+    });
     return QApplication::exec();
 }

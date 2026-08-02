@@ -915,7 +915,7 @@ void MainWindow::configureAutosaveTimer(const BehaviorSettings &settings) {
     if (autosaveTimer_ == nullptr) {
         return;
     }
-    if (!settings.autosaveEnabled || settings.autosaveIntervalMinutes <= 0) {
+    if (settings.autosaveIntervalMinutes <= 0) {
         autosaveTimer_->stop();
         return;
     }
@@ -937,6 +937,7 @@ void MainWindow::refreshShortcutActionText(QAction *action,
 
 void MainWindow::showSettingsDialog() {
     const UiTheme originalTheme = theme_;
+    const SystemIconSet originalIconSet = loadSystemIconSet();
     SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadPreviewBackgroundSettings(),
                           loadBehaviorSettings(), shortcutSettingsItems(), this);
     dialog.setThemeChangedCallback([this](UiTheme theme) {
@@ -951,6 +952,38 @@ void MainWindow::showSettingsDialog() {
     saveCanvasColorSettings(dialog.selectedCanvasSettings());
     savePreviewBackgroundSettings(dialog.selectedPreviewBackgroundSettings());
     applyTheme(dialog.selectedTheme());
+    const SystemIconSet selectedIconSet = dialog.selectedSystemIconSet();
+    QString associationError;
+    if (!setProjectFileAssociationEnabled(
+            dialog.projectFileAssociationEnabled(), selectedIconSet, &associationError)) {
+        QMessageBox::warning(this, QStringLiteral("File Association"), associationError);
+    }
+    saveSystemIconSet(selectedIconSet);
+    if (selectedIconSet != originalIconSet) {
+        restartApplication();
+    }
+}
+
+void MainWindow::restartApplication() {
+    if (!confirmDiscardUnsavedChanges()) {
+        statusBar()->showMessage(
+            QStringLiteral("The icon change will be applied on the next launch"), 5000);
+        return;
+    }
+
+    QStringList arguments;
+    if (!projectJsonPath_.isEmpty()) {
+        arguments.push_back(projectJsonPath_);
+    }
+    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Restart Failed"),
+            QStringLiteral("Could not restart Forza Livery Studio. The icon change will be applied on the next launch."));
+        return;
+    }
+    restartRequested_ = true;
+    close();
 }
 
 QVector<QDockWidget *> MainWindow::dockWidgetsInArea(Qt::DockWidgetArea area) const {

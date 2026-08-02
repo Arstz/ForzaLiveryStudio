@@ -527,6 +527,9 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/differential_shapes.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/settings_tips.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/settings_tips.json"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/icons"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -551,16 +554,6 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/MissingTexture.png"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/MissingTexture.png"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/system"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File big dark.png"
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File big.png"
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File small dark.png"
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/File small.png"
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/Logo dark.png"
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/Logo.png"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/system"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -590,7 +583,25 @@ elseif(NOT FLS_BUILD_LIVERY_COMPARE)
 endif()
 
 if(WIN32)
-    target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32 shell32)
+    enable_language(RC)
+    set(FLS_APPLICATION_LIGHT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/icons/application-light.ico")
+    set(FLS_APPLICATION_DARK_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/icons/application-dark.ico")
+    set(FLS_PROJECT_LIGHT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/icons/project-light.ico")
+    set(FLS_PROJECT_DARK_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/system/icons/project-dark.ico")
+    set(FLS_WINDOWS_RESOURCES "${CMAKE_CURRENT_BINARY_DIR}/windows_resources.rc")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/gui/app/windows_resources.rc.in"
+        "${FLS_WINDOWS_RESOURCES}"
+        @ONLY
+    )
+    set_property(SOURCE "${FLS_WINDOWS_RESOURCES}" APPEND PROPERTY OBJECT_DEPENDS
+        "${FLS_APPLICATION_LIGHT_ICON}"
+        "${FLS_APPLICATION_DARK_ICON}"
+        "${FLS_PROJECT_LIGHT_ICON}"
+        "${FLS_PROJECT_DARK_ICON}"
+    )
+    target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE "${FLS_WINDOWS_RESOURCES}")
+    target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32 shell32 gdi32)
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

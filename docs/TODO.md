@@ -1,4 +1,5 @@
 Small changes:
+    -Deprecate Link X/Y in property_panel
     -Decompose car_renderer
     -Rename project related functions to drop json naming
     -Deprecate double check for car model LOD

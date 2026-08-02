@@ -1,5 +1,6 @@
 #pragma once
 
+#include "system_integration.h"
 #include "theme_manager.h"
 
 #include <QDialog>
@@ -16,7 +17,6 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
-class QTableWidget;
 
 namespace gui {
 
@@ -40,6 +40,8 @@ public:
     CanvasColorSettings selectedCanvasSettings() const;
     PreviewBackgroundSettings selectedPreviewBackgroundSettings() const;
     BehaviorSettings selectedBehaviorSettings() const;
+    SystemIconSet selectedSystemIconSet() const;
+    bool projectFileAssociationEnabled() const;
     QVector<ShortcutSettingsItem> shortcutItems() const;
     bool shortcutsAreValid();
     void setThemeChangedCallback(std::function<void(UiTheme)> callback);
@@ -77,15 +79,17 @@ private:
     QDoubleSpinBox *nudgeStep_ = nullptr;
     QDoubleSpinBox *nudgeShiftStep_ = nullptr;
     QSpinBox *liveryTextureScale_ = nullptr;
-    QCheckBox *autosaveEnabledCheck_ = nullptr;
     QSpinBox *autosaveIntervalMinutes_ = nullptr;
     QLineEdit *gameFolder_ = nullptr;
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;
     QCheckBox *loadCarTextures_ = nullptr;
-    QCheckBox *verticalToolbarCheck_ = nullptr;
+    QComboBox *toolbarViewCombo_ = nullptr;
     QCheckBox *separateOpacityAndSkewToolsCheck_ = nullptr;
     QCheckBox *valueEditingWheelCheck_ = nullptr;
-    QTableWidget *shortcutTable_ = nullptr;
+    QComboBox *systemIconSetCombo_ = nullptr;
+    QCheckBox *projectFileAssociationCheck_ = nullptr;
+    QLabel *projectFileAssociationStatus_ = nullptr;
+    QVector<QKeySequenceEdit *> shortcutEdits_;
     QLabel *validationLabel_ = nullptr;
 };
 
