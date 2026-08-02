@@ -338,6 +338,15 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(FLS_BUILD_TESTS)
+    add_executable(fls_livery_logo_encoder_tests
+        tools/livery_logo_encoder_test.cpp
+    )
+    target_link_libraries(fls_livery_logo_encoder_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME livery_logo_encoder COMMAND fls_livery_logo_encoder_tests)
+
     add_executable(fls_guide_preprocess_metadata_tests
         tools/guide_preprocess_metadata_test.cpp
     )

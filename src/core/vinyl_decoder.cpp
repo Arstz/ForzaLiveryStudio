@@ -263,26 +263,33 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
                                                 bool allowCountOne, bool livery);
 bool groupAtOrAfterControlByte(const QByteArray &data, int pos, int end, bool livery);
 
-bool isLiveryLogoAt(const QByteArray &data, int pos, int end) {
-    if (pos < 0 || pos + 32 > end || pos + 32 > data.size()) {
-        return false;
+int liveryLogoRecordSize(const QByteArray &data, int pos, int end) {
+    const bool framed = bytesAt(data, pos, {0x00, 0x02})
+        || bytesAt(data, pos, {0x01, 0x02});
+    const int size = framed ? 32 : 31;
+    const int fieldOffset = framed ? 0 : -1;
+    if (pos < 0 || pos + size > end || pos + size > data.size()
+        || (!framed && static_cast<quint8>(data[pos]) != 0x02)) {
+        return 0;
     }
-    if (!bytesAt(data, pos, {0x00, 0x02}) && !bytesAt(data, pos, {0x01, 0x02})) {
-        return false;
-    }
-    const quint16 logoId = readLeU16(data, pos + 2);
+    const quint16 logoId = readLeU16(data, pos + 2 + fieldOffset);
     if (logoId < 0x8000) {
-        return false;
+        return 0;
     }
-    const double rot = readLeFloat(data, pos + 4);
-    const double px = readLeFloat(data, pos + 8);
-    const double py = readLeFloat(data, pos + 12);
-    const double sx = readLeFloat(data, pos + 16);
-    const double sy = readLeFloat(data, pos + 20);
-    return std::abs(rot) <= 10000.0
+    const double rot = readLeFloat(data, pos + 4 + fieldOffset);
+    const double px = readLeFloat(data, pos + 8 + fieldOffset);
+    const double py = readLeFloat(data, pos + 12 + fieldOffset);
+    const double sx = readLeFloat(data, pos + 16 + fieldOffset);
+    const double sy = readLeFloat(data, pos + 20 + fieldOffset);
+    const bool valid = std::abs(rot) <= 10000.0
         && std::abs(px) < 50000.0 && std::abs(py) < 50000.0
         && std::abs(sx) > 1e-6 && std::abs(sx) < 200.0
         && std::abs(sy) > 1e-6 && std::abs(sy) < 200.0;
+    return valid ? size : 0;
+}
+
+bool isLiveryLogoAt(const QByteArray &data, int pos, int end) {
+    return liveryLogoRecordSize(data, pos, end) > 0;
 }
 
 int expectedChildBlocks(int count) {
@@ -970,7 +977,8 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         return pos + info.size;
     }
 
-    if (liveryDialect && isLiveryLogoAt(layerData, pos, end)) {
+    const int logoRecordSize = liveryDialect ? liveryLogoRecordSize(layerData, pos, end) : 0;
+    if (logoRecordSize > 0) {
         const VinylShape logo = decodeLiveryLogoAt(layerData, pos);
         if (bytesAt(layerData, pos, {0x01, 0x02})) {
             markPreviousShapeAsMask(s, liveryDialect);
@@ -982,7 +990,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         s.pendingTransformPrefix.clear();
         s.pendingFlags = 0;
         s.pendingMask = false;
-        return pos + 32;
+        return pos + logoRecordSize;
     }
 
     if (isValidShapeAt(layerData, pos, end)) {
