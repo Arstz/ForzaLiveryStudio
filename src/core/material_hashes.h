@@ -65,11 +65,12 @@ inline constexpr std::array<quint64, 5> kRearWheelPaint = {
 
 namespace parameter {
 
-inline constexpr std::array<quint32, 20> kBaseColor = {
+inline constexpr std::array<quint32, 21> kBaseColor = {
     0xEA718FBE, 0x53A946B6, 0x6B242133, 0x63040D89, 0xF51639BE,
     0x57C321A6, 0x73A9E2DF, 0x1F3EB7A9, 0xEF5CCE09, 0x76BEA808,
     0x1F30F777, 0x1925D9BF, 0xD0F0433A, 0xA76D0485, 0xD9826618,
     0x00FC00E4, 0x1F0BBA20, 0x36976C2B, 0x5D1D0449, 0x0940E415,
+    0xC0CB2820,
 };
 
 inline constexpr std::array<quint32, 8> kEmissiveColor = {
@@ -120,8 +121,8 @@ inline constexpr std::array<quint32, 2> kTextureTilingV = {
 };
 inline constexpr quint32 kTextureTiling = 0xB99646E7;
 
-inline constexpr std::array<quint32, 2> kMetallic = {
-    0x938926B0, 0xA415641F,
+inline constexpr std::array<quint32, 4> kMetallic = {
+    0x938926B0, 0xA415641F, 0x1F9B6488, 0x9114636B,
 };
 
 inline constexpr std::array<quint32, 2> kFlakeAmount = {

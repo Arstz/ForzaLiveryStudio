@@ -27,6 +27,7 @@ struct OriginalDx12FrameResult {
     QString adapter;
     QString error;
     quint64 changedPixels = 0;
+    quint64 shadowMapPixels = 0;
     quint64 nonFiniteComponents = 0;
     float finiteMinimum = 0.0f;
     float finiteMaximum = 0.0f;

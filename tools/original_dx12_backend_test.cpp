@@ -39,6 +39,20 @@ int main(int argc, char **argv) {
                     QStringLiteral("garage_customiser"), Qt::CaseInsensitive);
         });
     }
+    const gui::OriginalDx12Camera paintTestCamera =
+        gui::originalDx12SceneCamera(scene);
+    const fh6::ModelVec3 placedPaintTestPosition =
+        scene.carPlacement.transformPoint({0.0f, 0.3f, 0.0f});
+    const QVector3D paintTestPosition(
+        placedPaintTestPosition.x, placedPaintTestPosition.y,
+        placedPaintTestPosition.z);
+    const QVector3D paintTestView =
+        (paintTestCamera.position - paintTestPosition).normalized();
+    const QVector3D paintTestLight = QVector3D(
+        -scene.lighting.direction.x, -scene.lighting.direction.y,
+        -scene.lighting.direction.z).normalized();
+    const QVector3D paintTestNormal =
+        (paintTestView + paintTestLight).normalized();
     fh6::CarModel car;
     car.sourcePath = QStringLiteral("test.carbin");
     car.boundsMin = {-1.0f, 0.0f, -2.0f};
@@ -48,16 +62,32 @@ int main(int argc, char **argv) {
     carMesh.paintMaterialHash = 1;
     carMesh.liveryUvChannel = 3;
     carMesh.material = std::make_shared<fh6::ModelMaterial>();
+    carMesh.material->automotivePaint.hasFlakeColor = true;
+    carMesh.material->automotivePaint.flakeColor = {0.35f, 0.75f, 1.0f, 1.0f};
+    carMesh.material->automotivePaint.hasFlakeCoverage = true;
+    carMesh.material->automotivePaint.flakeCoverage = 1.0f;
+    carMesh.material->automotivePaint.hasFlakeRoughness = true;
+    carMesh.material->automotivePaint.flakeRoughness = 1.0f;
+    carMesh.material->automotivePaint.hasGlitterIntensity = true;
+    carMesh.material->automotivePaint.glitterIntensity = 4.0f;
     carMesh.positions = {
-        {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+        {-0.5f, 0.3f, -0.5f}, {0.5f, 0.3f, -0.5f}, {0.0f, 0.3f, 0.5f},
+        {-1.0f, 0.0f, 0.4f}, {1.0f, 0.0f, 0.4f}, {0.0f, 0.0f, 1.4f}};
     carMesh.normals = {
-        {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}};
+        {paintTestNormal.x(), paintTestNormal.y(), paintTestNormal.z()},
+        {paintTestNormal.x(), paintTestNormal.y(), paintTestNormal.z()},
+        {paintTestNormal.x(), paintTestNormal.y(), paintTestNormal.z()},
+        {paintTestNormal.x(), paintTestNormal.y(), paintTestNormal.z()},
+        {paintTestNormal.x(), paintTestNormal.y(), paintTestNormal.z()},
+        {paintTestNormal.x(), paintTestNormal.y(), paintTestNormal.z()}};
     carMesh.uvChannels.resize(4);
     carMesh.uvChannels[0] = {
+        {4.0f, 4.0f}, {4.0f, 4.0f}, {4.0f, 4.0f},
         {4.0f, 4.0f}, {4.0f, 4.0f}, {4.0f, 4.0f}};
     carMesh.uvChannels[3] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f},
         {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
-    carMesh.indices = {0, 1, 2};
+    carMesh.indices = {0, 1, 2, 3, 4, 5};
     car.meshes.push_back(std::move(carMesh));
     fh6::SwatchImage livery;
     livery.width = 2;
@@ -119,6 +149,11 @@ int main(int argc, char **argv) {
             qPrintable(firstFrame.error), qPrintable(secondFrame.error));
         return 1;
     }
+    if (firstFrame.shadowMapPixels == 0
+        || secondFrame.shadowMapPixels == 0) {
+        std::fprintf(stderr, "D3D12 car shadow map is empty\n");
+        return 1;
+    }
     if (firstFrame.debugWarnings != 0 || secondFrame.debugWarnings != 0) {
         std::fprintf(
             stderr, "D3D12 debug warning: %s / %s\n",
@@ -150,6 +185,66 @@ int main(int argc, char **argv) {
     if (firstHash != secondHash
         || firstFrame.changedPixels != secondFrame.changedPixels) {
         std::fprintf(stderr, "D3D12 frame is not deterministic\n");
+        return 1;
+    }
+    fh6::OriginalShaderGarageScene unshadowedScene = scene;
+    for (fh6::OriginalShaderGarageDraw &draw : unshadowedScene.draws) {
+        draw.family = fh6::OriginalShaderSurfaceFamily::Default;
+    }
+    fh6::OriginalShaderGarageScene carSelfShadowScene = scene;
+    for (fh6::OriginalShaderGarageDraw &draw : carSelfShadowScene.draws) {
+        if (draw.family == fh6::OriginalShaderSurfaceFamily::Floor) {
+            draw.family = fh6::OriginalShaderSurfaceFamily::Default;
+        }
+    }
+    const gui::OriginalDx12FrameResult unshadowedFrame =
+        gui::renderOriginalDx12GarageFrame(
+            unshadowedScene, QSize(kFrameSize, kFrameSize));
+    const gui::OriginalDx12FrameResult carSelfShadowFrame =
+        gui::renderOriginalDx12GarageFrame(
+            carSelfShadowScene, QSize(kFrameSize, kFrameSize));
+    fh6::OriginalShaderGarageScene noFlakeScene = scene;
+    for (fh6::OriginalShaderGarageDraw &draw : noFlakeScene.draws) {
+        if (draw.family == fh6::OriginalShaderSurfaceFamily::Car) {
+            draw.flakeCoverage = 0.0f;
+        }
+    }
+    const gui::OriginalDx12FrameResult noFlakeFrame =
+        gui::renderOriginalDx12GarageFrame(
+            noFlakeScene, QSize(kFrameSize, kFrameSize));
+    if (!unshadowedFrame.valid() || !carSelfShadowFrame.valid()
+        || !noFlakeFrame.valid()) {
+        std::fprintf(
+            stderr, "D3D12 material/shadow reference frame failed: %s / %s / %s\n",
+            qPrintable(unshadowedFrame.error),
+            qPrintable(carSelfShadowFrame.error), qPrintable(noFlakeFrame.error));
+        return 1;
+    }
+    const auto *unshadowedPixels = reinterpret_cast<const quint32 *>(
+        unshadowedFrame.image.constBits());
+    const auto *carSelfShadowPixels = reinterpret_cast<const quint32 *>(
+        carSelfShadowFrame.image.constBits());
+    const auto *noFlakePixels = reinterpret_cast<const quint32 *>(
+        noFlakeFrame.image.constBits());
+    quint64 shadowAffectedPixels = 0;
+    quint64 selfShadowAffectedPixels = 0;
+    quint64 flakeAffectedPixels = 0;
+    for (qsizetype index = 0; index < pixelCount; ++index) {
+        shadowAffectedPixels += pixels[index] != unshadowedPixels[index] ? 1u : 0u;
+        selfShadowAffectedPixels +=
+            carSelfShadowPixels[index] != unshadowedPixels[index] ? 1u : 0u;
+        flakeAffectedPixels += pixels[index] != noFlakePixels[index] ? 1u : 0u;
+    }
+    if (shadowAffectedPixels == 0 || selfShadowAffectedPixels == 0
+        || flakeAffectedPixels == 0) {
+        std::fprintf(
+            stderr,
+            "D3D12 car shadow did not affect visible receivers "
+            "(map=%llu, all=%llu, self=%llu, flake=%llu pixels)\n",
+            static_cast<unsigned long long>(firstFrame.shadowMapPixels),
+            static_cast<unsigned long long>(shadowAffectedPixels),
+            static_cast<unsigned long long>(selfShadowAffectedPixels),
+            static_cast<unsigned long long>(flakeAffectedPixels));
         return 1;
     }
     // The complete environment contract contributes diffuse irradiance, the
@@ -207,9 +302,12 @@ int main(int argc, char **argv) {
     DestroyWindow(window);
 #endif
     std::printf(
-        "D3D12 exact frame on %s: changed=%llu colors=%lld hash=%s warnings=%d first=%s\n",
+        "D3D12 exact frame on %s: changed=%llu shadowed=%llu self-shadowed=%llu flake=%llu colors=%lld hash=%s warnings=%d first=%s\n",
         qPrintable(firstFrame.adapter),
         static_cast<unsigned long long>(firstFrame.changedPixels),
+        static_cast<unsigned long long>(shadowAffectedPixels),
+        static_cast<unsigned long long>(selfShadowAffectedPixels),
+        static_cast<unsigned long long>(flakeAffectedPixels),
         static_cast<long long>(colors.size()), firstHash.constData(),
         firstFrame.debugWarnings, qPrintable(firstFrame.debugWarningDetail));
     return 0;

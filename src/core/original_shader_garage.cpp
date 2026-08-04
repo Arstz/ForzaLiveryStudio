@@ -71,6 +71,13 @@ constexpr float kClearCoatGlossRange = 0.6f;
 constexpr float kClearCoatMetalCoverage = 0.25f;
 constexpr float kClearCoatMinRoughness = 0.04f;
 constexpr float kClearCoatMaxRoughness = 0.4f;
+constexpr float kTwoToneSecondaryMix = 0.78f;
+constexpr float kFlakeSecondaryMix = 0.6f;
+constexpr float kFlakeSecondaryMixMax = 0.45f;
+constexpr float kFlakeBaseTint = 0.7f;
+constexpr float kFlakeBaseTintMax = 0.9f;
+constexpr float kManufacturerFlakeBaseMetallic = 0.45f;
+constexpr float kManufacturerFlakeMetallicGain = 0.5f;
 
 struct GarageShellResource {
     const char *directory;
@@ -1495,6 +1502,7 @@ OriginalShaderGarageScene loadOriginalShaderGarageScene(
                 draw.metallic = fallback.metallic;
             }
             if (draw.translucent) {
+                draw.shaderFamily = ModelShaderFamily::Glass;
                 draw.opacity = std::min(draw.opacity, 0.22f);
                 draw.gloss = std::max(draw.gloss, 0.90f);
             }
@@ -1695,7 +1703,7 @@ bool appendOriginalShaderGarageCar(
     // House 8's car locator is on the finished floor, while car model origins
     // are not guaranteed to be at tire contact.  Seat the highest-detail wheel
     // and tire geometry on that plane instead of burying it below the floor.
-    float contactY = std::numeric_limits<float>::max();
+    float contactY = std::numeric_limits<float>::infinity();
     const std::vector<char> contactLod = highestLodFlags(car.meshes);
     for (std::size_t meshIndex = 0; meshIndex < car.meshes.size(); ++meshIndex) {
         const CarMesh &mesh = car.meshes[meshIndex];
@@ -1878,7 +1886,6 @@ bool appendOriginalShaderGarageCar(
         const QString lowerMaterialName = mesh.materialName.toLower();
         const bool bodyPaint = lowerMaterialName.startsWith(QStringLiteral("carpaint"))
             || lowerMaterialName.startsWith(QStringLiteral("car_paint"));
-        const bool paintSurface = bodyPaint;
         const bool usesLivery = liveryTexture != nullptr
             && bodyPaint && mesh.liveryUvChannel == 3;
         const std::optional<CarMaterialFallback> fallback =
@@ -1891,9 +1898,13 @@ bool appendOriginalShaderGarageCar(
         const PaintFinishRender *paintFinish =
             paint != nullptr && paintFinishes != nullptr
             ? paintFinishes->find(static_cast<int>(paint->finish)) : nullptr;
+        const bool paintSurface = bodyPaint || paint != nullptr;
         std::array<float, 3> resolvedPaintColor = paintColor;
+        std::array<float, 3> resolvedSecondaryColor = resolvedPaintColor;
         if (manufacturerColor != nullptr) {
             resolvedPaintColor = manufacturerColor->primary;
+            resolvedSecondaryColor = manufacturerColor->secondaryEnabled
+                ? manufacturerColor->secondary : resolvedPaintColor;
         }
         if (paint != nullptr && paint->primary.enabled) {
             for (int channel = 0; channel < 3; ++channel) {
@@ -1901,9 +1912,65 @@ bool appendOriginalShaderGarageCar(
                 resolvedPaintColor[channel] = std::pow(srgb, 2.2f);
             }
         }
+        if (paint != nullptr && paint->secondary.enabled) {
+            for (int channel = 0; channel < 3; ++channel) {
+                const float srgb = paint->secondary.bgra[2 - channel] / 255.0f;
+                resolvedSecondaryColor[channel] = std::pow(srgb, 2.2f);
+            }
+        } else if (manufacturerColor == nullptr) {
+            resolvedSecondaryColor = resolvedPaintColor;
+        }
+
+        float resolvedGloss = mesh.material != nullptr ? mesh.material->gloss : 0.45f;
+        float resolvedMetallic = mesh.material != nullptr && mesh.material->hasMetallic
+            ? mesh.material->metallic : 0.0f;
+        float manufacturerFlake = 0.0f;
+        if (manufacturerColor != nullptr && manufacturerColor->material != nullptr) {
+            resolvedGloss = manufacturerColor->material->gloss;
+            if (manufacturerColor->material->hasMetallic) {
+                resolvedMetallic = manufacturerColor->material->metallic;
+            }
+            manufacturerFlake = manufacturerColor->material->flakeAmount;
+            if (manufacturerFlake > 0.0f) {
+                resolvedMetallic = std::max(
+                    resolvedMetallic,
+                    kManufacturerFlakeBaseMetallic
+                        + kManufacturerFlakeMetallicGain * manufacturerFlake);
+            }
+        }
+        float glancingFlopStrength = 0.0f;
+        if (paint != nullptr && paintFinish != nullptr && paintFinish->valid) {
+            resolvedGloss = paintFinish->gloss;
+            resolvedMetallic = paintFinish->metallic;
+            if (paintFinish->usesSecondary && paint->secondary.enabled) {
+                glancingFlopStrength = kTwoToneSecondaryMix;
+            } else if (paintFinish->flakeAmount > 0.0f && paint->secondary.enabled) {
+                const float tint = std::clamp(
+                    0.45f + paintFinish->flakeAmount * kFlakeBaseTint,
+                    0.0f, kFlakeBaseTintMax);
+                for (int channel = 0; channel < 3; ++channel) {
+                    resolvedPaintColor[channel] =
+                        resolvedPaintColor[channel] * (1.0f - tint)
+                        + resolvedSecondaryColor[channel] * tint;
+                }
+                glancingFlopStrength = std::clamp(
+                    paintFinish->flakeAmount * kFlakeSecondaryMix,
+                    0.0f, kFlakeSecondaryMixMax);
+            }
+            if (paintFinish->hasMaterialColor
+                && (paintFinish->selfColored
+                    || paintFinish->category == PaintFinishCategory::Metal)) {
+                resolvedPaintColor = paintFinish->materialColor;
+                resolvedSecondaryColor = resolvedPaintColor;
+            }
+        }
         bool generatedSolidBase = false;
-        const auto finishPattern = bodyPaint && paintFinish != nullptr
-                && paintFinish->selfColored
+        // PatternImage is part of the finish material even when the finish is
+        // tinted by MaterialColor/paint.  Restricting it to SelfColored drops
+        // the authored micro-surface from finishes such as Brass Polished and
+        // reduces them to a flat paint colour.
+        const auto finishPattern = paintSurface && paintFinish != nullptr
+                && paintFinish->hasPattern()
             ? copyFinishTexture(
                   paintFinish->patternImage, QStringLiteral("DiffuseTexture"),
                   QStringLiteral("car://paint-finish/%1/pattern").arg(paint->finish))
@@ -1931,14 +1998,15 @@ bool appendOriginalShaderGarageCar(
                 ++unresolvedCheckerDraws;
             }
         } else {
-            std::array<float, 3> color = bodyPaint
-                ? resolvedPaintColor : std::array<float, 3>{0.55f, 0.55f, 0.55f};
-            const bool hasAuthoredColor = !bodyPaint && mesh.material != nullptr
+            std::array<float, 3> color = paintSurface || glassSurface
+                ? std::array<float, 3>{1.0f, 1.0f, 1.0f}
+                : std::array<float, 3>{0.55f, 0.55f, 0.55f};
+            const bool hasAuthoredColor = !paintSurface && mesh.material != nullptr
                 && mesh.material->hasBaseColor;
             if (hasAuthoredColor) {
                 color = mesh.material->baseColor;
             }
-            if (!bodyPaint && fallback != std::nullopt) {
+            if (!paintSurface && fallback != std::nullopt) {
                 const float brightestColor = std::max({color[0], color[1], color[2]});
                 if (!hasAuthoredColor || brightestColor < fallback->minimumColor) {
                     color = fallback->color;
@@ -1961,7 +2029,7 @@ bool appendOriginalShaderGarageCar(
             ++solidBaseDraws;
         }
 
-        auto normal = bodyPaint && paintFinish != nullptr
+        auto normal = paintSurface && paintFinish != nullptr
             ? copyFinishTexture(
                   paintFinish->hasDetailNormal()
                       ? paintFinish->detailNormalImage
@@ -1983,7 +2051,7 @@ bool appendOriginalShaderGarageCar(
                               : mesh.material->paintNormalMap0Texture),
                     QStringLiteral("NormalTexture"));
         }
-        auto surface = bodyPaint && paintFinish != nullptr
+        auto surface = paintSurface && paintFinish != nullptr
             ? copyFinishTexture(
                   paintFinish->roughMetalAoImage, QStringLiteral("SurfaceTexture"),
                   QStringLiteral("car://paint-finish/%1/surface").arg(paint->finish))
@@ -2028,7 +2096,7 @@ bool appendOriginalShaderGarageCar(
         OriginalShaderGarageDraw draw;
         draw.name = drawName;
         draw.source = source;
-        draw.family = OriginalShaderSurfaceFamily::Default;
+        draw.family = OriginalShaderSurfaceFamily::Car;
         draw.placement = groundedCarPlacement;
         draw.diffuseTexture = std::move(diffuse);
         draw.alphaTexture = std::move(alpha);
@@ -2046,10 +2114,9 @@ bool appendOriginalShaderGarageCar(
             draw.materialUvRotationDegrees = mesh.material->uvOrientationDegrees;
         }
         draw.rawMaterialUv = false;
-        draw.baseColor = generatedSolidBase
-            ? std::array<float, 3>{1.0f, 1.0f, 1.0f}
-            : (paintSurface ? resolvedPaintColor
-                            : std::array<float, 3>{1.0f, 1.0f, 1.0f});
+        draw.baseColor = paintSurface
+            ? resolvedPaintColor : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+        draw.secondaryPaintColor = resolvedSecondaryColor;
         if (mesh.material != nullptr) {
             if (!usesLivery && !generatedSolidBase && !paintSurface
                 && mesh.material->hasBaseColor) {
@@ -2074,7 +2141,18 @@ bool appendOriginalShaderGarageCar(
             draw.shaderFamily = modelShaderFamily(*mesh.material);
         }
         if (glassSurface && draw.opacity >= 0.995f) {
-            draw.opacity = isWindowGlassMaterial(mesh) ? 0.42f : 0.20f;
+            // Window materials in car archives are commonly parameterless
+            // aliases of the shared glass shader.  Keep their fallback close
+            // to the established garage-glass transmission instead of making
+            // an unresolved alias almost half opaque.
+            draw.opacity = isWindowGlassMaterial(mesh) ? 0.22f : 0.20f;
+        }
+        if (glassSurface) {
+            // Car archives frequently expose glass through a parameterless
+            // material-instance alias, so resource-path family detection alone
+            // cannot select the transmission/reflection shader.
+            draw.shaderFamily = ModelShaderFamily::Glass;
+            draw.gloss = std::max(draw.gloss, 0.90f);
         }
         draw.translucent = glassSurface || draw.opacity < 0.995f
             || draw.alphaTexture != nullptr;
@@ -2084,16 +2162,68 @@ bool appendOriginalShaderGarageCar(
             draw.gloss = fallback->gloss;
             draw.metallic = fallback->metallic;
         }
-        if (bodyPaint && paintFinish != nullptr && paintFinish->valid) {
-            draw.gloss = paintFinish->gloss;
-            draw.metallic = paintFinish->metallic;
-        } else if (bodyPaint && manufacturerColor != nullptr
+        if (paintSurface) {
+            draw.gloss = resolvedGloss;
+            draw.metallic = resolvedMetallic;
+        }
+        const AutomotivePaintParameters *automotivePaint = nullptr;
+        if (paintFinish != nullptr && paintFinish->valid) {
+            automotivePaint = &paintFinish->automotivePaint;
+        } else if (manufacturerColor != nullptr
                    && manufacturerColor->material != nullptr) {
-            draw.gloss = manufacturerColor->material->gloss;
-            if (manufacturerColor->material->hasMetallic) {
-                draw.metallic = manufacturerColor->material->metallic;
+            automotivePaint = &manufacturerColor->material->automotivePaint;
+        } else if (mesh.material != nullptr) {
+            automotivePaint = &mesh.material->automotivePaint;
+        }
+        draw.glancingFlopEnabled = glancingFlopStrength > 0.0f;
+        draw.glancingFlopStrength = glancingFlopStrength;
+        draw.flakeCoverage = paintFinish != nullptr && paintFinish->valid
+            ? paintFinish->flakeAmount : manufacturerFlake;
+        if (draw.flakeCoverage <= 0.0f && mesh.material != nullptr) {
+            draw.flakeCoverage = mesh.material->flakeAmount;
+        }
+        if (automotivePaint != nullptr) {
+            if (automotivePaint->hasGlancingFlopEnabled) {
+                draw.glancingFlopEnabled = automotivePaint->glancingFlopEnabled;
+            }
+            if (automotivePaint->hasGlancingFlopPower) {
+                draw.glancingFlopPower = automotivePaint->glancingFlopPower;
+            }
+            if (automotivePaint->hasGlancingFlopStrength) {
+                draw.glancingFlopStrength = automotivePaint->glancingFlopStrength;
+            }
+            if (automotivePaint->hasGlancingFlopColor
+                && (paint == nullptr || !paint->secondary.enabled)) {
+                std::copy_n(
+                    automotivePaint->glancingFlopColor.cbegin(), 3,
+                    draw.secondaryPaintColor.begin());
+            }
+            if (automotivePaint->hasFlakeCoverage) {
+                draw.flakeCoverage = automotivePaint->flakeCoverage;
+            }
+            if (automotivePaint->hasFlakeRoughness) {
+                draw.flakeRoughness = automotivePaint->flakeRoughness;
+            }
+            if (automotivePaint->hasGlitterIntensity) {
+                draw.glitterIntensity = automotivePaint->glitterIntensity;
+            }
+            if (automotivePaint->hasFlakeColor) {
+                std::copy_n(
+                    automotivePaint->flakeColor.cbegin(), 3,
+                    draw.flakeColor.begin());
             }
         }
+        if (paint != nullptr && paint->secondary.enabled
+            && draw.flakeCoverage > 0.0f
+            && (paintFinish == nullptr || !paintFinish->usesSecondary)) {
+            draw.flakeColor = resolvedSecondaryColor;
+        }
+        draw.flakeCoverage = std::clamp(draw.flakeCoverage, 0.0f, 1.0f);
+        draw.flakeRoughness = std::clamp(draw.flakeRoughness, 0.0f, 1.0f);
+        draw.glitterIntensity = std::max(draw.glitterIntensity, 0.0f);
+        draw.glancingFlopStrength = std::clamp(
+            draw.glancingFlopStrength, 0.0f, 1.0f);
+        draw.glancingFlopPower = std::max(draw.glancingFlopPower, 0.01f);
         if (bodyPaint) {
             const bool bareMetal = paintFinish != nullptr && paintFinish->valid
                 && paintFinish->category == PaintFinishCategory::Metal;
@@ -2106,15 +2236,6 @@ bool appendOriginalShaderGarageCar(
             draw.clearCoatRoughness = std::clamp(
                 1.0f - draw.gloss,
                 kClearCoatMinRoughness, kClearCoatMaxRoughness);
-            const AutomotivePaintParameters *automotivePaint = nullptr;
-            if (paintFinish != nullptr && paintFinish->valid) {
-                automotivePaint = &paintFinish->automotivePaint;
-            } else if (manufacturerColor != nullptr
-                       && manufacturerColor->material != nullptr) {
-                automotivePaint = &manufacturerColor->material->automotivePaint;
-            } else if (mesh.material != nullptr) {
-                automotivePaint = &mesh.material->automotivePaint;
-            }
             if (automotivePaint != nullptr) {
                 if (automotivePaint->hasClearCoatCoverage) {
                     draw.clearCoatCoverage = std::clamp(
@@ -2173,6 +2294,21 @@ bool appendOriginalShaderGarageCar(
         scene->draws.push_back(std::move(draw));
         ++opaqueDraws;
     }
+    const int shadowProxyMeshes = static_cast<int>(car.shadowMeshes.size());
+    if (!car.shadowMeshes.empty()) {
+        CarModel shadowGeometry;
+        shadowGeometry.sourcePath = source;
+        shadowGeometry.meshes = std::move(car.shadowMeshes);
+        shadowGeometry.boundsMin = boundsMin;
+        shadowGeometry.boundsMax = boundsMax;
+        OriginalShaderGarageDraw shadowDraw;
+        shadowDraw.name = QStringLiteral("car/shadow-proxy");
+        shadowDraw.source = source;
+        shadowDraw.geometry = std::move(shadowGeometry);
+        shadowDraw.placement = groundedCarPlacement;
+        shadowDraw.shadowCasterOnly = true;
+        scene->draws.push_back(std::move(shadowDraw));
+    }
     if (scene->draws.size() == firstDraw) {
         if (error != nullptr) {
             *error = QStringLiteral("the car contains no supported opaque meshes");
@@ -2184,7 +2320,7 @@ bool appendOriginalShaderGarageCar(
         "%4 solid material-colour, %5 visibly unresolved checker, %6 normal, "
         "%7 surface, and %8 emissive maps; %9 translucent/glass draws included; "
         "%10 lower-LOD, %11 coarse-interior, and %12 factory-livery sticker "
-        "draws excluded")
+        "draws excluded; %13 authored shadow-proxy meshes retained")
         .arg(opaqueDraws)
         .arg(liveryDraws)
         .arg(nativeBaseDraws)
@@ -2196,7 +2332,8 @@ bool appendOriginalShaderGarageCar(
         .arg(translucentDraws)
         .arg(excludedLowerLod)
         .arg(excludedInteriorShell)
-        .arg(excludedFactoryLiveryStickers);
+        .arg(excludedFactoryLiveryStickers)
+        .arg(shadowProxyMeshes);
     return true;
 }
 

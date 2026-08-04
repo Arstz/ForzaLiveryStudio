@@ -84,6 +84,7 @@ struct CarLocator {
 struct CarModel {
     QString sourcePath;
     std::vector<CarMesh> meshes;
+    std::vector<CarMesh> shadowMeshes;
     std::vector<CarMesh> liveryProjectionMeshes;
     std::vector<CarLocator> locators;
     ModelVec3 boundsMin;

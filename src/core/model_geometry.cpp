@@ -620,9 +620,10 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
 
     for (int mi = 0; mi < static_cast<int>(meshBlobs.size()); ++mi) {
         const MeshInfo info = decodeMesh(*meshBlobs[mi]);
+        const bool shadowMesh = info.name.compare(
+            QStringLiteral("shadow"), Qt::CaseInsensitive) == 0;
 
-        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0
-            || info.lodLevel != detailLevel) {
+        if (info.lodLevel != detailLevel) {
             continue;
         }
 
@@ -789,17 +790,20 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         out.texCoordTransforms = info.texCoordTransforms;
         out.liveryUvChannel = (out.uvChannels.size() > 3 && !out.uvChannels[3].empty()) ? 3 : -1;
 
-        for (const ModelVec3 &p : out.positions) {
-            const ModelVec3 w = out.boneTransform.transformPoint(p);
-            minX = std::min(minX, w.x);
-            minY = std::min(minY, w.y);
-            minZ = std::min(minZ, w.z);
-            maxX = std::max(maxX, w.x);
-            maxY = std::max(maxY, w.y);
-            maxZ = std::max(maxZ, w.z);
+        if (shadowMesh) {
+            model.shadowMeshes.push_back(std::move(out));
+        } else {
+            for (const ModelVec3 &p : out.positions) {
+                const ModelVec3 w = out.boneTransform.transformPoint(p);
+                minX = std::min(minX, w.x);
+                minY = std::min(minY, w.y);
+                minZ = std::min(minZ, w.z);
+                maxX = std::max(maxX, w.x);
+                maxY = std::max(maxY, w.y);
+                maxZ = std::max(maxZ, w.z);
+            }
+            model.meshes.push_back(std::move(out));
         }
-
-        model.meshes.push_back(std::move(out));
     }
 
     if (model.meshes.empty()) {

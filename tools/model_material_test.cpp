@@ -165,6 +165,24 @@ void testLinkedShaderFamily() {
     CHECK(fh6::modelShaderFamily(glass) == fh6::ModelShaderFamily::Glass);
 }
 
+void testWheelMaterialParameters() {
+    fh6::ModelMaterial wheelPaintDefaults;
+    wheelPaintDefaults.parameters = {
+        vector(0xC0CB2820u, {0.0194f, 0.0194f, 0.0194f, 1.0f}),
+        vector(0x1F9B6488u, {0.9132f, 0.9215f, 0.9245f, 0.0f}),
+        scalar(fh6::material_hashes::parameter::kFlakeCoverage, 0.7f),
+        scalar(fh6::material_hashes::parameter::kFlakeRoughness, 0.5f),
+    };
+    const auto wheel = fh6::mergeModelMaterialDefaults(
+        wheelPaintDefaults, fh6::ModelMaterial{});
+    CHECK(wheel != nullptr);
+    CHECK(wheel->hasBaseColor && near(wheel->baseColor[0], 0.0194f));
+    CHECK(wheel->hasMetallic && near(wheel->metallic, 1.0f));
+    CHECK(near(wheel->flakeAmount, 0.7f));
+    CHECK(wheel->automotivePaint.hasFlakeRoughness
+          && near(wheel->automotivePaint.flakeRoughness, 0.5f));
+}
+
 std::shared_ptr<fh6::ModelMaterial> loadMaterial(const QDir &directory, const char *name) {
     QFile file(directory.filePath(QString::fromLatin1(name) + QStringLiteral(".materialbin")));
     CHECK(file.open(QIODevice::ReadOnly));
@@ -213,6 +231,7 @@ void testGameEvidence(const QString &path) {
 int main(int argc, char **argv) {
     testAutomotivePaintRetentionAndOverrides();
     testLinkedShaderFamily();
+    testWheelMaterialParameters();
     if (argc >= 2) {
         testGameEvidence(QString::fromLocal8Bit(argv[1]));
     }

@@ -1,5 +1,7 @@
 #include "original_shader_garage.h"
+#include "core_types.h"
 #include "model_material.h"
+#include "paint_finish_catalog.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -294,9 +296,14 @@ int main(int argc, char **argv) {
     factoryStickerMesh.material->resourcePath = QStringLiteral(
         "Game:/Media/cars/_library/materials/_fmnext/carpaint_default/"
         "livery_sticker.materialbin");
+    fh6::CarMesh shadowMesh;
+    shadowMesh.name = QStringLiteral("shadow");
+    shadowMesh.positions = carMesh.positions;
+    shadowMesh.indices = carMesh.indices;
     car.meshes.push_back(std::move(carMesh));
     car.meshes.push_back(std::move(lowerLodMesh));
     car.meshes.push_back(std::move(factoryStickerMesh));
+    car.shadowMeshes.push_back(std::move(shadowMesh));
     fh6::SwatchImage livery;
     livery.width = 1;
     livery.height = 1;
@@ -320,29 +327,36 @@ int main(int argc, char **argv) {
             &scene, std::move(car), {0.2f, 0.4f, 0.6f}, livery,
             &liveryMasks, nullptr, nullptr, nullptr, nullptr, &carError),
         qPrintable(carError));
+    const fh6::OriginalShaderGarageDraw &carDraw = scene.draws[garageDraws];
+    const fh6::OriginalShaderGarageDraw &shadowDraw = scene.draws[garageDraws + 1];
     ok &= require(
-        scene.draws.size() == garageDraws + 1
-            && scene.draws.back().diffuseTexture != nullptr
-            && scene.draws.back().diffuseTexture->sourceEntry
+        scene.draws.size() == garageDraws + 2
+            && carDraw.diffuseTexture != nullptr
+            && carDraw.diffuseTexture->sourceEntry
                 == QStringLiteral("car://composited-livery")
-            && scene.draws.back().normalTexture != nullptr
-            && scene.draws.back().surfaceTexture != nullptr
-            && scene.draws.back().diffuseUvChannel == 3
-            && scene.draws.back().baseColor
+            && carDraw.normalTexture != nullptr
+            && carDraw.surfaceTexture != nullptr
+            && carDraw.diffuseUvChannel == 3
+            && carDraw.baseColor
                 == std::array<float, 3>{0.2f, 0.4f, 0.6f}
-            && scene.draws.back().liveryBaseTexture
-            && scene.draws.back().liveryAllowedSides == 0x1fu
+            && carDraw.family == fh6::OriginalShaderSurfaceFamily::Car
+            && carDraw.liveryBaseTexture
+            && carDraw.liveryAllowedSides == 0x1fu
             && scene.liveryMapping.valid()
-            && scene.draws.back().uTiling == 1.0f
-            && scene.draws.back().vTiling == 1.0f
-            && scene.draws.back().detailUTiling == 2.0f
-            && scene.draws.back().detailVTiling == 3.0f
-            && std::abs(scene.draws.back().clearCoatCoverage - 0.72f) < 0.00001f
-            && std::abs(scene.draws.back().clearCoatRoughness - 0.08f) < 0.00001f
-            && scene.draws.back().clearCoatTint
+            && carDraw.uTiling == 1.0f
+            && carDraw.vTiling == 1.0f
+            && carDraw.detailUTiling == 2.0f
+            && carDraw.detailVTiling == 3.0f
+            && std::abs(carDraw.clearCoatCoverage - 0.72f) < 0.00001f
+            && std::abs(carDraw.clearCoatRoughness - 0.08f) < 0.00001f
+            && carDraw.clearCoatTint
                 == std::array<float, 3>{0.9f, 0.95f, 1.0f}
+            && shadowDraw.shadowCasterOnly
+            && shadowDraw.geometry.meshes.size() == 1
             && scene.carStatus.contains(QStringLiteral("1 lower-LOD"))
-            && scene.carStatus.contains(QStringLiteral("1 factory-livery sticker")),
+            && scene.carStatus.contains(QStringLiteral("1 factory-livery sticker"))
+            && scene.carStatus.contains(QStringLiteral(
+                "1 authored shadow-proxy mesh")),
         "DX12 car livery/detail maps or factory-sticker exclusion changed");
 
     fh6::CarModel glassCar;
@@ -378,7 +392,9 @@ int main(int argc, char **argv) {
         scene.draws.size() == drawsBeforeGlass + 1
             && scene.draws.back().translucent
             && scene.draws.back().alphaTexture != nullptr
-            && std::abs(scene.draws.back().opacity - 0.42f) < 0.00001f
+            && std::abs(scene.draws.back().opacity - 0.22f) < 0.00001f
+            && scene.draws.back().gloss >= 0.90f
+            && scene.draws.back().shaderFamily == fh6::ModelShaderFamily::Glass
             && scene.carStatus.contains(QStringLiteral("1 translucent/glass")),
         "DX12 car glass must be retained in the translucent alpha-map pass");
 
@@ -415,6 +431,98 @@ int main(int argc, char **argv) {
             && std::abs(wheelDraw.gloss - 0.78f) < 0.00001f
             && std::abs(wheelDraw.metallic - 0.85f) < 0.00001f,
         "DX12 wheel fallback must not inherit the body-paint colour");
+
+    fh6::PaintFinishLibrary paintFinishes;
+    paintFinishes.load(QString::fromLocal8Bit(argv[1]));
+    fh6::LiveryPaintState brassPaintState;
+    fh6::LiveryPaintMaterial brassPaint;
+    brassPaint.materialHash = 0x27u;
+    brassPaint.finish = 27;
+    brassPaintState.materials.push_back(brassPaint);
+    fh6::CarModel brassCar;
+    brassCar.sourcePath = QStringLiteral("brass-finish-test.carbin");
+    brassCar.boundsMin = {-1.0f, 0.0f, -1.0f};
+    brassCar.boundsMax = {1.0f, 1.0f, 1.0f};
+    fh6::CarMesh brassMesh;
+    brassMesh.name = QStringLiteral("body_LODS0");
+    brassMesh.materialName = QStringLiteral("carpaint_standard");
+    brassMesh.paintMaterialHash = brassPaint.materialHash;
+    brassMesh.material = std::make_shared<fh6::ModelMaterial>();
+    brassMesh.positions = {
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    brassMesh.uvChannels.resize(1);
+    brassMesh.uvChannels[0] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
+    brassMesh.indices = {0, 1, 2};
+    brassCar.meshes.push_back(std::move(brassMesh));
+    const std::size_t drawsBeforeBrass = scene.draws.size();
+    ok &= require(
+        paintFinishes.loaded()
+            && fh6::appendOriginalShaderGarageCar(
+                &scene, std::move(brassCar), {1.0f, 1.0f, 1.0f}, {},
+                nullptr, nullptr, &brassPaintState, nullptr, &paintFinishes,
+                &carError),
+        qPrintable(carError));
+    const fh6::OriginalShaderGarageDraw &brassDraw = scene.draws.back();
+    ok &= require(
+        scene.draws.size() == drawsBeforeBrass + 1
+            && brassDraw.diffuseTexture != nullptr
+            && brassDraw.diffuseTexture->sourceEntry
+                == QStringLiteral("car://paint-finish/27/pattern")
+            && brassDraw.surfaceTexture != nullptr
+            && brassDraw.baseColor[0] > brassDraw.baseColor[1]
+            && brassDraw.baseColor[1] > brassDraw.baseColor[2]
+            && brassDraw.metallic > 0.89f,
+        "DX12 Brass Polished must retain its authored pattern, RMAO, and metal colour");
+
+    fh6::LiveryPaintState wheelPaintState;
+    fh6::LiveryPaintMaterial highFlakeWheelPaint;
+    highFlakeWheelPaint.materialHash = 0x5678u;
+    highFlakeWheelPaint.primary.enabled = true;
+    highFlakeWheelPaint.primary.bgra = {0, 0, 255, 255};
+    highFlakeWheelPaint.secondary.enabled = true;
+    highFlakeWheelPaint.secondary.bgra = {255, 0, 0, 255};
+    highFlakeWheelPaint.finish = 71;
+    wheelPaintState.materials.push_back(highFlakeWheelPaint);
+    fh6::CarModel paintedWheelCar;
+    paintedWheelCar.sourcePath = QStringLiteral("painted-wheel-test.carbin");
+    paintedWheelCar.boundsMin = {-1.0f, -1.0f, -1.0f};
+    paintedWheelCar.boundsMax = {1.0f, 1.0f, 1.0f};
+    fh6::CarMesh paintedWheelMesh;
+    paintedWheelMesh.name = QStringLiteral("wheel_LODS0");
+    paintedWheelMesh.sourceModelPath = QStringLiteral(
+        "_library/scene/wheels/test.modelbin");
+    paintedWheelMesh.materialName = QStringLiteral("rim");
+    paintedWheelMesh.paintMaterialHash = highFlakeWheelPaint.materialHash;
+    paintedWheelMesh.material = std::make_shared<fh6::ModelMaterial>();
+    paintedWheelMesh.material->resolvedFromLibrary = true;
+    paintedWheelMesh.positions = {
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    paintedWheelMesh.uvChannels.resize(1);
+    paintedWheelMesh.uvChannels[0] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
+    paintedWheelMesh.indices = {0, 1, 2};
+    paintedWheelCar.meshes.push_back(std::move(paintedWheelMesh));
+    const std::size_t drawsBeforePaintedWheel = scene.draws.size();
+    ok &= require(
+        paintFinishes.loaded()
+            && fh6::appendOriginalShaderGarageCar(
+                &scene, std::move(paintedWheelCar), {0.9f, 0.1f, 0.1f}, {},
+                nullptr, nullptr, &wheelPaintState, nullptr, &paintFinishes,
+                &carError),
+        qPrintable(carError));
+    const fh6::OriginalShaderGarageDraw &paintedWheelDraw = scene.draws.back();
+    ok &= require(
+        scene.draws.size() == drawsBeforePaintedWheel + 1
+            && paintedWheelDraw.baseColor[2] > paintedWheelDraw.baseColor[0]
+            && paintedWheelDraw.secondaryPaintColor[2] > 0.99f
+            && paintedWheelDraw.flakeColor[2] > 0.99f
+            && std::abs(paintedWheelDraw.flakeCoverage - 0.8f) < 0.0001f
+            && std::abs(paintedWheelDraw.flakeRoughness - 0.37f) < 0.0001f
+            && std::abs(paintedWheelDraw.metallic - 0.85f) < 0.0001f
+            && paintedWheelDraw.glancingFlopEnabled
+            && std::abs(paintedWheelDraw.glancingFlopStrength - 0.45f) < 0.0001f,
+        "DX12 painted rims must retain the FH6 high-flake finish and wheel colours");
 
     fh6::CarModel carbonCar;
     carbonCar.sourcePath = QStringLiteral("carbon-test.carbin");

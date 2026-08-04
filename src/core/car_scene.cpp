@@ -854,6 +854,21 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             car.liveryProjectionMeshes.push_back(std::move(mesh));
         }
         if (stock) {
+            for (CarMesh &mesh : model.shadowMeshes) {
+                mesh.sourceModelPath = part.path;
+                mesh.boneTransform = matMul(mesh.boneTransform, instance);
+                mesh.carPartType = part.partType;
+                mesh.modelInstanceId = currentInstanceId;
+                mesh.stockPart = true;
+                if (isWheelModelPath(part.path)) {
+                    const bool front = corner >= 0
+                        ? isFrontCorner(corner) : frontWheel(part, mesh);
+                    bakeWheelTransform(mesh, front ? wheels.front : wheels.rear);
+                }
+                car.shadowMeshes.push_back(std::move(mesh));
+            }
+        }
+        if (stock) {
             ++loaded;
         }
     }

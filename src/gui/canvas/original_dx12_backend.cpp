@@ -118,6 +118,12 @@ struct Binding {
 
 constexpr DXGI_FORMAT kTargetFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
 constexpr std::array<float, 4> kClearColor = {0.125f, 0.25f, 0.5f, 1.0f};
+constexpr UINT kShadowMapSize = 2048;
+constexpr UINT kShadowDescriptorIndex = 119;
+constexpr UINT kDropShadowDescriptorIndex = 121;
+constexpr float kShadowStrength = 1.0f;
+constexpr float kDropShadowStrength = 0.35f;
+constexpr float kShadowDepthBias = 0.0015f;
 constexpr UINT kFixedDescriptorCount = 176;
 constexpr UINT kMaterialDescriptorStart = 124;
 constexpr UINT kMaterialDescriptorCount = 19;
@@ -153,10 +159,17 @@ struct DrawResources {
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> surfaceTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> emissiveTexture;
     std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
+    std::array<float, 3> secondaryPaintColor = {0.55f, 0.55f, 0.55f};
+    std::array<float, 3> flakeColor = {1.0f, 1.0f, 1.0f};
     std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
     float opacity = 1.0f;
     float gloss = 0.45f;
     float metallic = 0.0f;
+    float flakeCoverage = 0.0f;
+    float flakeRoughness = 0.4f;
+    float glitterIntensity = 1.4f;
+    float glancingFlopStrength = 0.0f;
+    float glancingFlopPower = 2.0f;
     float uTiling = 1.0f;
     float vTiling = 1.0f;
     float detailUTiling = 1.0f;
@@ -171,6 +184,10 @@ struct DrawResources {
     float clearCoatCoverage = 0.0f;
     float clearCoatRoughness = 0.1f;
     bool translucent = false;
+    bool glancingFlopEnabled = false;
+    bool selfShadowCaster = false;
+    bool dropShadowCaster = false;
+    bool visible = true;
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
@@ -899,43 +916,138 @@ Matrix4 cameraViewProjection(
     return multiply(projection, view);
 }
 
-std::array<float, 6> contactShadowParameters(
-    const std::vector<fh6::OriginalShaderGarageDraw> &draws) {
-    float minimumX = std::numeric_limits<float>::max();
-    float maximumX = std::numeric_limits<float>::lowest();
-    float minimumZ = std::numeric_limits<float>::max();
-    float maximumZ = std::numeric_limits<float>::lowest();
-    float floorY = std::numeric_limits<float>::max();
+struct ShadowProjection {
+    Matrix4 viewProjection{};
+    float strength = 0.0f;
+    float depthBias = 0.0f;
+    bool valid = false;
+};
+
+enum class ShadowPassKind {
+    Self,
+    Drop,
+};
+
+bool castsShadow(const DrawResources &draw, ShadowPassKind kind) {
+    return kind == ShadowPassKind::Self
+        ? draw.selfShadowCaster : draw.dropShadowCaster;
+}
+
+ShadowProjection carShadowProjection(
+    const std::vector<DrawResources> &draws,
+    const fh6::ModelVec3 &lightRayDirection, ShadowPassKind kind,
+    float strength) {
+    QVector3D minimum(
+        std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max());
+    QVector3D maximum(
+        std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest());
     bool found = false;
     for (const auto &draw : draws) {
-        if (!draw.name.startsWith(QStringLiteral("car/"))) {
+        if (!castsShadow(draw, kind)) {
             continue;
         }
-        found = true;
-        const fh6::ModelVec3 low = draw.geometry.boundsMin;
-        const fh6::ModelVec3 high = draw.geometry.boundsMax;
-        for (int mask = 0; mask < 8; ++mask) {
-            const fh6::ModelVec3 point = draw.placement.transformPoint({
-                (mask & 1) != 0 ? high.x : low.x,
-                (mask & 2) != 0 ? high.y : low.y,
-                (mask & 4) != 0 ? high.z : low.z});
-            minimumX = std::min(minimumX, point.x);
-            maximumX = std::max(maximumX, point.x);
-            minimumZ = std::min(minimumZ, point.z);
-            maximumZ = std::max(maximumZ, point.z);
-            floorY = std::min(floorY, point.y);
+        for (const Vertex &vertex : draw.geometry.vertices) {
+            found = true;
+            minimum.setX(std::min(minimum.x(), vertex.position[0]));
+            minimum.setY(std::min(minimum.y(), vertex.position[1]));
+            minimum.setZ(std::min(minimum.z(), vertex.position[2]));
+            maximum.setX(std::max(maximum.x(), vertex.position[0]));
+            maximum.setY(std::max(maximum.y(), vertex.position[1]));
+            maximum.setZ(std::max(maximum.z(), vertex.position[2]));
         }
     }
     if (!found) {
         return {};
     }
-    return {
-        (minimumX + maximumX) * 0.5f,
-        (minimumZ + maximumZ) * 0.5f,
-        std::max((maximumX - minimumX) * 0.58f, 0.1f),
-        std::max((maximumZ - minimumZ) * 0.58f, 0.1f),
-        floorY,
-        0.48f};
+
+    const QVector3D direction(
+        lightRayDirection.x, lightRayDirection.y, lightRayDirection.z);
+    if (direction.lengthSquared() < 0.000001f) {
+        return {};
+    }
+    const QVector3D forward = direction.normalized();
+    // Homespace's ShadowLightDirection is the direction travelled by the
+    // light, rather than the direction from the surface back to the light.
+    // A ground shadow therefore lies beyond the caster in light-view depth.
+    // Fitting only the car clips that receiver point entirely for the shallow
+    // Tokyo light angle.
+    if (forward.y() >= -0.000001f) {
+        return {};
+    }
+    const float contactPlaneY = minimum.y();
+    const QVector3D upReference = std::abs(QVector3D::dotProduct(
+        forward, QVector3D(0.0f, 1.0f, 0.0f))) < 0.95f
+        ? QVector3D(0.0f, 1.0f, 0.0f)
+        : QVector3D(0.0f, 0.0f, 1.0f);
+    const QVector3D right = QVector3D::crossProduct(
+        upReference, forward).normalized();
+    const QVector3D up = QVector3D::crossProduct(forward, right);
+    float minimumLightX = std::numeric_limits<float>::max();
+    float maximumLightX = std::numeric_limits<float>::lowest();
+    float minimumLightY = std::numeric_limits<float>::max();
+    float maximumLightY = std::numeric_limits<float>::lowest();
+    float minimumLightZ = std::numeric_limits<float>::max();
+    float maximumLightZ = std::numeric_limits<float>::lowest();
+    for (int mask = 0; mask < 8; ++mask) {
+        const QVector3D point(
+            (mask & 1) != 0 ? maximum.x() : minimum.x(),
+            (mask & 2) != 0 ? maximum.y() : minimum.y(),
+            (mask & 4) != 0 ? maximum.z() : minimum.z());
+        const float lightX = QVector3D::dotProduct(right, point);
+        const float lightY = QVector3D::dotProduct(up, point);
+        const float lightZ = QVector3D::dotProduct(forward, point);
+        minimumLightX = std::min(minimumLightX, lightX);
+        maximumLightX = std::max(maximumLightX, lightX);
+        minimumLightY = std::min(minimumLightY, lightY);
+        maximumLightY = std::max(maximumLightY, lightY);
+        minimumLightZ = std::min(minimumLightZ, lightZ);
+        maximumLightZ = std::max(maximumLightZ, lightZ);
+
+        const float travelToContact =
+            (contactPlaneY - point.y()) / forward.y();
+        if (travelToContact > 0.0f) {
+            const QVector3D contactPoint = point + forward * travelToContact;
+            maximumLightZ = std::max(
+                maximumLightZ,
+                QVector3D::dotProduct(forward, contactPoint));
+        }
+    }
+    constexpr float kLateralMargin = 0.20f;
+    constexpr float kDepthMargin = 0.50f;
+    const float width = maximumLightX - minimumLightX + 2.0f * kLateralMargin;
+    const float height = maximumLightY - minimumLightY + 2.0f * kLateralMargin;
+    const float depth = maximumLightZ - minimumLightZ + 2.0f * kDepthMargin;
+    const float texelWidth = width / static_cast<float>(kShadowMapSize);
+    const float texelHeight = height / static_cast<float>(kShadowMapSize);
+    const float centerX = std::round(
+        (minimumLightX + maximumLightX) * 0.5f / texelWidth) * texelWidth;
+    const float centerY = std::round(
+        (minimumLightY + maximumLightY) * 0.5f / texelHeight) * texelHeight;
+    const float depthStart = minimumLightZ - kDepthMargin;
+    const Matrix4 viewProjection = {{
+        {2.0f * right.x() / width,
+         2.0f * right.y() / width,
+         2.0f * right.z() / width,
+         -2.0f * centerX / width},
+        {2.0f * up.x() / height,
+         2.0f * up.y() / height,
+         2.0f * up.z() / height,
+         -2.0f * centerY / height},
+        {forward.x() / depth,
+         forward.y() / depth,
+         forward.z() / depth,
+         -depthStart / depth},
+        {0.0f, 0.0f, 0.0f, 1.0f},
+    }};
+    ShadowProjection result;
+    result.viewProjection = viewProjection;
+    result.strength = strength;
+    result.depthBias = kShadowDepthBias;
+    result.valid = true;
+
+    return result;
 }
 
 std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
@@ -944,10 +1056,13 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     const std::vector<fh6::OriginalShaderPointLight> &authoredLights,
     const fh6::GaragePanoramaResources &panorama,
     const fh6::GarageColorLut &colorLut,
-    const std::array<float, 6> &contactShadow) {
+    const ShadowProjection &shadow, const ShadowProjection &dropShadow) {
     std::array<std::vector<std::uint8_t>, 8> data;
     constexpr std::array<std::size_t, 8> sizes = {
-        256, 256, 512, 11264, 18432, 2304, 65536, 65536};
+        // FrameData now ends at dropShadowParameters (row 150). Keep enough
+        // source bytes for every row before createConstantBuffer applies the
+        // required 256-byte allocation alignment.
+        256, 256, 512, 11264, 18432, 2416, 65536, 65536};
     for (std::size_t index = 0; index < data.size(); ++index) {
         data[index].resize(sizes[index], 0);
     }
@@ -1045,12 +1160,28 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[5], 11, 3, static_cast<float>(activeLightCount));
     writeFloat(&data[5], 140, 0, static_cast<float>(colorLut.dimension));
     writeFloat(&data[5], 140, 1, colorLut.scale);
-    writeFloat(&data[5], 141, 0, contactShadow[0]);
-    writeFloat(&data[5], 141, 1, contactShadow[1]);
-    writeFloat(&data[5], 141, 2, contactShadow[2]);
-    writeFloat(&data[5], 141, 3, contactShadow[3]);
-    writeFloat(&data[5], 142, 0, contactShadow[4]);
-    writeFloat(&data[5], 142, 1, contactShadow[5]);
+    for (UINT row = 0; row < 4; ++row) {
+        for (UINT component = 0; component < 4; ++component) {
+            writeFloat(
+                &data[5], 141 + row, component,
+                shadow.viewProjection[row][component]);
+        }
+    }
+    writeFloat(&data[5], 145, 0, 1.0f / static_cast<float>(kShadowMapSize));
+    writeFloat(&data[5], 145, 1, shadow.strength);
+    writeFloat(&data[5], 145, 2, shadow.depthBias);
+    writeFloat(&data[5], 145, 3, shadow.valid ? 1.0f : 0.0f);
+    for (UINT row = 0; row < 4; ++row) {
+        for (UINT component = 0; component < 4; ++component) {
+            writeFloat(
+                &data[5], 146 + row, component,
+                dropShadow.viewProjection[row][component]);
+        }
+    }
+    writeFloat(&data[5], 150, 0, 1.0f / static_cast<float>(kShadowMapSize));
+    writeFloat(&data[5], 150, 1, dropShadow.strength);
+    writeFloat(&data[5], 150, 2, dropShadow.depthBias);
+    writeFloat(&data[5], 150, 3, dropShadow.valid ? 1.0f : 0.0f);
     for (UINT row = 0; row < 4; ++row) {
         for (UINT component = 0; component < 4; ++component) {
             writeFloat(
@@ -1100,6 +1231,23 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     return data;
 }
 
+std::vector<std::uint8_t> shadowConstantData(
+    const ShadowProjection &shadow) {
+    std::vector<std::uint8_t> data(80, 0);
+    for (UINT row = 0; row < 4; ++row) {
+        for (UINT component = 0; component < 4; ++component) {
+            writeFloat(
+                &data, row, component,
+                shadow.viewProjection[row][component]);
+        }
+    }
+    writeFloat(&data, 4, 0, 1.0f / static_cast<float>(kShadowMapSize));
+    writeFloat(&data, 4, 1, shadow.strength);
+    writeFloat(&data, 4, 2, shadow.depthBias);
+    writeFloat(&data, 4, 3, shadow.valid ? 1.0f : 0.0f);
+    return data;
+}
+
 std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     std::vector<std::uint8_t> data(768, 0);
     writeFloat(&data, 0, 0, draw.baseColor[0]);
@@ -1125,7 +1273,9 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     writeUint(&data, 5, 2, static_cast<quint32>(draw.liverySideCount));
     writeUint(
         &data, 5, 3,
-        draw.family == fh6::OriginalShaderSurfaceFamily::Floor ? 1u : 0u);
+        draw.family == fh6::OriginalShaderSurfaceFamily::Floor ? 1u
+        : draw.family == fh6::OriginalShaderSurfaceFamily::Car ? 2u
+        : 0u);
     for (int side = 0; side < fh6::kLiverySideCount; ++side) {
         for (int component = 0; component < 4; ++component) {
             writeFloat(
@@ -1159,6 +1309,16 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     writeUint(&data, 44, 1, draw.weaveMaskTexture != nullptr ? 1u : 0u);
     writeUint(&data, 44, 2, draw.weaveNormalTexture != nullptr ? 1u : 0u);
     writeUint(&data, 44, 3, draw.clearCoatNormalTexture != nullptr ? 1u : 0u);
+    for (UINT component = 0; component < 3; ++component) {
+        writeFloat(&data, 45, component, draw.secondaryPaintColor[component]);
+        writeFloat(&data, 46, component, draw.flakeColor[component]);
+    }
+    writeFloat(&data, 45, 3, draw.glancingFlopStrength);
+    writeFloat(&data, 46, 3, draw.flakeCoverage);
+    writeFloat(&data, 47, 0, draw.flakeRoughness);
+    writeFloat(&data, 47, 1, draw.glitterIntensity);
+    writeFloat(&data, 47, 2, draw.glancingFlopPower);
+    writeFloat(&data, 47, 3, draw.glancingFlopEnabled ? 1.0f : 0.0f);
     return data;
 }
 
@@ -1308,6 +1468,49 @@ ComPtr<ID3D12Resource> createDepthTarget(
     return resource;
 }
 
+ComPtr<ID3D12Resource> createShadowDepthTarget(ID3D12Device *device) {
+    D3D12_RESOURCE_DESC description{};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Width = kShadowMapSize;
+    description.Height = kShadowMapSize;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_R32_TYPELESS;
+    description.SampleDesc.Count = 1;
+    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    description.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_CLEAR_VALUE clear{};
+    clear.Format = DXGI_FORMAT_D32_FLOAT;
+    clear.DepthStencil.Depth = 1.0f;
+    const D3D12_HEAP_PROPERTIES heap = heapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    ComPtr<ID3D12Resource> resource;
+
+    if (FAILED(device->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, &description,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
+            IID_PPV_ARGS(&resource)))) {
+        return {};
+    }
+
+    return resource;
+}
+
+void createShadowViews(
+    ID3D12Device *device, ID3D12Resource *target,
+    D3D12_CPU_DESCRIPTOR_HANDLE depthHandle,
+    D3D12_CPU_DESCRIPTOR_HANDLE shaderHandle) {
+    D3D12_DEPTH_STENCIL_VIEW_DESC depthView{};
+    depthView.Format = DXGI_FORMAT_D32_FLOAT;
+    depthView.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    device->CreateDepthStencilView(target, &depthView, depthHandle);
+    D3D12_SHADER_RESOURCE_VIEW_DESC shaderView{};
+    shaderView.Format = DXGI_FORMAT_R32_FLOAT;
+    shaderView.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    shaderView.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    shaderView.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView(target, &shaderView, shaderHandle);
+}
+
 ComPtr<ID3D12Device> createHardwareDevice(
     IDXGIFactory6 *factory, QString *adapterName) {
     for (UINT index = 0;; ++index) {
@@ -1377,14 +1580,21 @@ void configureSampler(D3D12_STATIC_SAMPLER_DESC *sampler, UINT shaderRegister) {
     sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    if (shaderRegister == 12) {
+    sampler->BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    if (shaderRegister == 12 || shaderRegister == 13) {
         sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     }
+    if (shaderRegister == 13) {
+        sampler->Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+        sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        sampler->BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    }
     sampler->MaxAnisotropy = shaderRegister == 0 ? 16 : 1;
     sampler->ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    sampler->BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
     sampler->MinLOD = 0.0f;
     sampler->MaxLOD = FLT_MAX;
     sampler->ShaderRegister = shaderRegister;
@@ -1446,7 +1656,7 @@ ComPtr<ID3D12RootSignature> createRootSignature(
         parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     }
 
-    constexpr std::array<UINT, 6> samplerRegisters = {1, 2, 3, 5, 10, 12};
+    constexpr std::array<UINT, 7> samplerRegisters = {1, 2, 3, 5, 10, 12, 13};
     std::array<D3D12_STATIC_SAMPLER_DESC, samplerRegisters.size()> samplers{};
     for (std::size_t index = 0; index < samplers.size(); ++index) {
         configureSampler(&samplers[index], samplerRegisters[index]);
@@ -1546,8 +1756,10 @@ cbuffer FrameData : register(b0, space2) {
     float4 pointLightDirectionOuter[32];
     float4 pointLightInner[32];
     float4 colorGradeParameters;
-    float4 contactShadowCenterRadii;
-    float4 contactShadowParameters;
+    row_major float4x4 shadowViewProjection;
+    float4 shadowParameters;
+    row_major float4x4 dropShadowViewProjection;
+    float4 dropShadowParameters;
 };
 Texture2D<float4> panoramaTexture : register(t120);
 Texture3D<float4> colorGradeLut : register(t123);
@@ -1575,12 +1787,12 @@ float3 hableCurve(float3 value) {
 }
 
 float3 applyColorGrade(float3 color) {
-    float dimension = max(colorGradeParameters.x, 2.0);
-    float3 encoded = pqEncode(max(color, 0.0) / max(colorGradeParameters.y, 0.0001));
-    float3 coordinate = (encoded * (dimension - 1.0) + 0.5) / dimension;
-    float3 graded = colorGradeLut.SampleLevel(
-        panoramaSampler, coordinate, 0).rgb;
-    return hableCurve(max(graded, 0.0)) / hableCurve(float3(1.5, 1.5, 1.5));
+    // The Homespace LUT's transfer domain and ordering are not established by
+    // the decoded assets.  Feeding linear HDR through a guessed PQ transform
+    // overexposes the entire scene.  Keep the documented preview fallback:
+    // linear HDR -> exposure -> Hable, exactly once per shaded result.
+    float3 exposed = max(color, 0.0) * exp2(-0.4);
+    return hableCurve(exposed) / hableCurve(float3(1.5, 1.5, 1.5));
 }
 
 struct PixelInput {
@@ -1676,7 +1888,7 @@ ComPtr<ID3D12PipelineState> createMaterialPipeline(
     ID3D12Device *device, ID3D12RootSignature *rootSignature,
     QString *error, DXGI_FORMAT targetFormat = kTargetFormat,
     bool translucent = false) {
-    static constexpr const char *kShader = R"hlsl(
+    const QByteArray shader = QByteArrayLiteral(R"hlsl(
 cbuffer FrameData : register(b0, space2) {
     row_major float4x4 viewProjection;
     float4 cameraPosition;
@@ -1692,8 +1904,10 @@ cbuffer FrameData : register(b0, space2) {
     float4 pointLightDirectionOuter[32];
     float4 pointLightInner[32];
     float4 colorGradeParameters;
-    float4 contactShadowCenterRadii;
-    float4 contactShadowParameters;
+    row_major float4x4 shadowViewProjection;
+    float4 shadowParameters;
+    row_major float4x4 dropShadowViewProjection;
+    float4 dropShadowParameters;
 };
 cbuffer MaterialData : register(b0, space3) {
     float4 baseColor;
@@ -1711,9 +1925,14 @@ cbuffer MaterialData : register(b0, space3) {
     float4 weaveColorTintA;
     float4 weaveColorTintB;
     uint4 materialFamilyParameters;
+    float4 secondaryPaintAndStrength;
+    float4 flakeColorAndCoverage;
+    float4 automotivePaintParameters;
 };
 TextureCube<float4> diffuseEnvironment : register(t0);
 TextureCube<float4> specularEnvironment : register(t1);
+Texture2D<float> shadowMap : register(t119);
+Texture2D<float> dropShadowMap : register(t121);
 Texture3D<float4> colorGradeLut : register(t123);
 Texture2D<float4> baseColorTexture : register(t0, space1);
 Texture2D<float4> normalTexture : register(t1, space1);
@@ -1726,6 +1945,7 @@ Texture2D<float4> weaveNormalTexture : register(t17, space1);
 Texture2D<float4> clearCoatNormalTexture : register(t18, space1);
 SamplerState materialSampler : register(s0);
 SamplerState liverySampler : register(s12);
+SamplerComparisonState shadowSampler : register(s13);
 
 struct VertexInput {
     float3 position : POSITION;
@@ -1824,12 +2044,8 @@ float3 hableCurve(float3 value) {
 }
 
 float3 applyColorGrade(float3 color) {
-    float dimension = max(colorGradeParameters.x, 2.0);
-    float3 encoded = pqEncode(max(color, 0.0) / max(colorGradeParameters.y, 0.0001));
-    float3 coordinate = (encoded * (dimension - 1.0) + 0.5) / dimension;
-    float3 graded = colorGradeLut.SampleLevel(
-        materialSampler, coordinate, 0).rgb;
-    return hableCurve(max(graded, 0.0)) / hableCurve(float3(1.5, 1.5, 1.5));
+    float3 exposed = max(color, 0.0) * exp2(-0.4);
+    return hableCurve(exposed) / hableCurve(float3(1.5, 1.5, 1.5));
 }
 
 float2 canvasToUv(float2 canvas) {
@@ -1847,12 +2063,90 @@ float3 applyMappedNormal(
     return normalize(t * sampled.x + b * sampled.y + normal * sampled.z);
 }
 
+)hlsl") + QByteArrayLiteral(R"hlsl(
+
+float shadowVisibility(float3 worldPosition) {
+    if (shadowParameters.w < 0.5) {
+        return 1.0;
+    }
+    float4 projected = mul(
+        shadowViewProjection, float4(worldPosition, 1.0));
+    float3 shadowCoordinate = projected.xyz / projected.w;
+    float2 uv = shadowCoordinate.xy * float2(0.5, -0.5) + 0.5;
+    if (any(uv < 0.0) || any(uv > 1.0)
+        || shadowCoordinate.z <= 0.0 || shadowCoordinate.z >= 1.0) {
+        return 1.0;
+    }
+    float visibility = 0.0;
+    [unroll]
+    for (int y = -2; y <= 2; ++y) {
+        [unroll]
+        for (int x = -2; x <= 2; ++x) {
+            visibility += shadowMap.SampleCmpLevelZero(
+                shadowSampler,
+                uv + float2(x, y) * shadowParameters.x,
+                shadowCoordinate.z - shadowParameters.z);
+        }
+    }
+    return visibility / 25.0;
+}
+
+float dropShadowVisibility(float3 worldPosition) {
+    if (dropShadowParameters.w < 0.5) {
+        return 1.0;
+    }
+    float4 clip = mul(dropShadowViewProjection, float4(worldPosition, 1.0));
+    float3 projected = clip.xyz / max(clip.w, 0.000001);
+    float2 uv = projected.xy * float2(0.5, -0.5) + 0.5;
+    if (projected.z <= 0.0 || projected.z >= 1.0
+        || any(uv <= 0.0) || any(uv >= 1.0)) {
+        return 1.0;
+    }
+    float visibility = 0.0;
+    [unroll]
+    for (int y = -2; y <= 2; ++y) {
+        [unroll]
+        for (int x = -2; x <= 2; ++x) {
+            visibility += dropShadowMap.SampleCmpLevelZero(
+                shadowSampler,
+                uv + float2(x, y) * dropShadowParameters.x * 3.0,
+                projected.z - dropShadowParameters.z);
+        }
+    }
+    return visibility / 25.0;
+}
+
+float finishGlitter(float3 worldPosition, float facing) {
+    float coverage = saturate(flakeColorAndCoverage.w);
+    if (coverage <= 0.0) {
+        return 0.0;
+    }
+    float3 cell = floor(worldPosition * 900.0);
+    float randomValue = frac(
+        sin(dot(cell, float3(12.9898, 78.233, 37.719))) * 43758.5453);
+    float randomFacing = frac(randomValue * 251.7);
+    float active = step(1.0 - 0.3 * coverage, randomValue);
+    float highlightStart = lerp(
+        0.97, 0.84, saturate(automotivePaintParameters.x));
+    float lit = smoothstep(
+        highlightStart, 1.0, facing + (randomFacing - 0.5) * 0.05);
+    return active * lit;
+}
+
 float4 PSMain(PixelInput input) : SV_Target0 {
     float2 uv = input.uv * textureParameters.yz;
     float2 detailUv = input.detailUv * detailTextureParameters.xy;
+    float3 earlyView = normalize(cameraPosition.xyz - input.worldPosition);
+    float edge = pow(
+        1.0 - saturate(dot(normalize(input.normal), earlyView)),
+        max(automotivePaintParameters.z, 0.01));
+    float glancingMix = automotivePaintParameters.w > 0.5
+        ? saturate(secondaryPaintAndStrength.w * edge) : 0.0;
+    float3 surfacePaint = lerp(
+        baseColor.rgb, secondaryPaintAndStrength.rgb, glancingMix);
     float4 authoredBase = float4(1, 1, 1, 1);
     float liveryCoverage = 0.0;
-    float3 albedo = baseColor.rgb;
+    float3 albedo = surfacePaint;
     if (liveryParameters.x != 0) {
         float2 atlasUv = float2(input.uv.x * 0.5, input.uv.y);
         float2 paintUv = float2(atlasUv.x, 1.0 - atlasUv.y);
@@ -1890,12 +2184,12 @@ float4 PSMain(PixelInput input) : SV_Target0 {
             ? baseColorTexture.Sample(liverySampler, paintUv)
             : float4(0, 0, 0, 0);
         float3 liveryColor = pow(max(authoredBase.rgb, 0.0), 2.2);
-        albedo = lerp(baseColor.rgb, liveryColor, authoredBase.a);
+        albedo = lerp(surfacePaint, liveryColor, authoredBase.a);
         liveryCoverage = authoredBase.a;
     } else if (textureParameters.x > 0.5) {
         authoredBase = baseColorTexture.Sample(materialSampler, uv);
         authoredBase.rgb = pow(max(authoredBase.rgb, 0.0), 2.2);
-        albedo = baseColor.rgb * authoredBase.rgb;
+        albedo = surfacePaint * authoredBase.rgb;
     }
     if (materialFamilyParameters.x == 2u && materialFamilyParameters.y != 0u) {
         float weave = weaveMaskTexture.Sample(materialSampler, detailUv).r;
@@ -1959,12 +2253,27 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     float3 reflected = reflect(-v, n);
     float3 reflectedEnvironment = specularEnvironment.SampleLevel(
         materialSampler, reflected, roughness * 9.0).rgb;
-    float3 color = (diffuse + specular) * directColor.rgb * ndotl;
+    float directionalVisibility = 1.0;
+    if (liveryParameters.w == 2u) {
+        directionalVisibility = lerp(
+            1.0, shadowVisibility(input.worldPosition), shadowParameters.y);
+    }
+    // ReceiveShadowMask applies to the focus-car lighting aggregate.  The
+    // authored garage contains many local fixtures, so leaving every point
+    // light unmasked washes away shadows cast between car parts.  Preserve a
+    // soft indirect floor while letting the car shadow map attenuate its local
+    // direct-light sum.
+    float localLightVisibility = liveryParameters.w == 2u
+        ? lerp(0.35, 1.0, directionalVisibility) : 1.0;
+    float3 color = (diffuse + specular) * directColor.rgb
+        * ndotl * directionalVisibility;
+    float glitterFacing = ndotl > 0.0 ? saturate(dot(n, h)) : 0.0;
     float coatIntensity = saturate(clearCoatParameters.x)
         * lerp(1.0, clearCoatParameters.z, saturate(liveryCoverage));
     float coatRoughness = clamp(clearCoatParameters.y, 0.04, 1.0);
     float3 clearCoatDirect = evaluateDirectClearCoat(
-        coatNormal, v, l, coatRoughness) * directColor.rgb;
+        coatNormal, v, l, coatRoughness) * directColor.rgb
+        * directionalVisibility;
     [loop]
     for (uint pointIndex = 0;
          pointIndex < min((uint)panoramaParameters.w, 32u); ++pointIndex) {
@@ -1997,11 +2306,16 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         float inverseSquare = rcp(max(distanceToLight * distanceToLight, 0.25));
         float radiance = pointLightColorIntensity[pointIndex].w
             * 0.00025 * inverseSquare * rangeFade * spot;
+        if (pointNdotL > 0.0 && radiance > 0.0) {
+            glitterFacing = max(glitterFacing, pointNdotH);
+        }
         color += (pointDiffuse + pointSpecular)
-            * pointLightColorIntensity[pointIndex].rgb * radiance * pointNdotL;
+            * pointLightColorIntensity[pointIndex].rgb * radiance * pointNdotL
+            * localLightVisibility;
         clearCoatDirect += evaluateDirectClearCoat(
                 coatNormal, v, pointDirection, coatRoughness)
-            * pointLightColorIntensity[pointIndex].rgb * radiance;
+            * pointLightColorIntensity[pointIndex].rgb * radiance
+            * localLightVisibility;
     }
     float3 environmentFresnel = fresnelSchlickRoughness(
         ndotv, f0, roughness);
@@ -2011,6 +2325,11 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     color += reflectedEnvironment
         * environmentBrdfApproximation(f0, roughness, ndotv)
         * specularOcclusion(ndotv, ao, roughness);
+    float glitter = finishGlitter(input.worldPosition, glitterFacing);
+    color += flakeColorAndCoverage.rgb
+        * (glitter * saturate(flakeColorAndCoverage.w)
+           * max(automotivePaintParameters.y, 0.0))
+        * environmentFresnel;
     if (coatIntensity > 0.01) {
         float coatNdotV = saturate(dot(coatNormal, v));
         float3 coatFresnel = fresnelSchlickRoughness(
@@ -2024,20 +2343,31 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         color += clearCoatTint.rgb
             * (pow(1.0 - coatNdotV, 4.0) * 0.06 * coatIntensity);
     }
+    if (materialFamilyParameters.x == 3u) {
+        // Thin automotive glass transmits the already-rendered scene through
+        // alpha, while its Fresnel reflection remains a surface contribution.
+        // Compensate the reflected probe for straight-alpha composition so it
+        // is not incorrectly faded by the transmission amount.
+        float glassAlpha = max(baseColor.a, 0.05);
+        float3 glassReflection = reflectedEnvironment
+            * environmentBrdfApproximation(
+                float3(0.04, 0.04, 0.04), roughness, ndotv);
+        color = color * 0.10 + glassReflection / glassAlpha;
+    }
+    // Homespace's plane-mode car drop shadow is a separate floor composite.
+    // Applying it after the floor's ambient/probe lighting prevents those terms
+    // from washing the footprint away; focus-car self-shadow remains a direct-
+    // light mask above.
+    if (liveryParameters.w == 1u) {
+        float floorShadow = dropShadowVisibility(input.worldPosition);
+        color *= lerp(1.0, floorShadow, dropShadowParameters.y);
+    }
     float3 emission = emissiveColorAndMap.rgb;
     if (emissiveColorAndMap.w > 0.5) {
         float3 authoredEmission = emissiveTexture.Sample(materialSampler, detailUv).rgb;
         emission += pow(max(authoredEmission, 0.0), 2.2);
     }
     color += emission;
-    if (liveryParameters.w != 0 && contactShadowCenterRadii.z > 0.0) {
-        float2 shadowOffset = (input.worldPosition.xz
-            - contactShadowCenterRadii.xy) / contactShadowCenterRadii.zw;
-        float broad = 1.0 - smoothstep(0.18, 1.0, length(shadowOffset));
-        float floorFade = 1.0 - smoothstep(
-            0.02, 0.30, abs(input.worldPosition.y - contactShadowParameters.x));
-        color *= 1.0 - broad * floorFade * contactShadowParameters.y;
-    }
     float outputAlpha = baseColor.a;
     if (liveryParameters.x == 0 && textureParameters.x > 0.5) {
         outputAlpha *= authoredBase.a;
@@ -2050,7 +2380,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     }
     return float4(applyColorGrade(color), saturate(outputAlpha));
 }
-)hlsl";
+)hlsl");
 
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
@@ -2062,7 +2392,8 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
     HRESULT result = D3DCompile(
-        kShader, std::strlen(kShader), "original_material_preview.hlsl",
+        shader.constData(), static_cast<SIZE_T>(shader.size()),
+        "original_material_preview.hlsl",
         nullptr, nullptr, "VSMain", "vs_5_1", flags, 0,
         &vertexShader, &diagnostics);
     if (FAILED(result)) {
@@ -2075,7 +2406,8 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     }
     diagnostics.Reset();
     result = D3DCompile(
-        kShader, std::strlen(kShader), "original_material_preview.hlsl",
+        shader.constData(), static_cast<SIZE_T>(shader.size()),
+        "original_material_preview.hlsl",
         nullptr, nullptr, "PSMain", "ps_5_1", flags, 0,
         &pixelShader, &diagnostics);
     if (FAILED(result)) {
@@ -2121,6 +2453,98 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         return {};
     }
     return pipeline;
+}
+
+ComPtr<ID3D12PipelineState> createShadowPipeline(
+    ID3D12Device *device, ID3D12RootSignature *rootSignature,
+    QString *error) {
+    static constexpr const char *kShader = R"hlsl(
+cbuffer ShadowData : register(b0, space3) {
+    row_major float4x4 shadowViewProjection;
+    float4 shadowParameters;
+};
+
+struct VertexInput {
+    float3 position : POSITION;
+};
+
+float4 VSMain(VertexInput input) : SV_Position {
+    return mul(shadowViewProjection, float4(input.position, 1.0));
+}
+)hlsl";
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> diagnostics;
+    constexpr UINT kFlags =
+        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    const HRESULT compileResult = D3DCompile(
+        kShader, std::strlen(kShader), "tokyo_car_shadow.hlsl", nullptr,
+        nullptr, "VSMain", "vs_5_1", kFlags, 0, &vertexShader, &diagnostics);
+    if (FAILED(compileResult)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 car-shadow vertex shader compilation failed");
+        return {};
+    }
+    constexpr D3D12_INPUT_ELEMENT_DESC kInput = {
+        "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+    description.pRootSignature = rootSignature;
+    description.VS = {
+        vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+    description.BlendState = blendDescription(false);
+    description.SampleMask = UINT_MAX;
+    description.RasterizerState = rasterizerDescription();
+    description.DepthStencilState = depthDescription();
+    description.InputLayout = {&kInput, 1};
+    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    description.NumRenderTargets = 0;
+    description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    description.SampleDesc.Count = 1;
+    ComPtr<ID3D12PipelineState> pipeline;
+    const HRESULT result = device->CreateGraphicsPipelineState(
+        &description, IID_PPV_ARGS(&pipeline));
+    if (FAILED(result)) {
+        *error = QStringLiteral("DX12 car-shadow pipeline creation failed: %1")
+            .arg(hresultText(result));
+        return {};
+    }
+
+    return pipeline;
+}
+
+void recordShadowPass(
+    ID3D12GraphicsCommandList *commands, ID3D12RootSignature *rootSignature,
+    ID3D12PipelineState *pipeline, ID3D12Resource *frameConstants,
+    D3D12_CPU_DESCRIPTOR_HANDLE depthView,
+    const std::vector<DrawResources> &draws, ShadowPassKind kind) {
+    const D3D12_VIEWPORT viewport{
+        0.0f, 0.0f, static_cast<float>(kShadowMapSize),
+        static_cast<float>(kShadowMapSize), 0.0f, 1.0f};
+    const D3D12_RECT scissor{
+        0, 0, static_cast<LONG>(kShadowMapSize),
+        static_cast<LONG>(kShadowMapSize)};
+    commands->RSSetViewports(1, &viewport);
+    commands->RSSetScissorRects(1, &scissor);
+    commands->OMSetRenderTargets(0, nullptr, FALSE, &depthView);
+    commands->ClearDepthStencilView(
+        depthView, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    commands->SetGraphicsRootSignature(rootSignature);
+    commands->SetGraphicsRootConstantBufferView(
+        7, frameConstants->GetGPUVirtualAddress());
+    commands->SetPipelineState(pipeline);
+    commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    for (const DrawResources &draw : draws) {
+        if (!castsShadow(draw, kind)) {
+            continue;
+        }
+        commands->IASetVertexBuffers(0, 1, &draw.vertexView);
+        commands->IASetIndexBuffer(&draw.indexView);
+        commands->DrawIndexedInstanced(
+            static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
+    }
 }
 
 ComPtr<ID3D12PipelineState> createExactPipeline(
@@ -2352,9 +2776,13 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         ? createPanoramaPipeline(
               device.Get(), rootSignature.Get(), &setupError, kTargetFormat)
         : ComPtr<ID3D12PipelineState>{};
+    const ComPtr<ID3D12PipelineState> shadowPipeline = rootSignature != nullptr
+        ? createShadowPipeline(device.Get(), rootSignature.Get(), &setupError)
+        : ComPtr<ID3D12PipelineState>{};
     if (rootSignature == nullptr || floorPipeline == nullptr
         || defaultPipeline == nullptr || materialPipeline == nullptr
-        || translucentMaterialPipeline == nullptr || panoramaPipeline == nullptr) {
+        || translucentMaterialPipeline == nullptr || panoramaPipeline == nullptr
+        || shadowPipeline == nullptr) {
         frame.error = setupError;
         return frame;
     }
@@ -2389,6 +2817,10 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
 
     std::vector<DrawResources> draws;
     draws.reserve(scene.draws.size());
+    const bool hasAuthoredDropShadow = std::any_of(
+        scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+            return !draw.hidden && draw.shadowCasterOnly;
+        });
     for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
         if (source.hidden) {
             continue;
@@ -2408,10 +2840,18 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.surfaceTexture = source.surfaceTexture;
         draw.emissiveTexture = source.emissiveTexture;
         draw.baseColor = source.baseColor;
+        draw.secondaryPaintColor = source.secondaryPaintColor;
+        draw.flakeColor = source.flakeColor;
         draw.emissiveColor = source.emissiveColor;
         draw.opacity = source.opacity;
         draw.gloss = source.gloss;
         draw.metallic = source.metallic;
+        draw.flakeCoverage = source.flakeCoverage;
+        draw.flakeRoughness = source.flakeRoughness;
+        draw.glitterIntensity = source.glitterIntensity;
+        draw.glancingFlopStrength = source.glancingFlopStrength;
+        draw.glancingFlopPower = source.glancingFlopPower;
+        draw.glancingFlopEnabled = source.glancingFlopEnabled;
         draw.uTiling = source.uTiling;
         draw.vTiling = source.vTiling;
         draw.detailUTiling = source.detailUTiling;
@@ -2429,6 +2869,16 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.clearCoatRoughness = source.clearCoatRoughness;
         draw.clearCoatOnLivery = source.clearCoatOnLivery;
         draw.translucent = source.translucent;
+        // ForzaTech separates the authored Shadow/LODS plane proxy from the
+        // focus car's detailed receive-shadow mask. Opaque visible geometry
+        // supplies part-on-part self-shadow; the proxy supplies only the floor
+        // footprint, with detailed geometry as a fallback for models lacking it.
+        draw.selfShadowCaster = !source.shadowCasterOnly
+            && source.family == fh6::OriginalShaderSurfaceFamily::Car
+            && !source.translucent;
+        draw.dropShadowCaster = source.shadowCasterOnly
+            || (!hasAuthoredDropShadow && draw.selfShadowCaster);
+        draw.visible = !source.shadowCasterOnly;
         draw.liveryBaseTexture = source.liveryBaseTexture;
         draw.liveryAllowedSides = source.liveryAllowedSides;
         if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
@@ -2472,11 +2922,16 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draws.push_back(std::move(draw));
     }
 
+    const ShadowProjection shadow = carShadowProjection(
+        draws, scene.lighting.direction, ShadowPassKind::Self,
+        kShadowStrength);
+    const ShadowProjection dropShadow = carShadowProjection(
+        draws, {0.0f, -1.0f, 0.0f}, ShadowPassKind::Drop,
+        kDropShadowStrength);
     const std::array<std::vector<std::uint8_t>, 8> constantData =
         shaderConstantData(
             camera, size, scene.lighting, scene.authoredLights,
-            scene.environment.panorama, scene.colorLut,
-            contactShadowParameters(scene.draws));
+            scene.environment.panorama, scene.colorLut, shadow, dropShadow);
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
     for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
         constantBuffers[index] =
@@ -2485,6 +2940,14 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             frame.error = QStringLiteral("original-DXIL constant upload failed");
             return frame;
         }
+    }
+    const ComPtr<ID3D12Resource> shadowConstants = createConstantBuffer(
+        device.Get(), shadowConstantData(shadow));
+    const ComPtr<ID3D12Resource> dropShadowConstants = createConstantBuffer(
+        device.Get(), shadowConstantData(dropShadow));
+    if (shadowConstants == nullptr || dropShadowConstants == nullptr) {
+        frame.error = QStringLiteral("DX12 shadow constant upload failed");
+        return frame;
     }
 
     D3D12_DESCRIPTOR_HEAP_DESC shaderHeapDescription{};
@@ -2706,15 +3169,20 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     const ComPtr<ID3D12Resource> target = createTarget(device.Get(), size);
     const ComPtr<ID3D12Resource> depthTarget =
         createDepthTarget(device.Get(), size);
+    const ComPtr<ID3D12Resource> shadowTarget =
+        createShadowDepthTarget(device.Get());
+    const ComPtr<ID3D12Resource> dropShadowTarget =
+        createShadowDepthTarget(device.Get());
     D3D12_DESCRIPTOR_HEAP_DESC targetHeapDescription{};
     targetHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     targetHeapDescription.NumDescriptors = 1;
     ComPtr<ID3D12DescriptorHeap> targetHeap;
     D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
     depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    depthHeapDescription.NumDescriptors = 1;
+    depthHeapDescription.NumDescriptors = 3;
     ComPtr<ID3D12DescriptorHeap> depthHeap;
-    if (target == nullptr || depthTarget == nullptr
+    if (target == nullptr || depthTarget == nullptr || shadowTarget == nullptr
+        || dropShadowTarget == nullptr
         || FAILED(device->CreateDescriptorHeap(
             &targetHeapDescription, IID_PPV_ARGS(&targetHeap)))
         || FAILED(device->CreateDescriptorHeap(
@@ -2732,6 +3200,18 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     depthViewDescription.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     device->CreateDepthStencilView(
         depthTarget.Get(), &depthViewDescription, depthView);
+    D3D12_CPU_DESCRIPTOR_HANDLE shadowDepthView = depthView;
+    shadowDepthView.ptr += device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    createShadowViews(
+        device.Get(), shadowTarget.Get(), shadowDepthView,
+        cpuHandleAt(kShadowDescriptorIndex));
+    D3D12_CPU_DESCRIPTOR_HANDLE dropShadowDepthView = shadowDepthView;
+    dropShadowDepthView.ptr += device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    createShadowViews(
+        device.Get(), dropShadowTarget.Get(), dropShadowDepthView,
+        cpuHandleAt(kDropShadowDescriptorIndex));
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT rows = 0;
@@ -2744,10 +3224,50 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     const ComPtr<ID3D12Resource> readback = createBuffer(
         device.Get(), readbackBytes, D3D12_HEAP_TYPE_READBACK,
         D3D12_RESOURCE_STATE_COPY_DEST);
-    if (readback == nullptr) {
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT shadowFootprint{};
+    UINT shadowRows = 0;
+    UINT64 shadowRowBytes = 0;
+    UINT64 shadowReadbackBytes = 0;
+    const D3D12_RESOURCE_DESC shadowDescription = shadowTarget->GetDesc();
+    device->GetCopyableFootprints(
+        &shadowDescription, 0, 1, 0, &shadowFootprint, &shadowRows,
+        &shadowRowBytes, &shadowReadbackBytes);
+    const ComPtr<ID3D12Resource> shadowReadback = createBuffer(
+        device.Get(), shadowReadbackBytes, D3D12_HEAP_TYPE_READBACK,
+        D3D12_RESOURCE_STATE_COPY_DEST);
+    if (readback == nullptr || shadowReadback == nullptr) {
         frame.error = QStringLiteral("original-DXIL readback creation failed");
         return frame;
     }
+
+    recordShadowPass(
+        commands.Get(), rootSignature.Get(), shadowPipeline.Get(),
+        shadowConstants.Get(), shadowDepthView, draws, ShadowPassKind::Self);
+    const D3D12_RESOURCE_BARRIER shadowCopyBarrier = transition(
+        shadowTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        D3D12_RESOURCE_STATE_COPY_SOURCE);
+    commands->ResourceBarrier(1, &shadowCopyBarrier);
+    D3D12_TEXTURE_COPY_LOCATION shadowDestination{};
+    shadowDestination.pResource = shadowReadback.Get();
+    shadowDestination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    shadowDestination.PlacedFootprint = shadowFootprint;
+    D3D12_TEXTURE_COPY_LOCATION shadowSource{};
+    shadowSource.pResource = shadowTarget.Get();
+    shadowSource.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    commands->CopyTextureRegion(
+        &shadowDestination, 0, 0, 0, &shadowSource, nullptr);
+    const D3D12_RESOURCE_BARRIER shadowSampleBarrier = transition(
+        shadowTarget.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    commands->ResourceBarrier(1, &shadowSampleBarrier);
+    recordShadowPass(
+        commands.Get(), rootSignature.Get(), shadowPipeline.Get(),
+        dropShadowConstants.Get(), dropShadowDepthView, draws,
+        ShadowPassKind::Drop);
+    const D3D12_RESOURCE_BARRIER dropShadowSampleBarrier = transition(
+        dropShadowTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    commands->ResourceBarrier(1, &dropShadowSampleBarrier);
 
     const D3D12_VIEWPORT viewport{
         0.0f, 0.0f, static_cast<float>(size.width()),
@@ -2781,7 +3301,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             translucentPass ? translucentMaterialPipeline.Get()
                             : materialPipeline.Get());
         for (const DrawResources &draw : draws) {
-            if (draw.translucent != translucentPass) {
+            if (!draw.visible || draw.translucent != translucentPass) {
                 continue;
             }
             commands->SetGraphicsRootDescriptorTable(
@@ -2886,6 +3406,24 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         }
     }
     readback->Unmap(0, nullptr);
+    mapped = nullptr;
+    const D3D12_RANGE shadowReadRange{
+        0, static_cast<SIZE_T>(shadowReadbackBytes)};
+    result = shadowReadback->Map(0, &shadowReadRange, &mapped);
+    if (FAILED(result)) {
+        frame.error = QStringLiteral("DX12 shadow readback mapping failed: %1")
+            .arg(hresultText(result));
+        return frame;
+    }
+    for (UINT y = 0; y < kShadowMapSize; ++y) {
+        const float *sourceRow = reinterpret_cast<const float *>(
+            static_cast<const std::uint8_t *>(mapped)
+            + static_cast<UINT64>(y) * shadowFootprint.Footprint.RowPitch);
+        for (UINT x = 0; x < kShadowMapSize; ++x) {
+            frame.shadowMapPixels += sourceRow[x] < 1.0f ? 1u : 0u;
+        }
+    }
+    shadowReadback->Unmap(0, nullptr);
     if (infoQueue != nullptr) {
         frame.debugErrors = countMessages(
             infoQueue.Get(), D3D12_MESSAGE_SEVERITY_ERROR);
@@ -2926,6 +3464,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12PipelineState> materialPipeline;
     ComPtr<ID3D12PipelineState> translucentMaterialPipeline;
     ComPtr<ID3D12PipelineState> panoramaPipeline;
+    ComPtr<ID3D12PipelineState> shadowPipeline;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -2937,9 +3476,13 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12DescriptorHeap> targetHeap;
     ComPtr<ID3D12DescriptorHeap> depthHeap;
     ComPtr<ID3D12Resource> depthTarget;
+    ComPtr<ID3D12Resource> shadowTarget;
+    ComPtr<ID3D12Resource> dropShadowTarget;
     ComPtr<ID3D12Fence> fence;
     std::array<ComPtr<ID3D12Resource>, 2> backBuffers;
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
+    ComPtr<ID3D12Resource> shadowConstants;
+    ComPtr<ID3D12Resource> dropShadowConstants;
     std::vector<DrawResources> draws;
     std::vector<UploadedTexture> materialTextures;
     std::vector<UploadedTexture> authoredMaterialTextures;
@@ -2954,7 +3497,8 @@ struct OriginalDx12ViewportRenderer::Impl {
     std::vector<fh6::OriginalShaderPointLight> authoredLights;
     fh6::GaragePanoramaResources panorama;
     fh6::GarageColorLut colorLut;
-    std::array<float, 6> contactShadow{};
+    ShadowProjection shadow;
+    ShadowProjection dropShadow;
     QString adapterName;
     QString failure;
     HANDLE completionEvent = nullptr;
@@ -2962,6 +3506,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     UINT shaderDescriptorStride = 0;
     UINT samplerDescriptorStride = 0;
     UINT targetDescriptorStride = 0;
+    UINT depthDescriptorStride = 0;
     UINT64 fenceValue = 0;
     bool liveryCommandsInFlight = false;
 
@@ -3088,10 +3633,13 @@ struct OriginalDx12ViewportRenderer::Impl {
                   device.Get(), rootSignature.Get(), &failure,
                   DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
             : ComPtr<ID3D12PipelineState>{};
+        shadowPipeline = rootSignature != nullptr
+            ? createShadowPipeline(device.Get(), rootSignature.Get(), &failure)
+            : ComPtr<ID3D12PipelineState>{};
         if (rootSignature == nullptr || floorPipeline == nullptr
             || defaultPipeline == nullptr || materialPipeline == nullptr
             || translucentMaterialPipeline == nullptr
-            || panoramaPipeline == nullptr) {
+            || panoramaPipeline == nullptr || shadowPipeline == nullptr) {
             return false;
         }
         D3D12_COMMAND_QUEUE_DESC queueDescription{};
@@ -3148,6 +3696,10 @@ struct OriginalDx12ViewportRenderer::Impl {
         }
 
         draws.reserve(scene.draws.size());
+        const bool hasAuthoredDropShadow = std::any_of(
+            scene.draws.cbegin(), scene.draws.cend(), [](const auto &draw) {
+                return !draw.hidden && draw.shadowCasterOnly;
+            });
         for (const fh6::OriginalShaderGarageDraw &source : scene.draws) {
             if (source.hidden) {
                 continue;
@@ -3167,10 +3719,18 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.surfaceTexture = source.surfaceTexture;
             draw.emissiveTexture = source.emissiveTexture;
             draw.baseColor = source.baseColor;
+            draw.secondaryPaintColor = source.secondaryPaintColor;
+            draw.flakeColor = source.flakeColor;
             draw.emissiveColor = source.emissiveColor;
             draw.opacity = source.opacity;
             draw.gloss = source.gloss;
             draw.metallic = source.metallic;
+            draw.flakeCoverage = source.flakeCoverage;
+            draw.flakeRoughness = source.flakeRoughness;
+            draw.glitterIntensity = source.glitterIntensity;
+            draw.glancingFlopStrength = source.glancingFlopStrength;
+            draw.glancingFlopPower = source.glancingFlopPower;
+            draw.glancingFlopEnabled = source.glancingFlopEnabled;
             draw.uTiling = source.uTiling;
             draw.vTiling = source.vTiling;
             draw.detailUTiling = source.detailUTiling;
@@ -3188,6 +3748,12 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.clearCoatRoughness = source.clearCoatRoughness;
             draw.clearCoatOnLivery = source.clearCoatOnLivery;
             draw.translucent = source.translucent;
+            draw.selfShadowCaster = !source.shadowCasterOnly
+                && source.family == fh6::OriginalShaderSurfaceFamily::Car
+                && !source.translucent;
+            draw.dropShadowCaster = source.shadowCasterOnly
+                || (!hasAuthoredDropShadow && draw.selfShadowCaster);
+            draw.visible = !source.shadowCasterOnly;
             draw.liveryBaseTexture = source.liveryBaseTexture;
             draw.liveryAllowedSides = source.liveryAllowedSides;
             if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
@@ -3232,10 +3798,15 @@ struct OriginalDx12ViewportRenderer::Impl {
         }
 
         colorLut = scene.colorLut;
-        contactShadow = contactShadowParameters(scene.draws);
+        shadow = carShadowProjection(
+            draws, lighting.direction, ShadowPassKind::Self,
+            kShadowStrength);
+        dropShadow = carShadowProjection(
+            draws, {0.0f, -1.0f, 0.0f}, ShadowPassKind::Drop,
+            kDropShadowStrength);
         const auto constants = shaderConstantData(
             camera, size, lighting, authoredLights, panorama, colorLut,
-            contactShadow);
+            shadow, dropShadow);
         for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
             constantBuffers[index] =
                 createConstantBuffer(device.Get(), constants[index]);
@@ -3243,6 +3814,14 @@ struct OriginalDx12ViewportRenderer::Impl {
                 failure = QStringLiteral("D3D12 viewport constant upload failed");
                 return false;
             }
+        }
+        shadowConstants = createConstantBuffer(
+            device.Get(), shadowConstantData(shadow));
+        dropShadowConstants = createConstantBuffer(
+            device.Get(), shadowConstantData(dropShadow));
+        if (shadowConstants == nullptr || dropShadowConstants == nullptr) {
+            failure = QStringLiteral("D3D12 viewport shadow constants failed");
+            return false;
         }
         D3D12_DESCRIPTOR_HEAP_DESC shaderHeapDescription{};
         shaderHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -3449,7 +4028,7 @@ struct OriginalDx12ViewportRenderer::Impl {
         targetHeapDescription.NumDescriptors = static_cast<UINT>(backBuffers.size());
         D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
         depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        depthHeapDescription.NumDescriptors = 1;
+        depthHeapDescription.NumDescriptors = 3;
         if (FAILED(device->CreateDescriptorHeap(
                 &targetHeapDescription, IID_PPV_ARGS(&targetHeap)))
             || FAILED(device->CreateDescriptorHeap(
@@ -3459,9 +4038,28 @@ struct OriginalDx12ViewportRenderer::Impl {
         }
         targetDescriptorStride = device->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        depthDescriptorStride = device->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
         if (!createTargets()) {
             return false;
         }
+        shadowTarget = createShadowDepthTarget(device.Get());
+        dropShadowTarget = createShadowDepthTarget(device.Get());
+        if (shadowTarget == nullptr || dropShadowTarget == nullptr) {
+            failure = QStringLiteral("D3D12 car-shadow target creation failed");
+            return false;
+        }
+        D3D12_CPU_DESCRIPTOR_HANDLE shadowDepthView =
+            depthHeap->GetCPUDescriptorHandleForHeapStart();
+        shadowDepthView.ptr += depthDescriptorStride;
+        createShadowViews(
+            device.Get(), shadowTarget.Get(), shadowDepthView,
+            cpuHandleAt(kShadowDescriptorIndex));
+        D3D12_CPU_DESCRIPTOR_HANDLE dropShadowDepthView = shadowDepthView;
+        dropShadowDepthView.ptr += depthDescriptorStride;
+        createShadowViews(
+            device.Get(), dropShadowTarget.Get(), dropShadowDepthView,
+            cpuHandleAt(kDropShadowDescriptorIndex));
         result = commands->Close();
         if (FAILED(result)) {
             failure = QStringLiteral("D3D12 viewport upload recording failed: %1")
@@ -3563,7 +4161,7 @@ struct OriginalDx12ViewportRenderer::Impl {
     bool renderFrame(const OriginalDx12Camera &camera) {
         const auto constants = shaderConstantData(
             camera, viewportSize, lighting, authoredLights, panorama, colorLut,
-            contactShadow);
+            shadow, dropShadow);
         if (!uploadBuffer(
                 constantBuffers[3].Get(), constants[3].data(), constants[3].size())
             || !uploadBuffer(
@@ -3580,6 +4178,27 @@ struct OriginalDx12ViewportRenderer::Impl {
                 .arg(hresultText(result));
             return false;
         }
+        D3D12_CPU_DESCRIPTOR_HANDLE shadowDepthView =
+            depthHeap->GetCPUDescriptorHandleForHeapStart();
+        shadowDepthView.ptr += depthDescriptorStride;
+        recordShadowPass(
+            commands.Get(), rootSignature.Get(), shadowPipeline.Get(),
+            shadowConstants.Get(), shadowDepthView, draws,
+            ShadowPassKind::Self);
+        const D3D12_RESOURCE_BARRIER shadowReadBarrier = transition(
+            shadowTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commands->ResourceBarrier(1, &shadowReadBarrier);
+        D3D12_CPU_DESCRIPTOR_HANDLE dropShadowDepthView = shadowDepthView;
+        dropShadowDepthView.ptr += depthDescriptorStride;
+        recordShadowPass(
+            commands.Get(), rootSignature.Get(), shadowPipeline.Get(),
+            dropShadowConstants.Get(), dropShadowDepthView, draws,
+            ShadowPassKind::Drop);
+        const D3D12_RESOURCE_BARRIER dropShadowReadBarrier = transition(
+            dropShadowTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commands->ResourceBarrier(1, &dropShadowReadBarrier);
         const UINT bufferIndex = swapChain->GetCurrentBackBufferIndex();
         const D3D12_RESOURCE_BARRIER beginBarrier = transition(
             backBuffers[bufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT,
@@ -3634,7 +4253,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 translucentPass ? translucentMaterialPipeline.Get()
                                 : materialPipeline.Get());
             for (const DrawResources &draw : draws) {
-                if (draw.translucent != translucentPass) {
+                if (!draw.visible || draw.translucent != translucentPass) {
                     continue;
                 }
                 commands->SetGraphicsRootDescriptorTable(
@@ -3649,10 +4268,21 @@ struct OriginalDx12ViewportRenderer::Impl {
                     static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
             }
         }
-        const D3D12_RESOURCE_BARRIER endBarrier = transition(
-            backBuffers[bufferIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PRESENT);
-        commands->ResourceBarrier(1, &endBarrier);
+        const std::array<D3D12_RESOURCE_BARRIER, 3> endBarriers = {{
+            transition(
+                backBuffers[bufferIndex].Get(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT),
+            transition(
+                shadowTarget.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            transition(
+                dropShadowTarget.Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE),
+        }};
+        commands->ResourceBarrier(
+            static_cast<UINT>(endBarriers.size()), endBarriers.data());
         result = commands->Close();
         if (FAILED(result)) {
             failure = QStringLiteral("D3D12 viewport recording failed: %1")

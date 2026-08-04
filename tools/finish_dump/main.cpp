@@ -3,6 +3,8 @@
 // rim rendering green) can be traced to the raw materialbin values.
 #include "model_material.h"
 #include "paint_finish_catalog.h"
+#include "game_paths.h"
+#include "zip_extract.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -60,6 +62,34 @@ void dumpRawMaterial(const QString &path) {
     }
 }
 
+void dumpArchiveMaterial(const QString &gameFolder, const QString &entry) {
+    const QHash<QString, QByteArray> blobs = fh6::readZipEntries(
+        fh6::gamePaintMaterialsArchive(gameFolder), {entry});
+    const QByteArray bytes = blobs.value(entry.toLower());
+    if (bytes.isEmpty()) {
+        std::fprintf(stderr, "archive entry not found: %s\n", entry.toUtf8().constData());
+        return;
+    }
+    const std::shared_ptr<fh6::ModelMaterial> material = fh6::decodeMaterialBundle(bytes);
+    if (!material) {
+        std::fprintf(stderr, "decode failed for archive entry %s\n", entry.toUtf8().constData());
+        return;
+    }
+    std::printf("%s\n", entry.toUtf8().constData());
+    std::printf("  resource=%s resolved=%d family=%d hasBaseColor=%d color=(%.4f, %.4f, %.4f) gloss=%.3f hasMetallic=%d metallic=%.3f flake=%.3f\n",
+                material->resourcePath.toUtf8().constData(), material->resolvedFromLibrary ? 1 : 0,
+                static_cast<int>(fh6::modelShaderFamily(*material)), material->hasBaseColor ? 1 : 0,
+                material->baseColor[0], material->baseColor[1], material->baseColor[2],
+                material->gloss, material->hasMetallic ? 1 : 0, material->metallic,
+                material->flakeAmount);
+    for (const fh6::ModelMaterialParameter &parameter : material->parameters) {
+        std::printf("    param hash=%08X type=%d scalar=%.4f bool=%d vec=(%.4f, %.4f, %.4f, %.4f) tex=%s\n",
+                    parameter.nameHash, static_cast<int>(parameter.type), parameter.scalar,
+                    parameter.boolean ? 1 : 0, parameter.vector[0], parameter.vector[1],
+                    parameter.vector[2], parameter.vector[3], parameter.texturePath.toUtf8().constData());
+    }
+}
+
 void dumpLibrary(const QString &gameFolder) {
     fh6::PaintFinishLibrary library;
     library.load(gameFolder);
@@ -81,6 +111,18 @@ void dumpLibrary(const QString &gameFolder) {
                     render->flakeAmount, render->selfColored ? 1 : 0, render->usesSecondary ? 1 : 0,
                     render->hasPattern() ? 1 : 0, render->hasDetailNormal() ? 1 : 0,
                     render->hasRoughMetalAo() ? 1 : 0);
+        const fh6::AutomotivePaintParameters &paint = render->automotivePaint;
+        std::printf("        automotive flakeColor=%d:(%.3f, %.3f, %.3f) coverage=%d:%.3f roughness=%d:%.3f glitter=%d:%.3f "
+                    "flopColor=%d:(%.3f, %.3f, %.3f) flopEnabled=%d:%d flopPower=%d:%.3f flopStrength=%d:%.3f\n",
+                    paint.hasFlakeColor ? 1 : 0, paint.flakeColor[0], paint.flakeColor[1], paint.flakeColor[2],
+                    paint.hasFlakeCoverage ? 1 : 0, paint.flakeCoverage,
+                    paint.hasFlakeRoughness ? 1 : 0, paint.flakeRoughness,
+                    paint.hasGlitterIntensity ? 1 : 0, paint.glitterIntensity,
+                    paint.hasGlancingFlopColor ? 1 : 0, paint.glancingFlopColor[0],
+                    paint.glancingFlopColor[1], paint.glancingFlopColor[2],
+                    paint.hasGlancingFlopEnabled ? 1 : 0, paint.glancingFlopEnabled ? 1 : 0,
+                    paint.hasGlancingFlopPower ? 1 : 0, paint.glancingFlopPower,
+                    paint.hasGlancingFlopStrength ? 1 : 0, paint.glancingFlopStrength);
     }
 }
 
@@ -97,9 +139,14 @@ int main(int argc, char **argv) {
         dumpLibrary(args[2]);
         return 0;
     }
+    if (args.size() >= 4 && args[1] == QStringLiteral("--archive-material")) {
+        dumpArchiveMaterial(args[2], args[3]);
+        return 0;
+    }
     std::fprintf(stderr,
                  "usage:\n"
                  "  fh6_finish_dump --library <gameFolder>\n"
+                 "  fh6_finish_dump --archive-material <gameFolder> <archive-entry>\n"
                  "  fh6_finish_dump --material <file.materialbin>\n");
     return 2;
 }

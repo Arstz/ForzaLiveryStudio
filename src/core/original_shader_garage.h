@@ -23,6 +23,7 @@ class PaintFinishLibrary;
 enum class OriginalShaderSurfaceFamily {
     Default,
     Floor,
+    Car,
 };
 
 struct OriginalShaderProgram {
@@ -54,10 +55,17 @@ struct OriginalShaderGarageDraw {
     int materialUvChannel = 0;
     float materialUvRotationDegrees = 0.0f;
     std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
+    std::array<float, 3> secondaryPaintColor = {0.55f, 0.55f, 0.55f};
+    std::array<float, 3> flakeColor = {1.0f, 1.0f, 1.0f};
     std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
     float opacity = 1.0f;
     float gloss = 0.45f;
     float metallic = 0.0f;
+    float flakeCoverage = 0.0f;
+    float flakeRoughness = 0.4f;
+    float glitterIntensity = 1.4f;
+    float glancingFlopStrength = 0.0f;
+    float glancingFlopPower = 2.0f;
     float uTiling = 1.0f;
     float vTiling = 1.0f;
     float detailUTiling = 1.0f;
@@ -74,6 +82,8 @@ struct OriginalShaderGarageDraw {
     bool rawMaterialUv = false;
     bool translucent = false;
     bool hidden = false;
+    bool shadowCasterOnly = false;
+    bool glancingFlopEnabled = false;
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
