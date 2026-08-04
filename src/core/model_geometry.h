@@ -83,6 +83,7 @@ struct CarMesh {
     int carPartType = -1;
     int modelInstanceId = -1;
     quint32 drawGroups = 0;
+    bool interiorWindshield = false;
     bool stockPart = true;
 };
 

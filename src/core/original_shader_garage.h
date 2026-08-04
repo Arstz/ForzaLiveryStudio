@@ -91,6 +91,7 @@ struct OriginalShaderGarageDraw {
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
     quint32 drawGroups = 0;
+    bool interiorWindshield = false;
     ModelMaterialSampler sampler;
     ModelShaderFamily shaderFamily = ModelShaderFamily::Generic;
 

@@ -28,6 +28,8 @@ struct OriginalDx12FrameResult {
     QString error;
     quint64 changedPixels = 0;
     quint64 shadowMapPixels = 0;
+    int localShadowMapCount = 0;
+    bool reflectionProbeActive = false;
     quint64 nonFiniteComponents = 0;
     float finiteMinimum = 0.0f;
     float finiteMaximum = 0.0f;

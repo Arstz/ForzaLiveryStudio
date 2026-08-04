@@ -154,6 +154,18 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "D3D12 car shadow map is empty\n");
         return 1;
     }
+    if (firstFrame.localShadowMapCount == 0
+        || firstFrame.localShadowMapCount != secondFrame.localShadowMapCount) {
+        std::fprintf(
+            stderr, "D3D12 authored-light shadow selection failed: %d / %d\n",
+            firstFrame.localShadowMapCount, secondFrame.localShadowMapCount);
+        return 1;
+    }
+    if (!firstFrame.reflectionProbeActive
+        || firstFrame.reflectionProbeActive != secondFrame.reflectionProbeActive) {
+        std::fprintf(stderr, "D3D12 garage reflection probe volume is inactive\n");
+        return 1;
+    }
     if (firstFrame.debugWarnings != 0 || secondFrame.debugWarnings != 0) {
         std::fprintf(
             stderr, "D3D12 debug warning: %s / %s\n",
@@ -302,11 +314,13 @@ int main(int argc, char **argv) {
     DestroyWindow(window);
 #endif
     std::printf(
-        "D3D12 exact frame on %s: changed=%llu shadowed=%llu self-shadowed=%llu flake=%llu colors=%lld hash=%s warnings=%d first=%s\n",
+        "D3D12 exact frame on %s: changed=%llu shadowed=%llu self-shadowed=%llu local-shadows=%d probe=%d flake=%llu colors=%lld hash=%s warnings=%d first=%s\n",
         qPrintable(firstFrame.adapter),
         static_cast<unsigned long long>(firstFrame.changedPixels),
         static_cast<unsigned long long>(shadowAffectedPixels),
         static_cast<unsigned long long>(selfShadowAffectedPixels),
+        firstFrame.localShadowMapCount,
+        firstFrame.reflectionProbeActive ? 1 : 0,
         static_cast<unsigned long long>(flakeAffectedPixels),
         static_cast<long long>(colors.size()), firstHash.constData(),
         firstFrame.debugWarnings, qPrintable(firstFrame.debugWarningDetail));

@@ -2178,6 +2178,7 @@ bool appendOriginalShaderGarageCar(
         draw.source = source;
         draw.family = OriginalShaderSurfaceFamily::Car;
         draw.drawGroups = mesh.drawGroups;
+        draw.interiorWindshield = mesh.interiorWindshield;
         draw.placement = groundedCarPlacement;
         draw.diffuseTexture = std::move(diffuse);
         draw.alphaTexture = std::move(alpha);

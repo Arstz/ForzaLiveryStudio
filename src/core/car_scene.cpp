@@ -118,6 +118,7 @@ struct PartInstance {
     qint16 boneId = -1;
     int partType = -1;
     quint32 drawGroups = 0;
+    bool interiorWindshield = false;
     bool stock = true;
     std::vector<MaterialBinding> materialBindings;
 };
@@ -203,7 +204,7 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion) {
         }
     }
     if (version >= 10) {
-        c.bl(); // IsInteriorWindshield
+        part.interiorWindshield = c.bl();
     }
     if (version >= 11) {
         c.bl();
@@ -832,6 +833,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.carPartType = part.partType;
             mesh.modelInstanceId = currentInstanceId;
             mesh.drawGroups = part.drawGroups;
+            mesh.interiorWindshield = part.interiorWindshield;
             mesh.stockPart = stock;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
@@ -862,6 +864,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                 mesh.carPartType = part.partType;
                 mesh.modelInstanceId = currentInstanceId;
                 mesh.drawGroups = part.drawGroups;
+                mesh.interiorWindshield = part.interiorWindshield;
                 mesh.stockPart = true;
                 if (isWheelModelPath(part.path)) {
                     const bool front = corner >= 0

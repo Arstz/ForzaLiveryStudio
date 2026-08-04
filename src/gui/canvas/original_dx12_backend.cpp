@@ -121,6 +121,11 @@ constexpr std::array<float, 4> kClearColor = {0.125f, 0.25f, 0.5f, 1.0f};
 constexpr UINT kShadowMapSize = 2048;
 constexpr UINT kShadowDescriptorIndex = 119;
 constexpr UINT kDropShadowDescriptorIndex = 121;
+constexpr UINT kSceneDepthDescriptorIndex = 116;
+constexpr UINT kHdrSceneDescriptorIndex = 122;
+constexpr UINT kGlassBackDepthDescriptorIndex = 113;
+constexpr std::array<UINT, 2> kTemporalHistoryDescriptorIndices = {110, 111};
+constexpr std::array<UINT, 2> kLocalShadowDescriptorIndices = {114, 115};
 constexpr float kShadowStrength = 1.0f;
 constexpr float kDropShadowStrength = 0.35f;
 constexpr float kShadowDepthBias = 0.0015f;
@@ -192,10 +197,12 @@ struct DrawResources {
     bool selfShadowCaster = false;
     bool dropShadowCaster = false;
     bool visible = true;
+    bool reflectionProbeShell = false;
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
     quint32 drawGroups = 0;
+    bool interiorWindshield = false;
     fh6::ModelMaterialSampler sampler;
     fh6::ModelShaderFamily shaderFamily = fh6::ModelShaderFamily::Generic;
     int liverySideCount = 0;
@@ -231,6 +238,16 @@ std::vector<const DrawResources *> drawPassOrder(
     if (translucent) {
         std::stable_sort(
             ordered.begin(), ordered.end(), [&](const auto *left, const auto *right) {
+                constexpr quint32 kReflectionGroups =
+                    fh6::car_draw_groups::kWindshieldReflection
+                    | fh6::car_draw_groups::kWindshieldReflectionDriverless;
+                const bool leftReflection =
+                    (left->drawGroups & kReflectionGroups) != 0;
+                const bool rightReflection =
+                    (right->drawGroups & kReflectionGroups) != 0;
+                if (leftReflection != rightReflection) {
+                    return !leftReflection;
+                }
                 return (left->center - cameraPosition).lengthSquared()
                     > (right->center - cameraPosition).lengthSquared();
             });
@@ -924,7 +941,8 @@ Matrix4 multiply(const Matrix4 &left, const Matrix4 &right) {
 }
 
 Matrix4 cameraViewProjection(
-    const OriginalDx12Camera &camera, float aspectRatio) {
+    const OriginalDx12Camera &camera, float aspectRatio,
+    const QPointF &jitterNdc = {}) {
     const QVector3D forward = (camera.target - camera.position).normalized();
     const QVector3D right = QVector3D::crossProduct(
         camera.up.normalized(), forward).normalized();
@@ -944,8 +962,9 @@ Matrix4 cameraViewProjection(
     const float depthScale = camera.farPlane
         / (camera.farPlane - camera.nearPlane);
     const Matrix4 projection = {{
-        {verticalScale / aspectRatio, 0.0f, 0.0f, 0.0f},
-        {0.0f, verticalScale, 0.0f, 0.0f},
+        {verticalScale / aspectRatio, 0.0f,
+         static_cast<float>(jitterNdc.x()), 0.0f},
+        {0.0f, verticalScale, static_cast<float>(jitterNdc.y()), 0.0f},
         {0.0f, 0.0f, depthScale, -camera.nearPlane * depthScale},
         {0.0f, 0.0f, 1.0f, 0.0f},
     }};
@@ -958,7 +977,86 @@ struct ShadowProjection {
     float strength = 0.0f;
     float depthBias = 0.0f;
     bool valid = false;
+    int lightIndex = -1;
 };
+
+struct ReflectionProbeVolume {
+    QVector3D minimum;
+    QVector3D maximum;
+    QVector3D position;
+    bool valid = false;
+};
+
+struct TemporalFrameState {
+    Matrix4 previousViewProjection{};
+    QPointF jitterNdc;
+    bool historyValid = false;
+    int previousHistoryIndex = 0;
+};
+
+QPointF temporalJitterNdc(quint64 frameIndex, const QSize &size) {
+    if (frameIndex == 0 || size.isEmpty()) {
+        return {};
+    }
+    constexpr std::array<std::array<float, 2>, 8> kHalton = {{
+        {{0.5f, 1.0f / 3.0f}}, {{0.25f, 2.0f / 3.0f}},
+        {{0.75f, 1.0f / 9.0f}}, {{0.125f, 4.0f / 9.0f}},
+        {{0.625f, 7.0f / 9.0f}}, {{0.375f, 2.0f / 9.0f}},
+        {{0.875f, 5.0f / 9.0f}}, {{0.0625f, 8.0f / 9.0f}},
+    }};
+    const auto &sample = kHalton[static_cast<std::size_t>((frameIndex - 1) % 8)];
+    return {
+        (sample[0] - 0.5f) * 2.0f / static_cast<float>(size.width()),
+        (0.5f - sample[1]) * 2.0f / static_cast<float>(size.height())};
+}
+
+ReflectionProbeVolume reflectionProbeVolume(
+    const std::vector<DrawResources> &draws) {
+    QVector3D minimum(
+        std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max());
+    QVector3D maximum(
+        std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest());
+    QVector3D carMinimum = minimum;
+    QVector3D carMaximum = maximum;
+    bool foundShell = false;
+    bool foundCar = false;
+    const auto include = [](const Vertex &vertex, QVector3D *low, QVector3D *high) {
+        low->setX(std::min(low->x(), vertex.position[0]));
+        low->setY(std::min(low->y(), vertex.position[1]));
+        low->setZ(std::min(low->z(), vertex.position[2]));
+        high->setX(std::max(high->x(), vertex.position[0]));
+        high->setY(std::max(high->y(), vertex.position[1]));
+        high->setZ(std::max(high->z(), vertex.position[2]));
+    };
+    for (const DrawResources &draw : draws) {
+        if (draw.reflectionProbeShell) {
+            foundShell = true;
+            for (const Vertex &vertex : draw.geometry.vertices) {
+                include(vertex, &minimum, &maximum);
+            }
+        }
+        if (draw.family == fh6::OriginalShaderSurfaceFamily::Car
+            && draw.visible) {
+            foundCar = true;
+            for (const Vertex &vertex : draw.geometry.vertices) {
+                include(vertex, &carMinimum, &carMaximum);
+            }
+        }
+    }
+    ReflectionProbeVolume result;
+    if (!foundShell || !foundCar
+        || minimum.x() >= maximum.x() || minimum.y() >= maximum.y()
+        || minimum.z() >= maximum.z()) {
+        return result;
+    }
+    result.minimum = minimum;
+    result.maximum = maximum;
+    result.position = (carMinimum + carMaximum) * 0.5f;
+    result.valid = true;
+    return result;
+}
 
 enum class ShadowPassKind {
     Self,
@@ -1087,19 +1185,144 @@ ShadowProjection carShadowProjection(
     return result;
 }
 
+std::array<ShadowProjection, 2> localLightShadowProjections(
+    const std::vector<DrawResources> &draws,
+    const std::vector<fh6::OriginalShaderPointLight> &authoredLights) {
+    QVector3D minimum(
+        std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max());
+    QVector3D maximum(
+        std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest());
+    bool foundCar = false;
+    for (const DrawResources &draw : draws) {
+        if (!draw.selfShadowCaster) {
+            continue;
+        }
+        for (const Vertex &vertex : draw.geometry.vertices) {
+            foundCar = true;
+            const QVector3D point(
+                vertex.position[0], vertex.position[1], vertex.position[2]);
+            minimum.setX(std::min(minimum.x(), point.x()));
+            minimum.setY(std::min(minimum.y(), point.y()));
+            minimum.setZ(std::min(minimum.z(), point.z()));
+            maximum.setX(std::max(maximum.x(), point.x()));
+            maximum.setY(std::max(maximum.y(), point.y()));
+            maximum.setZ(std::max(maximum.z(), point.z()));
+        }
+    }
+    if (!foundCar) {
+        return {};
+    }
+    const QVector3D carCenter = (minimum + maximum) * 0.5f;
+    struct Candidate {
+        float score = 0.0f;
+        int pointIndex = -1;
+        QVector3D position;
+        QVector3D direction;
+        float range = 0.0f;
+        float coneDegrees = 0.0f;
+    };
+    std::vector<Candidate> candidates;
+    int pointIndex = 0;
+    constexpr float kPi = 3.14159265358979323846f;
+    for (const fh6::OriginalShaderPointLight &light : authoredLights) {
+        if (!light.enabled || light.range <= 0.0f || light.intensity <= 0.0f
+            || pointIndex >= 32) {
+            continue;
+        }
+        const fh6::ModelVec3 sourcePosition =
+            light.transform.transformPoint({});
+        const fh6::ModelVec3 sourceDirection =
+            light.transform.transformVector({0.0f, 0.0f, 1.0f});
+        const QVector3D position(
+            sourcePosition.x, sourcePosition.y, sourcePosition.z);
+        QVector3D direction(
+            sourceDirection.x, sourceDirection.y, sourceDirection.z);
+        if (direction.lengthSquared() < 0.000001f) {
+            ++pointIndex;
+            continue;
+        }
+        direction.normalize();
+        const QVector3D toCar = carCenter - position;
+        const float distance = toCar.length();
+        const float cone = QVector3D::dotProduct(
+            toCar / std::max(distance, 0.0001f), direction);
+        const float outer = std::cos(
+            std::max(light.coneAngleDegrees, 1.0f) * 0.5f * kPi / 180.0f);
+        if (distance < light.range && cone > outer) {
+            const float rangeFade = 1.0f - distance / light.range;
+            candidates.push_back({
+                light.intensity * rangeFade * rangeFade
+                    * (cone - outer) / std::max(distance * distance, 0.25f),
+                pointIndex, position, direction, light.range,
+                std::max(light.coneAngleDegrees, 20.0f)});
+        }
+        ++pointIndex;
+    }
+    std::sort(
+        candidates.begin(), candidates.end(),
+        [](const Candidate &left, const Candidate &right) {
+            return left.score > right.score;
+        });
+    std::array<ShadowProjection, 2> result{};
+    for (std::size_t index = 0;
+         index < result.size() && index < candidates.size(); ++index) {
+        const Candidate &candidate = candidates[index];
+        const QVector3D upReference = std::abs(QVector3D::dotProduct(
+            candidate.direction, QVector3D(0.0f, 1.0f, 0.0f))) < 0.95f
+            ? QVector3D(0.0f, 1.0f, 0.0f)
+            : QVector3D(0.0f, 0.0f, 1.0f);
+        const QVector3D right = QVector3D::crossProduct(
+            upReference, candidate.direction).normalized();
+        const QVector3D up = QVector3D::crossProduct(
+            candidate.direction, right);
+        const Matrix4 view = {{
+            {right.x(), right.y(), right.z(),
+             -QVector3D::dotProduct(right, candidate.position)},
+            {up.x(), up.y(), up.z(),
+             -QVector3D::dotProduct(up, candidate.position)},
+            {candidate.direction.x(), candidate.direction.y(),
+             candidate.direction.z(),
+             -QVector3D::dotProduct(candidate.direction, candidate.position)},
+            {0.0f, 0.0f, 0.0f, 1.0f},
+        }};
+        constexpr float nearPlane = 0.05f;
+        const float farPlane = std::max(candidate.range, nearPlane + 0.1f);
+        const float scale = 1.0f / std::tan(
+            candidate.coneDegrees * 0.5f * kPi / 180.0f);
+        const float depthScale = farPlane / (farPlane - nearPlane);
+        const Matrix4 projection = {{
+            {scale, 0.0f, 0.0f, 0.0f},
+            {0.0f, scale, 0.0f, 0.0f},
+            {0.0f, 0.0f, depthScale, -nearPlane * depthScale},
+            {0.0f, 0.0f, 1.0f, 0.0f},
+        }};
+        result[index].viewProjection = multiply(projection, view);
+        result[index].strength = 0.72f;
+        result[index].depthBias = kShadowDepthBias;
+        result[index].valid = true;
+        result[index].lightIndex = candidate.pointIndex;
+    }
+    return result;
+}
+
 std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     const OriginalDx12Camera &camera, const QSize &frameSize,
     const fh6::OriginalShaderLighting &lighting,
     const std::vector<fh6::OriginalShaderPointLight> &authoredLights,
     const fh6::GaragePanoramaResources &panorama,
     const fh6::GarageColorLut &colorLut,
-    const ShadowProjection &shadow, const ShadowProjection &dropShadow) {
+    const ShadowProjection &shadow, const ShadowProjection &dropShadow,
+    const std::array<ShadowProjection, 2> &localShadows,
+    const ReflectionProbeVolume &reflectionProbe,
+    const TemporalFrameState &temporal) {
     std::array<std::vector<std::uint8_t>, 8> data;
     constexpr std::array<std::size_t, 8> sizes = {
-        // FrameData now ends at dropShadowParameters (row 150). Keep enough
+        // FrameData ends at temporal reprojection parameters (row 168). Keep enough
         // source bytes for every row before createConstantBuffer applies the
         // required 256-byte allocation alignment.
-        256, 256, 512, 11264, 18432, 2416, 65536, 65536};
+        256, 256, 512, 11264, 18432, 2704, 65536, 65536};
     for (std::size_t index = 0; index < data.size(); ++index) {
         data[index].resize(sizes[index], 0);
     }
@@ -1113,7 +1336,8 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[2], 13, 1, 1.0f);
     writeFloat(&data[2], 14, 2, 1.0f);
     const Matrix4 viewProjection = cameraViewProjection(
-        camera, static_cast<float>(frameSize.width()) / frameSize.height());
+        camera, static_cast<float>(frameSize.width()) / frameSize.height(),
+        temporal.jitterNdc);
     for (UINT row = 0; row < 4; ++row) {
         for (UINT component = 0; component < 4; ++component) {
             writeFloat(&data[5], row, component, viewProjection[row][component]);
@@ -1122,7 +1346,7 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[5], 4, 0, camera.position.x());
     writeFloat(&data[5], 4, 1, camera.position.y());
     writeFloat(&data[5], 4, 2, camera.position.z());
-    writeFloat(&data[5], 4, 3, 1.0f);
+    writeFloat(&data[5], 4, 3, camera.nearPlane);
     writeFloat(&data[5], 5, 0, lighting.direction.x);
     writeFloat(&data[5], 5, 1, lighting.direction.y);
     writeFloat(&data[5], 5, 2, lighting.direction.z);
@@ -1144,6 +1368,7 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
         writeFloat(&data[5], 8 + axis, 1, cameraAxes[axis].y());
         writeFloat(&data[5], 8 + axis, 2, cameraAxes[axis].z());
     }
+    writeFloat(&data[5], 8, 3, camera.farPlane);
     writeFloat(
         &data[5], 9, 3,
         static_cast<float>(frameSize.width()) / frameSize.height());
@@ -1219,6 +1444,48 @@ std::array<std::vector<std::uint8_t>, 8> shaderConstantData(
     writeFloat(&data[5], 150, 1, dropShadow.strength);
     writeFloat(&data[5], 150, 2, dropShadow.depthBias);
     writeFloat(&data[5], 150, 3, dropShadow.valid ? 1.0f : 0.0f);
+    for (UINT shadowIndex = 0; shadowIndex < localShadows.size(); ++shadowIndex) {
+        const ShadowProjection &local = localShadows[shadowIndex];
+        const UINT matrixStart = 151 + shadowIndex * 5;
+        for (UINT row = 0; row < 4; ++row) {
+            for (UINT component = 0; component < 4; ++component) {
+                writeFloat(
+                    &data[5], matrixStart + row, component,
+                    local.viewProjection[row][component]);
+            }
+        }
+        writeFloat(&data[5], matrixStart + 4, 0, local.strength);
+        writeFloat(&data[5], matrixStart + 4, 1, local.depthBias);
+        writeFloat(
+            &data[5], matrixStart + 4, 2,
+            static_cast<float>(local.lightIndex));
+        writeFloat(&data[5], matrixStart + 4, 3, local.valid ? 1.0f : 0.0f);
+    }
+    writeFloat(&data[5], 161, 0, reflectionProbe.minimum.x());
+    writeFloat(&data[5], 161, 1, reflectionProbe.minimum.y());
+    writeFloat(&data[5], 161, 2, reflectionProbe.minimum.z());
+    writeFloat(&data[5], 161, 3, reflectionProbe.valid ? 1.0f : 0.0f);
+    writeFloat(&data[5], 162, 0, reflectionProbe.maximum.x());
+    writeFloat(&data[5], 162, 1, reflectionProbe.maximum.y());
+    writeFloat(&data[5], 162, 2, reflectionProbe.maximum.z());
+    writeFloat(&data[5], 163, 0, reflectionProbe.position.x());
+    writeFloat(&data[5], 163, 1, reflectionProbe.position.y());
+    writeFloat(&data[5], 163, 2, reflectionProbe.position.z());
+    for (UINT row = 0; row < 4; ++row) {
+        for (UINT component = 0; component < 4; ++component) {
+            writeFloat(
+                &data[5], 164 + row, component,
+                temporal.previousViewProjection[row][component]);
+        }
+    }
+    writeFloat(&data[5], 168, 0, temporal.historyValid ? 1.0f : 0.0f);
+    writeFloat(
+        &data[5], 168, 1,
+        static_cast<float>(temporal.previousHistoryIndex));
+    writeFloat(
+        &data[5], 168, 2, static_cast<float>(temporal.jitterNdc.x()));
+    writeFloat(
+        &data[5], 168, 3, static_cast<float>(temporal.jitterNdc.y()));
     for (UINT row = 0; row < 4; ++row) {
         for (UINT component = 0; component < 4; ++component) {
             writeFloat(
@@ -1286,7 +1553,7 @@ std::vector<std::uint8_t> shadowConstantData(
 }
 
 std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
-    std::vector<std::uint8_t> data(768, 0);
+    std::vector<std::uint8_t> data(784, 0);
     writeFloat(&data, 0, 0, draw.baseColor[0]);
     writeFloat(&data, 0, 1, draw.baseColor[1]);
     writeFloat(&data, 0, 2, draw.baseColor[2]);
@@ -1361,6 +1628,13 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     writeFloat(&data, 47, 1, draw.glitterIntensity);
     writeFloat(&data, 47, 2, draw.glancingFlopPower);
     writeFloat(&data, 47, 3, draw.glancingFlopEnabled ? 1.0f : 0.0f);
+    constexpr quint32 kReflectionGroups =
+        fh6::car_draw_groups::kWindshieldReflection
+        | fh6::car_draw_groups::kWindshieldReflectionDriverless;
+    writeUint(
+        &data, 48, 0,
+        (draw.drawGroups & kReflectionGroups) != 0 ? 1u : 0u);
+    writeUint(&data, 48, 1, draw.interiorWindshield ? 1u : 0u);
     return data;
 }
 
@@ -1490,7 +1764,7 @@ ComPtr<ID3D12Resource> createDepthTarget(
     description.Height = static_cast<UINT>(size.height());
     description.DepthOrArraySize = 1;
     description.MipLevels = 1;
-    description.Format = DXGI_FORMAT_D32_FLOAT;
+    description.Format = DXGI_FORMAT_R32_TYPELESS;
     description.SampleDesc.Count = 1;
     description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     description.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
@@ -1508,6 +1782,17 @@ ComPtr<ID3D12Resource> createDepthTarget(
     }
 
     return resource;
+}
+
+void createSceneDepthView(
+    ID3D12Device *device, ID3D12Resource *target,
+    D3D12_CPU_DESCRIPTOR_HANDLE shaderHandle) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = DXGI_FORMAT_R32_FLOAT;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView(target, &view, shaderHandle);
 }
 
 ComPtr<ID3D12Resource> createShadowDepthTarget(ID3D12Device *device) {
@@ -1802,6 +2087,15 @@ cbuffer FrameData : register(b0, space2) {
     float4 shadowParameters;
     row_major float4x4 dropShadowViewProjection;
     float4 dropShadowParameters;
+    row_major float4x4 localShadowViewProjection0;
+    float4 localShadowParameters0;
+    row_major float4x4 localShadowViewProjection1;
+    float4 localShadowParameters1;
+    float4 reflectionProbeMinimum;
+    float4 reflectionProbeMaximum;
+    float4 reflectionProbePosition;
+    row_major float4x4 previousViewProjection;
+    float4 temporalParameters;
 };
 Texture2D<float4> panoramaTexture : register(t120);
 Texture3D<float4> colorGradeLut : register(t123);
@@ -1852,10 +2146,11 @@ PixelInput VSMain(uint vertexId : SV_VertexID) {
 }
 
 float4 PSMain(PixelInput input) : SV_Target0 {
+    float2 sampleNdc = input.ndc - temporalParameters.zw;
     float3 direction = normalize(
         cameraForward.xyz
-        + cameraRight.xyz * input.ndc.x * cameraRight.w * panoramaParameters.z
-        + cameraUp.xyz * input.ndc.y * panoramaParameters.z);
+        + cameraRight.xyz * sampleNdc.x * cameraRight.w * panoramaParameters.z
+        + cameraUp.xyz * sampleNdc.y * panoramaParameters.z);
     float theta = acos(saturate(abs(direction.y)));
     float polar = theta * (2.0 / 3.14159265358979323846);
     float radius = theta * (1.0 / 3.14159265358979323846)
@@ -1871,7 +2166,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     }
     float3 color = panoramaTexture.SampleLevel(panoramaSampler, uv, 0).rgb
         / max(panoramaParameters.y, 0.000001);
-    return float4(applyColorGrade(color), 1.0);
+    return float4(color, 1.0);
 }
 )hlsl";
     ComPtr<ID3DBlob> vertexShader;
@@ -1926,6 +2221,308 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     return pipeline;
 }
 
+ComPtr<ID3D12PipelineState> createPostPipeline(
+    ID3D12Device *device, ID3D12RootSignature *rootSignature,
+    QString *error, DXGI_FORMAT targetFormat = kTargetFormat) {
+    static constexpr const char *kShader = R"hlsl(
+cbuffer FrameData : register(b0, space2) {
+    row_major float4x4 viewProjection;
+    float4 cameraPosition;
+    float4 lightDirection;
+    float4 directColor;
+    float4 ambientColor;
+    float4 cameraForward;
+    float4 cameraRight;
+    float4 cameraUp;
+    float4 panoramaParameters;
+    float4 pointLightPositionRange[32];
+    float4 pointLightColorIntensity[32];
+    float4 pointLightDirectionOuter[32];
+    float4 pointLightInner[32];
+    float4 colorGradeParameters;
+    row_major float4x4 shadowViewProjection;
+    float4 shadowParameters;
+    row_major float4x4 dropShadowViewProjection;
+    float4 dropShadowParameters;
+    row_major float4x4 localShadowViewProjection0;
+    float4 localShadowParameters0;
+    row_major float4x4 localShadowViewProjection1;
+    float4 localShadowParameters1;
+    float4 reflectionProbeMinimum;
+    float4 reflectionProbeMaximum;
+    float4 reflectionProbePosition;
+    row_major float4x4 previousViewProjection;
+    float4 temporalParameters;
+};
+Texture2D<float> sceneDepth : register(t116);
+Texture2D<float4> hdrScene : register(t122);
+Texture2D<float4> temporalHistory0 : register(t110);
+Texture2D<float4> temporalHistory1 : register(t111);
+SamplerState postSampler : register(s12);
+
+struct PixelInput {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+PixelInput VSMain(uint vertexId : SV_VertexID) {
+    const float2 positions[3] = {
+        float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0)};
+    PixelInput output;
+    float2 ndc = positions[vertexId];
+    output.position = float4(ndc, 0.0, 1.0);
+    output.uv = ndc * float2(0.5, -0.5) + 0.5;
+    return output;
+}
+
+float linearDepth(float depth) {
+    float nearPlane = max(cameraPosition.w, 0.0001);
+    float farPlane = max(cameraForward.w, nearPlane + 0.001);
+    float a = farPlane / (farPlane - nearPlane);
+    float b = nearPlane * farPlane / (farPlane - nearPlane);
+    return b / max(a - depth, 0.000001);
+}
+
+float3 viewPosition(float2 uv, float depth) {
+    float z = linearDepth(depth);
+    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)
+        - temporalParameters.zw;
+    float tanHalfFov = panoramaParameters.z;
+    float aspect = cameraRight.w;
+    return float3(
+        ndc.x * z * tanHalfFov * aspect,
+        ndc.y * z * tanHalfFov,
+        z);
+}
+
+float screenSpaceOcclusion(float2 uv, float centerDepth) {
+    if (centerDepth >= 0.999999) {
+        return 1.0;
+    }
+    uint width;
+    uint height;
+    sceneDepth.GetDimensions(width, height);
+    float2 texel = rcp(float2(width, height));
+    float3 center = viewPosition(uv, centerDepth);
+    float depthRight = sceneDepth.SampleLevel(
+        postSampler, uv + float2(texel.x, 0.0), 0);
+    float depthDown = sceneDepth.SampleLevel(
+        postSampler, uv + float2(0.0, texel.y), 0);
+    float3 right = viewPosition(uv + float2(texel.x, 0.0), depthRight);
+    float3 down = viewPosition(uv + float2(0.0, texel.y), depthDown);
+    float3 normal = normalize(cross(down - center, right - center));
+    if (normal.z > 0.0) {
+        normal = -normal;
+    }
+    const float2 disk[12] = {
+        float2(1.0, 0.0), float2(-1.0, 0.0),
+        float2(0.0, 1.0), float2(0.0, -1.0),
+        float2(0.707, 0.707), float2(-0.707, 0.707),
+        float2(0.707, -0.707), float2(-0.707, -0.707),
+        float2(0.383, 0.924), float2(-0.924, 0.383),
+        float2(0.924, -0.383), float2(-0.383, -0.924)
+    };
+    float radiusPixels = clamp(42.0 / max(center.z, 1.0), 4.0, 14.0);
+    float radiusWorld = 0.025 + center.z * 0.018;
+    float occlusion = 0.0;
+    [unroll]
+    for (int index = 0; index < 12; ++index) {
+        float ring = 0.35 + 0.65 * ((index % 3) + 1.0) / 3.0;
+        float2 sampleUv = saturate(
+            uv + disk[index] * texel * radiusPixels * ring);
+        float sampleDepth = sceneDepth.SampleLevel(postSampler, sampleUv, 0);
+        if (sampleDepth >= 0.999999) {
+            continue;
+        }
+        float3 delta = viewPosition(sampleUv, sampleDepth) - center;
+        float distanceToSample = length(delta);
+        float range = saturate(1.0 - distanceToSample / radiusWorld);
+        float horizon = saturate(dot(normal, delta / max(distanceToSample, 0.0001)) - 0.06);
+        occlusion += horizon * range;
+    }
+    return saturate(1.0 - occlusion * (0.78 / 12.0));
+}
+
+float3 hableCurve(float3 value) {
+    const float a = 0.151;
+    const float b = 0.05;
+    const float c = 0.566;
+    const float d = 0.21;
+    const float e = 0.003;
+    const float f = 0.141;
+    return ((value * (a * value + c * b) + d * e)
+            / (value * (a * value + b) + d * f)) - e / f;
+}
+
+struct PostOutput {
+    float4 display : SV_Target0;
+    float4 history : SV_Target1;
+};
+
+float3 currentRadiance(float2 uv, float ao) {
+    return max(hdrScene.SampleLevel(postSampler, uv, 0).rgb, 0.0) * ao;
+}
+
+float3 gradeRadiance(float3 radiance) {
+    // The staged Tokyo assets are illuminated by a cool probe, while the
+    // in-game homespace grade retains a warmer neutral. Apply the balance in
+    // linear light and preserve luminance so this does not become another
+    // exposure adjustment.
+    float sourceLuminance = dot(
+        radiance, float3(0.2126, 0.7152, 0.0722));
+    float3 balanced = radiance * float3(1.045, 1.008, 0.930);
+    float balancedLuminance = dot(
+        balanced, float3(0.2126, 0.7152, 0.0722));
+    balanced *= sourceLuminance / max(balancedLuminance, 0.000001);
+    float3 exposed = balanced * exp2(-0.4);
+    return hableCurve(exposed) / hableCurve(float3(1.5, 1.5, 1.5));
+}
+
+PostOutput PSMain(PixelInput input) {
+    float3 hdr = max(hdrScene.SampleLevel(postSampler, input.uv, 0).rgb, 0.0);
+    float depth = sceneDepth.SampleLevel(postSampler, input.uv, 0);
+    float ao = screenSpaceOcclusion(input.uv, depth);
+    float3 resolvedRadiance = hdr * ao;
+    if (temporalParameters.x > 0.5 && depth < 0.999999) {
+        float3 view = viewPosition(input.uv, depth);
+        float3 world = cameraPosition.xyz
+            + cameraRight.xyz * view.x
+            + cameraUp.xyz * view.y
+            + cameraForward.xyz * view.z;
+        float4 previousClip = mul(
+            previousViewProjection, float4(world, 1.0));
+        float3 previousNdc = previousClip.xyz / max(previousClip.w, 0.000001);
+        float2 previousUv = previousNdc.xy * float2(0.5, -0.5) + 0.5;
+        if (previousClip.w > 0.0 && all(previousUv > 0.0)
+            && all(previousUv < 1.0)) {
+            float4 history = temporalParameters.y < 0.5
+                ? temporalHistory0.SampleLevel(postSampler, previousUv, 0)
+                : temporalHistory1.SampleLevel(postSampler, previousUv, 0);
+            float depthAgreement = 1.0 - smoothstep(
+                0.0004, 0.004,
+                abs(history.a - saturate(previousNdc.z)));
+            uint width;
+            uint height;
+            hdrScene.GetDimensions(width, height);
+            float2 texel = rcp(float2(width, height));
+            float3 neighborhoodMinimum = resolvedRadiance;
+            float3 neighborhoodMaximum = resolvedRadiance;
+            [unroll]
+            for (int y = -1; y <= 1; ++y) {
+                [unroll]
+                for (int x = -1; x <= 1; ++x) {
+                    float3 neighbor = currentRadiance(
+                        saturate(input.uv + float2(x, y) * texel), ao);
+                    neighborhoodMinimum = min(neighborhoodMinimum, neighbor);
+                    neighborhoodMaximum = max(neighborhoodMaximum, neighbor);
+                }
+            }
+            float3 clampedHistory = clamp(
+                history.rgb, neighborhoodMinimum, neighborhoodMaximum);
+            float velocity = length(input.uv - previousUv);
+            // A 0.88 bilinear history contribution visibly erased livery and
+            // garage detail. Keep enough current-frame energy for stable
+            // texture detail while retaining sub-pixel edge accumulation.
+            float historyWeight = 0.72 * depthAgreement
+                * exp2(-velocity * 64.0);
+            resolvedRadiance = lerp(
+                resolvedRadiance, clampedHistory, historyWeight);
+        }
+    }
+    // Restore only high-frequency information from the current jittered
+    // frame. Depth compatibility prevents the unsharp term from producing
+    // silhouettes around the car; the resolved value remains in history so
+    // sharpening cannot accumulate into temporal ringing.
+    uint sharpenWidth;
+    uint sharpenHeight;
+    hdrScene.GetDimensions(sharpenWidth, sharpenHeight);
+    float2 sharpenTexel = rcp(float2(sharpenWidth, sharpenHeight));
+    const float2 crossOffsets[4] = {
+        float2(-1.0, 0.0), float2(1.0, 0.0),
+        float2(0.0, -1.0), float2(0.0, 1.0)};
+    float3 currentCenter = hdr * ao;
+    float3 crossAverage = 0.0;
+    [unroll]
+    for (int sharpenIndex = 0; sharpenIndex < 4; ++sharpenIndex) {
+        float2 neighborUv = saturate(
+            input.uv + crossOffsets[sharpenIndex] * sharpenTexel);
+        float neighborDepth = sceneDepth.SampleLevel(
+            postSampler, neighborUv, 0);
+        float compatible = 0.0;
+        if (depth >= 0.999999) {
+            compatible = neighborDepth >= 0.999999 ? 1.0 : 0.0;
+        } else if (neighborDepth < 0.999999) {
+            compatible = 1.0 - smoothstep(
+                0.006, 0.06,
+                abs(linearDepth(neighborDepth) - linearDepth(depth)));
+        }
+        float3 neighbor = currentRadiance(neighborUv, ao);
+        crossAverage += lerp(currentCenter, neighbor, compatible);
+    }
+    crossAverage *= 0.25;
+    float3 detail = clamp(currentCenter - crossAverage, -0.22, 0.22);
+    float sharpenStrength = temporalParameters.x > 0.5 ? 0.30 : 0.12;
+    float3 displayRadiance = max(
+        resolvedRadiance + detail * sharpenStrength, 0.0);
+    PostOutput output;
+    output.display = float4(gradeRadiance(displayRadiance), 1.0);
+    output.history = float4(resolvedRadiance, depth);
+    return output;
+}
+)hlsl";
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+    ComPtr<ID3DBlob> diagnostics;
+    constexpr UINT flags =
+        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    HRESULT result = D3DCompile(
+        kShader, std::strlen(kShader), "tokyo_post.hlsl", nullptr, nullptr,
+        "VSMain", "vs_5_1", flags, 0, &vertexShader, &diagnostics);
+    if (FAILED(result)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 post vertex shader compilation failed");
+        return {};
+    }
+    diagnostics.Reset();
+    result = D3DCompile(
+        kShader, std::strlen(kShader), "tokyo_post.hlsl", nullptr, nullptr,
+        "PSMain", "ps_5_1", flags, 0, &pixelShader, &diagnostics);
+    if (FAILED(result)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 post pixel shader compilation failed");
+        return {};
+    }
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+    description.pRootSignature = rootSignature;
+    description.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+    description.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
+    description.BlendState = blendDescription(false);
+    description.SampleMask = UINT_MAX;
+    description.RasterizerState = rasterizerDescription();
+    description.DepthStencilState = depthDescription(false);
+    description.DepthStencilState.DepthEnable = FALSE;
+    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    description.NumRenderTargets = 2;
+    description.RTVFormats[0] = targetFormat;
+    description.RTVFormats[1] = kTargetFormat;
+    description.SampleDesc.Count = 1;
+    ComPtr<ID3D12PipelineState> pipeline;
+    result = device->CreateGraphicsPipelineState(
+        &description, IID_PPV_ARGS(&pipeline));
+    if (FAILED(result)) {
+        *error = QStringLiteral("DX12 post pipeline creation failed: %1")
+            .arg(hresultText(result));
+        return {};
+    }
+    return pipeline;
+}
+
 ComPtr<ID3D12PipelineState> createMaterialPipeline(
     ID3D12Device *device, ID3D12RootSignature *rootSignature,
     QString *error, DXGI_FORMAT targetFormat = kTargetFormat,
@@ -1950,6 +2547,13 @@ cbuffer FrameData : register(b0, space2) {
     float4 shadowParameters;
     row_major float4x4 dropShadowViewProjection;
     float4 dropShadowParameters;
+    row_major float4x4 localShadowViewProjection0;
+    float4 localShadowParameters0;
+    row_major float4x4 localShadowViewProjection1;
+    float4 localShadowParameters1;
+    float4 reflectionProbeMinimum;
+    float4 reflectionProbeMaximum;
+    float4 reflectionProbePosition;
 };
 cbuffer MaterialData : register(b0, space3) {
     float4 baseColor;
@@ -1970,11 +2574,15 @@ cbuffer MaterialData : register(b0, space3) {
     float4 secondaryPaintAndStrength;
     float4 flakeColorAndCoverage;
     float4 automotivePaintParameters;
+    uint4 renderPassParameters;
 };
 TextureCube<float4> diffuseEnvironment : register(t0);
 TextureCube<float4> specularEnvironment : register(t1);
 Texture2D<float> shadowMap : register(t119);
 Texture2D<float> dropShadowMap : register(t121);
+Texture2D<float> localShadowMap0 : register(t114);
+Texture2D<float> localShadowMap1 : register(t115);
+Texture2D<float> glassBackDepth : register(t113);
 Texture3D<float4> colorGradeLut : register(t123);
 Texture2D<float4> baseColorTexture : register(t0, space1);
 Texture2D<float4> normalTexture : register(t1, space1);
@@ -2026,6 +2634,52 @@ float3 fresnelSchlickRoughness(
     float cosine, float3 f0, float roughness) {
     return f0 + (max(1.0 - roughness, f0) - f0)
         * pow(saturate(1.0 - cosine), 5.0);
+}
+
+float3 reflectionLookupDirection(float3 worldPosition, float3 rayDirection) {
+    if (liveryParameters.w != 2u || reflectionProbeMinimum.w < 0.5) {
+        return rayDirection;
+    }
+    float3 safeDirection = sign(rayDirection)
+        * max(abs(rayDirection), float3(0.0001, 0.0001, 0.0001));
+    float3 exitPlane = lerp(
+        reflectionProbeMinimum.xyz, reflectionProbeMaximum.xyz,
+        step(0.0, safeDirection));
+    float3 distances = (exitPlane - worldPosition) / safeDirection;
+    float distanceToWall = min(distances.x, min(distances.y, distances.z));
+    if (distanceToWall <= 0.0) {
+        return rayDirection;
+    }
+    float3 wallPosition = worldPosition + safeDirection * distanceToWall;
+    return normalize(wallPosition - reflectionProbePosition.xyz);
+}
+
+float linearCameraDepth(float depth) {
+    float nearPlane = max(cameraPosition.w, 0.0001);
+    float farPlane = max(cameraForward.w, nearPlane + 0.001);
+    float a = farPlane / (farPlane - nearPlane);
+    float b = nearPlane * farPlane / (farPlane - nearPlane);
+    return b / max(a - depth, 0.000001);
+}
+
+float glassPathLength(PixelInput input, float3 viewDirection) {
+    if (renderPassParameters.x != 0u
+        || dot(normalize(input.normal), viewDirection) <= 0.0) {
+        return 0.0;
+    }
+    uint width;
+    uint height;
+    glassBackDepth.GetDimensions(width, height);
+    int2 pixel = clamp(
+        int2(input.position.xy), int2(0, 0),
+        int2((int)width - 1, (int)height - 1));
+    float backDepth = glassBackDepth.Load(int3(pixel, 0));
+    if (backDepth >= 0.999999 || backDepth <= input.position.z + 0.000001) {
+        return 0.0;
+    }
+    return clamp(
+        linearCameraDepth(backDepth) - linearCameraDepth(input.position.z),
+        0.0, 0.12);
 }
 
 float3 environmentBrdfApproximation(
@@ -2203,6 +2857,54 @@ float dropShadowVisibility(float3 worldPosition) {
     return visibility / 16.0;
 }
 
+float localLightShadowVisibility(float3 worldPosition, uint shadowIndex) {
+    float4 parameters = shadowIndex == 0u
+        ? localShadowParameters0 : localShadowParameters1;
+    if (parameters.w < 0.5) {
+        return 1.0;
+    }
+    float4 clip = shadowIndex == 0u
+        ? mul(localShadowViewProjection0, float4(worldPosition, 1.0))
+        : mul(localShadowViewProjection1, float4(worldPosition, 1.0));
+    float3 projected = clip.xyz / max(clip.w, 0.000001);
+    float2 uv = projected.xy * float2(0.5, -0.5) + 0.5;
+    if (projected.z <= 0.0 || projected.z >= 1.0
+        || any(uv <= 0.0) || any(uv >= 1.0)) {
+        return 1.0;
+    }
+    float receiverDepth = projected.z - parameters.y;
+    float blockerDepth = 0.0;
+    float blockerCount = 0.0;
+    [unroll]
+    for (int blockerIndex = 0; blockerIndex < 16; ++blockerIndex) {
+        int2 texel = int2(uv * 2048.0 + shadowDisk[blockerIndex] * 5.0);
+        texel = clamp(texel, int2(0, 0), int2(2047, 2047));
+        float depth = shadowIndex == 0u
+            ? localShadowMap0.Load(int3(texel, 0))
+            : localShadowMap1.Load(int3(texel, 0));
+        if (depth < receiverDepth) {
+            blockerDepth += depth;
+            blockerCount += 1.0;
+        }
+    }
+    float averageBlocker = blockerCount > 0.0
+        ? blockerDepth / blockerCount : receiverDepth;
+    float separation = saturate((receiverDepth - averageBlocker) * 55.0);
+    float filterRadius = lerp(3.5, 14.0, separation);
+    float visibility = 0.0;
+    [unroll]
+    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+        float2 sampleUv = uv + shadowDisk[sampleIndex]
+            * shadowParameters.x * filterRadius;
+        visibility += shadowIndex == 0u
+            ? localShadowMap0.SampleCmpLevelZero(
+                  shadowSampler, sampleUv, receiverDepth)
+            : localShadowMap1.SampleCmpLevelZero(
+                  shadowSampler, sampleUv, receiverDepth);
+    }
+    return visibility / 16.0;
+}
+
 float finishGlitter(float3 worldPosition, float facing) {
     float coverage = saturate(flakeColorAndCoverage.w);
     if (coverage <= 0.0) {
@@ -2348,8 +3050,10 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     float3 diffuse = (1.0 - fresnel) * (1.0 - metallic) * albedo / 3.14159265;
     float3 environment = diffuseEnvironment.SampleLevel(materialSampler, n, 0).rgb;
     float3 reflected = reflect(-v, n);
+    float3 reflectedLookup = reflectionLookupDirection(
+        input.worldPosition, reflected);
     float3 reflectedEnvironment = specularEnvironment.SampleLevel(
-        materialSampler, reflected, roughness * 9.0).rgb;
+        materialSampler, reflectedLookup, roughness * 9.0).rgb;
     float rawShadowVisibility = 1.0;
     float directionalVisibility = 1.0;
     if (liveryParameters.w == 2u) {
@@ -2357,18 +3061,11 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         directionalVisibility = lerp(
             1.0, rawShadowVisibility, shadowParameters.y);
     }
-    // A single directional shadow must not masquerade as shadows from every
-    // local garage fixture. Keep their fill light, but attenuate enough for
-    // close part-on-part occlusion to remain visible.
-    float localLightVisibility = liveryParameters.w == 2u
-        ? lerp(0.72, 1.0, sqrt(rawShadowVisibility)) : 1.0;
-    // Feed near-field self-shadowing into indirect and specular occlusion.
-    // This restores depth in wheel wells, vents, brakes, and overlapping body
-    // parts without turning the whole car into one hard single-light shadow.
-    float geometryOcclusion = liveryParameters.w == 2u
-        ? lerp(0.62, 1.0, sqrt(rawShadowVisibility)) : 1.0;
-    ao *= geometryOcclusion;
-    float3 color = (diffuse + specular) * directColor.rgb
+    // Local fixtures use only their matching shadow maps. Authored AO and the
+    // final screen-space pass handle cavity occlusion without imposing the
+    // compatibility light's direction on the entire car.
+    float compatibilityKey = liveryParameters.w == 2u ? 0.28 : 1.0;
+    float3 color = (diffuse + specular) * directColor.rgb * compatibilityKey
         * ndotl * directionalVisibility;
     float glitterFacing = ndotl > 0.0 ? saturate(dot(n, h)) : 0.0;
     float coatIntensity = saturate(clearCoatParameters.x)
@@ -2376,7 +3073,7 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     float coatRoughness = clamp(clearCoatParameters.y, 0.04, 1.0);
     float3 clearCoatDirect = evaluateDirectClearCoat(
         coatNormal, v, l, coatRoughness) * directColor.rgb
-        * directionalVisibility;
+        * compatibilityKey * directionalVisibility;
     [loop]
     for (uint pointIndex = 0;
          pointIndex < min((uint)panoramaParameters.w, 32u); ++pointIndex) {
@@ -2409,16 +3106,30 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         float inverseSquare = rcp(max(distanceToLight * distanceToLight, 0.25));
         float radiance = pointLightColorIntensity[pointIndex].w
             * 0.00025 * inverseSquare * rangeFade * spot;
+        float pointVisibility = 1.0;
+        if (liveryParameters.w == 2u
+            && localShadowParameters0.w > 0.5
+            && abs((float)pointIndex - localShadowParameters0.z) < 0.5) {
+            pointVisibility = lerp(
+                1.0, localLightShadowVisibility(input.worldPosition, 0u),
+                localShadowParameters0.x);
+        } else if (liveryParameters.w == 2u
+                   && localShadowParameters1.w > 0.5
+                   && abs((float)pointIndex - localShadowParameters1.z) < 0.5) {
+            pointVisibility = lerp(
+                1.0, localLightShadowVisibility(input.worldPosition, 1u),
+                localShadowParameters1.x);
+        }
         if (pointNdotL > 0.0 && radiance > 0.0) {
             glitterFacing = max(glitterFacing, pointNdotH);
         }
         color += (pointDiffuse + pointSpecular)
             * pointLightColorIntensity[pointIndex].rgb * radiance * pointNdotL
-            * localLightVisibility;
+            * pointVisibility;
         clearCoatDirect += evaluateDirectClearCoat(
                 coatNormal, v, pointDirection, coatRoughness)
             * pointLightColorIntensity[pointIndex].rgb * radiance
-            * localLightVisibility;
+            * pointVisibility;
     }
     float3 environmentFresnel = fresnelSchlickRoughness(
         ndotv, f0, roughness);
@@ -2438,14 +3149,17 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         float3 coatFresnel = fresnelSchlickRoughness(
             coatNdotV, float3(0.04, 0.04, 0.04), coatRoughness);
         float3 coatReflected = reflect(-v, coatNormal);
+        float3 coatLookup = reflectionLookupDirection(
+            input.worldPosition, coatReflected);
         float3 coatReflection = specularEnvironment.SampleLevel(
-            materialSampler, coatReflected, coatRoughness * 9.0).rgb;
+            materialSampler, coatLookup, coatRoughness * 9.0).rgb;
         color += clearCoatDirect * clearCoatTint.rgb * coatIntensity;
         color += coatReflection * coatFresnel * clearCoatTint.rgb
             * lerp(0.15, 0.95, 1.0 - coatRoughness) * coatIntensity;
         color += clearCoatTint.rgb
             * (pow(1.0 - coatNdotV, 4.0) * 0.06 * coatIntensity);
     }
+    float glassThicknessWeight = 0.42;
     if (materialFamilyParameters.x == 3u) {
         float3 glassReflection = reflectedEnvironment
             * environmentBrdfApproximation(
@@ -2457,13 +3171,29 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         float reflectionLuminance = dot(
             glassReflection, float3(0.2126, 0.7152, 0.0722));
         float edgeReflection = pow(1.0 - ndotv, 5.0);
+        float tintLuminance = dot(
+            glassTint, float3(0.2126, 0.7152, 0.0722));
+        // Retain the decoded GlassColor value, but treat its chroma as a weak
+        // absorption bias. The previous direct teal bias made nominally dark
+        // glass appear pale blue under the cool garage probe.
+        float3 neutralGlassTint = lerp(
+            tintLuminance.xxx, glassTint, 0.12);
         float3 neutralReflection = lerp(
             reflectionLuminance.xxx, glassReflection,
-            lerp(0.18, 0.72, edgeReflection));
-        float3 absorption = float3(0.0045, 0.0050, 0.0052)
-            + glassTint * 0.018;
-        color = absorption + neutralReflection
-            * lerp(0.42, 0.88, edgeReflection);
+            lerp(0.08, 0.52, edgeReflection));
+        float pathLength = glassPathLength(input, v);
+        glassThicknessWeight = pathLength > 0.0001
+            ? saturate(pathLength / 0.045) : 0.42;
+        if (renderPassParameters.x != 0u) {
+            color = neutralReflection * lerp(0.24, 0.68, edgeReflection);
+        } else {
+            float interiorScale = renderPassParameters.y != 0u ? 0.68 : 1.0;
+            float3 absorption = (float3(0.0028, 0.0026, 0.0023)
+                + neutralGlassTint * 0.010) * interiorScale
+                * lerp(0.62, 1.38, glassThicknessWeight);
+            color = absorption + neutralReflection
+                * lerp(0.20, 0.56, edgeReflection);
+        }
     }
     // Homespace's plane-mode car drop shadow is a separate floor composite.
     // Applying it after the floor's ambient/probe lighting prevents those terms
@@ -2483,17 +3213,40 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     if (liveryParameters.x == 0 && textureParameters.x > 0.5) {
         outputAlpha *= authoredBase.a;
     }
-    if (textureParameters.w > 0.5) {
-        outputAlpha *= alphaTexture.Sample(materialSampler, detailUv).r;
+    float authoredAlpha = textureParameters.w > 0.5
+        ? alphaTexture.Sample(materialSampler, detailUv).r : 1.0;
+    if (textureParameters.w > 0.5
+        && materialFamilyParameters.x != 3u) {
+        outputAlpha *= authoredAlpha;
     }
     if (materialFamilyParameters.x == 3u) {
         float glassEdge = pow(1.0 - ndotv, 5.0);
-        outputAlpha = saturate(outputAlpha * lerp(1.10, 1.35, glassEdge));
+        if (renderPassParameters.x != 0u) {
+            // The separate windshield member is a reflection mask, not a
+            // second full transmission layer.
+            outputAlpha = saturate(
+                outputAlpha * authoredAlpha
+                * lerp(0.18, 0.48, glassEdge));
+        } else {
+            float transmissionAlpha = outputAlpha
+                * lerp(0.82, 1.0, authoredAlpha)
+                * lerp(0.94, 1.16, glassEdge)
+                * lerp(0.90, 1.12, glassThicknessWeight);
+            if (liveryParameters.w == 2u
+                && renderPassParameters.y == 0u) {
+                // Exterior car glass needs enough body to reproduce the dark
+                // game tint even when its authored alpha map is mid-grey.
+                transmissionAlpha = max(
+                    transmissionAlpha,
+                    lerp(0.62, 0.68, glassThicknessWeight));
+            }
+            outputAlpha = saturate(transmissionAlpha);
+        }
     }
     if (outputAlpha < 0.02) {
         discard;
     }
-    return float4(applyColorGrade(color), saturate(outputAlpha));
+    return float4(color, saturate(outputAlpha));
 }
 )hlsl");
 
@@ -2630,6 +3383,63 @@ float4 VSMain(VertexInput input) : SV_Position {
     return pipeline;
 }
 
+ComPtr<ID3D12PipelineState> createGlassBackDepthPipeline(
+    ID3D12Device *device, ID3D12RootSignature *rootSignature,
+    QString *error) {
+    static constexpr const char *kShader = R"hlsl(
+cbuffer FrameData : register(b0, space2) {
+    row_major float4x4 viewProjection;
+};
+struct VertexInput {
+    float3 position : POSITION;
+};
+float4 VSMain(VertexInput input) : SV_Position {
+    return mul(viewProjection, float4(input.position, 1.0));
+}
+)hlsl";
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> diagnostics;
+    constexpr UINT kFlags =
+        D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    const HRESULT compileResult = D3DCompile(
+        kShader, std::strlen(kShader), "tokyo_glass_back_depth.hlsl", nullptr,
+        nullptr, "VSMain", "vs_5_1", kFlags, 0, &vertexShader, &diagnostics);
+    if (FAILED(compileResult)) {
+        *error = diagnostics != nullptr
+            ? QString::fromUtf8(
+                  static_cast<const char *>(diagnostics->GetBufferPointer()),
+                  static_cast<qsizetype>(diagnostics->GetBufferSize())).trimmed()
+            : QStringLiteral("DX12 glass-depth vertex shader compilation failed");
+        return {};
+    }
+    constexpr D3D12_INPUT_ELEMENT_DESC kInput = {
+        "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+    description.pRootSignature = rootSignature;
+    description.VS = {
+        vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
+    description.BlendState = blendDescription(false);
+    description.SampleMask = UINT_MAX;
+    description.RasterizerState = rasterizerDescription();
+    description.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
+    description.DepthStencilState = depthDescription();
+    description.InputLayout = {&kInput, 1};
+    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    description.NumRenderTargets = 0;
+    description.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    description.SampleDesc.Count = 1;
+    ComPtr<ID3D12PipelineState> pipeline;
+    const HRESULT result = device->CreateGraphicsPipelineState(
+        &description, IID_PPV_ARGS(&pipeline));
+    if (FAILED(result)) {
+        *error = QStringLiteral("DX12 glass-depth pipeline creation failed: %1")
+            .arg(hresultText(result));
+        return {};
+    }
+    return pipeline;
+}
+
 void recordShadowPass(
     ID3D12GraphicsCommandList *commands, ID3D12RootSignature *rootSignature,
     ID3D12PipelineState *pipeline, ID3D12Resource *frameConstants,
@@ -2653,6 +3463,41 @@ void recordShadowPass(
     commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     for (const DrawResources &draw : draws) {
         if (!castsShadow(draw, kind)) {
+            continue;
+        }
+        commands->IASetVertexBuffers(0, 1, &draw.vertexView);
+        commands->IASetIndexBuffer(&draw.indexView);
+        commands->DrawIndexedInstanced(
+            static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
+    }
+}
+
+void recordGlassBackDepthPass(
+    ID3D12GraphicsCommandList *commands, ID3D12RootSignature *rootSignature,
+    ID3D12PipelineState *pipeline, ID3D12Resource *frameConstants,
+    D3D12_CPU_DESCRIPTOR_HANDLE depthView, const QSize &size,
+    const std::vector<DrawResources> &draws) {
+    commands->SetGraphicsRootSignature(rootSignature);
+    commands->SetGraphicsRootConstantBufferView(
+        5, frameConstants->GetGPUVirtualAddress());
+    commands->SetPipelineState(pipeline);
+    commands->OMSetRenderTargets(0, nullptr, FALSE, &depthView);
+    commands->ClearDepthStencilView(
+        depthView, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    const D3D12_VIEWPORT viewport{
+        0.0f, 0.0f, static_cast<float>(size.width()),
+        static_cast<float>(size.height()), 0.0f, 1.0f};
+    const D3D12_RECT scissor{
+        0, 0, static_cast<LONG>(size.width()), static_cast<LONG>(size.height())};
+    commands->RSSetViewports(1, &viewport);
+    commands->RSSetScissorRects(1, &scissor);
+    commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    constexpr quint32 kReflectionGroups =
+        fh6::car_draw_groups::kWindshieldReflection
+        | fh6::car_draw_groups::kWindshieldReflectionDriverless;
+    for (const DrawResources &draw : draws) {
+        if (!draw.visible || draw.shaderFamily != fh6::ModelShaderFamily::Glass
+            || (draw.drawGroups & kReflectionGroups) != 0) {
             continue;
         }
         commands->IASetVertexBuffers(0, 1, &draw.vertexView);
@@ -2790,9 +3635,15 @@ OriginalDx12BackendStatus probeOriginalDx12Backend(
             device.Get(), rootSignature.Get(), &status.error, kTargetFormat, true);
     const ComPtr<ID3D12PipelineState> panoramaPipeline = createPanoramaPipeline(
         device.Get(), rootSignature.Get(), &status.error);
+    const ComPtr<ID3D12PipelineState> postPipeline = createPostPipeline(
+        device.Get(), rootSignature.Get(), &status.error);
+    const ComPtr<ID3D12PipelineState> glassBackDepthPipeline =
+        createGlassBackDepthPipeline(
+            device.Get(), rootSignature.Get(), &status.error);
     if (floorPipeline == nullptr || defaultPipeline == nullptr
         || materialPipeline == nullptr || translucentMaterialPipeline == nullptr
-        || panoramaPipeline == nullptr) {
+        || panoramaPipeline == nullptr || postPipeline == nullptr
+        || glassBackDepthPipeline == nullptr) {
         return status;
     }
 
@@ -2891,13 +3742,23 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         ? createPanoramaPipeline(
               device.Get(), rootSignature.Get(), &setupError, kTargetFormat)
         : ComPtr<ID3D12PipelineState>{};
+    const ComPtr<ID3D12PipelineState> postPipeline = rootSignature != nullptr
+        ? createPostPipeline(
+              device.Get(), rootSignature.Get(), &setupError, kTargetFormat)
+        : ComPtr<ID3D12PipelineState>{};
     const ComPtr<ID3D12PipelineState> shadowPipeline = rootSignature != nullptr
         ? createShadowPipeline(device.Get(), rootSignature.Get(), &setupError)
+        : ComPtr<ID3D12PipelineState>{};
+    const ComPtr<ID3D12PipelineState> glassBackDepthPipeline =
+        rootSignature != nullptr
+        ? createGlassBackDepthPipeline(
+              device.Get(), rootSignature.Get(), &setupError)
         : ComPtr<ID3D12PipelineState>{};
     if (rootSignature == nullptr || floorPipeline == nullptr
         || defaultPipeline == nullptr || materialPipeline == nullptr
         || translucentMaterialPipeline == nullptr || panoramaPipeline == nullptr
-        || shadowPipeline == nullptr) {
+        || postPipeline == nullptr || shadowPipeline == nullptr
+        || glassBackDepthPipeline == nullptr) {
         frame.error = setupError;
         return frame;
     }
@@ -2947,6 +3808,10 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             source.materialUvRotationDegrees);
         draw.center = geometryCenter(draw.geometry);
         draw.family = source.family;
+        draw.reflectionProbeShell = source.source.contains(
+            QStringLiteral("garage_customiser"), Qt::CaseInsensitive)
+            || source.source.contains(
+                QStringLiteral("bld_gbl_grge_custom_02"), Qt::CaseInsensitive);
         draw.diffuseTexture = source.diffuseTexture;
         draw.alphaTexture = source.alphaTexture;
         draw.normalTexture = source.normalTexture;
@@ -3003,6 +3868,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.liveryBaseTexture = source.liveryBaseTexture;
         draw.liveryAllowedSides = source.liveryAllowedSides;
         draw.drawGroups = source.drawGroups;
+        draw.interiorWindshield = source.interiorWindshield;
         if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
             draw.liverySideCount = scene.liveryMapping.sideCount;
             draw.liverySourceRegions = scene.liveryMapping.sourceRegions;
@@ -3050,10 +3916,21 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     const ShadowProjection dropShadow = carShadowProjection(
         draws, {0.0f, -1.0f, 0.0f}, ShadowPassKind::Drop,
         kDropShadowStrength);
+    const std::array<ShadowProjection, 2> localShadows =
+        localLightShadowProjections(draws, scene.authoredLights);
+    const ReflectionProbeVolume reflectionProbe = reflectionProbeVolume(draws);
+    frame.reflectionProbeActive = reflectionProbe.valid;
+    TemporalFrameState temporal;
+    temporal.previousViewProjection = cameraViewProjection(
+        camera, static_cast<float>(size.width()) / size.height());
+    frame.localShadowMapCount = static_cast<int>(std::count_if(
+        localShadows.cbegin(), localShadows.cend(),
+        [](const ShadowProjection &projection) { return projection.valid; }));
     const std::array<std::vector<std::uint8_t>, 8> constantData =
         shaderConstantData(
             camera, size, scene.lighting, scene.authoredLights,
-            scene.environment.panorama, scene.colorLut, shadow, dropShadow);
+            scene.environment.panorama, scene.colorLut, shadow, dropShadow,
+            localShadows, reflectionProbe, temporal);
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
     for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
         constantBuffers[index] =
@@ -3067,7 +3944,14 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         device.Get(), shadowConstantData(shadow));
     const ComPtr<ID3D12Resource> dropShadowConstants = createConstantBuffer(
         device.Get(), shadowConstantData(dropShadow));
-    if (shadowConstants == nullptr || dropShadowConstants == nullptr) {
+    std::array<ComPtr<ID3D12Resource>, 2> localShadowConstants;
+    for (std::size_t index = 0; index < localShadows.size(); ++index) {
+        localShadowConstants[index] = createConstantBuffer(
+            device.Get(), shadowConstantData(localShadows[index]));
+    }
+    if (shadowConstants == nullptr || dropShadowConstants == nullptr
+        || localShadowConstants[0] == nullptr
+        || localShadowConstants[1] == nullptr) {
         frame.error = QStringLiteral("DX12 shadow constant upload failed");
         return frame;
     }
@@ -3291,22 +4175,36 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         colorLutTexture.texture.Get(), &colorLutView, cpuHandleAt(123));
 
     const ComPtr<ID3D12Resource> target = createTarget(device.Get(), size);
+    const ComPtr<ID3D12Resource> finalTarget = createTarget(device.Get(), size);
+    std::array<ComPtr<ID3D12Resource>, 2> temporalHistoryTargets = {
+        createTarget(device.Get(), size), createTarget(device.Get(), size)};
     const ComPtr<ID3D12Resource> depthTarget =
+        createDepthTarget(device.Get(), size);
+    const ComPtr<ID3D12Resource> glassBackDepthTarget =
         createDepthTarget(device.Get(), size);
     const ComPtr<ID3D12Resource> shadowTarget =
         createShadowDepthTarget(device.Get());
     const ComPtr<ID3D12Resource> dropShadowTarget =
         createShadowDepthTarget(device.Get());
+    std::array<ComPtr<ID3D12Resource>, 2> localShadowTargets = {
+        createShadowDepthTarget(device.Get()),
+        createShadowDepthTarget(device.Get())};
     D3D12_DESCRIPTOR_HEAP_DESC targetHeapDescription{};
     targetHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    targetHeapDescription.NumDescriptors = 1;
+    targetHeapDescription.NumDescriptors = 4;
     ComPtr<ID3D12DescriptorHeap> targetHeap;
     D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
     depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    depthHeapDescription.NumDescriptors = 3;
+    depthHeapDescription.NumDescriptors = 6;
     ComPtr<ID3D12DescriptorHeap> depthHeap;
-    if (target == nullptr || depthTarget == nullptr || shadowTarget == nullptr
+    if (target == nullptr || finalTarget == nullptr || depthTarget == nullptr
+        || glassBackDepthTarget == nullptr
+        || temporalHistoryTargets[0] == nullptr
+        || temporalHistoryTargets[1] == nullptr
+        || shadowTarget == nullptr
         || dropShadowTarget == nullptr
+        || localShadowTargets[0] == nullptr
+        || localShadowTargets[1] == nullptr
         || FAILED(device->CreateDescriptorHeap(
             &targetHeapDescription, IID_PPV_ARGS(&targetHeap)))
         || FAILED(device->CreateDescriptorHeap(
@@ -3317,6 +4215,26 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     const D3D12_CPU_DESCRIPTOR_HANDLE targetView =
         targetHeap->GetCPUDescriptorHandleForHeapStart();
     device->CreateRenderTargetView(target.Get(), nullptr, targetView);
+    D3D12_CPU_DESCRIPTOR_HANDLE finalTargetView = targetView;
+    finalTargetView.ptr += device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    device->CreateRenderTargetView(
+        finalTarget.Get(), nullptr, finalTargetView);
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> temporalHistoryViews;
+    for (std::size_t index = 0; index < temporalHistoryTargets.size(); ++index) {
+        temporalHistoryViews[index] = finalTargetView;
+        temporalHistoryViews[index].ptr += (index + 1)
+            * device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        device->CreateRenderTargetView(
+            temporalHistoryTargets[index].Get(), nullptr,
+            temporalHistoryViews[index]);
+        const D3D12_SHADER_RESOURCE_VIEW_DESC historyView =
+            texture2DView(kTargetFormat);
+        device->CreateShaderResourceView(
+            temporalHistoryTargets[index].Get(), &historyView,
+            cpuHandleAt(kTemporalHistoryDescriptorIndices[index]));
+    }
     const D3D12_CPU_DESCRIPTOR_HANDLE depthView =
         depthHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
@@ -3324,6 +4242,13 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     depthViewDescription.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     device->CreateDepthStencilView(
         depthTarget.Get(), &depthViewDescription, depthView);
+    createSceneDepthView(
+        device.Get(), depthTarget.Get(),
+        cpuHandleAt(kSceneDepthDescriptorIndex));
+    const D3D12_SHADER_RESOURCE_VIEW_DESC hdrSceneView =
+        texture2DView(kTargetFormat);
+    device->CreateShaderResourceView(
+        target.Get(), &hdrSceneView, cpuHandleAt(kHdrSceneDescriptorIndex));
     D3D12_CPU_DESCRIPTOR_HANDLE shadowDepthView = depthView;
     shadowDepthView.ptr += device->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -3336,12 +4261,32 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     createShadowViews(
         device.Get(), dropShadowTarget.Get(), dropShadowDepthView,
         cpuHandleAt(kDropShadowDescriptorIndex));
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> localShadowDepthViews;
+    for (std::size_t index = 0; index < localShadowTargets.size(); ++index) {
+        localShadowDepthViews[index] = dropShadowDepthView;
+        localShadowDepthViews[index].ptr += (index + 1)
+            * device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        createShadowViews(
+            device.Get(), localShadowTargets[index].Get(),
+            localShadowDepthViews[index],
+            cpuHandleAt(kLocalShadowDescriptorIndices[index]));
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE glassBackDepthView = dropShadowDepthView;
+    glassBackDepthView.ptr += 3
+        * device->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    device->CreateDepthStencilView(
+        glassBackDepthTarget.Get(), &depthViewDescription, glassBackDepthView);
+    createSceneDepthView(
+        device.Get(), glassBackDepthTarget.Get(),
+        cpuHandleAt(kGlassBackDepthDescriptorIndex));
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT rows = 0;
     UINT64 rowBytes = 0;
     UINT64 readbackBytes = 0;
-    const D3D12_RESOURCE_DESC targetDescription = target->GetDesc();
+    const D3D12_RESOURCE_DESC targetDescription = finalTarget->GetDesc();
     device->GetCopyableFootprints(
         &targetDescription, 0, 1, 0, &footprint, &rows, &rowBytes,
         &readbackBytes);
@@ -3392,6 +4337,25 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         dropShadowTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     commands->ResourceBarrier(1, &dropShadowSampleBarrier);
+    for (std::size_t index = 0; index < localShadows.size(); ++index) {
+        if (localShadows[index].valid) {
+            recordShadowPass(
+                commands.Get(), rootSignature.Get(), shadowPipeline.Get(),
+                localShadowConstants[index].Get(), localShadowDepthViews[index],
+                draws, ShadowPassKind::Self);
+        }
+        const D3D12_RESOURCE_BARRIER localReadBarrier = transition(
+            localShadowTargets[index].Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commands->ResourceBarrier(1, &localReadBarrier);
+    }
+    recordGlassBackDepthPass(
+        commands.Get(), rootSignature.Get(), glassBackDepthPipeline.Get(),
+        constantBuffers[5].Get(), glassBackDepthView, size, draws);
+    const D3D12_RESOURCE_BARRIER glassDepthReadBarrier = transition(
+        glassBackDepthTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    commands->ResourceBarrier(1, &glassDepthReadBarrier);
 
     const D3D12_VIEWPORT viewport{
         0.0f, 0.0f, static_cast<float>(size.width()),
@@ -3439,8 +4403,30 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
                 static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
         }
     }
+    const std::array<D3D12_RESOURCE_BARRIER, 2> postReadBarriers = {{
+        transition(
+            target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        transition(
+            depthTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+    }};
+    commands->ResourceBarrier(
+        static_cast<UINT>(postReadBarriers.size()), postReadBarriers.data());
+    const D3D12_RESOURCE_BARRIER previousHistoryReadBarrier = transition(
+        temporalHistoryTargets[1].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    commands->ResourceBarrier(1, &previousHistoryReadBarrier);
+    const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> postTargets = {
+        finalTargetView, temporalHistoryViews[0]};
+    commands->OMSetRenderTargets(
+        static_cast<UINT>(postTargets.size()), postTargets.data(), FALSE,
+        nullptr);
+    commands->SetPipelineState(postPipeline.Get());
+    commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    commands->DrawInstanced(3, 1, 0, 0);
     const D3D12_RESOURCE_BARRIER targetBarrier = transition(
-        target.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+        finalTarget.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_COPY_SOURCE);
     commands->ResourceBarrier(1, &targetBarrier);
     D3D12_TEXTURE_COPY_LOCATION destination{};
@@ -3448,7 +4434,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
     destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     destination.PlacedFootprint = footprint;
     D3D12_TEXTURE_COPY_LOCATION source{};
-    source.pResource = target.Get();
+    source.pResource = finalTarget.Get();
     source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     commands->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
     result = commands->Close();
@@ -3587,7 +4573,9 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12PipelineState> materialPipeline;
     ComPtr<ID3D12PipelineState> translucentMaterialPipeline;
     ComPtr<ID3D12PipelineState> panoramaPipeline;
+    ComPtr<ID3D12PipelineState> postPipeline;
     ComPtr<ID3D12PipelineState> shadowPipeline;
+    ComPtr<ID3D12PipelineState> glassBackDepthPipeline;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -3599,13 +4587,18 @@ struct OriginalDx12ViewportRenderer::Impl {
     ComPtr<ID3D12DescriptorHeap> targetHeap;
     ComPtr<ID3D12DescriptorHeap> depthHeap;
     ComPtr<ID3D12Resource> depthTarget;
+    ComPtr<ID3D12Resource> sceneTarget;
+    ComPtr<ID3D12Resource> glassBackDepthTarget;
+    std::array<ComPtr<ID3D12Resource>, 2> temporalHistoryTargets;
     ComPtr<ID3D12Resource> shadowTarget;
     ComPtr<ID3D12Resource> dropShadowTarget;
+    std::array<ComPtr<ID3D12Resource>, 2> localShadowTargets;
     ComPtr<ID3D12Fence> fence;
     std::array<ComPtr<ID3D12Resource>, 2> backBuffers;
     std::array<ComPtr<ID3D12Resource>, 8> constantBuffers;
     ComPtr<ID3D12Resource> shadowConstants;
     ComPtr<ID3D12Resource> dropShadowConstants;
+    std::array<ComPtr<ID3D12Resource>, 2> localShadowConstants;
     std::vector<DrawResources> draws;
     std::vector<UploadedTexture> materialTextures;
     std::vector<UploadedTexture> authoredMaterialTextures;
@@ -3622,6 +4615,9 @@ struct OriginalDx12ViewportRenderer::Impl {
     fh6::GarageColorLut colorLut;
     ShadowProjection shadow;
     ShadowProjection dropShadow;
+    std::array<ShadowProjection, 2> localShadows;
+    ReflectionProbeVolume reflectionProbe;
+    Matrix4 previousViewProjection{};
     QString adapterName;
     QString failure;
     HANDLE completionEvent = nullptr;
@@ -3632,6 +4628,11 @@ struct OriginalDx12ViewportRenderer::Impl {
     UINT depthDescriptorStride = 0;
     UINT64 fenceValue = 0;
     bool liveryCommandsInFlight = false;
+    bool sceneTargetsReadable = false;
+    bool temporalHistoryValid = false;
+    std::array<bool, 2> temporalHistoryReadable = {false, false};
+    int temporalWriteIndex = 0;
+    quint64 temporalFrameIndex = 0;
 
     ~Impl() {
         waitForGpu();
@@ -3680,8 +4681,16 @@ struct OriginalDx12ViewportRenderer::Impl {
             device->CreateRenderTargetView(backBuffers[index].Get(), &view, handle);
         }
         depthTarget = createDepthTarget(device.Get(), viewportSize);
-        if (depthTarget == nullptr) {
-            failure = QStringLiteral("D3D12 viewport depth target creation failed");
+        sceneTarget = createTarget(device.Get(), viewportSize);
+        glassBackDepthTarget = createDepthTarget(device.Get(), viewportSize);
+        for (ComPtr<ID3D12Resource> &history : temporalHistoryTargets) {
+            history = createTarget(device.Get(), viewportSize);
+        }
+        if (depthTarget == nullptr || sceneTarget == nullptr
+            || glassBackDepthTarget == nullptr
+            || temporalHistoryTargets[0] == nullptr
+            || temporalHistoryTargets[1] == nullptr) {
+            failure = QStringLiteral("D3D12 viewport HDR/depth target creation failed");
             return false;
         }
         D3D12_DEPTH_STENCIL_VIEW_DESC view{};
@@ -3690,6 +4699,59 @@ struct OriginalDx12ViewportRenderer::Impl {
         device->CreateDepthStencilView(
             depthTarget.Get(), &view,
             depthHeap->GetCPUDescriptorHandleForHeapStart());
+        D3D12_CPU_DESCRIPTOR_HANDLE sceneView =
+            targetHeap->GetCPUDescriptorHandleForHeapStart();
+        sceneView.ptr += static_cast<SIZE_T>(backBuffers.size())
+            * targetDescriptorStride;
+        device->CreateRenderTargetView(sceneTarget.Get(), nullptr, sceneView);
+        for (std::size_t index = 0; index < temporalHistoryTargets.size(); ++index) {
+            D3D12_CPU_DESCRIPTOR_HANDLE historyTargetView = sceneView;
+            historyTargetView.ptr += (index + 1) * targetDescriptorStride;
+            device->CreateRenderTargetView(
+                temporalHistoryTargets[index].Get(), nullptr,
+                historyTargetView);
+            D3D12_CPU_DESCRIPTOR_HANDLE historyShaderView =
+                shaderHeap->GetCPUDescriptorHandleForHeapStart();
+            historyShaderView.ptr += static_cast<SIZE_T>(
+                kTemporalHistoryDescriptorIndices[index])
+                * shaderDescriptorStride;
+            const D3D12_SHADER_RESOURCE_VIEW_DESC historyView =
+                texture2DView(kTargetFormat);
+            device->CreateShaderResourceView(
+                temporalHistoryTargets[index].Get(), &historyView,
+                historyShaderView);
+        }
+        D3D12_CPU_DESCRIPTOR_HANDLE depthShaderView =
+            shaderHeap->GetCPUDescriptorHandleForHeapStart();
+        depthShaderView.ptr += static_cast<SIZE_T>(kSceneDepthDescriptorIndex)
+            * shaderDescriptorStride;
+        createSceneDepthView(
+            device.Get(), depthTarget.Get(), depthShaderView);
+        D3D12_CPU_DESCRIPTOR_HANDLE glassDepthView =
+            depthHeap->GetCPUDescriptorHandleForHeapStart();
+        glassDepthView.ptr += 5 * depthDescriptorStride;
+        device->CreateDepthStencilView(
+            glassBackDepthTarget.Get(), &view, glassDepthView);
+        D3D12_CPU_DESCRIPTOR_HANDLE glassDepthShaderView =
+            shaderHeap->GetCPUDescriptorHandleForHeapStart();
+        glassDepthShaderView.ptr +=
+            static_cast<SIZE_T>(kGlassBackDepthDescriptorIndex)
+            * shaderDescriptorStride;
+        createSceneDepthView(
+            device.Get(), glassBackDepthTarget.Get(), glassDepthShaderView);
+        D3D12_CPU_DESCRIPTOR_HANDLE sceneShaderView =
+            shaderHeap->GetCPUDescriptorHandleForHeapStart();
+        sceneShaderView.ptr += static_cast<SIZE_T>(kHdrSceneDescriptorIndex)
+            * shaderDescriptorStride;
+        const D3D12_SHADER_RESOURCE_VIEW_DESC hdrView =
+            texture2DView(kTargetFormat);
+        device->CreateShaderResourceView(
+            sceneTarget.Get(), &hdrView, sceneShaderView);
+        sceneTargetsReadable = false;
+        temporalHistoryValid = false;
+        temporalHistoryReadable = {false, false};
+        temporalWriteIndex = 0;
+        temporalFrameIndex = 0;
 
         return true;
     }
@@ -3734,35 +4796,45 @@ struct OriginalDx12ViewportRenderer::Impl {
         floorPipeline = rootSignature != nullptr
             ? createExactPipeline(
                   device.Get(), rootSignature.Get(), scene.floorProgram, &failure,
-                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+                  kTargetFormat)
             : ComPtr<ID3D12PipelineState>{};
         defaultPipeline = rootSignature != nullptr
             ? createExactPipeline(
                   device.Get(), rootSignature.Get(), scene.defaultProgram, &failure,
-                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+                  kTargetFormat)
             : ComPtr<ID3D12PipelineState>{};
         materialPipeline = rootSignature != nullptr
             ? createMaterialPipeline(
                   device.Get(), rootSignature.Get(), &failure,
-                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+                  kTargetFormat)
             : ComPtr<ID3D12PipelineState>{};
         translucentMaterialPipeline = rootSignature != nullptr
             ? createMaterialPipeline(
                   device.Get(), rootSignature.Get(), &failure,
-                  DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, true)
+                  kTargetFormat, true)
             : ComPtr<ID3D12PipelineState>{};
         panoramaPipeline = rootSignature != nullptr
             ? createPanoramaPipeline(
+                  device.Get(), rootSignature.Get(), &failure,
+                  kTargetFormat)
+            : ComPtr<ID3D12PipelineState>{};
+        postPipeline = rootSignature != nullptr
+            ? createPostPipeline(
                   device.Get(), rootSignature.Get(), &failure,
                   DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
             : ComPtr<ID3D12PipelineState>{};
         shadowPipeline = rootSignature != nullptr
             ? createShadowPipeline(device.Get(), rootSignature.Get(), &failure)
             : ComPtr<ID3D12PipelineState>{};
+        glassBackDepthPipeline = rootSignature != nullptr
+            ? createGlassBackDepthPipeline(
+                  device.Get(), rootSignature.Get(), &failure)
+            : ComPtr<ID3D12PipelineState>{};
         if (rootSignature == nullptr || floorPipeline == nullptr
             || defaultPipeline == nullptr || materialPipeline == nullptr
             || translucentMaterialPipeline == nullptr
-            || panoramaPipeline == nullptr || shadowPipeline == nullptr) {
+            || panoramaPipeline == nullptr || postPipeline == nullptr
+            || shadowPipeline == nullptr || glassBackDepthPipeline == nullptr) {
             return false;
         }
         D3D12_COMMAND_QUEUE_DESC queueDescription{};
@@ -3834,6 +4906,10 @@ struct OriginalDx12ViewportRenderer::Impl {
                 source.materialUvRotationDegrees);
             draw.center = geometryCenter(draw.geometry);
             draw.family = source.family;
+            draw.reflectionProbeShell = source.source.contains(
+                QStringLiteral("garage_customiser"), Qt::CaseInsensitive)
+                || source.source.contains(
+                    QStringLiteral("bld_gbl_grge_custom_02"), Qt::CaseInsensitive);
             draw.diffuseTexture = source.diffuseTexture;
             draw.alphaTexture = source.alphaTexture;
             draw.normalTexture = source.normalTexture;
@@ -3886,6 +4962,7 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.liveryBaseTexture = source.liveryBaseTexture;
             draw.liveryAllowedSides = source.liveryAllowedSides;
             draw.drawGroups = source.drawGroups;
+            draw.interiorWindshield = source.interiorWindshield;
             if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
                 draw.liverySideCount = scene.liveryMapping.sideCount;
                 draw.liverySourceRegions = scene.liveryMapping.sourceRegions;
@@ -3934,9 +5011,15 @@ struct OriginalDx12ViewportRenderer::Impl {
         dropShadow = carShadowProjection(
             draws, {0.0f, -1.0f, 0.0f}, ShadowPassKind::Drop,
             kDropShadowStrength);
+        localShadows = localLightShadowProjections(draws, authoredLights);
+        reflectionProbe = reflectionProbeVolume(draws);
+        previousViewProjection = cameraViewProjection(
+            camera, static_cast<float>(size.width()) / size.height());
+        TemporalFrameState temporal;
+        temporal.previousViewProjection = previousViewProjection;
         const auto constants = shaderConstantData(
             camera, size, lighting, authoredLights, panorama, colorLut,
-            shadow, dropShadow);
+            shadow, dropShadow, localShadows, reflectionProbe, temporal);
         for (std::size_t index = 0; index < constantBuffers.size(); ++index) {
             constantBuffers[index] =
                 createConstantBuffer(device.Get(), constants[index]);
@@ -3949,7 +5032,13 @@ struct OriginalDx12ViewportRenderer::Impl {
             device.Get(), shadowConstantData(shadow));
         dropShadowConstants = createConstantBuffer(
             device.Get(), shadowConstantData(dropShadow));
-        if (shadowConstants == nullptr || dropShadowConstants == nullptr) {
+        for (std::size_t index = 0; index < localShadows.size(); ++index) {
+            localShadowConstants[index] = createConstantBuffer(
+                device.Get(), shadowConstantData(localShadows[index]));
+        }
+        if (shadowConstants == nullptr || dropShadowConstants == nullptr
+            || localShadowConstants[0] == nullptr
+            || localShadowConstants[1] == nullptr) {
             failure = QStringLiteral("D3D12 viewport shadow constants failed");
             return false;
         }
@@ -4157,10 +5246,11 @@ struct OriginalDx12ViewportRenderer::Impl {
 
         D3D12_DESCRIPTOR_HEAP_DESC targetHeapDescription{};
         targetHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        targetHeapDescription.NumDescriptors = static_cast<UINT>(backBuffers.size());
+        targetHeapDescription.NumDescriptors =
+            static_cast<UINT>(backBuffers.size()) + 3u;
         D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
         depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        depthHeapDescription.NumDescriptors = 3;
+        depthHeapDescription.NumDescriptors = 6;
         if (FAILED(device->CreateDescriptorHeap(
                 &targetHeapDescription, IID_PPV_ARGS(&targetHeap)))
             || FAILED(device->CreateDescriptorHeap(
@@ -4177,7 +5267,12 @@ struct OriginalDx12ViewportRenderer::Impl {
         }
         shadowTarget = createShadowDepthTarget(device.Get());
         dropShadowTarget = createShadowDepthTarget(device.Get());
-        if (shadowTarget == nullptr || dropShadowTarget == nullptr) {
+        for (ComPtr<ID3D12Resource> &target : localShadowTargets) {
+            target = createShadowDepthTarget(device.Get());
+        }
+        if (shadowTarget == nullptr || dropShadowTarget == nullptr
+            || localShadowTargets[0] == nullptr
+            || localShadowTargets[1] == nullptr) {
             failure = QStringLiteral("D3D12 car-shadow target creation failed");
             return false;
         }
@@ -4192,6 +5287,13 @@ struct OriginalDx12ViewportRenderer::Impl {
         createShadowViews(
             device.Get(), dropShadowTarget.Get(), dropShadowDepthView,
             cpuHandleAt(kDropShadowDescriptorIndex));
+        for (std::size_t index = 0; index < localShadowTargets.size(); ++index) {
+            D3D12_CPU_DESCRIPTOR_HANDLE localDepthView = dropShadowDepthView;
+            localDepthView.ptr += (index + 1) * depthDescriptorStride;
+            createShadowViews(
+                device.Get(), localShadowTargets[index].Get(), localDepthView,
+                cpuHandleAt(kLocalShadowDescriptorIndices[index]));
+        }
         result = commands->Close();
         if (FAILED(result)) {
             failure = QStringLiteral("D3D12 viewport upload recording failed: %1")
@@ -4262,6 +5364,7 @@ struct OriginalDx12ViewportRenderer::Impl {
         queue->ExecuteCommandLists(1, lists);
         liveryCommandsInFlight = true;
         liveLiveryTexture = std::move(replacement);
+        temporalHistoryValid = false;
         return true;
     }
 
@@ -4276,6 +5379,12 @@ struct OriginalDx12ViewportRenderer::Impl {
             buffer.Reset();
         }
         depthTarget.Reset();
+        sceneTarget.Reset();
+        glassBackDepthTarget.Reset();
+        for (ComPtr<ID3D12Resource> &history : temporalHistoryTargets) {
+            history.Reset();
+        }
+        sceneTargetsReadable = false;
         viewportSize = size;
         const HRESULT result = swapChain->ResizeBuffers(
             static_cast<UINT>(backBuffers.size()),
@@ -4291,9 +5400,16 @@ struct OriginalDx12ViewportRenderer::Impl {
     }
 
     bool renderFrame(const OriginalDx12Camera &camera) {
+        const QPointF jitter = temporalJitterNdc(
+            temporalFrameIndex, viewportSize);
+        TemporalFrameState temporal;
+        temporal.previousViewProjection = previousViewProjection;
+        temporal.jitterNdc = jitter;
+        temporal.historyValid = temporalHistoryValid;
+        temporal.previousHistoryIndex = 1 - temporalWriteIndex;
         const auto constants = shaderConstantData(
             camera, viewportSize, lighting, authoredLights, panorama, colorLut,
-            shadow, dropShadow);
+            shadow, dropShadow, localShadows, reflectionProbe, temporal);
         if (!uploadBuffer(
                 constantBuffers[3].Get(), constants[3].data(), constants[3].size())
             || !uploadBuffer(
@@ -4309,6 +5425,26 @@ struct OriginalDx12ViewportRenderer::Impl {
             failure = QStringLiteral("D3D12 viewport command reset failed: %1")
                 .arg(hresultText(result));
             return false;
+        }
+        const int previousHistoryIndex = 1 - temporalWriteIndex;
+        std::array<D3D12_RESOURCE_BARRIER, 2> historyBeginBarriers{};
+        UINT historyBeginCount = 0;
+        if (temporalHistoryReadable[temporalWriteIndex]) {
+            historyBeginBarriers[historyBeginCount++] = transition(
+                temporalHistoryTargets[temporalWriteIndex].Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
+        }
+        if (!temporalHistoryReadable[previousHistoryIndex]) {
+            historyBeginBarriers[historyBeginCount++] = transition(
+                temporalHistoryTargets[previousHistoryIndex].Get(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            temporalHistoryReadable[previousHistoryIndex] = true;
+        }
+        if (historyBeginCount > 0) {
+            commands->ResourceBarrier(
+                historyBeginCount, historyBeginBarriers.data());
         }
         D3D12_CPU_DESCRIPTOR_HANDLE shadowDepthView =
             depthHeap->GetCPUDescriptorHandleForHeapStart();
@@ -4331,6 +5467,46 @@ struct OriginalDx12ViewportRenderer::Impl {
             dropShadowTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         commands->ResourceBarrier(1, &dropShadowReadBarrier);
+        for (std::size_t index = 0; index < localShadows.size(); ++index) {
+            D3D12_CPU_DESCRIPTOR_HANDLE localDepthView = dropShadowDepthView;
+            localDepthView.ptr += (index + 1) * depthDescriptorStride;
+            if (localShadows[index].valid) {
+                recordShadowPass(
+                    commands.Get(), rootSignature.Get(), shadowPipeline.Get(),
+                    localShadowConstants[index].Get(), localDepthView, draws,
+                    ShadowPassKind::Self);
+            }
+            const D3D12_RESOURCE_BARRIER localReadBarrier = transition(
+                localShadowTargets[index].Get(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            commands->ResourceBarrier(1, &localReadBarrier);
+        }
+        D3D12_CPU_DESCRIPTOR_HANDLE glassBackDepthView =
+            depthHeap->GetCPUDescriptorHandleForHeapStart();
+        glassBackDepthView.ptr += 5 * depthDescriptorStride;
+        recordGlassBackDepthPass(
+            commands.Get(), rootSignature.Get(), glassBackDepthPipeline.Get(),
+            constantBuffers[5].Get(), glassBackDepthView, viewportSize, draws);
+        const D3D12_RESOURCE_BARRIER glassDepthReadBarrier = transition(
+            glassBackDepthTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commands->ResourceBarrier(1, &glassDepthReadBarrier);
+        if (sceneTargetsReadable) {
+            const std::array<D3D12_RESOURCE_BARRIER, 2> sceneWriteBarriers = {{
+                transition(
+                    sceneTarget.Get(),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET),
+                transition(
+                    depthTarget.Get(),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            }};
+            commands->ResourceBarrier(
+                static_cast<UINT>(sceneWriteBarriers.size()),
+                sceneWriteBarriers.data());
+        }
         const UINT bufferIndex = swapChain->GetCurrentBackBufferIndex();
         const D3D12_RESOURCE_BARRIER beginBarrier = transition(
             backBuffers[bufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT,
@@ -4339,6 +5515,10 @@ struct OriginalDx12ViewportRenderer::Impl {
         D3D12_CPU_DESCRIPTOR_HANDLE targetView =
             targetHeap->GetCPUDescriptorHandleForHeapStart();
         targetView.ptr += static_cast<SIZE_T>(bufferIndex) * targetDescriptorStride;
+        D3D12_CPU_DESCRIPTOR_HANDLE sceneView =
+            targetHeap->GetCPUDescriptorHandleForHeapStart();
+        sceneView.ptr += static_cast<SIZE_T>(backBuffers.size())
+            * targetDescriptorStride;
         const D3D12_CPU_DESCRIPTOR_HANDLE depthView =
             depthHeap->GetCPUDescriptorHandleForHeapStart();
         const D3D12_VIEWPORT viewport{
@@ -4349,9 +5529,9 @@ struct OriginalDx12ViewportRenderer::Impl {
             static_cast<LONG>(viewportSize.height())};
         commands->RSSetViewports(1, &viewport);
         commands->RSSetScissorRects(1, &scissor);
-        commands->OMSetRenderTargets(1, &targetView, FALSE, &depthView);
+        commands->OMSetRenderTargets(1, &sceneView, FALSE, &depthView);
         commands->ClearRenderTargetView(
-            targetView, kClearColor.data(), 0, nullptr);
+            sceneView, kClearColor.data(), 0, nullptr);
         commands->ClearDepthStencilView(
             depthView, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         commands->SetGraphicsRootSignature(rootSignature.Get());
@@ -4399,7 +5579,31 @@ struct OriginalDx12ViewportRenderer::Impl {
                     static_cast<UINT>(draw.geometry.indices.size()), 1, 0, 0, 0);
             }
         }
-        const std::array<D3D12_RESOURCE_BARRIER, 3> endBarriers = {{
+        const std::array<D3D12_RESOURCE_BARRIER, 2> postReadBarriers = {{
+            transition(
+                sceneTarget.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            transition(
+                depthTarget.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        }};
+        commands->ResourceBarrier(
+            static_cast<UINT>(postReadBarriers.size()),
+            postReadBarriers.data());
+        D3D12_CPU_DESCRIPTOR_HANDLE historyTargetView =
+            targetHeap->GetCPUDescriptorHandleForHeapStart();
+        historyTargetView.ptr += static_cast<SIZE_T>(
+            backBuffers.size() + 1 + temporalWriteIndex)
+            * targetDescriptorStride;
+        const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> postTargets = {
+            targetView, historyTargetView};
+        commands->OMSetRenderTargets(
+            static_cast<UINT>(postTargets.size()), postTargets.data(), FALSE,
+            nullptr);
+        commands->SetPipelineState(postPipeline.Get());
+        commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        commands->DrawInstanced(3, 1, 0, 0);
+        const std::array<D3D12_RESOURCE_BARRIER, 7> endBarriers = {{
             transition(
                 backBuffers[bufferIndex].Get(),
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -4411,6 +5615,22 @@ struct OriginalDx12ViewportRenderer::Impl {
                 dropShadowTarget.Get(),
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            transition(
+                localShadowTargets[0].Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            transition(
+                localShadowTargets[1].Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            transition(
+                glassBackDepthTarget.Get(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            transition(
+                temporalHistoryTargets[temporalWriteIndex].Get(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
         }};
         commands->ResourceBarrier(
             static_cast<UINT>(endBarriers.size()), endBarriers.data());
@@ -4431,6 +5651,15 @@ struct OriginalDx12ViewportRenderer::Impl {
         if (!waitForGpu()) {
             return false;
         }
+        sceneTargetsReadable = true;
+        temporalHistoryReadable[temporalWriteIndex] = true;
+        temporalHistoryValid = true;
+        previousViewProjection = cameraViewProjection(
+            camera,
+            static_cast<float>(viewportSize.width()) / viewportSize.height(),
+            jitter);
+        temporalWriteIndex = 1 - temporalWriteIndex;
+        ++temporalFrameIndex;
         if (infoQueue != nullptr) {
             const int errors = countMessages(
                 infoQueue.Get(), D3D12_MESSAGE_SEVERITY_ERROR);

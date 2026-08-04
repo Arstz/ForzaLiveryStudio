@@ -390,6 +390,7 @@ int main(int argc, char **argv) {
     fh6::CarMesh interiorGlassMesh = glassMesh;
     interiorGlassMesh.name = QStringLiteral("glassFInt_a_LODS0");
     interiorGlassMesh.drawGroups = fh6::car_draw_groups::kCockpit;
+    interiorGlassMesh.interiorWindshield = true;
     interiorGlassMesh.material = std::make_shared<fh6::ModelMaterial>(
         *glassMesh.material);
     fh6::CarMesh blackFrameMesh = glassMesh;
@@ -447,6 +448,7 @@ int main(int argc, char **argv) {
             && exteriorGlassDraw->shaderFamily == fh6::ModelShaderFamily::Glass
             && interiorGlassDraw != scene.draws.cend()
             && interiorGlassDraw->translucent
+            && interiorGlassDraw->interiorWindshield
             && std::abs(interiorGlassDraw->opacity - 0.28f) < 0.00001f
             && reflectionDraw != scene.draws.cend()
             && reflectionDraw->translucent
