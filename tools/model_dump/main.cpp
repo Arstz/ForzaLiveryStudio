@@ -41,6 +41,52 @@ static QString findCarbin(const QString &root)
     return {};
 }
 
+static QString findModelbin(const QString &root)
+{
+    QDirIterator it(
+        root, QStringList{QStringLiteral("*.modelbin")},
+        QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        return it.next();
+    }
+    return {};
+}
+
+static void printMaterial(const QString &name, const ModelMaterial &material)
+{
+    std::printf(
+        "material '%s' resource='%s' fromLibrary=%d params=%lld "
+        "uTiling=%.4f vTiling=%.4f gloss=%.3f opacity=%.3f\n",
+        qPrintable(name), qPrintable(material.resourcePath),
+        material.resolvedFromLibrary ? 1 : 0,
+        static_cast<long long>(material.parameters.size()),
+        material.uTiling, material.vTiling, material.gloss, material.opacity);
+    std::printf(
+        "  base=(%.4f,%.4f,%.4f) hasBase=%d metallic=%.4f hasMetallic=%d\n",
+        material.baseColor[0], material.baseColor[1], material.baseColor[2],
+        material.hasBaseColor ? 1 : 0, material.metallic,
+        material.hasMetallic ? 1 : 0);
+    std::printf(
+        "  patternTex='%s'\n  detailNormalTex='%s'\n  roughMetalAoTex='%s'\n",
+        qPrintable(material.patternTexture),
+        qPrintable(material.detailNormalTexture),
+        qPrintable(material.roughMetalAoTexture));
+    for (const ModelMaterialParameter &parameter : material.parameters) {
+        if (parameter.type == ModelMaterialParameterType::Texture2D) {
+            std::printf(
+                "  tex   hash=%08X path=%s\n", parameter.nameHash,
+                qPrintable(parameter.texturePath));
+        } else {
+            std::printf(
+                "  param hash=%08X type=%d scalar=%.4f "
+                "vec=(%.3f,%.3f,%.3f,%.3f)\n",
+                parameter.nameHash, static_cast<int>(parameter.type),
+                parameter.scalar, parameter.vector[0], parameter.vector[1],
+                parameter.vector[2], parameter.vector[3]);
+        }
+    }
+}
+
 static bool resolveZipInput(QString &path, std::unique_ptr<QTemporaryDir> &tempDir)
 {
     if (!path.endsWith(QStringLiteral(".zip"), Qt::CaseInsensitive)) {
@@ -56,12 +102,16 @@ static bool resolveZipInput(QString &path, std::unique_ptr<QTemporaryDir> &tempD
         std::fprintf(stderr, "failed to extract %s: %s\n", qPrintable(path), qPrintable(error));
         return false;
     }
-    const QString carbin = findCarbin(tempDir->path());
-    if (carbin.isEmpty()) {
-        std::fprintf(stderr, "zip contains no .carbin: %s\n", qPrintable(path));
+    QString extracted = findCarbin(tempDir->path());
+    if (extracted.isEmpty()) {
+        extracted = findModelbin(tempDir->path());
+    }
+    if (extracted.isEmpty()) {
+        std::fprintf(
+            stderr, "zip contains no .carbin or .modelbin: %s\n", qPrintable(path));
         return false;
     }
-    path = carbin;
+    path = extracted;
     return true;
 }
 
@@ -488,6 +538,61 @@ int main(int argc, char *argv[])
     QString path = args[1];
     const bool verbose = args.contains(QStringLiteral("--verbose"));
 
+    if (const int entryIndex = args.indexOf(QStringLiteral("--material-entry"));
+        entryIndex >= 0 && entryIndex + 1 < args.size()) {
+        const QString entry = args[entryIndex + 1];
+        const QHash<QString, QByteArray> entries = readZipEntries(path, {entry});
+        const QByteArray bytes = entries.value(entry.toLower());
+        if (bytes.isEmpty()) {
+            std::fprintf(stderr, "material entry not found: %s\n", qPrintable(entry));
+            return 1;
+        }
+        const std::shared_ptr<ModelMaterial> material = decodeMaterialBundle(bytes);
+        if (!material) {
+            std::fprintf(stderr, "material entry did not decode: %s\n", qPrintable(entry));
+            return 1;
+        }
+        printMaterial(entry, *material);
+        return 0;
+    }
+    if (const int entryIndex = args.indexOf(QStringLiteral("--swatch-entry"));
+        entryIndex >= 0 && entryIndex + 1 < args.size()) {
+        const QString entry = args[entryIndex + 1];
+        const QHash<QString, QByteArray> entries = readZipEntries(path, {entry});
+        const QByteArray bytes = entries.value(entry.toLower());
+        QString error;
+        const auto texture = parseSwatchTexture(bytes, &error);
+        const SwatchImage image = texture
+            ? decodeSwatchImage(*texture, 0, 0, &error) : SwatchImage{};
+        if (!image.valid()) {
+            std::fprintf(
+                stderr, "swatch entry did not decode: %s: %s\n",
+                qPrintable(entry), qPrintable(error));
+            return 1;
+        }
+        std::array<int, 4> minimum = {255, 255, 255, 255};
+        std::array<int, 4> maximum = {0, 0, 0, 0};
+        std::array<double, 4> total = {};
+        const std::size_t pixels = image.rgba.size() / 4;
+        for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+            for (std::size_t channel = 0; channel < 4; ++channel) {
+                const int value = image.rgba[pixel * 4 + channel];
+                minimum[channel] = std::min(minimum[channel], value);
+                maximum[channel] = std::max(maximum[channel], value);
+                total[channel] += value;
+            }
+        }
+        std::printf(
+            "%s\n  image %dx%d rgba min=(%d,%d,%d,%d) "
+            "max=(%d,%d,%d,%d) mean=(%.2f,%.2f,%.2f,%.2f)\n",
+            qPrintable(entry), image.width, image.height,
+            minimum[0], minimum[1], minimum[2], minimum[3],
+            maximum[0], maximum[1], maximum[2], maximum[3],
+            total[0] / pixels, total[1] / pixels,
+            total[2] / pixels, total[3] / pixels);
+        return 0;
+    }
+
     if (path.endsWith(QStringLiteral(".swatchbin"), Qt::CaseInsensitive)) {
         return dumpSwatchbin(path);
     }
@@ -522,24 +627,7 @@ int main(int argc, char *argv[])
                 continue;
             }
             seen.insert(key);
-            std::printf("material '%s' resource='%s' fromLibrary=%d params=%lld uTiling=%.4f vTiling=%.4f gloss=%.3f\n",
-                        qPrintable(mesh.materialName), qPrintable(mesh.material->resourcePath),
-                        mesh.material->resolvedFromLibrary ? 1 : 0,
-                        static_cast<long long>(mesh.material->parameters.size()),
-                        mesh.material->uTiling, mesh.material->vTiling, mesh.material->gloss);
-            std::printf("  patternTex='%s'\n  detailNormalTex='%s'\n  roughMetalAoTex='%s'\n",
-                        qPrintable(mesh.material->patternTexture),
-                        qPrintable(mesh.material->detailNormalTexture),
-                        qPrintable(mesh.material->roughMetalAoTexture));
-            for (const ModelMaterialParameter &p : mesh.material->parameters) {
-                if (p.type == ModelMaterialParameterType::Texture2D) {
-                    std::printf("  tex   hash=%08X path=%s\n", p.nameHash, qPrintable(p.texturePath));
-                } else {
-                    std::printf("  param hash=%08X type=%d scalar=%.4f vec=(%.3f,%.3f,%.3f,%.3f)\n",
-                                p.nameHash, static_cast<int>(p.type), p.scalar,
-                                p.vector[0], p.vector[1], p.vector[2], p.vector[3]);
-                }
-            }
+            printMaterial(mesh.materialName, *mesh.material);
         }
         return 0;
     }
@@ -626,10 +714,11 @@ int main(int argc, char *argv[])
                 }
             }
             const double inv = mesh.positions.empty() ? 1.0 : 1.0 / mesh.positions.size();
-            std::printf("  [%3d] %-24s mat=%-18s instance=%-4d paint=%016llX params=%-4lld rgba(%.3f,%.3f,%.3f,%.3f) gloss=%.3f verts=%-6lld  centroid(%.2f,%.2f,%.2f) avgN(%.2f,%.2f,%.2f)\n",
+            std::printf("  [%3d] %-24s mat=%-18s instance=%-4d groups=%02X paint=%016llX params=%-4lld rgba(%.3f,%.3f,%.3f,%.3f) gloss=%.3f verts=%-6lld  centroid(%.2f,%.2f,%.2f) avgN(%.2f,%.2f,%.2f)\n",
                         i++, qPrintable(mesh.name.isEmpty() ? QStringLiteral("(unnamed)") : mesh.name),
                         qPrintable(mesh.materialName.isEmpty() ? QStringLiteral("(none)") : mesh.materialName),
                         mesh.modelInstanceId,
+                        mesh.drawGroups,
                         static_cast<unsigned long long>(mesh.paintMaterialHash),
                         static_cast<long long>(mesh.material ? mesh.material->parameters.size() : 0),
                         mesh.material ? mesh.material->baseColor[0] : 0.0f,

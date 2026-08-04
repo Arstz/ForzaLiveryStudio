@@ -529,9 +529,6 @@ QString semanticMaterialArchiveEntry(QString materialName) {
     if (materialName.contains(QStringLiteral("wood"))) {
         return QStringLiteral("_fmnext/wood/wood.materialbin");
     }
-    if (materialName.contains(QStringLiteral("gls_clear"))) {
-        return QStringLiteral("exterior_glass/gls_clear.materialbin");
-    }
     if (materialName.contains(QStringLiteral("titanium"))) {
         return QStringLiteral("_fmnext/metal/titanium.materialbin");
     }
@@ -676,6 +673,8 @@ enum class NativeTextureSlot {
     WeaveNormal,
     ClearCoatNormal,
     Surface,
+    TireHeightAo,
+    Ao,
     Emissive,
     PaintNormalMap00,
     PaintNormalMap0,
@@ -703,6 +702,15 @@ NativeTextureSlot nativeTextureSlot(const fh6::ModelMaterialParameter &parameter
     }
     if (parameter.nameHash == fh6::material_hashes::parameter::kClearCoatNormalTexture) {
         return NativeTextureSlot::ClearCoatNormal;
+    }
+    if (parameter.nameHash
+        == fh6::material_hashes::parameter::kTireHeightAoTexture) {
+        return NativeTextureSlot::TireHeightAo;
+    }
+    if (fh6::material_hashes::contains(
+            fh6::material_hashes::parameter::kAoTexture,
+            parameter.nameHash)) {
+        return NativeTextureSlot::Ao;
     }
     if (parameter.nameHash == fh6::material_hashes::parameter::kNormalTexture
         || path.contains(QStringLiteral("normal"))
@@ -798,6 +806,12 @@ void assignNativeTexture(fh6::ModelMaterial &material,
         break;
     case NativeTextureSlot::Surface:
         material.surfaceTexture = texture;
+        break;
+    case NativeTextureSlot::TireHeightAo:
+        material.tireHeightAoTexture = texture;
+        break;
+    case NativeTextureSlot::Ao:
+        material.aoTexture = texture;
         break;
     case NativeTextureSlot::Emissive:
         material.emissiveTexture = texture;

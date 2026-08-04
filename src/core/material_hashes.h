@@ -120,6 +120,7 @@ inline constexpr std::array<quint32, 2> kTextureTilingV = {
     0x4A3D8375, 0x3E95E96D,
 };
 inline constexpr quint32 kTextureTiling = 0xB99646E7;
+inline constexpr quint32 kRoughnessShift = 0x4E282123;
 
 inline constexpr std::array<quint32, 4> kMetallic = {
     0x938926B0, 0xA415641F, 0x1F9B6488, 0x9114636B,
@@ -132,6 +133,10 @@ inline constexpr std::array<quint32, 2> kFlakeAmount = {
 inline constexpr quint32 kColorTexture = 0x85E937A9;
 inline constexpr quint32 kNormalTexture = 0xF9E8078D;
 inline constexpr quint32 kSurfaceTexture = 0x8D9C56EF;
+inline constexpr quint32 kTireHeightAoTexture = 0x86AB1BDA;
+inline constexpr std::array<quint32, 2> kAoTexture = {
+    0x7FDA2F1B, 0x0FEA383B,
+};
 inline constexpr quint32 kNormalMap00Texture = 0xA0256751;
 inline constexpr quint32 kNormalMap0Texture = 0x8FC670E1;
 inline constexpr quint32 kOrangePeelNormalTexture = 0x8C7FDE22;

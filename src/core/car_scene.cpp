@@ -117,6 +117,7 @@ struct PartInstance {
     QString boneName;
     qint16 boneId = -1;
     int partType = -1;
+    quint32 drawGroups = 0;
     bool stock = true;
     std::vector<MaterialBinding> materialBindings;
 };
@@ -146,7 +147,7 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion) {
     part.boneName = c.str();
     part.boneId = c.i16();
     c.bl();  // SnapToParent
-    c.i32(); // DrawGroups
+    part.drawGroups = static_cast<quint32>(c.i32());
 
     if (version < 9) {
         c.str(); // AOSwatchPath
@@ -830,6 +831,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             mesh.carPartType = part.partType;
             mesh.modelInstanceId = currentInstanceId;
+            mesh.drawGroups = part.drawGroups;
             mesh.stockPart = stock;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
@@ -859,6 +861,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                 mesh.boneTransform = matMul(mesh.boneTransform, instance);
                 mesh.carPartType = part.partType;
                 mesh.modelInstanceId = currentInstanceId;
+                mesh.drawGroups = part.drawGroups;
                 mesh.stockPart = true;
                 if (isWheelModelPath(part.path)) {
                     const bool front = corner >= 0

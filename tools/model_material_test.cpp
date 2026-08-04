@@ -91,6 +91,7 @@ void testAutomotivePaintRetentionAndOverrides() {
         scalar(kWeaveNormalIntensity, 0.42f),
         scalar(kClearCoatNormalUTiling, 7.0f),
         scalar(kClearCoatNormalVTiling, 9.0f),
+        scalar(kRoughnessShift, 0.20f),
         vector(kWeaveColorTintA, {0.01f, 0.02f, 0.03f, 1.0f}),
         vector(kWeaveColorTintB, {0.10f, 0.20f, 0.30f, 1.0f}),
         sampler(2, 3, 0),
@@ -104,6 +105,7 @@ void testAutomotivePaintRetentionAndOverrides() {
         scalar(kClearcoatCoverage, 0.25f),
         boolean(kClearcoatOnLivery, false),
         scalar(kUvOrientation, 90.0f),
+        scalar(kRoughnessShift, -0.15f),
         texture(kNormalMap0Texture, "coarse_override.swatchbin"),
     };
 
@@ -139,6 +141,7 @@ void testAutomotivePaintRetentionAndOverrides() {
     CHECK(near(merged->weaveNormalIntensity, 0.42f));
     CHECK(near(merged->clearCoatNormalUTiling, 7.0f));
     CHECK(near(merged->clearCoatNormalVTiling, 9.0f));
+    CHECK(merged->hasRoughnessShift && near(merged->roughnessShift, -0.15f));
     CHECK(near(merged->weaveColorTintA[2], 0.03f));
     CHECK(near(merged->weaveColorTintB[1], 0.20f));
     CHECK(merged->sampler.authored && merged->sampler.addressU == 2

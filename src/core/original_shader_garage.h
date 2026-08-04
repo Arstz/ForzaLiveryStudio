@@ -50,6 +50,8 @@ struct OriginalShaderGarageDraw {
     std::shared_ptr<const OriginalShaderMaterialTexture> weaveNormalTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> clearCoatNormalTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> surfaceTexture;
+    std::shared_ptr<const OriginalShaderMaterialTexture> tireHeightAoTexture;
+    std::shared_ptr<const OriginalShaderMaterialTexture> aoTexture;
     std::shared_ptr<const OriginalShaderMaterialTexture> emissiveTexture;
     int diffuseUvChannel = 0;
     int materialUvChannel = 0;
@@ -60,6 +62,7 @@ struct OriginalShaderGarageDraw {
     std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
     float opacity = 1.0f;
     float gloss = 0.45f;
+    float roughnessShift = 0.0f;
     float metallic = 0.0f;
     float flakeCoverage = 0.0f;
     float flakeRoughness = 0.4f;
@@ -87,6 +90,7 @@ struct OriginalShaderGarageDraw {
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
+    quint32 drawGroups = 0;
     ModelMaterialSampler sampler;
     ModelShaderFamily shaderFamily = ModelShaderFamily::Generic;
 

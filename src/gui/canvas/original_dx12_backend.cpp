@@ -126,7 +126,7 @@ constexpr float kDropShadowStrength = 0.35f;
 constexpr float kShadowDepthBias = 0.0015f;
 constexpr UINT kFixedDescriptorCount = 176;
 constexpr UINT kMaterialDescriptorStart = 124;
-constexpr UINT kMaterialDescriptorCount = 19;
+constexpr UINT kMaterialDescriptorCount = 21;
 
 struct Vertex {
     float position[3];
@@ -143,6 +143,7 @@ struct Geometry {
 
 struct DrawResources {
     Geometry geometry;
+    QVector3D center;
     ComPtr<ID3D12Resource> vertexBuffer;
     ComPtr<ID3D12Resource> indexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vertexView{};
@@ -157,6 +158,8 @@ struct DrawResources {
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> weaveNormalTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> clearCoatNormalTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> surfaceTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> tireHeightAoTexture;
+    std::shared_ptr<const fh6::OriginalShaderMaterialTexture> aoTexture;
     std::shared_ptr<const fh6::OriginalShaderMaterialTexture> emissiveTexture;
     std::array<float, 3> baseColor = {0.55f, 0.55f, 0.55f};
     std::array<float, 3> secondaryPaintColor = {0.55f, 0.55f, 0.55f};
@@ -164,6 +167,7 @@ struct DrawResources {
     std::array<float, 3> emissiveColor = {0.0f, 0.0f, 0.0f};
     float opacity = 1.0f;
     float gloss = 0.45f;
+    float roughnessShift = 0.0f;
     float metallic = 0.0f;
     float flakeCoverage = 0.0f;
     float flakeRoughness = 0.4f;
@@ -191,6 +195,7 @@ struct DrawResources {
     bool clearCoatOnLivery = true;
     bool liveryBaseTexture = false;
     quint32 liveryAllowedSides = 0;
+    quint32 drawGroups = 0;
     fh6::ModelMaterialSampler sampler;
     fh6::ModelShaderFamily shaderFamily = fh6::ModelShaderFamily::Generic;
     int liverySideCount = 0;
@@ -200,6 +205,38 @@ struct DrawResources {
     fh6::OriginalShaderSurfaceFamily family =
         fh6::OriginalShaderSurfaceFamily::Default;
 };
+
+QVector3D geometryCenter(const Geometry &geometry) {
+    QVector3D center;
+    if (geometry.vertices.empty()) {
+        return center;
+    }
+    for (const Vertex &vertex : geometry.vertices) {
+        center += QVector3D(
+            vertex.position[0], vertex.position[1], vertex.position[2]);
+    }
+    return center / static_cast<float>(geometry.vertices.size());
+}
+
+std::vector<const DrawResources *> drawPassOrder(
+    const std::vector<DrawResources> &draws, bool translucent,
+    const QVector3D &cameraPosition) {
+    std::vector<const DrawResources *> ordered;
+    ordered.reserve(draws.size());
+    for (const DrawResources &draw : draws) {
+        if (draw.visible && draw.translucent == translucent) {
+            ordered.push_back(&draw);
+        }
+    }
+    if (translucent) {
+        std::stable_sort(
+            ordered.begin(), ordered.end(), [&](const auto *left, const auto *right) {
+                return (left->center - cameraPosition).lengthSquared()
+                    > (right->center - cameraPosition).lengthSquared();
+            });
+    }
+    return ordered;
+}
 
 struct UploadedTexture {
     ComPtr<ID3D12Resource> texture;
@@ -1297,6 +1334,7 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     writeFloat(&data, 40, 0, draw.clearCoatTint[0]);
     writeFloat(&data, 40, 1, draw.clearCoatTint[1]);
     writeFloat(&data, 40, 2, draw.clearCoatTint[2]);
+    writeFloat(&data, 40, 3, draw.roughnessShift);
     writeFloat(&data, 41, 0, draw.normalIntensity);
     writeFloat(&data, 41, 1, draw.weaveNormalIntensity);
     writeFloat(&data, 41, 2, draw.clearCoatNormalUTiling);
@@ -1309,6 +1347,10 @@ std::vector<std::uint8_t> materialConstantData(const DrawResources &draw) {
     writeUint(&data, 44, 1, draw.weaveMaskTexture != nullptr ? 1u : 0u);
     writeUint(&data, 44, 2, draw.weaveNormalTexture != nullptr ? 1u : 0u);
     writeUint(&data, 44, 3, draw.clearCoatNormalTexture != nullptr ? 1u : 0u);
+    writeFloat(
+        &data, 39, 3,
+        (draw.tireHeightAoTexture != nullptr ? 1.0f : 0.0f)
+            + (draw.aoTexture != nullptr ? 2.0f : 0.0f));
     for (UINT component = 0; component < 3; ++component) {
         writeFloat(&data, 45, component, draw.secondaryPaintColor[component]);
         writeFloat(&data, 46, component, draw.flakeColor[component]);
@@ -1943,6 +1985,8 @@ Texture2D<float4> alphaTexture : register(t15, space1);
 Texture2D<float4> weaveMaskTexture : register(t16, space1);
 Texture2D<float4> weaveNormalTexture : register(t17, space1);
 Texture2D<float4> clearCoatNormalTexture : register(t18, space1);
+Texture2D<float4> tireHeightAoTexture : register(t19, space1);
+Texture2D<float4> aoTexture : register(t20, space1);
 SamplerState materialSampler : register(s0);
 SamplerState liverySampler : register(s12);
 SamplerComparisonState shadowSampler : register(s13);
@@ -2065,6 +2109,17 @@ float3 applyMappedNormal(
 
 )hlsl") + QByteArrayLiteral(R"hlsl(
 
+static const float2 shadowDisk[16] = {
+    float2(-0.94201624, -0.39906216), float2(0.94558609, -0.76890725),
+    float2(-0.09418410, -0.92938870), float2(0.34495938, 0.29387760),
+    float2(-0.91588581, 0.45771432), float2(-0.81544232, -0.87912464),
+    float2(-0.38277543, 0.27676845), float2(0.97484398, 0.75648379),
+    float2(0.44323325, -0.97511554), float2(0.53742981, -0.47373420),
+    float2(-0.26496911, -0.41893023), float2(0.79197514, 0.19090188),
+    float2(-0.24188840, 0.99706507), float2(-0.81409955, 0.91437590),
+    float2(0.19984126, 0.78641367), float2(0.14383161, -0.14100790)
+};
+
 float shadowVisibility(float3 worldPosition) {
     if (shadowParameters.w < 0.5) {
         return 1.0;
@@ -2077,18 +2132,35 @@ float shadowVisibility(float3 worldPosition) {
         || shadowCoordinate.z <= 0.0 || shadowCoordinate.z >= 1.0) {
         return 1.0;
     }
-    float visibility = 0.0;
+    // Approximate the area-light penumbra from the distance between the
+    // receiver and nearby blockers.  Contact remains defined while gaps
+    // between car parts soften, unlike the old fixed square PCF kernel.
+    float receiverDepth = shadowCoordinate.z - shadowParameters.z;
+    float blockerDepth = 0.0;
+    float blockerCount = 0.0;
     [unroll]
-    for (int y = -2; y <= 2; ++y) {
-        [unroll]
-        for (int x = -2; x <= 2; ++x) {
-            visibility += shadowMap.SampleCmpLevelZero(
-                shadowSampler,
-                uv + float2(x, y) * shadowParameters.x,
-                shadowCoordinate.z - shadowParameters.z);
+    for (int blockerIndex = 0; blockerIndex < 16; ++blockerIndex) {
+        int2 texel = int2(uv * 2048.0 + shadowDisk[blockerIndex] * 5.0);
+        texel = clamp(texel, int2(0, 0), int2(2047, 2047));
+        float depth = shadowMap.Load(int3(texel, 0));
+        if (depth < receiverDepth) {
+            blockerDepth += depth;
+            blockerCount += 1.0;
         }
     }
-    return visibility / 25.0;
+    float averageBlocker = blockerCount > 0.0
+        ? blockerDepth / blockerCount : receiverDepth;
+    float separation = saturate((receiverDepth - averageBlocker) * 45.0);
+    float filterRadius = lerp(2.5, 13.0, separation);
+    float visibility = 0.0;
+    [unroll]
+    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+        visibility += shadowMap.SampleCmpLevelZero(
+            shadowSampler,
+            uv + shadowDisk[sampleIndex] * shadowParameters.x * filterRadius,
+            receiverDepth);
+    }
+    return visibility / 16.0;
 }
 
 float dropShadowVisibility(float3 worldPosition) {
@@ -2102,18 +2174,33 @@ float dropShadowVisibility(float3 worldPosition) {
         || any(uv <= 0.0) || any(uv >= 1.0)) {
         return 1.0;
     }
-    float visibility = 0.0;
+    float receiverDepth = projected.z - dropShadowParameters.z;
+    float blockerDepth = 0.0;
+    float blockerCount = 0.0;
     [unroll]
-    for (int y = -2; y <= 2; ++y) {
-        [unroll]
-        for (int x = -2; x <= 2; ++x) {
-            visibility += dropShadowMap.SampleCmpLevelZero(
-                shadowSampler,
-                uv + float2(x, y) * dropShadowParameters.x * 3.0,
-                projected.z - dropShadowParameters.z);
+    for (int blockerIndex = 0; blockerIndex < 16; ++blockerIndex) {
+        int2 texel = int2(uv * 2048.0 + shadowDisk[blockerIndex] * 7.0);
+        texel = clamp(texel, int2(0, 0), int2(2047, 2047));
+        float depth = dropShadowMap.Load(int3(texel, 0));
+        if (depth < receiverDepth) {
+            blockerDepth += depth;
+            blockerCount += 1.0;
         }
     }
-    return visibility / 25.0;
+    float averageBlocker = blockerCount > 0.0
+        ? blockerDepth / blockerCount : receiverDepth;
+    float separation = saturate((receiverDepth - averageBlocker) * 38.0);
+    float filterRadius = lerp(7.0, 22.0, separation);
+    float visibility = 0.0;
+    [unroll]
+    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+        visibility += dropShadowMap.SampleCmpLevelZero(
+            shadowSampler,
+            uv + shadowDisk[sampleIndex] * dropShadowParameters.x
+                * filterRadius,
+            receiverDepth);
+    }
+    return visibility / 16.0;
 }
 
 float finishGlitter(float3 worldPosition, float facing) {
@@ -2132,6 +2219,8 @@ float finishGlitter(float3 worldPosition, float facing) {
         highlightStart, 1.0, facing + (randomFacing - 0.5) * 0.05);
     return active * lit;
 }
+
+)hlsl") + QByteArrayLiteral(R"hlsl(
 
 float4 PSMain(PixelInput input) : SV_Target0 {
     float2 uv = input.uv * textureParameters.yz;
@@ -2228,6 +2317,14 @@ float4 PSMain(PixelInput input) : SV_Target0 {
         metallic = saturate(rmao.g);
         ao = saturate(rmao.b);
     }
+    roughness = saturate(roughness + clearCoatTint.w);
+    if (clearCoatParameters.w == 1.0 || clearCoatParameters.w == 3.0) {
+        float4 tireHeightAo = tireHeightAoTexture.Sample(materialSampler, detailUv);
+        ao *= saturate(tireHeightAo.g);
+    }
+    if (clearCoatParameters.w >= 2.0) {
+        ao *= saturate(aoTexture.Sample(materialSampler, detailUv).r);
+    }
     roughness = max(roughness, 0.045);
 
     float3 v = normalize(cameraPosition.xyz - input.worldPosition);
@@ -2253,18 +2350,24 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     float3 reflected = reflect(-v, n);
     float3 reflectedEnvironment = specularEnvironment.SampleLevel(
         materialSampler, reflected, roughness * 9.0).rgb;
+    float rawShadowVisibility = 1.0;
     float directionalVisibility = 1.0;
     if (liveryParameters.w == 2u) {
+        rawShadowVisibility = shadowVisibility(input.worldPosition);
         directionalVisibility = lerp(
-            1.0, shadowVisibility(input.worldPosition), shadowParameters.y);
+            1.0, rawShadowVisibility, shadowParameters.y);
     }
-    // ReceiveShadowMask applies to the focus-car lighting aggregate.  The
-    // authored garage contains many local fixtures, so leaving every point
-    // light unmasked washes away shadows cast between car parts.  Preserve a
-    // soft indirect floor while letting the car shadow map attenuate its local
-    // direct-light sum.
+    // A single directional shadow must not masquerade as shadows from every
+    // local garage fixture. Keep their fill light, but attenuate enough for
+    // close part-on-part occlusion to remain visible.
     float localLightVisibility = liveryParameters.w == 2u
-        ? lerp(0.35, 1.0, directionalVisibility) : 1.0;
+        ? lerp(0.72, 1.0, sqrt(rawShadowVisibility)) : 1.0;
+    // Feed near-field self-shadowing into indirect and specular occlusion.
+    // This restores depth in wheel wells, vents, brakes, and overlapping body
+    // parts without turning the whole car into one hard single-light shadow.
+    float geometryOcclusion = liveryParameters.w == 2u
+        ? lerp(0.62, 1.0, sqrt(rawShadowVisibility)) : 1.0;
+    ao *= geometryOcclusion;
     float3 color = (diffuse + specular) * directColor.rgb
         * ndotl * directionalVisibility;
     float glitterFacing = ndotl > 0.0 ? saturate(dot(n, h)) : 0.0;
@@ -2344,15 +2447,23 @@ float4 PSMain(PixelInput input) : SV_Target0 {
             * (pow(1.0 - coatNdotV, 4.0) * 0.06 * coatIntensity);
     }
     if (materialFamilyParameters.x == 3u) {
-        // Thin automotive glass transmits the already-rendered scene through
-        // alpha, while its Fresnel reflection remains a surface contribution.
-        // Compensate the reflected probe for straight-alpha composition so it
-        // is not incorrectly faded by the transmission amount.
-        float glassAlpha = max(baseColor.a, 0.05);
         float3 glassReflection = reflectedEnvironment
             * environmentBrdfApproximation(
                 float3(0.04, 0.04, 0.04), roughness, ndotv);
-        color = color * 0.10 + glassReflection / glassAlpha;
+        float3 glassTint = max(albedo, float3(0.001, 0.001, 0.001));
+        // GlassColor is absorption/transmission tint, not an opaque diffuse
+        // colour. Neutralize the strongly blue garage probe at normal angles
+        // while retaining a brighter authored reflection at grazing angles.
+        float reflectionLuminance = dot(
+            glassReflection, float3(0.2126, 0.7152, 0.0722));
+        float edgeReflection = pow(1.0 - ndotv, 5.0);
+        float3 neutralReflection = lerp(
+            reflectionLuminance.xxx, glassReflection,
+            lerp(0.18, 0.72, edgeReflection));
+        float3 absorption = float3(0.0045, 0.0050, 0.0052)
+            + glassTint * 0.018;
+        color = absorption + neutralReflection
+            * lerp(0.42, 0.88, edgeReflection);
     }
     // Homespace's plane-mode car drop shadow is a separate floor composite.
     // Applying it after the floor's ambient/probe lighting prevents those terms
@@ -2374,6 +2485,10 @@ float4 PSMain(PixelInput input) : SV_Target0 {
     }
     if (textureParameters.w > 0.5) {
         outputAlpha *= alphaTexture.Sample(materialSampler, detailUv).r;
+    }
+    if (materialFamilyParameters.x == 3u) {
+        float glassEdge = pow(1.0 - ndotv, 5.0);
+        outputAlpha = saturate(outputAlpha * lerp(1.10, 1.35, glassEdge));
     }
     if (outputAlpha < 0.02) {
         discard;
@@ -2830,6 +2945,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             source.geometry, source.placement, source.diffuseUvChannel,
             source.rawMaterialUv, source.materialUvChannel,
             source.materialUvRotationDegrees);
+        draw.center = geometryCenter(draw.geometry);
         draw.family = source.family;
         draw.diffuseTexture = source.diffuseTexture;
         draw.alphaTexture = source.alphaTexture;
@@ -2838,6 +2954,8 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.weaveNormalTexture = source.weaveNormalTexture;
         draw.clearCoatNormalTexture = source.clearCoatNormalTexture;
         draw.surfaceTexture = source.surfaceTexture;
+        draw.tireHeightAoTexture = source.tireHeightAoTexture;
+        draw.aoTexture = source.aoTexture;
         draw.emissiveTexture = source.emissiveTexture;
         draw.baseColor = source.baseColor;
         draw.secondaryPaintColor = source.secondaryPaintColor;
@@ -2845,6 +2963,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.emissiveColor = source.emissiveColor;
         draw.opacity = source.opacity;
         draw.gloss = source.gloss;
+        draw.roughnessShift = source.roughnessShift;
         draw.metallic = source.metallic;
         draw.flakeCoverage = source.flakeCoverage;
         draw.flakeRoughness = source.flakeRoughness;
@@ -2873,7 +2992,9 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         // focus car's detailed receive-shadow mask. Opaque visible geometry
         // supplies part-on-part self-shadow; the proxy supplies only the floor
         // footprint, with detailed geometry as a fallback for models lacking it.
-        draw.selfShadowCaster = !source.shadowCasterOnly
+        const bool authoredShadowMember = source.drawGroups == 0
+            || (source.drawGroups & fh6::car_draw_groups::kShadow) != 0;
+        draw.selfShadowCaster = authoredShadowMember && !source.shadowCasterOnly
             && source.family == fh6::OriginalShaderSurfaceFamily::Car
             && !source.translucent;
         draw.dropShadowCaster = source.shadowCasterOnly
@@ -2881,6 +3002,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         draw.visible = !source.shadowCasterOnly;
         draw.liveryBaseTexture = source.liveryBaseTexture;
         draw.liveryAllowedSides = source.liveryAllowedSides;
+        draw.drawGroups = source.drawGroups;
         if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
             draw.liverySideCount = scene.liveryMapping.sideCount;
             draw.liverySourceRegions = scene.liveryMapping.sourceRegions;
@@ -3031,7 +3153,7 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         materialTextures.push_back(std::move(texture));
     }
     std::vector<UploadedTexture> authoredMaterialTextures;
-    authoredMaterialTextures.reserve(draws.size() * 8);
+    authoredMaterialTextures.reserve(draws.size() * 10);
     std::unordered_map<const fh6::OriginalShaderMaterialTexture *, std::size_t>
         authoredTextureIndices;
     std::array<UploadedTexture, fh6::kLiverySideCount> liveryMaskTextures;
@@ -3066,12 +3188,14 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
             materialTextures[1].texture.Get(), &fallbackView,
             cpuHandleAt(draw.materialDescriptorStart + 15u));
         const std::array<std::pair<
-            std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 8>
+            std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 10>
             sources = {{{draw.diffuseTexture, 0u}, {draw.normalTexture, 1u},
                         {draw.surfaceTexture, 2u}, {draw.emissiveTexture, 3u},
                         {draw.alphaTexture, 15u}, {draw.weaveMaskTexture, 16u},
                         {draw.weaveNormalTexture, 17u},
-                        {draw.clearCoatNormalTexture, 18u}}};
+                        {draw.clearCoatNormalTexture, 18u},
+                        {draw.tireHeightAoTexture, 19u},
+                        {draw.aoTexture, 20u}}};
         for (const auto &[source, slot] : sources) {
             if (source == nullptr || !source->valid()) {
                 continue;
@@ -3300,10 +3424,9 @@ OriginalDx12FrameResult renderOriginalDx12GarageFrame(
         commands->SetPipelineState(
             translucentPass ? translucentMaterialPipeline.Get()
                             : materialPipeline.Get());
-        for (const DrawResources &draw : draws) {
-            if (!draw.visible || draw.translucent != translucentPass) {
-                continue;
-            }
+        for (const DrawResources *drawPointer
+             : drawPassOrder(draws, translucentPass, camera.position)) {
+            const DrawResources &draw = *drawPointer;
             commands->SetGraphicsRootDescriptorTable(
                 9, gpuHandleAt(draw.materialDescriptorStart));
             commands->SetGraphicsRootDescriptorTable(
@@ -3709,6 +3832,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 source.geometry, source.placement, source.diffuseUvChannel,
                 source.rawMaterialUv, source.materialUvChannel,
                 source.materialUvRotationDegrees);
+            draw.center = geometryCenter(draw.geometry);
             draw.family = source.family;
             draw.diffuseTexture = source.diffuseTexture;
             draw.alphaTexture = source.alphaTexture;
@@ -3717,6 +3841,8 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.weaveNormalTexture = source.weaveNormalTexture;
             draw.clearCoatNormalTexture = source.clearCoatNormalTexture;
             draw.surfaceTexture = source.surfaceTexture;
+            draw.tireHeightAoTexture = source.tireHeightAoTexture;
+            draw.aoTexture = source.aoTexture;
             draw.emissiveTexture = source.emissiveTexture;
             draw.baseColor = source.baseColor;
             draw.secondaryPaintColor = source.secondaryPaintColor;
@@ -3724,6 +3850,7 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.emissiveColor = source.emissiveColor;
             draw.opacity = source.opacity;
             draw.gloss = source.gloss;
+            draw.roughnessShift = source.roughnessShift;
             draw.metallic = source.metallic;
             draw.flakeCoverage = source.flakeCoverage;
             draw.flakeRoughness = source.flakeRoughness;
@@ -3748,7 +3875,9 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.clearCoatRoughness = source.clearCoatRoughness;
             draw.clearCoatOnLivery = source.clearCoatOnLivery;
             draw.translucent = source.translucent;
-            draw.selfShadowCaster = !source.shadowCasterOnly
+            const bool authoredShadowMember = source.drawGroups == 0
+                || (source.drawGroups & fh6::car_draw_groups::kShadow) != 0;
+            draw.selfShadowCaster = authoredShadowMember && !source.shadowCasterOnly
                 && source.family == fh6::OriginalShaderSurfaceFamily::Car
                 && !source.translucent;
             draw.dropShadowCaster = source.shadowCasterOnly
@@ -3756,6 +3885,7 @@ struct OriginalDx12ViewportRenderer::Impl {
             draw.visible = !source.shadowCasterOnly;
             draw.liveryBaseTexture = source.liveryBaseTexture;
             draw.liveryAllowedSides = source.liveryAllowedSides;
+            draw.drawGroups = source.drawGroups;
             if (source.liveryBaseTexture && scene.liveryMapping.valid()) {
                 draw.liverySideCount = scene.liveryMapping.sideCount;
                 draw.liverySourceRegions = scene.liveryMapping.sourceRegions;
@@ -3889,7 +4019,7 @@ struct OriginalDx12ViewportRenderer::Impl {
                 cpuHandleAt(kMaterialDescriptorStart + static_cast<UINT>(index)));
             materialTextures.push_back(std::move(texture));
         }
-        authoredMaterialTextures.reserve(draws.size() * 8);
+        authoredMaterialTextures.reserve(draws.size() * 10);
         std::unordered_map<const fh6::OriginalShaderMaterialTexture *, std::size_t>
             authoredTextureIndices;
         if (scene.liveryMapping.valid()) {
@@ -3923,12 +4053,14 @@ struct OriginalDx12ViewportRenderer::Impl {
                 materialTextures[1].texture.Get(), &fallbackView,
                 cpuHandleAt(draw.materialDescriptorStart + 15u));
             const std::array<std::pair<
-                std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 8>
+                std::shared_ptr<const fh6::OriginalShaderMaterialTexture>, UINT>, 10>
                 sources = {{{draw.diffuseTexture, 0u}, {draw.normalTexture, 1u},
                             {draw.surfaceTexture, 2u}, {draw.emissiveTexture, 3u},
                             {draw.alphaTexture, 15u}, {draw.weaveMaskTexture, 16u},
                             {draw.weaveNormalTexture, 17u},
-                            {draw.clearCoatNormalTexture, 18u}}};
+                            {draw.clearCoatNormalTexture, 18u},
+                            {draw.tireHeightAoTexture, 19u},
+                            {draw.aoTexture, 20u}}};
             for (const auto &[source, slot] : sources) {
                 if (source == nullptr || !source->valid()) {
                     continue;
@@ -4252,10 +4384,9 @@ struct OriginalDx12ViewportRenderer::Impl {
             commands->SetPipelineState(
                 translucentPass ? translucentMaterialPipeline.Get()
                                 : materialPipeline.Get());
-            for (const DrawResources &draw : draws) {
-                if (!draw.visible || draw.translucent != translucentPass) {
-                    continue;
-                }
+            for (const DrawResources *drawPointer
+                 : drawPassOrder(draws, translucentPass, camera.position)) {
+                const DrawResources &draw = *drawPointer;
                 commands->SetGraphicsRootDescriptorTable(
                     9, gpuHandleAt(draw.materialDescriptorStart));
                 commands->SetGraphicsRootDescriptorTable(

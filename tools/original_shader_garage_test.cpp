@@ -364,11 +364,17 @@ int main(int argc, char **argv) {
     glassCar.boundsMin = {-1.0f, 0.0f, -1.0f};
     glassCar.boundsMax = {1.0f, 1.0f, 1.0f};
     fh6::CarMesh glassMesh;
-    glassMesh.name = QStringLiteral("window_front_LODS0");
-    glassMesh.materialName = QStringLiteral("windowglass");
+    glassMesh.name = QStringLiteral("glassF_a_LODS0");
+    glassMesh.materialName = QStringLiteral("gls_windshield");
+    glassMesh.drawGroups = fh6::car_draw_groups::kExterior
+        | fh6::car_draw_groups::kShadow;
     glassMesh.material = std::make_shared<fh6::ModelMaterial>();
     glassMesh.material->resourcePath = QStringLiteral(
-        "Game:/Media/Cars/_library/materials/glass/windowglass.materialbin");
+        "Game:/Media/Cars/_library/materials/_fmnext/glass/"
+        "glass_windshield.materialbin");
+    glassMesh.material->resolvedFromLibrary = true;
+    glassMesh.material->hasBaseColor = true;
+    glassMesh.material->baseColor = {0.3763f, 0.4851f, 0.4851f};
     auto alphaTexture = std::make_shared<fh6::ModelMaterialTexture>();
     alphaTexture->path = QStringLiteral("glass_alpha.swatchbin");
     alphaTexture->image.width = 1;
@@ -381,22 +387,77 @@ int main(int argc, char **argv) {
     glassMesh.uvChannels[0] = {
         {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
     glassMesh.indices = {0, 1, 2};
+    fh6::CarMesh interiorGlassMesh = glassMesh;
+    interiorGlassMesh.name = QStringLiteral("glassFInt_a_LODS0");
+    interiorGlassMesh.drawGroups = fh6::car_draw_groups::kCockpit;
+    interiorGlassMesh.material = std::make_shared<fh6::ModelMaterial>(
+        *glassMesh.material);
+    fh6::CarMesh blackFrameMesh = glassMesh;
+    blackFrameMesh.name = QStringLiteral("glassF_a_LODS0");
+    blackFrameMesh.materialName = QStringLiteral("blackGlass");
+    blackFrameMesh.material = std::make_shared<fh6::ModelMaterial>();
+    blackFrameMesh.material->resourcePath = QStringLiteral(
+        "Game:/Media/Cars/_library/materials/_fmnext/specialcase/"
+        "blackframe.materialbin");
+    blackFrameMesh.material->resolvedFromLibrary = true;
+    blackFrameMesh.material->hasBaseColor = true;
+    blackFrameMesh.material->baseColor = {0.0048f, 0.0048f, 0.0048f};
+    blackFrameMesh.material->gloss = 0.585f;
+    fh6::CarMesh reflectionMesh = glassMesh;
+    reflectionMesh.name = QStringLiteral("windshieldReflection_LODS0");
+    reflectionMesh.drawGroups = fh6::car_draw_groups::kWindshieldReflection;
+    reflectionMesh.material = std::make_shared<fh6::ModelMaterial>(
+        *glassMesh.material);
     glassCar.meshes.push_back(std::move(glassMesh));
+    glassCar.meshes.push_back(std::move(interiorGlassMesh));
+    glassCar.meshes.push_back(std::move(blackFrameMesh));
+    glassCar.meshes.push_back(std::move(reflectionMesh));
     const std::size_t drawsBeforeGlass = scene.draws.size();
     ok &= require(
         fh6::appendOriginalShaderGarageCar(
             &scene, std::move(glassCar), {0.2f, 0.4f, 0.6f}, {},
             nullptr, nullptr, nullptr, nullptr, nullptr, &carError),
         qPrintable(carError));
+    const auto findAddedGlassDraw = [&](const QString &meshName) {
+        return std::find_if(
+            scene.draws.cbegin() + static_cast<std::ptrdiff_t>(drawsBeforeGlass),
+            scene.draws.cend(), [&](const auto &draw) {
+                return !draw.geometry.meshes.empty()
+                    && draw.geometry.meshes.front().name == meshName;
+            });
+    };
+    const auto exteriorGlassDraw = findAddedGlassDraw(QStringLiteral("glassF_a_LODS0"));
+    const auto interiorGlassDraw = findAddedGlassDraw(QStringLiteral("glassFInt_a_LODS0"));
+    const auto reflectionDraw = findAddedGlassDraw(
+        QStringLiteral("windshieldReflection_LODS0"));
+    const auto blackFrameDraw = std::find_if(
+        scene.draws.cbegin() + static_cast<std::ptrdiff_t>(drawsBeforeGlass),
+        scene.draws.cend(), [](const auto &draw) {
+            return draw.name == QStringLiteral("car/blackGlass");
+        });
     ok &= require(
-        scene.draws.size() == drawsBeforeGlass + 1
-            && scene.draws.back().translucent
-            && scene.draws.back().alphaTexture != nullptr
-            && std::abs(scene.draws.back().opacity - 0.22f) < 0.00001f
-            && scene.draws.back().gloss >= 0.90f
-            && scene.draws.back().shaderFamily == fh6::ModelShaderFamily::Glass
-            && scene.carStatus.contains(QStringLiteral("1 translucent/glass")),
-        "DX12 car glass must be retained in the translucent alpha-map pass");
+        scene.draws.size() == drawsBeforeGlass + 4
+            && exteriorGlassDraw != scene.draws.cend()
+            && exteriorGlassDraw->translucent
+            && exteriorGlassDraw->alphaTexture != nullptr
+            && exteriorGlassDraw->diffuseTexture != nullptr
+            && exteriorGlassDraw->diffuseTexture->image.rgba[0] < 255
+            && std::abs(exteriorGlassDraw->opacity - 0.58f) < 0.00001f
+            && exteriorGlassDraw->gloss >= 0.90f
+            && exteriorGlassDraw->shaderFamily == fh6::ModelShaderFamily::Glass
+            && interiorGlassDraw != scene.draws.cend()
+            && interiorGlassDraw->translucent
+            && std::abs(interiorGlassDraw->opacity - 0.28f) < 0.00001f
+            && reflectionDraw != scene.draws.cend()
+            && reflectionDraw->translucent
+            && reflectionDraw->drawGroups
+                == fh6::car_draw_groups::kWindshieldReflection
+            && blackFrameDraw != scene.draws.cend()
+            && !blackFrameDraw->translucent
+            && blackFrameDraw->shaderFamily == fh6::ModelShaderFamily::Generic
+            && scene.carStatus.contains(QStringLiteral("1 interior glass shell"))
+            && scene.carStatus.contains(QStringLiteral("1 windshield-reflection member")),
+        "DX12 car glass layering, tint, reflection groups, or black frame changed");
 
     fh6::CarModel wheelCar;
     wheelCar.sourcePath = QStringLiteral("wheel-test.carbin");
@@ -434,6 +495,110 @@ int main(int argc, char **argv) {
 
     fh6::PaintFinishLibrary paintFinishes;
     paintFinishes.load(QString::fromLocal8Bit(argv[1]));
+    fh6::LiveryPaintState inactiveWheelPaintState;
+    fh6::LiveryPaintMaterial inactiveWheelPaint;
+    inactiveWheelPaint.materialHash = 0x13u;
+    inactiveWheelPaint.finish = 13;
+    inactiveWheelPaintState.materials.push_back(inactiveWheelPaint);
+    fh6::CarModel nativeWheelCar;
+    nativeWheelCar.sourcePath = QStringLiteral("native-wheel-test.carbin");
+    nativeWheelCar.boundsMin = {-1.0f, -1.0f, -1.0f};
+    nativeWheelCar.boundsMax = {1.0f, 1.0f, 1.0f};
+    fh6::CarMesh nativeWheelMesh;
+    nativeWheelMesh.name = QStringLiteral("wheel_LODS0");
+    nativeWheelMesh.sourceModelPath = QStringLiteral(
+        "_library/scene/wheels/test.modelbin");
+    nativeWheelMesh.materialName = QStringLiteral("rim");
+    nativeWheelMesh.paintMaterialHash = inactiveWheelPaint.materialHash;
+    nativeWheelMesh.material = std::make_shared<fh6::ModelMaterial>();
+    nativeWheelMesh.material->resolvedFromLibrary = true;
+    nativeWheelMesh.material->hasBaseColor = true;
+    nativeWheelMesh.material->baseColor = {0.0194f, 0.0194f, 0.0194f};
+    nativeWheelMesh.positions = {
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    nativeWheelMesh.uvChannels.resize(1);
+    nativeWheelMesh.uvChannels[0] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
+    nativeWheelMesh.indices = {0, 1, 2};
+    nativeWheelCar.meshes.push_back(std::move(nativeWheelMesh));
+    const std::size_t drawsBeforeNativeWheel = scene.draws.size();
+    ok &= require(
+        paintFinishes.loaded()
+            && fh6::appendOriginalShaderGarageCar(
+                &scene, std::move(nativeWheelCar), {0.9f, 0.1f, 0.1f}, {},
+                nullptr, nullptr, &inactiveWheelPaintState, nullptr,
+                &paintFinishes, &carError),
+        qPrintable(carError));
+    const fh6::OriginalShaderGarageDraw &nativeWheelDraw = scene.draws.back();
+    ok &= require(
+        scene.draws.size() == drawsBeforeNativeWheel + 1
+            && nativeWheelDraw.diffuseTexture != nullptr
+            && !nativeWheelDraw.diffuseTexture->sourceEntry.contains(
+                QStringLiteral("paint-finish"))
+            && std::abs(nativeWheelDraw.gloss - 0.45f) < 0.00001f
+            && std::abs(nativeWheelDraw.metallic) < 0.00001f
+            && nativeWheelDraw.flakeCoverage == 0.0f,
+        "DX12 inactive wheel paint must preserve the native wheel material");
+
+    fh6::CarModel stockTireCar;
+    stockTireCar.sourcePath = QStringLiteral("stock-tire-test.carbin");
+    stockTireCar.boundsMin = {-1.0f, -1.0f, -1.0f};
+    stockTireCar.boundsMax = {1.0f, 1.0f, 1.0f};
+    fh6::CarMesh stockTireMesh;
+    stockTireMesh.name = QStringLiteral("tireL_b_LODS0");
+    stockTireMesh.sourceModelPath = QStringLiteral(
+        "_library/scene/tires/tireL_b.modelbin");
+    stockTireMesh.materialName = QStringLiteral("scaling_text");
+    stockTireMesh.material = std::make_shared<fh6::ModelMaterial>();
+    stockTireMesh.material->resourcePath = QStringLiteral(
+        "Game:/Media/Cars/_library/materials/_fmnext/tires/"
+        "tires_pg_sidewall_legacy.materialbin");
+    stockTireMesh.material->resolvedFromLibrary = true;
+    stockTireMesh.material->hasRoughnessShift = true;
+    stockTireMesh.material->roughnessShift = 0.25f;
+    auto tireNormal = std::make_shared<fh6::ModelMaterialTexture>();
+    tireNormal->path = QStringLiteral("tires_pg_sidewall_legacy_nrml.swatchbin");
+    tireNormal->image.width = 1;
+    tireNormal->image.height = 1;
+    tireNormal->image.rgba = {128, 128, 255, 255};
+    stockTireMesh.material->normalTexture = tireNormal;
+    auto tireHeightAo = std::make_shared<fh6::ModelMaterialTexture>();
+    tireHeightAo->path = QStringLiteral(
+        "tires_pg_sidewall_legacy_height_ao.swatchbin");
+    tireHeightAo->image.width = 1;
+    tireHeightAo->image.height = 1;
+    tireHeightAo->image.rgba = {96, 192, 255, 255};
+    stockTireMesh.material->tireHeightAoTexture = tireHeightAo;
+    auto tireLocalAo = std::make_shared<fh6::ModelMaterialTexture>();
+    tireLocalAo->path = QStringLiteral("tires_pg_sidewall_local_ao.swatchbin");
+    tireLocalAo->image.width = 1;
+    tireLocalAo->image.height = 1;
+    tireLocalAo->image.rgba = {176, 176, 176, 255};
+    stockTireMesh.material->aoTexture = tireLocalAo;
+    stockTireMesh.positions = {
+        {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    stockTireMesh.uvChannels.resize(1);
+    stockTireMesh.uvChannels[0] = {
+        {0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 1.0f}};
+    stockTireMesh.indices = {0, 1, 2};
+    stockTireCar.meshes.push_back(std::move(stockTireMesh));
+    const std::size_t drawsBeforeStockTire = scene.draws.size();
+    ok &= require(
+        fh6::appendOriginalShaderGarageCar(
+            &scene, std::move(stockTireCar), {0.9f, 0.1f, 0.1f}, {},
+            nullptr, nullptr, nullptr, nullptr, nullptr, &carError),
+        qPrintable(carError));
+    const fh6::OriginalShaderGarageDraw &stockTireDraw = scene.draws.back();
+    ok &= require(
+        scene.draws.size() == drawsBeforeStockTire + 1
+            && stockTireDraw.normalTexture != nullptr
+            && stockTireDraw.tireHeightAoTexture != nullptr
+            && stockTireDraw.aoTexture != nullptr
+            && std::abs(stockTireDraw.roughnessShift - 0.25f) < 0.00001f
+            && stockTireDraw.diffuseTexture != nullptr
+            && stockTireDraw.diffuseTexture->image.rgba[0] < 16,
+        "DX12 stock tire must retain its exact normal, height/AO, roughness, and dark rubber base");
+
     fh6::LiveryPaintState brassPaintState;
     fh6::LiveryPaintMaterial brassPaint;
     brassPaint.materialHash = 0x27u;

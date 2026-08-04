@@ -200,6 +200,12 @@ void applyPreviewParameter(ModelMaterial &material, const ModelMaterialParameter
         material.gloss = std::clamp(parameter.scalar, 0.0f, 1.0f);
     }
     if (parameter.type == ModelMaterialParameterType::Float
+        && parameter.nameHash == material_hashes::parameter::kRoughnessShift
+        && std::isfinite(parameter.scalar)) {
+        material.hasRoughnessShift = true;
+        material.roughnessShift = parameter.scalar;
+    }
+    if (parameter.type == ModelMaterialParameterType::Float
         && parameter.nameHash == material_hashes::parameter::kClearcoatRoughness
         && std::isfinite(parameter.scalar)) {
         material.automotivePaint.hasClearCoatRoughness = true;

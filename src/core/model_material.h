@@ -77,6 +77,8 @@ struct ModelMaterial {
     float emissiveIntensity = 0.0f;
     float opacity = 1.0f;
     float gloss = 0.45f;
+    bool hasRoughnessShift = false;
+    float roughnessShift = 0.0f;
     float uTiling = 1.0f;
     float vTiling = 1.0f;
     float uvOrientationDegrees = 0.0f;
@@ -102,6 +104,8 @@ struct ModelMaterial {
     std::shared_ptr<const ModelMaterialTexture> weaveNormalTexture;
     std::shared_ptr<const ModelMaterialTexture> clearCoatNormalTexture;
     std::shared_ptr<const ModelMaterialTexture> surfaceTexture;
+    std::shared_ptr<const ModelMaterialTexture> tireHeightAoTexture;
+    std::shared_ptr<const ModelMaterialTexture> aoTexture;
     std::shared_ptr<const ModelMaterialTexture> emissiveTexture;
     std::shared_ptr<const ModelMaterialTexture> paintNormalMap00Texture;
     std::shared_ptr<const ModelMaterialTexture> paintNormalMap0Texture;

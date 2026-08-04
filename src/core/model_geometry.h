@@ -49,6 +49,17 @@ struct ModelMat4 {
 
 ModelMat4 matMul(const ModelMat4 &a, const ModelMat4 &b);
 
+namespace car_draw_groups {
+inline constexpr quint32 kExterior = 1u << 0;
+inline constexpr quint32 kCockpit = 1u << 1;
+inline constexpr quint32 kShadow = 1u << 2;
+inline constexpr quint32 kHood = 1u << 3;
+inline constexpr quint32 kWindshieldReflection = 1u << 4;
+inline constexpr quint32 kDriverlessCockpit = 1u << 5;
+inline constexpr quint32 kWindshieldReflectionDriverless = 1u << 6;
+inline constexpr quint32 kProxyLod = 1u << 7;
+}
+
 struct SkeletonBone {
     QString name;
     ModelMat4 world;
@@ -71,6 +82,7 @@ struct CarMesh {
     int liveryUvChannel = -1;
     int carPartType = -1;
     int modelInstanceId = -1;
+    quint32 drawGroups = 0;
     bool stockPart = true;
 };
 

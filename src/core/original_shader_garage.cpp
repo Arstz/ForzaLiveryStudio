@@ -1006,33 +1006,92 @@ bool isInteriorWindowShell(QString name) {
         && name.contains(QStringLiteral("int"));
 }
 
+bool isBlackGlassFrame(const CarMesh &mesh) {
+    const QString name = mesh.materialName.toLower();
+    QString resource = mesh.material != nullptr
+        ? mesh.material->resourcePath.toLower() : QString();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return name.contains(QStringLiteral("blackglass"))
+        || resource.contains(QStringLiteral("/blackframe.materialbin"))
+        || resource.contains(QStringLiteral("/blackglass.materialbin"));
+}
+
+bool participatesInWindshieldReflection(const CarMesh &mesh) {
+    constexpr quint32 kReflectionGroups =
+        car_draw_groups::kWindshieldReflection
+        | car_draw_groups::kWindshieldReflectionDriverless;
+    return (mesh.drawGroups & kReflectionGroups) != 0;
+}
+
+QString normalizedMaterialResource(const CarMesh &mesh) {
+    QString resource = mesh.material != nullptr
+        ? mesh.material->resourcePath.toLower() : QString();
+    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return resource;
+}
+
+bool materialResourceIdentifiesGlass(const QString &resource) {
+    return resource.contains(QStringLiteral("/glass/"))
+        || resource.contains(QStringLiteral("/exterior_glass/"));
+}
+
 bool isWindowGlassMaterial(const CarMesh &mesh) {
     const QString name = mesh.materialName.toLower();
-    if (name.isEmpty() || name.contains(QStringLiteral("screw"))
+    if (isBlackGlassFrame(mesh)
+        || name.contains(QStringLiteral("screw"))
         || name.contains(QStringLiteral("frame"))
         || name.contains(QStringLiteral("label"))
         || name.contains(QStringLiteral("bulb"))
         || name.contains(QStringLiteral("light"))) {
         return false;
     }
-    QString resource = mesh.material != nullptr
-        ? mesh.material->resourcePath.toLower() : QString();
-    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    const bool glassResource = resource.isEmpty()
-        || resource.contains(QStringLiteral("/glass/"));
+    const QString resource = normalizedMaterialResource(mesh);
+    if (!resource.isEmpty()) {
+        return resource.contains(QStringLiteral("/glass_window_"))
+            || resource.contains(QStringLiteral("/glass_windshield.materialbin"));
+    }
     return name.contains(QStringLiteral("window"))
         || name.contains(QStringLiteral("windshield"))
-        || name.contains(QStringLiteral("windsheild"))
-        || (name.contains(QStringLiteral("blackglass")) && glassResource);
+        || name.contains(QStringLiteral("windsheild"));
 }
 
 bool isGlassSurface(const CarMesh &mesh) {
-    QString resource = mesh.material != nullptr
-        ? mesh.material->resourcePath.toLower() : QString();
-    resource.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (isBlackGlassFrame(mesh)) {
+        return false;
+    }
+    const QString resource = normalizedMaterialResource(mesh);
+    if (!resource.isEmpty()) {
+        return materialResourceIdentifiesGlass(resource);
+    }
     return isWindowGlassMaterial(mesh)
-        || mesh.materialName.contains(QStringLiteral("glass"), Qt::CaseInsensitive)
-        || resource.contains(QStringLiteral("/glass/"));
+        || mesh.materialName.contains(QStringLiteral("glass"), Qt::CaseInsensitive);
+}
+
+float windowGlassOpacity(const CarMesh &mesh) {
+    if (isInteriorWindowShell(mesh.name)) {
+        return 0.28f;
+    }
+    const QString resource = normalizedMaterialResource(mesh);
+    if (resource.contains(QStringLiteral("glass_windshield.materialbin"))) {
+        return 0.58f;
+    }
+    if (resource.contains(QStringLiteral("glass_window_side.materialbin"))) {
+        return 0.64f;
+    }
+    return 0.52f;
+}
+
+bool isWheelMesh(const CarMesh &mesh) {
+    QString source = mesh.sourceModelPath.toLower();
+    source.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return source.contains(QStringLiteral("/wheels/"))
+        || mesh.name.startsWith(QStringLiteral("wheel_"), Qt::CaseInsensitive);
+}
+
+bool hasEnabledPaint(const LiveryPaintMaterial *paint) {
+    return paint != nullptr
+        && (paint->primary.enabled || paint->secondary.enabled
+            || paint->manufacturerSelector != std::numeric_limits<quint32>::max());
 }
 
 bool decodeGarageLights(
@@ -1738,7 +1797,11 @@ bool appendOriginalShaderGarageCar(
     int emissiveDraws = 0;
     int translucentDraws = 0;
     int excludedLowerLod = 0;
-    int excludedInteriorShell = 0;
+    int excludedCoarseInterior = 0;
+    int includedInteriorGlass = 0;
+    int windshieldReflectionDraws = 0;
+    int unresolvedGlassMaterials = 0;
+    int unresolvedWheelMaterials = 0;
     int excludedFactoryLiveryStickers = 0;
     std::shared_ptr<const OriginalShaderMaterialTexture> liveryTexture;
     if (livery.valid()) {
@@ -1858,10 +1921,9 @@ bool appendOriginalShaderGarageCar(
             ++excludedLowerLod;
             continue;
         }
-        if (isInteriorWindowShell(mesh.name)
-            || mesh.materialName.startsWith(
+        if (mesh.materialName.startsWith(
                 QStringLiteral("InteriorLOD"), Qt::CaseInsensitive)) {
-            ++excludedInteriorShell;
+            ++excludedCoarseInterior;
             continue;
         }
         const QString materialPath = mesh.material != nullptr
@@ -1882,6 +1944,14 @@ bool appendOriginalShaderGarageCar(
             continue;
         }
         const bool glassSurface = isGlassSurface(mesh);
+        includedInteriorGlass += isInteriorWindowShell(mesh.name) ? 1 : 0;
+        windshieldReflectionDraws += participatesInWindshieldReflection(mesh) ? 1 : 0;
+        unresolvedGlassMaterials += glassSurface
+                && (mesh.material == nullptr || !mesh.material->resolvedFromLibrary)
+            ? 1 : 0;
+        unresolvedWheelMaterials += isWheelMesh(mesh)
+                && (mesh.material == nullptr || !mesh.material->resolvedFromLibrary)
+            ? 1 : 0;
 
         const QString lowerMaterialName = mesh.materialName.toLower();
         const bool bodyPaint = lowerMaterialName.startsWith(QStringLiteral("carpaint"))
@@ -1895,10 +1965,11 @@ bool appendOriginalShaderGarageCar(
         const ManufacturerColor *manufacturerColor =
             paint != nullptr && manufacturerColors != nullptr && !liveryCustomPainted
             ? manufacturerColors->find(paint->manufacturerSelector) : nullptr;
+        const bool paintSurface = bodyPaint || hasEnabledPaint(paint)
+            || manufacturerColor != nullptr;
         const PaintFinishRender *paintFinish =
-            paint != nullptr && paintFinishes != nullptr
+            paintSurface && paint != nullptr && paintFinishes != nullptr
             ? paintFinishes->find(static_cast<int>(paint->finish)) : nullptr;
-        const bool paintSurface = bodyPaint || paint != nullptr;
         std::array<float, 3> resolvedPaintColor = paintColor;
         std::array<float, 3> resolvedSecondaryColor = resolvedPaintColor;
         if (manufacturerColor != nullptr) {
@@ -2060,6 +2131,15 @@ bool appendOriginalShaderGarageCar(
             surface = copyNativeTexture(
                 mesh.material->surfaceTexture, QStringLiteral("SurfaceTexture"));
         }
+        auto tireHeightAo = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->tireHeightAoTexture,
+                  QStringLiteral("TireHeightAoTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
+        auto authoredAo = mesh.material != nullptr
+            ? copyNativeTexture(
+                  mesh.material->aoTexture, QStringLiteral("AoTexture"))
+            : std::shared_ptr<const OriginalShaderMaterialTexture>{};
         auto emissive = mesh.material != nullptr
             ? copyNativeTexture(
                   mesh.material->emissiveTexture, QStringLiteral("EmissiveTexture"))
@@ -2097,6 +2177,7 @@ bool appendOriginalShaderGarageCar(
         draw.name = drawName;
         draw.source = source;
         draw.family = OriginalShaderSurfaceFamily::Car;
+        draw.drawGroups = mesh.drawGroups;
         draw.placement = groundedCarPlacement;
         draw.diffuseTexture = std::move(diffuse);
         draw.alphaTexture = std::move(alpha);
@@ -2105,6 +2186,8 @@ bool appendOriginalShaderGarageCar(
         draw.weaveNormalTexture = std::move(weaveNormal);
         draw.clearCoatNormalTexture = std::move(clearCoatNormal);
         draw.surfaceTexture = std::move(surface);
+        draw.tireHeightAoTexture = std::move(tireHeightAo);
+        draw.aoTexture = std::move(authoredAo);
         draw.emissiveTexture = std::move(emissive);
         draw.diffuseUvChannel = diffuseUvChannel;
         if (usesCarbonFiberShader(mesh)
@@ -2125,6 +2208,8 @@ bool appendOriginalShaderGarageCar(
             draw.emissiveColor = mesh.material->emissiveColor;
             draw.opacity = mesh.material->opacity;
             draw.gloss = mesh.material->gloss;
+            draw.roughnessShift = mesh.material->hasRoughnessShift
+                ? mesh.material->roughnessShift : 0.0f;
             draw.metallic = mesh.material->hasMetallic
                 ? mesh.material->metallic : 0.0f;
             draw.uTiling = usesLivery ? 1.0f : mesh.material->uTiling;
@@ -2141,11 +2226,8 @@ bool appendOriginalShaderGarageCar(
             draw.shaderFamily = modelShaderFamily(*mesh.material);
         }
         if (glassSurface && draw.opacity >= 0.995f) {
-            // Window materials in car archives are commonly parameterless
-            // aliases of the shared glass shader.  Keep their fallback close
-            // to the established garage-glass transmission instead of making
-            // an unresolved alias almost half opaque.
-            draw.opacity = isWindowGlassMaterial(mesh) ? 0.22f : 0.20f;
+            draw.opacity = isWindowGlassMaterial(mesh)
+                ? windowGlassOpacity(mesh) : 0.24f;
         }
         if (glassSurface) {
             // Car archives frequently expose glass through a parameterless
@@ -2318,9 +2400,11 @@ bool appendOriginalShaderGarageCar(
     scene->carStatus = QStringLiteral(
         "DX12 car added with %1 material draws: %2 livery, %3 native base-colour, "
         "%4 solid material-colour, %5 visibly unresolved checker, %6 normal, "
-        "%7 surface, and %8 emissive maps; %9 translucent/glass draws included; "
-        "%10 lower-LOD, %11 coarse-interior, and %12 factory-livery sticker "
-        "draws excluded; %13 authored shadow-proxy meshes retained")
+        "%7 surface, and %8 emissive maps; %9 translucent/glass draws included, "
+        "%10 interior glass shells and %11 windshield-reflection members retained; "
+        "%12 unresolved glass and %13 unresolved wheel materials; %14 lower-LOD, "
+        "%15 coarse-interior, and %16 factory-livery sticker draws excluded; "
+        "%17 authored shadow-proxy meshes retained")
         .arg(opaqueDraws)
         .arg(liveryDraws)
         .arg(nativeBaseDraws)
@@ -2330,8 +2414,12 @@ bool appendOriginalShaderGarageCar(
         .arg(surfaceDraws)
         .arg(emissiveDraws)
         .arg(translucentDraws)
+        .arg(includedInteriorGlass)
+        .arg(windshieldReflectionDraws)
+        .arg(unresolvedGlassMaterials)
+        .arg(unresolvedWheelMaterials)
         .arg(excludedLowerLod)
-        .arg(excludedInteriorShell)
+        .arg(excludedCoarseInterior)
         .arg(excludedFactoryLiveryStickers)
         .arg(shadowProxyMeshes);
     return true;
