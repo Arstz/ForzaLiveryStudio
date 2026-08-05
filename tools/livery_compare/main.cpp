@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -106,6 +107,167 @@ bool shapesMatch(const ShapeView &a, const ShapeView &b)
     if (dr > rotTol) return false;
     if (a.shape->color != b.shape->color) return false;
     return true;
+}
+
+QSet<QString> retainedSourceShapeIds(const Project &source, const Project &subset)
+{
+    QSet<QString> retained;
+    for (int slot = 0; slot < static_cast<int>(std::size(kSections)); ++slot) {
+        const QVector<ShapeView> sourceShapes = sectionLeaves(source, slot);
+        const QVector<ShapeView> subsetShapes = sectionLeaves(subset, slot);
+        int subsetIndex = 0;
+        for (const ShapeView &sourceShape : sourceShapes) {
+            if (subsetIndex < subsetShapes.size()
+                && shapesMatch(sourceShape, subsetShapes[subsetIndex])) {
+                retained.insert(sourceShape.shape->id);
+                ++subsetIndex;
+            }
+        }
+        if (subsetIndex != subsetShapes.size()) {
+            throw std::runtime_error(
+                QStringLiteral("subset alignment failed in slot %1 at %2 of %3")
+                    .arg(slot)
+                    .arg(subsetIndex)
+                    .arg(subsetShapes.size())
+                    .toStdString());
+        }
+    }
+    return retained;
+}
+
+int makeRemovedShapesTransparent(scene::Layer &layer, const QSet<QString> &retained)
+{
+    if (layer.kind() == scene::LayerKind::Shape) {
+        auto &shape = static_cast<scene::Shape &>(layer);
+        if (!retained.contains(shape.id)) {
+            shape.opacity = 0.0;
+            shape.color[3] = 0;
+            return 1;
+        }
+        return 0;
+    }
+    if (layer.kind() != scene::LayerKind::Group) {
+        return 0;
+    }
+    int count = 0;
+    for (const auto &child : static_cast<scene::Group &>(layer).children) {
+        count += makeRemovedShapesTransparent(*child, retained);
+    }
+    return count;
+}
+
+void clearShapeMarkers(scene::Layer &layer)
+{
+    if (layer.kind() == scene::LayerKind::Shape) {
+        static_cast<scene::Shape &>(layer).marker.clear();
+        return;
+    }
+    if (layer.kind() != scene::LayerKind::Group) {
+        return;
+    }
+    for (const auto &child : static_cast<scene::Group &>(layer).children) {
+        clearShapeMarkers(*child);
+    }
+}
+
+void copySidecars(const QString &sourceFolder, const QString &outputFolder)
+{
+    for (const QString &name : {QStringLiteral("header"), QStringLiteral("bigThumb.webp")}) {
+        const QString source = QDir(sourceFolder).filePath(name);
+        const QString target = QDir(outputFolder).filePath(name);
+        if (!QFileInfo::exists(source)) {
+            continue;
+        }
+        QFile::remove(target);
+        if (!QFile::copy(source, target)) {
+            throw std::runtime_error(QStringLiteral("could not copy %1").arg(name).toStdString());
+        }
+    }
+}
+
+int patchRawRemovedShapeAlpha(QByteArray &raw, const LiveryPayload &payload,
+                              const Project &source, const QSet<QString> &retained)
+{
+    int patched = 0;
+    for (int slot = 0; slot < static_cast<int>(std::size(kSections)); ++slot) {
+        for (const ShapeView &view : sectionLeaves(source, slot)) {
+            const scene::Shape &shape = *view.shape;
+            if (retained.contains(shape.id)) {
+                continue;
+            }
+            const int record = payload.gyvlOffset + 0x15 + shape.absOffset;
+            const int alpha = record + shape.marker.size() + 29;
+            if (shape.marker.isEmpty() || raw.mid(record, shape.marker.size()) != shape.marker
+                || alpha < 0 || alpha >= raw.size()) {
+                throw std::runtime_error("source shape record does not match its raw offset");
+            }
+            raw[alpha] = '\0';
+            ++patched;
+        }
+    }
+    return patched;
+}
+
+void printPayloadDiff(const QByteArray &a, const QByteArray &b)
+{
+    constexpr int kAnchorBytes = 16;
+    constexpr int kSearchBytes = 64;
+    int aPos = 0;
+    int bPos = 0;
+    int differences = 0;
+    while (aPos < a.size() && bPos < b.size()) {
+        if (a[aPos] == b[bPos]) {
+            ++aPos;
+            ++bPos;
+            continue;
+        }
+
+        int aSkip = 0;
+        int bSkip = 0;
+        for (int distance = 1; distance <= kSearchBytes && aSkip == 0 && bSkip == 0;
+             ++distance) {
+            if (aPos + distance + kAnchorBytes <= a.size()
+                && bPos + kAnchorBytes <= b.size()
+                && a.mid(aPos + distance, kAnchorBytes) == b.mid(bPos, kAnchorBytes)) {
+                aSkip = distance;
+            }
+            if (bPos + distance + kAnchorBytes <= b.size()
+                && aPos + kAnchorBytes <= a.size()
+                && a.mid(aPos, kAnchorBytes) == b.mid(bPos + distance, kAnchorBytes)) {
+                bSkip = distance;
+            }
+        }
+        if (aSkip == 0 && bSkip == 0) {
+            int sameSkip = 1;
+            while (sameSkip <= kSearchBytes
+                   && aPos + sameSkip + kAnchorBytes <= a.size()
+                   && bPos + sameSkip + kAnchorBytes <= b.size()
+                   && a.mid(aPos + sameSkip, kAnchorBytes)
+                       != b.mid(bPos + sameSkip, kAnchorBytes)) {
+                ++sameSkip;
+            }
+            aSkip = std::min(sameSkip, kSearchBytes);
+            bSkip = aSkip;
+        }
+
+        std::printf("DIFF a=%d b=%d a_bytes=%s b_bytes=%s\n",
+                    aPos, bPos,
+                    a.mid(aPos, aSkip).toHex(' ').constData(),
+                    b.mid(bPos, bSkip).toHex(' ').constData());
+        aPos += aSkip;
+        bPos += bSkip;
+        ++differences;
+    }
+    if (aPos < a.size() || bPos < b.size()) {
+        std::printf("DIFF a=%d b=%d a_bytes=%s b_bytes=%s\n",
+                    aPos, bPos,
+                    a.mid(aPos).toHex(' ').constData(),
+                    b.mid(bPos).toHex(' ').constData());
+        ++differences;
+    }
+    std::printf("SUMMARY differences=%d a_size=%d b_size=%d delta=%d\n",
+                differences, static_cast<int>(a.size()), static_cast<int>(b.size()),
+                static_cast<int>(b.size() - a.size()));
 }
 
 QString colStr(const std::array<quint8, 4> &c)
@@ -1154,12 +1316,17 @@ int main(int argc, char *argv[])
     bool paintMode = args.removeAll(QStringLiteral("--paint")) > 0;
     bool roundtripMode = args.removeAll(QStringLiteral("--roundtrip")) > 0;
     bool exportReencodedMode = args.removeAll(QStringLiteral("--export-reencoded")) > 0;
+    const bool projectInput = args.removeAll(QStringLiteral("--project")) > 0;
+    const bool withoutShapeMarkers = args.removeAll(QStringLiteral("--without-shape-markers")) > 0;
     bool allMode = args.removeAll(QStringLiteral("--all")) > 0;
     bool nudgeFirstShape = args.removeAll(QStringLiteral("--nudge-first-shape")) > 0;
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
     const bool withoutSource = args.removeAll(QStringLiteral("--without-source")) > 0;
     const bool generateSyntheticMode = args.removeAll(QStringLiteral("--generate-synthetic")) > 0;
     const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
+    const bool rawTombstoneMode = args.removeAll(QStringLiteral("--raw-tombstones")) > 0;
+    const bool reencodedTombstoneMode = args.removeAll(QStringLiteral("--reencoded-tombstones")) > 0;
+    const bool payloadDiffMode = args.removeAll(QStringLiteral("--payload-diff")) > 0;
     const auto takeOption = [&args](const QString &name) {
         const int index = args.indexOf(name);
         if (index < 0 || index + 1 >= args.size()) {
@@ -1172,6 +1339,51 @@ int main(int argc, char *argv[])
     const QString targetCarOption = takeOption(QStringLiteral("--target-car"));
     const QString projectNameOption = takeOption(QStringLiteral("--project-name"));
     const QString creatorOption = takeOption(QStringLiteral("--creator"));
+
+    if (payloadDiffMode) {
+        if (args.size() < 3) {
+            std::fprintf(stderr, "usage: fls_livery_compare --payload-diff <folderA> <folderB>\n");
+            return 2;
+        }
+        try {
+            printPayloadDiff(readLiveryPayload(args[1]).raw, readLiveryPayload(args[2]).raw);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "payload diff failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
+
+    if (rawTombstoneMode || reencodedTombstoneMode) {
+        if (args.size() < 4) {
+            std::fprintf(stderr,
+                         "usage: fls_livery_compare --raw-tombstones|--reencoded-tombstones <sourceFolder> <subsetFolder> <outputFolder>\n");
+            return 2;
+        }
+        try {
+            Project source = importCLivery(args[1]);
+            const Project subset = importCLivery(args[2]);
+            const QSet<QString> retained = retainedSourceShapeIds(source, subset);
+            int changed = 0;
+            if (rawTombstoneMode) {
+                LiveryPayload payload = readLiveryPayload(args[1]);
+                changed = patchRawRemovedShapeAlpha(payload.raw, payload, source, retained);
+                QDir().mkpath(args[3]);
+                writeCGroupFile(QDir(args[3]).filePath(QStringLiteral("C_livery")), payload.raw);
+                copySidecars(args[1], args[3]);
+            } else {
+                changed = makeRemovedShapesTransparent(*source.root, retained);
+                exportCLivery(source, args[3]);
+                copySidecars(args[1], args[3]);
+            }
+            std::printf("WROTE %s transparent=%d leaves=%d\n",
+                        args[3].toLatin1().constData(), changed, sceneShapeCount(source));
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "tombstone generation failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
 
     if (generateSyntheticMode) {
         if (args.size() < 3) {
@@ -1320,7 +1532,15 @@ int main(int argc, char *argv[])
         const QString outputFolder = args[2];
         Project project;
         try {
-            project = importCLivery(folder);
+            if (projectInput) {
+                QFile file(folder);
+                if (!file.open(QIODevice::ReadOnly)) {
+                    throw std::runtime_error("could not open project document");
+                }
+                project = decodeProjectDocument(file.readAll());
+            } else {
+                project = importCLivery(folder);
+            }
         } catch (const std::exception &e) {
             std::fprintf(stderr, "import failed: %s\n", e.what());
             return 1;
@@ -1348,6 +1568,9 @@ int main(int argc, char *argv[])
             project.sourceFolder.clear();
             project.sourceHeader.clear();
             project.liverySource.clear();
+        }
+        if (withoutShapeMarkers && project.root) {
+            clearShapeMarkers(*project.root);
         }
         if (nudgeFirstShape && (!project.root || !nudgeFirstBuiltInShape(*project.root))) {
             std::fprintf(stderr, "no built-in shape found to nudge\n");

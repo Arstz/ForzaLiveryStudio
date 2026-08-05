@@ -102,6 +102,8 @@ lead, including the group's first shape.
 When a shape follows a group, its record begins with exactly one state byte
 (`00` or `01`) followed by `02`. Counted group boundaries close the preceding
 nesting, so this transition does not carry one unwind byte per group depth.
+Shape leads reflect traversal state across group boundaries. A markerless root
+can begin with the bare `02` form.
 
 ## Sections
 
@@ -125,15 +127,19 @@ Section membership is positional and is represented in the editor by a top-level
 group carrying `isLiverySection` and `liverySectionSlot`.
 
 Export retains visible section group hierarchy and composes scene transforms into
-encoded group origins and relative shape records. Mask ancestry and trailing
-shape-mask state remain expressible through the same structured representation.
+encoded group origins and relative shape records. When source metadata is
+available, retained groups preserve their transform frames and header dialect
+independently of changes to their child list. Artwork groups are normalized to
+the encodable cardinality before their child bitmap is written. Artwork record
+framing is derived from the current sibling structure and mask state. Mask
+ancestry and trailing shape-mask state remain expressible through the same
+structured representation.
 
 An empty slot uses a 23-byte scaffold. A populated slot followed by later artwork
 contains its section root, artwork, and an 18-byte remnant even when its terminal
-child is nested. A synthesized grouped remnant contains a state byte, terminal
-shape identifier, six reserved bytes, unit scale, section rotation, and a final
-control byte. The final populated slot can instead end with its one-byte terminal
-state.
+child is nested. The remnant contains state and reserved fields followed by unit
+scale, section rotation, and a trailing control field. The final populated slot
+can instead end with its one-byte terminal state.
 
 Section counters describe logical decal occupancy rather than byte length. The
 decoder reserves the remaining section footprint while walking each slot so record

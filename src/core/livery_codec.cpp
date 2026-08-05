@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QPointF>
 
 #include <algorithm>
@@ -257,6 +258,51 @@ struct SourceLivery {
     LiveryPayload payload;
     QVector<LiverySection> sections;
 };
+
+struct SourceGroupFrame {
+    Matrix3 world;
+    int parentAbsPos = 0;
+    double px = 0.0;
+    double py = 0.0;
+    double sx = 1.0;
+    double sy = 1.0;
+    double rot = 0.0;
+    bool markerless = false;
+};
+
+void collectSourceGroupFrames(const VinylGroup &node, const Matrix3 &parentWorld,
+                              int parentAbsPos, QHash<int, SourceGroupFrame> &frames) {
+    const Matrix3 world = detail::multiply(parentWorld, nodeMatrix(node));
+    if (node.absPos > 0 && node.expectedChildren) {
+        frames.insert(node.absPos, {
+            world,
+            parentAbsPos,
+            node.px,
+            node.py,
+            node.sx,
+            node.sy,
+            node.rot,
+            node.source.contains(QStringLiteral("markerless")),
+        });
+    }
+    for (const VinylItem &item : node.items) {
+        if (!item.isShape()) {
+            collectSourceGroupFrames(*std::get<VinylGroupPtr>(item.value), world,
+                                     node.absPos, frames);
+        }
+    }
+}
+
+QHash<int, SourceGroupFrame> sourceGroupFrames(const SourceLivery *source) {
+    QHash<int, SourceGroupFrame> frames;
+    if (source == nullptr) {
+        return frames;
+    }
+    for (const LiverySection &section : source->sections) {
+        collectSourceGroupFrames(section.subtree, Matrix3{}, 0, frames);
+    }
+    return frames;
+}
 
 std::optional<SourceLivery> sourceLivery(const Project &project) {
     if (project.liverySource.isEmpty()) {
@@ -528,10 +574,6 @@ quint16 liveryLogoId(const scene::Shape &logo) {
     return static_cast<quint16>(kLogoIdFlag | logo.rasterId);
 }
 
-quint16 liveryRecordId(const scene::Shape &shape) {
-    return shape.raster ? liveryLogoId(shape) : shape.shapeId;
-}
-
 LiveryExportShape exportLiveryShape(const scene::Shape &shape,
                                     const Matrix3 &worldAdjustment = Matrix3{}) {
     if (shape.raster) {
@@ -605,6 +647,27 @@ bool appendLiveryArtworkRecord(QByteArray &out, const LiveryEntry &entry, double
     return shape.placement.mask;
 }
 
+bool hasSourceArtworkMarker(const scene::Shape &shape) {
+    return shape.marker == QByteArray("\x02", 1)
+        || (shape.marker.size() == 2
+            && (static_cast<quint8>(shape.marker[0]) == 0x00
+                || static_cast<quint8>(shape.marker[0]) == 0x01)
+            && static_cast<quint8>(shape.marker[1]) == 0x02);
+}
+
+bool liveryArtworkBare(const scene::Shape &shape, bool fallback) {
+    return hasSourceArtworkMarker(shape) ? shape.marker.size() == 1 : fallback;
+}
+
+quint8 liveryArtworkLead(const scene::Shape &shape, quint8 fallback,
+                         bool previousShapeMask) {
+    quint8 lead = fallback;
+    if (hasSourceArtworkMarker(shape) && shape.marker.size() == 2) {
+        lead = static_cast<quint8>(shape.marker[0]);
+    }
+    return previousShapeMask ? 0x01 : lead;
+}
+
 int checkLiveryChildCount(int count, const char *label) {
     if (count <= 0) {
         throw std::runtime_error(std::string(label) + " has no visible children");
@@ -659,32 +722,12 @@ void entryShapes(const LiveryEntry &entry, QVector<const scene::Shape *> &out) {
     }
 }
 
-quint16 terminalRecordId(const QVector<LiveryEntry> &entries) {
-    QVector<const scene::Shape *> shapes;
-    for (const LiveryEntry &entry : entries) {
-        entryShapes(entry, shapes);
-    }
-    return shapes.isEmpty() ? 0 : liveryRecordId(*shapes.back());
-}
-
-QByteArray defaultGroupedRemnant(int slot, const QVector<LiveryEntry> &entries) {
-    QByteArray out(1, '\0');
-    detail::appendLeU16(out, terminalRecordId(entries));
-    out.append(QByteArray(6, '\0'));
-    detail::appendLeFloat(out, 1.0f);
-    detail::appendLeFloat(out, kSlotRotation[slot]);
-    out.append('\x80');
-    return out;
-}
-
-QByteArray groupedRemnant(const SourceLivery *source, int slot,
-                          const QVector<LiveryEntry> &entries) {
+QByteArray groupedRemnant(const SourceLivery *source, int slot) {
     const QByteArray preserved = sourceRemnant(source, slot);
-    if (sourceHasArtworkGroup(source, slot) && preserved.size() == 18
-        && detail::readLeU16(preserved, 1) == terminalRecordId(entries)) {
+    if (sourceHasArtworkGroup(source, slot) && preserved.size() == 18) {
         return preserved;
     }
-    return defaultGroupedRemnant(slot, entries);
+    return defaultRemnant(slot);
 }
 
 bool hasVisibleShapeLeaves(const scene::Layer &node) {
@@ -704,9 +747,6 @@ QVector<LiveryEntry> directVisibleChildren(const scene::Group &group) {
                    && child->visible && hasVisibleShapeLeaves(*child)) {
             const auto *childGroup = static_cast<const scene::Group *>(child.get());
             const QVector<LiveryEntry> normalizedChildren = directVisibleChildren(*childGroup);
-            if (normalizedChildren.isEmpty()) {
-                continue;
-            }
             if (normalizedChildren.size() == 1) {
                 entries.push_back(normalizedChildren.front());
             } else {
@@ -889,12 +929,16 @@ QByteArray liveryTransformMarker(QByteArray standaloneMarker) {
     return standaloneMarker;
 }
 
-QByteArray packLiveryGroupTransform(double x, double y, const QByteArray &marker) {
+QByteArray packLiveryGroupTransform(const scene::Transform2D &transform, const QByteArray &marker) {
     QByteArray out = marker;
-    detail::appendLeFloat(out, static_cast<float>(x));
-    detail::appendLeFloat(out, static_cast<float>(y));
-    detail::appendLeFloat(out, 1.0f);
-    detail::appendLeFloat(out, 0.0f);
+    detail::appendLeFloat(out, static_cast<float>(transform.x));
+    detail::appendLeFloat(out, static_cast<float>(transform.y));
+    detail::appendLeFloat(out, static_cast<float>(transform.scaleX));
+    detail::appendLeFloat(out, static_cast<float>(normalizeRotation(transform.rotation)));
+    if (std::abs(transform.scaleY - transform.scaleX) > 1e-5) {
+        out.append('\x30');
+        detail::appendLeFloat(out, static_cast<float>(transform.scaleY));
+    }
     return out;
 }
 
@@ -916,8 +960,11 @@ int terminalDepth(const LiveryEntry &entry) {
     return 1 + terminalDepth(children.back());
 }
 
-QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const QByteArray &transformMarker,
-                           bool parentMask, bool &previousShapeMask, const Matrix3 &worldAdjustment) {
+QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
+                           int parentSourceAbsPos, bool parentUsesSourceFrame,
+                           const QByteArray &transformMarker, bool parentMask,
+                           bool &previousShapeMask, const Matrix3 &worldAdjustment,
+                           const QHash<int, SourceGroupFrame> &sourceFrames) {
     const QVector<LiveryEntry> children = childrenForEntry(entry);
     if (children.isEmpty()) {
         throw std::runtime_error("livery group has no visible children");
@@ -925,16 +972,40 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
     const bool isMaskGroup = entryAllMasked(entry);
     const bool childMask = parentMask || isMaskGroup;
     const QPointF origin = entryOrigin(entry, worldAdjustment);
-
-    QByteArray out = packLiveryGroupTransform(origin.x() - parentOffset.x(),
-                                             origin.y() - parentOffset.y(),
-                                             liveryTransformMarker(transformMarker));
-    if (isMaskGroup) {
-        out.append(packCountedGroupHeader(children, true, "livery group"));
+    const auto sourceFrameIt = entry.group != nullptr
+        ? sourceFrames.constFind(entry.group->sourceAbsPos)
+        : sourceFrames.cend();
+    const bool usesSourceFrame = sourceFrameIt != sourceFrames.cend();
+    const Matrix3 groupWorld = usesSourceFrame
+        ? sourceFrameIt->world
+        : affine(1.0, 0.0, origin.x(), 0.0, 1.0, origin.y());
+    scene::Transform2D localTransform;
+    if (usesSourceFrame && parentUsesSourceFrame
+        && sourceFrameIt->parentAbsPos == parentSourceAbsPos) {
+        localTransform.x = sourceFrameIt->px;
+        localTransform.y = sourceFrameIt->py;
+        localTransform.scaleX = sourceFrameIt->sx;
+        localTransform.scaleY = sourceFrameIt->sy;
+        localTransform.rotation = sourceFrameIt->rot;
     } else {
-        out.append('\0');
-        out.append(packMarkerlessGroupHeader(children, "livery group"));
+        localTransform = decomposeTransform2D(
+            detail::multiply(invertAffine(parentWorld), groupWorld));
     }
+    QByteArray out = packLiveryGroupTransform(
+        localTransform, liveryTransformMarker(transformMarker));
+    const bool markerlessGroup = !isMaskGroup
+        && ((usesSourceFrame && sourceFrameIt->markerless)
+            || (!usesSourceFrame && parentSourceAbsPos == 0));
+    if (markerlessGroup) {
+        if (!usesSourceFrame || (parentSourceAbsPos == 0 && transformMarker.isEmpty())) {
+            out.append('\0');
+        }
+        out.append(packMarkerlessGroupHeader(children, "livery group"));
+    } else {
+        out.append(packCountedGroupHeader(children, isMaskGroup, "livery group"));
+    }
+    const Matrix3 localArtworkAdjustment = detail::multiply(
+        invertAffine(groupWorld), worldAdjustment);
 
     bool previousWasGroup = false;
     int previousGroupDepth = 0;
@@ -947,23 +1018,25 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
             } else if (hasPreviousSibling) {
                 marker = QByteArray("\x00\x03", 2);
             } else {
-                marker = QByteArray();
+                marker = QByteArray("\x01", 1);
             }
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
             previousShapeMask = false;
-            out.append(packLiveryGroup(child, origin, marker, childMask, previousShapeMask,
-                                       worldAdjustment));
+            out.append(packLiveryGroup(
+                child, groupWorld,
+                entry.group != nullptr ? entry.group->sourceAbsPos : 0,
+                usesSourceFrame, marker, childMask, previousShapeMask,
+                worldAdjustment, sourceFrames));
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
-            const bool followsGroup = previousWasGroup;
-            if (previousWasGroup) {
-                out.append(previousShapeMask ? '\x01' : '\x00');
-            }
-            const quint8 lead = (childMask || previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
+            const quint8 fallbackLead = (!hasPreviousSibling || previousShapeMask) ? 0x01 : 0x00;
+            const quint8 lead = liveryArtworkLead(
+                *child.shape, fallbackLead, previousShapeMask);
+            const bool bare = liveryArtworkBare(
+                *child.shape, !hasPreviousSibling && markerlessGroup);
             const bool artworkMask = appendLiveryArtworkRecord(
-                out, child, origin.x(), origin.y(), lead,
-                (!hasPreviousSibling || followsGroup) && !childMask, worldAdjustment);
+                out, child, 0.0, 0.0, lead, bare, localArtworkAdjustment);
             previousWasGroup = false;
             previousGroupDepth = 0;
             previousShapeMask = childMask || artworkMask;
@@ -974,7 +1047,8 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, QPointF parentOffset, const
 }
 
 void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
-                              const SourceLivery *source, int slot, bool hasFollowingSlot) {
+                              const SourceLivery *source, int slot, bool hasFollowingSlot,
+                              const QHash<int, SourceGroupFrame> &sourceFrames) {
     if (sectionGroup == nullptr) {
         body.append(sourceEmptySlot(source, slot));
         return;
@@ -987,13 +1061,18 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
     const bool hasGroupedArtwork = std::any_of(children.cbegin(), children.cend(), [](const LiveryEntry &entry) {
         return entry.kind == LiveryEntry::Group;
     });
+    QVector<const scene::Shape *> sectionShapes;
+    for (const LiveryEntry &entry : children) {
+        entryShapes(entry, sectionShapes);
+    }
+    const bool terminalShapeMask = !sectionShapes.isEmpty() && sectionShapes.back()->mask;
 
     body.append(packMarkerlessGroupHeader(children, "livery section"));
     bool previousWasGroup = false;
     int previousGroupDepth = 0;
     bool previousShapeMask = false;
     bool hasPreviousSibling = false;
-    const QPointF sectionOrigin(0.0, 0.0);
+    const Matrix3 sectionWorld;
     const Matrix3 worldAdjustment = invertAffine(liverySectionCanvasTransform(slot));
     for (const LiveryEntry &child : children) {
         if (child.kind == LiveryEntry::Group) {
@@ -1007,19 +1086,16 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
             }
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
             previousShapeMask = false;
-            body.append(packLiveryGroup(child, sectionOrigin, marker, false, previousShapeMask,
-                                        worldAdjustment));
+            body.append(packLiveryGroup(child, sectionWorld, 0, false, marker, false,
+                                        previousShapeMask, worldAdjustment, sourceFrames));
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
-            const bool followsGroup = previousWasGroup;
-            if (previousWasGroup) {
-                body.append(previousShapeMask ? '\x01' : '\x00');
-            }
-            const quint8 lead = (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
+            const quint8 lead = liveryArtworkLead(
+                *child.shape, previousShapeMask ? 0x01 : 0x00, previousShapeMask);
+            const bool bare = liveryArtworkBare(*child.shape, !hasPreviousSibling);
             const bool artworkMask = appendLiveryArtworkRecord(
-                body, child, sectionOrigin.x(), sectionOrigin.y(), lead,
-                !hasPreviousSibling || followsGroup, worldAdjustment);
+                body, child, 0.0, 0.0, lead, bare, worldAdjustment);
             previousWasGroup = false;
             previousGroupDepth = 0;
             previousShapeMask = artworkMask;
@@ -1030,23 +1106,23 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
         && children.back().kind == LiveryEntry::Group
         && terminalDepth(children.back()) > 1;
     if (endsInNestedGroup && !hasFollowingSlot) {
-        body.append(previousShapeMask ? '\x01' : '\x00');
+        body.append(terminalShapeMask ? '\x01' : '\x00');
         return;
     }
     if (hasGroupedArtwork) {
-        QByteArray remnant = groupedRemnant(source, slot, children);
-        if (previousShapeMask && !remnant.isEmpty()) {
-            remnant[0] = '\x01';
+        QByteArray remnant = groupedRemnant(source, slot);
+        if (!remnant.isEmpty()) {
+            remnant[0] = terminalShapeMask ? '\x01' : '\x00';
         }
         body.append(remnant);
     } else if (hasFollowingSlot) {
         QByteArray remnant = sourceRemnant(source, slot);
-        if (previousShapeMask && !remnant.isEmpty()) {
-            remnant[0] = '\x01';
+        if (!remnant.isEmpty()) {
+            remnant[0] = terminalShapeMask ? '\x01' : '\x00';
         }
         body.append(remnant);
     } else {
-        body.append(previousShapeMask ? '\x01' : '\x00');
+        body.append(terminalShapeMask ? '\x01' : '\x00');
     }
 }
 
@@ -1090,6 +1166,7 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
 
     const std::optional<SourceLivery> source = sourceLivery(project);
     const SourceLivery *sourcePtr = source ? &*source : nullptr;
+    const QHash<int, SourceGroupFrame> sourceFrames = sourceGroupFrames(sourcePtr);
     bool requiresStructuralArtwork = false;
     for (int slot = 0; slot < kLiverySectionCount; ++slot) {
         const int sourceCount = sourcePtr != nullptr
@@ -1155,7 +1232,8 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
         }
 
         const bool hasFollowingSlot = slot + 1 < kLiverySectionCount;
-        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot, hasFollowingSlot);
+        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot, hasFollowingSlot,
+                                sourceFrames);
         if (sourcePtr != nullptr && slot == kLiverySectionCount - 1 && !shapes.isEmpty()) {
             body.append(QByteArray(kLiveryBodyTruncate, '\0'));
         }
