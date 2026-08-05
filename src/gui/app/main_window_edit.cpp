@@ -943,15 +943,28 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
         group->append(std::move(shape));
     }
 
+    QString insertedEntryId = groupId;
+    std::unique_ptr<fls::scene::Layer> insertedNode = std::move(group);
+    if (placements.size() == 1) {
+        auto &insertedGroup = static_cast<fls::scene::Group &>(*insertedNode);
+        insertedNode = insertedGroup.takeAt(0);
+        insertedEntryId = insertedNode->id;
+    }
+
     state_->beginProjectEdit();
-    state_->insertLayerAboveSelection(std::move(group), generatedFillInsertionEntries_);
-    if (fls::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
-        const QString parentId = state_->parentGroupForEntry(groupId);
+    state_->insertLayerAboveSelection(std::move(insertedNode), generatedFillInsertionEntries_);
+    if (fls::scene::Layer *inserted = state_->sceneNode(insertedEntryId); inserted != nullptr) {
+        const QString parentId = state_->parentGroupForEntry(insertedEntryId);
         if (const fls::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
             const fls::Matrix3 parentInverse = fls::invertAffine(parent->worldMatrix());
-            for (const auto &child : inserted->children) {
-                child->transform = fls::decomposeTransform2D(
-                    fls::detail::multiply(parentInverse, child->transform.matrix()));
+            if (inserted->kind() == fls::scene::LayerKind::Group) {
+                for (const auto &child : static_cast<fls::scene::Group &>(*inserted).children) {
+                    child->transform = fls::decomposeTransform2D(
+                        fls::detail::multiply(parentInverse, child->transform.matrix()));
+                }
+            } else {
+                inserted->transform = fls::decomposeTransform2D(
+                    fls::detail::multiply(parentInverse, inserted->transform.matrix()));
             }
         }
     }

@@ -65,9 +65,6 @@ inline QString projectExportFolder(const QString &pickedFolder, const QString &p
     while (base.exists(candidate)) {
         candidate = QStringLiteral("%1_%2").arg(baseName).arg(suffix++);
     }
-    if (!base.mkpath(candidate)) {
-        throw std::runtime_error(("could not create export folder: " + base.filePath(candidate)).toStdString());
-    }
     return base.filePath(candidate);
 }
 
