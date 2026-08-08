@@ -1033,7 +1033,8 @@ int pushMarkerlessGroup(const QByteArray &data, int pos, int end, const GroupInf
 int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
              bool liveryDialect = false, bool invertOddLiveryRotation = true,
              quint8 shapeMarker = kCurrentShapeMarker,
-             quint8 transformTerminator = kCurrentTransformMarker) {
+             quint8 transformTerminator = kCurrentTransformMarker,
+             bool trailingMaskState = true) {
     QVector<VinylGroupPtr> &stack = s.stack;
     const std::optional<bool> expectsGroup = nextChildIsGroup(*stack.back());
     const bool mayDecodeGroup = !expectsGroup || *expectsGroup;
@@ -1103,7 +1104,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
     const int shapeRecordSize = mayDecodeShape
         ? shapeRecordSizeAt(layerData, pos, end, shapeMarker) : 0;
     if (shapeRecordSize > 0) {
-        if (isControlShapeAt(layerData, pos, end, shapeMarker)) {
+        if (trailingMaskState && isControlShapeAt(layerData, pos, end, shapeMarker)) {
             markPreviousShapeAsMask(s, liveryDialect);
         }
         if (s.pendingTransform) {
@@ -1159,7 +1160,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         ? std::optional<TransformRecord>{}
         : readTransformRecord(layerData, pos, end, transformTerminator);
     if (transformInfo) {
-        if (!transformInfo->marker.isEmpty()
+        if (trailingMaskState && !transformInfo->marker.isEmpty()
             && (static_cast<quint8>(transformInfo->marker[0]) & 0x01)) {
             markPreviousShapeAsMask(s, true);
         }
@@ -1291,7 +1292,8 @@ VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteA
     root->source = QStringLiteral("root");
     applyRootHeader(fullPayload, *root);
 
-    const bool generation2 = fullPayload.size() > 0x0c
+    const bool generation2 = options_.normalizeRecords == nullptr
+        && fullPayload.size() > 0x0c
         && fullPayload.startsWith(QByteArray("gyvl", 4))
         && static_cast<quint8>(fullPayload[0x0c]) == kGeneration2RootMarker;
     const quint8 shapeMarker = generation2
@@ -1312,9 +1314,9 @@ VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteA
     while (pos < end) {
         closeCompleteStack(state.stack);
         pos = walkStep(layerData, pos, end, state, false, true,
-                       shapeMarker, transformTerminator);
+                       shapeMarker, transformTerminator, !generation2);
     }
-    if (fullPayload.startsWith(QByteArray("gyvl", 4))) {
+    if (!generation2 && fullPayload.startsWith(QByteArray("gyvl", 4))) {
         applyTerminalMaskFlag(*root, layerData);
     }
 

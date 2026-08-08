@@ -339,6 +339,15 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(FLS_BUILD_TESTS)
+    add_executable(fls_vinyl_decoder_tests
+        tools/vinyl_decoder_test.cpp
+    )
+    target_link_libraries(fls_vinyl_decoder_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME vinyl_decoder COMMAND fls_vinyl_decoder_tests)
+
     add_executable(fls_livery_logo_encoder_tests
         tools/livery_logo_encoder_test.cpp
     )

@@ -205,6 +205,10 @@ The direct-child bitmap selects whether each following child is a shape or a
 group, so marker-like bytes outside that child type are not interpreted as
 records.
 
+Generation 2 uses odd record and transform leads as traversal framing. Their
+parity does not carry trailing mask state. Generation 3 assigns trailing mask
+state to the contextual odd leads described below.
+
 Built-in vector IDs are canonicalized and validated against the runtime registry
 in `assets/vector/shape_names.json`. A complete unsupported livery record can
 still contribute structural occupancy to preserve section alignment, but it is
@@ -224,6 +228,7 @@ Mask rules:
 ```text
 60 group marker => mask group
 mask state inherits through children and remains authoritative
+generation 3 odd record state applies to the preceding direct shape
 chromatic color data clears ambiguous record-level mask state outside mask groups
 ```
 
