@@ -3,6 +3,7 @@
 #include "system_integration.h"
 #include "image_io.h"
 #include "car_model_renderer.h"
+#include "livery_codec.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -17,7 +18,7 @@ namespace {
 bool isProjectPath(const QString &path) {
     const QFileInfo info(path);
     return info.suffix().compare(QStringLiteral("3so"), Qt::CaseInsensitive) == 0
-        || info.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
+        || fls::isLiveryAssetFileName(info.fileName());
 }
 
 void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
@@ -41,8 +42,8 @@ void openStartupFiles(gui::MainWindow &window, const QStringList &paths) {
 
     QString error;
     if (!projectPath.isEmpty()) {
-        const bool isLivery = QFileInfo(projectPath).fileName()
-                                  .compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
+        const bool isLivery = fls::isLiveryAssetFileName(
+            QFileInfo(projectPath).fileName());
         const bool opened = isLivery ? window.importAny(projectPath, &error)
                                      : window.loadProjectJson(projectPath, &error);
         if (!opened) {

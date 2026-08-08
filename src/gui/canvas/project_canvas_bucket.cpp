@@ -181,7 +181,8 @@ void ProjectCanvas::adjustBucketTolerance(int delta, const QPointF &screenPoint)
     updateBucketPreview(screenPoint);
 }
 
-bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
+bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
+                                        bool outlineOnly) {
     if (!updateBucketPreview(screenPoint) || !bucket_.fill.valid()) {
         return false;
     }
@@ -236,6 +237,9 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint) {
         return false;
     }
     QVector<PenLoop> imageLoops = std::move(conversion.loops);
+    if (outlineOnly && imageLoops.size() > 1) {
+        imageLoops.resize(1);
+    }
 
     const QSizeF guideSize = sceneNodeSize(*guide, geometry_);
     const QTransform imageToWorld = pc_detail::guideImageToLocal(image.size(), guideSize)

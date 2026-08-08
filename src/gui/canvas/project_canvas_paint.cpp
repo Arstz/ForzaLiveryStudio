@@ -540,13 +540,32 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                                std::max(0.0, height() - kRulerExtent)));
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (carUnwrapVisible_ && !carUnwrapOverlay_.isNull()) {
-        const QTransform imageToWorld(1.0, 0.0, 0.0, 1.0, -1024.0, -512.0);
+    if (carUnwrapVisible_ && !carUnwrapOverlay_.empty()) {
+        static const QColor kSideColors[fls::kLiverySideCount] = {
+            QColor(230, 60, 60),
+            QColor(60, 200, 60),
+            QColor(70, 120, 240),
+            QColor(230, 220, 60),
+            QColor(220, 80, 220),
+            QColor(60, 210, 210),
+            QColor(255, 130, 60),
+            QColor(120, 255, 140),
+            QColor(120, 190, 255),
+            QColor(255, 235, 120),
+            QColor(255, 140, 255),
+        };
         painter.save();
-        painter.setTransform(imageToWorld * camera_.matrix(), false);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.setTransform(camera_.matrix(), false);
+        painter.setPen(Qt::NoPen);
         painter.setOpacity(0.45);
-        painter.drawImage(QPointF(0.0, 0.0), carUnwrapOverlay_);
+        for (int sideIndex = 0; sideIndex < fls::kLiverySideCount; ++sideIndex) {
+            const CarUnwrapSide &side = carUnwrapOverlay_.sides[sideIndex];
+            if (!side.valid()) {
+                continue;
+            }
+            painter.setBrush(kSideColors[sideIndex]);
+            painter.drawPath(side.path);
+        }
         painter.restore();
     }
 

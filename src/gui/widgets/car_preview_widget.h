@@ -40,7 +40,7 @@ public:
     void clearModel();
     QImage renderThumbnail(const QSize &size);
 
-    QImage unwrapOverlay(int liverySectionSlot = -1) const;
+    CarUnwrapOverlay unwrapOverlay(int liverySectionSlot = -1) const;
 
     void setProject(fls::Project *project);
     void setEditorState(EditorState *state);
@@ -100,6 +100,7 @@ private:
     bool loadCarTextures_ = false;
 
     fls::LiveryMaskSet liveryMasks_;
+    CarUnwrapOverlay carUnwrapOverlay_;
     QString liveryMasksDir_;
     bool liveryMasksPending_ = false;
 

@@ -1,7 +1,7 @@
 {
   "general.game_folder": {
     "hasTip": true,
-    "tip": "Select the path to a valid Forza Horizon 6 install for model and texture loading."
+    "tip": "Select the path to a valid Forza Horizon 6 install for model and texture loading. Steam - ForzaHorizon6, Xbox - ForzaHorizon6/Content"
   },
   "general.autosave_interval": {
     "hasTip": true,

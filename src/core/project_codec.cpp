@@ -645,7 +645,18 @@ Project importCLivery(const QString &folderOrFile) {
     project.carId = livery.carId;
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
-    project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
+    QString headerPath = QDir(project.sourceFolder).filePath(QStringLiteral("header"));
+    if (info.isFile() && isLiveryAssetFileName(info.fileName())) {
+        QString stem = info.fileName();
+        stem.chop(QStringLiteral(".C_livery").size());
+        const QString flatHeaderPath = info.absoluteDir().filePath(
+            stem + QStringLiteral(".header"));
+        if (QFileInfo::exists(flatHeaderPath)) {
+            headerPath = flatHeaderPath;
+        }
+        project.name = stem;
+    }
+    project.sourceHeader = readOptionalFile(headerPath);
     if (!project.sourceHeader.isEmpty()) {
         try {
             project.headerMetadata = parseHeader(project.sourceHeader);

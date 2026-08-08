@@ -2,12 +2,15 @@
 
 #include "material_hashes.h"
 #include "model_material.h"
+#include "region_fill.h"
 
 #include <QDebug>
 #include <QHash>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QOpenGLFunctions>
+
+#include <clipper2/clipper.h>
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +20,8 @@
 
 namespace gui {
 namespace {
+
+constexpr double kUnwrapPathScale = 1024.0;
 
 constexpr char kVertexShader[] = R"(#version 330 core
 layout(location = 0) in vec3 in_position;
@@ -817,51 +822,10 @@ float axisOf(const fls::ModelVec3 &v, int axis) {
     return axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
 }
 
-constexpr int kStandaloneLodRank = 500;
-
-int lodRank(const QString &name) {
-    const int idx = name.lastIndexOf(QStringLiteral("_LOD"));
-    if (idx < 0) {
-        return kStandaloneLodRank;
-    }
-    const QString suffix = name.mid(idx + 4);
-    if (suffix.startsWith(QLatin1Char('S')) || suffix.startsWith(QLatin1Char('s'))) {
-        bool ok = false;
-        const int n = suffix.mid(1).toInt(&ok);
-        return 1000 - (ok ? n : 0);
-    }
-    bool ok = false;
-    const int n = suffix.toInt(&ok);
-    return ok ? 100 - n : kStandaloneLodRank;
-}
-
-QString lodBase(const QString &name) {
-    const int idx = name.lastIndexOf(QStringLiteral("_LOD"));
-    return idx < 0 ? name : name.left(idx);
-}
-
-QString lodGroup(const fls::CarMesh &mesh) {
-    const QString base = lodBase(mesh.name);
-    return mesh.modelInstanceId >= 0
-        ? QString::number(mesh.modelInstanceId) + QLatin1Char('|') + base
-        : base;
-}
-
-std::vector<char> highestLodFlags(const std::vector<fls::CarMesh> &meshes) {
-    QHash<QString, int> best;
-    for (const fls::CarMesh &mesh : meshes) {
-        const int rank = lodRank(mesh.name);
-        const QString group = lodGroup(mesh);
-        auto it = best.find(group);
-        if (it == best.end() || rank > it.value()) {
-            best.insert(group, rank);
-        }
-    }
-    std::vector<char> keep(meshes.size(), 0);
-    for (size_t i = 0; i < meshes.size(); ++i) {
-        keep[i] = lodRank(meshes[i].name) == best.value(lodGroup(meshes[i])) ? 1 : 0;
-    }
-    return keep;
+float sideAxisScale(const fls::LiverySide &side, bool horizontal) {
+    return horizontal
+        ? side.xSign * side.xScale
+        : side.ySign * side.yScale;
 }
 
 bool isSpoilerMesh(const QString &name) {
@@ -999,6 +963,25 @@ int projectionSidesForMesh(const fls::CarMesh &mesh) {
     return sides;
 }
 
+int renderedLiverySidesForMesh(const fls::CarMesh &mesh) {
+    int sides = 0;
+    if (isBodyPaintMaterial(mesh.materialName)) {
+        if (isSpoilerMesh(mesh.name)) {
+            sides = kSideSpoiler;
+        } else if (isTrunkPanelMesh(mesh.name)) {
+            sides = kSideBack | kSideTop;
+        } else {
+            sides = kAllBodySides;
+        }
+    }
+    if (isWindowGlassMaterial(mesh)
+        && allowedWindowSidesForPart(mesh.name) != 0) {
+        sides |= kAllGlassSides;
+    }
+
+    return sides;
+}
+
 std::optional<fls::ModelVec3> locatorPosition(const fls::CarModel &model, const char *name) {
     for (const fls::CarLocator &locator : model.locators) {
         if (locator.name.compare(QLatin1String(name), Qt::CaseInsensitive) == 0) {
@@ -1101,7 +1084,6 @@ ProjectionAlignment alignProjectionToMask(
     int sideIndex,
     const fls::LiverySide &side,
     const std::vector<fls::CarMesh> &meshes,
-    const std::vector<char> &keepLod,
     float axlo,
     float axhi,
     float aylo,
@@ -1159,7 +1141,7 @@ ProjectionAlignment alignProjectionToMask(
     result.pivotY = projectionPivot(false);
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const fls::CarMesh &mesh = meshes[mi];
-        if (!keepLod[mi] || (projectionSidesForMesh(mesh) & (1 << geometrySide)) == 0) {
+        if ((projectionSidesForMesh(mesh) & (1 << geometrySide)) == 0) {
             continue;
         }
         for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
@@ -1373,6 +1355,338 @@ ProjectionAlignment alignProjectionToMask(
     return result;
 }
 
+struct LiveryProjectionData {
+    std::array<QVector2D, fls::kLiverySideCount> minimum;
+    std::array<QVector2D, fls::kLiverySideCount> maximum;
+};
+
+LiveryProjectionData buildLiveryProjectionData(
+    const fls::CarModel &model, const fls::LiveryMaskSet &masks) {
+    std::array<float, fls::kLiverySideCount> minimumX;
+    std::array<float, fls::kLiverySideCount> maximumX;
+    std::array<float, fls::kLiverySideCount> minimumY;
+    std::array<float, fls::kLiverySideCount> maximumY;
+    minimumX.fill(std::numeric_limits<float>::max());
+    minimumY.fill(std::numeric_limits<float>::max());
+    maximumX.fill(std::numeric_limits<float>::lowest());
+    maximumY.fill(std::numeric_limits<float>::lowest());
+
+    const std::vector<fls::CarMesh> &projectionMeshes =
+        model.liveryProjectionMeshes.empty()
+        ? model.meshes
+        : model.liveryProjectionMeshes;
+    for (const fls::CarMesh &mesh : projectionMeshes) {
+        if (mesh.positions.empty()) {
+            continue;
+        }
+        const int candidateSides = projectionSidesForMesh(mesh);
+        if (candidateSides == 0) {
+            continue;
+        }
+        for (const fls::ModelVec3 &position : mesh.positions) {
+            const fls::ModelVec3 world = mirroredCarSpace(
+                mesh.boneTransform.transformPoint(position));
+            for (int sideIndex = 0;
+                 sideIndex < fls::kLiverySideCount;
+                 ++sideIndex) {
+                if ((candidateSides
+                     & (1 << kMaskSlotGeometrySides[sideIndex])) == 0) {
+                    continue;
+                }
+                const fls::LiverySide &side = masks.sides[sideIndex];
+                const float x = sideAxisScale(side, true)
+                    * axisOf(world, side.xAxis);
+                const float y = sideAxisScale(side, false)
+                    * axisOf(world, side.yAxis);
+                minimumX[sideIndex] = std::min(minimumX[sideIndex], x);
+                maximumX[sideIndex] = std::max(maximumX[sideIndex], x);
+                minimumY[sideIndex] = std::min(minimumY[sideIndex], y);
+                maximumY[sideIndex] = std::max(maximumY[sideIndex], y);
+            }
+        }
+    }
+
+    std::array<bool, fls::kLiverySideCount> locatorAnchored{};
+    for (int sideIndex = 2; sideIndex <= 4; ++sideIndex) {
+        if (const std::optional<std::pair<float, float>> range =
+                longitudinalLocatorRange(model, masks.sides[sideIndex])) {
+            minimumX[sideIndex] = range->first;
+            maximumX[sideIndex] = range->second;
+            locatorAnchored[sideIndex] = true;
+        }
+    }
+
+    LiveryProjectionData projection;
+    const std::optional<float> longitudinalPivotZ = wheelAxleMidpointZ(model);
+    for (int sideIndex = 0;
+         sideIndex < fls::kLiverySideCount;
+         ++sideIndex) {
+        const bool haveProjection = maximumX[sideIndex] > minimumX[sideIndex]
+            && maximumY[sideIndex] > minimumY[sideIndex];
+        if (!haveProjection) {
+            projection.minimum[sideIndex] = QVector2D(-1.0f, -1.0f);
+            projection.maximum[sideIndex] = QVector2D(1.0f, 1.0f);
+            continue;
+        }
+
+        const ProjectionAlignment alignment = alignProjectionToMask(
+            sideIndex, masks.sides[sideIndex], projectionMeshes,
+            minimumX[sideIndex], maximumX[sideIndex],
+            minimumY[sideIndex], maximumY[sideIndex],
+            longitudinalPivotZ, locatorAnchored[sideIndex]);
+        const float width = (maximumX[sideIndex] - minimumX[sideIndex])
+            / alignment.scaleX;
+        const float height = (maximumY[sideIndex] - minimumY[sideIndex])
+            / alignment.scaleY;
+        const float startX = alignment.pivotX + alignment.offsetX
+            - alignment.scaleX * alignment.pivotX;
+        const float startY = alignment.pivotY + alignment.offsetY
+            - alignment.scaleY * alignment.pivotY;
+        const float alignedMinimumX = minimumX[sideIndex] - startX * width;
+        const float alignedMinimumY = minimumY[sideIndex] - startY * height;
+        projection.minimum[sideIndex] = QVector2D(
+            alignedMinimumX, alignedMinimumY);
+        projection.maximum[sideIndex] = QVector2D(
+            alignedMinimumX + width, alignedMinimumY + height);
+    }
+
+    return projection;
+}
+
+bool transposedLiverySide(int sideIndex) {
+    return sideIndex == 5 || sideIndex == 6 || sideIndex == 7;
+}
+
+QPointF liverySectionPoint(const fls::LiverySide &side,
+                           int sideIndex,
+                           const QPointF &maskCanvasPoint) {
+    const bool transpose = transposedLiverySide(sideIndex);
+    double x = transpose
+        ? maskCanvasPoint.y() - side.yOrigin
+        : maskCanvasPoint.x() - side.xOrigin;
+    double y = transpose
+        ? maskCanvasPoint.x() - side.xOrigin
+        : maskCanvasPoint.y() - side.yOrigin;
+    if (sideIndex == 4 || sideIndex == 6
+        || sideIndex == 7 || sideIndex == 10) {
+        x = -x;
+    }
+    if (sideIndex == 4 || sideIndex == 7 || sideIndex == 10) {
+        y = -y;
+    }
+
+    return QPointF(x, y);
+}
+
+QPainterPath liveryCoveragePath(const fls::LiverySide &side,
+                                 int sideIndex) {
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    if (!side.mask.valid()) {
+        return path;
+    }
+
+    const fls::SwatchMask &mask = side.mask;
+    const double pixelWidth = 2.0 * fls::kLiveryCanvasHalfWidth
+        / mask.width;
+    const double pixelHeight = 2.0 * fls::kLiveryCanvasHalfHeight
+        / mask.height;
+    for (int y = 0; y < mask.height; ++y) {
+        int x = 0;
+        while (x < mask.width) {
+            while (x < mask.width && mask.at(x, y) < 128) {
+                ++x;
+            }
+            const int runStart = x;
+            while (x < mask.width && mask.at(x, y) >= 128) {
+                ++x;
+            }
+            if (runStart == x) {
+                continue;
+            }
+
+            const double left = runStart * pixelWidth
+                - fls::kLiveryCanvasHalfWidth;
+            const double right = x * pixelWidth
+                - fls::kLiveryCanvasHalfWidth;
+            const double top = fls::kLiveryCanvasHalfHeight
+                - y * pixelHeight;
+            const double bottom = top - pixelHeight;
+            QPolygonF run;
+            run.reserve(4);
+            run.push_back(liverySectionPoint(
+                side, sideIndex, QPointF(left, top)));
+            run.push_back(liverySectionPoint(
+                side, sideIndex, QPointF(right, top)));
+            run.push_back(liverySectionPoint(
+                side, sideIndex, QPointF(right, bottom)));
+            run.push_back(liverySectionPoint(
+                side, sideIndex, QPointF(left, bottom)));
+            path.addPolygon(run);
+            path.closeSubpath();
+        }
+    }
+
+    return path;
+}
+
+QPointF projectedMaskPoint(const fls::CarMesh &mesh,
+                           quint32 vertexIndex,
+                           const fls::LiverySide &side,
+                           int sideIndex,
+                           const LiveryProjectionData &projection,
+                           bool directUv) {
+    if (directUv) {
+        const fls::ModelVec2 &uv = mesh.uvChannels[3][vertexIndex];
+        const fls::TexCoordTransform &transform = mesh.texCoordTransforms[3];
+        const double u = (uv.u * transform.scaleU + transform.offsetU) * 0.5;
+        const double v = uv.v * transform.scaleV + transform.offsetV;
+
+        return QPointF(
+            u * 2.0 * fls::kLiveryCanvasHalfWidth
+                - fls::kLiveryCanvasHalfWidth,
+            fls::kLiveryCanvasHalfHeight
+                - v * 2.0 * fls::kLiveryCanvasHalfHeight);
+    }
+
+    const fls::ModelVec3 world = mirroredCarSpace(
+        mesh.boneTransform.transformPoint(mesh.positions[vertexIndex]));
+    const QVector2D minimum = projection.minimum[sideIndex];
+    const QVector2D maximum = projection.maximum[sideIndex];
+    const QVector2D range = maximum - minimum;
+    const double axisX = sideAxisScale(side, true)
+        * axisOf(world, side.xAxis);
+    const double axisY = sideAxisScale(side, false)
+        * axisOf(world, side.yAxis);
+    const double normalizedX = range.x() > 0.0f
+        ? (axisX - minimum.x()) / range.x()
+        : 0.0;
+    const double normalizedY = range.y() > 0.0f
+        ? (axisY - minimum.y()) / range.y()
+        : 0.0;
+
+    return QPointF(
+        side.left + (side.right - side.left) * normalizedX,
+        side.top + (side.bottom - side.top) * normalizedY);
+}
+
+QPainterPath projectedLiveryGeometryPath(
+    const fls::CarModel &model,
+    const fls::LiveryMaskSet &masks,
+    const LiveryProjectionData &projection,
+    int sideIndex) {
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    const fls::LiverySide &side = masks.sides[sideIndex];
+    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
+    for (const fls::CarMesh &mesh : model.meshes) {
+        if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
+            || mesh.positions.empty() || mesh.indices.empty()) {
+            continue;
+        }
+        const bool directUv = mesh.liveryUvChannel == 3
+            && mesh.uvChannels.size() > 3
+            && mesh.uvChannels[3].size() == mesh.positions.size();
+        for (size_t indexOffset = 0;
+             indexOffset + 2 < mesh.indices.size();
+             indexOffset += 3) {
+            QPolygonF triangle;
+            triangle.reserve(3);
+            bool valid = true;
+            bool haveNormals = true;
+            double facing = 0.0;
+            for (int corner = 0; corner < 3; ++corner) {
+                const quint32 vertexIndex = mesh.indices[indexOffset + corner];
+                if (vertexIndex >= mesh.positions.size()) {
+                    valid = false;
+                    break;
+                }
+                const QPointF maskPoint = projectedMaskPoint(
+                    mesh, vertexIndex, side, sideIndex,
+                    projection, directUv);
+                triangle.push_back(liverySectionPoint(
+                    side, sideIndex, maskPoint));
+                if (vertexIndex < mesh.normals.size()) {
+                    const fls::ModelVec3 normal = mirroredCarSpace(
+                        mesh.boneTransform.transformVector(
+                            mesh.normals[vertexIndex]));
+                    facing += normal.x * kFacing[geometrySide].x()
+                        + normal.y * kFacing[geometrySide].y()
+                        + normal.z * kFacing[geometrySide].z();
+                } else {
+                    haveNormals = false;
+                }
+            }
+            if (!valid || (haveNormals && facing <= 0.0)) {
+                continue;
+            }
+            path.addPolygon(triangle);
+            path.closeSubpath();
+        }
+    }
+
+    return path;
+}
+
+Clipper2Lib::Paths64 unwrapClipperPaths(const QPainterPath &path) {
+    const QList<QPolygonF> polygons = path.toSubpathPolygons();
+    Clipper2Lib::Paths64 paths;
+    paths.reserve(static_cast<size_t>(polygons.size()));
+    for (const QPolygonF &polygon : polygons) {
+        Clipper2Lib::Path64 sampled;
+        sampled.reserve(static_cast<size_t>(polygon.size()));
+        for (const QPointF &point : polygon) {
+            sampled.emplace_back(
+                std::llround(point.x() * kUnwrapPathScale),
+                std::llround(point.y() * kUnwrapPathScale));
+        }
+        if (sampled.size() >= 3) {
+            paths.push_back(std::move(sampled));
+        }
+    }
+
+    return paths;
+}
+
+QPainterPath rdpUnwrapPath(const QPainterPath &geometry,
+                           const QPainterPath &coverage) {
+    const RegionPenLoopConversionOptions options;
+    Clipper2Lib::Clipper64 clipper;
+    Clipper2Lib::Paths64 clipped;
+    clipper.AddSubject(unwrapClipperPaths(geometry));
+    clipper.AddClip(unwrapClipperPaths(coverage));
+    if (!clipper.Execute(Clipper2Lib::ClipType::Intersection,
+                         Clipper2Lib::FillRule::NonZero, clipped)) {
+        return {};
+    }
+
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    for (const Clipper2Lib::Path64 &sampled : clipped) {
+        if (sampled.size() < 3) {
+            continue;
+        }
+        QPolygonF polygon;
+        polygon.reserve(static_cast<qsizetype>(sampled.size()));
+        for (const Clipper2Lib::Point64 &point : sampled) {
+            polygon.push_back(QPointF(
+                static_cast<double>(point.x) / kUnwrapPathScale,
+                static_cast<double>(point.y) / kUnwrapPathScale));
+        }
+        const QVector<PenPoint> points = simplifyClosedPolygonRdpHybridQuadratic(
+            polygon, options.simplifyEpsilon, options.minimumCurveBow);
+        const PenContour contour = buildPenContour(points);
+        if (contour.valid()) {
+            path.addPath(contour.path);
+        } else {
+            path.addPolygon(polygon);
+            path.closeSubpath();
+        }
+    }
+
+    return path;
+}
+
 std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW, int dstH) {
     if (!mask.valid() || dstW <= 0 || dstH <= 0) {
         return {};
@@ -1412,6 +1726,29 @@ std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW,
 
 } // namespace
 
+CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
+                                       const fls::LiveryMaskSet &masks) {
+    CarUnwrapOverlay overlay;
+    if (model.meshes.empty() || !masks.valid()) {
+        return overlay;
+    }
+
+    const LiveryProjectionData projection =
+        buildLiveryProjectionData(model, masks);
+    for (int sideIndex = 0;
+         sideIndex < fls::kLiverySideCount;
+         ++sideIndex) {
+        const QPainterPath coverage = liveryCoveragePath(
+            masks.sides[sideIndex], sideIndex);
+        const QPainterPath geometry = projectedLiveryGeometryPath(
+            model, masks, projection, sideIndex);
+        overlay.sides[sideIndex].path = rdpUnwrapPath(
+            geometry, coverage);
+    }
+
+    return overlay;
+}
+
 void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMaskSet &masks) {
     clearLivery();
     if (!initialized_ || !masks.valid()) {
@@ -1436,56 +1773,8 @@ void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMa
     }
     const int texW = sourceW * kMaskTextureScale;
     const int texH = sourceH * kMaskTextureScale;
-
-    const auto sgn = [](const fls::LiverySide &L, int which) {
-        return which == 0 ? L.xSign * L.xScale : L.ySign * L.yScale;
-    };
-    float axlo[kLiverySideCount], axhi[kLiverySideCount], aylo[kLiverySideCount], ayhi[kLiverySideCount];
-    for (int s = 0; s < kLiverySideCount; ++s) {
-        axlo[s] = aylo[s] = std::numeric_limits<float>::max();
-        axhi[s] = ayhi[s] = std::numeric_limits<float>::lowest();
-    }
-    const std::vector<fls::CarMesh> &projectionMeshes = model.liveryProjectionMeshes.empty()
-        ? model.meshes
-        : model.liveryProjectionMeshes;
-    const std::vector<char> keepLod = highestLodFlags(projectionMeshes);
-    const std::optional<float> longitudinalPivotZ = wheelAxleMidpointZ(model);
-    for (size_t mi = 0; mi < projectionMeshes.size(); ++mi) {
-        const fls::CarMesh &mesh = projectionMeshes[mi];
-        if (!keepLod[mi] || mesh.positions.empty()) {
-            continue;
-        }
-        const int candidateSides = projectionSidesForMesh(mesh);
-        if (candidateSides == 0) {
-            continue;
-        }
-        for (const fls::ModelVec3 &position : mesh.positions) {
-            const fls::ModelVec3 wp =
-                mirroredCarSpace(mesh.boneTransform.transformPoint(position));
-            for (int side = 0; side < kLiverySideCount; ++side) {
-                if ((candidateSides & (1 << kMaskSlotGeometrySides[side])) == 0) {
-                    continue;
-                }
-                const fls::LiverySide &liverySide = masks.sides[side];
-                const float ax = sgn(liverySide, 0) * axisOf(wp, liverySide.xAxis);
-                const float ay = sgn(liverySide, 1) * axisOf(wp, liverySide.yAxis);
-                axlo[side] = std::min(axlo[side], ax);
-                axhi[side] = std::max(axhi[side], ax);
-                aylo[side] = std::min(aylo[side], ay);
-                ayhi[side] = std::max(ayhi[side], ay);
-            }
-        }
-    }
-
-    std::array<bool, kLiverySideCount> locatorAnchored{};
-    for (int side = 2; side <= 4; ++side) {
-        if (const std::optional<std::pair<float, float>> range =
-                longitudinalLocatorRange(model, masks.sides[side])) {
-            axlo[side] = range->first;
-            axhi[side] = range->second;
-            locatorAnchored[side] = true;
-        }
-    }
+    const LiveryProjectionData projection =
+        buildLiveryProjectionData(model, masks);
 
     QOpenGLExtraFunctions *ext = context->extraFunctions();
     QOpenGLFunctions *fns = context->functions();
@@ -1525,27 +1814,10 @@ void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMa
 
         sideAxis_.append(QVector4D(static_cast<float>(side.xAxis),
                                    static_cast<float>(side.yAxis),
-                                   sgn(side, 0), sgn(side, 1)));
-
-        const bool have = axhi[s] > axlo[s] && ayhi[s] > aylo[s];
-        if (have) {
-            const ProjectionAlignment alignment = alignProjectionToMask(
-                s, side, projectionMeshes, keepLod, axlo[s], axhi[s], aylo[s], ayhi[s],
-                longitudinalPivotZ, locatorAnchored[s]);
-            const float width = (axhi[s] - axlo[s]) / alignment.scaleX;
-            const float height = (ayhi[s] - aylo[s]) / alignment.scaleY;
-            const float startX = alignment.pivotX + alignment.offsetX
-                - alignment.scaleX * alignment.pivotX;
-            const float startY = alignment.pivotY + alignment.offsetY
-                - alignment.scaleY * alignment.pivotY;
-            const float alignedMinX = axlo[s] - startX * width;
-            const float alignedMinY = aylo[s] - startY * height;
-            sideEMin_.append(QVector2D(alignedMinX, alignedMinY));
-            sideEMax_.append(QVector2D(alignedMinX + width, alignedMinY + height));
-        } else {
-            sideEMin_.append(QVector2D(-1.0f, -1.0f));
-            sideEMax_.append(QVector2D(1.0f, 1.0f));
-        }
+                                   sideAxisScale(side, true),
+                                   sideAxisScale(side, false)));
+        sideEMin_.append(projection.minimum[s]);
+        sideEMax_.append(projection.maximum[s]);
 
         sideRegion_.append(QVector4D(side.left, side.right, side.top, side.bottom));
         defaultSidePaintRegion_.append(QVector4D(
@@ -1661,10 +1933,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         return id;
     };
 
-    const std::vector<char> keepLod = highestLodFlags(model.meshes);
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         const fls::CarMesh &mesh = model.meshes[mi];
-        if (!keepLod[mi] || mesh.positions.empty() || mesh.indices.empty()) {
+        if (mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
         if (isInteriorWindowShell(mesh.name)) {
@@ -1754,22 +2025,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         buffers->materialName = mesh.materialName;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
-        int bodySides = 0;
         buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName);
-        if (buffers->bodyPaint) {
-            if (isSpoilerMesh(mesh.name)) {
-                bodySides = kSideSpoiler;
-            } else if (isTrunkPanelMesh(mesh.name)) {
-                bodySides = kSideBack | kSideTop;
-            } else {
-                bodySides = kAllBodySides;
-            }
-        }
         const bool windowGlass = isWindowGlassMaterial(mesh);
-        const int windowSides = windowGlass && allowedWindowSidesForPart(mesh.name) != 0
-            ? kAllGlassSides
-            : 0;
-        buffers->allowedSides = bodySides | windowSides;
+        buffers->allowedSides = renderedLiverySidesForMesh(mesh);
         buffers->applyLivery = buffers->allowedSides != 0;
         buffers->paintMaterialHash = mesh.paintMaterialHash != 0
             ? mesh.paintMaterialHash

@@ -119,7 +119,7 @@ endif()
 
 target_include_directories(fls_core PUBLIC src/core)
 
-option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" ON)
+option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" OFF)
 option(FLS_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FLS_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 option(FLS_BUILD_TESTS "Build test executables" OFF)
@@ -208,6 +208,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/canvas_tools.h
     src/gui/canvas/car_model_renderer.cpp
     src/gui/canvas/car_model_renderer.h
+    src/gui/canvas/car_unwrap_overlay.h
     src/gui/fill/bucket_fill.cpp
     src/gui/fill/bucket_fill.h
     src/gui/fill/differential_cover.cpp

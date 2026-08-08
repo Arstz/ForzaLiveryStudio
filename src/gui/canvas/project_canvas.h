@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bucket_fill.h"
+#include "car_unwrap_overlay.h"
 #include "differential_cover.h"
 #include "canvas_camera.h"
 #include "core_types.h"
@@ -96,7 +97,7 @@ public:
     void setLiningWidth(double width);
     double liningWidth() const;
 
-    void setCarUnwrapOverlay(const QImage &overlay);
+    void setCarUnwrapOverlay(const CarUnwrapOverlay &overlay);
     void setCarUnwrapVisible(bool visible);
     bool carUnwrapVisible() const;
     bool hasCarUnwrap() const;
@@ -492,7 +493,7 @@ private:
                                       Qt::KeyboardModifiers modifiers);
     void adjustLiningWidth(double delta, const QPointF &screenPoint);
     bool updateBucketPreview(const QPointF &screenPoint);
-    bool commitBucketPreview(const QPointF &screenPoint);
+    bool commitBucketPreview(const QPointF &screenPoint, bool outlineOnly);
     void adjustBucketTolerance(int delta, const QPointF &screenPoint);
     void clearBucketPreview();
     void drawBucketOverlay(QPainter &painter);
@@ -546,7 +547,7 @@ private:
     mutable QHash<QString, QImage> guideImageCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
     std::optional<FlipCycleState> flipCycle_;
-    QImage carUnwrapOverlay_;
+    CarUnwrapOverlay carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;
     RegionOverlayState region_;
     mutable std::optional<QRectF> selectionWorldBoundsCache_;

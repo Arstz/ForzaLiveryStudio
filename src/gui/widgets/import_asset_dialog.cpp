@@ -178,6 +178,28 @@ AssetInfo inspectAsset(const QString &path) {
     return asset;
 }
 
+AssetInfo inspectFlatLivery(const QFileInfo &file) {
+    AssetInfo asset;
+    if (!file.isFile() || !isNonEmptyFile(file.absoluteFilePath())
+        || !fls::isLiveryAssetFileName(file.fileName())
+        || file.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0) {
+        return asset;
+    }
+
+    const QDir directory = file.absoluteDir();
+    QString stem = file.fileName();
+    stem.chop(QStringLiteral(".C_livery").size());
+    const QString identifier = stem.mid(QStringLiteral("Livery_").size());
+    asset.kind = AssetKind::HorizonLivery;
+    readHeaderMetadata(findFile(
+        directory, stem + QStringLiteral(".header")), asset);
+    asset.thumbnailPath = findFile(
+        directory,
+        QStringLiteral("GarageThumbnail_%1.bigThumb.webp").arg(identifier));
+
+    return asset;
+}
+
 QString assetKindLabel(AssetKind kind) {
     switch (kind) {
     case AssetKind::HorizonGroup:
@@ -672,6 +694,43 @@ private:
             item->setData(kNameRole, name);
             item->setData(kKindRole, static_cast<int>(asset.kind));
             item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
+            updateItemSizeHint(item);
+        }
+
+        const QFileInfoList files = directory.entryInfoList(
+            QDir::Files | QDir::Hidden | QDir::System,
+            QDir::Name | QDir::IgnoreCase);
+        for (const QFileInfo &file : files) {
+            const AssetInfo asset = inspectFlatLivery(file);
+            if (!asset.valid()) {
+                continue;
+            }
+
+            QString name = file.completeBaseName();
+            QString text = name;
+            if (!asset.name.isEmpty()) {
+                name = asset.name;
+                text = name;
+            }
+            QStringList details{assetKindLabel(asset.kind)};
+            if (!asset.creator.isEmpty()) {
+                details.push_back(asset.creator);
+            }
+            if (!asset.date.isEmpty()) {
+                details.push_back(asset.date);
+            }
+            text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
+            detailsRequests.push_back({
+                file.absoluteFilePath(), asset.thumbnailPath, asset.kind});
+
+            auto *item = new QListWidgetItem(folderIcon, text, list_);
+            item->setData(kPathRole, file.absoluteFilePath());
+            item->setData(kAssetRole, true);
+            item->setData(kMotorsportRole, false);
+            item->setData(kBaseTextRole, text);
+            item->setData(kNameRole, name);
+            item->setData(kKindRole, static_cast<int>(asset.kind));
+            item->setToolTip(QDir::toNativeSeparators(file.absoluteFilePath()));
             updateItemSizeHint(item);
         }
 

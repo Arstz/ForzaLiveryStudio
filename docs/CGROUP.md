@@ -197,6 +197,14 @@ u8  r
 u8  a
 ```
 
+Standalone streams identify their record generation in the root transform
+marker. Generation 2 uses `01` for shape records and `02` as the transform
+terminator. Generation 3 uses the markers shown above. The shared tree walk
+selects the record dialect from the root header and decodes the original bytes.
+The direct-child bitmap selects whether each following child is a shape or a
+group, so marker-like bytes outside that child type are not interpreted as
+records.
+
 Built-in vector IDs are canonicalized and validated against the runtime registry
 in `assets/vector/shape_names.json`. A complete unsupported livery record can
 still contribute structural occupancy to preserve section alignment, but it is

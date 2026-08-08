@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core_types.h"
+#include "car_unwrap_overlay.h"
 #include "livery_masks.h"
 #include "manufacturer_colors.h"
 #include "model_geometry.h"
@@ -17,6 +18,9 @@ struct ModelMaterialTexture;
 }
 
 namespace gui {
+
+CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
+                                       const fls::LiveryMaskSet &masks);
 
 class CarModelRenderer {
 public:

@@ -357,7 +357,7 @@ void ProjectCanvas::setDisplayAnchorsDuringTransformDrag(bool enabled) {
     update();
 }
 
-void ProjectCanvas::setCarUnwrapOverlay(const QImage &overlay) {
+void ProjectCanvas::setCarUnwrapOverlay(const CarUnwrapOverlay &overlay) {
     carUnwrapOverlay_ = overlay;
     update();
 }
@@ -375,7 +375,7 @@ bool ProjectCanvas::carUnwrapVisible() const {
 }
 
 bool ProjectCanvas::hasCarUnwrap() const {
-    return !carUnwrapOverlay_.isNull();
+    return !carUnwrapOverlay_.empty();
 }
 
 void ProjectCanvas::setGuideLayersOnTop(bool enabled) {

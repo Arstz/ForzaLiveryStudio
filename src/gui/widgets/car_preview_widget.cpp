@@ -838,6 +838,7 @@ struct PreparedCar {
     fls::CarModel model;
     fls::LiveryMaskSet liveryMasks;
     fls::ManufacturerColorPalette manufacturerColors;
+    CarUnwrapOverlay carUnwrapOverlay;
     std::unique_ptr<QTemporaryDir> extractedCarDir;
     QString loadedCarPath;
     QString liveryMasksDir;
@@ -892,6 +893,8 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (QFileInfo::exists(masksDir)) {
         prepared->liveryMasks = fls::loadLiveryMasks(masksDir);
         prepared->liveryMasksDir = masksDir;
+        prepared->carUnwrapOverlay = buildCarUnwrapOverlay(
+            prepared->model, prepared->liveryMasks);
     }
 
     return prepared;
@@ -963,6 +966,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
+                    guard->carUnwrapOverlay_ = std::move(prepared->carUnwrapOverlay);
                     guard->liveryMasksDir_ = std::move(prepared->liveryMasksDir);
                     guard->modelUploadPending_ = true;
                     guard->liveryMasksPending_ = true;
@@ -1016,6 +1020,7 @@ void CarPreviewWidget::clearModel() {
     model_ = fls::CarModel{};
     extractedCarDir_.reset();
     liveryMasks_ = {};
+    carUnwrapOverlay_ = {};
     liveryMasksDir_.clear();
     modelUploadPending_ = false;
     liveryMasksPending_ = false;
@@ -1028,112 +1033,19 @@ void CarPreviewWidget::clearModel() {
     update();
 }
 
-QImage CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
-    if (!liveryMasks_.valid()) {
-        return {};
+CarUnwrapOverlay CarPreviewWidget::unwrapOverlay(int liverySectionSlot) const {
+    if (liverySectionSlot < 0) {
+        return carUnwrapOverlay_;
     }
-    static const QColor kSideColors[fls::kLiverySideCount] = {
-        QColor(230, 60, 60),   // Front
-        QColor(60, 200, 60),   // Back
-        QColor(70, 120, 240),  // Top
-        QColor(230, 220, 60),  // Left
-        QColor(220, 80, 220),  // Right
-        QColor(60, 210, 210),  // Spoiler
-        QColor(255, 130, 60),  // FrontWindshield
-        QColor(120, 255, 140), // BackWindshield
-        QColor(120, 190, 255), // TopWindow
-        QColor(255, 235, 120), // LeftWindow
-        QColor(255, 140, 255), // RightWindow
-    };
-
-    int w = 0, h = 0;
-    for (const fls::LiverySide &side : liveryMasks_.sides) {
-        if (side.mask.valid()) {
-            w = side.mask.width;
-            h = side.mask.height;
-            break;
-        }
-    }
-    if (w == 0 || h == 0) {
+    if (liverySectionSlot >= fls::kLiverySideCount) {
         return {};
     }
 
-    QImage image(w, h, QImage::Format_ARGB32);
-    image.fill(Qt::transparent);
-    int firstSide = 0;
-    int lastSide = fls::kLiverySideCount;
-    if (liverySectionSlot >= 0) {
-        if (liverySectionSlot >= fls::kLiverySideCount) {
-            return {};
-        }
-        firstSide = kLiverySectionMaskSlots[liverySectionSlot];
-        lastSide = firstSide + 1;
-    }
-    const bool flipSectionX = liverySectionSlot == 4
-        || liverySectionSlot == 6
-        || liverySectionSlot == 7
-        || liverySectionSlot == 10;
-    const bool flipSectionY = liverySectionSlot == 4
-        || liverySectionSlot == 7
-        || liverySectionSlot == 10;
-    const bool transpose = liverySectionSlot == 5
-        || liverySectionSlot == 6
-        || liverySectionSlot == 7;
-    bool drew = false;
-    for (int s = firstSide; s < lastSide; ++s) {
-        const fls::LiverySide &side = liveryMasks_.sides[s];
-        const fls::SwatchMask &mask = side.mask;
-        if (!mask.valid() || mask.width != w || mask.height != h) {
-            continue;
-        }
+    CarUnwrapOverlay overlay;
+    const int maskSlot = kLiverySectionMaskSlots[liverySectionSlot];
+    overlay.sides[maskSlot] = carUnwrapOverlay_.sides[maskSlot];
 
-        const double left = std::min(side.left, side.right);
-        const double right = std::max(side.left, side.right);
-        const double top = std::min(side.top, side.bottom);
-        const double bottom = std::max(side.top, side.bottom);
-        const double sx = static_cast<double>(w) / (2.0 * fls::kLiveryCanvasHalfWidth);
-        const double sy = static_cast<double>(h) / (2.0 * fls::kLiveryCanvasHalfHeight);
-        const int x0 = std::clamp(static_cast<int>(std::floor((left + fls::kLiveryCanvasHalfWidth) * sx)), 0, w);
-        const int x1 = std::clamp(static_cast<int>(std::ceil((right + fls::kLiveryCanvasHalfWidth) * sx)), 0, w);
-        const int y0 = std::clamp(static_cast<int>(std::floor((fls::kLiveryCanvasHalfHeight - bottom) * sy)), 0, h);
-        const int y1 = std::clamp(static_cast<int>(std::ceil((fls::kLiveryCanvasHalfHeight - top) * sy)), 0, h);
-        if (x1 <= x0 || y1 <= y0) {
-            continue;
-        }
-
-        const QColor c = kSideColors[s];
-        const double originX = liverySectionSlot >= 0 ? side.xOrigin : 0.0;
-        const double originY = liverySectionSlot >= 0 ? side.yOrigin : 0.0;
-        for (int y = y0; y < y1; ++y) {
-            const double canvasY = fls::kLiveryCanvasHalfHeight - (static_cast<double>(y) + 0.5) / sy;
-            const uint8_t *cov = &mask.coverage[static_cast<size_t>(y) * w];
-            for (int x = x0; x < x1; ++x) {
-                if (cov[x] < 32) {
-                    continue;
-                }
-                const double canvasX = (static_cast<double>(x) + 0.5) / sx - fls::kLiveryCanvasHalfWidth;
-                const double sectionX = transpose ? canvasY - originY : canvasX - originX;
-                const double sectionY = transpose ? canvasX - originX : canvasY - originY;
-                int outX = static_cast<int>(std::floor(
-                    (sectionX + fls::kLiveryCanvasHalfWidth) * sx));
-                int outY = static_cast<int>(std::floor(
-                    (sectionY + fls::kLiveryCanvasHalfHeight) * sy));
-                if (outX < 0 || outX >= w || outY < 0 || outY >= h) {
-                    continue;
-                }
-                if (flipSectionX) {
-                    outX = w - 1 - outX;
-                }
-                if (flipSectionY) {
-                    outY = h - 1 - outY;
-                }
-                QRgb *row = reinterpret_cast<QRgb *>(image.scanLine(outY));
-                row[outX] = qRgba(c.red(), c.green(), c.blue(), 255);
-                drew = true;
-            }
-        }
-    }
-    return drew ? image : QImage();
+    return overlay;
 }
 
 void CarPreviewWidget::setProject(fls::Project *project) {

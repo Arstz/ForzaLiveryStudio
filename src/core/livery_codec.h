@@ -31,6 +31,7 @@ struct LiveryPayload {
 
 LiveryPayload readLiveryPayload(const QString &folderOrFile);
 LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw);
+bool isLiveryAssetFileName(const QString &fileName);
 
 QByteArray buildLiveryGyvl(const Project &project,
                            std::array<int, 11> *outSectionCounts = nullptr);

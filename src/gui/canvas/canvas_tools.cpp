@@ -715,7 +715,8 @@ bool BucketTool::handlePress(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) {
         return false;
     }
-    canvas_.commitBucketPreview(event->position());
+    canvas_.commitBucketPreview(
+        event->position(), event->modifiers() & Qt::ShiftModifier);
     event->accept();
     return true;
 }

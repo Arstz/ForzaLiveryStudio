@@ -21,6 +21,10 @@
 namespace fls {
 namespace {
 
+constexpr int kCurrentLiverySectionCount = 11;
+constexpr int kLegacyLiveryStatsCount = 7;
+constexpr int kLegacyLiverySectionCount = 5;
+
 QString resolveLiveryPath(const QString &folderOrFile) {
     QFileInfo info(folderOrFile);
     if (info.isDir()) {
@@ -137,16 +141,22 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
     if (paintEnd >= 0) {
         payload.paint = readPaintState(payload.raw, paintTag + 4, paintEnd);
     }
-    payload.sectionCounts.reserve(11);
-    if (statsTag >= 0 && payload.raw.mid(statsTag, 4) == QByteArray("yrvl", 4)) {
-        for (int i = 0; i < 11; ++i) {
+    const bool hasStats = statsTag >= 0
+        && payload.raw.mid(statsTag, 4) == QByteArray("yrvl", 4);
+    const int statsCount = hasStats && paintTag > statsTag
+        ? (paintTag - statsTag - 4) / 4
+        : kCurrentLiverySectionCount;
+    const int sectionCount = statsCount == kLegacyLiveryStatsCount
+        ? kLegacyLiverySectionCount
+        : std::min(statsCount, kCurrentLiverySectionCount);
+    payload.sectionCounts.reserve(sectionCount);
+    for (int i = 0; i < sectionCount; ++i) {
+        if (hasStats) {
             const int off = statsTag + 4 + i * 4;
             payload.sectionCounts.push_back(off + 4 <= payload.raw.size()
                                                 ? static_cast<int>(detail::readLeU32(payload.raw, off))
                                                 : 0);
-        }
-    } else {
-        for (int i = 0; i < 11; ++i) {
+        } else {
             payload.sectionCounts.push_back(0);
         }
     }
@@ -157,6 +167,15 @@ LiveryPayload parseInflatedLiveryPayloadImpl(const QByteArray &raw) {
 
 LiveryPayload parseInflatedLiveryPayload(const QByteArray &raw) {
     return parseInflatedLiveryPayloadImpl(raw);
+}
+
+bool isLiveryAssetFileName(const QString &fileName) {
+    if (fileName.compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+
+    return fileName.startsWith(QStringLiteral("Livery_"), Qt::CaseInsensitive)
+        && fileName.endsWith(QStringLiteral(".C_livery"), Qt::CaseInsensitive);
 }
 
 LiveryPayload readLiveryPayload(const QString &folderOrFile) {

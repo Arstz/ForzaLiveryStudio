@@ -694,10 +694,12 @@ void MainWindow::updateCarUnwrapOverlay() {
             return;
         }
     }
-    const QImage overlay = carPreview_ != nullptr ? carPreview_->unwrapOverlay(sectionSlot) : QImage();
+    const CarUnwrapOverlay overlay = carPreview_ != nullptr
+        ? carPreview_->unwrapOverlay(sectionSlot)
+        : CarUnwrapOverlay{};
     canvas_->setCarUnwrapOverlay(overlay);
     if (carUnwrapAction_ != nullptr) {
-        carUnwrapAction_->setEnabled(!overlay.isNull());
+        carUnwrapAction_->setEnabled(!overlay.empty());
     }
 }
 

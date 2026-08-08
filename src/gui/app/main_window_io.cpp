@@ -12,6 +12,7 @@
 #include "image_preprocess_dialog.h"
 #include "import_asset_dialog.h"
 #include "layer.h"
+#include "livery_codec.h"
 #include "project_codec.h"
 #include "shape_geometry_store.h"
 
@@ -131,7 +132,7 @@ MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString 
         return ExternalDropKind::ProjectJson;
     }
     if (info.fileName().compare(QStringLiteral("C_group"), Qt::CaseInsensitive) == 0
-        || info.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0) {
+        || fls::isLiveryAssetFileName(info.fileName())) {
         return ExternalDropKind::CGroup;
     }
 
@@ -431,7 +432,7 @@ bool MainWindow::importAny(const QString &path, QString *error) {
     if (info.isDir()) {
         isLivery = QFileInfo(QDir(path).filePath(QStringLiteral("C_livery"))).isFile();
     } else {
-        isLivery = info.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0;
+        isLivery = fls::isLiveryAssetFileName(info.fileName());
     }
 
     if (isLivery) {
