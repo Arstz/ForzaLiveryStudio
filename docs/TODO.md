@@ -1,5 +1,6 @@
 Small changes:
     -Remove Horizon/Motosport livery/group text in the exproler, retain just Livery/group
+    -Enable a toggle for Pipette tool auto return to last tool
 
 Medium changes:
 
