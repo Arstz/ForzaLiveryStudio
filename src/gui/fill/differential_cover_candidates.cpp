@@ -1495,6 +1495,9 @@ Candidate legalCandidate(const ShapeMesh &shape,
     QElapsedTimer timer;
     timer.start();
     Candidate result;
+    if (anchor != nullptr) {
+        result.anchor = *anchor;
+    }
     result.shapeId = shape.id;
     for (int step = 0; step <= kLegalShrinkSteps; ++step) {
         ++profile->legalizationEvaluations;

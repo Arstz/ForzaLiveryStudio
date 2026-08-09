@@ -23,6 +23,9 @@ constexpr double kAdamBeta2 = 0.999;
 constexpr double kAdamEpsilon = 1e-8;
 constexpr double kGradientNormLimit = 1000000.0;
 constexpr double kGradientStopNorm = 1e-8;
+constexpr int kNudgeAdamIterations = 40;
+constexpr double kNudgeAreaImprovementRatio = 0.01;
+constexpr double kNudgeDistanceAllowanceRatio = 0.01;
 constexpr double kRestartTranslationFraction = 0.15;
 constexpr double kRestartAngleRange = 0.2;
 constexpr double kRestartScaleRange = 0.12;
@@ -91,6 +94,7 @@ enum class CandidateOrigin {
 
 struct Candidate {
     Affine transform;
+    std::optional<CandidateAnchor> anchor;
     int shapeId = 0;
     double covered = 0.0;
     double spill = 0.0;
@@ -108,11 +112,6 @@ struct CandidateInitialization {
     QPointF translationOffset;
     double angleOffset = 0.0;
     double scaleFactor = 1.0;
-};
-
-struct CandidateAnchor {
-    Vec2 source;
-    QPointF target;
 };
 
 struct CandidateJob {
@@ -456,6 +455,21 @@ StructuralCoverPlan structuralCoverPlan(
     const std::function<bool()> &cancelled);
 
 bool prunePlacements(
+    QVector<Placement> *placements,
+    ExactCoverState *currentState,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &mustCover,
+    const Polygons &mayCover,
+    const QVector<ContourFeature> &features,
+    double targetArea,
+    const FillOptions &options,
+    GpuAreaEvaluator *gpuEvaluator,
+    QThreadPool *candidatePool,
+    FillProfile *profile,
+    QElapsedTimer *elapsed,
+    const std::function<bool()> &cancelled,
+    const std::function<void(const FillProgress &)> &progress);
+bool nudgePlacements(
     QVector<Placement> *placements,
     ExactCoverState *currentState,
     const QVector<ShapeMesh> &catalog,

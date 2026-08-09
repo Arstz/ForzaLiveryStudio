@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 namespace gui::cover {
 
@@ -82,12 +83,18 @@ struct Affine {
     double f = 0.0;
 };
 
+struct CandidateAnchor {
+    Vec2 source;
+    QPointF target;
+};
+
 struct Placement {
     Affine transform;
     int shapeId = 0;
     double coveredArea = 0.0;
     QVector<int> ownedFeatureIds;
     double exposedContourArc = 0.0;
+    std::optional<CandidateAnchor> anchor;
 };
 
 using Polygons = QVector<QPolygonF>;
@@ -161,8 +168,11 @@ struct FillProfile {
     double residualUpdateWallSeconds = 0.0;
     double finalMeasurementWallSeconds = 0.0;
     double gpuEvaluationWallSeconds = 0.0;
+    double nudgeWallSeconds = 0.0;
     double pruneWallSeconds = 0.0;
     double repairWallSeconds = 0.0;
+    double preNudgeResidualArea = 0.0;
+    double postNudgeResidualArea = 0.0;
     double prePruneResidualArea = 0.0;
     double postPruneResidualArea = 0.0;
     double repairTargetArea = 0.0;
@@ -193,6 +203,7 @@ struct FillProfile {
     std::uint64_t selectionEnvelopeRejections = 0;
     std::uint64_t selectionOutwardDistanceRejections = 0;
     std::uint64_t selectionFeatureRejections = 0;
+    std::uint64_t nudgeOptimizations = 0;
     std::uint64_t pruneAttempts = 0;
     std::uint64_t pruneOptimizations = 0;
     int greedySteps = 0;
@@ -201,6 +212,7 @@ struct FillProfile {
     int wholeComponentPlacements = 0;
     int hardEdgePlacements = 0;
     int featureSelectedPlacements = 0;
+    int nudgedPlacements = 0;
     int prunedPlacements = 0;
     int adjustedPlacements = 0;
     int prunePasses = 0;

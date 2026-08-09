@@ -159,6 +159,7 @@ Candidate optimizeExistingPlacement(
             placement.ownedFeatureIds,
             features);
     job.transform = placement.transform;
+    job.anchor = placement.anchor;
     job.hasTransform = true;
     const std::vector<CandidateJob> jobs{job};
     const EvaluationBounds subjectBounds{
@@ -167,7 +168,6 @@ Candidate optimizeExistingPlacement(
     };
     const DistanceSeed seed = distanceSeed(subject);
     ++profile->candidateJobs;
-    ++profile->pruneOptimizations;
     QElapsedTimer batchTimer;
     batchTimer.start();
     bool usedGpu = false;
@@ -192,7 +192,10 @@ Candidate optimizeExistingPlacement(
                 subject, target,
                 legalEnvelope,
                 subjectBounds,
-                options, &exactProfile);
+                options, &exactProfile,
+                job.featureAssignments,
+                job.anchor.has_value()
+                    ? &*job.anchor : nullptr);
             accumulateCandidateProfile(
                 exactProfile, profile);
         }
@@ -266,6 +269,194 @@ bool acceptablePruneState(
             >= acceptedMetrics.tversky
                 - tverskyAllowance
                 - kGeometryEpsilon;
+}
+
+bool acceptableNudgeMetrics(
+    const ExactCoverState &state,
+    const CoverErrorMetrics &metrics,
+    const ExactCoverState &acceptedState,
+    const CoverErrorMetrics &acceptedMetrics,
+    double minimumAreaImprovement,
+    const FillOptions &options) {
+    const double distanceAllowance =
+        options.boundaryTolerance
+        * kNudgeDistanceAllowanceRatio;
+
+    return state.residualArea
+            <= acceptedState.residualArea
+                - minimumAreaImprovement
+        && state.outsideArea
+            <= acceptedState.outsideArea
+                + kGeometryEpsilon
+        && metrics.outsideTargetArea
+            <= acceptedMetrics.outsideTargetArea
+                + kGeometryEpsilon
+        && legalEnvelopeArea(
+            metrics.outsideEnvelopeArea,
+            options)
+        && legalOutwardDistance(
+            metrics.maximumOutwardDistance,
+            options)
+        && metrics.maximumOutwardDistance
+            <= acceptedMetrics.maximumOutwardDistance
+                + kGeometryEpsilon
+        && metrics.meanBoundaryDistance
+            <= acceptedMetrics.meanBoundaryDistance
+                + distanceAllowance
+        && metrics.boundaryDistanceRms
+            <= acceptedMetrics.boundaryDistanceRms
+                + distanceAllowance
+        && metrics.boundaryDistance95
+            <= acceptedMetrics.boundaryDistance95
+                + distanceAllowance
+        && metrics.boundaryFScore
+            >= acceptedMetrics.boundaryFScore
+                - kGeometryEpsilon
+        && metrics.representedFeatureWeight
+            >= acceptedMetrics.representedFeatureWeight
+                - kGeometryEpsilon
+        && metrics.tversky
+            >= acceptedMetrics.tversky
+                - kGeometryEpsilon;
+}
+
+bool nudgePlacements(
+    QVector<Placement> *placements,
+    ExactCoverState *currentState,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &mustCover,
+    const Polygons &mayCover,
+    const QVector<ContourFeature> &features,
+    double targetArea,
+    const FillOptions &options,
+    GpuAreaEvaluator *gpuEvaluator,
+    QThreadPool *candidatePool,
+    FillProfile *profile,
+    QElapsedTimer *elapsed,
+    const std::function<bool()> &cancelled,
+    const std::function<void(const FillProgress &)> &progress) {
+    QElapsedTimer nudgeTimer;
+    nudgeTimer.start();
+    FillOptions nudgeOptions = options;
+    CoverErrorMetrics acceptedMetrics =
+        evaluateCoverMetrics(
+            mustCover, mayCover,
+            currentState->coverage,
+            features, options);
+    const double minimumAreaImprovement =
+        std::max(
+            kGeometryEpsilon,
+            options.epsArea
+                * kNudgeAreaImprovementRatio);
+    bool changed = false;
+
+    nudgeOptions.adamIterations =
+        std::min(
+            options.adamIterations,
+            kNudgeAdamIterations);
+    for (int offset = 0;
+         offset < placements->size(); ++offset) {
+        if (cancelled && cancelled()) {
+            profile->nudgeWallSeconds +=
+                static_cast<double>(
+                    nudgeTimer.nsecsElapsed()) * 1e-9;
+            return false;
+        }
+        const int index = placements->size()
+            - offset - 1;
+        Polygons fixedFootprints =
+            currentState->footprints;
+        fixedFootprints.removeAt(index);
+        const Polygons fixedCoverage =
+            unionPolygons(fixedFootprints);
+        const Polygons subject =
+            differencePolygons(
+                mustCover, fixedCoverage);
+        if (polygonSetArea(subject)
+            < options.epsGain) {
+            continue;
+        }
+        ++profile->nudgeOptimizations;
+        bool optimizationCancelled = false;
+        const Candidate optimized =
+            optimizeExistingPlacement(
+                (*placements)[index],
+                catalog, subject,
+                mustCover, mayCover,
+                features,
+                nudgeOptions,
+                gpuEvaluator, candidatePool,
+                profile, cancelled,
+                &optimizationCancelled);
+        if (optimizationCancelled) {
+            profile->nudgeWallSeconds +=
+                static_cast<double>(
+                    nudgeTimer.nsecsElapsed()) * 1e-9;
+            return false;
+        }
+        if (!optimized.valid
+            || sameTransform(
+                optimized.transform,
+                (*placements)[index].transform)) {
+            continue;
+        }
+        QVector<Placement> trial = *placements;
+        trial[index].transform =
+            optimized.transform;
+        const ExactCoverState trialState =
+            exactCoverState(
+                trial, catalog,
+                mustCover, mayCover,
+                targetArea);
+        if (trialState.residualArea
+                > currentState->residualArea
+                    - minimumAreaImprovement
+            || trialState.outsideArea
+                > currentState->outsideArea
+                    + kGeometryEpsilon) {
+            continue;
+        }
+        const CoverErrorMetrics trialMetrics =
+            evaluateCoverMetrics(
+                mustCover, mayCover,
+                trialState.coverage,
+                features, options);
+        if (!acceptableNudgeMetrics(
+                trialState, trialMetrics,
+                *currentState, acceptedMetrics,
+                minimumAreaImprovement,
+                options)) {
+            continue;
+        }
+        *placements = std::move(trial);
+        *currentState = trialState;
+        acceptedMetrics = trialMetrics;
+        assignFeatureOwnership(
+            placements, catalog,
+            currentState->coverage,
+            features);
+        ++profile->nudgedPlacements;
+        changed = true;
+    }
+    if (changed) {
+        refreshPlacementGains(
+            placements, catalog, mustCover);
+        if (progress) {
+            progress({
+                static_cast<int>(placements->size()),
+                targetArea,
+                currentState->coveredArea,
+                currentState->residualArea,
+                static_cast<double>(
+                    elapsed->elapsed()) / 1000.0,
+            });
+        }
+    }
+    profile->nudgeWallSeconds +=
+        static_cast<double>(
+            nudgeTimer.nsecsElapsed()) * 1e-9;
+
+    return true;
 }
 
 bool prunePlacements(
@@ -363,6 +554,7 @@ bool prunePlacements(
                         differencePolygons(
                             mustCover, fixedCoverage);
                     bool optimizationCancelled = false;
+                    ++profile->pruneOptimizations;
                     const Candidate optimized =
                         optimizeExistingPlacement(
                             trial[neighbor.index],

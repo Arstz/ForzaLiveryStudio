@@ -209,11 +209,20 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("gpuEvaluationWallSeconds"),
             profile->gpuEvaluationWallSeconds);
         profileObject.insert(
+            QStringLiteral("nudgeWallSeconds"),
+            profile->nudgeWallSeconds);
+        profileObject.insert(
             QStringLiteral("pruneWallSeconds"),
             profile->pruneWallSeconds);
         profileObject.insert(
             QStringLiteral("repairWallSeconds"),
             profile->repairWallSeconds);
+        profileObject.insert(
+            QStringLiteral("preNudgeResidualArea"),
+            profile->preNudgeResidualArea);
+        profileObject.insert(
+            QStringLiteral("postNudgeResidualArea"),
+            profile->postNudgeResidualArea);
         profileObject.insert(
             QStringLiteral("prePruneResidualArea"),
             profile->prePruneResidualArea);
@@ -317,6 +326,10 @@ void writePenFillLog(const PenFillRequest &request,
                 profile
                     ->selectionFeatureRejections));
         profileObject.insert(
+            QStringLiteral("nudgeOptimizations"),
+            static_cast<qint64>(
+                profile->nudgeOptimizations));
+        profileObject.insert(
             QStringLiteral("pruneAttempts"),
             static_cast<qint64>(profile->pruneAttempts));
         profileObject.insert(
@@ -339,6 +352,9 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("featureSelectedPlacements"),
             profile->featureSelectedPlacements);
+        profileObject.insert(
+            QStringLiteral("nudgedPlacements"),
+            profile->nudgedPlacements);
         profileObject.insert(
             QStringLiteral("prunedPlacements"),
             profile->prunedPlacements);

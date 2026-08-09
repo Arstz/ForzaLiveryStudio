@@ -638,6 +638,7 @@ FillResult analyticCoverFillInternal(
             selection
                 .newlyRepresentedFeatureIds,
             selection.exposedContourArc,
+            selection.candidate.anchor,
         });
         currentCoverage =
             std::move(selection.coverage);
@@ -675,10 +676,24 @@ FillResult analyticCoverFillInternal(
     bool haveRepairProfile = false;
     Polygons prePruneResidual;
     if (postProcess) {
+        result.profile.preNudgeResidualArea =
+            coverState.residualArea;
+        if (!nudgePlacements(
+                &result.placements, &coverState,
+                catalog, mustCover, mayCover,
+                targetFeatures,
+                targetArea, options, gpuEvaluator.get(),
+                &candidatePool, &result.profile, &elapsed,
+                cancelled, progress)) {
+            result.cancelled = true;
+        }
+        result.profile.postNudgeResidualArea =
+            coverState.residualArea;
         result.profile.prePruneResidualArea =
             coverState.residualArea;
         prePruneResidual = coverState.residual;
-        if (!prunePlacements(
+        if (!result.cancelled
+            && !prunePlacements(
                 &result.placements, &coverState,
                 catalog, mustCover, mayCover,
                 targetFeatures,
