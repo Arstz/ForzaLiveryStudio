@@ -39,6 +39,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   evaluate their complete square-and-triangle mesh as one coherent compact plan.
   A rejected plan is discarded. Consecutive hard corners instead seed bounded
   Square and Triangle Adam jobs whose shared contour vertex remains fixed during
+  optimization. Outward quadratic runs between hard endpoints seed Circle jobs
+  from their arc-length midpoint and tangent, with that midpoint fixed during
   optimization.
   An optional double-precision CUDA path evaluates the optimizer and
   legalization first. Direct3D 11 legalization with double-precision CPU Adam is

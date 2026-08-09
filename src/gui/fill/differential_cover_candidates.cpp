@@ -605,13 +605,20 @@ QVector<FixedCandidate> polygonMeshCandidates(
 namespace {
 
 constexpr int kMaximumHardPointJobs = 8;
+constexpr int kCurveRunLengthSamples = 16;
 constexpr double kMinimumHardTriangleQuality = 0.02;
 constexpr double kMinimumCurveEllipseQuality = 0.01;
+constexpr double kSoftCurveJoinTolerance = 1e-7;
 constexpr double kHardPointProbeSpillWeight = 2.0;
 constexpr std::array<double, 3> kHardPointProbeScales{
     1.0,
     1.5,
     2.0,
+};
+
+struct CurveRunMiddle {
+    QPointF position;
+    QPointF tangent;
 };
 
 double hardPointCross(const QPointF &left,
@@ -651,6 +658,197 @@ double hardTriangleQuality(const QPointF &first,
 
     return 2.0 * std::sqrt(3.0)
         * twiceArea / edgeSquares;
+}
+
+QPointF quadraticPoint(
+    const ContourSpan &span,
+    double parameter) {
+    const double inverse = 1.0 - parameter;
+
+    return span.start * (inverse * inverse)
+        + span.control
+            * (2.0 * inverse * parameter)
+        + span.end * (parameter * parameter);
+}
+
+QPointF quadraticTangent(
+    const ContourSpan &span,
+    double parameter) {
+    const QPointF derivative =
+        (span.control - span.start)
+            * (1.0 - parameter)
+        + (span.end - span.control)
+            * parameter;
+    const double length = std::hypot(
+        derivative.x(), derivative.y());
+
+    return length > kGeometryEpsilon
+        ? derivative / length : QPointF{};
+}
+
+double curveSpanLength(
+    const ContourSpan &span) {
+    QPointF previous = span.start;
+    double result = 0.0;
+    for (int sample = 1;
+         sample <= kCurveRunLengthSamples;
+         ++sample) {
+        const double parameter =
+            static_cast<double>(sample)
+            / static_cast<double>(
+                kCurveRunLengthSamples);
+        const QPointF point =
+            quadraticPoint(span, parameter);
+        result += QLineF(previous, point).length();
+        previous = point;
+    }
+
+    return result;
+}
+
+bool softCurveJoin(
+    const ContourSpan &left,
+    const ContourSpan &right) {
+    if (!left.curved || !right.curved
+        || QLineF(left.end, right.start).length()
+            > kSoftCurveJoinTolerance) {
+        return false;
+    }
+    const QPointF expected =
+        (left.control + right.control) * 0.5;
+
+    return QLineF(left.end, expected).length()
+        <= kSoftCurveJoinTolerance;
+}
+
+bool outwardCurveRun(
+    const QVector<ContourSpan> &spans,
+    int first,
+    int count,
+    double orientation) {
+    const QPointF runStart = spans[first].start;
+    const ContourSpan &lastSpan =
+        spans[(first + count - 1) % spans.size()];
+    const QPointF runChord =
+        lastSpan.end - runStart;
+    if (std::hypot(
+            runChord.x(), runChord.y())
+        <= kGeometryEpsilon) {
+        return false;
+    }
+    for (int offset = 0;
+         offset < count; ++offset) {
+        const ContourSpan &span =
+            spans[(first + offset) % spans.size()];
+        const QPointF spanChord =
+            span.end - span.start;
+        const QPointF spanMiddle =
+            quadraticPoint(span, 0.5);
+        const QPointF chordMiddle =
+            (span.start + span.end) * 0.5;
+        if (hardPointCross(
+                spanChord,
+                spanMiddle - chordMiddle)
+                    * orientation
+                >= -kGeometryEpsilon
+            || hardPointCross(
+                runChord,
+                span.control - runStart)
+                    * orientation
+                >= -kGeometryEpsilon) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::optional<CurveRunMiddle> curveRunMiddle(
+    const QVector<ContourSpan> &spans,
+    int first,
+    int count) {
+    QVector<double> lengths;
+    lengths.reserve(count);
+    double totalLength = 0.0;
+    for (int offset = 0;
+         offset < count; ++offset) {
+        const double length = curveSpanLength(
+            spans[(first + offset) % spans.size()]);
+        lengths.push_back(length);
+        totalLength += length;
+    }
+    if (totalLength <= kGeometryEpsilon) {
+        return std::nullopt;
+    }
+
+    const double middleLength = totalLength * 0.5;
+    double accumulatedLength = 0.0;
+    for (int offset = 0;
+         offset < count; ++offset) {
+        const ContourSpan &span =
+            spans[(first + offset) % spans.size()];
+        if (accumulatedLength + lengths[offset]
+                < middleLength
+            && offset + 1 < count) {
+            accumulatedLength += lengths[offset];
+            continue;
+        }
+        const double localTarget =
+            middleLength - accumulatedLength;
+        QPointF previous = span.start;
+        double localLength = 0.0;
+        for (int sample = 1;
+             sample <= kCurveRunLengthSamples;
+             ++sample) {
+            const double parameter =
+                static_cast<double>(sample)
+                / static_cast<double>(
+                    kCurveRunLengthSamples);
+            const QPointF point =
+                quadraticPoint(span, parameter);
+            const double segmentLength =
+                QLineF(previous, point).length();
+            if (localLength + segmentLength
+                    >= localTarget
+                || sample
+                    == kCurveRunLengthSamples) {
+                const double fraction =
+                    segmentLength > kGeometryEpsilon
+                    ? std::clamp(
+                        (localTarget - localLength)
+                            / segmentLength,
+                        0.0, 1.0)
+                    : 0.0;
+                const double previousParameter =
+                    static_cast<double>(sample - 1)
+                    / static_cast<double>(
+                        kCurveRunLengthSamples);
+                const double middleParameter =
+                    previousParameter
+                    + fraction
+                        / static_cast<double>(
+                            kCurveRunLengthSamples);
+                const QPointF tangent =
+                    quadraticTangent(
+                        span, middleParameter);
+                if (QPointF::dotProduct(
+                        tangent, tangent)
+                    <= kGeometryEpsilon) {
+                    return std::nullopt;
+                }
+
+                return CurveRunMiddle{
+                    quadraticPoint(
+                        span, middleParameter),
+                    tangent,
+                };
+            }
+            localLength += segmentLength;
+            previous = point;
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::optional<Affine> affineFromPointTriples(
@@ -948,44 +1146,53 @@ QVector<CandidateJob> hardPointCandidateSeeds(
                 (*circleFeatures)[2]];
         for (int index = 0;
              index < spans.size(); ++index) {
-            const ContourSpan &span = spans[index];
-            if (!span.curved) {
+            const int previous =
+                (index + spans.size() - 1)
+                % spans.size();
+            if (!spans[index].curved
+                || softCurveJoin(
+                    spans[previous], spans[index])) {
                 continue;
             }
-            const QPointF chordMiddle =
-                (span.start + span.end) * 0.5;
-            const QPointF curveMiddle =
-                span.start * 0.25
-                + span.control * 0.5
-                + span.end * 0.25;
-            const QPointF chord =
-                span.end - span.start;
-            if (hardPointCross(
-                    chord,
-                    curveMiddle - chordMiddle)
-                    * orientation
-                >= -kGeometryEpsilon
+            int count = 1;
+            while (count < spans.size()) {
+                const int left =
+                    (index + count - 1)
+                    % spans.size();
+                const int right =
+                    (index + count)
+                    % spans.size();
+                if (!softCurveJoin(
+                        spans[left], spans[right])) {
+                    break;
+                }
+                ++count;
+            }
+            const ContourSpan &lastSpan =
+                spans[
+                    (index + count - 1)
+                    % spans.size()];
+            const std::optional<CurveRunMiddle>
+                middle = curveRunMiddle(
+                    spans, index, count);
+            if (!middle.has_value()
+                || !outwardCurveRun(
+                    spans, index, count,
+                    orientation)
                 || hardTriangleQuality(
-                       span.start,
-                       curveMiddle,
-                       span.end)
+                       spans[index].start,
+                       middle->position,
+                       lastSpan.end)
                     < kMinimumCurveEllipseQuality) {
                 continue;
             }
-            const double tangentLength =
-                std::hypot(
-                    chord.x(), chord.y());
-            if (tangentLength
-                <= kGeometryEpsilon) {
-                continue;
-            }
-            const QPointF tangent =
-                chord / tangentLength;
             ContourFeature target =
                 features[index];
-            target.position = curveMiddle;
-            target.incomingTangent = tangent;
-            target.outgoingTangent = tangent;
+            target.position = middle->position;
+            target.incomingTangent =
+                middle->tangent;
+            target.outgoingTangent =
+                middle->tangent;
             target.kind =
                 ContourFeatureKind::SmoothJunction;
             appendHardPointSeed(
@@ -996,9 +1203,9 @@ QVector<CandidateJob> hardPointCandidateSeeds(
                     sourceFirst.position,
                     sourceMiddle.position,
                     sourceLast.position,
-                    span.start,
-                    curveMiddle,
-                    span.end));
+                    spans[index].start,
+                    middle->position,
+                    lastSpan.end));
         }
     }
 

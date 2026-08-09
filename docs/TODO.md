@@ -1,6 +1,7 @@
 Small changes:
     -Remove Horizon/Motosport livery/group text in the exproler, retain just Livery/group
     -Enable a toggle for Pipette tool auto return to last tool
+    -Draw pending contour if present in the Bucket tool as well
 
 Medium changes:
 
