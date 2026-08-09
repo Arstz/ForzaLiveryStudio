@@ -545,7 +545,7 @@ Affine fromQTransform(const QTransform &transform) {
     };
 }
 
-QVector<FixedCandidate> hardEdgeCandidates(
+QVector<FixedCandidate> polygonMeshCandidates(
     const QVector<ContourSpan> &boundarySpans,
     const QVector<ShapeMesh> &catalog,
     const std::function<bool()> &cancelled) {
@@ -597,6 +597,324 @@ QVector<FixedCandidate> hardEdgeCandidates(
                 fromQTransform(placement.transform),
             });
         }
+    }
+
+    return result;
+}
+
+namespace {
+
+double hardPointCross(const QPointF &left,
+                      const QPointF &right) {
+    return left.x() * right.y()
+        - left.y() * right.x();
+}
+
+double hardPointPolygonArea(
+    const QVector<ContourSpan> &spans) {
+    double twiceArea = 0.0;
+    for (int index = 0; index < spans.size(); ++index) {
+        const QPointF &left = spans[index].start;
+        const QPointF &right =
+            spans[(index + 1) % spans.size()].start;
+        twiceArea += hardPointCross(left, right);
+    }
+
+    return twiceArea * 0.5;
+}
+
+double hardTriangleQuality(const QPointF &first,
+                           const QPointF &middle,
+                           const QPointF &last) {
+    const QPointF firstEdge = middle - first;
+    const QPointF secondEdge = last - middle;
+    const QPointF thirdEdge = first - last;
+    const double edgeSquares =
+        QPointF::dotProduct(firstEdge, firstEdge)
+        + QPointF::dotProduct(secondEdge, secondEdge)
+        + QPointF::dotProduct(thirdEdge, thirdEdge);
+    if (edgeSquares <= kGeometryEpsilon) {
+        return 0.0;
+    }
+    const double twiceArea =
+        std::abs(hardPointCross(firstEdge, secondEdge));
+
+    return 2.0 * std::sqrt(3.0)
+        * twiceArea / edgeSquares;
+}
+
+std::optional<Affine> affineFromPointTriples(
+    const Vec2 &sourceFirst,
+    const Vec2 &sourceSecond,
+    const Vec2 &sourceThird,
+    const QPointF &targetFirst,
+    const QPointF &targetSecond,
+    const QPointF &targetThird) {
+    const Vec2 sourceEdgeFirst{
+        sourceSecond.x - sourceFirst.x,
+        sourceSecond.y - sourceFirst.y,
+    };
+    const Vec2 sourceEdgeSecond{
+        sourceThird.x - sourceFirst.x,
+        sourceThird.y - sourceFirst.y,
+    };
+    const QPointF targetEdgeFirst =
+        targetSecond - targetFirst;
+    const QPointF targetEdgeSecond =
+        targetThird - targetFirst;
+    const double determinant =
+        sourceEdgeFirst.x * sourceEdgeSecond.y
+        - sourceEdgeFirst.y * sourceEdgeSecond.x;
+    if (std::abs(determinant)
+        <= kGeometryEpsilon) {
+        return std::nullopt;
+    }
+
+    Affine result;
+    result.a =
+        (targetEdgeFirst.x()
+             * sourceEdgeSecond.y
+         - targetEdgeSecond.x()
+             * sourceEdgeFirst.y)
+        / determinant;
+    result.c =
+        (-targetEdgeFirst.x()
+             * sourceEdgeSecond.x
+         + targetEdgeSecond.x()
+             * sourceEdgeFirst.x)
+        / determinant;
+    result.b =
+        (targetEdgeFirst.y()
+             * sourceEdgeSecond.y
+         - targetEdgeSecond.y()
+             * sourceEdgeFirst.y)
+        / determinant;
+    result.d =
+        (-targetEdgeFirst.y()
+             * sourceEdgeSecond.x
+         + targetEdgeSecond.y()
+             * sourceEdgeFirst.x)
+        / determinant;
+    result.e = targetFirst.x()
+        - result.a * sourceFirst.x
+        - result.c * sourceFirst.y;
+    result.f = targetFirst.y()
+        - result.b * sourceFirst.x
+        - result.d * sourceFirst.y;
+    const std::array<double, kGradientCount> values =
+        affineValues(result);
+    if (!std::all_of(
+            values.cbegin(), values.cend(),
+            [](double value) {
+                return std::isfinite(value);
+            })) {
+        return std::nullopt;
+    }
+
+    return result;
+}
+
+const ShapeFeature *boundaryFeature(
+    const ShapeMesh &shape,
+    int boundaryIndex) {
+    const auto found = std::find_if(
+        shape.features.cbegin(),
+        shape.features.cend(),
+        [boundaryIndex](
+            const ShapeFeature &feature) {
+            return feature.boundaryIndex
+                == boundaryIndex;
+        });
+
+    return found == shape.features.cend()
+        ? nullptr : &*found;
+}
+
+void appendHardPointSeed(
+    QVector<CandidateJob> *jobs,
+    const ShapeMesh &shape,
+    int anchorIndex,
+    const ContourFeature &target,
+    const std::optional<Affine> &transform) {
+    const ShapeFeature *source =
+        boundaryFeature(shape, anchorIndex);
+    if (source == nullptr
+        || !transform.has_value()) {
+        return;
+    }
+
+    CandidateJob job;
+    job.shape = &shape;
+    job.featureAssignments = {
+        {*source, target},
+    };
+    job.transform = *transform;
+    job.anchor = CandidateAnchor{
+        source->position,
+        target.position,
+    };
+    job.origin = CandidateOrigin::HardEdge;
+    job.hasTransform = true;
+    jobs->push_back(std::move(job));
+}
+
+} // namespace
+
+QVector<CandidateJob> hardPointCandidateSeeds(
+    const QVector<ContourSpan> &spans,
+    const QVector<ShapeMesh> &catalog,
+    double boundaryTolerance) {
+    QVector<CandidateJob> result;
+    if (spans.size() < 3) {
+        return result;
+    }
+    const ShapeMesh *square = shapeById(catalog, 101);
+    const ShapeMesh *triangle = shapeById(catalog, 103);
+    if (square == nullptr
+        || triangle == nullptr
+        || square->boundary.size() != 4
+        || triangle->boundary.size() != 3) {
+        return result;
+    }
+    const QVector<ContourFeature> features =
+        extractContourFeatures(
+            spans, boundaryTolerance);
+    if (features.size() != spans.size()) {
+        return result;
+    }
+    const double orientation =
+        hardPointPolygonArea(spans);
+    if (std::abs(orientation)
+        <= kGeometryEpsilon) {
+        return result;
+    }
+
+    result.reserve(spans.size() * 2);
+    for (int index = 0;
+         index < spans.size(); ++index) {
+        const int previous =
+            (index + spans.size() - 1)
+            % spans.size();
+        const int next =
+            (index + 1) % spans.size();
+        if (features[previous].kind
+                != ContourFeatureKind::Corner
+            || features[index].kind
+                != ContourFeatureKind::Corner
+            || features[next].kind
+                != ContourFeatureKind::Corner) {
+            continue;
+        }
+        const QPointF &first =
+            features[previous].position;
+        const QPointF &middle =
+            features[index].position;
+        const QPointF &last =
+            features[next].position;
+        const double turn = hardPointCross(
+            middle - first,
+            last - middle);
+        if (turn * orientation
+                <= kGeometryEpsilon
+            || hardTriangleQuality(
+                   first, middle, last)
+                < kMinimumHardTriangleQuality) {
+            continue;
+        }
+
+        appendHardPointSeed(
+            &result, *triangle, 1,
+            features[index],
+            affineFromPointTriples(
+                triangle->boundary[0],
+                triangle->boundary[1],
+                triangle->boundary[2],
+                first, middle, last));
+        appendHardPointSeed(
+            &result, *square, 0,
+            features[index],
+            affineFromPointTriples(
+                square->boundary[0],
+                square->boundary[1],
+                square->boundary[3],
+                middle, last, first));
+    }
+
+    return result;
+}
+
+QVector<CandidateJob> rankedHardPointJobs(
+    const QVector<CandidateJob> &seeds,
+    const Polygons &residual,
+    const Polygons &target,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options) {
+    struct RankedJob {
+        CandidateJob job;
+        double score = 0.0;
+        double covered = 0.0;
+    };
+
+    QVector<RankedJob> ranked;
+    ranked.reserve(seeds.size());
+    for (const CandidateJob &seed : seeds) {
+        const AreaGradient evaluation =
+            areaGradient(
+                *seed.shape, seed.transform,
+                residual, target,
+                subjectBounds);
+        if (!finiteGradient(evaluation)
+            || evaluation.covered
+                < options.epsGain) {
+            continue;
+        }
+        const double score =
+            evaluation.covered
+            - options.spillWeight
+                * std::max(0.0, evaluation.spill);
+        if (score < options.epsGain) {
+            continue;
+        }
+        ranked.push_back({
+            seed,
+            score,
+            evaluation.covered,
+        });
+    }
+    std::stable_sort(
+        ranked.begin(), ranked.end(),
+        [](const RankedJob &left,
+           const RankedJob &right) {
+            if (std::abs(
+                    left.score - right.score)
+                > kGeometryEpsilon) {
+                return left.score > right.score;
+            }
+            if (std::abs(
+                    left.covered - right.covered)
+                > kGeometryEpsilon) {
+                return left.covered
+                    > right.covered;
+            }
+            if (left.job.shape->id
+                != right.job.shape->id) {
+                return left.job.shape->id
+                    < right.job.shape->id;
+            }
+
+            return lexicographicTransformLess(
+                left.job.transform,
+                right.job.transform);
+        });
+
+    QVector<CandidateJob> result;
+    const int count = std::min(
+        static_cast<int>(ranked.size()),
+        kMaximumHardPointJobs);
+    result.reserve(count);
+    for (int index = 0; index < count; ++index) {
+        result.push_back(
+            std::move(ranked[index].job));
     }
 
     return result;
@@ -859,23 +1177,72 @@ featurePotentialGradient(
     return result;
 }
 
+const CandidateAnchor *candidateAnchor(
+    const CandidateJob &job) {
+    return job.anchor.has_value()
+        ? &*job.anchor : nullptr;
+}
+
+void projectCandidateAnchor(
+    const CandidateAnchor &anchor,
+    Affine *transform) {
+    transform->e = anchor.target.x()
+        - transform->a * anchor.source.x
+        - transform->c * anchor.source.y;
+    transform->f = anchor.target.y()
+        - transform->b * anchor.source.x
+        - transform->d * anchor.source.y;
+}
+
+void projectCandidateAnchor(
+    const CandidateAnchor &anchor,
+    std::array<double, kGradientCount> *values) {
+    (*values)[4] = anchor.target.x()
+        - (*values)[0] * anchor.source.x
+        - (*values)[2] * anchor.source.y;
+    (*values)[5] = anchor.target.y()
+        - (*values)[1] * anchor.source.x
+        - (*values)[3] * anchor.source.y;
+}
+
+void constrainCandidateGradient(
+    const CandidateAnchor &anchor,
+    std::array<double, kGradientCount> *gradient) {
+    (*gradient)[0] -=
+        anchor.source.x * (*gradient)[4];
+    (*gradient)[2] -=
+        anchor.source.y * (*gradient)[4];
+    (*gradient)[1] -=
+        anchor.source.x * (*gradient)[5];
+    (*gradient)[3] -=
+        anchor.source.y * (*gradient)[5];
+    (*gradient)[4] = 0.0;
+    (*gradient)[5] = 0.0;
+}
+
 void shrinkCandidateTransform(
     Affine *transform,
     const QVector<CandidateFeatureAssignment>
-        &featureAssignments) {
+        &featureAssignments,
+    const CandidateAnchor *anchor) {
     transform->a *= kLegalShrinkFactor;
     transform->b *= kLegalShrinkFactor;
     transform->c *= kLegalShrinkFactor;
     transform->d *= kLegalShrinkFactor;
+    if (anchor != nullptr) {
+        projectCandidateAnchor(
+            *anchor, transform);
+        return;
+    }
     if (featureAssignments.isEmpty()) {
         return;
     }
 
-    const ShapeFeature &anchor =
+    const ShapeFeature &featureAnchor =
         featureAssignments.front().source;
     const QPointF anchorPosition =
         transformedFeaturePoint(
-            anchor, *transform);
+            featureAnchor, *transform);
     transform->e +=
         featureAssignments
             .front().target.position.x()
@@ -932,7 +1299,8 @@ Candidate legalCandidate(const ShapeMesh &shape,
                          const FillOptions &options,
                          CandidateProfile *profile,
                          const QVector<CandidateFeatureAssignment>
-                             &featureAssignments) {
+                             &featureAssignments,
+                         const CandidateAnchor *anchor) {
     QElapsedTimer timer;
     timer.start();
     Candidate result;
@@ -971,8 +1339,8 @@ Candidate legalCandidate(const ShapeMesh &shape,
             return result;
         }
         shrinkCandidateTransform(
-            &transform,
-            featureAssignments);
+            &transform, featureAssignments,
+            anchor);
     }
     profile->legalizationNanoseconds += timer.nsecsElapsed();
 
@@ -994,13 +1362,18 @@ CandidateJobResult optimizeCandidate(
     const ShapeMesh &shape = *job.shape;
     std::array<double, kGradientCount> values =
         affineValues(initialTransform(job, seed));
+    if (job.anchor.has_value()) {
+        projectCandidateAnchor(
+            *job.anchor, &values);
+    }
     std::array<double, kGradientCount> firstMoment{};
     std::array<double, kGradientCount> secondMoment{};
     result.candidate = legalCandidate(
         shape, affineFromValues(values),
         residual, target, legalEnvelope,
         subjectBounds, options, &result.profile,
-        job.featureAssignments);
+        job.featureAssignments,
+        candidateAnchor(job));
     double beta1Power = 1.0;
     double beta2Power = 1.0;
     for (int iteration = 1; iteration <= options.adamIterations; ++iteration) {
@@ -1038,6 +1411,16 @@ CandidateJobResult optimizeCandidate(
             gradientNormSquared += scoreGradient[parameter]
                 * scoreGradient[parameter];
         }
+        if (job.anchor.has_value()) {
+            constrainCandidateGradient(
+                *job.anchor,
+                &scoreGradient);
+            gradientNormSquared = 0.0;
+            for (const double gradient : scoreGradient) {
+                gradientNormSquared +=
+                    gradient * gradient;
+            }
+        }
         const double gradientNorm = std::sqrt(gradientNormSquared);
         if (gradientNorm <= kGradientStopNorm) {
             break;
@@ -1064,11 +1447,16 @@ CandidateJobResult optimizeCandidate(
             values[parameter] += options.adamLearningRate * correctedFirst
                 / (std::sqrt(correctedSecond) + kAdamEpsilon);
         }
+        if (job.anchor.has_value()) {
+            projectCandidateAnchor(
+                *job.anchor, &values);
+        }
         const Candidate candidate = legalCandidate(
             shape, affineFromValues(values),
             residual, target, legalEnvelope,
             subjectBounds, options, &result.profile,
-            job.featureAssignments);
+            job.featureAssignments,
+            candidateAnchor(job));
         if (betterOptimizedCandidate(
                 candidate, result.candidate,
                 job.featureAssignments,
@@ -1174,7 +1562,9 @@ bool legalCandidatesGpu(
                 shrinkCandidateTransform(
                     &transform,
                     jobs[pendingIndex]
-                        ->featureAssignments);
+                        ->featureAssignments,
+                    candidateAnchor(
+                        *jobs[pendingIndex]));
             }
         }
         QVector<AreaGradient> evaluations;
@@ -1231,7 +1621,9 @@ bool legalCandidatesGpu(
                 shrinkCandidateTransform(
                     &transforms[pendingIndex],
                     jobs[pendingIndex]
-                        ->featureAssignments);
+                        ->featureAssignments,
+                    candidateAnchor(
+                        *jobs[pendingIndex]));
             }
             nextPending.push_back(pendingIndex);
         }
@@ -1319,7 +1711,8 @@ void exactCandidatesCpuBatch(
                 residual, target, legalEnvelope,
                 subjectBounds, options,
                 &profiles[static_cast<size_t>(index)],
-                jobs[index]->featureAssignments);
+                jobs[index]->featureAssignments,
+                candidateAnchor(*jobs[index]));
         });
     }
     candidatePool->waitForDone();
@@ -1353,6 +1746,11 @@ bool optimizeCandidatesGpu(
         GpuCandidateState state;
         state.job = &job;
         state.values = affineValues(initialTransform(job, seed));
+        if (job.anchor.has_value()) {
+            projectCandidateAnchor(
+                *job.anchor,
+                &state.values);
+        }
         states.push_back(state);
     }
 
@@ -1467,6 +1865,17 @@ bool optimizeCandidatesGpu(
                 gradientNormSquared += scoreGradient[parameter]
                     * scoreGradient[parameter];
             }
+            if (state.job->anchor.has_value()) {
+                constrainCandidateGradient(
+                    *state.job->anchor,
+                    &scoreGradient);
+                gradientNormSquared = 0.0;
+                for (const double gradient :
+                     scoreGradient) {
+                    gradientNormSquared +=
+                        gradient * gradient;
+                }
+            }
             const double gradientNorm = std::sqrt(gradientNormSquared);
             if (gradientNorm <= kGradientStopNorm) {
                 state.active = false;
@@ -1505,6 +1914,11 @@ bool optimizeCandidatesGpu(
                 state.values[parameter] +=
                     options.adamLearningRate * correctedFirst
                     / (std::sqrt(correctedSecond) + kAdamEpsilon);
+            }
+            if (state.job->anchor.has_value()) {
+                projectCandidateAnchor(
+                    *state.job->anchor,
+                    &state.values);
             }
             if (legalizationStep) {
                 legalIndices.push_back(
@@ -1754,47 +2168,6 @@ QVector<const ShapeMesh *> routedShapes(const Polygons &residual,
                          return left->id < right->id;
                      });
     result.resize(kRouterCandidateCount);
-
-    return result;
-}
-
-Candidate fixedCandidate(const FixedCandidate &fixed,
-                         const Polygons &residual,
-                         const Polygons &target,
-                         const Polygons &legalEnvelope,
-                         const EvaluationBounds &subjectBounds,
-                         const FillOptions &options,
-                         CandidateProfile *profile) {
-    QElapsedTimer timer;
-    timer.start();
-    const AreaGradient evaluation = areaGradient(
-        *fixed.shape, fixed.transform,
-        residual, target, subjectBounds);
-    const double outsideEnvelopeArea =
-        polygonSetArea(
-            differencePolygons(
-                Polygons{
-                    transformedBoundary(
-                        *fixed.shape,
-                        fixed.transform),
-                },
-                legalEnvelope));
-    ++profile->legalizationEvaluations;
-    profile->legalizationNanoseconds += timer.nsecsElapsed();
-    Candidate result;
-    if (!finiteGradient(evaluation)
-        || !legalEnvelopeArea(
-            outsideEnvelopeArea,
-            options)
-        || evaluation.covered < options.epsGain) {
-        return result;
-    }
-    result.transform = fixed.transform;
-    result.shapeId = fixed.shape->id;
-    result.covered = evaluation.covered;
-    result.spill = std::max(0.0, evaluation.spill);
-    result.origin = CandidateOrigin::HardEdge;
-    result.valid = true;
 
     return result;
 }

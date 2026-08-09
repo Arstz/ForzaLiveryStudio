@@ -56,6 +56,8 @@ constexpr int kStructuralSearchNodeLimit = 100000;
 constexpr double kMeshMinimumCompactCoverageRatio = 0.98;
 constexpr double kMeshMinimumLegalScale = 0.9;
 constexpr double kMeshLegalScaleStep = 0.0005;
+constexpr int kMaximumHardPointJobs = 8;
+constexpr double kMinimumHardTriangleQuality = 0.02;
 constexpr double kCornerAngleTolerance = 0.13962634015954636;
 constexpr double kShapeCornerSalience = 0.17453292519943295;
 constexpr double kFeatureTangentSigma = 0.35;
@@ -110,11 +112,17 @@ struct CandidateInitialization {
     double scaleFactor = 1.0;
 };
 
+struct CandidateAnchor {
+    Vec2 source;
+    QPointF target;
+};
+
 struct CandidateJob {
     const ShapeMesh *shape = nullptr;
     QVector<CandidateFeatureAssignment> featureAssignments;
     CandidateInitialization initialization;
     Affine transform;
+    std::optional<CandidateAnchor> anchor;
     CandidateOrigin origin = CandidateOrigin::Greedy;
     bool hasTransform = false;
 };
@@ -324,10 +332,20 @@ placementFeatureAssignments(
     const QVector<ContourFeature> &targetFeatures);
 const ShapeMesh *shapeById(const QVector<ShapeMesh> &catalog,
                            int shapeId);
-QVector<FixedCandidate> hardEdgeCandidates(
+QVector<FixedCandidate> polygonMeshCandidates(
     const QVector<ContourSpan> &spans,
     const QVector<ShapeMesh> &catalog,
     const std::function<bool()> &cancelled);
+QVector<CandidateJob> hardPointCandidateSeeds(
+    const QVector<ContourSpan> &spans,
+    const QVector<ShapeMesh> &catalog,
+    double boundaryTolerance);
+QVector<CandidateJob> rankedHardPointJobs(
+    const QVector<CandidateJob> &seeds,
+    const Polygons &residual,
+    const Polygons &target,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options);
 bool lexicographicTransformLess(const Affine &left,
                                 const Affine &right);
 Candidate legalCandidate(const ShapeMesh &shape,
@@ -339,7 +357,8 @@ Candidate legalCandidate(const ShapeMesh &shape,
                          const FillOptions &options,
                          CandidateProfile *profile,
                          const QVector<CandidateFeatureAssignment>
-                             &featureAssignments = {});
+                             &featureAssignments = {},
+                         const CandidateAnchor *anchor = nullptr);
 CandidateJobResult optimizeCandidate(
     const CandidateJob &job,
     const Polygons &residual,
@@ -378,13 +397,6 @@ QVector<const ShapeMesh *> routedShapes(
     const Polygons &residual,
     const QVector<ShapeMesh> &catalog,
     bool useRouter);
-Candidate fixedCandidate(const FixedCandidate &fixed,
-                         const Polygons &residual,
-                         const Polygons &target,
-                         const Polygons &legalEnvelope,
-                         const EvaluationBounds &subjectBounds,
-                         const FillOptions &options,
-                         CandidateProfile *profile);
 CandidateSelection selectCandidate(
     const QVector<Candidate> &candidates,
     const QVector<ShapeMesh> &catalog,

@@ -385,16 +385,22 @@ components an opportunity to be removed with one placement before the local
 medial-axis search dominates.
 
 The original contour spans also provide a straight-boundary ratio. A
-hard-edge-dominated contour produces fixed polygon-mesh candidates using the
-catalog's square and triangle geometry. Mixed contours retain every mesh
-candidate. The complete mesh is first legalized coherently by scaling every
+hard-edge-dominated contour produces a complete polygon mesh using the catalog's
+square and triangle geometry. The mesh is legalized coherently by scaling every
 piece around the target center, preserving shared seams. A legal mesh covering
-at least 98 percent completes directly. When that plan is unavailable, its
-pieces pass through the same exact coverage and spill checks as optimized
-candidates.
+at least 98 percent completes directly. A rejected mesh and all of its pieces are
+discarded.
 
-Incomplete structural and mesh results remain candidate-generation passes. They
-compete with differentiable candidates through the common exact selector.
+Consecutive convex hard-corner triples seed both Triangle and affine Square
+candidates. The Square maps the middle corner and its two neighbors onto three
+adjacent vertices. The Triangle starts on the same three contour points. Both
+jobs keep the middle source vertex exactly mapped to its contour corner while
+Adam adjusts the remaining affine degrees of freedom. Degenerate triples are
+discarded, and each greedy step optimizes only the highest-scoring seeds against
+the current residual. These jobs compete with the other differentiable
+candidates through the common exact selector.
+
+Incomplete structural results remain candidate-generation passes.
 
 ### 7.3 Initialization (per optimized candidate) — medial axis, **not** triangulation
 

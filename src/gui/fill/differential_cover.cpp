@@ -211,17 +211,15 @@ FillResult analyticCoverFillInternal(
     } else {
         result.residual = mustCover;
     }
-    const QVector<FixedCandidate> hardCandidates =
-        hardEdgeCandidates(
+    const QVector<FixedCandidate> meshCandidates =
+        polygonMeshCandidates(
             boundaryLoops.isEmpty()
                 ? QVector<ContourSpan>{}
                 : boundaryLoops.front(),
             catalog, cancelled);
-    result.profile.hardEdgeCandidates =
-        hardCandidates.size();
     MeshCoverPlan mesh =
         meshCoverPlan(
-            hardCandidates, catalog,
+            meshCandidates, catalog,
             mustCover, mayCover,
             targetArea, options,
             cancelled);
@@ -310,6 +308,15 @@ FillResult analyticCoverFillInternal(
         measureResult();
         return result;
     }
+    const QVector<CandidateJob> hardPointSeeds =
+        hardPointCandidateSeeds(
+            boundaryLoops.isEmpty()
+                ? QVector<ContourSpan>{}
+                : boundaryLoops.front(),
+            catalog,
+            options.boundaryTolerance);
+    result.profile.hardEdgeCandidates =
+        hardPointSeeds.size();
     const std::uint64_t seedValue = options.seed == 0
         ? derivedSeed(mustCover) : options.seed;
     std::mt19937_64 random(seedValue);
@@ -458,6 +465,17 @@ FillResult analyticCoverFillInternal(
                 jobs.push_back(job);
             }
         }
+        const QVector<CandidateJob> hardPointJobs =
+            rankedHardPointJobs(
+                hardPointSeeds,
+                result.residual,
+                mustCover,
+                subjectBounds,
+                options);
+        for (const CandidateJob &job :
+             hardPointJobs) {
+            jobs.push_back(job);
+        }
         const QVector<CandidateJob> featureJobs =
             featureAwareJobs(
                 candidates, targetFeatures,
@@ -505,7 +523,11 @@ FillResult analyticCoverFillInternal(
                         subjectBounds,
                         options, &exactProfile,
                         jobs[jobIndex]
-                            .featureAssignments);
+                            .featureAssignments,
+                        jobs[jobIndex]
+                                .anchor.has_value()
+                            ? &*jobs[jobIndex].anchor
+                            : nullptr);
                     jobResults[jobIndex].profile = exactProfile;
                 }
             }
@@ -525,29 +547,13 @@ FillResult analyticCoverFillInternal(
         }
         QVector<Candidate> rankedCandidates;
         rankedCandidates.reserve(
-            static_cast<qsizetype>(jobResults.size())
-            + hardCandidates.size());
+            static_cast<qsizetype>(jobResults.size()));
         for (size_t jobIndex = 0;
              jobIndex < jobResults.size(); ++jobIndex) {
             jobResults[jobIndex].candidate.origin =
                 jobs[jobIndex].origin;
             rankedCandidates.push_back(
                 jobResults[jobIndex].candidate);
-        }
-        for (const FixedCandidate &fixed : hardCandidates) {
-            CandidateProfile fixedProfile;
-            rankedCandidates.push_back(fixedCandidate(
-                fixed, result.residual,
-                mustCover, mayCover,
-                subjectBounds, options, &fixedProfile));
-            result.profile.candidateWorkerSeconds +=
-                static_cast<double>(
-                    fixedProfile.legalizationNanoseconds) * 1e-9;
-            result.profile.legalizationWorkerSeconds +=
-                static_cast<double>(
-                    fixedProfile.legalizationNanoseconds) * 1e-9;
-            result.profile.legalizationEvaluations +=
-                fixedProfile.legalizationEvaluations;
         }
         result.profile.candidateBatchWallSeconds +=
             static_cast<double>(candidateBatchTimer.nsecsElapsed()) * 1e-9;

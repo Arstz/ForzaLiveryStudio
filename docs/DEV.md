@@ -36,8 +36,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   legalizes it against the original contour. Compact covers complete directly;
   thin boundary residuals are retained without adding low-value placements, and
   other partial covers seed residual fitting. Multi-axis hard boundaries also
-  evaluate their complete square-and-triangle mesh as one coherent plan before
-  individual mesh pieces compete with analytic candidates.
+  evaluate their complete square-and-triangle mesh as one coherent compact plan.
+  A rejected plan is discarded. Consecutive hard corners instead seed bounded
+  Square and Triangle Adam jobs whose shared contour vertex remains fixed during
+  optimization.
   An optional double-precision CUDA path evaluates the optimizer and
   legalization first. Direct3D 11 legalization with double-precision CPU Adam is
   the next backend, followed by the parallel CPU evaluator. Exact CPU candidate
