@@ -606,6 +606,7 @@ namespace {
 
 constexpr int kMaximumHardPointJobs = 8;
 constexpr double kMinimumHardTriangleQuality = 0.02;
+constexpr double kMinimumCurveEllipseQuality = 0.01;
 constexpr double kHardPointProbeSpillWeight = 2.0;
 constexpr std::array<double, 3> kHardPointProbeScales{
     1.0,
@@ -739,6 +740,64 @@ const ShapeFeature *boundaryFeature(
         ? nullptr : &*found;
 }
 
+int nearestCircleFeature(
+    const QVector<ShapeFeature> &features,
+    double arcPosition) {
+    int result = -1;
+    double bestDistance =
+        std::numeric_limits<double>::max();
+    for (int index = 0;
+         index < features.size(); ++index) {
+        const double directDistance =
+            std::abs(
+                features[index].arcPosition
+                - arcPosition);
+        const double distance = std::min(
+            directDistance,
+            1.0 - directDistance);
+        if (distance
+            < bestDistance
+                - kGeometryEpsilon) {
+            result = index;
+            bestDistance = distance;
+        }
+    }
+
+    return result;
+}
+
+std::optional<std::array<int, 3>>
+circleArcFeatureIndices(
+    const ShapeMesh &circle) {
+    if (circle.features.size() < 4) {
+        return std::nullopt;
+    }
+    const int middle = 0;
+    const double middleArc =
+        circle.features[middle].arcPosition;
+    const double firstArc =
+        std::fmod(middleArc + 0.75, 1.0);
+    const double lastArc =
+        std::fmod(middleArc + 0.25, 1.0);
+    const int first = nearestCircleFeature(
+        circle.features, firstArc);
+    const int last = nearestCircleFeature(
+        circle.features, lastArc);
+    if (first < 0
+        || last < 0
+        || first == middle
+        || last == middle
+        || first == last) {
+        return std::nullopt;
+    }
+
+    return std::array<int, 3>{
+        first,
+        middle,
+        last,
+    };
+}
+
 void appendHardPointSeed(
     QVector<CandidateJob> *jobs,
     const ShapeMesh &shape,
@@ -799,6 +858,7 @@ QVector<CandidateJob> hardPointCandidateSeeds(
     if (spans.size() < 3) {
         return result;
     }
+    const ShapeMesh *circle = shapeById(catalog, 102);
     const ShapeMesh *square = shapeById(catalog, 101);
     const ShapeMesh *triangle = shapeById(catalog, 103);
     if (square == nullptr
@@ -820,7 +880,12 @@ QVector<CandidateJob> hardPointCandidateSeeds(
         return result;
     }
 
-    result.reserve(spans.size() * 2);
+    const std::optional<std::array<int, 3>>
+        circleFeatures = circle != nullptr
+        ? circleArcFeatureIndices(*circle)
+        : std::nullopt;
+
+    result.reserve(spans.size() * 3);
     for (int index = 0;
          index < spans.size(); ++index) {
         const int previous =
@@ -869,6 +934,72 @@ QVector<CandidateJob> hardPointCandidateSeeds(
                 square->boundary[1],
                 square->boundary[3],
                 middle, last, first));
+    }
+    if (circle != nullptr
+        && circleFeatures.has_value()) {
+        const ShapeFeature &sourceFirst =
+            circle->features[
+                (*circleFeatures)[0]];
+        const ShapeFeature &sourceMiddle =
+            circle->features[
+                (*circleFeatures)[1]];
+        const ShapeFeature &sourceLast =
+            circle->features[
+                (*circleFeatures)[2]];
+        for (int index = 0;
+             index < spans.size(); ++index) {
+            const ContourSpan &span = spans[index];
+            if (!span.curved) {
+                continue;
+            }
+            const QPointF chordMiddle =
+                (span.start + span.end) * 0.5;
+            const QPointF curveMiddle =
+                span.start * 0.25
+                + span.control * 0.5
+                + span.end * 0.25;
+            const QPointF chord =
+                span.end - span.start;
+            if (hardPointCross(
+                    chord,
+                    curveMiddle - chordMiddle)
+                    * orientation
+                >= -kGeometryEpsilon
+                || hardTriangleQuality(
+                       span.start,
+                       curveMiddle,
+                       span.end)
+                    < kMinimumCurveEllipseQuality) {
+                continue;
+            }
+            const double tangentLength =
+                std::hypot(
+                    chord.x(), chord.y());
+            if (tangentLength
+                <= kGeometryEpsilon) {
+                continue;
+            }
+            const QPointF tangent =
+                chord / tangentLength;
+            ContourFeature target =
+                features[index];
+            target.position = curveMiddle;
+            target.incomingTangent = tangent;
+            target.outgoingTangent = tangent;
+            target.kind =
+                ContourFeatureKind::SmoothJunction;
+            appendHardPointSeed(
+                &result, *circle,
+                sourceMiddle.boundaryIndex,
+                target,
+                affineFromPointTriples(
+                    sourceFirst.position,
+                    sourceMiddle.position,
+                    sourceLast.position,
+                    span.start,
+                    curveMiddle,
+                    span.end));
+        }
     }
 
     return result;

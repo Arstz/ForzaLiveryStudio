@@ -396,10 +396,12 @@ candidates. The Square maps the middle corner and its two neighbors onto three
 adjacent vertices. The Triangle starts on the same three contour points. Both
 jobs keep the middle source vertex exactly mapped to its contour corner while
 Adam adjusts the remaining affine degrees of freedom. Degenerate triples are
-discarded. Each greedy step probes bounded anchored expansions and optimizes
-only the highest-scoring transforms against the current residual. These jobs
-compete with the other differentiable candidates through the common exact
-selector.
+discarded. Outward quadratic spans also seed an affine Circle through both Hard
+endpoints and the evaluated curve midpoint. The Circle keeps that midpoint fixed
+and aligns its smooth feature with the quadratic tangent. Each greedy step probes
+bounded anchored expansions and optimizes only the highest-scoring transforms
+from the combined seed pool against the current residual. These jobs compete
+with the other differentiable candidates through the common exact selector.
 
 Incomplete structural results remain candidate-generation passes.
 
