@@ -689,6 +689,17 @@ FillResult analyticCoverFillInternal(
         }
         result.profile.postNudgeResidualArea =
             coverState.residualArea;
+        if (!result.cancelled
+            && !stabilizePlacementContinuity(
+                &result.placements,
+                &coverState,
+                catalog, mustCover,
+                mayCover, targetFeatures,
+                targetArea, options,
+                &result.profile, &elapsed,
+                cancelled, progress)) {
+            result.cancelled = true;
+        }
         result.profile.prePruneResidualArea =
             coverState.residualArea;
         prePruneResidual = coverState.residual;
@@ -697,8 +708,8 @@ FillResult analyticCoverFillInternal(
                 &result.placements, &coverState,
                 catalog, mustCover, mayCover,
                 targetFeatures,
-                targetArea, options, gpuEvaluator.get(),
-                &candidatePool, &result.profile, &elapsed,
+                targetArea, options,
+                &result.profile, &elapsed,
                 cancelled, progress)) {
             result.cancelled = true;
         }
@@ -826,6 +837,28 @@ FillResult analyticCoverFillInternal(
             result.stalled = repair.stalled;
             if (!repair.error.isEmpty()) {
                 result.error = repair.error;
+            }
+        }
+        if (!result.cancelled
+            && result.profile.repairPlacements > 0) {
+            coverState = exactCoverState(
+                result.placements, catalog,
+                mustCover, mayCover,
+                targetArea);
+            assignFeatureOwnership(
+                &result.placements,
+                catalog,
+                coverState.coverage,
+                targetFeatures);
+            if (!stabilizePlacementContinuity(
+                    &result.placements,
+                    &coverState,
+                    catalog, mustCover,
+                    mayCover, targetFeatures,
+                    targetArea, options,
+                    &result.profile, &elapsed,
+                    cancelled, progress)) {
+                result.cancelled = true;
             }
         }
     }

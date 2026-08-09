@@ -171,6 +171,9 @@ struct FillProfile {
     double nudgeWallSeconds = 0.0;
     double pruneWallSeconds = 0.0;
     double repairWallSeconds = 0.0;
+    double continuityWallSeconds = 0.0;
+    double preContinuityEnergy = 0.0;
+    double postContinuityEnergy = 0.0;
     double preNudgeResidualArea = 0.0;
     double postNudgeResidualArea = 0.0;
     double prePruneResidualArea = 0.0;
@@ -206,6 +209,7 @@ struct FillProfile {
     std::uint64_t nudgeOptimizations = 0;
     std::uint64_t pruneAttempts = 0;
     std::uint64_t pruneOptimizations = 0;
+    std::uint64_t continuityProposals = 0;
     int greedySteps = 0;
     int complexitySelections = 0;
     int localComponentPlacements = 0;
@@ -216,6 +220,9 @@ struct FillProfile {
     int prunedPlacements = 0;
     int adjustedPlacements = 0;
     int prunePasses = 0;
+    int preContinuityKinks = 0;
+    int postContinuityKinks = 0;
+    int stabilizedPlacements = 0;
     int repairSteps = 0;
     int repairPlacements = 0;
     int structuralGridCells = 0;

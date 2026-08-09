@@ -5,6 +5,441 @@
 
 namespace gui::cover {
 
+namespace {
+
+constexpr int kMaximumContinuityPlacements = 16;
+constexpr int kMaximumContinuityEdges = 2;
+constexpr double kContinuityMinimumTurn =
+    0.17453292519943295;
+constexpr double kContinuityMinimumAlignment =
+    0.08726646259971647;
+constexpr double kContinuityTargetBandFactor = 2.0;
+constexpr double kContinuityExposureToleranceFactor = 0.05;
+constexpr double kContinuityTangentWeight = 0.25;
+constexpr double kContinuityMinimumEnergyImprovement = 1e-4;
+constexpr double kContinuityAngleAllowance = 1e-4;
+constexpr double kContinuityMaximumCoverageLossRatio = 0.0005;
+constexpr double kContinuityPlacementCoverageLossRatio = 0.02;
+constexpr double kContinuityBoundaryDistanceAllowanceFactor = 0.25;
+constexpr std::array<double, 5> kContinuityAlignmentFractions{
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+};
+constexpr std::array<double, 3> kContinuityScaleFactors{
+    0.995,
+    0.99,
+    0.98,
+};
+
+struct ContinuityBoundaryLocation {
+    QPointF point;
+    QPointF tangent;
+    double distance =
+        std::numeric_limits<double>::infinity();
+};
+
+struct ContinuityMetrics {
+    double energy = 0.0;
+    double maximumTurn = 0.0;
+    int kinkCount = 0;
+};
+
+struct AlignmentEdge {
+    QPointF contact;
+    QPointF targetPoint;
+    double rotation = 0.0;
+    double score = 0.0;
+};
+
+struct ContinuityPlacement {
+    double score = 0.0;
+    int index = -1;
+};
+
+QPointF continuityNormalized(
+    const QPointF &vector) {
+    const double length = std::hypot(
+        vector.x(), vector.y());
+
+    return length > kGeometryEpsilon
+        ? vector / length : QPointF{};
+}
+
+double continuityCross(
+    const QPointF &left,
+    const QPointF &right) {
+    return left.x() * right.y()
+        - left.y() * right.x();
+}
+
+double continuityLineAngle(
+    const QPointF &left,
+    const QPointF &right) {
+    if (left.isNull() || right.isNull()) {
+        return kPi * 0.5;
+    }
+
+    return std::acos(
+        std::clamp(
+            std::abs(
+                QPointF::dotProduct(
+                    left, right)),
+            0.0, 1.0));
+}
+
+ContinuityBoundaryLocation
+closestContinuityBoundary(
+    const QPointF &point,
+    const Polygons &polygons) {
+    ContinuityBoundaryLocation result;
+    for (const QPolygonF &polygon : polygons) {
+        for (int index = 0;
+             index < polygon.size(); ++index) {
+            const QPointF start = polygon[index];
+            const QPointF end =
+                polygon[(index + 1)
+                        % polygon.size()];
+            const QPointF edge = end - start;
+            const double lengthSquared =
+                QPointF::dotProduct(edge, edge);
+            const double parameter =
+                lengthSquared > kGeometryEpsilon
+                ? std::clamp(
+                    QPointF::dotProduct(
+                        point - start, edge)
+                        / lengthSquared,
+                    0.0, 1.0)
+                : 0.0;
+            const QPointF closest =
+                start + edge * parameter;
+            const double distance =
+                QLineF(point, closest).length();
+            if (distance
+                >= result.distance
+                    - kGeometryEpsilon) {
+                continue;
+            }
+            result.point = closest;
+            result.tangent =
+                continuityNormalized(edge);
+            result.distance = distance;
+        }
+    }
+
+    return result;
+}
+
+bool nearAuthoredCorner(
+    const QPointF &point,
+    const QVector<ContourFeature> &features,
+    double boundaryTolerance) {
+    return std::any_of(
+        features.cbegin(), features.cend(),
+        [&](const ContourFeature &feature) {
+            return feature.kind
+                    == ContourFeatureKind::Corner
+                && QLineF(
+                    point,
+                    feature.position).length()
+                    <= std::max(
+                        boundaryTolerance,
+                        feature.captureRadius);
+        });
+}
+
+ContinuityMetrics contourContinuityMetrics(
+    const Polygons &coverage,
+    const Polygons &target,
+    const QVector<ContourFeature> &features,
+    const FillOptions &options) {
+    ContinuityMetrics result;
+    const double targetBand =
+        options.boundaryTolerance
+        * kContinuityTargetBandFactor;
+    for (const QPolygonF &polygon : coverage) {
+        if (polygon.size() < 3) {
+            continue;
+        }
+        for (int index = 0;
+             index < polygon.size(); ++index) {
+            const QPointF point = polygon[index];
+            const QPointF incoming =
+                continuityNormalized(
+                    point
+                    - polygon[
+                        (index + polygon.size() - 1)
+                        % polygon.size()]);
+            const QPointF outgoing =
+                continuityNormalized(
+                    polygon[
+                        (index + 1)
+                        % polygon.size()]
+                    - point);
+            if (incoming.isNull()
+                || outgoing.isNull()
+                || nearAuthoredCorner(
+                    point, features,
+                    options.boundaryTolerance)) {
+                continue;
+            }
+            const ContinuityBoundaryLocation targetLocation =
+                closestContinuityBoundary(
+                    point, target);
+            if (targetLocation.distance
+                > targetBand) {
+                continue;
+            }
+            const double turn = std::acos(
+                std::clamp(
+                    QPointF::dotProduct(
+                        incoming, outgoing),
+                    -1.0, 1.0));
+            if (turn
+                <= kContinuityMinimumTurn) {
+                continue;
+            }
+            const double turnExcess =
+                turn - kContinuityMinimumTurn;
+            const double incomingError =
+                continuityLineAngle(
+                    incoming,
+                    targetLocation.tangent);
+            const double outgoingError =
+                continuityLineAngle(
+                    outgoing,
+                    targetLocation.tangent);
+            result.energy +=
+                turnExcess * turnExcess
+                + kContinuityTangentWeight
+                    * (incomingError * incomingError
+                       + outgoingError * outgoingError);
+            result.maximumTurn =
+                std::max(
+                    result.maximumTurn, turn);
+            ++result.kinkCount;
+        }
+    }
+
+    return result;
+}
+
+Affine rotatedContinuityTransform(
+    const Placement &placement,
+    const QPointF &pivot,
+    double angle) {
+    const double cosine = std::cos(angle);
+    const double sine = std::sin(angle);
+    const Affine &source = placement.transform;
+    Affine result;
+    result.a = cosine * source.a
+        - sine * source.b;
+    result.b = sine * source.a
+        + cosine * source.b;
+    result.c = cosine * source.c
+        - sine * source.d;
+    result.d = sine * source.c
+        + cosine * source.d;
+    result.e = pivot.x()
+        + cosine * (source.e - pivot.x())
+        - sine * (source.f - pivot.y());
+    result.f = pivot.y()
+        + sine * (source.e - pivot.x())
+        + cosine * (source.f - pivot.y());
+    if (placement.anchor.has_value()) {
+        const CandidateAnchor &anchor =
+            *placement.anchor;
+        result.e = anchor.target.x()
+            - result.a * anchor.source.x
+            - result.c * anchor.source.y;
+        result.f = anchor.target.y()
+            - result.b * anchor.source.x
+            - result.d * anchor.source.y;
+    }
+
+    return result;
+}
+
+Affine scaledContinuityTransform(
+    const Placement &placement,
+    const QPointF &pivot,
+    double scale) {
+    const Affine &source = placement.transform;
+    Affine result = source;
+    result.a *= scale;
+    result.b *= scale;
+    result.c *= scale;
+    result.d *= scale;
+    result.e = pivot.x()
+        + (source.e - pivot.x()) * scale;
+    result.f = pivot.y()
+        + (source.f - pivot.y()) * scale;
+    if (placement.anchor.has_value()) {
+        const CandidateAnchor &anchor =
+            *placement.anchor;
+        result.e = anchor.target.x()
+            - result.a * anchor.source.x
+            - result.c * anchor.source.y;
+        result.f = anchor.target.y()
+            - result.b * anchor.source.x
+            - result.d * anchor.source.y;
+    }
+
+    return result;
+}
+
+QVector<AlignmentEdge> continuityAlignmentEdges(
+    const QPolygonF &footprint,
+    const Polygons &coverage,
+    const Polygons &target,
+    const QVector<ContourFeature> &features,
+    const FillOptions &options) {
+    QVector<AlignmentEdge> result;
+    const double exposureTolerance =
+        std::max(
+            kGeometryEpsilon,
+            options.boundaryTolerance
+                * kContinuityExposureToleranceFactor);
+    const double targetBand =
+        options.boundaryTolerance
+        * kContinuityTargetBandFactor;
+    for (int index = 0;
+         index < footprint.size(); ++index) {
+        const QPointF start = footprint[index];
+        const QPointF end =
+            footprint[(index + 1)
+                      % footprint.size()];
+        const QPointF edge = end - start;
+        const double edgeLength =
+            std::hypot(edge.x(), edge.y());
+        if (edgeLength
+            < options.boundaryTolerance) {
+            continue;
+        }
+        const QPointF contact =
+            (start + end) * 0.5;
+        if (closestContinuityBoundary(
+                contact, coverage).distance
+                > exposureTolerance
+            || nearAuthoredCorner(
+                contact, features,
+                options.boundaryTolerance)) {
+            continue;
+        }
+        const ContinuityBoundaryLocation targetLocation =
+            closestContinuityBoundary(
+                contact, target);
+        if (targetLocation.distance
+                > targetBand
+            || targetLocation.tangent.isNull()) {
+            continue;
+        }
+        const QPointF edgeTangent =
+            edge / edgeLength;
+        QPointF targetTangent =
+            targetLocation.tangent;
+        if (QPointF::dotProduct(
+                edgeTangent, targetTangent)
+            < 0.0) {
+            targetTangent = -targetTangent;
+        }
+        const double rotation = std::atan2(
+            continuityCross(
+                edgeTangent, targetTangent),
+            QPointF::dotProduct(
+                edgeTangent, targetTangent));
+        if (std::abs(rotation)
+            < kContinuityMinimumAlignment) {
+            continue;
+        }
+        result.push_back({
+            contact,
+            targetLocation.point,
+            rotation,
+            edgeLength * std::abs(rotation),
+        });
+    }
+    std::stable_sort(
+        result.begin(), result.end(),
+        [](const AlignmentEdge &left,
+           const AlignmentEdge &right) {
+            return left.score > right.score;
+        });
+    if (result.size()
+        > kMaximumContinuityEdges) {
+        result.resize(
+            kMaximumContinuityEdges);
+    }
+
+    return result;
+}
+
+QVector<Affine> continuityProposals(
+    const Placement &placement,
+    const QPolygonF &footprint,
+    const Polygons &coverage,
+    const Polygons &target,
+    const QVector<ContourFeature> &features,
+    const FillOptions &options) {
+    QVector<Affine> result;
+    const QVector<AlignmentEdge> edges =
+        continuityAlignmentEdges(
+            footprint, coverage, target,
+            features, options);
+    if (edges.isEmpty()) {
+        return result;
+    }
+    const QPointF pivot =
+        placement.anchor.has_value()
+        ? placement.anchor->target
+        : footprint.boundingRect().center();
+    for (const AlignmentEdge &edge : edges) {
+        for (const double fraction :
+             kContinuityAlignmentFractions) {
+            result.push_back(
+                rotatedContinuityTransform(
+                    placement, pivot,
+                    edge.rotation * fraction));
+            if (!placement.anchor.has_value()) {
+                Affine translated =
+                    placement.transform;
+                const QPointF translation =
+                    (edge.targetPoint
+                     - edge.contact)
+                    * fraction;
+                translated.e += translation.x();
+                translated.f += translation.y();
+                result.push_back(translated);
+            }
+        }
+    }
+    for (const double scale :
+         kContinuityScaleFactors) {
+        result.push_back(
+            scaledContinuityTransform(
+                placement, pivot, scale));
+    }
+
+    return result;
+}
+
+bool betterContinuity(
+    const ContinuityMetrics &left,
+    const ContinuityMetrics &right) {
+    if (left.kinkCount != right.kinkCount) {
+        return left.kinkCount
+            < right.kinkCount;
+    }
+
+    return left.energy
+        < right.energy
+            - kContinuityMinimumEnergyImprovement;
+}
+
+} // namespace
+
 QVector<PruneCandidate> pruneCandidateOrder(
     const QVector<Placement> &placements,
     const Polygons &mustCover,
@@ -243,32 +678,21 @@ bool acceptablePruneState(
     const CoverErrorMetrics &acceptedMetrics,
     double residualLimit,
     double outsideLimit,
-    double targetArea,
     const FillOptions &options) {
-    const double tverskyAllowance =
-        options.epsArea
-        / std::max(
-            targetArea,
-            kGeometryEpsilon);
-
     return state.residualArea
             <= residualLimit + kGeometryEpsilon
         && state.outsideArea
             <= outsideLimit + kGeometryEpsilon
+        && metrics.outsideTargetArea
+            <= acceptedMetrics.outsideTargetArea
+                + options.epsSpill
+                + kGeometryEpsilon
         && legalEnvelopeArea(
             metrics.outsideEnvelopeArea,
             options)
         && legalOutwardDistance(
             metrics.maximumOutwardDistance,
-            options)
-        && metrics.representedFeatureWeight
-            >= acceptedMetrics
-                   .representedFeatureWeight
-                - kGeometryEpsilon
-        && metrics.tversky
-            >= acceptedMetrics.tversky
-                - tverskyAllowance
-                - kGeometryEpsilon;
+            options);
 }
 
 bool acceptableNudgeMetrics(
@@ -318,6 +742,19 @@ bool acceptableNudgeMetrics(
         && metrics.tversky
             >= acceptedMetrics.tversky
                 - kGeometryEpsilon;
+}
+
+bool acceptablePruneContinuity(
+    const ContinuityMetrics &metrics,
+    const ContinuityMetrics &acceptedMetrics) {
+    return metrics.kinkCount
+            <= acceptedMetrics.kinkCount
+        && metrics.maximumTurn
+            <= acceptedMetrics.maximumTurn
+                + kContinuityAngleAllowance
+        && metrics.energy
+            <= acceptedMetrics.energy
+                + kContinuityMinimumEnergyImprovement;
 }
 
 bool nudgePlacements(
@@ -459,6 +896,249 @@ bool nudgePlacements(
     return true;
 }
 
+bool stabilizePlacementContinuity(
+    QVector<Placement> *placements,
+    ExactCoverState *currentState,
+    const QVector<ShapeMesh> &catalog,
+    const Polygons &mustCover,
+    const Polygons &mayCover,
+    const QVector<ContourFeature> &features,
+    double targetArea,
+    const FillOptions &options,
+    FillProfile *profile,
+    QElapsedTimer *elapsed,
+    const std::function<bool()> &cancelled,
+    const std::function<void(const FillProgress &)> &progress) {
+    QElapsedTimer continuityTimer;
+    continuityTimer.start();
+    ContinuityMetrics acceptedContinuity =
+        contourContinuityMetrics(
+            currentState->coverage,
+            mustCover, features, options);
+    CoverErrorMetrics acceptedMetrics =
+        evaluateCoverMetrics(
+            mustCover, mayCover,
+            currentState->coverage,
+            features, options);
+    QVector<ContinuityPlacement> order;
+    const double residualLimit =
+        currentState->residualArea
+        + std::max(
+            options.epsArea,
+            targetArea
+                * kContinuityMaximumCoverageLossRatio);
+    bool changed = false;
+
+    profile->preContinuityEnergy =
+        acceptedContinuity.energy;
+    profile->preContinuityKinks =
+        acceptedContinuity.kinkCount;
+    order.reserve(placements->size());
+    for (int index = 0;
+         index < placements->size(); ++index) {
+        const QVector<AlignmentEdge> edges =
+            continuityAlignmentEdges(
+                currentState->footprints[index],
+                currentState->coverage,
+                mustCover, features, options);
+        double score = 0.0;
+        for (const AlignmentEdge &edge : edges) {
+            score += edge.score;
+        }
+        if (score > kGeometryEpsilon) {
+            order.push_back({score, index});
+        }
+    }
+    std::stable_sort(
+        order.begin(), order.end(),
+        [](const ContinuityPlacement &left,
+           const ContinuityPlacement &right) {
+            if (std::abs(
+                    left.score - right.score)
+                > kGeometryEpsilon) {
+                return left.score > right.score;
+            }
+            return left.index < right.index;
+        });
+    if (order.size()
+        > kMaximumContinuityPlacements) {
+        order.resize(
+            kMaximumContinuityPlacements);
+    }
+
+    for (const ContinuityPlacement &entry : order) {
+        if (cancelled && cancelled()) {
+            profile->continuityWallSeconds +=
+                static_cast<double>(
+                    continuityTimer.nsecsElapsed()) * 1e-9;
+            return false;
+        }
+        const int index = entry.index;
+        const QVector<Affine> proposals =
+            continuityProposals(
+                (*placements)[index],
+                currentState->footprints[index],
+                currentState->coverage,
+                mustCover, features, options);
+        Polygons fixedFootprints =
+            currentState->footprints;
+        fixedFootprints.removeAt(index);
+        const Polygons fixedCoverage =
+            unionPolygons(fixedFootprints);
+        const double reducedResidualArea =
+            polygonSetArea(
+                differencePolygons(
+                    mustCover,
+                    fixedCoverage));
+        const double uniqueArea =
+            std::max(
+                0.0,
+                reducedResidualArea
+                    - currentState->residualArea);
+        const double placementResidualLimit =
+            std::min(
+                residualLimit,
+                currentState->residualArea
+                    + std::max(
+                        options.epsArea,
+                        uniqueArea
+                            * kContinuityPlacementCoverageLossRatio));
+        QVector<Placement> bestPlacements;
+        ExactCoverState bestState;
+        CoverErrorMetrics bestMetrics;
+        ContinuityMetrics bestContinuity =
+            acceptedContinuity;
+        bool haveBest = false;
+        for (const Affine &proposal : proposals) {
+            if (cancelled && cancelled()) {
+                profile->continuityWallSeconds +=
+                    static_cast<double>(
+                        continuityTimer.nsecsElapsed()) * 1e-9;
+                return false;
+            }
+            ++profile->continuityProposals;
+            QVector<Placement> trial = *placements;
+            trial[index].transform = proposal;
+            ExactCoverState trialState =
+                exactCoverState(
+                    trial, catalog,
+                    mustCover, mayCover,
+                    targetArea);
+            if (trialState.residualArea
+                    > placementResidualLimit
+                        + kGeometryEpsilon
+                || trialState.outsideArea
+                    > currentState->outsideArea
+                        + kGeometryEpsilon) {
+                continue;
+            }
+            const ContinuityMetrics trialContinuity =
+                contourContinuityMetrics(
+                    trialState.coverage,
+                    mustCover, features,
+                    options);
+            if (!betterContinuity(
+                    trialContinuity,
+                    acceptedContinuity)
+                || trialContinuity.maximumTurn
+                    > acceptedContinuity.maximumTurn
+                        + kGeometryEpsilon) {
+                continue;
+            }
+            const CoverErrorMetrics trialMetrics =
+                evaluateCoverMetrics(
+                    mustCover, mayCover,
+                    trialState.coverage,
+                    features, options);
+            const double distanceAllowance =
+                options.boundaryTolerance
+                * kContinuityBoundaryDistanceAllowanceFactor;
+            if (trialMetrics.outsideTargetArea
+                    > acceptedMetrics.outsideTargetArea
+                        + kGeometryEpsilon
+                || !legalEnvelopeArea(
+                    trialMetrics.outsideEnvelopeArea,
+                    options)
+                || !legalOutwardDistance(
+                    trialMetrics.maximumOutwardDistance,
+                    options)
+                || trialMetrics.maximumOutwardDistance
+                    > acceptedMetrics.maximumOutwardDistance
+                        + kGeometryEpsilon
+                || trialMetrics.meanBoundaryDistance
+                    > acceptedMetrics.meanBoundaryDistance
+                        + distanceAllowance
+                || trialMetrics.boundaryDistance95
+                    > acceptedMetrics.boundaryDistance95
+                        + distanceAllowance
+                || trialMetrics.representedFeatureWeight
+                    + kGeometryEpsilon
+                    < acceptedMetrics
+                          .representedFeatureWeight) {
+                continue;
+            }
+            if (!haveBest
+                || betterContinuity(
+                    trialContinuity,
+                    bestContinuity)
+                || (!betterContinuity(
+                        bestContinuity,
+                        trialContinuity)
+                    && trialState.residualArea
+                        < bestState.residualArea
+                            - kGeometryEpsilon)) {
+                bestPlacements =
+                    std::move(trial);
+                bestState =
+                    std::move(trialState);
+                bestMetrics = trialMetrics;
+                bestContinuity =
+                    trialContinuity;
+                haveBest = true;
+            }
+        }
+        if (!haveBest) {
+            continue;
+        }
+        *placements =
+            std::move(bestPlacements);
+        *currentState =
+            std::move(bestState);
+        acceptedMetrics = bestMetrics;
+        acceptedContinuity =
+            bestContinuity;
+        assignFeatureOwnership(
+            placements, catalog,
+            currentState->coverage,
+            features);
+        ++profile->stabilizedPlacements;
+        changed = true;
+    }
+    if (changed) {
+        refreshPlacementGains(
+            placements, catalog, mustCover);
+        if (progress) {
+            progress({
+                static_cast<int>(placements->size()),
+                targetArea,
+                currentState->coveredArea,
+                currentState->residualArea,
+                static_cast<double>(
+                    elapsed->elapsed()) / 1000.0,
+            });
+        }
+    }
+    profile->postContinuityEnergy =
+        acceptedContinuity.energy;
+    profile->postContinuityKinks =
+        acceptedContinuity.kinkCount;
+    profile->continuityWallSeconds +=
+        static_cast<double>(
+            continuityTimer.nsecsElapsed()) * 1e-9;
+
+    return true;
+}
+
 bool prunePlacements(
     QVector<Placement> *placements,
     ExactCoverState *currentState,
@@ -468,8 +1148,6 @@ bool prunePlacements(
     const QVector<ContourFeature> &features,
     double targetArea,
     const FillOptions &options,
-    GpuAreaEvaluator *gpuEvaluator,
-    QThreadPool *candidatePool,
     FillProfile *profile,
     QElapsedTimer *elapsed,
     const std::function<bool()> &cancelled,
@@ -490,6 +1168,58 @@ bool prunePlacements(
             mustCover, mayCover,
             currentState->coverage,
             features, options);
+    ContinuityMetrics acceptedContinuity =
+        contourContinuityMetrics(
+            currentState->coverage,
+            mustCover, features, options);
+    const FeatureMatchSummary acceptedFeatureMatches =
+        matchContourFeatures(
+            currentState->coverage,
+            features);
+    QSet<int> requiredCornerFeatureIds;
+    for (const int featureId :
+         acceptedFeatureMatches.representedIds) {
+        const auto found = std::find_if(
+            features.cbegin(), features.cend(),
+            [featureId](
+                const ContourFeature &feature) {
+                return feature.id == featureId;
+            });
+        if (found != features.cend()
+            && found->kind
+                == ContourFeatureKind::Corner) {
+            requiredCornerFeatureIds.insert(
+                featureId);
+        }
+    }
+    const auto acceptableTrial =
+        [&](const ExactCoverState &state,
+            const CoverErrorMetrics &metrics,
+            const ContinuityMetrics &continuity) {
+            const FeatureMatchSummary featureMatches =
+                matchContourFeatures(
+                    state.coverage,
+                    features);
+            const QSet<int> representedIds(
+                featureMatches.representedIds.cbegin(),
+                featureMatches.representedIds.cend());
+            return acceptablePruneState(
+                    state, metrics,
+                    acceptedMetrics,
+                    residualLimit,
+                    outsideLimit,
+                    options)
+                && acceptablePruneContinuity(
+                    continuity,
+                    acceptedContinuity)
+                && std::all_of(
+                    requiredCornerFeatureIds.cbegin(),
+                    requiredCornerFeatureIds.cend(),
+                    [&](int featureId) {
+                        return representedIds.contains(
+                            featureId);
+                    });
+        };
     while (!placements->isEmpty()) {
         if (cancelled && cancelled()) {
             profile->pruneWallSeconds +=
@@ -531,109 +1261,116 @@ bool prunePlacements(
                     mustCover, mayCover,
                     trialState.coverage,
                     features, options);
+            ContinuityMetrics trialContinuity =
+                contourContinuityMetrics(
+                    trialState.coverage,
+                    mustCover, features,
+                    options);
             QSet<int> adjustedIndices;
-            if (!acceptablePruneState(
+            if (!acceptableTrial(
                     trialState,
                     trialMetrics,
-                    acceptedMetrics,
-                    residualLimit,
-                    outsideLimit,
-                    targetArea,
-                    options)) {
+                    trialContinuity)) {
                 const QVector<PruneNeighbor> neighbors =
                     pruneNeighbors(
                         removedFootprint, trialState);
                 for (const PruneNeighbor &neighbor : neighbors) {
-                    Polygons fixedFootprints =
-                        trialState.footprints;
-                    fixedFootprints.removeAt(
-                        neighbor.index);
-                    const Polygons fixedCoverage =
-                        unionPolygons(fixedFootprints);
-                    const Polygons fixedResidual =
-                        differencePolygons(
-                            mustCover, fixedCoverage);
-                    bool optimizationCancelled = false;
-                    ++profile->pruneOptimizations;
-                    const Candidate optimized =
-                        optimizeExistingPlacement(
+                    const QVector<Affine> proposals =
+                        continuityProposals(
                             trial[neighbor.index],
-                            catalog, fixedResidual,
-                            mustCover, mayCover,
-                            features,
-                            options,
-                            gpuEvaluator, candidatePool,
-                            profile, cancelled,
-                            &optimizationCancelled);
-                    if (optimizationCancelled) {
-                        profile->pruneWallSeconds +=
-                            static_cast<double>(
-                                pruneTimer.nsecsElapsed()) * 1e-9;
-                        return false;
-                    }
-                    if (!optimized.valid
-                        || sameTransform(
-                            optimized.transform,
-                            trial[neighbor.index].transform)) {
+                            trialState.footprints[
+                                neighbor.index],
+                            trialState.coverage,
+                            mustCover, features,
+                            options);
+                    if (proposals.isEmpty()) {
                         continue;
                     }
-                    QVector<Placement> adjustedTrial = trial;
-                    adjustedTrial[neighbor.index].transform =
-                        optimized.transform;
-                    ExactCoverState adjustedState =
-                        exactCoverState(
-                            adjustedTrial, catalog,
-                            mustCover, mayCover,
-                            targetArea);
-                    const CoverErrorMetrics
-                        adjustedMetrics =
+                    QVector<Placement> bestTrial;
+                    ExactCoverState bestState;
+                    CoverErrorMetrics bestMetrics;
+                    ContinuityMetrics bestContinuity;
+                    bool haveBest = false;
+                    for (const Affine &proposal : proposals) {
+                        if (cancelled && cancelled()) {
+                            profile->pruneWallSeconds +=
+                                static_cast<double>(
+                                    pruneTimer.nsecsElapsed()) * 1e-9;
+                            return false;
+                        }
+                        ++profile->continuityProposals;
+                        QVector<Placement> adjustedTrial =
+                            trial;
+                        adjustedTrial[
+                            neighbor.index].transform =
+                                proposal;
+                        ExactCoverState adjustedState =
+                            exactCoverState(
+                                adjustedTrial,
+                                catalog,
+                                mustCover,
+                                mayCover,
+                                targetArea);
+                        CoverErrorMetrics adjustedMetrics =
                             evaluateCoverMetrics(
                                 mustCover,
                                 mayCover,
                                 adjustedState.coverage,
                                 features,
                                 options);
-                    if (adjustedState.residualArea
-                            >= trialState.residualArea
-                                - kGeometryEpsilon
-                        || adjustedState.outsideArea
-                            > outsideLimit
-                                + kGeometryEpsilon
-                        || !acceptablePruneState(
-                            adjustedState,
-                            adjustedMetrics,
-                            acceptedMetrics,
-                            residualLimit,
-                            outsideLimit,
-                            targetArea,
-                            options)) {
+                        ContinuityMetrics adjustedContinuity =
+                            contourContinuityMetrics(
+                                adjustedState.coverage,
+                                mustCover,
+                                features,
+                                options);
+                        if (!acceptableTrial(
+                                adjustedState,
+                                adjustedMetrics,
+                                adjustedContinuity)) {
+                            continue;
+                        }
+                        if (!haveBest
+                            || betterContinuity(
+                                adjustedContinuity,
+                                bestContinuity)
+                            || (!betterContinuity(
+                                    bestContinuity,
+                                    adjustedContinuity)
+                                && adjustedState
+                                       .residualArea
+                                    < bestState
+                                          .residualArea
+                                        - kGeometryEpsilon)) {
+                            bestTrial =
+                                std::move(
+                                    adjustedTrial);
+                            bestState =
+                                std::move(
+                                    adjustedState);
+                            bestMetrics =
+                                adjustedMetrics;
+                            bestContinuity =
+                                adjustedContinuity;
+                            haveBest = true;
+                        }
+                    }
+                    if (!haveBest) {
                         continue;
                     }
-                    trial = std::move(adjustedTrial);
-                    trialState = std::move(adjustedState);
-                    trialMetrics =
-                        adjustedMetrics;
+                    trial = std::move(bestTrial);
+                    trialState = std::move(bestState);
+                    trialMetrics = bestMetrics;
+                    trialContinuity =
+                        bestContinuity;
                     adjustedIndices.insert(neighbor.index);
-                    if (acceptablePruneState(
-                            trialState,
-                            trialMetrics,
-                            acceptedMetrics,
-                            residualLimit,
-                            outsideLimit,
-                            targetArea,
-                            options)) {
-                        break;
-                    }
+                    break;
                 }
             }
-            if (!acceptablePruneState(
+            if (!acceptableTrial(
                     trialState,
                     trialMetrics,
-                    acceptedMetrics,
-                    residualLimit,
-                    outsideLimit,
-                    targetArea,
-                    options)) {
+                    trialContinuity)) {
                 continue;
             }
             *placements = std::move(trial);
@@ -644,8 +1381,12 @@ bool prunePlacements(
                 features);
             refreshPlacementGains(
                 placements, catalog, mustCover);
+            acceptedContinuity =
+                trialContinuity;
             ++profile->prunedPlacements;
             profile->adjustedPlacements +=
+                adjustedIndices.size();
+            profile->stabilizedPlacements +=
                 adjustedIndices.size();
             removedInPass = true;
             if (progress) {
@@ -664,6 +1405,10 @@ bool prunePlacements(
             break;
         }
     }
+    profile->postContinuityEnergy =
+        acceptedContinuity.energy;
+    profile->postContinuityKinks =
+        acceptedContinuity.kinkCount;
     profile->pruneWallSeconds +=
         static_cast<double>(
             pruneTimer.nsecsElapsed()) * 1e-9;

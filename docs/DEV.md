@@ -41,7 +41,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   Square and Triangle Adam jobs whose shared contour vertex remains fixed during
   optimization. Outward quadratic runs between hard endpoints seed Circle jobs
   from their arc-length midpoint and tangent, with that midpoint fixed during
-  optimization.
+  optimization. A bounded continuity-aware pruning stage aligns exposed
+  boundaries near smooth contour sections, then removes placements under the
+  stabilized contour baseline. A removal can align its newly exposed neighbors
+  through the same bounded proposals. Exact union checks reject added outward
+  deviation, unstable contours, or lost hard-corner features. Smooth-junction
+  ownership can be discarded when the stabilized union remains within the
+  coverage and continuity limits.
   An optional double-precision CUDA path evaluates the optimizer and
   legalization first. Direct3D 11 legalization with double-precision CPU Adam is
   the next backend, followed by the parallel CPU evaluator. Exact CPU candidate

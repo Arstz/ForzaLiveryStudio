@@ -218,6 +218,15 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("repairWallSeconds"),
             profile->repairWallSeconds);
         profileObject.insert(
+            QStringLiteral("continuityWallSeconds"),
+            profile->continuityWallSeconds);
+        profileObject.insert(
+            QStringLiteral("preContinuityEnergy"),
+            profile->preContinuityEnergy);
+        profileObject.insert(
+            QStringLiteral("postContinuityEnergy"),
+            profile->postContinuityEnergy);
+        profileObject.insert(
             QStringLiteral("preNudgeResidualArea"),
             profile->preNudgeResidualArea);
         profileObject.insert(
@@ -336,6 +345,10 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("pruneOptimizations"),
             static_cast<qint64>(profile->pruneOptimizations));
         profileObject.insert(
+            QStringLiteral("continuityProposals"),
+            static_cast<qint64>(
+                profile->continuityProposals));
+        profileObject.insert(
             QStringLiteral("greedySteps"), profile->greedySteps);
         profileObject.insert(
             QStringLiteral("complexitySelections"),
@@ -364,6 +377,15 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("prunePasses"),
             profile->prunePasses);
+        profileObject.insert(
+            QStringLiteral("preContinuityKinks"),
+            profile->preContinuityKinks);
+        profileObject.insert(
+            QStringLiteral("postContinuityKinks"),
+            profile->postContinuityKinks);
+        profileObject.insert(
+            QStringLiteral("stabilizedPlacements"),
+            profile->stabilizedPlacements);
         profileObject.insert(
             QStringLiteral("repairSteps"),
             profile->repairSteps);
