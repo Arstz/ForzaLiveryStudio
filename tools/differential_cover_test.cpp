@@ -1432,6 +1432,108 @@ bool testWeightedLoggedContour(
         "weighted logged contour produced no legal placement");
 }
 
+QVector<PenPoint> continuityPruneRegressionPoints() {
+    return {
+        {{176.19, -587.30}, PenPointKind::Hard},
+        {{160.95, -615.16}, PenPointKind::Hard},
+        {{143.19, -687.83}, PenPointKind::Hard},
+        {{141.83, -695.93}, PenPointKind::Soft},
+        {{150.43, -738.92}, PenPointKind::Soft},
+        {{174.90, -759.47}, PenPointKind::Soft},
+        {{197.93, -763.16}, PenPointKind::Soft},
+        {{217.32, -758.45}, PenPointKind::Soft},
+        {{234.33, -749.34}, PenPointKind::Soft},
+        {{259.69, -719.98}, PenPointKind::Soft},
+        {{261.99, -701.77}, PenPointKind::Hard},
+        {{273.11, -631.50}, PenPointKind::Hard},
+        {{289.45, -570.59}, PenPointKind::Hard},
+        {{292.69, -555.38}, PenPointKind::Soft},
+        {{289.55, -527.76}, PenPointKind::Soft},
+        {{274.95, -508.73}, PenPointKind::Soft},
+        {{251.17, -500.52}, PenPointKind::Soft},
+        {{223.27, -507.72}, PenPointKind::Soft},
+        {{198.67, -529.13}, PenPointKind::Soft},
+        {{181.90, -565.24}, PenPointKind::Soft},
+    };
+}
+
+bool testContinuityPruneRegression(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr int kMaximumPlacementCount = 7;
+    constexpr double kMinimumCoverageRatio = 0.98;
+    constexpr double kBoundaryTolerance = 0.1;
+    constexpr double kMetricTolerance = 1e-5;
+    const PenContour contour = buildPenContour(
+        continuityPruneRegressionPoints(),
+        kBoundaryTolerance * 0.25);
+    if (!check(
+            contour.valid(),
+            "continuity-prune regression contour is invalid")) {
+        return false;
+    }
+
+    cover::FillInput input;
+    input.mustCover =
+        cover::polygonsFromPainterPath(
+            contour.path);
+    for (const PenContourLoop &loop :
+         contour.loops) {
+        input.boundaryLoops.push_back(
+            loop.segments);
+    }
+    cover::FillOptions options;
+    options.boundaryTolerance =
+        kBoundaryTolerance;
+    options.inactivityTimeoutSeconds = 0.0;
+    options.useWeightedContour = true;
+    input.mayCover =
+        cover::expandedCoverEnvelope(
+            input.mustCover,
+            options.boundaryTolerance);
+    const cover::FillResult result =
+        cover::analyticCoverFill(
+            input, catalog, options);
+    const double targetArea =
+        result.coveredArea
+        + result.residualArea;
+    const double coverageRatio =
+        targetArea > 0.0
+        ? result.coveredArea / targetArea
+        : 0.0;
+
+    std::cout
+        << "continuity-prune regression: "
+        << result.placements.size()
+        << " placements, "
+        << coverageRatio
+        << " coverage, "
+        << result.profile.preContinuityKinks
+        << " -> "
+        << result.profile.postContinuityKinks
+        << " kinks, "
+        << result.profile.prunedPlacements
+        << " pruned\n";
+
+    return check(
+        result.error.isEmpty()
+            && !result.cancelled
+            && result.placements.size()
+                <= kMaximumPlacementCount
+            && coverageRatio
+                >= kMinimumCoverageRatio
+            && result.metrics.maximumOutwardDistance
+                <= options.boundaryTolerance
+                    + kMetricTolerance
+            && result.profile.prunedPlacements > 0
+            && result.profile.pruneOptimizations == 0
+            && result.profile.postContinuityKinks
+                <= result.profile.preContinuityKinks
+            && result.profile.postContinuityEnergy
+                <= result.profile.preContinuityEnergy
+                    + kMetricTolerance,
+        "continuity-aware pruning regression failed");
+}
+
 QVector<PenLoop> letterOLoops() {
     const auto hardLoop = [](std::initializer_list<QPointF> positions,
                              PenLoopKind kind) {
@@ -1575,7 +1677,8 @@ int main(int argc, char **argv) {
         || !testCompactPolygonMesh(catalog)
         || !testLetterONegativeSpace(geometry, catalog)
         || !testLoggedContour(catalog)
-        || !testWeightedLoggedContour(catalog)) {
+        || !testWeightedLoggedContour(catalog)
+        || !testContinuityPruneRegression(catalog)) {
         return 1;
     }
 
