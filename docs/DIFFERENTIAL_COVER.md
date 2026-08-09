@@ -396,9 +396,10 @@ candidates. The Square maps the middle corner and its two neighbors onto three
 adjacent vertices. The Triangle starts on the same three contour points. Both
 jobs keep the middle source vertex exactly mapped to its contour corner while
 Adam adjusts the remaining affine degrees of freedom. Degenerate triples are
-discarded, and each greedy step optimizes only the highest-scoring seeds against
-the current residual. These jobs compete with the other differentiable
-candidates through the common exact selector.
+discarded. Each greedy step probes bounded anchored expansions and optimizes
+only the highest-scoring transforms against the current residual. These jobs
+compete with the other differentiable candidates through the common exact
+selector.
 
 Incomplete structural results remain candidate-generation passes.
 

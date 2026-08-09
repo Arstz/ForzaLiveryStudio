@@ -604,6 +604,15 @@ QVector<FixedCandidate> polygonMeshCandidates(
 
 namespace {
 
+constexpr int kMaximumHardPointJobs = 8;
+constexpr double kMinimumHardTriangleQuality = 0.02;
+constexpr double kHardPointProbeSpillWeight = 2.0;
+constexpr std::array<double, 3> kHardPointProbeScales{
+    1.0,
+    1.5,
+    2.0,
+};
+
 double hardPointCross(const QPointF &left,
                       const QPointF &right) {
     return left.x() * right.y()
@@ -758,6 +767,28 @@ void appendHardPointSeed(
     jobs->push_back(std::move(job));
 }
 
+Affine scaledHardPointTransform(
+    const CandidateJob &seed,
+    double scale) {
+    Affine result = seed.transform;
+    result.a *= scale;
+    result.b *= scale;
+    result.c *= scale;
+    result.d *= scale;
+    if (seed.anchor.has_value()) {
+        const CandidateAnchor &anchor =
+            *seed.anchor;
+        result.e = anchor.target.x()
+            - result.a * anchor.source.x
+            - result.c * anchor.source.y;
+        result.f = anchor.target.y()
+            - result.b * anchor.source.x
+            - result.d * anchor.source.y;
+    }
+
+    return result;
+}
+
 } // namespace
 
 QVector<CandidateJob> hardPointCandidateSeeds(
@@ -858,28 +889,57 @@ QVector<CandidateJob> rankedHardPointJobs(
     QVector<RankedJob> ranked;
     ranked.reserve(seeds.size());
     for (const CandidateJob &seed : seeds) {
-        const AreaGradient evaluation =
-            areaGradient(
-                *seed.shape, seed.transform,
-                residual, target,
-                subjectBounds);
-        if (!finiteGradient(evaluation)
-            || evaluation.covered
-                < options.epsGain) {
-            continue;
+        std::optional<RankedJob> best;
+        for (const double scale :
+             kHardPointProbeScales) {
+            CandidateJob probe = seed;
+            probe.transform =
+                scaledHardPointTransform(
+                    seed, scale);
+            const AreaGradient evaluation =
+                areaGradient(
+                    *probe.shape,
+                    probe.transform,
+                    residual, target,
+                    subjectBounds);
+            if (!finiteGradient(evaluation)
+                || evaluation.covered
+                    < options.epsGain) {
+                continue;
+            }
+            const double score =
+                evaluation.covered
+                - kHardPointProbeSpillWeight
+                    * std::max(
+                        0.0,
+                        evaluation.spill);
+            if (score < options.epsGain) {
+                continue;
+            }
+            RankedJob rankedProbe{
+                std::move(probe),
+                score,
+                evaluation.covered,
+            };
+            if (!best.has_value()
+                || rankedProbe.score
+                    > best->score
+                        + kGeometryEpsilon
+                || (std::abs(
+                        rankedProbe.score
+                        - best->score)
+                    <= kGeometryEpsilon
+                    && rankedProbe.covered
+                        > best->covered
+                            + kGeometryEpsilon)) {
+                best = std::move(
+                    rankedProbe);
+            }
         }
-        const double score =
-            evaluation.covered
-            - options.spillWeight
-                * std::max(0.0, evaluation.spill);
-        if (score < options.epsGain) {
-            continue;
+        if (best.has_value()) {
+            ranked.push_back(
+                std::move(*best));
         }
-        ranked.push_back({
-            seed,
-            score,
-            evaluation.covered,
-        });
     }
     std::stable_sort(
         ranked.begin(), ranked.end(),
