@@ -1432,6 +1432,162 @@ bool testWeightedLoggedContour(
         "weighted logged contour produced no legal placement");
 }
 
+bool testContourLeewayShapeSavings(
+    const QVector<cover::ShapeMesh> &catalog) {
+    constexpr double kExtent = 50.0;
+    constexpr double kCutY = 20.0;
+    const auto runCase = [&catalog](
+        const char *name,
+        int shapeId,
+        const cover::Polygons &target,
+        const cover::Polygons &leeway) {
+        const cover::ShapeMesh *shape =
+            shapeById(catalog, shapeId);
+        if (!check(shape != nullptr, name)) {
+            return false;
+        }
+        cover::FillInput baselineInput;
+        baselineInput.mustCover = target;
+        cover::FillOptions options;
+        options.budget = 2;
+        options.adamIterations = 160;
+        options.restarts = 4;
+        options.featureRestarts = 0;
+        options.epsArea = 1.0;
+        options.epsGain = 0.1;
+        options.inactivityTimeoutSeconds = 0.0;
+        options.useGpu = false;
+        options.useRouter = false;
+        baselineInput.mayCover =
+            cover::expandedCoverEnvelope(
+                baselineInput.mustCover,
+                options.boundaryTolerance);
+        const QVector<cover::ShapeMesh> shapeCatalog{
+            *shape,
+        };
+        const cover::FillResult baseline =
+            cover::analyticCoverFill(
+                baselineInput, shapeCatalog,
+                options);
+        cover::FillInput leewayInput = baselineInput;
+        leewayInput.leeway = leeway;
+        options.budget = 1;
+        const cover::FillResult relaxed =
+            cover::analyticCoverFill(
+                leewayInput, shapeCatalog,
+                options);
+        std::cout
+            << name << ": baseline="
+            << baseline.placements.size()
+            << " shapes, residual="
+            << baseline.residualArea
+            << "; leeway="
+            << relaxed.placements.size()
+            << " shape, residual="
+            << relaxed.residualArea
+            << '\n';
+
+        return check(
+            baseline.error.isEmpty()
+                && relaxed.error.isEmpty()
+                && baseline.placements.size() == 2
+                && relaxed.placements.size() == 1
+                && relaxed.residualArea
+                    <= options.epsArea + 1e-6,
+            name);
+    };
+
+    const QPolygonF triangleTarget{
+        QPointF(-kExtent, -kExtent),
+        QPointF(kExtent, -kExtent),
+        QPointF(15.0, kCutY),
+        QPointF(-15.0, kCutY),
+    };
+    const QPolygonF triangleLeeway{
+        QPointF(-15.0, kCutY),
+        QPointF(15.0, kCutY),
+        QPointF(0.0, kExtent),
+    };
+    if (!runCase(
+            "triangle leeway shape savings",
+            103, {triangleTarget}, {triangleLeeway})) {
+        return false;
+    }
+
+    const cover::ShapeMesh *circleShape =
+        shapeById(catalog, 102);
+    if (!check(circleShape != nullptr,
+               "circle leeway shape is unavailable")) {
+        return false;
+    }
+    QPolygonF fullCircle;
+    for (const cover::Vec2 &point : circleShape->boundary) {
+        fullCircle.push_back(QPointF(point.x, point.y));
+    }
+    const QRectF circleBounds = fullCircle.boundingRect();
+    QPainterPath fullCirclePath;
+    fullCirclePath.addPolygon(fullCircle);
+    fullCirclePath.closeSubpath();
+    QPainterPath targetClip;
+    targetClip.addRect(
+        QRectF(circleBounds.left() - 1.0,
+               circleBounds.top() - 1.0,
+               circleBounds.width() * 0.75 + 1.0,
+               circleBounds.height() + 2.0));
+    QPainterPath leewayClip;
+    leewayClip.addRect(
+        QRectF(circleBounds.left() + circleBounds.width() * 0.75 - 1.0,
+               circleBounds.top(),
+               circleBounds.width() * 0.25 + 1.0,
+               circleBounds.height()));
+    const cover::Polygons circleTarget =
+        cover::polygonsFromPainterPath(
+            fullCirclePath.intersected(targetClip));
+    const cover::Polygons circleLeeway =
+        cover::polygonsFromPainterPath(leewayClip);
+    if (!runCase(
+            "circle leeway shape savings",
+            102, circleTarget, circleLeeway)) {
+        return false;
+    }
+
+    cover::FillInput internalInput;
+    internalInput.mustCover = {fullCircle};
+    internalInput.mayCover =
+        cover::expandedCoverEnvelope(
+            internalInput.mustCover, 0.1);
+    internalInput.leeway = {
+        QPolygonF{
+            QPointF(-10.0, -10.0),
+            QPointF(10.0, -10.0),
+            QPointF(10.0, 10.0),
+            QPointF(-10.0, 10.0),
+        },
+    };
+    cover::FillOptions internalOptions;
+    internalOptions.budget = 1;
+    internalOptions.adamIterations = 80;
+    internalOptions.restarts = 1;
+    internalOptions.epsArea = 1.0;
+    internalOptions.epsGain = 0.1;
+    internalOptions.inactivityTimeoutSeconds = 0.0;
+    internalOptions.useGpu = false;
+    internalOptions.useRouter = false;
+    const cover::FillResult internal =
+        cover::analyticCoverFill(
+            internalInput, {*circleShape},
+            internalOptions);
+
+    return check(
+        internal.error.isEmpty()
+            && internal.placements.size() == 1
+            && internal.residualArea
+                <= internalOptions.epsArea + 1e-6
+            && internal.coveredArea + internal.residualArea
+                < circleShape->area - 100.0,
+        "internal leeway did not reduce required target coverage");
+}
+
 QVector<PenPoint> continuityPruneRegressionPoints() {
     return {
         {{176.19, -587.30}, PenPointKind::Hard},
@@ -1672,6 +1828,7 @@ int main(int argc, char **argv) {
         || !testWeightedCandidatePath(catalog)
         || !testReflectedPlacementUnion(catalog)
         || !testPartialTermination(catalog)
+        || !testContourLeewayShapeSavings(catalog)
         || !testStructuralT(catalog)
         || !testApproximateStructuralT(catalog)
         || !testCompactPolygonMesh(catalog)

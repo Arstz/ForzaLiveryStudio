@@ -14,11 +14,18 @@ class QPaintEvent;
 namespace gui {
 
 class LayerTreeView final : public QTreeView {
+    Q_OBJECT
+
 public:
     explicit LayerTreeView(QWidget *parent = nullptr);
+    void setLeewayGroupId(const QString &groupId);
+
+Q_SIGNALS:
+    void leewayGroupRequested(const QString &groupId);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dragMoveEvent(QDragMoveEvent *event) override;
@@ -39,6 +46,7 @@ private:
     int dragScrollDirection_ = 0;
     QPoint lastDragPosition_;
     QTimer dragScrollTimer_;
+    QString leewayGroupId_;
 };
 
 } // namespace gui

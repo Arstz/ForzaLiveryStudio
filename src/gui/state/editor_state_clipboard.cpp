@@ -277,6 +277,35 @@ void EditorState::insertLayerAboveSelection(std::unique_ptr<fls::scene::Layer> l
     invalidateProjectIndexCache();
 }
 
+bool EditorState::insertLayerBelowEntry(
+    std::unique_ptr<fls::scene::Layer> &layer,
+    const QString &entryId) {
+    if (!layer || !project_.root) {
+        return false;
+    }
+    fls::scene::Layer *entry = sceneNode(entryId);
+    fls::scene::Group *parent = entry != nullptr
+        ? static_cast<fls::scene::Group *>(entry->parent())
+        : nullptr;
+    if (parent == nullptr) {
+        return false;
+    }
+    const auto found = std::find_if(
+        parent->children.cbegin(), parent->children.cend(),
+        [entry](const std::unique_ptr<fls::scene::Layer> &child) {
+            return child.get() == entry;
+        });
+    if (found == parent->children.cend()) {
+        return false;
+    }
+    const int insertAt = static_cast<int>(
+        std::distance(parent->children.cbegin(), found));
+    parent->insert(insertAt, std::move(layer));
+    invalidateProjectIndexCache();
+
+    return true;
+}
+
 EditorState::EntryInsertionPoint EditorState::insertionPointAboveSelection(
     const QVector<QString> &selectedEntries) const {
     EntryInsertionPoint result;

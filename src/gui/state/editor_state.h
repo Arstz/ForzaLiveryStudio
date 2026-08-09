@@ -149,6 +149,8 @@ public:
                                  QSet<QString> *newLayerSelection = nullptr,
                                  QSet<QString> *newGuideLayerSelection = nullptr);
     void insertLayerAboveSelection(std::unique_ptr<fls::scene::Layer> layer, const QVector<QString> &selectedEntries);
+    bool insertLayerBelowEntry(std::unique_ptr<fls::scene::Layer> &layer,
+                               const QString &entryId);
     void groupEntries(const QVector<QString> &entryIds);
     void ungroupEntries(const QVector<QString> &entryIds, bool flatten);
     bool reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow);

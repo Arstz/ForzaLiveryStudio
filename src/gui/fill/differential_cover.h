@@ -104,6 +104,7 @@ using ContourSpan = FillBoundarySegment;
 struct FillInput {
     Polygons mustCover;
     Polygons mayCover;
+    Polygons leeway;
     QVector<ContourSpan> boundarySpans;
     QVector<QVector<ContourSpan>> boundaryLoops;
     QImage mask;
@@ -131,6 +132,7 @@ struct FillOptions {
     bool useRouter = true;
     bool useGpu = true;
     bool useWeightedContour = false;
+    bool useContourLeeway = false;
 };
 
 struct CoverErrorMetrics {

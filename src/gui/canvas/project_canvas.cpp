@@ -517,6 +517,94 @@ QVector<cover::ShapeMesh> ProjectCanvas::differentialCoverCatalog(QString *error
     return cover::buildShapeCatalog(geometry_, error);
 }
 
+bool ProjectCanvas::canAssignContourLeeway() const {
+    return tool_ == QStringLiteral("pen")
+        && pen_.closed
+        && pen_.cutoutClosed
+        && !pen_.fillRunning;
+}
+
+void ProjectCanvas::setContourLeewayGroupId(const QString &groupId) {
+    if (contourLeewayGroupId_ == groupId) {
+        return;
+    }
+    contourLeewayGroupId_ = groupId;
+    update();
+}
+
+QString ProjectCanvas::contourLeewayGroupId() const {
+    return contourLeewayGroupId_;
+}
+
+QPainterPath ProjectCanvas::contourLeewayPath(QString *error) const {
+    QPainterPath result;
+    result.setFillRule(Qt::WindingFill);
+    if (contourLeewayGroupId_.isEmpty()) {
+        if (error != nullptr) {
+            error->clear();
+        }
+        return result;
+    }
+    if (state_ == nullptr
+        || state_->groupForId(contourLeewayGroupId_) == nullptr) {
+        if (error != nullptr) {
+            *error = QStringLiteral("The leeway group is unavailable");
+        }
+        return {};
+    }
+
+    int shapeCount = 0;
+    for (const SceneRenderEntry &entry : state_->renderEntries()) {
+        if (entry.shape == nullptr
+            || !entry.ancestorGroupIds.contains(contourLeewayGroupId_)) {
+            continue;
+        }
+        const fls::scene::Shape &shape = *entry.shape;
+        if (!shape.visible) {
+            continue;
+        }
+        if (shape.isRaster() || shape.mask
+            || shape.color[3] != 255
+            || shape.opacity < 1.0) {
+            if (error != nullptr) {
+                *error = QStringLiteral(
+                    "Leeway requires visible opaque vector shapes without masks");
+            }
+            return {};
+        }
+        const ShapeGeometry *geometry =
+            geometry_.shape(shape.shapeId);
+        if (geometry == nullptr) {
+            if (error != nullptr) {
+                *error = QStringLiteral("Leeway group geometry is unavailable");
+            }
+            return {};
+        }
+        const PenPrimitive primitive =
+            buildPenPrimitive(shape.shapeId, *geometry);
+        if (primitive.silhouette.isEmpty()) {
+            if (error != nullptr) {
+                *error = QStringLiteral("Leeway group geometry is unavailable");
+            }
+            return {};
+        }
+        result = result.united(
+            entry.worldTransform.map(primitive.silhouette));
+        ++shapeCount;
+    }
+    if (shapeCount == 0 || result.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Leeway group has no visible vector coverage");
+        }
+        return {};
+    }
+    if (error != nullptr) {
+        error->clear();
+    }
+
+    return result;
+}
+
 void ProjectCanvas::setPathFillRunning(PathInteraction &path, bool running, const QString &message) {
     path.fillRunning = running;
     path.fillMessage = running ? message : QString();

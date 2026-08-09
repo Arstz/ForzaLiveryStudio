@@ -13,15 +13,45 @@ namespace gui::cover {
 FillResult analyticCoverFillInternal(
     const FillInput &input,
     const QVector<ShapeMesh> &catalog,
-    const FillOptions &options,
+    const FillOptions &requestedOptions,
     const std::function<bool()> &cancelled,
     const std::function<void(const FillProgress &)> &progress,
     bool postProcess) {
     FillResult result;
+    FillOptions options = requestedOptions;
     result.profile.areaWindowRatio =
         options.areaWindowRatio;
-    const Polygons mustCover = normalizedInputPolygons(input.mustCover);
-    const Polygons mayCover = normalizedInputPolygons(input.mayCover);
+    const Polygons authoredTarget =
+        normalizedInputPolygons(input.mustCover);
+    const Polygons leeway =
+        normalizedInputPolygons(input.leeway);
+    const bool hasLeeway = !leeway.isEmpty();
+    options.useContourLeeway = hasLeeway;
+    Polygons leewayCore = leeway;
+    if (hasLeeway && options.boundaryTolerance > 0.0) {
+        const QPainterPath leewayPath =
+            painterPathFromPolygons(leeway);
+        QPainterPathStroker stroker;
+        stroker.setWidth(options.boundaryTolerance * 2.0);
+        stroker.setJoinStyle(Qt::RoundJoin);
+        stroker.setCapStyle(Qt::RoundCap);
+        leewayCore = polygonsFromPainterPath(
+            leewayPath.subtracted(
+                stroker.createStroke(leewayPath)));
+    }
+    const Polygons mustCover = hasLeeway
+        ? differencePolygons(authoredTarget, leewayCore)
+        : authoredTarget;
+    Polygons legalSubjects = input.mayCover;
+    legalSubjects += leeway;
+    const Polygons mayCover =
+        normalizedInputPolygons(
+            unionPolygons(legalSubjects));
+    Polygons spillFreeSubjects = authoredTarget;
+    spillFreeSubjects += leeway;
+    const Polygons spillFreeCover =
+        normalizedInputPolygons(
+            unionPolygons(spillFreeSubjects));
     QVector<QVector<ContourSpan>> boundaryLoops = input.boundaryLoops;
     if (boundaryLoops.isEmpty() && !input.boundarySpans.isEmpty()) {
         boundaryLoops.push_back(input.boundarySpans);
@@ -34,6 +64,20 @@ FillResult analyticCoverFillInternal(
             for (ContourFeature &feature : features) {
                 feature.id = targetFeatures.size();
                 targetFeatures.push_back(std::move(feature));
+            }
+        }
+        if (hasLeeway) {
+            const QPainterPath leewayPath =
+                painterPathFromPolygons(leeway);
+            targetFeatures.erase(
+                std::remove_if(
+                    targetFeatures.begin(), targetFeatures.end(),
+                    [&leewayPath](const ContourFeature &feature) {
+                        return leewayPath.contains(feature.position);
+                    }),
+                targetFeatures.end());
+            for (int index = 0; index < targetFeatures.size(); ++index) {
+                targetFeatures[index].id = index;
             }
         }
     }
@@ -60,10 +104,16 @@ FillResult analyticCoverFillInternal(
                     placementFootprints(
                         result.placements,
                         catalog));
+            const Polygons visibleCoverage = hasLeeway
+                ? differencePolygons(coverage, leeway)
+                : coverage;
+            const Polygons visibleTarget = hasLeeway
+                ? differencePolygons(authoredTarget, leeway)
+                : mustCover;
             result.metrics =
                 evaluateCoverMetrics(
-                    mustCover, mayCover,
-                    coverage, targetFeatures,
+                    visibleTarget, mayCover,
+                    visibleCoverage, targetFeatures,
                     options);
             result.metrics.placementCount =
                 result.placements.size();
@@ -85,11 +135,16 @@ FillResult analyticCoverFillInternal(
             0.0,
         });
     }
-    StructuralCoverPlan structural =
-        structuralCoverPlan(
+    StructuralCoverPlan structural;
+    if (hasLeeway) {
+        structural.reason =
+            QStringLiteral("leeway uses residual optimization");
+    } else {
+        structural = structuralCoverPlan(
             boundaryLoops, catalog,
             mustCover, mayCover,
             targetArea, options, cancelled);
+    }
     const bool compactStructuralCover =
         structural.coverageRatio
         >= kStructuralMinimumCompactCoverageRatio
@@ -211,18 +266,23 @@ FillResult analyticCoverFillInternal(
     } else {
         result.residual = mustCover;
     }
-    const QVector<FixedCandidate> meshCandidates =
-        polygonMeshCandidates(
+    QVector<FixedCandidate> meshCandidates;
+    MeshCoverPlan mesh;
+    if (hasLeeway) {
+        mesh.reason =
+            QStringLiteral("leeway uses residual optimization");
+    } else {
+        meshCandidates = polygonMeshCandidates(
             boundaryLoops.isEmpty()
                 ? QVector<ContourSpan>{}
                 : boundaryLoops.front(),
             catalog, cancelled);
-    MeshCoverPlan mesh =
-        meshCoverPlan(
+        mesh = meshCoverPlan(
             meshCandidates, catalog,
             mustCover, mayCover,
             targetArea, options,
             cancelled);
+    }
     if (mesh.accepted
         && !targetFeatures.isEmpty()) {
         const Polygons coverage =
@@ -397,7 +457,7 @@ FillResult analyticCoverFillInternal(
         setupTimer.start();
         const EvaluationBounds subjectBounds{
             individualPolygonBounds(result.residual),
-            individualPolygonBounds(mustCover),
+            individualPolygonBounds(spillFreeCover),
         };
         const DistanceSeed seed = distanceSeed(result.residual);
         const Polygons routedComponent =
@@ -458,7 +518,11 @@ FillResult analyticCoverFillInternal(
         }
         if (result.placements.isEmpty()) {
             const QVector<CandidateJob> componentJobs =
-                wholeComponentJobs(result.residual, catalog);
+                wholeComponentJobs(
+                    hasLeeway
+                        ? spillFreeCover
+                        : result.residual,
+                    catalog);
             result.profile.wholeComponentJobs +=
                 componentJobs.size();
             for (const CandidateJob &job : componentJobs) {
@@ -469,7 +533,7 @@ FillResult analyticCoverFillInternal(
             rankedHardPointJobs(
                 hardPointSeeds,
                 result.residual,
-                mustCover,
+                spillFreeCover,
                 subjectBounds,
                 options);
         for (const CandidateJob &job :
@@ -500,11 +564,11 @@ FillResult analyticCoverFillInternal(
         if (gpuEvaluator != nullptr && gpuEvaluator->available()
             && gpuEvaluator->setSubjects(
                 result.residual,
-                mustCover)) {
+                spillFreeCover)) {
             std::vector<Candidate> gpuResults;
             usedGpu = optimizeCandidatesGpu(
                 jobs, result.residual,
-                mustCover, mayCover,
+                spillFreeCover, mayCover,
                 subjectBounds,
                 options, seed, gpuEvaluator.get(), &candidatePool,
                 &result.profile, cancelled,
@@ -519,7 +583,7 @@ FillResult analyticCoverFillInternal(
                         *jobs[jobIndex].shape,
                         gpuResults[jobIndex].transform,
                         result.residual,
-                        mustCover, mayCover,
+                        spillFreeCover, mayCover,
                         subjectBounds,
                         options, &exactProfile,
                         jobs[jobIndex]
@@ -538,7 +602,7 @@ FillResult analyticCoverFillInternal(
                     const CandidateJob &job = jobs[jobIndex];
                     jobResults[jobIndex] = optimizeCandidate(
                         job, result.residual,
-                        mustCover, mayCover,
+                        spillFreeCover, mayCover,
                         subjectBounds,
                         options, seed, cancelled);
                 });
@@ -675,7 +739,7 @@ FillResult analyticCoverFillInternal(
     FillProfile repairProfile;
     bool haveRepairProfile = false;
     Polygons prePruneResidual;
-    if (postProcess) {
+    if (postProcess && !hasLeeway) {
         result.profile.preNudgeResidualArea =
             coverState.residualArea;
         if (!nudgePlacements(
@@ -872,7 +936,7 @@ FillResult analyticCoverFillInternal(
     result.coveredArea = coverState.coveredArea;
     result.outsideArea = coverState.outsideArea;
     measureResult();
-    if (postProcess) {
+    if (postProcess && !hasLeeway) {
         result.profile.postRepairNewGapArea =
             polygonSetArea(
                 differencePolygons(

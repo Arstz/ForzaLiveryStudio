@@ -3,6 +3,7 @@
 #include "core_types.h"
 #include "editor_state.h"
 #include "layer_tree_model.h"
+#include "layer_tree_view.h"
 #include "gui/key_bindings.h"
 #include "project_canvas.h"
 #include "settings_dialog.h"
@@ -143,6 +144,8 @@ private:
     void updateClipboardWidget();
     void updateColorPaletteWidget();
     void updateLastSelectedShapeDefaults();
+    void toggleContourLeewayGroup(const QString &groupId);
+    void clearContourLeewayGroup();
     void updateSelectionFromTree();
     void syncTreeSelectionFromIds();
     void revealTreeIndex(const QModelIndex &index);
@@ -237,7 +240,7 @@ private:
     CarPreviewWidget *carPreview_ = nullptr;
     QDockWidget *carPreviewDock_ = nullptr;
     QAction *carUnwrapAction_ = nullptr;
-    QTreeView *tree_ = nullptr;
+    LayerTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;
     QSplitter *layersSplitter_ = nullptr;
     QLabel *details_ = nullptr;
@@ -307,6 +310,8 @@ private:
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;
+    QString contourLeewayGroupId_;
+    QString generatedFillLeewayGroupId_;
     QElapsedTimer generatedFillElapsed_;
     QTimer *generatedFillElapsedTimer_ = nullptr;
     QProgressBar *generatedFillProgress_ = nullptr;

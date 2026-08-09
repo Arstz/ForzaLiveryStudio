@@ -193,6 +193,32 @@ QVector<CandidateJob> wholeComponentJobs(
             job.origin = CandidateOrigin::WholeComponent;
             job.hasTransform = true;
             result.push_back(job);
+
+            const QRectF targetBounds = polygon.boundingRect();
+            const QRectF sourceBounds = shapeBounds(shape);
+            if (targetBounds.width() > kGeometryEpsilon
+                && targetBounds.height() > kGeometryEpsilon
+                && sourceBounds.width() > kGeometryEpsilon
+                && sourceBounds.height() > kGeometryEpsilon) {
+                CandidateJob axisAlignedJob;
+                axisAlignedJob.shape = &shape;
+                axisAlignedJob.transform.a =
+                    targetBounds.width() / sourceBounds.width();
+                axisAlignedJob.transform.d =
+                    targetBounds.height() / sourceBounds.height();
+                axisAlignedJob.transform.e =
+                    targetBounds.center().x()
+                    - axisAlignedJob.transform.a
+                        * sourceBounds.center().x();
+                axisAlignedJob.transform.f =
+                    targetBounds.center().y()
+                    - axisAlignedJob.transform.d
+                        * sourceBounds.center().y();
+                axisAlignedJob.origin =
+                    CandidateOrigin::WholeComponent;
+                axisAlignedJob.hasTransform = true;
+                result.push_back(axisAlignedJob);
+            }
         }
     }
 
@@ -2841,8 +2867,12 @@ CandidateSelection selectCandidate(
     if (areaWinner < 0) {
         return result;
     }
-    int winner = -1;
+    int winner = options.useContourLeeway
+        ? areaWinner : -1;
     for (int index = 0; index < scored.size(); ++index) {
+        if (options.useContourLeeway) {
+            break;
+        }
         if (scored[index].candidate.origin
                 == CandidateOrigin::LocalComponent
             && scored[index].complexity

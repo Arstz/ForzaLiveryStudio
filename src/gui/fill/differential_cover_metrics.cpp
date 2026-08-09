@@ -440,7 +440,8 @@ bool legalEnvelopeArea(
 bool legalOutwardDistance(
     double maximumOutwardDistance,
     const FillOptions &options) {
-    return !options.useWeightedContour
+    return options.useContourLeeway
+        || !options.useWeightedContour
         || (std::isfinite(
                 maximumOutwardDistance)
             && maximumOutwardDistance

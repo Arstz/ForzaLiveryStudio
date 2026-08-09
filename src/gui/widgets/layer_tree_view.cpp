@@ -12,6 +12,7 @@ namespace {
 constexpr int kDragHotspotClamp = 24;
 constexpr int kDragScrollMargin = 32;
 constexpr int kDragScrollIntervalMs = 40;
+const QColor kLeewayAccentColor(45, 205, 185);
 
 bool isBadgePoint(const QRect &rowRect, const QPoint &point, bool guide) {
     const int badgeCount = guide ? 2 : 3;
@@ -44,6 +45,14 @@ LayerTreeView::LayerTreeView(QWidget *parent)
     });
 }
 
+void LayerTreeView::setLeewayGroupId(const QString &groupId) {
+    if (leewayGroupId_ == groupId) {
+        return;
+    }
+    leewayGroupId_ = groupId;
+    viewport()->update();
+}
+
 void LayerTreeView::paintEvent(QPaintEvent *event) {
     QTreeView::paintEvent(event);
     QPainter painter(viewport());
@@ -60,6 +69,15 @@ void LayerTreeView::paintEvent(QPaintEvent *event) {
                 continue;
             }
             const QRect rowRect = visualRect(index);
+            if (index.data(LayerTreeModel::EntryIdRole).toString()
+                == leewayGroupId_) {
+                QColor fill = kLeewayAccentColor;
+                fill.setAlpha(35);
+                painter.fillRect(rowRect, fill);
+                painter.setPen(QPen(kLeewayAccentColor, 2));
+                painter.drawLine(rowRect.topLeft(), rowRect.bottomLeft());
+                painter.setPen(QPen(lineColor, 1));
+            }
             int depth = 0;
             for (QModelIndex ancestor = index.parent(); ancestor.isValid(); ancestor = ancestor.parent()) {
                 ++depth;
@@ -76,6 +94,25 @@ void LayerTreeView::paintEvent(QPaintEvent *event) {
     }
     painter.setPen(QPen(dropIndicatorColor(), 2));
     painter.drawLine(QPoint(0, dropIndicatorY_), QPoint(viewport()->width(), dropIndicatorY_));
+}
+
+void LayerTreeView::mousePressEvent(QMouseEvent *event) {
+    if (event != nullptr
+        && event->button() == Qt::LeftButton
+        && event->modifiers().testFlag(Qt::AltModifier)) {
+        const QModelIndex index = indexAt(event->position().toPoint());
+        if (index.isValid()
+            && index.data(LayerTreeModel::IsGroupRole).toBool()) {
+            const QString groupId =
+                index.data(LayerTreeModel::EntryIdRole).toString();
+            if (!groupId.isEmpty()) {
+                Q_EMIT leewayGroupRequested(groupId);
+                event->accept();
+                return;
+            }
+        }
+    }
+    QTreeView::mousePressEvent(event);
 }
 
 void LayerTreeView::mouseDoubleClickEvent(QMouseEvent *event) {

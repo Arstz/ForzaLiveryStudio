@@ -46,6 +46,20 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
 
+    if (!contourLeewayGroupId_.isEmpty()) {
+        const QPainterPath leeway = contourLeewayPath();
+        if (!leeway.isEmpty()) {
+            const QPainterPath screenLeeway = camera_.matrix().map(leeway);
+            QColor leewayFill(45, 205, 185, 55);
+            QBrush brush(leewayFill, Qt::BDiagPattern);
+            QPen pen(QColor(45, 205, 185, 220), 2.0, Qt::DashLine);
+            pen.setCosmetic(true);
+            painter.setPen(pen);
+            painter.setBrush(brush);
+            painter.drawPath(screenLeeway);
+        }
+    }
+
     if (pen_.fillRunning) {
         const QString message = pen_.fillMessage.isEmpty()
             ? QStringLiteral("Filling Pen path…")

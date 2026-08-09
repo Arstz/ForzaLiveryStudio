@@ -115,6 +115,8 @@ void MainWindow::setupTreeView() {
     connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
         updateSelectionFromTree();
     });
+    connect(tree_, &LayerTreeView::leewayGroupRequested,
+            this, &MainWindow::toggleContourLeewayGroup);
 
     sectionBar_ = new LiverySectionBar(this);
     connect(sectionBar_, &LiverySectionBar::sectionActivated, this, &MainWindow::setActiveSection);

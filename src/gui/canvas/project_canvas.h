@@ -85,6 +85,10 @@ public:
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
+    bool canAssignContourLeeway() const;
+    void setContourLeewayGroupId(const QString &groupId);
+    QString contourLeewayGroupId() const;
+    QPainterPath contourLeewayPath(QString *error = nullptr) const;
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
     void setLiningFillRequestedCallback(
@@ -528,6 +532,7 @@ private:
     std::function<void()> liningFillCancelCallback_;
     std::function<void(double)> liningWidthChangedCallback_;
     PathInteraction pen_;
+    QString contourLeewayGroupId_;
     PathInteraction lining_;
     mutable PenGeometryCache penGeometryCache_;
     mutable PenHitCache penHitCache_;

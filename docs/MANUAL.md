@@ -72,6 +72,8 @@ Bucket tool automates the process described in Pen by generating the contour on 
 
 >Enable Differential contour fill in the `Options` menu to conserve shapes, the algortihm takes more time and is not deterministic. GPU acceration will be used if available, priority CUDA->DirectX->CPU. You can adjust shape ids in `assets\differential_shapes.json`, ids are displayed in decimal.
 
+>Selecting a layer in Layers widget with `Alt` held will mark it as a leeway layer for new fill pass. The generated fill will try to conserve shapes by accounting for occlusion. 
+
 ### Lining (experimental)
 
 This tool is aimed to help tracing the finer details, same as Pen but allows for a non-closed contour, to stop drawing press right mouse button. Adjust width with scrollwheel, it gives the filling algorithm some leeway, confirm with `Enter` it will try to match the curve with shapes, try to maximize hardpoints and minimize contour lenght. Try different width settings, usually best around 4-8.
