@@ -180,10 +180,10 @@ std::optional<ProjectedLiverySection> buildProjectedLiverySection(const fls::Pro
     const double packedOriginX = (originPixelX - layout.textureSize.width() * 0.5) / scale;
     const double packedOriginY = (originPixelY - layout.textureSize.height() * 0.5) / scale;
     QTransform projectionTransform;
-    if (slot == 4 || slot == 10) {
-        projectionTransform.scale(-1.0, -1.0);
-    } else if (slot == 6) {
+    if (slot == 5 || slot == 6) {
         projectionTransform.scale(-1.0, 1.0);
+    } else if (slot == 4 || slot == 10) {
+        projectionTransform.scale(-1.0, -1.0);
     } else if (slot == 7) {
         projectionTransform.scale(1.0, -1.0);
     }

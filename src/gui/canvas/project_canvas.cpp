@@ -100,6 +100,7 @@ void ProjectCanvas::setProject(fls::Project *project) {
     clearBucketPreview();
     flipCycle_.reset();
     project_ = project;
+    invalidateContourLeewayCache();
     guidelines_.draggedOrientation = GuidelineOrientation::None;
     guidelines_.draggedIndex = -1;
     guidelines_.rulerPressActive = false;
@@ -332,6 +333,10 @@ void ProjectCanvas::setAllowMoveOutsideBoundingBox(bool enabled) {
     options_.allowMoveOutsideBoundingBox = enabled;
 }
 
+void ProjectCanvas::setPipetteAutoReturn(bool enabled) {
+    options_.pipetteAutoReturn = enabled;
+}
+
 void ProjectCanvas::setSelectionFlashEnabled(bool enabled) {
     if (flash_.enabled == enabled) {
         return;
@@ -529,6 +534,7 @@ void ProjectCanvas::setContourLeewayGroupId(const QString &groupId) {
         return;
     }
     contourLeewayGroupId_ = groupId;
+    invalidateContourLeewayCache();
     update();
 }
 
@@ -537,20 +543,35 @@ QString ProjectCanvas::contourLeewayGroupId() const {
 }
 
 QPainterPath ProjectCanvas::contourLeewayPath(QString *error) const {
+    if (contourLeewayCacheDirty_) {
+        rebuildContourLeewayCache();
+    }
+    if (error != nullptr) {
+        *error = contourLeewayErrorCache_;
+    }
+
+    return contourLeewayPathCache_;
+}
+
+void ProjectCanvas::invalidateContourLeewayCache() {
+    contourLeewayCacheDirty_ = true;
+    contourLeewayPathCache_ = {};
+    contourLeewayErrorCache_.clear();
+}
+
+void ProjectCanvas::rebuildContourLeewayCache() const {
     QPainterPath result;
     result.setFillRule(Qt::WindingFill);
+    contourLeewayCacheDirty_ = false;
+    contourLeewayPathCache_ = {};
+    contourLeewayErrorCache_.clear();
     if (contourLeewayGroupId_.isEmpty()) {
-        if (error != nullptr) {
-            error->clear();
-        }
-        return result;
+        return;
     }
     if (state_ == nullptr
         || state_->groupForId(contourLeewayGroupId_) == nullptr) {
-        if (error != nullptr) {
-            *error = QStringLiteral("The leeway group is unavailable");
-        }
-        return {};
+        contourLeewayErrorCache_ = QStringLiteral("The leeway group is unavailable");
+        return;
     }
 
     int shapeCount = 0;
@@ -566,43 +587,32 @@ QPainterPath ProjectCanvas::contourLeewayPath(QString *error) const {
         if (shape.isRaster() || shape.mask
             || shape.color[3] != 255
             || shape.opacity < 1.0) {
-            if (error != nullptr) {
-                *error = QStringLiteral(
-                    "Leeway requires visible opaque vector shapes without masks");
-            }
-            return {};
+            contourLeewayErrorCache_ = QStringLiteral(
+                "Leeway requires visible opaque vector shapes without masks");
+            return;
         }
         const ShapeGeometry *geometry =
             geometry_.shape(shape.shapeId);
         if (geometry == nullptr) {
-            if (error != nullptr) {
-                *error = QStringLiteral("Leeway group geometry is unavailable");
-            }
-            return {};
+            contourLeewayErrorCache_ = QStringLiteral("Leeway group geometry is unavailable");
+            return;
         }
         const PenPrimitive primitive =
             buildPenPrimitive(shape.shapeId, *geometry);
         if (primitive.silhouette.isEmpty()) {
-            if (error != nullptr) {
-                *error = QStringLiteral("Leeway group geometry is unavailable");
-            }
-            return {};
+            contourLeewayErrorCache_ = QStringLiteral("Leeway group geometry is unavailable");
+            return;
         }
         result = result.united(
             entry.worldTransform.map(primitive.silhouette));
         ++shapeCount;
     }
     if (shapeCount == 0 || result.isEmpty()) {
-        if (error != nullptr) {
-            *error = QStringLiteral("Leeway group has no visible vector coverage");
-        }
-        return {};
-    }
-    if (error != nullptr) {
-        error->clear();
+        contourLeewayErrorCache_ = QStringLiteral("Leeway group has no visible vector coverage");
+        return;
     }
 
-    return result;
+    contourLeewayPathCache_ = result;
 }
 
 void ProjectCanvas::setPathFillRunning(PathInteraction &path, bool running, const QString &message) {

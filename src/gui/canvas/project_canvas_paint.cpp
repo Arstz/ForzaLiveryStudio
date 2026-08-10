@@ -39,7 +39,11 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
 }
 
 void ProjectCanvas::drawPenOverlay(QPainter &painter) {
-    if (tool_ != QStringLiteral("pen") && !pen_.fillRunning) {
+    const bool showPendingBucketContour =
+        tool_ == QStringLiteral("bucket") && !pen_.points.isEmpty();
+    if (tool_ != QStringLiteral("pen")
+        && !showPendingBucketContour
+        && !pen_.fillRunning) {
         return;
     }
     painter.save();

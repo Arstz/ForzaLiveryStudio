@@ -124,6 +124,8 @@ BehaviorSettings loadBehaviorSettings() {
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), result.moveToolAutoSelect).toBool();
     result.allowMoveOutsideBoundingBox = settings.value(
         QStringLiteral("ui/behavior/allowMoveOutsideBoundingBox"), result.allowMoveOutsideBoundingBox).toBool();
+    result.pipetteAutoReturn = settings.value(
+        QStringLiteral("ui/behavior/pipetteAutoReturn"), result.pipetteAutoReturn).toBool();
     result.selectionFlashEnabled = settings.value(QStringLiteral("ui/behavior/selectionFlashEnabled"), result.selectionFlashEnabled).toBool();
     result.displayAnchorsDuringTransformDrag = settings.value(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), result.displayAnchorsDuringTransformDrag).toBool();
     result.generatePreviewsWithTransformations = settings.value(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), result.generatePreviewsWithTransformations).toBool();
@@ -175,6 +177,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);
     qsettings.setValue(QStringLiteral("ui/behavior/allowMoveOutsideBoundingBox"), settings.allowMoveOutsideBoundingBox);
+    qsettings.setValue(QStringLiteral("ui/behavior/pipetteAutoReturn"), settings.pipetteAutoReturn);
     qsettings.setValue(QStringLiteral("ui/behavior/selectionFlashEnabled"), settings.selectionFlashEnabled);
     qsettings.setValue(QStringLiteral("ui/behavior/displayAnchorsDuringTransformDrag"), settings.displayAnchorsDuringTransformDrag);
     qsettings.setValue(QStringLiteral("ui/behavior/generatePreviewsWithTransformations"), settings.generatePreviewsWithTransformations);

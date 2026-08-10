@@ -54,12 +54,15 @@ inline QString safeGroupName(QString name) {
 inline QString projectExportFolder(const QString &pickedFolder, const QString &projectName, bool livery) {
     const QFileInfo pickedInfo(pickedFolder);
     const QString prefix = livery ? QStringLiteral("Livery_") : QStringLiteral("LayerGroup_");
-    if (pickedInfo.fileName().startsWith(prefix) && pickedInfo.fileName().size() > prefix.size()) {
+    if (pickedInfo.fileName().startsWith(prefix, Qt::CaseInsensitive)
+        && pickedInfo.fileName().size() > prefix.size()) {
         return pickedInfo.absoluteFilePath();
     }
 
     QDir base(pickedFolder);
-    const QString baseName = QStringLiteral("%1%2").arg(prefix, safeGroupName(projectName));
+    const QString safeName = safeGroupName(projectName);
+    const QString baseName = safeName.startsWith(prefix, Qt::CaseInsensitive)
+        ? safeName : prefix + safeName;
     QString candidate = baseName;
     int suffix = 2;
     while (base.exists(candidate)) {

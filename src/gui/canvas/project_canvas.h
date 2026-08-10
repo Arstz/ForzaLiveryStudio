@@ -59,6 +59,7 @@ public:
     void setMoveToolAutoSelect(bool enabled);
     bool moveToolAutoSelect() const;
     void setAllowMoveOutsideBoundingBox(bool enabled);
+    void setPipetteAutoReturn(bool enabled);
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
     void setDisplayAnchorsDuringTransformDrag(bool enabled);
@@ -89,6 +90,7 @@ public:
     void setContourLeewayGroupId(const QString &groupId);
     QString contourLeewayGroupId() const;
     QPainterPath contourLeewayPath(QString *error = nullptr) const;
+    void invalidateContourLeewayCache();
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
     void setLiningFillRequestedCallback(
@@ -352,6 +354,7 @@ private:
         bool transformRelativeMode = false;
         bool moveToolAutoSelect = false;
         bool allowMoveOutsideBoundingBox = true;
+        bool pipetteAutoReturn = true;
         bool displayAnchorsDuringTransformDrag = true;
         bool separateOpacityAndSkewTools = false;
         bool guideLayersVisible = true;
@@ -459,6 +462,7 @@ private:
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
     QPainterPath penPreviewPath(bool closeToStart) const;
+    void rebuildContourLeewayCache() const;
     void invalidatePenGeometryCache();
     const PenGeometryCache &penGeometryCache() const;
     const QPainterPath &penScreenPath() const;
@@ -534,8 +538,11 @@ private:
     PathInteraction pen_;
     QString contourLeewayGroupId_;
     PathInteraction lining_;
+    mutable QPainterPath contourLeewayPathCache_;
+    mutable QString contourLeewayErrorCache_;
     mutable PenGeometryCache penGeometryCache_;
     mutable PenHitCache penHitCache_;
+    mutable bool contourLeewayCacheDirty_ = true;
     quint64 penGeometryRevision_ = 0;
     double liningWidth_ = kDefaultLiningWidth;
     BucketState bucket_;

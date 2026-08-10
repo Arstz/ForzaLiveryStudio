@@ -578,7 +578,6 @@ LiveryExportPlacement exportLiveryPlacement(const scene::Shape &shape,
     out.scaleY = t.scaleY;
     out.skew = t.skew;
     out.color = shape.color;
-    out.color[3] = static_cast<quint8>(std::clamp<int>(std::lround(shape.opacity * 255.0), 0, 255));
     out.mask = shape.mask;
     return out;
 }

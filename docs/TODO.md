@@ -1,10 +1,8 @@
 Small changes:
-    -Remove Horizon/Motosport livery/group text in the exproler, retain just Livery/group
-    -Enable a toggle for Pipette tool auto return to last tool
-    -Draw pending contour if present in the Bucket tool as well
+    -Pipette tool does not align with the cursor icon, the icon points down-left but samples center
+    -Escape in Bucket tool should also discard the current contour
 
 Medium changes:
-    -Cache leeway overlay for better perfomance on pan/zoom
 
 Big changes:
     -Color aware point snapping for Pen contours

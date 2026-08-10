@@ -285,6 +285,7 @@ void MainWindow::connectEditorStateSignals() {
     connect(state_, &EditorState::transformLiveChanged, this, [this]() {
         if (canvas_ != nullptr) {
             canvas_->invalidateSceneCache();
+            canvas_->invalidateContourLeewayCache();
             canvas_->update();
         }
         if (properties_ != nullptr) {
@@ -294,6 +295,7 @@ void MainWindow::connectEditorStateSignals() {
     });
     connect(state_, &EditorState::canvasRepaintRequested, this, [this]() {
         canvas_->invalidateSceneCache();
+        canvas_->invalidateContourLeewayCache();
         canvas_->update();
     });
     connect(state_, &EditorState::projectStructureChanged, this, &MainWindow::noteProjectStructureChanged);
@@ -519,6 +521,9 @@ void MainWindow::setupOptionsMenu() {
     addBehaviorOption(optionsMenu, QStringLiteral("Allow Move Outside Bounding Box"),
                       QStringLiteral("toggle_allow_move_outside_bounding_box"),
                       &BehaviorSettings::allowMoveOutsideBoundingBox);
+    addBehaviorOption(optionsMenu, QStringLiteral("Pipette Auto-Return"),
+                      QStringLiteral("toggle_pipette_auto_return"),
+                      &BehaviorSettings::pipetteAutoReturn);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Selection Flash"), QStringLiteral("toggle_selection_flash"), &BehaviorSettings::selectionFlashEnabled);
 
     QMenu *guidesMenu = optionsMenu->addMenu(QStringLiteral("&Guides"));
@@ -875,6 +880,7 @@ void MainWindow::applyBehaviorSettings(const BehaviorSettings &settings, bool sa
     if (canvas_ != nullptr) {
         canvas_->setMoveToolAutoSelect(settings.moveToolAutoSelect);
         canvas_->setAllowMoveOutsideBoundingBox(settings.allowMoveOutsideBoundingBox);
+        canvas_->setPipetteAutoReturn(settings.pipetteAutoReturn);
         canvas_->setSelectionFlashEnabled(settings.selectionFlashEnabled);
         canvas_->setDisplayAnchorsDuringTransformDrag(settings.displayAnchorsDuringTransformDrag);
         canvas_->setSeparateOpacityAndSkewTools(settings.separateOpacityAndSkewTools);

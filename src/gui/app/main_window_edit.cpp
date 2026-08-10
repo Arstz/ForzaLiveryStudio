@@ -1935,6 +1935,7 @@ void MainWindow::noteProjectGeometryChanged(bool refreshPreviews) {
         }
         canvas_->invalidateSelectionCache();
         canvas_->invalidateSceneCache();
+        canvas_->invalidateContourLeewayCache();
         canvas_->update();
     }
     if (updateLayerPreviews && treeModel_ != nullptr) {

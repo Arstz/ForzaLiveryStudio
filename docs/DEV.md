@@ -20,7 +20,8 @@ exports grouped `C_group` folders and `C_livery` folders.
 - Drag/drop projects (`.3so`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
-  canvas tools. Pipette returns to the previously used tool after a successful pick.
+  canvas tools. Pipette can return to the previously used tool after a successful
+  pick through a persistent, default-on Options toggle.
   Pen builds a closed hard/soft quadratic compound contour with editable interior cutouts,
   fits affine vector primitives along curved boundaries, and prepares an interior
   boundary before meshing the remaining area.
@@ -76,6 +77,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
   drag the current selection from outside its bounds and giving that selection
   priority over auto-select. Disable it to retain bounds-gated interaction.
+- Keep a selected contour-leeway group's world geometry cached while panning and
+  zooming the canvas. Scene edits invalidate the cached overlay.
 - Nudge selected layers/guides precisely in Move or Transform with arrow keys;
   normal and Shift step sizes are configurable in Settings.
 - Read world coordinates from pan/zoom-aware canvas rulers and manage persistent

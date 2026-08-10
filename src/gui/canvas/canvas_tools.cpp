@@ -279,7 +279,9 @@ bool PipetteTool::handlePress(QMouseEvent *event) {
     const std::optional<QColor> color = canvas_.colorAtScreenPoint(event->position());
     if (color.has_value() && canvas_.pipetteColorPickedCallback_ != nullptr) {
         canvas_.pipetteColorPickedCallback_(color.value());
-        canvas_.setTool(canvas_.lastNonPipetteTool_);
+        if (canvas_.options_.pipetteAutoReturn) {
+            canvas_.setTool(canvas_.lastNonPipetteTool_);
+        }
     }
     event->accept();
     return true;

@@ -56,7 +56,7 @@ All in one tool to move, rotate, scale and skew the selection. Applying `Shift` 
 
 ### Pipette
 
-Click a layer to sample its color, will apply it to the current selection. You can also sample the guide layer. Every sample adds this color to Swatches widget to be reused later if not already present.
+Click a layer to sample its color, will apply it to the current selection. You can also sample the guide layer. Every sample adds this color to Swatches widget to be reused later if not already present. The default-on `Pipette Auto-Return` option returns to the previous tool after a successful sample; disable it to keep Pipette active.
 
 ### Pen
 

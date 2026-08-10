@@ -82,9 +82,11 @@ QString findFile(const QDir &directory, const QString &name) {
 
 QString findThumbnail(const QDir &directory) {
     const QStringList preferredNames = {
+        QStringLiteral("bigThumb.png"),
+        QStringLiteral("thumb.png"),
+        QStringLiteral("thumbnail.png"),
         QStringLiteral("bigThumb.webp"),
         QStringLiteral("thumb.webp"),
-        QStringLiteral("thumbnail.png"),
         QStringLiteral("thumbnail"),
     };
     for (const QString &name : preferredNames) {
@@ -195,7 +197,12 @@ AssetInfo inspectFlatLivery(const QFileInfo &file) {
         directory, stem + QStringLiteral(".header")), asset);
     asset.thumbnailPath = findFile(
         directory,
-        QStringLiteral("GarageThumbnail_%1.bigThumb.webp").arg(identifier));
+        QStringLiteral("GarageThumbnail_%1.bigThumb.png").arg(identifier));
+    if (asset.thumbnailPath.isEmpty()) {
+        asset.thumbnailPath = findFile(
+            directory,
+            QStringLiteral("GarageThumbnail_%1.bigThumb.webp").arg(identifier));
+    }
 
     return asset;
 }
@@ -203,13 +210,13 @@ AssetInfo inspectFlatLivery(const QFileInfo &file) {
 QString assetKindLabel(AssetKind kind) {
     switch (kind) {
     case AssetKind::HorizonGroup:
-        return QStringLiteral("Horizon group");
+        return QStringLiteral("Group");
     case AssetKind::HorizonLivery:
-        return QStringLiteral("Horizon livery");
+        return QStringLiteral("Livery");
     case AssetKind::MotorsportGroup:
-        return QStringLiteral("Motorsport group");
+        return QStringLiteral("Group");
     case AssetKind::MotorsportLivery:
-        return QStringLiteral("Motorsport livery");
+        return QStringLiteral("Livery");
     case AssetKind::None:
         break;
     }
