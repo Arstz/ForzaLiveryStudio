@@ -24,6 +24,9 @@ QString iconAssetPath(const QString &fileName) {
 }
 
 constexpr int kLogicalCursorSize = 21;
+constexpr int kPipetteCursorSourceExtent = 32;
+constexpr int kPipetteCursorHotspotX = 0;
+constexpr int kPipetteCursorHotspotY = 31;
 
 double cursorScaleFactor() {
     double scale = 1.0;
@@ -58,6 +61,13 @@ QCursor assetCursor(const QString &fileName) {
 
     if (fileName == QStringLiteral("Cursor.xpm")) {
         cursor = QCursor(pixmap, 0, 0);
+    } else if (fileName == QStringLiteral("CursorPipette.xpm")) {
+        const double hotspotScale = static_cast<double>(pixmap.width() - 1)
+            / (kPipetteCursorSourceExtent - 1);
+        cursor = QCursor(
+            pixmap,
+            qRound(kPipetteCursorHotspotX * hotspotScale),
+            qRound(kPipetteCursorHotspotY * hotspotScale));
     } else {
         cursor = QCursor(pixmap, pixmap.width() / 2, pixmap.height() / 2);
     }

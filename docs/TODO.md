@@ -1,6 +1,4 @@
 Small changes:
-    -Pipette tool does not align with the cursor icon, the icon points down-left but samples center
-    -Escape in Bucket tool should also discard the current contour
 
 Medium changes:
 

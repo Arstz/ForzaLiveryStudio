@@ -64,7 +64,7 @@ Pen tool will place a single hard point (red) to start a contour on left click. 
 
 ### Bucket
 
-Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. Outer and interior traced boundaries remain editable when the tool changes to Pen. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Some larger contours may take longer. For best results try to maximize tolerance and hard point count. Click with `Shift` held to select only the outer contour with holes ignored.
+Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. Outer and interior traced boundaries remain editable when the tool changes to Pen. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Press `Escape` while Bucket is active to discard its preview and current contour. Some larger contours may take longer. For best results try to maximize tolerance and hard point count. Click with `Shift` held to select only the outer contour with holes ignored.
 
 >Both Bucket and Pen is not a replacement for every contour, and can have unpredictable results on finer details. For basic shapes like fonts it is still reccommended to use other means. Use both if you want to speed up the process but be aware that they might consume more shapes than if done manually.
 

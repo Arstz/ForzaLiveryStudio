@@ -550,6 +550,7 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
             return true;
         }
         if (tool_ == QStringLiteral("bucket")) {
+            discardPathInteraction(pen_, penFillCancelCallback_);
             clearBucketPreview();
             return true;
         }
