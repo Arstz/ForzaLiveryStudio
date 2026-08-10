@@ -1070,6 +1070,722 @@ void buildLargeStructuredCounts(Project &project)
     appendLargeFlatSection(*rightWindow, ids, 3200, 2049);
 }
 
+scene::Group &grammarSection(Project &project, int slot)
+{
+    scene::Group *section = syntheticSection(project, slot);
+    if (section == nullptr) {
+        throw std::runtime_error("scaffold is missing a livery section");
+    }
+    return *section;
+}
+
+std::unique_ptr<scene::Shape> grammarShape(int &idCounter, double x, double y,
+                                           bool mask = false)
+{
+    auto shape = std::make_unique<scene::Shape>();
+    shape->id = QStringLiteral("grammar-shape-%1")
+        .arg(++idCounter, 3, 10, QLatin1Char('0'));
+    shape->name = QStringLiteral("Grammar shape %1").arg(idCounter);
+    shape->setVectorShape(101);
+    shape->x = x;
+    shape->y = y;
+    shape->scaleX = 0.5;
+    shape->scaleY = 0.5;
+    shape->mask = mask;
+    shape->color = mask
+        ? std::array<quint8, 4>{0, 0, 0, 0}
+        : std::array<quint8, 4>{36, 88, 240, 255};
+    return shape;
+}
+
+std::unique_ptr<scene::Group> grammarPair(int &idCounter, double x, double y,
+                                          bool mask = false)
+{
+    auto group = std::make_unique<scene::Group>();
+    group->id = QStringLiteral("grammar-group-%1")
+        .arg(++idCounter, 3, 10, QLatin1Char('0'));
+    group->name = QStringLiteral("Grammar group %1").arg(idCounter);
+    group->x = x;
+    group->y = y;
+    group->append(grammarShape(idCounter, -18.0, -8.0, mask));
+    group->append(grammarShape(idCounter, 18.0, 8.0, mask));
+    return group;
+}
+
+std::unique_ptr<scene::Group> grammarChain(int &idCounter, int depth,
+                                           bool mask = false)
+{
+    auto group = std::make_unique<scene::Group>();
+    group->id = QStringLiteral("closure-group-%1")
+        .arg(++idCounter, 3, 10, QLatin1Char('0'));
+    group->name = QStringLiteral("Closure depth %1").arg(depth);
+    group->append(grammarShape(idCounter, -18.0, -8.0, mask));
+    if (depth > 1) {
+        group->append(grammarChain(idCounter, depth - 1, mask));
+    } else {
+        group->append(grammarShape(idCounter, 18.0, 8.0, mask));
+    }
+    return group;
+}
+
+void buildGrammarEmpty(Project &)
+{
+}
+
+void buildGrammarOneShape(Project &project)
+{
+    int ids = 0;
+    grammarSection(project, 0).append(grammarShape(ids, 0.0, 0.0));
+}
+
+void buildGrammarShapeSibling(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -36.0, 0.0));
+    section.append(grammarShape(ids, 36.0, 0.0));
+}
+
+void buildGrammarCountedGroup(Project &project)
+{
+    int ids = 0;
+    grammarSection(project, 0).append(grammarPair(ids, 0.0, 0.0));
+}
+
+void buildGrammarShapeGroupShape(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -90.0, 0.0));
+    section.append(grammarPair(ids, 0.0, 0.0));
+    section.append(grammarShape(ids, 90.0, 0.0));
+}
+
+void buildGrammarGroupSibling(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarPair(ids, -55.0, 0.0));
+    section.append(grammarPair(ids, 55.0, 0.0));
+}
+
+void buildGrammarNestedTerminal(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -90.0, 0.0));
+    auto outer = std::make_unique<scene::Group>();
+    outer->id = QStringLiteral("grammar-outer");
+    outer->name = QStringLiteral("Grammar outer");
+    outer->append(grammarShape(ids, -20.0, 0.0));
+    outer->append(grammarPair(ids, 28.0, 0.0));
+    section.append(std::move(outer));
+}
+
+void buildGrammarSectionBoundary(Project &project)
+{
+    int ids = 0;
+    grammarSection(project, 0).append(grammarShape(ids, 0.0, 0.0));
+    grammarSection(project, 1).append(grammarShape(ids, 0.0, 0.0));
+}
+
+void buildGrammarFinalSection(Project &project)
+{
+    int ids = 0;
+    grammarSection(project, 10).append(grammarShape(ids, 0.0, 0.0));
+}
+
+void buildClosureDepthThree(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -90.0, 0.0));
+    section.append(grammarChain(ids, 3));
+}
+
+void buildClosureDepthSix(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -90.0, 0.0));
+    section.append(grammarChain(ids, 6));
+}
+
+void buildClosureToShape(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarChain(ids, 6));
+    section.append(grammarShape(ids, 90.0, 0.0));
+}
+
+void buildClosureToGroup(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarChain(ids, 6));
+    section.append(grammarPair(ids, 90.0, 0.0));
+}
+
+void buildClosureBeforeSection(Project &project)
+{
+    int ids = 0;
+    scene::Group &front = grammarSection(project, 0);
+    front.append(grammarShape(ids, -90.0, 0.0));
+    front.append(grammarChain(ids, 6));
+    grammarSection(project, 1).append(grammarShape(ids, 0.0, 0.0));
+}
+
+void buildClosureRootBitmap(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    for (int i = 0; i < 16; ++i) {
+        section.append(grammarShape(ids, i * 12.0 - 90.0, -30.0));
+    }
+    section.append(grammarChain(ids, 3));
+}
+
+void buildClosureGroupBitmap(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -110.0, -45.0));
+    auto outer = std::make_unique<scene::Group>();
+    outer->id = QStringLiteral("closure-bitmap-group");
+    outer->name = QStringLiteral("Closure bitmap group");
+    for (int i = 0; i < 64; ++i) {
+        outer->append(grammarShape(ids, (i % 8) * 18.0 - 63.0,
+                                   (i / 8) * 14.0 - 49.0));
+    }
+    outer->append(grammarChain(ids, 3));
+    section.append(std::move(outer));
+}
+
+void buildClosureMasked(Project &project)
+{
+    int ids = 0;
+    scene::Group &section = grammarSection(project, 0);
+    section.append(grammarShape(ids, -90.0, 0.0));
+    section.append(grammarChain(ids, 6, true));
+}
+
+void buildClosureMaskedBeforeSection(Project &project)
+{
+    int ids = 0;
+    scene::Group &front = grammarSection(project, 0);
+    front.append(grammarShape(ids, -90.0, 0.0));
+    front.append(grammarChain(ids, 6, true));
+    grammarSection(project, 1).append(grammarShape(ids, 0.0, 0.0));
+}
+
+void buildClosureFinalSection(Project &project)
+{
+    int ids = 0;
+    grammarSection(project, 10).append(grammarChain(ids, 6));
+}
+
+scene::Group &firstPopulatedSection(Project &project)
+{
+    for (int slot = 0; slot < 11; ++slot) {
+        if (!sectionLeaves(project, slot).isEmpty()) {
+            return grammarSection(project, slot);
+        }
+    }
+    throw std::runtime_error("scaffold has no populated livery section");
+}
+
+void buildMutationUnchanged(Project &)
+{
+}
+
+void buildMutationShape(Project &project)
+{
+    if (!project.root || !nudgeFirstBuiltInShape(*project.root)) {
+        throw std::runtime_error("scaffold has no built-in shape");
+    }
+}
+
+void buildMutationGroup(Project &project)
+{
+    if (!project.root || !rotateFirstArtworkGroup(*project.root)) {
+        throw std::runtime_error("scaffold has no artwork group");
+    }
+}
+
+void buildMutationAppendShape(Project &project)
+{
+    int ids = 0;
+    firstPopulatedSection(project).append(grammarShape(ids, 0.0, 0.0));
+}
+
+void buildMutationAppendGroup(Project &project)
+{
+    int ids = 0;
+    firstPopulatedSection(project).append(grammarPair(ids, 0.0, 0.0));
+}
+
+void buildMutationAppendNestedGroup(Project &project)
+{
+    int ids = 0;
+    firstPopulatedSection(project).append(grammarChain(ids, 3));
+}
+
+void buildMutationWithoutShapeMarkers(Project &project)
+{
+    if (project.root) {
+        clearShapeMarkers(*project.root);
+    }
+}
+
+void buildMutationWithoutSource(Project &project)
+{
+    project.sourceFolder.clear();
+    project.sourceHeader.clear();
+    project.liverySource.clear();
+}
+
+void buildMutationFresh(Project &project)
+{
+    buildMutationWithoutShapeMarkers(project);
+    buildMutationWithoutSource(project);
+}
+
+void collectMarkerlessSourcePositions(const VinylGroup &node, QSet<int> &positions)
+{
+    if (node.source == QStringLiteral("markerless_count_stack")) {
+        positions.insert(node.absPos);
+    }
+    for (const VinylItem &item : node.items) {
+        if (!item.isShape()) {
+            collectMarkerlessSourcePositions(
+                *std::get<VinylGroupPtr>(item.value), positions);
+        }
+    }
+}
+
+QSet<int> markerlessSourcePositions(const Project &project)
+{
+    const LiveryPayload payload = parseInflatedLiveryPayload(project.liverySource);
+    const QVector<LiverySection> sections =
+        buildLiverySections(payload.body, payload.sectionCounts);
+    QSet<int> positions;
+    for (const LiverySection &section : sections) {
+        collectMarkerlessSourcePositions(section.subtree, positions);
+    }
+    return positions;
+}
+
+bool deleteMarkerlessShape(scene::Layer &node, const QSet<int> &positions)
+{
+    if (node.kind() != scene::LayerKind::Group) {
+        return false;
+    }
+    auto &group = static_cast<scene::Group &>(node);
+    if (!group.isLiverySection && positions.contains(group.sourceAbsPos)
+        && group.children.size() >= 2) {
+        for (int i = 0; i < static_cast<int>(group.children.size()); ++i) {
+            if (group.children[i]->kind() == scene::LayerKind::Shape) {
+                group.takeAt(i);
+                return true;
+            }
+        }
+    }
+    for (const auto &child : group.children) {
+        if (deleteMarkerlessShape(*child, positions)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool reorderMarkerlessChildren(scene::Layer &node, const QSet<int> &positions)
+{
+    if (node.kind() != scene::LayerKind::Group) {
+        return false;
+    }
+    auto &group = static_cast<scene::Group &>(node);
+    if (!group.isLiverySection && positions.contains(group.sourceAbsPos)) {
+        for (int first = 0; first < static_cast<int>(group.children.size()); ++first) {
+            for (int second = first + 1;
+                 second < static_cast<int>(group.children.size()); ++second) {
+                if (group.children[first]->kind() != group.children[second]->kind()) {
+                    std::swap(group.children[first], group.children[second]);
+                    return true;
+                }
+            }
+        }
+    }
+    for (const auto &child : group.children) {
+        if (reorderMarkerlessChildren(*child, positions)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool reparentMarkerlessGroup(scene::Group &current, scene::Group &section,
+                             const QSet<int> &positions)
+{
+    if (!current.isLiverySection && positions.contains(current.sourceAbsPos)
+        && current.children.size() >= 2) {
+        for (int i = 0; i < static_cast<int>(current.children.size()); ++i) {
+            const auto *childGroup = dynamic_cast<const scene::Group *>(current.children[i].get());
+            if (childGroup != nullptr && childGroup->sourceAbsPos > 0) {
+                section.append(current.takeAt(i));
+                return true;
+            }
+        }
+    }
+    for (const auto &child : current.children) {
+        if (child->kind() == scene::LayerKind::Group
+            && reparentMarkerlessGroup(
+                static_cast<scene::Group &>(*child), section, positions)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void nudgeSection(Project &project, int slot)
+{
+    scene::Group *section = syntheticSection(project, slot);
+    if (section == nullptr || !nudgeFirstBuiltInShape(*section)) {
+        throw std::runtime_error("livery section has no built-in shape");
+    }
+}
+
+void buildWorkflowProjectRoundTrip(Project &project)
+{
+    project = decodeProjectDocument(encodeProjectDocument(project));
+    nudgeSection(project, 0);
+}
+
+void buildWorkflowDeleteMarkerlessChild(Project &project)
+{
+    const QSet<int> positions = markerlessSourcePositions(project);
+    if (!project.root || !deleteMarkerlessShape(*project.root, positions)) {
+        throw std::runtime_error("scaffold has no removable markerless child");
+    }
+}
+
+void buildWorkflowReorderMarkerlessBitmap(Project &project)
+{
+    const QSet<int> positions = markerlessSourcePositions(project);
+    if (!project.root || !reorderMarkerlessChildren(*project.root, positions)) {
+        throw std::runtime_error("scaffold has no mixed markerless group");
+    }
+}
+
+void buildWorkflowReparentMarkerlessGroup(Project &project)
+{
+    const QSet<int> positions = markerlessSourcePositions(project);
+    scene::Group *section = syntheticSection(project, 0);
+    if (section == nullptr || !reparentMarkerlessGroup(*section, *section, positions)) {
+        throw std::runtime_error("scaffold has no nested markerless group to reparent");
+    }
+}
+
+void buildWorkflowLaterSection(Project &project)
+{
+    nudgeSection(project, 4);
+}
+
+void buildWorkflowFinalSection(Project &project)
+{
+    nudgeSection(project, 10);
+}
+
+void buildWorkflowMultipleSections(Project &project)
+{
+    nudgeSection(project, 0);
+    nudgeSection(project, 4);
+    nudgeSection(project, 10);
+}
+
+void copyGrammarControl(const QString &sourceFolder, const QString &outputFolder)
+{
+    if (!QDir().mkpath(outputFolder)) {
+        throw std::runtime_error("could not create grammar control folder");
+    }
+    const QStringList files = {
+        QStringLiteral("C_livery"),
+        QStringLiteral("header"),
+        QStringLiteral("bigThumb.webp"),
+    };
+    for (const QString &name : files) {
+        const QString source = QDir(sourceFolder).filePath(name);
+        const QString destination = QDir(outputFolder).filePath(name);
+        if (!QFile::copy(source, destination)) {
+            throw std::runtime_error("could not copy grammar control payload");
+        }
+    }
+}
+
+struct GrammarCase {
+    const char *folder;
+    const char *purpose;
+    void (*build)(Project &);
+};
+
+void generateGrammarDiagnostics(const QString &sourceFolder, const QString &outputRoot)
+{
+    const GrammarCase cases[] = {
+        {"Grammar_01_Empty", "Envelope and empty-section records.", buildGrammarEmpty},
+        {"Grammar_02_OneShape", "Markerless section root and first shape record.",
+         buildGrammarOneShape},
+        {"Grammar_03_ShapeSibling", "Direct shape sibling transition.",
+         buildGrammarShapeSibling},
+        {"Grammar_04_CountedGroup", "First counted group and its child bitmap.",
+         buildGrammarCountedGroup},
+        {"Grammar_05_ShapeGroupShape", "Entry into and exit from a group between shapes.",
+         buildGrammarShapeGroupShape},
+        {"Grammar_06_GroupSibling", "Transition between sibling groups.",
+         buildGrammarGroupSibling},
+        {"Grammar_07_NestedTerminal", "Nested group closure at a section terminal.",
+         buildGrammarNestedTerminal},
+        {"Grammar_08_SectionBoundary", "Boundary between adjacent populated sections.",
+         buildGrammarSectionBoundary},
+        {"Grammar_09_FinalSection", "Populated final-section termination.",
+         buildGrammarFinalSection},
+    };
+
+    if (!QDir().mkpath(outputRoot)) {
+        throw std::runtime_error("could not create grammar diagnostic root");
+    }
+    copyGrammarControl(
+        sourceFolder,
+        QDir(outputRoot).filePath(QStringLiteral("Grammar_00_NativeControl")));
+
+    QString manifest = QStringLiteral(
+        "Livery grammar diagnostics\n"
+        "Native scaffold: %1\n\n"
+        "Load the folders in numeric order and stop at the first one the game rejects.\n"
+        "Grammar_00_NativeControl is copied without re-encoding.\n\n"
+        "Grammar_00_NativeControl\n"
+        "  Transfer and native-reference control.\n\n")
+        .arg(QDir::toNativeSeparators(QFileInfo(sourceFolder).absoluteFilePath()));
+
+    for (const GrammarCase &testCase : cases) {
+        Project project = syntheticBase(sourceFolder);
+        testCase.build(project);
+        const QString outputFolder = QDir(outputRoot).filePath(QString::fromLatin1(testCase.folder));
+        exportCLivery(project, outputFolder);
+
+        const Project decoded = importCLivery(outputFolder);
+        QStringList decodedCounts;
+        for (int slot = 0; slot < 11; ++slot) {
+            decodedCounts.push_back(QString::number(sectionLeaves(decoded, slot).size()));
+        }
+        manifest += QStringLiteral("%1\n  %2\n  decoded=[%3]\n\n")
+            .arg(QString::fromLatin1(testCase.folder), QString::fromLatin1(testCase.purpose),
+                 decodedCounts.join(QLatin1Char(',')));
+        std::printf("WROTE %-30s decoded=%s\n", testCase.folder,
+                    decodedCounts.join(QLatin1Char(',')).toLatin1().constData());
+    }
+
+    QFile manifestFile(QDir(outputRoot).filePath(QStringLiteral("TEST_ORDER.txt")));
+    const QByteArray manifestBytes = manifest.toUtf8();
+    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || manifestFile.write(manifestBytes) != manifestBytes.size()) {
+        throw std::runtime_error("could not write grammar diagnostic manifest");
+    }
+}
+
+void generateClosureDiagnostics(const QString &sourceFolder, const QString &outputRoot)
+{
+    const GrammarCase cases[] = {
+        {"Closure_01_DepthThreeTerminal", "Three group levels close at the payload terminal.",
+         buildClosureDepthThree},
+        {"Closure_02_DepthSixTerminal", "Six group levels close at the payload terminal.",
+         buildClosureDepthSix},
+        {"Closure_03_DeepThenShape", "Six group levels close before a direct shape.",
+         buildClosureToShape},
+        {"Closure_04_DeepThenGroup", "Six group levels close before a sibling group.",
+         buildClosureToGroup},
+        {"Closure_05_DeepThenSection", "Six group levels close before the next section.",
+         buildClosureBeforeSection},
+        {"Closure_06_RootBitmapTerminal", "A terminal group crosses the root bitmap boundary.",
+         buildClosureRootBitmap},
+        {"Closure_07_GroupBitmapTerminal", "A nested terminal crosses a counted-group bitmap boundary.",
+         buildClosureGroupBitmap},
+        {"Closure_08_MaskedTerminal", "Masked group state closes through six levels.",
+         buildClosureMasked},
+        {"Closure_09_MaskedThenSection", "Masked group state closes before the next section.",
+         buildClosureMaskedBeforeSection},
+        {"Closure_10_FinalSection", "Six group levels close in the final section.",
+         buildClosureFinalSection},
+    };
+
+    if (!QDir().mkpath(outputRoot)) {
+        throw std::runtime_error("could not create closure diagnostic root");
+    }
+    copyGrammarControl(
+        sourceFolder,
+        QDir(outputRoot).filePath(QStringLiteral("Closure_00_NativeControl")));
+
+    QString manifest = QStringLiteral(
+        "Livery group-closure diagnostics\n"
+        "Native scaffold: %1\n\n"
+        "Load the folders in numeric order and stop at the first one the game rejects.\n"
+        "Closure_00_NativeControl is copied without re-encoding.\n\n"
+        "Closure_00_NativeControl\n"
+        "  Transfer and native-reference control.\n\n")
+        .arg(QDir::toNativeSeparators(QFileInfo(sourceFolder).absoluteFilePath()));
+
+    for (const GrammarCase &testCase : cases) {
+        Project project = syntheticBase(sourceFolder);
+        testCase.build(project);
+        const QString outputFolder = QDir(outputRoot).filePath(
+            QString::fromLatin1(testCase.folder));
+        exportCLivery(project, outputFolder);
+
+        const Project decoded = importCLivery(outputFolder);
+        QStringList decodedCounts;
+        for (int slot = 0; slot < 11; ++slot) {
+            decodedCounts.push_back(QString::number(sectionLeaves(decoded, slot).size()));
+        }
+        manifest += QStringLiteral("%1\n  %2\n  decoded=[%3]\n\n")
+            .arg(QString::fromLatin1(testCase.folder), QString::fromLatin1(testCase.purpose),
+                 decodedCounts.join(QLatin1Char(',')));
+        std::printf("WROTE %-36s decoded=%s\n", testCase.folder,
+                    decodedCounts.join(QLatin1Char(',')).toLatin1().constData());
+    }
+
+    QFile manifestFile(QDir(outputRoot).filePath(QStringLiteral("TEST_ORDER.txt")));
+    const QByteArray manifestBytes = manifest.toUtf8();
+    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || manifestFile.write(manifestBytes) != manifestBytes.size()) {
+        throw std::runtime_error("could not write closure diagnostic manifest");
+    }
+}
+
+void generateMutationDiagnostics(const QString &sourceFolder, const QString &outputRoot)
+{
+    const GrammarCase cases[] = {
+        {"Mutation_01_Unchanged", "Imported native scene exported without edits.",
+         buildMutationUnchanged},
+        {"Mutation_02_OneShape", "One existing vector shape is translated.",
+         buildMutationShape},
+        {"Mutation_03_OneGroup", "One existing artwork group is rotated.",
+         buildMutationGroup},
+        {"Mutation_04_AppendShape", "One new shape is appended to a populated section.",
+         buildMutationAppendShape},
+        {"Mutation_05_AppendGroup", "One new terminal group is appended.",
+         buildMutationAppendGroup},
+        {"Mutation_06_AppendNestedGroup", "One new nested terminal group is appended.",
+         buildMutationAppendNestedGroup},
+        {"Mutation_07_NoSourceFrames", "The native scene is exported without source framing.",
+         buildMutationWithoutSource},
+        {"Mutation_08_FreshRebuild", "Source framing and shape markers are both removed.",
+         buildMutationFresh},
+    };
+
+    if (!QDir().mkpath(outputRoot)) {
+        throw std::runtime_error("could not create mutation diagnostic root");
+    }
+    copyGrammarControl(
+        sourceFolder,
+        QDir(outputRoot).filePath(QStringLiteral("Mutation_00_NativeControl")));
+
+    QString manifest = QStringLiteral(
+        "Livery native-mutation diagnostics\n"
+        "Native scaffold: %1\n\n"
+        "Load the folders in numeric order and stop at the first one the game rejects.\n"
+        "Mutation_00_NativeControl is copied without re-encoding.\n\n"
+        "Mutation_00_NativeControl\n"
+        "  Transfer and native-reference control.\n\n")
+        .arg(QDir::toNativeSeparators(QFileInfo(sourceFolder).absoluteFilePath()));
+
+    for (const GrammarCase &testCase : cases) {
+        Project project = importCLivery(sourceFolder);
+        testCase.build(project);
+        const QString outputFolder = QDir(outputRoot).filePath(
+            QString::fromLatin1(testCase.folder));
+        exportCLivery(project, outputFolder);
+
+        const Project decoded = importCLivery(outputFolder);
+        QStringList decodedCounts;
+        for (int slot = 0; slot < 11; ++slot) {
+            decodedCounts.push_back(QString::number(sectionLeaves(decoded, slot).size()));
+        }
+        manifest += QStringLiteral("%1\n  %2\n  decoded=[%3]\n\n")
+            .arg(QString::fromLatin1(testCase.folder), QString::fromLatin1(testCase.purpose),
+                 decodedCounts.join(QLatin1Char(',')));
+        std::printf("WROTE %-32s decoded=%s\n", testCase.folder,
+                    decodedCounts.join(QLatin1Char(',')).toLatin1().constData());
+    }
+
+    QFile manifestFile(QDir(outputRoot).filePath(QStringLiteral("TEST_ORDER.txt")));
+    const QByteArray manifestBytes = manifest.toUtf8();
+    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || manifestFile.write(manifestBytes) != manifestBytes.size()) {
+        throw std::runtime_error("could not write mutation diagnostic manifest");
+    }
+}
+
+void generateWorkflowDiagnostics(const QString &sourceFolder, const QString &outputRoot)
+{
+    const GrammarCase cases[] = {
+        {"Workflow_00_ProjectRoundTripShape",
+         "The native project is packed, reopened, edited, and exported.",
+         buildWorkflowProjectRoundTrip},
+        {"Workflow_01_DeleteMarkerlessChild",
+         "One shape is deleted from an existing markerless group.",
+         buildWorkflowDeleteMarkerlessChild},
+        {"Workflow_02_ReorderMarkerlessBitmap",
+         "A shape and group exchange positions inside a markerless group.",
+         buildWorkflowReorderMarkerlessBitmap},
+        {"Workflow_03_ReparentMarkerlessGroup",
+         "A nested markerless group is moved to the section root.",
+         buildWorkflowReparentMarkerlessGroup},
+        {"Workflow_04_LaterSectionShape",
+         "One existing shape is translated in a later body section.",
+         buildWorkflowLaterSection},
+        {"Workflow_05_FinalSectionShape",
+         "One existing shape is translated in the final body section.",
+         buildWorkflowFinalSection},
+        {"Workflow_06_MultipleSections",
+         "Existing shapes are translated in the first, later, and final sections.",
+         buildWorkflowMultipleSections},
+    };
+
+    if (!QDir().mkpath(outputRoot)) {
+        throw std::runtime_error("could not create workflow diagnostic root");
+    }
+    QString manifest = QStringLiteral(
+        "Livery editor-workflow diagnostics\n"
+        "Native scaffold: %1\n\n"
+        "Load the folders in numeric order and stop at the first one the game rejects.\n\n")
+        .arg(QDir::toNativeSeparators(QFileInfo(sourceFolder).absoluteFilePath()));
+
+    for (const GrammarCase &testCase : cases) {
+        Project project = importCLivery(sourceFolder);
+        testCase.build(project);
+        const QString outputFolder = QDir(outputRoot).filePath(
+            QString::fromLatin1(testCase.folder));
+        exportCLivery(project, outputFolder);
+
+        const Project decoded = importCLivery(outputFolder);
+        QStringList decodedCounts;
+        for (int slot = 0; slot < 11; ++slot) {
+            decodedCounts.push_back(QString::number(sectionLeaves(decoded, slot).size()));
+        }
+        manifest += QStringLiteral("%1\n  %2\n  decoded=[%3]\n\n")
+            .arg(QString::fromLatin1(testCase.folder), QString::fromLatin1(testCase.purpose),
+                 decodedCounts.join(QLatin1Char(',')));
+        std::printf("WROTE %-40s decoded=%s\n", testCase.folder,
+                    decodedCounts.join(QLatin1Char(',')).toLatin1().constData());
+    }
+
+    QFile manifestFile(QDir(outputRoot).filePath(QStringLiteral("TEST_ORDER.txt")));
+    const QByteArray manifestBytes = manifest.toUtf8();
+    if (!manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        || manifestFile.write(manifestBytes) != manifestBytes.size()) {
+        throw std::runtime_error("could not write workflow diagnostic manifest");
+    }
+}
+
 struct SyntheticCase {
     const char *folder;
     const char *purpose;
@@ -1194,9 +1910,11 @@ void dumpRaw(const VinylGroup &node, int depth, int maxDepth, int maxChildren)
         }
         if (item.isShape()) {
             const VinylShape &s = std::get<VinylShape>(item.value);
-            std::printf("%s  shape @%d id=%u px=%.2f py=%.2f sx=%.3f sy=%.3f rot=%.1f mk=%s\n",
+            std::printf("%s  shape @%d id=%u px=%.2f py=%.2f sx=%.3f sy=%.3f "
+                        "rot=%.1f skew=%.6f mk=%s\n",
                         ind.toLatin1().constData(), s.absPos, s.shapeId, s.posX, s.posY,
-                        s.scaleX, s.scaleY, s.rotation, s.marker.toHex().constData());
+                        s.scaleX, s.scaleY, s.rotation, s.skew,
+                        s.marker.toHex().constData());
         } else {
             dumpRaw(*std::get<VinylGroupPtr>(item.value), depth + 1, maxDepth, maxChildren);
         }
@@ -1323,6 +2041,14 @@ int main(int argc, char *argv[])
     bool rotateFirstGroup = args.removeAll(QStringLiteral("--rotate-first-group")) > 0;
     const bool withoutSource = args.removeAll(QStringLiteral("--without-source")) > 0;
     const bool generateSyntheticMode = args.removeAll(QStringLiteral("--generate-synthetic")) > 0;
+    const bool generateGrammarMode =
+        args.removeAll(QStringLiteral("--generate-grammar-diagnostics")) > 0;
+    const bool generateClosureMode =
+        args.removeAll(QStringLiteral("--generate-closure-diagnostics")) > 0;
+    const bool generateMutationMode =
+        args.removeAll(QStringLiteral("--generate-mutation-diagnostics")) > 0;
+    const bool generateWorkflowMode =
+        args.removeAll(QStringLiteral("--generate-workflow-diagnostics")) > 0;
     const bool bodyRangeMode = args.removeAll(QStringLiteral("--body-range")) > 0;
     const bool rawTombstoneMode = args.removeAll(QStringLiteral("--raw-tombstones")) > 0;
     const bool reencodedTombstoneMode = args.removeAll(QStringLiteral("--reencoded-tombstones")) > 0;
@@ -1380,6 +2106,70 @@ int main(int argc, char *argv[])
                         args[3].toLatin1().constData(), changed, sceneShapeCount(source));
         } catch (const std::exception &e) {
             std::fprintf(stderr, "tombstone generation failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
+
+    if (generateGrammarMode) {
+        if (args.size() < 3) {
+            std::fprintf(
+                stderr,
+                "usage: fls_livery_compare --generate-grammar-diagnostics <sourceFolder> <outputRoot>\n");
+            return 2;
+        }
+        try {
+            generateGrammarDiagnostics(args[1], args[2]);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "grammar diagnostic generation failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
+
+    if (generateClosureMode) {
+        if (args.size() < 3) {
+            std::fprintf(
+                stderr,
+                "usage: fls_livery_compare --generate-closure-diagnostics <sourceFolder> <outputRoot>\n");
+            return 2;
+        }
+        try {
+            generateClosureDiagnostics(args[1], args[2]);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "closure diagnostic generation failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
+
+    if (generateMutationMode) {
+        if (args.size() < 3) {
+            std::fprintf(
+                stderr,
+                "usage: fls_livery_compare --generate-mutation-diagnostics <sourceFolder> <outputRoot>\n");
+            return 2;
+        }
+        try {
+            generateMutationDiagnostics(args[1], args[2]);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "mutation diagnostic generation failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
+    }
+
+    if (generateWorkflowMode) {
+        if (args.size() < 3) {
+            std::fprintf(
+                stderr,
+                "usage: fls_livery_compare --generate-workflow-diagnostics <sourceFolder> <outputRoot>\n");
+            return 2;
+        }
+        try {
+            generateWorkflowDiagnostics(args[1], args[2]);
+        } catch (const std::exception &e) {
+            std::fprintf(stderr, "workflow diagnostic generation failed: %s\n", e.what());
             return 1;
         }
         return 0;

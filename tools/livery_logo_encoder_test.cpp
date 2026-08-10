@@ -1,4 +1,5 @@
 #include "binary_io.h"
+#include "cgroup_codec.h"
 #include "header_codec.h"
 #include "layer.h"
 #include "livery_codec.h"
@@ -626,9 +627,9 @@ const fls::VinylGroup *findRawShapePair(const fls::VinylGroup &group,
     return nullptr;
 }
 
-bool testCurrentGroupHeaders() {
+bool testSourceGroupHeaderPreservation() {
     fls::Project source;
-    source.name = QStringLiteral("Current group header test");
+    source.name = QStringLiteral("Source group header test");
     source.isLivery = true;
     source.carId = 1069;
     source.root = std::make_unique<fls::scene::Group>();
@@ -655,7 +656,7 @@ bool testCurrentGroupHeaders() {
 
     QTemporaryDir temporary;
     if (!temporary.isValid()) {
-        qCritical() << "could not create the current group header test folder";
+        qCritical() << "could not create the source group header test folder";
         return false;
     }
     fls::exportCLivery(source, temporary.path());
@@ -667,27 +668,53 @@ bool testCurrentGroupHeaders() {
     const fls::VinylGroup *originalSecond = findRawShapePair(
         originalSections[2].subtree, 127, 128);
     if (originalFirst == nullptr || originalSecond == nullptr) {
-        qCritical() << "current group header fixture did not decode";
+        qCritical() << "source group header fixture did not decode";
+        return false;
+    }
+
+    if (originalFirst->headerMarker != QByteArray("\x20", 1)
+        || originalSecond->headerMarker != QByteArray("\x20", 1)) {
+        qCritical() << "group header fixture did not use counted source framing";
+        return false;
+    }
+
+    QByteArray framedSource = original.raw;
+    QByteArray mirroredScaleX;
+    fls::detail::appendLeFloat(mirroredScaleX, -1.0f);
+    QByteArray mirroredScaleY("\x30", 1);
+    fls::detail::appendLeFloat(mirroredScaleY, 1.0f);
+    const int bodyStart = original.gyvlOffset + 0x15;
+    framedSource.replace(bodyStart + originalFirst->absPos - 8, 4, mirroredScaleX);
+    framedSource.insert(bodyStart + originalFirst->absPos, mirroredScaleY);
+    framedSource.remove(bodyStart + originalSecond->absPos + mirroredScaleY.size(), 1);
+    fls::writeCGroupFile(
+        QDir(temporary.path()).filePath(QStringLiteral("C_livery")), framedSource);
+
+    const fls::LiveryPayload framedPayload = fls::readLiveryPayload(temporary.path());
+    const QVector<fls::LiverySection> framedSections =
+        fls::buildLiverySections(framedPayload.body, framedPayload.sectionCounts);
+    const fls::VinylGroup *framedFirst = findRawShapePair(
+        framedSections[2].subtree, 101, 102);
+    const fls::VinylGroup *framedSecond = findRawShapePair(
+        framedSections[2].subtree, 127, 128);
+    if (framedFirst == nullptr || framedSecond == nullptr
+        || framedFirst->source != QStringLiteral("count_stack")
+        || framedFirst->sx * framedFirst->sy >= 0.0
+        || framedSecond->source != QStringLiteral("markerless_count_stack")
+        || framedSecond->sx * framedSecond->sy < 0.0) {
+        qCritical() << "group handedness fixture did not decode";
         return false;
     }
 
     fls::Project edited = fls::importCLivery(temporary.path());
-    fls::scene::Group *editedFirst = edited.root
-        ? findSceneShapePair(*edited.root, 101, 102)
-        : nullptr;
+    edited = fls::decodeProjectDocument(fls::encodeProjectDocument(edited));
     fls::scene::Group *editedSecond = edited.root
         ? findSceneShapePair(*edited.root, 127, 128)
         : nullptr;
-    if (editedFirst == nullptr || editedSecond == nullptr) {
-        qCritical() << "source-backed sibling groups were not imported";
+    if (editedSecond == nullptr) {
+        qCritical() << "source-backed groups did not survive project serialization";
         return false;
     }
-    QByteArray markerlessSource = original.raw;
-    markerlessSource[original.gyvlOffset + 0x15 + originalFirst->absPos] = '\0';
-    markerlessSource[original.gyvlOffset + 0x15 + originalSecond->absPos] = '\0';
-    edited.liverySource = markerlessSource;
-    editedFirst->sourceAbsPos = originalFirst->absPos + 1;
-    editedSecond->sourceAbsPos = originalSecond->absPos + 1;
     static_cast<fls::scene::Shape &>(*editedSecond->children.front()).x += 10.0;
 
     std::array<int, kSectionCount> rebuiltCounts{};
@@ -703,14 +730,14 @@ bool testCurrentGroupHeaders() {
         rebuiltSections[2].subtree, 101, 102);
     const fls::VinylGroup *rebuiltSecond = findRawShapePair(
         rebuiltSections[2].subtree, 127, 128);
-    const QByteArray originalGyvl = original.raw.mid(
-        original.gyvlOffset, 0x15 + original.body.size());
+    const QByteArray framedGyvl = framedPayload.raw.mid(
+        framedPayload.gyvlOffset, 0x15 + framedPayload.body.size());
     if (rebuiltFirst == nullptr || rebuiltSecond == nullptr
-        || rebuiltSecond->absPos - rebuiltFirst->absPos
-            != originalSecond->absPos - originalFirst->absPos
-        || rebuiltFirst->source != QStringLiteral("count_stack")
+        || rebuiltFirst->source != QStringLiteral("markerless_count_stack")
+        || rebuiltFirst->sx * rebuiltFirst->sy >= 0.0
         || rebuiltSecond->source != QStringLiteral("count_stack")
-        || rebuiltFirst->headerMarker != QByteArray("\x20", 1)
+        || rebuiltSecond->sx * rebuiltSecond->sy < 0.0
+        || !rebuiltFirst->headerMarker.isEmpty()
         || rebuiltSecond->headerMarker != QByteArray("\x20", 1)
         || rebuiltFirst->items.isEmpty() || rebuiltSecond->items.isEmpty()
         || !rebuiltFirst->items.front().isShape() || !rebuiltSecond->items.front().isShape()
@@ -718,11 +745,11 @@ bool testCurrentGroupHeaders() {
             != QByteArray("\x01\x02", 2)
         || std::get<fls::VinylShape>(rebuiltSecond->items.front().value).marker
             != QByteArray("\x01\x02", 2)
-        || rebuilt.size() != originalGyvl.size()) {
-        qCritical() << "source-backed groups did not use current counted framing"
-                    << "original positions"
-                    << (originalFirst != nullptr ? originalFirst->absPos : -1)
-                    << (originalSecond != nullptr ? originalSecond->absPos : -1)
+        || rebuilt.size() != framedGyvl.size()) {
+        qCritical() << "group framing did not follow transform handedness"
+                    << "source positions"
+                    << (framedFirst != nullptr ? framedFirst->absPos : -1)
+                    << (framedSecond != nullptr ? framedSecond->absPos : -1)
                     << "rebuilt positions"
                     << (rebuiltFirst != nullptr ? rebuiltFirst->absPos : -1)
                     << (rebuiltSecond != nullptr ? rebuiltSecond->absPos : -1)
@@ -741,7 +768,7 @@ bool testCurrentGroupHeaders() {
                             && rebuiltSecond->items.front().isShape()
                         ? std::get<fls::VinylShape>(rebuiltSecond->items.front().value).marker.toHex()
                         : QByteArray())
-                    << "sizes" << originalGyvl.size() << rebuilt.size();
+                    << "sizes" << framedGyvl.size() << rebuilt.size();
         return false;
     }
     return true;
@@ -1045,7 +1072,7 @@ int main(int argc, char *argv[]) {
         return testCanonicalFh6Envelope() ? 0 : 1;
     }
     if (args.size() == 2 && args[1] == QStringLiteral("--current-group-header")) {
-        return testCurrentGroupHeaders() ? 0 : 1;
+        return testSourceGroupHeaderPreservation() ? 0 : 1;
     }
     if (args.size() == 2 && args[1] == QStringLiteral("--legacy-artwork")) {
         return testLegacyArtworkRebuild() ? 0 : 1;
@@ -1065,7 +1092,7 @@ int main(int argc, char *argv[]) {
     return testLogoEncoding() && testLogoShapeLimit() && testPartialSourceRebuild()
             && testCanonicalFh6Envelope() && testLegacyFivePanelSourcePreservation()
             && testLegacyArtworkRebuild()
-            && testNestedMaskGroupTransforms() && testCurrentGroupHeaders()
+            && testNestedMaskGroupTransforms() && testSourceGroupHeaderPreservation()
             && testDeletedSiblingSourceFraming()
         ? 0
         : 1;

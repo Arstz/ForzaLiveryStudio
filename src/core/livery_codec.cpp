@@ -1025,7 +1025,9 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
     }
     QByteArray out = packLiveryGroupTransform(
         localTransform, liveryTransformMarker(transformMarker));
-    out.append(packCountedGroupHeader(children, isMaskGroup, "livery group"));
+    out.append(localTransform.scaleX * localTransform.scaleY < 0.0
+                   ? packMarkerlessGroupHeader(children, "livery group")
+                   : packCountedGroupHeader(children, isMaskGroup, "livery group"));
     const Matrix3 localArtworkAdjustment = detail::multiply(
         invertAffine(groupWorld), worldAdjustment);
 
