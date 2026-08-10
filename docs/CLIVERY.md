@@ -94,6 +94,11 @@ when a structurally valid successor group follows directly, through one control
 byte, or through the framed livery trailer. Markerless section wrappers can also
 carry the first-child transform directly after their bitmap.
 
+The current encoder reserves markerless framing for section roots. Artwork
+groups use counted `20` or `60` headers, including groups reconstructed from a
+markerless source frame. The first shape in a counted group uses the explicit
+`01 02` lead.
+
 Record-level mask state is trailing. It resolves against the preceding direct
 shape or terminal group child, while inherited mask-group state remains
 authoritative. Every shape inheriting a `60` group carries an explicit `01 02`
@@ -134,6 +139,18 @@ the encodable cardinality before their child bitmap is written. Artwork record
 framing is derived from the current sibling structure and mask state. Mask
 ancestry and trailing shape-mask state remain expressible through the same
 structured representation.
+
+The current eleven-slot layout preserves source records for unchanged populated
+slots and structurally rebuilds edited slots. Empty slots are emitted as fixed
+scaffolds rather than raw source spans.
+
+Decoded placeholder slots have no source span. Source preservation ends a slot
+at the next strictly increasing decoded offset, or at the payload body boundary
+when no later source-backed slot exists.
+
+The last populated slot retains one state byte after its terminal shape. The
+first empty scaffold supplies the remaining tail fields so source bytes beyond
+that state boundary cannot enter an empty slot.
 
 An empty slot uses a 23-byte scaffold. A populated slot followed by later artwork
 contains its section root, artwork, and an 18-byte remnant even when its terminal

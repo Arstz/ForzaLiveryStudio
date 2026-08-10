@@ -1649,11 +1649,39 @@ int main(int argc, char *argv[])
 
     if (sectionTerminalsMode) {
         if (args.size() < 2) {
-            std::fprintf(stderr, "usage: fls_livery_compare --section-terminals <liveryFolder>\n");
+            std::fprintf(stderr,
+                         "usage: fls_livery_compare --section-terminals [--project] <input>\n");
             return 2;
         }
-        const LiveryPayload payload = readLiveryPayload(args[1]);
+        LiveryPayload payload;
+        if (projectInput) {
+            QFile file(args[1]);
+            if (!file.open(QIODevice::ReadOnly)) {
+                std::fprintf(stderr, "could not open project document\n");
+                return 1;
+            }
+            const Project project = decodeProjectDocument(file.readAll());
+            payload = parseInflatedLiveryPayload(project.liverySource);
+        } else {
+            payload = readLiveryPayload(args[1]);
+        }
         const QVector<LiverySection> sections = buildLiverySections(payload.body, payload.sectionCounts);
+        std::printf("body=%d counts=", static_cast<int>(payload.body.size()));
+        for (int count : payload.sectionCounts) {
+            std::printf("%d,", count);
+        }
+        std::printf("\n");
+        for (const LiverySection &section : sections) {
+            RawStats stats;
+            collectRawStats(section.subtree, stats);
+            const int target = section.slot < payload.sectionCounts.size()
+                ? payload.sectionCounts[section.slot]
+                : 0;
+            std::printf("slot=%d abs=%d target=%d shapes=%d skipped=%d groups=%d incomplete=%d\n",
+                        section.slot, section.absPos, target, stats.shapes, stats.skipped,
+                        stats.groups, stats.incompleteGroups);
+            printIncompleteGroups(section.subtree);
+        }
         printSectionTerminals(sections, payload.body);
         return 0;
     }
@@ -1718,7 +1746,18 @@ int main(int argc, char *argv[])
     }
 
     if (rawMode || rawGroupsMode) {
-        const LiveryPayload lp = readLiveryPayload(liveryFolder);
+        LiveryPayload lp;
+        if (projectInput) {
+            QFile file(liveryFolder);
+            if (!file.open(QIODevice::ReadOnly)) {
+                std::fprintf(stderr, "could not open project document\n");
+                return 1;
+            }
+            const Project project = decodeProjectDocument(file.readAll());
+            lp = parseInflatedLiveryPayload(project.liverySource);
+        } else {
+            lp = readLiveryPayload(liveryFolder);
+        }
         const QVector<LiverySection> sections = buildLiverySections(lp.body, lp.sectionCounts);
         for (const SectionMap &sm : kSections) {
             if (!onlySection.isEmpty() && QString::fromLatin1(sm.folder).compare(onlySection, Qt::CaseInsensitive) != 0) continue;

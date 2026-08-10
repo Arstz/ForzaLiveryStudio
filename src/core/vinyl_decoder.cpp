@@ -170,12 +170,14 @@ bool isUnsupportedShapeRecordAt(const QByteArray &data, int pos, int end,
 }
 
 VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false,
-                         int flags = 0, quint8 shapeMarker = kCurrentShapeMarker) {
+                         int flags = 0, quint8 shapeMarker = kCurrentShapeMarker,
+                         std::optional<bool> framedOverride = std::nullopt) {
     if (absPos < 0 || absPos + 31 > data.size()) {
         throw std::runtime_error("shape record extends past layer data");
     }
     const quint8 first = static_cast<quint8>(data[absPos]);
-    const bool framed = shapeRecordSizeAt(data, absPos, data.size(), shapeMarker) == 32;
+    const bool framed = framedOverride.value_or(
+        shapeRecordSizeAt(data, absPos, data.size(), shapeMarker) == 32);
     const int off = framed ? 0 : -1;
     VinylShape shape;
     shape.marker = off == 0 ? data.mid(absPos, 2) : data.mid(absPos, 1);
@@ -202,7 +204,10 @@ VinylShape decodeShapeAt(const QByteArray &data, int absPos, bool isMask = false
 }
 
 VinylShape decodeLiveryLogoAt(const QByteArray &data, int absPos) {
-    VinylShape logo = decodeShapeAt(data, absPos);
+    const bool framed = bytesAt(data, absPos, {0x00, 0x02})
+        || bytesAt(data, absPos, {0x01, 0x02});
+    VinylShape logo = decodeShapeAt(
+        data, absPos, false, 0, kCurrentShapeMarker, framed);
     logo.isLogo = true;
     logo.logoId = logo.shapeId;
     logo.rasterId = static_cast<quint32>(logo.logoId & 0x7fff);

@@ -356,6 +356,12 @@ if(FLS_BUILD_TESTS)
         Qt6::Core
     )
     add_test(NAME livery_logo_encoder COMMAND fls_livery_logo_encoder_tests)
+    add_test(NAME livery_current_group_header
+        COMMAND fls_livery_logo_encoder_tests --current-group-header)
+    add_test(NAME livery_legacy_artwork
+        COMMAND fls_livery_logo_encoder_tests --legacy-artwork)
+    add_test(NAME livery_legacy_five_panel
+        COMMAND fls_livery_logo_encoder_tests --legacy-five-panel)
 
     add_executable(fls_guide_preprocess_metadata_tests
         tools/guide_preprocess_metadata_test.cpp

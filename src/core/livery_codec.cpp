@@ -286,7 +286,6 @@ struct SourceGroupFrame {
     double sx = 1.0;
     double sy = 1.0;
     double rot = 0.0;
-    bool markerless = false;
 };
 
 void collectSourceGroupFrames(const VinylGroup &node, const Matrix3 &parentWorld,
@@ -301,7 +300,6 @@ void collectSourceGroupFrames(const VinylGroup &node, const Matrix3 &parentWorld
             node.sx,
             node.sy,
             node.rot,
-            node.source.contains(QStringLiteral("markerless")),
         });
     }
     for (const VinylItem &item : node.items) {
@@ -507,9 +505,12 @@ QByteArray sourceSlotBytes(const SourceLivery *source, int slot) {
         return {};
     }
     int end = source->payload.body.size();
-    if (slot + 1 < kLiverySectionCount) {
-        if (const LiverySection *next = sourceSection(source, slot + 1)) {
-            end = next->absPos;
+    for (int nextSlot = slot + 1; nextSlot < kLiverySectionCount; ++nextSlot) {
+        if (const LiverySection *next = sourceSection(source, nextSlot)) {
+            if (next->absPos > section->absPos) {
+                end = next->absPos;
+                break;
+            }
         }
     }
     if (end < section->absPos) {
@@ -520,6 +521,19 @@ QByteArray sourceSlotBytes(const SourceLivery *source, int slot) {
         bytes.append(QByteArray(kLiveryBodyTruncate, '\0'));
     }
     return bytes;
+}
+
+int sourcePopulatedSlotSize(const LiverySection *section) {
+    if (section == nullptr) {
+        return 0;
+    }
+    const QVector<SourceShapeView> shapes = sourceSectionShapes(*section);
+    if (shapes.isEmpty()) {
+        return 0;
+    }
+    const SourceShapeView &terminal = shapes.back();
+    const int end = terminal.absPos + terminal.marker.size() + 31;
+    return std::max(0, end - section->absPos);
 }
 
 QByteArray defaultRemnant(int slot) {
@@ -1011,17 +1025,7 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
     }
     QByteArray out = packLiveryGroupTransform(
         localTransform, liveryTransformMarker(transformMarker));
-    const bool markerlessGroup = !isMaskGroup
-        && ((usesSourceFrame && sourceFrameIt->markerless)
-            || (!usesSourceFrame && parentSourceAbsPos == 0));
-    if (markerlessGroup) {
-        if (!usesSourceFrame || (parentSourceAbsPos == 0 && transformMarker.isEmpty())) {
-            out.append('\0');
-        }
-        out.append(packMarkerlessGroupHeader(children, "livery group"));
-    } else {
-        out.append(packCountedGroupHeader(children, isMaskGroup, "livery group"));
-    }
+    out.append(packCountedGroupHeader(children, isMaskGroup, "livery group"));
     const Matrix3 localArtworkAdjustment = detail::multiply(
         invertAffine(groupWorld), worldAdjustment);
 
@@ -1048,11 +1052,12 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
             previousWasGroup = true;
             previousGroupDepth = terminalDepth(child);
         } else if (child.shape != nullptr) {
-            const quint8 fallbackLead = (!hasPreviousSibling || previousShapeMask) ? 0x01 : 0x00;
+            const quint8 fallbackLead = (!hasPreviousSibling || childMask || previousShapeMask)
+                ? 0x01
+                : 0x00;
             const quint8 lead = liveryArtworkLead(
                 *child.shape, fallbackLead, previousShapeMask);
-            const bool bare = liveryArtworkBare(
-                *child.shape, !hasPreviousSibling && markerlessGroup);
+            const bool bare = false;
             const bool artworkMask = appendLiveryArtworkRecord(
                 out, child, 0.0, 0.0, lead, bare, localArtworkAdjustment);
             previousWasGroup = false;
@@ -1207,6 +1212,7 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
         }
     }
     QByteArray body;
+    bool adjustedTrailingSlots = false;
     for (int slot = 0; slot < kLiverySectionCount; ++slot) {
         const QVector<const scene::Shape *> &shapes = slotShapes[slot];
         const LiverySection *section = sourceSection(sourcePtr, slot);
@@ -1231,18 +1237,37 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
         }
 
         if (requiresStructuralArtwork && shapes.isEmpty() && slot + 1 < kLiverySectionCount) {
-            body.append(sourceEmptySlot(sourcePtr, slot));
+            QByteArray emptySlot = sourceEmptySlot(sourcePtr, slot);
+            if (slot == lastPopulatedSlot + 1) {
+                if (!adjustedTrailingSlots) {
+                    emptySlot.remove(0, kLiveryBodyTruncate);
+                }
+                adjustedTrailingSlots = true;
+            }
+            body.append(emptySlot);
             counts[static_cast<size_t>(slot)] = 0;
             continue;
         }
 
-        if (sectionMatchesSource(shapes, section, hasGroupedArtwork(slotGroups[slot]),
-                                 sourceCount)) {
-            const QByteArray preserved = sourceSlotBytes(sourcePtr, slot);
-            if (shapes.isEmpty() && preserved.size() < kLiveryEmptySlotBytes) {
-                body.append(sourceEmptySlot(sourcePtr, slot));
+        if (!(requiresStructuralArtwork && shapes.isEmpty())
+            && sectionMatchesSource(shapes, section, hasGroupedArtwork(slotGroups[slot]),
+                                    sourceCount)) {
+            QByteArray preserved = sourceSlotBytes(sourcePtr, slot);
+            if (shapes.isEmpty()) {
+                const int expectedSize = kLiveryEmptySlotBytes
+                    + (slot == kLiverySectionCount - 1 ? kLiveryBodyTruncate : 0);
+                body.append(preserved.size() == expectedSize
+                                ? preserved
+                                : sourceEmptySlot(sourcePtr, slot));
                 counts[static_cast<size_t>(slot)] = 0;
             } else {
+                if (slot == lastPopulatedSlot && slot + 1 < kLiverySectionCount) {
+                    const int populatedSize = sourcePopulatedSlotSize(section);
+                    if (populatedSize > 0 && preserved.size() > populatedSize) {
+                        preserved.truncate(populatedSize);
+                        adjustedTrailingSlots = true;
+                    }
+                }
                 body.append(preserved);
                 counts[static_cast<size_t>(slot)] = exportCount;
             }
@@ -1257,7 +1282,7 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
         }
         counts[static_cast<size_t>(slot)] = static_cast<int>(shapes.size());
     }
-    if (sourcePtr != nullptr) {
+    if (sourcePtr != nullptr && !adjustedTrailingSlots) {
         body = body.left(std::max<qsizetype>(0, body.size() - kLiveryBodyTruncate));
     }
 

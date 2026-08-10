@@ -144,6 +144,17 @@ const fls::VinylShape *firstShape(const fls::VinylGroup &group) {
     return nullptr;
 }
 
+const fls::VinylShape *terminalShape(const fls::VinylGroup &group) {
+    if (group.items.isEmpty()) {
+        return nullptr;
+    }
+    const fls::VinylItem &item = group.items.back();
+    if (item.isShape()) {
+        return &std::get<fls::VinylShape>(item.value);
+    }
+    return terminalShape(*std::get<fls::VinylGroupPtr>(item.value));
+}
+
 void collectRawPlacements(const fls::VinylGroup &group, double parentX, double parentY,
                           bool parentMask, QVector<RawPlacement> &out) {
     const double groupX = parentX + group.px;
@@ -219,7 +230,10 @@ bool testLogoEncoding() {
     std::sort(top.logoIds.begin(), top.logoIds.end());
     if (front.logoIds != QVector<quint32>{12, 47} || front.vectors != 2
         || top.logoIds != QVector<quint32>{114, 129} || top.groups == 0) {
-        qCritical() << "encoded logo identities or hierarchy did not round trip";
+        qCritical() << "encoded logo identities or hierarchy did not round trip"
+                    << "front logos" << front.logoIds << "vectors" << front.vectors
+                    << "groups" << front.groups << "top logos" << top.logoIds
+                    << "vectors" << top.vectors << "groups" << top.groups;
         return false;
     }
     const fls::VinylShape *firstFrontShape = firstShape(sections[0].subtree);
@@ -349,6 +363,165 @@ bool testCanonicalFh6Envelope() {
     return true;
 }
 
+bool testLegacyFivePanelSourcePreservation() {
+    constexpr int kLegacyStatsCount = 7;
+    fls::Project project;
+    project.name = QStringLiteral("Legacy five-panel source test");
+    project.isLivery = true;
+    project.carId = 1069;
+    project.root = std::make_unique<fls::scene::Group>();
+    project.root->id = QStringLiteral("__root__");
+    for (int slot = 0; slot < 5; ++slot) {
+        auto shape = makeVector(QStringLiteral("panel-%1").arg(slot), slot * 20.0, 0.0);
+        shape->setVectorShape(static_cast<quint16>(kVectorShapeId + slot));
+        appendSection(project, slot)->append(std::move(shape));
+    }
+    for (int slot = 5; slot < kSectionCount; ++slot) {
+        appendSection(project, slot);
+    }
+
+    QByteArray source = fls::encodeCLiveryPayload(project);
+    const int gyvl = source.indexOf(QByteArray("gyvl", 4));
+    const int stats = source.indexOf(QByteArray("yrvl", 4), gyvl + 4);
+    const int descriptors = source.indexOf(QByteArray("yrvl", 4), stats + 4);
+    if (gyvl < 0 || stats < 0 || descriptors < 0) {
+        qCritical() << "legacy panel fixture is missing livery chunks";
+        return false;
+    }
+    const int legacyStatsEnd = stats + 4 + kLegacyStatsCount * 4;
+    source.remove(legacyStatsEnd, descriptors - legacyStatsEnd);
+    project.liverySource = source;
+
+    std::array<int, kSectionCount> counts{};
+    const QByteArray rebuilt = fls::buildLiveryGyvl(project, &counts);
+    QVector<int> decodedCounts;
+    decodedCounts.reserve(kSectionCount);
+    for (int count : counts) {
+        decodedCounts.push_back(count);
+    }
+    const QVector<fls::LiverySection> sections =
+        fls::buildLiverySections(rebuilt.mid(0x15), decodedCounts);
+    if (sections.size() != kSectionCount) {
+        qCritical() << "legacy panel source did not rebuild as eleven sections";
+        return false;
+    }
+    for (int slot = 0; slot < kSectionCount; ++slot) {
+        ArtworkStats stats;
+        collectArtwork(sections[slot].subtree, stats);
+        const int expected = slot < 5 ? 1 : 0;
+        if (counts[slot] != expected || stats.vectors != expected
+            || !stats.logoIds.isEmpty()) {
+            qCritical() << "rebuilt section does not match its declared count"
+                        << "slot" << slot << "declared" << counts[slot]
+                        << "vectors" << stats.vectors << "logos" << stats.logoIds.size();
+            return false;
+        }
+        if (slot > 0 && sections[slot].absPos <= sections[slot - 1].absPos) {
+            qCritical() << "rebuilt section offsets are not strictly increasing"
+                        << "slot" << slot << "offset" << sections[slot].absPos;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool testLegacyArtworkRebuild() {
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) {
+        qCritical() << "could not create the legacy artwork test folder";
+        return false;
+    }
+    fls::Project seed;
+    seed.name = QStringLiteral("Legacy artwork test");
+    seed.isLivery = true;
+    seed.carId = 1069;
+    seed.root = std::make_unique<fls::scene::Group>();
+    seed.root->id = QStringLiteral("__root__");
+    fls::scene::Group *front = appendSection(seed, 0);
+    auto legacyVector = std::make_unique<fls::scene::Shape>();
+    legacyVector->id = QStringLiteral("legacy-vector");
+    legacyVector->setVectorShape(kVectorShapeId);
+    front->append(std::move(legacyVector));
+    auto trailingVector = std::make_unique<fls::scene::Shape>();
+    trailingVector->id = QStringLiteral("legacy-trailing-vector");
+    trailingVector->setVectorShape(kVectorShapeId);
+    appendSection(seed, 2)->append(std::move(trailingVector));
+    fls::exportCLivery(seed, temporary.path());
+    fls::Project project = fls::importCLivery(temporary.path());
+    QByteArray legacySource = project.liverySource;
+    const int gyvl = legacySource.indexOf(QByteArray("gyvl", 4));
+    const int stats = legacySource.indexOf(QByteArray("yrvl", 4), gyvl + 4);
+    if (gyvl < 4 || stats < 0) {
+        qCritical() << "legacy artwork fixture is missing livery chunks";
+        return false;
+    }
+    const QByteArray trailingArtwork(
+        "legacy-artwork-tail-5d7364d54f3344d8a0f947f7c534ac16", 52);
+    const QByteArray trailingFrame = trailingArtwork + QByteArray(17, '\0');
+    legacySource.insert(stats, trailingFrame);
+    writeLeU32(legacySource, gyvl - 4,
+               fls::detail::readLeU32(legacySource, gyvl - 4)
+                   + static_cast<quint32>(trailingFrame.size()));
+    writeLeU32(legacySource, 4, 1);
+
+    fls::LiveryPayload sourcePayload = fls::parseInflatedLiveryPayload(legacySource);
+    QVector<fls::LiverySection> sourceSections =
+        fls::buildLiverySections(sourcePayload.body, sourcePayload.sectionCounts);
+    const fls::VinylShape *sourceTerminal = sourceSections.size() == kSectionCount
+        ? terminalShape(sourceSections[2].subtree)
+        : nullptr;
+    const QByteArray trailingSlotBytes("legacy-tail-bleed", 17);
+    if (sourceTerminal == nullptr) {
+        qCritical() << "legacy artwork fixture has no populated terminal shape";
+        return false;
+    }
+    const int trailingSlotOffset = gyvl + 0x15 + sourceTerminal->absPos
+        + sourceTerminal->marker.size() + 31;
+    legacySource.replace(trailingSlotOffset, trailingSlotBytes.size(), trailingSlotBytes);
+    project.liverySource = legacySource;
+    sourcePayload = fls::parseInflatedLiveryPayload(legacySource);
+    sourceSections = fls::buildLiverySections(sourcePayload.body, sourcePayload.sectionCounts);
+
+    std::array<int, kSectionCount> counts{};
+    const QByteArray rebuilt = fls::buildLiveryGyvl(project, &counts);
+    QVector<int> decodedCounts;
+    decodedCounts.reserve(kSectionCount);
+    for (int count : counts) {
+        decodedCounts.push_back(count);
+    }
+    const QVector<fls::LiverySection> sections =
+        fls::buildLiverySections(rebuilt.mid(0x15), decodedCounts);
+    const auto slotBytes = [](const QByteArray &body,
+                              const QVector<fls::LiverySection> &decoded,
+                              int slot) {
+        const int start = decoded[slot].absPos;
+        const int end = slot + 1 < decoded.size() ? decoded[slot + 1].absPos : body.size();
+        return body.mid(start, end - start);
+    };
+    if (rebuilt.contains(trailingArtwork) || rebuilt.contains(trailingSlotBytes)
+        || sections.size() != kSectionCount
+        || sourceSections.size() != kSectionCount
+        || counts[0] != 1 || counts[2] != 1) {
+        qCritical() << "legacy artwork did not migrate to current section framing";
+        return false;
+    }
+    const QByteArray rebuiltBody = rebuilt.mid(0x15);
+    const QByteArray rebuiltFront = slotBytes(rebuiltBody, sections, 0);
+    const QByteArray sourceFront = slotBytes(sourcePayload.body, sourceSections, 0);
+    if (rebuiltFront != sourceFront) {
+        int firstDifference = 0;
+        while (firstDifference < std::min(rebuiltFront.size(), sourceFront.size())
+               && rebuiltFront[firstDifference] == sourceFront[firstDifference]) {
+            ++firstDifference;
+        }
+        qCritical() << "unchanged legacy artwork records were structurally rewritten"
+                    << "sizes" << sourceFront.size() << rebuiltFront.size()
+                    << "first difference" << firstDifference;
+        return false;
+    }
+    return true;
+}
+
 bool testNestedMaskGroupTransforms() {
     fls::Project project;
     project.isLivery = true;
@@ -451,6 +624,127 @@ const fls::VinylGroup *findRawShapePair(const fls::VinylGroup &group,
         }
     }
     return nullptr;
+}
+
+bool testCurrentGroupHeaders() {
+    fls::Project source;
+    source.name = QStringLiteral("Current group header test");
+    source.isLivery = true;
+    source.carId = 1069;
+    source.root = std::make_unique<fls::scene::Group>();
+    source.root->id = QStringLiteral("__root__");
+    fls::scene::Group *top = appendSection(source, 2);
+
+    auto firstGroup = std::make_unique<fls::scene::Group>();
+    firstGroup->id = QStringLiteral("first-group");
+    firstGroup->append(makeVector(QStringLiteral("first-a"), -80.0, -20.0));
+    auto firstB = makeVector(QStringLiteral("first-b"), -40.0, 20.0);
+    firstB->setVectorShape(102);
+    firstGroup->append(std::move(firstB));
+    top->append(std::move(firstGroup));
+
+    auto secondGroup = std::make_unique<fls::scene::Group>();
+    secondGroup->id = QStringLiteral("second-group");
+    auto secondA = makeVector(QStringLiteral("second-a"), 40.0, -20.0);
+    secondA->setVectorShape(127);
+    secondGroup->append(std::move(secondA));
+    auto secondB = makeVector(QStringLiteral("second-b"), 80.0, 20.0);
+    secondB->setVectorShape(128);
+    secondGroup->append(std::move(secondB));
+    top->append(std::move(secondGroup));
+
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) {
+        qCritical() << "could not create the current group header test folder";
+        return false;
+    }
+    fls::exportCLivery(source, temporary.path());
+    const fls::LiveryPayload original = fls::readLiveryPayload(temporary.path());
+    const QVector<fls::LiverySection> originalSections =
+        fls::buildLiverySections(original.body, original.sectionCounts);
+    const fls::VinylGroup *originalFirst = findRawShapePair(
+        originalSections[2].subtree, 101, 102);
+    const fls::VinylGroup *originalSecond = findRawShapePair(
+        originalSections[2].subtree, 127, 128);
+    if (originalFirst == nullptr || originalSecond == nullptr) {
+        qCritical() << "current group header fixture did not decode";
+        return false;
+    }
+
+    fls::Project edited = fls::importCLivery(temporary.path());
+    fls::scene::Group *editedFirst = edited.root
+        ? findSceneShapePair(*edited.root, 101, 102)
+        : nullptr;
+    fls::scene::Group *editedSecond = edited.root
+        ? findSceneShapePair(*edited.root, 127, 128)
+        : nullptr;
+    if (editedFirst == nullptr || editedSecond == nullptr) {
+        qCritical() << "source-backed sibling groups were not imported";
+        return false;
+    }
+    QByteArray markerlessSource = original.raw;
+    markerlessSource[original.gyvlOffset + 0x15 + originalFirst->absPos] = '\0';
+    markerlessSource[original.gyvlOffset + 0x15 + originalSecond->absPos] = '\0';
+    edited.liverySource = markerlessSource;
+    editedFirst->sourceAbsPos = originalFirst->absPos + 1;
+    editedSecond->sourceAbsPos = originalSecond->absPos + 1;
+    static_cast<fls::scene::Shape &>(*editedSecond->children.front()).x += 10.0;
+
+    std::array<int, kSectionCount> rebuiltCounts{};
+    const QByteArray rebuilt = fls::buildLiveryGyvl(edited, &rebuiltCounts);
+    QVector<int> decodedRebuiltCounts;
+    decodedRebuiltCounts.reserve(kSectionCount);
+    for (int count : rebuiltCounts) {
+        decodedRebuiltCounts.push_back(count);
+    }
+    const QVector<fls::LiverySection> rebuiltSections =
+        fls::buildLiverySections(rebuilt.mid(0x15), decodedRebuiltCounts);
+    const fls::VinylGroup *rebuiltFirst = findRawShapePair(
+        rebuiltSections[2].subtree, 101, 102);
+    const fls::VinylGroup *rebuiltSecond = findRawShapePair(
+        rebuiltSections[2].subtree, 127, 128);
+    const QByteArray originalGyvl = original.raw.mid(
+        original.gyvlOffset, 0x15 + original.body.size());
+    if (rebuiltFirst == nullptr || rebuiltSecond == nullptr
+        || rebuiltSecond->absPos - rebuiltFirst->absPos
+            != originalSecond->absPos - originalFirst->absPos
+        || rebuiltFirst->source != QStringLiteral("count_stack")
+        || rebuiltSecond->source != QStringLiteral("count_stack")
+        || rebuiltFirst->headerMarker != QByteArray("\x20", 1)
+        || rebuiltSecond->headerMarker != QByteArray("\x20", 1)
+        || rebuiltFirst->items.isEmpty() || rebuiltSecond->items.isEmpty()
+        || !rebuiltFirst->items.front().isShape() || !rebuiltSecond->items.front().isShape()
+        || std::get<fls::VinylShape>(rebuiltFirst->items.front().value).marker
+            != QByteArray("\x01\x02", 2)
+        || std::get<fls::VinylShape>(rebuiltSecond->items.front().value).marker
+            != QByteArray("\x01\x02", 2)
+        || rebuilt.size() != originalGyvl.size()) {
+        qCritical() << "source-backed groups did not use current counted framing"
+                    << "original positions"
+                    << (originalFirst != nullptr ? originalFirst->absPos : -1)
+                    << (originalSecond != nullptr ? originalSecond->absPos : -1)
+                    << "rebuilt positions"
+                    << (rebuiltFirst != nullptr ? rebuiltFirst->absPos : -1)
+                    << (rebuiltSecond != nullptr ? rebuiltSecond->absPos : -1)
+                    << "sources"
+                    << (rebuiltFirst != nullptr ? rebuiltFirst->source : QString())
+                    << (rebuiltSecond != nullptr ? rebuiltSecond->source : QString())
+                    << "headers"
+                    << (rebuiltFirst != nullptr ? rebuiltFirst->headerMarker.toHex() : QByteArray())
+                    << (rebuiltSecond != nullptr ? rebuiltSecond->headerMarker.toHex() : QByteArray())
+                    << "first markers"
+                    << (rebuiltFirst != nullptr && !rebuiltFirst->items.isEmpty()
+                            && rebuiltFirst->items.front().isShape()
+                        ? std::get<fls::VinylShape>(rebuiltFirst->items.front().value).marker.toHex()
+                        : QByteArray())
+                    << (rebuiltSecond != nullptr && !rebuiltSecond->items.isEmpty()
+                            && rebuiltSecond->items.front().isShape()
+                        ? std::get<fls::VinylShape>(rebuiltSecond->items.front().value).marker.toHex()
+                        : QByteArray())
+                    << "sizes" << originalGyvl.size() << rebuilt.size();
+        return false;
+    }
+    return true;
 }
 
 bool testDeletedSiblingSourceFraming() {
@@ -750,15 +1044,29 @@ int main(int argc, char *argv[]) {
     if (args.size() == 2 && args[1] == QStringLiteral("--canonical-envelope")) {
         return testCanonicalFh6Envelope() ? 0 : 1;
     }
+    if (args.size() == 2 && args[1] == QStringLiteral("--current-group-header")) {
+        return testCurrentGroupHeaders() ? 0 : 1;
+    }
+    if (args.size() == 2 && args[1] == QStringLiteral("--legacy-artwork")) {
+        return testLegacyArtworkRebuild() ? 0 : 1;
+    }
+    if (args.size() == 2 && args[1] == QStringLiteral("--legacy-five-panel")) {
+        return testLegacyFivePanelSourcePreservation() ? 0 : 1;
+    }
     if (args.size() != 1) {
         qCritical() << "usage: fls_livery_logo_encoder_tests"
                        " [--canonical-envelope]"
+                       " [--current-group-header]"
+                       " [--legacy-five-panel]"
+                       " [--legacy-artwork]"
                        " [--generate-fixtures <source-root> <output-root>]";
         return 2;
     }
     return testLogoEncoding() && testLogoShapeLimit() && testPartialSourceRebuild()
-            && testCanonicalFh6Envelope()
-            && testNestedMaskGroupTransforms() && testDeletedSiblingSourceFraming()
+            && testCanonicalFh6Envelope() && testLegacyFivePanelSourcePreservation()
+            && testLegacyArtworkRebuild()
+            && testNestedMaskGroupTransforms() && testCurrentGroupHeaders()
+            && testDeletedSiblingSourceFraming()
         ? 0
         : 1;
 }
