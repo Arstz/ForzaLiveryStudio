@@ -87,6 +87,7 @@ QString elapsedDuration(double seconds) {
 void writePenFillLog(const PenFillRequest &request,
                      const PenFillResult &result,
                      const QString &strategy,
+                     const cover::FillOptions *options = nullptr,
                      const cover::FillProfile *profile = nullptr,
                      const cover::CoverErrorMetrics *metrics = nullptr) {
     QJsonArray loops;
@@ -116,10 +117,61 @@ void writePenFillLog(const PenFillRequest &request,
 
     QJsonObject requestObject;
     requestObject.insert(QStringLiteral("strategy"), strategy);
-    requestObject.insert(QStringLiteral("boundaryTolerance"), request.boundaryTolerance);
+    requestObject.insert(
+        QStringLiteral("boundaryTolerance"),
+        request.boundaryTolerance);
     requestObject.insert(QStringLiteral("discardNegligiblePlacements"),
                          request.discardNegligiblePlacements);
     requestObject.insert(QStringLiteral("loops"), loops);
+    if (options != nullptr) {
+        QJsonObject optionsObject;
+        optionsObject.insert(QStringLiteral("budget"), options->budget);
+        optionsObject.insert(
+            QStringLiteral("adamIterations"),
+            options->adamIterations);
+        optionsObject.insert(QStringLiteral("restarts"), options->restarts);
+        optionsObject.insert(
+            QStringLiteral("spillWeight"),
+            options->spillWeight);
+        optionsObject.insert(QStringLiteral("epsArea"), options->epsArea);
+        optionsObject.insert(QStringLiteral("epsGain"), options->epsGain);
+        optionsObject.insert(QStringLiteral("epsSpill"), options->epsSpill);
+        optionsObject.insert(
+            QStringLiteral("adamLearningRate"), options->adamLearningRate);
+        optionsObject.insert(
+            QStringLiteral("inactivityTimeoutSeconds"),
+            options->inactivityTimeoutSeconds);
+        optionsObject.insert(
+            QStringLiteral("boundaryTolerance"), options->boundaryTolerance);
+        optionsObject.insert(
+            QStringLiteral("outwardMargin"),
+            options->outwardMargin);
+        optionsObject.insert(
+            QStringLiteral("areaWindowRatio"), options->areaWindowRatio);
+        optionsObject.insert(
+            QStringLiteral("targetCoverageRatio"),
+            options->targetCoverageRatio);
+        optionsObject.insert(
+            QStringLiteral("tverskyAlpha"),
+            options->tverskyAlpha);
+        optionsObject.insert(
+            QStringLiteral("tverskyBeta"),
+            options->tverskyBeta);
+        optionsObject.insert(
+            QStringLiteral("featureWeight"),
+            options->featureWeight);
+        optionsObject.insert(
+            QStringLiteral("featureRestarts"), options->featureRestarts);
+        optionsObject.insert(
+            QStringLiteral("seed"), static_cast<qint64>(options->seed));
+        optionsObject.insert(QStringLiteral("useRouter"), options->useRouter);
+        optionsObject.insert(QStringLiteral("useGpu"), options->useGpu);
+        optionsObject.insert(
+            QStringLiteral("useWeightedContour"), options->useWeightedContour);
+        optionsObject.insert(
+            QStringLiteral("useContourLeeway"), options->useContourLeeway);
+        requestObject.insert(QStringLiteral("fillOptions"), optionsObject);
+    }
 
     QJsonObject resultObject;
     resultObject.insert(QStringLiteral("shapeCount"), result.placements.size());
@@ -180,8 +232,17 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("meshReason"),
             profile->meshReason);
         profileObject.insert(
+            QStringLiteral("analyticSeedReason"),
+            profile->analyticSeedReason);
+        profileObject.insert(
+            QStringLiteral("retainedBaseline"),
+            profile->retainedBaseline);
+        profileObject.insert(
             QStringLiteral("areaWindowRatio"),
             profile->areaWindowRatio);
+        profileObject.insert(
+            QStringLiteral("targetCoverageRatio"),
+            profile->targetCoverageRatio);
         profileObject.insert(
             QStringLiteral("totalWallSeconds"), profile->totalWallSeconds);
         profileObject.insert(
@@ -307,6 +368,14 @@ void writePenFillLog(const PenFillRequest &request,
             static_cast<qint64>(
                 profile->featureCandidateJobs));
         profileObject.insert(
+            QStringLiteral("analyticSeedJobs"),
+            static_cast<qint64>(
+                profile->analyticSeedJobs));
+        profileObject.insert(
+            QStringLiteral("meshSeedJobs"),
+            static_cast<qint64>(
+                profile->meshSeedJobs));
+        profileObject.insert(
             QStringLiteral("featureCandidateRejections"),
             static_cast<qint64>(
                 profile->featureCandidateRejections));
@@ -363,6 +432,21 @@ void writePenFillLog(const PenFillRequest &request,
             QStringLiteral("hardEdgePlacements"),
             profile->hardEdgePlacements);
         profileObject.insert(
+            QStringLiteral("analyticSeedPlacements"),
+            profile->analyticSeedPlacements);
+        profileObject.insert(
+            QStringLiteral("meshSeedPlacements"),
+            profile->meshSeedPlacements);
+        profileObject.insert(
+            QStringLiteral("analyticSeedSelections"),
+            profile->analyticSeedSelections);
+        profileObject.insert(
+            QStringLiteral("meshSeedSelections"),
+            profile->meshSeedSelections);
+        profileObject.insert(
+            QStringLiteral("completionPlacements"),
+            profile->completionPlacements);
+        profileObject.insert(
             QStringLiteral("featureSelectedPlacements"),
             profile->featureSelectedPlacements);
         profileObject.insert(
@@ -415,6 +499,12 @@ void writePenFillLog(const PenFillRequest &request,
         profileObject.insert(
             QStringLiteral("meshAccepted"),
             profile->meshAccepted);
+        profileObject.insert(
+            QStringLiteral("completionActivated"),
+            profile->completionActivated);
+        profileObject.insert(
+            QStringLiteral("coverageTargetReached"),
+            profile->coverageTargetReached);
         resultObject.insert(QStringLiteral("profile"), profileObject);
     }
     if (metrics != nullptr) {
@@ -647,7 +737,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                         &profile, &metrics);
                 writePenFillLog(
                     request, result, strategy,
-                    &profile, &metrics);
+                    &options, &profile, &metrics);
 
                 return result;
             });

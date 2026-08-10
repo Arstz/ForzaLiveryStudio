@@ -1,4 +1,5 @@
 #include "differential_cover_internal.h"
+#include "pen_fill.h"
 
 #include <algorithm>
 #include <cmath>
@@ -623,6 +624,262 @@ QVector<FixedCandidate> polygonMeshCandidates(
                 fromQTransform(placement.transform),
             });
         }
+    }
+
+    return result;
+}
+
+namespace {
+
+constexpr int kMaximumInitialFillJobs = 24;
+
+PenPrimitive penPrimitiveFromShape(
+    const ShapeMesh &shape) {
+    PenPrimitive result;
+    result.shapeId = shape.id;
+    QPolygonF polygon = shapePolygon(shape);
+    if (signedArea(polygon) < 0.0) {
+        std::reverse(
+            polygon.begin(), polygon.end());
+    }
+    result.silhouette.setFillRule(
+        Qt::WindingFill);
+    result.silhouette.addPolygon(polygon);
+    result.silhouette.closeSubpath();
+    result.silhouette =
+        result.silhouette.simplified();
+    result.silhouette.setFillRule(
+        Qt::WindingFill);
+    result.contours =
+        result.silhouette.toSubpathPolygons();
+    result.bounds =
+        result.silhouette.boundingRect();
+    result.area = shape.area;
+
+    return result;
+}
+
+QVector<PenLoop> penLoopsFromBoundary(
+    const QVector<QVector<ContourSpan>> &boundaryLoops) {
+    QVector<PenLoop> result;
+    result.reserve(boundaryLoops.size());
+    for (int loopIndex = 0;
+         loopIndex < boundaryLoops.size();
+         ++loopIndex) {
+        const QVector<ContourSpan> &spans =
+            boundaryLoops[loopIndex];
+        if (spans.size() < 2) {
+            return {};
+        }
+        PenLoop loop;
+        loop.kind = loopIndex == 0
+            ? PenLoopKind::Outer
+            : PenLoopKind::Cutout;
+        loop.points.reserve(spans.size() * 2);
+        for (const ContourSpan &span : spans) {
+            loop.points.push_back({
+                span.start,
+                PenPointKind::Hard,
+            });
+            if (span.curved) {
+                loop.points.push_back({
+                    span.control,
+                    PenPointKind::Soft,
+                });
+            }
+        }
+        result.push_back(std::move(loop));
+    }
+
+    return result;
+}
+
+} // namespace
+
+bool sameCandidateSeed(
+    const CandidateJob &job,
+    const ShapeMesh &shape,
+    const Affine &transform) {
+    if (job.shape == nullptr
+        || job.shape->id != shape.id) {
+        return false;
+    }
+    const std::array<double, kGradientCount>
+        jobValues = affineValues(job.transform);
+    const std::array<double, kGradientCount>
+        transformValues = affineValues(transform);
+    for (int parameter = 0;
+         parameter < kGradientCount;
+         ++parameter) {
+        if (std::abs(
+                jobValues[parameter]
+                - transformValues[parameter])
+            > kGeometryEpsilon) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+AnalyticSeedPlan analyticSeedPlan(
+    const QVector<QVector<ContourSpan>> &boundaryLoops,
+    const QVector<ShapeMesh> &catalog,
+    double boundaryTolerance,
+    const std::function<bool()> &cancelled) {
+    AnalyticSeedPlan result;
+    const QVector<PenLoop> loops =
+        penLoopsFromBoundary(boundaryLoops);
+    if (loops.isEmpty()) {
+        result.reason =
+            QStringLiteral("boundary geometry is unavailable");
+        return result;
+    }
+    PenFillRequest request;
+    request.loops = loops;
+    request.boundaryTolerance =
+        boundaryTolerance;
+    request.discardNegligiblePlacements = false;
+    request.primitives.reserve(catalog.size());
+    for (const ShapeMesh &shape : catalog) {
+        request.primitives.push_back(
+            penPrimitiveFromShape(shape));
+    }
+    const PenFillResult fill =
+        fillPenPath(request, cancelled);
+    result.cancelled =
+        fill.cancelled
+        || (cancelled && cancelled());
+    if (result.cancelled) {
+        result.reason =
+            QStringLiteral("cancelled");
+        return result;
+    }
+    if (!fill.error.isEmpty()) {
+        result.reason = fill.error;
+        return result;
+    }
+    result.jobs.reserve(fill.placements.size());
+    for (const PenPlacement &placement :
+         fill.placements) {
+        const ShapeMesh *shape =
+            shapeById(
+                catalog,
+                placement.shapeId);
+        if (shape == nullptr) {
+            continue;
+        }
+        CandidateJob job;
+        job.shape = shape;
+        job.transform =
+            fromQTransform(
+                placement.transform);
+        job.origin =
+            CandidateOrigin::AnalyticSeed;
+        job.hasTransform = true;
+        const bool duplicate =
+            std::any_of(
+                result.jobs.cbegin(),
+                result.jobs.cend(),
+                [&](const CandidateJob &existing) {
+                    return sameCandidateSeed(
+                        existing,
+                        *job.shape,
+                        job.transform);
+                });
+        if (!duplicate) {
+            result.placements.push_back({
+                job.transform,
+                job.shape->id,
+                0.0,
+            });
+            result.jobs.push_back(
+                std::move(job));
+        }
+    }
+    result.reason = result.jobs.isEmpty()
+        ? QStringLiteral("analytic fill produced no placements")
+        : QStringLiteral("analytic fill seed candidates");
+
+    return result;
+}
+
+QVector<CandidateJob> rankedInitialFillJobs(
+    const QVector<CandidateJob> &seeds,
+    const Polygons &residual,
+    const Polygons &target,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options) {
+    struct RankedJob {
+        CandidateJob job;
+        double score = 0.0;
+        double covered = 0.0;
+    };
+
+    QVector<RankedJob> ranked;
+    ranked.reserve(seeds.size());
+    for (const CandidateJob &seed : seeds) {
+        if (seed.shape == nullptr
+            || !seed.hasTransform) {
+            continue;
+        }
+        const AreaGradient evaluation =
+            areaGradient(
+                *seed.shape,
+                seed.transform,
+                residual, target,
+                subjectBounds);
+        if (!finiteGradient(evaluation)
+            || evaluation.covered
+                < options.epsGain) {
+            continue;
+        }
+        ranked.push_back({
+            seed,
+            evaluation.covered
+                - options.spillWeight
+                    * std::max(
+                        0.0,
+                        evaluation.spill),
+            evaluation.covered,
+        });
+    }
+    std::stable_sort(
+        ranked.begin(), ranked.end(),
+        [](const RankedJob &left,
+           const RankedJob &right) {
+            if (std::abs(
+                    left.score - right.score)
+                > kGeometryEpsilon) {
+                return left.score > right.score;
+            }
+            if (std::abs(
+                    left.covered
+                    - right.covered)
+                > kGeometryEpsilon) {
+                return left.covered
+                    > right.covered;
+            }
+            if (left.job.shape->id
+                != right.job.shape->id) {
+                return left.job.shape->id
+                    < right.job.shape->id;
+            }
+
+            return lexicographicTransformLess(
+                left.job.transform,
+                right.job.transform);
+        });
+
+    QVector<CandidateJob> result;
+    const int count = std::min(
+        static_cast<int>(ranked.size()),
+        kMaximumInitialFillJobs);
+    result.reserve(count);
+    for (int index = 0;
+         index < count; ++index) {
+        result.push_back(
+            std::move(ranked[index].job));
     }
 
     return result;

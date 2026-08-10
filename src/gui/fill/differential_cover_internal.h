@@ -90,6 +90,8 @@ enum class CandidateOrigin {
     WholeComponent,
     HardEdge,
     Feature,
+    AnalyticSeed,
+    PolygonMeshSeed,
 };
 
 struct Candidate {
@@ -122,6 +124,13 @@ struct CandidateJob {
     std::optional<CandidateAnchor> anchor;
     CandidateOrigin origin = CandidateOrigin::Greedy;
     bool hasTransform = false;
+};
+
+struct AnalyticSeedPlan {
+    QVector<CandidateJob> jobs;
+    QVector<Placement> placements;
+    QString reason;
+    bool cancelled = false;
 };
 
 struct FixedCandidate {
@@ -333,6 +342,17 @@ QVector<FixedCandidate> polygonMeshCandidates(
     const QVector<ContourSpan> &spans,
     const QVector<ShapeMesh> &catalog,
     const std::function<bool()> &cancelled);
+AnalyticSeedPlan analyticSeedPlan(
+    const QVector<QVector<ContourSpan>> &boundaryLoops,
+    const QVector<ShapeMesh> &catalog,
+    double boundaryTolerance,
+    const std::function<bool()> &cancelled);
+QVector<CandidateJob> rankedInitialFillJobs(
+    const QVector<CandidateJob> &seeds,
+    const Polygons &residual,
+    const Polygons &target,
+    const EvaluationBounds &subjectBounds,
+    const FillOptions &options);
 QVector<CandidateJob> hardPointCandidateSeeds(
     const QVector<ContourSpan> &spans,
     const QVector<ShapeMesh> &catalog,
@@ -345,6 +365,10 @@ QVector<CandidateJob> rankedHardPointJobs(
     const FillOptions &options);
 bool lexicographicTransformLess(const Affine &left,
                                 const Affine &right);
+bool sameCandidateSeed(
+    const CandidateJob &job,
+    const ShapeMesh &shape,
+    const Affine &transform);
 Candidate legalCandidate(const ShapeMesh &shape,
                          Affine transform,
                          const Polygons &residual,

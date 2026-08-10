@@ -280,6 +280,10 @@ cover::FillOptions loadDifferentialFillOptions() {
         settings, QStringLiteral("ui/differentialFill/areaWindowRatio"),
         result.areaWindowRatio, cover::kMinimumAreaWindowRatio,
         cover::kMaximumAreaWindowRatio);
+    result.targetCoverageRatio = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/targetCoverageRatio"),
+        result.targetCoverageRatio, cover::kMinimumTargetCoverageRatio,
+        cover::kMaximumTargetCoverageRatio);
     result.tverskyAlpha = boundedSetting(
         settings, QStringLiteral("ui/differentialFill/tverskyAlpha"),
         result.tverskyAlpha, cover::kMinimumTverskyAlpha,
@@ -353,6 +357,10 @@ void saveDifferentialFillOptions(const cover::FillOptions &options) {
                       std::clamp(options.areaWindowRatio,
                                  cover::kMinimumAreaWindowRatio,
                                  cover::kMaximumAreaWindowRatio));
+    settings.setValue(QStringLiteral("ui/differentialFill/targetCoverageRatio"),
+                      std::clamp(options.targetCoverageRatio,
+                                 cover::kMinimumTargetCoverageRatio,
+                                 cover::kMaximumTargetCoverageRatio));
     settings.setValue(QStringLiteral("ui/differentialFill/tverskyAlpha"),
                       std::clamp(options.tverskyAlpha,
                                  cover::kMinimumTverskyAlpha,

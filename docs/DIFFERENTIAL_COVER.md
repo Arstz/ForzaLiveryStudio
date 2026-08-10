@@ -44,9 +44,9 @@ catalog**, minimising shape count. Two naive framings both fail:
 - **Deterministic triangulation** (what the existing fill effectively does for the
   interior): decomposes the region into many non-overlapping triangles/quads. It
   is correct and fast but **cannot use overlap**, so shape count is high on
-  organic/non-convex regions. It is a *bad initializer* for a count-minimizing
-  solver because it sits in exactly the high-count, non-overlapping local optimum
-  we want to escape.
+  organic/non-convex regions. It is not sufficient as the final
+  count-minimizing strategy, but its feasible affine transforms are useful
+  per-candidate initializations and its complete cover is a useful baseline.
 - **Global differentiable area-maximization** (DiffVG/soft-raster style over a
   fixed slot set): optimize N primitives at once to maximize rendered overlap with
   the target. This is slow, prone to local minima, and — critically — **cannot
@@ -393,9 +393,26 @@ medial-axis search dominates.
 The original contour spans also provide a straight-boundary ratio. A
 hard-edge-dominated contour produces a complete polygon mesh using the catalog's
 square and triangle geometry. The mesh is legalized coherently by scaling every
-piece around the target center, preserving shared seams. A legal mesh covering
-at least 98 percent completes directly. A rejected mesh and all of its pieces are
-discarded.
+piece around the target center, preserving shared seams. Its placements remain
+candidate initializations whether or not the coherent plan reaches the compact
+coverage threshold.
+
+Before the residual loop, the existing analytic Pen fill runs against the same
+authored boundary loops and shape catalog with placement cleanup disabled. Its
+curve, square, circle, and ear-clipped triangle transforms join the mesh
+transforms in one initial-fill seed pool. Each greedy step ranks these transforms
+against the current exact residual and sends the best bounded subset through the
+normal Adam, legalization, and selection path. Optimization records the legal
+initial transform before taking a step, so Adam cannot erase a better feasible
+seed.
+
+The coherent mesh and legal analytic result remain whole-solution baselines.
+After adjustment and pruning, a baseline replaces the optimized result only when
+it has no worse coverage within `epsArea`, preserves legality, represented
+features, and Tversky quality, and uses fewer shapes; a baseline with strictly
+better coverage may replace an optimized result only without increasing shape
+count. The greedy solver must therefore improve coverage or shape count rather
+than merely replacing a known feasible cover.
 
 Consecutive convex hard-corner triples seed both Triangle and affine Square
 candidates. The Square maps the middle corner and its two neighbors onto three
@@ -411,7 +428,7 @@ with the other differentiable candidates through the common exact selector.
 
 Incomplete structural results remain candidate-generation passes.
 
-### 7.3 Initialization (per optimized candidate) — medial axis, **not** triangulation
+### 7.3 Initialization (per optimized candidate)
 
 Good init is what makes the optimizer fast and local-minimum-free:
 
@@ -425,6 +442,9 @@ Good init is what makes the optimizer fast and local-minimum-free:
 - This is the classic medial-axis "cover with maximal inscribed shapes" seed and
   the analog of LIVE's component-wise path initialization. It yields an overlapping,
   low-count cover and keeps each Adam run to a short warm descent.
+- Initial analytic-fill and polygon-mesh transforms enter the same optimizer as
+  explicit affine initializations. They complement the medial-axis route with
+  boundary-aligned feasible candidates.
 
 ### 7.4 Optimize (per candidate)
 
@@ -454,6 +474,15 @@ represented by the current union. The accepted placement stores its exact
 subtraction gain, newly represented feature ids, and exposed contour-arc
 contribution.
 
+If weighted selection cannot accept another placement before the configured
+`targetCoverageRatio` is reached, the greedy loop enters a bounded completion
+phase. That phase evaluates the full catalog, widens the area-competition window
+to at least the default breadth, and stops requiring every previously matched
+contour feature to remain exposed. Exact envelope and maximum outward-distance
+checks remain active. The phase ends as soon as the requested covered-area ratio
+is reached, or returns a measured stalled result when no legal candidate can make
+the configured minimum gain.
+
 ### 7.6 Redundancy pruning and local adjustment
 
 After the greedy loop stops, run an exact backward-elimination pass:
@@ -473,24 +502,22 @@ After the greedy loop stops, run an exact backward-elimination pass:
    outside-area limits, then recompute unique areas and restart. Stop only when
    an entire pass removes nothing or cancellation is requested.
 
-The coverage floor is the greater of the completed greedy cover minus the
-absolute area tolerance and the compact-cover threshold. The outside-area
-ceiling is fixed from the completed greedy cover. Repeated removals therefore
-cannot accumulate loss beyond those fixed limits. Survivor adjustment uses the
-selected CUDA, Direct3D, or CPU optimizer without a placement clock, calculation
-cap, or separate iteration reduction.
+The coverage floor is the completed greedy cover minus the absolute area
+tolerance. The outside-area ceiling is also fixed from the completed greedy
+cover. Repeated removals therefore cannot relax a strong result toward the lower
+compact structural threshold or accumulate loss beyond those fixed limits.
+Survivor adjustment uses the selected CUDA, Direct3D, or CPU optimizer without a
+placement clock, calculation cap, or separate iteration reduction.
 
 Weighted pruning also compares complete metric snapshots. It preserves the
 accepted represented-feature weight, Tversky floor, outward-distance limit, and
 legality-envelope constraint. Final ownership is reassigned from the exposed
 placement union.
 
-When the pruned result is below the compact coverage threshold, compute the exact
-repair target as `postPruneResidual - prePruneResidual`. Run one additive greedy
-cover on that target using the normal catalog, routing, optimizer, legality
-checks, and remaining placement budget. Append the resulting placements to the
-pruned cover. A result meeting the compact threshold retains its accepted
-shape-count tradeoff. The repair result is not pruned again.
+The exact pre-prune and post-prune residuals remain available to the repair
+safety path. Under the normal pruning invariant their difference cannot exceed
+`epsArea`, so an accepted pruning pass does not need to regenerate discarded
+coverage.
 
 ### 7.7 Feature-weighted contour policy
 
@@ -574,6 +601,10 @@ runs.
   optimization, and residual subtraction.
 - **No fallback:** a stalled or budget-limited run does not call another fill,
   triangulate the residual, discard it as occluded, or fabricate a placement.
+- **Coverage completion:** when ordinary weighted selection stalls below
+  `targetCoverageRatio`, the same residual loop broadens catalog routing and
+  relaxes exposed-feature retention while preserving placement legality. The
+  default requested coverage is 0.99.
 - **Inactivity timeout:** stop after 60 seconds without an accepted placement or
   prune operation. Timeout uses the same exact partial-result finalization as
   user cancellation.
@@ -594,7 +625,11 @@ runs.
   evaluation wall time in `pen_fill.log`. It also records whole-component jobs,
   generated hard-edge candidates, feature-aware jobs and rejections, complexity
   selections, and accepted placements
-  from component-local, whole-component, and hard-edge routes. Prune wall time,
+  from component-local, whole-component, hard-edge, analytic-seed, and mesh-seed
+  routes. Completion activation, completion placements, and whether the target
+  coverage was reached are recorded separately. The analytic seed reason,
+  initial placement count, ranked job counts,
+  seed selections, and any retained whole-solution baseline are recorded. Prune wall time,
   passes, attempts, survivor optimizations, adjusted placements, and removed
   placements are recorded separately. The pre-prune and post-prune residual
   areas, repair-target area, repair placements, repaired area, remaining newly
@@ -644,6 +679,7 @@ bounds declared beside their defaults in `differential_cover.h`:
 | `boundaryTolerance` | Canvas-unit sampling and matching tolerance for boundary metrics and contour features. |
 | `outwardMargin` | Canvas-unit distance used to expand `mustCover` into `mayCover`; the default is 1.0. |
 | `areaWindowRatio` | Fraction of the best exact gain a candidate must reach before quality ranking. |
+| `targetCoverageRatio` | Covered-area fraction requested from the completion phase; the default is 0.99. |
 | `tverskyAlpha` | Weight assigned to outside-target area in Tversky similarity. |
 | `tverskyBeta` | Weight assigned to missing area in Tversky similarity. |
 | `featureWeight` | Selection priority assigned to represented exposed contour features. |
@@ -688,6 +724,7 @@ struct FillOptions {
     double boundaryTolerance = 0.1;
     double outwardMargin = 1.0;
     double areaWindowRatio = 0.875;
+    double targetCoverageRatio = 0.99;
     double tverskyAlpha = 0.35;
     double tverskyBeta = 1.0;
     double featureWeight = 1.0;
@@ -793,7 +830,8 @@ The implementation is divided by responsibility:
   feature extraction, legality-envelope construction, polygon conversion, exact
   booleans, and the differentiable area kernel.
 - `differential_cover_candidates.cpp` owns initialization, routing, CPU/GPU
-  optimization dispatch, legalization, and candidate selection.
+  optimization dispatch, analytic-fill and polygon-mesh seed construction,
+  legalization, and candidate selection.
 - `differential_cover_metrics.cpp` owns placement unions, exact cover state,
   area/Tversky summaries, boundary distances, exposed feature matching and
   ownership, and incremental placement gains.
@@ -825,9 +863,9 @@ the strategy unit.
 5. **Clipper2 2.0.1** is vendored under `third_party/clipper2`; fixed six-decimal
    integer conversion wraps residual, footprint, union, and subtraction booleans.
    The initializer rasterizes world coordinates independently.
-6. **Single greedy step (§7)** — structural prepasses, global and component-local
-   routing, DT initialization, Adam, residual-complexity ranking, and exact
-   selection.
+6. **Single greedy step (§7)** — structural prepasses, analytic and mesh seed
+   ranking, global and component-local routing, DT initialization, Adam,
+   residual-complexity ranking, and exact selection.
 7. **Residual loop (§6) + stopping (§8) + repeatability (§9).**
 8. **Redundancy pruning (§7.6)** — exact unique-area ranking, tentative removal,
    local survivor adjustment, fixed acceptance limits, convergence, and one
@@ -852,6 +890,14 @@ coordinates, runs the analytic method with a fixed seed, and verifies that it
 produces placements, reports finite coverage/residual metrics, respects the spill
 tolerance, and repeats the same placement ids and transforms within floating-point
 tolerance. The log is a local test asset and is not compiled into the application.
+
+For aggregate tuning, configure the test target and run
+`fls_differential_cover_tests --corpus <log-directory>`. It evaluates every
+distinct `pen_fill*.log` contour, aliases duplicate requests, and emits one JSON
+summary containing coverage, boundary, placement, pruning, backend, and runtime
+metrics. `FLS_CORPUS_*` environment overrides sweep the public fill options
+without changing application settings. Differential logs record the complete
+fill-option snapshot so later comparisons remain attributable.
 
 ---
 

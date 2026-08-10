@@ -1155,12 +1155,8 @@ bool prunePlacements(
     QElapsedTimer pruneTimer;
     pruneTimer.start();
     const double residualLimit =
-        std::max(
-            currentState->residualArea
-                + options.epsArea,
-            targetArea
-                * (1.0
-                   - kStructuralMinimumCompactCoverageRatio));
+        currentState->residualArea
+        + options.epsArea;
     const double outsideLimit =
         currentState->outsideArea + options.epsSpill;
     const CoverErrorMetrics acceptedMetrics =
@@ -1452,6 +1448,12 @@ bool validOptions(const FillOptions &options) {
         && options.areaWindowRatio > 0.0
         && options.areaWindowRatio <= 1.0
         && std::isfinite(
+            options.targetCoverageRatio)
+        && options.targetCoverageRatio
+            >= kMinimumTargetCoverageRatio
+        && options.targetCoverageRatio
+            <= kMaximumTargetCoverageRatio
+        && std::isfinite(
             options.tverskyAlpha)
         && options.tverskyAlpha >= 0.0
         && std::isfinite(
@@ -1498,6 +1500,12 @@ void mergeRepairProfile(
         repair.hardEdgeCandidates;
     profile->featureCandidateJobs +=
         repair.featureCandidateJobs;
+    profile->analyticSeedJobs +=
+        repair.analyticSeedJobs;
+    profile->meshSeedJobs +=
+        repair.meshSeedJobs;
+    profile->completionPlacements +=
+        repair.completionPlacements;
     profile->featureCandidateRejections +=
         repair.featureCandidateRejections;
     profile->selectionInsufficientGainRejections +=
@@ -1516,6 +1524,20 @@ void mergeRepairProfile(
         repair.wholeComponentPlacements;
     profile->hardEdgePlacements +=
         repair.hardEdgePlacements;
+    profile->analyticSeedPlacements +=
+        repair.analyticSeedPlacements;
+    profile->meshSeedPlacements +=
+        repair.meshSeedPlacements;
+    profile->analyticSeedSelections +=
+        repair.analyticSeedSelections;
+    profile->meshSeedSelections +=
+        repair.meshSeedSelections;
+    profile->completionActivated =
+        profile->completionActivated
+        || repair.completionActivated;
+    profile->coverageTargetReached =
+        profile->coverageTargetReached
+        || repair.coverageTargetReached;
     profile->featureSelectedPlacements +=
         repair.featureSelectedPlacements;
     profile->workerThreads = std::max(

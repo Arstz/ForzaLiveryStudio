@@ -127,6 +127,10 @@
     "hasTip": true,
     "tip": "Keeps candidates whose area gain reaches this fraction of the best gain before quality ranking. Values near 1 favor raw coverage."
   },
+  "advanced.differential_target_coverage_ratio": {
+    "hasTip": true,
+    "tip": "Minimum covered-area fraction requested from the fallback completion pass. Higher values reduce residual holes but usually require more shapes and time."
+  },
   "advanced.differential_tversky_alpha": {
     "hasTip": true,
     "tip": "Weight assigned to outside area in Tversky similarity. Larger values rank spill more harshly."

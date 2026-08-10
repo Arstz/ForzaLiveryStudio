@@ -98,6 +98,7 @@ private:
     QDoubleSpinBox *differentialBoundaryTolerance_ = nullptr;
     QDoubleSpinBox *differentialOutwardMargin_ = nullptr;
     QDoubleSpinBox *differentialAreaWindowRatio_ = nullptr;
+    QDoubleSpinBox *differentialTargetCoverageRatio_ = nullptr;
     QDoubleSpinBox *differentialTverskyAlpha_ = nullptr;
     QDoubleSpinBox *differentialTverskyBeta_ = nullptr;
     QDoubleSpinBox *differentialFeatureWeight_ = nullptr;

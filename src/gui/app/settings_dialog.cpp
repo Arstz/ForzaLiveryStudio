@@ -501,6 +501,13 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     addSettingRow(advancedPage, QStringLiteral("advanced.differential_area_window_ratio"),
                   QStringLiteral("Candidate area window"),
                   differentialAreaWindowRatio_, tips);
+    differentialTargetCoverageRatio_ = makeRealOption(
+        cover::kMinimumTargetCoverageRatio,
+        cover::kMaximumTargetCoverageRatio,
+        differentialFillOptions_.targetCoverageRatio, 3, 0.001);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_target_coverage_ratio"),
+                  QStringLiteral("Completion coverage"),
+                  differentialTargetCoverageRatio_, tips);
     differentialTverskyAlpha_ = makeRealOption(
         cover::kMinimumTverskyAlpha, cover::kMaximumTverskyAlpha,
         differentialFillOptions_.tverskyAlpha, 3, 0.05);
@@ -718,6 +725,7 @@ cover::FillOptions SettingsDialog::selectedDifferentialFillOptions() const {
     result.boundaryTolerance = differentialBoundaryTolerance_->value();
     result.outwardMargin = differentialOutwardMargin_->value();
     result.areaWindowRatio = differentialAreaWindowRatio_->value();
+    result.targetCoverageRatio = differentialTargetCoverageRatio_->value();
     result.tverskyAlpha = differentialTverskyAlpha_->value();
     result.tverskyBeta = differentialTverskyBeta_->value();
     result.featureWeight = differentialFeatureWeight_->value();

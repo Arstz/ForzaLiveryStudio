@@ -24,6 +24,7 @@ inline constexpr int kDefaultRestarts = 2;
 inline constexpr double kDefaultInactivityTimeoutSeconds = 60.0;
 inline constexpr double kDefaultBoundaryTolerance = 0.1;
 inline constexpr double kDefaultAreaWindowRatio = 0.875;
+inline constexpr double kDefaultTargetCoverageRatio = 0.99;
 inline constexpr double kDefaultTverskyAlpha = 0.35;
 inline constexpr double kDefaultTverskyBeta = 1.0;
 inline constexpr double kDefaultFeatureWeight = 1.0;
@@ -54,6 +55,8 @@ inline constexpr double kMinimumOutwardMargin = 0.0;
 inline constexpr double kMaximumOutwardMargin = 100.0;
 inline constexpr double kMinimumAreaWindowRatio = 0.001;
 inline constexpr double kMaximumAreaWindowRatio = 1.0;
+inline constexpr double kMinimumTargetCoverageRatio = 0.9;
+inline constexpr double kMaximumTargetCoverageRatio = 1.0;
 inline constexpr double kMinimumTverskyAlpha = 0.0;
 inline constexpr double kMaximumTverskyAlpha = 100.0;
 inline constexpr double kMinimumTverskyBeta = 0.001;
@@ -162,6 +165,7 @@ struct FillOptions {
         kDefaultInactivityTimeoutSeconds;
     double boundaryTolerance = kDefaultBoundaryTolerance;
     double areaWindowRatio = kDefaultAreaWindowRatio;
+    double targetCoverageRatio = kDefaultTargetCoverageRatio;
     double tverskyAlpha = kDefaultTverskyAlpha;
     double tverskyBeta = kDefaultTverskyBeta;
     double featureWeight = kDefaultFeatureWeight;
@@ -199,7 +203,10 @@ struct CoverErrorMetrics {
 struct FillProfile {
     QString structuralReason;
     QString meshReason;
+    QString analyticSeedReason;
+    QString retainedBaseline;
     double areaWindowRatio = 0.0;
+    double targetCoverageRatio = 0.0;
     double totalWallSeconds = 0.0;
     double greedySetupWallSeconds = 0.0;
     double candidateBatchWallSeconds = 0.0;
@@ -242,6 +249,8 @@ struct FillProfile {
     std::uint64_t wholeComponentJobs = 0;
     std::uint64_t hardEdgeCandidates = 0;
     std::uint64_t featureCandidateJobs = 0;
+    std::uint64_t analyticSeedJobs = 0;
+    std::uint64_t meshSeedJobs = 0;
     std::uint64_t featureCandidateRejections = 0;
     std::uint64_t selectionInsufficientGainRejections = 0;
     std::uint64_t selectionEnvelopeRejections = 0;
@@ -256,6 +265,11 @@ struct FillProfile {
     int localComponentPlacements = 0;
     int wholeComponentPlacements = 0;
     int hardEdgePlacements = 0;
+    int analyticSeedPlacements = 0;
+    int meshSeedPlacements = 0;
+    int analyticSeedSelections = 0;
+    int meshSeedSelections = 0;
+    int completionPlacements = 0;
     int featureSelectedPlacements = 0;
     int nudgedPlacements = 0;
     int prunedPlacements = 0;
@@ -274,6 +288,8 @@ struct FillProfile {
     bool structuralAccepted = false;
     bool structuralSeeded = false;
     bool meshAccepted = false;
+    bool completionActivated = false;
+    bool coverageTargetReached = false;
 };
 
 struct FillResult {

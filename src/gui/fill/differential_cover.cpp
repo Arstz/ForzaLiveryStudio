@@ -21,6 +21,8 @@ FillResult analyticCoverFillInternal(
     FillOptions options = requestedOptions;
     result.profile.areaWindowRatio =
         options.areaWindowRatio;
+    result.profile.targetCoverageRatio =
+        options.targetCoverageRatio;
     const double pathFlatnessTolerance =
         options.boundaryTolerance * 0.25;
     const Polygons authoredTarget =
@@ -119,6 +121,11 @@ FillResult analyticCoverFillInternal(
     }
 
     const double targetArea = polygonSetArea(mustCover);
+    const double targetResidualArea =
+        targetArea
+        * (1.0 - options.targetCoverageRatio);
+    const double successfulResidualArea =
+        std::max(options.epsArea, targetResidualArea);
     const auto measureResult =
         [&]() {
             const Polygons coverage =
@@ -358,37 +365,79 @@ FillResult analyticCoverFillInternal(
         measureResult();
         return result;
     }
-    if (mesh.accepted) {
-        result.placements =
-            mesh.placements;
-        result.residual =
-            mesh.residual;
+    AnalyticSeedPlan analyticSeeds;
+    if (hasLeeway) {
+        analyticSeeds.reason =
+            QStringLiteral("leeway uses residual optimization");
+    } else {
+        analyticSeeds = analyticSeedPlan(
+            boundaryLoops, catalog,
+            options.boundaryTolerance,
+            cancelled);
+    }
+    result.profile.analyticSeedReason =
+        analyticSeeds.reason;
+    result.profile.analyticSeedPlacements =
+        analyticSeeds.jobs.size();
+    if (analyticSeeds.cancelled) {
+        result.cancelled = true;
         result.residualArea =
-            mesh.residualArea;
+            polygonSetArea(result.residual);
         result.coveredArea =
             targetArea - result.residualArea;
-        result.outsideArea =
-            mesh.outsideArea;
-        result.stalled =
-            result.residualArea > options.epsArea;
-        result.profile.evaluationBackend =
-            QStringLiteral("Polygon mesh");
         result.profile.totalWallSeconds =
             static_cast<double>(
                 elapsed.nsecsElapsed()) * 1e-9;
-        if (progress) {
-            progress({
-                static_cast<int>(
-                    result.placements.size()),
-                targetArea,
-                result.coveredArea,
-                result.residualArea,
-                static_cast<double>(
-                    elapsed.elapsed()) / 1000.0,
-            });
-        }
         measureResult();
         return result;
+    }
+    QVector<CandidateJob> initialFillSeeds =
+        analyticSeeds.jobs;
+    const auto appendMeshSeed =
+        [&](const ShapeMesh *shape,
+            const Affine &transform) {
+            if (shape == nullptr) {
+                return;
+            }
+            const bool duplicate =
+                std::any_of(
+                    initialFillSeeds.cbegin(),
+                    initialFillSeeds.cend(),
+                    [&](const CandidateJob &existing) {
+                        return sameCandidateSeed(
+                            existing,
+                            *shape,
+                            transform);
+                    });
+            if (duplicate) {
+                return;
+            }
+            CandidateJob job;
+            job.shape = shape;
+            job.transform = transform;
+            job.origin =
+                CandidateOrigin::PolygonMeshSeed;
+            job.hasTransform = true;
+            initialFillSeeds.push_back(
+                std::move(job));
+            ++result.profile.meshSeedPlacements;
+        };
+    if (!mesh.placements.isEmpty()) {
+        for (const Placement &placement :
+             mesh.placements) {
+            appendMeshSeed(
+                shapeById(
+                    catalog,
+                    placement.shapeId),
+                placement.transform);
+        }
+    } else {
+        for (const FixedCandidate &candidate :
+             meshCandidates) {
+            appendMeshSeed(
+                candidate.shape,
+                candidate.transform);
+        }
     }
     const QVector<CandidateJob> hardPointSeeds =
         hardPointCandidateSeeds(
@@ -461,8 +510,17 @@ FillResult analyticCoverFillInternal(
         matchContourFeatures(
             currentCoverage,
             targetFeatures);
+    const QVector<ContourFeature> completionFeatures;
+    const FeatureMatchSummary completionFeatureMatches;
+    bool completionMode = false;
     while (polygonSetArea(result.residual) > options.epsArea
            && result.placements.size() < options.budget) {
+        if (completionMode
+            && polygonSetArea(result.residual)
+                <= targetResidualArea
+                    + kGeometryEpsilon) {
+            break;
+        }
         if (cancelled && cancelled()) {
             result.cancelled = true;
             result.residualArea = polygonSetArea(result.residual);
@@ -484,15 +542,17 @@ FillResult analyticCoverFillInternal(
         const DistanceSeed seed = distanceSeed(result.residual);
         const Polygons routedComponent =
             componentAtPoint(result.residual, seed.point);
+        const bool routeCandidates =
+            options.useRouter && !completionMode;
         QVector<const ShapeMesh *> candidates =
-            routedShapes(result.residual, catalog, options.useRouter);
+            routedShapes(result.residual, catalog, routeCandidates);
         const ResidualComplexity structure =
             residualComplexity(result.residual);
         QSet<const ShapeMesh *> localFallbackShapes;
-        if (options.useRouter && structure.components > 1) {
+        if (routeCandidates && structure.components > 1) {
             const QVector<const ShapeMesh *> localCandidates =
                 routedShapes(
-                    routedComponent, catalog, options.useRouter);
+                    routedComponent, catalog, routeCandidates);
             double globalComponentDistance =
                 std::numeric_limits<double>::max();
             for (const ShapeMesh *shape : candidates) {
@@ -515,7 +575,8 @@ FillResult analyticCoverFillInternal(
         }
         std::vector<CandidateJob> jobs;
         jobs.reserve(static_cast<size_t>(
-            candidates.size() * (options.restarts + 1)));
+            candidates.size() * (options.restarts + 1)
+            + initialFillSeeds.size()));
         std::mt19937_64 localRandom;
         bool localRandomReady = false;
         for (const ShapeMesh *shape : candidates) {
@@ -551,6 +612,24 @@ FillResult analyticCoverFillInternal(
                 jobs.push_back(job);
             }
         }
+        const QVector<CandidateJob> initialFillJobs =
+            rankedInitialFillJobs(
+                initialFillSeeds,
+                result.residual,
+                spillFreeCover,
+                subjectBounds,
+                options);
+        for (const CandidateJob &job :
+             initialFillJobs) {
+            if (job.origin
+                == CandidateOrigin::AnalyticSeed) {
+                ++result.profile.analyticSeedJobs;
+            } else if (job.origin
+                       == CandidateOrigin::PolygonMeshSeed) {
+                ++result.profile.meshSeedJobs;
+            }
+            jobs.push_back(job);
+        }
         const QVector<CandidateJob> hardPointJobs =
             rankedHardPointJobs(
                 hardPointSeeds,
@@ -562,13 +641,14 @@ FillResult analyticCoverFillInternal(
              hardPointJobs) {
             jobs.push_back(job);
         }
-        const QVector<CandidateJob> featureJobs =
-            featureAwareJobs(
-                candidates, targetFeatures,
-                currentFeatureMatches
-                    .representedIds,
-                seed,
-                options.featureRestarts);
+        const QVector<CandidateJob> featureJobs = completionMode
+            ? QVector<CandidateJob>{}
+            : featureAwareJobs(
+                  candidates, targetFeatures,
+                  currentFeatureMatches
+                      .representedIds,
+                  seed,
+                  options.featureRestarts);
         result.profile.featureCandidateJobs +=
             featureJobs.size();
         for (const CandidateJob &job :
@@ -669,13 +749,25 @@ FillResult analyticCoverFillInternal(
         }
         QElapsedTimer residualTimer;
         residualTimer.start();
+        FillOptions selectionOptions = options;
+        selectionOptions.areaWindowRatio = completionMode
+            ? std::min(
+                  options.areaWindowRatio,
+                  kDefaultAreaWindowRatio)
+            : options.areaWindowRatio;
+        const QVector<ContourFeature> &selectionFeatures = completionMode
+            ? completionFeatures
+            : targetFeatures;
+        const FeatureMatchSummary &selectionFeatureMatches = completionMode
+            ? completionFeatureMatches
+            : currentFeatureMatches;
         CandidateSelection selection = selectCandidate(
             rankedCandidates, catalog,
             mustCover, mayCover,
             currentCoverage,
-            result.residual, targetFeatures,
-            currentFeatureMatches,
-            options);
+            result.residual, selectionFeatures,
+            selectionFeatureMatches,
+            selectionOptions);
         result.profile.featureCandidateRejections +=
             selection
                 .featureCandidateRejections;
@@ -694,8 +786,23 @@ FillResult analyticCoverFillInternal(
         result.profile.residualUpdateWallSeconds +=
             static_cast<double>(residualTimer.nsecsElapsed()) * 1e-9;
         if (!selection.valid) {
-            result.stalled = true;
+            const double remainingArea =
+                polygonSetArea(result.residual);
+            if (!completionMode
+                && remainingArea
+                    > targetResidualArea
+                        + kGeometryEpsilon) {
+                completionMode = true;
+                result.profile.completionActivated = true;
+                continue;
+            }
+            result.stalled = remainingArea
+                > successfulResidualArea
+                    + kGeometryEpsilon;
             break;
+        }
+        if (completionMode) {
+            ++result.profile.completionPlacements;
         }
         if (selection.complexityPreferred) {
             ++result.profile.complexitySelections;
@@ -709,6 +816,12 @@ FillResult analyticCoverFillInternal(
         } else if (selection.candidate.origin
                    == CandidateOrigin::HardEdge) {
             ++result.profile.hardEdgePlacements;
+        } else if (selection.candidate.origin
+                   == CandidateOrigin::AnalyticSeed) {
+            ++result.profile.analyticSeedSelections;
+        } else if (selection.candidate.origin
+                   == CandidateOrigin::PolygonMeshSeed) {
+            ++result.profile.meshSeedSelections;
         }
         if (!selection
                  .newlyRepresentedFeatureIds
@@ -749,7 +862,8 @@ FillResult analyticCoverFillInternal(
 
     const bool greedyBudgetHit =
         result.placements.size() >= options.budget
-        && polygonSetArea(result.residual) > options.epsArea;
+        && polygonSetArea(result.residual)
+            > successfulResidualArea;
     ExactCoverState coverState = exactCoverState(
         result.placements, catalog,
         mustCover, mayCover, targetArea);
@@ -953,10 +1067,95 @@ FillResult analyticCoverFillInternal(
     coverState = exactCoverState(
         result.placements, catalog,
         mustCover, mayCover, targetArea);
+    const auto retainBetterBaseline =
+        [&](const QVector<Placement> &baseline,
+            const QString &name) {
+            if (baseline.isEmpty()
+                || baseline.size() > options.budget) {
+                return;
+            }
+            ExactCoverState baselineState =
+                exactCoverState(
+                    baseline, catalog,
+                    mustCover, mayCover,
+                    targetArea);
+            const CoverErrorMetrics currentMetrics =
+                evaluateCoverMetrics(
+                    mustCover, mayCover,
+                    coverState.coverage,
+                    targetFeatures,
+                    options);
+            const CoverErrorMetrics baselineMetrics =
+                evaluateCoverMetrics(
+                    mustCover, mayCover,
+                    baselineState.coverage,
+                    targetFeatures,
+                    options);
+            const double similarityTolerance =
+                targetArea > kGeometryEpsilon
+                ? options.epsArea / targetArea
+                : 0.0;
+            const bool betterCoverage =
+                baselineState.residualArea
+                    + options.epsArea
+                < coverState.residualArea
+                && baseline.size()
+                    <= result.placements.size();
+            const bool betterShapeCount =
+                baseline.size()
+                    < result.placements.size()
+                && baselineState.residualArea
+                    <= coverState.residualArea
+                        + options.epsArea;
+            if ((!betterCoverage
+                 && !betterShapeCount)
+                || !legalEnvelopeArea(
+                    baselineMetrics.outsideEnvelopeArea,
+                    options)
+                || !legalOutwardDistance(
+                    baselineMetrics.maximumOutwardDistance,
+                    options)
+                || baselineMetrics
+                       .representedFeatureWeight
+                    + kGeometryEpsilon
+                    < currentMetrics
+                          .representedFeatureWeight
+                || baselineMetrics.tversky
+                    + similarityTolerance
+                    < currentMetrics.tversky) {
+                return;
+            }
+            result.placements = baseline;
+            coverState =
+                std::move(baselineState);
+            refreshPlacementGains(
+                &result.placements,
+                catalog, mustCover);
+            assignFeatureOwnership(
+                &result.placements,
+                catalog,
+                coverState.coverage,
+                targetFeatures);
+            result.profile.retainedBaseline =
+                name;
+        };
+    retainBetterBaseline(
+        analyticSeeds.placements,
+        QStringLiteral("analytic fill"));
+    retainBetterBaseline(
+        mesh.placements,
+        QStringLiteral("polygon mesh"));
     result.residual = std::move(coverState.residual);
     result.residualArea = coverState.residualArea;
     result.coveredArea = coverState.coveredArea;
     result.outsideArea = coverState.outsideArea;
+    result.profile.coverageTargetReached =
+        result.residualArea
+        <= targetResidualArea
+            + kGeometryEpsilon;
+    if (result.profile.coverageTargetReached) {
+        result.stalled = false;
+    }
     measureResult();
     if (postProcess && !hasLeeway) {
         result.profile.postRepairNewGapArea =
@@ -967,7 +1166,8 @@ FillResult analyticCoverFillInternal(
     }
     result.budgetHit = greedyBudgetHit
         || (result.placements.size() >= options.budget
-            && result.residualArea > options.epsArea);
+            && result.residualArea
+                > successfulResidualArea);
     result.profile.finalMeasurementWallSeconds =
         static_cast<double>(finalTimer.nsecsElapsed()) * 1e-9;
     result.profile.totalWallSeconds =
@@ -977,8 +1177,9 @@ FillResult analyticCoverFillInternal(
         mergeRepairProfile(
             repairProfile, &result.profile);
     }
-    if (postProcess && progress
-        && result.profile.repairPlacements > 0) {
+    if (progress
+        && (result.profile.repairPlacements > 0
+            || !result.profile.retainedBaseline.isEmpty())) {
         progress({
             static_cast<int>(
                 result.placements.size()),

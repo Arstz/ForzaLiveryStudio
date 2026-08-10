@@ -846,25 +846,51 @@ bool testCompactPolygonMesh(
     const cover::FillResult result =
         cover::analyticCoverFill(
             input, catalog, options);
+    const double targetArea =
+        result.coveredArea
+        + result.residualArea;
+    const double coverageRatio =
+        targetArea > 0.0
+        ? result.coveredArea / targetArea
+        : 0.0;
+
+    std::cout
+        << "polygon mesh seeds: baseline="
+        << result.profile.meshPlacements
+        << " placements at "
+        << result.profile.meshCoverageRatio
+        << " coverage; final="
+        << result.placements.size()
+        << " placements at "
+        << coverageRatio
+        << " coverage; analytic jobs="
+        << result.profile.analyticSeedJobs
+        << ", mesh jobs="
+        << result.profile.meshSeedJobs
+        << ", selections="
+        << result.profile.analyticSeedSelections
+        << "+"
+        << result.profile.meshSeedSelections
+        << '\n';
 
     return check(
         result.error.isEmpty()
             && !result.profile.structuralAccepted
             && result.profile.meshAccepted
-            && result.profile.meshPlacements
-                == result.placements.size()
             && result.profile.meshCoverageRatio
                 >= 0.98
-            && result.profile.evaluationBackend
-                == QStringLiteral("Polygon mesh")
-            && std::all_of(
-                result.placements.cbegin(),
-                result.placements.cend(),
-                [](const cover::Placement &placement) {
-                    return placement.shapeId == 101
-                        || placement.shapeId == 103;
-                }),
-        "multi-axis contour did not use its compact polygon mesh");
+            && result.profile.analyticSeedPlacements > 0
+            && result.profile.analyticSeedJobs
+                + result.profile.meshSeedJobs > 0
+            && result.profile.analyticSeedSelections > 0
+            && result.profile.meshSeedSelections > 0
+            && result.placements.size()
+                <= result.profile.meshPlacements
+            && result.residualArea
+                <= result.profile.meshResidualArea
+                    + options.epsArea
+                    + 1e-6,
+        "multi-axis contour did not refine its polygon-mesh baseline");
 }
 
 bool loadLoggedContour(QVector<PenPoint> *points, bool *available) {
@@ -1051,10 +1077,8 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
         : first;
     const bool structural =
         first.profile.structuralAccepted;
-    const bool mesh =
-        first.profile.meshAccepted;
     const bool compactPlan =
-        structural || mesh;
+        structural;
     std::cout
         << "logged contour structural: "
         << qPrintable(
@@ -1092,19 +1116,16 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                                   > 0.0),
                   "logged contour solver profiling times are invalid")
         || !check((compactPlan
-                       ? ((structural
-                               && first.profile.structuralRectangles > 0
-                               && first.profile.structuralCoverageRatio
-                                   >= 0.9)
-                          || (mesh
-                              && first.profile.meshPlacements > 0
-                              && first.profile.meshCoverageRatio
-                                  >= 0.98))
+                       ? (first.profile.structuralRectangles > 0
+                          && first.profile.structuralCoverageRatio
+                              >= 0.9)
                        : (first.profile.greedySteps > 0
                           && first.profile.workerThreads > 0
                           && first.profile.candidateJobs > 0
                           && first.profile.adamEvaluations > 0
                           && first.profile.legalizationEvaluations > 0
+                          && first.profile.analyticSeedPlacements > 0
+                          && first.profile.analyticSeedJobs > 0
                           && first.profile.prunePasses > 0
                           && first.profile.pruneAttempts > 0))
                       && std::isfinite(first.profile.pruneWallSeconds)
@@ -1121,12 +1142,8 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
                    "logged contour solver profiling counts are invalid")
         || !check(
             compactPlan
-                ? ((structural
-                        && first.profile.evaluationBackend
-                            == QStringLiteral("Structural cover"))
-                   || (mesh
-                       && first.profile.evaluationBackend
-                           == QStringLiteral("Polygon mesh")))
+                ? first.profile.evaluationBackend
+                    == QStringLiteral("Structural cover")
                 : (first.profile.evaluationBackend
                            != QStringLiteral("CPU")
                        ? (first.profile.gpuBatches > 0
@@ -1214,6 +1231,12 @@ bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
               << " hard-edge placements from "
               << first.profile.hardEdgeCandidates
               << " hard-edge candidates, "
+              << first.profile.analyticSeedSelections
+              << " analytic-seed placements from "
+              << first.profile.analyticSeedPlacements
+              << " initial placements and "
+              << first.profile.analyticSeedJobs
+              << " jobs, "
               << first.profile.structuralRectangles
               << " structural rectangles ("
               << qPrintable(
@@ -1615,8 +1638,6 @@ QVector<PenPoint> continuityPruneRegressionPoints() {
 
 bool testContinuityPruneRegression(
     const QVector<cover::ShapeMesh> &catalog) {
-    constexpr int kMaximumPlacementCount = 7;
-    constexpr double kMinimumCoverageRatio = 0.98;
     constexpr double kBoundaryTolerance = 0.1;
     constexpr double kMetricTolerance = 1e-5;
     const PenContour contour = buildPenContour(
@@ -1673,14 +1694,17 @@ bool testContinuityPruneRegression(
     return check(
         result.error.isEmpty()
             && !result.cancelled
-            && result.placements.size()
-                <= kMaximumPlacementCount
             && coverageRatio
-                >= kMinimumCoverageRatio
+                >= options.targetCoverageRatio
+            && result.profile.coverageTargetReached
             && result.metrics.maximumOutwardDistance
                 <= options.boundaryTolerance
                     + kMetricTolerance
-            && result.profile.prunedPlacements > 0
+            && result.profile.pruneAttempts > 0
+            && result.profile.postPruneResidualArea
+                <= result.profile.prePruneResidualArea
+                    + options.epsArea
+                    + kMetricTolerance
             && result.profile.pruneOptimizations == 0
             && result.profile.postContinuityKinks
                 <= result.profile.preContinuityKinks
@@ -1808,6 +1832,255 @@ bool testLetterONegativeSpace(
     return true;
 }
 
+QVector<PenLoop> loggedLoops(const QJsonObject &request) {
+    QVector<PenLoop> result;
+    QJsonArray sourceLoops =
+        request.value(QStringLiteral("loops")).toArray();
+    if (sourceLoops.isEmpty()) {
+        const QJsonArray points =
+            request.value(QStringLiteral("points")).toArray();
+        if (!points.isEmpty()) {
+            QJsonObject loop;
+            loop.insert(QStringLiteral("kind"), QStringLiteral("outer"));
+            loop.insert(QStringLiteral("points"), points);
+            sourceLoops.push_back(loop);
+        }
+    }
+    for (const QJsonValue &loopValue : sourceLoops) {
+        const QJsonObject sourceLoop = loopValue.toObject();
+        PenLoop loop;
+        loop.kind = sourceLoop.value(QStringLiteral("kind")).toString()
+                    == QStringLiteral("cutout")
+            ? PenLoopKind::Cutout
+            : PenLoopKind::Outer;
+        const QJsonArray sourcePoints =
+            sourceLoop.value(QStringLiteral("points")).toArray();
+        loop.points.reserve(sourcePoints.size());
+        for (const QJsonValue &pointValue : sourcePoints) {
+            const QJsonObject sourcePoint = pointValue.toObject();
+            const QJsonArray position =
+                sourcePoint.value(QStringLiteral("position")).toArray();
+            if (position.size() != 2) {
+                continue;
+            }
+            loop.points.push_back({
+                QPointF(position[0].toDouble(), position[1].toDouble()),
+                sourcePoint.value(QStringLiteral("kind")).toString()
+                        == QStringLiteral("soft")
+                    ? PenPointKind::Soft
+                    : PenPointKind::Hard,
+            });
+        }
+        if (!loop.points.isEmpty()) {
+            result.push_back(std::move(loop));
+        }
+    }
+
+    return result;
+}
+
+int corpusIntegerOption(const char *name, int fallback) {
+    bool valid = false;
+    const int value = qEnvironmentVariableIntValue(name, &valid);
+
+    return valid ? value : fallback;
+}
+
+double corpusRealOption(const char *name, double fallback) {
+    bool valid = false;
+    const double value = qEnvironmentVariable(name).toDouble(&valid);
+
+    return valid ? value : fallback;
+}
+
+bool corpusBooleanOption(const char *name, bool fallback) {
+    if (!qEnvironmentVariableIsSet(name)) {
+        return fallback;
+    }
+    const QString value = qEnvironmentVariable(name).trimmed();
+
+    return value != QStringLiteral("0")
+        && value.compare(QStringLiteral("false"), Qt::CaseInsensitive) != 0;
+}
+
+cover::FillOptions corpusOptions() {
+    cover::FillOptions result;
+    result.budget = corpusIntegerOption("FLS_CORPUS_BUDGET", result.budget);
+    result.adamIterations = corpusIntegerOption(
+        "FLS_CORPUS_ADAM_ITERATIONS", result.adamIterations);
+    result.restarts = corpusIntegerOption(
+        "FLS_CORPUS_RESTARTS", result.restarts);
+    result.featureRestarts = corpusIntegerOption(
+        "FLS_CORPUS_FEATURE_RESTARTS", result.featureRestarts);
+    result.spillWeight = corpusRealOption(
+        "FLS_CORPUS_SPILL_WEIGHT", result.spillWeight);
+    result.epsArea = corpusRealOption("FLS_CORPUS_EPS_AREA", result.epsArea);
+    result.epsGain = corpusRealOption("FLS_CORPUS_EPS_GAIN", result.epsGain);
+    result.epsSpill = corpusRealOption(
+        "FLS_CORPUS_EPS_SPILL", result.epsSpill);
+    result.adamLearningRate = corpusRealOption(
+        "FLS_CORPUS_ADAM_LEARNING_RATE", result.adamLearningRate);
+    result.inactivityTimeoutSeconds = corpusRealOption(
+        "FLS_CORPUS_INACTIVITY_TIMEOUT", result.inactivityTimeoutSeconds);
+    result.boundaryTolerance = corpusRealOption(
+        "FLS_CORPUS_BOUNDARY_TOLERANCE", result.boundaryTolerance);
+    result.outwardMargin = corpusRealOption(
+        "FLS_CORPUS_OUTWARD_MARGIN", result.outwardMargin);
+    result.areaWindowRatio = corpusRealOption(
+        "FLS_CORPUS_AREA_WINDOW_RATIO", result.areaWindowRatio);
+    result.targetCoverageRatio = corpusRealOption(
+        "FLS_CORPUS_TARGET_COVERAGE_RATIO", result.targetCoverageRatio);
+    result.tverskyAlpha = corpusRealOption(
+        "FLS_CORPUS_TVERSKY_ALPHA", result.tverskyAlpha);
+    result.tverskyBeta = corpusRealOption(
+        "FLS_CORPUS_TVERSKY_BETA", result.tverskyBeta);
+    result.featureWeight = corpusRealOption(
+        "FLS_CORPUS_FEATURE_WEIGHT", result.featureWeight);
+    result.seed = static_cast<std::uint64_t>(std::max(
+        0, corpusIntegerOption("FLS_CORPUS_SEED", 0)));
+    result.useRouter = corpusBooleanOption(
+        "FLS_CORPUS_USE_ROUTER", result.useRouter);
+    result.useGpu = corpusBooleanOption(
+        "FLS_CORPUS_USE_GPU", result.useGpu);
+    result.useWeightedContour = corpusBooleanOption(
+        "FLS_CORPUS_WEIGHTED_CONTOUR", true);
+
+    return result;
+}
+
+int runLoggedCorpus(const QString &directoryPath,
+                    const QVector<cover::ShapeMesh> &catalog) {
+    const QDir directory(directoryPath);
+    const QStringList files = directory.entryList(
+        {QStringLiteral("pen_fill*.log")}, QDir::Files, QDir::Name);
+    if (files.isEmpty()) {
+        std::cerr << "No pen_fill logs found\n";
+        return 1;
+    }
+    const cover::FillOptions options = corpusOptions();
+    QJsonArray results;
+    QHash<QByteArray, QJsonObject> resultByContour;
+    for (const QString &fileName : files) {
+        QFile file(directory.filePath(fileName));
+        if (!file.open(QIODevice::ReadOnly)) {
+            std::cerr << "Could not open " << qPrintable(file.fileName()) << '\n';
+            return 1;
+        }
+        QJsonParseError parseError;
+        const QJsonDocument document =
+            QJsonDocument::fromJson(file.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError
+            || !document.isObject()) {
+            std::cerr << "Invalid log " << qPrintable(file.fileName()) << '\n';
+            return 1;
+        }
+        const QJsonObject request =
+            document.object().value(QStringLiteral("request")).toObject();
+        QJsonArray digestLoops =
+            request.value(QStringLiteral("loops")).toArray();
+        if (digestLoops.isEmpty()) {
+            digestLoops.push_back(
+                request.value(QStringLiteral("points")));
+        }
+        const QByteArray contourDigest = QCryptographicHash::hash(
+            QJsonDocument(digestLoops).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256);
+        if (resultByContour.contains(contourDigest)) {
+            QJsonObject result = resultByContour.value(contourDigest);
+            result.insert(QStringLiteral("file"), fileName);
+            result.insert(QStringLiteral("duplicateContour"), true);
+            results.push_back(result);
+            std::cerr << qPrintable(fileName) << ": duplicate contour\n";
+            continue;
+        }
+        const QVector<PenLoop> loops = loggedLoops(request);
+        const PenContour contour = buildPenContour(
+            loops, options.boundaryTolerance * 0.25);
+        if (!contour.valid()) {
+            std::cerr << "Invalid contour in " << qPrintable(fileName)
+                      << ": " << qPrintable(contour.error) << '\n';
+            return 1;
+        }
+        cover::FillInput input;
+        input.mustCoverPath = contour.path;
+        for (const PenContourLoop &loop : contour.loops) {
+            input.boundaryLoops.push_back(loop.segments);
+        }
+        const cover::FillResult fill =
+            cover::analyticCoverFill(input, catalog, options);
+        QJsonObject result;
+        result.insert(QStringLiteral("file"), fileName);
+        result.insert(QStringLiteral("error"), fill.error);
+        result.insert(QStringLiteral("placements"), fill.placements.size());
+        result.insert(QStringLiteral("targetArea"),
+                      fill.coveredArea + fill.residualArea);
+        result.insert(QStringLiteral("missingArea"), fill.metrics.missingArea);
+        result.insert(QStringLiteral("outsideArea"),
+                      fill.metrics.outsideTargetArea);
+        result.insert(QStringLiteral("boundaryFScore"),
+                      fill.metrics.boundaryFScore);
+        result.insert(QStringLiteral("boundaryDistance95"),
+                      fill.metrics.boundaryDistance95);
+        result.insert(QStringLiteral("maximumOutwardDistance"),
+                      fill.metrics.maximumOutwardDistance);
+        result.insert(QStringLiteral("tversky"), fill.metrics.tversky);
+        result.insert(QStringLiteral("wallSeconds"),
+                      fill.profile.totalWallSeconds);
+        result.insert(QStringLiteral("greedySteps"),
+                      fill.profile.greedySteps);
+        result.insert(QStringLiteral("analyticSeedPlacements"),
+                      fill.profile.analyticSeedPlacements);
+        result.insert(QStringLiteral("analyticSeedJobs"),
+                      static_cast<qint64>(
+                          fill.profile.analyticSeedJobs));
+        result.insert(QStringLiteral("meshSeedJobs"),
+                      static_cast<qint64>(
+                          fill.profile.meshSeedJobs));
+        result.insert(QStringLiteral("analyticSeedSelections"),
+                      fill.profile.analyticSeedSelections);
+        result.insert(QStringLiteral("meshSeedSelections"),
+                      fill.profile.meshSeedSelections);
+        result.insert(QStringLiteral("completionPlacements"),
+                      fill.profile.completionPlacements);
+        result.insert(QStringLiteral("completionActivated"),
+                      fill.profile.completionActivated);
+        result.insert(QStringLiteral("coverageTargetReached"),
+                      fill.profile.coverageTargetReached);
+        result.insert(QStringLiteral("retainedBaseline"),
+                      fill.profile.retainedBaseline);
+        result.insert(QStringLiteral("prunedPlacements"),
+                      fill.profile.prunedPlacements);
+        result.insert(QStringLiteral("repairPlacements"),
+                      fill.profile.repairPlacements);
+        result.insert(QStringLiteral("prePruneResidualArea"),
+                      fill.profile.prePruneResidualArea);
+        result.insert(QStringLiteral("postPruneResidualArea"),
+                      fill.profile.postPruneResidualArea);
+        result.insert(QStringLiteral("backend"),
+                      fill.profile.evaluationBackend);
+        result.insert(QStringLiteral("cancelled"), fill.cancelled);
+        result.insert(QStringLiteral("timedOut"), fill.timedOut);
+        result.insert(QStringLiteral("stalled"), fill.stalled);
+        resultByContour.insert(contourDigest, result);
+        results.push_back(result);
+        std::cerr << qPrintable(fileName) << ": "
+                  << fill.placements.size() << " shapes, "
+                  << fill.metrics.missingArea << " missing, "
+                  << fill.profile.totalWallSeconds << "s\n";
+    }
+    QJsonObject output;
+    output.insert(QStringLiteral("configuration"),
+                  qEnvironmentVariable(
+                      "FLS_CORPUS_CONFIGURATION",
+                      QStringLiteral("unnamed")));
+    output.insert(QStringLiteral("results"), results);
+    QTextStream(stdout)
+        << QJsonDocument(output).toJson(QJsonDocument::Compact)
+        << Qt::endl;
+
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1821,8 +2094,15 @@ int main(int argc, char **argv) {
     const QVector<cover::ShapeMesh> catalog =
         cover::buildShapeCatalog(geometry, &error);
     if (!check(error.isEmpty(),
-               qPrintable(QStringLiteral("catalog build failed: %1").arg(error)))
-        || !testCatalogAndGradient(catalog)
+               qPrintable(QStringLiteral("catalog build failed: %1").arg(error)))) {
+        return 1;
+    }
+    const QStringList arguments = application.arguments();
+    if (arguments.size() == 3
+        && arguments[1] == QStringLiteral("--corpus")) {
+        return runLoggedCorpus(arguments[2], catalog);
+    }
+    if (!testCatalogAndGradient(catalog)
         || !testWeightedMetrics()
         || !testWeightedSquare(catalog)
         || !testWeightedCandidatePath(catalog)

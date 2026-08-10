@@ -39,13 +39,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   thin boundary residuals are retained without adding low-value placements, and
   other partial covers seed residual fitting. Multi-axis hard boundaries also
   evaluate their complete square-and-triangle mesh as one coherent compact plan.
-  A rejected plan is discarded. Consecutive hard corners instead seed bounded
-  Square and Triangle Adam jobs whose shared contour vertex remains fixed during
-  optimization. Outward quadratic runs between hard endpoints seed Circle jobs
-  from their arc-length midpoint and tangent, with that midpoint fixed during
-  optimization. A bounded continuity-aware pruning stage aligns exposed
+  The existing analytic Pen fill and the polygon mesh supply feasible affine
+  transforms to the greedy candidate pool. Their exact initial transforms remain
+  available while Adam tries to improve them, and the best legal complete plan
+  remains a final shape-count baseline. Consecutive hard corners also seed
+  bounded Square and Triangle Adam jobs whose shared contour vertex remains fixed
+  during optimization. Outward quadratic runs between hard endpoints seed Circle
+  jobs from their arc-length midpoint and tangent, with that midpoint fixed
+  during optimization. A bounded continuity-aware pruning stage aligns exposed
   boundaries near smooth contour sections, then removes placements under the
-  stabilized contour baseline. A removal can align its newly exposed neighbors
+  stabilized contour baseline without relaxing achieved coverage toward the
+  compact structural threshold. A removal can align its newly exposed neighbors
   through the same bounded proposals. Exact union checks reject added outward
   deviation, unstable contours, or lost hard-corner features. Smooth-junction
   ownership can be discarded when the stabilized union remains within the
@@ -54,11 +58,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   legalization first. Direct3D 11 legalization with double-precision CPU Adam is
   the next backend, followed by the parallel CPU evaluator. Exact CPU candidate
   verification remains authoritative, and backend failure advances automatically.
+  If feature-preserving selection stalls below the configured 99 percent
+  coverage target, a bounded completion phase evaluates the full catalog without
+  requiring every previously matched feature to remain exposed. It retains the
+  exact legality envelope and outward-distance limit, and stops when the target
+  ratio is reached.
   Its status-bar progress reports exact covered area and updates elapsed time
   independently of placement completion.
   The Settings **Advanced** page persists bounded controls for placement budget,
   optimizer iterations, restarts, spill and stopping thresholds, learning rate,
-  inactivity timeout, boundary tolerance, outward margin, candidate selection,
+  inactivity timeout, boundary tolerance, outward margin, completion coverage,
+  candidate selection,
   similarity and feature weights, random seed, routing, acceleration, and
   feature-weighted contour handling. Every control includes a concise usage tip.
   The GUI retains the submitted quadratic `QPainterPath` through solver setup and
