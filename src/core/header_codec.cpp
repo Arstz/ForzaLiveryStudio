@@ -163,7 +163,7 @@ QByteArray buildHeader(const HeaderMetadata &meta) {
 
 HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId) {
     HeaderMetadata meta;
-    meta.formatVersion = 7;
+    meta.formatVersion = kCurrentHeaderFormatVersion;
     meta.name = name;
     meta.published = false;
     const QDate today = QDate::currentDate();

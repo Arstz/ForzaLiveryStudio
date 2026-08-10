@@ -1,4 +1,5 @@
 #include "binary_io.h"
+#include "header_codec.h"
 #include "layer.h"
 #include "livery_codec.h"
 #include "project_codec.h"
@@ -286,6 +287,63 @@ bool testPartialSourceRebuild() {
     const QByteArray original = source.mid(gyvl, stats - gyvl);
     if (counts[kTopSlot] != 2 || rebuilt == original) {
         qCritical() << "partially decoded source section was not rebuilt from editable artwork";
+        return false;
+    }
+    return true;
+}
+
+bool testCanonicalFh6Envelope() {
+    constexpr int kLegacySectionCount = 7;
+    constexpr int kStatsTableSize = 52;
+    fls::Project project = makeEncoderProject();
+    QByteArray legacySource = fls::encodeCLiveryPayload(project);
+    const int sourceGyvl = legacySource.indexOf(QByteArray("gyvl", 4));
+    const int sourceStats = legacySource.indexOf(QByteArray("yrvl", 4), sourceGyvl + 4);
+    const int sourceDescriptors = legacySource.indexOf(QByteArray("yrvl", 4), sourceStats + 4);
+    if (sourceGyvl < 0 || sourceStats < 0 || sourceDescriptors < 0) {
+        qCritical() << "canonical envelope fixture is missing livery chunks";
+        return false;
+    }
+    writeLeU32(legacySource, 4, 1);
+    const int legacyStatsEnd = sourceStats + 4 + kLegacySectionCount * 4;
+    legacySource.remove(legacyStatsEnd, sourceDescriptors - legacyStatsEnd);
+    project.liverySource = legacySource;
+    project.headerMetadata = fls::defaultDraftHeader(project.name, QString(), project.carId);
+    project.headerMetadata->formatVersion = 4;
+
+    const QByteArray encoded = fls::encodeCLiveryPayload(project);
+    const int gyvl = encoded.indexOf(QByteArray("gyvl", 4));
+    const int stats = encoded.indexOf(QByteArray("yrvl", 4), gyvl + 4);
+    const int descriptors = encoded.indexOf(QByteArray("yrvl", 4), stats + 4);
+    const int terminator = encoded.indexOf(QByteArray("yrvl", 4), descriptors + 4);
+    const fls::LiveryPayload decoded = fls::parseInflatedLiveryPayload(encoded);
+    if (fls::detail::readLeU32(encoded, 4) != 2
+        || encoded.indexOf(QByteArray("yrvl", 4)) != 26
+        || gyvl != 51
+        || descriptors != stats + kStatsTableSize
+        || descriptors + 6 > encoded.size()
+        || static_cast<quint8>(encoded[descriptors + 5]) != 2
+        || terminator < descriptors
+        || decoded.sectionCounts.size() != kSectionCount) {
+        qCritical() << "legacy source did not export with the canonical FH6 envelope";
+        return false;
+    }
+
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) {
+        qCritical() << "could not create the canonical envelope test folder";
+        return false;
+    }
+    fls::exportCLivery(project, temporary.path());
+    QFile headerFile(QDir(temporary.path()).filePath(QStringLiteral("header")));
+    if (!headerFile.open(QIODevice::ReadOnly)) {
+        qCritical() << "canonical FH6 header was not exported";
+        return false;
+    }
+    const fls::HeaderMetadata header = fls::parseHeader(headerFile.readAll());
+    if (header.formatVersion != fls::kCurrentHeaderFormatVersion
+        || header.carId != static_cast<quint32>(project.carId)) {
+        qCritical() << "legacy header metadata did not export as the current FH6 version";
         return false;
     }
     return true;
@@ -689,12 +747,17 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
+    if (args.size() == 2 && args[1] == QStringLiteral("--canonical-envelope")) {
+        return testCanonicalFh6Envelope() ? 0 : 1;
+    }
     if (args.size() != 1) {
         qCritical() << "usage: fls_livery_logo_encoder_tests"
+                       " [--canonical-envelope]"
                        " [--generate-fixtures <source-root> <output-root>]";
         return 2;
     }
     return testLogoEncoding() && testLogoShapeLimit() && testPartialSourceRebuild()
+            && testCanonicalFh6Envelope()
             && testNestedMaskGroupTransforms() && testDeletedSiblingSourceFraming()
         ? 0
         : 1;

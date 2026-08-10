@@ -1133,22 +1133,16 @@ QByteArray buildLiveryHeader(const Project &project, const QVector<int> &section
             metadata.creatorName = project.headerMetadata->creatorName;
             metadata.year = project.headerMetadata->year;
         }
+        metadata.formatVersion = kCurrentHeaderFormatVersion;
         metadata.name = project.name;
         metadata.carId = static_cast<quint32>(project.carId);
         metadata.typeValue = decalCount;
         return buildHeader(metadata);
     }
 
-    if (!project.sourceHeader.isEmpty()) {
-        QByteArray header = renameHeader(project.sourceHeader, project.name);
-        if (header.size() >= 20) {
-            writeLeU32InPlace(header, header.size() - 20, static_cast<quint32>(project.carId));
-        }
-        return header;
-    }
-
     if (project.headerMetadata) {
         HeaderMetadata metadata = *project.headerMetadata;
+        metadata.formatVersion = kCurrentHeaderFormatVersion;
         metadata.name = project.name;
         metadata.carId = static_cast<quint32>(project.carId);
         metadata.typeValue = decalCount;
@@ -1168,54 +1162,8 @@ QByteArray encodeCLiveryPayload(const Project &project) {
     }
     std::array<int, 11> counts{};
     const QByteArray gyvl = buildLiveryGyvl(project, &counts);
-    if (project.liverySource.isEmpty()) {
-        return buildNewLiveryPayload(project, gyvl, counts);
-    }
-    const LiveryPayload source = [&project]() {
-        LiveryPayload payload;
-        payload.raw = project.liverySource;
-        const int gyvl = payload.raw.indexOf(QByteArray("gyvl", 4));
-        if (gyvl < 0) {
-            throw std::runtime_error("livery source is missing its gyvl artwork chunk");
-        }
-        payload.gyvlOffset = gyvl;
-        const int bodyStart = gyvl + 0x15;
-        int bodyEnd = payload.raw.indexOf(QByteArray("yrvl", 4), gyvl);
-        if (bodyEnd < 0 || bodyEnd < bodyStart) {
-            throw std::runtime_error("livery source is missing its post-gyvl stats chunk");
-        }
-        payload.body = payload.raw.mid(bodyStart, bodyEnd - bodyStart);
-        return payload;
-    }();
 
-    const int oldGyvlEnd = source.gyvlOffset + 0x15 + source.body.size();
-    if (oldGyvlEnd > project.liverySource.size()) {
-        throw std::runtime_error("livery source gyvl chunk is truncated");
-    }
-
-    QByteArray payload = project.liverySource.left(source.gyvlOffset);
-    payload.append(gyvl);
-    payload.append(project.liverySource.mid(oldGyvlEnd));
-
-    const int vlrc = payload.indexOf(QByteArray("vlrc", 4));
-    if (vlrc < 0 || vlrc + 0x14 > payload.size()) {
-        throw std::runtime_error("livery source is missing its vlrc root header");
-    }
-    writeLeU32InPlace(payload, vlrc + 0x10, static_cast<quint32>(project.carId));
-
-    if (source.gyvlOffset < 4) {
-        throw std::runtime_error("livery source is missing its gyvl length field");
-    }
-    writeLeU32InPlace(payload, source.gyvlOffset - 4, static_cast<quint32>(gyvl.size()));
-
-    const int statsTag = source.gyvlOffset + gyvl.size();
-    if (statsTag + 52 > payload.size() || payload.mid(statsTag, 4) != QByteArray("yrvl", 4)) {
-        throw std::runtime_error("re-encoded livery is missing its post-gyvl stats chunk");
-    }
-    for (int i = 0; i < 11; ++i) {
-        writeLeU32InPlace(payload, statsTag + 4 + i * 4, static_cast<quint32>(counts[static_cast<size_t>(i)]));
-    }
-    return payload;
+    return buildNewLiveryPayload(project, gyvl, counts);
 }
 
 void exportCLivery(const Project &project, const QString &outputFolder) {

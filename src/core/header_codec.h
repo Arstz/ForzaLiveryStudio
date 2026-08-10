@@ -6,8 +6,10 @@
 
 namespace fls {
 
+inline constexpr quint32 kCurrentHeaderFormatVersion = 7;
+
 struct HeaderMetadata {
-    quint32 formatVersion = 7;
+    quint32 formatVersion = kCurrentHeaderFormatVersion;
     QString name;
     bool published = false;
     QString description;
