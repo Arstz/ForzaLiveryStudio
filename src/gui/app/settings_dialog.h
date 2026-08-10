@@ -1,5 +1,6 @@
 #pragma once
 
+#include "differential_cover.h"
 #include "system_integration.h"
 #include "theme_manager.h"
 
@@ -33,6 +34,7 @@ public:
                    const CanvasColorSettings &canvasSettings,
                    const PreviewBackgroundSettings &previewBackgroundSettings,
                    const BehaviorSettings &behaviorSettings,
+                   const cover::FillOptions &differentialFillOptions,
                    const QVector<ShortcutSettingsItem> &shortcuts,
                    QWidget *parent = nullptr);
 
@@ -40,6 +42,7 @@ public:
     CanvasColorSettings selectedCanvasSettings() const;
     PreviewBackgroundSettings selectedPreviewBackgroundSettings() const;
     BehaviorSettings selectedBehaviorSettings() const;
+    cover::FillOptions selectedDifferentialFillOptions() const;
     SystemIconSet selectedSystemIconSet() const;
     bool projectFileAssociationEnabled() const;
     QVector<ShortcutSettingsItem> shortcutItems() const;
@@ -60,6 +63,7 @@ private:
     CanvasColorSettings canvasSettings_;
     PreviewBackgroundSettings previewBackgroundSettings_;
     BehaviorSettings behaviorSettings_;
+    cover::FillOptions differentialFillOptions_;
     QVector<ShortcutSettingsItem> shortcuts_;
     QComboBox *themeCombo_ = nullptr;
     QComboBox *darkCanvasMode_ = nullptr;
@@ -82,6 +86,26 @@ private:
     QLineEdit *gameFolder_ = nullptr;
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;
     QCheckBox *loadCarTextures_ = nullptr;
+    QSpinBox *differentialBudget_ = nullptr;
+    QSpinBox *differentialAdamIterations_ = nullptr;
+    QSpinBox *differentialRestarts_ = nullptr;
+    QDoubleSpinBox *differentialSpillWeight_ = nullptr;
+    QDoubleSpinBox *differentialEpsArea_ = nullptr;
+    QDoubleSpinBox *differentialEpsGain_ = nullptr;
+    QDoubleSpinBox *differentialEpsSpill_ = nullptr;
+    QDoubleSpinBox *differentialAdamLearningRate_ = nullptr;
+    QDoubleSpinBox *differentialInactivityTimeout_ = nullptr;
+    QDoubleSpinBox *differentialBoundaryTolerance_ = nullptr;
+    QDoubleSpinBox *differentialOutwardMargin_ = nullptr;
+    QDoubleSpinBox *differentialAreaWindowRatio_ = nullptr;
+    QDoubleSpinBox *differentialTverskyAlpha_ = nullptr;
+    QDoubleSpinBox *differentialTverskyBeta_ = nullptr;
+    QDoubleSpinBox *differentialFeatureWeight_ = nullptr;
+    QSpinBox *differentialFeatureRestarts_ = nullptr;
+    QSpinBox *differentialSeed_ = nullptr;
+    QCheckBox *differentialUseRouter_ = nullptr;
+    QCheckBox *differentialUseGpu_ = nullptr;
+    QCheckBox *differentialUseWeightedContour_ = nullptr;
     QComboBox *toolbarViewCombo_ = nullptr;
     QCheckBox *separateOpacityAndSkewToolsCheck_ = nullptr;
     QCheckBox *valueEditingWheelCheck_ = nullptr;

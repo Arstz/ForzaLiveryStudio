@@ -79,6 +79,86 @@
     "hasTip": true,
     "tip": "May degrade performance but allows for better car detail in 3D preview."
   },
+  "advanced.differential_budget": {
+    "hasTip": true,
+    "tip": "Maximum number of shapes the solver may place. Higher values allow more complete fills but can take longer."
+  },
+  "advanced.differential_adam_iterations": {
+    "hasTip": true,
+    "tip": "Maximum Adam optimization steps for each candidate transform. More steps can improve fitting at a higher runtime cost."
+  },
+  "advanced.differential_restarts": {
+    "hasTip": true,
+    "tip": "Additional jittered optimizer starts for ordinary candidates. More restarts can escape poor local solutions but increase runtime."
+  },
+  "advanced.differential_spill_weight": {
+    "hasTip": true,
+    "tip": "Penalty applied to candidate area outside the desired region. Larger values pull shapes farther inward."
+  },
+  "advanced.differential_eps_area": {
+    "hasTip": true,
+    "tip": "Remaining uncovered area considered negligible, measured in square canvas units. Larger values stop sooner."
+  },
+  "advanced.differential_eps_gain": {
+    "hasTip": true,
+    "tip": "Minimum new area a shape must cover, measured in square canvas units. Larger values reject small cleanup shapes."
+  },
+  "advanced.differential_eps_spill": {
+    "hasTip": true,
+    "tip": "Outside-envelope area allowed by unweighted legalization, measured in square canvas units. Weighted contour mode keeps the envelope exact."
+  },
+  "advanced.differential_adam_learning_rate": {
+    "hasTip": true,
+    "tip": "Adam optimizer step size. Values that are too large may overshoot; values that are too small may converge slowly."
+  },
+  "advanced.differential_inactivity_timeout": {
+    "hasTip": true,
+    "tip": "Stops a fill after this many seconds without coverage or pruning progress. Set to 0 to disable the timeout."
+  },
+  "advanced.differential_boundary_tolerance": {
+    "hasTip": true,
+    "tip": "Sampling and matching tolerance for contour boundaries and authored features, measured in canvas units."
+  },
+  "advanced.differential_outward_margin": {
+    "hasTip": true,
+    "tip": "Expands the legal placement envelope beyond the desired region by this distance in canvas units, making edge coverage easier."
+  },
+  "advanced.differential_area_window_ratio": {
+    "hasTip": true,
+    "tip": "Keeps candidates whose area gain reaches this fraction of the best gain before quality ranking. Values near 1 favor raw coverage."
+  },
+  "advanced.differential_tversky_alpha": {
+    "hasTip": true,
+    "tip": "Weight assigned to outside area in Tversky similarity. Larger values rank spill more harshly."
+  },
+  "advanced.differential_tversky_beta": {
+    "hasTip": true,
+    "tip": "Weight assigned to missing area in Tversky similarity. Larger values rank gaps more harshly."
+  },
+  "advanced.differential_feature_weight": {
+    "hasTip": true,
+    "tip": "Priority given to preserving exposed hard corners and smooth contour junctions relative to area gain."
+  },
+  "advanced.differential_feature_restarts": {
+    "hasTip": true,
+    "tip": "Number of feature-aligned optimizer starts. More starts can reproduce contour landmarks more reliably but increase runtime."
+  },
+  "advanced.differential_seed": {
+    "hasTip": true,
+    "tip": "Seed for optimizer jitter. Set to 0 to derive a stable seed from the fill geometry."
+  },
+  "advanced.differential_router": {
+    "hasTip": true,
+    "tip": "Limits optimization to shapes that resemble the current residual. Disabling it evaluates a broader catalog and is slower."
+  },
+  "advanced.differential_gpu": {
+    "hasTip": true,
+    "tip": "Uses CUDA optimization or Direct3D legalization when available before falling back to CPU-only work."
+  },
+  "advanced.differential_weighted_contour": {
+    "hasTip": true,
+    "tip": "Ranks and validates candidates using contour distance and authored-feature preservation in addition to covered area."
+  },
   "keybinds.shortcuts": {
     "hasTip": false,
     "tip": " "

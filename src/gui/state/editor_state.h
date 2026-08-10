@@ -47,6 +47,7 @@ struct ProjectEditCommand {
     ProjectSelectionSnapshot undoSelection;
     ProjectSelectionSnapshot redoSelection;
     ProjectEditRefresh refresh = ProjectEditRefresh::Structure;
+    quint64 id = 0;
 };
 
 struct ProjectClipboard {
@@ -122,8 +123,9 @@ public:
     void beginTransformCommand(const QVector<QString> &targetIds);
     void commitTransformCommand();
     void cancelTransformCommand();
-    void undo();
-    void redo();
+    quint64 undo();
+    quint64 redo();
+    quint64 lastCommittedHistoryCommandId() const;
 
     void noteProjectGeometryChanged(bool refreshPreviews = false, const QVector<QString> &changedNodeIds = {});
     void noteTransformLiveChanged(const QVector<QString> &targetIds);
@@ -185,6 +187,8 @@ public:
     QVector<ProjectEditCommand> redoStack_;
     std::optional<ProjectEditCommand> pendingEdit_;
     std::optional<ProjectClipboard> clipboard_;
+    quint64 nextHistoryCommandId_ = 1;
+    quint64 lastCommittedHistoryCommandId_ = 0;
 
 Q_SIGNALS:
     void projectReset();
@@ -241,7 +245,7 @@ private:
     bool snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const;
     ProjectEditRefresh classifySnapshotRefresh(const ProjectEditSnapshot &a, const ProjectEditSnapshot &b) const;
     void applyTransformEdits(const QVector<ProjectTransformEdit> &edits, bool useAfter);
-    void applyHistoryCommand(HistoryDirection direction);
+    quint64 applyHistoryCommand(HistoryDirection direction);
     void restoreSelection(const ProjectSelectionSnapshot &selection);
     void refreshAfterHistoryCommand(ProjectEditRefresh refresh);
     EntryInsertionPoint insertionPointAboveSelection(const QVector<QString> &selectedEntries) const;

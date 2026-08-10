@@ -1078,11 +1078,37 @@ QVector<ShapeMesh> buildShapeCatalog(const ShapeGeometryStore &geometry,
     return result;
 }
 
-Polygons polygonsFromPainterPath(const QPainterPath &path) {
+namespace {
+
+struct PathFlatteningTransforms {
+    QTransform forward;
+    QTransform inverse;
+};
+
+PathFlatteningTransforms pathFlatteningTransforms(
+    double flatnessTolerance) {
+    constexpr double kPainterCurveThreshold = 0.25;
+    constexpr double kMaximumFlatteningScale = 4096.0;
+    PathFlatteningTransforms result;
+    if (std::isfinite(flatnessTolerance)
+        && flatnessTolerance > 0.0) {
+        const double scale = std::clamp(
+            kPainterCurveThreshold / flatnessTolerance,
+            1.0, kMaximumFlatteningScale);
+        result.forward.scale(scale, scale);
+        result.inverse.scale(1.0 / scale, 1.0 / scale);
+    }
+
+    return result;
+}
+
+Polygons normalizedPathPolygons(
+    const QList<QPolygonF> &pathPolygons,
+    const QTransform &inverseTransform) {
     Polygons result;
-    const QList<QPolygonF> subpaths = path.toSubpathPolygons();
-    result.reserve(subpaths.size());
-    for (QPolygonF polygon : subpaths) {
+    result.reserve(pathPolygons.size());
+    for (QPolygonF polygon : pathPolygons) {
+        polygon = inverseTransform.map(polygon);
         polygon = normalizedPolygon(std::move(polygon));
         if (!polygon.isEmpty()) {
             result.push_back(std::move(polygon));
@@ -1091,6 +1117,19 @@ Polygons polygonsFromPainterPath(const QPainterPath &path) {
     orientPolygonSet(&result);
 
     return result;
+}
+
+} // namespace
+
+Polygons polygonsFromPainterPath(
+    const QPainterPath &path,
+    double flatnessTolerance) {
+    const PathFlatteningTransforms transforms =
+        pathFlatteningTransforms(flatnessTolerance);
+
+    return normalizedPathPolygons(
+        path.toSubpathPolygons(transforms.forward),
+        transforms.inverse);
 }
 
 QPainterPath painterPathFromPolygons(const Polygons &polygons) {
@@ -1250,7 +1289,8 @@ QVector<ContourFeature> extractContourFeatures(
 
 Polygons expandedCoverEnvelope(
     const Polygons &target,
-    double distance) {
+    double distance,
+    double flatnessTolerance) {
     if (!std::isfinite(distance)
         || distance <= 0.0) {
         return normalizedInputPolygons(target);
@@ -1268,7 +1308,35 @@ Polygons expandedCoverEnvelope(
 
     return unionPolygons(
         polygonsFromPainterPath(
-            expanded));
+            expanded,
+            flatnessTolerance));
+}
+
+Polygons expandedCoverEnvelope(
+    const QPainterPath &target,
+    double distance,
+    double flatnessTolerance) {
+    if (!std::isfinite(distance)
+        || distance <= 0.0) {
+        return polygonsFromPainterPath(
+            target, flatnessTolerance);
+    }
+    QPainterPath expanded = target;
+    expanded.setFillRule(Qt::WindingFill);
+    QPainterPathStroker stroker;
+    stroker.setWidth(distance * 2.0);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setCapStyle(Qt::RoundCap);
+    expanded.addPath(
+        stroker.createStroke(target));
+    const PathFlatteningTransforms transforms =
+        pathFlatteningTransforms(flatnessTolerance);
+
+    return unionPolygons(
+        normalizedPathPolygons(
+            expanded.toFillPolygons(
+                transforms.forward),
+            transforms.inverse));
 }
 
 } // namespace gui::cover

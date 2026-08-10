@@ -752,6 +752,52 @@ void ProjectCanvas::cancelPenInteraction() {
     cancelPathInteraction(pen_, penFillCancelCallback_);
 }
 
+void ProjectCanvas::restorePenInteraction(
+    const QVector<PenLoop> &loops,
+    const std::optional<QColor> &fillColor,
+    bool fillMask) {
+    pen_.reset();
+    for (const PenLoop &loop : loops) {
+        if (loop.kind == PenLoopKind::Outer) {
+            pen_.points = loop.points;
+        } else {
+            pen_.cutouts.push_back(loop.points);
+        }
+    }
+    pen_.fillColor = fillColor;
+    pen_.fillMask = fillMask;
+    pen_.closed = !pen_.points.isEmpty();
+    pen_.cutoutClosed = true;
+    invalidatePenGeometryCache();
+    refreshPathAfterHistory(pen_);
+}
+
+void ProjectCanvas::clearRestoredPenInteraction(
+    const QVector<PenLoop> &loops,
+    const std::optional<QColor> &fillColor,
+    bool fillMask) {
+    PathInteraction expected;
+    for (const PenLoop &loop : loops) {
+        if (loop.kind == PenLoopKind::Outer) {
+            expected.points = loop.points;
+        } else {
+            expected.cutouts.push_back(loop.points);
+        }
+    }
+    expected.fillColor = fillColor;
+    expected.fillMask = fillMask;
+    expected.closed = !expected.points.isEmpty();
+    if (!pathStatesEqual(
+            capturePathState(pen_),
+            capturePathState(expected))) {
+        return;
+    }
+    pen_.reset();
+    invalidatePenGeometryCache();
+    clearCursorHint();
+    update();
+}
+
 void ProjectCanvas::setLiningFillRequestedCallback(
     std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> callback) {
     liningFillRequestedCallback_ = std::move(callback);

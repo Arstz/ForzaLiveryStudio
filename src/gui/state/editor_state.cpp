@@ -332,6 +332,7 @@ void EditorState::setProject(fls::Project project) {
     undoStack_.clear();
     redoStack_.clear();
     pendingEdit_.reset();
+    lastCommittedHistoryCommandId_ = 0;
     setModified(false);
     Q_EMIT projectReset();
     Q_EMIT selectionChanged();

@@ -30,8 +30,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   cap, and the result is an ordinary single-colour scene group.
   A persistent, default-off **Differential Contour Fill** option replaces that commit
   path with a slow analytic greedy cover for the active contour. It optimizes
-  affine catalog shapes against an exact world-coordinate residual, stays within
-  the contour tolerance, and inserts a measured partial result when progress
+  affine catalog shapes against an exact world-coordinate residual, uses a
+  default one-canvas-unit outward margin for easier edge coverage, and inserts a
+  measured partial result when progress
   stalls. A deterministic structural pass recognizes boundaries dominated by
   two affine axes, constructs a minimum rectangle cover on an oblique grid, and
   legalizes it against the original contour. Compact covers complete directly;
@@ -55,6 +56,16 @@ exports grouped `C_group` folders and `C_livery` folders.
   verification remains authoritative, and backend failure advances automatically.
   Its status-bar progress reports exact covered area and updates elapsed time
   independently of placement completion.
+  The Settings **Advanced** page persists bounded controls for placement budget,
+  optimizer iterations, restarts, spill and stopping thresholds, learning rate,
+  inactivity timeout, boundary tolerance, outward margin, candidate selection,
+  similarity and feature weights, random seed, routing, acceleration, and
+  feature-weighted contour handling. Every control includes a concise usage tip.
+  The GUI retains the submitted quadratic `QPainterPath` through solver setup and
+  adaptively flattens it at one quarter of the configured boundary tolerance for
+  exact polygon operations. Undoing the generated project edit restores the exact
+  submitted Pen loops, point kinds, fill colour, and mask state; redoing it clears
+  that restored contour when it has not been edited.
   Bucket-derived Pen
   contours use the same selected mode.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a

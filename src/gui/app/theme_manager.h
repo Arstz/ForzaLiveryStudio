@@ -10,6 +10,10 @@ class QApplication;
 
 namespace gui {
 
+namespace cover {
+struct FillOptions;
+}
+
 enum class UiTheme {
     Dark,
     Light,
@@ -93,6 +97,8 @@ TransformModeSettings loadTransformModeSettings();
 void saveTransformModeSettings(const TransformModeSettings &settings);
 BehaviorSettings loadBehaviorSettings();
 void saveBehaviorSettings(const BehaviorSettings &settings);
+cover::FillOptions loadDifferentialFillOptions();
+void saveDifferentialFillOptions(const cover::FillOptions &options);
 QColor canvasColorForTheme(UiTheme theme, const CanvasColorSettings &settings);
 QPalette paletteForTheme(UiTheme theme);
 QColor iconColorForTheme(UiTheme theme);

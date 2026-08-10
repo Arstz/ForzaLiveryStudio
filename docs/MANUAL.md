@@ -70,7 +70,9 @@ Bucket tool automates the process described in Pen by generating the contour on 
 
 >Clicking with Bucket tool on transparent pixels will still generate a contour but it will be filled with masked shapes instead upon confirmation.
 
->Enable Differential contour fill in the `Options` menu to conserve shapes, the algortihm takes more time and is not deterministic. GPU acceration will be used if available, priority CUDA->DirectX->CPU. You can adjust shape ids in `assets\differential_shapes.json`, ids are displayed in decimal.
+>Enable Differential contour fill in the `Options` menu to conserve shapes, the algortihm takes more time and is not deterministic. GPU acceration will be used if available, priority CUDA->DirectX->CPU. Its bounded tuning controls and explanations are in `Window → Settings → Advanced`; the outward margin permits edge shapes to extend beyond the desired region by a configured canvas-unit distance. You can adjust shape ids in `assets\differential_shapes.json`, ids are displayed in decimal.
+
+>Undoing a completed Pen or Bucket fill removes its generated shapes and restores the exact editable Pen contour submitted to that fill. Redo reapplies the generated shapes and clears the restored contour if it has not since been edited.
 
 >Selecting a layer in Layers widget with `Alt` held will mark it as a leeway layer for new fill pass. The generated fill will try to conserve shapes by accounting for occlusion. 
 

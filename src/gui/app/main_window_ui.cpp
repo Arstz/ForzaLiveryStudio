@@ -305,6 +305,8 @@ void MainWindow::connectEditorStateSignals() {
     connect(state_, &EditorState::modifiedChanged, this, [this]() { updateWindowTitle(); });
     connect(state_, &EditorState::projectReset, this, [this]() {
         cancelGeneratedFill();
+        pendingGeneratedPenContour_.reset();
+        generatedPenContourHistory_.clear();
         haveLastSelectedShapeDefaults_ = false;
         lastSelectedShapeColor_ = {255, 255, 255, 255};
         lastSelectedShapeScaleX_ = 1.0;
@@ -947,7 +949,8 @@ void MainWindow::showSettingsDialog() {
     const UiTheme originalTheme = theme_;
     const SystemIconSet originalIconSet = loadSystemIconSet();
     SettingsDialog dialog(theme_, loadCanvasColorSettings(), loadPreviewBackgroundSettings(),
-                          loadBehaviorSettings(), shortcutSettingsItems(), this);
+                          loadBehaviorSettings(), loadDifferentialFillOptions(),
+                          shortcutSettingsItems(), this);
     dialog.setThemeChangedCallback([this](UiTheme theme) {
         applyTheme(theme, false);
     });
@@ -957,6 +960,7 @@ void MainWindow::showSettingsDialog() {
     }
     applyShortcutSettings(dialog.shortcutItems());
     applyBehaviorSettings(dialog.selectedBehaviorSettings());
+    saveDifferentialFillOptions(dialog.selectedDifferentialFillOptions());
     saveCanvasColorSettings(dialog.selectedCanvasSettings());
     savePreviewBackgroundSettings(dialog.selectedPreviewBackgroundSettings());
     applyTheme(dialog.selectedTheme());

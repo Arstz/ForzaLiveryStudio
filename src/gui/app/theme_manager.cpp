@@ -1,5 +1,7 @@
 #include "theme_manager.h"
 
+#include "differential_cover.h"
+
 #include <QApplication>
 #include <QPainter>
 #include <QPixmap>
@@ -7,6 +9,7 @@
 #include <QStyleFactory>
 
 #include <algorithm>
+#include <cmath>
 
 namespace gui {
 namespace {
@@ -37,6 +40,34 @@ QString previewBackgroundModeValue(PreviewBackgroundMode mode) {
         return QStringLiteral("default");
     }
     return QStringLiteral("default");
+}
+
+double boundedSetting(QSettings &settings,
+                      const QString &key,
+                      double fallback,
+                      double minimum,
+                      double maximum) {
+    bool valid = false;
+    const double value = settings.value(key, fallback).toDouble(&valid);
+    if (!valid || !std::isfinite(value)) {
+        return fallback;
+    }
+
+    return std::clamp(value, minimum, maximum);
+}
+
+int boundedSetting(QSettings &settings,
+                   const QString &key,
+                   int fallback,
+                   int minimum,
+                   int maximum) {
+    bool valid = false;
+    const int value = settings.value(key, fallback).toInt(&valid);
+    if (!valid) {
+        return fallback;
+    }
+
+    return std::clamp(value, minimum, maximum);
 }
 
 } // namespace
@@ -202,6 +233,150 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/verticalToolbar"), settings.verticalToolbar);
     qsettings.setValue(QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
                        settings.separateOpacityAndSkewTools);
+}
+
+cover::FillOptions loadDifferentialFillOptions() {
+    QSettings settings;
+    cover::FillOptions result;
+    result.budget = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/budget"), result.budget,
+        cover::kMinimumBudget, cover::kMaximumBudget);
+    result.adamIterations = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/adamIterations"),
+        result.adamIterations, cover::kMinimumAdamIterations,
+        cover::kMaximumAdamIterations);
+    result.restarts = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/restarts"), result.restarts,
+        cover::kMinimumRestarts, cover::kMaximumRestarts);
+    result.spillWeight = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/spillWeight"),
+        result.spillWeight, cover::kMinimumSpillWeight, cover::kMaximumSpillWeight);
+    result.epsArea = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/epsArea"), result.epsArea,
+        cover::kMinimumEpsArea, cover::kMaximumEpsArea);
+    result.epsGain = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/epsGain"), result.epsGain,
+        cover::kMinimumEpsGain, cover::kMaximumEpsGain);
+    result.epsSpill = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/epsSpill"), result.epsSpill,
+        cover::kMinimumEpsSpill, cover::kMaximumEpsSpill);
+    result.adamLearningRate = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/adamLearningRate"),
+        result.adamLearningRate, cover::kMinimumAdamLearningRate,
+        cover::kMaximumAdamLearningRate);
+    result.inactivityTimeoutSeconds = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/inactivityTimeoutSeconds"),
+        result.inactivityTimeoutSeconds, cover::kMinimumInactivityTimeoutSeconds,
+        cover::kMaximumInactivityTimeoutSeconds);
+    result.boundaryTolerance = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/boundaryTolerance"),
+        result.boundaryTolerance, cover::kMinimumBoundaryTolerance,
+        cover::kMaximumBoundaryTolerance);
+    result.outwardMargin = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/outwardMargin"),
+        result.outwardMargin, cover::kMinimumOutwardMargin,
+        cover::kMaximumOutwardMargin);
+    result.areaWindowRatio = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/areaWindowRatio"),
+        result.areaWindowRatio, cover::kMinimumAreaWindowRatio,
+        cover::kMaximumAreaWindowRatio);
+    result.tverskyAlpha = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/tverskyAlpha"),
+        result.tverskyAlpha, cover::kMinimumTverskyAlpha,
+        cover::kMaximumTverskyAlpha);
+    result.tverskyBeta = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/tverskyBeta"),
+        result.tverskyBeta, cover::kMinimumTverskyBeta,
+        cover::kMaximumTverskyBeta);
+    result.featureWeight = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/featureWeight"),
+        result.featureWeight, cover::kMinimumFeatureWeight,
+        cover::kMaximumFeatureWeight);
+    result.featureRestarts = boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/featureRestarts"),
+        result.featureRestarts, cover::kMinimumFeatureRestarts,
+        cover::kMaximumFeatureRestarts);
+    result.seed = static_cast<std::uint64_t>(boundedSetting(
+        settings, QStringLiteral("ui/differentialFill/seed"),
+        cover::kMinimumSeed, cover::kMinimumSeed, cover::kMaximumSeed));
+    result.useRouter = settings.value(
+        QStringLiteral("ui/differentialFill/useRouter"), result.useRouter).toBool();
+    result.useGpu = settings.value(
+        QStringLiteral("ui/differentialFill/useGpu"), result.useGpu).toBool();
+    result.useWeightedContour = settings.value(
+        QStringLiteral("ui/differentialFill/useWeightedContour"), true).toBool();
+
+    return result;
+}
+
+void saveDifferentialFillOptions(const cover::FillOptions &options) {
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/differentialFill/budget"),
+                      std::clamp(options.budget, cover::kMinimumBudget,
+                                 cover::kMaximumBudget));
+    settings.setValue(QStringLiteral("ui/differentialFill/adamIterations"),
+                      std::clamp(options.adamIterations,
+                                 cover::kMinimumAdamIterations,
+                                 cover::kMaximumAdamIterations));
+    settings.setValue(QStringLiteral("ui/differentialFill/restarts"),
+                      std::clamp(options.restarts, cover::kMinimumRestarts,
+                                 cover::kMaximumRestarts));
+    settings.setValue(QStringLiteral("ui/differentialFill/spillWeight"),
+                      std::clamp(options.spillWeight, cover::kMinimumSpillWeight,
+                                 cover::kMaximumSpillWeight));
+    settings.setValue(QStringLiteral("ui/differentialFill/epsArea"),
+                      std::clamp(options.epsArea, cover::kMinimumEpsArea,
+                                 cover::kMaximumEpsArea));
+    settings.setValue(QStringLiteral("ui/differentialFill/epsGain"),
+                      std::clamp(options.epsGain, cover::kMinimumEpsGain,
+                                 cover::kMaximumEpsGain));
+    settings.setValue(QStringLiteral("ui/differentialFill/epsSpill"),
+                      std::clamp(options.epsSpill, cover::kMinimumEpsSpill,
+                                 cover::kMaximumEpsSpill));
+    settings.setValue(QStringLiteral("ui/differentialFill/adamLearningRate"),
+                      std::clamp(options.adamLearningRate,
+                                 cover::kMinimumAdamLearningRate,
+                                 cover::kMaximumAdamLearningRate));
+    settings.setValue(QStringLiteral("ui/differentialFill/inactivityTimeoutSeconds"),
+                      std::clamp(options.inactivityTimeoutSeconds,
+                                 cover::kMinimumInactivityTimeoutSeconds,
+                                 cover::kMaximumInactivityTimeoutSeconds));
+    settings.setValue(QStringLiteral("ui/differentialFill/boundaryTolerance"),
+                      std::clamp(options.boundaryTolerance,
+                                 cover::kMinimumBoundaryTolerance,
+                                 cover::kMaximumBoundaryTolerance));
+    settings.setValue(QStringLiteral("ui/differentialFill/outwardMargin"),
+                      std::clamp(options.outwardMargin,
+                                 cover::kMinimumOutwardMargin,
+                                 cover::kMaximumOutwardMargin));
+    settings.setValue(QStringLiteral("ui/differentialFill/areaWindowRatio"),
+                      std::clamp(options.areaWindowRatio,
+                                 cover::kMinimumAreaWindowRatio,
+                                 cover::kMaximumAreaWindowRatio));
+    settings.setValue(QStringLiteral("ui/differentialFill/tverskyAlpha"),
+                      std::clamp(options.tverskyAlpha,
+                                 cover::kMinimumTverskyAlpha,
+                                 cover::kMaximumTverskyAlpha));
+    settings.setValue(QStringLiteral("ui/differentialFill/tverskyBeta"),
+                      std::clamp(options.tverskyBeta,
+                                 cover::kMinimumTverskyBeta,
+                                 cover::kMaximumTverskyBeta));
+    settings.setValue(QStringLiteral("ui/differentialFill/featureWeight"),
+                      std::clamp(options.featureWeight,
+                                 cover::kMinimumFeatureWeight,
+                                 cover::kMaximumFeatureWeight));
+    settings.setValue(QStringLiteral("ui/differentialFill/featureRestarts"),
+                      std::clamp(options.featureRestarts,
+                                 cover::kMinimumFeatureRestarts,
+                                 cover::kMaximumFeatureRestarts));
+    const std::uint64_t boundedSeed = std::min<std::uint64_t>(
+        options.seed, static_cast<std::uint64_t>(cover::kMaximumSeed));
+    settings.setValue(QStringLiteral("ui/differentialFill/seed"),
+                      static_cast<int>(boundedSeed));
+    settings.setValue(QStringLiteral("ui/differentialFill/useRouter"), options.useRouter);
+    settings.setValue(QStringLiteral("ui/differentialFill/useGpu"), options.useGpu);
+    settings.setValue(QStringLiteral("ui/differentialFill/useWeightedContour"),
+                      options.useWeightedContour);
 }
 
 PreviewBackgroundSettings loadPreviewBackgroundSettings() {

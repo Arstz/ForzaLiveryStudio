@@ -565,16 +565,24 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     prepareGeneratedFill(
         fillColor, fillLabel, fillTool,
         fillMask);
+    pendingGeneratedPenContour_ =
+        GeneratedPenContourState{loops, fillColor, fillMask};
     PenFillRequest request;
     request.loops = loops;
     if (differential) {
+        cover::FillOptions options =
+            loadDifferentialFillOptions();
+        request.boundaryTolerance =
+            options.boundaryTolerance;
         QString catalogError;
         const QVector<cover::ShapeMesh> catalog =
             canvas_->differentialCoverCatalog(&catalogError);
         const PenContour contour = buildPenContour(
             request.loops, request.boundaryTolerance * 0.25);
         const cover::Polygons polygons = contour.valid()
-            ? cover::polygonsFromPainterPath(contour.path)
+            ? cover::polygonsFromPainterPath(
+                  contour.path,
+                  options.boundaryTolerance * 0.25)
             : cover::Polygons{};
         if (catalog.isEmpty() || polygons.isEmpty()) {
             canvas_->setPenFillRunning(false);
@@ -591,7 +599,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         }
 
         cover::FillInput input;
-        input.mustCover = polygons;
+        input.mustCoverPath = contour.path;
         if (!contourLeewayGroupId_.isEmpty()) {
             QString leewayError;
             const QPainterPath leewayPath =
@@ -605,22 +613,13 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                     5000);
                 return;
             }
-            input.leeway =
-                cover::polygonsFromPainterPath(leewayPath);
+            input.leewayPath = leewayPath;
             generatedFillLeewayGroupId_ =
                 contourLeewayGroupId_;
         }
         for (const PenContourLoop &loop : contour.loops) {
             input.boundaryLoops.push_back(loop.segments);
         }
-        cover::FillOptions options;
-        options.boundaryTolerance =
-            request.boundaryTolerance;
-        options.useWeightedContour = true;
-        input.mayCover =
-            cover::expandedCoverEnvelope(
-                polygons,
-                options.boundaryTolerance);
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(
             QStringLiteral("Differential fill | Elapsed 0s"));
@@ -728,6 +727,7 @@ void MainWindow::prepareGeneratedFill(const std::optional<QColor> &fillColor,
     generatedFillLabel_ = label;
     generatedFillTool_ = tool;
     generatedFillMask_ = fillMask;
+    pendingGeneratedPenContour_.reset();
 }
 
 void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
@@ -797,6 +797,7 @@ void MainWindow::clearGeneratedFillState() {
     generatedFillLeewayGroupId_.clear();
     generatedFillMask_ = false;
     generatedFillKeepPartialOnCancel_ = false;
+    pendingGeneratedPenContour_.reset();
 }
 
 void MainWindow::cancelActiveFills() {
@@ -951,7 +952,15 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         : (differential
                ? QStringLiteral("Differential Contour Fill")
                : QStringLiteral("Analytic Contour Fill"));
-    insertGeneratedFill(groupName, groupName, placements);
+    const quint64 historyCommandId =
+        insertGeneratedFill(groupName, groupName, placements);
+    if (!lining
+        && historyCommandId != 0
+        && pendingGeneratedPenContour_.has_value()) {
+        generatedPenContourHistory_.insert(
+            historyCommandId,
+            *pendingGeneratedPenContour_);
+    }
     if (differential) {
         const double residualArea =
             std::max(0.0, result.targetArea - result.coveredArea);
@@ -974,12 +983,13 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
     clearGeneratedFillState();
 }
 
-void MainWindow::insertGeneratedFill(const QString &groupName,
-                                     const QString &displayName,
-                                     const QVector<QPair<int, QTransform>> &placements) {
+quint64 MainWindow::insertGeneratedFill(
+    const QString &groupName,
+    const QString &displayName,
+    const QVector<QPair<int, QTransform>> &placements) {
     if (placements.isEmpty() || !state_->hasProject()) {
         generatedFillInsertionEntries_.clear();
-        return;
+        return 0;
     }
 
     auto group = std::make_unique<fls::scene::Group>();
@@ -1038,6 +1048,8 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
     state_->selectedGuideLayerIds_.clear();
     state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
+    const quint64 historyCommandId =
+        state_->lastCommittedHistoryCommandId();
     generatedFillInsertionEntries_.clear();
     state_->noteProjectStructureChanged();
     if (canvas_ != nullptr) {
@@ -1048,6 +1060,8 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
                                  .arg(placements.size()),
                              3500);
     clearContourLeewayGroup();
+
+    return historyCommandId;
 }
 
 void MainWindow::toggleContourLeewayGroup(
@@ -1904,7 +1918,18 @@ void MainWindow::undo() {
     if (canvas_ != nullptr && canvas_->undoContourEdit()) {
         return;
     }
-    state_->undo();
+    const quint64 historyCommandId = state_->undo();
+    const auto contour =
+        generatedPenContourHistory_.constFind(
+            historyCommandId);
+    if (canvas_ != nullptr
+        && contour
+            != generatedPenContourHistory_.cend()) {
+        canvas_->restorePenInteraction(
+            contour->loops,
+            contour->fillColor,
+            contour->fillMask);
+    }
     canvas_->resetRelativeSelectionFrame();
 }
 
@@ -1912,7 +1937,18 @@ void MainWindow::redo() {
     if (canvas_ != nullptr && canvas_->redoContourEdit()) {
         return;
     }
-    state_->redo();
+    const quint64 historyCommandId = state_->redo();
+    const auto contour =
+        generatedPenContourHistory_.constFind(
+            historyCommandId);
+    if (canvas_ != nullptr
+        && contour
+            != generatedPenContourHistory_.cend()) {
+        canvas_->clearRestoredPenInteraction(
+            contour->loops,
+            contour->fillColor,
+            contour->fillMask);
+    }
     canvas_->resetRelativeSelectionFrame();
 }
 

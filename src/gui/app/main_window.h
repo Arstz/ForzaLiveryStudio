@@ -180,9 +180,9 @@ private:
     void updateRegionFillProgress(quint64 generation, const QString &phase,
                                   int completed, int total);
     void finishRegionFill(quint64 generation, RegionFillBatchResult result);
-    void insertGeneratedFill(const QString &groupName,
-                             const QString &displayName,
-                             const QVector<QPair<int, QTransform>> &placements);
+    quint64 insertGeneratedFill(const QString &groupName,
+                                const QString &displayName,
+                                const QVector<QPair<int, QTransform>> &placements);
     void insertGeneratedRegionVariants(
         const QString &groupName,
         const QString &displayName,
@@ -298,6 +298,11 @@ private:
         QString iconName;
         bool mirrored = false;
     };
+    struct GeneratedPenContourState {
+        QVector<PenLoop> loops;
+        std::optional<QColor> fillColor;
+        bool fillMask = false;
+    };
     QVector<ShortcutAction> shortcutActions_;
     QVector<IconAction> iconActions_;
     UiTheme theme_ = UiTheme::Dark;
@@ -321,6 +326,8 @@ private:
     double generatedFillCoveredArea_ = 0.0;
     bool generatedFillMask_ = false;
     bool generatedFillKeepPartialOnCancel_ = false;
+    std::optional<GeneratedPenContourState> pendingGeneratedPenContour_;
+    QHash<quint64, GeneratedPenContourState> generatedPenContourHistory_;
     int regionMergeAreaThreshold_ = 12;
     std::shared_ptr<std::atomic_bool> regionFillCancel_;
     quint64 regionFillGeneration_ = 0;

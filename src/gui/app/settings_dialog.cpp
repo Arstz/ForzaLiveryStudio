@@ -180,12 +180,14 @@ SettingsDialog::SettingsDialog(UiTheme theme,
                                const CanvasColorSettings &canvasSettings,
                                const PreviewBackgroundSettings &previewBackgroundSettings,
                                const BehaviorSettings &behaviorSettings,
+                               const cover::FillOptions &differentialFillOptions,
                                const QVector<ShortcutSettingsItem> &shortcuts,
                                QWidget *parent)
     : QDialog(parent)
     , canvasSettings_(canvasSettings)
     , previewBackgroundSettings_(previewBackgroundSettings)
     , behaviorSettings_(behaviorSettings)
+    , differentialFillOptions_(differentialFillOptions)
     , shortcuts_(shortcuts) {
     setWindowTitle(QStringLiteral("Settings"));
     resize(940, 680);
@@ -197,6 +199,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     auto *pages = new QStackedWidget(this);
     navigation->addItems({QStringLiteral("General"), QStringLiteral("Theme"),
                           QStringLiteral("Tools"), QStringLiteral("Editor"),
+                          QStringLiteral("Advanced"),
                           QStringLiteral("Keybinds"), QStringLiteral("System")});
     navigation->setCurrentRow(0);
     navigation->setFixedWidth(150);
@@ -404,6 +407,146 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     addSettingRow(editorPage, QStringLiteral("editor.load_car_textures"),
                   QStringLiteral("Load car textures"), loadCarTextures_, tips);
 
+    SettingsPage advancedPage = createSettingsPage(pages);
+    const auto makeIntegerOption = [advancedPage](int minimum,
+                                                   int maximum,
+                                                   int value) {
+        auto *spin = new QSpinBox(advancedPage.widget);
+        spin->setRange(minimum, maximum);
+        spin->setValue(std::clamp(value, minimum, maximum));
+        return spin;
+    };
+    const auto makeRealOption = [advancedPage](double minimum,
+                                                double maximum,
+                                                double value,
+                                                int decimals,
+                                                double step) {
+        auto *spin = new QDoubleSpinBox(advancedPage.widget);
+        spin->setDecimals(decimals);
+        spin->setRange(minimum, maximum);
+        spin->setSingleStep(step);
+        spin->setValue(std::clamp(value, minimum, maximum));
+        return spin;
+    };
+    differentialBudget_ = makeIntegerOption(
+        cover::kMinimumBudget, cover::kMaximumBudget,
+        differentialFillOptions_.budget);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_budget"),
+                  QStringLiteral("Placement budget"), differentialBudget_, tips);
+    differentialAdamIterations_ = makeIntegerOption(
+        cover::kMinimumAdamIterations, cover::kMaximumAdamIterations,
+        differentialFillOptions_.adamIterations);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_adam_iterations"),
+                  QStringLiteral("Optimizer iterations"),
+                  differentialAdamIterations_, tips);
+    differentialRestarts_ = makeIntegerOption(
+        cover::kMinimumRestarts, cover::kMaximumRestarts,
+        differentialFillOptions_.restarts);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_restarts"),
+                  QStringLiteral("Optimizer restarts"), differentialRestarts_, tips);
+    differentialSpillWeight_ = makeRealOption(
+        cover::kMinimumSpillWeight, cover::kMaximumSpillWeight,
+        differentialFillOptions_.spillWeight, 3, 0.1);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_spill_weight"),
+                  QStringLiteral("Spill penalty"), differentialSpillWeight_, tips);
+    differentialEpsArea_ = makeRealOption(
+        cover::kMinimumEpsArea, cover::kMaximumEpsArea,
+        differentialFillOptions_.epsArea, 3, 0.1);
+    differentialEpsArea_->setSuffix(QStringLiteral(" canvas²"));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_eps_area"),
+                  QStringLiteral("Residual-area threshold"), differentialEpsArea_, tips);
+    differentialEpsGain_ = makeRealOption(
+        cover::kMinimumEpsGain, cover::kMaximumEpsGain,
+        differentialFillOptions_.epsGain, 3, 0.1);
+    differentialEpsGain_->setSuffix(QStringLiteral(" canvas²"));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_eps_gain"),
+                  QStringLiteral("Minimum placement gain"), differentialEpsGain_, tips);
+    differentialEpsSpill_ = makeRealOption(
+        cover::kMinimumEpsSpill, cover::kMaximumEpsSpill,
+        differentialFillOptions_.epsSpill, 3, 0.1);
+    differentialEpsSpill_->setSuffix(QStringLiteral(" canvas²"));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_eps_spill"),
+                  QStringLiteral("Outside-area tolerance"), differentialEpsSpill_, tips);
+    differentialAdamLearningRate_ = makeRealOption(
+        cover::kMinimumAdamLearningRate, cover::kMaximumAdamLearningRate,
+        differentialFillOptions_.adamLearningRate, 4, 0.01);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_adam_learning_rate"),
+                  QStringLiteral("Optimizer learning rate"),
+                  differentialAdamLearningRate_, tips);
+    differentialInactivityTimeout_ = makeRealOption(
+        cover::kMinimumInactivityTimeoutSeconds,
+        cover::kMaximumInactivityTimeoutSeconds,
+        differentialFillOptions_.inactivityTimeoutSeconds, 1, 5.0);
+    differentialInactivityTimeout_->setSuffix(QStringLiteral(" s"));
+    differentialInactivityTimeout_->setSpecialValueText(QStringLiteral("Disabled"));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_inactivity_timeout"),
+                  QStringLiteral("Inactivity timeout"),
+                  differentialInactivityTimeout_, tips);
+    differentialBoundaryTolerance_ = makeRealOption(
+        cover::kMinimumBoundaryTolerance, cover::kMaximumBoundaryTolerance,
+        differentialFillOptions_.boundaryTolerance, 3, 0.01);
+    differentialBoundaryTolerance_->setSuffix(QStringLiteral(" canvas"));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_boundary_tolerance"),
+                  QStringLiteral("Boundary tolerance"),
+                  differentialBoundaryTolerance_, tips);
+    differentialOutwardMargin_ = makeRealOption(
+        cover::kMinimumOutwardMargin, cover::kMaximumOutwardMargin,
+        differentialFillOptions_.outwardMargin, 3, 0.1);
+    differentialOutwardMargin_->setSuffix(QStringLiteral(" canvas"));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_outward_margin"),
+                  QStringLiteral("Outward margin"), differentialOutwardMargin_, tips);
+    differentialAreaWindowRatio_ = makeRealOption(
+        cover::kMinimumAreaWindowRatio, cover::kMaximumAreaWindowRatio,
+        differentialFillOptions_.areaWindowRatio, 3, 0.025);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_area_window_ratio"),
+                  QStringLiteral("Candidate area window"),
+                  differentialAreaWindowRatio_, tips);
+    differentialTverskyAlpha_ = makeRealOption(
+        cover::kMinimumTverskyAlpha, cover::kMaximumTverskyAlpha,
+        differentialFillOptions_.tverskyAlpha, 3, 0.05);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_tversky_alpha"),
+                  QStringLiteral("Tversky spill penalty"),
+                  differentialTverskyAlpha_, tips);
+    differentialTverskyBeta_ = makeRealOption(
+        cover::kMinimumTverskyBeta, cover::kMaximumTverskyBeta,
+        differentialFillOptions_.tverskyBeta, 3, 0.05);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_tversky_beta"),
+                  QStringLiteral("Tversky missing-area penalty"),
+                  differentialTverskyBeta_, tips);
+    differentialFeatureWeight_ = makeRealOption(
+        cover::kMinimumFeatureWeight, cover::kMaximumFeatureWeight,
+        differentialFillOptions_.featureWeight, 3, 0.1);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_feature_weight"),
+                  QStringLiteral("Contour feature weight"),
+                  differentialFeatureWeight_, tips);
+    differentialFeatureRestarts_ = makeIntegerOption(
+        cover::kMinimumFeatureRestarts, cover::kMaximumFeatureRestarts,
+        differentialFillOptions_.featureRestarts);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_feature_restarts"),
+                  QStringLiteral("Contour feature restarts"),
+                  differentialFeatureRestarts_, tips);
+    differentialSeed_ = makeIntegerOption(
+        cover::kMinimumSeed, cover::kMaximumSeed,
+        static_cast<int>(std::min<std::uint64_t>(
+            differentialFillOptions_.seed,
+            static_cast<std::uint64_t>(cover::kMaximumSeed))));
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_seed"),
+                  QStringLiteral("Random seed"), differentialSeed_, tips);
+    differentialUseRouter_ = new QCheckBox(advancedPage.widget);
+    differentialUseRouter_->setChecked(differentialFillOptions_.useRouter);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_router"),
+                  QStringLiteral("Candidate routing"), differentialUseRouter_, tips);
+    differentialUseGpu_ = new QCheckBox(advancedPage.widget);
+    differentialUseGpu_->setChecked(differentialFillOptions_.useGpu);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_gpu"),
+                  QStringLiteral("GPU acceleration"), differentialUseGpu_, tips);
+    differentialUseWeightedContour_ = new QCheckBox(advancedPage.widget);
+    differentialUseWeightedContour_->setChecked(
+        differentialFillOptions_.useWeightedContour);
+    addSettingRow(advancedPage, QStringLiteral("advanced.differential_weighted_contour"),
+                  QStringLiteral("Feature-weighted contour"),
+                  differentialUseWeightedContour_, tips);
+
     SettingsPage keybindsPage = createSettingsPage(pages);
     shortcutEdits_.reserve(shortcuts_.size());
     for (int row = 0; row < shortcuts_.size(); ++row) {
@@ -557,6 +700,32 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     result.gameFolder = gameFolder_->text().trimmed();
     result.discardModelOnLiveryOpen = discardModelOnLiveryOpen_->isChecked();
     result.loadCarTextures = loadCarTextures_->isChecked();
+
+    return result;
+}
+
+cover::FillOptions SettingsDialog::selectedDifferentialFillOptions() const {
+    cover::FillOptions result = differentialFillOptions_;
+    result.budget = differentialBudget_->value();
+    result.adamIterations = differentialAdamIterations_->value();
+    result.restarts = differentialRestarts_->value();
+    result.spillWeight = differentialSpillWeight_->value();
+    result.epsArea = differentialEpsArea_->value();
+    result.epsGain = differentialEpsGain_->value();
+    result.epsSpill = differentialEpsSpill_->value();
+    result.adamLearningRate = differentialAdamLearningRate_->value();
+    result.inactivityTimeoutSeconds = differentialInactivityTimeout_->value();
+    result.boundaryTolerance = differentialBoundaryTolerance_->value();
+    result.outwardMargin = differentialOutwardMargin_->value();
+    result.areaWindowRatio = differentialAreaWindowRatio_->value();
+    result.tverskyAlpha = differentialTverskyAlpha_->value();
+    result.tverskyBeta = differentialTverskyBeta_->value();
+    result.featureWeight = differentialFeatureWeight_->value();
+    result.featureRestarts = differentialFeatureRestarts_->value();
+    result.seed = static_cast<std::uint64_t>(differentialSeed_->value());
+    result.useRouter = differentialUseRouter_->isChecked();
+    result.useGpu = differentialUseGpu_->isChecked();
+    result.useWeightedContour = differentialUseWeightedContour_->isChecked();
 
     return result;
 }

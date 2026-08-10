@@ -28,6 +28,42 @@ inline constexpr double kDefaultTverskyAlpha = 0.35;
 inline constexpr double kDefaultTverskyBeta = 1.0;
 inline constexpr double kDefaultFeatureWeight = 1.0;
 inline constexpr int kDefaultFeatureRestarts = 12;
+inline constexpr double kDefaultOutwardMargin = 1.0;
+
+inline constexpr int kMinimumBudget = 1;
+inline constexpr int kMaximumBudget = 1000000;
+inline constexpr int kMinimumAdamIterations = 1;
+inline constexpr int kMaximumAdamIterations = 10000;
+inline constexpr int kMinimumRestarts = 0;
+inline constexpr int kMaximumRestarts = 100;
+inline constexpr double kMinimumSpillWeight = 0.001;
+inline constexpr double kMaximumSpillWeight = 1000.0;
+inline constexpr double kMinimumEpsArea = 0.0;
+inline constexpr double kMaximumEpsArea = 1000000000.0;
+inline constexpr double kMinimumEpsGain = 0.001;
+inline constexpr double kMaximumEpsGain = 1000000000.0;
+inline constexpr double kMinimumEpsSpill = 0.0;
+inline constexpr double kMaximumEpsSpill = 1000000000.0;
+inline constexpr double kMinimumAdamLearningRate = 0.0001;
+inline constexpr double kMaximumAdamLearningRate = 1.0;
+inline constexpr double kMinimumInactivityTimeoutSeconds = 0.0;
+inline constexpr double kMaximumInactivityTimeoutSeconds = 3600.0;
+inline constexpr double kMinimumBoundaryTolerance = 0.001;
+inline constexpr double kMaximumBoundaryTolerance = 100.0;
+inline constexpr double kMinimumOutwardMargin = 0.0;
+inline constexpr double kMaximumOutwardMargin = 100.0;
+inline constexpr double kMinimumAreaWindowRatio = 0.001;
+inline constexpr double kMaximumAreaWindowRatio = 1.0;
+inline constexpr double kMinimumTverskyAlpha = 0.0;
+inline constexpr double kMaximumTverskyAlpha = 100.0;
+inline constexpr double kMinimumTverskyBeta = 0.001;
+inline constexpr double kMaximumTverskyBeta = 100.0;
+inline constexpr double kMinimumFeatureWeight = 0.0;
+inline constexpr double kMaximumFeatureWeight = 100.0;
+inline constexpr int kMinimumFeatureRestarts = 0;
+inline constexpr int kMaximumFeatureRestarts = 1000;
+inline constexpr int kMinimumSeed = 0;
+inline constexpr int kMaximumSeed = 2147483647;
 
 struct Vec2 {
     double x = 0.0;
@@ -105,6 +141,8 @@ struct FillInput {
     Polygons mustCover;
     Polygons mayCover;
     Polygons leeway;
+    QPainterPath mustCoverPath;
+    QPainterPath leewayPath;
     QVector<ContourSpan> boundarySpans;
     QVector<QVector<ContourSpan>> boundaryLoops;
     QImage mask;
@@ -127,6 +165,7 @@ struct FillOptions {
     double tverskyAlpha = kDefaultTverskyAlpha;
     double tverskyBeta = kDefaultTverskyBeta;
     double featureWeight = kDefaultFeatureWeight;
+    double outwardMargin = kDefaultOutwardMargin;
     int featureRestarts = kDefaultFeatureRestarts;
     std::uint64_t seed = 0;
     bool useRouter = true;
@@ -270,7 +309,9 @@ struct AreaGradient {
 QVector<ShapeMesh> buildShapeCatalog(const ShapeGeometryStore &geometry,
                                      QString *error = nullptr);
 
-Polygons polygonsFromPainterPath(const QPainterPath &path);
+Polygons polygonsFromPainterPath(
+    const QPainterPath &path,
+    double flatnessTolerance = 0.0);
 
 QPainterPath painterPathFromPolygons(const Polygons &polygons);
 
@@ -294,7 +335,13 @@ QVector<ContourFeature> extractContourFeatures(
 
 Polygons expandedCoverEnvelope(
     const Polygons &target,
-    double distance);
+    double distance,
+    double flatnessTolerance = 0.0);
+
+Polygons expandedCoverEnvelope(
+    const QPainterPath &target,
+    double distance,
+    double flatnessTolerance = 0.0);
 
 CoverErrorMetrics evaluateCoverMetrics(
     const Polygons &target,

@@ -21,10 +21,22 @@ FillResult analyticCoverFillInternal(
     FillOptions options = requestedOptions;
     result.profile.areaWindowRatio =
         options.areaWindowRatio;
+    const double pathFlatnessTolerance =
+        options.boundaryTolerance * 0.25;
     const Polygons authoredTarget =
-        normalizedInputPolygons(input.mustCover);
+        normalizedInputPolygons(
+            input.mustCoverPath.isEmpty()
+                ? input.mustCover
+                : polygonsFromPainterPath(
+                      input.mustCoverPath,
+                      pathFlatnessTolerance));
     const Polygons leeway =
-        normalizedInputPolygons(input.leeway);
+        normalizedInputPolygons(
+            input.leewayPath.isEmpty()
+                ? input.leeway
+                : polygonsFromPainterPath(
+                      input.leewayPath,
+                      pathFlatnessTolerance));
     const bool hasLeeway = !leeway.isEmpty();
     options.useContourLeeway = hasLeeway;
     Polygons leewayCore = leeway;
@@ -42,7 +54,17 @@ FillResult analyticCoverFillInternal(
     const Polygons mustCover = hasLeeway
         ? differencePolygons(authoredTarget, leewayCore)
         : authoredTarget;
-    Polygons legalSubjects = input.mayCover;
+    Polygons legalSubjects = input.mayCover.isEmpty()
+        ? (input.mustCoverPath.isEmpty()
+               ? expandedCoverEnvelope(
+                     authoredTarget,
+                     options.outwardMargin,
+                     pathFlatnessTolerance)
+               : expandedCoverEnvelope(
+                     input.mustCoverPath,
+                     options.outwardMargin,
+                     pathFlatnessTolerance))
+        : input.mayCover;
     legalSubjects += leeway;
     const Polygons mayCover =
         normalizedInputPolygons(

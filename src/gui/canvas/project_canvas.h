@@ -93,6 +93,12 @@ public:
     void invalidateContourLeewayCache();
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
+    void restorePenInteraction(const QVector<PenLoop> &loops,
+                               const std::optional<QColor> &fillColor,
+                               bool fillMask);
+    void clearRestoredPenInteraction(const QVector<PenLoop> &loops,
+                                     const std::optional<QColor> &fillColor,
+                                     bool fillMask);
     void setLiningFillRequestedCallback(
         std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> callback);
     void setLiningFillCancelCallback(std::function<void()> callback);

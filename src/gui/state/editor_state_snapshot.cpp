@@ -173,6 +173,7 @@ void EditorState::beginProjectEdit() {
 
 void EditorState::commitProjectEdit() {
     ScopedPerf perf("EditorState::commitProjectEdit");
+    lastCommittedHistoryCommandId_ = 0;
     if (!pendingEdit_.has_value()) {
         return;
     }
@@ -183,6 +184,8 @@ void EditorState::commitProjectEdit() {
     pendingEdit_->after = captureSnapshot();
     pendingEdit_->redoSelection = captureSelection();
     if (!snapshotsEqual(pendingEdit_->before, pendingEdit_->after)) {
+        pendingEdit_->id = nextHistoryCommandId_++;
+        lastCommittedHistoryCommandId_ = pendingEdit_->id;
         pendingEdit_->refresh = classifySnapshotRefresh(pendingEdit_->before, pendingEdit_->after);
         undoStack_.push_back(*pendingEdit_);
         redoStack_.clear();
@@ -239,6 +242,7 @@ void EditorState::beginTransformCommand(const QVector<QString> &targetIds) {
 
 void EditorState::commitTransformCommand() {
     ScopedPerf perf("EditorState::commitTransformCommand");
+    lastCommittedHistoryCommandId_ = 0;
     if (!pendingEdit_.has_value()) {
         return;
     }
@@ -263,6 +267,8 @@ void EditorState::commitTransformCommand() {
     pendingEdit_->transforms = std::move(changed);
     pendingEdit_->redoSelection = captureSelection();
     if (!pendingEdit_->transforms.isEmpty()) {
+        pendingEdit_->id = nextHistoryCommandId_++;
+        lastCommittedHistoryCommandId_ = pendingEdit_->id;
         undoStack_.push_back(*pendingEdit_);
         redoStack_.clear();
         setModified(true);
@@ -286,12 +292,16 @@ void EditorState::cancelTransformCommand() {
     noteProjectGeometryChanged(false);
 }
 
-void EditorState::undo() {
-    applyHistoryCommand(HistoryDirection::Undo);
+quint64 EditorState::undo() {
+    return applyHistoryCommand(HistoryDirection::Undo);
 }
 
-void EditorState::redo() {
-    applyHistoryCommand(HistoryDirection::Redo);
+quint64 EditorState::redo() {
+    return applyHistoryCommand(HistoryDirection::Redo);
+}
+
+quint64 EditorState::lastCommittedHistoryCommandId() const {
+    return lastCommittedHistoryCommandId_;
 }
 
 void EditorState::applySnapshot(const ProjectEditSnapshot &snapshot) {
@@ -342,12 +352,12 @@ void EditorState::applyTransformEdits(const QVector<ProjectTransformEdit> &edits
     invalidateSceneTree();
 }
 
-void EditorState::applyHistoryCommand(HistoryDirection direction) {
+quint64 EditorState::applyHistoryCommand(HistoryDirection direction) {
     const bool isRedo = direction == HistoryDirection::Redo;
     QVector<ProjectEditCommand> &source = isRedo ? redoStack_ : undoStack_;
     QVector<ProjectEditCommand> &destination = isRedo ? undoStack_ : redoStack_;
     if (source.isEmpty()) {
-        return;
+        return 0;
     }
     const ProjectSelectionSnapshot previousSelection = captureSelection();
     const ProjectEditCommand command = source.takeLast();
@@ -367,6 +377,8 @@ void EditorState::applyHistoryCommand(HistoryDirection direction) {
         Q_EMIT selectionChanged();
     }
     Q_EMIT historyChanged();
+
+    return command.id;
 }
 
 void EditorState::restoreSelection(const ProjectSelectionSnapshot &selection) {

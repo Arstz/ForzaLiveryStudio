@@ -445,7 +445,7 @@ bool legalOutwardDistance(
         || (std::isfinite(
                 maximumOutwardDistance)
             && maximumOutwardDistance
-                <= options.boundaryTolerance
+                <= options.outwardMargin
                     + kEnvelopeDistanceEpsilon);
 }
 

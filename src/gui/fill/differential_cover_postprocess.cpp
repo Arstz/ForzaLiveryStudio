@@ -1460,6 +1460,9 @@ bool validOptions(const FillOptions &options) {
         && std::isfinite(
             options.featureWeight)
         && options.featureWeight >= 0.0
+        && std::isfinite(
+            options.outwardMargin)
+        && options.outwardMargin >= 0.0
         && options.featureRestarts >= 0;
 }
 

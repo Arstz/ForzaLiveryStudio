@@ -75,10 +75,16 @@ The Pen caller provides one compound contour:
 | Name | Type | Meaning |
 | --- | --- | --- |
 | `mustCover` | polygon set | The flattened active contour. |
-| `mayCover` | polygon set | The outward legality envelope derived from the contour tolerance. |
+| `mayCover` | polygon set | The outward legality envelope derived from the configured outward margin. |
 | `colour` | RGBA | The region colour, copied onto every placement. |
 | `mask` *(optional)* | binary raster + bbox | Rasterized `mustCover`, for the distance-transform initializer (§7.3). Can be rasterized from `mustCover` internally instead. |
 | `boundaryLoops` | ordered line/quadratic span loops | Original compound-contour topology used to measure straight-boundary dominance and build hard-edge candidates. |
+
+The GUI also supplies the authored compound `QPainterPath`. It remains curved
+through setup and is flattened at one quarter of `boundaryTolerance` only when
+the exact polygon kernel needs it. `mustCover` remains available for callers that
+already own appropriately sampled polygon geometry. When `mayCover` is omitted,
+the solver derives it from that adaptively flattened target and `outwardMargin`.
 
 Polygons are simple, closed, with explicit orientation (outer CCW, holes CW, or
 whatever convention the chosen boolean library uses — pick one and enforce it).
@@ -497,12 +503,11 @@ The weighted path keeps four geometric regions distinct:
 
 - `mustCover` is the original target and supplies covered and missing area.
 - `residual` is the part of that target not covered by the current union.
-- `mayCover` is the outward legality envelope derived from
-  `boundaryTolerance`.
+- `mayCover` is the outward legality envelope derived from `outwardMargin`.
 - `coverage` is the exact union of accepted placement footprints.
 
 Spill is measured against `mustCover`. Coverage outside `mayCover` and an
-exposed boundary farther than `boundaryTolerance` from the target are hard
+exposed boundary farther than `outwardMargin` from the target are hard
 rejections, subject to the temporary compact structural policy in §7.2.
 Tversky similarity uses a lower penalty for spill than for missing area, but it
 is a ranking and reporting metric rather than a replacement for either hard
@@ -622,6 +627,33 @@ build is.
 
 ## 10. Module interface
 
+The Settings **Advanced** page persists the GUI solver parameters within the
+bounds declared beside their defaults in `differential_cover.h`:
+
+| Parameter | Meaning |
+| --- | --- |
+| `budget` | Maximum number of placements. A larger budget permits more cleanup work and can increase runtime. |
+| `adamIterations` | Maximum Adam steps used to optimize each candidate transform. |
+| `restarts` | Additional jittered Adam starts for ordinary candidates. |
+| `spillWeight` | Objective penalty for candidate area outside `mustCover`. |
+| `epsArea` | Residual area, in canvas units squared, below which the fill is complete. |
+| `epsGain` | Minimum newly covered area, in canvas units squared, required to accept a placement. |
+| `epsSpill` | Outside-envelope area permitted by unweighted legalization; weighted contour mode uses numerical envelope tolerance. |
+| `adamLearningRate` | Adam step size for affine-transform optimization. |
+| `inactivityTimeoutSeconds` | Time without accepted coverage or pruning progress before returning the measured partial result; zero disables it. |
+| `boundaryTolerance` | Canvas-unit sampling and matching tolerance for boundary metrics and contour features. |
+| `outwardMargin` | Canvas-unit distance used to expand `mustCover` into `mayCover`; the default is 1.0. |
+| `areaWindowRatio` | Fraction of the best exact gain a candidate must reach before quality ranking. |
+| `tverskyAlpha` | Weight assigned to outside-target area in Tversky similarity. |
+| `tverskyBeta` | Weight assigned to missing area in Tversky similarity. |
+| `featureWeight` | Selection priority assigned to represented exposed contour features. |
+| `featureRestarts` | Number of feature-aligned optimizer starts. |
+| `seed` | Jitter seed; zero derives a stable seed from the fill geometry. |
+| `useRouter` | Restricts optimization to catalog shapes that resemble the current residual. |
+| `useGpu` | Enables the accelerated evaluator before CPU fallback. |
+| `useWeightedContour` | Enables contour-distance and authored-feature ranking and validation. |
+| `useContourLeeway` | Runtime-derived flag indicating that an occlusion-leeway contour is active; it is not a persistent user parameter. |
+
 ```cpp
 namespace cover {
 
@@ -636,6 +668,7 @@ struct FillInput {
     // Exact polygons in canvas world space; outer CCW, holes CW.
     Polygons mustCover;
     Polygons mayCover;                            // outward legality envelope
+    QPainterPath mustCoverPath;                   // preferred authored curve geometry
     QVector<QVector<ContourSpan>> boundaryLoops;
     // Optional prebuilt raster of mustCover for the DT initializer.
     QImage mask;
@@ -653,6 +686,7 @@ struct FillOptions {
     int    restarts      = 2;
     double inactivityTimeoutSeconds = 60.0;
     double boundaryTolerance = 0.1;
+    double outwardMargin = 1.0;
     double areaWindowRatio = 0.875;
     double tverskyAlpha = 0.35;
     double tverskyBeta = 1.0;
@@ -855,6 +889,6 @@ reference implementations to crib correctness from:
 - **Kinks on difficult residuals.** Expected benign (§5.6); restarts are the
   escape hatch. If a contour defeats the optimizer, return the measured partial
   result rather than looping.
-- **Controlled spill.** The contour tolerance supplies a bounded outward
+- **Controlled spill.** The outward margin supplies a bounded outward
   envelope. Spill remains measured against the original target, and the maximum
   outward distance and outside-envelope area remain hard constraints.
