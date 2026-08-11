@@ -282,10 +282,18 @@ exports grouped `C_group` folders and `C_livery` folders.
   model scene, XML axes, mask boundaries, part classifications, and locator transforms.
   Section-coordinate orientation is normalized while building and sampling the isolated
   paint regions; decoded project geometry remains unchanged.
+  **Show Section Wireframe** adds the selected preview LOD's topology as a white, mask-bounded
+  wireframe over the canvas overlay. Cycling the preview LOD rebuilds the canvas overlay from the
+  same geometry. The 3D preview draws that topology as a final constant-width line pass, with
+  back-facing fragments removed and draw order independent of the car depth buffer. It does not
+  add scene or export entries.
+  The highest-detail topology is used when a selected LOD supplies no relevant paint geometry.
 
-  Only the highest LOD of each part is uploaded (names ending `_LOD1`.. are dropped) to
-  avoid body overdraw. The swatch masks are uploaded to the GPU as a 2x upsampled
-  texture array. Imported `C_livery` section geometry is not rewritten for the preview;
+  Shaded rendering starts at `LOD0`. The preview's LOD button cycles every available detail
+  level as `LOD0`, `LOD1`, and so on. A part retains its least detailed available mesh when the
+  assembled car has further LODs supplied by other parts. Its focus-scoped cycle command is
+  unbound by default, as is the preview debug-mode cycle. The swatch masks are uploaded to the
+  GPU as a 2x upsampled texture array. Imported `C_livery` section geometry is not rewritten for the preview;
   texture-coordinate conversion is performed in the car shader's sampling path while
   mask sampling remains in the original swatch orientation. The preview updates live as
   layers are edited.
@@ -330,6 +338,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   or its `media` directory) is the source for auto-loaded car models and painttype
   paint materials; every game resource path is derived from it. Every menu-bar action can be bound to a hotkey in the
   keybind settings, even those with no default shortcut.
+  Duplicate keybinds are outlined in red as they are edited; applying conflicting
+  assignments also reports the two commands and their shared key sequence.
   Buffer and layer-preview backgrounds independently support theme-default,
   checkerboard, and custom modes. The toolbar can use a vertical icon-only layout.
   Fresh settings default to the Dark theme with theme-default canvas colors.
@@ -589,7 +599,7 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     X-mirror, so front faces are `GL_CW`); wheels, tires, and translucent surfaces are
     marked double-sided. Meshes without usable UV3 fall back to
     registered planar projection using the model scene, mask boundary, part metadata,
-    and locator landmarks. It uploads only each part's highest LOD; and layer drag cursors.
+    and locator landmarks. It uploads the selected preview LOD; and layer drag cursors.
 - `src/gui/widgets/` (`property_panel.*`, `layer_tree_view.*`,
   `layer_state_delegate.*`, `color_palette_widget.*`, `shapes_browser_widget.*`,
   `shape_geometry_store.*`, `shape_name_store.*`, `font_glyphs.*`,

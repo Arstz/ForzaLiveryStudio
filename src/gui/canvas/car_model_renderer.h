@@ -20,7 +20,8 @@ struct ModelMaterialTexture;
 namespace gui {
 
 CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
-                                       const fls::LiveryMaskSet &masks);
+                                       const fls::LiveryMaskSet &masks,
+                                       int lodIndex = 0);
 
 class CarModelRenderer {
 public:
@@ -33,7 +34,7 @@ public:
     static QString shaderSelfTest();
     bool hasModel() const;
 
-    void uploadModel(const fls::CarModel &model);
+    void uploadModel(const fls::CarModel &model, int lodIndex = 0);
     void clearModel();
 
     void setLivery(const fls::CarModel &model, const fls::LiveryMaskSet &masks);
@@ -42,6 +43,9 @@ public:
 
     void setDebugMode(int mode) { debugMode_ = mode; }
     int debugMode() const { return debugMode_; }
+    void setWireframeVisible(bool visible) { wireframeVisible_ = visible; }
+    bool wireframeVisible() const { return wireframeVisible_; }
+    void setWireframeSide(int side) { wireframeSide_ = side; }
 
     void render(const QMatrix4x4 &view,
                 const QMatrix4x4 &projection,
@@ -88,6 +92,16 @@ private:
         qsizetype bytes = 0;
     };
 
+    struct WireframeBuffers {
+        QOpenGLVertexArrayObject vao;
+        QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
+        QOpenGLBuffer ibo{QOpenGLBuffer::IndexBuffer};
+        int indexCount = 0;
+        bool hasDirectLiveryUv = false;
+        int allowedSides = 0;
+        QMatrix4x4 model;
+    };
+
     struct FinishTextureEntry {
         GLuint pattern = 0;
         GLuint normal = 0;
@@ -102,6 +116,7 @@ private:
 
     QOpenGLShaderProgram program_;
     std::vector<std::unique_ptr<MeshBuffers>> meshes_;
+    std::vector<std::unique_ptr<WireframeBuffers>> wireframeMeshes_;
     QHash<QString, MaterialTextureCacheEntry> materialTextureCache_;
     qsizetype materialTextureCacheBytes_ = 0;
     QHash<int, FinishTextureEntry> finishTextureCache_;
@@ -109,6 +124,8 @@ private:
     bool paintFinishTracked_ = false;
     bool paintDiagnosticsLogged_ = false;
     bool initialized_ = false;
+    bool wireframeVisible_ = false;
+    int wireframeSide_ = -1;
 
     GLuint sideMaskArray_ = 0;
     int sideCount_ = 0;
@@ -136,6 +153,7 @@ private:
     int sidePaintRegionLocation_ = -1;
     int sideFacingLocation_ = -1;
     int debugModeLocation_ = -1;
+    int wireframeOverlayLocation_ = -1;
     int allowedSidesLocation_ = -1;
     int materialAlphaLocation_ = -1;
     int secondaryPaintLocation_ = -1;

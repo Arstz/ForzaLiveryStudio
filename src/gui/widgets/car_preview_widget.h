@@ -17,6 +17,7 @@
 
 class QTemporaryDir;
 class QLabel;
+class QToolButton;
 
 namespace fls {
 struct Project;
@@ -41,6 +42,8 @@ public:
     QImage renderThumbnail(const QSize &size);
 
     CarUnwrapOverlay unwrapOverlay(int liverySectionSlot = -1) const;
+    void setSectionWireframeVisible(bool visible);
+    void setCarUnwrapSection(int liverySectionSlot);
 
     void setProject(fls::Project *project);
     void setEditorState(EditorState *state);
@@ -51,6 +54,7 @@ public:
     void setLiveryTextureScale(int scale);
     void setLoadCarTextures(bool enabled);
     void setGameFolder(const QString &folder);
+    void cycleLod();
     void cycleDebugMode();
 
 public Q_SLOTS:
@@ -58,6 +62,9 @@ public Q_SLOTS:
     void markLiveryDirtyImmediate();
     void markLiverySectionsDirty(const QVector<QString> &nodeIds);
     void onProjectGeometryChanged(bool refreshPreviews, const QVector<QString> &changedNodeIds);
+
+Q_SIGNALS:
+    void unwrapOverlayChanged();
 
 protected:
     void initializeGL() override;
@@ -79,6 +86,7 @@ private:
     QTransform liveryWorldToScreen(const QSize &textureSize) const;
     void fitCameraToModel();
     void invalidateCachedLivery();
+    void updateLodControl();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
@@ -94,6 +102,7 @@ private:
     fls::CarModel model_;
     fls::ManufacturerColorPalette manufacturerColors_;
     bool modelUploadPending_ = false;
+    bool modelFitPending_ = false;
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
     quint64 carLoadGeneration_ = 0;
@@ -115,6 +124,8 @@ private:
     bool transparentBackground_ = false;
 
     QLabel *referenceNote_ = nullptr;
+    QToolButton *lodButton_ = nullptr;
+    int selectedLodIndex_ = 0;
 
     QVector3D target_;
     float modelRadius_ = 1.0f;

@@ -434,6 +434,19 @@ long long CarModel::totalVertices() const {
     return n;
 }
 
+int CarModel::lodCount() const {
+    return meshes.empty() ? 0 : 1 + static_cast<int>(additionalLodMeshes.size());
+}
+
+const std::vector<CarMesh> &CarModel::meshesForLod(int lodIndex) const {
+    if (lodIndex <= 0 || additionalLodMeshes.empty()) {
+        return meshes;
+    }
+    const size_t index = std::min(
+        static_cast<size_t>(lodIndex - 1), additionalLodMeshes.size() - 1);
+    return additionalLodMeshes[index];
+}
+
 long long CarModel::totalIndices() const {
     long long n = 0;
     for (const CarMesh &mesh : meshes) {
@@ -526,23 +539,32 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
     float maxY = maxX;
     float maxZ = maxX;
 
-    // Every LOD of a part is stored side by side. Only the most detailed one is wanted; which
-    // level that is varies by model, so it is whichever level the model actually starts at.
-    quint8 detailLevel = std::numeric_limits<quint8>::max();
+    std::vector<quint8> detailLevels;
     for (const BundleBlobRecord *blob : meshBlobs) {
         const MeshInfo info = decodeMesh(*blob);
         if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) != 0) {
-            detailLevel = std::min(detailLevel, info.lodLevel);
+            detailLevels.push_back(info.lodLevel);
         }
+    }
+    std::sort(detailLevels.begin(), detailLevels.end());
+    detailLevels.erase(
+        std::unique(detailLevels.begin(), detailLevels.end()), detailLevels.end());
+    if (detailLevels.size() > 1) {
+        model.additionalLodMeshes.resize(detailLevels.size() - 1);
     }
 
     for (int mi = 0; mi < static_cast<int>(meshBlobs.size()); ++mi) {
         const MeshInfo info = decodeMesh(*meshBlobs[mi]);
 
-        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0
-            || info.lodLevel != detailLevel) {
+        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0) {
             continue;
         }
+        const auto detail = std::lower_bound(
+            detailLevels.begin(), detailLevels.end(), info.lodLevel);
+        if (detail == detailLevels.end() || *detail != info.lodLevel) {
+            continue;
+        }
+        const int lodIndex = static_cast<int>(detail - detailLevels.begin());
 
         const VertexLayout *layout = nullptr;
         if (auto it = layoutById.find(static_cast<quint32>(info.vertexLayoutIndex)); it != layoutById.end()) {
@@ -694,17 +716,20 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         out.texCoordTransforms = info.texCoordTransforms;
         out.liveryUvChannel = (out.uvChannels.size() > 3 && !out.uvChannels[3].empty()) ? 3 : -1;
 
-        for (const ModelVec3 &p : out.positions) {
-            const ModelVec3 w = out.boneTransform.transformPoint(p);
-            minX = std::min(minX, w.x);
-            minY = std::min(minY, w.y);
-            minZ = std::min(minZ, w.z);
-            maxX = std::max(maxX, w.x);
-            maxY = std::max(maxY, w.y);
-            maxZ = std::max(maxZ, w.z);
+        if (lodIndex == 0) {
+            for (const ModelVec3 &p : out.positions) {
+                const ModelVec3 w = out.boneTransform.transformPoint(p);
+                minX = std::min(minX, w.x);
+                minY = std::min(minY, w.y);
+                minZ = std::min(minZ, w.z);
+                maxX = std::max(maxX, w.x);
+                maxY = std::max(maxY, w.y);
+                maxZ = std::max(maxZ, w.z);
+            }
+            model.meshes.push_back(std::move(out));
+        } else {
+            model.additionalLodMeshes[lodIndex - 1].push_back(std::move(out));
         }
-
-        model.meshes.push_back(std::move(out));
     }
 
     if (model.meshes.empty()) {
@@ -736,6 +761,11 @@ CarModel loadModelBin(const QString &path, QString *error) {
         model.sourcePath = path;
         for (CarMesh &mesh : model.meshes) {
             mesh.sourceModelPath = path;
+        }
+        for (std::vector<CarMesh> &lodMeshes : model.additionalLodMeshes) {
+            for (CarMesh &mesh : lodMeshes) {
+                mesh.sourceModelPath = path;
+            }
         }
         return model;
     } catch (const std::exception &ex) {

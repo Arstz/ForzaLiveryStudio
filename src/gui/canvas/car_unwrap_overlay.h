@@ -10,6 +10,7 @@ namespace gui {
 
 struct CarUnwrapSide {
     QPainterPath path;
+    QPainterPath wireframe;
 
     bool valid() const {
         return !path.isEmpty();

@@ -28,6 +28,10 @@ Using raster images as your guide is very straightforward, you can import one to
 
 To place guidelines left click with `Alt` held on the rulers, the guidelines can be moved, deleted with right click and locked with `Option->Guides->Lock Guidelines`.
 
+### 3D preview
+
+With Livery project open or car model loaded in the Group project, you can see the car model preview with the decals applied. You may have to open the widget manually if not present with `Window->3D Preview`. Rotate model with left mouse button, zoom with scrollwheel and pan with middle mouse. With model loaded you can enable UV unwrap and/or wireframe with `Options->Show Car UV unwrap` and `Options->Show Section Wireframe`. You can cycle the LOD via button in top right corner or make a keybind in `Settings->Keybinds`.
+
 ## Tools
 
 ### Select

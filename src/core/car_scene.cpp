@@ -822,9 +822,9 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             }
         }
 
-        for (CarMesh &mesh : model.meshes) {
+        const auto prepareMesh = [&](CarMesh &mesh) {
             if (isWheelModelPath(part.path) && isWheelStandInSlot(mesh.materialName)) {
-                continue;
+                return false;
             }
             mesh.sourceModelPath = part.path;
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
@@ -839,6 +839,23 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                     mesh.paintMaterialHash = wheelPaintHash(part, mesh);
                 }
             }
+
+            return true;
+        };
+        if (stock) {
+            while (car.additionalLodMeshes.size() < model.additionalLodMeshes.size()) {
+                car.additionalLodMeshes.push_back(
+                    car.additionalLodMeshes.empty()
+                        ? car.meshes
+                        : car.additionalLodMeshes.back());
+            }
+        }
+        std::vector<std::vector<CarMesh>> partLodMeshes(
+            1 + model.additionalLodMeshes.size());
+        for (CarMesh &mesh : model.meshes) {
+            if (!prepareMesh(mesh)) {
+                continue;
+            }
             if (stock) {
                 for (const ModelVec3 &p : mesh.positions) {
                     const ModelVec3 w = mesh.boneTransform.transformPoint(p);
@@ -850,8 +867,34 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                     maxZ = std::max(maxZ, w.z);
                 }
                 car.meshes.push_back(mesh);
+                partLodMeshes[0].push_back(mesh);
             }
             car.liveryProjectionMeshes.push_back(std::move(mesh));
+        }
+        if (stock) {
+            for (size_t lodIndex = 0;
+                 lodIndex < model.additionalLodMeshes.size();
+                 ++lodIndex) {
+                for (CarMesh &mesh : model.additionalLodMeshes[lodIndex]) {
+                    if (prepareMesh(mesh)) {
+                        partLodMeshes[lodIndex + 1].push_back(std::move(mesh));
+                    }
+                }
+            }
+            for (size_t lodIndex = 1; lodIndex < partLodMeshes.size(); ++lodIndex) {
+                if (partLodMeshes[lodIndex].empty()) {
+                    partLodMeshes[lodIndex] = partLodMeshes[lodIndex - 1];
+                }
+            }
+            for (size_t lodIndex = 0;
+                 lodIndex < car.additionalLodMeshes.size();
+                 ++lodIndex) {
+                const std::vector<CarMesh> &partMeshes = partLodMeshes[
+                    std::min(lodIndex + 1, partLodMeshes.size() - 1)];
+                car.additionalLodMeshes[lodIndex].insert(
+                    car.additionalLodMeshes[lodIndex].end(),
+                    partMeshes.begin(), partMeshes.end());
+            }
         }
         if (stock) {
             ++loaded;
@@ -866,7 +909,6 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         }
         return {};
     }
-
     car.boundsMin = {minX, minY, minZ};
     car.boundsMax = {maxX, maxY, maxZ};
     return car;

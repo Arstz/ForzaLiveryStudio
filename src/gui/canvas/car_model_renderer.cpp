@@ -73,6 +73,7 @@ uniform vec4 side_region[11];
 uniform vec4 side_paint_region[11];
 uniform vec3 side_facing[11];
 uniform int debug_mode;
+uniform int wireframe_overlay;
 uniform int allowed_sides;
 uniform float material_alpha;
 uniform sampler2D native_diffuse;
@@ -267,6 +268,13 @@ void main()
                     }
                 }
             }
+            if (wireframe_overlay == 1) {
+                if (coverage <= 0.5 || dot(n, viewDir) <= 0.0) {
+                    discard;
+                }
+                out_color = vec4(1.0);
+                return;
+            }
             vec2 paintUv = vec2(atlasUv.x, 1.0 - atlasUv.y);
             if (coveredSide >= 0) {
                 vec4 sourceRegion = side_region[coveredSide];
@@ -344,6 +352,13 @@ void main()
                 bestUv = paintUv;
                 bestSide = s;
             }
+        }
+        if (wireframe_overlay == 1) {
+            if (bestCoverage <= 0.5 || dot(n, viewDir) <= 0.0) {
+                discard;
+            }
+            out_color = vec4(1.0);
+            return;
         }
         if (debug_mode == 1 && bestSide >= 0) {
             out_color = vec4(bestUv, 0.0, 1.0);
@@ -664,6 +679,7 @@ void CarModelRenderer::initialize() {
     sidePaintRegionLocation_ = program_.uniformLocation("side_paint_region");
     sideFacingLocation_ = program_.uniformLocation("side_facing");
     debugModeLocation_ = program_.uniformLocation("debug_mode");
+    wireframeOverlayLocation_ = program_.uniformLocation("wireframe_overlay");
     allowedSidesLocation_ = program_.uniformLocation("allowed_sides");
     materialAlphaLocation_ = program_.uniformLocation("material_alpha");
     secondaryPaintLocation_ = program_.uniformLocation("secondary_paint");
@@ -729,6 +745,7 @@ void CarModelRenderer::release() {
     sidePaintRegionLocation_ = -1;
     sideFacingLocation_ = -1;
     debugModeLocation_ = -1;
+    wireframeOverlayLocation_ = -1;
     allowedSidesLocation_ = -1;
     materialAlphaLocation_ = -1;
     secondaryPaintLocation_ = -1;
@@ -760,7 +777,7 @@ bool CarModelRenderer::hasModel() const {
 }
 
 void CarModelRenderer::clearModel() {
-    for (auto &mesh : meshes_) {
+    const auto destroyBuffers = [](auto &mesh) {
         if (mesh->vbo.isCreated()) {
             mesh->vbo.destroy();
         }
@@ -770,8 +787,15 @@ void CarModelRenderer::clearModel() {
         if (mesh->vao.isCreated()) {
             mesh->vao.destroy();
         }
+    };
+    for (auto &mesh : meshes_) {
+        destroyBuffers(mesh);
+    }
+    for (auto &mesh : wireframeMeshes_) {
+        destroyBuffers(mesh);
     }
     meshes_.clear();
+    wireframeMeshes_.clear();
 }
 
 void CarModelRenderer::clearLivery() {
@@ -816,6 +840,19 @@ constexpr int kMaskSlotGeometrySides[fls::kLiverySideCount] = {
 fls::ModelVec3 mirroredCarSpace(fls::ModelVec3 value) {
     value.x = -value.x;
     return value;
+}
+
+QMatrix4x4 carMeshModelMatrix(const fls::CarMesh &mesh) {
+    const auto &matrix = mesh.boneTransform.m;
+    const QMatrix4x4 boneModel(
+        matrix[0], matrix[4], matrix[8], matrix[12],
+        matrix[1], matrix[5], matrix[9], matrix[13],
+        matrix[2], matrix[6], matrix[10], matrix[14],
+        matrix[3], matrix[7], matrix[11], matrix[15]);
+    QMatrix4x4 horizontalMirror;
+    horizontalMirror.scale(-1.0f, 1.0f, 1.0f);
+
+    return horizontalMirror * boneModel;
 }
 
 float axisOf(const fls::ModelVec3 &v, int axis) {
@@ -1571,7 +1608,7 @@ QPointF projectedMaskPoint(const fls::CarMesh &mesh,
 }
 
 QPainterPath projectedLiveryGeometryPath(
-    const fls::CarModel &model,
+    const std::vector<fls::CarMesh> &meshes,
     const fls::LiveryMaskSet &masks,
     const LiveryProjectionData &projection,
     int sideIndex) {
@@ -1579,7 +1616,7 @@ QPainterPath projectedLiveryGeometryPath(
     path.setFillRule(Qt::WindingFill);
     const fls::LiverySide &side = masks.sides[sideIndex];
     const int geometrySide = kMaskSlotGeometrySides[sideIndex];
-    for (const fls::CarMesh &mesh : model.meshes) {
+    for (const fls::CarMesh &mesh : meshes) {
         if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
             || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
@@ -1622,6 +1659,81 @@ QPainterPath projectedLiveryGeometryPath(
             }
             path.addPolygon(triangle);
             path.closeSubpath();
+        }
+    }
+
+    return path;
+}
+
+quint64 unwrapEdgeKey(quint32 first, quint32 second) {
+    const quint32 minimum = std::min(first, second);
+    const quint32 maximum = std::max(first, second);
+
+    return (static_cast<quint64>(minimum) << 32) | maximum;
+}
+
+QPainterPath projectedLiveryWireframePath(
+    const std::vector<fls::CarMesh> &meshes,
+    const fls::LiveryMaskSet &masks,
+    const LiveryProjectionData &projection,
+    int sideIndex) {
+    QPainterPath path;
+    const fls::LiverySide &side = masks.sides[sideIndex];
+    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
+    for (const fls::CarMesh &mesh : meshes) {
+        if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
+            || mesh.positions.empty() || mesh.indices.empty()) {
+            continue;
+        }
+        const bool directUv = mesh.liveryUvChannel == 3
+            && mesh.uvChannels.size() > 3
+            && mesh.uvChannels[3].size() == mesh.positions.size();
+        QSet<quint64> edges;
+        for (size_t indexOffset = 0;
+             indexOffset + 2 < mesh.indices.size();
+             indexOffset += 3) {
+            std::array<QPointF, 3> triangle;
+            std::array<quint32, 3> vertexIndices;
+            bool valid = true;
+            bool haveNormals = true;
+            double facing = 0.0;
+            for (int corner = 0; corner < 3; ++corner) {
+                const quint32 vertexIndex = mesh.indices[indexOffset + corner];
+                vertexIndices[corner] = vertexIndex;
+                if (vertexIndex >= mesh.positions.size()) {
+                    valid = false;
+                    break;
+                }
+                const QPointF maskPoint = projectedMaskPoint(
+                    mesh, vertexIndex, side, sideIndex,
+                    projection, directUv);
+                triangle[corner] = liverySectionPoint(
+                    side, sideIndex, maskPoint);
+                if (vertexIndex < mesh.normals.size()) {
+                    const fls::ModelVec3 normal = mirroredCarSpace(
+                        mesh.boneTransform.transformVector(
+                            mesh.normals[vertexIndex]));
+                    facing += normal.x * kFacing[geometrySide].x()
+                        + normal.y * kFacing[geometrySide].y()
+                        + normal.z * kFacing[geometrySide].z();
+                } else {
+                    haveNormals = false;
+                }
+            }
+            if (!valid || (haveNormals && facing <= 0.0)) {
+                continue;
+            }
+            for (int corner = 0; corner < 3; ++corner) {
+                const int nextCorner = (corner + 1) % 3;
+                const quint64 edge = unwrapEdgeKey(
+                    vertexIndices[corner], vertexIndices[nextCorner]);
+                if (edges.contains(edge)) {
+                    continue;
+                }
+                edges.insert(edge);
+                path.moveTo(triangle[corner]);
+                path.lineTo(triangle[nextCorner]);
+            }
         }
     }
 
@@ -1727,7 +1839,8 @@ std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW,
 } // namespace
 
 CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
-                                       const fls::LiveryMaskSet &masks) {
+                                       const fls::LiveryMaskSet &masks,
+                                       int lodIndex) {
     CarUnwrapOverlay overlay;
     if (model.meshes.empty() || !masks.valid()) {
         return overlay;
@@ -1735,15 +1848,28 @@ CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
 
     const LiveryProjectionData projection =
         buildLiveryProjectionData(model, masks);
+    const std::vector<fls::CarMesh> &selectedMeshes =
+        model.meshesForLod(lodIndex);
     for (int sideIndex = 0;
          sideIndex < fls::kLiverySideCount;
          ++sideIndex) {
         const QPainterPath coverage = liveryCoveragePath(
             masks.sides[sideIndex], sideIndex);
-        const QPainterPath geometry = projectedLiveryGeometryPath(
-            model, masks, projection, sideIndex);
+        QPainterPath geometry = projectedLiveryGeometryPath(
+            selectedMeshes, masks, projection, sideIndex);
+        if (geometry.isEmpty() && lodIndex > 0) {
+            geometry = projectedLiveryGeometryPath(
+                model.meshes, masks, projection, sideIndex);
+        }
         overlay.sides[sideIndex].path = rdpUnwrapPath(
             geometry, coverage);
+        overlay.sides[sideIndex].wireframe = projectedLiveryWireframePath(
+            selectedMeshes, masks, projection, sideIndex);
+        if (overlay.sides[sideIndex].wireframe.isEmpty()
+            && lodIndex > 0) {
+            overlay.sides[sideIndex].wireframe = projectedLiveryWireframePath(
+                model.meshes, masks, projection, sideIndex);
+        }
     }
 
     return overlay;
@@ -1837,12 +1963,13 @@ void CarModelRenderer::setPaintTextureRegions(const QVector<QVector4D> &regions)
     sidePaintRegion_ = regions.size() == sideCount_ ? regions : defaultSidePaintRegion_;
 }
 
-void CarModelRenderer::uploadModel(const fls::CarModel &model) {
+void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
     if (!initialized_) {
         return;
     }
     clearModel();
     paintDiagnosticsLogged_ = false;
+    const std::vector<fls::CarMesh> &renderMeshes = model.meshesForLod(lodIndex);
 
     const auto textureKey = [](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                bool srgb) {
@@ -1865,7 +1992,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
             missingTextureBytes += static_cast<qsizetype>(texture->image.rgba.size());
         }
     };
-    for (const fls::CarMesh &mesh : model.meshes) {
+    for (const fls::CarMesh &mesh : renderMeshes) {
         if (!mesh.material) {
             continue;
         }
@@ -1933,8 +2060,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         return id;
     };
 
-    for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
-        const fls::CarMesh &mesh = model.meshes[mi];
+    for (size_t mi = 0; mi < renderMeshes.size(); ++mi) {
+        const fls::CarMesh &mesh = renderMeshes[mi];
         if (mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
@@ -2163,15 +2290,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
                 || mesh.name.startsWith(QStringLiteral("wheel"), Qt::CaseInsensitive);
         }
 
-        // Bone matrices cross from row-vector to column-vector convention.
-        const auto &m = mesh.boneTransform.m;
-        const QMatrix4x4 boneModel(m[0], m[4], m[8], m[12],
-                                  m[1], m[5], m[9], m[13],
-                                  m[2], m[6], m[10], m[14],
-                                  m[3], m[7], m[11], m[15]);
-        QMatrix4x4 horizontalMirror;
-        horizontalMirror.scale(-1.0f, 1.0f, 1.0f);
-        buffers->model = horizontalMirror * boneModel;
+        buffers->model = carMeshModelMatrix(mesh);
 
         QVector3D center;
         for (const fls::ModelVec3 &p : mesh.positions) {
@@ -2208,6 +2327,113 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model) {
         buffers->ibo.release();
 
         meshes_.push_back(std::move(buffers));
+    }
+
+    const auto uploadWireframeMeshes = [&](const std::vector<fls::CarMesh> &sourceMeshes) {
+        const size_t initialCount = wireframeMeshes_.size();
+        for (const fls::CarMesh &mesh : sourceMeshes) {
+            const int allowedSides = renderedLiverySidesForMesh(mesh);
+            if (allowedSides == 0 || mesh.positions.empty() || mesh.indices.empty()) {
+                continue;
+            }
+
+            QSet<quint64> uniqueEdges;
+            std::vector<quint32> edgeIndices;
+            uniqueEdges.reserve(static_cast<qsizetype>(mesh.indices.size()));
+            edgeIndices.reserve(mesh.indices.size() * 2);
+            for (size_t indexOffset = 0;
+                 indexOffset + 2 < mesh.indices.size();
+                 indexOffset += 3) {
+                const std::array<quint32, 3> triangle = {
+                    mesh.indices[indexOffset],
+                    mesh.indices[indexOffset + 1],
+                    mesh.indices[indexOffset + 2],
+                };
+                if (triangle[0] >= mesh.positions.size()
+                    || triangle[1] >= mesh.positions.size()
+                    || triangle[2] >= mesh.positions.size()) {
+                    continue;
+                }
+                for (int corner = 0; corner < 3; ++corner) {
+                    const quint32 first = triangle[corner];
+                    const quint32 second = triangle[(corner + 1) % 3];
+                    const quint64 edge = unwrapEdgeKey(first, second);
+                    if (first == second || uniqueEdges.contains(edge)) {
+                        continue;
+                    }
+                    uniqueEdges.insert(edge);
+                    edgeIndices.push_back(first);
+                    edgeIndices.push_back(second);
+                }
+            }
+            if (edgeIndices.empty()) {
+                continue;
+            }
+
+            const bool directUv = mesh.liveryUvChannel == 3
+                && mesh.uvChannels.size() > 3
+                && mesh.uvChannels[3].size() == mesh.positions.size();
+            const fls::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
+            std::vector<float> interleaved;
+            interleaved.reserve(mesh.positions.size() * 8);
+            for (size_t vertexIndex = 0;
+                 vertexIndex < mesh.positions.size();
+                 ++vertexIndex) {
+                const fls::ModelVec3 &position = mesh.positions[vertexIndex];
+                const fls::ModelVec3 normal = vertexIndex < mesh.normals.size()
+                    ? mesh.normals[vertexIndex]
+                    : fls::ModelVec3{0.0f, 1.0f, 0.0f};
+                const fls::ModelVec2 uv = directUv
+                    ? mesh.uvChannels[3][vertexIndex]
+                    : fls::ModelVec2{};
+                interleaved.push_back(position.x);
+                interleaved.push_back(position.y);
+                interleaved.push_back(position.z);
+                interleaved.push_back(normal.x);
+                interleaved.push_back(normal.y);
+                interleaved.push_back(normal.z);
+                interleaved.push_back(uv.u * uvTransform.scaleU + uvTransform.offsetU);
+                interleaved.push_back(uv.v * uvTransform.scaleV + uvTransform.offsetV);
+            }
+
+            auto buffers = std::make_unique<WireframeBuffers>();
+            buffers->indexCount = static_cast<int>(edgeIndices.size());
+            buffers->hasDirectLiveryUv = directUv;
+            buffers->allowedSides = allowedSides;
+            buffers->model = carMeshModelMatrix(mesh);
+            buffers->vao.create();
+            buffers->vao.bind();
+            buffers->vbo.create();
+            buffers->vbo.bind();
+            buffers->vbo.allocate(
+                interleaved.data(),
+                static_cast<int>(interleaved.size() * sizeof(float)));
+            buffers->ibo.create();
+            buffers->ibo.bind();
+            buffers->ibo.allocate(
+                edgeIndices.data(),
+                static_cast<int>(edgeIndices.size() * sizeof(quint32)));
+
+            constexpr int stride = 8 * sizeof(float);
+            program_.enableAttributeArray(0);
+            program_.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
+            program_.enableAttributeArray(1);
+            program_.setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
+            program_.enableAttributeArray(2);
+            program_.setAttributeBuffer(2, GL_FLOAT, 6 * sizeof(float), 2, stride);
+
+            buffers->vao.release();
+            buffers->vbo.release();
+            buffers->ibo.release();
+            wireframeMeshes_.push_back(std::move(buffers));
+        }
+
+        return wireframeMeshes_.size() - initialCount;
+    };
+
+    const size_t uploadedWireframes = uploadWireframeMeshes(renderMeshes);
+    if (uploadedWireframes == 0 && lodIndex > 0) {
+        uploadWireframeMeshes(model.meshes);
     }
 }
 
@@ -2403,6 +2629,7 @@ void CarModelRenderer::render(
     }
 
     program_.bind();
+    program_.setUniformValue(wireframeOverlayLocation_, 0);
     const QVector3D fallbackColor(
         static_cast<float>(basePaint.redF()),
         static_cast<float>(basePaint.greenF()),
@@ -2653,6 +2880,45 @@ void CarModelRenderer::render(
         }
         functions->glDepthMask(GL_TRUE);
         functions->glDisable(GL_BLEND);
+    }
+
+    if (hasLivery && wireframeVisible_ && !wireframeMeshes_.empty()) {
+        functions->glDisable(GL_DEPTH_TEST);
+        functions->glDisable(GL_CULL_FACE);
+        functions->glDepthMask(GL_FALSE);
+        functions->glLineWidth(1.0f);
+        program_.setUniformValue(wireframeOverlayLocation_, 1);
+        program_.setUniformValue(hasLiveryLocation_, 1);
+        program_.setUniformValue(debugModeLocation_, 0);
+        program_.setUniformValue(materialAlphaLocation_, 1.0f);
+        program_.setUniformValue(hasNativeDiffuseLocation_, 0);
+        program_.setUniformValue(hasNativeAlphaLocation_, 0);
+        program_.setUniformValue(hasNativeNormalLocation_, 0);
+        program_.setUniformValue(hasNativeSurfaceLocation_, 0);
+        program_.setUniformValue(hasNativeEmissiveLocation_, 0);
+        program_.setUniformValue(hasFinishPatternLocation_, 0);
+        program_.setUniformValue(hasFinishNormalLocation_, 0);
+        program_.setUniformValue(hasFinishSurfaceLocation_, 0);
+        for (const auto &mesh : wireframeMeshes_) {
+            const int allowedSides = wireframeSide_ >= 0
+                ? mesh->allowedSides & (1 << wireframeSide_)
+                : mesh->allowedSides;
+            if (allowedSides == 0) {
+                continue;
+            }
+            program_.setUniformValue(
+                useDirectUvLocation_, mesh->hasDirectLiveryUv ? 1 : 0);
+            program_.setUniformValue(allowedSidesLocation_, allowedSides);
+            program_.setUniformValue(mvpLocation_, viewProjection * mesh->model);
+            program_.setUniformValue(modelLocation_, mesh->model);
+            mesh->vao.bind();
+            functions->glDrawElements(
+                GL_LINES, mesh->indexCount, GL_UNSIGNED_INT, nullptr);
+            mesh->vao.release();
+        }
+        program_.setUniformValue(wireframeOverlayLocation_, 0);
+        functions->glDepthMask(GL_TRUE);
+        functions->glEnable(GL_DEPTH_TEST);
     }
 
     paintDiagnosticsLogged_ = true;

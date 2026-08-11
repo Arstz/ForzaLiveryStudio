@@ -106,6 +106,7 @@ public:
     void setCarUnwrapOverlay(const CarUnwrapOverlay &overlay);
     void setCarUnwrapVisible(bool visible);
     bool carUnwrapVisible() const;
+    void setSectionWireframeVisible(bool visible);
     bool hasCarUnwrap() const;
     void cycleFlipSelection();
 
@@ -561,6 +562,7 @@ private:
     std::optional<FlipCycleState> flipCycle_;
     CarUnwrapOverlay carUnwrapOverlay_;
     bool carUnwrapVisible_ = false;
+    bool sectionWireframeVisible_ = false;
     RegionOverlayState region_;
     mutable std::optional<QRectF> selectionWorldBoundsCache_;
 };

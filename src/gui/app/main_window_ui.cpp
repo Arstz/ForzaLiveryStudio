@@ -257,15 +257,18 @@ void MainWindow::setupDocks() {
     carPreview_->setGameFolder(behaviorSettings.gameFolder);
     carPreview_->setEditorState(state_);
     carPreview_->setProject(project());
-    keyBindings_->registerInteraction(
-        KeyInteraction::PreviewCycleDebugMode, carPreview_, KeyBindingRouter::Scope::Focus,
-        [this](KeyInteraction, KeyEventPhase phase, bool) {
-            if (phase != KeyEventPhase::Press) {
-                return false;
-            }
-            carPreview_->cycleDebugMode();
-            return true;
-        });
+    connect(carPreview_, &CarPreviewWidget::unwrapOverlayChanged,
+            this, &MainWindow::updateCarUnwrapOverlay);
+    auto *cycleLodAction = new QAction(this);
+    registerShortcutAction(
+        cycleLodAction, QStringLiteral("preview_cycle_lod"),
+        QStringLiteral("3D Preview: Cycle LOD"), {}, false, carPreview_);
+    connect(cycleLodAction, &QAction::triggered, carPreview_, &CarPreviewWidget::cycleLod);
+    auto *cycleDebugAction = new QAction(this);
+    registerShortcutAction(
+        cycleDebugAction, QStringLiteral("preview_cycle_debug_mode"),
+        QStringLiteral("3D Preview: Cycle Debug Mode"), {}, false, carPreview_);
+    connect(cycleDebugAction, &QAction::triggered, carPreview_, &CarPreviewWidget::cycleDebugMode);
     carPreviewDock_ = addPanelDock(QStringLiteral("3D Preview"), QStringLiteral("CarPreviewDock"),
                                    QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, carPreview_);
     tabifyDockWidget(layersDock, carPreviewDock_);
@@ -573,6 +576,24 @@ void MainWindow::setupOptionsMenu() {
             canvas_->setCarUnwrapVisible(checked);
         }
     });
+
+    sectionWireframeAction_ = optionsMenu->addAction(
+        QStringLiteral("Show Section Wireframe"));
+    sectionWireframeAction_->setCheckable(true);
+    sectionWireframeAction_->setChecked(false);
+    sectionWireframeAction_->setEnabled(false);
+    registerShortcutAction(
+        sectionWireframeAction_, QStringLiteral("toggle_section_wireframe"),
+        QStringLiteral("Show Section Wireframe"));
+    addAction(sectionWireframeAction_);
+    connect(sectionWireframeAction_, &QAction::toggled, this, [this](bool checked) {
+        if (canvas_ != nullptr) {
+            canvas_->setSectionWireframeVisible(checked);
+        }
+        if (carPreview_ != nullptr) {
+            carPreview_->setSectionWireframeVisible(checked);
+        }
+    });
 }
 
 void MainWindow::setupToolbar() {
@@ -695,8 +716,14 @@ void MainWindow::updateCarUnwrapOverlay() {
         sectionSlot = activeLiverySectionSlot();
         if (sectionSlot < 0) {
             canvas_->setCarUnwrapOverlay({});
+            if (carPreview_ != nullptr) {
+                carPreview_->setCarUnwrapSection(fls::kLiverySideCount);
+            }
             if (carUnwrapAction_ != nullptr) {
                 carUnwrapAction_->setEnabled(false);
+            }
+            if (sectionWireframeAction_ != nullptr) {
+                sectionWireframeAction_->setEnabled(false);
             }
             return;
         }
@@ -704,9 +731,15 @@ void MainWindow::updateCarUnwrapOverlay() {
     const CarUnwrapOverlay overlay = carPreview_ != nullptr
         ? carPreview_->unwrapOverlay(sectionSlot)
         : CarUnwrapOverlay{};
+    if (carPreview_ != nullptr) {
+        carPreview_->setCarUnwrapSection(sectionSlot);
+    }
     canvas_->setCarUnwrapOverlay(overlay);
     if (carUnwrapAction_ != nullptr) {
         carUnwrapAction_->setEnabled(!overlay.empty());
+    }
+    if (sectionWireframeAction_ != nullptr) {
+        sectionWireframeAction_->setEnabled(!overlay.empty());
     }
 }
 
@@ -743,7 +776,8 @@ QAction *MainWindow::registerShortcutAction(QAction *action,
                                             const QString &id,
                                             const QString &label,
                                             const QString &iconName,
-                                            bool mirroredIcon) {
+                                            bool mirroredIcon,
+                                            QWidget *focusOwner) {
     if (action == nullptr) {
         return nullptr;
     }
@@ -756,7 +790,9 @@ QAction *MainWindow::registerShortcutAction(QAction *action,
     const QKeySequence currentSequence = settings.contains(settingsKey)
         ? QKeySequence(settings.value(settingsKey).toString())
         : defaultSequence;
-    keyBindings_->registerAction(id, action, currentSequence);
+    keyBindings_->registerAction(
+        id, action, currentSequence, focusOwner,
+        focusOwner == nullptr ? KeyBindingRouter::Scope::Window : KeyBindingRouter::Scope::Focus);
     refreshShortcutActionText(action, id, label, currentSequence);
     QString settingsLabel = label;
     settingsLabel.remove(QLatin1Char('&'));

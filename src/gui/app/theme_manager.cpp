@@ -3,8 +3,10 @@
 #include <QApplication>
 #include <QPainter>
 #include <QPixmap>
+#include <QProxyStyle>
 #include <QSettings>
 #include <QStyleFactory>
+#include <QStyleOption>
 
 #include <algorithm>
 
@@ -12,6 +14,53 @@ namespace gui {
 namespace {
 
 UiTheme currentTheme = UiTheme::Dark;
+
+constexpr int kDarkLineEditOutlineLightness = 240;
+
+QPalette darkLineEditFramePalette(const QPalette &palette) {
+    QPalette adjustedPalette = palette;
+    const QColor window = palette.color(QPalette::Window);
+    adjustedPalette.setColor(
+        QPalette::Window, window.lighter(kDarkLineEditOutlineLightness));
+
+    return adjustedPalette;
+}
+
+class ThemeStyle final : public QProxyStyle {
+public:
+    explicit ThemeStyle(QStyle *style)
+        : QProxyStyle(style) {}
+
+    void drawPrimitive(PrimitiveElement element,
+                       const QStyleOption *option,
+                       QPainter *painter,
+                       const QWidget *widget = nullptr) const override {
+        if (element != PE_FrameLineEdit || currentTheme != UiTheme::Dark) {
+            QProxyStyle::drawPrimitive(element, option, painter, widget);
+            return;
+        }
+
+        QStyleOption adjustedOption = *option;
+        adjustedOption.palette = darkLineEditFramePalette(option->palette);
+        QProxyStyle::drawPrimitive(element, &adjustedOption, painter, widget);
+    }
+
+    void drawComplexControl(ComplexControl control,
+                            const QStyleOptionComplex *option,
+                            QPainter *painter,
+                            const QWidget *widget = nullptr) const override {
+        if (control == CC_SpinBox && currentTheme == UiTheme::Dark) {
+            if (const auto *spinBox = qstyleoption_cast<const QStyleOptionSpinBox *>(option)) {
+                QStyleOptionSpinBox adjustedOption = *spinBox;
+                adjustedOption.palette = darkLineEditFramePalette(option->palette);
+                QProxyStyle::drawComplexControl(control, &adjustedOption, painter, widget);
+                return;
+            }
+        }
+
+        QProxyStyle::drawComplexControl(control, option, painter, widget);
+    }
+};
 
 QColor validColor(const QColor &color, const QColor &fallback) {
     return color.isValid() ? color : fallback;
@@ -315,7 +364,7 @@ QPalette paletteForTheme(UiTheme theme) {
 void applyUiTheme(QApplication &app, UiTheme theme) {
     currentTheme = theme;
     if (QStyleFactory::keys().contains(QStringLiteral("Fusion"))) {
-        app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+        app.setStyle(new ThemeStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
     }
     app.setPalette(paletteForTheme(theme));
 }

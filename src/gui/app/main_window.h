@@ -131,7 +131,8 @@ private:
                                     const QString &id,
                                     const QString &label,
                                     const QString &iconName = QString(),
-                                    bool mirroredIcon = false);
+                                    bool mirroredIcon = false,
+                                    QWidget *focusOwner = nullptr);
     QAction *trackIconAction(QAction *action, const QString &iconName, bool mirroredIcon = false);
     QVector<ShortcutSettingsItem> shortcutSettingsItems() const;
     void applyShortcutSettings(const QVector<ShortcutSettingsItem> &items);
@@ -240,6 +241,7 @@ private:
     CarPreviewWidget *carPreview_ = nullptr;
     QDockWidget *carPreviewDock_ = nullptr;
     QAction *carUnwrapAction_ = nullptr;
+    QAction *sectionWireframeAction_ = nullptr;
     LayerTreeView *tree_ = nullptr;
     LiverySectionBar *sectionBar_ = nullptr;
     QSplitter *layersSplitter_ = nullptr;

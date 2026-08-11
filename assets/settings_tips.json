@@ -5,7 +5,7 @@
   },
   "general.autosave_interval": {
     "hasTip": true,
-    "tip": "Minutes between autosave attempts. Set to 0 to disable autosave."
+    "tip": "Minutes between autosave attempts. Set to 0 to disable autosave. Will not apply unless .3so file present."
   },
   "theme.theme": {
     "hasTip": false,

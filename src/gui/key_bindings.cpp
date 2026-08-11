@@ -74,7 +74,6 @@ const QVector<InteractionDefinition> &interactionDefinitions() {
         {KeyInteraction::CanvasNudgeRightFast, QKeySequence(Qt::ShiftModifier | Qt::Key_Right)},
         {KeyInteraction::CanvasNudgeUpFast, QKeySequence(Qt::ShiftModifier | Qt::Key_Up)},
         {KeyInteraction::CanvasNudgeDownFast, QKeySequence(Qt::ShiftModifier | Qt::Key_Down)},
-        {KeyInteraction::PreviewCycleDebugMode, QKeySequence(Qt::Key_U)},
     };
 
     return definitions;
@@ -212,6 +211,9 @@ QKeySequence defaultShortcut(const QString &id) {
         {QStringLiteral("toggle_guide_layers_on_top"), QKeySequence(Qt::Key_QuoteLeft)},
         {QStringLiteral("toggle_transform_relative"), {}},
         {QStringLiteral("toggle_car_uv_unwrap"), {}},
+        {QStringLiteral("toggle_section_wireframe"), {}},
+        {QStringLiteral("preview_cycle_lod"), {}},
+        {QStringLiteral("preview_cycle_debug_mode"), {}},
         {QStringLiteral("tool_select"), QKeySequence(Qt::Key_S)},
         {QStringLiteral("tool_move"), QKeySequence(Qt::Key_V)},
         {QStringLiteral("tool_marquee"), QKeySequence(Qt::Key_F)},
@@ -268,13 +270,17 @@ KeyBindingRouter::~KeyBindingRouter() {
     }
 }
 
-void KeyBindingRouter::registerAction(const QString &id, QAction *action, const QKeySequence &sequence) {
+void KeyBindingRouter::registerAction(const QString &id,
+                                      QAction *action,
+                                      const QKeySequence &sequence,
+                                      QWidget *owner,
+                                      Scope scope) {
     if (action == nullptr) {
         return;
     }
     action->setShortcut({});
     action->setAutoRepeat(shortcutAutoRepeats(id));
-    actions_.push_back({id, action, sequence});
+    actions_.push_back({id, action, owner, sequence, scope});
 }
 
 void KeyBindingRouter::setActionSequence(const QString &id, const QKeySequence &sequence) {
@@ -434,7 +440,8 @@ bool KeyBindingRouter::routeAction(QKeyEvent &event) {
     const QKeySequence pressed = sequenceFromCombinations(pendingSequence_);
     bool partialMatch = false;
     for (const ActionBinding &binding : std::as_const(actions_)) {
-        if (binding.action == nullptr || !binding.action->isEnabled() || binding.sequence.isEmpty()) {
+        if (!actionHasFocus(binding) || binding.action == nullptr
+            || !binding.action->isEnabled() || binding.sequence.isEmpty()) {
             continue;
         }
         const QKeySequence::SequenceMatch match = binding.sequence.matches(pressed);
@@ -458,6 +465,16 @@ bool KeyBindingRouter::routeAction(QKeyEvent &event) {
     clearPendingSequence();
 
     return false;
+}
+
+bool KeyBindingRouter::actionHasFocus(const ActionBinding &binding) const {
+    if (binding.scope == Scope::Window) {
+        return windowCanReceiveBindings();
+    }
+    QWidget *focus = QApplication::focusWidget();
+
+    return focus != nullptr && binding.owner != nullptr
+        && (focus == binding.owner || binding.owner->isAncestorOf(focus));
 }
 
 bool KeyBindingRouter::interactionHasFocus(const InteractionBinding &binding) const {

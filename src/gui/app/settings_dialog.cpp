@@ -19,6 +19,21 @@ struct SettingTip {
 
 using SettingTips = QHash<QString, SettingTip>;
 
+constexpr auto kShortcutConflictStyle =
+    "QLineEdit { border: 2px solid #d9534f; }";
+
+void setShortcutConflictStyle(QKeySequenceEdit *edit, bool conflict) {
+    if (edit == nullptr) {
+        return;
+    }
+    QLineEdit *field = edit->findChild<QLineEdit *>();
+    QWidget *target = field != nullptr
+        ? static_cast<QWidget *>(field)
+        : static_cast<QWidget *>(edit);
+    target->setStyleSheet(
+        conflict ? QString::fromLatin1(kShortcutConflictStyle) : QString());
+}
+
 SettingTips loadSettingTips() {
     QFile file(assetPath(QStringLiteral("settings_tips.json")));
     if (!file.open(QIODevice::ReadOnly)) {
@@ -416,6 +431,8 @@ SettingsDialog::SettingsDialog(UiTheme theme,
         controlsLayout->addWidget(edit, 1);
         controlsLayout->addWidget(reset);
         shortcutEdits_.append(edit);
+        QObject::connect(edit, &QKeySequenceEdit::keySequenceChanged,
+                         this, [this]() { updateShortcutConflicts(false); });
         QObject::connect(reset, &QPushButton::clicked,
                          this, [this, row]() { resetShortcutRow(row); });
         addSettingRow(keybindsPage, QStringLiteral("keybinds.shortcuts"),
@@ -435,6 +452,7 @@ SettingsDialog::SettingsDialog(UiTheme theme,
                      this, [this]() { resetAllShortcuts(); });
     addSettingRow(keybindsPage, QStringLiteral("keybinds.shortcuts"),
                   QStringLiteral("All keybinds"), resetControls, tips);
+    updateShortcutConflicts(false);
 
     SettingsPage systemPage = createSettingsPage(pages);
     const SystemIconSet iconSet = loadSystemIconSet();
@@ -588,6 +606,7 @@ void SettingsDialog::resetShortcutRow(int row) {
         return;
     }
     shortcutEdits_[row]->setKeySequence(shortcuts_[row].defaultSequence);
+    updateShortcutConflicts(false);
 }
 
 void SettingsDialog::resetAllShortcuts() {
@@ -699,24 +718,48 @@ void SettingsDialog::updatePreviewBackgroundControls() {
 }
 
 bool SettingsDialog::shortcutsAreValid() {
+    return updateShortcutConflicts(true);
+}
+
+bool SettingsDialog::updateShortcutConflicts(bool showDialog) {
     validationLabel_->clear();
-    QHash<QString, QString> seen;
-    for (const ShortcutSettingsItem &item : shortcutItems()) {
+    for (QKeySequenceEdit *edit : std::as_const(shortcutEdits_)) {
+        setShortcutConflictStyle(edit, false);
+    }
+    const QVector<ShortcutSettingsItem> items = shortcutItems();
+    QHash<QString, int> seen;
+    QSet<int> conflictRows;
+    QString conflictMessage;
+    for (int row = 0; row < items.size(); ++row) {
+        const ShortcutSettingsItem &item = items[row];
         if (item.currentSequence.isEmpty()) {
             continue;
         }
         const QString normalized = item.currentSequence.toString(QKeySequence::PortableText);
         const auto it = seen.constFind(normalized);
         if (it != seen.constEnd()) {
-            validationLabel_->setText(
-                QStringLiteral("Shortcut %1 is assigned to both %2 and %3.")
-                    .arg(item.currentSequence.toString(QKeySequence::NativeText),
-                         it.value(), item.label));
-            return false;
+            conflictRows.insert(it.value());
+            conflictRows.insert(row);
+            if (conflictMessage.isEmpty()) {
+                conflictMessage = QStringLiteral("%1 conflicts with %2 (%3).")
+                    .arg(items[it.value()].label, item.label,
+                         item.currentSequence.toString(QKeySequence::NativeText));
+            }
+        } else {
+            seen.insert(normalized, row);
         }
-        seen.insert(normalized, item.label);
     }
-    return true;
+    for (int row : std::as_const(conflictRows)) {
+        if (row >= 0 && row < shortcutEdits_.size()) {
+            setShortcutConflictStyle(shortcutEdits_[row], true);
+        }
+    }
+    validationLabel_->setText(conflictMessage);
+    if (showDialog && !conflictMessage.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Conflicting keybinds"), conflictMessage);
+    }
+
+    return conflictMessage.isEmpty();
 }
 
 void SettingsDialog::accept() {

@@ -32,7 +32,6 @@ enum class KeyInteraction {
     CanvasNudgeRightFast,
     CanvasNudgeUpFast,
     CanvasNudgeDownFast,
-    PreviewCycleDebugMode,
 };
 
 enum class KeyEventPhase {
@@ -57,7 +56,11 @@ public:
     explicit KeyBindingRouter(QWidget *window, QObject *parent = nullptr);
     ~KeyBindingRouter() override;
 
-    void registerAction(const QString &id, QAction *action, const QKeySequence &sequence);
+    void registerAction(const QString &id,
+                        QAction *action,
+                        const QKeySequence &sequence,
+                        QWidget *owner = nullptr,
+                        Scope scope = Scope::Window);
     void setActionSequence(const QString &id, const QKeySequence &sequence);
     void registerInteraction(KeyInteraction interaction,
                              QWidget *owner,
@@ -74,7 +77,9 @@ private:
     struct ActionBinding {
         QString id;
         QPointer<QAction> action;
+        QPointer<QWidget> owner;
         QKeySequence sequence;
+        Scope scope = Scope::Window;
     };
 
     struct InteractionBinding {
@@ -93,6 +98,7 @@ private:
     bool routeKeyRelease(QKeyEvent &event);
     bool routeInteraction(QKeyEvent &event, KeyEventPhase phase);
     bool routeAction(QKeyEvent &event);
+    bool actionHasFocus(const ActionBinding &binding) const;
     bool interactionHasFocus(const InteractionBinding &binding) const;
     bool windowCanReceiveBindings() const;
     void releaseActiveInteractions();

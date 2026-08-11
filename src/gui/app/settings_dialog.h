@@ -54,6 +54,7 @@ private:
     void chooseGuidelineColor();
     void updateCanvasColorControls();
     void updatePreviewBackgroundControls();
+    bool updateShortcutConflicts(bool showDialog);
     void accept() override;
 
     std::function<void(UiTheme)> themeChangedCallback_;

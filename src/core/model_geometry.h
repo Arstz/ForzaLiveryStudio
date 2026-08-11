@@ -74,11 +74,14 @@ struct CarLocator {
 struct CarModel {
     QString sourcePath;
     std::vector<CarMesh> meshes;
+    std::vector<std::vector<CarMesh>> additionalLodMeshes;
     std::vector<CarMesh> liveryProjectionMeshes;
     std::vector<CarLocator> locators;
     ModelVec3 boundsMin;
     ModelVec3 boundsMax;
 
+    int lodCount() const;
+    const std::vector<CarMesh> &meshesForLod(int lodIndex) const;
     long long totalVertices() const;
     long long totalIndices() const;
 };

@@ -379,6 +379,14 @@ bool ProjectCanvas::carUnwrapVisible() const {
     return carUnwrapVisible_;
 }
 
+void ProjectCanvas::setSectionWireframeVisible(bool visible) {
+    if (sectionWireframeVisible_ == visible) {
+        return;
+    }
+    sectionWireframeVisible_ = visible;
+    update();
+}
+
 bool ProjectCanvas::hasCarUnwrap() const {
     return !carUnwrapOverlay_.empty();
 }

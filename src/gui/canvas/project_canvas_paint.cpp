@@ -558,7 +558,8 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                                std::max(0.0, height() - kRulerExtent)));
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (carUnwrapVisible_ && !carUnwrapOverlay_.empty()) {
+    if ((carUnwrapVisible_ || sectionWireframeVisible_)
+        && !carUnwrapOverlay_.empty()) {
         static const QColor kSideColors[fls::kLiverySideCount] = {
             QColor(230, 60, 60),
             QColor(60, 200, 60),
@@ -574,15 +575,34 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
         };
         painter.save();
         painter.setTransform(camera_.matrix(), false);
-        painter.setPen(Qt::NoPen);
-        painter.setOpacity(0.45);
-        for (int sideIndex = 0; sideIndex < fls::kLiverySideCount; ++sideIndex) {
-            const CarUnwrapSide &side = carUnwrapOverlay_.sides[sideIndex];
-            if (!side.valid()) {
-                continue;
+        if (carUnwrapVisible_) {
+            painter.setPen(Qt::NoPen);
+            painter.setOpacity(0.45);
+            for (int sideIndex = 0; sideIndex < fls::kLiverySideCount; ++sideIndex) {
+                const CarUnwrapSide &side = carUnwrapOverlay_.sides[sideIndex];
+                if (!side.valid()) {
+                    continue;
+                }
+                painter.setBrush(kSideColors[sideIndex]);
+                painter.drawPath(side.path);
             }
-            painter.setBrush(kSideColors[sideIndex]);
-            painter.drawPath(side.path);
+        }
+        if (sectionWireframeVisible_) {
+            QPen wireframePen(Qt::white);
+            wireframePen.setWidthF(1.0);
+            wireframePen.setCosmetic(true);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(wireframePen);
+            painter.setOpacity(1.0);
+            for (const CarUnwrapSide &side : carUnwrapOverlay_.sides) {
+                if (!side.valid() || side.wireframe.isEmpty()) {
+                    continue;
+                }
+                painter.save();
+                painter.setClipPath(side.path, Qt::IntersectClip);
+                painter.drawPath(side.wireframe);
+                painter.restore();
+            }
         }
         painter.restore();
     }
