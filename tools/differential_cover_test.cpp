@@ -1,13 +1,20 @@
 #include "differential_cover.h"
 #include "differential_cover_gpu.h"
+#include "layer.h"
+#include "matrix_math.h"
 #include "pen_fill.h"
+#include "project_codec.h"
 
 #include <QtCore>
+#include <QtGui>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <iostream>
+
+#include <zlib.h>
 
 namespace {
 
@@ -1948,6 +1955,325 @@ cover::FillOptions corpusOptions() {
     return result;
 }
 
+fls::Matrix3 placementMatrix(const cover::Affine &transform) {
+    fls::Matrix3 matrix;
+    matrix.m[0][0] = transform.a;
+    matrix.m[0][1] = transform.c;
+    matrix.m[0][2] = transform.e;
+    matrix.m[1][0] = transform.b;
+    matrix.m[1][1] = transform.d;
+    matrix.m[1][2] = transform.f;
+    return matrix;
+}
+
+void appendPngInteger(QByteArray &bytes, quint32 value) {
+    bytes.append(static_cast<char>((value >> 24) & 0xff));
+    bytes.append(static_cast<char>((value >> 16) & 0xff));
+    bytes.append(static_cast<char>((value >> 8) & 0xff));
+    bytes.append(static_cast<char>(value & 0xff));
+}
+
+void appendPngChunk(QByteArray &png,
+                    const QByteArray &type,
+                    const QByteArray &data) {
+    appendPngInteger(png, static_cast<quint32>(data.size()));
+    const qsizetype checksumStart = png.size();
+    png.append(type);
+    png.append(data);
+    uLong checksum = crc32(0L, Z_NULL, 0);
+    checksum = crc32(
+        checksum,
+        reinterpret_cast<const Bytef *>(png.constData() + checksumStart),
+        static_cast<uInt>(type.size() + data.size()));
+    appendPngInteger(png, static_cast<quint32>(checksum));
+}
+
+QByteArray encodePng(const QImage &source) {
+    const QImage image = source.convertToFormat(QImage::Format_RGBA8888);
+    QByteArray scanlines;
+    scanlines.reserve(image.height() * (1 + image.width() * 4));
+    for (int y = 0; y < image.height(); ++y) {
+        scanlines.append('\0');
+        scanlines.append(
+            reinterpret_cast<const char *>(image.constScanLine(y)),
+            image.width() * 4);
+    }
+
+    uLongf compressedSize = compressBound(
+        static_cast<uLong>(scanlines.size()));
+    QByteArray compressed(static_cast<qsizetype>(compressedSize), '\0');
+    const int compressionResult = compress2(
+        reinterpret_cast<Bytef *>(compressed.data()),
+        &compressedSize,
+        reinterpret_cast<const Bytef *>(scanlines.constData()),
+        static_cast<uLong>(scanlines.size()),
+        Z_BEST_SPEED);
+    if (compressionResult != Z_OK) {
+        return {};
+    }
+    compressed.resize(static_cast<qsizetype>(compressedSize));
+
+    QByteArray header;
+    appendPngInteger(header, static_cast<quint32>(image.width()));
+    appendPngInteger(header, static_cast<quint32>(image.height()));
+    header.append(static_cast<char>(8));
+    header.append(static_cast<char>(6));
+    header.append(QByteArray(3, '\0'));
+
+    QByteArray png("\x89PNG\r\n\x1a\n", 8);
+    appendPngChunk(png, QByteArrayLiteral("IHDR"), header);
+    appendPngChunk(png, QByteArrayLiteral("IDAT"), compressed);
+    appendPngChunk(png, QByteArrayLiteral("IEND"), {});
+    return png;
+}
+
+std::unique_ptr<fls::scene::GuideLayer> contourGuide(
+    const QPainterPath &path,
+    const QRectF &imageBounds,
+    double pixelsPerCanvasUnit,
+    bool outlineOnly) {
+    const int width = std::max(
+        1, qCeil(imageBounds.width() * pixelsPerCanvasUnit));
+    const int height = std::max(
+        1, qCeil(imageBounds.height() * pixelsPerCanvasUnit));
+    const QRectF exactBounds(
+        imageBounds.topLeft(),
+        QSizeF(width / pixelsPerCanvasUnit,
+               height / pixelsPerCanvasUnit));
+    QImage image(width, height, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setTransform(QTransform(
+        pixelsPerCanvasUnit, 0.0,
+        0.0, pixelsPerCanvasUnit,
+        -exactBounds.left() * pixelsPerCanvasUnit,
+        -exactBounds.top() * pixelsPerCanvasUnit));
+    if (outlineOnly) {
+        QPen pen(QColor(255, 224, 48));
+        pen.setWidthF(0.55);
+        pen.setJoinStyle(Qt::RoundJoin);
+        pen.setCapStyle(Qt::RoundCap);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+    } else {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(220, 45, 55));
+    }
+    painter.drawPath(path);
+    painter.end();
+
+    QByteArray encoded = encodePng(image);
+    if (encoded.isEmpty()) {
+        return nullptr;
+    }
+
+    auto guide = std::make_unique<fls::scene::GuideLayer>();
+    guide->id = outlineOnly
+        ? QStringLiteral("ga_target_outline")
+        : QStringLiteral("ga_target_area");
+    guide->name = outlineOnly
+        ? QStringLiteral("Target contour (yellow)")
+        : QStringLiteral("Unfilled target area (red)");
+    guide->locked = true;
+    guide->opacity = outlineOnly ? 1.0 : 0.92;
+    guide->x = exactBounds.center().x();
+    guide->y = exactBounds.center().y();
+    guide->scaleX = 1.0 / pixelsPerCanvasUnit;
+    guide->scaleY = 1.0 / pixelsPerCanvasUnit;
+    guide->imageTopDown = true;
+    guide->image = std::make_unique<fls::scene::RasterContainer>();
+    guide->image->width = width;
+    guide->image->height = height;
+    guide->image->format = QStringLiteral("PNG");
+    guide->image->encoded = std::move(encoded);
+    return guide;
+}
+
+int countProjectShapes(const fls::scene::Group &group) {
+    int result = 0;
+    for (const auto &child : group.children) {
+        if (child->kind() == fls::scene::LayerKind::Shape) {
+            ++result;
+        } else if (child->kind() == fls::scene::LayerKind::Group) {
+            result += countProjectShapes(
+                static_cast<const fls::scene::Group &>(*child));
+        }
+    }
+    return result;
+}
+
+int exportLoggedFillProject(
+    const QString &logPath,
+    const QString &outputPath,
+    const QString &displayName,
+    const QVector<cover::ShapeMesh> &catalog) {
+    QFile source(logPath);
+    if (!source.open(QIODevice::ReadOnly)) {
+        std::cerr << "Could not open " << qPrintable(logPath) << '\n';
+        return 1;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(source.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError
+        || !document.isObject()) {
+        std::cerr << "Invalid log " << qPrintable(logPath) << '\n';
+        return 1;
+    }
+
+    const cover::FillOptions options = corpusOptions();
+    const QJsonObject request =
+        document.object().value(QStringLiteral("request")).toObject();
+    const QVector<PenLoop> loops = loggedLoops(request);
+    const PenContour contour = buildPenContour(
+        loops, options.boundaryTolerance * 0.25);
+    if (!contour.valid()) {
+        std::cerr << "Invalid contour: " << qPrintable(contour.error) << '\n';
+        return 1;
+    }
+
+    cover::FillInput input;
+    input.mustCoverPath = contour.path;
+    for (const PenContourLoop &loop : contour.loops) {
+        input.boundaryLoops.push_back(loop.segments);
+    }
+    const cover::FillResult fill =
+        cover::analyticCoverFill(input, catalog, options);
+    if (!fill.error.isEmpty() || fill.cancelled || fill.timedOut) {
+        std::cerr << "Fill failed: " << qPrintable(fill.error) << '\n';
+        return 1;
+    }
+
+    constexpr double kGuidePixelsPerCanvasUnit = 4.0;
+    constexpr double kMinimumGuidePadding = 4.0;
+    const double padding = std::max(
+        kMinimumGuidePadding, options.outwardMargin + 2.0);
+    const QRectF guideBounds = contour.path.boundingRect().adjusted(
+        -padding, -padding, padding, padding);
+    auto targetGuide = contourGuide(
+        contour.path, guideBounds, kGuidePixelsPerCanvasUnit, false);
+    auto outlineGuide = contourGuide(
+        contour.path, guideBounds, kGuidePixelsPerCanvasUnit, true);
+    if (!targetGuide || !outlineGuide) {
+        std::cerr << "Could not encode contour guides\n";
+        return 1;
+    }
+
+    const bool appendToProject = corpusBooleanOption(
+        "FLS_EXPORT_APPEND", false)
+        && QFileInfo::exists(outputPath);
+    fls::Project project;
+    std::unique_ptr<fls::scene::Layer> existingOutline;
+    if (appendToProject) {
+        QFile existing(outputPath);
+        if (!existing.open(QIODevice::ReadOnly)) {
+            std::cerr << "Could not open existing project "
+                      << qPrintable(outputPath) << '\n';
+            return 1;
+        }
+        project = fls::decodeProjectDocument(existing.readAll());
+        for (int index = 0;
+             index < static_cast<int>(project.root->children.size());
+             ++index) {
+            if (project.root->children[static_cast<std::size_t>(index)]->id
+                == QStringLiteral("ga_target_outline")) {
+                existingOutline = project.root->takeAt(index);
+                break;
+            }
+        }
+    } else {
+        project.name = QStringLiteral("GA differential fill comparison");
+        project.root->name = project.name;
+        project.colorSwatches = {
+            {255, 202, 52, 255},
+            {225, 130, 35, 255},
+            {245, 77, 125, 255},
+            {215, 190, 47, 255},
+        };
+        project.root->append(std::move(targetGuide));
+    }
+    const int existingShapeCount = countProjectShapes(*project.root);
+
+    auto fillGroup = std::make_unique<fls::scene::Group>();
+    const QString fillId = QStringLiteral("ga_fill_%1").arg(
+        QString::fromLatin1(QCryptographicHash::hash(
+            displayName.toUtf8(), QCryptographicHash::Sha256).toHex().left(12)));
+    fillGroup->id = fillId;
+    fillGroup->name = QStringLiteral(
+        "%1 | %2 shapes | %3% fill | %4s")
+        .arg(displayName)
+        .arg(fill.placements.size())
+        .arg(100.0 * fill.coveredArea
+                 / (fill.coveredArea + fill.residualArea),
+             0, 'f', 4)
+        .arg(fill.profile.totalWallSeconds, 0, 'f', 1);
+    fillGroup->visible = corpusBooleanOption(
+        "FLS_EXPORT_VISIBLE", !appendToProject);
+    const std::array<std::array<quint8, 4>, 4> colors = {
+        std::array<quint8, 4>{255, 202, 52, 255},
+        std::array<quint8, 4>{225, 130, 35, 255},
+        std::array<quint8, 4>{245, 77, 125, 255},
+        std::array<quint8, 4>{215, 190, 47, 255},
+    };
+    for (qsizetype index = 0; index < fill.placements.size(); ++index) {
+        const cover::Placement &placement = fill.placements[index];
+        auto shape = std::make_unique<fls::scene::Shape>();
+        shape->id = QStringLiteral("%1_shape_%2")
+            .arg(fillId)
+            .arg(index + 1, 3, 10, QLatin1Char('0'));
+        shape->name = QStringLiteral("Shape %1 (#%2)")
+            .arg(index + 1)
+            .arg(placement.shapeId);
+        shape->setVectorShape(static_cast<quint16>(placement.shapeId));
+        shape->transform = fls::decomposeTransform2D(
+            placementMatrix(placement.transform));
+        shape->color = colors[static_cast<std::size_t>(index) % colors.size()];
+        fillGroup->append(std::move(shape));
+    }
+    project.root->append(std::move(fillGroup));
+    project.root->append(existingOutline
+                             ? std::move(existingOutline)
+                             : std::move(outlineGuide));
+
+    const QByteArray projectBytes = fls::encodeProjectDocument(project);
+    QSaveFile output(outputPath);
+    if (!output.open(QIODevice::WriteOnly)
+        || output.write(projectBytes) != projectBytes.size()
+        || !output.commit()) {
+        std::cerr << "Could not write " << qPrintable(outputPath) << '\n';
+        return 1;
+    }
+
+    const fls::Project decoded = fls::decodeProjectDocument(projectBytes);
+    if (!decoded.root
+        || countProjectShapes(*decoded.root)
+            != existingShapeCount + fill.placements.size()) {
+        std::cerr << "Exported project validation failed\n";
+        return 1;
+    }
+
+    QJsonObject summary;
+    summary.insert(QStringLiteral("output"),
+                   QFileInfo(outputPath).absoluteFilePath());
+    summary.insert(QStringLiteral("placements"), fill.placements.size());
+    summary.insert(QStringLiteral("coverageRatio"),
+                   fill.coveredArea
+                       / (fill.coveredArea + fill.residualArea));
+    summary.insert(QStringLiteral("missingArea"), fill.metrics.missingArea);
+    summary.insert(QStringLiteral("outsideArea"),
+                   fill.metrics.outsideTargetArea);
+    summary.insert(QStringLiteral("maximumOutwardDistance"),
+                   fill.metrics.maximumOutwardDistance);
+    summary.insert(QStringLiteral("wallSeconds"),
+                   fill.profile.totalWallSeconds);
+    QTextStream(stdout)
+        << QJsonDocument(summary).toJson(QJsonDocument::Compact)
+        << Qt::endl;
+    return 0;
+}
+
 int runLoggedCorpus(const QString &directoryPath,
                     const QVector<cover::ShapeMesh> &catalog) {
     const QDir directory(directoryPath);
@@ -1958,6 +2284,8 @@ int runLoggedCorpus(const QString &directoryPath,
         return 1;
     }
     const cover::FillOptions options = corpusOptions();
+    const double hardTimeoutSeconds = corpusRealOption(
+        "FLS_CORPUS_HARD_TIMEOUT_SECONDS", 0.0);
     QJsonArray results;
     QHash<QByteArray, QJsonObject> resultByContour;
     for (const QString &fileName : files) {
@@ -2006,8 +2334,22 @@ int runLoggedCorpus(const QString &directoryPath,
         for (const PenContourLoop &loop : contour.loops) {
             input.boundaryLoops.push_back(loop.segments);
         }
-        const cover::FillResult fill =
-            cover::analyticCoverFill(input, catalog, options);
+        const auto hardTimeoutStart =
+            std::chrono::steady_clock::now();
+        std::atomic_bool hardTimedOut{false};
+        const auto hardTimeoutReached = [&]() {
+            const bool expired = hardTimeoutSeconds > 0.0
+                && std::chrono::duration<double>(
+                       std::chrono::steady_clock::now()
+                       - hardTimeoutStart).count()
+                    >= hardTimeoutSeconds;
+            if (expired) {
+                hardTimedOut.store(true, std::memory_order_relaxed);
+            }
+            return expired;
+        };
+        const cover::FillResult fill = cover::analyticCoverFill(
+            input, catalog, options, hardTimeoutReached);
         QJsonObject result;
         result.insert(QStringLiteral("file"), fileName);
         result.insert(QStringLiteral("error"), fill.error);
@@ -2060,6 +2402,8 @@ int runLoggedCorpus(const QString &directoryPath,
                       fill.profile.evaluationBackend);
         result.insert(QStringLiteral("cancelled"), fill.cancelled);
         result.insert(QStringLiteral("timedOut"), fill.timedOut);
+        result.insert(QStringLiteral("hardTimedOut"),
+                      hardTimedOut.load(std::memory_order_relaxed));
         result.insert(QStringLiteral("stalled"), fill.stalled);
         resultByContour.insert(contourDigest, result);
         results.push_back(result);
@@ -2101,6 +2445,11 @@ int main(int argc, char **argv) {
     if (arguments.size() == 3
         && arguments[1] == QStringLiteral("--corpus")) {
         return runLoggedCorpus(arguments[2], catalog);
+    }
+    if (arguments.size() == 5
+        && arguments[1] == QStringLiteral("--export-project")) {
+        return exportLoggedFillProject(
+            arguments[2], arguments[3], arguments[4], catalog);
     }
     if (!testCatalogAndGradient(catalog)
         || !testWeightedMetrics()

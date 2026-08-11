@@ -592,6 +592,43 @@ orientation. It records placement count, exact areas, boundary and feature
 errors, runtime, backend, and repeatability for both weighted and unweighted
 runs.
 
+### 7.8 Genetic parameter search
+
+`tools/optimize_differential_cover.ps1` replays the newest available Pen-fill
+log and evolves every persistent Advanced parameter within the bounds declared
+in `differential_cover.h`. The initial population contains the current defaults
+and a default-derived genome whose completion target matches the requested
+coverage. Numeric crossover and bounded mutations operate in linear or
+logarithmic parameter space; occasional full-range resets keep every permitted
+value reachable. Boolean modes participate in crossover and mutation.
+
+Coverage and outward-distance requirements are feasibility constraints. Before
+the search finds a feasible genome, it ranks progress toward those constraints.
+Afterward it uses lexicographic fitness: fewer placements, greater coverage, then
+shorter solver wall time. Each completed evaluation is appended to a JSON-lines
+history, and the best parameters are atomically rewritten to a JSON snapshot.
+The snapshot therefore remains usable when the indefinite search is interrupted.
+Shortly before the evaluator watchdog, a cooperative deadline asks the solver to
+finalize its current placements and metrics. Internally timed-out or cooperatively
+stopped fills remain valid measured samples and participate in fitness ranking;
+only a process that cannot return before the watchdog, malformed output, or a
+solver error is invalid. History distinguishes solver inactivity, cooperative
+deadline, and last-resort watchdog timeouts so slow genomes cannot silently waste
+later generations.
+
+Run from the repository root:
+
+```powershell
+.\tools\optimize_differential_cover.ps1
+```
+
+By default the snapshot is `build/differential_ga_best.json`, the evaluation
+history is `build/differential_ga_history.jsonl`, required coverage is 0.998,
+maximum outward distance is one canvas unit, and the search continues until
+manually cancelled. Command-line parameters can select a contour log, change the
+population and mutation settings, set a per-evaluation timeout, or limit the
+evaluation count for a bounded experiment.
+
 ---
 
 ## 8. Budget, stopping, and partial results

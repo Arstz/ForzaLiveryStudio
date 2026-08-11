@@ -427,6 +427,7 @@ if(FLS_BUILD_TESTS)
         PRIVATE FLS_DIFFERENTIAL_COVER_TESTS=1)
     target_link_libraries(fls_differential_cover_tests PRIVATE
         clipper2
+        fls_core
         Qt6::Core
         Qt6::Gui
         ZLIB::ZLIB
