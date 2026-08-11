@@ -461,8 +461,7 @@ bool isBodyPaintMaterial(const QString &material) {
 
 bool isWindowGlassMaterial(const fls::CarMesh &mesh) {
     const QString name = mesh.materialName.toLower();
-    if (name.isEmpty()
-        || name.contains(QStringLiteral("screw"))
+    if (name.contains(QStringLiteral("screw"))
         || name.contains(QStringLiteral("frame"))
         || name.contains(QStringLiteral("label"))
         || name.contains(QStringLiteral("bulb"))
@@ -476,7 +475,13 @@ bool isWindowGlassMaterial(const fls::CarMesh &mesh) {
     }
     const bool glassResource = resource.isEmpty()
         || resource.contains(QStringLiteral("/glass/"));
-    return name.contains(QStringLiteral("window"))
+    const bool windowGlassResource =
+        resource.contains(QStringLiteral("/glass/glass_window"))
+        || resource.contains(QStringLiteral("/glass/glass_windshield"))
+        || resource.contains(QStringLiteral("/glass/glass_limotint"));
+    return mesh.paintMaterialHash == fls::material_hashes::binding::kWindowGlass
+        || windowGlassResource
+        || name.contains(QStringLiteral("window"))
         || name.contains(QStringLiteral("windshield"))
         || name.contains(QStringLiteral("windsheild"))
         || (name.contains(QStringLiteral("blackglass")) && glassResource);
