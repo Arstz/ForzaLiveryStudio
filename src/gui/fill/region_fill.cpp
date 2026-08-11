@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace gui {
 
@@ -33,7 +34,11 @@ namespace {
 
 constexpr double kGeometryEpsilon = 1e-9;
 constexpr int kBoundarySamplesPerCurve = 32;
+constexpr int kCurveBoundarySamplesPerCurve = 8;
 constexpr int kCircleShapeId = 102;
+constexpr double kCurveSharpJunctionAngle = 0.5235987755982988;
+constexpr double kStraightJunctionAngle = 0.0872664625997165;
+constexpr int kCurveReductionSamples = 64;
 
 struct Op {
     enum Kind { Line, Cubic } kind = Line;
@@ -595,6 +600,274 @@ QVector<ConvertiblePoint> initialPenPoints(const Subpath &subpath,
     return points;
 }
 
+double vectorAngle(const QPointF &left, const QPointF &right) {
+    const double leftLength = std::hypot(left.x(), left.y());
+    const double rightLength = std::hypot(right.x(), right.y());
+    if (leftLength <= kGeometryEpsilon || rightLength <= kGeometryEpsilon) {
+        return std::numbers::pi;
+    }
+    const double cosine = QPointF::dotProduct(left, right)
+        / (leftLength * rightLength);
+
+    return std::acos(std::clamp(cosine, -1.0, 1.0));
+}
+
+QVector<double> cubicInflections(const QPointF &start, const Op &op) {
+    const QPointF a = -start + op.control1 * 3.0
+        - op.control2 * 3.0 + op.end;
+    const QPointF b = start * 3.0 - op.control1 * 6.0
+        + op.control2 * 3.0;
+    const QPointF c = (op.control1 - start) * 3.0;
+    const auto crossProduct = [](const QPointF &left, const QPointF &right) {
+        return left.x() * right.y() - left.y() * right.x();
+    };
+    const double quadratic = -6.0 * crossProduct(a, b);
+    const double linear = 6.0 * crossProduct(c, a);
+    const double constant = 2.0 * crossProduct(c, b);
+    QVector<double> result;
+    if (std::abs(quadratic) <= kGeometryEpsilon) {
+        if (std::abs(linear) > kGeometryEpsilon) {
+            const double root = -constant / linear;
+            if (root > kGeometryEpsilon && root < 1.0 - kGeometryEpsilon) {
+                result.push_back(root);
+            }
+        }
+        return result;
+    }
+    const double discriminant = linear * linear
+        - 4.0 * quadratic * constant;
+    if (discriminant < 0.0) {
+        return result;
+    }
+    const double rootTerm = std::sqrt(discriminant);
+    for (const double root : {(-linear - rootTerm) / (2.0 * quadratic),
+                              (-linear + rootTerm) / (2.0 * quadratic)}) {
+        if (root > kGeometryEpsilon && root < 1.0 - kGeometryEpsilon
+            && (result.isEmpty() || std::abs(root - result.front()) > 1e-6)) {
+            result.push_back(root);
+        }
+    }
+    std::sort(result.begin(), result.end());
+
+    return result;
+}
+
+QPair<Op, Op> splitCubic(const QPointF &start, const Op &op, double parameter) {
+    const QPointF first = start * (1.0 - parameter)
+        + op.control1 * parameter;
+    const QPointF second = op.control1 * (1.0 - parameter)
+        + op.control2 * parameter;
+    const QPointF third = op.control2 * (1.0 - parameter)
+        + op.end * parameter;
+    const QPointF fourth = first * (1.0 - parameter) + second * parameter;
+    const QPointF fifth = second * (1.0 - parameter) + third * parameter;
+    const QPointF split = fourth * (1.0 - parameter) + fifth * parameter;
+    Op left;
+    left.kind = Op::Cubic;
+    left.control1 = first;
+    left.control2 = fourth;
+    left.end = split;
+    Op right;
+    right.kind = Op::Cubic;
+    right.control1 = fifth;
+    right.control2 = third;
+    right.end = op.end;
+
+    return {left, right};
+}
+
+Subpath splitCurveInflections(const Subpath &subpath) {
+    Subpath result;
+    result.start = subpath.start;
+    result.closed = subpath.closed;
+    QPointF start = subpath.start;
+    for (const Op &op : subpath.ops) {
+        if (op.kind == Op::Line) {
+            result.ops.push_back(op);
+            start = op.end;
+            continue;
+        }
+        const QVector<double> inflections = cubicInflections(start, op);
+        Op remaining = op;
+        QPointF remainingStart = start;
+        double previousParameter = 0.0;
+        for (const double parameter : inflections) {
+            const double localParameter = (parameter - previousParameter)
+                / (1.0 - previousParameter);
+            const auto pieces = splitCubic(
+                remainingStart, remaining, localParameter);
+            result.ops.push_back(pieces.first);
+            remainingStart = pieces.first.end;
+            remaining = pieces.second;
+            previousParameter = parameter;
+        }
+        result.ops.push_back(remaining);
+        start = op.end;
+    }
+
+    return result;
+}
+
+bool smoothCubicJunction(const QPointF &position,
+                         const Op &incoming,
+                         const Op &outgoing) {
+    if (incoming.kind != Op::Cubic || outgoing.kind != Op::Cubic) {
+        return false;
+    }
+
+    return vectorAngle(position - incoming.control2,
+                       outgoing.control1 - position)
+        < kCurveSharpJunctionAngle;
+}
+
+QVector<ConvertiblePoint> initialCurvePenPoints(const Subpath &source,
+                                                double closureTolerance) {
+    const Subpath subpath = splitCurveInflections(source);
+    QVector<ConvertiblePoint> points;
+    if (subpath.ops.isEmpty()) {
+        return points;
+    }
+    const int opCount = subpath.ops.size();
+    const bool startRemovable = smoothCubicJunction(
+        subpath.start, subpath.ops.back(), subpath.ops.front());
+    points.push_back({{subpath.start, PenPointKind::Hard}, startRemovable});
+    QPointF previous = subpath.start;
+    for (int index = 0; index < opCount; ++index) {
+        const Op &op = subpath.ops[index];
+        const bool closesAtStart = index == opCount - 1
+            && QLineF(op.end, subpath.start).length() <= closureTolerance;
+        if (op.kind == Op::Line) {
+            if (!closesAtStart) {
+                points.push_back({{op.end, PenPointKind::Hard}, false});
+            }
+        } else {
+            const QPointF control =
+                (op.control1 * 3.0 + op.control2 * 3.0
+                 - previous - op.end) * 0.25;
+            points.push_back({{control, PenPointKind::Soft}, false});
+            if (!closesAtStart) {
+                const Op &next = subpath.ops[(index + 1) % opCount];
+                points.push_back({{op.end, PenPointKind::Hard},
+                                  smoothCubicJunction(op.end, op, next)});
+            }
+        }
+        previous = op.end;
+    }
+
+    return points;
+}
+
+QPainterPath softRunPath(const QPointF &start,
+                         const QVector<QPointF> &controls,
+                         const QPointF &end) {
+    QPainterPath path(start);
+    QPointF current = start;
+    for (int index = 0; index < controls.size(); ++index) {
+        const QPointF segmentEnd = index + 1 == controls.size()
+            ? end : (controls[index] + controls[index + 1]) * 0.5;
+        path.quadTo(controls[index], segmentEnd);
+        current = segmentEnd;
+    }
+    if (controls.isEmpty() && current != end) {
+        path.lineTo(end);
+    }
+
+    return path;
+}
+
+QVector<QPointF> softRunSamples(const QPointF &start,
+                                const QVector<QPointF> &controls,
+                                const QPointF &end) {
+    const QPainterPath path = softRunPath(start, controls, end);
+    QVector<QPointF> result;
+    result.reserve(kCurveReductionSamples + 1);
+    for (int sample = 0; sample <= kCurveReductionSamples; ++sample) {
+        result.push_back(path.pointAtPercent(
+            static_cast<double>(sample) / kCurveReductionSamples));
+    }
+
+    return result;
+}
+
+QVector<QPointF> fitSoftControls(const QVector<QPointF> &samples,
+                                 const QPointF &start,
+                                 const QPointF &end,
+                                 int controlCount) {
+    if (samples.size() < 3 || controlCount < 1 || controlCount > 8) {
+        return {};
+    }
+    QVector<QVector<double>> normal(
+        controlCount, QVector<double>(controlCount, 0.0));
+    QVector<QPointF> right(controlCount);
+    for (int index = 1; index + 1 < samples.size(); ++index) {
+        const double parameter = static_cast<double>(index)
+            / (samples.size() - 1);
+        const double scaled = parameter * controlCount;
+        const int segment = std::min(
+            controlCount - 1, static_cast<int>(std::floor(scaled)));
+        const double local = segment + 1 == controlCount
+            ? std::min(1.0, scaled - segment)
+            : scaled - segment;
+        const double inverse = 1.0 - local;
+        QVector<double> coefficients(controlCount, 0.0);
+        QPointF fixed;
+        if (segment == 0) {
+            fixed += start * (inverse * inverse);
+        } else {
+            coefficients[segment - 1] += 0.5 * inverse * inverse;
+            coefficients[segment] += 0.5 * inverse * inverse;
+        }
+        coefficients[segment] += 2.0 * inverse * local;
+        if (segment + 1 == controlCount) {
+            fixed += end * (local * local);
+        } else {
+            coefficients[segment] += 0.5 * local * local;
+            coefficients[segment + 1] += 0.5 * local * local;
+        }
+        const QPointF residual = samples[index] - fixed;
+        for (int row = 0; row < controlCount; ++row) {
+            right[row] += residual * coefficients[row];
+            for (int column = 0; column < controlCount; ++column) {
+                normal[row][column] += coefficients[row]
+                    * coefficients[column];
+            }
+        }
+    }
+
+    for (int pivot = 0; pivot < controlCount; ++pivot) {
+        int best = pivot;
+        for (int row = pivot + 1; row < controlCount; ++row) {
+            if (std::abs(normal[row][pivot])
+                > std::abs(normal[best][pivot])) {
+                best = row;
+            }
+        }
+        if (std::abs(normal[best][pivot]) <= kGeometryEpsilon) {
+            return {};
+        }
+        if (best != pivot) {
+            normal.swapItemsAt(best, pivot);
+            right.swapItemsAt(best, pivot);
+        }
+        const double divisor = normal[pivot][pivot];
+        for (int column = pivot; column < controlCount; ++column) {
+            normal[pivot][column] /= divisor;
+        }
+        right[pivot] /= divisor;
+        for (int row = 0; row < controlCount; ++row) {
+            if (row == pivot) {
+                continue;
+            }
+            const double factor = normal[row][pivot];
+            for (int column = pivot; column < controlCount; ++column) {
+                normal[row][column] -= factor * normal[pivot][column];
+            }
+            right[row] -= right[pivot] * factor;
+        }
+    }
+    return right;
+}
+
 void protectCyclicSeam(QVector<ConvertiblePoint> *points) {
     const bool hasProtectedHard = std::any_of(points->cbegin(),
                                               points->cend(),
@@ -1146,6 +1419,610 @@ RegionPenConversionResult regionOutlineToPenPoints(
     return result;
 }
 
+QVector<ConvertiblePoint> enforceCurvePointStructure(
+    const QVector<ConvertiblePoint> &points) {
+    const int hardPointCount = static_cast<int>(std::count_if(
+        points.cbegin(), points.cend(), [](const ConvertiblePoint &point) {
+            return point.point.kind == PenPointKind::Hard;
+        }));
+    const int softPointCount = points.size() - hardPointCount;
+    if (hardPointCount < 1 || softPointCount == 0) {
+        return points;
+    }
+    int firstHard = 0;
+    while (firstHard < points.size()
+           && points[firstHard].point.kind != PenPointKind::Hard) {
+        ++firstHard;
+    }
+    QVector<ConvertiblePoint> ordered;
+    ordered.reserve(points.size());
+    for (int offset = 0; offset < points.size(); ++offset) {
+        ordered.push_back(points[(firstHard + offset) % points.size()]);
+    }
+    QVector<ConvertiblePoint> result;
+    result.reserve(points.size() + softPointCount / 2 + 1);
+    int index = 0;
+    while (index < ordered.size()) {
+        result.push_back(ordered[index]);
+        int nextHard = index + 1;
+        while (nextHard < ordered.size()
+               && ordered[nextHard].point.kind == PenPointKind::Soft) {
+            ++nextHard;
+        }
+        const int runSize = nextHard - index - 1;
+        const bool needsSecondHard = hardPointCount == 1 && runSize <= 2;
+        for (int runIndex = 0; runIndex < runSize; ++runIndex) {
+            const int controlIndex = index + 1 + runIndex;
+            result.push_back(ordered[controlIndex]);
+            const bool structuralSplit = runIndex + 1 < runSize
+                && ((runIndex + 1) % 2 == 0
+                    || (needsSecondHard && runIndex == 0));
+            if (structuralSplit) {
+                result.push_back({
+                    {(ordered[controlIndex].point.position
+                      + ordered[controlIndex + 1].point.position) * 0.5,
+                     PenPointKind::Hard},
+                    false,
+                });
+            }
+        }
+        index = nextHard;
+    }
+
+    return result;
+}
+
+RegionPenConversionResult optimizeCurveRegionOutline(
+    const QPainterPath &outline,
+    const RegionPenConversionOptions &options) {
+    RegionPenConversionResult result;
+    if (!std::isfinite(options.mergeTolerance) || options.mergeTolerance < 0.0
+        || !std::isfinite(options.maximumDssim) || options.maximumDssim < 0.0
+        || options.maximumDssim > 1.0
+        || !std::isfinite(options.closureTolerance)
+        || options.closureTolerance <= 0.0
+        || options.dssimSupersample < 1 || options.dssimSupersample > 8
+        || options.adaptiveSearchSteps < 0 || options.adaptiveSearchSteps > 16
+        || !std::isfinite(options.maximumPreferredHardPointDistance)
+        || options.maximumPreferredHardPointDistance < 0.0
+        || ((options.comparisonImageSize.width() > 0)
+            != (options.comparisonImageSize.height() > 0))) {
+        result.error = QStringLiteral("Curve contour options are invalid");
+        return result;
+    }
+
+    const OuterSelection outer = selectClosedOuter(
+        outline, options.closureTolerance);
+    if (!outer.error.isEmpty()) {
+        result.error = outer.error;
+        return result;
+    }
+    QVector<ConvertiblePoint> working = initialCurvePenPoints(
+        outer.subpath, options.closureTolerance);
+    protectCyclicSeam(&working);
+    result.originalPointCount = working.size();
+    if (working.size() < 3) {
+        result.error = QStringLiteral("Curve contour has too few points");
+        return result;
+    }
+    if (options.maxOptimizedPointCount > 0
+        && working.size() > options.maxOptimizedPointCount) {
+        result.points = penPoints(working);
+        result.optimizationSkipped = true;
+        return result;
+    }
+
+    QPolygonF sourcePolygon = flattenSubpath(
+        outer.subpath, kCurveBoundarySamplesPerCurve);
+    while (sourcePolygon.size() > 1
+           && QLineF(sourcePolygon.back(), sourcePolygon.front()).length()
+               <= options.closureTolerance) {
+        sourcePolygon.removeLast();
+    }
+    const PenContour initialContour = buildPenContour(penPoints(working));
+    if (!initialContour.valid()) {
+        result.error = initialContour.error.isEmpty()
+            ? QStringLiteral("Curve contour conversion failed")
+            : initialContour.error;
+        return result;
+    }
+    const QPolygonF initialPolygon = flattenPenContour(
+        initialContour, kCurveBoundarySamplesPerCurve);
+    const double referenceArea = signedArea(sourcePolygon);
+    result.baselineDeviation = boundaryDeviation(sourcePolygon, initialPolygon);
+    result.maximumDeviation = result.baselineDeviation;
+
+    struct Evaluation {
+        QPolygonF polygon;
+        double deviation = 0.0;
+        double dssim = 0.0;
+        bool valid = false;
+    };
+    const auto evaluate = [&](const QVector<ConvertiblePoint> &candidate) {
+        Evaluation evaluation;
+        const int hardPointCount = static_cast<int>(std::count_if(
+            candidate.cbegin(), candidate.cend(), [](const ConvertiblePoint &point) {
+                return point.point.kind == PenPointKind::Hard;
+            }));
+        if (candidate.size() < 3 || hardPointCount < 1) {
+            return evaluation;
+        }
+        const PenContour contour = buildPenContour(penPoints(candidate));
+        if (!contour.valid()) {
+            return evaluation;
+        }
+        evaluation.polygon = flattenPenContour(
+            contour, kCurveBoundarySamplesPerCurve);
+        if (!sameOrientation(referenceArea, signedArea(evaluation.polygon))) {
+            return evaluation;
+        }
+        evaluation.deviation = boundaryDeviation(
+            sourcePolygon, evaluation.polygon);
+        if (!std::isfinite(evaluation.deviation)
+            || evaluation.deviation
+                > result.baselineDeviation + options.mergeTolerance
+                    + kGeometryEpsilon) {
+            return evaluation;
+        }
+        evaluation.dssim = contourDssim(
+            sourcePolygon, evaluation.polygon,
+            options.comparisonImageSize, options.dssimSupersample);
+        if (!std::isfinite(evaluation.dssim)
+            || evaluation.dssim > options.maximumDssim + kGeometryEpsilon) {
+            return evaluation;
+        }
+        evaluation.valid = true;
+        return evaluation;
+    };
+
+    const auto supportedCornerAngle = [&](const QPointF &position) {
+        int nearest = 0;
+        double nearestDistance = std::numeric_limits<double>::max();
+        for (int index = 0; index < sourcePolygon.size(); ++index) {
+            const double distance = QLineF(position, sourcePolygon[index]).length();
+            if (distance < nearestDistance) {
+                nearest = index;
+                nearestDistance = distance;
+            }
+        }
+        const double supportDistance = std::max(
+            2.0, options.mergeTolerance * 4.0);
+        int previous = nearest;
+        double previousLength = 0.0;
+        while (previousLength < supportDistance) {
+            const int next = (previous + sourcePolygon.size() - 1)
+                % sourcePolygon.size();
+            previousLength += QLineF(
+                sourcePolygon[previous], sourcePolygon[next]).length();
+            previous = next;
+            if (previous == nearest) {
+                break;
+            }
+        }
+        int next = nearest;
+        double nextLength = 0.0;
+        while (nextLength < supportDistance) {
+            const int following = (next + 1) % sourcePolygon.size();
+            nextLength += QLineF(
+                sourcePolygon[next], sourcePolygon[following]).length();
+            next = following;
+            if (next == nearest) {
+                break;
+            }
+        }
+
+        return vectorAngle(position - sourcePolygon[previous],
+                           sourcePolygon[next] - position);
+    };
+
+    QVector<int> retainedHardIndices;
+    for (int index = 0; index < working.size(); ++index) {
+        if (working[index].point.kind != PenPointKind::Hard) {
+            continue;
+        }
+        if (supportedCornerAngle(working[index].point.position)
+            >= kCurveSharpJunctionAngle) {
+            retainedHardIndices.push_back(index);
+        }
+    }
+    if (retainedHardIndices.isEmpty()) {
+        for (int index = 0; index < working.size(); ++index) {
+            if (working[index].point.kind == PenPointKind::Hard) {
+                retainedHardIndices.push_back(index);
+                break;
+            }
+        }
+    }
+    if (!retainedHardIndices.isEmpty()) {
+        const int seam = retainedHardIndices.front();
+        QVector<ConvertiblePoint> ordered;
+        QVector<bool> retained;
+        ordered.reserve(working.size());
+        retained.reserve(working.size());
+        for (int offset = 0; offset < working.size(); ++offset) {
+            const int sourceIndex = (seam + offset) % working.size();
+            ordered.push_back(working[sourceIndex]);
+            retained.push_back(retainedHardIndices.contains(sourceIndex));
+        }
+        QVector<ConvertiblePoint> candidate;
+        int removedHardCount = 0;
+        int hard = 0;
+        do {
+            candidate.push_back(ordered[hard]);
+            int nextHard = hard + 1;
+            while (nextHard < ordered.size() && !retained[nextHard]) {
+                ++nextHard;
+            }
+            QVector<QPointF> originalControls;
+            QVector<QPointF> desiredJunctions;
+            std::optional<QPointF> pendingHard;
+            bool validRun = true;
+            for (int index = hard + 1; index < nextHard; ++index) {
+                if (ordered[index].point.kind == PenPointKind::Hard) {
+                    if (pendingHard.has_value() || originalControls.isEmpty()) {
+                        validRun = false;
+                        break;
+                    }
+                    pendingHard = ordered[index].point.position;
+                    continue;
+                }
+                if (!originalControls.isEmpty()) {
+                    desiredJunctions.push_back(
+                        pendingHard.value_or(
+                            (originalControls.back()
+                             + ordered[index].point.position) * 0.5));
+                    pendingHard.reset();
+                }
+                originalControls.push_back(ordered[index].point.position);
+            }
+            if (pendingHard.has_value()
+                || desiredJunctions.size() + 1 != originalControls.size()) {
+                validRun = false;
+            }
+            if (validRun && !originalControls.isEmpty()) {
+                QVector<QPointF> constants(originalControls.size());
+                QVector<double> signs(originalControls.size(), 1.0);
+                for (int index = 1; index < originalControls.size(); ++index) {
+                    signs[index] = -signs[index - 1];
+                    constants[index] = desiredJunctions[index - 1] * 2.0
+                        - constants[index - 1];
+                }
+                QPointF firstControl;
+                for (int index = 0; index < originalControls.size(); ++index) {
+                    firstControl += (originalControls[index] - constants[index])
+                        * signs[index];
+                }
+                firstControl /= originalControls.size();
+                for (int index = 0; index < originalControls.size(); ++index) {
+                    candidate.push_back({
+                        {firstControl * signs[index] + constants[index],
+                         PenPointKind::Soft},
+                        false,
+                    });
+                }
+                for (int index = hard + 1; index < nextHard; ++index) {
+                    removedHardCount +=
+                        ordered[index].point.kind == PenPointKind::Hard;
+                }
+            } else {
+                for (int index = hard + 1; index < nextHard; ++index) {
+                    candidate.push_back(ordered[index]);
+                }
+            }
+            if (nextHard == ordered.size()) {
+                break;
+            }
+            hard = nextHard;
+        } while (hard < ordered.size());
+        const Evaluation evaluation = evaluate(candidate);
+        if (evaluation.valid && removedHardCount > 0) {
+            working = std::move(candidate);
+            result.removedHardPoints += removedHardCount;
+            result.maximumDeviation = evaluation.deviation;
+            result.dssim = evaluation.dssim;
+        }
+    }
+
+    bool removedPoint = true;
+    while (removedPoint) {
+        removedPoint = false;
+        for (int index = 0; index < working.size(); ++index) {
+            if (working[index].point.kind != PenPointKind::Hard) {
+                continue;
+            }
+            const int previous = (index + working.size() - 1) % working.size();
+            const int next = (index + 1) % working.size();
+            bool removable = working[index].removable;
+            const double localDisplacement = perpendicularDistance(
+                working[index].point.position,
+                working[previous].point.position,
+                working[next].point.position);
+            const double localSupport = std::min(
+                QLineF(working[previous].point.position,
+                       working[index].point.position).length(),
+                QLineF(working[index].point.position,
+                       working[next].point.position).length());
+            removable = removable
+                || (localDisplacement
+                        <= options.mergeTolerance + kGeometryEpsilon
+                    && localSupport <= options.mergeTolerance * 4.0)
+                || (working[previous].point.kind == PenPointKind::Soft
+                    && working[next].point.kind == PenPointKind::Soft
+                    && localDisplacement
+                        <= options.mergeTolerance + kGeometryEpsilon
+                    && vectorAngle(
+                           working[index].point.position
+                               - working[previous].point.position,
+                           working[next].point.position
+                               - working[index].point.position)
+                        < kCurveSharpJunctionAngle);
+            if (!removable
+                && working[previous].point.kind == PenPointKind::Hard
+                && working[next].point.kind == PenPointKind::Hard) {
+                const QPointF incoming = working[index].point.position
+                    - working[previous].point.position;
+                const QPointF outgoing = working[next].point.position
+                    - working[index].point.position;
+                removable = vectorAngle(incoming, outgoing)
+                        <= kStraightJunctionAngle
+                    && perpendicularDistance(
+                           working[index].point.position,
+                           working[previous].point.position,
+                           working[next].point.position)
+                        <= options.mergeTolerance + kGeometryEpsilon;
+            }
+            if (!removable) {
+                continue;
+            }
+            QVector<ConvertiblePoint> candidate = working;
+            candidate.removeAt(index);
+            Evaluation evaluation = evaluate(candidate);
+            if (!evaluation.valid
+                && working[previous].point.kind == PenPointKind::Soft
+                && working[next].point.kind == PenPointKind::Soft) {
+                candidate = working;
+                const QPointF implied =
+                    (candidate[previous].point.position
+                     + candidate[next].point.position) * 0.5;
+                const QPointF adjustment =
+                    candidate[index].point.position - implied;
+                candidate[previous].point.position += adjustment;
+                candidate[next].point.position += adjustment;
+                candidate.removeAt(index);
+                evaluation = evaluate(candidate);
+            }
+            if (!evaluation.valid) {
+                continue;
+            }
+            working = std::move(candidate);
+            ++result.removedHardPoints;
+            result.maximumDeviation = evaluation.deviation;
+            result.dssim = evaluation.dssim;
+            removedPoint = true;
+            break;
+        }
+    }
+
+    bool reducedSoftRun = true;
+    while (reducedSoftRun) {
+        reducedSoftRun = false;
+        int firstHard = 0;
+        while (firstHard < working.size()
+               && working[firstHard].point.kind != PenPointKind::Hard) {
+            ++firstHard;
+        }
+        if (firstHard >= working.size()) {
+            break;
+        }
+        QVector<ConvertiblePoint> ordered;
+        ordered.reserve(working.size());
+        for (int offset = 0; offset < working.size(); ++offset) {
+            ordered.push_back(working[(firstHard + offset) % working.size()]);
+        }
+        int hard = 0;
+        do {
+            int nextHard = hard + 1;
+            while (nextHard < ordered.size()
+                   && ordered[nextHard].point.kind == PenPointKind::Soft) {
+                ++nextHard;
+            }
+            const bool wraps = nextHard == ordered.size();
+            const int softCount = nextHard - hard - 1;
+            if (softCount > 2) {
+                const QPointF start = ordered[hard].point.position;
+                const QPointF end = wraps
+                    ? ordered.front().point.position
+                    : ordered[nextHard].point.position;
+                QVector<QPointF> controls;
+                controls.reserve(softCount);
+                for (int index = hard + 1; index < nextHard; ++index) {
+                    controls.push_back(ordered[index].point.position);
+                }
+                const QVector<QPointF> samples = softRunSamples(
+                    start, controls, end);
+                const QVector<int> controlCounts = wraps
+                    ? QVector<int>{4, 5, 6, 7, 8}
+                    : QVector<int>{1, 2};
+                for (const int controlCount : controlCounts) {
+                    if (controlCount >= softCount) {
+                        continue;
+                    }
+                    const QVector<QPointF> fitted = fitSoftControls(
+                        samples, start, end, controlCount);
+                    if (fitted.size() != controlCount) {
+                        continue;
+                    }
+                    QVector<ConvertiblePoint> candidate;
+                    candidate.reserve(
+                        ordered.size() - softCount + controlCount);
+                    for (int index = 0; index <= hard; ++index) {
+                        candidate.push_back(ordered[index]);
+                    }
+                    for (const QPointF &control : fitted) {
+                        candidate.push_back({
+                            {control, PenPointKind::Soft}, false});
+                    }
+                    for (int index = nextHard; index < ordered.size(); ++index) {
+                        candidate.push_back(ordered[index]);
+                    }
+                    const Evaluation evaluation = evaluate(candidate);
+                    if (!evaluation.valid) {
+                        continue;
+                    }
+                    result.removedSoftPoints += softCount - controlCount;
+                    result.maximumDeviation = evaluation.deviation;
+                    result.dssim = evaluation.dssim;
+                    working = std::move(candidate);
+                    reducedSoftRun = true;
+                    break;
+                }
+                if (!reducedSoftRun) {
+                    QVector<ConvertiblePoint> bestCandidate;
+                    Evaluation bestEvaluation;
+                    for (int removeIndex = hard + 1;
+                         removeIndex < nextHard; ++removeIndex) {
+                        for (int adjustment = 0; adjustment < 4; ++adjustment) {
+                            QVector<ConvertiblePoint> candidate = ordered;
+                            const QPointF removed =
+                                candidate[removeIndex].point.position;
+                            if ((adjustment == 1 || adjustment == 3)
+                                && removeIndex - 1 > hard) {
+                                candidate[removeIndex - 1].point.position =
+                                    (candidate[removeIndex - 1].point.position
+                                     + removed) * 0.5;
+                            }
+                            if ((adjustment == 2 || adjustment == 3)
+                                && removeIndex + 1 < nextHard) {
+                                candidate[removeIndex + 1].point.position =
+                                    (candidate[removeIndex + 1].point.position
+                                     + removed) * 0.5;
+                            }
+                            candidate.removeAt(removeIndex);
+                            const Evaluation evaluation = evaluate(candidate);
+                            if (!evaluation.valid
+                                || (bestEvaluation.valid
+                                    && evaluation.deviation
+                                        >= bestEvaluation.deviation
+                                            - kGeometryEpsilon)) {
+                                continue;
+                            }
+                            bestCandidate = std::move(candidate);
+                            bestEvaluation = evaluation;
+                        }
+                    }
+                    if (bestEvaluation.valid) {
+                        ++result.removedSoftPoints;
+                        result.maximumDeviation = bestEvaluation.deviation;
+                        result.dssim = bestEvaluation.dssim;
+                        working = std::move(bestCandidate);
+                        reducedSoftRun = true;
+                    }
+                }
+                if (reducedSoftRun) {
+                    break;
+                }
+            }
+            if (wraps) {
+                break;
+            }
+            hard = nextHard;
+        } while (hard < ordered.size());
+    }
+
+    QVector<ConvertiblePoint> structured = enforceCurvePointStructure(working);
+    Evaluation structuredEvaluation = evaluate(structured);
+    if (structuredEvaluation.valid) {
+        working = std::move(structured);
+        result.maximumDeviation = structuredEvaluation.deviation;
+        result.dssim = structuredEvaluation.dssim;
+    }
+
+    if (!options.preferredHardPoints.isEmpty()
+        && options.maximumPreferredHardPointDistance > 0.0) {
+        QSet<int> usedPreferredPoints;
+        for (int pointIndex = 0; pointIndex < working.size(); ++pointIndex) {
+            if (working[pointIndex].point.kind != PenPointKind::Hard) {
+                continue;
+            }
+            QVector<int> preferredIndices;
+            preferredIndices.reserve(options.preferredHardPoints.size());
+            for (int preferredIndex = 0;
+                 preferredIndex < options.preferredHardPoints.size();
+                 ++preferredIndex) {
+                if (usedPreferredPoints.contains(preferredIndex)
+                    || QLineF(working[pointIndex].point.position,
+                              options.preferredHardPoints[preferredIndex]).length()
+                        > options.maximumPreferredHardPointDistance
+                            + kGeometryEpsilon) {
+                    continue;
+                }
+                preferredIndices.push_back(preferredIndex);
+            }
+            std::sort(
+                preferredIndices.begin(), preferredIndices.end(),
+                [&](int left, int right) {
+                    return QLineF(
+                               working[pointIndex].point.position,
+                               options.preferredHardPoints[left]).length()
+                        < QLineF(
+                               working[pointIndex].point.position,
+                               options.preferredHardPoints[right]).length();
+                });
+            preferredIndices.resize(std::min<qsizetype>(
+                4, preferredIndices.size()));
+            QVector<ConvertiblePoint> bestCandidate;
+            Evaluation bestEvaluation;
+            int bestPreferredIndex = -1;
+            for (const int preferredIndex : preferredIndices) {
+                const int previous = (pointIndex + working.size() - 1)
+                    % working.size();
+                const int next = (pointIndex + 1) % working.size();
+                const QPointF adjustment =
+                    options.preferredHardPoints[preferredIndex]
+                    - working[pointIndex].point.position;
+                for (int adjustmentMode = 0; adjustmentMode < 5;
+                     ++adjustmentMode) {
+                    QVector<ConvertiblePoint> candidate = working;
+                    candidate[pointIndex].point.position =
+                        options.preferredHardPoints[preferredIndex];
+                    if (candidate[previous].point.kind == PenPointKind::Soft
+                        && (adjustmentMode == 1 || adjustmentMode == 2
+                            || adjustmentMode == 4)) {
+                        candidate[previous].point.position += adjustment
+                            * (adjustmentMode == 4 ? 0.5 : 1.0);
+                    }
+                    if (candidate[next].point.kind == PenPointKind::Soft
+                        && (adjustmentMode == 1 || adjustmentMode == 3
+                            || adjustmentMode == 4)) {
+                        candidate[next].point.position += adjustment
+                            * (adjustmentMode == 4 ? 0.5 : 1.0);
+                    }
+                    const Evaluation evaluation = evaluate(candidate);
+                    if (!evaluation.valid
+                        || (bestEvaluation.valid
+                            && evaluation.deviation
+                                >= bestEvaluation.deviation
+                                    - kGeometryEpsilon)) {
+                        continue;
+                    }
+                    bestCandidate = std::move(candidate);
+                    bestEvaluation = evaluation;
+                    bestPreferredIndex = preferredIndex;
+                }
+            }
+            if (bestEvaluation.valid) {
+                working = std::move(bestCandidate);
+                usedPreferredPoints.insert(bestPreferredIndex);
+                result.maximumDeviation = bestEvaluation.deviation;
+                result.dssim = bestEvaluation.dssim;
+            }
+        }
+    }
+
+    result.points = penPoints(working);
+    return result;
+}
+
 int regionOutlinePenPointCount(const QPainterPath &outline) {
     constexpr double kClosureTolerance = 1e-6;
     const OuterSelection outer = selectClosedOuter(outline, kClosureTolerance);
@@ -1513,8 +2390,38 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
             }
         }
         const Subpath &subpath = candidate.subpath;
-        QVector<PenPoint> points = simplifyClosedPolygonRdpHybridQuadratic(
-            candidate.sampled, options.simplifyEpsilon, options.minimumCurveBow);
+        QVector<PenPoint> points;
+        if (options.curveBased) {
+            const RegionPenConversionResult conversion =
+                optimizeCurveRegionOutline(
+                    subpathPainterPath(subpath), options.fallback);
+            if (!conversion.valid()) {
+                result.error = conversion.error.isEmpty()
+                    ? QStringLiteral("The traced curve boundary is invalid")
+                    : conversion.error;
+                result.loops.clear();
+                return result;
+            }
+            result.contourStats.originalPointCount +=
+                conversion.originalPointCount;
+            result.contourStats.optimizedPointCount +=
+                conversion.points.size();
+            result.contourStats.removedHardPoints +=
+                conversion.removedHardPoints;
+            result.contourStats.removedSoftPoints +=
+                conversion.removedSoftPoints;
+            result.contourStats.optimizationSkipped =
+                result.contourStats.optimizationSkipped
+                || conversion.optimizationSkipped;
+            if (candidateIndex == 0) {
+                result.contourStats.dssim = conversion.dssim;
+            }
+            points = conversion.points;
+        } else {
+            points = simplifyClosedPolygonRdpHybridQuadratic(
+                candidate.sampled, options.simplifyEpsilon,
+                options.minimumCurveBow);
+        }
         if (!buildPenContour(points).valid()) {
             const RegionPenConversionResult conversion = regionOutlineToPenPoints(
                 subpathPainterPath(subpath), options.fallback);

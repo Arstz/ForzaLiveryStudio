@@ -19,6 +19,85 @@ namespace {
 constexpr QRgb kSafeOnlyDifferenceColor = qRgba(255, 55, 55, 230);
 constexpr QRgb kDangerousOnlyDifferenceColor = qRgba(30, 220, 255, 230);
 constexpr QRgb kChangedColorDifferenceColor = qRgba(255, 215, 35, 230);
+struct CurveRegionTrace {
+    QPainterPath target;
+    QPainterPath legalEnvelope;
+};
+
+CurveRegionTrace traceCurveRegion(
+    const QPainterPath &outline,
+    const RegionExtractionResult &regions) {
+    CurveRegionTrace result;
+    const QRect imageBounds(QPoint(0, 0), regions.imageSize);
+    const QRect bounds = outline.boundingRect().toAlignedRect()
+        .adjusted(-1, -1, 1, 1).intersected(imageBounds);
+    if (bounds.isEmpty()) {
+        return result;
+    }
+    const int width = bounds.width();
+    const int height = bounds.height();
+    std::vector<std::uint8_t> targetMask(
+        static_cast<size_t>(width) * height, 0);
+    std::vector<std::uint8_t> legalMask(targetMask.size(), 0);
+    const auto localIndex = [width](int x, int y) {
+        return static_cast<size_t>(y) * width + x;
+    };
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const QPointF center(bounds.left() + x + 0.5,
+                                 bounds.top() + y + 0.5);
+            if (outline.contains(center)) {
+                targetMask[localIndex(x, y)] = 1;
+                legalMask[localIndex(x, y)] = 1;
+            }
+        }
+    }
+    const size_t imagePixelCount = static_cast<size_t>(
+        regions.imageSize.width()) * regions.imageSize.height();
+    if (regions.raster != nullptr
+        && regions.raster->foreground.size() == imagePixelCount) {
+        const int imageWidth = regions.imageSize.width();
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const int imageX = bounds.left() + x;
+                const int imageY = bounds.top() + y;
+                const size_t imageIndex = static_cast<size_t>(imageY)
+                    * imageWidth + imageX;
+                if (regions.raster->foreground[imageIndex] == 0) {
+                    continue;
+                }
+                bool adjacent = false;
+                for (int offsetY = -1; offsetY <= 1 && !adjacent; ++offsetY) {
+                    for (int offsetX = -1; offsetX <= 1; ++offsetX) {
+                        const int neighborX = x + offsetX;
+                        const int neighborY = y + offsetY;
+                        if (neighborX >= 0 && neighborY >= 0
+                            && neighborX < width && neighborY < height
+                            && targetMask[localIndex(neighborX, neighborY)] != 0) {
+                            adjacent = true;
+                            break;
+                        }
+                    }
+                }
+                if (adjacent) {
+                    legalMask[localIndex(x, y)] = 1;
+                }
+            }
+        }
+    }
+    RegionExtractionParams traceOptions = regions.raster != nullptr
+        ? regions.raster->traceParams : RegionExtractionParams{};
+    traceOptions.traceSpeckle = 0;
+    traceOptions.traceOptTolerance = 0.0;
+    result.target = traceMaskToPath(
+        targetMask, width, height, QRect(0, 0, width, height), traceOptions);
+    result.legalEnvelope = traceMaskToPath(
+        legalMask, width, height, QRect(0, 0, width, height), traceOptions);
+    result.target.translate(bounds.left(), bounds.top());
+    result.legalEnvelope.translate(bounds.left(), bounds.top());
+
+    return result;
+}
 
 QImage renderRegionFillVariant(
     const QSize &imageSize,
@@ -128,6 +207,7 @@ RegionFillBatchResult computeRegionFills(
     int dangerousRdpFills = 0;
     QHash<QString, int> failureReasons;
     constexpr qint64 kRegionBudgetMs = 3000;
+    constexpr qint64 kCurveRegionBudgetMs = 10000;
     const PolygonMeshSources &meshSources = request.meshSources;
     constexpr double kFallbackSimplifyEpsilon = 0.45;
     constexpr double kCyclicRdpEpsilon = 1.9;
@@ -177,11 +257,17 @@ RegionFillBatchResult computeRegionFills(
                .arg(layerPlans.safe.units.size())
                .arg(layerPlans.dangerous.units.size())
                .arg(planningElapsedMs);
-    log << QStringLiteral("Safe/Dangerous contour mode: cyclic closed RDP epsilon=%1, "
-                          "%2 curve samples, direct polygon mesh; Pen fitting is "
-                          "retained as recovery")
-               .arg(kCyclicRdpEpsilon, 0, 'f', 1)
-               .arg(kCyclicRdpCurveSamples);
+    if (request.algorithm == FillAlgorithm::CurveBased) {
+        log << QStringLiteral(
+            "Safe/Dangerous contour mode: high-precision Potrace, curve point "
+            "optimization, one-pixel colored-region envelope, curve-template fill");
+    } else {
+        log << QStringLiteral("Safe/Dangerous contour mode: cyclic closed RDP epsilon=%1, "
+                              "%2 curve samples, direct polygon mesh; Pen fitting is "
+                              "retained as recovery")
+                   .arg(kCyclicRdpEpsilon, 0, 'f', 1)
+                   .arg(kCyclicRdpCurveSamples);
+    }
     const QString layerLogPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/region_layer.log");
     QFile layerLogFile(layerLogPath);
@@ -339,55 +425,117 @@ RegionFillBatchResult computeRegionFills(
                     const FillUnit &unit = units[i];
                     QElapsedTimer clock;
                     clock.start();
-                    const auto unitCancelled = [&clock, &globallyCancelled]() {
-                        return globallyCancelled() || clock.elapsed() > kRegionBudgetMs;
+                    const auto unitCancelled = [
+                        &clock, &globallyCancelled, &request]() {
+                        const qint64 budget = request.algorithm
+                                == FillAlgorithm::CurveBased
+                            ? kCurveRegionBudgetMs : kRegionBudgetMs;
+                        return globallyCancelled() || clock.elapsed() > budget;
                     };
                     QPolygonF optimizedContour;
-                    const QPolygonF sourceContour = regionOuterContour(
-                        unit.outline, kCyclicRdpCurveSamples);
-                    const QPolygonF simplifiedContour = simplifyClosedPolygonCyclic(
-                        sourceContour, kCyclicRdpEpsilon);
-                    work.cyclicRdpInputPoints = sourceContour.size();
-                    work.cyclicRdpOutputPoints = simplifiedContour.size();
-                    work.contourStats.originalPointCount =
-                        regionOutlinePenPointCount(unit.outline);
-                    work.contourStats.optimizedPointCount = simplifiedContour.size();
-                    work.contourStats.flattenedPointCount = simplifiedContour.size();
-                    work.contourStats.dssim =
-                        std::numeric_limits<double>::quiet_NaN();
-                    work.via = unit.variant == RegionFillVariant::Safe
-                        ? QStringLiteral("safe-rdp-mesh")
-                        : QStringLiteral("dangerous-rdp-mesh");
-                    work.fit = fillPolygonMesh(simplifiedContour, meshSources,
-                                               unitCancelled);
-                    if (i == biggestUnitIndex) {
-                        work.optimizedContour = simplifiedContour;
-                        work.optimizedPenPoints.reserve(simplifiedContour.size());
-                        for (const QPointF &point : simplifiedContour) {
-                            work.optimizedPenPoints.push_back(
-                                PenPoint{point, PenPointKind::Hard});
+                    if (request.algorithm == FillAlgorithm::CurveBased) {
+                        const CurveRegionTrace trace = traceCurveRegion(
+                            unit.outline, regionOverlay);
+                        RegionPenLoopConversionOptions conversionOptions;
+                        conversionOptions.curveBased = true;
+                        conversionOptions.fallback.comparisonImageSize =
+                            regionOverlay.imageSize;
+                        conversionOptions.fallback.mergeTolerance =
+                            kCurveContourMergeTolerance;
+                        conversionOptions.fallback.maximumDssim =
+                            kCurveContourMaximumDssim;
+                        const RegionPenLoopConversionResult conversion =
+                            regionOutlineToPenLoops(
+                                trace.target, conversionOptions);
+                        work.via = unit.variant == RegionFillVariant::Safe
+                            ? QStringLiteral("safe-curve-based")
+                            : QStringLiteral("dangerous-curve-based");
+                        if (conversion.valid()) {
+                            PenFillRequest fillRequest;
+                            fillRequest.loops = conversion.loops;
+                            fillRequest.primitives = primitives;
+                            fillRequest.targetPath = trace.target;
+                            fillRequest.legalEnvelope = trace.legalEnvelope;
+                            fillRequest.boundaryTolerance = tolerance;
+                            fillRequest.shapeLimit = std::max(
+                                6, trace.target.elementCount() * 2);
+                            work.fit = fillPenPath(fillRequest, unitCancelled);
+                            const PenContour optimized = buildPenContour(
+                                conversion.loops);
+                            if (optimized.valid()) {
+                                optimizedContour = regionOuterContour(
+                                    optimized.path, kCyclicRdpCurveSamples);
+                                work.contourStats.flattenedPointCount =
+                                    optimizedContour.size();
+                            }
+                            const int flattenedPointCount =
+                                work.contourStats.flattenedPointCount;
+                            work.contourStats = conversion.contourStats;
+                            work.contourStats.flattenedPointCount =
+                                flattenedPointCount;
+                            if (i == biggestUnitIndex) {
+                                work.optimizedContour = optimizedContour;
+                                work.optimizedPenPoints =
+                                    conversion.loops.front().points;
+                            }
+                        } else {
+                            work.fit.error = conversion.error.isEmpty()
+                                ? QStringLiteral("Curve contour optimization failed")
+                                : conversion.error;
                         }
-                    }
-                    if (!fitSucceeded(work.fit)) {
-                        work.cyclicRdpError = work.fit.error;
-                    }
-                    if (!fitSucceeded(work.fit) && !globallyCancelled()) {
-                        work.via = unit.variant == RegionFillVariant::Dangerous
-                            ? QStringLiteral("dangerous-rdp-pen-fallback")
-                            : QStringLiteral("safe-rdp-pen-fallback");
-                        work.fit = fillRegionOutline(
-                            unit.outline, primitives, tolerance, unitCancelled,
-                            &optimizedContour, &work.contourStats,
-                            i == biggestUnitIndex ? &work.optimizedPenPoints : nullptr,
-                            regionOverlay.imageSize);
+                    } else {
+                        const QPolygonF sourceContour = regionOuterContour(
+                            unit.outline, kCyclicRdpCurveSamples);
+                        const QPolygonF simplifiedContour =
+                            simplifyClosedPolygonCyclic(
+                                sourceContour, kCyclicRdpEpsilon);
+                        work.cyclicRdpInputPoints = sourceContour.size();
+                        work.cyclicRdpOutputPoints = simplifiedContour.size();
+                        work.contourStats.originalPointCount =
+                            regionOutlinePenPointCount(unit.outline);
+                        work.contourStats.optimizedPointCount =
+                            simplifiedContour.size();
+                        work.contourStats.flattenedPointCount =
+                            simplifiedContour.size();
+                        work.contourStats.dssim =
+                            std::numeric_limits<double>::quiet_NaN();
+                        work.via = unit.variant == RegionFillVariant::Safe
+                            ? QStringLiteral("safe-rdp-mesh")
+                            : QStringLiteral("dangerous-rdp-mesh");
+                        work.fit = fillPolygonMesh(
+                            simplifiedContour, meshSources, unitCancelled);
                         if (i == biggestUnitIndex) {
-                            work.optimizedContour = optimizedContour;
+                            work.optimizedContour = simplifiedContour;
+                            work.optimizedPenPoints.reserve(
+                                simplifiedContour.size());
+                            for (const QPointF &point : simplifiedContour) {
+                                work.optimizedPenPoints.push_back(
+                                    PenPoint{point, PenPointKind::Hard});
+                            }
                         }
-                        if (work.contourStats.softRunRetry && fitSucceeded(work.fit)) {
-                            work.via = QStringLiteral("hard-only-pen-retry");
-                        } else if (work.contourStats.baselineRetry
-                                   && fitSucceeded(work.fit)) {
-                            work.via = QStringLiteral("baseline-pen-retry");
+                        if (!fitSucceeded(work.fit)) {
+                            work.cyclicRdpError = work.fit.error;
+                        }
+                        if (!fitSucceeded(work.fit) && !globallyCancelled()) {
+                            work.via = unit.variant == RegionFillVariant::Dangerous
+                                ? QStringLiteral("dangerous-rdp-pen-fallback")
+                                : QStringLiteral("safe-rdp-pen-fallback");
+                            work.fit = fillRegionOutline(
+                                unit.outline, primitives, tolerance, unitCancelled,
+                                &optimizedContour, &work.contourStats,
+                                i == biggestUnitIndex
+                                    ? &work.optimizedPenPoints : nullptr,
+                                regionOverlay.imageSize);
+                            if (i == biggestUnitIndex) {
+                                work.optimizedContour = optimizedContour;
+                            }
+                            if (work.contourStats.softRunRetry
+                                && fitSucceeded(work.fit)) {
+                                work.via = QStringLiteral("hard-only-pen-retry");
+                            } else if (work.contourStats.baselineRetry
+                                       && fitSucceeded(work.fit)) {
+                                work.via = QStringLiteral("baseline-pen-retry");
+                            }
                         }
                     }
                     if (work.fit.cancelled && !globallyCancelled()) {

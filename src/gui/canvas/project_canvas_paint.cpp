@@ -942,7 +942,8 @@ void ProjectCanvas::clearRegionOverlay() {
     update();
 }
 
-bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
+bool ProjectCanvas::prepareRegionFillBatch(FillAlgorithm algorithm,
+                                           RegionFillBatchRequest *request,
                                            QString *message) const {
     if (request == nullptr) {
         if (message != nullptr) {
@@ -956,10 +957,15 @@ bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
         }
         return false;
     }
-    const QVector<PenPrimitive> primitives = penPrimitiveCatalog();
+    QString catalogError;
+    const QVector<PenPrimitive> primitives = algorithm == FillAlgorithm::CurveBased
+        ? curvePrimitiveCatalog(&catalogError)
+        : penPrimitiveCatalog();
     if (primitives.isEmpty()) {
         if (message != nullptr) {
-            *message = QStringLiteral("Pen primitive geometry is unavailable");
+            *message = catalogError.isEmpty()
+                ? QStringLiteral("Fill shape geometry is unavailable")
+                : catalogError;
         }
         return false;
     }
@@ -970,6 +976,7 @@ bool ProjectCanvas::prepareRegionFillBatch(RegionFillBatchRequest *request,
     request->meshSources = buildPolygonMeshSources(geometry_);
     request->overlayGuideId = region_.guideId;
     request->overlayGeneration = region_.generation;
+    request->algorithm = algorithm;
     return true;
 }
 

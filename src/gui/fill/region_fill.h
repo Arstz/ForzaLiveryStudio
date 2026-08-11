@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fill_algorithm.h"
 #include "pen_fill.h"
 #include "polygon_mesh.h"
 #include "region_extract.h"
@@ -11,6 +12,9 @@
 #include <functional>
 
 namespace gui {
+
+inline constexpr double kCurveContourMergeTolerance = 0.75;
+inline constexpr double kCurveContourMaximumDssim = 0.0075;
 
 enum class RegionFillVariant {
     Safe,
@@ -47,6 +51,7 @@ struct RegionFillBatchRequest {
     PolygonMeshSources meshSources;
     QString overlayGuideId;
     quint64 overlayGeneration = 0;
+    FillAlgorithm algorithm = FillAlgorithm::Analytic;
 };
 
 struct RegionFillBatchResult {
@@ -79,6 +84,8 @@ struct RegionPenConversionOptions {
     int maxOptimizedPointCount = 0;
     int adaptiveSearchSteps = 8;
     bool straightenSoftRuns = true;
+    QVector<QPointF> preferredHardPoints;
+    double maximumPreferredHardPointDistance = 0.0;
 };
 
 struct RegionPenConversionResult {
@@ -95,25 +102,6 @@ struct RegionPenConversionResult {
     bool valid() const { return error.isEmpty() && points.size() >= 3; }
 };
 
-struct RegionPenLoopConversionOptions {
-    RegionPenConversionOptions fallback;
-    double simplifyEpsilon = 2.0;
-    double minimumCurveBow = 0.75;
-    double discardedCutoutAreaCeiling = 0.0;
-    double discardedCutoutBoundaryClearance = 0.0;
-    int curveSamples = 32;
-};
-
-struct RegionPenLoopConversionResult {
-    QVector<PenLoop> loops;
-    QString error;
-    int discardedCutoutCount = 0;
-    int discardedCutoutAreaCount = 0;
-    int discardedCutoutBoundaryCount = 0;
-
-    bool valid() const { return error.isEmpty() && !loops.isEmpty(); }
-};
-
 struct RegionFillContourStats {
     int originalPointCount = 0;
     int optimizedPointCount = 0;
@@ -126,7 +114,32 @@ struct RegionFillContourStats {
     double dssim = 0.0;
 };
 
+struct RegionPenLoopConversionOptions {
+    RegionPenConversionOptions fallback;
+    double simplifyEpsilon = 2.0;
+    double minimumCurveBow = 0.75;
+    double discardedCutoutAreaCeiling = 0.0;
+    double discardedCutoutBoundaryClearance = 0.0;
+    int curveSamples = 32;
+    bool curveBased = false;
+};
+
+struct RegionPenLoopConversionResult {
+    QVector<PenLoop> loops;
+    RegionFillContourStats contourStats;
+    QString error;
+    int discardedCutoutCount = 0;
+    int discardedCutoutAreaCount = 0;
+    int discardedCutoutBoundaryCount = 0;
+
+    bool valid() const { return error.isEmpty() && !loops.isEmpty(); }
+};
+
 RegionPenConversionResult regionOutlineToPenPoints(
+    const QPainterPath &outline,
+    const RegionPenConversionOptions &options = {});
+
+RegionPenConversionResult optimizeCurveRegionOutline(
     const QPainterPath &outline,
     const RegionPenConversionOptions &options = {});
 

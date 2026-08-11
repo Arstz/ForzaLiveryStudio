@@ -1,4 +1,5 @@
 #include "bucket_fill.h"
+#include "curve_fill.h"
 #include "lining_fill.h"
 #include "region_extract.h"
 #include "region_fill.h"
@@ -8,6 +9,7 @@
 #include <QtGui>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -1046,6 +1048,201 @@ void automaticRegionFillRetainsCurvedBoundary(TestContext *test)
                  "a Potrace-generated region should pass through the automatic Pen fitter");
     test->expect(hasCurvePlacement,
                  "a Potrace-generated circle should not flatten to only Squares/Triangles");
+}
+
+int penPointKindCount(const QVector<gui::PenPoint> &points,
+                      gui::PenPointKind kind);
+
+int maximumSoftRun(const QVector<gui::PenPoint> &points);
+
+bool atTriangleVertex(const QPointF &point,
+                      const gui::ShapeGeometry &geometry) {
+    for (const gui::ShapeTriangle &triangle : geometry.triangles) {
+        for (const QPointF &vertex : {triangle.p0, triangle.p1, triangle.p2}) {
+            if (QLineF(point, vertex).length() <= 1e-6) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void curvePrimitiveCatalogUsesEveryDifferentialShape(TestContext *test)
+{
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    test->expect(geometry.loadDefault(&error),
+                 "Curve Primitive geometry should load");
+    const QVector<gui::PenPrimitive> primitives =
+        gui::buildCurvePrimitiveCatalog(geometry, &error);
+    constexpr std::array<int, 18> expectedShapeIds = {
+        101, 102, 103, 109, 127, 129,
+        130, 139, 2103, 2104, 2113, 2117,
+        2118, 2123, 2133, 2135, 2136, 2311,
+    };
+    test->expect(error.isEmpty(),
+                 "Curve Primitive catalog should build without an error");
+    test->expect(primitives.size() == expectedShapeIds.size(),
+                 "Curve Primitive catalog should contain every Differential shape");
+    for (const int shapeId : expectedShapeIds) {
+        const auto found = std::find_if(
+            primitives.cbegin(), primitives.cend(),
+            [shapeId](const gui::PenPrimitive &primitive) {
+                return primitive.shapeId == shapeId;
+            });
+        test->expect(found != primitives.cend(),
+                     "Curve Primitive catalog shape should be available");
+        if (found == primitives.cend()) {
+            continue;
+        }
+        test->expect(!found->curvePoints.isEmpty()
+                         && !found->curveSegments.isEmpty(),
+                     "Curve Primitive shape should have an optimized curve path");
+        const gui::PenContour contour =
+            gui::buildPenContour(found->curvePoints);
+        test->expect(contour.valid(),
+                     "Curve Primitive shape path should be a valid Pen contour");
+        const int hardPointCount = penPointKindCount(
+            found->curvePoints, gui::PenPointKind::Hard);
+        const int softPointCount = penPointKindCount(
+            found->curvePoints, gui::PenPointKind::Soft);
+        test->expect(softPointCount == 0 || hardPointCount >= 2,
+                     "Curved shape templates should have at least two hard points");
+        test->expect(maximumSoftRun(found->curvePoints) <= 2,
+                     "Shape templates should have at most two consecutive soft points");
+        const gui::ShapeGeometry *shape = geometry.shape(shapeId);
+        test->expect(shape != nullptr,
+                     "Curve Primitive source geometry should be available");
+        if (shape != nullptr) {
+            int vertexHardPointCount = 0;
+            for (const gui::PenPoint &point : found->curvePoints) {
+                if (point.kind == gui::PenPointKind::Hard) {
+                    vertexHardPointCount += atTriangleVertex(
+                        point.position, *shape);
+                }
+            }
+            test->expect(vertexHardPointCount >= std::min(2, hardPointCount),
+                         "Template hard anchors should prefer triangle vertices");
+        }
+        if (contour.valid()) {
+            const QRectF sourceBounds = found->silhouette.boundingRect();
+            const QRectF curveBounds = contour.path.boundingRect();
+            test->expect(
+                sourceBounds.adjusted(-1.0, -1.0, 1.0, 1.0)
+                        .contains(curveBounds)
+                    && curveBounds.width() >= sourceBounds.width() * 0.9
+                    && curveBounds.height() >= sourceBounds.height() * 0.9,
+                "Curve Primitive path should stay aligned with its source shape");
+        }
+    }
+    const auto square = std::find_if(
+        primitives.cbegin(), primitives.cend(),
+        [](const gui::PenPrimitive &primitive) {
+            return primitive.shapeId == 101;
+        });
+    test->expect(square != primitives.cend()
+                     && penPointKindCount(
+                            square->curvePoints, gui::PenPointKind::Hard) == 4
+                     && penPointKindCount(
+                            square->curvePoints, gui::PenPointKind::Soft) == 0,
+                 "Square template should contain only its four hard corners");
+}
+
+int penPointKindCount(const QVector<gui::PenPoint> &points,
+                      gui::PenPointKind kind) {
+    return static_cast<int>(std::count_if(
+        points.cbegin(), points.cend(), [kind](const gui::PenPoint &point) {
+            return point.kind == kind;
+        }));
+}
+
+int maximumSoftRun(const QVector<gui::PenPoint> &points) {
+    if (points.isEmpty()) {
+        return 0;
+    }
+    int firstHard = 0;
+    while (firstHard < points.size()
+           && points[firstHard].kind != gui::PenPointKind::Hard) {
+        ++firstHard;
+    }
+    if (firstHard == points.size()) {
+        return points.size();
+    }
+    int maximum = 0;
+    int current = 0;
+    for (int offset = 1; offset <= points.size(); ++offset) {
+        const gui::PenPoint &point = points[(firstHard + offset) % points.size()];
+        if (point.kind == gui::PenPointKind::Soft) {
+            ++current;
+        } else {
+            maximum = std::max(maximum, current);
+            current = 0;
+        }
+    }
+
+    return maximum;
+}
+
+void curveOptimizerKeepsOneHardPointPerRectangleCorner(TestContext *test) {
+    constexpr int kWidth = 80;
+    constexpr int kHeight = 64;
+    std::vector<std::uint8_t> mask(
+        static_cast<size_t>(kWidth) * kHeight, 0);
+    for (int y = 12; y < 52; ++y) {
+        for (int x = 14; x < 66; ++x) {
+            mask[static_cast<size_t>(y) * kWidth + x] = 1;
+        }
+    }
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    traceOptions.traceOptTolerance = 0.0;
+    const QPainterPath traced = gui::traceMaskToPath(
+        mask, kWidth, kHeight, QRect(0, 0, kWidth, kHeight), traceOptions);
+    gui::RegionPenConversionOptions conversionOptions;
+    conversionOptions.mergeTolerance = gui::kCurveContourMergeTolerance;
+    conversionOptions.maximumDssim = gui::kCurveContourMaximumDssim;
+    conversionOptions.comparisonImageSize = QSize(kWidth, kHeight);
+    const gui::RegionPenConversionResult result =
+        gui::optimizeCurveRegionOutline(traced, conversionOptions);
+    test->expect(result.valid(),
+                 "curve optimizer should retain a valid high-precision rectangle");
+    test->expect(penPointKindCount(result.points, gui::PenPointKind::Hard) == 4,
+                 "curve optimizer should retain one hard point per rectangle corner");
+    test->expect(penPointKindCount(result.points, gui::PenPointKind::Soft) == 0,
+                 "curve optimizer should not add soft points to straight spans");
+}
+
+void curveOptimizerMinimizesSmoothClosedContour(TestContext *test) {
+    constexpr int kSize = 96;
+    const QPointF center(kSize * 0.5, kSize * 0.5);
+    constexpr double kRadius = 34.0;
+    std::vector<std::uint8_t> mask(
+        static_cast<size_t>(kSize) * kSize, 0);
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+            const QPointF delta(x + 0.5 - center.x(), y + 0.5 - center.y());
+            if (QPointF::dotProduct(delta, delta) <= kRadius * kRadius) {
+                mask[static_cast<size_t>(y) * kSize + x] = 1;
+            }
+        }
+    }
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    traceOptions.traceOptTolerance = 0.0;
+    const QPainterPath traced = gui::traceMaskToPath(
+        mask, kSize, kSize, QRect(0, 0, kSize, kSize), traceOptions);
+    gui::RegionPenConversionOptions conversionOptions;
+    conversionOptions.mergeTolerance = gui::kCurveContourMergeTolerance;
+    conversionOptions.maximumDssim = gui::kCurveContourMaximumDssim;
+    conversionOptions.comparisonImageSize = QSize(kSize, kSize);
+    const gui::RegionPenConversionResult result =
+        gui::optimizeCurveRegionOutline(traced, conversionOptions);
+    test->expect(result.valid(),
+                 "curve optimizer should retain a valid high-precision circle");
+    test->expect(penPointKindCount(result.points, gui::PenPointKind::Hard) >= 2,
+                 "a smooth closed contour should use at least two hard anchors");
+    test->expect(maximumSoftRun(result.points) <= 2,
+                 "a smooth closed contour should limit every soft run to two points");
 }
 
 void denseValidPolygonTriangulates(TestContext *test)
@@ -2684,6 +2881,7 @@ int main(int argc, char **argv)
         return checkLoggedRegion(QString::fromLocal8Bit(argv[2]), QSize(width, height));
     }
     TestContext test;
+    curvePrimitiveCatalogUsesEveryDifferentialShape(&test);
     centuryGothicLowercaseAUsesFullWidth(&test);
     alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);
@@ -2702,6 +2900,8 @@ int main(int argc, char **argv)
     concaveCoreFallbackStaysContained(&test);
     negligibleCorePlacementsAreDiscarded(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);
+    curveOptimizerKeepsOneHardPointPerRectangleCorner(&test);
+    curveOptimizerMinimizesSmoothClosedContour(&test);
     smallRegionMergesIntoClosestColorNeighbor(&test);
     lineartDiagnosticCapturesComponentTopology(&test);
     blendWithoutLineVotesRemainsAColorRegion(&test);

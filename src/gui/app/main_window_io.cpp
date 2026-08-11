@@ -633,7 +633,8 @@ void MainWindow::fillRegions() {
     cancelRegionFill();
     RegionFillBatchRequest request;
     QString message;
-    if (!canvas_->prepareRegionFillBatch(&request, &message)) {
+    if (!canvas_->prepareRegionFillBatch(
+            loadBehaviorSettings().fillAlgorithm, &request, &message)) {
         statusBar()->showMessage(message.isEmpty()
                                      ? QStringLiteral("Could not fill regions")
                                      : message,

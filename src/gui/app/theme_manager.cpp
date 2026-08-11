@@ -147,10 +147,19 @@ BehaviorSettings loadBehaviorSettings() {
     result.insertShapeWithLastSelectedScale = settings.value(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), result.insertShapeWithLastSelectedScale).toBool();
     const QVariant legacyDifferentialFill = settings.value(
         QStringLiteral("ui/behavior/differentiablePenFill"),
-        result.differentialContourFill);
-    result.differentialContourFill = settings.value(
+        false);
+    const bool differentialFill = settings.value(
         QStringLiteral("ui/behavior/differentialContourFill"),
         legacyDifferentialFill).toBool();
+    const QString fillAlgorithm = settings.value(
+        QStringLiteral("ui/behavior/fillAlgorithm"),
+        differentialFill ? QStringLiteral("differential")
+                         : QStringLiteral("analytic")).toString();
+    if (fillAlgorithm == QStringLiteral("differential")) {
+        result.fillAlgorithm = FillAlgorithm::Differential;
+    } else if (fillAlgorithm == QStringLiteral("curve-based")) {
+        result.fillAlgorithm = FillAlgorithm::CurveBased;
+    }
     result.showPropertyDebug = settings.value(QStringLiteral("ui/behavior/showPropertyDebug"), result.showPropertyDebug).toBool();
     result.moveToolAutoSelect = settings.value(QStringLiteral("ui/behavior/moveToolAutoSelect"), result.moveToolAutoSelect).toBool();
     result.allowMoveOutsideBoundingBox = settings.value(
@@ -202,8 +211,14 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     const BehaviorSettings defaults;
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedColor"), settings.insertShapeWithLastSelectedColor);
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), settings.insertShapeWithLastSelectedScale);
-    qsettings.setValue(QStringLiteral("ui/behavior/differentialContourFill"),
-                       settings.differentialContourFill);
+    QString fillAlgorithm = QStringLiteral("analytic");
+    if (settings.fillAlgorithm == FillAlgorithm::Differential) {
+        fillAlgorithm = QStringLiteral("differential");
+    } else if (settings.fillAlgorithm == FillAlgorithm::CurveBased) {
+        fillAlgorithm = QStringLiteral("curve-based");
+    }
+    qsettings.setValue(QStringLiteral("ui/behavior/fillAlgorithm"), fillAlgorithm);
+    qsettings.remove(QStringLiteral("ui/behavior/differentialContourFill"));
     qsettings.remove(QStringLiteral("ui/behavior/differentiablePenFill"));
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);
     qsettings.setValue(QStringLiteral("ui/behavior/moveToolAutoSelect"), settings.moveToolAutoSelect);

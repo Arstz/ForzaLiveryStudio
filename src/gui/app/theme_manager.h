@@ -1,5 +1,7 @@
 #pragma once
 
+#include "fill_algorithm.h"
+
 #include <QColor>
 #include <QBrush>
 #include <QPalette>
@@ -38,7 +40,7 @@ struct TransformModeSettings {
 struct BehaviorSettings {
     bool insertShapeWithLastSelectedColor = true;
     bool insertShapeWithLastSelectedScale = false;
-    bool differentialContourFill = false;
+    FillAlgorithm fillAlgorithm = FillAlgorithm::Analytic;
     bool showPropertyDebug = false;
     bool moveToolAutoSelect = false;
     bool allowMoveOutsideBoundingBox = true;

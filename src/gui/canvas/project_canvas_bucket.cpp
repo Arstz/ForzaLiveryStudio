@@ -2,6 +2,7 @@
 
 #include "editor_state.h"
 #include "project_canvas_internal.h"
+#include "theme_manager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -208,6 +209,11 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
 
     RegionExtractionParams traceParams;
     traceParams.traceSpeckle = 0;
+    const bool curveBased = loadBehaviorSettings().fillAlgorithm
+        == FillAlgorithm::CurveBased;
+    if (curveBased) {
+        traceParams.traceOptTolerance = 0.0;
+    }
     const QPainterPath traced = traceMaskToPath(bucket_.fill.mask,
                                                 bucket_.fill.imageSize.width(),
                                                 bucket_.fill.imageSize.height(),
@@ -223,6 +229,13 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
 
     RegionPenLoopConversionOptions conversionOptions;
     conversionOptions.fallback.comparisonImageSize = image.size();
+    conversionOptions.curveBased = curveBased;
+    if (curveBased) {
+        conversionOptions.fallback.mergeTolerance =
+            kCurveContourMergeTolerance;
+        conversionOptions.fallback.maximumDssim =
+            kCurveContourMaximumDssim;
+    }
     conversionOptions.discardedCutoutAreaCeiling = 5.0;
     conversionOptions.discardedCutoutBoundaryClearance = 2.0;
     RegionPenLoopConversionResult conversion =

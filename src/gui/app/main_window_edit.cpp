@@ -645,13 +645,17 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         }
         return;
     }
-    const bool differential = loadBehaviorSettings().differentialContourFill;
+    const FillAlgorithm algorithm = loadBehaviorSettings().fillAlgorithm;
+    const bool differential = algorithm == FillAlgorithm::Differential;
+    const bool curveBased = algorithm == FillAlgorithm::CurveBased;
     const QString fillLabel = differential
         ? QStringLiteral("Differential contour fill")
-        : QStringLiteral("Analytic contour fill");
+        : (curveBased ? QStringLiteral("Curve-based fill")
+                      : QStringLiteral("Analytic contour fill"));
     const QString fillTool = differential
         ? QStringLiteral("differential")
-        : QStringLiteral("analytic");
+        : (curveBased ? QStringLiteral("curve-based")
+                      : QStringLiteral("analytic"));
     prepareGeneratedFill(
         fillColor, fillLabel, fillTool,
         fillMask);
@@ -738,6 +742,41 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                 writePenFillLog(
                     request, result, strategy,
                     &options, &profile, &metrics);
+
+                return result;
+            });
+        return;
+    }
+
+    if (curveBased) {
+        QString catalogError;
+        request.primitives = canvas_->curvePrimitiveCatalog(&catalogError);
+        if (request.primitives.isEmpty()) {
+            canvas_->setPenFillRunning(false);
+            clearGeneratedFillState();
+            statusBar()->showMessage(
+                QStringLiteral("Curve-based fill failed: %1")
+                    .arg(catalogError.isEmpty()
+                             ? QStringLiteral("shape geometry is unavailable")
+                             : catalogError),
+                4000);
+            return;
+        }
+        canvas_->setPenFillRunning(
+            true, QStringLiteral("Matching curve-based contour fill…"));
+        statusBar()->showMessage(
+            QStringLiteral("Matching curve-based contour fill… Press %1 to cancel")
+                .arg(interactionShortcutText(
+                    KeyInteraction::CanvasCancelInteraction)));
+        const QString strategy = fillColor.has_value()
+            ? QStringLiteral("curve-based-bucket")
+            : QStringLiteral("curve-based-pen");
+        startGeneratedFillTask(
+            [request = std::move(request), strategy](
+                const std::function<bool()> &cancelled,
+                const GeneratedFillProgress &) {
+                PenFillResult result = fillPenPath(request, cancelled);
+                writePenFillLog(request, result, strategy);
 
                 return result;
             });
@@ -1157,7 +1196,7 @@ quint64 MainWindow::insertGeneratedFill(
 void MainWindow::toggleContourLeewayGroup(
     const QString &groupId) {
     if (canvas_ == nullptr
-        || !loadBehaviorSettings().differentialContourFill) {
+        || loadBehaviorSettings().fillAlgorithm != FillAlgorithm::Differential) {
         statusBar()->showMessage(
             QStringLiteral("Contour leeway requires Differential Contour Fill"),
             3000);

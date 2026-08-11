@@ -211,6 +211,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/car_unwrap_overlay.h
     src/gui/fill/bucket_fill.cpp
     src/gui/fill/bucket_fill.h
+    src/gui/fill/curve_fill.cpp
+    src/gui/fill/curve_fill.h
     src/gui/fill/differential_cover.cpp
     src/gui/fill/differential_cover.h
     src/gui/fill/differential_cover_candidates.cpp
@@ -221,6 +223,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/differential_cover_metrics.cpp
     src/gui/fill/differential_cover_postprocess.cpp
     src/gui/fill/differential_cover_strategies.cpp
+    src/gui/fill/fill_algorithm.h
     src/gui/fill/fill_contour.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
@@ -382,6 +385,8 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_region_pen_conversion_tests
         tools/region_pen_conversion_test.cpp
         src/gui/fill/bucket_fill.cpp
+        src/gui/fill/curve_fill.cpp
+        src/gui/fill/differential_cover_geometry.cpp
         src/gui/fill/lining_fill.cpp
         src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
@@ -397,6 +402,7 @@ if(FLS_BUILD_TESTS)
         src/gui/widgets
     )
     target_link_libraries(fls_region_pen_conversion_tests PRIVATE
+        clipper2
         Qt6::Core
         Qt6::Gui
         ZLIB::ZLIB

@@ -1,5 +1,6 @@
 #include "project_canvas.h"
 
+#include "curve_fill.h"
 #include "project_canvas_internal.h"
 
 #include <cmath>
@@ -119,6 +120,9 @@ void ProjectCanvas::setEditorState(EditorState *state) {
 
 bool ProjectCanvas::loadGeometry(QString *error) {
     geometryLoaded_ = geometry_.loadDefault(error);
+    curvePrimitiveCatalogCache_.clear();
+    curvePrimitiveCatalogErrorCache_.clear();
+    curvePrimitiveCatalogBuilt_ = false;
     rendererGeometryDirty_ = true;
     invalidateSceneCache();
     update();
@@ -516,6 +520,18 @@ void ProjectCanvas::setPenFillCancelCallback(std::function<void()> callback) {
 
 QVector<PenPrimitive> ProjectCanvas::penPrimitiveCatalog() const {
     return buildPenPrimitiveCatalog(geometry_);
+}
+
+QVector<PenPrimitive> ProjectCanvas::curvePrimitiveCatalog(QString *error) const {
+    if (!curvePrimitiveCatalogBuilt_) {
+        curvePrimitiveCatalogCache_ = buildCurvePrimitiveCatalog(
+            geometry_, &curvePrimitiveCatalogErrorCache_);
+        curvePrimitiveCatalogBuilt_ = true;
+    }
+    if (error != nullptr) {
+        *error = curvePrimitiveCatalogErrorCache_;
+    }
+    return curvePrimitiveCatalogCache_;
 }
 
 QVector<cover::ShapeMesh> ProjectCanvas::differentialCoverCatalog(QString *error) const {

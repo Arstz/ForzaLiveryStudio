@@ -515,9 +515,35 @@ void MainWindow::setupOptionsMenu() {
     };
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
-    addBehaviorOption(optionsMenu, QStringLiteral("Differential Contour Fill"),
-                      QStringLiteral("toggle_differential_contour_fill"),
-                      &BehaviorSettings::differentialContourFill);
+    QMenu *fillAlgorithmMenu = optionsMenu->addMenu(QStringLiteral("Fill Algorithm"));
+    auto *fillAlgorithmGroup = new QActionGroup(fillAlgorithmMenu);
+    fillAlgorithmGroup->setExclusive(true);
+    const FillAlgorithm selectedFillAlgorithm = loadBehaviorSettings().fillAlgorithm;
+    const auto addFillAlgorithm = [this, fillAlgorithmMenu, fillAlgorithmGroup,
+                                   selectedFillAlgorithm](const QString &text,
+                                                          const QString &id,
+                                                          FillAlgorithm algorithm) {
+        QAction *action = fillAlgorithmMenu->addAction(text);
+        action->setActionGroup(fillAlgorithmGroup);
+        action->setCheckable(true);
+        action->setChecked(selectedFillAlgorithm == algorithm);
+        registerShortcutAction(action, id, text);
+        addAction(action);
+        connect(action, &QAction::triggered, this, [this, algorithm]() {
+            BehaviorSettings settings = loadBehaviorSettings();
+            settings.fillAlgorithm = algorithm;
+            applyBehaviorSettings(settings);
+        });
+    };
+    addFillAlgorithm(QStringLiteral("Analytic fill"),
+                     QStringLiteral("select_analytic_fill"),
+                     FillAlgorithm::Analytic);
+    addFillAlgorithm(QStringLiteral("Differential fill"),
+                     QStringLiteral("toggle_differential_contour_fill"),
+                     FillAlgorithm::Differential);
+    addFillAlgorithm(QStringLiteral("Curve-based fill"),
+                     QStringLiteral("select_curve_based_fill"),
+                     FillAlgorithm::CurveBased);
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
     addBehaviorOption(optionsMenu, QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
     addBehaviorOption(optionsMenu, QStringLiteral("Allow Move Outside Bounding Box"),

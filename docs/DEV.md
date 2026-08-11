@@ -28,8 +28,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
-  A persistent, default-off **Differential Contour Fill** option replaces that commit
-  path with a slow analytic greedy cover for the active contour. It optimizes
+  A persistent **Fill Algorithm** submenu makes Analytic, Differential, and
+  Curve-based fill mutually exclusive; Analytic remains the default.
+  Differential fill replaces the normal commit path with a slow analytic greedy
+  cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, uses a
   default one-canvas-unit outward margin for easier edge coverage, and inserts a
   measured partial result when progress
@@ -183,8 +185,18 @@ exports grouped `C_group` folders and `C_livery` folders.
   additional contacts must lower that group's current fitting cost, and a bridge cannot
   overlap pixels claimed by another expanded group. Deterministic Kruskal levels then
   produce successively larger merged contours. During fitting, every Safe and Dangerous
-  unit sends a 32-sample cyclic closed-RDP contour at epsilon 1.9 directly to the polygon
-  mesh; failures retain the existing Pen and mesh recovery path. The log records each
+  unit normally sends a 32-sample cyclic closed-RDP contour at epsilon 1.9 directly to
+  the polygon mesh; failures retain the existing Pen and mesh recovery path. Curve-based
+  fill instead starts from an unoptimized Potrace contour, splits cubic segments at
+  inflections, classifies supported sharp junctions as hard points, removes redundant
+  hard points from smooth or straight spans, and least-squares fits compact quadratic
+  soft-point runs under boundary-deviation and raster-similarity guards. Curved loops
+  retain at least two hard anchors and no more than two consecutive soft controls;
+  template hard anchors prefer boundary vertices from the source triangle geometry
+  when the same guards accept the snap. Its legal
+  envelope may extend by one pixel into neighboring coloured regions, but never into
+  transparent background, so later layers can conceal the permitted overlap.
+  The log records each
   variant's RDP input/output counts, straight visibility,
   attachment count, expanded-group cost, corridor width, and hierarchy level. Dangerous also tries
   square morphological closing at several radii and a convex contour. A geometry
@@ -441,7 +453,7 @@ Build output is written to `build/ForzaLiveryStudio`.
 ### Runtime Assets
 
 Runtime assets live in `assets/` (repo root). The build copies that folder next
-to the editor executable. Differential fill reads its shape IDs from
+to the editor executable. Differential and Curve-based fill read the same 18 shape IDs from
 `assets/differential_shapes.json`, icons live in `assets/icons/`, and vector data
 lives in `assets/vector/`.
 

@@ -52,6 +52,8 @@ struct PenPrimitive {
     int shapeId = 0;
     QPainterPath silhouette;
     QVector<QPolygonF> contours;
+    QVector<PenPoint> curvePoints;
+    QVector<PenBoundarySegment> curveSegments;
     QRectF bounds;
     double area = 0.0;
 };
@@ -69,7 +71,10 @@ struct PenFillRequest {
     QVector<PenPoint> points;
     QVector<PenLoop> loops;
     QVector<PenPrimitive> primitives;
+    QPainterPath targetPath;
+    QPainterPath legalEnvelope;
     double boundaryTolerance = 0.1;
+    int shapeLimit = 0;
     bool discardNegligiblePlacements = true;
 };
 

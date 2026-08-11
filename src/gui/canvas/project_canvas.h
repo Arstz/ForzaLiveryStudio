@@ -85,6 +85,7 @@ public:
             bool)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
+    QVector<PenPrimitive> curvePrimitiveCatalog(QString *error = nullptr) const;
     QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
     bool canAssignContourLeeway() const;
     void setContourLeewayGroupId(const QString &groupId);
@@ -119,7 +120,8 @@ public:
                                        QString *message = nullptr);
     void clearRegionOverlay();
 
-    bool prepareRegionFillBatch(RegionFillBatchRequest *request,
+    bool prepareRegionFillBatch(FillAlgorithm algorithm,
+                                RegionFillBatchRequest *request,
                                 QString *message = nullptr) const;
     bool applyRegionFillBatch(RegionFillBatchResult result,
                               QString *message = nullptr);
@@ -523,6 +525,9 @@ private:
     fls::Project *project_ = nullptr;
     ShapeGeometryStore geometry_;
     bool geometryLoaded_ = false;
+    mutable QVector<PenPrimitive> curvePrimitiveCatalogCache_;
+    mutable QString curvePrimitiveCatalogErrorCache_;
+    mutable bool curvePrimitiveCatalogBuilt_ = false;
     QString tool_ = QStringLiteral("select");
     QString lastNonPipetteTool_ = QStringLiteral("select");
     std::vector<std::unique_ptr<CanvasTool>> tools_;

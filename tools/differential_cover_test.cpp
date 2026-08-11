@@ -53,12 +53,12 @@ cover::Affine variedTransform(const cover::Affine &source,
 }
 
 bool testCatalogAndGradient(const QVector<cover::ShapeMesh> &catalog) {
-    constexpr int kExpectedCatalogSize = 12;
-    constexpr std::array<int, 3> kExpandedShapeIds = {
-        2103, 2104, 2133,
+    constexpr int kExpectedCatalogSize = 18;
+    constexpr std::array<int, 9> kExpandedShapeIds = {
+        2103, 2104, 2113, 2117, 2118, 2133, 2135, 2136, 2311,
     };
     if (!check(catalog.size() == kExpectedCatalogSize,
-               "default analytic catalog did not load twelve shapes")) {
+               "default Differential catalog did not load eighteen shapes")) {
         return false;
     }
     for (const int shapeId : kExpandedShapeIds) {
