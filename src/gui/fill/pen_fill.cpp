@@ -37,17 +37,22 @@ constexpr double kMaximumCurvatureJump = 0.75;
 constexpr double kMaximumSpanErrorRatio = 0.05;
 constexpr int kSpanSamples = 64;
 constexpr int kMaximumSpanEvaluations = 2048;
-constexpr int kMaximumCurveProfileShortlist = 16;
-constexpr int kMaximumExactCurveCandidates = 8;
-constexpr int kMaximumInteriorCurvePlacements = 8;
-constexpr int kMaximumExactInteriorCandidates = 24;
+constexpr int kMaximumCurveProfileShortlist = 32;
+constexpr int kMaximumExactCurveAttempts = 12;
+constexpr int kMaximumValidCurveCandidates = 4;
+constexpr int kMaximumInteriorCurvePlacements = 24;
+constexpr int kMaximumExactInteriorCandidates = 48;
+constexpr int kMaximumExactInteriorCpuCandidates = 96;
+constexpr int kMaximumStraightProfilesPerPrimitive = 1;
+constexpr int kMaximumStraightTargetEdges = 8;
+constexpr int kMaximumInteriorTriangleTargets = 12;
 
 int curveEvaluationBudget(int segmentCount) {
     // A budget smaller than the contour consumed every trial on individual
     // segments and left no room for the multi-segment matches that actually
     // reduce the polygonal core. Scale with contour complexity while retaining
     // the existing hard cap.
-    return std::min(1024, std::max(256, segmentCount * 3));
+    return std::min(1024, std::max(96, segmentCount * 3));
 }
 
 bool isAllowedPenShape(int shapeId) {
@@ -210,6 +215,22 @@ bool curvatureBreak(const PenBoundarySegment &left,
                                             1.0 / std::max(1.0, (incomingLength + outgoingLength) * 0.5)});
     return std::abs(leftCurvature - rightCurvature) / curvatureScale
         > kMaximumCurvatureJump;
+}
+
+bool tangentBreak(const PenBoundarySegment &left,
+                  const PenBoundarySegment &right) {
+    const QPointF incoming = segmentDerivative(left, 1.0);
+    const QPointF outgoing = segmentDerivative(right, 0.0);
+    const double incomingLength = std::hypot(incoming.x(), incoming.y());
+    const double outgoingLength = std::hypot(outgoing.x(), outgoing.y());
+    if (incomingLength <= kEpsilon || outgoingLength <= kEpsilon) {
+        return true;
+    }
+    const double cosine = std::clamp(
+        QPointF::dotProduct(incoming, outgoing)
+            / (incomingLength * outgoingLength),
+        -1.0, 1.0);
+    return std::acos(cosine) > kMaximumTangentJump;
 }
 
 QVector<QPointF> sampleSegmentSpan(const QVector<PenBoundarySegment> &segments,
@@ -727,6 +748,7 @@ struct ArcProfile {
     QPointF middle;
     QPointF end;
     QPointF coreMiddle;
+    bool straight = false;
 };
 
 struct CurvePrimitive {
@@ -780,9 +802,6 @@ QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive) {
                         || primitive.curveSegments[
                             (first + offset) % segmentCount].curved;
                 }
-                if (!curved) {
-                    continue;
-                }
                 const QVector<QPointF> samples = sampleCyclicSegmentSpan(
                     primitive.curveSegments, first, span);
                 if (samples.size() < 3
@@ -795,12 +814,47 @@ QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive) {
                 const QPointF end = samples.back();
                 const QPointF chord = end - start;
                 const QPointF leftNormal(-chord.y(), chord.x());
-                const double curveSide = cross(chord, middle - start);
+                double curveSide = cross(chord, middle - start);
+                double maximumDeviation = std::abs(curveSide);
+                for (const QPointF &sample : samples) {
+                    const double side = cross(chord, sample - start);
+                    if (std::abs(side) > maximumDeviation) {
+                        maximumDeviation = std::abs(side);
+                        curveSide = side;
+                    }
+                }
+                const double chordLength = std::hypot(chord.x(), chord.y());
+                const bool straight = !curved
+                    && maximumDeviation
+                        <= chordLength * chordLength * 1e-7;
+                if (!curved && !straight) {
+                    continue;
+                }
+                if (straight) {
+                    const QPointF midpoint = (start + end) * 0.5;
+                    const double probeDistance = std::max(
+                        1e-5,
+                        std::hypot(primitive.bounds.width(),
+                                   primitive.bounds.height()) * 1e-5);
+                    const QPointF normal = leftNormal / chordLength;
+                    const bool leftInside = primitive.silhouette.contains(
+                        midpoint + normal * probeDistance);
+                    const bool rightInside = primitive.silhouette.contains(
+                        midpoint - normal * probeDistance);
+                    if (leftInside != rightInside) {
+                        curveSide = leftInside ? -1.0 : 1.0;
+                    } else {
+                        curveSide = cross(
+                            chord, primitive.bounds.center() - start) >= 0.0
+                            ? -1.0 : 1.0;
+                    }
+                }
                 const QPointF inwardDirection = curveSide >= 0.0
                     ? -leftNormal : leftNormal;
                 result.push_back({
                     start, middle, end,
                     supportPoint(primitive, inwardDirection),
+                    straight,
                 });
             }
         }
@@ -813,7 +867,8 @@ QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive) {
         result.push_back({{bounds.left(), bounds.bottom()},
                           {bounds.center().x(), bounds.top()},
                           {bounds.right(), bounds.bottom()},
-                          {bounds.center().x(), bounds.bottom()}});
+                          {bounds.center().x(), bounds.bottom()},
+                          false});
         return result;
     }
     const QPointF center(bounds.left(), bounds.bottom());
@@ -824,7 +879,8 @@ QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive) {
                           {center.x() + radiusX / std::numbers::sqrt2,
                            center.y() - radiusY / std::numbers::sqrt2},
                           {center.x() + radiusX, center.y()},
-                          center});
+                          center,
+                          false});
         return result;
     }
     if (primitive.shapeId == kConcaveArcShapeId) {
@@ -835,7 +891,8 @@ QVector<ArcProfile> primitiveArcProfiles(const PenPrimitive &primitive) {
                            center.y() - innerRadiusY / std::numbers::sqrt2},
                           {center.x() + innerRadiusX, center.y()},
                           {center.x() + bounds.width() / std::numbers::sqrt2,
-                           center.y() - bounds.height() / std::numbers::sqrt2}});
+                           center.y() - bounds.height() / std::numbers::sqrt2},
+                          false});
         return result;
     }
     if (primitive.shapeId != kFangShapeId
@@ -953,10 +1010,10 @@ QVector<QPair<const CurvePrimitive *, const ArcProfile *>> rankedArcProfiles(
         double score = std::numeric_limits<double>::max();
     };
     const ArcSignature target = arcSignature(start, middle, end);
-    QVector<RankedProfile> ranked;
-    ranked.reserve(curves.size() * 2);
-    const int profilesPerCurve =
-        curves.size() <= kMaximumCurveProfileShortlist ? 2 : 1;
+    QVector<RankedProfile> primary;
+    QVector<RankedProfile> secondary;
+    primary.reserve(curves.size());
+    secondary.reserve(curves.size());
     for (const CurvePrimitive &curve : curves) {
         if ((!includeCircle
              && curve.primitive->shapeId == kCircleShapeId)
@@ -966,6 +1023,9 @@ QVector<QPair<const CurvePrimitive *, const ArcProfile *>> rankedArcProfiles(
         QVector<RankedProfile> curveProfiles;
         curveProfiles.reserve(curve.profiles.size());
         for (const ArcProfile &profile : curve.profiles) {
+            if (profile.straight) {
+                continue;
+            }
             const ArcSignature source = arcSignature(
                 profile.start, profile.middle, profile.end);
             const double score =
@@ -979,26 +1039,35 @@ QVector<QPair<const CurvePrimitive *, const ArcProfile *>> rankedArcProfiles(
             [](const RankedProfile &left, const RankedProfile &right) {
                 return left.score < right.score;
             });
-        curveProfiles.resize(std::min(
-            profilesPerCurve, static_cast<int>(curveProfiles.size())));
-        for (const RankedProfile &profile : std::as_const(curveProfiles)) {
-            ranked.push_back(profile);
+        if (!curveProfiles.isEmpty()) {
+            primary.push_back(curveProfiles.front());
+        }
+        if (curveProfiles.size() > 1) {
+            secondary.push_back(curveProfiles[1]);
         }
     }
-    std::sort(ranked.begin(), ranked.end(),
-              [](const RankedProfile &left, const RankedProfile &right) {
+    const auto lessProfile = [](const RankedProfile &left,
+                                const RankedProfile &right) {
         if (std::abs(left.score - right.score) > kEpsilon) {
             return left.score < right.score;
         }
         return left.curve->primitive->shapeId
             < right.curve->primitive->shapeId;
-    });
-    ranked.resize(std::min(
-        kMaximumCurveProfileShortlist,
-        static_cast<int>(ranked.size())));
+    };
+    std::sort(primary.begin(), primary.end(), lessProfile);
+    std::sort(secondary.begin(), secondary.end(), lessProfile);
     QVector<QPair<const CurvePrimitive *, const ArcProfile *>> result;
-    result.reserve(ranked.size());
-    for (const RankedProfile &profile : std::as_const(ranked)) {
+    result.reserve(kMaximumCurveProfileShortlist);
+    for (const RankedProfile &profile : std::as_const(primary)) {
+        if (result.size() >= kMaximumCurveProfileShortlist) {
+            break;
+        }
+        result.push_back({profile.curve, profile.profile});
+    }
+    for (const RankedProfile &profile : std::as_const(secondary)) {
+        if (result.size() >= kMaximumCurveProfileShortlist) {
+            break;
+        }
         result.push_back({profile.curve, profile.profile});
     }
     return result;
@@ -1323,7 +1392,7 @@ std::optional<EvaluatedCurveTransform> evaluateCurveTransforms(
     if (exhaustiveLegacyEvaluation) {
         shortlist = order;
     }
-    shortlist.reserve(kMaximumExactCurveCandidates);
+    shortlist.reserve(kMaximumExactCurveAttempts);
     QSet<int> usedShapes;
     for (const int index : std::as_const(order)) {
         if (exhaustiveLegacyEvaluation) {
@@ -1335,7 +1404,7 @@ std::optional<EvaluatedCurveTransform> evaluateCurveTransforms(
         }
         usedShapes.insert(shapeId);
         shortlist.push_back(index);
-        if (shortlist.size() >= kMaximumExactCurveCandidates) {
+        if (shortlist.size() >= kMaximumExactCurveAttempts) {
             break;
         }
     }
@@ -1343,7 +1412,7 @@ std::optional<EvaluatedCurveTransform> evaluateCurveTransforms(
         if (exhaustiveLegacyEvaluation) {
             break;
         }
-        if (shortlist.size() >= kMaximumExactCurveCandidates) {
+        if (shortlist.size() >= kMaximumExactCurveAttempts) {
             break;
         }
         if (!shortlist.contains(index)) {
@@ -1352,6 +1421,7 @@ std::optional<EvaluatedCurveTransform> evaluateCurveTransforms(
     }
 
     std::optional<EvaluatedCurveTransform> best;
+    int validCandidateCount = 0;
     for (const int index : std::as_const(shortlist)) {
         if (cancelled && cancelled()) {
             break;
@@ -1366,11 +1436,16 @@ std::optional<EvaluatedCurveTransform> evaluateCurveTransforms(
         if (!placement || (accepted && !accepted(candidate))) {
             continue;
         }
+        ++validCandidateCount;
         EvaluatedCurveTransform evaluated{
             *placement, candidate.coreMiddle, candidate.hasCoreMiddle};
         if (!best || betterCurvePlacement(
                          evaluated.curve, best->curve)) {
             best = std::move(evaluated);
+        }
+        if (!exhaustiveLegacyEvaluation
+            && validCandidateCount >= kMaximumValidCurveCandidates) {
+            break;
         }
     }
     return best;
@@ -1492,6 +1567,252 @@ QVector<QPolygonF> residualComponents(const QPainterPath &residual) {
     return polygons;
 }
 
+QPolygonF normalizedPathPolygon(QPolygonF polygon) {
+    while (polygon.size() > 1
+           && QLineF(polygon.front(), polygon.back()).length() <= kEpsilon) {
+        polygon.removeLast();
+    }
+    return polygon;
+}
+
+PolygonMeshResult meshPainterPath(
+    const QPainterPath &path,
+    const PolygonMeshSources &sources,
+    const std::function<bool()> &cancelled) {
+    PolygonMeshResult result;
+    if (path.isEmpty()) {
+        return result;
+    }
+    QVector<QPolygonF> polygons;
+    for (QPolygonF polygon : path.toSubpathPolygons()) {
+        polygon = normalizedPathPolygon(std::move(polygon));
+        if (polygon.size() >= 3
+            && std::abs(signedArea(polygon)) > kEpsilon) {
+            polygons.push_back(std::move(polygon));
+        }
+    }
+    if (polygons.isEmpty()) {
+        result.error = QStringLiteral("The residual has no meshable contour");
+        return result;
+    }
+
+    QVector<int> parents(polygons.size(), -1);
+    for (int child = 0; child < polygons.size(); ++child) {
+        double parentArea = std::numeric_limits<double>::max();
+        for (int candidate = 0; candidate < polygons.size(); ++candidate) {
+            if (candidate == child
+                || !polygons[candidate].containsPoint(
+                    polygons[child].front(), Qt::OddEvenFill)) {
+                continue;
+            }
+            const double area = std::abs(signedArea(polygons[candidate]));
+            if (area < parentArea) {
+                parentArea = area;
+                parents[child] = candidate;
+            }
+        }
+    }
+    QVector<int> depths(polygons.size(), 0);
+    for (int index = 0; index < polygons.size(); ++index) {
+        int parent = parents[index];
+        while (parent >= 0) {
+            ++depths[index];
+            parent = parents[parent];
+            if (depths[index] > polygons.size()) {
+                result.error = QStringLiteral("The residual contour nesting is invalid");
+                return result;
+            }
+        }
+    }
+
+    result.contour.setFillRule(Qt::WindingFill);
+    for (int outer = 0; outer < polygons.size(); ++outer) {
+        if (depths[outer] % 2 != 0) {
+            continue;
+        }
+        PolygonMeshRequest request;
+        request.sources = sources;
+        for (int hole = 0; hole < polygons.size(); ++hole) {
+            if (parents[hole] == outer && depths[hole] % 2 != 0) {
+                request.contours.push_back(
+                    QVector<QPointF>(polygons[hole].cbegin(),
+                                     polygons[hole].cend()));
+            }
+        }
+        if (request.contours.isEmpty()) {
+            request.points = QVector<QPointF>(polygons[outer].cbegin(),
+                                              polygons[outer].cend());
+        } else {
+            request.contours.prepend(
+                QVector<QPointF>(polygons[outer].cbegin(),
+                                 polygons[outer].cend()));
+        }
+        request.mergeSquares = request.contours.isEmpty();
+        const PolygonMeshResult component = meshPolygon(request, cancelled);
+        if (component.cancelled) {
+            result.cancelled = true;
+            result.placements.clear();
+            return result;
+        }
+        if (!component.error.isEmpty()) {
+            result.error = component.error;
+            result.placements.clear();
+            return result;
+        }
+        result.placements += component.placements;
+        result.contour = result.contour.united(component.contour);
+    }
+    const double allowedArea = std::max(1e-6, pathArea(path) * 1e-4);
+    if (pathArea(result.contour.subtracted(path)) > allowedArea
+        || pathArea(path.subtracted(result.contour)) > allowedArea) {
+        result.error = QStringLiteral("The residual mesh did not match its contour");
+        result.placements.clear();
+    }
+    return result;
+}
+
+std::optional<QPointF> inwardNormalForEdge(
+    const QPointF &start,
+    const QPointF &end,
+    const QPainterPath &path) {
+    const QPointF edge = end - start;
+    const double length = std::hypot(edge.x(), edge.y());
+    if (length <= kEpsilon) {
+        return std::nullopt;
+    }
+    const QPointF normal(-edge.y() / length, edge.x() / length);
+    const QPointF middle = (start + end) * 0.5;
+    const QRectF bounds = path.boundingRect();
+    const double probeDistance = std::max(
+        1e-5, std::hypot(bounds.width(), bounds.height()) * 1e-5);
+    const bool leftInside = path.contains(middle + normal * probeDistance);
+    const bool rightInside = path.contains(middle - normal * probeDistance);
+    if (leftInside == rightInside) {
+        return std::nullopt;
+    }
+    return leftInside ? std::optional<QPointF>(normal)
+                      : std::optional<QPointF>(-normal);
+}
+
+double interiorDepthAlongRay(const QPointF &origin,
+                             const QPointF &direction,
+                             const QPainterPath &path) {
+    const QRectF bounds = path.boundingRect();
+    const double limit = std::max(
+        1e-4, std::hypot(bounds.width(), bounds.height()) * 1.5);
+    constexpr int steps = 64;
+    double inside = 0.0;
+    double outside = limit;
+    for (int step = 1; step <= steps; ++step) {
+        const double distance = limit * step / steps;
+        if (!path.contains(origin + direction * distance)) {
+            outside = distance;
+            break;
+        }
+        inside = distance;
+    }
+    for (int iteration = 0; iteration < 12; ++iteration) {
+        const double middle = (inside + outside) * 0.5;
+        if (path.contains(origin + direction * middle)) {
+            inside = middle;
+        } else {
+            outside = middle;
+        }
+    }
+    return inside;
+}
+
+QVector<QTransform> straightBoundaryTransforms(
+    const QVector<ArcProfile> &profiles,
+    const QPointF &targetStart,
+    const QPointF &targetEnd,
+    const QPainterPath &target) {
+    const auto inward = inwardNormalForEdge(
+        targetStart, targetEnd, target);
+    const double targetLength = QLineF(targetStart, targetEnd).length();
+    if (!inward || targetLength <= kEpsilon) {
+        return {};
+    }
+    const QPointF targetMiddle = (targetStart + targetEnd) * 0.5;
+    const double maximumDepth = interiorDepthAlongRay(
+        targetMiddle, *inward, target);
+    if (maximumDepth <= kEpsilon) {
+        return {};
+    }
+
+    QVector<QTransform> result;
+    QVector<const ArcProfile *> straightProfiles;
+    for (const ArcProfile &profile : profiles) {
+        if (profile.straight) {
+            straightProfiles.push_back(&profile);
+        }
+    }
+    std::sort(straightProfiles.begin(), straightProfiles.end(),
+              [](const ArcProfile *left, const ArcProfile *right) {
+        return QLineF(left->start, left->end).length()
+            > QLineF(right->start, right->end).length();
+    });
+    straightProfiles.resize(std::min(
+        kMaximumStraightProfilesPerPrimitive,
+        static_cast<int>(straightProfiles.size())));
+    for (const ArcProfile *profilePointer : std::as_const(straightProfiles)) {
+        const ArcProfile &profile = *profilePointer;
+        const QPointF sourceEdge = profile.end - profile.start;
+        const double sourceLengthSquared = QPointF::dotProduct(
+            sourceEdge, sourceEdge);
+        if (sourceLengthSquared <= kEpsilon) {
+            continue;
+        }
+        const double sourceDepth = std::abs(cross(
+            sourceEdge, profile.coreMiddle - profile.start))
+            / std::sqrt(sourceLengthSquared);
+        if (sourceDepth <= kEpsilon) {
+            continue;
+        }
+        const double sourcePosition = QPointF::dotProduct(
+            profile.coreMiddle - profile.start, sourceEdge)
+            / sourceLengthSquared;
+        const double naturalDepth = targetLength * sourceDepth
+            / std::sqrt(sourceLengthSquared);
+        QVector<double> depths = {
+            naturalDepth,
+            maximumDepth * 0.9,
+        };
+        std::sort(depths.begin(), depths.end());
+        depths.erase(std::unique(
+                         depths.begin(), depths.end(),
+                         [](double left, double right) {
+                             return std::abs(left - right)
+                                 <= std::max({1e-6,
+                                              std::abs(left) * 1e-6,
+                                              std::abs(right) * 1e-6});
+                         }),
+                     depths.end());
+        for (const bool reversed : {false, true}) {
+            const QPointF start = reversed ? targetEnd : targetStart;
+            const QPointF end = reversed ? targetStart : targetEnd;
+            for (const double depth : std::as_const(depths)) {
+                if (depth <= kEpsilon
+                    || depth > maximumDepth * 1.05 + kEpsilon) {
+                    continue;
+                }
+                const QPointF core = start
+                    + (end - start) * sourcePosition
+                    + *inward * depth;
+                bool ok = false;
+                const QTransform transform = affineFromTriangles(
+                    profile.start, profile.end, profile.coreMiddle,
+                    start, end, core, &ok);
+                if (ok && transform.isAffine()
+                    && std::abs(transform.determinant()) > kEpsilon) {
+                    result.push_back(transform);
+                }
+            }
+        }
+    }
+    return result;
+}
+
 CurveCoreOptimization optimizeCurveCoreWithTemplates(
     const QVector<PolygonMeshPlacement> &baselineMesh,
     const PolygonMeshSources &meshSources,
@@ -1512,12 +1833,20 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         return best;
     }
     const CurveCoreOptimization baseline = best;
+    const cover::Polygons baselineCoveragePolygons =
+        cover::polygonsFromPainterPath(baseline.coverage, 0.025);
+    const cover::Polygons legalEnvelopePolygons =
+        cover::polygonsFromPainterPath(legalEnvelope, 0.025);
     QVector<const PenPrimitive *> interiorPrimitives;
+    QHash<int, QVector<ArcProfile>> interiorProfiles;
     for (const PenPrimitive &primitive : primitives) {
-        if (primitive.shapeId != kTriangleShapeId
-            && isCurveShape(primitive)
-            && !primitive.curveSegments.isEmpty()) {
+        if (primitive.shapeId == kSquareShapeId
+            || (primitive.shapeId != kTriangleShapeId
+                && isCurveShape(primitive)
+                && !primitive.curveSegments.isEmpty())) {
             interiorPrimitives.push_back(&primitive);
+            interiorProfiles.insert(
+                primitive.shapeId, primitiveArcProfiles(primitive));
         }
     }
     if (interiorPrimitives.isEmpty()) {
@@ -1571,16 +1900,17 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         });
         shapeAnchors.resize(std::min(
             2, static_cast<int>(shapeAnchors.size())));
-        if (!shapeAnchors.isEmpty()) {
-            triangleAnchors.push_back(
-                shapeAnchors.size() > 1 ? shapeAnchors[1] : shapeAnchors[0]);
+        for (InteriorTriangleAnchor &anchor : shapeAnchors) {
+            triangleAnchors.push_back(std::move(anchor));
         }
     }
 
     QVector<QPainterPath> baselinePaths;
+    QVector<cover::Polygons> baselinePathPolygons;
     QVector<double> baselineAreas;
     QVector<QRectF> baselineBounds;
     baselinePaths.reserve(baselineMesh.size());
+    baselinePathPolygons.reserve(baselineMesh.size());
     baselineAreas.reserve(baselineMesh.size());
     baselineBounds.reserve(baselineMesh.size());
     for (const PolygonMeshPlacement &placement : baselineMesh) {
@@ -1592,21 +1922,48 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         QPainterPath path = placement.transform.map(primitive->silhouette);
         baselineAreas.push_back(pathArea(path));
         baselineBounds.push_back(path.boundingRect());
+        baselinePathPolygons.push_back(
+            cover::polygonsFromPainterPath(path, 0.025));
         baselinePaths.push_back(std::move(path));
     }
 
     QVector<bool> active(baselineMesh.size(), true);
     QVector<PenPlacement> interiorPlacements;
+    QVector<QPainterPath> interiorPaths;
     QPainterPath interiorCoverage;
     interiorCoverage.setFillRule(Qt::WindingFill);
-    QVector<bool> bestActive;
-    QVector<PenPlacement> bestInteriorPlacements;
-    int bestPlacementCount = baselineMesh.size();
+    cover::Polygons interiorCoveragePolygons;
+    int bestPlacementCount = best.placements.size();
     int bestTriangleCount = static_cast<int>(std::count_if(
         baselineMesh.cbegin(), baselineMesh.cend(),
         [](const PolygonMeshPlacement &placement) {
             return placement.shapeId == kTriangleShapeId;
         }));
+    const auto considerPlan = [&](CurveCoreOptimization plan,
+                                  int triangleCount) {
+        const int placementCount = plan.placements.size();
+        const cover::Polygons planPolygons =
+            cover::polygonsFromPainterPath(plan.coverage, 0.025);
+        const double lostBaselineArea = pathArea(
+            cover::painterPathFromPolygons(cover::differencePolygons(
+                baselineCoveragePolygons, planPolygons)));
+        const double illegalArea = pathArea(
+            cover::painterPathFromPolygons(cover::differencePolygons(
+                planPolygons, legalEnvelopePolygons)));
+        const bool complete = lostBaselineArea
+                <= std::max(1e-6, targetArea * 1e-3)
+            && illegalArea
+                <= std::max(1e-6, targetArea * 1e-5);
+        if (!complete || placementCount > shapeBudget
+            || (placementCount > bestPlacementCount)
+            || (placementCount == bestPlacementCount
+                && triangleCount >= bestTriangleCount)) {
+            return;
+        }
+        bestPlacementCount = placementCount;
+        bestTriangleCount = triangleCount;
+        best = std::move(plan);
+    };
     const int maximumPlacements = std::min(
         kMaximumInteriorCurvePlacements, shapeBudget);
     for (int iteration = 0; iteration < maximumPlacements; ++iteration) {
@@ -1635,6 +1992,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
 
         QVector<QPolygonF> components = residualComponents(uncoveredCoverage);
         components.resize(std::min(1, static_cast<int>(components.size())));
+        const int boundaryComponentCount = components.size();
 
         // Whole connected components are useful for broad shapes.  Local
         // nearest-neighbour clusters add the smaller targets needed to replace
@@ -1680,7 +2038,9 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         }
 
         QVector<CurveTransformCandidate> candidates;
-        for (const QPolygonF &component : std::as_const(components)) {
+        for (int componentIndex = 0;
+             componentIndex < components.size(); ++componentIndex) {
+            const QPolygonF &component = components[componentIndex];
             const double principalAngle = polygonPrincipalAngle(component);
             for (const double angle : {
                      principalAngle, principalAngle + std::numbers::pi * 0.5,
@@ -1695,9 +2055,51 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                     }
                 }
             }
+            if (componentIndex >= boundaryComponentCount) {
+                continue;
+            }
+            QVector<int> boundaryEdges(component.size());
+            std::iota(boundaryEdges.begin(), boundaryEdges.end(), 0);
+            std::sort(boundaryEdges.begin(), boundaryEdges.end(),
+                      [&](int left, int right) {
+                return QLineF(
+                           component[left],
+                           component[(left + 1) % component.size()]).length()
+                    > QLineF(
+                           component[right],
+                           component[(right + 1) % component.size()]).length();
+            });
+            boundaryEdges.resize(std::min(
+                kMaximumStraightTargetEdges,
+                static_cast<int>(boundaryEdges.size())));
+            for (const int edge : std::as_const(boundaryEdges)) {
+                const QPointF start = component[edge];
+                const QPointF end = component[(edge + 1) % component.size()];
+                for (const PenPrimitive *primitive : interiorPrimitives) {
+                    const auto profiles = interiorProfiles.constFind(
+                        primitive->shapeId);
+                    if (profiles == interiorProfiles.cend()) {
+                        continue;
+                    }
+                    for (const QTransform &transform
+                         : straightBoundaryTransforms(
+                               profiles.value(), start, end,
+                               uncoveredCoverage)) {
+                        candidates.push_back({primitive, transform});
+                    }
+                }
+            }
         }
         if (meshSources.triangle.size() == 3) {
-            for (const int placementIndex : std::as_const(activeIndices)) {
+            QVector<int> triangleTargets = activeIndices;
+            std::sort(triangleTargets.begin(), triangleTargets.end(),
+                      [&](int left, int right) {
+                return baselineAreas[left] > baselineAreas[right];
+            });
+            triangleTargets.resize(std::min(
+                kMaximumInteriorTriangleTargets,
+                static_cast<int>(triangleTargets.size())));
+            for (const int placementIndex : std::as_const(triangleTargets)) {
                 if (baselineMesh[placementIndex].shapeId
                     != kTriangleShapeId) {
                     continue;
@@ -1802,16 +2204,38 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         std::sort(order.begin(), order.end(), [&](int left, int right) {
             return scores[left] > scores[right];
         });
-        order.resize(std::min(
-            kMaximumExactInteriorCandidates,
-            static_cast<int>(order.size())));
+        const int exactCandidateLimit = gpuRanked
+            ? kMaximumExactInteriorCandidates
+            : kMaximumExactInteriorCpuCandidates;
+        QVector<int> exactOrder;
+        exactOrder.reserve(exactCandidateLimit);
+        QSet<int> shortlistedShapes;
+        for (const int index : std::as_const(order)) {
+            const int shapeId = candidates[index].primitive->shapeId;
+            if (shortlistedShapes.contains(shapeId)) {
+                continue;
+            }
+            shortlistedShapes.insert(shapeId);
+            exactOrder.push_back(index);
+            if (exactOrder.size() >= exactCandidateLimit) {
+                break;
+            }
+        }
+        for (const int index : std::as_const(order)) {
+            if (exactOrder.size() >= exactCandidateLimit) {
+                break;
+            }
+            if (!exactOrder.contains(index)) {
+                exactOrder.push_back(index);
+            }
+        }
         int bestIndex = -1;
         QPainterPath bestPath;
         QVector<int> bestCovered;
         int bestCoveredTriangles = -1;
         double bestGain = 0.0;
         double bestPlacementArea = 0.0;
-        for (const int index : std::as_const(order)) {
+        for (const int index : std::as_const(exactOrder)) {
             if (cancelled && cancelled()) {
                 break;
             }
@@ -1827,16 +2251,26 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
             if (gain <= std::max(targetArea * 1e-4, area * 0.05)) {
                 continue;
             }
-            const QPainterPath combinedCoverage =
-                interiorCoverage.united(path);
+            cover::Polygons combinedSubjects = interiorCoveragePolygons;
+            combinedSubjects += cover::polygonsFromPainterPath(path, 0.025);
+            const cover::Polygons combinedCoveragePolygons =
+                cover::unionPolygons(combinedSubjects);
+            const double combinedIllegal = cover::polygonSetArea(
+                cover::differencePolygons(
+                    combinedCoveragePolygons, legalEnvelopePolygons));
+            if (combinedIllegal
+                > std::max(1e-6, targetArea * 1e-5)) {
+                continue;
+            }
             QVector<int> covered;
             int coveredTriangles = 0;
             for (const int placementIndex : std::as_const(activeIndices)) {
-                const double missing = pathArea(
-                    baselinePaths[placementIndex].subtracted(
-                        combinedCoverage));
+                const double missing = cover::polygonSetArea(
+                    cover::differencePolygons(
+                        baselinePathPolygons[placementIndex],
+                        combinedCoveragePolygons));
                 if (missing > std::max(
-                        1e-7, baselineAreas[placementIndex] * 1e-6)) {
+                        1e-6, baselineAreas[placementIndex] * 1e-3)) {
                     continue;
                 }
                 covered.push_back(placementIndex);
@@ -1874,54 +2308,73 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                 * std::abs(selected.transform.determinant()),
             selected.primitive->shapeId == kCircleShapeId,
         });
+        interiorPaths.push_back(bestPath);
         interiorCoverage = interiorCoverage.united(bestPath);
+        interiorCoveragePolygons += cover::polygonsFromPainterPath(
+            bestPath, 0.025);
+        interiorCoveragePolygons = cover::unionPolygons(
+            interiorCoveragePolygons);
         for (const int index : std::as_const(bestCovered)) {
             active[index] = false;
         }
-        const int activeCount = static_cast<int>(std::count(
-            active.cbegin(), active.cend(), true));
-        const int placementCount = activeCount + interiorPlacements.size();
-        int activeTriangles = 0;
-        for (int index = 0; index < active.size(); ++index) {
-            activeTriangles += active[index]
-                && baselineMesh[index].shapeId == kTriangleShapeId ? 1 : 0;
+        CurveCoreOptimization retiredPlan;
+        retiredPlan.coverage.setFillRule(Qt::WindingFill);
+        cover::Polygons retiredPolygons;
+        int retiredTriangleCount = 0;
+        for (int index = 0; index < baselineMesh.size(); ++index) {
+            if (!active[index]) {
+                continue;
+            }
+            retiredPlan.placements += penPlacementsFromMesh(
+                {baselineMesh[index]}, primitives, nullptr);
+            retiredPolygons += cover::polygonsFromPainterPath(
+                baselinePaths[index], 0.025);
+            retiredTriangleCount += baselineMesh[index].shapeId
+                == kTriangleShapeId ? 1 : 0;
         }
-        if (placementCount < bestPlacementCount
-            || (placementCount == bestPlacementCount
-                && activeTriangles < bestTriangleCount)) {
-            bestPlacementCount = placementCount;
-            bestTriangleCount = activeTriangles;
-            bestActive = active;
-            bestInteriorPlacements = interiorPlacements;
+        for (int index = 0; index < interiorPlacements.size(); ++index) {
+            retiredPlan.placements.push_back(interiorPlacements[index]);
+            retiredPolygons += cover::polygonsFromPainterPath(
+                interiorPaths[index], 0.025);
+        }
+        retiredPlan.coverage = cover::painterPathFromPolygons(
+            cover::unionPolygons(retiredPolygons));
+        considerPlan(std::move(retiredPlan), retiredTriangleCount);
+
+        const QPainterPath residual = corePath.subtracted(interiorCoverage);
+        PolygonMeshResult residualMesh;
+        const bool residualRemeshIsCompact = residual.elementCount()
+            <= corePath.elementCount() + 8;
+        if (!residual.isEmpty() && residualRemeshIsCompact) {
+            residualMesh = meshPainterPath(residual, meshSources, cancelled);
+        }
+        if (residualMesh.cancelled) {
+            break;
+        }
+        if (residualRemeshIsCompact && residualMesh.error.isEmpty()) {
+            QPainterPath residualCoverage;
+            residualCoverage.setFillRule(Qt::WindingFill);
+            const QVector<PenPlacement> residualPlacements =
+                penPlacementsFromMesh(
+                    residualMesh.placements, primitives, &residualCoverage);
+            if (residual.isEmpty()
+                || !residualPlacements.isEmpty()) {
+                CurveCoreOptimization plan;
+                plan.placements = interiorPlacements;
+                plan.placements += residualPlacements;
+                plan.coverage = interiorCoverage.united(residualCoverage);
+                const int triangleCount = static_cast<int>(std::count_if(
+                    residualMesh.placements.cbegin(),
+                    residualMesh.placements.cend(),
+                    [](const PolygonMeshPlacement &placement) {
+                        return placement.shapeId == kTriangleShapeId;
+                    }));
+                considerPlan(std::move(plan), triangleCount);
+            }
         }
         if (progress) {
             progress(iteration + 1, maximumPlacements);
         }
-    }
-
-    if (bestInteriorPlacements.isEmpty()) {
-        return best;
-    }
-    best.placements = bestInteriorPlacements;
-    best.coverage = QPainterPath();
-    best.coverage.setFillRule(Qt::WindingFill);
-    for (const PenPlacement &placement : std::as_const(bestInteriorPlacements)) {
-        const PenPrimitive *primitive = primitiveForId(
-            primitives, placement.shapeId);
-        best.coverage = best.coverage.united(
-            placement.transform.map(primitive->silhouette));
-    }
-    for (int index = 0; index < baselineMesh.size(); ++index) {
-        if (!bestActive[index]) {
-            continue;
-        }
-        best.placements.push_back(penPlacementsFromMesh(
-            {baselineMesh[index]}, primitives, &best.coverage).front());
-    }
-    const double lostBaselineArea = pathArea(
-        baseline.coverage.subtracted(best.coverage));
-    if (lostBaselineArea > std::max(1e-6, targetArea * 1e-3)) {
-        return baseline;
     }
     return best;
 }
@@ -2091,6 +2544,7 @@ struct SpanSelectionCost {
     bool valid = false;
     int fallbackSegments = 0;
     int placementCount = 0;
+    int matchedSegments = 0;
     double boundaryError = 0.0;
     double outsideArea = 0.0;
     int decision = -1;
@@ -2106,6 +2560,9 @@ bool betterSpanSelection(const SpanSelectionCost &candidate,
     }
     if (candidate.placementCount != best.placementCount) {
         return candidate.placementCount < best.placementCount;
+    }
+    if (candidate.matchedSegments != best.matchedSegments) {
+        return candidate.matchedSegments > best.matchedSegments;
     }
     if (std::abs(candidate.boundaryError - best.boundaryError) > kEpsilon) {
         return candidate.boundaryError < best.boundaryError;
@@ -2159,7 +2616,7 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
         ++exactEvaluations;
         if (progress) {
             progress(exactEvaluations,
-                     maximumEvaluations * kMaximumExactCurveCandidates);
+                     maximumEvaluations * kMaximumExactCurveAttempts);
         }
     };
     for (const int i : std::as_const(outwardIndices)) {
@@ -2194,7 +2651,9 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
     }
     int runStart = 0;
     while (runStart < count) {
-        while (runStart < count && !outward[runStart]) {
+        while (runStart < count
+               && segments[runStart].curved
+               && !outward[runStart]) {
             ++runStart;
         }
         if (runStart >= count) {
@@ -2202,8 +2661,9 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
         }
         int runEnd = runStart;
         while (runEnd + 1 < count
-               && outward[runEnd + 1]
-               && !curvatureBreak(segments[runEnd], segments[runEnd + 1])) {
+               && (outward[runEnd + 1]
+                   || !segments[runEnd + 1].curved)
+               && !tangentBreak(segments[runEnd], segments[runEnd + 1])) {
             ++runEnd;
         }
         const int runLength = runEnd - runStart + 1;
@@ -2220,11 +2680,18 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                     return {};
                 }
                 const int last = first + spanLength - 1;
+                bool containsOutwardCurve = false;
                 QPolygonF spanControlPoints;
                 for (int i = first; i <= last; ++i) {
+                    containsOutwardCurve = containsOutwardCurve || outward[i];
                     spanControlPoints.push_back(segments[i].start);
-                    spanControlPoints.push_back(segments[i].control);
+                    if (segments[i].curved) {
+                        spanControlPoints.push_back(segments[i].control);
+                    }
                     spanControlPoints.push_back(segments[i].end);
+                }
+                if (!containsOutwardCurve) {
+                    continue;
                 }
                 const QRectF bounds = spanControlPoints.boundingRect();
                 const double diagonal = std::hypot(bounds.width(), bounds.height());
@@ -2269,6 +2736,7 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                 continue;
             }
             ++cost.placementCount;
+            cost.matchedSegments += candidate.last - candidate.first + 1;
             cost.boundaryError += candidate.curve.boundaryError;
             cost.outsideArea += candidate.curve.outsideArea;
             cost.decision = candidateIndex;
@@ -2366,7 +2834,7 @@ QVector<InwardCurveSpanPlacement> selectInwardCurveSpans(
         ++exactEvaluations;
         if (progress) {
             progress(exactEvaluations,
-                     maximumEvaluations * kMaximumExactCurveCandidates);
+                     maximumEvaluations * kMaximumExactCurveAttempts);
         }
     };
     int runStart = 0;
@@ -2424,6 +2892,7 @@ QVector<InwardCurveSpanPlacement> selectInwardCurveSpans(
                 continue;
             }
             ++cost.placementCount;
+            cost.matchedSegments += candidate.last - candidate.first + 1;
             cost.boundaryError += candidate.curve.curve.boundaryError;
             cost.outsideArea += candidate.curve.curve.outsideArea;
             cost.decision = candidateIndex;

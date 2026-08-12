@@ -332,6 +332,16 @@ Polygons polygonsFromPainterPath(
 
 QPainterPath painterPathFromPolygons(const Polygons &polygons);
 
+Polygons differencePolygons(const Polygons &subjects,
+                            const Polygons &clips);
+
+Polygons intersectionPolygons(const Polygons &subjects,
+                              const Polygons &clips);
+
+Polygons unionPolygons(const Polygons &subjects);
+
+double polygonSetArea(const Polygons &polygons);
+
 AreaGradient evaluateAreaGradient(const ShapeMesh &shape,
                                   const Affine &transform,
                                   const Polygons &coveredSubject,

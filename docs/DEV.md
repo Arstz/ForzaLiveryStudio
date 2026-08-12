@@ -199,19 +199,26 @@ exports grouped `C_group` folders and `C_livery` folders.
   retain at least two hard anchors and no more than two consecutive soft controls;
   template hard anchors prefer boundary vertices from the source triangle geometry
   when the same guards accept the snap. Precomputed curve templates are loaded and cached
-  in the generated-fill worker. Candidate silhouettes can be shortlisted in batches through
-  the Differential Direct3D/CUDA area evaluator, followed by exact CPU boundary and legal
-  envelope validation. Both single and multi-segment matching first retain at most sixteen
-  geometry-ranked template profiles, batch their transforms on the GPU when available, and
-  permit at most eight distinct-shape candidates to reach exact path validation. Direct
+  in the generated-fill worker. Template profiling retains straight boundaries alongside
+  curved and mixed spans. Tangential straight/curve target runs can share one placement,
+  while straight template boundaries use an inward affine support to avoid a degenerate
+  line-only transform. Candidate silhouettes can be shortlisted in batches through the
+  Differential Direct3D/CUDA area evaluator, followed by exact CPU boundary and legal
+  envelope validation. Both single and multi-segment matching retain a bounded,
+  shape-diverse set of geometry-ranked template profiles, batch their transforms on the GPU
+  when available, and continue exact validation across several valid alternatives. Direct
   Curve fills have a 30-second matching budget and fall back to the safe polygon mesh instead
   of remaining indefinitely in candidate evaluation. After boundary fitting, Curve fill also
-  packs the polygonal core with curve templates. It proposes both component-aligned fits and
-  fits anchored to triangles from the templates' own Pen silhouettes, ranks them with the GPU
-  area evaluator, and validates the legal envelope exactly on the CPU. Curve candidates may
-  cooperate before mesh placements are retired; a result is committed only when it does not
-  increase total placement count (or reduces it), lowers the triangle count, and loses at most
-  0.1 percent of the baseline core coverage. Multi-segment matching covers outward
+  packs the polygonal core with curve templates and Square. It proposes component-aligned,
+  straight-boundary, and template-mesh-anchored fits, then ranks their complete transform
+  batch with the GPU area evaluator and validates the legal envelope exactly on the CPU.
+  The initial core mesh is a provisional savings baseline. Candidate combinations retire
+  covered mesh cells directly or subtract accepted broad coverage and remesh the remaining
+  components. Integer polygon unions provide the authoritative coverage and legal-envelope
+  checks for the final plan.
+  A result is committed only when it reduces total placement count, or retains that count
+  while lowering the triangle count, and loses at most 0.1 percent of the baseline core
+  coverage. Multi-segment matching covers outward
   and inward cyclic spans, and
   the status bar reports template, candidate, core-mesh, and cleanup phases. Its legal
   envelope may extend by one pixel into neighboring coloured regions, but never into

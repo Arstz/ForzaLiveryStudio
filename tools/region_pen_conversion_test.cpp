@@ -911,7 +911,113 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
                      || hasPlacement(inwardArcResult, 129)
                      || hasPlacement(inwardArcResult, 139)
                      || hasPlacement(inwardArcResult, 2123),
-                 "an internal arc should use a contained curve Primitive");
+                  "an internal arc should use a contained curve Primitive");
+}
+
+void straightBoundaryCurveReplacesTriangleMesh(TestContext *test)
+{
+    constexpr int shapeId = 5001;
+    QVector<gui::PenPrimitive> primitives;
+    for (const gui::PenPrimitive &primitive : penPrimitiveCatalog(test)) {
+        if (primitive.shapeId == 101 || primitive.shapeId == 103) {
+            primitives.push_back(primitive);
+        }
+    }
+
+    const QPointF bottomLeft(-1.0, 0.0);
+    const QPointF bottomRight(1.0, 0.0);
+    const QPointF topRight(0.7, 1.0);
+    const QPointF topLeft(-0.7, 1.0);
+    gui::PenPrimitive curve;
+    curve.shapeId = shapeId;
+    curve.silhouette.moveTo(bottomLeft);
+    curve.silhouette.lineTo(bottomRight);
+    curve.silhouette.lineTo(topRight);
+    curve.silhouette.lineTo(topLeft);
+    curve.silhouette.closeSubpath();
+    curve.contours = curve.silhouette.toSubpathPolygons();
+    curve.contours.push_back(QPolygonF({QPointF(0.0, 0.5),
+                                        QPointF(0.0, 0.5)}));
+    curve.area = filledPathArea(curve.silhouette);
+    curve.curveSegments = {
+        {bottomLeft, {}, bottomRight, false},
+        {bottomRight, {}, topRight, false},
+        {topRight, (topRight + topLeft) * 0.5, topLeft, true},
+        {topLeft, {}, bottomLeft, false},
+    };
+    primitives.push_back(curve);
+
+    gui::PenFillRequest baselineRequest;
+    baselineRequest.primitives = primitives;
+    baselineRequest.boundaryTolerance = 0.01;
+    baselineRequest.shapeLimit = 32;
+    baselineRequest.points = {
+        {{-100.0, 0.0}, gui::PenPointKind::Hard},
+        {{100.0, 0.0}, gui::PenPointKind::Hard},
+        {{70.0, 100.0}, gui::PenPointKind::Hard},
+        {{-70.0, 100.0}, gui::PenPointKind::Hard},
+    };
+    const gui::PenFillResult baseline = gui::fillPenPath(baselineRequest);
+
+    gui::PenFillRequest optimizedRequest = baselineRequest;
+    gui::cover::ShapeMesh curveMesh;
+    curveMesh.id = shapeId;
+    optimizedRequest.curveMeshes.push_back(curveMesh);
+    const gui::PenFillResult optimized = gui::fillPenPath(optimizedRequest);
+    const int baselineTriangles = static_cast<int>(std::count_if(
+        baseline.placements.cbegin(), baseline.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.shapeId == 103;
+        }));
+    const int optimizedTriangles = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.shapeId == 103;
+        }));
+    const QPainterPath coverage = placementCoverage(optimized, primitives);
+    const gui::PenContour contour = gui::buildPenContour(
+        baselineRequest.points);
+    test->expect(baseline.error.isEmpty() && optimized.error.isEmpty(),
+                 "a straight-boundary curve optimization should fill");
+    test->expect(baselineTriangles >= 2
+                     && optimizedTriangles < baselineTriangles,
+                 "a straight-boundary curve should retire triangle placements");
+    test->expect(hasPlacement(optimized, shapeId),
+                 "a curve shape should fit through one of its straight edges");
+    test->expect(filledPathArea(contour.path.subtracted(coverage))
+                     <= optimized.targetArea * 1e-3 + 1e-6,
+                 "a straight-boundary curve plan should retain core coverage");
+
+    gui::PenFillRequest residualBaselineRequest = baselineRequest;
+    residualBaselineRequest.points = {
+        {{-100.0, 0.0}, gui::PenPointKind::Hard},
+        {{100.0, 0.0}, gui::PenPointKind::Hard},
+        {{70.0, 100.0}, gui::PenPointKind::Hard},
+        {{70.0, 150.0}, gui::PenPointKind::Hard},
+        {{-70.0, 150.0}, gui::PenPointKind::Hard},
+        {{-70.0, 100.0}, gui::PenPointKind::Hard},
+    };
+    const gui::PenFillResult residualBaseline = gui::fillPenPath(
+        residualBaselineRequest);
+    gui::PenFillRequest residualOptimizedRequest = residualBaselineRequest;
+    residualOptimizedRequest.curveMeshes.push_back(curveMesh);
+    const gui::PenFillResult residualOptimized = gui::fillPenPath(
+        residualOptimizedRequest);
+    const QPainterPath residualCoverage = placementCoverage(
+        residualOptimized, primitives);
+    const gui::PenContour residualContour = gui::buildPenContour(
+        residualBaselineRequest.points);
+    test->expect(residualBaseline.error.isEmpty()
+                     && residualOptimized.error.isEmpty(),
+                 "a partial straight-boundary curve optimization should fill");
+    test->expect(hasPlacement(residualOptimized, shapeId)
+                     && residualOptimized.placements.size()
+                         < residualBaseline.placements.size(),
+                 "a broad curve should be combined with a remeshed residual");
+    test->expect(filledPathArea(
+                     residualContour.path.subtracted(residualCoverage))
+                     <= residualOptimized.targetArea * 1e-3 + 1e-6,
+                 "a remeshed residual should retain the provisional coverage");
 }
 
 void concaveCoreFallbackStaysContained(TestContext *test)
@@ -2816,6 +2922,11 @@ int compareLoggedPen(const QString &path, bool optimizeOnly = false)
     const int curvePlacements = static_cast<int>(std::count_if(
         optimized.placements.cbegin(), optimized.placements.cend(),
         [](const gui::PenPlacement &placement) {
+            return placement.shapeId != 101 && placement.shapeId != 103;
+        }));
+    const int exposedCurvePlacements = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
             return placement.exposedContourArc > 0.0;
         }));
     const int trianglePlacements = static_cast<int>(std::count_if(
@@ -2832,6 +2943,7 @@ int compareLoggedPen(const QString &path, bool optimizeOnly = false)
               << " unpruned_shapes=" << baseline.placements.size()
               << " pruned_shapes=" << optimized.placements.size()
               << " curve_shapes=" << curvePlacements
+              << " exposed_curve_shapes=" << exposedCurvePlacements
               << " triangles=" << trianglePlacements
               << " eligible_shapes=" << eligiblePlacements
               << " minimum_shape_area="
@@ -3038,6 +3150,7 @@ int main(int argc, char **argv)
     denseValidPolygonTriangulates(&test);
     ellipseLikeCoreUsesOneCircle(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
+    straightBoundaryCurveReplacesTriangleMesh(&test);
     concaveCoreFallbackStaysContained(&test);
     negligibleCorePlacementsAreDiscarded(&test);
     automaticRegionFillRetainsCurvedBoundary(&test);
