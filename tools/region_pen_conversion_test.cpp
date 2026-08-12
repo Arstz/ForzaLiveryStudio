@@ -2615,7 +2615,7 @@ void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
     test->expect(curveMatches, "dense lining Hairs should retain their fitted curves");
 }
 
-int compareLoggedPen(const QString &path)
+int compareLoggedPen(const QString &path, bool optimizeOnly = false)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -2635,22 +2635,72 @@ int compareLoggedPen(const QString &path)
     gui::PenFillRequest request;
     request.boundaryTolerance =
         loggedRequest.value(QStringLiteral("boundaryTolerance")).toDouble(0.1);
-    for (const QJsonValue &value :
-         loggedRequest.value(QStringLiteral("points")).toArray()) {
-        const QJsonObject pointObject = value.toObject();
-        const QJsonArray position =
-            pointObject.value(QStringLiteral("position")).toArray();
-        if (position.size() != 2) {
-            std::cerr << "Pen fill log contains an invalid point\n";
+    const auto readPoints = [](const QJsonArray &values) {
+        QVector<gui::PenPoint> points;
+        for (const QJsonValue &value : values) {
+            const QJsonObject pointObject = value.toObject();
+            const QJsonArray position =
+                pointObject.value(QStringLiteral("position")).toArray();
+            if (position.size() != 2) {
+                return QVector<gui::PenPoint>{};
+            }
+            const gui::PenPointKind kind =
+                pointObject.value(QStringLiteral("kind")).toString()
+                        == QStringLiteral("hard")
+                ? gui::PenPointKind::Hard
+                : gui::PenPointKind::Soft;
+            points.push_back(
+                {{position[0].toDouble(), position[1].toDouble()}, kind});
+        }
+        return points;
+    };
+    const QJsonArray loggedLoops = loggedRequest.value(
+        QStringLiteral("loops")).toArray();
+    for (const QJsonValue &loopValue : loggedLoops) {
+        const QJsonObject loopObject = loopValue.toObject();
+        gui::PenLoop loop;
+        loop.kind = loopObject.value(QStringLiteral("kind")).toString()
+                == QStringLiteral("cutout")
+            ? gui::PenLoopKind::Cutout
+            : gui::PenLoopKind::Outer;
+        loop.points = readPoints(loopObject.value(
+            QStringLiteral("points")).toArray());
+        if (loop.points.isEmpty()) {
+            std::cerr << "Pen fill log contains an invalid loop\n";
             return 2;
         }
-        const gui::PenPointKind kind =
-            pointObject.value(QStringLiteral("kind")).toString()
-                    == QStringLiteral("hard")
-            ? gui::PenPointKind::Hard
-            : gui::PenPointKind::Soft;
-        request.points.push_back(
-            {{position[0].toDouble(), position[1].toDouble()}, kind});
+        request.loops.push_back(std::move(loop));
+    }
+    if (request.loops.isEmpty()) {
+        request.points = readPoints(loggedRequest.value(
+            QStringLiteral("points")).toArray());
+    }
+    if (optimizeOnly) {
+        const gui::PenContour contour = request.loops.isEmpty()
+            ? gui::buildPenContour(request.points)
+            : gui::buildPenContour(request.loops);
+        gui::RegionPenConversionOptions options;
+        options.mergeTolerance = gui::kCurveContourMergeTolerance;
+        options.maximumDeviationMultiplier = 8.0;
+        options.maximumDssim = gui::kCurveContourMaximumDssim;
+        const gui::RegionPenConversionResult optimized =
+            gui::optimizeCurveRegionOutline(contour.path, options);
+        if (!optimized.valid()) {
+            std::cerr << "Logged contour optimization failed: "
+                      << optimized.error.toStdString() << '\n';
+            return 1;
+        }
+        std::cout << "original_points=" << optimized.originalPointCount
+                  << " optimized_points=" << optimized.points.size()
+                  << " hard_points="
+                  << penPointKindCount(optimized.points, gui::PenPointKind::Hard)
+                  << " soft_points="
+                  << penPointKindCount(optimized.points, gui::PenPointKind::Soft)
+                  << " maximum_soft_run=" << maximumSoftRun(optimized.points)
+                  << " removed_hard=" << optimized.removedHardPoints
+                  << " removed_soft=" << optimized.removedSoftPoints
+                  << " dssim=" << optimized.dssim << '\n';
+        return 0;
     }
     gui::ShapeGeometryStore geometry;
     QString geometryError;
@@ -2659,7 +2709,16 @@ int compareLoggedPen(const QString &path)
                   << geometryError.toStdString() << '\n';
         return 2;
     }
-    request.primitives = gui::buildPenPrimitiveCatalog(geometry);
+    QString catalogError;
+    request.primitives = loggedRequest.value(QStringLiteral("strategy"))
+            .toString().startsWith(QStringLiteral("curve-based"))
+        ? gui::buildCurvePrimitiveCatalog(geometry, &catalogError)
+        : gui::buildPenPrimitiveCatalog(geometry);
+    if (request.primitives.isEmpty()) {
+        std::cerr << "Could not load fill catalog: "
+                  << catalogError.toStdString() << '\n';
+        return 2;
+    }
     request.discardNegligiblePlacements = false;
     QElapsedTimer timer;
     timer.start();
@@ -2688,7 +2747,21 @@ int compareLoggedPen(const QString &path)
         });
     const QJsonObject loggedResult =
         root.value(QStringLiteral("result")).toObject();
-    std::cout << "points=" << request.points.size()
+    int loggedPointCount = request.points.size();
+    for (const gui::PenLoop &loop : request.loops) {
+        loggedPointCount += loop.points.size();
+    }
+    const int curvePlacements = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.exposedContourArc > 0.0;
+        }));
+    const int trianglePlacements = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.shapeId == 103;
+        }));
+    std::cout << "points=" << loggedPointCount
               << " logged_strategy="
               << loggedRequest.value(QStringLiteral("strategy"))
                      .toString().toStdString()
@@ -2696,6 +2769,8 @@ int compareLoggedPen(const QString &path)
               << loggedResult.value(QStringLiteral("shapeCount")).toInt()
               << " unpruned_shapes=" << baseline.placements.size()
               << " pruned_shapes=" << optimized.placements.size()
+              << " curve_shapes=" << curvePlacements
+              << " triangles=" << trianglePlacements
               << " eligible_shapes=" << eligiblePlacements
               << " minimum_shape_area="
               << (minimumPlacement != baseline.placements.cend()
@@ -2868,6 +2943,10 @@ int main(int argc, char **argv)
     if (argc == 3
         && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--compare-pen-log")) {
         return compareLoggedPen(QString::fromLocal8Bit(argv[2]));
+    }
+    if (argc == 3
+        && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--optimize-pen-log")) {
+        return compareLoggedPen(QString::fromLocal8Bit(argv[2]), true);
     }
     if (argc == 5 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-region-log")) {
         bool widthOk = false;

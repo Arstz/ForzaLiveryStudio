@@ -126,6 +126,33 @@ QJsonObject guideToJson(const GuideLayer &g) {
                  g.imageTopDown ? QStringLiteral("top_down")
                                 : QStringLiteral("bottom_up"));
     o.insert(QStringLiteral("image"), image);
+    if (g.isClosedPath()) {
+        QJsonArray paths;
+        for (const ClosedPathLoop &loop : g.closedPaths) {
+            QJsonObject path;
+            path.insert(QStringLiteral("kind"),
+                        loop.cutout ? QStringLiteral("cutout")
+                                    : QStringLiteral("outer"));
+            QJsonArray points;
+            for (const ClosedPathPoint &point : loop.points) {
+                QJsonObject item;
+                item.insert(QStringLiteral("x"), point.position.x());
+                item.insert(QStringLiteral("y"), point.position.y());
+                item.insert(QStringLiteral("hard"), point.hard);
+                points.append(item);
+            }
+            path.insert(QStringLiteral("points"), points);
+            paths.append(path);
+        }
+        o.insert(QStringLiteral("closed_paths"), paths);
+        QJsonArray color;
+        for (quint8 channel : g.pathFillColor) {
+            color.append(channel);
+        }
+        o.insert(QStringLiteral("path_fill_color"), color);
+        o.insert(QStringLiteral("has_path_fill_color"), g.hasPathFillColor);
+        o.insert(QStringLiteral("path_fill_mask"), g.pathFillMask);
+    }
     return o;
 }
 
@@ -222,6 +249,33 @@ std::unique_ptr<GuideLayer> guideFromJson(const QJsonObject &o) {
     guide->image = std::move(raster);
     guide->imageTopDown = image.value(QStringLiteral("orientation")).toString()
         == QLatin1String("top_down");
+    for (const QJsonValue &pathValue : o.value(QStringLiteral("closed_paths")).toArray()) {
+        const QJsonObject path = pathValue.toObject();
+        ClosedPathLoop loop;
+        loop.cutout = path.value(QStringLiteral("kind")).toString()
+            == QLatin1String("cutout");
+        for (const QJsonValue &pointValue : path.value(QStringLiteral("points")).toArray()) {
+            const QJsonObject point = pointValue.toObject();
+            loop.points.push_back({
+                QPointF(point.value(QStringLiteral("x")).toDouble(),
+                        point.value(QStringLiteral("y")).toDouble()),
+                point.value(QStringLiteral("hard")).toBool(false),
+            });
+        }
+        if (!loop.points.isEmpty()) {
+            guide->closedPaths.push_back(std::move(loop));
+        }
+    }
+    const QJsonArray pathColor = o.value(QStringLiteral("path_fill_color")).toArray();
+    if (pathColor.size() == 4) {
+        for (int index = 0; index < 4; ++index) {
+            guide->pathFillColor[index] = static_cast<quint8>(
+                std::clamp(pathColor[index].toInt(), 0, 255));
+        }
+    }
+    guide->hasPathFillColor = o.value(
+        QStringLiteral("has_path_fill_color")).toBool(false);
+    guide->pathFillMask = o.value(QStringLiteral("path_fill_mask")).toBool(false);
     return guide;
 }
 

@@ -37,6 +37,22 @@ inline QTransform sceneLocalTransform(const fls::scene::Layer &node) {
     return toQTransform(node.transform.matrix());
 }
 
+inline QRectF closedPathBounds(const fls::scene::GuideLayer &guide) {
+    QRectF bounds;
+    bool havePoint = false;
+    for (const fls::scene::ClosedPathLoop &loop : guide.closedPaths) {
+        for (const fls::scene::ClosedPathPoint &point : loop.points) {
+            if (!havePoint) {
+                bounds = QRectF(point.position, QSizeF());
+                havePoint = true;
+            } else {
+                bounds = bounds.united(QRectF(point.position, QSizeF()));
+            }
+        }
+    }
+    return bounds;
+}
+
 inline QSizeF sceneNodeSize(const fls::scene::Layer &node, const ShapeGeometryStore &geometry) {
     if (node.kind() == fls::scene::LayerKind::Shape) {
         const auto &shape = static_cast<const fls::scene::Shape &>(node);
@@ -47,6 +63,9 @@ inline QSizeF sceneNodeSize(const fls::scene::Layer &node, const ShapeGeometrySt
     }
     if (node.kind() == fls::scene::LayerKind::Guide) {
         const auto &guide = static_cast<const fls::scene::GuideLayer &>(node);
+        if (guide.isClosedPath()) {
+            return closedPathBounds(guide).size();
+        }
         return guide.image != nullptr ? QSizeF(guide.image->width, guide.image->height) : QSizeF();
     }
     return QSizeF();

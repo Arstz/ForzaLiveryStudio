@@ -442,6 +442,7 @@ RegionFillBatchResult computeRegionFills(
                             regionOverlay.imageSize;
                         conversionOptions.fallback.mergeTolerance =
                             kCurveContourMergeTolerance;
+                        conversionOptions.fallback.maximumDeviationMultiplier = 8.0;
                         conversionOptions.fallback.maximumDssim =
                             kCurveContourMaximumDssim;
                         const RegionPenLoopConversionResult conversion =

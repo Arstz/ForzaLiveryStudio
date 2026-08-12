@@ -12,6 +12,16 @@ int main()
     auto guide = std::make_unique<fls::scene::GuideLayer>();
     guide->id = QStringLiteral("guide-1");
     guide->preprocessColorCount = 11;
+    guide->closedPaths = {{
+        {{{-10.0, -5.0}, true},
+         {{0.0, -12.0}, false},
+         {{10.0, -5.0}, true},
+         {{0.0, 12.0}, false}},
+        false,
+    }};
+    guide->pathFillColor = {12, 34, 56, 78};
+    guide->hasPathFillColor = true;
+    guide->pathFillMask = true;
     root.append(std::move(guide));
 
     const QJsonObject encoded = fls::scene::sceneTreeToJson(root);
@@ -28,6 +38,14 @@ int main()
     }
     if (!decodedGuide->imageTopDown) {
         qCritical() << "guide image orientation was not serialized";
+        return 1;
+    }
+    if (decodedGuide->closedPaths != static_cast<const fls::scene::GuideLayer *>(
+            root.children.front().get())->closedPaths
+        || decodedGuide->pathFillColor != std::array<quint8, 4>{12, 34, 56, 78}
+        || !decodedGuide->hasPathFillColor
+        || !decodedGuide->pathFillMask) {
+        qCritical() << "closed path metadata was not serialized";
         return 1;
     }
 

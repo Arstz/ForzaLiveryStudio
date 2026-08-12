@@ -45,19 +45,11 @@ constexpr int kSpanSamples = 64;
 constexpr int kMaximumSpanEvaluations = 2048;
 
 int curveEvaluationBudget(int segmentCount) {
-    if (segmentCount > 384) {
-        return 4;
-    }
-    if (segmentCount > 192) {
-        return 8;
-    }
-    if (segmentCount > 96) {
-        return 16;
-    }
-    if (segmentCount > 48) {
-        return 32;
-    }
-    return kMaximumSpanEvaluations;
+    // A budget smaller than the contour consumed every trial on individual
+    // segments and left no room for the multi-segment matches that actually
+    // reduce the polygonal core. Scale with contour complexity while retaining
+    // the existing hard cap.
+    return std::min(1024, std::max(256, segmentCount * 3));
 }
 
 bool isAllowedPenShape(int shapeId) {
@@ -140,6 +132,15 @@ QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples) {
         result.push_back(segmentPoint(segment, static_cast<double>(i) / samples));
     }
     return result;
+}
+
+double sampledArcLength(const PenBoundarySegment &segment) {
+    const QVector<QPointF> samples = sampleSegment(segment, 16);
+    double length = 0.0;
+    for (int index = 1; index < samples.size(); ++index) {
+        length += QLineF(samples[index - 1], samples[index]).length();
+    }
+    return length;
 }
 
 QPointF segmentDerivative(const PenBoundarySegment &segment, double t) {
@@ -1346,9 +1347,8 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
         return left < right;
     });
     const int maximumEvaluations = curveEvaluationBudget(count);
-    const int maximumSingleEvaluations = count > 96
-        ? maximumEvaluations * 2 / 3
-        : maximumEvaluations;
+    const int maximumSingleEvaluations = std::min(
+        count, std::max(1, maximumEvaluations / 3));
     int evaluations = 0;
     for (const int i : std::as_const(outwardIndices)) {
         if (evaluations >= maximumSingleEvaluations) {
@@ -2263,13 +2263,22 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         const int spanIndex = layout.spanAtStart[i];
         if (spanIndex >= 0) {
             const CurveSpanPlacement &span = curveSpans[spanIndex];
-            result.placements.push_back(span.curve.placement);
+            PenPlacement placement = span.curve.placement;
+            for (int segmentIndex = span.first;
+                 segmentIndex <= span.last;
+                 ++segmentIndex) {
+                placement.exposedContourArc +=
+                    sampledArcLength(segments[segmentIndex]);
+            }
+            result.placements.push_back(std::move(placement));
             coverage = coverage.united(span.curve.path);
             i = span.last + 1;
             continue;
         }
         if (activeInwardCurves[i]) {
-            result.placements.push_back(inwardCurves[i]->curve.placement);
+            PenPlacement placement = inwardCurves[i]->curve.placement;
+            placement.exposedContourArc = sampledArcLength(segments[i]);
+            result.placements.push_back(std::move(placement));
             coverage = coverage.united(inwardCurves[i]->curve.path);
         }
         ++i;

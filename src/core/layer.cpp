@@ -92,6 +92,10 @@ std::unique_ptr<Layer> GuideLayer::clone() const {
     copy->sourcePath = sourcePath;
     copy->preprocessColorCount = preprocessColorCount;
     copy->imageTopDown = imageTopDown;
+    copy->closedPaths = closedPaths;
+    copy->pathFillColor = pathFillColor;
+    copy->hasPathFillColor = hasPathFillColor;
+    copy->pathFillMask = pathFillMask;
     return copy;
 }
 

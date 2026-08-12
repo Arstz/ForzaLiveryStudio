@@ -115,6 +115,24 @@ void MainWindow::setupTreeView() {
     connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
         updateSelectionFromTree();
     });
+    connect(tree_, &QTreeView::doubleClicked, this, [this](const QModelIndex &index) {
+        if (canvas_ == nullptr || state_ == nullptr) {
+            return;
+        }
+        const QString entryId = index.data(LayerTreeModel::EntryIdRole).toString();
+        const auto *guide = dynamic_cast<const fls::scene::GuideLayer *>(
+            state_->sceneNode(entryId));
+        if (guide == nullptr || !guide->isClosedPath()) {
+            return;
+        }
+        if (canvas_->restoreClosedPathLayer(*guide)) {
+            statusBar()->showMessage(
+                QStringLiteral("Loaded closed path into Pen"), 2500);
+        } else {
+            statusBar()->showMessage(
+                QStringLiteral("Could not load the closed path"), 3500);
+        }
+    });
     connect(tree_, &LayerTreeView::leewayGroupRequested,
             this, &MainWindow::toggleContourLeewayGroup);
 

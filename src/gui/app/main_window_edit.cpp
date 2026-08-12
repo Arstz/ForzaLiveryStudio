@@ -1076,11 +1076,14 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         placements.push_back({placement.shapeId, placement.transform});
     }
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
+    const bool curveBased = generatedFillTool_ == QStringLiteral("curve-based");
     const QString groupName = lining
         ? QStringLiteral("Lining")
         : (differential
                ? QStringLiteral("Differential Contour Fill")
-               : QStringLiteral("Analytic Contour Fill"));
+               : (curveBased
+                      ? QStringLiteral("Curve-based Contour Fill")
+                      : QStringLiteral("Analytic Contour Fill")));
     const quint64 historyCommandId =
         insertGeneratedFill(groupName, groupName, placements);
     if (!lining
@@ -1125,6 +1128,53 @@ quint64 MainWindow::insertGeneratedFill(
     group->id = state_->uniqueGroupId();
     const QString groupId = group->id;
     group->name = groupName;
+    const bool includeClosedPath = generatedFillTool_ != QStringLiteral("lining")
+        && pendingGeneratedPenContour_.has_value()
+        && !pendingGeneratedPenContour_->loops.isEmpty();
+    if (includeClosedPath) {
+        const GeneratedPenContourState &source = *pendingGeneratedPenContour_;
+        QRectF bounds;
+        bool havePoint = false;
+        for (const PenLoop &loop : source.loops) {
+            for (const PenPoint &point : loop.points) {
+                if (!havePoint) {
+                    bounds = QRectF(point.position, QSizeF());
+                    havePoint = true;
+                } else {
+                    bounds = bounds.united(QRectF(point.position, QSizeF()));
+                }
+            }
+        }
+        if (havePoint) {
+            const QPointF center = bounds.center();
+            auto path = std::make_unique<fls::scene::GuideLayer>();
+            path->id = state_->uniqueGuideLayerId();
+            path->name = source.fillColor.has_value()
+                ? QStringLiteral("Bucket path")
+                : QStringLiteral("Pen path");
+            path->opacity = 1.0;
+            path->x = center.x();
+            path->y = center.y();
+            path->hasPathFillColor = source.fillColor.has_value();
+            if (source.fillColor.has_value()) {
+                path->pathFillColor = colorBytes(*source.fillColor);
+            }
+            path->pathFillMask = source.fillMask;
+            for (const PenLoop &loop : source.loops) {
+                fls::scene::ClosedPathLoop storedLoop;
+                storedLoop.cutout = loop.kind == PenLoopKind::Cutout;
+                storedLoop.points.reserve(loop.points.size());
+                for (const PenPoint &point : loop.points) {
+                    storedLoop.points.push_back({
+                        point.position - center,
+                        point.kind == PenPointKind::Hard,
+                    });
+                }
+                path->closedPaths.push_back(std::move(storedLoop));
+            }
+            group->append(std::move(path));
+        }
+    }
     QSet<QString> generatedIds;
     generatedIds.reserve(placements.size());
     for (const auto &placement : placements) {
@@ -1141,7 +1191,7 @@ quint64 MainWindow::insertGeneratedFill(
 
     QString insertedEntryId = groupId;
     std::unique_ptr<fls::scene::Layer> insertedNode = std::move(group);
-    if (placements.size() == 1) {
+    if (placements.size() == 1 && !includeClosedPath) {
         auto &insertedGroup = static_cast<fls::scene::Group &>(*insertedNode);
         insertedNode = insertedGroup.takeAt(0);
         insertedEntryId = insertedNode->id;

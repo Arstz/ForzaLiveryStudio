@@ -97,6 +97,7 @@ public:
     void restorePenInteraction(const QVector<PenLoop> &loops,
                                const std::optional<QColor> &fillColor,
                                bool fillMask);
+    bool restoreClosedPathLayer(const fls::scene::GuideLayer &guide);
     void clearRestoredPenInteraction(const QVector<PenLoop> &loops,
                                      const std::optional<QColor> &fillColor,
                                      bool fillMask);

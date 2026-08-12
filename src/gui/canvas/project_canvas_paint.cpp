@@ -8,6 +8,28 @@ namespace gui {
 
 using namespace pc_detail;
 
+namespace {
+
+QPainterPath storedClosedPath(const fls::scene::GuideLayer &guide) {
+    QVector<PenLoop> loops;
+    loops.reserve(guide.closedPaths.size());
+    for (const fls::scene::ClosedPathLoop &storedLoop : guide.closedPaths) {
+        PenLoop loop;
+        loop.kind = storedLoop.cutout ? PenLoopKind::Cutout : PenLoopKind::Outer;
+        loop.points.reserve(storedLoop.points.size());
+        for (const fls::scene::ClosedPathPoint &storedPoint : storedLoop.points) {
+            loop.points.push_back({
+                storedPoint.position,
+                storedPoint.hard ? PenPointKind::Hard : PenPointKind::Soft,
+            });
+        }
+        loops.push_back(std::move(loop));
+    }
+    return buildPenContour(loops).path;
+}
+
+} // namespace
+
 QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     if (pen_.points.isEmpty()) {
         return {};
@@ -853,6 +875,28 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter) {
         const QSizeF size = sceneNodeSize(guide, geometry_);
         const QRectF localRect(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
         if (!(world * camera_.matrix()).mapRect(localRect).intersects(QRectF(rect()).adjusted(-1.0, -1.0, 1.0, 1.0))) {
+            return true;
+        }
+        if (guide.isClosedPath()) {
+            const QPainterPath path = storedClosedPath(guide);
+            if (path.isEmpty()) {
+                return true;
+            }
+            painter.save();
+            painter.setOpacity(std::clamp(guide.opacity, 0.0, 1.0));
+            painter.setTransform(world * camera_.matrix(), false);
+            QPen halo(QColor(18, 20, 24, 210), 3.5, Qt::SolidLine,
+                      Qt::RoundCap, Qt::RoundJoin);
+            halo.setCosmetic(true);
+            painter.setPen(halo);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(path);
+            QPen outline(QColor(83, 164, 255), 1.5, Qt::DashLine,
+                         Qt::RoundCap, Qt::RoundJoin);
+            outline.setCosmetic(true);
+            painter.setPen(outline);
+            painter.drawPath(path);
+            painter.restore();
             return true;
         }
         const QImage image = guideImage(guide);

@@ -793,7 +793,9 @@ QVector<QPointF> fitSoftControls(const QVector<QPointF> &samples,
                                  const QPointF &start,
                                  const QPointF &end,
                                  int controlCount) {
-    if (samples.size() < 3 || controlCount < 1 || controlCount > 8) {
+    constexpr int kMaximumFittedSoftControls = 32;
+    if (samples.size() < 3 || controlCount < 1
+        || controlCount > kMaximumFittedSoftControls) {
         return {};
     }
     QVector<QVector<double>> normal(
@@ -1477,6 +1479,8 @@ RegionPenConversionResult optimizeCurveRegionOutline(
     const RegionPenConversionOptions &options) {
     RegionPenConversionResult result;
     if (!std::isfinite(options.mergeTolerance) || options.mergeTolerance < 0.0
+        || !std::isfinite(options.maximumDeviationMultiplier)
+        || options.maximumDeviationMultiplier < 1.0
         || !std::isfinite(options.maximumDssim) || options.maximumDssim < 0.0
         || options.maximumDssim > 1.0
         || !std::isfinite(options.closureTolerance)
@@ -1529,6 +1533,43 @@ RegionPenConversionResult optimizeCurveRegionOutline(
     const QPolygonF initialPolygon = flattenPenContour(
         initialContour, kCurveBoundarySamplesPerCurve);
     const double referenceArea = signedArea(sourcePolygon);
+    const QPainterPath sourcePath = subpathPainterPath(outer.subpath);
+    QPainterPathStroker legalStroker;
+    legalStroker.setWidth(2.0);
+    legalStroker.setCapStyle(Qt::RoundCap);
+    legalStroker.setJoinStyle(Qt::RoundJoin);
+    const QPainterPath legalPath = sourcePath.united(
+        legalStroker.createStroke(sourcePath));
+    constexpr double kLegalMaskScale = 2.0;
+    const QRectF legalMaskBounds = legalPath.boundingRect().adjusted(
+        -1.0, -1.0, 1.0, 1.0);
+    const QSize legalMaskSize(
+        std::max(1, static_cast<int>(std::ceil(
+            legalMaskBounds.width() * kLegalMaskScale))),
+        std::max(1, static_cast<int>(std::ceil(
+            legalMaskBounds.height() * kLegalMaskScale))));
+    QImage legalMask(legalMaskSize, QImage::Format_Grayscale8);
+    legalMask.fill(0);
+    {
+        QPainter painter(&legalMask);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        QTransform transform;
+        transform.scale(kLegalMaskScale, kLegalMaskScale);
+        transform.translate(-legalMaskBounds.left(), -legalMaskBounds.top());
+        painter.setTransform(transform);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::white);
+        painter.drawPath(legalPath);
+    }
+    const auto isWithinLegalMargin = [&](const QPointF &point) {
+        const int x = static_cast<int>(std::floor(
+            (point.x() - legalMaskBounds.left()) * kLegalMaskScale));
+        const int y = static_cast<int>(std::floor(
+            (point.y() - legalMaskBounds.top()) * kLegalMaskScale));
+        return x >= 0 && y >= 0
+            && x < legalMask.width() && y < legalMask.height()
+            && legalMask.constScanLine(y)[x] != 0;
+    };
     result.baselineDeviation = boundaryDeviation(sourcePolygon, initialPolygon);
     result.maximumDeviation = result.baselineDeviation;
 
@@ -1556,11 +1597,19 @@ RegionPenConversionResult optimizeCurveRegionOutline(
         if (!sameOrientation(referenceArea, signedArea(evaluation.polygon))) {
             return evaluation;
         }
+        if (std::any_of(evaluation.polygon.cbegin(),
+                        evaluation.polygon.cend(),
+                        [&](const QPointF &point) {
+                            return !isWithinLegalMargin(point);
+                        })) {
+            return evaluation;
+        }
         evaluation.deviation = boundaryDeviation(
             sourcePolygon, evaluation.polygon);
         if (!std::isfinite(evaluation.deviation)
             || evaluation.deviation
-                > result.baselineDeviation + options.mergeTolerance
+                > result.baselineDeviation
+                    + options.mergeTolerance * options.maximumDeviationMultiplier
                     + kGeometryEpsilon) {
             return evaluation;
         }
@@ -1804,6 +1853,7 @@ RegionPenConversionResult optimizeCurveRegionOutline(
     }
 
     bool reducedSoftRun = true;
+    bool usedGlobalSoftFit = false;
     while (reducedSoftRun) {
         reducedSoftRun = false;
         int firstHard = 0;
@@ -1840,16 +1890,20 @@ RegionPenConversionResult optimizeCurveRegionOutline(
                 }
                 const QVector<QPointF> samples = softRunSamples(
                     start, controls, end);
-                const QVector<int> controlCounts = wraps
-                    ? QVector<int>{4, 5, 6, 7, 8}
-                    : QVector<int>{1, 2};
-                for (const int controlCount : controlCounts) {
-                    if (controlCount >= softCount) {
-                        continue;
-                    }
+                const int maximumControlCount = std::min(32, softCount - 1);
+                const int firstControlCount = wraps ? 4 : 1;
+                QVector<ConvertiblePoint> fittedCandidate;
+                Evaluation fittedEvaluation;
+                int fittedControlCount = -1;
+                int lowerControlCount = firstControlCount;
+                int upperControlCount = maximumControlCount;
+                while (lowerControlCount <= upperControlCount) {
+                    const int controlCount = lowerControlCount
+                        + (upperControlCount - lowerControlCount) / 2;
                     const QVector<QPointF> fitted = fitSoftControls(
                         samples, start, end, controlCount);
                     if (fitted.size() != controlCount) {
+                        lowerControlCount = controlCount + 1;
                         continue;
                     }
                     QVector<ConvertiblePoint> candidate;
@@ -1867,16 +1921,23 @@ RegionPenConversionResult optimizeCurveRegionOutline(
                     }
                     const Evaluation evaluation = evaluate(candidate);
                     if (!evaluation.valid) {
+                        lowerControlCount = controlCount + 1;
                         continue;
                     }
-                    result.removedSoftPoints += softCount - controlCount;
-                    result.maximumDeviation = evaluation.deviation;
-                    result.dssim = evaluation.dssim;
-                    working = std::move(candidate);
-                    reducedSoftRun = true;
-                    break;
+                    fittedCandidate = std::move(candidate);
+                    fittedEvaluation = evaluation;
+                    fittedControlCount = controlCount;
+                    upperControlCount = controlCount - 1;
                 }
-                if (!reducedSoftRun) {
+                if (fittedControlCount >= 0) {
+                    result.removedSoftPoints += softCount - fittedControlCount;
+                    result.maximumDeviation = fittedEvaluation.deviation;
+                    result.dssim = fittedEvaluation.dssim;
+                    working = std::move(fittedCandidate);
+                    reducedSoftRun = true;
+                    usedGlobalSoftFit = true;
+                }
+                if (!reducedSoftRun && !usedGlobalSoftFit) {
                     QVector<ConvertiblePoint> bestCandidate;
                     Evaluation bestEvaluation;
                     for (int removeIndex = hard + 1;
@@ -1927,6 +1988,12 @@ RegionPenConversionResult optimizeCurveRegionOutline(
             }
             hard = nextHard;
         } while (hard < ordered.size());
+        if (reducedSoftRun && usedGlobalSoftFit) {
+            // The binary search already found the smallest accepted control
+            // count for this smooth run. A second pass only repeats expensive
+            // global fidelity checks against that same lower bound.
+            reducedSoftRun = false;
+        }
     }
 
     QVector<ConvertiblePoint> structured = enforceCurvePointStructure(working);

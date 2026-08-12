@@ -384,7 +384,32 @@ QIcon guideIcon(const fls::scene::GuideLayer &guide,
     QImage composed(kShapePreviewSize, kShapePreviewSize, QImage::Format_ARGB32_Premultiplied);
     QPainter painter(&composed);
     painter.fillRect(composed.rect(), previewBackgroundBrush(theme, background));
-    if (!image.isNull()) {
+    if (guide.isClosedPath()) {
+        const QRectF bounds = closedPathBounds(guide);
+        const double scale = std::min(
+            (kShapePreviewSize - 12.0) / std::max(1.0, bounds.width()),
+            (kShapePreviewSize - 12.0) / std::max(1.0, bounds.height()));
+        QTransform transform;
+        transform.translate(kShapePreviewSize * 0.5,
+                            kShapePreviewSize * 0.5);
+        transform.scale(scale, scale);
+        transform.translate(-bounds.center().x(), -bounds.center().y());
+        QPen pen(QColor(83, 164, 255), 2.0, Qt::DashLine,
+                 Qt::RoundCap, Qt::RoundJoin);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        for (const fls::scene::ClosedPathLoop &loop : guide.closedPaths) {
+            QPolygonF polygon;
+            polygon.reserve(loop.points.size() + 1);
+            for (const fls::scene::ClosedPathPoint &point : loop.points) {
+                polygon.push_back(transform.map(point.position));
+            }
+            if (!polygon.isEmpty()) {
+                polygon.push_back(polygon.front());
+                painter.drawPolyline(polygon);
+            }
+        }
+    } else if (!image.isNull()) {
         const QImage scaled = image.scaled(kShapePreviewSize, kShapePreviewSize,
                                            Qt::KeepAspectRatio, Qt::SmoothTransformation);
         painter.drawImage(QPoint((kShapePreviewSize - scaled.width()) / 2,
@@ -431,6 +456,19 @@ quint64 contentSignature(const fls::scene::Layer &node, QHash<QString, quint64> 
         seed = mixHash(seed, guide.image ? hashString(guide.image->format) : 0);
         seed = mixHash(seed, guide.image ? static_cast<quint64>(qHash(guide.image->encoded)) : 0);
         seed = mixHash(seed, guide.imageTopDown ? 1 : 0);
+        seed = mixHash(seed, guide.pathFillMask ? 1 : 0);
+        seed = mixHash(seed, guide.hasPathFillColor ? 1 : 0);
+        for (quint8 channel : guide.pathFillColor) {
+            seed = mixHash(seed, channel);
+        }
+        for (const fls::scene::ClosedPathLoop &loop : guide.closedPaths) {
+            seed = mixHash(seed, loop.cutout ? 1 : 0);
+            for (const fls::scene::ClosedPathPoint &point : loop.points) {
+                seed = mixHash(seed, hashDouble(point.position.x()));
+                seed = mixHash(seed, hashDouble(point.position.y()));
+                seed = mixHash(seed, point.hard ? 1 : 0);
+            }
+        }
         break;
     }
     case fls::scene::LayerKind::Group: {

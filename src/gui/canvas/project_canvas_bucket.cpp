@@ -233,6 +233,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
     if (curveBased) {
         conversionOptions.fallback.mergeTolerance =
             kCurveContourMergeTolerance;
+        conversionOptions.fallback.maximumDeviationMultiplier = 8.0;
         conversionOptions.fallback.maximumDssim =
             kCurveContourMaximumDssim;
     }

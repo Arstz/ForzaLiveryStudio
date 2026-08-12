@@ -4,6 +4,7 @@
 #include "visual_container.h"
 
 #include <QByteArray>
+#include <QPointF>
 #include <QString>
 #include <QVector>
 
@@ -89,6 +90,20 @@ public:
     void setRasterShape(quint32 id, int width = 256, int height = 256);
 };
 
+struct ClosedPathPoint {
+    QPointF position;
+    bool hard = false;
+
+    bool operator==(const ClosedPathPoint &) const = default;
+};
+
+struct ClosedPathLoop {
+    QVector<ClosedPathPoint> points;
+    bool cutout = false;
+
+    bool operator==(const ClosedPathLoop &) const = default;
+};
+
 class GuideLayer : public Layer {
 public:
     GuideLayer() {
@@ -100,6 +115,12 @@ public:
     QString sourcePath;
     int preprocessColorCount = 0;
     bool imageTopDown = true;
+    QVector<ClosedPathLoop> closedPaths;
+    std::array<quint8, 4> pathFillColor = {255, 255, 255, 255};
+    bool hasPathFillColor = false;
+    bool pathFillMask = false;
+
+    bool isClosedPath() const { return !closedPaths.isEmpty(); }
 
     LayerKind kind() const override { return LayerKind::Guide; }
     std::unique_ptr<Layer> clone() const override;

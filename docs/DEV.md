@@ -190,12 +190,20 @@ exports grouped `C_group` folders and `C_livery` folders.
   fill instead starts from an unoptimized Potrace contour, splits cubic segments at
   inflections, classifies supported sharp junctions as hard points, removes redundant
   hard points from smooth or straight spans, and least-squares fits compact quadratic
-  soft-point runs under boundary-deviation and raster-similarity guards. Curved loops
+  soft-point runs under boundary-deviation and raster-similarity guards. Region contours
+  may use the wider deviation search needed to reproduce human simplification, but every
+  sampled point remains inside a two-times-rasterized one-pixel legal envelope. A bounded
+  binary search finds the minimum accepted control count up to 32 instead of falling back
+  to one-at-a-time removal for long smooth runs. Curved loops
   retain at least two hard anchors and no more than two consecutive soft controls;
   template hard anchors prefer boundary vertices from the source triangle geometry
   when the same guards accept the snap. Its legal
   envelope may extend by one pixel into neighboring coloured regions, but never into
   transparent background, so later layers can conceal the permitted overlap.
+  Successful Pen and Bucket fills also retain the source contour as a visible, non-exported
+  vector construction layer inside the generated fill group. Double-clicking that Layers
+  entry restores its transformed outer/cutout loops, point kinds, fill colour, and mask to
+  the Pen for reuse.
   The log records each
   variant's RDP input/output counts, straight visibility,
   attachment count, expanded-group cost, corridor width, and hierarchy level. Dangerous also tries

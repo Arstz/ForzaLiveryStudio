@@ -68,6 +68,9 @@ inline QRectF flatEntryVisualRect(const fls::scene::Shape &layer, const ShapeGeo
 }
 
 inline QRectF flatEntryRect(const fls::scene::GuideLayer &guide) {
+    if (guide.isClosedPath()) {
+        return closedPathBounds(guide);
+    }
     const QSizeF size = guide.image != nullptr ? QSizeF(guide.image->width, guide.image->height) : QSizeF();
     return sceneLocalRect(size);
 }

@@ -77,6 +77,7 @@ void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers);
 
 struct RegionPenConversionOptions {
     double mergeTolerance = 1.1;
+    double maximumDeviationMultiplier = 1.0;
     double maximumDssim = 0.001;
     int dssimSupersample = 4;
     QSize comparisonImageSize;

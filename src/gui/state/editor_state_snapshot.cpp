@@ -70,6 +70,10 @@ bool nodeEqual(const fls::scene::Layer &a, const fls::scene::Layer &b) {
         if (ga.sourcePath != gb.sourcePath
             || ga.preprocessColorCount != gb.preprocessColorCount
             || ga.imageTopDown != gb.imageTopDown
+            || ga.closedPaths != gb.closedPaths
+            || ga.pathFillColor != gb.pathFillColor
+            || ga.hasPathFillColor != gb.hasPathFillColor
+            || ga.pathFillMask != gb.pathFillMask
             || !rasterContentEqual(ga.image.get(), gb.image.get())) {
             return false;
         }
@@ -142,6 +146,10 @@ bool previewChange(const fls::scene::Layer &a, const fls::scene::Layer &b) {
         const auto &gb = static_cast<const fls::scene::GuideLayer &>(b);
         return ga.preprocessColorCount != gb.preprocessColorCount
             || ga.imageTopDown != gb.imageTopDown
+            || ga.closedPaths != gb.closedPaths
+            || ga.pathFillColor != gb.pathFillColor
+            || ga.hasPathFillColor != gb.hasPathFillColor
+            || ga.pathFillMask != gb.pathFillMask
             || !rasterContentEqual(ga.image.get(), gb.image.get());
     }
     if (a.kind() == fls::scene::LayerKind::Group) {

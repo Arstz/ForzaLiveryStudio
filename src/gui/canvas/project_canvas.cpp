@@ -788,6 +788,42 @@ void ProjectCanvas::restorePenInteraction(
     refreshPathAfterHistory(pen_);
 }
 
+bool ProjectCanvas::restoreClosedPathLayer(
+    const fls::scene::GuideLayer &guide) {
+    if (!guide.isClosedPath()) {
+        return false;
+    }
+    const QTransform localToWorld = sceneWorldTransform(guide);
+    QVector<PenLoop> loops;
+    loops.reserve(guide.closedPaths.size());
+    for (const fls::scene::ClosedPathLoop &storedLoop : guide.closedPaths) {
+        PenLoop loop;
+        loop.kind = storedLoop.cutout ? PenLoopKind::Cutout : PenLoopKind::Outer;
+        loop.points.reserve(storedLoop.points.size());
+        for (const fls::scene::ClosedPathPoint &storedPoint : storedLoop.points) {
+            loop.points.push_back({
+                localToWorld.map(storedPoint.position),
+                storedPoint.hard ? PenPointKind::Hard : PenPointKind::Soft,
+            });
+        }
+        loops.push_back(std::move(loop));
+    }
+    const PenContour contour = buildPenContour(loops);
+    if (!contour.valid()) {
+        return false;
+    }
+    std::optional<QColor> fillColor;
+    if (guide.hasPathFillColor) {
+        fillColor = QColor(guide.pathFillColor[2],
+                           guide.pathFillColor[1],
+                           guide.pathFillColor[0],
+                           guide.pathFillColor[3]);
+    }
+    restorePenInteraction(loops, fillColor, guide.pathFillMask);
+    setTool(QStringLiteral("pen"));
+    return true;
+}
+
 void ProjectCanvas::clearRestoredPenInteraction(
     const QVector<PenLoop> &loops,
     const std::optional<QColor> &fillColor,
