@@ -205,7 +205,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   geometry-ranked template profiles, batch their transforms on the GPU when available, and
   permit at most eight distinct-shape candidates to reach exact path validation. Direct
   Curve fills have a 30-second matching budget and fall back to the safe polygon mesh instead
-  of remaining indefinitely in candidate evaluation. Multi-segment matching covers outward
+  of remaining indefinitely in candidate evaluation. After boundary fitting, Curve fill also
+  packs the polygonal core with curve templates. It proposes both component-aligned fits and
+  fits anchored to triangles from the templates' own Pen silhouettes, ranks them with the GPU
+  area evaluator, and validates the legal envelope exactly on the CPU. Curve candidates may
+  cooperate before mesh placements are retired; a result is committed only when it does not
+  increase total placement count (or reduces it), lowers the triangle count, and loses at most
+  0.1 percent of the baseline core coverage. Multi-segment matching covers outward
   and inward cyclic spans, and
   the status bar reports template, candidate, core-mesh, and cleanup phases. Its legal
   envelope may extend by one pixel into neighboring coloured regions, but never into

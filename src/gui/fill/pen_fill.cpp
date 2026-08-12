@@ -39,6 +39,8 @@ constexpr int kSpanSamples = 64;
 constexpr int kMaximumSpanEvaluations = 2048;
 constexpr int kMaximumCurveProfileShortlist = 16;
 constexpr int kMaximumExactCurveCandidates = 8;
+constexpr int kMaximumInteriorCurvePlacements = 8;
+constexpr int kMaximumExactInteriorCandidates = 24;
 
 int curveEvaluationBudget(int segmentCount) {
     // A budget smaller than the contour consumed every trial on individual
@@ -739,6 +741,7 @@ struct CurveTransformCandidate {
     double approximateBoundaryError =
         std::numeric_limits<double>::max();
     bool hasCoreMiddle = false;
+    int coveredMeshHint = -1;
 };
 
 struct EvaluatedCurveTransform {
@@ -1369,6 +1372,556 @@ std::optional<EvaluatedCurveTransform> evaluateCurveTransforms(
                          evaluated.curve, best->curve)) {
             best = std::move(evaluated);
         }
+    }
+    return best;
+}
+
+struct CurveCoreOptimization {
+    QVector<PenPlacement> placements;
+    QPainterPath coverage;
+};
+
+QVector<PenPlacement> penPlacementsFromMesh(
+    const QVector<PolygonMeshPlacement> &placements,
+    const QVector<PenPrimitive> &primitives,
+    QPainterPath *coverage) {
+    QVector<PenPlacement> result;
+    result.reserve(placements.size());
+    for (const PolygonMeshPlacement &placement : placements) {
+        const PenPrimitive *primitive = primitiveForId(
+            primitives, placement.shapeId);
+        if (primitive == nullptr) {
+            return {};
+        }
+        result.push_back({
+            placement.shapeId,
+            placement.transform,
+            primitive->area * std::abs(placement.transform.determinant()),
+            placement.shapeId == kCircleShapeId,
+        });
+        if (coverage != nullptr) {
+            *coverage = coverage->united(
+                placement.transform.map(primitive->silhouette));
+        }
+    }
+    return result;
+}
+
+double polygonPrincipalAngle(const QPolygonF &polygon) {
+    if (polygon.isEmpty()) {
+        return 0.0;
+    }
+    QPointF mean;
+    for (const QPointF &point : polygon) {
+        mean += point;
+    }
+    mean /= polygon.size();
+    double xx = 0.0;
+    double xy = 0.0;
+    double yy = 0.0;
+    for (const QPointF &point : polygon) {
+        const QPointF centered = point - mean;
+        xx += centered.x() * centered.x();
+        xy += centered.x() * centered.y();
+        yy += centered.y() * centered.y();
+    }
+    return 0.5 * std::atan2(2.0 * xy, xx - yy);
+}
+
+std::optional<QTransform> fitPrimitiveToPolygon(
+    const PenPrimitive &primitive,
+    const QPolygonF &polygon,
+    double angle,
+    double scale) {
+    if (polygon.size() < 3 || primitive.bounds.width() <= kEpsilon
+        || primitive.bounds.height() <= kEpsilon) {
+        return std::nullopt;
+    }
+    const QPointF axisX(std::cos(angle), std::sin(angle));
+    const QPointF axisY(-axisX.y(), axisX.x());
+    double minimumX = std::numeric_limits<double>::max();
+    double maximumX = std::numeric_limits<double>::lowest();
+    double minimumY = std::numeric_limits<double>::max();
+    double maximumY = std::numeric_limits<double>::lowest();
+    for (const QPointF &point : polygon) {
+        const double x = QPointF::dotProduct(point, axisX);
+        const double y = QPointF::dotProduct(point, axisY);
+        minimumX = std::min(minimumX, x);
+        maximumX = std::max(maximumX, x);
+        minimumY = std::min(minimumY, y);
+        maximumY = std::max(maximumY, y);
+    }
+    const double width = (maximumX - minimumX) * scale;
+    const double height = (maximumY - minimumY) * scale;
+    if (width <= kEpsilon || height <= kEpsilon) {
+        return std::nullopt;
+    }
+    const QPointF center = axisX * ((minimumX + maximumX) * 0.5)
+        + axisY * ((minimumY + maximumY) * 0.5);
+    const QPointF targetTopLeft = center
+        - axisX * (width * 0.5) - axisY * (height * 0.5);
+    bool ok = false;
+    const QTransform transform = affineFromTriangles(
+        primitive.bounds.topLeft(), primitive.bounds.topRight(),
+        primitive.bounds.bottomLeft(), targetTopLeft,
+        targetTopLeft + axisX * width,
+        targetTopLeft + axisY * height, &ok);
+    return ok ? std::optional<QTransform>(transform) : std::nullopt;
+}
+
+QVector<QPolygonF> residualComponents(const QPainterPath &residual) {
+    QVector<QPolygonF> polygons = residual.toFillPolygons();
+    for (QPolygonF &polygon : polygons) {
+        while (polygon.size() > 1
+               && QLineF(polygon.front(), polygon.back()).length()
+                   <= kEpsilon) {
+            polygon.removeLast();
+        }
+    }
+    polygons.erase(
+        std::remove_if(polygons.begin(), polygons.end(),
+                       [](const QPolygonF &polygon) {
+                           return polygon.size() < 3
+                               || std::abs(signedArea(polygon)) <= kEpsilon;
+                       }),
+        polygons.end());
+    std::sort(polygons.begin(), polygons.end(),
+              [](const QPolygonF &left, const QPolygonF &right) {
+        return std::abs(signedArea(left)) > std::abs(signedArea(right));
+    });
+    return polygons;
+}
+
+CurveCoreOptimization optimizeCurveCoreWithTemplates(
+    const QVector<PolygonMeshPlacement> &baselineMesh,
+    const PolygonMeshSources &meshSources,
+    const QPainterPath &corePath,
+    const QVector<PenPrimitive> &primitives,
+    const QPainterPath &legalEnvelope,
+    double targetArea,
+    int shapeBudget,
+    cover::GpuAreaEvaluator *gpuEvaluator,
+    const QHash<int, const cover::ShapeMesh *> &gpuMeshes,
+    const std::function<bool()> &cancelled,
+    const std::function<void(int, int)> &progress) {
+    CurveCoreOptimization best;
+    best.placements = penPlacementsFromMesh(
+        baselineMesh, primitives, &best.coverage);
+    if (best.placements.isEmpty() || corePath.isEmpty()
+        || gpuMeshes.isEmpty() || shapeBudget <= 0) {
+        return best;
+    }
+    const CurveCoreOptimization baseline = best;
+    QVector<const PenPrimitive *> interiorPrimitives;
+    for (const PenPrimitive &primitive : primitives) {
+        if (primitive.shapeId != kTriangleShapeId
+            && isCurveShape(primitive)
+            && !primitive.curveSegments.isEmpty()) {
+            interiorPrimitives.push_back(&primitive);
+        }
+    }
+    if (interiorPrimitives.isEmpty()) {
+        return best;
+    }
+
+    struct InteriorTriangleAnchor {
+        const PenPrimitive *primitive = nullptr;
+        std::array<QPointF, 3> points;
+        double area = 0.0;
+    };
+    QVector<InteriorTriangleAnchor> triangleAnchors;
+    for (const PenPrimitive *primitive : std::as_const(interiorPrimitives)) {
+        PolygonMeshRequest primitiveMeshRequest;
+        primitiveMeshRequest.sources = meshSources;
+        primitiveMeshRequest.mergeSquares = false;
+        primitiveMeshRequest.contours.reserve(primitive->contours.size());
+        for (const QPolygonF &contour : primitive->contours) {
+            primitiveMeshRequest.contours.push_back(
+                QVector<QPointF>(contour.cbegin(), contour.cend()));
+        }
+        const PolygonMeshResult primitiveMesh = meshPolygon(
+            primitiveMeshRequest, cancelled);
+        if (primitiveMesh.cancelled || !primitiveMesh.error.isEmpty()) {
+            continue;
+        }
+        QVector<InteriorTriangleAnchor> shapeAnchors;
+        shapeAnchors.reserve(primitiveMesh.placements.size());
+        for (const PolygonMeshPlacement &placement
+             : primitiveMesh.placements) {
+            if (placement.shapeId != kTriangleShapeId) {
+                continue;
+            }
+            InteriorTriangleAnchor anchor;
+            anchor.primitive = primitive;
+            anchor.points = {
+                placement.transform.map(meshSources.triangle[0]),
+                placement.transform.map(meshSources.triangle[1]),
+                placement.transform.map(meshSources.triangle[2])};
+            anchor.area = std::abs(cross(
+                anchor.points[1] - anchor.points[0],
+                anchor.points[2] - anchor.points[0])) * 0.5;
+            if (anchor.area > kEpsilon) {
+                shapeAnchors.push_back(std::move(anchor));
+            }
+        }
+        std::sort(shapeAnchors.begin(), shapeAnchors.end(),
+                  [](const InteriorTriangleAnchor &left,
+                     const InteriorTriangleAnchor &right) {
+            return left.area > right.area;
+        });
+        shapeAnchors.resize(std::min(
+            2, static_cast<int>(shapeAnchors.size())));
+        if (!shapeAnchors.isEmpty()) {
+            triangleAnchors.push_back(
+                shapeAnchors.size() > 1 ? shapeAnchors[1] : shapeAnchors[0]);
+        }
+    }
+
+    QVector<QPainterPath> baselinePaths;
+    QVector<double> baselineAreas;
+    QVector<QRectF> baselineBounds;
+    baselinePaths.reserve(baselineMesh.size());
+    baselineAreas.reserve(baselineMesh.size());
+    baselineBounds.reserve(baselineMesh.size());
+    for (const PolygonMeshPlacement &placement : baselineMesh) {
+        const PenPrimitive *primitive = primitiveForId(
+            primitives, placement.shapeId);
+        if (primitive == nullptr) {
+            return best;
+        }
+        QPainterPath path = placement.transform.map(primitive->silhouette);
+        baselineAreas.push_back(pathArea(path));
+        baselineBounds.push_back(path.boundingRect());
+        baselinePaths.push_back(std::move(path));
+    }
+
+    QVector<bool> active(baselineMesh.size(), true);
+    QVector<PenPlacement> interiorPlacements;
+    QPainterPath interiorCoverage;
+    interiorCoverage.setFillRule(Qt::WindingFill);
+    QVector<bool> bestActive;
+    QVector<PenPlacement> bestInteriorPlacements;
+    int bestPlacementCount = baselineMesh.size();
+    int bestTriangleCount = static_cast<int>(std::count_if(
+        baselineMesh.cbegin(), baselineMesh.cend(),
+        [](const PolygonMeshPlacement &placement) {
+            return placement.shapeId == kTriangleShapeId;
+        }));
+    const int maximumPlacements = std::min(
+        kMaximumInteriorCurvePlacements, shapeBudget);
+    for (int iteration = 0; iteration < maximumPlacements; ++iteration) {
+        if (cancelled && cancelled()) {
+            break;
+        }
+        QVector<int> activeIndices;
+        QPainterPath remainingCoverage;
+        remainingCoverage.setFillRule(Qt::WindingFill);
+        for (int index = 0; index < active.size(); ++index) {
+            if (!active[index]) {
+                continue;
+            }
+            activeIndices.push_back(index);
+            remainingCoverage = remainingCoverage.united(baselinePaths[index]);
+        }
+        if (activeIndices.size() < 2) {
+            break;
+        }
+        const QPainterPath uncoveredCoverage =
+            remainingCoverage.subtracted(interiorCoverage);
+        if (pathArea(uncoveredCoverage)
+            <= std::max(1e-6, targetArea * 1e-4)) {
+            break;
+        }
+
+        QVector<QPolygonF> components = residualComponents(uncoveredCoverage);
+        components.resize(std::min(1, static_cast<int>(components.size())));
+
+        // Whole connected components are useful for broad shapes.  Local
+        // nearest-neighbour clusters add the smaller targets needed to replace
+        // groups of triangles without carving holes and remeshing fragments.
+        const int anchorCount = std::min(
+            2, static_cast<int>(activeIndices.size()));
+        for (int anchorNumber = 0; anchorNumber < anchorCount; ++anchorNumber) {
+            const int anchorPosition = anchorCount == 1
+                ? 0
+                : anchorNumber * (activeIndices.size() - 1)
+                    / (anchorCount - 1);
+            const int anchor = activeIndices[anchorPosition];
+            const QPointF anchorCenter = baselineBounds[anchor].center();
+            QVector<int> neighbours = activeIndices;
+            std::sort(neighbours.begin(), neighbours.end(),
+                      [&](int left, int right) {
+                const QPointF leftOffset = baselineBounds[left].center()
+                    - anchorCenter;
+                const QPointF rightOffset = baselineBounds[right].center()
+                    - anchorCenter;
+                return QPointF::dotProduct(leftOffset, leftOffset)
+                    < QPointF::dotProduct(rightOffset, rightOffset);
+            });
+            for (const int requestedSize : {2, 6}) {
+                const int clusterSize = std::min(
+                    requestedSize, static_cast<int>(neighbours.size()));
+                if (clusterSize < 2) {
+                    continue;
+                }
+                QRectF bounds = baselineBounds[neighbours.front()];
+                for (int index = 1; index < clusterSize; ++index) {
+                    bounds = bounds.united(baselineBounds[neighbours[index]]);
+                }
+                if (bounds.width() <= kEpsilon
+                    || bounds.height() <= kEpsilon) {
+                    continue;
+                }
+                QPolygonF rectangle;
+                rectangle << bounds.topLeft() << bounds.topRight()
+                          << bounds.bottomRight() << bounds.bottomLeft();
+                components.push_back(std::move(rectangle));
+            }
+        }
+
+        QVector<CurveTransformCandidate> candidates;
+        for (const QPolygonF &component : std::as_const(components)) {
+            const double principalAngle = polygonPrincipalAngle(component);
+            for (const double angle : {
+                     principalAngle, principalAngle + std::numbers::pi * 0.5,
+                     0.0}) {
+                for (const double scale : {0.65, 1.0}) {
+                    for (const PenPrimitive *primitive : interiorPrimitives) {
+                        const auto transform = fitPrimitiveToPolygon(
+                            *primitive, component, angle, scale);
+                        if (transform) {
+                            candidates.push_back({primitive, *transform});
+                        }
+                    }
+                }
+            }
+        }
+        if (meshSources.triangle.size() == 3) {
+            for (const int placementIndex : std::as_const(activeIndices)) {
+                if (baselineMesh[placementIndex].shapeId
+                    != kTriangleShapeId) {
+                    continue;
+                }
+                const QTransform &targetTransform =
+                    baselineMesh[placementIndex].transform;
+                const QPointF target0 = targetTransform.map(
+                    meshSources.triangle[0]);
+                const QPointF target1 = targetTransform.map(
+                    meshSources.triangle[1]);
+                const QPointF target2 = targetTransform.map(
+                    meshSources.triangle[2]);
+                for (const InteriorTriangleAnchor &anchor
+                     : std::as_const(triangleAnchors)) {
+                    for (const bool reflected : {false, true}) {
+                        bool ok = false;
+                        const QTransform transform = affineFromTriangles(
+                            anchor.points[0], anchor.points[1],
+                            anchor.points[2], target0,
+                            reflected ? target2 : target1,
+                            reflected ? target1 : target2, &ok);
+                        if (!ok) {
+                            continue;
+                        }
+                        CurveTransformCandidate candidate;
+                        candidate.primitive = anchor.primitive;
+                        candidate.transform = transform;
+                        candidate.coveredMeshHint = placementIndex;
+                        candidates.push_back(std::move(candidate));
+                    }
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            break;
+        }
+        QVector<double> scores(
+            candidates.size(), -std::numeric_limits<double>::infinity());
+        QVector<double> approximateSpill(
+            candidates.size(), std::numeric_limits<double>::infinity());
+        bool gpuRanked = false;
+        if (gpuEvaluator != nullptr && gpuEvaluator->available()) {
+            const cover::Polygons residualPolygons =
+                cover::polygonsFromPainterPath(uncoveredCoverage, 0.025);
+            const cover::Polygons legalPolygons =
+                cover::polygonsFromPainterPath(legalEnvelope, 0.025);
+            if (gpuEvaluator->setSubjects(residualPolygons, legalPolygons)) {
+                QVector<cover::GpuEvaluationRequest> requests;
+                QVector<int> indices;
+                requests.reserve(candidates.size());
+                for (int index = 0; index < candidates.size(); ++index) {
+                    const cover::ShapeMesh *mesh = gpuMeshes.value(
+                        candidates[index].primitive->shapeId, nullptr);
+                    if (mesh == nullptr) {
+                        continue;
+                    }
+                    const QTransform &transform = candidates[index].transform;
+                    requests.push_back({
+                        mesh,
+                        cover::Affine{
+                            transform.m11(), transform.m12(),
+                            transform.m21(), transform.m22(),
+                            transform.dx(), transform.dy(),
+                        },
+                    });
+                    indices.push_back(index);
+                }
+                QVector<cover::AreaGradient> evaluations;
+                if (!requests.isEmpty()
+                    && gpuEvaluator->evaluate(requests, &evaluations)
+                    && evaluations.size() == requests.size()) {
+                    gpuRanked = true;
+                    for (int index = 0; index < evaluations.size(); ++index) {
+                        scores[indices[index]] = evaluations[index].covered
+                            - evaluations[index].spill * 12.0;
+                        approximateSpill[indices[index]] =
+                            evaluations[index].spill;
+                    }
+                }
+            }
+        }
+        for (int index = 0; index < candidates.size(); ++index) {
+            if (!gpuRanked || !std::isfinite(scores[index])) {
+                const QPainterPath path = candidates[index].transform.map(
+                    candidates[index].primitive->silhouette);
+                const QRectF intersection = path.boundingRect().intersected(
+                    uncoveredCoverage.boundingRect());
+                scores[index] = intersection.width() * intersection.height();
+            }
+            if (approximateSpill[index]
+                <= std::max(1e-6, targetArea * 1e-4)) {
+                // Ensure approximately legal candidates are evaluated before
+                // larger candidates whose apparent coverage comes from spill.
+                scores[index] += targetArea * 2.0;
+                if (candidates[index].coveredMeshHint >= 0) {
+                    scores[index] += targetArea * 2.0;
+                }
+            }
+        }
+        QVector<int> order(candidates.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](int left, int right) {
+            return scores[left] > scores[right];
+        });
+        order.resize(std::min(
+            kMaximumExactInteriorCandidates,
+            static_cast<int>(order.size())));
+        int bestIndex = -1;
+        QPainterPath bestPath;
+        QVector<int> bestCovered;
+        int bestCoveredTriangles = -1;
+        double bestGain = 0.0;
+        double bestPlacementArea = 0.0;
+        for (const int index : std::as_const(order)) {
+            if (cancelled && cancelled()) {
+                break;
+            }
+            const QPainterPath path = candidates[index].transform.map(
+                candidates[index].primitive->silhouette);
+            const double area = pathArea(path);
+            const double illegal = pathArea(path.subtracted(legalEnvelope));
+            if (area <= kEpsilon
+                || illegal > std::max(1e-6, targetArea * 1e-5)) {
+                continue;
+            }
+            const double gain = pathArea(path.intersected(uncoveredCoverage));
+            if (gain <= std::max(targetArea * 1e-4, area * 0.05)) {
+                continue;
+            }
+            const QPainterPath combinedCoverage =
+                interiorCoverage.united(path);
+            QVector<int> covered;
+            int coveredTriangles = 0;
+            for (const int placementIndex : std::as_const(activeIndices)) {
+                const double missing = pathArea(
+                    baselinePaths[placementIndex].subtracted(
+                        combinedCoverage));
+                if (missing > std::max(
+                        1e-7, baselineAreas[placementIndex] * 1e-6)) {
+                    continue;
+                }
+                covered.push_back(placementIndex);
+                coveredTriangles += baselineMesh[placementIndex].shapeId
+                    == kTriangleShapeId ? 1 : 0;
+            }
+            const bool better = covered.size() > bestCovered.size()
+                || (covered.size() == bestCovered.size()
+                    && coveredTriangles > bestCoveredTriangles)
+                || (covered.size() == bestCovered.size()
+                    && coveredTriangles == bestCoveredTriangles
+                    && gain > bestGain + kEpsilon)
+                || (covered.size() == bestCovered.size()
+                    && coveredTriangles == bestCoveredTriangles
+                    && std::abs(gain - bestGain) <= kEpsilon
+                    && (bestPlacementArea <= kEpsilon
+                        || area < bestPlacementArea - kEpsilon));
+            if (better) {
+                bestIndex = index;
+                bestPath = path;
+                bestCovered = std::move(covered);
+                bestCoveredTriangles = coveredTriangles;
+                bestGain = gain;
+                bestPlacementArea = area;
+            }
+        }
+        if (bestIndex < 0) {
+            break;
+        }
+        const CurveTransformCandidate &selected = candidates[bestIndex];
+        interiorPlacements.push_back({
+            selected.primitive->shapeId,
+            selected.transform,
+            selected.primitive->area
+                * std::abs(selected.transform.determinant()),
+            selected.primitive->shapeId == kCircleShapeId,
+        });
+        interiorCoverage = interiorCoverage.united(bestPath);
+        for (const int index : std::as_const(bestCovered)) {
+            active[index] = false;
+        }
+        const int activeCount = static_cast<int>(std::count(
+            active.cbegin(), active.cend(), true));
+        const int placementCount = activeCount + interiorPlacements.size();
+        int activeTriangles = 0;
+        for (int index = 0; index < active.size(); ++index) {
+            activeTriangles += active[index]
+                && baselineMesh[index].shapeId == kTriangleShapeId ? 1 : 0;
+        }
+        if (placementCount < bestPlacementCount
+            || (placementCount == bestPlacementCount
+                && activeTriangles < bestTriangleCount)) {
+            bestPlacementCount = placementCount;
+            bestTriangleCount = activeTriangles;
+            bestActive = active;
+            bestInteriorPlacements = interiorPlacements;
+        }
+        if (progress) {
+            progress(iteration + 1, maximumPlacements);
+        }
+    }
+
+    if (bestInteriorPlacements.isEmpty()) {
+        return best;
+    }
+    best.placements = bestInteriorPlacements;
+    best.coverage = QPainterPath();
+    best.coverage.setFillRule(Qt::WindingFill);
+    for (const PenPlacement &placement : std::as_const(bestInteriorPlacements)) {
+        const PenPrimitive *primitive = primitiveForId(
+            primitives, placement.shapeId);
+        best.coverage = best.coverage.united(
+            placement.transform.map(primitive->silhouette));
+    }
+    for (int index = 0; index < baselineMesh.size(); ++index) {
+        if (!bestActive[index]) {
+            continue;
+        }
+        best.placements.push_back(penPlacementsFromMesh(
+            {baselineMesh[index]}, primitives, &best.coverage).front());
+    }
+    const double lostBaselineArea = pathArea(
+        baseline.coverage.subtracted(best.coverage));
+    if (lostBaselineArea > std::max(1e-6, targetArea * 1e-3)) {
+        return baseline;
     }
     return best;
 }
@@ -2516,23 +3069,27 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         }
         const QVector<PolygonMeshPlacement> corePlacements = optimizePolygonMeshWithEllipses(
             mesh.placements, meshSources, mesh.contour, cancelled);
-        for (const PolygonMeshPlacement &placement : corePlacements) {
-            const PenPrimitive *primitive = primitiveForId(primitives, placement.shapeId);
-            if (primitive == nullptr) {
-                result.placements.clear();
-                result.error = QStringLiteral("Pen core selected unavailable Primitive %1")
-                    .arg(placement.shapeId);
-                return result;
-            }
-            result.placements.push_back({
-                placement.shapeId,
-                placement.transform,
-                primitive->area * std::abs(placement.transform.determinant()),
-                placement.shapeId == kCircleShapeId,
-            });
-            coverage = coverage.united(
-                placement.transform.map(primitive->silhouette));
+        const CurveCoreOptimization optimizedCore =
+            optimizeCurveCoreWithTemplates(
+                corePlacements, meshSources, mesh.contour, primitives,
+                legalEnvelope, result.targetArea,
+                result.shapeLimit - result.placements.size(),
+                gpuEvaluator.get(), gpuMeshes, curveCancelled,
+                [&](int completed, int total) {
+                    reportProgress(QStringLiteral("Packing curve core"),
+                                   completed, total,
+                                   result.placements.size() + completed);
+                });
+        if (optimizedCore.placements.isEmpty()) {
+            result.placements.clear();
+            result.error = QStringLiteral(
+                "Pen core selected unavailable Primitive geometry");
+            return result;
         }
+        for (const PenPlacement &placement : optimizedCore.placements) {
+            result.placements.push_back(placement);
+        }
+        coverage = coverage.united(optimizedCore.coverage);
         if (result.placements.size() > result.shapeLimit) {
             result.error = QStringLiteral("Pen fill exceeded its shape limit");
             result.placements.clear();
@@ -3012,20 +3569,25 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.error = QStringLiteral("Pen core ellipse selection timed out");
         return result;
     }
-    for (const PolygonMeshPlacement &placement : corePlacements) {
-        const PenPrimitive *primitive = primitiveForId(primitives, placement.shapeId);
-        if (primitive == nullptr) {
-            result.error = QStringLiteral("Pen core selected unavailable Primitive %1").arg(placement.shapeId);
-            return result;
-        }
-        PenPlacement penPlacement;
-        penPlacement.shapeId = placement.shapeId;
-        penPlacement.transform = placement.transform;
-        penPlacement.area = primitive->area * std::abs(placement.transform.determinant());
-        penPlacement.coreEllipse = placement.shapeId == kCircleShapeId;
-        result.placements.push_back(penPlacement);
-        coverage = coverage.united(placement.transform.map(primitive->silhouette));
+    const CurveCoreOptimization optimizedCore = optimizeCurveCoreWithTemplates(
+        corePlacements, meshSources, mesh.contour, primitives,
+        legalEnvelope, result.targetArea,
+        result.shapeLimit - result.placements.size(),
+        gpuEvaluator.get(), gpuMeshes, curveCancelled,
+        [&](int completed, int total) {
+            reportProgress(QStringLiteral("Packing curve core"),
+                           completed, total,
+                           result.placements.size() + completed);
+        });
+    if (optimizedCore.placements.isEmpty()) {
+        result.error = QStringLiteral(
+            "Pen core selected unavailable Primitive geometry");
+        return result;
     }
+    for (const PenPlacement &placement : optimizedCore.placements) {
+        result.placements.push_back(placement);
+    }
+    coverage = coverage.united(optimizedCore.coverage);
     if (result.placements.size() > result.shapeLimit) {
         result.error = QStringLiteral("Pen fill exceeded its shape limit");
         result.placements.clear();
