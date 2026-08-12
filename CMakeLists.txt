@@ -397,9 +397,6 @@ if(FLS_BUILD_TESTS)
         src/gui/fill
         src/gui/widgets
     )
-    target_compile_definitions(fls_svg_guide_image_tests PRIVATE
-        FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-    )
     target_link_libraries(fls_svg_guide_image_tests PRIVATE
         Qt6::Core
         Qt6::Gui

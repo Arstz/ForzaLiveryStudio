@@ -97,6 +97,7 @@ struct RegionPenConversionResult {
 
 struct RegionPenLoopConversionOptions {
     RegionPenConversionOptions fallback;
+    bool preserveInputCurves = false;
     double simplifyEpsilon = 2.0;
     double minimumCurveBow = 0.75;
     double discardedCutoutAreaCeiling = 0.0;

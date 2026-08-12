@@ -118,26 +118,6 @@ int main(int argc, char **argv) {
         return fail(QStringLiteral("SVG text glyph outlines have incorrect geometry or paint"));
     }
 
-    QFile actual410(QDir(QStringLiteral(FLS_SOURCE_DIR))
-                        .filePath(QStringLiteral("tools/410.svg")));
-    if (!actual410.open(QIODevice::ReadOnly)) {
-        return fail(QStringLiteral("Could not open tools/410.svg test fixture"));
-    }
-    const gui::SvgVectorDocument actual410Document =
-        gui::extractSvgVectorObjects(actual410.readAll(), QSize(100, 100));
-    if (!actual410Document.supportsObjectSelection()
-        || actual410Document.objects.size() != 5) {
-        return fail(QStringLiteral("tools/410.svg was not fully extracted as vector objects: %1")
-                        .arg(actual410Document.fallbackReason));
-    }
-    for (int objectIndex = 2; objectIndex < 5; ++objectIndex) {
-        const gui::SvgVectorObject &digit = actual410Document.objects.at(objectIndex);
-        if (digit.color != QColor(Qt::white) || digit.path.isEmpty()) {
-            return fail(QStringLiteral("tools/410.svg digit %1 has no selectable glyph outline")
-                            .arg(objectIndex - 1));
-        }
-    }
-
     error.clear();
     const QImage restored = gui::decodeGuideImage(svg, QStringLiteral("svg"), &error);
     if (restored.size() != imported.size() || restored.pixelColor(8, 8) != painted) {

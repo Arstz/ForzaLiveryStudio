@@ -1047,6 +1047,11 @@ RegionPenConversionResult regionOutlineToPenPoints(
         result.optimizationSkipped = true;
         return result;
     }
+    if (options.mergeTolerance <= 0.0 && !options.straightenSoftRuns) {
+        result.points = penPoints(working);
+        result.optimizationSkipped = true;
+        return result;
+    }
 
     const QPolygonF baselinePolygon =
         flattenPenContour(baseline, kBoundarySamplesPerCurve);
@@ -1513,19 +1518,37 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
             }
         }
         const Subpath &subpath = candidate.subpath;
-        QVector<PenPoint> points = simplifyClosedPolygonRdpHybridQuadratic(
-            candidate.sampled, options.simplifyEpsilon, options.minimumCurveBow);
-        if (!buildPenContour(points).valid()) {
+        QVector<PenPoint> points;
+        if (options.preserveInputCurves) {
+            RegionPenConversionOptions directOptions = options.fallback;
+            directOptions.mergeTolerance = 0.0;
+            directOptions.adaptiveSearchSteps = 0;
+            directOptions.straightenSoftRuns = false;
             const RegionPenConversionResult conversion = regionOutlineToPenPoints(
-                subpathPainterPath(subpath), options.fallback);
+                subpathPainterPath(subpath), directOptions);
             if (!conversion.valid()) {
                 result.error = conversion.error.isEmpty()
-                    ? QStringLiteral("The traced region boundary is invalid")
+                    ? QStringLiteral("The source vector boundary is invalid")
                     : conversion.error;
                 result.loops.clear();
                 return result;
             }
             points = conversion.points;
+        } else {
+            points = simplifyClosedPolygonRdpHybridQuadratic(
+                candidate.sampled, options.simplifyEpsilon, options.minimumCurveBow);
+            if (!buildPenContour(points).valid()) {
+                const RegionPenConversionResult conversion = regionOutlineToPenPoints(
+                    subpathPainterPath(subpath), options.fallback);
+                if (!conversion.valid()) {
+                    result.error = conversion.error.isEmpty()
+                        ? QStringLiteral("The traced region boundary is invalid")
+                        : conversion.error;
+                    result.loops.clear();
+                    return result;
+                }
+                points = conversion.points;
+            }
         }
         result.loops.push_back({
             std::move(points),

@@ -315,9 +315,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
         outline = bucket_.vectorHit.path;
         sourceSize = QSize(guide->image->width, guide->image->height);
         fillColor = bucket_.vectorHit.color;
-        const double vectorScale = std::max(sourceSize.width(), sourceSize.height());
-        conversionOptions.simplifyEpsilon = std::max(0.01, vectorScale / 2048.0);
-        conversionOptions.minimumCurveBow = conversionOptions.simplifyEpsilon * 0.75;
+        conversionOptions.preserveInputCurves = true;
     } else {
         QImage image;
         QPoint seed;

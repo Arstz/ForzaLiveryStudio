@@ -50,8 +50,7 @@ void svgVectorObjectConvertsDirectlyToPen(TestContext *test)
                  "SVG vector document should support object selection");
     test->expect(hit.valid(), "SVG vector object should hit without rasterization");
     gui::RegionPenLoopConversionOptions options;
-    options.simplifyEpsilon = 0.05;
-    options.minimumCurveBow = 0.0375;
+    options.preserveInputCurves = true;
     const gui::RegionPenLoopConversionResult conversion =
         gui::regionOutlineToPenLoops(hit.path, options);
     test->expect(conversion.valid(), "SVG vector path should convert into Pen loops");
@@ -59,6 +58,17 @@ void svgVectorObjectConvertsDirectlyToPen(TestContext *test)
                  "SVG vector path should preserve its cutout loop");
     test->expect(gui::buildPenContour(conversion.loops).valid(),
                  "SVG-derived Pen contour should be valid");
+    const int hardPointCount = static_cast<int>(std::count_if(
+        conversion.loops.front().points.cbegin(),
+        conversion.loops.front().points.cend(),
+        [](const gui::PenPoint &point) {
+            return point.kind == gui::PenPointKind::Hard;
+        }));
+    const int softPointCount = conversion.loops.front().points.size() - hardPointCount;
+    test->expect(hardPointCount == 4,
+                 "direct SVG conversion should retain only authored cubic endpoints");
+    test->expect(softPointCount == 4,
+                 "direct SVG conversion should use one soft control per authored cubic");
 }
 
 void quadraticTo(QPainterPath *path, const QPointF &control, const QPointF &end)
