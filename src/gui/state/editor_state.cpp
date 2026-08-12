@@ -500,26 +500,39 @@ QTransform EditorState::groupParentWorld(const QString &groupId) const {
     return toQTransform(group->parent()->worldMatrix());
 }
 
-void EditorState::transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT) {
+void EditorState::transformEntryFrames(const QVector<QString> &entryIds, const QTransform &worldT) {
     if (worldT.isIdentity()) {
         return;
     }
-    for (const QString &id : groupIds) {
-        fls::scene::Group *group = groupForId(id);
-        if (group == nullptr) {
+    for (const QString &id : entryIds) {
+        fls::scene::Layer *node = sceneNode(id);
+        if (node == nullptr) {
             continue;
         }
-        const QTransform parentWorld = groupParentWorld(id);
-        const QTransform inner = parentWorld * worldT * parentWorld.inverted();
-        storeFrame(*group, frameOf(*group) * inner);
+        if (node->kind() == fls::scene::LayerKind::Group
+            && static_cast<const fls::scene::Group *>(node)->isLiverySection) {
+            continue;
+        }
+        const fls::scene::Layer *parent = node->parent();
+        const QTransform parentWorld = parent != nullptr ? sceneWorldTransform(*parent) : QTransform();
+        bool invertible = false;
+        const QTransform parentWorldInverse = parentWorld.inverted(&invertible);
+
+        if (invertible) {
+            storeFrame(*node, frameOf(*node) * parentWorld * worldT * parentWorldInverse);
+        }
     }
+}
+
+void EditorState::transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT) {
+    transformEntryFrames(groupIds, worldT);
 }
 
 void EditorState::setGroupFramesFromStart(const QHash<QString, QTransform> &startLocalFrames,
                                           const QTransform &worldT) {
     for (auto it = startLocalFrames.constBegin(); it != startLocalFrames.constEnd(); ++it) {
         fls::scene::Group *group = groupForId(it.key());
-        if (group == nullptr) {
+        if (group == nullptr || group->isLiverySection) {
             continue;
         }
         const QTransform parentWorld = groupParentWorld(it.key());
@@ -540,7 +553,8 @@ QVector<QString> EditorState::fullySelectedTopGroupIds() const {
             if (seen.contains(id)) {
                 continue;
             }
-            if (cache.groups.contains(id)) {
+            const fls::scene::Group *group = cache.groups.value(id, nullptr);
+            if (group != nullptr && !group->isLiverySection) {
                 result.push_back(id);
                 seen.insert(id);
             }
@@ -551,6 +565,9 @@ QVector<QString> EditorState::fullySelectedTopGroupIds() const {
     QSet<QString> fully;
     const ProjectIndexCache &cache = projectIndexCache();
     for (fls::scene::Group *group : cache.groups) {
+        if (group->isLiverySection) {
+            continue;
+        }
         const QVector<QString> leaves = leafLayerIdsForEntry(group->id);
         QSet<QString> guides;
         collectGuideIds(*group, guides);

@@ -96,6 +96,7 @@ public:
 
     QTransform groupLocalFrame(const QString &groupId) const;
     QTransform groupParentWorld(const QString &groupId) const;
+    void transformEntryFrames(const QVector<QString> &entryIds, const QTransform &worldT);
     void transformGroupFrames(const QVector<QString> &groupIds, const QTransform &worldT);
     void setGroupFramesFromStart(const QHash<QString, QTransform> &startLocalFrames,
                                  const QTransform &worldT);
@@ -169,7 +170,7 @@ public:
     QString uniqueGroupId() const;
     bool buildEntryClipboard(const QVector<QString> &entries, ProjectClipboard &out) const;
     void insertClipboardAt(const ProjectClipboard &clipboard,
-                           const QString &parentId, int insertAt, bool haveTarget, int guideInsertAt,
+                           const QString &parentId, int insertAt, bool haveTarget,
                            QSet<QString> *newLayerSelection, QSet<QString> *newGuideLayerSelection,
                            bool renameCopies, QVector<QString> *newRootEntryIds);
     void pruneEmptyGroups();

@@ -896,6 +896,10 @@ QPointF ProjectCanvas::viewCenterWorld() {
                                  kRulerExtent + (height() - kRulerExtent) * 0.5));
 }
 
+QRectF ProjectCanvas::selectionWorldBounds() const {
+    return cachedSelectionWorldBounds();
+}
+
 QRectF ProjectCanvas::projectBounds() const {
     BoundsAccumulator acc;
     forEachSceneShape([&](const fls::scene::Shape &shape, const QTransform &world, int) {

@@ -1356,13 +1356,25 @@ void MainWindow::pasteClipboard() {
         return;
     }
 
+    const QPointF pasteCenter = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
     state_->beginProjectEdit();
     QSet<QString> newLayerSelection;
     QSet<QString> newGuideSelection;
-    state_->insertClipboardAboveSelection(pasteBuffer, selectedEntryIds(), &newLayerSelection, &newGuideSelection);
+    QVector<QString> insertedRootIds;
+    state_->insertClipboardAboveSelection(
+        pasteBuffer, selectedEntryIds(), &newLayerSelection, &newGuideSelection, true, &insertedRootIds);
     state_->selectedLayerIds_ = newLayerSelection;
     state_->selectedGuideLayerIds_ = newGuideSelection;
     state_->selectedEntryIds_.clear();
+    if (canvas_ != nullptr) {
+        canvas_->invalidateSelectionCache();
+        const QRectF pastedBounds = canvas_->selectionWorldBounds();
+        if (pastedBounds.isValid() && !pastedBounds.isEmpty()) {
+            const QPointF delta = pasteCenter - pastedBounds.center();
+            state_->transformEntryFrames(
+                insertedRootIds, QTransform::fromTranslate(delta.x(), delta.y()));
+        }
+    }
     state_->commitProjectEdit();
     state_->noteProjectStructureChanged();
     if (strippedLogos > 0) {

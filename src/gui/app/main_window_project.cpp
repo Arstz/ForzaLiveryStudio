@@ -239,7 +239,7 @@ void MainWindow::setActiveSection(const QString &sectionGroupId) {
 
     treeModel_->setProjectSection(&state_->project_, sectionGroupId);
 
-    state_->selectedLayerIds_.clear();
+    state_->clearSelection();
     if (canvas_ != nullptr) {
         canvas_->refitView();
         canvas_->invalidateSelectionCache();

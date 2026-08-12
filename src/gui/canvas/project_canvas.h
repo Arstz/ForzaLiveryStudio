@@ -53,6 +53,7 @@ public:
     void refitView();
     bool centerViewOnSelection();
     QPointF viewCenterWorld();
+    QRectF selectionWorldBounds() const;
     void setCanvasColor(const QColor &color);
     QColor canvasColor() const;
     void setTransformRelativeMode(bool relative);

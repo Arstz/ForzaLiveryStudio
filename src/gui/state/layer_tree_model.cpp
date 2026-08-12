@@ -622,6 +622,7 @@ void LayerTreeModel::clearSectionCache() {
         }
     }
     sectionRowsCache_.clear();
+    previewSignatureCache_.clear();
 }
 
 void LayerTreeModel::cacheDisplayedSectionRows() {

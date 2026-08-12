@@ -62,13 +62,29 @@ bool EditorState::buildEntryClipboard(const QVector<QString> &entries, ProjectCl
         return a < b;
     });
     ProjectClipboard copied;
-    copied.rootIds = ordered;
     for (const QString &entryId : ordered) {
         fls::scene::Layer *node = cache.nodes.value(entryId, nullptr);
         if (node == nullptr || entryHasLockedLayer(entryId) || node->locked) {
             return false;
         }
+        if (node->kind() == fls::scene::LayerKind::Group) {
+            const auto &group = static_cast<const fls::scene::Group &>(*node);
+            if (group.isLiverySection) {
+                for (const auto &child : group.children) {
+                    if (entryHasLockedLayer(child->id) || child->locked) {
+                        return false;
+                    }
+                    copied.rootIds.push_back(child->id);
+                    copied.nodes.push_back(child->clone());
+                }
+                continue;
+            }
+        }
+        copied.rootIds.push_back(entryId);
         copied.nodes.push_back(node->clone());
+    }
+    if (copied.nodes.empty()) {
+        return false;
     }
     out = std::move(copied);
     return true;
@@ -126,7 +142,7 @@ bool EditorState::duplicateEntriesInPlace(const QVector<QString> &entryIds,
         batch.clipboard.nodes.push_back(std::move(copied.nodes[static_cast<size_t>(i)]));
     }
     for (const InsertionBatch &batch : batches) {
-        insertClipboardAt(batch.clipboard, batch.parentId, batch.insertAt, true, batch.insertAt,
+        insertClipboardAt(batch.clipboard, batch.parentId, batch.insertAt, true,
                           newLayerSelection, newGuideLayerSelection, false, nullptr);
     }
     return true;
@@ -148,7 +164,7 @@ void EditorState::removeEntries(const QVector<QString> &entryIds) {
 }
 
 void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
-                                    const QString &parentId, int insertAt, bool haveTarget, int guideInsertAt,
+                                    const QString &parentId, int insertAt, bool haveTarget,
                                     QSet<QString> *newLayerSelection, QSet<QString> *newGuideLayerSelection,
                                     bool renameCopies, QVector<QString> *newRootEntryIds) {
     if (!hasProject_) {
@@ -202,8 +218,6 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         insertAt = static_cast<int>(target->children.size());
     }
     insertAt = std::clamp(insertAt, 0, static_cast<int>(target->children.size()));
-    int insertGuideAt = guideInsertAt < 0 ? static_cast<int>(project_.root->children.size())
-                                          : std::clamp(guideInsertAt, 0, static_cast<int>(project_.root->children.size()));
 
     for (const auto &root : clipboard.nodes) {
         if (!root) {
@@ -217,6 +231,8 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
             }
             if (entry.kind() == fls::scene::LayerKind::Group) {
                 auto &group = static_cast<fls::scene::Group &>(entry);
+                group.isLiverySection = false;
+                group.liverySectionSlot = -1;
                 group.sourceParentId.clear();
                 group.sourcePreviousSiblingId.clear();
                 group.sourceChildren.clear();
@@ -234,11 +250,7 @@ void EditorState::insertClipboardAt(const ProjectClipboard &clipboard,
         if (newGuideLayerSelection != nullptr) {
             *newGuideLayerSelection += insertedGuides;
         }
-        if (node->kind() == fls::scene::LayerKind::Guide && target != project_.root.get()) {
-            project_.root->insert(insertGuideAt++, std::move(node));
-        } else {
-            target->insert(insertAt++, std::move(node));
-        }
+        target->insert(insertAt++, std::move(node));
     }
     invalidateProjectIndexCache();
 }
@@ -250,14 +262,7 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                                                 bool renameCopies,
                                                 QVector<QString> *newRootEntryIds) {
     const EntryInsertionPoint insertionPoint = insertionPointAboveSelection(selectedEntries);
-    const ProjectIndexCache &cache = projectIndexCache();
-    int guideInsertAt = -1;
-    for (const QString &entryId : insertionPoint.entries) {
-        if (cache.guides.contains(entryId)) {
-            guideInsertAt = std::max(guideInsertAt, cache.orderByChild.value(entryId, -1) + 1);
-        }
-    }
-    insertClipboardAt(clipboard, insertionPoint.parentId, insertionPoint.row, insertionPoint.hasTarget, guideInsertAt,
+    insertClipboardAt(clipboard, insertionPoint.parentId, insertionPoint.row, insertionPoint.hasTarget,
                       newLayerSelection, newGuideLayerSelection, renameCopies, newRootEntryIds);
 }
 

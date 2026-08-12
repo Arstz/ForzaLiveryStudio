@@ -947,7 +947,6 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         }
     }
 
-    bool drew = false;
     for (int i = 0; i < projects.size(); ++i) {
         const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
         if (!clip.isEmpty()) {
@@ -965,12 +964,12 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         } else {
             functions->glDisable(GL_SCISSOR_TEST);
         }
-        drew = drawProjectLayers(functions, projects[i], geometry, worldToScreen, size) || drew;
+        drawProjectLayers(functions, projects[i], geometry, worldToScreen, size);
     }
 
     functions->glDisable(GL_SCISSOR_TEST);
     sceneFbo_->release();
-    return (preserveExisting || drew) ? sceneFbo_->texture() : 0;
+    return sceneFbo_->texture();
 }
 
 void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size) {
