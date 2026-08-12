@@ -216,9 +216,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   covered mesh cells directly or subtract accepted broad coverage and remesh the remaining
   components. Integer polygon unions provide the authoritative coverage and legal-envelope
   checks for the final plan.
-  A result is committed only when it reduces total placement count, or retains that count
-  while lowering the triangle count, and loses at most 0.1 percent of the baseline core
-  coverage. Multi-segment matching covers outward
+  A result is committed only when it reduces total placement count. Its exact union may
+  trade at most one percent of the target area from the baseline core coverage for that
+  reduction; equal-count substitutions are rejected. Multi-segment matching covers outward
   and inward cyclic spans, and
   the status bar reports template, candidate, core-mesh, and cleanup phases. Its legal
   envelope may extend by one pixel into neighboring coloured regions, but never into

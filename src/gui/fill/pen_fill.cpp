@@ -40,12 +40,13 @@ constexpr int kMaximumSpanEvaluations = 2048;
 constexpr int kMaximumCurveProfileShortlist = 32;
 constexpr int kMaximumExactCurveAttempts = 12;
 constexpr int kMaximumValidCurveCandidates = 4;
-constexpr int kMaximumInteriorCurvePlacements = 24;
+constexpr int kMaximumInteriorCurvePlacements = 36;
 constexpr int kMaximumExactInteriorCandidates = 48;
 constexpr int kMaximumExactInteriorCpuCandidates = 96;
 constexpr int kMaximumStraightProfilesPerPrimitive = 1;
 constexpr int kMaximumStraightTargetEdges = 8;
 constexpr int kMaximumInteriorTriangleTargets = 12;
+constexpr double kMaximumCoreReplacementLossRatio = 0.01;
 
 int curveEvaluationBudget(int segmentCount) {
     // A budget smaller than the contour consumed every trial on individual
@@ -764,6 +765,7 @@ struct CurveTransformCandidate {
         std::numeric_limits<double>::max();
     bool hasCoreMiddle = false;
     int coveredMeshHint = -1;
+    int targetGroup = -1;
 };
 
 struct EvaluatedCurveTransform {
@@ -1841,8 +1843,8 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
     QHash<int, QVector<ArcProfile>> interiorProfiles;
     for (const PenPrimitive &primitive : primitives) {
         if (primitive.shapeId == kSquareShapeId
-            || (primitive.shapeId != kTriangleShapeId
-                && isCurveShape(primitive)
+            || primitive.shapeId == kTriangleShapeId
+            || (isCurveShape(primitive)
                 && !primitive.curveSegments.isEmpty())) {
             interiorPrimitives.push_back(&primitive);
             interiorProfiles.insert(
@@ -1934,13 +1936,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
     interiorCoverage.setFillRule(Qt::WindingFill);
     cover::Polygons interiorCoveragePolygons;
     int bestPlacementCount = best.placements.size();
-    int bestTriangleCount = static_cast<int>(std::count_if(
-        baselineMesh.cbegin(), baselineMesh.cend(),
-        [](const PolygonMeshPlacement &placement) {
-            return placement.shapeId == kTriangleShapeId;
-        }));
-    const auto considerPlan = [&](CurveCoreOptimization plan,
-                                  int triangleCount) {
+    const auto considerPlan = [&](CurveCoreOptimization plan) {
         const int placementCount = plan.placements.size();
         const cover::Polygons planPolygons =
             cover::polygonsFromPainterPath(plan.coverage, 0.025);
@@ -1951,17 +1947,15 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
             cover::painterPathFromPolygons(cover::differencePolygons(
                 planPolygons, legalEnvelopePolygons)));
         const bool complete = lostBaselineArea
-                <= std::max(1e-6, targetArea * 1e-3)
+                <= std::max(1e-6,
+                            targetArea * kMaximumCoreReplacementLossRatio)
             && illegalArea
                 <= std::max(1e-6, targetArea * 1e-5);
         if (!complete || placementCount > shapeBudget
-            || (placementCount > bestPlacementCount)
-            || (placementCount == bestPlacementCount
-                && triangleCount >= bestTriangleCount)) {
+            || placementCount >= bestPlacementCount) {
             return;
         }
         bestPlacementCount = placementCount;
-        bestTriangleCount = triangleCount;
         best = std::move(plan);
     };
     const int maximumPlacements = std::min(
@@ -1971,20 +1965,17 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
             break;
         }
         QVector<int> activeIndices;
-        QPainterPath remainingCoverage;
-        remainingCoverage.setFillRule(Qt::WindingFill);
         for (int index = 0; index < active.size(); ++index) {
             if (!active[index]) {
                 continue;
             }
             activeIndices.push_back(index);
-            remainingCoverage = remainingCoverage.united(baselinePaths[index]);
         }
-        if (activeIndices.size() < 2) {
+        if (activeIndices.isEmpty()) {
             break;
         }
         const QPainterPath uncoveredCoverage =
-            remainingCoverage.subtracted(interiorCoverage);
+            corePath.subtracted(interiorCoverage);
         if (pathArea(uncoveredCoverage)
             <= std::max(1e-6, targetArea * 1e-4)) {
             break;
@@ -2016,7 +2007,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                 return QPointF::dotProduct(leftOffset, leftOffset)
                     < QPointF::dotProduct(rightOffset, rightOffset);
             });
-            for (const int requestedSize : {2, 6}) {
+            for (const int requestedSize : {2, 4, 6}) {
                 const int clusterSize = std::min(
                     requestedSize, static_cast<int>(neighbours.size()));
                 if (clusterSize < 2) {
@@ -2050,7 +2041,11 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                         const auto transform = fitPrimitiveToPolygon(
                             *primitive, component, angle, scale);
                         if (transform) {
-                            candidates.push_back({primitive, *transform});
+                            CurveTransformCandidate candidate;
+                            candidate.primitive = primitive;
+                            candidate.transform = *transform;
+                            candidate.targetGroup = componentIndex;
+                            candidates.push_back(std::move(candidate));
                         }
                     }
                 }
@@ -2085,7 +2080,11 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                          : straightBoundaryTransforms(
                                profiles.value(), start, end,
                                uncoveredCoverage)) {
-                        candidates.push_back({primitive, transform});
+                        CurveTransformCandidate candidate;
+                        candidate.primitive = primitive;
+                        candidate.transform = transform;
+                        candidate.targetGroup = componentIndex;
+                        candidates.push_back(std::move(candidate));
                     }
                 }
             }
@@ -2209,6 +2208,19 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
             : kMaximumExactInteriorCpuCandidates;
         QVector<int> exactOrder;
         exactOrder.reserve(exactCandidateLimit);
+        QHash<int, int> shortlistedTargetCounts;
+        for (const int index : std::as_const(order)) {
+            const int targetGroup = candidates[index].targetGroup;
+            if (targetGroup < 0
+                || shortlistedTargetCounts.value(targetGroup) >= 2) {
+                continue;
+            }
+            ++shortlistedTargetCounts[targetGroup];
+            exactOrder.push_back(index);
+            if (exactOrder.size() >= exactCandidateLimit) {
+                break;
+            }
+        }
         QSet<int> shortlistedShapes;
         for (const int index : std::as_const(order)) {
             const int shapeId = candidates[index].primitive->shapeId;
@@ -2233,6 +2245,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         QPainterPath bestPath;
         QVector<int> bestCovered;
         int bestCoveredTriangles = -1;
+        int bestRetirableCount = -1;
         double bestGain = 0.0;
         double bestPlacementArea = 0.0;
         for (const int index : std::as_const(exactOrder)) {
@@ -2263,12 +2276,15 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                 continue;
             }
             QVector<int> covered;
+            QVector<double> retirementCosts;
+            retirementCosts.reserve(activeIndices.size());
             int coveredTriangles = 0;
             for (const int placementIndex : std::as_const(activeIndices)) {
                 const double missing = cover::polygonSetArea(
                     cover::differencePolygons(
                         baselinePathPolygons[placementIndex],
                         combinedCoveragePolygons));
+                retirementCosts.push_back(missing);
                 if (missing > std::max(
                         1e-6, baselineAreas[placementIndex] * 1e-3)) {
                     continue;
@@ -2277,15 +2293,32 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                 coveredTriangles += baselineMesh[placementIndex].shapeId
                     == kTriangleShapeId ? 1 : 0;
             }
-            const bool better = covered.size() > bestCovered.size()
-                || (covered.size() == bestCovered.size()
+            std::sort(retirementCosts.begin(), retirementCosts.end());
+            const double retirementLossLimit = std::max(
+                1e-6, targetArea * kMaximumCoreReplacementLossRatio);
+            double retirementLoss = 0.0;
+            int retirableCount = 0;
+            for (const double cost : std::as_const(retirementCosts)) {
+                if (retirementLoss + cost > retirementLossLimit) {
+                    break;
+                }
+                retirementLoss += cost;
+                ++retirableCount;
+            }
+            const bool better = gain > bestGain + kEpsilon
+                || (std::abs(gain - bestGain) <= kEpsilon
+                    && retirableCount > bestRetirableCount)
+                || (std::abs(gain - bestGain) <= kEpsilon
+                    && retirableCount == bestRetirableCount
+                    && covered.size() > bestCovered.size())
+                || (std::abs(gain - bestGain) <= kEpsilon
+                    && retirableCount == bestRetirableCount
+                    && covered.size() == bestCovered.size()
                     && coveredTriangles > bestCoveredTriangles)
-                || (covered.size() == bestCovered.size()
+                || (std::abs(gain - bestGain) <= kEpsilon
+                    && retirableCount == bestRetirableCount
+                    && covered.size() == bestCovered.size()
                     && coveredTriangles == bestCoveredTriangles
-                    && gain > bestGain + kEpsilon)
-                || (covered.size() == bestCovered.size()
-                    && coveredTriangles == bestCoveredTriangles
-                    && std::abs(gain - bestGain) <= kEpsilon
                     && (bestPlacementArea <= kEpsilon
                         || area < bestPlacementArea - kEpsilon));
             if (better) {
@@ -2293,6 +2326,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                 bestPath = path;
                 bestCovered = std::move(covered);
                 bestCoveredTriangles = coveredTriangles;
+                bestRetirableCount = retirableCount;
                 bestGain = gain;
                 bestPlacementArea = area;
             }
@@ -2320,17 +2354,53 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         CurveCoreOptimization retiredPlan;
         retiredPlan.coverage.setFillRule(Qt::WindingFill);
         cover::Polygons retiredPolygons;
-        int retiredTriangleCount = 0;
+        struct RetirementCandidate {
+            int index = -1;
+            double missingArea = 0.0;
+        };
+        QVector<RetirementCandidate> retirementCandidates;
+        retirementCandidates.reserve(baselineMesh.size());
         for (int index = 0; index < baselineMesh.size(); ++index) {
-            if (!active[index]) {
+            retirementCandidates.push_back({
+                index,
+                cover::polygonSetArea(cover::differencePolygons(
+                    baselinePathPolygons[index],
+                    interiorCoveragePolygons)),
+            });
+        }
+        std::sort(retirementCandidates.begin(), retirementCandidates.end(),
+                  [&](const RetirementCandidate &left,
+                      const RetirementCandidate &right) {
+            if (std::abs(left.missingArea - right.missingArea) > kEpsilon) {
+                return left.missingArea < right.missingArea;
+            }
+            return baselineMesh[left.index].shapeId == kTriangleShapeId
+                && baselineMesh[right.index].shapeId != kTriangleShapeId;
+        });
+        QSet<int> retiredIndices;
+        const double retirementLossLimit = std::max(
+            1e-6, targetArea * kMaximumCoreReplacementLossRatio);
+        double retirementLoss = 0.0;
+        for (const RetirementCandidate &candidate
+             : std::as_const(retirementCandidates)) {
+            if (retirementLoss + candidate.missingArea
+                > retirementLossLimit) {
+                break;
+            }
+            retirementLoss += candidate.missingArea;
+            retiredIndices.insert(candidate.index);
+        }
+        for (int index = 0; index < active.size(); ++index) {
+            active[index] = !retiredIndices.contains(index);
+        }
+        for (int index = 0; index < baselineMesh.size(); ++index) {
+            if (retiredIndices.contains(index)) {
                 continue;
             }
             retiredPlan.placements += penPlacementsFromMesh(
                 {baselineMesh[index]}, primitives, nullptr);
             retiredPolygons += cover::polygonsFromPainterPath(
                 baselinePaths[index], 0.025);
-            retiredTriangleCount += baselineMesh[index].shapeId
-                == kTriangleShapeId ? 1 : 0;
         }
         for (int index = 0; index < interiorPlacements.size(); ++index) {
             retiredPlan.placements.push_back(interiorPlacements[index]);
@@ -2339,7 +2409,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
         }
         retiredPlan.coverage = cover::painterPathFromPolygons(
             cover::unionPolygons(retiredPolygons));
-        considerPlan(std::move(retiredPlan), retiredTriangleCount);
+        considerPlan(std::move(retiredPlan));
 
         const QPainterPath residual = corePath.subtracted(interiorCoverage);
         PolygonMeshResult residualMesh;
@@ -2363,13 +2433,7 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
                 plan.placements = interiorPlacements;
                 plan.placements += residualPlacements;
                 plan.coverage = interiorCoverage.united(residualCoverage);
-                const int triangleCount = static_cast<int>(std::count_if(
-                    residualMesh.placements.cbegin(),
-                    residualMesh.placements.cend(),
-                    [](const PolygonMeshPlacement &placement) {
-                        return placement.shapeId == kTriangleShapeId;
-                    }));
-                considerPlan(std::move(plan), triangleCount);
+                considerPlan(std::move(plan));
             }
         }
         if (progress) {
@@ -3518,7 +3582,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
 
         PolygonMeshRequest meshRequest;
         meshRequest.sources = meshSources;
-        meshRequest.mergeSquares = false;
+        meshRequest.mergeSquares = true;
         meshRequest.contours = std::move(coreContours);
         reportProgress(QStringLiteral("Meshing contour core"),
                        0, meshRequest.contours.size(),
