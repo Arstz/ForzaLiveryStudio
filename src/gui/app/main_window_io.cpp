@@ -553,7 +553,7 @@ void MainWindow::preprocessSelectedGuide() {
                         guide->image->width * 4,
                         QImage::Format_ARGB32_Premultiplied).copy();
     } else if (!guide->image->encoded.isEmpty()) {
-        source.loadFromData(guide->image->encoded, guide->image->format.toLatin1().constData());
+        source = decodeGuideImage(guide->image->encoded, guide->image->format);
         source = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     }
     if (!source.isNull() && !guide->imageTopDown) {

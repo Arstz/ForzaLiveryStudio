@@ -26,7 +26,7 @@ if(FLS_ENABLE_CUDA)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Svg)
 find_package(ZLIB REQUIRED)
 qt_standard_project_setup()
 
@@ -213,6 +213,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/car_unwrap_overlay.h
     src/gui/fill/bucket_fill.cpp
     src/gui/fill/bucket_fill.h
+    src/gui/fill/svg_vector_objects.cpp
+    src/gui/fill/svg_vector_objects.h
     src/gui/fill/differential_cover.cpp
     src/gui/fill/differential_cover.h
     src/gui/fill/differential_cover_candidates.cpp
@@ -333,6 +335,7 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::Widgets
         Qt6::OpenGL
         Qt6::OpenGLWidgets
+        Qt6::Svg
 )
 
 target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
@@ -383,6 +386,30 @@ if(FLS_BUILD_TESTS)
     )
     add_test(NAME guide_preprocess_metadata COMMAND fls_guide_preprocess_metadata_tests)
 
+    add_executable(fls_svg_guide_image_tests
+        tools/svg_guide_image_test.cpp
+        src/gui/fill/svg_vector_objects.cpp
+        src/gui/fill/svg_vector_objects.h
+        src/gui/widgets/image_io.cpp
+        src/gui/widgets/image_io.h
+    )
+    target_include_directories(fls_svg_guide_image_tests PRIVATE
+        src/gui/fill
+        src/gui/widgets
+    )
+    target_compile_definitions(fls_svg_guide_image_tests PRIVATE
+        FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(fls_svg_guide_image_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Svg
+    )
+    if(WIN32)
+        target_link_libraries(fls_svg_guide_image_tests PRIVATE windowscodecs ole32)
+    endif()
+    add_test(NAME svg_guide_image COMMAND fls_svg_guide_image_tests)
+
     add_executable(fls_image_preprocessor_tests
         tools/image_preprocessor_test.cpp
         src/gui/widgets/image_preprocessor.cpp
@@ -406,6 +433,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/region_fill.cpp
         src/gui/fill/region_fill_batch.cpp
         src/gui/fill/region_layer_plan.cpp
+        src/gui/fill/svg_vector_objects.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_region_pen_conversion_tests PRIVATE
@@ -416,6 +444,7 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_region_pen_conversion_tests PRIVATE
         Qt6::Core
         Qt6::Gui
+        Qt6::Svg
         ZLIB::ZLIB
         potrace
     )

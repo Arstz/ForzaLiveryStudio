@@ -2,6 +2,7 @@
 
 #include <QtCore>
 #include <QtGui>
+#include <QtSvg/QSvgRenderer>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -13,6 +14,55 @@
 
 namespace gui {
 namespace {
+
+QImage renderSvg(const QByteArray &bytes, QString *error) {
+    QSvgRenderer renderer(bytes);
+    if (!renderer.isValid()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Could not decode SVG image");
+        }
+        return {};
+    }
+
+    QSize size = renderer.defaultSize();
+    if (size.isEmpty()) {
+        const QSizeF viewBoxSize = renderer.viewBoxF().size();
+        size = viewBoxSize.toSize();
+    }
+    if (size.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("SVG image has no usable size or viewBox");
+        }
+        return {};
+    }
+
+    // Match the memory guard used implicitly by QImage's signed dimensions and
+    // reject malicious or accidental documents before allocating their canvas.
+    constexpr qint64 kMaxSvgPixels = 64LL * 1024LL * 1024LL;
+    if (static_cast<qint64>(size.width()) * size.height() > kMaxSvgPixels) {
+        if (error != nullptr) {
+            *error = QStringLiteral("SVG canvas is too large (%1 x %2)")
+                         .arg(size.width())
+                         .arg(size.height());
+        }
+        return {};
+    }
+
+    QImage image(size, QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Could not allocate the SVG image canvas");
+        }
+        return {};
+    }
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    renderer.render(&painter, QRectF(QPointF(), QSizeF(size)));
+    painter.end();
+    return image;
+}
 
 QString supportedImageFormatsText() {
     QStringList formats;
@@ -105,6 +155,12 @@ QImage readImageWithWic(const QString &path, QString *error) {
 
 } // namespace
 
+bool isSvgGuideFormat(const QString &format) {
+    return format.compare(QStringLiteral("svg"), Qt::CaseInsensitive) == 0
+        || format.compare(QStringLiteral("svgz"), Qt::CaseInsensitive) == 0
+        || format.compare(QStringLiteral("image/svg+xml"), Qt::CaseInsensitive) == 0;
+}
+
 QStringList supportedImageSuffixes() {
     QStringList suffixes;
     for (const QByteArray &format : QImageReader::supportedImageFormats()) {
@@ -137,6 +193,9 @@ QStringList supportedImageSuffixes() {
         }
     }
 #endif
+    if (!suffixes.contains(QStringLiteral("svg"))) {
+        suffixes.push_back(QStringLiteral("svg"));
+    }
     return suffixes;
 }
 
@@ -151,6 +210,21 @@ QString imageDialogFilter() {
 }
 
 QImage readGuideImage(const QString &path, QByteArray *format, QString *error) {
+    if (QFileInfo(path).suffix().compare(QStringLiteral("svg"), Qt::CaseInsensitive) == 0) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error != nullptr) {
+                *error = QStringLiteral("Could not open SVG image: %1").arg(path);
+            }
+            return {};
+        }
+        QImage image = renderSvg(file.readAll(), error);
+        if (!image.isNull() && format != nullptr) {
+            *format = QByteArrayLiteral("svg");
+        }
+        return image;
+    }
+
     QImageReader reader(path);
     reader.setAutoTransform(true);
     QImage image = reader.read();
@@ -177,6 +251,24 @@ QImage readGuideImage(const QString &path, QByteArray *format, QString *error) {
                      .arg(path, supportedImageFormatsText());
     }
     return {};
+}
+
+QImage decodeGuideImage(const QByteArray &bytes, const QString &format, QString *error) {
+    if (bytes.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Guide image data is empty");
+        }
+        return {};
+    }
+    if (isSvgGuideFormat(format)) {
+        return renderSvg(bytes, error);
+    }
+
+    QImage image;
+    if (!image.loadFromData(bytes, format.toLatin1().constData()) && error != nullptr) {
+        *error = QStringLiteral("Could not decode embedded %1 guide image").arg(format);
+    }
+    return image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
 QImage readThumbnailImage(const QString &path, QString *error) {

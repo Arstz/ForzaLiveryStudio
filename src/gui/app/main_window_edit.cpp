@@ -1743,7 +1743,9 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     }
 
     QString embedFormat;
-    QProgressDialog progress(QStringLiteral("Converting guide image for project storage..."),
+    QProgressDialog progress(decodedFormat == QByteArrayLiteral("svg")
+                                 ? QStringLiteral("Preparing SVG guide for project storage...")
+                                 : QStringLiteral("Converting guide image for project storage..."),
                              QString(),
                              0,
                              0,
@@ -1755,11 +1757,22 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     progress.show();
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
-    const QByteArray embedBytes = encodeGuideImage(image, &embedFormat);
+    QByteArray embedBytes;
+    if (decodedFormat == QByteArrayLiteral("svg")) {
+        QFile source(path);
+        if (source.open(QIODevice::ReadOnly)) {
+            embedBytes = source.readAll();
+            embedFormat = QStringLiteral("svg");
+        }
+    } else {
+        embedBytes = encodeGuideImage(image, &embedFormat);
+    }
     progress.close();
     if (embedBytes.isEmpty()) {
         if (error != nullptr) {
-            *error = QStringLiteral("could not encode guide image: %1").arg(path);
+            *error = decodedFormat == QByteArrayLiteral("svg")
+                ? QStringLiteral("could not read SVG guide image: %1").arg(path)
+                : QStringLiteral("could not encode guide image: %1").arg(path);
         }
         return false;
     }
@@ -1774,7 +1787,10 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error) {
     guide->sourcePath = QFileInfo(path).absoluteFilePath();
     guide->image = std::make_unique<fls::scene::RasterContainer>();
     guide->image->encoded = embedBytes;
-    guide->image->pixels = QByteArray(reinterpret_cast<const char *>(image.constBits()), image.sizeInBytes());
+    if (decodedFormat != QByteArrayLiteral("svg")) {
+        guide->image->pixels = QByteArray(reinterpret_cast<const char *>(image.constBits()),
+                                          image.sizeInBytes());
+    }
     guide->image->format = embedFormat;
     guide->image->width = image.width();
     guide->image->height = image.height();

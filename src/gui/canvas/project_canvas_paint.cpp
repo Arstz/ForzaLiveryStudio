@@ -1,6 +1,9 @@
 #include "project_canvas.h"
 
+#include "image_io.h"
 #include "project_canvas_internal.h"
+
+#include <QtSvg/QSvgRenderer>
 
 #include <cstdint>
 
@@ -813,7 +816,7 @@ QImage ProjectCanvas::guideImage(const fls::scene::GuideLayer &guide) const {
                        width * 4,
                        QImage::Format_ARGB32_Premultiplied).copy();
     } else {
-        image.loadFromData(encodedBytes, format.toLatin1().constData());
+        image = decodeGuideImage(encodedBytes, format);
     }
     if (!image.isNull()) {
         image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
@@ -823,6 +826,34 @@ QImage ProjectCanvas::guideImage(const fls::scene::GuideLayer &guide) const {
     }
     guideImageCache_.insert(cacheKey, image);
     return image;
+}
+
+QSharedPointer<QSvgRenderer> ProjectCanvas::guideSvgRenderer(
+    const fls::scene::GuideLayer &guide) const {
+    const fls::scene::RasterContainer *image = guide.image.get();
+    if (image == nullptr || !isSvgGuideFormat(image->format) || image->encoded.isEmpty()) {
+        return {};
+    }
+    const QString cacheKey = QStringLiteral("%1|%2|%3|%4")
+        .arg(guide.id)
+        .arg(image->encoded.size())
+        .arg(static_cast<qulonglong>(qHash(image->encoded)))
+        .arg(QString::number(reinterpret_cast<quintptr>(image), 16));
+    const auto cached = guideSvgRendererCache_.constFind(cacheKey);
+    if (cached != guideSvgRendererCache_.constEnd()) {
+        return cached.value();
+    }
+
+    const auto renderer = QSharedPointer<QSvgRenderer>::create(image->encoded);
+    if (!renderer->isValid()) {
+        return {};
+    }
+    constexpr int kSvgRendererCacheCap = 32;
+    if (guideSvgRendererCache_.size() >= kSvgRendererCacheCap) {
+        guideSvgRendererCache_.clear();
+    }
+    guideSvgRendererCache_.insert(cacheKey, renderer);
+    return renderer;
 }
 
 QString ProjectCanvas::sectionCanvasCacheKey() const {
@@ -875,16 +906,33 @@ void ProjectCanvas::drawGuideLayers(QPainter &painter) {
         if (!(world * camera_.matrix()).mapRect(localRect).intersects(QRectF(rect()).adjusted(-1.0, -1.0, 1.0, 1.0))) {
             return true;
         }
-        const QImage image = guideImage(guide);
-        if (image.isNull()) {
-            return true;
-        }
         painter.save();
         painter.setOpacity(std::clamp(guide.opacity, 0.0, 1.0));
-        painter.setTransform(pc_detail::guideImageToLocal(image.size(), size)
-                                 * world * camera_.matrix(),
-                             false);
-        painter.drawImage(QPointF(), image);
+        const fls::scene::RasterContainer *source = guide.image.get();
+        const QSharedPointer<QSvgRenderer> svg = guideSvgRenderer(guide);
+        if (svg && source != nullptr && source->width > 0 && source->height > 0) {
+            const QSize sourceSize(source->width, source->height);
+            QTransform sourceToLocal = pc_detail::guideImageToLocal(sourceSize, size);
+            if (!guide.imageTopDown) {
+                QTransform mirror;
+                mirror.translate(0.0, sourceSize.height());
+                mirror.scale(1.0, -1.0);
+                sourceToLocal = mirror * sourceToLocal;
+            }
+            painter.setTransform(sourceToLocal * world * camera_.matrix(), false);
+            svg->render(&painter,
+                        QRectF(0.0, 0.0, sourceSize.width(), sourceSize.height()));
+        } else {
+            const QImage image = guideImage(guide);
+            if (image.isNull()) {
+                painter.restore();
+                return true;
+            }
+            painter.setTransform(pc_detail::guideImageToLocal(image.size(), size)
+                                     * world * camera_.matrix(),
+                                 false);
+            painter.drawImage(QPointF(), image);
+        }
         painter.restore();
         return true;
     }, /*reverse=*/false);

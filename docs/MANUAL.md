@@ -24,7 +24,7 @@ To place shapes interact with `Shapes` widget. Left click would create a new sha
 
 ### Guide layers
 
-Using raster images as your guide is very straightforward, you can import one to your project by clicking `File->Import Guide Layer` or dropping the file into editor window directly. Guide layers have opacity and can be freely transformed. You can toggle their visibility and draw order (on top/on bottom) via `Option->Guides`.
+Using raster or SVG images as your guide is very straightforward: import one by clicking `File->Import Guide Layer` or by dropping the file into the editor window. SVG source data is kept in the project and painted as scalable vector artwork on the canvas. Pixel-based tools such as Bucket and Pipette use a temporary raster working image without replacing the SVG guide. Guide layers have opacity and can be freely transformed. You can toggle their visibility and draw order (on top/on bottom) via `Option->Guides`.
 
 To place guidelines left click with `Alt` held on the rulers, the guidelines can be moved, deleted with right click and locked with `Option->Guides->Lock Guidelines`.
 
@@ -68,7 +68,7 @@ Pen tool will place a single hard point (red) to start a contour on left click. 
 
 ### Bucket
 
-Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. Outer and interior traced boundaries remain editable when the tool changes to Pen. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Press `Escape` while Bucket is active to discard its preview and current contour. Some larger contours may take longer. For best results try to maximize tolerance and hard point count. Click with `Shift` held to select only the outer contour with holes ignored.
+Bucket tool automates the process described in Pen by generating the contour on the selected guide layer within a given tolerance. Outer and interior traced boundaries remain editable when the tool changes to Pen. To adjust tolerance use scrollwheel, press left click to create a contour. Once done, your tool will be changed to Pen and you can fine-tune the contour. When satisfied confirm fill on `Enter`. Press `Escape` while Bucket is active to discard its preview and current contour. Some larger contours may take longer. For best results try to maximize tolerance and hard point count. Click with `Shift` held to select only the outer contour with holes ignored. On SVG guides, Bucket selects the topmost filled vector object under the cursor and converts its path directly into an editable Pen contour without creating a raster working image. Live SVG text is resolved to the installed font's vector glyph outlines. SVG features that do not expose a reliable object contour, such as gradients, patterns, masks, clipping, text-on-path, and embedded images, automatically use the raster Bucket behavior instead.
 
 >Both Bucket and Pen is not a replacement for every contour, and can have unpredictable results on finer details. For basic shapes like fonts it is still reccommended to use other means. Use both if you want to speed up the process but be aware that they might consume more shapes than if done manually.
 

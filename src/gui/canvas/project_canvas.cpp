@@ -115,6 +115,7 @@ void ProjectCanvas::setProject(fls::Project *project) {
     guidelines_.draggedIndex = -1;
     guidelines_.rulerPressActive = false;
     guideImageCache_.clear();
+    guideSvgRendererCache_.clear();
     sectionCanvasCache_.clear();
     camera_.reset();
     refitView();
@@ -212,6 +213,7 @@ void ProjectCanvas::invalidateSceneCache() {
 
 void ProjectCanvas::invalidateGuideImageCache() {
     guideImageCache_.clear();
+    guideSvgRendererCache_.clear();
     sectionCanvasCache_.clear();
 }
 

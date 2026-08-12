@@ -28,7 +28,7 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and l
 - Save/load project to json files.
 - Full transformations for shapes and groups.
 - Custom groups, reusable in multiple projects.
-- Add raster image overlay as guide layer.
+- Add raster or SVG image overlays as guide layers.
 - Direct shape parity with the game engine.
 - 3D car preview with live livery projection; auto-loads the matching car model.
 - Blazingly fast perfomance thanks to C++.
@@ -45,7 +45,7 @@ All settings as well as custom groups are stored in your QSettings, in the regis
 
 ### Windows
 
-Requirements: Qt6 via vcpkg, C++ compiler, zlib.
+Requirements: Qt6 (including Qt SVG) via vcpkg, C++ compiler, zlib.
 
 Run the build script:
 ```powershell

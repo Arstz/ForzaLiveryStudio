@@ -12,6 +12,11 @@ int main()
     auto guide = std::make_unique<fls::scene::GuideLayer>();
     guide->id = QStringLiteral("guide-1");
     guide->preprocessColorCount = 11;
+    guide->image = std::make_unique<fls::scene::RasterContainer>();
+    guide->image->format = QStringLiteral("svg");
+    guide->image->width = 32;
+    guide->image->height = 16;
+    guide->image->encoded = QByteArrayLiteral("<svg viewBox=\"0 0 32 16\"/>");
     root.append(std::move(guide));
 
     const QJsonObject encoded = fls::scene::sceneTreeToJson(root);
@@ -28,6 +33,12 @@ int main()
     }
     if (!decodedGuide->imageTopDown) {
         qCritical() << "guide image orientation was not serialized";
+        return 1;
+    }
+    if (!decodedGuide->image || decodedGuide->image->format != QStringLiteral("svg")
+        || decodedGuide->image->width != 32 || decodedGuide->image->height != 16
+        || decodedGuide->image->encoded != QByteArrayLiteral("<svg viewBox=\"0 0 32 16\"/>")) {
+        qCritical() << "SVG guide source was not preserved by serialization";
         return 1;
     }
 

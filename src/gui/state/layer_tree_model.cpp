@@ -1,6 +1,7 @@
 #include "layer_tree_model.h"
 
 #include "raster_decals.h"
+#include "image_io.h"
 #include "scene_view.h"
 
 #include <algorithm>
@@ -375,7 +376,7 @@ QIcon guideIcon(const fls::scene::GuideLayer &guide,
                            guide.image->width * 4,
                            QImage::Format_ARGB32_Premultiplied).copy();
         } else {
-            image.loadFromData(guide.image->encoded, guide.image->format.toLatin1().constData());
+            image = decodeGuideImage(guide.image->encoded, guide.image->format);
         }
     }
     if (!image.isNull() && !guide.imageTopDown) {

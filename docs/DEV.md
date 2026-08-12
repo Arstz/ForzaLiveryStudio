@@ -376,6 +376,8 @@ group-to-shape state transitions, and complete positional remnants.
 
 The scripts use `VCPKG_ROOT`, defaulting to `C:\vcpkg` or `C:\vcpkg\vcpkg`,
 and target `x64-windows`. Build output is written to `build\Release`.
+The vcpkg installation must include `qtsvg:x64-windows` in addition to the
+existing Qt base and image-format packages.
 Test executables are excluded by default. Configure with
 `-DFLS_BUILD_TESTS=ON` when they are required.
 Public builds enable `FLS_PRIVACY_POLICY` by default, which blocks importing

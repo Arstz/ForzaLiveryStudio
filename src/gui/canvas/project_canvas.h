@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bucket_fill.h"
+#include "svg_vector_objects.h"
 #include "car_unwrap_overlay.h"
 #include "differential_cover.h"
 #include "canvas_camera.h"
@@ -28,6 +29,7 @@
 class QPainter;
 class QMouseEvent;
 class QWheelEvent;
+class QSvgRenderer;
 
 namespace gui {
 
@@ -305,10 +307,16 @@ private:
     struct BucketState {
         QString guideId;
         QString sourceGuideId;
+        QString vectorSourceGuideId;
+        QString vectorFallbackReason;
+        quint64 vectorSourceHash = 0;
         QPoint seedPixel = QPoint(-1, -1);
         BucketFillResult fill;
+        SvgVectorDocument vectorDocument;
+        SvgVectorObjectHit vectorHit;
         QImage sourceImage;
         QImage previewImage;
+        bool vectorMode = false;
         int tolerance = kDefaultBucketTolerance;
     };
 
@@ -454,6 +462,7 @@ private:
     void drawGuideLayers(QPainter &painter);
     void drawRegionOverlay(QPainter &painter);
     QImage guideImage(const fls::scene::GuideLayer &guide) const;
+    QSharedPointer<QSvgRenderer> guideSvgRenderer(const fls::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;
     void storeSectionCanvasCache(const QString &key);
     void setPathFillRunning(PathInteraction &path, bool running, const QString &message);
@@ -516,6 +525,11 @@ private:
                             QImage *image,
                             QPoint *imagePoint,
                             QString *error) const;
+    bool bucketGuideGeometryContext(const QPointF &screenPoint,
+                                    const fls::scene::GuideLayer **guide,
+                                    QTransform *guideWorld,
+                                    QPointF *guideLocalPoint,
+                                    QString *error) const;
 
 
     EditorState *state_ = nullptr;
@@ -562,6 +576,7 @@ private:
     bool rendererGeometryDirty_ = true;
     FlashState flash_;
     mutable QHash<QString, QImage> guideImageCache_;
+    mutable QHash<QString, QSharedPointer<QSvgRenderer>> guideSvgRendererCache_;
     mutable QHash<QString, QImage> sectionCanvasCache_;
     std::optional<FlipCycleState> flipCycle_;
     CarUnwrapOverlay carUnwrapOverlay_;

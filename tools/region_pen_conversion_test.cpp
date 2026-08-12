@@ -3,6 +3,7 @@
 #include "region_extract.h"
 #include "region_fill.h"
 #include "region_layer_plan.h"
+#include "svg_vector_objects.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -32,6 +33,33 @@ public:
 private:
     int failures_ = 0;
 };
+
+void svgVectorObjectConvertsDirectlyToPen(TestContext *test)
+{
+    const QByteArray svg = QByteArrayLiteral(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" "
+        "viewBox=\"0 0 100 100\"><path fill=\"#22aa44\" fill-rule=\"evenodd\" "
+        "d=\"M5 50 C5 20 20 5 50 5 C80 5 95 20 95 50 "
+        "C95 80 80 95 50 95 C20 95 5 80 5 50 Z "
+        "M40 40 H60 V60 H40 Z\"/></svg>");
+    const gui::SvgVectorDocument document =
+        gui::extractSvgVectorObjects(svg, QSize(100, 100));
+    const gui::SvgVectorObjectHit hit =
+        gui::svgVectorObjectAt(document, QPointF(20.0, 50.0));
+    test->expect(document.supportsObjectSelection(),
+                 "SVG vector document should support object selection");
+    test->expect(hit.valid(), "SVG vector object should hit without rasterization");
+    gui::RegionPenLoopConversionOptions options;
+    options.simplifyEpsilon = 0.05;
+    options.minimumCurveBow = 0.0375;
+    const gui::RegionPenLoopConversionResult conversion =
+        gui::regionOutlineToPenLoops(hit.path, options);
+    test->expect(conversion.valid(), "SVG vector path should convert into Pen loops");
+    test->expect(conversion.loops.size() == 2,
+                 "SVG vector path should preserve its cutout loop");
+    test->expect(gui::buildPenContour(conversion.loops).valid(),
+                 "SVG-derived Pen contour should be valid");
+}
 
 void quadraticTo(QPainterPath *path, const QPointF &control, const QPointF &end)
 {
@@ -2684,6 +2712,7 @@ int main(int argc, char **argv)
         return checkLoggedRegion(QString::fromLocal8Bit(argv[2]), QSize(width, height));
     }
     TestContext test;
+    svgVectorObjectConvertsDirectlyToPen(&test);
     centuryGothicLowercaseAUsesFullWidth(&test);
     alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);
