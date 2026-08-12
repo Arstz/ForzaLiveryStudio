@@ -291,8 +291,8 @@ void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery) {
 }
 
 Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
-    Project project;
     QFileInfo info(folderOrFile);
+    Project project;
     if (info.isDir()) {
         project.name = info.fileName();
         project.sourceFolder = info.absoluteFilePath();
@@ -302,6 +302,42 @@ Project newImportProject(const QString &folderOrFile, const QByteArray &payload)
     }
     project.sourceDecPrefix = payload.left(0x1d);
     project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
+    return project;
+}
+
+Project newImportProject(const QString &name, const QByteArray &payload,
+                         const QByteArray &header) {
+    Project project;
+    project.name = name;
+    project.sourceDecPrefix = payload.left(0x1d);
+    project.sourceHeader = header;
+
+    return project;
+}
+
+Project newLiveryImportProject(const QString &folderOrFile) {
+    const QFileInfo info(folderOrFile);
+    Project project;
+    if (info.isDir()) {
+        project.name = info.fileName();
+        project.sourceFolder = info.absoluteFilePath();
+    } else {
+        project.name = info.absoluteDir().dirName();
+        project.sourceFolder = info.absoluteDir().absolutePath();
+    }
+    QString headerPath = QDir(project.sourceFolder).filePath(QStringLiteral("header"));
+    if (info.isFile() && isLiveryAssetFileName(info.fileName())) {
+        QString stem = info.fileName();
+        stem.chop(QStringLiteral(".C_livery").size());
+        const QString flatHeaderPath = info.absoluteDir().filePath(
+            stem + QStringLiteral(".header"));
+        if (QFileInfo::exists(flatHeaderPath)) {
+            headerPath = flatHeaderPath;
+        }
+        project.name = stem;
+    }
+    project.sourceHeader = readOptionalFile(headerPath);
+
     return project;
 }
 
@@ -525,12 +561,9 @@ Project importCGroupFlat(const QString &folderOrFile) {
     return project;
 }
 
-Project importCGroupNested(const QString &folderOrFile) {
-    const QByteArray payload = readCGroupPayload(folderOrFile);
-    enforcePrivacyPolicyForCGroup(payload);
+static Project importCGroupNestedDecoded(const QByteArray &payload, Project project) {
     LayerData layerData;
     const VinylGroup root = decodeGroup(payload, &layerData);
-    Project project = newImportProject(folderOrFile, payload);
     scene::ensureProjectSceneRoot(project);
 
     int shapeIndex = 0;
@@ -626,37 +659,30 @@ Project importCGroupNested(const QString &folderOrFile) {
     return project;
 }
 
-Project importCLivery(const QString &folderOrFile) {
-    const LiveryPayload livery = readLiveryPayload(folderOrFile);
+Project importCGroupNested(const QString &folderOrFile) {
+    const QByteArray payload = readCGroupPayload(folderOrFile);
+    enforcePrivacyPolicyForCGroup(payload);
+
+    return importCGroupNestedDecoded(payload, newImportProject(folderOrFile, payload));
+}
+
+Project importCGroupNestedData(const QByteArray &wrapped, const QByteArray &header,
+                               const QString &name) {
+    const QByteArray payload = inflateContainer(wrapped);
+    enforcePrivacyPolicyForCGroup(payload);
+
+    return importCGroupNestedDecoded(payload, newImportProject(name, payload, header));
+}
+
+static Project importCLiveryDecoded(const LiveryPayload &livery, Project project) {
     enforcePrivacyPolicyForCLivery(livery);
     const QVector<LiverySection> sections =
         buildLiverySections(livery.body, livery.sectionCounts);
 
-    Project project;
-    const QFileInfo info(folderOrFile);
-    if (info.isDir()) {
-        project.name = info.fileName();
-        project.sourceFolder = info.absoluteFilePath();
-    } else {
-        project.name = info.absoluteDir().dirName();
-        project.sourceFolder = info.absoluteDir().absolutePath();
-    }
     project.isLivery = true;
     project.carId = livery.carId;
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
-    QString headerPath = QDir(project.sourceFolder).filePath(QStringLiteral("header"));
-    if (info.isFile() && isLiveryAssetFileName(info.fileName())) {
-        QString stem = info.fileName();
-        stem.chop(QStringLiteral(".C_livery").size());
-        const QString flatHeaderPath = info.absoluteDir().filePath(
-            stem + QStringLiteral(".header"));
-        if (QFileInfo::exists(flatHeaderPath)) {
-            headerPath = flatHeaderPath;
-        }
-        project.name = stem;
-    }
-    project.sourceHeader = readOptionalFile(headerPath);
     if (!project.sourceHeader.isEmpty()) {
         try {
             project.headerMetadata = parseHeader(project.sourceHeader);
@@ -791,6 +817,22 @@ Project importCLivery(const QString &folderOrFile) {
         project.root->append(std::move(sectionGroup));
     }
     return project;
+}
+
+Project importCLivery(const QString &folderOrFile) {
+    const LiveryPayload livery = readLiveryPayload(folderOrFile);
+
+    return importCLiveryDecoded(livery, newLiveryImportProject(folderOrFile));
+}
+
+Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
+                          const QString &name) {
+    const LiveryPayload livery = parseInflatedLiveryPayload(inflateContainer(wrapped));
+    Project project;
+    project.name = name;
+    project.sourceHeader = header;
+
+    return importCLiveryDecoded(livery, std::move(project));
 }
 
 Project projectFromJson(const QJsonObject &object) {

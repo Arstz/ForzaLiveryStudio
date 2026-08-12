@@ -103,6 +103,8 @@ add_library(fls_core STATIC
     src/core/vinyl_decoder.h
     src/core/vinyl_flattener.cpp
     src/core/vinyl_flattener.h
+    src/core/wgs_save_reader.cpp
+    src/core/wgs_save_reader.h
     src/core/zip_extract.cpp
     src/core/zip_extract.h
 )
@@ -339,6 +341,15 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(FLS_BUILD_TESTS)
+    add_executable(fls_wgs_save_reader_tests
+        tools/wgs_save_reader_test.cpp
+    )
+    target_link_libraries(fls_wgs_save_reader_tests PRIVATE
+        fls_core
+        Qt6::Core
+    )
+    add_test(NAME wgs_save_reader COMMAND fls_wgs_save_reader_tests)
+
     add_executable(fls_vinyl_decoder_tests
         tools/vinyl_decoder_test.cpp
     )
@@ -476,6 +487,7 @@ else()
     add_custom_target(fls_remove_disabled_tests ALL
         COMMAND "${CMAKE_COMMAND}" -E rm -f
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_livery_logo_encoder_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_wgs_save_reader_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_guide_preprocess_metadata_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_image_preprocessor_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_region_pen_conversion_tests${CMAKE_EXECUTABLE_SUFFIX}"

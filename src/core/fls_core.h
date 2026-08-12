@@ -26,7 +26,11 @@ QVector<QString> validateTree(const VinylGroup &root);
 QVector<FlattenedLayer> flattenGroup(const VinylGroup &root);
 Project importCGroupFlat(const QString &folderOrFile);
 Project importCGroupNested(const QString &folderOrFile);
+Project importCGroupNestedData(const QByteArray &wrapped, const QByteArray &header,
+                               const QString &name);
 Project importCLivery(const QString &folderOrFile);
+Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
+                          const QString &name);
 QByteArray readCGroupPayload(const QString &folderOrFile);
 void writeCGroupFile(const QString &path, const QByteArray &payload);
 

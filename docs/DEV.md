@@ -9,7 +9,9 @@ exports grouped `C_group` folders and `C_livery` folders.
 - Import supported asset folders through one context-aware **Import…** action.
   Its minimal filesystem browser identifies importable folders, shows available
   header metadata and thumbnails, routes the selection to the matching decoder,
-  and restores its last folder and filters when reopened.
+  and restores its last folder and filters when reopened. A Microsoft Store WGS
+  save directory is exposed there as a read-only virtual list of its active
+  livery and layer-group assets.
 - Open/save editor projects as a `.3so` container: the editor project JSON
   wrapped in a gzip stream. The document is the unified scene tree (a recursive
   `root` of kind-discriminated layer nodes). Packed `.3so` is the only recognized

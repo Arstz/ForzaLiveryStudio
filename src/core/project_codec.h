@@ -19,7 +19,11 @@ QByteArray encodeProjectDocument(const Project &project);
 Project decodeProjectDocument(const QByteArray &fileBytes);
 Project importCGroupFlat(const QString &folderOrFile);
 Project importCGroupNested(const QString &folderOrFile);
+Project importCGroupNestedData(const QByteArray &wrapped, const QByteArray &header,
+                               const QString &name);
 Project importCLivery(const QString &folderOrFile);
+Project importCLiveryData(const QByteArray &wrapped, const QByteArray &header,
+                          const QString &name);
 void exportNestedProjectFolder(const Project &project, const QString &outputFolder,
                                const QString &name = {}, const SpriteSizeFn &spriteSize = {});
 

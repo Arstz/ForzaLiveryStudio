@@ -7,6 +7,7 @@
 #include "image_io.h"
 #include "livery_codec.h"
 #include "theme_manager.h"
+#include "wgs_save_reader.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -24,6 +25,7 @@ constexpr int kBaseTextRole = Qt::UserRole + 3;
 constexpr int kNameRole = Qt::UserRole + 4;
 constexpr int kKindRole = Qt::UserRole + 5;
 constexpr int kThumbnailRole = Qt::UserRole + 6;
+constexpr int kWgsAssetIndexRole = Qt::UserRole + 7;
 constexpr int kGridWidth = 184;
 constexpr int kGridMargin = 2;
 constexpr int kTilePadding = 4;
@@ -69,6 +71,21 @@ struct AssetInfo {
         return kind == AssetKind::MotorsportGroup || kind == AssetKind::MotorsportLivery;
     }
 };
+
+using FilePathIndex = QHash<QString, QString>;
+
+FilePathIndex indexFilePaths(const QFileInfoList &files) {
+    FilePathIndex index;
+    index.reserve(files.size());
+    for (const QFileInfo &file : files) {
+        index.insert(file.fileName().toCaseFolded(), file.absoluteFilePath());
+    }
+    return index;
+}
+
+QString indexedFile(const FilePathIndex &index, const QString &name) {
+    return index.value(name.toCaseFolded());
+}
 
 QString findFile(const QDir &directory, const QString &name) {
     const QFileInfoList files = directory.entryInfoList(QDir::Files | QDir::Hidden | QDir::System);
@@ -180,28 +197,29 @@ AssetInfo inspectAsset(const QString &path) {
     return asset;
 }
 
-AssetInfo inspectFlatLivery(const QFileInfo &file) {
+AssetInfo inspectFlatLivery(const QFileInfo &file, const FilePathIndex &files) {
     AssetInfo asset;
-    if (!file.isFile() || !isNonEmptyFile(file.absoluteFilePath())
+    if (!file.isFile() || file.size() <= 0
         || !fls::isLiveryAssetFileName(file.fileName())
         || file.fileName().compare(QStringLiteral("C_livery"), Qt::CaseInsensitive) == 0) {
         return asset;
     }
 
-    const QDir directory = file.absoluteDir();
     QString stem = file.fileName();
     stem.chop(QStringLiteral(".C_livery").size());
-    const QString identifier = stem.mid(QStringLiteral("Livery_").size());
     asset.kind = AssetKind::HorizonLivery;
-    readHeaderMetadata(findFile(
-        directory, stem + QStringLiteral(".header")), asset);
-    asset.thumbnailPath = findFile(
-        directory,
-        QStringLiteral("GarageThumbnail_%1.bigThumb.png").arg(identifier));
-    if (asset.thumbnailPath.isEmpty()) {
-        asset.thumbnailPath = findFile(
-            directory,
-            QStringLiteral("GarageThumbnail_%1.bigThumb.webp").arg(identifier));
+    readHeaderMetadata(indexedFile(files, stem + QStringLiteral(".header")), asset);
+    const QStringList thumbnailSuffixes = {
+        QStringLiteral(".bigThumb.png"),
+        QStringLiteral(".bigThumb.webp"),
+        QStringLiteral(".smallThumb.png"),
+        QStringLiteral(".smallThumb.webp"),
+    };
+    for (const QString &suffix : thumbnailSuffixes) {
+        asset.thumbnailPath = indexedFile(files, stem + suffix);
+        if (!asset.thumbnailPath.isEmpty()) {
+            break;
+        }
     }
 
     return asset;
@@ -541,6 +559,7 @@ public:
         ImportAssetSelection result;
         result.path = selectedPath_;
         result.directory = currentDirectory_;
+        result.wgsAsset = selectedWgsAsset_;
         result.motorsport = selectedMotorsport_;
         return result;
     }
@@ -642,38 +661,140 @@ private:
         list_->setUpdatesEnabled(false);
         list_->clear();
         selectedPath_.clear();
+        selectedWgsAsset_.reset();
         selectedMotorsport_ = false;
         pathEdit_->setText(QDir::toNativeSeparators(currentDirectory_));
 
         const QDir directory(currentDirectory_);
-        const QFileInfoList folders = directory.entryInfoList(
-            QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
-            QDir::Name | QDir::IgnoreCase | QDir::DirsFirst);
         const bool containersRoot = directory.dirName().compare(
             QStringLiteral("ContainersRoot"), Qt::CaseInsensitive) == 0;
         const bool showGenericForzaFolders =
             showGenericForzaFolders_->isChecked();
+        QString refreshError;
         QVector<AssetDetailsRequest> detailsRequests;
         const int folderIconExtent = style()->pixelMetric(QStyle::PM_LargeIconSize);
         const QIcon folderIcon(style()->standardIcon(QStyle::SP_DirIcon)
                                    .pixmap(folderIconExtent, folderIconExtent));
-        for (const QFileInfo &folder : folders) {
-            const bool userAssetFolder =
-                folder.fileName().startsWith(
-                    QStringLiteral("Livery_"), Qt::CaseInsensitive)
-                || folder.fileName().startsWith(
-                    QStringLiteral("LayerGroup_"), Qt::CaseInsensitive);
-            if (containersRoot
-                && !showGenericForzaFolders
-                && !userAssetFolder) {
-                continue;
+        if (fls::isWgsSaveDirectory(currentDirectory_)) {
+            try {
+                if (wgsDirectory_ != currentDirectory_) {
+                    wgsAssets_ = fls::readWgsSave(currentDirectory_).assets;
+                    wgsDirectory_ = currentDirectory_;
+                }
+                for (int index = 0; index < wgsAssets_.size(); ++index) {
+                    const fls::WgsAsset &wgsAsset = wgsAssets_.at(index);
+                    const bool userAsset = wgsAsset.containerName.startsWith(
+                                               QStringLiteral("Livery_"), Qt::CaseInsensitive)
+                        || wgsAsset.containerName.startsWith(
+                            QStringLiteral("LayerGroup_"), Qt::CaseInsensitive);
+                    if (!showGenericForzaFolders && !userAsset) {
+                        continue;
+                    }
+                    AssetInfo asset;
+                    asset.kind = wgsAsset.kind == fls::WgsAssetKind::Livery
+                        ? AssetKind::HorizonLivery
+                        : AssetKind::HorizonGroup;
+                    asset.thumbnailPath = wgsAsset.thumbnailPath;
+                    readHeaderMetadata(wgsAsset.headerPath, asset);
+                    QString name = wgsAsset.containerName;
+                    QString text = name;
+                    if (!asset.name.isEmpty()) {
+                        name = asset.name;
+                        text = name;
+                    }
+                    QStringList details{assetKindLabel(asset.kind)};
+                    if (!asset.creator.isEmpty()) {
+                        details.push_back(asset.creator);
+                    }
+                    if (!asset.date.isEmpty()) {
+                        details.push_back(asset.date);
+                    }
+                    text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
+                    detailsRequests.push_back({
+                        wgsAsset.payloadPath, wgsAsset.thumbnailPath, asset.kind});
+
+                    auto *item = new QListWidgetItem(folderIcon, text, list_);
+                    item->setData(kPathRole, wgsAsset.payloadPath);
+                    item->setData(kAssetRole, true);
+                    item->setData(kMotorsportRole, false);
+                    item->setData(kBaseTextRole, text);
+                    item->setData(kNameRole, name);
+                    item->setData(kKindRole, static_cast<int>(asset.kind));
+                    item->setData(kWgsAssetIndexRole, index);
+                    item->setToolTip(QStringLiteral("WGS: %1").arg(wgsAsset.containerName));
+                    updateItemSizeHint(item);
+                }
+            } catch (const std::exception &error) {
+                wgsAssets_.clear();
+                wgsDirectory_.clear();
+                refreshError = QStringLiteral("Could not read WGS save: %1")
+                                   .arg(QString::fromUtf8(error.what()));
+            }
+        } else {
+            wgsAssets_.clear();
+            wgsDirectory_.clear();
+            const QFileInfoList folders = directory.entryInfoList(
+                QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+                QDir::Name | QDir::IgnoreCase | QDir::DirsFirst);
+            for (const QFileInfo &folder : folders) {
+                const bool userAssetFolder =
+                    folder.fileName().startsWith(
+                        QStringLiteral("Livery_"), Qt::CaseInsensitive)
+                    || folder.fileName().startsWith(
+                        QStringLiteral("LayerGroup_"), Qt::CaseInsensitive);
+                if (containersRoot
+                    && !showGenericForzaFolders
+                    && !userAssetFolder) {
+                    continue;
+                }
+
+                const AssetInfo asset = inspectAsset(folder.absoluteFilePath());
+                QString name = folder.fileName();
+                QString text = name;
+                QIcon icon = folderIcon;
+                if (asset.valid()) {
+                    if (!asset.name.isEmpty()) {
+                        name = asset.name;
+                        text = name;
+                    }
+                    QStringList details{assetKindLabel(asset.kind)};
+                    if (!asset.creator.isEmpty()) {
+                        details.push_back(asset.creator);
+                    }
+                    if (!asset.date.isEmpty()) {
+                        details.push_back(asset.date);
+                    }
+                    text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
+                    if (!asset.thumbnailPath.isEmpty()
+                        || asset.kind == AssetKind::HorizonLivery
+                        || asset.kind == AssetKind::MotorsportLivery) {
+                        detailsRequests.push_back({folder.absoluteFilePath(), asset.thumbnailPath, asset.kind});
+                    }
+                }
+
+                auto *item = new QListWidgetItem(icon, text, list_);
+                item->setData(kPathRole, folder.absoluteFilePath());
+                item->setData(kAssetRole, asset.valid());
+                item->setData(kMotorsportRole, asset.motorsport());
+                item->setData(kBaseTextRole, text);
+                item->setData(kNameRole, name);
+                item->setData(kKindRole, static_cast<int>(asset.kind));
+                item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
+                updateItemSizeHint(item);
             }
 
-            const AssetInfo asset = inspectAsset(folder.absoluteFilePath());
-            QString name = folder.fileName();
-            QString text = name;
-            QIcon icon = folderIcon;
-            if (asset.valid()) {
+            const QFileInfoList files = directory.entryInfoList(
+                QDir::Files | QDir::Hidden | QDir::System,
+                QDir::Name | QDir::IgnoreCase);
+            const FilePathIndex filePaths = indexFilePaths(files);
+            for (const QFileInfo &file : files) {
+                const AssetInfo asset = inspectFlatLivery(file, filePaths);
+                if (!asset.valid()) {
+                    continue;
+                }
+
+                QString name = file.completeBaseName();
+                QString text = name;
                 if (!asset.name.isEmpty()) {
                     name = asset.name;
                     text = name;
@@ -686,69 +807,25 @@ private:
                     details.push_back(asset.date);
                 }
                 text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
-                if (!asset.thumbnailPath.isEmpty()
-                    || asset.kind == AssetKind::HorizonLivery
-                    || asset.kind == AssetKind::MotorsportLivery) {
-                    detailsRequests.push_back({folder.absoluteFilePath(), asset.thumbnailPath, asset.kind});
-                }
-            }
+                detailsRequests.push_back({
+                    file.absoluteFilePath(), asset.thumbnailPath, asset.kind});
 
-            auto *item = new QListWidgetItem(icon, text, list_);
-            item->setData(kPathRole, folder.absoluteFilePath());
-            item->setData(kAssetRole, asset.valid());
-            item->setData(kMotorsportRole, asset.motorsport());
-            item->setData(kBaseTextRole, text);
-            item->setData(kNameRole, name);
-            item->setData(kKindRole, static_cast<int>(asset.kind));
-            item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
-            updateItemSizeHint(item);
-        }
-
-        const QFileInfoList files = directory.entryInfoList(
-            QDir::Files | QDir::Hidden | QDir::System,
-            QDir::Name | QDir::IgnoreCase);
-        for (const QFileInfo &file : files) {
-            const AssetInfo asset = inspectFlatLivery(file);
-            if (!asset.valid()) {
-                continue;
+                auto *item = new QListWidgetItem(folderIcon, text, list_);
+                item->setData(kPathRole, file.absoluteFilePath());
+                item->setData(kAssetRole, true);
+                item->setData(kMotorsportRole, false);
+                item->setData(kBaseTextRole, text);
+                item->setData(kNameRole, name);
+                item->setData(kKindRole, static_cast<int>(asset.kind));
+                item->setToolTip(QDir::toNativeSeparators(file.absoluteFilePath()));
+                updateItemSizeHint(item);
             }
-
-            QString name = file.completeBaseName();
-            QString text = name;
-            if (!asset.name.isEmpty()) {
-                name = asset.name;
-                text = name;
-            }
-            QStringList details{assetKindLabel(asset.kind)};
-            if (!asset.creator.isEmpty()) {
-                details.push_back(asset.creator);
-            }
-            if (!asset.date.isEmpty()) {
-                details.push_back(asset.date);
-            }
-            text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
-            detailsRequests.push_back({
-                file.absoluteFilePath(), asset.thumbnailPath, asset.kind});
-
-            auto *item = new QListWidgetItem(folderIcon, text, list_);
-            item->setData(kPathRole, file.absoluteFilePath());
-            item->setData(kAssetRole, true);
-            item->setData(kMotorsportRole, false);
-            item->setData(kBaseTextRole, text);
-            item->setData(kNameRole, name);
-            item->setData(kKindRole, static_cast<int>(asset.kind));
-            item->setToolTip(QDir::toNativeSeparators(file.absoluteFilePath()));
-            updateItemSizeHint(item);
         }
 
         const QString parent = QFileInfo(currentDirectory_).absolutePath();
         upButton_->setEnabled(QDir::cleanPath(parent) != QDir::cleanPath(currentDirectory_));
         backButton_->setEnabled(historyIndex_ > 0);
         buttons_->button(QDialogButtonBox::Open)->setEnabled(false);
-        hint_->setText(list_->count() == 0
-                           ? QStringLiteral("This folder is empty.")
-                           : QStringLiteral("Open a folder or select an import asset."));
-
         const QString root = QDir(currentDirectory_).rootPath();
         for (int index = 0; index < drives_->count(); ++index) {
             if (QDir::cleanPath(drives_->itemData(index).toString()) == QDir::cleanPath(root)) {
@@ -758,6 +835,11 @@ private:
             }
         }
         applyFilters();
+        if (!refreshError.isEmpty()) {
+            hint_->setText(refreshError);
+        } else if (list_->count() == 0) {
+            hint_->setText(QStringLiteral("This folder is empty."));
+        }
         list_->setUpdatesEnabled(true);
         list_->doItemsLayout();
         list_->viewport()->update();
@@ -883,7 +965,7 @@ private:
                                : QStringLiteral("Double-click to open this folder."));
             return;
         }
-        hint_->setText(QDir::toNativeSeparators(item->data(kPathRole).toString()));
+        hint_->setText(item->toolTip());
     }
 
     void acceptSelection() {
@@ -893,6 +975,10 @@ private:
         }
         selectedPath_ = item->data(kPathRole).toString();
         selectedMotorsport_ = item->data(kMotorsportRole).toBool();
+        const QVariant wgsIndex = item->data(kWgsAssetIndexRole);
+        if (wgsIndex.isValid()) {
+            selectedWgsAsset_ = wgsAssets_.at(wgsIndex.toInt());
+        }
         accept();
     }
 
@@ -911,7 +997,10 @@ private:
     QString initialDirectory_;
     QString currentDirectory_;
     QString selectedPath_;
+    QString wgsDirectory_;
     QStringList history_;
+    QVector<fls::WgsAsset> wgsAssets_;
+    std::optional<fls::WgsAsset> selectedWgsAsset_;
     int historyIndex_ = -1;
     bool selectedMotorsport_ = false;
     quint64 thumbnailGeneration_ = 0;

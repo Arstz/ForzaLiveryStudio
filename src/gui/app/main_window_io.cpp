@@ -22,6 +22,7 @@
 #include <exception>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 namespace gui {
@@ -46,6 +47,18 @@ constexpr const char *kEmptyLiverySectionNames[] = {
 
 QString generatedGroupId(int index) {
     return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
+}
+
+QByteArray readImportFile(const QString &path, bool optional = false) {
+    if (path.isEmpty() && optional) {
+        return {};
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        throw std::runtime_error(("could not open import file: " + path).toStdString());
+    }
+
+    return file.readAll();
 }
 
 fls::Project createNewProject(bool livery, const QString &creatorName, int carId) {
@@ -464,9 +477,30 @@ void MainWindow::importFileDialog() {
     }
 
     QString error;
-    const bool imported = selection.motorsport
-        ? importFM2023Folder(selection.path, &error)
-        : importAny(selection.path, &error);
+    bool imported = false;
+    if (selection.wgsAsset) {
+        const fls::WgsAsset asset = *selection.wgsAsset;
+        rememberImportDirectory(selection.directory, QStringLiteral("source"));
+        rememberImportDirectory(
+            selection.directory,
+            asset.kind == fls::WgsAssetKind::Livery
+                ? QStringLiteral("liveryFolder")
+                : QStringLiteral("cgroupFolder"));
+        imported = loadImportedProject(
+            [asset]() {
+                const QByteArray payload = readImportFile(asset.payloadPath);
+                const QByteArray header = readImportFile(asset.headerPath, true);
+                return asset.kind == fls::WgsAssetKind::Livery
+                    ? fls::importCLiveryData(payload, header, asset.containerName)
+                    : fls::importCGroupNestedData(payload, header, asset.containerName);
+            },
+            QStringLiteral("Imported WGS asset %1").arg(asset.containerName),
+            &error);
+    } else {
+        imported = selection.motorsport
+            ? importFM2023Folder(selection.path, &error)
+            : importAny(selection.path, &error);
+    }
     if (!imported) {
         QMessageBox::critical(this, QStringLiteral("Import failed"), error);
     }
