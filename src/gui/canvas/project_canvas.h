@@ -128,6 +128,7 @@ public:
     bool alignSelection(AlignEdge edge);
     bool distributeSelection(DistributeAxis axis);
     bool handleKeyBinding(KeyInteraction interaction, KeyEventPhase phase, bool autoRepeat);
+    void cancelActiveInput();
     bool undoContourEdit();
     bool redoContourEdit();
 
@@ -144,6 +145,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
     void leaveEvent(QEvent *event) override;
     bool focusNextPrevChild(bool next) override;
 
@@ -459,6 +461,7 @@ private:
     void discardPathInteraction(PathInteraction &path, const std::function<void()> &cancelCallback);
     void beginPathEdit(PathInteraction &path);
     void commitPathEdit(PathInteraction &path);
+    void cancelPathEdit(PathInteraction &path);
     bool applyPathHistory(PathInteraction &path, bool undo);
     void refreshPathAfterHistory(PathInteraction &path);
     void closePenPath();

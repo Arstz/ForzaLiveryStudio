@@ -88,7 +88,7 @@ private:
         Scope scope = Scope::Focus;
         InteractionHandler handler;
         EnabledPredicate enabled;
-        QKeySequence activeSequence;
+        Qt::Key activeKey = Qt::Key_unknown;
         int priority = 0;
         bool handleRelease = false;
         bool activePress = false;
@@ -100,8 +100,9 @@ private:
     bool routeAction(QKeyEvent &event);
     bool actionHasFocus(const ActionBinding &binding) const;
     bool interactionHasFocus(const InteractionBinding &binding) const;
+    bool focusedInteractionClaimsModifiers() const;
     bool windowCanReceiveBindings() const;
-    void releaseActiveInteractions();
+    void releaseActiveInteractions(QWidget *focusScope = nullptr);
     void clearPendingSequence();
 
     QPointer<QWidget> window_;

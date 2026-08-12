@@ -176,6 +176,16 @@ bool ProjectCanvas::handleRulerPress(QMouseEvent *event) {
 }
 
 void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
+    const bool stalePrimaryGesture = event->button() == Qt::LeftButton
+        && (drag_.mode != DragMode::None
+            || guidelines_.rulerPressActive
+            || pen_.dragPoint >= 0
+            || lining_.dragPoint >= 0);
+    const bool stalePanGesture = event->button() == Qt::MiddleButton
+        && drag_.mode == DragMode::Pan;
+    if (stalePrimaryGesture || stalePanGesture) {
+        cancelActiveInput();
+    }
     setFocus();
     updateViewTransform();
     if (handleRulerPress(event)) {
@@ -329,6 +339,18 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event) {
 }
 
 void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
+    const bool guidelineButtonLost = guidelines_.rulerPressActive
+        && !(event->buttons() & Qt::LeftButton);
+    const bool panButtonLost = drag_.mode == DragMode::Pan
+        && !(event->buttons() & (Qt::LeftButton | Qt::MiddleButton));
+    const bool dragButtonLost = drag_.mode != DragMode::None
+        && drag_.mode != DragMode::Pan
+        && !(event->buttons() & Qt::LeftButton);
+    const bool pathButtonLost = (pen_.dragPoint >= 0 || lining_.dragPoint >= 0)
+        && !(event->buttons() & Qt::LeftButton);
+    if (guidelineButtonLost || panButtonLost || dragButtonLost || pathButtonLost) {
+        cancelActiveInput();
+    }
     if (guidelines_.draggedOrientation != GuidelineOrientation::None) {
         updateViewTransform();
         QVector<double> &guidelines = guidelines_.draggedOrientation == GuidelineOrientation::Vertical
@@ -621,9 +643,36 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
     return nudgeSelection(delta);
 }
 
+void ProjectCanvas::cancelActiveInput() {
+    spaceDown_ = false;
+    if (pen_.dragPoint >= 0) {
+        cancelPathEdit(pen_);
+    }
+    if (lining_.dragPoint >= 0) {
+        cancelPathEdit(lining_);
+    }
+    if (guidelines_.draggedOrientation != GuidelineOrientation::None && state_ != nullptr) {
+        state_->cancelProjectEdit();
+    }
+    guidelines_.draggedOrientation = GuidelineOrientation::None;
+    guidelines_.draggedIndex = -1;
+    guidelines_.rulerPressActive = false;
+    if (drag_.mode != DragMode::None) {
+        cancelDrag();
+        return;
+    }
+    updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+    update();
+}
+
 bool ProjectCanvas::focusNextPrevChild(bool next) {
     Q_UNUSED(next);
     return false;
+}
+
+void ProjectCanvas::focusOutEvent(QFocusEvent *event) {
+    cancelActiveInput();
+    QOpenGLWidget::focusOutEvent(event);
 }
 
 void ProjectCanvas::leaveEvent(QEvent *event) {

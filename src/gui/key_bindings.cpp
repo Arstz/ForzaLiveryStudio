@@ -125,6 +125,14 @@ bool isUiConfirmKey(const QKeyEvent &event) {
     return event.key() == Qt::Key_Return || event.key() == Qt::Key_Enter;
 }
 
+bool isModifierKey(const QKeyEvent &event) {
+    return event.key() == Qt::Key_Shift
+        || event.key() == Qt::Key_Control
+        || event.key() == Qt::Key_Alt
+        || event.key() == Qt::Key_Meta
+        || event.key() == Qt::Key_AltGr;
+}
+
 bool textInputClaims(const QKeyEvent &event, const QWidget *focus) {
     if (!isTextInput(focus)) {
         return false;
@@ -301,7 +309,7 @@ void KeyBindingRouter::registerInteraction(KeyInteraction interaction,
                                            int priority,
                                            bool handleRelease) {
     interactions_.push_back({interaction, owner, scope, std::move(handler), std::move(enabled),
-                             {}, priority, handleRelease, false});
+                             Qt::Key_unknown, priority, handleRelease, false});
 }
 
 bool KeyBindingRouter::eventFilter(QObject *watched, QEvent *event) {
@@ -309,13 +317,23 @@ bool KeyBindingRouter::eventFilter(QObject *watched, QEvent *event) {
     if (event == nullptr) {
         return false;
     }
-    if (event->type() == QEvent::WindowDeactivate) {
+    if (event->type() == QEvent::ApplicationDeactivate
+        || event->type() == QEvent::WindowDeactivate) {
         releaseActiveInteractions();
+        clearPendingSequence();
+        return false;
+    }
+    if (event->type() == QEvent::FocusOut) {
+        releaseActiveInteractions(qobject_cast<QWidget *>(watched));
         clearPendingSequence();
         return false;
     }
     if (event->type() == QEvent::ShortcutOverride) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (isModifierKey(*keyEvent) && focusedInteractionClaimsModifiers()) {
+            event->accept();
+            return true;
+        }
         if (!isKeySequenceInput(QApplication::focusWidget())
             && (isUiNavigationKey(*keyEvent) || isUiConfirmKey(*keyEvent))) {
             event->accept();
@@ -358,8 +376,12 @@ bool KeyBindingRouter::eventFilter(QObject *watched, QEvent *event) {
 
 bool KeyBindingRouter::routeKeyPress(QKeyEvent &event) {
     if (!windowCanReceiveBindings()) {
+        releaseActiveInteractions();
         clearPendingSequence();
         return false;
+    }
+    if (isModifierKey(event)) {
+        return focusedInteractionClaimsModifiers();
     }
     if (routeInteraction(event, KeyEventPhase::Press) || routeAction(event)) {
         event.accept();
@@ -374,6 +396,9 @@ bool KeyBindingRouter::routeKeyRelease(QKeyEvent &event) {
         event.accept();
         return true;
     }
+    if (isModifierKey(event)) {
+        return focusedInteractionClaimsModifiers();
+    }
 
     return false;
 }
@@ -382,14 +407,14 @@ bool KeyBindingRouter::routeInteraction(QKeyEvent &event, KeyEventPhase phase) {
     const QKeySequence pressed(normalizedCombination(event));
     for (InteractionBinding &binding : interactions_) {
         if (!binding.activePress
-            || binding.activeSequence.matches(pressed) != QKeySequence::ExactMatch) {
+            || binding.activeKey != static_cast<Qt::Key>(event.key())) {
             continue;
         }
         if (phase == KeyEventPhase::Press) {
             binding.handler(binding.interaction, phase, event.isAutoRepeat());
         } else {
             binding.activePress = false;
-            binding.activeSequence = {};
+            binding.activeKey = Qt::Key_unknown;
             if (binding.handleRelease) {
                 binding.handler(binding.interaction, phase, event.isAutoRepeat());
             }
@@ -418,7 +443,7 @@ bool KeyBindingRouter::routeInteraction(QKeyEvent &event, KeyEventPhase phase) {
     InteractionBinding &binding = interactions_[bestIndex];
     const bool handled = binding.handler(binding.interaction, phase, event.isAutoRepeat());
     binding.activePress = handled;
-    binding.activeSequence = handled ? pressed : QKeySequence();
+    binding.activeKey = handled ? static_cast<Qt::Key>(event.key()) : Qt::Key_unknown;
 
     return handled;
 }
@@ -487,6 +512,16 @@ bool KeyBindingRouter::interactionHasFocus(const InteractionBinding &binding) co
         && (focus == binding.owner || binding.owner->isAncestorOf(focus));
 }
 
+bool KeyBindingRouter::focusedInteractionClaimsModifiers() const {
+    return std::any_of(
+        interactions_.cbegin(), interactions_.cend(), [this](const InteractionBinding &binding) {
+            return binding.scope == Scope::Focus
+                && interactionHasFocus(binding)
+                && binding.owner != nullptr
+                && (!binding.enabled || binding.enabled());
+        });
+}
+
 bool KeyBindingRouter::windowCanReceiveBindings() const {
     if (window_ == nullptr || QApplication::activeModalWidget() != nullptr
         || QApplication::activePopupWidget() != nullptr) {
@@ -508,13 +543,18 @@ bool KeyBindingRouter::windowCanReceiveBindings() const {
     return false;
 }
 
-void KeyBindingRouter::releaseActiveInteractions() {
+void KeyBindingRouter::releaseActiveInteractions(QWidget *focusScope) {
     for (InteractionBinding &binding : interactions_) {
-        if (!binding.activePress) {
+        if (!binding.activePress
+            || (focusScope != nullptr
+                && binding.scope == Scope::Focus
+                && (binding.owner == nullptr
+                    || (binding.owner != focusScope
+                        && !binding.owner->isAncestorOf(focusScope))))) {
             continue;
         }
         binding.activePress = false;
-        binding.activeSequence = {};
+        binding.activeKey = Qt::Key_unknown;
         if (binding.handleRelease && binding.owner != nullptr && binding.handler) {
             binding.handler(binding.interaction, KeyEventPhase::Release, false);
         }

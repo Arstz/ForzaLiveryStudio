@@ -57,6 +57,16 @@ bool pathStatesEqual(const PathInteractionState &left, const PathInteractionStat
     return true;
 }
 
+void restorePathState(PathInteraction &path, const PathInteractionState &state) {
+    path.points = state.points;
+    path.cutouts = state.cutouts;
+    path.fillColor = state.fillColor;
+    path.closed = state.closed;
+    path.cutoutClosed = state.cutoutClosed;
+    path.activeCutout = path.cutouts.isEmpty() ? -1 : path.cutouts.size() - 1;
+    path.fillMask = state.fillMask;
+}
+
 } // namespace
 
 ProjectCanvas::ProjectCanvas(QWidget *parent)
@@ -690,6 +700,19 @@ void ProjectCanvas::commitPathEdit(PathInteraction &path) {
     path.pendingEdit.reset();
 }
 
+void ProjectCanvas::cancelPathEdit(PathInteraction &path) {
+    if (!path.pendingEdit.has_value()) {
+        path.resetHover();
+        return;
+    }
+    restorePathState(path, *path.pendingEdit);
+    path.pendingEdit.reset();
+    if (&path == &pen_) {
+        invalidatePenGeometryCache();
+    }
+    refreshPathAfterHistory(path);
+}
+
 void ProjectCanvas::refreshPathAfterHistory(PathInteraction &path) {
     path.resetHover();
     path.crossings.clear();
@@ -718,13 +741,7 @@ bool ProjectCanvas::applyPathHistory(PathInteraction &path, bool undo) {
     }
     destination.push_back(capturePathState(path));
     const PathInteractionState next = source.takeLast();
-    path.points = next.points;
-    path.cutouts = next.cutouts;
-    path.fillColor = next.fillColor;
-    path.closed = next.closed;
-    path.cutoutClosed = next.cutoutClosed;
-    path.activeCutout = path.cutouts.isEmpty() ? -1 : path.cutouts.size() - 1;
-    path.fillMask = next.fillMask;
+    restorePathState(path, next);
     if (&path == &pen_) {
         invalidatePenGeometryCache();
     }

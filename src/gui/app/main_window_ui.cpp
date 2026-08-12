@@ -1231,6 +1231,9 @@ void MainWindow::toggleDockAreaCollapsed(Qt::DockWidgetArea area, QDockWidget *a
 }
 
 bool MainWindow::event(QEvent *event) {
+    if (event->type() == QEvent::WindowDeactivate && canvas_ != nullptr) {
+        canvas_->cancelActiveInput();
+    }
     const bool result = QMainWindow::event(event);
     switch (event->type()) {
     case QEvent::HoverMove:
