@@ -2,6 +2,26 @@
 
 I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and liveries. **Does not** modify the game memory in runtime. We are not responsible for any damage done to your groups/liveries, use at your own discretion. Preferred communication is via [Discord Channel](https://discord.gg/s5B2tExv3k), but you can leave the issue here as well.
 
+## Preview
+
+<p align="center">
+  <em>Design vinyl groups in 2D, then inspect the finished livery on the car in a live 3D preview.</em>
+</p>
+
+<p align="center">
+  <img src="docs/Images/LiveryInGame.png" alt="Forza Livery Studio main workspace" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/Images/LiveryEditing1.png" alt="Forza Livery Studio editor preview" width="49%">
+  <img src="docs/Images/LiveryEditing2.png" alt="Forza Livery Studio livery preview" width="49%">
+</p>
+
+<p align="center">
+  <img src="docs/Images/GroupEdit.png" alt="Forza Livery Studio design tools" width="49%">
+  <img src="docs/Images/GroupInGame.png" alt="Forza Livery Studio car preview" width="49%">
+</p>
+
 ## Features
 
 - Import/export to Forza proprietary binary format.
