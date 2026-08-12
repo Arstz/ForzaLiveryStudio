@@ -166,6 +166,35 @@ if(FLS_BUILD_HELPER_TOOLS)
     )
     target_link_libraries(fls_finish_dump PRIVATE fls_core Qt6::Core)
 
+    add_executable(fls_curve_template_generator
+        tools/curve_template_generator.cpp
+        src/gui/fill/curve_fill.cpp
+        src/gui/fill/differential_cover_geometry.cpp
+        src/gui/fill/differential_cover_gpu.cpp
+        src/gui/fill/pen_fill.cpp
+        src/gui/fill/polygon_mesh.cpp
+        src/gui/fill/region_extract.cpp
+        src/gui/fill/region_fill.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_curve_template_generator PRIVATE
+        src/gui/fill
+        src/gui/widgets
+    )
+    target_link_libraries(fls_curve_template_generator PRIVATE
+        clipper2
+        Qt6::Core
+        Qt6::Gui
+        ZLIB::ZLIB
+        potrace
+    )
+    if(WIN32)
+        target_link_libraries(fls_curve_template_generator PRIVATE
+            d3d11
+            d3dcompiler
+        )
+    endif()
+
 endif()
 
 set(FORZA_LIVERY_STUDIO_TARGET ForzaLiveryStudio)
@@ -387,6 +416,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/bucket_fill.cpp
         src/gui/fill/curve_fill.cpp
         src/gui/fill/differential_cover_geometry.cpp
+        src/gui/fill/differential_cover_gpu.cpp
         src/gui/fill/lining_fill.cpp
         src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
@@ -407,6 +437,25 @@ if(FLS_BUILD_TESTS)
         Qt6::Gui
         ZLIB::ZLIB
         potrace
+    )
+    if(WIN32)
+        target_link_libraries(fls_region_pen_conversion_tests PRIVATE
+            d3d11
+            d3dcompiler
+        )
+    endif()
+    add_custom_command(TARGET fls_region_pen_conversion_tests POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_FILE_DIR:fls_region_pen_conversion_tests>/assets"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/curve_shapes.json"
+            "$<TARGET_FILE_DIR:fls_region_pen_conversion_tests>/assets/curve_shapes.json"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
+            "$<TARGET_FILE_DIR:fls_region_pen_conversion_tests>/assets/differential_shapes.json"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/curve_templates"
+            "$<TARGET_FILE_DIR:fls_region_pen_conversion_tests>/assets/curve_templates"
     )
     add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
 
@@ -472,6 +521,13 @@ if(FLS_BUILD_TESTS)
             d3dcompiler
         )
     endif()
+    add_custom_command(TARGET fls_differential_cover_tests POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_FILE_DIR:fls_differential_cover_tests>/assets"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
+            "$<TARGET_FILE_DIR:fls_differential_cover_tests>/assets/differential_shapes.json"
+    )
     add_test(NAME differential_cover COMMAND fls_differential_cover_tests)
 else()
     add_custom_target(fls_remove_disabled_tests ALL
@@ -563,6 +619,12 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/differential_shapes.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/curve_shapes.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/curve_shapes.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/curve_templates"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/curve_templates"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/settings_tips.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/settings_tips.json"

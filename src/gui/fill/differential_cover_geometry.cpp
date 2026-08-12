@@ -824,11 +824,6 @@ ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry) {
             ++edgeCounts[std::minmax(left, right)];
         }
     }
-    if (result.triangles.size() != result.vertices.size() - 2) {
-        result.error = QStringLiteral("shape %1 triangulation count is invalid").arg(shapeId);
-        return result;
-    }
-
     QVector<QVector<int>> adjacency(result.vertices.size());
     int boundaryEdgeCount = 0;
     for (const auto &[edge, count] : edgeCounts) {
@@ -853,21 +848,96 @@ ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry) {
         }
     }
 
-    int previous = -1;
-    int current = 0;
-    for (int i = 0; i < result.vertices.size(); ++i) {
-        result.boundary.push_back(result.vertices[current]);
-        const QVector<int> &neighbors = adjacency[current];
-        const int next = neighbors[0] == previous ? neighbors[1] : neighbors[0];
-        previous = current;
-        current = next;
+    QVector<QVector<Vec2>> boundaryLoops;
+    QVector<bool> visited(result.vertices.size(), false);
+    for (int start = 0; start < result.vertices.size(); ++start) {
+        if (visited[start]) {
+            continue;
+        }
+        QVector<Vec2> loop;
+        int previous = -1;
+        int current = start;
+        do {
+            if (visited[current]) {
+                result.error = QStringLiteral(
+                    "shape %1 boundary revisits a vertex").arg(shapeId);
+                return result;
+            }
+            visited[current] = true;
+            loop.push_back(result.vertices[current]);
+            const QVector<int> &neighbors = adjacency[current];
+            const int next = neighbors[0] == previous
+                ? neighbors[1] : neighbors[0];
+            previous = current;
+            current = next;
+        } while (current != start);
+        boundaryLoops.push_back(std::move(loop));
     }
-    if (current != 0) {
-        result.error = QStringLiteral("shape %1 boundary did not close").arg(shapeId);
-        return result;
+    for (int loopIndex = 0; loopIndex < boundaryLoops.size(); ++loopIndex) {
+        const Vec2 probe = boundaryLoops[loopIndex].front();
+        int containmentDepth = 0;
+        for (int otherIndex = 0; otherIndex < boundaryLoops.size();
+             ++otherIndex) {
+            if (otherIndex == loopIndex) {
+                continue;
+            }
+            QPolygonF polygon;
+            polygon.reserve(boundaryLoops[otherIndex].size());
+            for (const Vec2 &point : boundaryLoops[otherIndex]) {
+                polygon.push_back(QPointF(point.x, point.y));
+            }
+            containmentDepth += polygon.containsPoint(
+                QPointF(probe.x, probe.y), Qt::OddEvenFill);
+        }
+        const bool shouldBePositive = containmentDepth % 2 == 0;
+        if ((signedArea(boundaryLoops[loopIndex]) > 0.0)
+            != shouldBePositive) {
+            std::reverse(boundaryLoops[loopIndex].begin(),
+                         boundaryLoops[loopIndex].end());
+        }
     }
-    if (signedArea(result.boundary) < 0.0) {
-        std::reverse(result.boundary.begin(), result.boundary.end());
+    std::sort(boundaryLoops.begin(), boundaryLoops.end(),
+              [](const QVector<Vec2> &left, const QVector<Vec2> &right) {
+        return std::abs(signedArea(left)) > std::abs(signedArea(right));
+    });
+    result.boundary = boundaryLoops.front();
+    for (int loopIndex = 1; loopIndex < boundaryLoops.size(); ++loopIndex) {
+        const QVector<Vec2> &loop = boundaryLoops[loopIndex];
+        int boundaryBridge = 0;
+        int loopBridge = 0;
+        double bridgeDistance = std::numeric_limits<double>::max();
+        for (int boundaryIndex = 0;
+             boundaryIndex < result.boundary.size(); ++boundaryIndex) {
+            for (int candidateIndex = 0;
+                 candidateIndex < loop.size(); ++candidateIndex) {
+                const double dx = result.boundary[boundaryIndex].x
+                    - loop[candidateIndex].x;
+                const double dy = result.boundary[boundaryIndex].y
+                    - loop[candidateIndex].y;
+                const double distance = dx * dx + dy * dy;
+                if (distance < bridgeDistance) {
+                    bridgeDistance = distance;
+                    boundaryBridge = boundaryIndex;
+                    loopBridge = candidateIndex;
+                }
+            }
+        }
+        QVector<Vec2> stitched;
+        stitched.reserve(result.boundary.size() + loop.size() + 2);
+        for (int index = 0; index <= boundaryBridge; ++index) {
+            stitched.push_back(result.boundary[index]);
+        }
+        stitched.push_back(loop[loopBridge]);
+        for (int offset = 1; offset < loop.size(); ++offset) {
+            stitched.push_back(loop[(loopBridge + offset) % loop.size()]);
+        }
+        stitched.push_back(loop[loopBridge]);
+        stitched.push_back(result.boundary[boundaryBridge]);
+        for (int index = boundaryBridge + 1;
+             index < result.boundary.size(); ++index) {
+            stitched.push_back(result.boundary[index]);
+        }
+        result.boundary = std::move(stitched);
     }
 
     double triangleArea = 0.0;
@@ -880,7 +950,11 @@ ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry) {
             Vec2{c.x - a.x, c.y - a.y}))
             * 0.5;
     }
-    const double boundaryArea = std::abs(signedArea(result.boundary));
+    double boundaryArea = 0.0;
+    for (const QVector<Vec2> &loop : std::as_const(boundaryLoops)) {
+        boundaryArea += signedArea(loop);
+    }
+    boundaryArea = std::abs(boundaryArea);
     if (std::abs(triangleArea - boundaryArea)
         > std::max(1.0, boundaryArea) * 1e-8) {
         result.error = QStringLiteral("shape %1 triangles overlap or leave gaps")
@@ -888,9 +962,10 @@ ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry) {
         return result;
     }
     result.area = boundaryArea;
-    result.convex = boundaryIsConvex(result.boundary);
+    result.convex = boundaryLoops.size() == 1
+        && boundaryIsConvex(result.boundary);
     result.features =
-        shapeFeatures(result.boundary);
+        shapeFeatures(boundaryLoops.front());
     if (result.features.isEmpty()) {
         result.error =
             QStringLiteral("shape %1 has no salient boundary features")

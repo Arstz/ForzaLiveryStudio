@@ -1,0 +1,33 @@
+{
+    "points": [
+        {
+            "kind": "hard",
+            "x": -64,
+            "y": 64
+        },
+        {
+            "kind": "hard",
+            "x": 64,
+            "y": 64
+        },
+        {
+            "kind": "hard",
+            "x": 64,
+            "y": -64
+        },
+        {
+            "kind": "hard",
+            "x": -64,
+            "y": -64
+        }
+    ],
+    "raster_scale": 2,
+    "shape_id": 101,
+    "source_bounds": {
+        "height": 128,
+        "width": 128,
+        "x": -64,
+        "y": -64
+    },
+    "version": 1
+}

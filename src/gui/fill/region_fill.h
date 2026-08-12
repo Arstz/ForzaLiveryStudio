@@ -48,10 +48,12 @@ struct GeneratedRegionVariant {
 struct RegionFillBatchRequest {
     RegionExtractionResult regions;
     QVector<PenPrimitive> primitives;
+    ShapeGeometryStore geometry;
     PolygonMeshSources meshSources;
     QString overlayGuideId;
     quint64 overlayGeneration = 0;
     FillAlgorithm algorithm = FillAlgorithm::Analytic;
+    bool useGpu = true;
 };
 
 struct RegionFillBatchResult {
@@ -78,6 +80,8 @@ void sortRegionFillLayersByDrawOrder(QVector<RegionFillLayer> *layers);
 struct RegionPenConversionOptions {
     double mergeTolerance = 1.1;
     double maximumDeviationMultiplier = 1.0;
+    double maximumBoundaryDeviation = 1.0;
+    double maximumAreaErrorRatio = 0.025;
     double maximumDssim = 0.001;
     int dssimSupersample = 4;
     QSize comparisonImageSize;
@@ -95,9 +99,12 @@ struct RegionPenConversionResult {
     int originalPointCount = 0;
     int removedHardPoints = 0;
     int removedSoftPoints = 0;
+    int movedHardPoints = 0;
     bool optimizationSkipped = false;
     double baselineDeviation = 0.0;
     double maximumDeviation = 0.0;
+    double maximumHardPointMovement = 0.0;
+    double areaErrorRatio = 0.0;
     double dssim = 0.0;
 
     bool valid() const { return error.isEmpty() && points.size() >= 3; }
@@ -109,9 +116,12 @@ struct RegionFillContourStats {
     int flattenedPointCount = 0;
     int removedHardPoints = 0;
     int removedSoftPoints = 0;
+    int movedHardPoints = 0;
     bool optimizationSkipped = false;
     bool softRunRetry = false;
     bool baselineRetry = false;
+    double maximumHardPointMovement = 0.0;
+    double areaErrorRatio = 0.0;
     double dssim = 0.0;
 };
 

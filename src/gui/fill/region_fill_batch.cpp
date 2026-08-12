@@ -1,4 +1,5 @@
 #include "region_fill.h"
+#include "curve_fill.h"
 #include "region_layer_plan.h"
 
 #include <QElapsedTimer>
@@ -178,7 +179,21 @@ RegionFillBatchResult computeRegionFills(
     result.overlayGuideId = request.overlayGuideId;
     result.overlayGeneration = request.overlayGeneration;
     const RegionExtractionResult &regionOverlay = request.regions;
-    const QVector<PenPrimitive> &primitives = request.primitives;
+    QVector<PenPrimitive> primitives = request.primitives;
+    QVector<cover::ShapeMesh> curveMeshes;
+    if (request.algorithm == FillAlgorithm::CurveBased) {
+        const CurveFillCatalog catalog = cachedCurveFillCatalog(
+            request.geometry, progress, cancelled);
+        if (!catalog.valid()) {
+            result.cancelled = cancelled && cancelled();
+            result.error = catalog.error.isEmpty()
+                ? QStringLiteral("Curve shape catalog is unavailable")
+                : catalog.error;
+            return result;
+        }
+        primitives = catalog.primitives;
+        curveMeshes = catalog.meshes;
+    }
     if (regionOverlay.regions.isEmpty() || primitives.isEmpty()) {
         result.error = QStringLiteral("Region fill input is empty");
         return result;
@@ -442,7 +457,7 @@ RegionFillBatchResult computeRegionFills(
                             regionOverlay.imageSize;
                         conversionOptions.fallback.mergeTolerance =
                             kCurveContourMergeTolerance;
-                        conversionOptions.fallback.maximumDeviationMultiplier = 8.0;
+                        conversionOptions.fallback.maximumDeviationMultiplier = 1.0;
                         conversionOptions.fallback.maximumDssim =
                             kCurveContourMaximumDssim;
                         const RegionPenLoopConversionResult conversion =
@@ -455,11 +470,13 @@ RegionFillBatchResult computeRegionFills(
                             PenFillRequest fillRequest;
                             fillRequest.loops = conversion.loops;
                             fillRequest.primitives = primitives;
+                            fillRequest.curveMeshes = curveMeshes;
                             fillRequest.targetPath = trace.target;
                             fillRequest.legalEnvelope = trace.legalEnvelope;
                             fillRequest.boundaryTolerance = tolerance;
                             fillRequest.shapeLimit = std::max(
                                 6, trace.target.elementCount() * 2);
+                            fillRequest.useGpu = request.useGpu;
                             work.fit = fillPenPath(fillRequest, unitCancelled);
                             const PenContour optimized = buildPenContour(
                                 conversion.loops);
@@ -615,8 +632,15 @@ RegionFillBatchResult computeRegionFills(
                .arg(biggestWork.contourStats.softRunRetry
                         ? QStringLiteral("yes") : QStringLiteral("no"))
                .arg(biggestWork.contourStats.optimizationSkipped
-                        ? QStringLiteral("yes") : QStringLiteral("no"))
+                         ? QStringLiteral("yes") : QStringLiteral("no"))
                .arg(biggestWork.contourStats.dssim, 0, 'g', 8);
+    log << QStringLiteral(
+               "Biggest region relocation: moved-hard=%1 maximum-movement=%2 "
+               "area-error=%3")
+               .arg(biggestWork.contourStats.movedHardPoints)
+               .arg(biggestWork.contourStats.maximumHardPointMovement,
+                    0, 'g', 8)
+               .arg(biggestWork.contourStats.areaErrorRatio, 0, 'g', 8);
 
     const QString pointsLogPath = QCoreApplication::applicationDirPath()
         + QStringLiteral("/region_points.log");
@@ -638,6 +662,12 @@ RegionFillBatchResult computeRegionFills(
                << biggestWork.contourStats.removedHardPoints << '\n'
                << "removed_soft_point_count="
                << biggestWork.contourStats.removedSoftPoints << '\n'
+               << "moved_hard_point_count="
+               << biggestWork.contourStats.movedHardPoints << '\n'
+               << "maximum_hard_point_movement="
+               << biggestWork.contourStats.maximumHardPointMovement << '\n'
+               << "area_error_ratio="
+               << biggestWork.contourStats.areaErrorRatio << '\n'
                << "hard_only_retry="
                << (biggestWork.contourStats.softRunRetry ? "yes" : "no") << '\n'
                << "flattened_point_count="

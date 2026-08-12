@@ -324,6 +324,7 @@ struct AreaGradient {
 
 QVector<ShapeMesh> buildShapeCatalog(const ShapeGeometryStore &geometry,
                                      QString *error = nullptr);
+ShapeMesh buildShapeMesh(int shapeId, const ShapeGeometry &geometry);
 
 Polygons polygonsFromPainterPath(
     const QPainterPath &path,

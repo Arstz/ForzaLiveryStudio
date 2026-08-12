@@ -156,12 +156,14 @@ private:
     void refreshPropertyBoxFieldsFromCanvas();
     void startPenFill(const QVector<PenLoop> &loops,
                       const std::optional<QColor> &fillColor = std::nullopt,
-                      bool fillMask = false);
+                      bool fillMask = false,
+                      const QPainterPath &targetPath = {},
+                      const QPainterPath &legalEnvelope = {});
     void startLiningFill(const QVector<PenPoint> &points,
                          double width,
                          const std::optional<QColor> &fillColor = std::nullopt);
-    using GeneratedFillProgress =
-        std::function<void(int, double, double)>;
+    using GeneratedFillProgress = std::function<void(
+        const QString &, int, int, int, double, double)>;
     using GeneratedFillFunction = std::function<PenFillResult(
         const std::function<bool()> &, const GeneratedFillProgress &)>;
     void prepareGeneratedFill(const std::optional<QColor> &fillColor,
@@ -173,8 +175,10 @@ private:
     void cancelActiveFills();
     void cancelGeneratedFill(bool keepPartial = false);
     void refreshGeneratedFillElapsedTime();
-    void updateGeneratedFillProgress(quint64 generation, int placementCount,
-                                     double targetArea, double coveredArea);
+    void updateGeneratedFillProgress(quint64 generation, const QString &phase,
+                                     int completed, int total,
+                                     int placementCount, double targetArea,
+                                     double coveredArea);
     void finishGeneratedFill(quint64 generation, PenFillResult result);
     void cancelRegionFill();
     void updateRegionFillProgress(quint64 generation, const QString &phase,
@@ -315,6 +319,7 @@ private:
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;
+    QString generatedFillPhase_;
     QString contourLeewayGroupId_;
     QString generatedFillLeewayGroupId_;
     QElapsedTimer generatedFillElapsed_;
@@ -322,6 +327,8 @@ private:
     QProgressBar *generatedFillProgress_ = nullptr;
     quint64 generatedFillGeneration_ = 0;
     int generatedFillPlacementCount_ = 0;
+    int generatedFillPhaseCompleted_ = 0;
+    int generatedFillPhaseTotal_ = 0;
     double generatedFillTargetArea_ = 0.0;
     double generatedFillCoveredArea_ = 0.0;
     bool generatedFillMask_ = false;

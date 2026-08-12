@@ -18,6 +18,8 @@ PathInteractionState capturePathState(const PathInteraction &path) {
         path.points,
         path.cutouts,
         path.fillColor,
+        path.targetPath,
+        path.legalEnvelope,
         path.closed,
         path.cutoutClosed,
         path.fillMask,
@@ -26,10 +28,9 @@ PathInteractionState capturePathState(const PathInteraction &path) {
     return state;
 }
 
-bool pathStatesEqual(const PathInteractionState &left, const PathInteractionState &right) {
+bool pathGeometryStatesEqual(const PathInteractionState &left,
+                             const PathInteractionState &right) {
     if (left.closed != right.closed
-        || left.fillMask != right.fillMask
-        || left.fillColor != right.fillColor
         || left.cutoutClosed != right.cutoutClosed
         || left.cutouts.size() != right.cutouts.size()
         || left.points.size() != right.points.size()) {
@@ -56,6 +57,15 @@ bool pathStatesEqual(const PathInteractionState &left, const PathInteractionStat
         }
     }
     return true;
+}
+
+bool pathStatesEqual(const PathInteractionState &left,
+                     const PathInteractionState &right) {
+    return pathGeometryStatesEqual(left, right)
+        && left.fillMask == right.fillMask
+        && left.fillColor == right.fillColor
+        && left.targetPath == right.targetPath
+        && left.legalEnvelope == right.legalEnvelope;
 }
 
 } // namespace
@@ -120,6 +130,7 @@ void ProjectCanvas::setEditorState(EditorState *state) {
 
 bool ProjectCanvas::loadGeometry(QString *error) {
     geometryLoaded_ = geometry_.loadDefault(error);
+    invalidateCurveFillCatalog();
     curvePrimitiveCatalogCache_.clear();
     curvePrimitiveCatalogErrorCache_.clear();
     curvePrimitiveCatalogBuilt_ = false;
@@ -510,7 +521,9 @@ void ProjectCanvas::setPenFillRequestedCallback(
     std::function<void(
         const QVector<PenLoop> &,
         const std::optional<QColor> &,
-        bool)> callback) {
+        bool,
+        const QPainterPath &,
+        const QPainterPath &)> callback) {
     penFillRequestedCallback_ = std::move(callback);
 }
 
@@ -532,6 +545,10 @@ QVector<PenPrimitive> ProjectCanvas::curvePrimitiveCatalog(QString *error) const
         *error = curvePrimitiveCatalogErrorCache_;
     }
     return curvePrimitiveCatalogCache_;
+}
+
+ShapeGeometryStore ProjectCanvas::shapeGeometrySnapshot() const {
+    return geometry_;
 }
 
 QVector<cover::ShapeMesh> ProjectCanvas::differentialCoverCatalog(QString *error) const {
@@ -662,6 +679,8 @@ void ProjectCanvas::discardPathInteraction(PathInteraction &path,
     path.cutouts.clear();
     path.crossings.clear();
     path.fillColor.reset();
+    path.targetPath = {};
+    path.legalEnvelope = {};
     path.fillMask = false;
     path.error.clear();
     path.fillMessage.clear();
@@ -688,7 +707,16 @@ void ProjectCanvas::commitPathEdit(PathInteraction &path) {
     if (!path.pendingEdit.has_value()) {
         return;
     }
-    if (!pathStatesEqual(*path.pendingEdit, capturePathState(path))) {
+    PathInteractionState current = capturePathState(path);
+    if (&path == &pen_
+        && !pathGeometryStatesEqual(*path.pendingEdit, current)
+        && current.targetPath == path.pendingEdit->targetPath
+        && current.legalEnvelope == path.pendingEdit->legalEnvelope) {
+        path.targetPath = {};
+        path.legalEnvelope = {};
+        current = capturePathState(path);
+    }
+    if (!pathStatesEqual(*path.pendingEdit, current)) {
         path.undoStack.push_back(std::move(*path.pendingEdit));
         path.redoStack.clear();
         if (&path == &pen_) {
@@ -729,6 +757,8 @@ bool ProjectCanvas::applyPathHistory(PathInteraction &path, bool undo) {
     path.points = next.points;
     path.cutouts = next.cutouts;
     path.fillColor = next.fillColor;
+    path.targetPath = next.targetPath;
+    path.legalEnvelope = next.legalEnvelope;
     path.closed = next.closed;
     path.cutoutClosed = next.cutoutClosed;
     path.activeCutout = path.cutouts.isEmpty() ? -1 : path.cutouts.size() - 1;
@@ -921,6 +951,8 @@ void ProjectCanvas::closePenPath() {
     const QVector<PenLoop> loops = currentPenLoops();
     const std::optional<QColor> fillColor = pen_.fillColor;
     const bool fillMask = pen_.fillMask;
+    const QPainterPath targetPath = pen_.targetPath;
+    const QPainterPath legalEnvelope = pen_.legalEnvelope;
     pen_.resetHover();
     pen_.crossings.clear();
     pen_.error.clear();
@@ -929,7 +961,7 @@ void ProjectCanvas::closePenPath() {
     pen_.fillMessage = QStringLiteral("Filling Pen path…");
     update();
     penFillRequestedCallback_(
-        loops, fillColor, fillMask);
+        loops, fillColor, fillMask, targetPath, legalEnvelope);
 }
 
 void ProjectCanvas::requestLiningFill() {

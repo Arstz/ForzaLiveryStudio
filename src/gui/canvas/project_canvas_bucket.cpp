@@ -10,6 +10,37 @@
 namespace gui {
 namespace {
 
+std::vector<std::uint8_t> bucketLegalMask(
+    const BucketFillResult &fill,
+    const QImage &image) {
+    std::vector<std::uint8_t> result = fill.mask;
+    const int width = fill.imageSize.width();
+    const int height = fill.imageSize.height();
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (fill.mask[index] == 0) {
+                continue;
+            }
+            for (int offsetY = -1; offsetY <= 1; ++offsetY) {
+                for (int offsetX = -1; offsetX <= 1; ++offsetX) {
+                    const int neighborX = x + offsetX;
+                    const int neighborY = y + offsetY;
+                    if (neighborX < 0 || neighborY < 0
+                        || neighborX >= width || neighborY >= height
+                        || qAlpha(image.pixel(neighborX, neighborY)) == 0) {
+                        continue;
+                    }
+                    result[static_cast<size_t>(neighborY) * width
+                           + neighborX] = 1;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
 } // namespace
 
 using namespace pc_detail;
@@ -226,6 +257,12 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
         update();
         return false;
     }
+    const std::vector<std::uint8_t> legalMask = bucketLegalMask(
+        bucket_.fill, image);
+    const QPainterPath tracedLegalEnvelope = traceMaskToPath(
+        legalMask, bucket_.fill.imageSize.width(),
+        bucket_.fill.imageSize.height(), bucket_.fill.bounds,
+        traceParams);
 
     RegionPenLoopConversionOptions conversionOptions;
     conversionOptions.fallback.comparisonImageSize = image.size();
@@ -233,7 +270,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
     if (curveBased) {
         conversionOptions.fallback.mergeTolerance =
             kCurveContourMergeTolerance;
-        conversionOptions.fallback.maximumDeviationMultiplier = 8.0;
+        conversionOptions.fallback.maximumDeviationMultiplier = 1.0;
         conversionOptions.fallback.maximumDssim =
             kCurveContourMaximumDssim;
     }
@@ -290,6 +327,9 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
         : bucket_.fill.averageColor;
     pen_.fillMask =
         bucket_.fill.transparentTarget;
+    pen_.targetPath = imageToWorld.map(traced);
+    pen_.legalEnvelope = tracedLegalEnvelope.isEmpty()
+        ? pen_.targetPath : imageToWorld.map(tracedLegalEnvelope);
     pen_.closed = true;
     pen_.hoverWorld = pen_.points.front().position;
     pen_.crossings.clear();

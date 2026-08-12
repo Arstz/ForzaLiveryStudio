@@ -1,5 +1,6 @@
 #pragma once
 
+#include "differential_cover.h"
 #include "fill_contour.h"
 #include "shape_geometry_store.h"
 
@@ -71,12 +72,26 @@ struct PenFillRequest {
     QVector<PenPoint> points;
     QVector<PenLoop> loops;
     QVector<PenPrimitive> primitives;
+    QVector<cover::ShapeMesh> curveMeshes;
     QPainterPath targetPath;
     QPainterPath legalEnvelope;
     double boundaryTolerance = 0.1;
     int shapeLimit = 0;
+    int curveTimeBudgetMs = 0;
     bool discardNegligiblePlacements = true;
+    bool useGpu = false;
 };
+
+struct PenFillProgress {
+    QString phase;
+    int completed = 0;
+    int total = 0;
+    int placementCount = 0;
+    double targetArea = 0.0;
+    double coveredArea = 0.0;
+};
+
+using PenFillProgressCallback = std::function<void(const PenFillProgress &)>;
 
 struct PenFillResult {
     QVector<PenPlacement> placements;
@@ -97,6 +112,7 @@ QVector<PenPrimitive> buildPenPrimitiveCatalog(const ShapeGeometryStore &geometr
                                                int firstShapeId = 101,
                                                int lastShapeId = 0x084b);
 PenFillResult fillPenPath(const PenFillRequest &request,
-                         const std::function<bool()> &cancelled = {});
+                         const std::function<bool()> &cancelled = {},
+                         const PenFillProgressCallback &progress = {});
 
 } // namespace gui

@@ -191,13 +191,23 @@ exports grouped `C_group` folders and `C_livery` folders.
   inflections, classifies supported sharp junctions as hard points, removes redundant
   hard points from smooth or straight spans, and least-squares fits compact quadratic
   soft-point runs under boundary-deviation and raster-similarity guards. Region contours
-  may use the wider deviation search needed to reproduce human simplification, but every
-  sampled point remains inside a two-times-rasterized one-pixel legal envelope. A bounded
-  binary search finds the minimum accepted control count up to 32 instead of falling back
-  to one-at-a-time removal for long smooth runs. Curved loops
+  preserve the unoptimized Potrace path as the authoritative fill target while the editable
+  hard/soft contour remains within a symmetric one-pixel boundary limit and a bounded area
+  error. Every two-control run is tested against a one-control least-squares fit, and hard
+  anchors search nearby source-contour positions while both adjacent spans are refitted.
+  Curved loops
   retain at least two hard anchors and no more than two consecutive soft controls;
   template hard anchors prefer boundary vertices from the source triangle geometry
-  when the same guards accept the snap. Its legal
+  when the same guards accept the snap. Precomputed curve templates are loaded and cached
+  in the generated-fill worker. Candidate silhouettes can be shortlisted in batches through
+  the Differential Direct3D/CUDA area evaluator, followed by exact CPU boundary and legal
+  envelope validation. Both single and multi-segment matching first retain at most sixteen
+  geometry-ranked template profiles, batch their transforms on the GPU when available, and
+  permit at most eight distinct-shape candidates to reach exact path validation. Direct
+  Curve fills have a 30-second matching budget and fall back to the safe polygon mesh instead
+  of remaining indefinitely in candidate evaluation. Multi-segment matching covers outward
+  and inward cyclic spans, and
+  the status bar reports template, candidate, core-mesh, and cleanup phases. Its legal
   envelope may extend by one pixel into neighboring coloured regions, but never into
   transparent background, so later layers can conceal the permitted overlap.
   Successful Pen and Bucket fills also retain the source contour as a visible, non-exported
@@ -461,9 +471,12 @@ Build output is written to `build/ForzaLiveryStudio`.
 ### Runtime Assets
 
 Runtime assets live in `assets/` (repo root). The build copies that folder next
-to the editor executable. Differential and Curve-based fill read the same 18 shape IDs from
-`assets/differential_shapes.json`, icons live in `assets/icons/`, and vector data
-lives in `assets/vector/`.
+to the editor executable. Differential fill reads its 18 mesh IDs from
+`assets/differential_shapes.json`. Curve-based fill reads its independent 49-shape catalog
+from `assets/curve_shapes.json` and loads the checked-in Pen paths from
+`assets/curve_templates/`. Run `tools/generate_curve_templates.ps1` after adding Curve IDs;
+the generator skips existing templates by default, while `-Force` intentionally rebuilds
+all of them. Icons live in `assets/icons/`, and vector data lives in `assets/vector/`.
 
 ## Run
 

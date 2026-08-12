@@ -641,6 +641,7 @@ void MainWindow::fillRegions() {
                                  5000);
         return;
     }
+    request.useGpu = loadDifferentialFillOptions().useGpu;
 
     const quint64 generation = ++regionFillGeneration_;
     const auto token = std::make_shared<std::atomic_bool>(false);

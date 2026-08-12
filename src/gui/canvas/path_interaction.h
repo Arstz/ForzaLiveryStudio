@@ -25,6 +25,8 @@ struct PathInteractionState {
     QVector<PenPoint> points;
     QVector<QVector<PenPoint>> cutouts;
     std::optional<QColor> fillColor;
+    QPainterPath targetPath;
+    QPainterPath legalEnvelope;
     bool closed = false;
     bool cutoutClosed = true;
     bool fillMask = false;
@@ -34,6 +36,8 @@ struct PathInteraction {
     QVector<PenPoint> points;
     QVector<QVector<PenPoint>> cutouts;
     std::optional<QColor> fillColor;
+    QPainterPath targetPath;
+    QPainterPath legalEnvelope;
     QVector<QPointF> crossings;
     QPointF hoverWorld;
     QPointF dragOffsetWorld;
@@ -67,6 +71,8 @@ struct PathInteraction {
         cutouts.clear();
         crossings.clear();
         fillColor.reset();
+        targetPath = {};
+        legalEnvelope = {};
         error.clear();
         fillMessage.clear();
         resetHover();

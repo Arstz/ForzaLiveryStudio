@@ -34,9 +34,11 @@ void MainWindow::setupCanvas() {
     canvas_->setPenFillRequestedCallback(
         [this](const QVector<PenLoop> &loops,
                const std::optional<QColor> &fillColor,
-               bool fillMask) {
+               bool fillMask,
+               const QPainterPath &targetPath,
+               const QPainterPath &legalEnvelope) {
         startPenFill(
-            loops, fillColor, fillMask);
+            loops, fillColor, fillMask, targetPath, legalEnvelope);
     });
     canvas_->setPenFillCancelCallback(
         [this]() { cancelGeneratedFill(true); });

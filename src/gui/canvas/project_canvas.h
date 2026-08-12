@@ -82,10 +82,13 @@ public:
         std::function<void(
             const QVector<PenLoop> &,
             const std::optional<QColor> &,
-            bool)> callback);
+            bool,
+            const QPainterPath &,
+            const QPainterPath &)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
     QVector<PenPrimitive> curvePrimitiveCatalog(QString *error = nullptr) const;
+    ShapeGeometryStore shapeGeometrySnapshot() const;
     QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
     bool canAssignContourLeeway() const;
     void setContourLeewayGroupId(const QString &groupId);
@@ -542,7 +545,9 @@ private:
     std::function<void(
         const QVector<PenLoop> &,
         const std::optional<QColor> &,
-        bool)> penFillRequestedCallback_;
+        bool,
+        const QPainterPath &,
+        const QPainterPath &)> penFillRequestedCallback_;
     std::function<void()> penFillCancelCallback_;
     std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> liningFillRequestedCallback_;
     std::function<void()> liningFillCancelCallback_;

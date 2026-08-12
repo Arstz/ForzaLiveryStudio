@@ -4,6 +4,7 @@
 
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
+#include "curve_fill.h"
 #include "differential_cover.h"
 #include "image_io.h"
 #include "layer_tree_view.h"
@@ -122,6 +123,29 @@ void writePenFillLog(const PenFillRequest &request,
         request.boundaryTolerance);
     requestObject.insert(QStringLiteral("discardNegligiblePlacements"),
                          request.discardNegligiblePlacements);
+    requestObject.insert(QStringLiteral("curveTimeBudgetMs"),
+                         request.curveTimeBudgetMs);
+    requestObject.insert(QStringLiteral("useGpu"), request.useGpu);
+    requestObject.insert(QStringLiteral("authoritativeTargetProvided"),
+                         !request.targetPath.isEmpty());
+    const auto pathBoundsObject = [](const QPainterPath &path) {
+        const QRectF bounds = path.boundingRect();
+        QJsonObject object;
+        object.insert(QStringLiteral("left"), bounds.left());
+        object.insert(QStringLiteral("top"), bounds.top());
+        object.insert(QStringLiteral("right"), bounds.right());
+        object.insert(QStringLiteral("bottom"), bounds.bottom());
+        object.insert(QStringLiteral("elements"), path.elementCount());
+        return object;
+    };
+    if (!request.targetPath.isEmpty()) {
+        requestObject.insert(QStringLiteral("authoritativeTarget"),
+                             pathBoundsObject(request.targetPath));
+    }
+    if (!request.legalEnvelope.isEmpty()) {
+        requestObject.insert(QStringLiteral("legalEnvelope"),
+                             pathBoundsObject(request.legalEnvelope));
+    }
     requestObject.insert(QStringLiteral("loops"), loops);
     if (options != nullptr) {
         QJsonObject optionsObject;
@@ -638,7 +662,9 @@ PenFillResult differentialContourFill(
 
 void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                               const std::optional<QColor> &fillColor,
-                              bool fillMask) {
+                              bool fillMask,
+                              const QPainterPath &targetPath,
+                              const QPainterPath &legalEnvelope) {
     if (!ensureProjectForInsertion() || canvas_ == nullptr) {
         if (canvas_ != nullptr) {
             canvas_->setPenFillRunning(false);
@@ -663,6 +689,8 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         GeneratedPenContourState{loops, fillColor, fillMask};
     PenFillRequest request;
     request.loops = loops;
+    request.targetPath = targetPath;
+    request.legalEnvelope = legalEnvelope;
     if (differential) {
         cover::FillOptions options =
             loadDifferentialFillOptions();
@@ -737,7 +765,14 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                 PenFillResult result =
                     differentialContourFill(
                         input, catalog, options,
-                        cancelled, progress,
+                        cancelled,
+                        [&progress](int placementCount,
+                                    double targetArea,
+                                    double coveredArea) {
+                            progress(QStringLiteral("Optimizing coverage"),
+                                     0, 0, placementCount,
+                                     targetArea, coveredArea);
+                        },
                         &profile, &metrics);
                 writePenFillLog(
                     request, result, strategy,
@@ -749,19 +784,13 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     }
 
     if (curveBased) {
-        QString catalogError;
-        request.primitives = canvas_->curvePrimitiveCatalog(&catalogError);
-        if (request.primitives.isEmpty()) {
-            canvas_->setPenFillRunning(false);
-            clearGeneratedFillState();
-            statusBar()->showMessage(
-                QStringLiteral("Curve-based fill failed: %1")
-                    .arg(catalogError.isEmpty()
-                             ? QStringLiteral("shape geometry is unavailable")
-                             : catalogError),
-                4000);
-            return;
-        }
+        const ShapeGeometryStore geometry = canvas_->shapeGeometrySnapshot();
+        request.useGpu = loadDifferentialFillOptions().useGpu;
+        request.curveTimeBudgetMs = 30000;
+        generatedFillProgress_->setRange(0, 0);
+        generatedFillProgress_->setFormat(
+            QStringLiteral("Preparing curve templates…"));
+        generatedFillProgress_->show();
         canvas_->setPenFillRunning(
             true, QStringLiteral("Matching curve-based contour fill…"));
         statusBar()->showMessage(
@@ -772,10 +801,37 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             ? QStringLiteral("curve-based-bucket")
             : QStringLiteral("curve-based-pen");
         startGeneratedFillTask(
-            [request = std::move(request), strategy](
+            [request = std::move(request), strategy, geometry](
                 const std::function<bool()> &cancelled,
-                const GeneratedFillProgress &) {
-                PenFillResult result = fillPenPath(request, cancelled);
+                const GeneratedFillProgress &progress) mutable {
+                const CurveFillCatalog catalog = cachedCurveFillCatalog(
+                    geometry,
+                    [&progress](const QString &phase,
+                                int completed, int total) {
+                        progress(phase, completed, total,
+                                 0, 0.0, 0.0);
+                    },
+                    cancelled);
+                if (!catalog.valid()) {
+                    PenFillResult result;
+                    result.cancelled = cancelled && cancelled();
+                    result.error = catalog.error.isEmpty()
+                        ? QStringLiteral("Curve shape catalog is unavailable")
+                        : catalog.error;
+                    return result;
+                }
+                request.primitives = catalog.primitives;
+                request.curveMeshes = catalog.meshes;
+                PenFillResult result = fillPenPath(
+                    request, cancelled,
+                    [&progress](const PenFillProgress &fillProgress) {
+                        progress(fillProgress.phase,
+                                 fillProgress.completed,
+                                 fillProgress.total,
+                                 fillProgress.placementCount,
+                                 fillProgress.targetArea,
+                                 fillProgress.coveredArea);
+                    });
                 writePenFillLog(request, result, strategy);
 
                 return result;
@@ -863,10 +919,14 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
     const quint64 generation = ++generatedFillGeneration_;
     const auto token = std::make_shared<std::atomic_bool>(false);
     generatedFillCancel_ = token;
-    if (generatedFillTool_ == QStringLiteral("differential")) {
+    if (generatedFillTool_ == QStringLiteral("differential")
+        || generatedFillTool_ == QStringLiteral("curve-based")) {
         generatedFillPlacementCount_ = 0;
+        generatedFillPhaseCompleted_ = 0;
+        generatedFillPhaseTotal_ = 0;
         generatedFillTargetArea_ = 0.0;
         generatedFillCoveredArea_ = 0.0;
+        generatedFillPhase_.clear();
         generatedFillElapsed_.restart();
         generatedFillElapsedTimer_->start();
     }
@@ -877,19 +937,21 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
             [token]() {
                 return token->load(std::memory_order_relaxed);
             },
-            [guard, generation](int placementCount, double targetArea,
+            [guard, generation](const QString &phase,
+                                int completed, int total,
+                                int placementCount, double targetArea,
                                 double coveredArea) {
                 if (guard.isNull()) {
                     return;
                 }
                 QMetaObject::invokeMethod(
                     guard.data(),
-                    [guard, generation, placementCount, targetArea,
-                     coveredArea]() {
+                    [guard, generation, phase, completed, total,
+                     placementCount, targetArea, coveredArea]() {
                         if (!guard.isNull()) {
                             guard->updateGeneratedFillProgress(
-                                generation, placementCount, targetArea,
-                                coveredArea);
+                                generation, phase, completed, total,
+                                placementCount, targetArea, coveredArea);
                         }
                     },
                     Qt::QueuedConnection);
@@ -918,8 +980,11 @@ void MainWindow::clearGeneratedFillState() {
         generatedFillProgress_->hide();
     }
     generatedFillPlacementCount_ = 0;
+    generatedFillPhaseCompleted_ = 0;
+    generatedFillPhaseTotal_ = 0;
     generatedFillTargetArea_ = 0.0;
     generatedFillCoveredArea_ = 0.0;
+    generatedFillPhase_.clear();
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();
     generatedFillTool_.clear();
@@ -970,7 +1035,8 @@ void MainWindow::cancelGeneratedFill(bool keepPartial) {
 void MainWindow::refreshGeneratedFillElapsedTime() {
     if (generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
-        || generatedFillTool_ != QStringLiteral("differential")
+        || (generatedFillTool_ != QStringLiteral("differential")
+            && generatedFillTool_ != QStringLiteral("curve-based"))
         || generatedFillProgress_ == nullptr
         || !generatedFillElapsed_.isValid()) {
         return;
@@ -980,14 +1046,34 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
     const double elapsedSeconds =
         static_cast<double>(generatedFillElapsed_.elapsed()) / 1000.0;
     const QString duration = elapsedDuration(elapsedSeconds);
+    const QString phase = generatedFillPhase_.isEmpty()
+        ? generatedFillLabel_ : generatedFillPhase_;
+    if (generatedFillPhaseTotal_ > 0) {
+        const double fraction = std::clamp(
+            static_cast<double>(generatedFillPhaseCompleted_)
+                / generatedFillPhaseTotal_,
+            0.0, 1.0);
+        generatedFillProgress_->setRange(0, kProgressResolution);
+        generatedFillProgress_->setValue(static_cast<int>(
+            std::lround(fraction * kProgressResolution)));
+        generatedFillProgress_->setFormat(
+            QStringLiteral("%1 %2/%3 | Elapsed %4 | %5 shapes")
+                .arg(phase)
+                .arg(generatedFillPhaseCompleted_)
+                .arg(generatedFillPhaseTotal_)
+                .arg(duration)
+                .arg(generatedFillPlacementCount_));
+        generatedFillProgress_->show();
+        return;
+    }
     if (!std::isfinite(generatedFillTargetArea_)
         || generatedFillTargetArea_ <= 0.0
         || !std::isfinite(generatedFillCoveredArea_)) {
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(
             QStringLiteral(
-                "Differential fill | Elapsed %1 | %2 shapes")
-                .arg(duration)
+                "%1 | Elapsed %2 | %3 shapes")
+                .arg(phase, duration)
                 .arg(generatedFillPlacementCount_));
         generatedFillProgress_->show();
         return;
@@ -1001,8 +1087,8 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
         QString::number(fraction * 100.0, 'f', 1);
     const QString format =
         QStringLiteral(
-            "Differential fill %1% | Elapsed %2 | %3 shapes")
-            .arg(percentage, duration)
+            "%1 %2% | Elapsed %3 | %4 shapes")
+            .arg(phase, percentage, duration)
             .arg(generatedFillPlacementCount_);
 
     generatedFillProgress_->setRange(0, kProgressResolution);
@@ -1016,19 +1102,26 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
 }
 
 void MainWindow::updateGeneratedFillProgress(quint64 generation,
+                                             const QString &phase,
+                                             int completed,
+                                             int total,
                                              int placementCount,
                                              double targetArea,
                                              double coveredArea) {
     if (generation != generatedFillGeneration_
         || generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
-        || generatedFillTool_ != QStringLiteral("differential")
+        || (generatedFillTool_ != QStringLiteral("differential")
+            && generatedFillTool_ != QStringLiteral("curve-based"))
         || generatedFillProgress_ == nullptr
-        || !std::isfinite(targetArea) || targetArea <= 0.0
+        || !std::isfinite(targetArea)
         || !std::isfinite(coveredArea)) {
         return;
     }
 
+    generatedFillPhase_ = phase;
+    generatedFillPhaseCompleted_ = std::max(0, completed);
+    generatedFillPhaseTotal_ = std::max(0, total);
     generatedFillPlacementCount_ = placementCount;
     generatedFillTargetArea_ = targetArea;
     generatedFillCoveredArea_ = coveredArea;
@@ -1104,6 +1197,12 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
                     .arg(residualArea, 0, 'g', 10),
                 5000);
         }
+    } else if (curveBased && result.timedOut) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Curve matching reached its time limit; created a safe mesh fallback with %1 shapes")
+                .arg(placements.size()),
+            5000);
     }
     if (canvas_ != nullptr) {
         if (lining) {
