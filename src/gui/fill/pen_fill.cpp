@@ -47,6 +47,12 @@ constexpr int kMaximumStraightProfilesPerPrimitive = 1;
 constexpr int kMaximumStraightTargetEdges = 8;
 constexpr int kMaximumInteriorTriangleTargets = 12;
 constexpr double kMaximumCoreReplacementLossRatio = 0.01;
+constexpr double kMaximumCompletionOutsideRatio = 0.01;
+constexpr double kMaximumCompletionResidualRatio = 0.01;
+constexpr double kCompletionResidualRatio = 1e-6;
+constexpr double kCompletionSpillPenalty = 2.0;
+constexpr int kMaximumCompletionPlacements = 8;
+constexpr double kDefaultLegalEnvelopeDistance = 1.0;
 
 int curveEvaluationBudget(int segmentCount) {
     // A budget smaller than the contour consumed every trial on individual
@@ -123,6 +129,15 @@ QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples) {
         result.push_back(segmentPoint(segment, static_cast<double>(i) / samples));
     }
     return result;
+}
+
+QPainterPath expandedPath(const QPainterPath &path, double distance) {
+    QPainterPathStroker stroker;
+    stroker.setWidth(distance * 2.0);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setCapStyle(Qt::RoundCap);
+
+    return path.united(stroker.createStroke(path));
 }
 
 double sampledArcLength(const PenBoundarySegment &segment) {
@@ -2443,6 +2458,443 @@ CurveCoreOptimization optimizeCurveCoreWithTemplates(
     return best;
 }
 
+std::optional<CurveCoreOptimization> optimizeCoverageWithinSpill(
+    const QVector<PenPlacement> &initialPlacements,
+    const QPainterPath &initialCoverage,
+    const QPainterPath &target,
+    const QPainterPath &legalEnvelope,
+    const QVector<PenPrimitive> &primitives,
+    double targetArea,
+    int placementBudget,
+    cover::GpuAreaEvaluator *gpuEvaluator,
+    const QHash<int, const cover::ShapeMesh *> &gpuMeshes,
+    const std::function<bool()> &cancelled,
+    const std::function<void(int, int)> &progress) {
+    CurveCoreOptimization result;
+    if (target.isEmpty()) {
+        return std::nullopt;
+    }
+    QVector<const PenPrimitive *> candidatesPrimitives;
+    for (const PenPrimitive &primitive : primitives) {
+        if (primitive.shapeId == kSquareShapeId
+            || primitive.shapeId == kTriangleShapeId
+            || (isCurveShape(primitive)
+                && !primitive.curveSegments.isEmpty())) {
+            candidatesPrimitives.push_back(&primitive);
+        }
+    }
+    if (candidatesPrimitives.isEmpty()) {
+        return std::nullopt;
+    }
+
+    const cover::Polygons targetPolygons =
+        cover::polygonsFromPainterPath(target, 0.025);
+    const cover::Polygons legalPolygons =
+        cover::polygonsFromPainterPath(legalEnvelope, 0.025);
+    cover::Polygons coveragePolygons = cover::unionPolygons(
+        cover::polygonsFromPainterPath(initialCoverage, 0.025));
+    const double residualLimit = std::max(
+        1e-6, targetArea * kCompletionResidualRatio);
+    const double outsideLimit = std::max(
+        1e-6, targetArea * kMaximumCompletionOutsideRatio);
+    const double illegalLimit = std::max(
+        cover::polygonSetArea(cover::differencePolygons(
+            coveragePolygons, legalPolygons)),
+        targetArea * kMaximumCoreOutsideRatio) + residualLimit;
+    const int maximumPlacements = std::max(0, std::min({
+        kMaximumCompletionPlacements,
+        placementBudget,
+        std::max(1, static_cast<int>(initialPlacements.size()) / 10),
+    }));
+    result.placements = initialPlacements;
+    QVector<QPainterPath> placementPaths;
+    placementPaths.reserve(result.placements.size());
+    for (const PenPlacement &placement : std::as_const(result.placements)) {
+        const PenPrimitive *primitive = primitiveForId(
+            primitives, placement.shapeId);
+        if (primitive == nullptr) {
+            return std::nullopt;
+        }
+        placementPaths.push_back(
+            placement.transform.map(primitive->silhouette));
+    }
+
+    for (int adjustment = 0;
+         adjustment < std::min(
+             48, static_cast<int>(result.placements.size()) * 2);
+         ++adjustment) {
+        if (cancelled && cancelled()) {
+            return std::nullopt;
+        }
+        const double currentResidual = cover::polygonSetArea(
+            cover::differencePolygons(targetPolygons, coveragePolygons));
+        const double currentOutside = cover::polygonSetArea(
+            cover::differencePolygons(coveragePolygons, targetPolygons));
+        if (currentResidual <= residualLimit) {
+            result.coverage = cover::painterPathFromPolygons(
+                coveragePolygons);
+            return result;
+        }
+        int bestPlacement = -1;
+        QTransform bestTransform;
+        QPainterPath bestPath;
+        cover::Polygons bestCoverage;
+        double bestResidual = currentResidual;
+        double bestOutside = currentOutside;
+        double bestUtility = 0.0;
+        for (int placementIndex = 0;
+             placementIndex < result.placements.size(); ++placementIndex) {
+            const PenPlacement &placement = result.placements[placementIndex];
+            const PenPrimitive *primitive = primitiveForId(
+                primitives, placement.shapeId);
+            if (primitive == nullptr) {
+                continue;
+            }
+            const QPointF sourceCenter = primitive->bounds.center();
+            const QPointF targetCenter = placement.transform.map(sourceCenter);
+            const QPointF targetTopLeft = placement.transform.map(
+                primitive->bounds.topLeft());
+            const QPointF targetTopRight = placement.transform.map(
+                primitive->bounds.topRight());
+            const QPointF targetBottomLeft = placement.transform.map(
+                primitive->bounds.bottomLeft());
+            const QPointF targetAxisX = targetTopRight - targetTopLeft;
+            const QPointF targetAxisY = targetBottomLeft - targetTopLeft;
+            const double targetWidth = std::hypot(
+                targetAxisX.x(), targetAxisX.y());
+            const double targetHeight = std::hypot(
+                targetAxisY.x(), targetAxisY.y());
+            double maximumRadius = 0.0;
+            for (const QPointF &corner : {
+                     primitive->bounds.topLeft(),
+                     primitive->bounds.topRight(),
+                     primitive->bounds.bottomLeft(),
+                     primitive->bounds.bottomRight()}) {
+                maximumRadius = std::max(
+                    maximumRadius,
+                    QLineF(targetCenter,
+                           placement.transform.map(corner)).length());
+            }
+            if (maximumRadius <= kEpsilon) {
+                continue;
+            }
+            cover::Polygons otherSubjects;
+            for (int index = 0; index < placementPaths.size(); ++index) {
+                if (index != placementIndex) {
+                    otherSubjects += cover::polygonsFromPainterPath(
+                        placementPaths[index], 0.025);
+                }
+            }
+            const cover::Polygons otherCoverage = cover::unionPolygons(
+                otherSubjects);
+            const auto considerTransform = [&](const QTransform &transform) {
+                const QPainterPath path = transform.map(
+                    primitive->silhouette);
+                cover::Polygons trialSubjects = otherCoverage;
+                trialSubjects += cover::polygonsFromPainterPath(path, 0.025);
+                const cover::Polygons trialCoverage = cover::unionPolygons(
+                    trialSubjects);
+                if (cover::polygonSetArea(cover::differencePolygons(
+                        trialCoverage, legalPolygons)) > illegalLimit) {
+                    return;
+                }
+                const double outsideArea = cover::polygonSetArea(
+                    cover::differencePolygons(
+                        trialCoverage, targetPolygons));
+                if (outsideArea > outsideLimit) {
+                    return;
+                }
+                const double trialResidual = cover::polygonSetArea(
+                    cover::differencePolygons(
+                        targetPolygons, trialCoverage));
+                const double utility = currentResidual - trialResidual
+                    - kCompletionSpillPenalty
+                        * std::max(0.0, outsideArea - currentOutside);
+                const bool better = utility > bestUtility + kEpsilon
+                    || (std::abs(utility - bestUtility) <= kEpsilon
+                        && trialResidual < bestResidual - kEpsilon)
+                    || (std::abs(utility - bestUtility) <= kEpsilon
+                        && std::abs(trialResidual - bestResidual) <= kEpsilon
+                        && outsideArea < bestOutside - kEpsilon);
+                if (better) {
+                    bestPlacement = placementIndex;
+                    bestTransform = transform;
+                    bestPath = path;
+                    bestCoverage = trialCoverage;
+                    bestResidual = trialResidual;
+                    bestOutside = outsideArea;
+                    bestUtility = utility;
+                }
+            };
+            for (const double expansionDistance : {0.5, 1.0, 2.0, 4.0}) {
+                const double scale = 1.0
+                    + expansionDistance / maximumRadius;
+                const auto expandedPoint = [&](const QPointF &source) {
+                    const QPointF mapped = placement.transform.map(source);
+                    return targetCenter + (mapped - targetCenter) * scale;
+                };
+                bool ok = false;
+                const QTransform transform = affineFromTriangles(
+                    primitive->bounds.topLeft(),
+                    primitive->bounds.topRight(),
+                    primitive->bounds.bottomLeft(),
+                    expandedPoint(primitive->bounds.topLeft()),
+                    expandedPoint(primitive->bounds.topRight()),
+                    expandedPoint(primitive->bounds.bottomLeft()),
+                    &ok);
+                if (!ok) {
+                    continue;
+                }
+                considerTransform(transform);
+            }
+            if (targetWidth > kEpsilon && targetHeight > kEpsilon) {
+                const QPointF directionX = targetAxisX / targetWidth;
+                const QPointF directionY = targetAxisY / targetHeight;
+                for (const double distance
+                     : {0.5, 1.0, 2.0, 4.0, 8.0, 16.0}) {
+                    for (int side = 0; side < 4; ++side) {
+                        QPointF topLeft = targetTopLeft;
+                        QPointF topRight = targetTopRight;
+                        QPointF bottomLeft = targetBottomLeft;
+                        if (side == 0) {
+                            topLeft -= directionX * distance;
+                            bottomLeft -= directionX * distance;
+                        } else if (side == 1) {
+                            topRight += directionX * distance;
+                        } else if (side == 2) {
+                            topLeft -= directionY * distance;
+                            topRight -= directionY * distance;
+                        } else {
+                            bottomLeft += directionY * distance;
+                        }
+                        bool ok = false;
+                        const QTransform transform = affineFromTriangles(
+                            primitive->bounds.topLeft(),
+                            primitive->bounds.topRight(),
+                            primitive->bounds.bottomLeft(),
+                            topLeft, topRight, bottomLeft,
+                            &ok);
+                        if (ok) {
+                            considerTransform(transform);
+                        }
+                    }
+                }
+            }
+        }
+        if (bestPlacement < 0) {
+            break;
+        }
+        result.placements[bestPlacement].transform = bestTransform;
+        const PenPrimitive *primitive = primitiveForId(
+            primitives, result.placements[bestPlacement].shapeId);
+        result.placements[bestPlacement].area = primitive->area
+            * std::abs(bestTransform.determinant());
+        placementPaths[bestPlacement] = std::move(bestPath);
+        coveragePolygons = std::move(bestCoverage);
+    }
+    result.coverage = cover::painterPathFromPolygons(coveragePolygons);
+    const double adjustedResidual = cover::polygonSetArea(
+        cover::differencePolygons(targetPolygons, coveragePolygons));
+    const double adjustedOutside = cover::polygonSetArea(
+        cover::differencePolygons(coveragePolygons, targetPolygons));
+    std::optional<CurveCoreOptimization> adjustedResult;
+    if (adjustedResidual
+            <= targetArea * kMaximumCompletionResidualRatio + kEpsilon
+        && adjustedOutside <= outsideLimit + kEpsilon) {
+        adjustedResult = result;
+    }
+
+    for (int iteration = 0; iteration < maximumPlacements; ++iteration) {
+        if (cancelled && cancelled()) {
+            return adjustedResult;
+        }
+        const cover::Polygons residualPolygons = cover::differencePolygons(
+            targetPolygons, coveragePolygons);
+        const double residualArea = cover::polygonSetArea(residualPolygons);
+        if (residualArea <= residualLimit) {
+            result.coverage = cover::painterPathFromPolygons(
+                coveragePolygons);
+            return result;
+        }
+        const QPainterPath residual = cover::painterPathFromPolygons(
+            residualPolygons);
+        QVector<QPolygonF> components = residualComponents(residual);
+        components.resize(std::min(6, static_cast<int>(components.size())));
+        if (components.isEmpty()) {
+            return adjustedResult;
+        }
+        QVector<QPolygonF> candidateGroups = components;
+        for (int left = 0; left < components.size(); ++left) {
+            for (int right = left + 1; right < components.size(); ++right) {
+                QPolygonF combined = components[left];
+                combined += components[right];
+                candidateGroups.push_back(std::move(combined));
+            }
+        }
+
+        QVector<CurveTransformCandidate> candidates;
+        for (int componentIndex = 0;
+             componentIndex < candidateGroups.size(); ++componentIndex) {
+            const QPolygonF &component = candidateGroups[componentIndex];
+            const double principalAngle = polygonPrincipalAngle(component);
+            for (const double angle : {
+                     principalAngle,
+                     principalAngle + std::numbers::pi * 0.5,
+                     0.0}) {
+                for (const double scale : {1.0, 1.1, 1.25, 1.5, 2.0}) {
+                    for (const PenPrimitive *primitive
+                         : std::as_const(candidatesPrimitives)) {
+                        if (componentIndex >= components.size()
+                            && primitive->shapeId != kSquareShapeId
+                            && primitive->shapeId != kTriangleShapeId) {
+                            continue;
+                        }
+                        const auto transform = fitPrimitiveToPolygon(
+                            *primitive, component, angle, scale);
+                        if (!transform) {
+                            continue;
+                        }
+                        CurveTransformCandidate candidate;
+                        candidate.primitive = primitive;
+                        candidate.transform = *transform;
+                        candidate.targetGroup = componentIndex;
+                        candidates.push_back(std::move(candidate));
+                    }
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            return adjustedResult;
+        }
+
+        QVector<double> scores(
+            candidates.size(), -std::numeric_limits<double>::infinity());
+        bool gpuRanked = false;
+        if (gpuEvaluator != nullptr && gpuEvaluator->available()
+            && gpuEvaluator->setSubjects(residualPolygons, legalPolygons)) {
+            QVector<cover::GpuEvaluationRequest> requests;
+            QVector<int> indices;
+            requests.reserve(candidates.size());
+            for (int index = 0; index < candidates.size(); ++index) {
+                const cover::ShapeMesh *mesh = gpuMeshes.value(
+                    candidates[index].primitive->shapeId, nullptr);
+                if (mesh == nullptr) {
+                    continue;
+                }
+                const QTransform &transform = candidates[index].transform;
+                requests.push_back({
+                    mesh,
+                    cover::Affine{
+                        transform.m11(), transform.m12(),
+                        transform.m21(), transform.m22(),
+                        transform.dx(), transform.dy(),
+                    },
+                });
+                indices.push_back(index);
+            }
+            QVector<cover::AreaGradient> evaluations;
+            if (!requests.isEmpty()
+                && gpuEvaluator->evaluate(requests, &evaluations)
+                && evaluations.size() == requests.size()) {
+                gpuRanked = true;
+                for (int index = 0; index < evaluations.size(); ++index) {
+                    scores[indices[index]] = evaluations[index].covered
+                        - evaluations[index].spill;
+                }
+            }
+        }
+        for (int index = 0; index < candidates.size(); ++index) {
+            if (gpuRanked && std::isfinite(scores[index])) {
+                continue;
+            }
+            const QPainterPath path = candidates[index].transform.map(
+                candidates[index].primitive->silhouette);
+            const QRectF intersection = path.boundingRect().intersected(
+                residual.boundingRect());
+            scores[index] = intersection.width() * intersection.height();
+        }
+        QVector<int> order(candidates.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](int left, int right) {
+            return scores[left] > scores[right];
+        });
+        order.resize(std::min(
+            kMaximumExactInteriorCpuCandidates,
+            static_cast<int>(order.size())));
+
+        int bestIndex = -1;
+        cover::Polygons bestCoverage;
+        double bestResidual = residualArea;
+        const double currentOutside = cover::polygonSetArea(
+            cover::differencePolygons(coveragePolygons, targetPolygons));
+        double bestOutside = currentOutside;
+        double bestUtility = 0.0;
+        for (const int index : std::as_const(order)) {
+            if (cancelled && cancelled()) {
+                return adjustedResult;
+            }
+            cover::Polygons trialSubjects = coveragePolygons;
+            trialSubjects += cover::polygonsFromPainterPath(
+                candidates[index].transform.map(
+                    candidates[index].primitive->silhouette),
+                0.025);
+            const cover::Polygons trialCoverage = cover::unionPolygons(
+                trialSubjects);
+            if (cover::polygonSetArea(cover::differencePolygons(
+                    trialCoverage, legalPolygons)) > illegalLimit) {
+                continue;
+            }
+            const double outsideArea = cover::polygonSetArea(
+                cover::differencePolygons(trialCoverage, targetPolygons));
+            if (outsideArea > outsideLimit) {
+                continue;
+            }
+            const double trialResidual = cover::polygonSetArea(
+                cover::differencePolygons(targetPolygons, trialCoverage));
+            const double utility = residualArea - trialResidual
+                - kCompletionSpillPenalty
+                    * std::max(0.0, outsideArea - currentOutside);
+            const bool better = utility > bestUtility + kEpsilon
+                || (std::abs(utility - bestUtility) <= kEpsilon
+                    && trialResidual < bestResidual - kEpsilon)
+                || (std::abs(utility - bestUtility) <= kEpsilon
+                    && std::abs(trialResidual - bestResidual) <= kEpsilon
+                    && outsideArea < bestOutside - kEpsilon);
+            if (better) {
+                bestIndex = index;
+                bestCoverage = trialCoverage;
+                bestResidual = trialResidual;
+                bestOutside = outsideArea;
+                bestUtility = utility;
+            }
+        }
+        if (bestIndex < 0) {
+            return adjustedResult;
+        }
+        const CurveTransformCandidate &selected = candidates[bestIndex];
+        result.placements.push_back({
+            selected.primitive->shapeId,
+            selected.transform,
+            selected.primitive->area
+                * std::abs(selected.transform.determinant()),
+            selected.primitive->shapeId == kCircleShapeId,
+        });
+        coveragePolygons = std::move(bestCoverage);
+        if (progress) {
+            progress(iteration + 1, maximumPlacements);
+        }
+    }
+
+    const double residualArea = cover::polygonSetArea(
+        cover::differencePolygons(targetPolygons, coveragePolygons));
+    if (residualArea > residualLimit) {
+        return adjustedResult;
+    }
+    result.coverage = cover::painterPathFromPolygons(coveragePolygons);
+
+    return result;
+}
+
 std::optional<CurvePlacement> outwardCurvePlacement(const QVector<CurvePrimitive> &caps,
                                                      const PenBoundarySegment &segment,
                                                      const QPainterPath &target,
@@ -3238,7 +3690,10 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     const QPainterPath target = request.targetPath.isEmpty()
         ? contour.path : request.targetPath;
     const QPainterPath legalEnvelope = request.legalEnvelope.isEmpty()
-        ? target : request.legalEnvelope.united(target);
+        ? (request.curveTimeBudgetMs > 0
+               ? expandedPath(target, kDefaultLegalEnvelopeDistance)
+               : target)
+        : request.legalEnvelope.united(target);
     if (target.isEmpty() || legalEnvelope.isEmpty()) {
         result.error = QStringLiteral("Pen fill target is unavailable");
         return result;
@@ -3623,6 +4078,23 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             result.placements.push_back(placement);
         }
         coverage = coverage.united(optimizedCore.coverage);
+        if (request.curveTimeBudgetMs > 0) {
+            const auto completion = optimizeCoverageWithinSpill(
+                result.placements, coverage, target, legalEnvelope,
+                primitives, result.targetArea,
+                result.shapeLimit - result.placements.size(),
+                gpuEvaluator.get(), gpuMeshes, curveCancelled,
+                [&](int completed, int total) {
+                    reportProgress(
+                        QStringLiteral("Completing exact coverage"),
+                        completed, total,
+                        result.placements.size() + completed);
+                });
+            if (completion) {
+                result.placements = completion->placements;
+                coverage = completion->coverage;
+            }
+        }
         if (result.placements.size() > result.shapeLimit) {
             result.error = QStringLiteral("Pen fill exceeded its shape limit");
             result.placements.clear();
@@ -4121,6 +4593,22 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.placements.push_back(placement);
     }
     coverage = coverage.united(optimizedCore.coverage);
+    if (request.curveTimeBudgetMs > 0) {
+        const auto completion = optimizeCoverageWithinSpill(
+            result.placements, coverage, target, legalEnvelope,
+            primitives, result.targetArea,
+            result.shapeLimit - result.placements.size(),
+            gpuEvaluator.get(), gpuMeshes, curveCancelled,
+            [&](int completed, int total) {
+                reportProgress(QStringLiteral("Completing exact coverage"),
+                               completed, total,
+                               result.placements.size() + completed);
+            });
+        if (completion) {
+            result.placements = completion->placements;
+            coverage = completion->coverage;
+        }
+    }
     if (result.placements.size() > result.shapeLimit) {
         result.error = QStringLiteral("Pen fill exceeded its shape limit");
         result.placements.clear();

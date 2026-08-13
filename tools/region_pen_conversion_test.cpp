@@ -2877,7 +2877,7 @@ int compareLoggedPen(const QString &path, bool optimizeOnly = false)
         request.primitives = catalog.primitives;
         request.curveMeshes = catalog.meshes;
         request.useGpu = true;
-        request.curveTimeBudgetMs = 30000;
+        request.curveTimeBudgetMs = 60000;
         catalogError = catalog.error;
     } else {
         request.primitives = gui::buildPenPrimitiveCatalog(geometry);

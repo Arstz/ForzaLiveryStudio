@@ -28,6 +28,8 @@ using namespace mw_detail;
 
 namespace {
 
+constexpr int kCurveFillTimeBudgetMs = 60000;
+
 int stripRasterLayers(std::vector<std::unique_ptr<fls::scene::Layer>> &nodes) {
     int removed = 0;
     for (auto it = nodes.begin(); it != nodes.end();) {
@@ -786,7 +788,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     if (curveBased) {
         const ShapeGeometryStore geometry = canvas_->shapeGeometrySnapshot();
         request.useGpu = loadDifferentialFillOptions().useGpu;
-        request.curveTimeBudgetMs = 30000;
+        request.curveTimeBudgetMs = kCurveFillTimeBudgetMs;
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(
             QStringLiteral("Preparing curve templates…"));

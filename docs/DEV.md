@@ -207,8 +207,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   envelope validation. Both single and multi-segment matching retain a bounded,
   shape-diverse set of geometry-ranked template profiles, batch their transforms on the GPU
   when available, and continue exact validation across several valid alternatives. Direct
-  Curve fills have a 30-second matching budget and fall back to the safe polygon mesh instead
-  of remaining indefinitely in candidate evaluation. After boundary fitting, Curve fill also
+  Curve fills have a 60-second matching and completion budget and fall back to the safe
+  polygon mesh instead of remaining indefinitely in candidate evaluation. After boundary fitting, Curve fill also
   packs the polygonal core with curve templates and Square. It proposes component-aligned,
   straight-boundary, and template-mesh-anchored fits, then ranks their complete transform
   batch with the GPU area evaluator and validates the legal envelope exactly on the CPU.
@@ -218,7 +218,12 @@ exports grouped `C_group` folders and `C_livery` folders.
   checks for the final plan.
   A result is committed only when it reduces total placement count. Its exact union may
   trade at most one percent of the target area from the baseline core coverage for that
-  reduction; equal-count substitutions are rejected. Multi-segment matching covers outward
+  reduction; equal-count substitutions are rejected. A final count-first pass can reshape
+  existing placements within a one-pixel legal envelope. It prices unique outside spill,
+  limits both spill and remaining internal area to one percent of the target, and attempts
+  numerically complete residual repair with no more than a ten-percent placement increase.
+  If that bounded repair cannot complete, only the count-neutral reshaped plan is retained.
+  Multi-segment matching covers outward
   and inward cyclic spans, and
   the status bar reports template, candidate, core-mesh, and cleanup phases. Its legal
   envelope may extend by one pixel into neighboring coloured regions, but never into
