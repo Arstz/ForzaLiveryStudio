@@ -13,8 +13,8 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and l
 </p>
 
 <p align="center">
-  <img src="docs/Images/LiveryEditing1.png" alt="Forza Livery Studio editor preview" width="49%">
-  <img src="docs/Images/LiveryEditing2.png" alt="Forza Livery Studio livery preview" width="49%">
+  <img src="docs/Images/LiveryEditing2.png" alt="Forza Livery Studio editor preview" width="49%">
+  <img src="docs/Images/LiveryEditing1.png" alt="Forza Livery Studio livery preview" width="49%">
 </p>
 
 <p align="center">
