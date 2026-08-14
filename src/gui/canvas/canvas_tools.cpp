@@ -731,6 +731,12 @@ bool BucketTool::handleMove(QMouseEvent *event) {
 }
 
 bool BucketTool::handleWheel(QWheelEvent *event) {
+    // Ctrl+wheel is reserved for the canvas zoom path. Do not let any other
+    // modifier (including Shift) turn the same event into a tolerance change.
+    if (event->modifiers().testFlag(Qt::ControlModifier)) {
+        return false;
+    }
+
     const QPoint angle = event->angleDelta();
     const QPoint pixels = event->pixelDelta();
     const int raw = angle.y() != 0 ? angle.y()
