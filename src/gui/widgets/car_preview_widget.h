@@ -16,8 +16,10 @@
 #include <memory>
 
 class QTemporaryDir;
+class QFrame;
 class QLabel;
 class QToolButton;
+class QVBoxLayout;
 
 namespace fls {
 struct Project;
@@ -87,6 +89,10 @@ private:
     void fitCameraToModel();
     void invalidateCachedLivery();
     void updateLodControl();
+    void layoutOverlayControls();
+    void rebuildPartsPanel();
+    void selectPartOption(int partType, int optionId);
+    void syncPartOptionControls();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
@@ -125,6 +131,10 @@ private:
 
     QLabel *referenceNote_ = nullptr;
     QToolButton *lodButton_ = nullptr;
+    QToolButton *partsButton_ = nullptr;
+    QFrame *partsPanel_ = nullptr;
+    QVBoxLayout *partsOptionsLayout_ = nullptr;
+    QHash<int, int> selectedPartOptions_;
     int selectedLodIndex_ = 0;
 
     QVector3D target_;

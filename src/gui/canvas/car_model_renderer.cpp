@@ -1974,7 +1974,16 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
     }
     clearModel();
     paintDiagnosticsLogged_ = false;
-    const std::vector<fls::CarMesh> &renderMeshes = model.meshesForLod(lodIndex);
+    const std::vector<fls::CarMesh> &stockMeshes = model.meshesForLod(lodIndex);
+    const std::vector<fls::CarMesh> &variantMeshes = model.variantMeshesForLod(lodIndex);
+    std::vector<const fls::CarMesh *> renderMeshes;
+    renderMeshes.reserve(stockMeshes.size() + variantMeshes.size());
+    for (const fls::CarMesh &mesh : stockMeshes) {
+        renderMeshes.push_back(&mesh);
+    }
+    for (const fls::CarMesh &mesh : variantMeshes) {
+        renderMeshes.push_back(&mesh);
+    }
 
     const auto textureKey = [](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                bool srgb) {
@@ -1997,7 +2006,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             missingTextureBytes += static_cast<qsizetype>(texture->image.rgba.size());
         }
     };
-    for (const fls::CarMesh &mesh : renderMeshes) {
+    for (const fls::CarMesh *meshPtr : renderMeshes) {
+        const fls::CarMesh &mesh = *meshPtr;
         if (!mesh.material) {
             continue;
         }
@@ -2066,7 +2076,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
     };
 
     for (size_t mi = 0; mi < renderMeshes.size(); ++mi) {
-        const fls::CarMesh &mesh = renderMeshes[mi];
+        const fls::CarMesh &mesh = *renderMeshes[mi];
         if (mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
@@ -2155,6 +2165,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         buffers->materialColor = kDefaultMaterialColor;
         buffers->name = mesh.name;
         buffers->materialName = mesh.materialName;
+        buffers->carPartType = mesh.carPartType;
+        buffers->stockPart = mesh.stockPart;
+        buffers->partOptionIds = mesh.partOptionIds;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
         buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName);
@@ -2405,6 +2418,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             buffers->indexCount = static_cast<int>(edgeIndices.size());
             buffers->hasDirectLiveryUv = directUv;
             buffers->allowedSides = allowedSides;
+            buffers->carPartType = mesh.carPartType;
+            buffers->stockPart = mesh.stockPart;
+            buffers->partOptionIds = mesh.partOptionIds;
             buffers->model = carMeshModelMatrix(mesh);
             buffers->vao.create();
             buffers->vao.bind();
@@ -2436,7 +2452,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         return wireframeMeshes_.size() - initialCount;
     };
 
-    const size_t uploadedWireframes = uploadWireframeMeshes(renderMeshes);
+    size_t uploadedWireframes = uploadWireframeMeshes(stockMeshes);
+    uploadedWireframes += uploadWireframeMeshes(variantMeshes);
     if (uploadedWireframes == 0 && lodIndex > 0) {
         uploadWireframeMeshes(model.meshes);
     }
@@ -2620,6 +2637,19 @@ void CarModelRenderer::render(
     }
     QOpenGLFunctions *functions = context->functions();
 
+    const auto partVisible = [this](int partType, bool stockPart,
+                                    const std::vector<int> &optionIds) {
+        const auto selected = partSelections_.constFind(partType);
+        if (selected == partSelections_.cend()) {
+            return stockPart;
+        }
+        if (optionIds.empty()) {
+            return stockPart;
+        }
+        return std::find(optionIds.begin(), optionIds.end(), selected.value())
+            != optionIds.end();
+    };
+
     functions->glEnable(GL_DEPTH_TEST);
     functions->glDepthFunc(GL_LEQUAL);
     // Every mesh is drawn through an X-mirror (model matrix scale -1 on X), which reverses
@@ -2690,6 +2720,9 @@ void CarModelRenderer::render(
         int bestPrimary = 0;
         for (const std::unique_ptr<MeshBuffers> &meshPtr : meshes_) {
             const MeshBuffers &m = *meshPtr;
+            if (!partVisible(m.carPartType, m.stockPart, m.partOptionIds)) {
+                continue;
+            }
             const fls::LiveryPaintMaterial *paint =
                 m.bodyPaint ? paintState->find(m.paintMaterialHash) : nullptr;
             if (paint == nullptr || !paint->primary.enabled) {
@@ -2850,7 +2883,8 @@ void CarModelRenderer::render(
     functions->glEnable(GL_CULL_FACE);
     functions->glCullFace(GL_BACK);
     for (const auto &mesh : meshes_) {
-        if (mesh->translucent) {
+        if (mesh->translucent
+            || !partVisible(mesh->carPartType, mesh->stockPart, mesh->partOptionIds)) {
             continue;
         }
         if (mesh->doubleSided) {
@@ -2867,7 +2901,8 @@ void CarModelRenderer::render(
     std::vector<MeshBuffers *> translucentMeshes;
     translucentMeshes.reserve(meshes_.size());
     for (const auto &mesh : meshes_) {
-        if (mesh->translucent) {
+        if (mesh->translucent
+            && partVisible(mesh->carPartType, mesh->stockPart, mesh->partOptionIds)) {
             translucentMeshes.push_back(mesh.get());
         }
     }
@@ -2905,6 +2940,9 @@ void CarModelRenderer::render(
         program_.setUniformValue(hasFinishNormalLocation_, 0);
         program_.setUniformValue(hasFinishSurfaceLocation_, 0);
         for (const auto &mesh : wireframeMeshes_) {
+            if (!partVisible(mesh->carPartType, mesh->stockPart, mesh->partOptionIds)) {
+                continue;
+            }
             const int allowedSides = wireframeSide_ >= 0
                 ? mesh->allowedSides & (1 << wireframeSide_)
                 : mesh->allowedSides;

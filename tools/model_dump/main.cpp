@@ -480,7 +480,7 @@ int main(int argc, char *argv[]) {
     QCoreApplication app(argc, argv);
     const QStringList args = app.arguments();
     if (args.size() < 2) {
-        std::fprintf(stderr, "usage: fls_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--fit] [--mask-hits] [--uv] [--manufacturer-colors]\n");
+        std::fprintf(stderr, "usage: fls_model_dump <file.modelbin|file.carbin|file.zip|file.swatchbin> [--verbose] [--parts] [--fit] [--mask-hits] [--uv] [--manufacturer-colors]\n");
         return 2;
     }
 
@@ -598,6 +598,7 @@ int main(int argc, char *argv[]) {
 
     std::printf("%s\n", qPrintable(path));
     std::printf("  meshes:   %lld\n", static_cast<long long>(model.meshes.size()));
+    std::printf("  variant meshes: %lld\n", static_cast<long long>(model.variantMeshes.size()));
     std::printf("  projection meshes: %lld\n", static_cast<long long>(model.liveryProjectionMeshes.size()));
     std::printf("  locators: %lld\n", static_cast<long long>(model.locators.size()));
     std::printf("  vertices: %lld\n", model.totalVertices());
@@ -605,6 +606,30 @@ int main(int argc, char *argv[]) {
     std::printf("  bounds:   min (%.3f, %.3f, %.3f)  max (%.3f, %.3f, %.3f)\n",
                 model.boundsMin.x, model.boundsMin.y, model.boundsMin.z,
                 model.boundsMax.x, model.boundsMax.y, model.boundsMax.z);
+
+    if (args.contains(QStringLiteral("--parts"))) {
+        std::printf("  part options: %lld\n", static_cast<long long>(model.partOptions.size()));
+        for (const CarPartOption &option : model.partOptions) {
+            long long drawMeshes = 0;
+            const auto countOptionMeshes = [&](const std::vector<CarMesh> &meshes) {
+                for (const CarMesh &mesh : meshes) {
+                    if (mesh.carPartType == option.partType
+                        && std::find(mesh.partOptionIds.begin(), mesh.partOptionIds.end(), option.id)
+                            != mesh.partOptionIds.end()) {
+                        ++drawMeshes;
+                    }
+                }
+            };
+            countOptionMeshes(model.meshes);
+            countOptionMeshes(model.variantMeshes);
+            std::printf("    type=%d id=%d level=%d stock=%d carBody=%d models=%lld draws=%lld\n",
+                        option.partType, option.id, option.level, option.stock ? 1 : 0,
+                        option.carBodyId, static_cast<long long>(option.modelPaths.size()), drawMeshes);
+            for (const QString &modelPath : option.modelPaths) {
+                std::printf("      %s\n", qPrintable(modelPath));
+            }
+        }
+    }
 
     if (verbose) {
         int i = 0;

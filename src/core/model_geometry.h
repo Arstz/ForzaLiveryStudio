@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 
 #include <array>
 #include <cstdint>
@@ -10,6 +11,15 @@
 #include <vector>
 
 namespace fls {
+
+namespace car_part_types {
+constexpr int RearWing = 9;
+constexpr int CarBody = 2;
+constexpr int FrontBumper = 34;
+constexpr int RearBumper = 35;
+constexpr int Hood = 36;
+constexpr int SideSkirts = 37;
+} // namespace car_part_types
 
 struct ModelMaterial;
 
@@ -64,6 +74,17 @@ struct CarMesh {
     int carPartType = -1;
     int modelInstanceId = -1;
     bool stockPart = true;
+    std::vector<int> partOptionIds;
+};
+
+struct CarPartOption {
+    int partType = -1;
+    int id = -1;
+    int level = 0;
+    int carBodyId = -1;
+    bool parentIsStock = false;
+    bool stock = false;
+    QStringList modelPaths;
 };
 
 struct CarLocator {
@@ -75,13 +96,17 @@ struct CarModel {
     QString sourcePath;
     std::vector<CarMesh> meshes;
     std::vector<std::vector<CarMesh>> additionalLodMeshes;
+    std::vector<CarMesh> variantMeshes;
+    std::vector<std::vector<CarMesh>> additionalVariantLodMeshes;
     std::vector<CarMesh> liveryProjectionMeshes;
+    std::vector<CarPartOption> partOptions;
     std::vector<CarLocator> locators;
     ModelVec3 boundsMin;
     ModelVec3 boundsMax;
 
     int lodCount() const;
     const std::vector<CarMesh> &meshesForLod(int lodIndex) const;
+    const std::vector<CarMesh> &variantMeshesForLod(int lodIndex) const;
     long long totalVertices() const;
     long long totalIndices() const;
 };

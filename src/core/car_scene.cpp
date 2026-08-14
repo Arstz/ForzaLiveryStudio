@@ -118,12 +118,14 @@ struct PartInstance {
     qint16 boneId = -1;
     int partType = -1;
     bool stock = true;
+    std::vector<int> optionIds;
     std::vector<MaterialBinding> materialBindings;
 };
 
 struct SceneParts {
     std::vector<PartInstance> stock;
     std::vector<PartInstance> projection;
+    std::vector<CarPartOption> options;
 };
 
 int canonicalPartType(quint32 type) {
@@ -304,15 +306,25 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
         const quint16 partVersion = c.u16();
         const int partType = canonicalPartType(c.u32());
         std::vector<int> stockUpgradeIds;
+        std::vector<size_t> optionIndexes;
 
         const quint32 upgradeCount = c.u32();
         for (quint32 u = 0; u < upgradeCount; ++u) {
             const quint16 upgradeVersion = c.u16();
-            c.u8();                 // Level
+            const int level = c.u8();
             const bool isStock = c.bl();
             const qint32 id = c.i32();
-            c.i32();                // CarBodyId
-            c.bl();                 // ParentIsStock
+            const qint32 carBodyId = c.i32();
+            const bool parentIsStock = c.bl();
+            CarPartOption option;
+            option.partType = partType;
+            option.id = id;
+            option.level = level;
+            option.carBodyId = carBodyId;
+            option.parentIsStock = parentIsStock;
+            option.stock = isStock;
+            optionIndexes.push_back(parts.options.size());
+            parts.options.push_back(std::move(option));
             if (isStock) {
                 stockUpgradeIds.push_back(id);
             }
@@ -322,6 +334,8 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
                     PartInstance inst = readRenderModel(c, series, version);
                     inst.partType = partType;
                     inst.stock = isStock;
+                    inst.optionIds.push_back(id);
+                    parts.options[optionIndexes.back()].modelPaths.push_back(inst.path);
                     parts.projection.push_back(inst);
                     if (isStock) {
                         parts.stock.push_back(std::move(inst));
@@ -343,11 +357,20 @@ SceneParts readScene(const QByteArray &bytes, QString &mediaName, QString &skele
                 }
                 PartInstance inst = readRenderModel(c, series, version);
                 inst.partType = partType;
+                inst.optionIds = upgradeIds;
                 const bool stock = idCount == 0
                     || std::any_of(upgradeIds.begin(), upgradeIds.end(), [&](int id) {
                            return std::find(stockUpgradeIds.begin(), stockUpgradeIds.end(), id) != stockUpgradeIds.end();
                        });
                 inst.stock = stock;
+                for (size_t optionIndex : optionIndexes) {
+                    CarPartOption &option = parts.options[optionIndex];
+                    if (upgradeIds.empty()
+                        || std::find(upgradeIds.begin(), upgradeIds.end(), option.id)
+                            != upgradeIds.end()) {
+                        option.modelPaths.push_back(inst.path);
+                    }
+                }
                 parts.projection.push_back(inst);
                 if (stock) {
                     parts.stock.push_back(std::move(inst));
@@ -688,6 +711,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
 
     CarModel car;
     car.sourcePath = path;
+    car.partOptions = parts.options;
     car.locators = loadCarLocators(carbinDir);
     float minX = std::numeric_limits<float>::max();
     float minY = minX;
@@ -831,6 +855,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.carPartType = part.partType;
             mesh.modelInstanceId = currentInstanceId;
             mesh.stockPart = stock;
+            mesh.partOptionIds = part.optionIds;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
             if (isWheelModelPath(part.path)) {
                 const bool front = corner >= 0 ? isFrontCorner(corner) : frontWheel(part, mesh);
@@ -842,13 +867,12 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
 
             return true;
         };
-        if (stock) {
-            while (car.additionalLodMeshes.size() < model.additionalLodMeshes.size()) {
-                car.additionalLodMeshes.push_back(
-                    car.additionalLodMeshes.empty()
-                        ? car.meshes
-                        : car.additionalLodMeshes.back());
-            }
+        std::vector<CarMesh> &targetBase = stock ? car.meshes : car.variantMeshes;
+        std::vector<std::vector<CarMesh>> &targetLods = stock
+            ? car.additionalLodMeshes
+            : car.additionalVariantLodMeshes;
+        while (targetLods.size() < model.additionalLodMeshes.size()) {
+            targetLods.push_back(targetLods.empty() ? targetBase : targetLods.back());
         }
         std::vector<std::vector<CarMesh>> partLodMeshes(
             1 + model.additionalLodMeshes.size());
@@ -866,35 +890,30 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                     maxY = std::max(maxY, w.y);
                     maxZ = std::max(maxZ, w.z);
                 }
-                car.meshes.push_back(mesh);
-                partLodMeshes[0].push_back(mesh);
             }
+            targetBase.push_back(mesh);
+            partLodMeshes[0].push_back(mesh);
             car.liveryProjectionMeshes.push_back(std::move(mesh));
         }
-        if (stock) {
-            for (size_t lodIndex = 0;
-                 lodIndex < model.additionalLodMeshes.size();
-                 ++lodIndex) {
-                for (CarMesh &mesh : model.additionalLodMeshes[lodIndex]) {
-                    if (prepareMesh(mesh)) {
-                        partLodMeshes[lodIndex + 1].push_back(std::move(mesh));
-                    }
+        for (size_t lodIndex = 0;
+             lodIndex < model.additionalLodMeshes.size();
+             ++lodIndex) {
+            for (CarMesh &mesh : model.additionalLodMeshes[lodIndex]) {
+                if (prepareMesh(mesh)) {
+                    partLodMeshes[lodIndex + 1].push_back(std::move(mesh));
                 }
             }
-            for (size_t lodIndex = 1; lodIndex < partLodMeshes.size(); ++lodIndex) {
-                if (partLodMeshes[lodIndex].empty()) {
-                    partLodMeshes[lodIndex] = partLodMeshes[lodIndex - 1];
-                }
+        }
+        for (size_t lodIndex = 1; lodIndex < partLodMeshes.size(); ++lodIndex) {
+            if (partLodMeshes[lodIndex].empty()) {
+                partLodMeshes[lodIndex] = partLodMeshes[lodIndex - 1];
             }
-            for (size_t lodIndex = 0;
-                 lodIndex < car.additionalLodMeshes.size();
-                 ++lodIndex) {
-                const std::vector<CarMesh> &partMeshes = partLodMeshes[
-                    std::min(lodIndex + 1, partLodMeshes.size() - 1)];
-                car.additionalLodMeshes[lodIndex].insert(
-                    car.additionalLodMeshes[lodIndex].end(),
-                    partMeshes.begin(), partMeshes.end());
-            }
+        }
+        for (size_t lodIndex = 0; lodIndex < targetLods.size(); ++lodIndex) {
+            const std::vector<CarMesh> &partMeshes = partLodMeshes[
+                std::min(lodIndex + 1, partLodMeshes.size() - 1)];
+            targetLods[lodIndex].insert(
+                targetLods[lodIndex].end(), partMeshes.begin(), partMeshes.end());
         }
         if (stock) {
             ++loaded;

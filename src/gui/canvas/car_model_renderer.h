@@ -36,6 +36,7 @@ public:
 
     void uploadModel(const fls::CarModel &model, int lodIndex = 0);
     void clearModel();
+    void setPartSelections(const QHash<int, int> &selections) { partSelections_ = selections; }
 
     void setLivery(const fls::CarModel &model, const fls::LiveryMaskSet &masks);
     void setPaintTextureRegions(const QVector<QVector4D> &regions);
@@ -77,6 +78,9 @@ private:
         float metallic = 0.0f;
         QString name;
         QString materialName;
+        int carPartType = -1;
+        bool stockPart = true;
+        std::vector<int> partOptionIds;
         GLuint diffuseTexture = 0;
         GLuint alphaTexture = 0;
         GLuint normalTexture = 0;
@@ -99,6 +103,9 @@ private:
         int indexCount = 0;
         bool hasDirectLiveryUv = false;
         int allowedSides = 0;
+        int carPartType = -1;
+        bool stockPart = true;
+        std::vector<int> partOptionIds;
         QMatrix4x4 model;
     };
 
@@ -130,6 +137,7 @@ private:
     GLuint sideMaskArray_ = 0;
     int sideCount_ = 0;
     int debugMode_ = 0;
+    QHash<int, int> partSelections_;
     QVector<QVector4D> sideAxis_;
     QVector<QVector2D> sideEMin_;
     QVector<QVector2D> sideEMax_;

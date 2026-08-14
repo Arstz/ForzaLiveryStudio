@@ -291,6 +291,11 @@ exports grouped `C_group` folders and `C_livery` folders.
   add scene or export entries.
   The highest-detail topology is used when a selected LOD supplies no relevant paint geometry.
 
+  Upgradable carbin entries retain their option IDs, stock/body compatibility, and complete
+  model-instance membership. The preview uploads the stock and alternative model sets and filters
+  them at draw time. Its `Parts` drawer exposes only body kits, rear wings, bumpers, hoods, and
+  side skirts; selecting a body kit synchronizes subordinate options carrying the same kit ID.
+
   Shaded rendering starts at `LOD0`. The preview's LOD button cycles every available detail
   level as `LOD0`, `LOD1`, and so on. A part retains its least detailed available mesh when the
   assembled car has further LODs supplied by other parts. Its focus-scoped cycle command is

@@ -435,7 +435,11 @@ long long CarModel::totalVertices() const {
 }
 
 int CarModel::lodCount() const {
-    return meshes.empty() ? 0 : 1 + static_cast<int>(additionalLodMeshes.size());
+    if (meshes.empty() && variantMeshes.empty()) {
+        return 0;
+    }
+    return 1 + static_cast<int>(std::max(
+        additionalLodMeshes.size(), additionalVariantLodMeshes.size()));
 }
 
 const std::vector<CarMesh> &CarModel::meshesForLod(int lodIndex) const {
@@ -445,6 +449,15 @@ const std::vector<CarMesh> &CarModel::meshesForLod(int lodIndex) const {
     const size_t index = std::min(
         static_cast<size_t>(lodIndex - 1), additionalLodMeshes.size() - 1);
     return additionalLodMeshes[index];
+}
+
+const std::vector<CarMesh> &CarModel::variantMeshesForLod(int lodIndex) const {
+    if (lodIndex <= 0 || additionalVariantLodMeshes.empty()) {
+        return variantMeshes;
+    }
+    const size_t index = std::min(
+        static_cast<size_t>(lodIndex - 1), additionalVariantLodMeshes.size() - 1);
+    return additionalVariantLodMeshes[index];
 }
 
 long long CarModel::totalIndices() const {

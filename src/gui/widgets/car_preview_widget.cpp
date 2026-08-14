@@ -10,13 +10,18 @@
 #include "zip_extract.h"
 
 #include <QCoreApplication>
+#include <QButtonGroup>
 #include <QDir>
 #include <QFile>
+#include <QFrame>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QRadioButton>
+#include <QScrollArea>
 #include <QSet>
 #include <QToolButton>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -339,12 +344,79 @@ void appendSharedTireB(
 
 std::vector<std::vector<fls::CarMesh> *> renderMeshSets(fls::CarModel &model) {
     std::vector<std::vector<fls::CarMesh> *> meshSets;
-    meshSets.reserve(static_cast<size_t>(model.lodCount()));
+    meshSets.reserve(
+        2 + model.additionalLodMeshes.size() + model.additionalVariantLodMeshes.size());
     meshSets.push_back(&model.meshes);
     for (std::vector<fls::CarMesh> &lodMeshes : model.additionalLodMeshes) {
         meshSets.push_back(&lodMeshes);
     }
+    meshSets.push_back(&model.variantMeshes);
+    for (std::vector<fls::CarMesh> &lodMeshes : model.additionalVariantLodMeshes) {
+        meshSets.push_back(&lodMeshes);
+    }
     return meshSets;
+}
+
+constexpr std::array<int, 6> kSelectablePartTypes = {
+    fls::car_part_types::CarBody,
+    fls::car_part_types::RearWing,
+    fls::car_part_types::FrontBumper,
+    fls::car_part_types::RearBumper,
+    fls::car_part_types::Hood,
+    fls::car_part_types::SideSkirts,
+};
+
+QString partTypeDisplayName(int partType) {
+    switch (partType) {
+    case fls::car_part_types::CarBody: return QStringLiteral("Body Kit");
+    case fls::car_part_types::RearWing: return QStringLiteral("Rear Wing / Spoiler");
+    case fls::car_part_types::FrontBumper: return QStringLiteral("Front Bumper");
+    case fls::car_part_types::RearBumper: return QStringLiteral("Rear Bumper");
+    case fls::car_part_types::Hood: return QStringLiteral("Hood");
+    case fls::car_part_types::SideSkirts: return QStringLiteral("Side Skirts");
+    default: return QStringLiteral("Part");
+    }
+}
+
+QString optionModelKey(const fls::CarPartOption &option) {
+    QStringList paths;
+    paths.reserve(option.modelPaths.size());
+    for (QString path : option.modelPaths) {
+        path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        paths.push_back(path.toLower());
+    }
+    paths.removeDuplicates();
+    paths.sort();
+    return paths.join(QLatin1Char('|'));
+}
+
+QString partOptionDisplayName(const fls::CarPartOption &option, int alternativeIndex,
+                              bool defaultOption) {
+    if (defaultOption) {
+        if (option.partType == fls::car_part_types::RearWing
+            && option.modelPaths.isEmpty()) {
+            return QStringLiteral("None (Stock)");
+        }
+        return QStringLiteral("Stock");
+    }
+    if (option.partType == fls::car_part_types::CarBody) {
+        return alternativeIndex == 0
+            ? QStringLiteral("Body Kit")
+            : QStringLiteral("Body Kit %1").arg(alternativeIndex + 1);
+    }
+
+    QString identity = optionModelKey(option);
+    if (identity.contains(QStringLiteral("_race"))) {
+        return QStringLiteral("Race");
+    }
+    if (identity.contains(QStringLiteral("_wide"))) {
+        return QStringLiteral("Wide");
+    }
+    if (identity.contains(QStringLiteral("_b.modelbin"))
+        || identity.contains(QStringLiteral("_b_"))) {
+        return QStringLiteral("Option B");
+    }
+    return QStringLiteral("Option %1").arg(alternativeIndex + 1);
 }
 
 QString materialArchiveEntry(QString resourcePath) {
@@ -961,6 +1033,53 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     lodButton_->setFocusPolicy(Qt::NoFocus);
     lodButton_->setToolTip(QStringLiteral("Cycle rendered model detail level"));
     connect(lodButton_, &QToolButton::clicked, this, &CarPreviewWidget::cycleLod);
+
+    partsButton_ = new QToolButton(this);
+    partsButton_->setText(QStringLiteral("Parts"));
+    partsButton_->setCheckable(true);
+    partsButton_->setFocusPolicy(Qt::NoFocus);
+    partsButton_->setToolTip(QStringLiteral("Choose installed body-part models"));
+    partsButton_->setEnabled(false);
+
+    partsPanel_ = new QFrame(this);
+    partsPanel_->setObjectName(QStringLiteral("carPartsPanel"));
+    partsPanel_->setStyleSheet(QStringLiteral(
+        "QFrame#carPartsPanel {"
+        " background: rgba(24, 25, 29, 238);"
+        " border: 1px solid rgba(255, 255, 255, 38);"
+        " border-radius: 5px;"
+        "}"
+        "QLabel { color: rgb(235, 236, 240); }"
+        "QRadioButton { color: rgb(225, 226, 230); padding: 2px 0; }"));
+    auto *panelLayout = new QVBoxLayout(partsPanel_);
+    panelLayout->setContentsMargins(10, 9, 8, 9);
+    panelLayout->setSpacing(6);
+    auto *title = new QLabel(QStringLiteral("Body Parts"), partsPanel_);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    panelLayout->addWidget(title);
+
+    auto *scroll = new QScrollArea(partsPanel_);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
+    auto *optionsWidget = new QWidget(scroll);
+    optionsWidget->setStyleSheet(QStringLiteral("background: transparent;"));
+    partsOptionsLayout_ = new QVBoxLayout(optionsWidget);
+    partsOptionsLayout_->setContentsMargins(0, 0, 2, 0);
+    partsOptionsLayout_->setSpacing(4);
+    scroll->setWidget(optionsWidget);
+    panelLayout->addWidget(scroll, 1);
+    partsPanel_->hide();
+
+    connect(partsButton_, &QToolButton::toggled, this, [this](bool visible) {
+        partsPanel_->setVisible(visible && partsButton_->isEnabled());
+        if (partsPanel_->isVisible()) {
+            partsPanel_->raise();
+        }
+    });
     updateLodControl();
 }
 
@@ -1005,6 +1124,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->carUnwrapOverlay_ = std::move(prepared->carUnwrapOverlay);
                     guard->liveryMasksDir_ = std::move(prepared->liveryMasksDir);
                     guard->selectedLodIndex_ = 0;
+                    guard->rebuildPartsPanel();
                     guard->modelUploadPending_ = true;
                     guard->modelFitPending_ = true;
                     guard->liveryMasksPending_ = true;
@@ -1066,11 +1186,15 @@ void CarPreviewWidget::clearModel() {
     loadedCarPath_.clear();
     manufacturerColors_ = {};
     selectedLodIndex_ = 0;
+    selectedPartOptions_.clear();
+    carRenderer_.setPartSelections(selectedPartOptions_);
     if (!hasModel() && !carRenderer_.hasModel()) {
+        rebuildPartsPanel();
         updateLodControl();
         return;
     }
     model_ = fls::CarModel{};
+    rebuildPartsPanel();
     updateLodControl();
     extractedCarDir_.reset();
     liveryMasks_ = {};
@@ -1236,9 +1360,8 @@ void CarPreviewWidget::initializeGL() {
 }
 
 void CarPreviewWidget::resizeGL(int width, int) {
-    if (lodButton_ != nullptr) {
-        lodButton_->move(std::max(8, width - lodButton_->width() - 8), 6);
-    }
+    (void)width;
+    layoutOverlayControls();
 }
 
 void CarPreviewWidget::paintGL() {
@@ -1506,8 +1629,227 @@ void CarPreviewWidget::updateLodControl() {
     lodButton_->setText(QStringLiteral("LOD%1").arg(selectedLodIndex_));
     lodButton_->setEnabled(model_.lodCount() > 1);
     lodButton_->adjustSize();
-    lodButton_->move(std::max(8, width() - lodButton_->width() - 8), 6);
+    layoutOverlayControls();
     lodButton_->raise();
+}
+
+void CarPreviewWidget::layoutOverlayControls() {
+    if (lodButton_ == nullptr || partsButton_ == nullptr || partsPanel_ == nullptr) {
+        return;
+    }
+    lodButton_->adjustSize();
+    partsButton_->adjustSize();
+    const int margin = 8;
+    const int spacing = 6;
+    const int lodX = std::max(margin, width() - lodButton_->width() - margin);
+    lodButton_->move(lodX, 6);
+    partsButton_->move(
+        std::max(margin, lodX - partsButton_->width() - spacing), 6);
+
+    const int panelWidth = std::min(270, std::max(190, width() - margin * 2));
+    const int panelTop = std::max(lodButton_->geometry().bottom(),
+                                  partsButton_->geometry().bottom()) + 6;
+    partsPanel_->setGeometry(
+        std::max(margin, width() - panelWidth - margin), panelTop,
+        panelWidth, std::max(80, height() - panelTop - margin));
+}
+
+void CarPreviewWidget::rebuildPartsPanel() {
+    if (partsOptionsLayout_ == nullptr || partsButton_ == nullptr) {
+        return;
+    }
+    qDeleteAll(partsPanel_->findChildren<QButtonGroup *>(
+        QString(), Qt::FindDirectChildrenOnly));
+    while (QLayoutItem *item = partsOptionsLayout_->takeAt(0)) {
+        if (QWidget *widget = item->widget()) {
+            delete widget;
+        }
+        delete item;
+    }
+
+    selectedPartOptions_.clear();
+    const fls::CarPartOption *defaultCarBody = nullptr;
+    for (const fls::CarPartOption &option : model_.partOptions) {
+        if (option.partType != fls::car_part_types::CarBody || !option.stock) {
+            continue;
+        }
+        if (defaultCarBody == nullptr || option.level < defaultCarBody->level
+            || (option.level == defaultCarBody->level && option.id < defaultCarBody->id)) {
+            defaultCarBody = &option;
+        }
+    }
+    const int defaultCarBodyId = defaultCarBody != nullptr ? defaultCarBody->id : -1;
+    QSet<int> bodyKitOptionIds;
+    for (const fls::CarPartOption &option : model_.partOptions) {
+        if (option.partType == fls::car_part_types::CarBody
+            && option.id != defaultCarBodyId) {
+            bodyKitOptionIds.insert(option.id);
+        }
+    }
+    int visibleGroups = 0;
+    for (int partType : kSelectablePartTypes) {
+        QVector<const fls::CarPartOption *> allOptions;
+        for (const fls::CarPartOption &option : model_.partOptions) {
+            if (option.partType == partType) {
+                allOptions.push_back(&option);
+            }
+        }
+        if (allOptions.isEmpty()) {
+            continue;
+        }
+        std::sort(allOptions.begin(), allOptions.end(), [](const auto *a, const auto *b) {
+            if (a->stock != b->stock) return a->stock;
+            if (a->level != b->level) return a->level < b->level;
+            return a->id < b->id;
+        });
+
+        const fls::CarPartOption *selected = allOptions.front();
+        if (partType == fls::car_part_types::CarBody && defaultCarBody != nullptr) {
+            selected = defaultCarBody;
+        } else {
+            const auto preferred = std::find_if(
+                allOptions.begin(), allOptions.end(), [defaultCarBodyId](const auto *option) {
+                    return option->id == defaultCarBodyId;
+                });
+            if (preferred != allOptions.end()) {
+                selected = *preferred;
+            } else {
+                const auto stock = std::find_if(
+                    allOptions.begin(), allOptions.end(), [](const auto *option) {
+                        return option->stock;
+                    });
+                if (stock != allOptions.end()) {
+                    selected = *stock;
+                }
+            }
+        }
+        selectedPartOptions_.insert(partType, selected->id);
+
+        QVector<const fls::CarPartOption *> options;
+        for (const fls::CarPartOption *option : allOptions) {
+            const bool bodyKitOwned = partType != fls::car_part_types::CarBody
+                && (bodyKitOptionIds.contains(option->id)
+                    || (defaultCarBodyId >= 0 && option->carBodyId >= 0
+                        && option->carBodyId != defaultCarBodyId));
+            if (!bodyKitOwned) {
+                options.push_back(option);
+            }
+        }
+
+        QSet<QString> distinctModels;
+        for (const fls::CarPartOption *option : options) {
+            distinctModels.insert(optionModelKey(*option));
+        }
+        if (options.size() < 2 || distinctModels.size() < 2) {
+            continue;
+        }
+
+        if (visibleGroups > 0) {
+            auto *separator = new QFrame(partsPanel_);
+            separator->setFrameShape(QFrame::HLine);
+            separator->setStyleSheet(
+                QStringLiteral("color: rgba(255, 255, 255, 28);"));
+            partsOptionsLayout_->addWidget(separator);
+        }
+        auto *groupLabel = new QLabel(partTypeDisplayName(partType), partsPanel_);
+        QFont font = groupLabel->font();
+        font.setBold(true);
+        groupLabel->setFont(font);
+        partsOptionsLayout_->addWidget(groupLabel);
+
+        auto *buttonGroup = new QButtonGroup(partsPanel_);
+        buttonGroup->setExclusive(true);
+        int alternativeIndex = 0;
+        for (const fls::CarPartOption *option : options) {
+            const int labelIndex = option->stock ? 0 : alternativeIndex++;
+            auto *radio = new QRadioButton(
+                partOptionDisplayName(
+                    *option, labelIndex, option->id == selected->id),
+                partsPanel_);
+            radio->setProperty("carPartType", partType);
+            radio->setProperty("carPartOptionId", option->id);
+            radio->setToolTip(option->modelPaths.join(QLatin1Char('\n')));
+            radio->setChecked(option->id == selected->id);
+            buttonGroup->addButton(radio);
+            partsOptionsLayout_->addWidget(radio);
+            connect(radio, &QRadioButton::toggled, this,
+                    [this, partType, optionId = option->id](bool checked) {
+                if (checked) {
+                    selectPartOption(partType, optionId);
+                }
+            });
+        }
+        ++visibleGroups;
+    }
+    partsOptionsLayout_->addStretch(1);
+
+    carRenderer_.setPartSelections(selectedPartOptions_);
+    partsButton_->setEnabled(visibleGroups > 0);
+    if (visibleGroups == 0) {
+        partsButton_->setChecked(false);
+        partsPanel_->hide();
+    }
+    layoutOverlayControls();
+}
+
+void CarPreviewWidget::selectPartOption(int partType, int optionId) {
+    const auto applyCarBody = [this](int carBodyOptionId) {
+        selectedPartOptions_.insert(fls::car_part_types::CarBody, carBodyOptionId);
+        for (int relatedType : {fls::car_part_types::FrontBumper,
+                                fls::car_part_types::RearBumper,
+                                fls::car_part_types::Hood,
+                                fls::car_part_types::SideSkirts}) {
+            const bool hasMatchingOption = std::any_of(
+                model_.partOptions.begin(), model_.partOptions.end(),
+                [relatedType, carBodyOptionId](const fls::CarPartOption &option) {
+                    return option.partType == relatedType && option.id == carBodyOptionId;
+                });
+            if (hasMatchingOption) {
+                selectedPartOptions_.insert(relatedType, carBodyOptionId);
+            }
+        }
+    };
+
+    if (partType == fls::car_part_types::CarBody) {
+        applyCarBody(optionId);
+    } else {
+        const auto chosen = std::find_if(
+            model_.partOptions.begin(), model_.partOptions.end(),
+            [partType, optionId](const fls::CarPartOption &option) {
+                return option.partType == partType && option.id == optionId;
+            });
+        if (chosen != model_.partOptions.end()) {
+            const auto bodyOptionExists = [this](int id) {
+                return id >= 0 && std::any_of(
+                    model_.partOptions.begin(), model_.partOptions.end(),
+                    [id](const fls::CarPartOption &option) {
+                        return option.partType == fls::car_part_types::CarBody
+                            && option.id == id;
+                    });
+            };
+            if (bodyOptionExists(chosen->id)) {
+                applyCarBody(chosen->id);
+            } else if (bodyOptionExists(chosen->carBodyId)) {
+                applyCarBody(chosen->carBodyId);
+            }
+        }
+        selectedPartOptions_.insert(partType, optionId);
+    }
+    carRenderer_.setPartSelections(selectedPartOptions_);
+    syncPartOptionControls();
+    update();
+}
+
+void CarPreviewWidget::syncPartOptionControls() {
+    if (partsPanel_ == nullptr) {
+        return;
+    }
+    for (QRadioButton *radio : partsPanel_->findChildren<QRadioButton *>()) {
+        const int partType = radio->property("carPartType").toInt();
+        const int optionId = radio->property("carPartOptionId").toInt();
+        const QSignalBlocker blocker(radio);
+        radio->setChecked(selectedPartOptions_.value(partType, -1) == optionId);
+    }
 }
 
 void CarPreviewWidget::mousePressEvent(QMouseEvent *event) {
