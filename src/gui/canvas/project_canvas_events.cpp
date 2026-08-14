@@ -469,12 +469,8 @@ void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event) {
 
 void ProjectCanvas::wheelEvent(QWheelEvent *event) {
     updateViewTransform();
-    const Qt::KeyboardModifiers modifiers = event->modifiers();
-    const bool bucketZoomOverride = tool_ == QStringLiteral("bucket")
-        && modifiers.testFlag(Qt::ControlModifier);
-    const bool editToolZoom = bucketZoomOverride
-        || (modifiers.testFlag(Qt::AltModifier)
-            && (tool_ == QStringLiteral("bucket") || tool_ == QStringLiteral("lining")));
+    const bool editToolZoom = (event->modifiers() & Qt::AltModifier)
+        && (tool_ == QStringLiteral("bucket") || tool_ == QStringLiteral("lining"));
     if (!editToolZoom && activeTool_ != nullptr && activeTool_->handleWheel(event)) {
         return;
     }
