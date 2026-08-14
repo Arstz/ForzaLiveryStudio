@@ -1613,7 +1613,7 @@ QPointF projectedMaskPoint(const fls::CarMesh &mesh,
 }
 
 QPainterPath projectedLiveryGeometryPath(
-    const std::vector<fls::CarMesh> &meshes,
+    const std::vector<const fls::CarMesh *> &meshes,
     const fls::LiveryMaskSet &masks,
     const LiveryProjectionData &projection,
     int sideIndex) {
@@ -1621,7 +1621,8 @@ QPainterPath projectedLiveryGeometryPath(
     path.setFillRule(Qt::WindingFill);
     const fls::LiverySide &side = masks.sides[sideIndex];
     const int geometrySide = kMaskSlotGeometrySides[sideIndex];
-    for (const fls::CarMesh &mesh : meshes) {
+    for (const fls::CarMesh *meshPointer : meshes) {
+        const fls::CarMesh &mesh = *meshPointer;
         if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
             || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
@@ -1678,14 +1679,15 @@ quint64 unwrapEdgeKey(quint32 first, quint32 second) {
 }
 
 QPainterPath projectedLiveryWireframePath(
-    const std::vector<fls::CarMesh> &meshes,
+    const std::vector<const fls::CarMesh *> &meshes,
     const fls::LiveryMaskSet &masks,
     const LiveryProjectionData &projection,
     int sideIndex) {
     QPainterPath path;
     const fls::LiverySide &side = masks.sides[sideIndex];
     const int geometrySide = kMaskSlotGeometrySides[sideIndex];
-    for (const fls::CarMesh &mesh : meshes) {
+    for (const fls::CarMesh *meshPointer : meshes) {
+        const fls::CarMesh &mesh = *meshPointer;
         if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
             || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
@@ -1843,6 +1845,39 @@ std::vector<uint8_t> upsampleCoverageMask(const fls::SwatchMask &mask, int dstW,
 
 } // namespace
 
+namespace {
+
+std::vector<const fls::CarMesh *> meshPointers(
+    const std::vector<fls::CarMesh> &meshes) {
+    std::vector<const fls::CarMesh *> pointers;
+    pointers.reserve(meshes.size());
+    for (const fls::CarMesh &mesh : meshes) {
+        pointers.push_back(&mesh);
+    }
+    return pointers;
+}
+
+CarUnwrapOverlay buildCarUnwrapOverlayForMeshes(
+    const std::vector<const fls::CarMesh *> &meshes,
+    const fls::LiveryMaskSet &masks,
+    const LiveryProjectionData &projection,
+    const std::array<QPainterPath, fls::kLiverySideCount> &coveragePaths) {
+    CarUnwrapOverlay overlay;
+    for (int sideIndex = 0;
+         sideIndex < fls::kLiverySideCount;
+         ++sideIndex) {
+        const QPainterPath geometry = projectedLiveryGeometryPath(
+            meshes, masks, projection, sideIndex);
+        overlay.sides[sideIndex].path = rdpUnwrapPath(
+            geometry, coveragePaths[sideIndex]);
+        overlay.sides[sideIndex].wireframe = projectedLiveryWireframePath(
+            meshes, masks, projection, sideIndex);
+    }
+    return overlay;
+}
+
+} // namespace
+
 CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
                                        const fls::LiveryMaskSet &masks,
                                        int lodIndex) {
@@ -1855,29 +1890,102 @@ CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
         buildLiveryProjectionData(model, masks);
     const std::vector<fls::CarMesh> &selectedMeshes =
         model.meshesForLod(lodIndex);
+    const std::vector<const fls::CarMesh *> selectedMeshPointers =
+        meshPointers(selectedMeshes);
+    const std::vector<const fls::CarMesh *> baseMeshPointers =
+        lodIndex > 0 ? meshPointers(model.meshes)
+                     : std::vector<const fls::CarMesh *>{};
     for (int sideIndex = 0;
          sideIndex < fls::kLiverySideCount;
          ++sideIndex) {
         const QPainterPath coverage = liveryCoveragePath(
             masks.sides[sideIndex], sideIndex);
         QPainterPath geometry = projectedLiveryGeometryPath(
-            selectedMeshes, masks, projection, sideIndex);
+            selectedMeshPointers, masks, projection, sideIndex);
         if (geometry.isEmpty() && lodIndex > 0) {
             geometry = projectedLiveryGeometryPath(
-                model.meshes, masks, projection, sideIndex);
+                baseMeshPointers, masks, projection, sideIndex);
         }
         overlay.sides[sideIndex].path = rdpUnwrapPath(
             geometry, coverage);
         overlay.sides[sideIndex].wireframe = projectedLiveryWireframePath(
-            selectedMeshes, masks, projection, sideIndex);
+            selectedMeshPointers, masks, projection, sideIndex);
         if (overlay.sides[sideIndex].wireframe.isEmpty()
             && lodIndex > 0) {
             overlay.sides[sideIndex].wireframe = projectedLiveryWireframePath(
-                model.meshes, masks, projection, sideIndex);
+                baseMeshPointers, masks, projection, sideIndex);
         }
     }
 
     return overlay;
+}
+
+CarUnwrapOverlaySet buildCarUnwrapOverlaySet(
+    const fls::CarModel &model,
+    const fls::LiveryMaskSet &masks,
+    const QSet<int> &selectablePartTypes,
+    int lodIndex) {
+    CarUnwrapOverlaySet overlays;
+    if (model.meshes.empty() || !masks.valid()) {
+        return overlays;
+    }
+
+    std::vector<const fls::CarMesh *> baseMeshes;
+    QHash<int, std::vector<const fls::CarMesh *>> stockMeshes;
+    QHash<int, QHash<int, std::vector<const fls::CarMesh *>>> optionMeshes;
+    const auto categorize = [&](const std::vector<fls::CarMesh> &meshes) {
+        for (const fls::CarMesh &mesh : meshes) {
+            const bool selectable = selectablePartTypes.contains(mesh.carPartType)
+                && !mesh.partOptionIds.empty();
+            if (!selectable) {
+                if (mesh.stockPart) {
+                    baseMeshes.push_back(&mesh);
+                }
+                continue;
+            }
+            if (mesh.stockPart) {
+                stockMeshes[mesh.carPartType].push_back(&mesh);
+            }
+            for (int optionId : mesh.partOptionIds) {
+                optionMeshes[mesh.carPartType][optionId].push_back(&mesh);
+            }
+        }
+    };
+    categorize(model.meshesForLod(lodIndex));
+    categorize(model.variantMeshesForLod(lodIndex));
+
+    const LiveryProjectionData projection =
+        buildLiveryProjectionData(model, masks);
+    std::array<QPainterPath, fls::kLiverySideCount> coveragePaths;
+    for (int sideIndex = 0;
+         sideIndex < fls::kLiverySideCount;
+         ++sideIndex) {
+        coveragePaths[sideIndex] = liveryCoveragePath(
+            masks.sides[sideIndex], sideIndex);
+    }
+    overlays.base = buildCarUnwrapOverlayForMeshes(
+        baseMeshes, masks, projection, coveragePaths);
+    for (int partType : selectablePartTypes) {
+        CarUnwrapPartOverlays partOverlays;
+        const auto stock = stockMeshes.constFind(partType);
+        if (stock != stockMeshes.cend()) {
+            partOverlays.stock = buildCarUnwrapOverlayForMeshes(
+                stock.value(), masks, projection, coveragePaths);
+        }
+        const auto options = optionMeshes.constFind(partType);
+        if (options != optionMeshes.cend()) {
+            for (auto option = options->cbegin(); option != options->cend(); ++option) {
+                partOverlays.options.insert(
+                    option.key(),
+                    buildCarUnwrapOverlayForMeshes(
+                        option.value(), masks, projection, coveragePaths));
+            }
+        }
+        if (!partOverlays.stock.empty() || !partOverlays.options.isEmpty()) {
+            overlays.parts.insert(partType, std::move(partOverlays));
+        }
+    }
+    return overlays;
 }
 
 void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMaskSet &masks) {

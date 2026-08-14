@@ -93,6 +93,7 @@ private:
     void rebuildPartsPanel();
     void selectPartOption(int partType, int optionId);
     void syncPartOptionControls();
+    void switchCarUnwrapOverlay();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
@@ -116,6 +117,7 @@ private:
 
     fls::LiveryMaskSet liveryMasks_;
     CarUnwrapOverlay carUnwrapOverlay_;
+    std::vector<CarUnwrapOverlaySet> carUnwrapOverlaySets_;
     QString liveryMasksDir_;
     bool liveryMasksPending_ = false;
 

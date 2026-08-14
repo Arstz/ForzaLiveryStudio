@@ -22,6 +22,11 @@ namespace gui {
 CarUnwrapOverlay buildCarUnwrapOverlay(const fls::CarModel &model,
                                        const fls::LiveryMaskSet &masks,
                                        int lodIndex = 0);
+CarUnwrapOverlaySet buildCarUnwrapOverlaySet(
+    const fls::CarModel &model,
+    const fls::LiveryMaskSet &masks,
+    const QSet<int> &selectablePartTypes,
+    int lodIndex = 0);
 
 class CarModelRenderer {
 public:

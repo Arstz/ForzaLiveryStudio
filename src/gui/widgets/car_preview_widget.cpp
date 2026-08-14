@@ -940,7 +940,7 @@ struct PreparedCar {
     fls::CarModel model;
     fls::LiveryMaskSet liveryMasks;
     fls::ManufacturerColorPalette manufacturerColors;
-    CarUnwrapOverlay carUnwrapOverlay;
+    std::vector<CarUnwrapOverlaySet> carUnwrapOverlaySets;
     std::unique_ptr<QTemporaryDir> extractedCarDir;
     QString loadedCarPath;
     QString liveryMasksDir;
@@ -995,8 +995,20 @@ std::shared_ptr<PreparedCar> prepareCar(
     if (QFileInfo::exists(masksDir)) {
         prepared->liveryMasks = fls::loadLiveryMasks(masksDir);
         prepared->liveryMasksDir = masksDir;
-        prepared->carUnwrapOverlay = buildCarUnwrapOverlay(
-            prepared->model, prepared->liveryMasks);
+        QSet<int> selectablePartTypes;
+        for (int partType : kSelectablePartTypes) {
+            selectablePartTypes.insert(partType);
+        }
+        prepared->carUnwrapOverlaySets.reserve(
+            static_cast<size_t>(prepared->model.lodCount()));
+        for (int lodIndex = 0;
+             lodIndex < prepared->model.lodCount();
+             ++lodIndex) {
+            prepared->carUnwrapOverlaySets.push_back(
+                buildCarUnwrapOverlaySet(
+                    prepared->model, prepared->liveryMasks,
+                    selectablePartTypes, lodIndex));
+        }
     }
 
     return prepared;
@@ -1121,10 +1133,12 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->extractedCarDir_ = std::move(prepared->extractedCarDir);
                     guard->loadedCarPath_ = std::move(prepared->loadedCarPath);
                     guard->liveryMasks_ = std::move(prepared->liveryMasks);
-                    guard->carUnwrapOverlay_ = std::move(prepared->carUnwrapOverlay);
+                    guard->carUnwrapOverlaySets_ = std::move(
+                        prepared->carUnwrapOverlaySets);
                     guard->liveryMasksDir_ = std::move(prepared->liveryMasksDir);
                     guard->selectedLodIndex_ = 0;
                     guard->rebuildPartsPanel();
+                    guard->switchCarUnwrapOverlay();
                     guard->modelUploadPending_ = true;
                     guard->modelFitPending_ = true;
                     guard->liveryMasksPending_ = true;
@@ -1199,6 +1213,7 @@ void CarPreviewWidget::clearModel() {
     extractedCarDir_.reset();
     liveryMasks_ = {};
     carUnwrapOverlay_ = {};
+    carUnwrapOverlaySets_.clear();
     liveryMasksDir_.clear();
     modelUploadPending_ = false;
     modelFitPending_ = false;
@@ -1240,8 +1255,7 @@ void CarPreviewWidget::cycleLod() {
         return;
     }
     selectedLodIndex_ = (selectedLodIndex_ + 1) % model_.lodCount();
-    carUnwrapOverlay_ = buildCarUnwrapOverlay(
-        model_, liveryMasks_, selectedLodIndex_);
+    switchCarUnwrapOverlay();
     modelUploadPending_ = true;
     updateLodControl();
     Q_EMIT unwrapOverlayChanged();
@@ -1837,6 +1851,8 @@ void CarPreviewWidget::selectPartOption(int partType, int optionId) {
     }
     carRenderer_.setPartSelections(selectedPartOptions_);
     syncPartOptionControls();
+    switchCarUnwrapOverlay();
+    Q_EMIT unwrapOverlayChanged();
     update();
 }
 
@@ -1850,6 +1866,16 @@ void CarPreviewWidget::syncPartOptionControls() {
         const QSignalBlocker blocker(radio);
         radio->setChecked(selectedPartOptions_.value(partType, -1) == optionId);
     }
+}
+
+void CarPreviewWidget::switchCarUnwrapOverlay() {
+    if (selectedLodIndex_ < 0
+        || selectedLodIndex_ >= static_cast<int>(carUnwrapOverlaySets_.size())) {
+        carUnwrapOverlay_ = {};
+        return;
+    }
+    carUnwrapOverlay_ = carUnwrapOverlaySets_[
+        static_cast<size_t>(selectedLodIndex_)].selected(selectedPartOptions_);
 }
 
 void CarPreviewWidget::mousePressEvent(QMouseEvent *event) {
