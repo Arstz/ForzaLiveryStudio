@@ -106,6 +106,7 @@ struct CarLocator {
 
 struct CarModel {
     QString sourcePath;
+    QString mediaName;
     std::vector<CarMesh> meshes;
     std::vector<std::vector<CarMesh>> additionalLodMeshes;
     std::vector<CarMesh> variantMeshes;

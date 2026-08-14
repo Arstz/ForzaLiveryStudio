@@ -717,6 +717,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
 
     CarModel car;
     car.sourcePath = path;
+    car.mediaName = mediaName;
     car.partOptions = parts.options;
     car.locators = loadCarLocators(carbinDir);
     float minX = std::numeric_limits<float>::max();

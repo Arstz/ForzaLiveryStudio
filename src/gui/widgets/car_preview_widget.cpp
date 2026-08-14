@@ -542,13 +542,74 @@ QString optionModelKey(const fls::CarPartOption &option) {
     return paths.join(QLatin1Char('|'));
 }
 
-QString partOptionDisplayName(const fls::CarPartOption &option, int alternativeIndex,
-                              bool defaultOption) {
+const fls::CarPartOption *linkedCarBodyPartOption(
+    const fls::CarModel &model, int partType, int carBodyOptionId, int linkedCarBodyId) {
+    const fls::CarPartOption *selected = nullptr;
+
+    for (const fls::CarPartOption &option : model.partOptions) {
+        const bool matches = option.partType == partType
+            && (linkedCarBodyId >= 0
+                ? option.carBodyId == linkedCarBodyId
+                : option.id == carBodyOptionId);
+        if (!matches) {
+            continue;
+        }
+        if (selected == nullptr
+            || (option.stock && !selected->stock)
+            || (option.stock == selected->stock
+                && (option.level < selected->level
+                    || (option.level == selected->level && option.id < selected->id)))) {
+            selected = &option;
+        }
+    }
+
+    return selected;
+}
+
+QString catalogPartName(const QString &mediaName, const fls::CarPartOption &option) {
+    static const auto catalog = [] {
+        QHash<QString, QHash<QString, QString>> names;
+        QFile file(assetPath(QStringLiteral("cars/part_names.json")));
+        if (!file.open(QIODevice::ReadOnly)) {
+            return names;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+        for (auto model = root.constBegin(); model != root.constEnd(); ++model) {
+            if (!model.value().isObject()) {
+                continue;
+            }
+            QHash<QString, QString> modelNames;
+            const QJsonObject entries = model.value().toObject();
+            for (auto entry = entries.constBegin(); entry != entries.constEnd(); ++entry) {
+                if (entry.value().isString()) {
+                    modelNames.insert(entry.key(), entry.value().toString());
+                }
+            }
+            names.insert(model.key().toLower(), modelNames);
+        }
+        return names;
+    }();
+
+    const auto model = catalog.constFind(mediaName.toLower());
+    if (model == catalog.constEnd()) {
+        return {};
+    }
+    return model->value(QStringLiteral("%1:%2").arg(option.partType).arg(option.id));
+}
+
+QString partOptionDisplayName(const QString &mediaName, const fls::CarPartOption &option,
+                              int alternativeIndex, bool defaultOption) {
     if (defaultOption) {
         if (option.partType == fls::car_part_types::RearWing
             && option.modelPaths.isEmpty()) {
             return QStringLiteral("None (Stock)");
         }
+    }
+    const QString catalogName = catalogPartName(mediaName, option);
+    if (!catalogName.isEmpty()) {
+        return catalogName;
+    }
+    if (defaultOption) {
         return QStringLiteral("Stock");
     }
     if (option.partType == fls::car_part_types::CarBody) {
@@ -2067,7 +2128,7 @@ void CarPreviewWidget::rebuildPartsPanel() {
             const int labelIndex = option->stock ? 0 : alternativeIndex++;
             auto *radio = new QRadioButton(
                 partOptionDisplayName(
-                    *option, labelIndex, option->id == selected->id),
+                    model_.mediaName, *option, labelIndex, option->id == selected->id),
                 partsPanel_);
             radio->setProperty("carPartType", partType);
             radio->setProperty("carPartOptionId", option->id);
@@ -2097,18 +2158,23 @@ void CarPreviewWidget::rebuildPartsPanel() {
 
 void CarPreviewWidget::selectPartOption(int partType, int optionId) {
     const auto applyCarBody = [this](int carBodyOptionId) {
+        const auto body = std::find_if(
+            model_.partOptions.begin(), model_.partOptions.end(),
+            [carBodyOptionId](const fls::CarPartOption &option) {
+                return option.partType == fls::car_part_types::CarBody
+                    && option.id == carBodyOptionId;
+            });
+        const int linkedCarBodyId = body != model_.partOptions.end()
+            ? body->carBodyId : -1;
+
         selectedPartOptions_.insert(fls::car_part_types::CarBody, carBodyOptionId);
         for (int relatedType : {fls::car_part_types::FrontBumper,
                                 fls::car_part_types::RearBumper,
-                                fls::car_part_types::Hood,
                                 fls::car_part_types::SideSkirts}) {
-            const bool hasMatchingOption = std::any_of(
-                model_.partOptions.begin(), model_.partOptions.end(),
-                [relatedType, carBodyOptionId](const fls::CarPartOption &option) {
-                    return option.partType == relatedType && option.id == carBodyOptionId;
-                });
-            if (hasMatchingOption) {
-                selectedPartOptions_.insert(relatedType, carBodyOptionId);
+            const fls::CarPartOption *related = linkedCarBodyPartOption(
+                model_, relatedType, carBodyOptionId, linkedCarBodyId);
+            if (related != nullptr) {
+                selectedPartOptions_.insert(relatedType, related->id);
             }
         }
     };
@@ -2116,26 +2182,6 @@ void CarPreviewWidget::selectPartOption(int partType, int optionId) {
     if (partType == fls::car_part_types::CarBody) {
         applyCarBody(optionId);
     } else {
-        const auto chosen = std::find_if(
-            model_.partOptions.begin(), model_.partOptions.end(),
-            [partType, optionId](const fls::CarPartOption &option) {
-                return option.partType == partType && option.id == optionId;
-            });
-        if (chosen != model_.partOptions.end()) {
-            const auto bodyOptionExists = [this](int id) {
-                return id >= 0 && std::any_of(
-                    model_.partOptions.begin(), model_.partOptions.end(),
-                    [id](const fls::CarPartOption &option) {
-                        return option.partType == fls::car_part_types::CarBody
-                            && option.id == id;
-                    });
-            };
-            if (bodyOptionExists(chosen->id)) {
-                applyCarBody(chosen->id);
-            } else if (bodyOptionExists(chosen->carBodyId)) {
-                applyCarBody(chosen->carBodyId);
-            }
-        }
         selectedPartOptions_.insert(partType, optionId);
     }
     carRenderer_.setPartSelections(selectedPartOptions_);

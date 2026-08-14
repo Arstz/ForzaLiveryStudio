@@ -633,6 +633,9 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/car_ids.json"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/part_names.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/part_names.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/wheel_sizes.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/wheel_sizes.json"
     COMMENT "Deploying used GUI assets"
