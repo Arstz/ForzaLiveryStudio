@@ -191,11 +191,11 @@ mat3 materialTangentFrame(vec3 normal, vec3 position, vec2 uv)
 
 vec3 finishBaseColor(vec2 uv, vec3 paint)
 {
-    if (has_finish_pattern == 0) {
+    if (has_finish_pattern == 0 || finish_self_colored == 0) {
         return paint;
     }
     vec3 pattern = texture(finish_pattern, fract(uv * finish_tiling)).rgb;
-    return finish_self_colored == 1 ? pattern : paint * pattern;
+    return pattern;
 }
 
 // Procedural metal-flake sparkle: quantise world space into tiny cells, keep only the
@@ -2346,6 +2346,9 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             uv = &mesh.uvChannels[mesh.liveryUvChannel];
         }
         const bool hasDirectLiveryUv = uv != nullptr && mesh.liveryUvChannel == 3;
+        const bool cockpitOnly = isCockpitOnly(mesh);
+        const bool brakeRotor = isBrakeRotorMesh(mesh);
+        const bool windowGlass = isWindowGlassMaterial(mesh);
         const fls::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
         int materialUvIndex = 0;
         float materialUTiling = mesh.material ? mesh.material->uTiling : 1.0f;
@@ -2422,9 +2425,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         buffers->partOptionIds = mesh.partOptionIds;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
-        const bool cockpitOnly = isCockpitOnly(mesh);
-        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName) && !cockpitOnly;
-        const bool windowGlass = isWindowGlassMaterial(mesh);
+        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName)
+            && !cockpitOnly && !brakeRotor;
         buffers->allowedSides = cockpitOnly ? 0 : renderedLiverySidesForMesh(mesh);
         buffers->applyLivery = buffers->allowedSides != 0;
         buffers->paintMaterialHashes = paintMaterialHashes(mesh, cockpitOnly);
@@ -2807,8 +2809,7 @@ void applyPaintFinish(const fls::LiveryPaintMaterial &paint, const fls::PaintFin
         primary = primary * (1.0f - tint) + secondary * tint;
         secondaryMix = std::clamp(finish->flakeAmount * kFlakeSecondaryMix, 0.0f, kFlakeSecondaryMixMax);
     }
-    if (finish->hasMaterialColor
-        && (finish->selfColored || finish->category == fls::PaintFinishCategory::Metal)) {
+    if (finish->hasMaterialColor && finish->selfColored) {
         primary = QVector3D(finish->materialColor[0], finish->materialColor[1], finish->materialColor[2]);
         secondary = primary;
     }
@@ -3001,7 +3002,9 @@ void CarModelRenderer::render(
 
     const QMatrix4x4 viewProjection = projection * view;
     const auto drawMesh = [&](MeshBuffers &mesh) {
-        QVector3D primary = mesh.hasMaterialColor ? mesh.materialColor : fallbackColor;
+        QVector3D primary = mesh.hasMaterialColor
+            ? mesh.materialColor
+            : (mesh.bodyPaint ? fallbackColor : kDefaultMaterialColor);
         // A custom-painted body panel with no explicit colour of its own (the livery-canvas layer)
         // takes the colour of the painted panel around it, so it reads as the paint nearby rather
         // than a car-wide guess (grey on the maroon rocker, or maroon on the grey hood). Rank by

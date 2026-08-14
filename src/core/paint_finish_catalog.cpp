@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -25,6 +26,12 @@ QString textureLeaf(const QString &path) {
     value.replace(QLatin1Char('\\'), QLatin1Char('/'));
 
     return value.mid(value.lastIndexOf(QLatin1Char('/')) + 1);
+}
+
+bool isOpaqueWhite(const SwatchImage &image) {
+    return image.valid()
+        && std::all_of(image.rgba.cbegin(), image.rgba.cend(),
+                       [](uint8_t channel) { return channel == 255; });
 }
 
 PaintFinishRender renderFromMaterial(const PaintFinishInfo &info, const ModelMaterial &material) {
@@ -242,6 +249,9 @@ void PaintFinishLibrary::load(const QString &gameFolder) {
         render.patternImage = swatchImage(material.patternTexture);
         render.detailNormalImage = swatchImage(material.detailNormalTexture);
         render.roughMetalAoImage = swatchImage(material.roughMetalAoTexture);
+        if (isOpaqueWhite(render.roughMetalAoImage)) {
+            render.roughMetalAoImage = {};
+        }
         byCode_.insert(info.code, render);
     }
     loaded_ = !byCode_.isEmpty();
