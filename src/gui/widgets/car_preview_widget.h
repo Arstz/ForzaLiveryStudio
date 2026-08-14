@@ -18,6 +18,7 @@
 class QTemporaryDir;
 class QFrame;
 class QLabel;
+class QMenu;
 class QToolButton;
 class QVBoxLayout;
 
@@ -94,7 +95,9 @@ private:
     void selectPartOption(int partType, int optionId);
     void syncPartOptionControls();
     void switchCarUnwrapOverlay();
-    void chooseCarColor();
+    void chooseRegionColor(const QVector<quint64> &materialHashes,
+                           bool secondary);
+    void rebuildCarColorMenu();
     void updateCarColorControl();
 
     NativeShapeRenderer shapeRenderer_;
@@ -137,6 +140,7 @@ private:
     QToolButton *lodButton_ = nullptr;
     QToolButton *partsButton_ = nullptr;
     QToolButton *carColorButton_ = nullptr;
+    QMenu *carColorMenu_ = nullptr;
     QFrame *partsPanel_ = nullptr;
     QVBoxLayout *partsOptionsLayout_ = nullptr;
     QHash<int, int> selectedPartOptions_;

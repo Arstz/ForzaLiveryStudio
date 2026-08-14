@@ -40,7 +40,10 @@ struct LiveryPaintState {
 
     const LiveryPaintMaterial *find(quint64 materialHash) const;
     LiveryPaintMaterial *find(quint64 materialHash);
+    LiveryPaintMaterial &ensure(quint64 materialHash);
     std::optional<std::array<quint8, 4>> defaultCarColorBgra() const;
+    void setColorBgra(quint64 materialHash, bool secondary,
+                      std::array<quint8, 4> color);
     void setDefaultCarColorBgra(std::array<quint8, 4> color);
 
     bool operator==(const LiveryPaintState &) const = default;

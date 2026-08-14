@@ -459,6 +459,22 @@ bool isBodyPaintMaterial(const QString &material) {
     return name.startsWith(QStringLiteral("carpaint")) || name.startsWith(QStringLiteral("car_paint"));
 }
 
+bool isCockpitOnly(const fls::CarMesh &mesh) {
+    QString path = mesh.sourceModelPath;
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (path.contains(QStringLiteral("/interior/"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    constexpr quint32 kCockpitGroups =
+        fls::car_draw_groups::kCockpit | fls::car_draw_groups::kDriverlessCockpit;
+    constexpr quint32 kExteriorGroups =
+        fls::car_draw_groups::kExterior | fls::car_draw_groups::kHood;
+
+    return mesh.drawGroups != 0
+        && (mesh.drawGroups & kCockpitGroups) != 0
+        && (mesh.drawGroups & kExteriorGroups) == 0;
+}
+
 bool isWindowGlassMaterial(const fls::CarMesh &mesh) {
     const QString name = mesh.materialName.toLower();
     if (name.contains(QStringLiteral("screw"))
@@ -907,26 +923,154 @@ enum CarPartType {
 };
 
 quint64 fallbackPaintHash(const fls::CarMesh &mesh) {
-    const QString identity = mesh.name.toLower() + QLatin1Char('|') + mesh.materialName.toLower();
+    const QString materialIdentity =
+        mesh.name.toLower() + QLatin1Char('|') + mesh.materialName.toLower();
+    const QString partIdentity =
+        materialIdentity + QLatin1Char('|') + mesh.sourceModelPath.toLower();
     if (isWindowGlassMaterial(mesh)) {
         return fls::material_hashes::binding::kWindowGlass;
     }
-    if (identity.contains(QStringLiteral("caliper")) || identity.contains(QStringLiteral("brake"))) {
+    if (materialIdentity.contains(QStringLiteral("caliper"))
+        || materialIdentity.contains(QStringLiteral("brakepad"))
+        || materialIdentity.contains(QStringLiteral("brake_pad"))) {
         return fls::material_hashes::binding::kBrakeCaliper;
     }
     if (isBodyPaintMaterial(mesh.materialName)) {
-        if (isSpoilerMesh(mesh.name)) {
+        if (isSpoilerMesh(mesh.name) || isSpoilerMesh(mesh.sourceModelPath)) {
             return fls::material_hashes::binding::kSpoilerPaint;
         }
-        if (mesh.carPartType == kHoodPart || identity.contains(QStringLiteral("hood"))) {
+        if (mesh.carPartType == kHoodPart
+            || partIdentity.contains(QStringLiteral("hood"))) {
             return fls::material_hashes::binding::kHoodPaint;
         }
-        if (identity.contains(QStringLiteral("mirror"))) {
+        if (partIdentity.contains(QStringLiteral("mirror"))) {
             return fls::material_hashes::binding::kMirrorPaint;
         }
         return fls::material_hashes::binding::kBodyPaint;
     }
     return 0;
+}
+
+bool isBrakeRotorMesh(const fls::CarMesh &mesh) {
+    QString identity = mesh.sourceModelPath + QLatin1Char('|')
+        + mesh.name + QLatin1Char('|') + mesh.materialName;
+    identity.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    return identity.contains(QStringLiteral("/rotors/"), Qt::CaseInsensitive)
+        || identity.contains(QStringLiteral("rotor"), Qt::CaseInsensitive)
+        || identity.contains(QStringLiteral("brakedisc"), Qt::CaseInsensitive)
+        || identity.contains(QStringLiteral("brake_disc"), Qt::CaseInsensitive);
+}
+
+QString paintMaterialToken(QString value) {
+    value.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    value = value.mid(value.lastIndexOf(QLatin1Char('/')) + 1).toLower();
+    const int separator = value.indexOf(QLatin1Char('|'));
+    if (separator >= 0) {
+        value.truncate(separator);
+    }
+    if (value.endsWith(QStringLiteral(".materialbin"))) {
+        value.chop(12);
+    }
+    return value;
+}
+
+bool isWheelPaintMesh(const fls::CarMesh &mesh) {
+    QString path = mesh.sourceModelPath;
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (!path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)) {
+        return false;
+    }
+    const QString material = paintMaterialToken(mesh.materialName);
+    return material == QStringLiteral("rim")
+        || material == QStringLiteral("rim2")
+        || material == QStringLiteral("rim3")
+        || material == QStringLiteral("inner_rim")
+        || material == QStringLiteral("lip")
+        || material == QStringLiteral("hub")
+        || material == QStringLiteral("lug")
+        || material == QStringLiteral("detail")
+        || material == QStringLiteral("detail2");
+}
+
+bool isFrontWheelPaintMesh(const fls::CarMesh &mesh) {
+    using namespace fls::material_hashes::binding;
+    if (fls::material_hashes::contains(kFrontWheelPaint, mesh.paintMaterialHash)) {
+        return true;
+    }
+    if (fls::material_hashes::contains(kRearWheelPaint, mesh.paintMaterialHash)) {
+        return false;
+    }
+    if (mesh.positions.empty()) {
+        return false;
+    }
+    double z = 0.0;
+    for (const fls::ModelVec3 &position : mesh.positions) {
+        z += mesh.boneTransform.transformPoint(position).z;
+    }
+    return z / static_cast<double>(mesh.positions.size()) >= 0.0;
+}
+
+std::vector<quint64> paintMaterialHashes(const fls::CarMesh &mesh, bool cockpitOnly) {
+    if (cockpitOnly || isBrakeRotorMesh(mesh)) {
+        return {};
+    }
+    const quint64 semanticHash = fallbackPaintHash(mesh);
+    std::vector<quint64> hashes;
+    const auto append = [&hashes](quint64 hash) {
+        if (hash != 0 && std::find(hashes.cbegin(), hashes.cend(), hash) == hashes.cend()) {
+            hashes.push_back(hash);
+        }
+    };
+    append(semanticHash != 0 ? semanticHash : mesh.paintMaterialHash);
+    if (!isWheelPaintMesh(mesh)) {
+        return hashes;
+    }
+
+    using namespace fls::material_hashes::binding;
+    const QString material = paintMaterialToken(mesh.materialName);
+    if (material == QStringLiteral("rim")) append(kRims);
+    if (material == QStringLiteral("rim2")) append(kRims2);
+    if (material == QStringLiteral("rim3")) append(kRims3);
+    if (material == QStringLiteral("inner_rim")) append(kRimsInner);
+    if (material == QStringLiteral("lip")) append(kRimsLip);
+    if (material == QStringLiteral("detail")) append(kWheel1);
+    if (material == QStringLiteral("detail2")) append(kWheel2);
+    for (quint64 hash : kWheelPaintGroups) {
+        append(hash);
+    }
+    const auto &axleHashes = isFrontWheelPaintMesh(mesh)
+        ? kFrontWheelPaint
+        : kRearWheelPaint;
+    for (quint64 hash : axleHashes) {
+        append(hash);
+    }
+    return hashes;
+}
+
+bool hasSelectedPaint(const fls::LiveryPaintMaterial &paint) {
+    return paint.primary.enabled || paint.secondary.enabled
+        || paint.manufacturerSelector != 0xffffffffu;
+}
+
+const fls::LiveryPaintMaterial *findPaint(
+    const fls::LiveryPaintState *paintState, const std::vector<quint64> &hashes) {
+    if (paintState == nullptr) {
+        return nullptr;
+    }
+    const fls::LiveryPaintMaterial *fallback = nullptr;
+    for (quint64 hash : hashes) {
+        const fls::LiveryPaintMaterial *paint = paintState->find(hash);
+        if (paint == nullptr) {
+            continue;
+        }
+        if (fallback == nullptr) {
+            fallback = paint;
+        }
+        if (hasSelectedPaint(*paint)) {
+            return paint;
+        }
+    }
+    return fallback;
 }
 
 struct WheelMaterialFallback {
@@ -2278,13 +2422,12 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         buffers->partOptionIds = mesh.partOptionIds;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
         buffers->hasDirectLiveryUv = hasDirectLiveryUv;
-        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName);
+        const bool cockpitOnly = isCockpitOnly(mesh);
+        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName) && !cockpitOnly;
         const bool windowGlass = isWindowGlassMaterial(mesh);
-        buffers->allowedSides = renderedLiverySidesForMesh(mesh);
+        buffers->allowedSides = cockpitOnly ? 0 : renderedLiverySidesForMesh(mesh);
         buffers->applyLivery = buffers->allowedSides != 0;
-        buffers->paintMaterialHash = mesh.paintMaterialHash != 0
-            ? mesh.paintMaterialHash
-            : fallbackPaintHash(mesh);
+        buffers->paintMaterialHashes = paintMaterialHashes(mesh, cockpitOnly);
         if (mesh.material) {
             buffers->hasMaterialColor = mesh.material->hasBaseColor;
             buffers->materialColor = QVector3D(
@@ -2311,7 +2454,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
                 buffers->materialColor = kTextureMaterialColor;
             }
         }
-        if (isBodyPaintMaterial(mesh.materialName)) {
+        if (buffers->bodyPaint) {
             buffers->hasMaterialColor = false;
         }
         // When the shared _library material was resolved, its gloss/metallic are the game's
@@ -2349,6 +2492,10 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
                 buffers->gloss = material->gloss;
                 buffers->metallic = material->metallic;
             }
+        }
+        if (cockpitOnly && !buffers->hasMaterialColor) {
+            buffers->hasMaterialColor = true;
+            buffers->materialColor = kDefaultMaterialColor;
         }
         if (isLampSurface(mesh)) {
             const QString material = materialIdentity(mesh);
@@ -2832,7 +2979,7 @@ void CarModelRenderer::render(
                 continue;
             }
             const fls::LiveryPaintMaterial *paint =
-                m.bodyPaint ? paintState->find(m.paintMaterialHash) : nullptr;
+                m.bodyPaint ? findPaint(paintState, m.paintMaterialHashes) : nullptr;
             if (paint == nullptr || !paint->primary.enabled) {
                 continue;
             }
@@ -2877,9 +3024,8 @@ void CarModelRenderer::render(
         float gloss = mesh.gloss;
         float metallic = mesh.metallic;
         float manufacturerFlake = 0.0f;
-        const fls::LiveryPaintMaterial *paint = paintState != nullptr
-            ? paintState->find(mesh.paintMaterialHash)
-            : nullptr;
+        const fls::LiveryPaintMaterial *paint = findPaint(
+            paintState, mesh.paintMaterialHashes);
         const fls::ManufacturerColor *manufacturerColor =
             paint != nullptr && manufacturerColors != nullptr && !liveryCustomPainted
             ? manufacturerColors->find(paint->manufacturerSelector)

@@ -20,6 +20,23 @@ inline constexpr quint64 kMirrorPaint = 0x1E5FF0F50C741122ULL;
 inline constexpr quint64 kSpoilerPaint = 0xCD48110253EE319AULL;
 inline constexpr quint64 kWindowGlass = 0x9582FD1BA2FFF9A4ULL;
 inline constexpr quint64 kBrakeCaliper = 0xA5495E0A43DF55B9ULL;
+inline constexpr quint64 kRims = 0xDCE6592BFA0DFA78ULL;
+inline constexpr quint64 kRims2 = 0x6963CFB9E5C04BBEULL;
+inline constexpr quint64 kRims3 = 0x6963D0B9E5C04D71ULL;
+inline constexpr quint64 kRimsInner = 0xA11BBB5668440C18ULL;
+inline constexpr quint64 kRimsLip = 0xC3F4EEFF7A11DBCDULL;
+inline constexpr quint64 kWheel1 = 0xE20AAE21D70536F7ULL;
+inline constexpr quint64 kWheel2 = 0xE20AAF21D70538AAULL;
+
+inline constexpr std::array<quint64, 7> kWheelPaintGroups = {
+    kRims,
+    kRims2,
+    kRims3,
+    kRimsInner,
+    kRimsLip,
+    kWheel1,
+    kWheel2,
+};
 
 inline constexpr std::array<quint64, 7> kLiveryMaterials = {
     kBodyPaint,

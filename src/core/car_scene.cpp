@@ -117,6 +117,7 @@ struct PartInstance {
     QString boneName;
     qint16 boneId = -1;
     int partType = -1;
+    quint32 drawGroups = 0;
     bool stock = true;
     std::vector<int> optionIds;
     std::vector<MaterialBinding> materialBindings;
@@ -148,7 +149,7 @@ PartInstance readRenderModel(Cursor &c, Series series, quint16 sceneVersion) {
     part.boneName = c.str();
     part.boneId = c.i16();
     c.bl();  // SnapToParent
-    c.i32(); // DrawGroups
+    part.drawGroups = static_cast<quint32>(c.i32());
 
     if (version < 9) {
         c.str(); // AOSwatchPath
@@ -535,7 +536,7 @@ void bakeWheelTransform(CarMesh &mesh, const AxleSizing &axle) {
 }
 
 int wheelPaintChannel(const QString &materialName) {
-    const QString name = materialName.toLower();
+    const QString name = materialToken(materialName);
     if (name == QStringLiteral("rim")) return 0;
     if (name == QStringLiteral("rim2")) return 1;
     if (name == QStringLiteral("inner_rim")) return 2;
@@ -564,14 +565,19 @@ bool frontWheel(const PartInstance &part, const CarMesh &mesh) {
     return z / static_cast<double>(mesh.positions.size()) >= 0.0;
 }
 
-quint64 wheelPaintHash(const PartInstance &part, const CarMesh &mesh) {
+quint64 wheelPaintHash(bool front, const CarMesh &mesh) {
     const int channel = wheelPaintChannel(mesh.materialName);
-    if (channel < 0) {
-        return 0;
+    if (channel >= 0) {
+        return front
+            ? material_hashes::binding::kFrontWheelPaint[channel]
+            : material_hashes::binding::kRearWheelPaint[channel];
     }
-    return frontWheel(part, mesh)
-        ? material_hashes::binding::kFrontWheelPaint[channel]
-        : material_hashes::binding::kRearWheelPaint[channel];
+    const QString name = materialToken(mesh.materialName);
+    if (name == QStringLiteral("rim3")) return material_hashes::binding::kRims3;
+    if (name == QStringLiteral("lip")) return material_hashes::binding::kRimsLip;
+    if (name == QStringLiteral("detail")) return material_hashes::binding::kWheel1;
+    if (name == QStringLiteral("detail2")) return material_hashes::binding::kWheel2;
+    return 0;
 }
 
 std::vector<CarLocator> loadCarLocators(const QString &carbinDir) {
@@ -804,7 +810,10 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             continue;
         }
         CarModel model = decodeModel(bundle);
-        if (model.meshes.empty()) {
+        const bool hasAdditionalMeshes = std::any_of(
+            model.additionalLodMeshes.cbegin(), model.additionalLodMeshes.cend(),
+            [](const std::vector<CarMesh> &meshes) { return !meshes.empty(); });
+        if (model.meshes.empty() && !hasAdditionalMeshes) {
             continue;
         }
 
@@ -854,6 +863,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
             mesh.boneTransform = matMul(mesh.boneTransform, instance);
             mesh.carPartType = part.partType;
             mesh.modelInstanceId = currentInstanceId;
+            mesh.drawGroups = part.drawGroups;
             mesh.stockPart = stock;
             mesh.partOptionIds = part.optionIds;
             mesh.paintMaterialHash = materialBindingHash(part, mesh);
@@ -861,7 +871,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                 const bool front = corner >= 0 ? isFrontCorner(corner) : frontWheel(part, mesh);
                 bakeWheelTransform(mesh, front ? wheels.front : wheels.rear);
                 if (mesh.paintMaterialHash == 0) {
-                    mesh.paintMaterialHash = wheelPaintHash(part, mesh);
+                    mesh.paintMaterialHash = wheelPaintHash(front, mesh);
                 }
             }
 

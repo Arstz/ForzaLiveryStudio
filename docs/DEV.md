@@ -320,6 +320,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   the livery on top. Unmapped codes fall back to a small built-in approximation. See
   `GAMEDATA.md` for where the enumeration, materials, and textures live in the game
   media folder.
+  The preview color menu edits each supported region's primary and secondary colors
+  without replacing its finish. Authored car draw groups determine whether a mesh
+  participates in exterior paint and livery rendering.
   Non-paint parts take their real shading from the game's shared `_library` materials:
   each mesh's materialbin (gloss, F0→metallic, base colour) is decoded and merged in
   whenever a car loads — this tuning is cheap and always applied, independent of the

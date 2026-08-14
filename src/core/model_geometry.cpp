@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <unordered_map>
 
@@ -90,7 +91,9 @@ struct MeshInfo {
     QString name;
     qint16 materialId = -1;
     qint16 rigidBoneIndex = -1;
-    quint8 lodLevel = 0;
+    quint16 lodFlags = 0;
+    quint8 minimumLod = 0;
+    quint8 maximumLod = 0;
     bool is32BitIndices = true;
     qint32 indexBufferOffset = 0;
     qint32 indexBufferDrawOffset = 0;
@@ -107,6 +110,20 @@ struct BufferData {
     quint16 stride = 0;
     QByteArray raw;
 };
+
+quint8 meshLodMask(const MeshInfo &mesh) {
+    if (mesh.lodFlags == 0) {
+        const int lod = std::min<int>(mesh.minimumLod, 5);
+        return static_cast<quint8>(1u << lod);
+    }
+    quint8 mask = (mesh.lodFlags & 0x0003u) != 0 ? 0x01u : 0u;
+    for (int lod = 1; lod < 6; ++lod) {
+        if ((mesh.lodFlags & (1u << (lod + 1))) != 0) {
+            mask |= static_cast<quint8>(1u << lod);
+        }
+    }
+    return mask;
+}
 
 int formatSize(int fmt) {
     switch (fmt) {
@@ -260,9 +277,9 @@ MeshInfo decodeMesh(const BundleBlobRecord &blob) {
     }
 
     mesh.rigidBoneIndex = c.i16();
-    c.u16(); // LODFlags
-    mesh.lodLevel = c.u8();
-    c.u8();  // LODLevel2
+    mesh.lodFlags = c.u16();
+    mesh.minimumLod = c.u8();
+    mesh.maximumLod = c.u8();
     c.u16(); // bucket flags
     c.u8();  // bucket order
 
@@ -552,18 +569,22 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
     float maxY = maxX;
     float maxZ = maxX;
 
-    std::vector<quint8> detailLevels;
+    int highestLod = 0;
     for (const BundleBlobRecord *blob : meshBlobs) {
         const MeshInfo info = decodeMesh(*blob);
-        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) != 0) {
-            detailLevels.push_back(info.lodLevel);
+        if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0) {
+            continue;
+        }
+        const quint8 lodMask = meshLodMask(info);
+        for (int lod = 5; lod > highestLod; --lod) {
+            if ((lodMask & (1u << lod)) != 0) {
+                highestLod = lod;
+                break;
+            }
         }
     }
-    std::sort(detailLevels.begin(), detailLevels.end());
-    detailLevels.erase(
-        std::unique(detailLevels.begin(), detailLevels.end()), detailLevels.end());
-    if (detailLevels.size() > 1) {
-        model.additionalLodMeshes.resize(detailLevels.size() - 1);
+    if (highestLod > 0) {
+        model.additionalLodMeshes.resize(static_cast<size_t>(highestLod));
     }
 
     for (int mi = 0; mi < static_cast<int>(meshBlobs.size()); ++mi) {
@@ -572,12 +593,10 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         if (info.name.compare(QStringLiteral("shadow"), Qt::CaseInsensitive) == 0) {
             continue;
         }
-        const auto detail = std::lower_bound(
-            detailLevels.begin(), detailLevels.end(), info.lodLevel);
-        if (detail == detailLevels.end() || *detail != info.lodLevel) {
+        const quint8 lodMask = meshLodMask(info);
+        if (lodMask == 0) {
             continue;
         }
-        const int lodIndex = static_cast<int>(detail - detailLevels.begin());
 
         const VertexLayout *layout = nullptr;
         if (auto it = layoutById.find(static_cast<quint32>(info.vertexLayoutIndex)); it != layoutById.end()) {
@@ -729,7 +748,7 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         out.texCoordTransforms = info.texCoordTransforms;
         out.liveryUvChannel = (out.uvChannels.size() > 3 && !out.uvChannels[3].empty()) ? 3 : -1;
 
-        if (lodIndex == 0) {
+        if ((lodMask & 0x01u) != 0) {
             for (const ModelVec3 &p : out.positions) {
                 const ModelVec3 w = out.boneTransform.transformPoint(p);
                 minX = std::min(minX, w.x);
@@ -739,13 +758,19 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
                 maxY = std::max(maxY, w.y);
                 maxZ = std::max(maxZ, w.z);
             }
-            model.meshes.push_back(std::move(out));
-        } else {
-            model.additionalLodMeshes[lodIndex - 1].push_back(std::move(out));
+            model.meshes.push_back(out);
+        }
+        for (int lod = 1; lod <= highestLod; ++lod) {
+            if ((lodMask & (1u << lod)) != 0) {
+                model.additionalLodMeshes[static_cast<size_t>(lod - 1)].push_back(out);
+            }
         }
     }
 
-    if (model.meshes.empty()) {
+    const bool hasAdditionalMeshes = std::any_of(
+        model.additionalLodMeshes.cbegin(), model.additionalLodMeshes.cend(),
+        [](const std::vector<CarMesh> &meshes) { return !meshes.empty(); });
+    if (model.meshes.empty() && !hasAdditionalMeshes) {
         if (error) {
             *error = QStringLiteral("modelbin decoded to zero meshes");
         }
@@ -771,6 +796,35 @@ CarModel loadModelBin(const QString &path, QString *error) {
     try {
         const ModelBundle bundle = parseModelBundle(bytes);
         CarModel model = decodeModel(bundle, error);
+        if (model.meshes.empty()) {
+            const auto firstLod = std::find_if(
+                model.additionalLodMeshes.begin(), model.additionalLodMeshes.end(),
+                [](const std::vector<CarMesh> &meshes) { return !meshes.empty(); });
+            if (firstLod != model.additionalLodMeshes.end()) {
+                model.meshes = *firstLod;
+                model.additionalLodMeshes.erase(
+                    model.additionalLodMeshes.begin(), std::next(firstLod));
+                float modelMinX = std::numeric_limits<float>::max();
+                float modelMinY = modelMinX;
+                float modelMinZ = modelMinX;
+                float modelMaxX = std::numeric_limits<float>::lowest();
+                float modelMaxY = modelMaxX;
+                float modelMaxZ = modelMaxX;
+                for (const CarMesh &mesh : model.meshes) {
+                    for (const ModelVec3 &position : mesh.positions) {
+                        const ModelVec3 world = mesh.boneTransform.transformPoint(position);
+                        modelMinX = std::min(modelMinX, world.x);
+                        modelMinY = std::min(modelMinY, world.y);
+                        modelMinZ = std::min(modelMinZ, world.z);
+                        modelMaxX = std::max(modelMaxX, world.x);
+                        modelMaxY = std::max(modelMaxY, world.y);
+                        modelMaxZ = std::max(modelMaxZ, world.z);
+                    }
+                }
+                model.boundsMin = {modelMinX, modelMinY, modelMinZ};
+                model.boundsMax = {modelMaxX, modelMaxY, modelMaxZ};
+            }
+        }
         model.sourcePath = path;
         for (CarMesh &mesh : model.meshes) {
             mesh.sourceModelPath = path;

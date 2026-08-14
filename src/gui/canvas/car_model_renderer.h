@@ -74,7 +74,7 @@ private:
         bool translucent = false;
         bool doubleSided = false;
         float alpha = 1.0f;
-        quint64 paintMaterialHash = 0;
+        std::vector<quint64> paintMaterialHashes;
         bool hasMaterialColor = false;
         QVector3D materialColor;
         QVector3D emissiveColor;

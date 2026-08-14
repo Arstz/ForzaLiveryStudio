@@ -21,6 +21,17 @@ constexpr int Hood = 36;
 constexpr int SideSkirts = 37;
 } // namespace car_part_types
 
+namespace car_draw_groups {
+constexpr quint32 kExterior = 1u << 0;
+constexpr quint32 kCockpit = 1u << 1;
+constexpr quint32 kShadow = 1u << 2;
+constexpr quint32 kHood = 1u << 3;
+constexpr quint32 kWindshieldReflection = 1u << 4;
+constexpr quint32 kDriverlessCockpit = 1u << 5;
+constexpr quint32 kWindshieldReflectionDriverless = 1u << 6;
+constexpr quint32 kProxyLod = 1u << 7;
+} // namespace car_draw_groups
+
 struct ModelMaterial;
 
 struct ModelVec2 {
@@ -73,6 +84,7 @@ struct CarMesh {
     int liveryUvChannel = -1;
     int carPartType = -1;
     int modelInstanceId = -1;
+    quint32 drawGroups = 0;
     bool stockPart = true;
     std::vector<int> partOptionIds;
 };

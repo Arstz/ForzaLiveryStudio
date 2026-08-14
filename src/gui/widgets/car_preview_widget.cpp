@@ -18,6 +18,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMenu>
 #include <QPainter>
 #include <QRadioButton>
 #include <QScrollArea>
@@ -394,6 +395,127 @@ QIcon carColorSwatchIcon(const QColor &color) {
     painter.setBrush(color);
     painter.drawRoundedRect(QRectF(1.5, 1.5, 15.0, 15.0), 3.0, 3.0);
     return QIcon(icon);
+}
+
+struct PaintRegion {
+    QString name;
+    QVector<quint64> materialHashes;
+};
+
+QVector<quint64> fallbackWheelPaintHashes(bool front, bool rear) {
+    QVector<quint64> hashes;
+    if (front && rear) {
+        for (quint64 materialHash : fls::material_hashes::binding::kWheelPaintGroups) {
+            hashes.push_back(materialHash);
+        }
+    }
+    if (front) {
+        for (quint64 materialHash : fls::material_hashes::binding::kFrontWheelPaint) {
+            hashes.push_back(materialHash);
+        }
+    }
+    if (rear) {
+        for (quint64 materialHash : fls::material_hashes::binding::kRearWheelPaint) {
+            hashes.push_back(materialHash);
+        }
+    }
+
+    return hashes;
+}
+
+QString paintMaterialToken(QString value) {
+    value.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    value = value.mid(value.lastIndexOf(QLatin1Char('/')) + 1).toLower();
+    const int pipe = value.indexOf(QLatin1Char('|'));
+    if (pipe >= 0) {
+        value.truncate(pipe);
+    }
+    if (value.endsWith(QStringLiteral(".materialbin"))) {
+        value.chop(12);
+    }
+
+    return value;
+}
+
+bool isWheelPaintMesh(const fls::CarMesh &mesh) {
+    QString path = mesh.sourceModelPath;
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (!path.contains(QStringLiteral("/wheels/"), Qt::CaseInsensitive)) {
+        return false;
+    }
+    const QString material = paintMaterialToken(mesh.materialName);
+    return material == QStringLiteral("rim")
+        || material == QStringLiteral("rim2")
+        || material == QStringLiteral("rim3")
+        || material == QStringLiteral("inner_rim")
+        || material == QStringLiteral("lip")
+        || material == QStringLiteral("hub")
+        || material == QStringLiteral("lug")
+        || material == QStringLiteral("detail")
+        || material == QStringLiteral("detail2");
+}
+
+bool isFrontWheelPaintMesh(const fls::CarMesh &mesh) {
+    using namespace fls::material_hashes::binding;
+    if (fls::material_hashes::contains(kFrontWheelPaint, mesh.paintMaterialHash)) {
+        return true;
+    }
+    if (fls::material_hashes::contains(kRearWheelPaint, mesh.paintMaterialHash)) {
+        return false;
+    }
+    if (mesh.positions.empty()) {
+        return false;
+    }
+    double z = 0.0;
+    for (const fls::ModelVec3 &position : mesh.positions) {
+        z += mesh.boneTransform.transformPoint(position).z;
+    }
+
+    return z / static_cast<double>(mesh.positions.size()) >= 0.0;
+}
+
+QVector<quint64> modelWheelPaintHashes(
+    const fls::CarModel &model, int lodIndex, bool front, bool rear) {
+    QVector<quint64> hashes;
+    QSet<quint64> seen;
+    const auto appendMeshes = [&](const std::vector<fls::CarMesh> &meshes) {
+        for (const fls::CarMesh &mesh : meshes) {
+            if (!isWheelPaintMesh(mesh) || mesh.paintMaterialHash == 0) {
+                continue;
+            }
+            const bool meshFront = isFrontWheelPaintMesh(mesh);
+            if ((meshFront ? front : rear) && !seen.contains(mesh.paintMaterialHash)) {
+                seen.insert(mesh.paintMaterialHash);
+                hashes.push_back(mesh.paintMaterialHash);
+            }
+        }
+    };
+    appendMeshes(model.meshesForLod(lodIndex));
+    appendMeshes(model.variantMeshesForLod(lodIndex));
+    for (quint64 materialHash : fallbackWheelPaintHashes(front, rear)) {
+        if (!seen.contains(materialHash)) {
+            seen.insert(materialHash);
+            hashes.push_back(materialHash);
+        }
+    }
+
+    return hashes;
+}
+
+QVector<PaintRegion> paintRegions(const fls::CarModel &model, int lodIndex) {
+    using namespace fls::material_hashes::binding;
+
+    return {
+        {QStringLiteral("Wing"), {kSpoilerPaint}},
+        {QStringLiteral("Brakes"), {kBrakeCaliper}},
+        {QStringLiteral("Hood"), {kHoodPaint}},
+        {QStringLiteral("Rims"), modelWheelPaintHashes(model, lodIndex, true, true)},
+        {QStringLiteral("Rear Rims"), modelWheelPaintHashes(model, lodIndex, false, true)},
+        {QStringLiteral("Front Rims"), modelWheelPaintHashes(model, lodIndex, true, false)},
+        {QStringLiteral("Body"), {kBodyPaint}},
+        {QStringLiteral("Windows"), {kWindowGlass}},
+        {QStringLiteral("Mirrors"), {kMirrorPaint}},
+    };
 }
 
 QString partTypeDisplayName(int partType) {
@@ -1084,12 +1206,15 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     partsButton_->setEnabled(false);
 
     carColorButton_ = new QToolButton(this);
-    carColorButton_->setText(QStringLiteral("Color"));
+    carColorButton_->setText(QStringLiteral("Colors"));
     carColorButton_->setFocusPolicy(Qt::NoFocus);
-    carColorButton_->setToolTip(QStringLiteral("Choose the car's default paint color"));
+    carColorButton_->setToolTip(QStringLiteral("Edit car paint colors by material region"));
     carColorButton_->setEnabled(false);
-    connect(carColorButton_, &QToolButton::clicked,
-            this, &CarPreviewWidget::chooseCarColor);
+    carColorButton_->setPopupMode(QToolButton::InstantPopup);
+    carColorMenu_ = new QMenu(carColorButton_);
+    carColorButton_->setMenu(carColorMenu_);
+    connect(carColorMenu_, &QMenu::aboutToShow,
+            this, &CarPreviewWidget::rebuildCarColorMenu);
 
     partsPanel_ = new QFrame(this);
     partsPanel_->setObjectName(QStringLiteral("carPartsPanel"));
@@ -1316,6 +1441,7 @@ void CarPreviewWidget::setCarUnwrapSection(int liverySectionSlot) {
 
 void CarPreviewWidget::setProject(fls::Project *project) {
     project_ = project;
+    modelUploadPending_ = hasModel();
     invalidateCachedLivery();
     updateCarColorControl();
     update();
@@ -1334,6 +1460,7 @@ void CarPreviewWidget::setEditorState(EditorState *state) {
         connect(state_, &EditorState::transformLiveChanged, this, &CarPreviewWidget::markLiverySectionsDirty);
         connect(state_, &EditorState::canvasRepaintRequested, this, &CarPreviewWidget::markLiveryDirtyImmediate);
         connect(state_, &EditorState::projectPaintChanged, this, [this]() {
+            modelUploadPending_ = hasModel();
             updateCarColorControl();
             update();
         });
@@ -1357,22 +1484,90 @@ void CarPreviewWidget::setBasePaint(const QColor &color) {
     update();
 }
 
-void CarPreviewWidget::chooseCarColor() {
+void CarPreviewWidget::chooseRegionColor(
+    const QVector<quint64> &materialHashes, bool secondary) {
     if (state_ == nullptr || project_ == nullptr || !project_->isLivery
-        || state_->project() != project_) {
+        || state_->project() != project_ || materialHashes.isEmpty()) {
         return;
     }
-    QColor selected = QColorDialog::getColor(
-        basePaint_, this, QStringLiteral("Car Color"));
+    QColor initial = basePaint_;
+    for (quint64 materialHash : materialHashes) {
+        const fls::LiveryPaintMaterial *material =
+            project_->liveryPaint.find(materialHash);
+        const fls::LiveryPaintColor *current = material != nullptr
+            ? secondary ? &material->secondary : &material->primary
+            : nullptr;
+        if (current != nullptr && current->enabled) {
+            initial = colorFromBgra(current->bgra);
+            break;
+        }
+        if (secondary && material != nullptr && material->primary.enabled) {
+            initial = colorFromBgra(material->primary.bgra);
+        }
+    }
+    const QColor selected = QColorDialog::getColor(
+        initial, this,
+        secondary ? QStringLiteral("Secondary Paint Color")
+                  : QStringLiteral("Primary Paint Color"));
     if (!selected.isValid()) {
         return;
     }
-    selected.setAlpha(255);
 
     state_->beginProjectEdit();
-    project_->liveryPaint.setDefaultCarColorBgra(opaqueBgra(selected));
+    for (quint64 materialHash : materialHashes) {
+        project_->liveryPaint.setColorBgra(
+            materialHash, secondary, opaqueBgra(selected));
+        fls::LiveryPaintMaterial &material = project_->liveryPaint.ensure(materialHash);
+        if (secondary) {
+            if (material.finish < 50 || material.finish > 52) {
+                material.finish = 51;
+            }
+        } else {
+            material.finish = 0;
+        }
+    }
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
+    modelUploadPending_ = true;
+    update();
+}
+
+void CarPreviewWidget::rebuildCarColorMenu() {
+    if (carColorMenu_ == nullptr) {
+        return;
+    }
+    carColorMenu_->clear();
+    for (const PaintRegion &paintRegion : paintRegions(model_, selectedLodIndex_)) {
+        QColor primary = basePaint_;
+        QColor secondary = primary;
+        for (quint64 materialHash : paintRegion.materialHashes) {
+            const fls::LiveryPaintMaterial *material = project_ != nullptr
+                ? project_->liveryPaint.find(materialHash)
+                : nullptr;
+            if (material != nullptr && material->primary.enabled) {
+                primary = colorFromBgra(material->primary.bgra);
+                secondary = primary;
+                if (material->secondary.enabled) {
+                    secondary = colorFromBgra(material->secondary.bgra);
+                }
+                break;
+            }
+        }
+        QMenu *region = carColorMenu_->addMenu(paintRegion.name);
+        region->setIcon(carColorSwatchIcon(primary));
+        QAction *primaryAction = region->addAction(
+            carColorSwatchIcon(primary), QStringLiteral("Set Primary"));
+        connect(primaryAction, &QAction::triggered, this,
+                [this, hashes = paintRegion.materialHashes]() {
+                    chooseRegionColor(hashes, false);
+                });
+        QAction *secondaryAction = region->addAction(
+            carColorSwatchIcon(secondary), QStringLiteral("Set Secondary"));
+        connect(secondaryAction, &QAction::triggered, this,
+                [this, hashes = paintRegion.materialHashes]() {
+                    chooseRegionColor(hashes, true);
+                });
+    }
 }
 
 void CarPreviewWidget::updateCarColorControl() {
@@ -1388,13 +1583,10 @@ void CarPreviewWidget::updateCarColorControl() {
         : defaultPreviewCarColor();
     basePaint_.setAlpha(255);
 
-    carColorButton_->setIcon(carColorSwatchIcon(basePaint_));
-    carColorButton_->setIconSize(QSize(18, 18));
+    carColorButton_->setIcon(QIcon());
     carColorButton_->setEnabled(
         hasModel() && state_ != nullptr && project_ != nullptr && project_->isLivery);
-    carColorButton_->setToolTip(projectColor.has_value()
-        ? QStringLiteral("Car color: %1").arg(basePaint_.name(QColor::HexRgb))
-        : QStringLiteral("Choose the car's default paint color"));
+    carColorButton_->setToolTip(QStringLiteral("Edit car colors by region"));
     carColorButton_->adjustSize();
     layoutOverlayControls();
 }

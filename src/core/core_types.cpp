@@ -23,6 +23,17 @@ LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) {
     return nullptr;
 }
 
+LiveryPaintMaterial &LiveryPaintState::ensure(quint64 materialHash) {
+    if (LiveryPaintMaterial *material = find(materialHash)) {
+        return *material;
+    }
+    LiveryPaintMaterial material;
+    material.materialHash = materialHash;
+    materials.push_back(material);
+
+    return materials.back();
+}
+
 std::optional<std::array<quint8, 4>> LiveryPaintState::defaultCarColorBgra() const {
     const LiveryPaintMaterial *body = find(material_hashes::binding::kBodyPaint);
     if (body != nullptr && body->primary.enabled) {
@@ -37,21 +48,19 @@ std::optional<std::array<quint8, 4>> LiveryPaintState::defaultCarColorBgra() con
     return std::nullopt;
 }
 
-void LiveryPaintState::setDefaultCarColorBgra(std::array<quint8, 4> color) {
+void LiveryPaintState::setColorBgra(quint64 materialHash, bool secondary,
+                                    std::array<quint8, 4> color) {
     color[3] = 255;
+    LiveryPaintMaterial &material = ensure(materialHash);
+    LiveryPaintColor &target = secondary ? material.secondary : material.primary;
+    target.enabled = true;
+    target.bgra = color;
+    material.manufacturerSelector = 0xffffffffu;
+}
+
+void LiveryPaintState::setDefaultCarColorBgra(std::array<quint8, 4> color) {
     for (quint64 hash : material_hashes::binding::kLiveryMaterials) {
-        LiveryPaintMaterial *material = find(hash);
-        if (material == nullptr) {
-            LiveryPaintMaterial added;
-            added.materialHash = hash;
-            materials.push_back(added);
-            material = &materials.back();
-        }
-        material->primary.enabled = true;
-        material->primary.bgra = color;
-        material->secondary = {};
-        material->manufacturerSelector = 0xffffffffu;
-        material->finish = 0;
+        setColorBgra(hash, false, color);
     }
 }
 

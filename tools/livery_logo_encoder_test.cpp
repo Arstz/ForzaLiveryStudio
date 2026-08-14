@@ -839,6 +839,14 @@ bool testDeletedSiblingSourceFraming() {
 
 bool testDefaultCarColorRoundTrip() {
     fls::Project project = makeEncoderProject();
+    fls::LiveryPaintMaterial &body = project.liveryPaint.ensure(
+        fls::material_hashes::binding::kBodyPaint);
+    body.secondary.enabled = true;
+    body.secondary.bgra = {0x20, 0x40, 0x60, 0xff};
+    body.manufacturerSelector = 7;
+    body.finish = 51;
+    const fls::LiveryPaintColor expectedBodySecondary = body.secondary;
+
     fls::LiveryPaintMaterial unrelated;
     unrelated.materialHash = 0x123456789abcdef0ULL;
     unrelated.primary.enabled = true;
@@ -859,13 +867,27 @@ bool testDefaultCarColorRoundTrip() {
     for (quint64 hash : fls::material_hashes::binding::kLiveryMaterials) {
         const fls::LiveryPaintMaterial *paint = project.liveryPaint.find(hash);
         if (paint == nullptr || !paint->primary.enabled
-            || paint->primary.bgra != expected || paint->secondary.enabled
-            || paint->manufacturerSelector != 0xffffffffu || paint->finish != 0) {
-            qCritical() << "default car color did not normalize paint binding"
+            || paint->primary.bgra != expected
+            || paint->manufacturerSelector != 0xffffffffu) {
+            qCritical() << "default car color did not update paint binding"
                         << QString::number(hash, 16);
             return false;
         }
     }
+    const fls::LiveryPaintMaterial *updatedBody = project.liveryPaint.find(
+        fls::material_hashes::binding::kBodyPaint);
+    if (updatedBody == nullptr || updatedBody->secondary != expectedBodySecondary
+        || updatedBody->finish != 51) {
+        qCritical() << "default car color did not retain the decoded finish";
+        return false;
+    }
+
+    const quint64 wheelHash = fls::material_hashes::binding::kFrontWheelPaint[1];
+    const std::array<quint8, 4> wheelPrimary = {0x12, 0x34, 0x56, 0xff};
+    const std::array<quint8, 4> wheelSecondary = {0x65, 0x43, 0x21, 0xff};
+    project.liveryPaint.setColorBgra(wheelHash, false, wheelPrimary);
+    project.liveryPaint.setColorBgra(wheelHash, true, wheelSecondary);
+    project.liveryPaint.ensure(wheelHash).finish = 50;
     if (project.liveryPaint.find(unrelated.materialHash) == nullptr
         || *project.liveryPaint.find(unrelated.materialHash) != unrelated) {
         qCritical() << "default car color changed an unrelated paint binding";
@@ -878,18 +900,34 @@ bool testDefaultCarColorRoundTrip() {
         qCritical() << "project document lost the selected car color";
         return false;
     }
+    const fls::LiveryPaintMaterial *reopenedWheel = reopened.liveryPaint.find(wheelHash);
+    if (reopenedWheel == nullptr || reopenedWheel->primary.bgra != wheelPrimary
+        || !reopenedWheel->secondary.enabled
+        || reopenedWheel->secondary.bgra != wheelSecondary
+        || reopenedWheel->finish != 50) {
+        qCritical() << "project document lost regional two-tone paint";
+        return false;
+    }
 
     const fls::LiveryPayload exported = fls::parseInflatedLiveryPayload(
         fls::encodeCLiveryPayload(reopened));
     for (quint64 hash : fls::material_hashes::binding::kLiveryMaterials) {
         const fls::LiveryPaintMaterial *paint = exported.paint.find(hash);
         if (paint == nullptr || !paint->primary.enabled
-            || paint->primary.bgra != expected || paint->secondary.enabled
-            || paint->manufacturerSelector != 0xffffffffu || paint->finish != 0) {
+            || paint->primary.bgra != expected
+            || paint->manufacturerSelector != 0xffffffffu) {
             qCritical() << "C_livery export lost the selected car color"
                         << QString::number(hash, 16);
             return false;
         }
+    }
+    const fls::LiveryPaintMaterial *exportedWheel = exported.paint.find(wheelHash);
+    if (exportedWheel == nullptr || exportedWheel->primary.bgra != wheelPrimary
+        || !exportedWheel->secondary.enabled
+        || exportedWheel->secondary.bgra != wheelSecondary
+        || exportedWheel->finish != 50) {
+        qCritical() << "C_livery export lost regional two-tone paint";
+        return false;
     }
     return true;
 }
