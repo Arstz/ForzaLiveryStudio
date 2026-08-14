@@ -717,14 +717,14 @@ bool BucketTool::handlePress(QMouseEvent *event) {
     if (event->button() != Qt::LeftButton) {
         return false;
     }
-    canvas_.commitBucketPreview(
-        event->position(), event->modifiers() & Qt::ShiftModifier);
+    canvas_.commitBucketPreview(event->position(), event->modifiers());
     event->accept();
     return true;
 }
 
 bool BucketTool::handleMove(QMouseEvent *event) {
-    canvas_.updateBucketPreview(event->position());
+    canvas_.updateBucketPreview(
+        event->position(), event->modifiers().testFlag(Qt::ShiftModifier));
     canvas_.updateCursorForPoint(event->position());
     event->accept();
     return true;
@@ -748,7 +748,8 @@ bool BucketTool::handleWheel(QWheelEvent *event) {
     if (event->modifiers() & Qt::ShiftModifier) {
         steps *= 5;
     }
-    canvas_.adjustBucketTolerance(steps, event->position());
+    canvas_.adjustBucketTolerance(
+        steps, event->position(), event->modifiers().testFlag(Qt::ShiftModifier));
     event->accept();
     return true;
 }

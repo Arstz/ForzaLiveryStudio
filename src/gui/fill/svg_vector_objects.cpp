@@ -275,6 +275,11 @@ SvgVectorDocument extractSvgVectorObjects(const QByteArray &svg,
     return result;
 }
 
+bool useSvgObjectSelection(const SvgVectorDocument &document,
+                           bool rasterFallbackRequested) {
+    return !rasterFallbackRequested && document.supportsObjectSelection();
+}
+
 SvgVectorObjectHit svgVectorObjectAt(const SvgVectorDocument &document,
                                      const QPointF &point) {
     SvgVectorObjectHit result;

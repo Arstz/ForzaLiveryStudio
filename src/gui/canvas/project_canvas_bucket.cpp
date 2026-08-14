@@ -155,18 +155,18 @@ bool ProjectCanvas::bucketGuideGeometryContext(
     return true;
 }
 
-bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
+bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint,
+                                        bool forceRaster) {
     updateViewTransform();
     const fls::scene::GuideLayer *vectorGuide = nullptr;
     QPointF vectorLocal;
     QString vectorContextError;
-    if (bucketGuideGeometryContext(screenPoint,
-                                   &vectorGuide,
-                                   nullptr,
-                                   &vectorLocal,
-                                   &vectorContextError)
-        && vectorGuide->image != nullptr
-        && isSvgGuideFormat(vectorGuide->image->format)) {
+    const bool haveVectorContext = bucketGuideGeometryContext(
+        screenPoint, &vectorGuide, nullptr, &vectorLocal, &vectorContextError);
+    const bool svgGuide = haveVectorContext && vectorGuide->image != nullptr
+        && isSvgGuideFormat(vectorGuide->image->format);
+    bucket_.forcedRasterMode = svgGuide && forceRaster;
+    if (svgGuide && !forceRaster) {
         const auto *source = vectorGuide->image.get();
         const quint64 sourceHash = static_cast<quint64>(qHash(source->encoded));
         if (bucket_.vectorSourceGuideId != vectorGuide->id
@@ -177,7 +177,7 @@ bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
                 source->encoded, QSize(source->width, source->height));
         }
         bucket_.vectorFallbackReason = bucket_.vectorDocument.fallbackReason;
-        if (bucket_.vectorDocument.supportsObjectSelection()) {
+        if (useSvgObjectSelection(bucket_.vectorDocument, forceRaster)) {
             const QSize sourceSize(source->width, source->height);
             const QSizeF guideSize = sceneNodeSize(*vectorGuide, geometry_);
             QPointF sourcePoint = pc_detail::guideLocalToImage(
@@ -195,7 +195,8 @@ bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
             if (!bucket_.vectorHit.valid()) {
                 setCursorHint(screenPoint,
                               {QStringLiteral("Vector object selection"),
-                               QStringLiteral("No filled SVG object here")});
+                               QStringLiteral("No filled SVG object here"),
+                               QStringLiteral("Hold Shift for raster fallback")});
                 update();
                 return false;
             }
@@ -203,10 +204,15 @@ bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
                           {QStringLiteral("Vector object selection"),
                            QStringLiteral("Object %1 of %2")
                                .arg(bucket_.vectorHit.objectIndex + 1)
-                               .arg(bucket_.vectorDocument.objects.size())});
+                               .arg(bucket_.vectorDocument.objects.size()),
+                           QStringLiteral("Hold Shift for raster fallback")});
             update();
             return true;
         }
+    } else if (bucket_.forcedRasterMode) {
+        bucket_.vectorFallbackReason = QStringLiteral("Requested with Shift");
+    } else {
+        bucket_.vectorFallbackReason.clear();
     }
 
     bucket_.vectorMode = false;
@@ -228,9 +234,11 @@ bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
 
     QStringList fallbackHint;
     fallbackHint.push_back(QStringLiteral("Tolerance: %1").arg(bucket_.tolerance));
-    if (!bucket_.vectorFallbackReason.isEmpty()
-        && guide->image != nullptr
-        && isSvgGuideFormat(guide->image->format)) {
+    if (bucket_.forcedRasterMode) {
+        fallbackHint.push_back(QStringLiteral("Raster fallback (Shift)"));
+    } else if (!bucket_.vectorFallbackReason.isEmpty()
+               && guide->image != nullptr
+               && isSvgGuideFormat(guide->image->format)) {
         fallbackHint.push_back(QStringLiteral("Raster fallback: %1")
                                    .arg(bucket_.vectorFallbackReason));
     }
@@ -268,22 +276,25 @@ bool ProjectCanvas::updateBucketPreview(const QPointF &screenPoint) {
     return true;
 }
 
-void ProjectCanvas::adjustBucketTolerance(int delta, const QPointF &screenPoint) {
+void ProjectCanvas::adjustBucketTolerance(int delta, const QPointF &screenPoint,
+                                          bool forceRaster) {
     bucket_.tolerance = std::clamp(bucket_.tolerance + delta, 0, 255);
     bucket_.guideId.clear();
     bucket_.seedPixel = QPoint(-1, -1);
     bucket_.fill = BucketFillResult{};
     bucket_.previewImage = {};
-    updateBucketPreview(screenPoint);
+    updateBucketPreview(screenPoint, forceRaster);
 }
 
 bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
-                                        bool outlineOnly) {
-    if (!updateBucketPreview(screenPoint)
+                                        Qt::KeyboardModifiers modifiers) {
+    const bool shiftHeld = modifiers.testFlag(Qt::ShiftModifier);
+    if (!updateBucketPreview(screenPoint, shiftHeld)
         || (!bucket_.vectorMode && !bucket_.fill.valid())
         || (bucket_.vectorMode && !bucket_.vectorHit.valid())) {
         return false;
     }
+    const bool outlineOnly = shiftHeld && !bucket_.forcedRasterMode;
     if (!pen_.points.isEmpty() || !pen_.cutouts.isEmpty()) {
         setCursorHint(screenPoint,
                       {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
@@ -427,6 +438,7 @@ void ProjectCanvas::clearBucketPreview() {
     bucket_.sourceImage = {};
     bucket_.previewImage = {};
     bucket_.vectorMode = false;
+    bucket_.forcedRasterMode = false;
     clearCursorHint();
     update();
 }

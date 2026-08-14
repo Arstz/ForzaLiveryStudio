@@ -58,6 +58,11 @@ int main(int argc, char **argv) {
         return fail(QStringLiteral("SVG vector objects were not extracted: %1")
                         .arg(vectorDocument.fallbackReason));
     }
+    if (!gui::useSvgObjectSelection(vectorDocument, false)
+        || gui::useSvgObjectSelection(vectorDocument, true)) {
+        return fail(QStringLiteral(
+            "Explicit SVG raster fallback did not override object selection"));
+    }
     const gui::SvgVectorObjectHit vectorHit =
         gui::svgVectorObjectAt(vectorDocument, QPointF(8.0, 8.0));
     if (!vectorHit.valid() || vectorHit.color != QColor(QStringLiteral("#ff0000"))

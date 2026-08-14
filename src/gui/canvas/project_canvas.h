@@ -317,6 +317,7 @@ private:
         QImage sourceImage;
         QImage previewImage;
         bool vectorMode = false;
+        bool forcedRasterMode = false;
         int tolerance = kDefaultBucketTolerance;
     };
 
@@ -514,9 +515,11 @@ private:
     void refreshLiningInteractionHint(const QPointF &screenPoint,
                                       Qt::KeyboardModifiers modifiers);
     void adjustLiningWidth(double delta, const QPointF &screenPoint);
-    bool updateBucketPreview(const QPointF &screenPoint);
-    bool commitBucketPreview(const QPointF &screenPoint, bool outlineOnly);
-    void adjustBucketTolerance(int delta, const QPointF &screenPoint);
+    bool updateBucketPreview(const QPointF &screenPoint, bool forceRaster = false);
+    bool commitBucketPreview(const QPointF &screenPoint,
+                             Qt::KeyboardModifiers modifiers);
+    void adjustBucketTolerance(int delta, const QPointF &screenPoint,
+                               bool forceRaster = false);
     void clearBucketPreview();
     void drawBucketOverlay(QPainter &painter);
     bool bucketGuideContext(const QPointF &screenPoint,

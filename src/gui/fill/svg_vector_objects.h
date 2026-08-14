@@ -32,6 +32,9 @@ struct SvgVectorObjectHit {
 SvgVectorDocument extractSvgVectorObjects(const QByteArray &svg,
                                           const QSize &logicalSize);
 
+bool useSvgObjectSelection(const SvgVectorDocument &document,
+                           bool rasterFallbackRequested);
+
 SvgVectorObjectHit svgVectorObjectAt(const SvgVectorDocument &document,
                                      const QPointF &point);
 
