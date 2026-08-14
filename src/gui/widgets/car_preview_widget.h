@@ -94,6 +94,8 @@ private:
     void selectPartOption(int partType, int optionId);
     void syncPartOptionControls();
     void switchCarUnwrapOverlay();
+    void chooseCarColor();
+    void updateCarColorControl();
 
     NativeShapeRenderer shapeRenderer_;
     ShapeGeometryStore geometry_;
@@ -134,6 +136,7 @@ private:
     QLabel *referenceNote_ = nullptr;
     QToolButton *lodButton_ = nullptr;
     QToolButton *partsButton_ = nullptr;
+    QToolButton *carColorButton_ = nullptr;
     QFrame *partsPanel_ = nullptr;
     QVBoxLayout *partsOptionsLayout_ = nullptr;
     QHash<int, int> selectedPartOptions_;

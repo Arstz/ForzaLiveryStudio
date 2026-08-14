@@ -313,6 +313,7 @@ bool EditorState::snapshotsEqual(const ProjectEditSnapshot &a, const ProjectEdit
     if (a.project.colorSwatches != b.project.colorSwatches
         || a.project.horizontalGuidelines != b.project.horizontalGuidelines
         || a.project.verticalGuidelines != b.project.verticalGuidelines
+        || a.project.liveryPaint != b.project.liveryPaint
         || static_cast<bool>(a.project.root) != static_cast<bool>(b.project.root)) {
         return false;
     }
@@ -326,6 +327,9 @@ ProjectEditRefresh EditorState::classifySnapshotRefresh(const ProjectEditSnapsho
     ScopedPerf perf("EditorState::classifySnapshotRefresh");
     if (!a.project.root || !b.project.root || !structureEqual(*a.project.root, *b.project.root)) {
         return ProjectEditRefresh::Structure;
+    }
+    if (a.project.liveryPaint != b.project.liveryPaint) {
+        return ProjectEditRefresh::Paint;
     }
     if (previewChange(*a.project.root, *b.project.root)) {
         return ProjectEditRefresh::Previews;
@@ -385,6 +389,9 @@ void EditorState::refreshAfterHistoryCommand(ProjectEditRefresh refresh) {
         return;
     case ProjectEditRefresh::Structure:
         noteProjectStructureChanged();
+        return;
+    case ProjectEditRefresh::Paint:
+        noteProjectPaintChanged();
         return;
     }
 }

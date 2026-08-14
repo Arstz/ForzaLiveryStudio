@@ -21,6 +21,8 @@ namespace fls {
 struct LiveryPaintColor {
     bool enabled = false;
     std::array<quint8, 4> bgra = {0, 0, 0, 0};
+
+    bool operator==(const LiveryPaintColor &) const = default;
 };
 
 struct LiveryPaintMaterial {
@@ -29,12 +31,19 @@ struct LiveryPaintMaterial {
     LiveryPaintColor secondary;
     quint32 manufacturerSelector = 0xffffffffu;
     quint32 finish = 0;
+
+    bool operator==(const LiveryPaintMaterial &) const = default;
 };
 
 struct LiveryPaintState {
     QVector<LiveryPaintMaterial> materials;
 
     const LiveryPaintMaterial *find(quint64 materialHash) const;
+    LiveryPaintMaterial *find(quint64 materialHash);
+    std::optional<std::array<quint8, 4>> defaultCarColorBgra() const;
+    void setDefaultCarColorBgra(std::array<quint8, 4> color);
+
+    bool operator==(const LiveryPaintState &) const = default;
 };
 
 struct Project {

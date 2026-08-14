@@ -11,12 +11,14 @@
 
 #include <QCoreApplication>
 #include <QButtonGroup>
+#include <QColorDialog>
 #include <QDir>
 #include <QFile>
 #include <QFrame>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPainter>
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSet>
@@ -365,6 +367,34 @@ constexpr std::array<int, 6> kSelectablePartTypes = {
     fls::car_part_types::Hood,
     fls::car_part_types::SideSkirts,
 };
+
+QColor defaultPreviewCarColor() {
+    return QColor(180, 182, 190);
+}
+
+QColor colorFromBgra(const std::array<quint8, 4> &bgra) {
+    return QColor(bgra[2], bgra[1], bgra[0], bgra[3]);
+}
+
+std::array<quint8, 4> opaqueBgra(const QColor &color) {
+    return {
+        static_cast<quint8>(color.blue()),
+        static_cast<quint8>(color.green()),
+        static_cast<quint8>(color.red()),
+        255,
+    };
+}
+
+QIcon carColorSwatchIcon(const QColor &color) {
+    QPixmap icon(18, 18);
+    icon.fill(Qt::transparent);
+    QPainter painter(&icon);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(QColor(255, 255, 255, 150), 1.0));
+    painter.setBrush(color);
+    painter.drawRoundedRect(QRectF(1.5, 1.5, 15.0, 15.0), 3.0, 3.0);
+    return QIcon(icon);
+}
 
 QString partTypeDisplayName(int partType) {
     switch (partType) {
@@ -1053,6 +1083,14 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     partsButton_->setToolTip(QStringLiteral("Choose installed body-part models"));
     partsButton_->setEnabled(false);
 
+    carColorButton_ = new QToolButton(this);
+    carColorButton_->setText(QStringLiteral("Color"));
+    carColorButton_->setFocusPolicy(Qt::NoFocus);
+    carColorButton_->setToolTip(QStringLiteral("Choose the car's default paint color"));
+    carColorButton_->setEnabled(false);
+    connect(carColorButton_, &QToolButton::clicked,
+            this, &CarPreviewWidget::chooseCarColor);
+
     partsPanel_ = new QFrame(this);
     partsPanel_->setObjectName(QStringLiteral("carPartsPanel"));
     partsPanel_->setStyleSheet(QStringLiteral(
@@ -1092,6 +1130,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
             partsPanel_->raise();
         }
     });
+    updateCarColorControl();
     updateLodControl();
 }
 
@@ -1139,6 +1178,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->selectedLodIndex_ = 0;
                     guard->rebuildPartsPanel();
                     guard->switchCarUnwrapOverlay();
+                    guard->updateCarColorControl();
                     guard->modelUploadPending_ = true;
                     guard->modelFitPending_ = true;
                     guard->liveryMasksPending_ = true;
@@ -1204,11 +1244,13 @@ void CarPreviewWidget::clearModel() {
     carRenderer_.setPartSelections(selectedPartOptions_);
     if (!hasModel() && !carRenderer_.hasModel()) {
         rebuildPartsPanel();
+        updateCarColorControl();
         updateLodControl();
         return;
     }
     model_ = fls::CarModel{};
     rebuildPartsPanel();
+    updateCarColorControl();
     updateLodControl();
     extractedCarDir_.reset();
     liveryMasks_ = {};
@@ -1275,6 +1317,7 @@ void CarPreviewWidget::setCarUnwrapSection(int liverySectionSlot) {
 void CarPreviewWidget::setProject(fls::Project *project) {
     project_ = project;
     invalidateCachedLivery();
+    updateCarColorControl();
     update();
 }
 
@@ -1290,8 +1333,16 @@ void CarPreviewWidget::setEditorState(EditorState *state) {
         connect(state_, &EditorState::projectGeometryChanged, this, &CarPreviewWidget::onProjectGeometryChanged);
         connect(state_, &EditorState::transformLiveChanged, this, &CarPreviewWidget::markLiverySectionsDirty);
         connect(state_, &EditorState::canvasRepaintRequested, this, &CarPreviewWidget::markLiveryDirtyImmediate);
-        connect(state_, &EditorState::projectStructureChanged, this, &CarPreviewWidget::markLiveryDirty);
+        connect(state_, &EditorState::projectPaintChanged, this, [this]() {
+            updateCarColorControl();
+            update();
+        });
+        connect(state_, &EditorState::projectStructureChanged, this, [this]() {
+            updateCarColorControl();
+            markLiveryDirty();
+        });
     }
+    updateCarColorControl();
 }
 
 QColor CarPreviewWidget::basePaint() const {
@@ -1304,6 +1355,48 @@ void CarPreviewWidget::setBasePaint(const QColor &color) {
     }
     basePaint_ = color;
     update();
+}
+
+void CarPreviewWidget::chooseCarColor() {
+    if (state_ == nullptr || project_ == nullptr || !project_->isLivery
+        || state_->project() != project_) {
+        return;
+    }
+    QColor selected = QColorDialog::getColor(
+        basePaint_, this, QStringLiteral("Car Color"));
+    if (!selected.isValid()) {
+        return;
+    }
+    selected.setAlpha(255);
+
+    state_->beginProjectEdit();
+    project_->liveryPaint.setDefaultCarColorBgra(opaqueBgra(selected));
+    state_->commitProjectEdit();
+    state_->noteProjectPaintChanged();
+}
+
+void CarPreviewWidget::updateCarColorControl() {
+    if (carColorButton_ == nullptr) {
+        return;
+    }
+    std::optional<std::array<quint8, 4>> projectColor;
+    if (project_ != nullptr && project_->isLivery) {
+        projectColor = project_->liveryPaint.defaultCarColorBgra();
+    }
+    basePaint_ = projectColor.has_value()
+        ? colorFromBgra(*projectColor)
+        : defaultPreviewCarColor();
+    basePaint_.setAlpha(255);
+
+    carColorButton_->setIcon(carColorSwatchIcon(basePaint_));
+    carColorButton_->setIconSize(QSize(18, 18));
+    carColorButton_->setEnabled(
+        hasModel() && state_ != nullptr && project_ != nullptr && project_->isLivery);
+    carColorButton_->setToolTip(projectColor.has_value()
+        ? QStringLiteral("Car color: %1").arg(basePaint_.name(QColor::HexRgb))
+        : QStringLiteral("Choose the car's default paint color"));
+    carColorButton_->adjustSize();
+    layoutOverlayControls();
 }
 
 int CarPreviewWidget::liveryTextureScale() const {
@@ -1648,17 +1741,21 @@ void CarPreviewWidget::updateLodControl() {
 }
 
 void CarPreviewWidget::layoutOverlayControls() {
-    if (lodButton_ == nullptr || partsButton_ == nullptr || partsPanel_ == nullptr) {
+    if (lodButton_ == nullptr || partsButton_ == nullptr
+        || carColorButton_ == nullptr || partsPanel_ == nullptr) {
         return;
     }
     lodButton_->adjustSize();
     partsButton_->adjustSize();
+    carColorButton_->adjustSize();
     const int margin = 8;
     const int spacing = 6;
     const int lodX = std::max(margin, width() - lodButton_->width() - margin);
     lodButton_->move(lodX, 6);
-    partsButton_->move(
-        std::max(margin, lodX - partsButton_->width() - spacing), 6);
+    const int partsX = std::max(margin, lodX - partsButton_->width() - spacing);
+    partsButton_->move(partsX, 6);
+    carColorButton_->move(
+        std::max(margin, partsX - carColorButton_->width() - spacing), 6);
 
     const int panelWidth = std::min(270, std::max(190, width() - margin * 2));
     const int panelTop = std::max(lodButton_->geometry().bottom(),

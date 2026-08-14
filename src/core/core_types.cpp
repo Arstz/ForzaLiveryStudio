@@ -1,6 +1,7 @@
 #include "core_types.h"
 
 #include "layer.h"
+#include "material_hashes.h"
 
 namespace fls {
 
@@ -11,6 +12,47 @@ const LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) const {
         }
     }
     return nullptr;
+}
+
+LiveryPaintMaterial *LiveryPaintState::find(quint64 materialHash) {
+    for (LiveryPaintMaterial &material : materials) {
+        if (material.materialHash == materialHash) {
+            return &material;
+        }
+    }
+    return nullptr;
+}
+
+std::optional<std::array<quint8, 4>> LiveryPaintState::defaultCarColorBgra() const {
+    const LiveryPaintMaterial *body = find(material_hashes::binding::kBodyPaint);
+    if (body != nullptr && body->primary.enabled) {
+        return body->primary.bgra;
+    }
+    for (quint64 hash : material_hashes::binding::kLiveryMaterials) {
+        const LiveryPaintMaterial *material = find(hash);
+        if (material != nullptr && material->primary.enabled) {
+            return material->primary.bgra;
+        }
+    }
+    return std::nullopt;
+}
+
+void LiveryPaintState::setDefaultCarColorBgra(std::array<quint8, 4> color) {
+    color[3] = 255;
+    for (quint64 hash : material_hashes::binding::kLiveryMaterials) {
+        LiveryPaintMaterial *material = find(hash);
+        if (material == nullptr) {
+            LiveryPaintMaterial added;
+            added.materialHash = hash;
+            materials.push_back(added);
+            material = &materials.back();
+        }
+        material->primary.enabled = true;
+        material->primary.bgra = color;
+        material->secondary = {};
+        material->manufacturerSelector = 0xffffffffu;
+        material->finish = 0;
+    }
 }
 
 Project::Project()

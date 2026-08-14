@@ -643,6 +643,10 @@ void EditorState::noteCanvasRepaint() {
     Q_EMIT canvasRepaintRequested();
 }
 
+void EditorState::noteProjectPaintChanged() {
+    Q_EMIT projectPaintChanged();
+}
+
 void EditorState::noteProjectStructureChanged() {
     invalidateProjectIndexCache();
     selectedLayerIds_ = existingLayerIds(selectedLayerIds_);

@@ -31,6 +31,7 @@ enum class ProjectEditRefresh {
     GeometryOnly,
     Previews,
     Structure,
+    Paint,
 };
 
 struct ProjectTransformEdit {
@@ -129,6 +130,7 @@ public:
     void noteProjectGeometryChanged(bool refreshPreviews = false, const QVector<QString> &changedNodeIds = {});
     void noteTransformLiveChanged(const QVector<QString> &targetIds);
     void noteCanvasRepaint();
+    void noteProjectPaintChanged();
     void noteProjectStructureChanged();
     void noteClipboardChanged();
     void setActiveSectionId(const QString &sectionGroupId);
@@ -192,6 +194,7 @@ Q_SIGNALS:
     void projectGeometryChanged(bool refreshPreviews, const QVector<QString> &changedNodeIds);
     void transformLiveChanged(const QVector<QString> &targetIds);
     void canvasRepaintRequested();
+    void projectPaintChanged();
     void projectStructureChanged();
     void selectionChanged();
     void clipboardChanged();

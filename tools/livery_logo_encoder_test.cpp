@@ -3,6 +3,7 @@
 #include "header_codec.h"
 #include "layer.h"
 #include "livery_codec.h"
+#include "material_hashes.h"
 #include "project_codec.h"
 #include "vinyl_decoder.h"
 
@@ -836,6 +837,63 @@ bool testDeletedSiblingSourceFraming() {
     return true;
 }
 
+bool testDefaultCarColorRoundTrip() {
+    fls::Project project = makeEncoderProject();
+    fls::LiveryPaintMaterial unrelated;
+    unrelated.materialHash = 0x123456789abcdef0ULL;
+    unrelated.primary.enabled = true;
+    unrelated.primary.bgra = {9, 8, 7, 6};
+    unrelated.secondary.enabled = true;
+    unrelated.secondary.bgra = {5, 4, 3, 2};
+    unrelated.manufacturerSelector = 17;
+    unrelated.finish = 51;
+    project.liveryPaint.materials.push_back(unrelated);
+
+    const std::array<quint8, 4> selected = {0x31, 0x72, 0xc4, 0x08};
+    const std::array<quint8, 4> expected = {0x31, 0x72, 0xc4, 0xff};
+    project.liveryPaint.setDefaultCarColorBgra(selected);
+    if (project.liveryPaint.defaultCarColorBgra() != expected) {
+        qCritical() << "default car color was not stored as opaque BGRA";
+        return false;
+    }
+    for (quint64 hash : fls::material_hashes::binding::kLiveryMaterials) {
+        const fls::LiveryPaintMaterial *paint = project.liveryPaint.find(hash);
+        if (paint == nullptr || !paint->primary.enabled
+            || paint->primary.bgra != expected || paint->secondary.enabled
+            || paint->manufacturerSelector != 0xffffffffu || paint->finish != 0) {
+            qCritical() << "default car color did not normalize paint binding"
+                        << QString::number(hash, 16);
+            return false;
+        }
+    }
+    if (project.liveryPaint.find(unrelated.materialHash) == nullptr
+        || *project.liveryPaint.find(unrelated.materialHash) != unrelated) {
+        qCritical() << "default car color changed an unrelated paint binding";
+        return false;
+    }
+
+    const fls::Project reopened = fls::decodeProjectDocument(
+        fls::encodeProjectDocument(project));
+    if (reopened.liveryPaint.defaultCarColorBgra() != expected) {
+        qCritical() << "project document lost the selected car color";
+        return false;
+    }
+
+    const fls::LiveryPayload exported = fls::parseInflatedLiveryPayload(
+        fls::encodeCLiveryPayload(reopened));
+    for (quint64 hash : fls::material_hashes::binding::kLiveryMaterials) {
+        const fls::LiveryPaintMaterial *paint = exported.paint.find(hash);
+        if (paint == nullptr || !paint->primary.enabled
+            || paint->primary.bgra != expected || paint->secondary.enabled
+            || paint->manufacturerSelector != 0xffffffffu || paint->finish != 0) {
+            qCritical() << "C_livery export lost the selected car color"
+                        << QString::number(hash, 16);
+            return false;
+        }
+    }
+    return true;
+}
+
 fls::scene::Group &fixtureSection(fls::Project &project, int slot) {
     fls::scene::Group *target = section(project, slot);
     if (target == nullptr) {
@@ -1093,7 +1151,7 @@ int main(int argc, char *argv[]) {
             && testCanonicalFh6Envelope() && testLegacyFivePanelSourcePreservation()
             && testLegacyArtworkRebuild()
             && testNestedMaskGroupTransforms() && testSourceGroupHeaderPreservation()
-            && testDeletedSiblingSourceFraming()
+            && testDeletedSiblingSourceFraming() && testDefaultCarColorRoundTrip()
         ? 0
         : 1;
 }

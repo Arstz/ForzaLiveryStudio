@@ -270,6 +270,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   imported and newly created livery projects while preserving visible section
   group structure, nesting, and masks. With a
   car model loaded, livery export writes `bigThumb.webp` from the textured car render.
+  The preview's **Color** control stores one opaque default solid color in the
+  project's canonical livery paint-material bindings. The same records drive the
+  live car, project JSON round trips, native `C_livery` export, and the thumbnail.
 - Preview a car in 3D with the current vinyl applied: **Import Car Model…**
   decodes a `.modelbin` (single model), a `.carbin` (full car - referenced parts
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
