@@ -2483,6 +2483,283 @@ QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
     return result;
 }
 
+namespace {
+
+constexpr double kLocalCurveCornerRatio = 1.5;
+constexpr double kLocalCurveCornerMargin = 0.0872664625997165;
+constexpr int kLocalCurveSamples = 32;
+constexpr int kLocalCurveWindowRadius = 2;
+constexpr int kLocalCurveSelectionRadius =
+    2 * kLocalCurveWindowRadius - 1;
+
+struct LocalCurveMerge {
+    QPointF control;
+    int center = -1;
+    double deviation = std::numeric_limits<double>::infinity();
+    bool curved = false;
+};
+
+double pointToOpenPolylineDistance(const QPointF &point,
+                                   const QPolygonF &polyline) {
+    double result = std::numeric_limits<double>::infinity();
+    for (int index = 1; index < polyline.size(); ++index) {
+        result = std::min(
+            result,
+            perpendicularDistance(point, polyline[index - 1], polyline[index]));
+    }
+
+    return result;
+}
+
+double openPolylineDeviation(const QPolygonF &left,
+                             const QPolygonF &right) {
+    if (left.size() < 2 || right.size() < 2) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double result = 0.0;
+    for (const QPointF &point : left) {
+        result = std::max(result,
+                          pointToOpenPolylineDistance(point, right));
+    }
+    for (const QPointF &point : right) {
+        result = std::max(result,
+                          pointToOpenPolylineDistance(point, left));
+    }
+
+    return result;
+}
+
+double anchorTurn(const QPolygonF &polygon,
+                  const QVector<int> &anchors,
+                  int center) {
+    const int count = anchors.size();
+    const QPointF incoming = polygon[anchors[center]]
+        - polygon[anchors[(center + count - 1) % count]];
+    const QPointF outgoing = polygon[anchors[(center + 1) % count]]
+        - polygon[anchors[center]];
+
+    return vectorAngle(incoming, outgoing);
+}
+
+bool locallyDistinctCorner(const QPolygonF &polygon,
+                           const QVector<int> &anchors,
+                           int center) {
+    const int count = anchors.size();
+    const double previousTurn = anchorTurn(
+        polygon, anchors, (center + count - 1) % count);
+    const double middleTurn = anchorTurn(polygon, anchors, center);
+    const double nextTurn = anchorTurn(
+        polygon, anchors, (center + 1) % count);
+    const double neighboringTurn = std::max(previousTurn, nextTurn);
+
+    return middleTurn >= kCurveSharpJunctionAngle
+        && middleTurn > neighboringTurn * kLocalCurveCornerRatio
+            + kLocalCurveCornerMargin;
+}
+
+QPolygonF sampledQuadratic(const QPointF &start,
+                           const QPointF &control,
+                           const QPointF &end) {
+    QPolygonF result;
+    result.reserve(kLocalCurveSamples + 1);
+    for (int sample = 0; sample <= kLocalCurveSamples; ++sample) {
+        const double parameter = static_cast<double>(sample)
+            / kLocalCurveSamples;
+        const double inverse = 1.0 - parameter;
+        result.push_back(start * (inverse * inverse)
+                         + control * (2.0 * inverse * parameter)
+                         + end * (parameter * parameter));
+    }
+
+    return result;
+}
+
+QPolygonF indexedPolyline(const QPolygonF &polygon,
+                          const QVector<int> &indices) {
+    QPolygonF result;
+    result.reserve(indices.size());
+    for (const int index : indices) {
+        result.push_back(polygon[index]);
+    }
+
+    return result;
+}
+
+QVector<PenPoint> buildWindowedHybridPoints(
+    const QPolygonF &polygon,
+    const QVector<int> &anchors,
+    const QVector<std::optional<LocalCurveMerge>> &merges,
+    const QVector<bool> &selected,
+    double minimumCurveBow) {
+    QVector<PenPoint> result;
+    const int anchorCount = anchors.size();
+    int first = 0;
+    while (first < anchorCount && selected[first]) {
+        ++first;
+    }
+    if (first >= anchorCount) {
+        return result;
+    }
+
+    int current = first;
+    result.push_back({polygon[anchors[current]], PenPointKind::Hard});
+    do {
+        int next = (current + 1) % anchorCount;
+        std::optional<LocalCurveMerge> merge;
+        if (selected[next]) {
+            merge = merges[next];
+            next = (next + 1) % anchorCount;
+        }
+        const QVector<int> arcIndices = cyclicArcIndices(
+            polygon.size(), anchors[current], anchors[next]);
+        const QPointF control = merge.has_value()
+            ? merge->control
+            : quadraticReconstructionControl(polygon, arcIndices);
+        const double curveBow = perpendicularDistance(
+            control, polygon[anchors[current]], polygon[anchors[next]]) * 0.5;
+        if ((merge.has_value() && merge->curved)
+            || (!merge.has_value() && curveBow >= minimumCurveBow)) {
+            result.push_back({control, PenPointKind::Soft});
+        }
+        if (next != first) {
+            result.push_back({polygon[anchors[next]], PenPointKind::Hard});
+        }
+        current = next;
+    } while (current != first);
+
+    return result;
+}
+
+QVector<PenPoint> simplifyClosedPolygonWindowedQuadratic(
+    const QPolygonF &polygon,
+    double epsilon,
+    double minimumCurveBow,
+    double maximumAreaErrorRatio,
+    int *removedHardPoints,
+    int *removedSoftPoints) {
+    const QVector<PenPoint> baseline =
+        simplifyClosedPolygonRdpHybridQuadratic(
+            polygon, epsilon, minimumCurveBow);
+    const QVector<int> anchors = cyclicRdpIndices(polygon, epsilon);
+    const int anchorCount = anchors.size();
+    if (anchorCount < 5 || !buildPenContour(baseline).valid()) {
+        return baseline;
+    }
+
+    QVector<std::optional<LocalCurveMerge>> merges(anchorCount);
+    QVector<LocalCurveMerge> ranked;
+    ranked.reserve(anchorCount);
+    for (int center = 0; center < anchorCount; ++center) {
+        if (locallyDistinctCorner(polygon, anchors, center)) {
+            continue;
+        }
+        const int previous = (center + anchorCount - 1) % anchorCount;
+        const int next = (center + 1) % anchorCount;
+        const QVector<int> arcIndices = cyclicArcIndices(
+            polygon.size(), anchors[previous], anchors[next]);
+        const QPointF start = polygon[anchors[previous]];
+        const QPointF end = polygon[anchors[next]];
+        const QPointF control = quadraticReconstructionControl(
+            polygon, arcIndices);
+        const bool curved = perpendicularDistance(control, start, end) * 0.5
+            >= minimumCurveBow;
+        QPolygonF approximation;
+        if (curved) {
+            approximation = sampledQuadratic(start, control, end);
+        } else {
+            approximation = {start, end};
+        }
+        const double deviation = openPolylineDeviation(
+            indexedPolyline(polygon, arcIndices), approximation);
+        if (!std::isfinite(deviation)
+            || deviation > epsilon + kGeometryEpsilon) {
+            continue;
+        }
+        LocalCurveMerge merge;
+        merge.control = control;
+        merge.center = center;
+        merge.deviation = deviation;
+        merge.curved = curved;
+        merges[center] = merge;
+        ranked.push_back(merge);
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const LocalCurveMerge &left,
+                                                const LocalCurveMerge &right) {
+        if (std::abs(left.deviation - right.deviation) > kGeometryEpsilon) {
+            return left.deviation < right.deviation;
+        }
+        return left.center < right.center;
+    });
+
+    QVector<bool> selected(anchorCount, false);
+    int retainedAnchorCount = anchorCount;
+    for (const LocalCurveMerge &merge : std::as_const(ranked)) {
+        bool overlapsSelectedWindow = false;
+        for (int offset = -kLocalCurveSelectionRadius;
+             offset <= kLocalCurveSelectionRadius; ++offset) {
+            const int neighbor = (merge.center + offset + anchorCount)
+                % anchorCount;
+            overlapsSelectedWindow = overlapsSelectedWindow
+                || selected[neighbor];
+        }
+        if (retainedAnchorCount <= 3 || overlapsSelectedWindow) {
+            continue;
+        }
+        selected[merge.center] = true;
+        --retainedAnchorCount;
+    }
+
+    const QVector<PenPoint> optimized = buildWindowedHybridPoints(
+        polygon, anchors, merges, selected, minimumCurveBow);
+    const PenContour baselineContour = buildPenContour(baseline);
+    const PenContour optimizedContour = buildPenContour(optimized);
+    const QPolygonF baselinePolygon = flattenPenContour(
+        baselineContour, kLocalCurveSamples);
+    const double referenceArea = signedArea(polygon);
+    const double baselineDeviation = boundaryDeviation(
+        polygon, baselinePolygon);
+    const double maximumDeviation = std::max(epsilon, baselineDeviation);
+    const double areaScale = std::max(
+        std::abs(referenceArea), kGeometryEpsilon);
+    auto acceptable = [&](const PenContour &contour) {
+        if (!contour.valid()) {
+            return false;
+        }
+        const QPolygonF flattened = flattenPenContour(
+            contour, kLocalCurveSamples);
+        const double areaErrorRatio = std::abs(
+            std::abs(signedArea(flattened)) - std::abs(referenceArea))
+            / areaScale;
+
+        return sameOrientation(referenceArea, signedArea(flattened))
+            && areaErrorRatio <= maximumAreaErrorRatio + kGeometryEpsilon
+            && boundaryDeviation(polygon, flattened)
+                <= maximumDeviation + kGeometryEpsilon;
+    };
+    if (!acceptable(optimizedContour)) {
+        return baseline;
+    }
+
+    if (removedHardPoints != nullptr) {
+        *removedHardPoints += static_cast<int>(std::count(
+            selected.cbegin(), selected.cend(), true));
+    }
+    if (removedSoftPoints != nullptr) {
+        const int baselineSoftPoints = baseline.size() - anchorCount;
+        const int optimizedHardPoints = static_cast<int>(std::count_if(
+            optimized.cbegin(), optimized.cend(), [](const PenPoint &point) {
+                return point.kind == PenPointKind::Hard;
+            }));
+        const int optimizedSoftPoints = optimized.size() - optimizedHardPoints;
+        *removedSoftPoints += std::max(
+            0, baselineSoftPoints - optimizedSoftPoints);
+    }
+
+    return optimized;
+}
+
+} // namespace
+
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,
     const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace) {
@@ -2672,6 +2949,18 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
             points = simplifyClosedPolygonRdpHybridQuadratic(
                 candidate.sampled, options.simplifyEpsilon,
                 options.minimumCurveBow);
+            if (candidateIndex == 0 && options.localCurveOptimization) {
+                const int originalPointCount = points.size();
+                points = simplifyClosedPolygonWindowedQuadratic(
+                    candidate.sampled,
+                    options.simplifyEpsilon,
+                    options.minimumCurveBow,
+                    options.fallback.maximumAreaErrorRatio,
+                    &result.contourStats.removedHardPoints,
+                    &result.contourStats.removedSoftPoints);
+                result.contourStats.originalPointCount += originalPointCount;
+                result.contourStats.optimizedPointCount += points.size();
+            }
         }
         if (!buildPenContour(points).valid()) {
             const RegionPenConversionResult conversion = regionOutlineToPenPoints(

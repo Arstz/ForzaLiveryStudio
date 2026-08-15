@@ -776,6 +776,39 @@ void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
     test->expect(gui::buildPenContour(hybrid).valid(),
                  "the analyzer-matched hybrid contour should remain valid for Pen");
 
+    QPainterPath bucketContour;
+    bucketContour.addPolygon(circle);
+    bucketContour.closeSubpath();
+    gui::RegionPenLoopConversionOptions bucketOptions;
+    bucketOptions.simplifyEpsilon = kEpsilon;
+    bucketOptions.minimumCurveBow = kMinimumCurveBow;
+    bucketOptions.localCurveOptimization = true;
+    const gui::RegionPenLoopConversionResult bucketConversion =
+        gui::regionOutlineToPenLoops(bucketContour, bucketOptions);
+    test->expect(bucketConversion.valid()
+                     && bucketConversion.loops.size() == 1,
+                 "the local Bucket optimization should retain a valid outer contour");
+    if (bucketConversion.valid()) {
+        test->expect(bucketConversion.loops.front().points.size()
+                         < hybrid.size(),
+                     "the local Bucket optimization should merge smooth neighboring spans");
+        test->expect(bucketConversion.contourStats.removedHardPoints > 0,
+                     "the local Bucket optimization should reduce smooth hard anchors");
+    }
+
+    QPolygonF pointedCircle = circle;
+    pointedCircle[0] = QPointF(30.0, 0.0);
+    QPainterPath pointedContour;
+    pointedContour.addPolygon(pointedCircle);
+    pointedContour.closeSubpath();
+    const gui::RegionPenLoopConversionResult pointedConversion =
+        gui::regionOutlineToPenLoops(pointedContour, bucketOptions);
+    test->expect(pointedConversion.valid()
+                     && hasPoint(pointedConversion.loops.front().points,
+                                 pointedCircle.front(),
+                                 gui::PenPointKind::Hard),
+                 "the local Bucket optimization should retain a distinct corner");
+
     const QVector<gui::PenPoint> straight =
         gui::simplifyClosedPolygonRdpHybridQuadratic(circle, kEpsilon, kRadius);
     test->expect(straight.size() == 8
@@ -2774,7 +2807,10 @@ void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
     test->expect(curveMatches, "dense lining Hairs should retain their fitted curves");
 }
 
-int compareLoggedPen(const QString &path, bool optimizeOnly = false)
+int compareLoggedPen(const QString &path,
+                     bool optimizeOnly = false,
+                     bool windowOptimize = false,
+                     bool windowOnly = false)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -2833,6 +2869,47 @@ int compareLoggedPen(const QString &path, bool optimizeOnly = false)
     if (request.loops.isEmpty()) {
         request.points = readPoints(loggedRequest.value(
             QStringLiteral("points")).toArray());
+    }
+    int windowSourcePointCount = 0;
+    gui::RegionFillContourStats windowStats;
+    if (windowOptimize) {
+        const gui::PenContour sourceContour = request.loops.isEmpty()
+            ? gui::buildPenContour(request.points)
+            : gui::buildPenContour(request.loops);
+        if (!sourceContour.valid()) {
+            std::cerr << "Logged contour preprocessing failed: "
+                      << sourceContour.error.toStdString() << '\n';
+            return 1;
+        }
+        windowSourcePointCount = request.points.size();
+        for (const gui::PenLoop &loop : request.loops) {
+            windowSourcePointCount += loop.points.size();
+        }
+        gui::RegionPenLoopConversionOptions options;
+        options.localCurveOptimization = true;
+        const gui::RegionPenLoopConversionResult conversion =
+            gui::regionOutlineToPenLoops(sourceContour.path, options);
+        if (!conversion.valid()) {
+            std::cerr << "Logged contour preprocessing failed: "
+                      << conversion.error.toStdString() << '\n';
+            return 1;
+        }
+        request.points.clear();
+        request.loops = conversion.loops;
+        windowStats = conversion.contourStats;
+        int optimizedPointCount = 0;
+        for (const gui::PenLoop &loop : request.loops) {
+            optimizedPointCount += loop.points.size();
+        }
+        std::cout << "window_source_points=" << windowSourcePointCount
+                  << " window_optimized_points=" << optimizedPointCount
+                  << " window_removed_hard="
+                  << windowStats.removedHardPoints
+                  << " window_removed_soft="
+                  << windowStats.removedSoftPoints << '\n';
+        if (windowOnly) {
+            return 0;
+        }
     }
     if (optimizeOnly) {
         const gui::PenContour contour = request.loops.isEmpty()
@@ -2934,7 +3011,41 @@ int compareLoggedPen(const QString &path, bool optimizeOnly = false)
         [](const gui::PenPlacement &placement) {
             return placement.shapeId == 103;
         }));
+    const int boundaryPlacements = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.boundaryFitKind
+                != gui::PenBoundaryFitKind::None;
+        }));
+    const int straightTrianglePlacements = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.boundaryFitKind
+                == gui::PenBoundaryFitKind::StraightTriangle;
+        }));
+    const int straightSquarePlacements = static_cast<int>(std::count_if(
+        optimized.placements.cbegin(), optimized.placements.cend(),
+        [](const gui::PenPlacement &placement) {
+            return placement.boundaryFitKind
+                == gui::PenBoundaryFitKind::StraightSquare;
+        }));
+    int outerBoundaryPlacements = 0;
+    int outerOwnedSegments = 0;
+    double outerOwnedArc = 0.0;
+    for (const gui::PenPlacement &placement : optimized.placements) {
+        if (placement.boundaryLoopIndex != 0
+            || placement.boundaryFitKind
+                == gui::PenBoundaryFitKind::None) {
+            continue;
+        }
+        ++outerBoundaryPlacements;
+        outerOwnedSegments += placement.exposedContourSegments;
+        outerOwnedArc += placement.exposedContourArc;
+    }
     std::cout << "points=" << loggedPointCount
+              << " source_points=" << windowSourcePointCount
+              << " window_removed_hard=" << windowStats.removedHardPoints
+              << " window_removed_soft=" << windowStats.removedSoftPoints
               << " logged_strategy="
               << loggedRequest.value(QStringLiteral("strategy"))
                      .toString().toStdString()
@@ -2944,6 +3055,14 @@ int compareLoggedPen(const QString &path, bool optimizeOnly = false)
               << " pruned_shapes=" << optimized.placements.size()
               << " curve_shapes=" << curvePlacements
               << " exposed_curve_shapes=" << exposedCurvePlacements
+              << " boundary_shapes=" << boundaryPlacements
+              << " core_shapes="
+              << optimized.placements.size() - boundaryPlacements
+              << " straight_triangles=" << straightTrianglePlacements
+              << " straight_squares=" << straightSquarePlacements
+              << " outer_boundary_shapes=" << outerBoundaryPlacements
+              << " outer_owned_segments=" << outerOwnedSegments
+              << " outer_owned_arc=" << outerOwnedArc
               << " triangles=" << trianglePlacements
               << " eligible_shapes=" << eligiblePlacements
               << " minimum_shape_area="
@@ -3121,6 +3240,18 @@ int main(int argc, char **argv)
     if (argc == 3
         && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--optimize-pen-log")) {
         return compareLoggedPen(QString::fromLocal8Bit(argv[2]), true);
+    }
+    if (argc == 3
+        && QString::fromLocal8Bit(argv[1])
+            == QStringLiteral("--compare-windowed-pen-log")) {
+        return compareLoggedPen(
+            QString::fromLocal8Bit(argv[2]), false, true);
+    }
+    if (argc == 3
+        && QString::fromLocal8Bit(argv[1])
+            == QStringLiteral("--inspect-windowed-pen-log")) {
+        return compareLoggedPen(
+            QString::fromLocal8Bit(argv[2]), false, true, true);
     }
     if (argc == 5 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-region-log")) {
         bool widthOk = false;

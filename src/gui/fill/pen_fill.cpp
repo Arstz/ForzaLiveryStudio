@@ -26,12 +26,16 @@ constexpr int kGarlicShapeId = 139;
 constexpr int kToothShapeId = 2123;
 constexpr double kConcaveArcInnerRadiusRatio = 0.65;
 constexpr double kMaximumCurveOutsideRatio = 1e-5;
+constexpr double kMaximumStraightBoundaryOutsideRatio = 1e-7;
+constexpr double kStraightBoundaryMinimumDepthMultiplier = 2.0;
 constexpr double kMaximumCoreOutsideRatio = 1e-5;
 constexpr double kMaximumNegligiblePlacementAreaRatio = 1e-3;
 constexpr double kMaximumDiscardedAreaRatio = 1e-3;
 constexpr double kMaximumDiscardedThicknessRatio = 0.0025;
 constexpr int kInteriorCoreSteps = 16;
 constexpr int kChordContainmentSamples = 32;
+constexpr int kMinimumStraightBoundarySegmentCount = 8;
+constexpr int kStraightStripDepthSteps = 12;
 constexpr double kMaximumTangentJump = 0.35;
 constexpr double kMaximumCurvatureJump = 0.75;
 constexpr double kMaximumSpanErrorRatio = 0.05;
@@ -638,6 +642,9 @@ bool discardNegligiblePlacements(
     for (int i = 0; i < placements->size(); ++i) {
         if (cancelled && cancelled()) {
             return false;
+        }
+        if ((*placements)[i].boundaryFitKind != PenBoundaryFitKind::None) {
+            continue;
         }
         const double placementArea = (*placements)[i].area;
         if (placementArea > maximumPlacementArea) {
@@ -3043,16 +3050,371 @@ struct CurveSpanPlacement {
     CurvePlacement curve;
 };
 
+struct StraightBoundarySpanPlacement {
+    int first = 0;
+    int last = 0;
+    CurvePlacement shape;
+    QVector<QPointF> corePoints;
+    PenBoundaryFitKind kind = PenBoundaryFitKind::None;
+};
+
+void recordBoundaryOwnership(
+    PenPlacement *placement,
+    PenBoundaryFitKind kind,
+    int loopIndex,
+    int first,
+    int last,
+    const QVector<PenBoundarySegment> &segments) {
+    placement->boundaryFitKind = kind;
+    placement->boundaryLoopIndex = loopIndex;
+    placement->boundaryFirstSegment = first;
+    placement->boundaryLastSegment = last;
+    placement->boundaryStart = segments[first].start;
+    placement->boundaryEnd = segments[last].end;
+    placement->exposedContourSegments = last - first + 1;
+    for (int segmentIndex = first; segmentIndex <= last; ++segmentIndex) {
+        const PenBoundarySegment &segment = segments[segmentIndex];
+        const double arcLength = sampledArcLength(segment);
+
+        placement->exposedContourArc += arcLength;
+        if (segment.curved) {
+            placement->exposedCurveArc += arcLength;
+            ++placement->exposedCurveSegments;
+        }
+    }
+}
+
+QVector<QPointF> straightSpanCorners(
+    const QVector<PenBoundarySegment> &segments,
+    int first,
+    int last,
+    double tolerance) {
+    QVector<QPointF> result;
+    result.reserve(last - first + 2);
+    result.push_back(segments[first].start);
+    for (int segmentIndex = first; segmentIndex <= last; ++segmentIndex) {
+        result.push_back(segments[segmentIndex].end);
+    }
+
+    bool changed = true;
+    while (changed && result.size() > 2) {
+        changed = false;
+        for (int pointIndex = 1; pointIndex + 1 < result.size(); ++pointIndex) {
+            const QPointF incoming = result[pointIndex] - result[pointIndex - 1];
+            const QPointF outgoing = result[pointIndex + 1] - result[pointIndex];
+            if (QPointF::dotProduct(incoming, outgoing) < -kEpsilon
+                || distanceSquaredToSegment(
+                       result[pointIndex],
+                       result[pointIndex - 1],
+                       result[pointIndex + 1]) > tolerance * tolerance) {
+                continue;
+            }
+            result.remove(pointIndex);
+            changed = true;
+            break;
+        }
+    }
+
+    return result;
+}
+
+QVector<QPointF> straightSpanSamples(
+    const QVector<PenBoundarySegment> &segments,
+    int first,
+    int last) {
+    QVector<QPointF> result;
+    result.reserve((last - first + 1) * 2 + 1);
+    result.push_back(segments[first].start);
+    for (int segmentIndex = first; segmentIndex <= last; ++segmentIndex) {
+        result.push_back(segmentPoint(segments[segmentIndex], 0.5));
+        result.push_back(segments[segmentIndex].end);
+    }
+
+    return result;
+}
+
+std::optional<CurvePlacement> straightBoundaryPlacement(
+    const PenPrimitive &primitive,
+    const QPolygonF &source,
+    const QVector<QPointF> &corners,
+    const QVector<QPointF> &samples,
+    const QPainterPath &target,
+    double targetArea,
+    double boundaryTolerance) {
+    if (source.size() != corners.size() || corners.size() < 3) {
+        return std::nullopt;
+    }
+
+    std::optional<CurvePlacement> best;
+    const int count = source.size();
+    for (int direction : {-1, 1}) {
+        for (int offset = 0; offset < count; ++offset) {
+            const auto sourcePoint = [&](int index) {
+                return source[(offset + direction * index + count * 2) % count];
+            };
+            bool transformValid = false;
+            const QTransform transform = affineFromTriangles(
+                sourcePoint(0), sourcePoint(1), sourcePoint(count - 1),
+                corners[0], corners[1], corners[count - 1],
+                &transformValid);
+            if (!transformValid) {
+                continue;
+            }
+            bool verticesMatch = true;
+            for (int pointIndex = 0; pointIndex < count; ++pointIndex) {
+                if (QLineF(transform.map(sourcePoint(pointIndex)),
+                           corners[pointIndex]).length() > boundaryTolerance) {
+                    verticesMatch = false;
+                    break;
+                }
+            }
+            if (!verticesMatch) {
+                continue;
+            }
+            const auto placement = evaluateCurvePlacement(
+                primitive, samples, transform, target, target,
+                targetArea, boundaryTolerance);
+            if (placement
+                && placement->outsideArea / targetArea
+                    <= kMaximumStraightBoundaryOutsideRatio
+                && (!best || betterCurvePlacement(*placement, *best))) {
+                best = placement;
+            }
+        }
+    }
+
+    return best;
+}
+
+std::optional<StraightBoundarySpanPlacement> straightBoundaryStrip(
+    const QVector<PenBoundarySegment> &segments,
+    int first,
+    int last,
+    const PenPrimitive &square,
+    const QPolygonF &source,
+    const QPainterPath &target,
+    double targetArea,
+    double boundaryTolerance) {
+    const QPointF start = segments[first].start;
+    const QPointF end = segments[last].end;
+    const QPointF edge = end - start;
+    const double length = QLineF(start, end).length();
+    const QVector<QPointF> samples = straightSpanSamples(
+        segments, first, last);
+    std::optional<StraightBoundarySpanPlacement> best;
+
+    if (length <= boundaryTolerance) {
+        return std::nullopt;
+    }
+    const QPointF normal(-edge.y() / length, edge.x() / length);
+    for (double side : {-1.0, 1.0}) {
+        double depth = length;
+        for (int step = 0; step < kStraightStripDepthSteps; ++step) {
+            const QPointF inset = normal * (side * depth);
+            const QVector<QPointF> corners{
+                start, end, end + inset, start + inset};
+            const auto placement = straightBoundaryPlacement(
+                square, source, corners, samples, target,
+                targetArea, boundaryTolerance);
+            if (placement) {
+                StraightBoundarySpanPlacement candidate;
+                candidate.first = first;
+                candidate.last = last;
+                candidate.shape = *placement;
+                candidate.corePoints = {
+                    start + inset, end + inset, end};
+                candidate.kind = PenBoundaryFitKind::StraightSquare;
+                if (!best || betterCurvePlacement(
+                                 candidate.shape, best->shape)) {
+                    best = std::move(candidate);
+                }
+                break;
+            }
+            depth *= 0.5;
+            if (depth < boundaryTolerance) {
+                break;
+            }
+        }
+    }
+
+    return best;
+}
+
+struct StraightBoundarySelectionCost {
+    bool valid = false;
+    int matchedSegments = 0;
+    int removedVertices = 0;
+    int placementCount = 0;
+    double matchedArc = 0.0;
+    double insideArea = 0.0;
+    int decision = -1;
+};
+
+bool betterStraightBoundarySelection(
+    const StraightBoundarySelectionCost &candidate,
+    const StraightBoundarySelectionCost &best) {
+    if (!best.valid) {
+        return true;
+    }
+    if (std::abs(candidate.matchedArc - best.matchedArc) > kEpsilon) {
+        return candidate.matchedArc > best.matchedArc;
+    }
+    if (candidate.removedVertices != best.removedVertices) {
+        return candidate.removedVertices > best.removedVertices;
+    }
+    if (candidate.placementCount != best.placementCount) {
+        return candidate.placementCount < best.placementCount;
+    }
+    if (candidate.matchedSegments != best.matchedSegments) {
+        return candidate.matchedSegments > best.matchedSegments;
+    }
+
+    return candidate.insideArea > best.insideArea;
+}
+
+QVector<StraightBoundarySpanPlacement> selectStraightBoundarySpans(
+    const QVector<PenBoundarySegment> &segments,
+    const QVector<bool> &occupied,
+    const QVector<PenPrimitive> &primitives,
+    const PolygonMeshSources &meshSources,
+    const QPainterPath &target,
+    double targetArea,
+    double boundaryTolerance,
+    const std::function<bool()> &cancelled,
+    bool *wasCancelled) {
+    const PenPrimitive *square = primitiveForId(primitives, kSquareShapeId);
+    const PenPrimitive *triangle = primitiveForId(primitives, kTriangleShapeId);
+    const int count = segments.size();
+    QVector<StraightBoundarySpanPlacement> candidates;
+    QVector<QVector<int>> candidatesAt(count);
+
+    if (count < kMinimumStraightBoundarySegmentCount
+        || square == nullptr || triangle == nullptr || !meshSources.valid()) {
+        return {};
+    }
+    for (int first = 0; first < count; ++first) {
+        if (occupied[first] || segments[first].curved) {
+            continue;
+        }
+        for (int last = first + 1; last < count; ++last) {
+            if (cancelled && cancelled()) {
+                *wasCancelled = true;
+                return {};
+            }
+            if (occupied[last] || segments[last].curved) {
+                break;
+            }
+            const QVector<QPointF> corners = straightSpanCorners(
+                segments, first, last, boundaryTolerance);
+            const PenPrimitive *primitive = nullptr;
+            const QPolygonF *source = nullptr;
+            PenBoundaryFitKind kind = PenBoundaryFitKind::None;
+            if (corners.size() == 2 && last - first + 1 >= 4) {
+                const auto strip = straightBoundaryStrip(
+                    segments, first, last, *square, meshSources.square,
+                    target, targetArea, boundaryTolerance);
+                if (strip) {
+                    candidatesAt[first].push_back(candidates.size());
+                    candidates.push_back(*strip);
+                }
+                continue;
+            } else if (corners.size() == 3) {
+                primitive = triangle;
+                source = &meshSources.triangle;
+                kind = PenBoundaryFitKind::StraightTriangle;
+            } else if (corners.size() == 4) {
+                primitive = square;
+                source = &meshSources.square;
+                kind = PenBoundaryFitKind::StraightSquare;
+            } else {
+                continue;
+            }
+            double depth = 0.0;
+            for (int pointIndex = 1;
+                 pointIndex + 1 < corners.size(); ++pointIndex) {
+                depth = std::max(
+                    depth,
+                    std::sqrt(distanceSquaredToSegment(
+                        corners[pointIndex], corners.front(), corners.back())));
+            }
+            if (depth <= boundaryTolerance
+                    * kStraightBoundaryMinimumDepthMultiplier) {
+                continue;
+            }
+            const QVector<QPointF> samples = straightSpanSamples(
+                segments, first, last);
+            const auto placement = straightBoundaryPlacement(
+                *primitive, *source, corners, samples, target,
+                targetArea, boundaryTolerance);
+            if (!placement) {
+                continue;
+            }
+            candidatesAt[first].push_back(candidates.size());
+            candidates.push_back({
+                first, last, *placement, {segments[last].end}, kind});
+        }
+    }
+
+    QVector<StraightBoundarySelectionCost> costs(count + 1);
+    costs[count].valid = true;
+    for (int segmentIndex = count - 1; segmentIndex >= 0; --segmentIndex) {
+        StraightBoundarySelectionCost best = costs[segmentIndex + 1];
+        best.decision = -1;
+        for (int candidateIndex : candidatesAt[segmentIndex]) {
+            const StraightBoundarySpanPlacement &candidate =
+                candidates[candidateIndex];
+            StraightBoundarySelectionCost cost = costs[candidate.last + 1];
+            if (!cost.valid) {
+                continue;
+            }
+            const int matchedSegments = candidate.last - candidate.first + 1;
+            double matchedArc = 0.0;
+            for (int index = candidate.first; index <= candidate.last; ++index) {
+                matchedArc += sampledArcLength(segments[index]);
+            }
+            cost.matchedSegments += matchedSegments;
+            cost.removedVertices += std::max(
+                0, matchedSegments
+                    - static_cast<int>(candidate.corePoints.size()));
+            ++cost.placementCount;
+            cost.matchedArc += matchedArc;
+            cost.insideArea += candidate.shape.insideArea;
+            cost.decision = candidateIndex;
+            if (betterStraightBoundarySelection(cost, best)) {
+                best = cost;
+            }
+        }
+        best.valid = true;
+        costs[segmentIndex] = best;
+    }
+
+    QVector<StraightBoundarySpanPlacement> selected;
+    for (int segmentIndex = 0; segmentIndex < count;) {
+        const int decision = costs[segmentIndex].decision;
+        if (decision < 0) {
+            ++segmentIndex;
+            continue;
+        }
+        selected.push_back(candidates[decision]);
+        segmentIndex = candidates[decision].last + 1;
+    }
+
+    return selected;
+}
+
 struct CoreLayout {
     QVector<QPointF> points;
     QVector<int> spanAtStart;
     QVector<int> inwardSpanAtStart;
+    QVector<int> straightSpanAtStart;
+    QSet<int> supportedCurveSegments;
 };
 
 enum class CoreFitKind {
     None,
     Span,
     InwardSpan,
+    StraightSpan,
     InwardCurve,
 };
 
@@ -3687,6 +4049,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.error = contour.error.isEmpty() ? QStringLiteral("Invalid Pen contour") : contour.error;
         return result;
     }
+    result.curveLoopDiagnostics.resize(contour.loops.size());
     const QPainterPath target = request.targetPath.isEmpty()
         ? contour.path : request.targetPath;
     const QPainterPath legalEnvelope = request.legalEnvelope.isEmpty()
@@ -3842,7 +4205,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         coreContours.reserve(contour.loops.size());
         QPainterPath coverage;
         coverage.setFillRule(Qt::WindingFill);
-        for (const PenContourLoop &loop : contour.loops) {
+        for (int loopIndex = 0; loopIndex < contour.loops.size(); ++loopIndex) {
+            const PenContourLoop &loop = contour.loops[loopIndex];
             PenContour loopContour;
             loopContour.segments = loop.segments;
             const QPolygonF flattened = flattenedContour(loopContour, 16);
@@ -3926,6 +4290,36 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 }
             }
 
+            QVector<StraightBoundarySpanPlacement> straightSpans;
+            QVector<int> straightSpanAtStart(segments.size(), -1);
+            if (loop.kind == PenLoopKind::Outer
+                && request.curveMeshes.isEmpty()) {
+                straightSpans = selectStraightBoundarySpans(
+                    segments, spanCovered, primitives, meshSources,
+                    target, result.targetArea, request.boundaryTolerance,
+                    curveCancelled, &selectionCancelled);
+                if (selectionCancelled) {
+                    if (curveTimedOut()
+                        && !(cancelled && cancelled())) {
+                        return polygonFallback();
+                    }
+                    result.cancelled = true;
+                    result.error = QStringLiteral(
+                        "Pen straight-boundary selection timed out");
+                    return result;
+                }
+                for (int spanIndex = 0; spanIndex < straightSpans.size();
+                     ++spanIndex) {
+                    const StraightBoundarySpanPlacement &span =
+                        straightSpans[spanIndex];
+                    straightSpanAtStart[span.first] = spanIndex;
+                    for (int segmentIndex = span.first;
+                         segmentIndex <= span.last; ++segmentIndex) {
+                        spanCovered[segmentIndex] = true;
+                    }
+                }
+            }
+
             QVector<std::optional<InwardCurvePlacement>> inwardCurves(segments.size());
             QVector<int> inwardCandidates;
             for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
@@ -3983,7 +4377,11 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 const int spanIndex = spanAtStart[segmentIndex];
                 if (spanIndex >= 0) {
                     const CurveSpanPlacement &span = curveSpans[spanIndex];
-                    result.placements.push_back(span.curve.placement);
+                    PenPlacement placement = span.curve.placement;
+                    recordBoundaryOwnership(
+                        &placement, PenBoundaryFitKind::OutwardSpan,
+                        loopIndex, span.first, span.last, segments);
+                    result.placements.push_back(std::move(placement));
                     coverage = coverage.united(span.curve.path);
                     corePoints.push_back(segments[span.last].end);
                     segmentIndex = span.last + 1;
@@ -3993,24 +4391,55 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 if (inwardSpanIndex >= 0) {
                     const InwardCurveSpanPlacement &span =
                         inwardSpans[inwardSpanIndex];
-                    result.placements.push_back(span.curve.curve.placement);
+                    PenPlacement placement = span.curve.curve.placement;
+                    recordBoundaryOwnership(
+                        &placement, PenBoundaryFitKind::InwardSpan,
+                        loopIndex, span.first, span.last, segments);
+                    result.placements.push_back(std::move(placement));
                     coverage = coverage.united(span.curve.curve.path);
                     corePoints.push_back(span.curve.coreMiddle);
                     corePoints.push_back(segments[span.last].end);
                     segmentIndex = span.last + 1;
                     continue;
                 }
+                const int straightSpanIndex =
+                    straightSpanAtStart[segmentIndex];
+                if (straightSpanIndex >= 0) {
+                    const StraightBoundarySpanPlacement &span =
+                        straightSpans[straightSpanIndex];
+                    PenPlacement placement = span.shape.placement;
+                    recordBoundaryOwnership(
+                        &placement, span.kind, loopIndex,
+                        span.first, span.last, segments);
+                    result.placements.push_back(std::move(placement));
+                    coverage = coverage.united(span.shape.path);
+                    for (const QPointF &point : span.corePoints) {
+                        corePoints.push_back(point);
+                    }
+                    segmentIndex = span.last + 1;
+                    continue;
+                }
                 const PenBoundarySegment &segment = segments[segmentIndex];
                 if (inwardCurves[segmentIndex]) {
-                    result.placements.push_back(inwardCurves[segmentIndex]->curve.placement);
+                    PenPlacement placement =
+                        inwardCurves[segmentIndex]->curve.placement;
+                    recordBoundaryOwnership(
+                        &placement, PenBoundaryFitKind::InwardSegment,
+                        loopIndex, segmentIndex, segmentIndex, segments);
+                    result.placements.push_back(std::move(placement));
                     coverage = coverage.united(inwardCurves[segmentIndex]->curve.path);
                     corePoints.push_back(inwardCurves[segmentIndex]->coreMiddle);
-                } else if (segment.curved
-                           && !chordInsideTarget(segment.start,
-                                                 segment.end,
-                                                 target)) {
-                    const auto point = interiorCorePoint(segment, target);
-                    corePoints.push_back(point ? *point : segment.control);
+                } else if (segment.curved) {
+                    if (!chordInsideTarget(
+                            segment.start, segment.end, target)) {
+                        const auto point = interiorCorePoint(segment, target);
+                        corePoints.push_back(point ? *point : segment.control);
+                        ++result.curveLoopDiagnostics[loopIndex]
+                              .supportedCurveSegments;
+                    } else {
+                        ++result.curveLoopDiagnostics[loopIndex]
+                              .chordedCurveSegments;
+                    }
                 }
                 corePoints.push_back(segment.end);
                 ++segmentIndex;
@@ -4207,6 +4636,27 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             spanCovered[index] = true;
         }
     }
+    QVector<StraightBoundarySpanPlacement> straightSpans;
+    if (request.curveMeshes.isEmpty()) {
+        straightSpans = selectStraightBoundarySpans(
+            segments, spanCovered, primitives, meshSources,
+            target, result.targetArea, request.boundaryTolerance,
+            curveCancelled, &selectionCancelled);
+    }
+    if (selectionCancelled) {
+        if (curveTimedOut() && !(cancelled && cancelled())) {
+            return polygonFallback();
+        }
+        result.cancelled = true;
+        result.error = QStringLiteral(
+            "Pen straight-boundary selection timed out");
+        return result;
+    }
+    for (const StraightBoundarySpanPlacement &span : straightSpans) {
+        for (int index = span.first; index <= span.last; ++index) {
+            spanCovered[index] = true;
+        }
+    }
     QVector<std::optional<InwardCurvePlacement>> inwardCurves(segments.size());
     if (!inwardCaps.isEmpty()) {
         QVector<int> inwardCandidates;
@@ -4255,19 +4705,23 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     }
     QVector<bool> activeSpans(curveSpans.size(), true);
     QVector<bool> activeInwardSpans(inwardSpans.size(), true);
+    QVector<bool> activeStraightSpans(straightSpans.size(), true);
     QVector<bool> activeInwardCurves(segments.size(), false);
     for (int i = 0; i < inwardCurves.size(); ++i) {
         activeInwardCurves[i] = inwardCurves[i].has_value();
     }
     const auto coreLayout = [&](const QVector<bool> &enabledSpans,
                                  const QVector<bool> &enabledInwardSpans,
+                                 const QVector<bool> &enabledStraightSpans,
                                  const QVector<bool> &enabledInwardCurves) {
         CoreLayout layout;
         layout.spanAtStart.fill(-1, segments.size());
         layout.inwardSpanAtStart.fill(-1, segments.size());
+        layout.straightSpanAtStart.fill(-1, segments.size());
         QVector<bool> activeSpanCovered(segments.size(), false);
         int activeSpanCount = 0;
         int activeInwardSpanCount = 0;
+        int activeStraightSpanCount = 0;
         int activeInwardCount = 0;
         int activeRemovedVertices = 0;
         for (int spanIndex = 0; spanIndex < curveSpans.size(); ++spanIndex) {
@@ -4291,6 +4745,22 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             layout.inwardSpanAtStart[span.first] = spanIndex;
             activeRemovedVertices += span.last - span.first;
             ++activeInwardSpanCount;
+            for (int index = span.first; index <= span.last; ++index) {
+                activeSpanCovered[index] = true;
+            }
+        }
+        for (int spanIndex = 0; spanIndex < straightSpans.size();
+             ++spanIndex) {
+            if (!enabledStraightSpans[spanIndex]) {
+                continue;
+            }
+            const StraightBoundarySpanPlacement &span =
+                straightSpans[spanIndex];
+            layout.straightSpanAtStart[span.first] = spanIndex;
+            activeRemovedVertices += std::max(
+                0, span.last - span.first + 1
+                    - static_cast<int>(span.corePoints.size()));
+            ++activeStraightSpanCount;
             for (int index = span.first; index <= span.last; ++index) {
                 activeSpanCovered[index] = true;
             }
@@ -4324,7 +4794,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             }
         }
         const int capCount = activeSpanCount + activeInwardSpanCount
-            + activeInwardCount;
+            + activeStraightSpanCount + activeInwardCount;
         const int baseVertices = segments.size() - activeRemovedVertices
             + activeInwardSpanCount + activeInwardCount
             + interiorCorePoints.size();
@@ -4350,6 +4820,11 @@ PenFillResult fillPenPath(const PenFillRequest &request,
              ++i) {
             midpointSegments.insert(activeMidpointCandidates[i]);
         }
+        layout.supportedCurveSegments = midpointSegments;
+        for (auto iterator = interiorCorePoints.cbegin();
+             iterator != interiorCorePoints.cend(); ++iterator) {
+            layout.supportedCurveSegments.insert(iterator.key());
+        }
         layout.points.push_back(segments.front().start);
         for (int i = 0; i < segments.size();) {
             const int spanIndex = layout.spanAtStart[i];
@@ -4365,6 +4840,16 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                     inwardSpans[inwardSpanIndex];
                 layout.points.push_back(span.curve.coreMiddle);
                 layout.points.push_back(segments[span.last].end);
+                i = span.last + 1;
+                continue;
+            }
+            const int straightSpanIndex = layout.straightSpanAtStart[i];
+            if (straightSpanIndex >= 0) {
+                const StraightBoundarySpanPlacement &span =
+                    straightSpans[straightSpanIndex];
+                for (const QPointF &point : span.corePoints) {
+                    layout.points.push_back(point);
+                }
                 i = span.last + 1;
                 continue;
             }
@@ -4394,7 +4879,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         return layout;
     };
     CoreLayout layout = coreLayout(
-        activeSpans, activeInwardSpans, activeInwardCurves);
+        activeSpans, activeInwardSpans,
+        activeStraightSpans, activeInwardCurves);
     PolygonContour coreContour = buildPolygonContour(layout.points);
     const double maximumCoreOutsideArea =
         std::max(1e-6, result.targetArea * kMaximumCoreOutsideRatio);
@@ -4414,7 +4900,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         PolygonContour bestContour;
         const auto consider = [&](CoreFitKind kind, int index) {
             CoreLayout candidateLayout = coreLayout(
-                activeSpans, activeInwardSpans, activeInwardCurves);
+                activeSpans, activeInwardSpans,
+                activeStraightSpans, activeInwardCurves);
             PolygonContour candidateContour = buildPolygonContour(candidateLayout.points);
             const double candidateOutsideArea =
                 coreOutsideArea(candidateContour);
@@ -4464,6 +4951,21 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 return result;
             }
         }
+        for (int i = 0; i < activeStraightSpans.size()
+             && (bestCrossingCount != 0
+                 || bestOutsideArea > maximumCoreOutsideArea); ++i) {
+            if (!activeStraightSpans[i]) {
+                continue;
+            }
+            activeStraightSpans[i] = false;
+            consider(CoreFitKind::StraightSpan, i);
+            activeStraightSpans[i] = true;
+            if (cancelled && cancelled()) {
+                result.cancelled = true;
+                result.error = QStringLiteral("Pen core repair timed out");
+                return result;
+            }
+        }
         for (int i = 0; i < activeInwardCurves.size()
              && (bestCrossingCount != 0
                  || bestOutsideArea > maximumCoreOutsideArea); ++i) {
@@ -4486,6 +4988,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             activeSpans[bestIndex] = false;
         } else if (bestKind == CoreFitKind::InwardSpan) {
             activeInwardSpans[bestIndex] = false;
+        } else if (bestKind == CoreFitKind::StraightSpan) {
+            activeStraightSpans[bestIndex] = false;
         } else {
             activeInwardCurves[bestIndex] = false;
         }
@@ -4507,6 +5011,38 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         result.error = QStringLiteral("The Pen core could not remain within its contour");
         return result;
     }
+    QVector<bool> matchedCurveSegments(segments.size(), false);
+    for (int spanIndex = 0; spanIndex < curveSpans.size(); ++spanIndex) {
+        if (!activeSpans[spanIndex]) {
+            continue;
+        }
+        for (int segmentIndex = curveSpans[spanIndex].first;
+             segmentIndex <= curveSpans[spanIndex].last; ++segmentIndex) {
+            matchedCurveSegments[segmentIndex] = true;
+        }
+    }
+    for (int spanIndex = 0; spanIndex < inwardSpans.size(); ++spanIndex) {
+        if (!activeInwardSpans[spanIndex]) {
+            continue;
+        }
+        for (int segmentIndex = inwardSpans[spanIndex].first;
+             segmentIndex <= inwardSpans[spanIndex].last; ++segmentIndex) {
+            matchedCurveSegments[segmentIndex] = true;
+        }
+    }
+    for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
+        matchedCurveSegments[segmentIndex] = matchedCurveSegments[segmentIndex]
+            || activeInwardCurves[segmentIndex];
+        if (!segments[segmentIndex].curved
+            || matchedCurveSegments[segmentIndex]) {
+            continue;
+        }
+        if (layout.supportedCurveSegments.contains(segmentIndex)) {
+            ++result.curveLoopDiagnostics[0].supportedCurveSegments;
+        } else {
+            ++result.curveLoopDiagnostics[0].chordedCurveSegments;
+        }
+    }
     QPainterPath coverage;
     coverage.setFillRule(Qt::WindingFill);
     for (int i = 0; i < segments.size();) {
@@ -4514,12 +5050,9 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         if (spanIndex >= 0) {
             const CurveSpanPlacement &span = curveSpans[spanIndex];
             PenPlacement placement = span.curve.placement;
-            for (int segmentIndex = span.first;
-                 segmentIndex <= span.last;
-                 ++segmentIndex) {
-                placement.exposedContourArc +=
-                    sampledArcLength(segments[segmentIndex]);
-            }
+            recordBoundaryOwnership(
+                &placement, PenBoundaryFitKind::OutwardSpan,
+                0, span.first, span.last, segments);
             result.placements.push_back(std::move(placement));
             coverage = coverage.united(span.curve.path);
             i = span.last + 1;
@@ -4530,19 +5063,32 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             const InwardCurveSpanPlacement &span =
                 inwardSpans[inwardSpanIndex];
             PenPlacement placement = span.curve.curve.placement;
-            for (int segmentIndex = span.first;
-                 segmentIndex <= span.last; ++segmentIndex) {
-                placement.exposedContourArc +=
-                    sampledArcLength(segments[segmentIndex]);
-            }
+            recordBoundaryOwnership(
+                &placement, PenBoundaryFitKind::InwardSpan,
+                0, span.first, span.last, segments);
             result.placements.push_back(std::move(placement));
             coverage = coverage.united(span.curve.curve.path);
             i = span.last + 1;
             continue;
         }
+        const int straightSpanIndex = layout.straightSpanAtStart[i];
+        if (straightSpanIndex >= 0) {
+            const StraightBoundarySpanPlacement &span =
+                straightSpans[straightSpanIndex];
+            PenPlacement placement = span.shape.placement;
+            recordBoundaryOwnership(
+                &placement, span.kind, 0,
+                span.first, span.last, segments);
+            result.placements.push_back(std::move(placement));
+            coverage = coverage.united(span.shape.path);
+            i = span.last + 1;
+            continue;
+        }
         if (activeInwardCurves[i]) {
             PenPlacement placement = inwardCurves[i]->curve.placement;
-            placement.exposedContourArc = sampledArcLength(segments[i]);
+            recordBoundaryOwnership(
+                &placement, PenBoundaryFitKind::InwardSegment,
+                0, i, i, segments);
             result.placements.push_back(std::move(placement));
             coverage = coverage.united(inwardCurves[i]->curve.path);
         }

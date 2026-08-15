@@ -133,6 +133,7 @@ struct RegionPenLoopConversionOptions {
     double discardedCutoutBoundaryClearance = 0.0;
     int curveSamples = 32;
     bool curveBased = false;
+    bool localCurveOptimization = false;
 };
 
 struct RegionPenLoopConversionResult {

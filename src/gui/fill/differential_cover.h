@@ -13,22 +13,22 @@
 
 namespace gui::cover {
 
-inline constexpr int kDefaultBudget = 100000;
-inline constexpr double kDefaultSpillWeight = 8.0;
-inline constexpr double kDefaultEpsArea = 0.25;
+inline constexpr int kDefaultBudget = 38575;
+inline constexpr double kDefaultSpillWeight = 0.69190441216220333;
+inline constexpr double kDefaultEpsArea = 0.151567550553943;
 inline constexpr double kDefaultEpsGain = 1.0;
-inline constexpr double kDefaultEpsSpill = 0.25;
-inline constexpr int kDefaultAdamIterations = 200;
+inline constexpr double kDefaultEpsSpill = 41650204.079782464;
+inline constexpr int kDefaultAdamIterations = 512;
 inline constexpr double kDefaultAdamLearningRate = 0.05;
 inline constexpr int kDefaultRestarts = 2;
 inline constexpr double kDefaultInactivityTimeoutSeconds = 60.0;
 inline constexpr double kDefaultBoundaryTolerance = 0.1;
-inline constexpr double kDefaultAreaWindowRatio = 0.875;
-inline constexpr double kDefaultTargetCoverageRatio = 0.99;
-inline constexpr double kDefaultTverskyAlpha = 0.35;
-inline constexpr double kDefaultTverskyBeta = 1.0;
+inline constexpr double kDefaultAreaWindowRatio = 1.0;
+inline constexpr double kDefaultTargetCoverageRatio = 0.998;
+inline constexpr double kDefaultTverskyAlpha = 2.0226083946374671;
+inline constexpr double kDefaultTverskyBeta = 4.3441205893624559;
 inline constexpr double kDefaultFeatureWeight = 1.0;
-inline constexpr int kDefaultFeatureRestarts = 12;
+inline constexpr int kDefaultFeatureRestarts = 10;
 inline constexpr double kDefaultOutwardMargin = 1.0;
 
 inline constexpr int kMinimumBudget = 1;

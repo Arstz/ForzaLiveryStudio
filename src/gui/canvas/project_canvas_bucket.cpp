@@ -240,8 +240,8 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
 
     RegionExtractionParams traceParams;
     traceParams.traceSpeckle = 0;
-    const bool curveBased = loadBehaviorSettings().fillAlgorithm
-        == FillAlgorithm::CurveBased;
+    const FillAlgorithm fillAlgorithm = loadBehaviorSettings().fillAlgorithm;
+    const bool curveBased = fillAlgorithm == FillAlgorithm::CurveBased;
     if (curveBased) {
         traceParams.traceOptTolerance = 0.0;
     }
@@ -267,6 +267,8 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
     RegionPenLoopConversionOptions conversionOptions;
     conversionOptions.fallback.comparisonImageSize = image.size();
     conversionOptions.curveBased = curveBased;
+    conversionOptions.localCurveOptimization =
+        fillAlgorithm == FillAlgorithm::Analytic;
     if (curveBased) {
         conversionOptions.fallback.mergeTolerance =
             kCurveContourMergeTolerance;

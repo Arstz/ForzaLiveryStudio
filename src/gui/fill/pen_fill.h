@@ -59,6 +59,15 @@ struct PenPrimitive {
     double area = 0.0;
 };
 
+enum class PenBoundaryFitKind {
+    None,
+    OutwardSpan,
+    InwardSpan,
+    InwardSegment,
+    StraightTriangle,
+    StraightSquare,
+};
+
 struct PenPlacement {
     int shapeId = 0;
     QTransform transform;
@@ -66,6 +75,15 @@ struct PenPlacement {
     bool coreEllipse = false;
     QVector<int> ownedFeatureIds;
     double exposedContourArc = 0.0;
+    double exposedCurveArc = 0.0;
+    int exposedContourSegments = 0;
+    int exposedCurveSegments = 0;
+    int boundaryLoopIndex = -1;
+    int boundaryFirstSegment = -1;
+    int boundaryLastSegment = -1;
+    QPointF boundaryStart;
+    QPointF boundaryEnd;
+    PenBoundaryFitKind boundaryFitKind = PenBoundaryFitKind::None;
 };
 
 struct PenFillRequest {
@@ -93,8 +111,14 @@ struct PenFillProgress {
 
 using PenFillProgressCallback = std::function<void(const PenFillProgress &)>;
 
+struct PenCurveLoopDiagnostics {
+    int chordedCurveSegments = 0;
+    int supportedCurveSegments = 0;
+};
+
 struct PenFillResult {
     QVector<PenPlacement> placements;
+    QVector<PenCurveLoopDiagnostics> curveLoopDiagnostics;
     QPainterPath unfilled;
     double targetArea = 0.0;
     double coveredArea = 0.0;

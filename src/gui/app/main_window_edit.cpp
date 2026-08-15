@@ -29,6 +29,259 @@ using namespace mw_detail;
 namespace {
 
 constexpr int kCurveFillTimeBudgetMs = 60000;
+constexpr int kPenLogCurveSamples = 32;
+constexpr double kPenLogPolygonTolerance = 0.025;
+
+QString boundaryFitKindName(PenBoundaryFitKind kind) {
+    switch (kind) {
+    case PenBoundaryFitKind::OutwardSpan:
+        return QStringLiteral("outward-span");
+    case PenBoundaryFitKind::InwardSpan:
+        return QStringLiteral("inward-span");
+    case PenBoundaryFitKind::InwardSegment:
+        return QStringLiteral("inward-segment");
+    case PenBoundaryFitKind::StraightTriangle:
+        return QStringLiteral("straight-triangle");
+    case PenBoundaryFitKind::StraightSquare:
+        return QStringLiteral("straight-square");
+    case PenBoundaryFitKind::None:
+        return QStringLiteral("none");
+    }
+
+    return QStringLiteral("none");
+}
+
+double boundarySegmentLength(const PenBoundarySegment &segment) {
+    QPointF previous = segment.start;
+    double result = 0.0;
+    for (int sample = 1; sample <= kPenLogCurveSamples; ++sample) {
+        const double parameter = static_cast<double>(sample)
+            / kPenLogCurveSamples;
+        const double complement = 1.0 - parameter;
+        const QPointF point = segment.curved
+            ? segment.start * (complement * complement)
+                + segment.control * (2.0 * complement * parameter)
+                + segment.end * (parameter * parameter)
+            : segment.start * complement + segment.end * parameter;
+
+        result += QLineF(previous, point).length();
+        previous = point;
+    }
+
+    return result;
+}
+
+QJsonObject curveOwnershipObject(
+    const QVector<PenLoop> &loops,
+    const PenFillResult &result) {
+    QJsonObject object;
+    QJsonArray loopObjects;
+    int contourSegmentCount = 0;
+    int curveSegmentCount = 0;
+    int matchedContourSegmentCount = 0;
+    int matchedCurveSegmentCount = 0;
+    int chordedCurveSegmentCount = 0;
+    int supportedCurveSegmentCount = 0;
+    double contourArc = 0.0;
+    double curveArc = 0.0;
+    double matchedContourArc = 0.0;
+    double matchedCurveArc = 0.0;
+    for (int loopIndex = 0; loopIndex < loops.size(); ++loopIndex) {
+        const PenContour contour = buildPenContour(loops[loopIndex].points);
+        QJsonObject loopObject;
+        loopObject.insert(QStringLiteral("index"), loopIndex);
+        loopObject.insert(
+            QStringLiteral("kind"),
+            loops[loopIndex].kind == PenLoopKind::Outer
+                ? QStringLiteral("outer") : QStringLiteral("cutout"));
+        if (!contour.valid()) {
+            loopObject.insert(QStringLiteral("error"), contour.error);
+            loopObjects.push_back(loopObject);
+            continue;
+        }
+
+        int loopCurveSegmentCount = 0;
+        int loopMatchedContourSegmentCount = 0;
+        int loopMatchedCurveSegmentCount = 0;
+        int loopPlacementCount = 0;
+        double loopContourArc = 0.0;
+        double loopCurveArc = 0.0;
+        double loopMatchedContourArc = 0.0;
+        double loopMatchedCurveArc = 0.0;
+        const PenCurveLoopDiagnostics loopDiagnostics =
+            loopIndex < result.curveLoopDiagnostics.size()
+            ? result.curveLoopDiagnostics[loopIndex]
+            : PenCurveLoopDiagnostics{};
+        for (const PenBoundarySegment &segment : contour.segments) {
+            const double arcLength = boundarySegmentLength(segment);
+
+            loopContourArc += arcLength;
+            if (segment.curved) {
+                loopCurveArc += arcLength;
+                ++loopCurveSegmentCount;
+            }
+        }
+        for (const PenPlacement &placement : result.placements) {
+            if (placement.boundaryLoopIndex != loopIndex
+                || placement.boundaryFitKind == PenBoundaryFitKind::None) {
+                continue;
+            }
+            ++loopPlacementCount;
+            loopMatchedContourSegmentCount +=
+                placement.exposedContourSegments;
+            loopMatchedCurveSegmentCount += placement.exposedCurveSegments;
+            loopMatchedContourArc += placement.exposedContourArc;
+            loopMatchedCurveArc += placement.exposedCurveArc;
+        }
+
+        loopObject.insert(
+            QStringLiteral("segmentCount"), contour.segments.size());
+        loopObject.insert(
+            QStringLiteral("curveSegmentCount"), loopCurveSegmentCount);
+        loopObject.insert(
+            QStringLiteral("matchedSegmentCount"),
+            loopMatchedContourSegmentCount);
+        loopObject.insert(
+            QStringLiteral("matchedCurveSegmentCount"),
+            loopMatchedCurveSegmentCount);
+        loopObject.insert(
+            QStringLiteral("unmatchedCurveSegmentCount"),
+            std::max(0, loopCurveSegmentCount - loopMatchedCurveSegmentCount));
+        loopObject.insert(
+            QStringLiteral("chordedCurveSegmentCount"),
+            loopDiagnostics.chordedCurveSegments);
+        loopObject.insert(
+            QStringLiteral("supportedCurveSegmentCount"),
+            loopDiagnostics.supportedCurveSegments);
+        loopObject.insert(
+            QStringLiteral("unaccountedCurveSegmentCount"),
+            std::max(
+                0, loopCurveSegmentCount - loopMatchedCurveSegmentCount
+                    - loopDiagnostics.chordedCurveSegments
+                    - loopDiagnostics.supportedCurveSegments));
+        loopObject.insert(
+            QStringLiteral("boundaryPlacementCount"), loopPlacementCount);
+        loopObject.insert(QStringLiteral("contourArc"), loopContourArc);
+        loopObject.insert(QStringLiteral("curveArc"), loopCurveArc);
+        loopObject.insert(
+            QStringLiteral("matchedContourArc"), loopMatchedContourArc);
+        loopObject.insert(
+            QStringLiteral("matchedCurveArc"), loopMatchedCurveArc);
+        loopObjects.push_back(loopObject);
+
+        contourSegmentCount += contour.segments.size();
+        curveSegmentCount += loopCurveSegmentCount;
+        matchedContourSegmentCount += loopMatchedContourSegmentCount;
+        matchedCurveSegmentCount += loopMatchedCurveSegmentCount;
+        chordedCurveSegmentCount += loopDiagnostics.chordedCurveSegments;
+        supportedCurveSegmentCount += loopDiagnostics.supportedCurveSegments;
+        contourArc += loopContourArc;
+        curveArc += loopCurveArc;
+        matchedContourArc += loopMatchedContourArc;
+        matchedCurveArc += loopMatchedCurveArc;
+    }
+    object.insert(QStringLiteral("segmentCount"), contourSegmentCount);
+    object.insert(QStringLiteral("curveSegmentCount"), curveSegmentCount);
+    object.insert(
+        QStringLiteral("matchedSegmentCount"), matchedContourSegmentCount);
+    object.insert(
+        QStringLiteral("matchedCurveSegmentCount"), matchedCurveSegmentCount);
+    object.insert(
+        QStringLiteral("unmatchedCurveSegmentCount"),
+        std::max(0, curveSegmentCount - matchedCurveSegmentCount));
+    object.insert(
+        QStringLiteral("chordedCurveSegmentCount"),
+        chordedCurveSegmentCount);
+    object.insert(
+        QStringLiteral("supportedCurveSegmentCount"),
+        supportedCurveSegmentCount);
+    object.insert(
+        QStringLiteral("unaccountedCurveSegmentCount"),
+        std::max(0, curveSegmentCount - matchedCurveSegmentCount
+                        - chordedCurveSegmentCount
+                        - supportedCurveSegmentCount));
+    object.insert(QStringLiteral("contourArc"), contourArc);
+    object.insert(QStringLiteral("curveArc"), curveArc);
+    object.insert(QStringLiteral("matchedContourArc"), matchedContourArc);
+    object.insert(QStringLiteral("matchedCurveArc"), matchedCurveArc);
+    object.insert(QStringLiteral("loops"), loopObjects);
+
+    return object;
+}
+
+QJsonObject measuredCoverageObject(
+    const PenFillRequest &request,
+    const PenFillResult &result,
+    const QVector<PenLoop> &loops) {
+    QJsonObject object;
+    const PenContour submittedContour = buildPenContour(
+        loops, std::max(kPenLogPolygonTolerance,
+                        request.boundaryTolerance * 0.25));
+    const QPainterPath target = request.targetPath.isEmpty()
+        ? submittedContour.path : request.targetPath;
+    if (target.isEmpty()) {
+        object.insert(QStringLiteral("valid"), false);
+        object.insert(QStringLiteral("error"),
+                      QStringLiteral("target path is unavailable"));
+        return object;
+    }
+
+    QHash<int, const PenPrimitive *> primitives;
+    for (const PenPrimitive &primitive : request.primitives) {
+        primitives.insert(primitive.shapeId, &primitive);
+    }
+    cover::Polygons coverageSubjects;
+    double placementAreaSum = 0.0;
+    for (const PenPlacement &placement : result.placements) {
+        const PenPrimitive *primitive = primitives.value(
+            placement.shapeId, nullptr);
+        if (primitive == nullptr) {
+            object.insert(QStringLiteral("valid"), false);
+            object.insert(
+                QStringLiteral("error"),
+                QStringLiteral("Primitive %1 is unavailable")
+                    .arg(placement.shapeId));
+            return object;
+        }
+        coverageSubjects += cover::polygonsFromPainterPath(
+            placement.transform.map(primitive->silhouette),
+            kPenLogPolygonTolerance);
+        placementAreaSum += placement.area;
+    }
+
+    const cover::Polygons targetPolygons = cover::polygonsFromPainterPath(
+        target, kPenLogPolygonTolerance);
+    const cover::Polygons coveragePolygons = cover::unionPolygons(
+        coverageSubjects);
+    const cover::Polygons coveredPolygons = cover::intersectionPolygons(
+        coveragePolygons, targetPolygons);
+    const cover::Polygons residualPolygons = cover::differencePolygons(
+        targetPolygons, coveragePolygons);
+    const cover::Polygons outsidePolygons = cover::differencePolygons(
+        coveragePolygons, targetPolygons);
+    const cover::Polygons unfilledPolygons = cover::polygonsFromPainterPath(
+        result.unfilled, kPenLogPolygonTolerance);
+    object.insert(QStringLiteral("valid"), true);
+    object.insert(
+        QStringLiteral("polygonTolerance"), kPenLogPolygonTolerance);
+    object.insert(
+        QStringLiteral("targetArea"), cover::polygonSetArea(targetPolygons));
+    object.insert(
+        QStringLiteral("coverageUnionArea"),
+        cover::polygonSetArea(coveragePolygons));
+    object.insert(
+        QStringLiteral("coveredArea"), cover::polygonSetArea(coveredPolygons));
+    object.insert(
+        QStringLiteral("residualArea"), cover::polygonSetArea(residualPolygons));
+    object.insert(
+        QStringLiteral("outsideArea"), cover::polygonSetArea(outsidePolygons));
+    object.insert(
+        QStringLiteral("unfilledPathArea"),
+        cover::polygonSetArea(unfilledPolygons));
+    object.insert(QStringLiteral("placementAreaSum"), placementAreaSum);
+
+    return object;
+}
 
 int stripRasterLayers(std::vector<std::unique_ptr<fls::scene::Layer>> &nodes) {
     int removed = 0;
@@ -211,6 +464,12 @@ void writePenFillLog(const PenFillRequest &request,
     resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
     resultObject.insert(QStringLiteral("timedOut"), result.timedOut);
     resultObject.insert(QStringLiteral("error"), result.error);
+    resultObject.insert(
+        QStringLiteral("measuredCoverage"),
+        measuredCoverageObject(request, result, requestLoops));
+    resultObject.insert(
+        QStringLiteral("curveOwnership"),
+        curveOwnershipObject(requestLoops, result));
     QJsonArray placements;
     for (const PenPlacement &placement :
          result.placements) {
@@ -220,6 +479,9 @@ void writePenFillLog(const PenFillRequest &request,
             placement.shapeId);
         placementObject.insert(
             QStringLiteral("coveredArea"),
+            placement.area);
+        placementObject.insert(
+            QStringLiteral("transformedArea"),
             placement.area);
         QJsonArray ownedFeatureIds;
         for (const int featureId :
@@ -233,6 +495,37 @@ void writePenFillLog(const PenFillRequest &request,
         placementObject.insert(
             QStringLiteral("exposedContourArc"),
             placement.exposedContourArc);
+        placementObject.insert(
+            QStringLiteral("exposedCurveArc"),
+            placement.exposedCurveArc);
+        placementObject.insert(
+            QStringLiteral("exposedContourSegments"),
+            placement.exposedContourSegments);
+        placementObject.insert(
+            QStringLiteral("exposedCurveSegments"),
+            placement.exposedCurveSegments);
+        placementObject.insert(
+            QStringLiteral("boundaryFitKind"),
+            boundaryFitKindName(placement.boundaryFitKind));
+        placementObject.insert(
+            QStringLiteral("boundaryLoopIndex"),
+            placement.boundaryLoopIndex);
+        placementObject.insert(
+            QStringLiteral("boundaryFirstSegment"),
+            placement.boundaryFirstSegment);
+        placementObject.insert(
+            QStringLiteral("boundaryLastSegment"),
+            placement.boundaryLastSegment);
+        if (placement.boundaryFitKind != PenBoundaryFitKind::None) {
+            placementObject.insert(
+                QStringLiteral("boundaryStart"),
+                QJsonArray{
+                    placement.boundaryStart.x(), placement.boundaryStart.y()});
+            placementObject.insert(
+                QStringLiteral("boundaryEnd"),
+                QJsonArray{
+                    placement.boundaryEnd.x(), placement.boundaryEnd.y()});
+        }
         placementObject.insert(
             QStringLiteral("transform"),
             QJsonArray{
@@ -854,7 +1147,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     const QString strategy = fillColor.has_value()
-        ? QStringLiteral("analytic-bucket-hybrid-quadratic-rdp")
+        ? QStringLiteral("analytic-bucket-windowed-hybrid-quadratic-rdp")
         : QStringLiteral("analytic-pen");
     startGeneratedFillTask([request = std::move(request), strategy](
                                const std::function<bool()> &cancelled,
