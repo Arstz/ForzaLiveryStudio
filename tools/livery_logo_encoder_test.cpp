@@ -864,7 +864,7 @@ bool testDefaultCarColorRoundTrip() {
         qCritical() << "default car color was not stored as opaque BGRA";
         return false;
     }
-    for (quint64 hash : fls::material_hashes::binding::kLiveryMaterials) {
+    for (quint64 hash : fls::material_hashes::binding::kDefaultCarPaintGroups) {
         const fls::LiveryPaintMaterial *paint = project.liveryPaint.find(hash);
         if (paint == nullptr || !paint->primary.enabled
             || paint->primary.bgra != expected
@@ -882,12 +882,37 @@ bool testDefaultCarColorRoundTrip() {
         return false;
     }
 
-    const quint64 wheelHash = fls::material_hashes::binding::kFrontWheelPaint[1];
-    const std::array<quint8, 4> wheelPrimary = {0x12, 0x34, 0x56, 0xff};
-    const std::array<quint8, 4> wheelSecondary = {0x65, 0x43, 0x21, 0xff};
-    project.liveryPaint.setColorBgra(wheelHash, false, wheelPrimary);
-    project.liveryPaint.setColorBgra(wheelHash, true, wheelSecondary);
-    project.liveryPaint.ensure(wheelHash).finish = 50;
+    const std::array<quint8, 4> frontWheelPrimary = {0x12, 0x34, 0x56, 0xff};
+    const std::array<quint8, 4> frontWheelSecondary = {0x65, 0x43, 0x21, 0xff};
+    const std::array<quint8, 4> rearWheelPrimary = {0x09, 0x18, 0x27, 0xff};
+    for (quint64 hash : fls::material_hashes::binding::kFrontWheelPaint) {
+        project.liveryPaint.setColorBgra(hash, false, frontWheelPrimary);
+        project.liveryPaint.setColorBgra(hash, true, frontWheelSecondary);
+        project.liveryPaint.ensure(hash).finish = 50;
+    }
+    for (quint64 hash : fls::material_hashes::binding::kRearWheelPaint) {
+        project.liveryPaint.setColorBgra(hash, false, rearWheelPrimary);
+        project.liveryPaint.ensure(hash).finish = 4;
+    }
+    const auto hasAxlePaint = [&](const fls::LiveryPaintState &paintState) {
+        for (quint64 hash : fls::material_hashes::binding::kFrontWheelPaint) {
+            const fls::LiveryPaintMaterial *paint = paintState.find(hash);
+            if (paint == nullptr || paint->primary.bgra != frontWheelPrimary
+                || !paint->secondary.enabled
+                || paint->secondary.bgra != frontWheelSecondary
+                || paint->finish != 50) {
+                return false;
+            }
+        }
+        for (quint64 hash : fls::material_hashes::binding::kRearWheelPaint) {
+            const fls::LiveryPaintMaterial *paint = paintState.find(hash);
+            if (paint == nullptr || paint->primary.bgra != rearWheelPrimary
+                || paint->secondary.enabled || paint->finish != 4) {
+                return false;
+            }
+        }
+        return true;
+    };
     if (project.liveryPaint.find(unrelated.materialHash) == nullptr
         || *project.liveryPaint.find(unrelated.materialHash) != unrelated) {
         qCritical() << "default car color changed an unrelated paint binding";
@@ -900,18 +925,14 @@ bool testDefaultCarColorRoundTrip() {
         qCritical() << "project document lost the selected car color";
         return false;
     }
-    const fls::LiveryPaintMaterial *reopenedWheel = reopened.liveryPaint.find(wheelHash);
-    if (reopenedWheel == nullptr || reopenedWheel->primary.bgra != wheelPrimary
-        || !reopenedWheel->secondary.enabled
-        || reopenedWheel->secondary.bgra != wheelSecondary
-        || reopenedWheel->finish != 50) {
-        qCritical() << "project document lost regional two-tone paint";
+    if (!hasAxlePaint(reopened.liveryPaint)) {
+        qCritical() << "project document lost independent axle paint";
         return false;
     }
 
     const fls::LiveryPayload exported = fls::parseInflatedLiveryPayload(
         fls::encodeCLiveryPayload(reopened));
-    for (quint64 hash : fls::material_hashes::binding::kLiveryMaterials) {
+    for (quint64 hash : fls::material_hashes::binding::kDefaultCarPaintGroups) {
         const fls::LiveryPaintMaterial *paint = exported.paint.find(hash);
         if (paint == nullptr || !paint->primary.enabled
             || paint->primary.bgra != expected
@@ -921,12 +942,51 @@ bool testDefaultCarColorRoundTrip() {
             return false;
         }
     }
-    const fls::LiveryPaintMaterial *exportedWheel = exported.paint.find(wheelHash);
-    if (exportedWheel == nullptr || exportedWheel->primary.bgra != wheelPrimary
-        || !exportedWheel->secondary.enabled
-        || exportedWheel->secondary.bgra != wheelSecondary
-        || exportedWheel->finish != 50) {
-        qCritical() << "C_livery export lost regional two-tone paint";
+    if (!hasAxlePaint(exported.paint)) {
+        qCritical() << "C_livery export lost independent axle paint";
+        return false;
+    }
+
+    fls::Project legacyRimProject = makeEncoderProject();
+    const std::array<quint8, 4> legacyRimColor = {0x30, 0x2e, 0x2e, 0xff};
+    legacyRimProject.liveryPaint.setColorBgra(
+        fls::material_hashes::binding::kRims, false, legacyRimColor);
+    legacyRimProject.liveryPaint.ensure(
+        fls::material_hashes::binding::kRims).finish = 4;
+    const fls::LiveryPaintState migratedPaint = fls::parseInflatedLiveryPayload(
+        fls::encodeCLiveryPayload(legacyRimProject)).paint;
+    const auto migratedAxle = [&](const auto &hashes) {
+        for (quint64 hash : hashes) {
+            const fls::LiveryPaintMaterial *paint = migratedPaint.find(hash);
+            if (paint == nullptr || !paint->primary.enabled
+                || paint->primary.bgra != legacyRimColor || paint->finish != 4) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!migratedAxle(fls::material_hashes::binding::kFrontWheelPaint)
+        || !migratedAxle(fls::material_hashes::binding::kRearWheelPaint)) {
+        qCritical() << "C_livery export did not migrate legacy generic rim paint";
+        return false;
+    }
+
+    fls::Project defaultFinishProject = makeEncoderProject();
+    defaultFinishProject.liveryPaint.setColorBgra(
+        fls::material_hashes::binding::kBodyPaint, false, expected);
+    defaultFinishProject.liveryPaint.setColorBgra(
+        fls::material_hashes::binding::kWindowGlass, false, expected);
+    defaultFinishProject.liveryPaint.ensure(
+        fls::material_hashes::binding::kWindowGlass).finish = 3;
+    const fls::LiveryPaintState defaultFinishPaint = fls::parseInflatedLiveryPayload(
+        fls::encodeCLiveryPayload(defaultFinishProject)).paint;
+    const fls::LiveryPaintMaterial *defaultGloss = defaultFinishPaint.find(
+        fls::material_hashes::binding::kBodyPaint);
+    const fls::LiveryPaintMaterial *finishlessWindow = defaultFinishPaint.find(
+        fls::material_hashes::binding::kWindowGlass);
+    if (defaultGloss == nullptr || defaultGloss->finish != 1
+        || finishlessWindow == nullptr || finishlessWindow->finish != 0) {
+        qCritical() << "default gloss or finishless window export was incorrect";
         return false;
     }
     return true;

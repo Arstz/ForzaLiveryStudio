@@ -70,6 +70,7 @@ private:
         bool applyLivery = false;
         bool hasDirectLiveryUv = false;
         bool bodyPaint = false;
+        bool windowGlass = false;
         int allowedSides = 0;
         bool translucent = false;
         bool doubleSided = false;

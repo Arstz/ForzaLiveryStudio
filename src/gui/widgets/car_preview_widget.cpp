@@ -504,21 +504,32 @@ QVector<PaintRegion> paintRegions(const fls::CarModel &model, int lodIndex) {
     const QVector<quint64> sharedRims = modelSharedWheelPaintHashes(model, lodIndex);
     const QVector<quint64> frontRims = paintHashVector(kFrontWheelPaint);
     const QVector<quint64> rearRims = paintHashVector(kRearWheelPaint);
-    QVector<quint64> allRims = sharedRims;
-    appendUniqueHashes(allRims, frontRims);
+    // Forza saves the visible wheel colors in the axle-specific records. Put
+    // those first so an imported in-game color wins over stale generic rim
+    // records retained from an earlier editor export.
+    QVector<quint64> allRims = frontRims;
     appendUniqueHashes(allRims, rearRims);
+    appendUniqueHashes(allRims, sharedRims);
 
     return {
-        {QStringLiteral("Body"), {kBodyPaint}},
-        {QStringLiteral("Hood"), {kHoodPaint}},
-        {QStringLiteral("Mirrors"), {kMirrorPaint}},
-        {QStringLiteral("Wing"), {kSpoilerPaint}},
+        {QStringLiteral("Body"), paintHashVector(kBodyPaintGroups)},
+        {QStringLiteral("Hood"), paintHashVector(kHoodPaintGroups)},
+        {QStringLiteral("Mirrors"), paintHashVector(kMirrorPaintGroups)},
+        {QStringLiteral("Wing"), paintHashVector(kWingPaintGroups)},
         {QStringLiteral("Brakes"), {kBrakeCaliper}},
         {QStringLiteral("Rims"), allRims},
         {QStringLiteral("Front Rims"), frontRims, sharedRims},
         {QStringLiteral("Rear Rims"), rearRims, sharedRims},
         {QStringLiteral("Windows"), {kWindowGlass}},
     };
+}
+
+QVector<quint64> bodyChildPaintHashes() {
+    using namespace fls::material_hashes::binding;
+    QVector<quint64> hashes = paintHashVector(kHoodPaintGroups);
+    appendUniqueHashes(hashes, paintHashVector(kMirrorPaintGroups));
+    appendUniqueHashes(hashes, paintHashVector(kWingPaintGroups));
+    return hashes;
 }
 
 QString partTypeDisplayName(int partType) {
@@ -1657,10 +1668,9 @@ void CarPreviewWidget::chooseRegionColor(
     const QVector<quint64> editHashes = effectivePaintHashes(materialHashes);
     state_->beginProjectEdit();
     if (bodyRegion && !secondary && !overrideBodyChildPaint_) {
-        using namespace fls::material_hashes::binding;
         // Unpainted body-type meshes inherit the body's fallback color. Materialize their
         // current color before changing Body so an isolated body edit does not recolor them.
-        for (quint64 childHash : {kHoodPaint, kMirrorPaint, kSpoilerPaint}) {
+        for (quint64 childHash : bodyChildPaintHashes()) {
             const fls::LiveryPaintMaterial *child =
                 project_->liveryPaint.find(childHash);
             if (child != nullptr && child->primary.enabled) {
@@ -1673,6 +1683,10 @@ void CarPreviewWidget::chooseRegionColor(
     for (quint64 materialHash : editHashes) {
         project_->liveryPaint.setColorBgra(
             materialHash, secondary, opaqueBgra(selected));
+        if (materialHash != fls::material_hashes::binding::kWindowGlass
+            && project_->liveryPaint.ensure(materialHash).finish == 0) {
+            project_->liveryPaint.ensure(materialHash).finish = 1;
+        }
     }
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
@@ -1719,11 +1733,7 @@ QVector<quint64> CarPreviewWidget::effectivePaintHashes(
     if (!overrideBodyChildPaint_ || !result.contains(kBodyPaint)) {
         return result;
     }
-    for (quint64 childHash : {kHoodPaint, kMirrorPaint, kSpoilerPaint}) {
-        if (!result.contains(childHash)) {
-            result.push_back(childHash);
-        }
-    }
+    appendUniqueHashes(result, bodyChildPaintHashes());
     return result;
 }
 
@@ -1803,9 +1813,11 @@ void CarPreviewWidget::rebuildColorsPanel() {
     for (const PaintRegion &paintRegion : paintRegions(model_, selectedLodIndex_)) {
         const bool bodyRegion = paintRegion.materialHashes.contains(
             fls::material_hashes::binding::kBodyPaint);
+        const bool windowRegion = paintRegion.materialHashes.contains(
+            fls::material_hashes::binding::kWindowGlass);
         QColor primary = bodyRegion ? basePaint_ : defaultPreviewCarColor();
         QColor secondary = primary;
-        int currentFinish = 0;
+        int currentFinish = 1;
         bool finishFound = false;
         bool colorFound = false;
         QVector<quint64> displayHashes = paintRegion.materialHashes;
@@ -1862,16 +1874,18 @@ void CarPreviewWidget::rebuildColorsPanel() {
         colorsLayout_->addWidget(primaryButton);
         colorsLayout_->addWidget(secondaryButton);
 
-        auto *materialCombo = new NoWheelComboBox(colorsPage_);
-        materialCombo->addItem(QStringLiteral("Gloss"), 1);
-        materialCombo->addItem(QStringLiteral("Semigloss"), 2);
-        materialCombo->addItem(QStringLiteral("Metallic"), 4);
-        materialCombo->addItem(QStringLiteral("Matte"), 3);
-        const int materialIndex = materialCombo->findData(currentFinish);
-        materialCombo->setCurrentIndex(materialIndex);
-        materialCombo->setPlaceholderText(QStringLiteral("Material"));
-        materialCombo->setToolTip(QStringLiteral("Paint material finish"));
-        colorsLayout_->addWidget(materialCombo);
+        NoWheelComboBox *materialCombo = nullptr;
+        if (!windowRegion) {
+            materialCombo = new NoWheelComboBox(colorsPage_);
+            materialCombo->addItem(QStringLiteral("Gloss"), 1);
+            materialCombo->addItem(QStringLiteral("Semigloss"), 2);
+            materialCombo->addItem(QStringLiteral("Metallic"), 4);
+            materialCombo->addItem(QStringLiteral("Matte"), 3);
+            const int materialIndex = materialCombo->findData(currentFinish);
+            materialCombo->setCurrentIndex(materialIndex >= 0 ? materialIndex : 0);
+            materialCombo->setToolTip(QStringLiteral("Paint material finish"));
+            colorsLayout_->addWidget(materialCombo);
+        }
 
         connect(primaryButton, &QPushButton::clicked, this,
                 [this, hashes = paintRegion.materialHashes,
@@ -1887,16 +1901,18 @@ void CarPreviewWidget::rebuildColorsPanel() {
                         chooseRegionColor(hashes, true, fallbackHashes);
                     });
                 });
-        connect(materialCombo, qOverload<int>(&QComboBox::activated), this,
-                [this, materialCombo, hashes = paintRegion.materialHashes](int index) {
-                    if (index < 0) {
-                        return;
-                    }
-                    const quint32 finish = materialCombo->itemData(index).toUInt();
-                    QTimer::singleShot(0, this, [this, hashes, finish]() {
-                        chooseRegionFinish(hashes, finish);
+        if (materialCombo != nullptr) {
+            connect(materialCombo, qOverload<int>(&QComboBox::activated), this,
+                    [this, materialCombo, hashes = paintRegion.materialHashes](int index) {
+                        if (index < 0) {
+                            return;
+                        }
+                        const quint32 finish = materialCombo->itemData(index).toUInt();
+                        QTimer::singleShot(0, this, [this, hashes, finish]() {
+                            chooseRegionFinish(hashes, finish);
+                        });
                     });
-                });
+        }
     }
     colorsLayout_->addStretch(1);
 }

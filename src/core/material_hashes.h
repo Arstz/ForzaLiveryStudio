@@ -27,6 +27,29 @@ inline constexpr quint64 kRimsInner = 0xA11BBB5668440C18ULL;
 inline constexpr quint64 kRimsLip = 0xC3F4EEFF7A11DBCDULL;
 inline constexpr quint64 kWheel1 = 0xE20AAE21D70536F7ULL;
 inline constexpr quint64 kWheel2 = 0xE20AAF21D70538AAULL;
+inline constexpr quint64 kBodySecondaryPaint = 0x48E5B27611922B17ULL;
+inline constexpr quint64 kHoodSecondaryPaint = 0x4FD95FB5F29A1C11ULL;
+inline constexpr quint64 kMirrorSecondaryPaint = 0x115F3B8D0531FAE2ULL;
+inline constexpr quint64 kWingSecondaryPaint = 0x06506BFF10D8BBBAULL;
+inline constexpr quint64 kBodyTertiaryPaint = 0x496F92FA5A6AAA57ULL;
+inline constexpr quint64 kHoodTertiaryPaint = 0x78D434B9676BAFE1ULL;
+inline constexpr quint64 kMirrorTertiaryPaint = 0x23E6ED8FEF16F8E0ULL;
+inline constexpr quint64 kWingTertiaryPaint = 0x9A883D636B6F3798ULL;
+inline constexpr quint64 kTrim1 = 0xE3AEF60D5E234B88ULL;
+inline constexpr quint64 kTrim2 = 0xE3AEF90D5E2350A1ULL;
+inline constexpr quint64 kOverride1 = 0xBF98CB3AA93337A4ULL;
+inline constexpr quint64 kOverride2 = 0xBF98CE3AA9333CBDULL;
+inline constexpr quint64 kOverride3 = 0xBF98CD3AA9333B0AULL;
+inline constexpr quint64 kOverride4 = 0xBF98C83AA933328BULL;
+inline constexpr quint64 kOverride5 = 0xBF98C73AA93330D8ULL;
+inline constexpr quint64 kOverride6 = 0xBF98CA3AA93335F1ULL;
+inline constexpr quint64 kOverride7 = 0xBF98C93AA933343EULL;
+inline constexpr quint64 kOverride8 = 0xBF98C43AA9332BBFULL;
+inline constexpr quint64 kOverride9 = 0xBF98C33AA9332A0CULL;
+inline constexpr quint64 kWingEndPlates = 0xBCEA13C28AA26965ULL;
+inline constexpr quint64 kWingPlane = 0x6E3810972EA4DBF4ULL;
+inline constexpr quint64 kWingStruts = 0xB0C163FF8ADE48FDULL;
+inline constexpr quint64 kTowHook = 0x471A5FA481625396ULL;
 
 inline constexpr std::array<quint64, 7> kWheelPaintGroups = {
     kRims,
@@ -38,30 +61,96 @@ inline constexpr std::array<quint64, 7> kWheelPaintGroups = {
     kWheel2,
 };
 
-inline constexpr std::array<quint64, 7> kLiveryMaterials = {
+inline constexpr std::array<quint64, 15> kBodyPaintGroups = {
     kBodyPaint,
+    kBodySecondaryPaint,
+    kBodyTertiaryPaint,
+    kTrim1,
+    kTrim2,
+    kOverride1,
+    kOverride2,
+    kOverride3,
+    kOverride4,
+    kOverride5,
+    kOverride6,
+    kOverride7,
+    kOverride8,
+    kOverride9,
+    kTowHook,
+};
+
+inline constexpr std::array<quint64, 3> kHoodPaintGroups = {
     kHoodPaint,
+    kHoodSecondaryPaint,
+    kHoodTertiaryPaint,
+};
+
+inline constexpr std::array<quint64, 3> kMirrorPaintGroups = {
     kMirrorPaint,
+    kMirrorSecondaryPaint,
+    kMirrorTertiaryPaint,
+};
+
+inline constexpr std::array<quint64, 6> kWingPaintGroups = {
     kSpoilerPaint,
-    0xBCEA13C28AA26965ULL,
-    0xB963C2391A4EB883ULL,
-    0x4A7FF0B38CA8F1A0ULL,
+    kWingSecondaryPaint,
+    kWingTertiaryPaint,
+    kWingEndPlates,
+    kWingPlane,
+    kWingStruts,
 };
 
-inline constexpr std::array<quint64, 11> kLiveryPanels = {
-    0x4FF3746D9B055F1DULL,
-    0xE00E033E6A20B977ULL,
-    0xE00E023E6A20B7C4ULL,
-    0xE00E053E6A20BCDDULL,
-    0xE00E043E6A20BB2AULL,
-    0xE00DFF3E6A20B2ABULL,
-    0xE00DFE3E6A20B0F8ULL,
-    0xE00E013E6A20B611ULL,
-    0xE00E003E6A20B45EULL,
-    0xE00DFB3E6A20ABDFULL,
-    0xE00DFA3E6A20AA2CULL,
+inline constexpr std::array<quint64, 2> kTrimPaintGroups = {
+    kTrim1,
+    kTrim2,
 };
 
+inline constexpr std::array<quint64, 9> kOverridePaintGroups = {
+    kOverride1,
+    kOverride2,
+    kOverride3,
+    kOverride4,
+    kOverride5,
+    kOverride6,
+    kOverride7,
+    kOverride8,
+    kOverride9,
+};
+
+// Bindings that follow the vehicle's body color. Wheels, brakes, and glass are
+// intentionally excluded because they have independent paint controls.
+inline constexpr std::array<quint64, 27> kDefaultCarPaintGroups = {
+    kBodyPaint,
+    kBodySecondaryPaint,
+    kBodyTertiaryPaint,
+    kTrim1,
+    kTrim2,
+    kOverride1,
+    kOverride2,
+    kOverride3,
+    kOverride4,
+    kOverride5,
+    kOverride6,
+    kOverride7,
+    kOverride8,
+    kOverride9,
+    kTowHook,
+    kHoodPaint,
+    kHoodSecondaryPaint,
+    kHoodTertiaryPaint,
+    kMirrorPaint,
+    kMirrorSecondaryPaint,
+    kMirrorTertiaryPaint,
+    kSpoilerPaint,
+    kWingSecondaryPaint,
+    kWingTertiaryPaint,
+    kWingEndPlates,
+    kWingPlane,
+    kWingStruts,
+};
+
+// Each axle has five paint channels used by Forza's wheel paint UI. These are
+// separate from the generic Rims/Wheel1/Wheel2 material bindings above.
 inline constexpr std::array<quint64, 5> kFrontWheelPaint = {
     0xB8925E450764DE78ULL,
     0x15EDB6869EFC7F22ULL,
@@ -76,6 +165,69 @@ inline constexpr std::array<quint64, 5> kRearWheelPaint = {
     0xC338EA21477FD950ULL,
     0x0F1580E714EA9063ULL,
     0x874E9585EAB6EF64ULL,
+};
+
+inline constexpr std::array<quint64, 46> kLiveryMaterials = {
+    kBodyPaint,
+    kHoodPaint,
+    kMirrorPaint,
+    kSpoilerPaint,
+    kBrakeCaliper,
+    kRims,
+    kWindowGlass,
+    kBodySecondaryPaint,
+    kHoodSecondaryPaint,
+    kMirrorSecondaryPaint,
+    kWingSecondaryPaint,
+    kBodyTertiaryPaint,
+    kHoodTertiaryPaint,
+    kMirrorTertiaryPaint,
+    kWingTertiaryPaint,
+    kTrim1,
+    kTrim2,
+    kWheel1,
+    kWheel2,
+    kOverride1,
+    kOverride2,
+    kOverride3,
+    kOverride4,
+    kOverride5,
+    kOverride6,
+    kOverride7,
+    kOverride8,
+    kOverride9,
+    kRims2,
+    kRims3,
+    kRimsInner,
+    kRimsLip,
+    kWingEndPlates,
+    kWingPlane,
+    kWingStruts,
+    kTowHook,
+    kFrontWheelPaint[0],
+    kFrontWheelPaint[1],
+    kFrontWheelPaint[2],
+    kFrontWheelPaint[3],
+    kFrontWheelPaint[4],
+    kRearWheelPaint[0],
+    kRearWheelPaint[1],
+    kRearWheelPaint[2],
+    kRearWheelPaint[3],
+    kRearWheelPaint[4],
+};
+
+inline constexpr std::array<quint64, 11> kLiveryPanels = {
+    0x4FF3746D9B055F1DULL,
+    0xE00E033E6A20B977ULL,
+    0xE00E023E6A20B7C4ULL,
+    0xE00E053E6A20BCDDULL,
+    0xE00E043E6A20BB2AULL,
+    0xE00DFF3E6A20B2ABULL,
+    0xE00DFE3E6A20B0F8ULL,
+    0xE00E013E6A20B611ULL,
+    0xE00E003E6A20B45EULL,
+    0xE00DFB3E6A20ABDFULL,
+    0xE00DFA3E6A20AA2CULL,
 };
 
 } // namespace binding
