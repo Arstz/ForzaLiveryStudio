@@ -11,18 +11,22 @@
 
 #include <QCoreApplication>
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QColorDialog>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
-#include <QMenu>
 #include <QPainter>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QStackedWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -38,6 +42,16 @@ constexpr int kLiveryBaseTexWidth = 2048;
 constexpr int kLiveryBaseTexHeight = 1024;
 constexpr int kLiverySectionMaskSlots[fls::kLiverySideCount] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+};
+
+class NoWheelComboBox final : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+
+protected:
+    void wheelEvent(QWheelEvent *event) override {
+        event->ignore();
+    }
 };
 
 bool transposedSection(int maskSlot) {
@@ -400,26 +414,24 @@ QIcon carColorSwatchIcon(const QColor &color) {
 struct PaintRegion {
     QString name;
     QVector<quint64> materialHashes;
+    QVector<quint64> fallbackHashes;
 };
 
-QVector<quint64> fallbackWheelPaintHashes(bool front, bool rear) {
-    QVector<quint64> hashes;
-    if (front && rear) {
-        for (quint64 materialHash : fls::material_hashes::binding::kWheelPaintGroups) {
-            hashes.push_back(materialHash);
+void appendUniqueHashes(QVector<quint64> &target, const QVector<quint64> &source) {
+    for (quint64 hash : source) {
+        if (!target.contains(hash)) {
+            target.push_back(hash);
         }
     }
-    if (front) {
-        for (quint64 materialHash : fls::material_hashes::binding::kFrontWheelPaint) {
-            hashes.push_back(materialHash);
-        }
-    }
-    if (rear) {
-        for (quint64 materialHash : fls::material_hashes::binding::kRearWheelPaint) {
-            hashes.push_back(materialHash);
-        }
-    }
+}
 
+template <size_t Size>
+QVector<quint64> paintHashVector(const std::array<quint64, Size> &source) {
+    QVector<quint64> hashes;
+    hashes.reserve(static_cast<qsizetype>(Size));
+    for (quint64 hash : source) {
+        hashes.push_back(hash);
+    }
     return hashes;
 }
 
@@ -455,27 +467,9 @@ bool isWheelPaintMesh(const fls::CarMesh &mesh) {
         || material == QStringLiteral("detail2");
 }
 
-bool isFrontWheelPaintMesh(const fls::CarMesh &mesh) {
+QVector<quint64> modelSharedWheelPaintHashes(
+    const fls::CarModel &model, int lodIndex) {
     using namespace fls::material_hashes::binding;
-    if (fls::material_hashes::contains(kFrontWheelPaint, mesh.paintMaterialHash)) {
-        return true;
-    }
-    if (fls::material_hashes::contains(kRearWheelPaint, mesh.paintMaterialHash)) {
-        return false;
-    }
-    if (mesh.positions.empty()) {
-        return false;
-    }
-    double z = 0.0;
-    for (const fls::ModelVec3 &position : mesh.positions) {
-        z += mesh.boneTransform.transformPoint(position).z;
-    }
-
-    return z / static_cast<double>(mesh.positions.size()) >= 0.0;
-}
-
-QVector<quint64> modelWheelPaintHashes(
-    const fls::CarModel &model, int lodIndex, bool front, bool rear) {
     QVector<quint64> hashes;
     QSet<quint64> seen;
     const auto appendMeshes = [&](const std::vector<fls::CarMesh> &meshes) {
@@ -483,8 +477,11 @@ QVector<quint64> modelWheelPaintHashes(
             if (!isWheelPaintMesh(mesh) || mesh.paintMaterialHash == 0) {
                 continue;
             }
-            const bool meshFront = isFrontWheelPaintMesh(mesh);
-            if ((meshFront ? front : rear) && !seen.contains(mesh.paintMaterialHash)) {
+            if (fls::material_hashes::contains(kFrontWheelPaint, mesh.paintMaterialHash)
+                || fls::material_hashes::contains(kRearWheelPaint, mesh.paintMaterialHash)) {
+                continue;
+            }
+            if (!seen.contains(mesh.paintMaterialHash)) {
                 seen.insert(mesh.paintMaterialHash);
                 hashes.push_back(mesh.paintMaterialHash);
             }
@@ -492,7 +489,7 @@ QVector<quint64> modelWheelPaintHashes(
     };
     appendMeshes(model.meshesForLod(lodIndex));
     appendMeshes(model.variantMeshesForLod(lodIndex));
-    for (quint64 materialHash : fallbackWheelPaintHashes(front, rear)) {
+    for (quint64 materialHash : kWheelPaintGroups) {
         if (!seen.contains(materialHash)) {
             seen.insert(materialHash);
             hashes.push_back(materialHash);
@@ -504,17 +501,23 @@ QVector<quint64> modelWheelPaintHashes(
 
 QVector<PaintRegion> paintRegions(const fls::CarModel &model, int lodIndex) {
     using namespace fls::material_hashes::binding;
+    const QVector<quint64> sharedRims = modelSharedWheelPaintHashes(model, lodIndex);
+    const QVector<quint64> frontRims = paintHashVector(kFrontWheelPaint);
+    const QVector<quint64> rearRims = paintHashVector(kRearWheelPaint);
+    QVector<quint64> allRims = sharedRims;
+    appendUniqueHashes(allRims, frontRims);
+    appendUniqueHashes(allRims, rearRims);
 
     return {
+        {QStringLiteral("Body"), {kBodyPaint}},
+        {QStringLiteral("Hood"), {kHoodPaint}},
+        {QStringLiteral("Mirrors"), {kMirrorPaint}},
         {QStringLiteral("Wing"), {kSpoilerPaint}},
         {QStringLiteral("Brakes"), {kBrakeCaliper}},
-        {QStringLiteral("Hood"), {kHoodPaint}},
-        {QStringLiteral("Rims"), modelWheelPaintHashes(model, lodIndex, true, true)},
-        {QStringLiteral("Rear Rims"), modelWheelPaintHashes(model, lodIndex, false, true)},
-        {QStringLiteral("Front Rims"), modelWheelPaintHashes(model, lodIndex, true, false)},
-        {QStringLiteral("Body"), {kBodyPaint}},
+        {QStringLiteral("Rims"), allRims},
+        {QStringLiteral("Front Rims"), frontRims, sharedRims},
+        {QStringLiteral("Rear Rims"), rearRims, sharedRims},
         {QStringLiteral("Windows"), {kWindowGlass}},
-        {QStringLiteral("Mirrors"), {kMirrorPaint}},
     };
 }
 
@@ -1254,70 +1257,133 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     referenceNote_->adjustSize();
     referenceNote_->raise();
 
-    lodButton_ = new QToolButton(this);
-    lodButton_->setFocusPolicy(Qt::NoFocus);
-    lodButton_->setToolTip(QStringLiteral("Cycle rendered model detail level"));
-    connect(lodButton_, &QToolButton::clicked, this, &CarPreviewWidget::cycleLod);
-
-    partsButton_ = new QToolButton(this);
-    partsButton_->setText(QStringLiteral("Parts"));
-    partsButton_->setCheckable(true);
-    partsButton_->setFocusPolicy(Qt::NoFocus);
-    partsButton_->setToolTip(QStringLiteral("Choose installed body-part models"));
-    partsButton_->setEnabled(false);
-
-    carColorButton_ = new QToolButton(this);
-    carColorButton_->setText(QStringLiteral("Colors"));
-    carColorButton_->setFocusPolicy(Qt::NoFocus);
-    carColorButton_->setToolTip(QStringLiteral("Edit car paint colors by material region"));
-    carColorButton_->setEnabled(false);
-    carColorButton_->setPopupMode(QToolButton::InstantPopup);
-    carColorMenu_ = new QMenu(carColorButton_);
-    carColorButton_->setMenu(carColorMenu_);
-    connect(carColorMenu_, &QMenu::aboutToShow,
-            this, &CarPreviewWidget::rebuildCarColorMenu);
-
-    partsPanel_ = new QFrame(this);
-    partsPanel_->setObjectName(QStringLiteral("carPartsPanel"));
-    partsPanel_->setStyleSheet(QStringLiteral(
-        "QFrame#carPartsPanel {"
-        " background: rgba(24, 25, 29, 238);"
-        " border: 1px solid rgba(255, 255, 255, 38);"
-        " border-radius: 5px;"
+    sidePanel_ = new QFrame(this);
+    sidePanel_->setObjectName(QStringLiteral("previewSidePanel"));
+    sidePanel_->setAttribute(Qt::WA_StyledBackground, true);
+    sidePanel_->setStyleSheet(QStringLiteral(
+        "QFrame#previewSidePanel {"
+        " background: rgba(24, 25, 29, 246);"
+        " border-left: 1px solid rgba(255, 255, 255, 42);"
+        "}"
+        "QWidget#previewCategoryBar {"
+        " background: rgba(14, 15, 18, 150);"
+        " border-bottom: 1px solid rgba(255, 255, 255, 30);"
+        "}"
+        "QToolButton#previewCategoryButton {"
+        " color: rgba(225, 226, 230, 185);"
+        " background: transparent;"
+        " border: 0;"
+        " border-bottom: 2px solid transparent;"
+        " padding: 10px 3px 8px 3px;"
+        " font-size: 10px;"
+        " font-weight: 600;"
+        "}"
+        "QToolButton#previewCategoryButton:hover {"
+        " color: rgb(245, 246, 248);"
+        " background: rgba(255, 255, 255, 12);"
+        "}"
+        "QToolButton#previewCategoryButton:checked {"
+        " color: rgb(245, 246, 248);"
+        " border-bottom-color: rgb(88, 157, 235);"
         "}"
         "QLabel { color: rgb(235, 236, 240); }"
-        "QRadioButton { color: rgb(225, 226, 230); padding: 2px 0; }"));
-    auto *panelLayout = new QVBoxLayout(partsPanel_);
-    panelLayout->setContentsMargins(10, 9, 8, 9);
-    panelLayout->setSpacing(6);
-    auto *title = new QLabel(QStringLiteral("Body Parts"), partsPanel_);
-    QFont titleFont = title->font();
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    panelLayout->addWidget(title);
+        "QLabel[secondary=\"true\"] { color: rgba(220, 222, 228, 155); }"
+        "QCheckBox { color: rgb(225, 226, 230); padding: 3px 0; }"
+        "QRadioButton { color: rgb(225, 226, 230); padding: 3px 0; }"
+        "QPushButton { text-align: left; padding: 5px 7px; }"
+        "QPushButton#previewClearPaint {"
+        " color: rgba(230, 232, 236, 190);"
+        " background: transparent;"
+        " border: 1px solid rgba(255, 255, 255, 42);"
+        " border-radius: 3px;"
+        " padding: 3px 9px;"
+        " text-align: center;"
+        "}"
+        "QPushButton#previewClearPaint:hover {"
+        " color: rgb(245, 246, 248);"
+        " background: rgba(255, 255, 255, 14);"
+        "}"
+        "QComboBox { padding: 5px 7px; }"
+        "QScrollArea { background: transparent; border: 0; }"
+        "QScrollArea > QWidget > QWidget { background: transparent; }"));
 
-    auto *scroll = new QScrollArea(partsPanel_);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; }"));
-    auto *optionsWidget = new QWidget(scroll);
-    optionsWidget->setStyleSheet(QStringLiteral("background: transparent;"));
-    partsOptionsLayout_ = new QVBoxLayout(optionsWidget);
-    partsOptionsLayout_->setContentsMargins(0, 0, 2, 0);
-    partsOptionsLayout_->setSpacing(4);
-    scroll->setWidget(optionsWidget);
-    panelLayout->addWidget(scroll, 1);
-    partsPanel_->hide();
+    auto *panelLayout = new QVBoxLayout(sidePanel_);
+    panelLayout->setContentsMargins(0, 0, 0, 0);
+    panelLayout->setSpacing(0);
 
-    connect(partsButton_, &QToolButton::toggled, this, [this](bool visible) {
-        partsPanel_->setVisible(visible && partsButton_->isEnabled());
-        if (partsPanel_->isVisible()) {
-            partsPanel_->raise();
-        }
+    auto *categoryBar = new QWidget(sidePanel_);
+    categoryBar->setObjectName(QStringLiteral("previewCategoryBar"));
+    auto *categoryLayout = new QHBoxLayout(categoryBar);
+    categoryLayout->setContentsMargins(38, 0, 5, 0);
+    categoryLayout->setSpacing(0);
+    categoryButtons_ = new QButtonGroup(sidePanel_);
+    categoryButtons_->setExclusive(true);
+    const auto addCategory = [this, categoryLayout](const QString &text, int page) {
+        auto *button = new QToolButton(sidePanel_);
+        button->setObjectName(QStringLiteral("previewCategoryButton"));
+        button->setText(text);
+        button->setCheckable(true);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        categoryButtons_->addButton(button, page);
+        categoryLayout->addWidget(button, 1);
+        return button;
+    };
+    QToolButton *paintCategory = addCategory(QStringLiteral("PAINT"), 0);
+    addCategory(QStringLiteral("PARTS"), 1);
+    addCategory(QStringLiteral("LOD"), 2);
+    paintCategory->setChecked(true);
+    panelLayout->addWidget(categoryBar);
+
+    categoryPages_ = new QStackedWidget(sidePanel_);
+    const auto addScrollPage = [this](QWidget **page, QVBoxLayout **contentLayout) {
+        *page = new QWidget(categoryPages_);
+        auto *pageLayout = new QVBoxLayout(*page);
+        pageLayout->setContentsMargins(0, 0, 0, 0);
+        auto *scroll = new QScrollArea(*page);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *content = new QWidget(scroll);
+        content->setAttribute(Qt::WA_StyledBackground, true);
+        *contentLayout = new QVBoxLayout(content);
+        (*contentLayout)->setContentsMargins(13, 13, 11, 13);
+        (*contentLayout)->setSpacing(6);
+        scroll->setWidget(content);
+        pageLayout->addWidget(scroll);
+        categoryPages_->addWidget(*page);
+    };
+    addScrollPage(&colorsPage_, &colorsLayout_);
+    addScrollPage(&partsPage_, &partsOptionsLayout_);
+    addScrollPage(&modelPage_, &modelOptionsLayout_);
+    panelLayout->addWidget(categoryPages_, 1);
+
+    connect(categoryButtons_, &QButtonGroup::idClicked,
+            categoryPages_, &QStackedWidget::setCurrentIndex);
+
+    sidePanelToggle_ = new QToolButton(this);
+    sidePanelToggle_->setObjectName(QStringLiteral("previewSidePanelToggle"));
+    sidePanelToggle_->setFocusPolicy(Qt::NoFocus);
+    sidePanelToggle_->setFixedSize(29, 32);
+    sidePanelToggle_->setStyleSheet(QStringLiteral(
+        "QToolButton#previewSidePanelToggle {"
+        " color: rgb(235, 236, 240);"
+        " background: rgba(24, 25, 29, 246);"
+        " border: 1px solid rgba(255, 255, 255, 42);"
+        " border-radius: 4px;"
+        " font-size: 16px;"
+        "}"
+        "QToolButton#previewSidePanelToggle:hover {"
+        " background: rgba(54, 57, 64, 250);"
+        "}"));
+    connect(sidePanelToggle_, &QToolButton::clicked, this, [this]() {
+        setSidePanelVisible(!sidePanelVisible_);
     });
+
+    rebuildPartsPanel();
     updateCarColorControl();
     updateLodControl();
+    setSidePanelVisible(false);
 }
 
 CarPreviewWidget::~CarPreviewWidget() {
@@ -1482,10 +1548,19 @@ void CarPreviewWidget::cycleLod() {
     if (model_.lodCount() < 2) {
         return;
     }
-    selectedLodIndex_ = (selectedLodIndex_ + 1) % model_.lodCount();
+    selectLod((selectedLodIndex_ + 1) % model_.lodCount());
+}
+
+void CarPreviewWidget::selectLod(int lodIndex) {
+    if (lodIndex < 0 || lodIndex >= model_.lodCount()
+        || selectedLodIndex_ == lodIndex) {
+        return;
+    }
+    selectedLodIndex_ = lodIndex;
     switchCarUnwrapOverlay();
     modelUploadPending_ = true;
     updateLodControl();
+    rebuildColorsPanel();
     Q_EMIT unwrapOverlayChanged();
     update();
 }
@@ -1546,13 +1621,18 @@ void CarPreviewWidget::setBasePaint(const QColor &color) {
 }
 
 void CarPreviewWidget::chooseRegionColor(
-    const QVector<quint64> &materialHashes, bool secondary) {
+    const QVector<quint64> &materialHashes, bool secondary,
+    const QVector<quint64> &fallbackHashes) {
     if (state_ == nullptr || project_ == nullptr || !project_->isLivery
         || state_->project() != project_ || materialHashes.isEmpty()) {
         return;
     }
-    QColor initial = basePaint_;
-    for (quint64 materialHash : materialHashes) {
+    const bool bodyRegion = materialHashes.contains(
+        fls::material_hashes::binding::kBodyPaint);
+    QColor initial = bodyRegion ? basePaint_ : defaultPreviewCarColor();
+    QVector<quint64> displayHashes = materialHashes;
+    appendUniqueHashes(displayHashes, fallbackHashes);
+    for (quint64 materialHash : displayHashes) {
         const fls::LiveryPaintMaterial *material =
             project_->liveryPaint.find(materialHash);
         const fls::LiveryPaintColor *current = material != nullptr
@@ -1574,18 +1654,25 @@ void CarPreviewWidget::chooseRegionColor(
         return;
     }
 
+    const QVector<quint64> editHashes = effectivePaintHashes(materialHashes);
     state_->beginProjectEdit();
-    for (quint64 materialHash : materialHashes) {
+    if (bodyRegion && !secondary && !overrideBodyChildPaint_) {
+        using namespace fls::material_hashes::binding;
+        // Unpainted body-type meshes inherit the body's fallback color. Materialize their
+        // current color before changing Body so an isolated body edit does not recolor them.
+        for (quint64 childHash : {kHoodPaint, kMirrorPaint, kSpoilerPaint}) {
+            const fls::LiveryPaintMaterial *child =
+                project_->liveryPaint.find(childHash);
+            if (child != nullptr && child->primary.enabled) {
+                continue;
+            }
+            project_->liveryPaint.setColorBgra(
+                childHash, false, opaqueBgra(basePaint_));
+        }
+    }
+    for (quint64 materialHash : editHashes) {
         project_->liveryPaint.setColorBgra(
             materialHash, secondary, opaqueBgra(selected));
-        fls::LiveryPaintMaterial &material = project_->liveryPaint.ensure(materialHash);
-        if (secondary) {
-            if (material.finish < 50 || material.finish > 52) {
-                material.finish = 51;
-            }
-        } else {
-            material.finish = 0;
-        }
     }
     state_->commitProjectEdit();
     state_->noteProjectPaintChanged();
@@ -1593,48 +1680,228 @@ void CarPreviewWidget::chooseRegionColor(
     update();
 }
 
-void CarPreviewWidget::rebuildCarColorMenu() {
-    if (carColorMenu_ == nullptr) {
+void CarPreviewWidget::chooseRegionFinish(
+    const QVector<quint64> &materialHashes, quint32 finish) {
+    if (state_ == nullptr || project_ == nullptr || !project_->isLivery
+        || state_->project() != project_ || materialHashes.isEmpty()
+        || (finish != 1 && finish != 2 && finish != 3 && finish != 4)) {
         return;
     }
-    carColorMenu_->clear();
+
+    const QVector<quint64> editHashes = effectivePaintHashes(materialHashes);
+    bool changed = false;
+    for (quint64 materialHash : editHashes) {
+        const fls::LiveryPaintMaterial *material =
+            project_->liveryPaint.find(materialHash);
+        if (material == nullptr || material->finish != finish) {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+
+    state_->beginProjectEdit();
+    for (quint64 materialHash : editHashes) {
+        project_->liveryPaint.ensure(materialHash).finish = finish;
+    }
+    state_->commitProjectEdit();
+    state_->noteProjectPaintChanged();
+    modelUploadPending_ = true;
+    update();
+}
+
+QVector<quint64> CarPreviewWidget::effectivePaintHashes(
+    const QVector<quint64> &materialHashes) const {
+    QVector<quint64> result = materialHashes;
+    using namespace fls::material_hashes::binding;
+    if (!overrideBodyChildPaint_ || !result.contains(kBodyPaint)) {
+        return result;
+    }
+    for (quint64 childHash : {kHoodPaint, kMirrorPaint, kSpoilerPaint}) {
+        if (!result.contains(childHash)) {
+            result.push_back(childHash);
+        }
+    }
+    return result;
+}
+
+void CarPreviewWidget::clearPaintOverrides() {
+    if (state_ == nullptr || project_ == nullptr || !project_->isLivery
+        || state_->project() != project_ || project_->liveryPaint.materials.isEmpty()) {
+        return;
+    }
+    state_->beginProjectEdit();
+    project_->liveryPaint.materials.clear();
+    state_->commitProjectEdit();
+    state_->noteProjectPaintChanged();
+    modelUploadPending_ = true;
+    update();
+}
+
+void CarPreviewWidget::rebuildColorsPanel() {
+    if (colorsLayout_ == nullptr || colorsPage_ == nullptr) {
+        return;
+    }
+    while (QLayoutItem *item = colorsLayout_->takeAt(0)) {
+        if (QWidget *widget = item->widget()) {
+            delete widget;
+        }
+        delete item;
+    }
+
+    const bool canEditPaint = state_ != nullptr && project_ != nullptr
+        && project_->isLivery && state_->project() == project_;
+
+    auto *header = new QWidget(colorsPage_);
+    auto *headerLayout = new QHBoxLayout(header);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(8);
+    auto *title = new QLabel(QStringLiteral("Paint"), header);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
+    title->setFont(titleFont);
+    headerLayout->addWidget(title);
+    headerLayout->addStretch(1);
+    auto *clearButton = new QPushButton(QStringLiteral("Clear all"), header);
+    clearButton->setObjectName(QStringLiteral("previewClearPaint"));
+    clearButton->setFocusPolicy(Qt::NoFocus);
+    clearButton->setToolTip(QStringLiteral("Clear all paint overrides (undoable)"));
+    clearButton->setEnabled(
+        canEditPaint && !project_->liveryPaint.materials.isEmpty());
+    headerLayout->addWidget(clearButton);
+    colorsLayout_->addWidget(header);
+    connect(clearButton, &QPushButton::clicked, this, [this]() {
+        QTimer::singleShot(0, this, [this]() { clearPaintOverrides(); });
+    });
+
+    auto *description = new QLabel(
+        QStringLiteral("Choose each region's colors and material finish."),
+        colorsPage_);
+    description->setProperty("secondary", true);
+    description->setWordWrap(true);
+    colorsLayout_->addWidget(description);
+    colorsLayout_->addSpacing(5);
+
+    const bool editable = hasModel() && canEditPaint;
+    if (!editable) {
+        auto *empty = new QLabel(
+            hasModel()
+                ? QStringLiteral("Open a livery project to edit car paint colors.")
+                : QStringLiteral("Load a car to see its paint regions."),
+            colorsPage_);
+        empty->setProperty("secondary", true);
+        empty->setWordWrap(true);
+        colorsLayout_->addWidget(empty);
+        colorsLayout_->addStretch(1);
+        return;
+    }
+
+    int regionIndex = 0;
     for (const PaintRegion &paintRegion : paintRegions(model_, selectedLodIndex_)) {
-        QColor primary = basePaint_;
+        const bool bodyRegion = paintRegion.materialHashes.contains(
+            fls::material_hashes::binding::kBodyPaint);
+        QColor primary = bodyRegion ? basePaint_ : defaultPreviewCarColor();
         QColor secondary = primary;
-        for (quint64 materialHash : paintRegion.materialHashes) {
+        int currentFinish = 0;
+        bool finishFound = false;
+        bool colorFound = false;
+        QVector<quint64> displayHashes = paintRegion.materialHashes;
+        appendUniqueHashes(displayHashes, paintRegion.fallbackHashes);
+        for (quint64 materialHash : displayHashes) {
             const fls::LiveryPaintMaterial *material = project_ != nullptr
                 ? project_->liveryPaint.find(materialHash)
                 : nullptr;
-            if (material != nullptr && material->primary.enabled) {
+            if (!finishFound && material != nullptr && material->finish != 0) {
+                currentFinish = static_cast<int>(material->finish);
+                finishFound = true;
+            }
+            if (!colorFound && material != nullptr && material->primary.enabled) {
                 primary = colorFromBgra(material->primary.bgra);
                 secondary = primary;
                 if (material->secondary.enabled) {
                     secondary = colorFromBgra(material->secondary.bgra);
                 }
-                break;
+                colorFound = true;
             }
         }
-        QMenu *region = carColorMenu_->addMenu(paintRegion.name);
-        region->setIcon(carColorSwatchIcon(primary));
-        QAction *primaryAction = region->addAction(
-            carColorSwatchIcon(primary), QStringLiteral("Set Primary"));
-        connect(primaryAction, &QAction::triggered, this,
-                [this, hashes = paintRegion.materialHashes]() {
-                    chooseRegionColor(hashes, false);
+
+        if (regionIndex++ > 0) {
+            auto *separator = new QFrame(colorsPage_);
+            separator->setFrameShape(QFrame::HLine);
+            separator->setStyleSheet(
+                QStringLiteral("color: rgba(255, 255, 255, 28);"));
+            colorsLayout_->addWidget(separator);
+        }
+
+        auto *regionLabel = new QLabel(paintRegion.name, colorsPage_);
+        QFont regionFont = regionLabel->font();
+        regionFont.setBold(true);
+        regionLabel->setFont(regionFont);
+        colorsLayout_->addWidget(regionLabel);
+
+        if (bodyRegion) {
+            auto *overrideChildren = new QCheckBox(
+                QStringLiteral("Override hood, mirrors and wing"), colorsPage_);
+            overrideChildren->setChecked(overrideBodyChildPaint_);
+            overrideChildren->setToolTip(QStringLiteral(
+                "Apply body color and material changes to its child parts too"));
+            colorsLayout_->addWidget(overrideChildren);
+            connect(overrideChildren, &QCheckBox::toggled, this,
+                    [this](bool checked) {
+                        overrideBodyChildPaint_ = checked;
+                    });
+        }
+
+        auto *primaryButton = new QPushButton(
+            carColorSwatchIcon(primary), QStringLiteral("Primary color"), colorsPage_);
+        auto *secondaryButton = new QPushButton(
+            carColorSwatchIcon(secondary), QStringLiteral("Secondary color"), colorsPage_);
+        colorsLayout_->addWidget(primaryButton);
+        colorsLayout_->addWidget(secondaryButton);
+
+        auto *materialCombo = new NoWheelComboBox(colorsPage_);
+        materialCombo->addItem(QStringLiteral("Gloss"), 1);
+        materialCombo->addItem(QStringLiteral("Semigloss"), 2);
+        materialCombo->addItem(QStringLiteral("Metallic"), 4);
+        materialCombo->addItem(QStringLiteral("Matte"), 3);
+        const int materialIndex = materialCombo->findData(currentFinish);
+        materialCombo->setCurrentIndex(materialIndex);
+        materialCombo->setPlaceholderText(QStringLiteral("Material"));
+        materialCombo->setToolTip(QStringLiteral("Paint material finish"));
+        colorsLayout_->addWidget(materialCombo);
+
+        connect(primaryButton, &QPushButton::clicked, this,
+                [this, hashes = paintRegion.materialHashes,
+                 fallbackHashes = paintRegion.fallbackHashes]() {
+                    QTimer::singleShot(0, this, [this, hashes, fallbackHashes]() {
+                        chooseRegionColor(hashes, false, fallbackHashes);
+                    });
                 });
-        QAction *secondaryAction = region->addAction(
-            carColorSwatchIcon(secondary), QStringLiteral("Set Secondary"));
-        connect(secondaryAction, &QAction::triggered, this,
-                [this, hashes = paintRegion.materialHashes]() {
-                    chooseRegionColor(hashes, true);
+        connect(secondaryButton, &QPushButton::clicked, this,
+                [this, hashes = paintRegion.materialHashes,
+                 fallbackHashes = paintRegion.fallbackHashes]() {
+                    QTimer::singleShot(0, this, [this, hashes, fallbackHashes]() {
+                        chooseRegionColor(hashes, true, fallbackHashes);
+                    });
+                });
+        connect(materialCombo, qOverload<int>(&QComboBox::activated), this,
+                [this, materialCombo, hashes = paintRegion.materialHashes](int index) {
+                    if (index < 0) {
+                        return;
+                    }
+                    const quint32 finish = materialCombo->itemData(index).toUInt();
+                    QTimer::singleShot(0, this, [this, hashes, finish]() {
+                        chooseRegionFinish(hashes, finish);
+                    });
                 });
     }
+    colorsLayout_->addStretch(1);
 }
 
 void CarPreviewWidget::updateCarColorControl() {
-    if (carColorButton_ == nullptr) {
-        return;
-    }
     std::optional<std::array<quint8, 4>> projectColor;
     if (project_ != nullptr && project_->isLivery) {
         projectColor = project_->liveryPaint.defaultCarColorBgra();
@@ -1643,13 +1910,7 @@ void CarPreviewWidget::updateCarColorControl() {
         ? colorFromBgra(*projectColor)
         : defaultPreviewCarColor();
     basePaint_.setAlpha(255);
-
-    carColorButton_->setIcon(QIcon());
-    carColorButton_->setEnabled(
-        hasModel() && state_ != nullptr && project_ != nullptr && project_->isLivery);
-    carColorButton_->setToolTip(QStringLiteral("Edit car colors by region"));
-    carColorButton_->adjustSize();
-    layoutOverlayControls();
+    rebuildColorsPanel();
 }
 
 int CarPreviewWidget::liveryTextureScale() const {
@@ -1866,7 +2127,8 @@ void CarPreviewWidget::paintGL() {
         liveryTexture = liveryTexture_;
     }
     const qreal dpr = devicePixelRatioF();
-    const int pw = std::max(1, static_cast<int>(std::lround(width() * dpr)));
+    const int pw = std::max(
+        1, static_cast<int>(std::lround(previewViewportWidth() * dpr)));
     const int ph = std::max(1, static_cast<int>(std::lround(height() * dpr)));
     functions->glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
     functions->glViewport(0, 0, pw, ph);
@@ -1946,7 +2208,9 @@ QMatrix4x4 CarPreviewWidget::cameraView() const {
 }
 
 QMatrix4x4 CarPreviewWidget::cameraProjection() const {
-    const float aspect = height() > 0 ? static_cast<float>(width()) / static_cast<float>(height()) : 1.0f;
+    const float aspect = height() > 0
+        ? static_cast<float>(previewViewportWidth()) / static_cast<float>(height())
+        : 1.0f;
     const float nearPlane = std::max(0.01f, modelRadius_ * 0.02f);
     const float farPlane = modelRadius_ * 8.0f + distance_ * 2.0f;
     QMatrix4x4 projection;
@@ -1983,46 +2247,131 @@ void CarPreviewWidget::invalidateCachedLivery() {
 }
 
 void CarPreviewWidget::updateLodControl() {
-    if (lodButton_ == nullptr) {
+    if (modelPage_ == nullptr || modelOptionsLayout_ == nullptr) {
         return;
     }
-    lodButton_->setText(QStringLiteral("LOD%1").arg(selectedLodIndex_));
-    lodButton_->setEnabled(model_.lodCount() > 1);
-    lodButton_->adjustSize();
-    layoutOverlayControls();
-    lodButton_->raise();
+    const QVariant displayedLodCount = modelPage_->property("lodCount");
+    if (!displayedLodCount.isValid()
+        || displayedLodCount.toInt() != model_.lodCount()) {
+        rebuildModelPanel();
+        return;
+    }
+    for (QRadioButton *radio : modelPage_->findChildren<QRadioButton *>()) {
+        if (!radio->property("previewLodIndex").isValid()) {
+            continue;
+        }
+        const QSignalBlocker blocker(radio);
+        radio->setChecked(
+            radio->property("previewLodIndex").toInt() == selectedLodIndex_);
+    }
 }
 
 void CarPreviewWidget::layoutOverlayControls() {
-    if (lodButton_ == nullptr || partsButton_ == nullptr
-        || carColorButton_ == nullptr || partsPanel_ == nullptr) {
+    if (sidePanel_ == nullptr || sidePanelToggle_ == nullptr) {
         return;
     }
-    lodButton_->adjustSize();
-    partsButton_->adjustSize();
-    carColorButton_->adjustSize();
-    const int margin = 8;
-    const int spacing = 6;
-    const int lodX = std::max(margin, width() - lodButton_->width() - margin);
-    lodButton_->move(lodX, 6);
-    const int partsX = std::max(margin, lodX - partsButton_->width() - spacing);
-    partsButton_->move(partsX, 6);
-    carColorButton_->move(
-        std::max(margin, partsX - carColorButton_->width() - spacing), 6);
+    const int preferredWidth = std::min(292, std::max(220, width() * 2 / 5));
+    const int panelWidth = std::min(preferredWidth, std::max(0, width() - 38));
+    sidePanel_->setGeometry(width() - panelWidth, 0, panelWidth, height());
+    sidePanel_->setVisible(sidePanelVisible_);
 
-    const int panelWidth = std::min(270, std::max(190, width() - margin * 2));
-    const int panelTop = std::max(lodButton_->geometry().bottom(),
-                                  partsButton_->geometry().bottom()) + 6;
-    partsPanel_->setGeometry(
-        std::max(margin, width() - panelWidth - margin), panelTop,
-        panelWidth, std::max(80, height() - panelTop - margin));
+    const int toggleX = sidePanelVisible_
+        ? std::max(3, width() - panelWidth + 5)
+        : std::max(3, width() - sidePanelToggle_->width() - 5);
+    sidePanelToggle_->move(toggleX, 5);
+    sidePanel_->raise();
+    sidePanelToggle_->raise();
+}
+
+void CarPreviewWidget::setSidePanelVisible(bool visible) {
+    sidePanelVisible_ = visible;
+    if (sidePanel_ != nullptr) {
+        sidePanel_->setVisible(visible);
+    }
+    if (sidePanelToggle_ != nullptr) {
+        sidePanelToggle_->setText(visible ? QStringLiteral(">")
+                                          : QStringLiteral("<"));
+        sidePanelToggle_->setToolTip(
+            visible ? QStringLiteral("Hide preview controls")
+                    : QStringLiteral("Show preview controls"));
+    }
+    layoutOverlayControls();
+    update();
+}
+
+int CarPreviewWidget::previewViewportWidth() const {
+    if (transparentBackground_ || !sidePanelVisible_ || sidePanel_ == nullptr) {
+        return width();
+    }
+    return std::max(1, width() - sidePanel_->width());
+}
+
+void CarPreviewWidget::rebuildModelPanel() {
+    if (modelOptionsLayout_ == nullptr || modelPage_ == nullptr) {
+        return;
+    }
+    qDeleteAll(modelPage_->findChildren<QButtonGroup *>(
+        QString(), Qt::FindDirectChildrenOnly));
+    while (QLayoutItem *item = modelOptionsLayout_->takeAt(0)) {
+        if (QWidget *widget = item->widget()) {
+            delete widget;
+        }
+        delete item;
+    }
+    modelPage_->setProperty("lodCount", model_.lodCount());
+
+    auto *title = new QLabel(QStringLiteral("Level of detail"), modelPage_);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
+    title->setFont(titleFont);
+    modelOptionsLayout_->addWidget(title);
+
+    auto *description = new QLabel(
+        QStringLiteral("Select which level of detail is rendered in the preview."),
+        modelPage_);
+    description->setProperty("secondary", true);
+    description->setWordWrap(true);
+    modelOptionsLayout_->addWidget(description);
+    modelOptionsLayout_->addSpacing(5);
+
+    if (!hasModel()) {
+        auto *empty = new QLabel(
+            QStringLiteral("Load a car to choose its model detail."), modelPage_);
+        empty->setProperty("secondary", true);
+        empty->setWordWrap(true);
+        modelOptionsLayout_->addWidget(empty);
+        modelOptionsLayout_->addStretch(1);
+        return;
+    }
+
+    auto *buttonGroup = new QButtonGroup(modelPage_);
+    buttonGroup->setExclusive(true);
+    for (int lodIndex = 0; lodIndex < model_.lodCount(); ++lodIndex) {
+        const QString label = QStringLiteral("LOD %1").arg(lodIndex);
+        auto *radio = new QRadioButton(label, modelPage_);
+        radio->setProperty("previewLodIndex", lodIndex);
+        radio->setChecked(lodIndex == selectedLodIndex_);
+        buttonGroup->addButton(radio, lodIndex);
+        modelOptionsLayout_->addWidget(radio);
+        connect(radio, &QRadioButton::clicked, this,
+                [this, lodIndex]() { selectLod(lodIndex); });
+    }
+    if (model_.lodCount() == 1) {
+        auto *note = new QLabel(
+            QStringLiteral("This car only provides one detail level."), modelPage_);
+        note->setProperty("secondary", true);
+        note->setWordWrap(true);
+        modelOptionsLayout_->addWidget(note);
+    }
+    modelOptionsLayout_->addStretch(1);
 }
 
 void CarPreviewWidget::rebuildPartsPanel() {
-    if (partsOptionsLayout_ == nullptr || partsButton_ == nullptr) {
+    if (partsOptionsLayout_ == nullptr || partsPage_ == nullptr) {
         return;
     }
-    qDeleteAll(partsPanel_->findChildren<QButtonGroup *>(
+    qDeleteAll(partsPage_->findChildren<QButtonGroup *>(
         QString(), Qt::FindDirectChildrenOnly));
     while (QLayoutItem *item = partsOptionsLayout_->takeAt(0)) {
         if (QWidget *widget = item->widget()) {
@@ -2030,6 +2379,21 @@ void CarPreviewWidget::rebuildPartsPanel() {
         }
         delete item;
     }
+
+    auto *title = new QLabel(QStringLiteral("Body parts"), partsPage_);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
+    title->setFont(titleFont);
+    partsOptionsLayout_->addWidget(title);
+
+    auto *description = new QLabel(
+        QStringLiteral("Choose the body kit and installed exterior parts."),
+        partsPage_);
+    description->setProperty("secondary", true);
+    description->setWordWrap(true);
+    partsOptionsLayout_->addWidget(description);
+    partsOptionsLayout_->addSpacing(5);
 
     selectedPartOptions_.clear();
     const fls::CarPartOption *defaultCarBody = nullptr;
@@ -2109,19 +2473,19 @@ void CarPreviewWidget::rebuildPartsPanel() {
         }
 
         if (visibleGroups > 0) {
-            auto *separator = new QFrame(partsPanel_);
+            auto *separator = new QFrame(partsPage_);
             separator->setFrameShape(QFrame::HLine);
             separator->setStyleSheet(
                 QStringLiteral("color: rgba(255, 255, 255, 28);"));
             partsOptionsLayout_->addWidget(separator);
         }
-        auto *groupLabel = new QLabel(partTypeDisplayName(partType), partsPanel_);
+        auto *groupLabel = new QLabel(partTypeDisplayName(partType), partsPage_);
         QFont font = groupLabel->font();
         font.setBold(true);
         groupLabel->setFont(font);
         partsOptionsLayout_->addWidget(groupLabel);
 
-        auto *buttonGroup = new QButtonGroup(partsPanel_);
+        auto *buttonGroup = new QButtonGroup(partsPage_);
         buttonGroup->setExclusive(true);
         int alternativeIndex = 0;
         for (const fls::CarPartOption *option : options) {
@@ -2129,7 +2493,7 @@ void CarPreviewWidget::rebuildPartsPanel() {
             auto *radio = new QRadioButton(
                 partOptionDisplayName(
                     model_.mediaName, *option, labelIndex, option->id == selected->id),
-                partsPanel_);
+                partsPage_);
             radio->setProperty("carPartType", partType);
             radio->setProperty("carPartOptionId", option->id);
             radio->setToolTip(option->modelPaths.join(QLatin1Char('\n')));
@@ -2145,15 +2509,19 @@ void CarPreviewWidget::rebuildPartsPanel() {
         }
         ++visibleGroups;
     }
-    partsOptionsLayout_->addStretch(1);
 
     carRenderer_.setPartSelections(selectedPartOptions_);
-    partsButton_->setEnabled(visibleGroups > 0);
     if (visibleGroups == 0) {
-        partsButton_->setChecked(false);
-        partsPanel_->hide();
+        auto *empty = new QLabel(
+            hasModel()
+                ? QStringLiteral("This car has no selectable exterior part variants.")
+                : QStringLiteral("Load a car to see its available parts."),
+            partsPage_);
+        empty->setProperty("secondary", true);
+        empty->setWordWrap(true);
+        partsOptionsLayout_->addWidget(empty);
     }
-    layoutOverlayControls();
+    partsOptionsLayout_->addStretch(1);
 }
 
 void CarPreviewWidget::selectPartOption(int partType, int optionId) {
@@ -2192,10 +2560,10 @@ void CarPreviewWidget::selectPartOption(int partType, int optionId) {
 }
 
 void CarPreviewWidget::syncPartOptionControls() {
-    if (partsPanel_ == nullptr) {
+    if (partsPage_ == nullptr) {
         return;
     }
-    for (QRadioButton *radio : partsPanel_->findChildren<QRadioButton *>()) {
+    for (QRadioButton *radio : partsPage_->findChildren<QRadioButton *>()) {
         const int partType = radio->property("carPartType").toInt();
         const int optionId = radio->property("carPartOptionId").toInt();
         const QSignalBlocker blocker(radio);
