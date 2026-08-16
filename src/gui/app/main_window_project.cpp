@@ -38,6 +38,10 @@ void MainWindow::setProject(fls::Project project) {
         carPreview_->cancelCarLoad();
     }
     state_->setProject(std::move(project));
+    if (!state_->project_.isLivery && carPreview_ != nullptr
+        && carPreview_->hasModel()) {
+        carPreview_->clearModel();
+    }
     projectJsonPath_.clear();
     autoExpandedTreeIndexes_.clear();
     autoExpandedGroupIds_.clear();

@@ -122,4 +122,5 @@ The import/export for groups is fully supported, core functionality in place. So
 - [Pengyss](https://github.com/Pengyss) - non-uniform group tranform algorithm.
 - Eaterrius - big money man, provided tokens.
 - [Doliman100](https://github.com/Doliman100) - reverse engineering Forza file formats and documentation.
+- [D3FEKT](https://github.com/D3FEKT) - material hashes from his amazing project [ForzaTechStudio](https://github.com/D3FEKT/ForzaTechStudio).
 - All the people's liveries/groups I used to decode the format.
