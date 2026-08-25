@@ -1182,6 +1182,27 @@ QByteArray buildLiveryDescriptorTable(const Project &project) {
 
     const auto appendMaterial = [&project, &table](quint64 hash, quint32 defaultSelector) {
         const LiveryPaintMaterial *paint = project.liveryPaint.find(hash);
+        const bool axlePaint = material_hashes::contains(
+            material_hashes::binding::kFrontWheelPaint, hash)
+            || material_hashes::contains(
+                material_hashes::binding::kRearWheelPaint, hash);
+        const auto hasExplicitPaint = [](const LiveryPaintMaterial *candidate) {
+            return candidate != nullptr
+                && (candidate->primary.enabled || candidate->secondary.enabled
+                    || candidate->finish != 0);
+        };
+        // Older editor exports only wrote the generic rim records. Materialize
+        // those values into Forza's axle records so reopening and re-exporting
+        // an existing project repairs it without requiring another UI edit.
+        if (axlePaint && !hasExplicitPaint(paint)) {
+            for (quint64 fallbackHash : material_hashes::binding::kWheelPaintGroups) {
+                const LiveryPaintMaterial *fallback = project.liveryPaint.find(fallbackHash);
+                if (hasExplicitPaint(fallback)) {
+                    paint = fallback;
+                    break;
+                }
+            }
+        }
         appendLeU64(table, hash);
         table.append('\x02');
         table.append(paint != nullptr && paint->primary.enabled ? '\x01' : '\0');
@@ -1197,7 +1218,14 @@ QByteArray buildLiveryDescriptorTable(const Project &project) {
             table.append(static_cast<char>(channel));
         }
         detail::appendLeU32(table, paint != nullptr ? paint->manufacturerSelector : defaultSelector);
-        detail::appendLeU32(table, paint != nullptr ? paint->finish : 0);
+        quint32 exportedFinish = paint != nullptr ? paint->finish : 0;
+        if (hash == material_hashes::binding::kWindowGlass) {
+            exportedFinish = 0;
+        } else if (exportedFinish == 0 && paint != nullptr
+                   && (paint->primary.enabled || paint->secondary.enabled)) {
+            exportedFinish = 1;
+        }
+        detail::appendLeU32(table, exportedFinish);
     };
 
     for (const quint64 hash : recordHashes) {

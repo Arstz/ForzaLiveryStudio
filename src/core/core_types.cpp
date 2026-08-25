@@ -39,7 +39,7 @@ std::optional<std::array<quint8, 4>> LiveryPaintState::defaultCarColorBgra() con
     if (body != nullptr && body->primary.enabled) {
         return body->primary.bgra;
     }
-    for (quint64 hash : material_hashes::binding::kLiveryMaterials) {
+    for (quint64 hash : material_hashes::binding::kDefaultCarPaintGroups) {
         const LiveryPaintMaterial *material = find(hash);
         if (material != nullptr && material->primary.enabled) {
             return material->primary.bgra;
@@ -59,7 +59,7 @@ void LiveryPaintState::setColorBgra(quint64 materialHash, bool secondary,
 }
 
 void LiveryPaintState::setDefaultCarColorBgra(std::array<quint8, 4> color) {
-    for (quint64 hash : material_hashes::binding::kLiveryMaterials) {
+    for (quint64 hash : material_hashes::binding::kDefaultCarPaintGroups) {
         setColorBgra(hash, false, color);
     }
 }

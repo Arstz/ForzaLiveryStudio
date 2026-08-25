@@ -16,9 +16,10 @@
 #include <memory>
 
 class QTemporaryDir;
+class QButtonGroup;
 class QFrame;
 class QLabel;
-class QMenu;
+class QStackedWidget;
 class QToolButton;
 class QVBoxLayout;
 
@@ -92,12 +93,22 @@ private:
     void updateLodControl();
     void layoutOverlayControls();
     void rebuildPartsPanel();
+    void rebuildColorsPanel();
+    void rebuildModelPanel();
     void selectPartOption(int partType, int optionId);
+    void selectLod(int lodIndex);
     void syncPartOptionControls();
     void switchCarUnwrapOverlay();
+    void setSidePanelVisible(bool visible);
+    int previewViewportWidth() const;
     void chooseRegionColor(const QVector<quint64> &materialHashes,
-                           bool secondary);
-    void rebuildCarColorMenu();
+                           bool secondary,
+                           const QVector<quint64> &fallbackHashes = {});
+    void chooseRegionFinish(const QVector<quint64> &materialHashes,
+                            quint32 finish);
+    QVector<quint64> effectivePaintHashes(
+        const QVector<quint64> &materialHashes) const;
+    void clearPaintOverrides();
     void updateCarColorControl();
 
     NativeShapeRenderer shapeRenderer_;
@@ -137,14 +148,20 @@ private:
     bool transparentBackground_ = false;
 
     QLabel *referenceNote_ = nullptr;
-    QToolButton *lodButton_ = nullptr;
-    QToolButton *partsButton_ = nullptr;
-    QToolButton *carColorButton_ = nullptr;
-    QMenu *carColorMenu_ = nullptr;
-    QFrame *partsPanel_ = nullptr;
+    QFrame *sidePanel_ = nullptr;
+    QToolButton *sidePanelToggle_ = nullptr;
+    QButtonGroup *categoryButtons_ = nullptr;
+    QStackedWidget *categoryPages_ = nullptr;
+    QWidget *partsPage_ = nullptr;
+    QWidget *colorsPage_ = nullptr;
+    QWidget *modelPage_ = nullptr;
     QVBoxLayout *partsOptionsLayout_ = nullptr;
+    QVBoxLayout *colorsLayout_ = nullptr;
+    QVBoxLayout *modelOptionsLayout_ = nullptr;
     QHash<int, int> selectedPartOptions_;
     int selectedLodIndex_ = 0;
+    bool sidePanelVisible_ = false;
+    bool overrideBodyChildPaint_ = true;
 
     QVector3D target_;
     float modelRadius_ = 1.0f;

@@ -2281,17 +2281,15 @@ int main(int argc, char *argv[])
                     static_cast<long long>(payload.body.size()));
         const auto labelHash = [](quint64 hash) -> const char * {
             using namespace material_hashes::binding;
-            for (int channel = 0; channel < 5; ++channel) {
-                if (hash == kFrontWheelPaint[channel]) {
-                    return "front-wheel";
-                }
-                if (hash == kRearWheelPaint[channel]) {
-                    return "rear-wheel";
-                }
+            if (material_hashes::contains(kFrontWheelPaint, hash)) {
+                return "front-wheel";
+            }
+            if (material_hashes::contains(kRearWheelPaint, hash)) {
+                return "rear-wheel";
             }
             for (quint64 known : kLiveryMaterials) {
                 if (hash == known) {
-                    return "body";
+                    return "known-paint";
                 }
             }
             return "";

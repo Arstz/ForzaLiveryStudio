@@ -299,8 +299,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   them at draw time. Its `Parts` drawer exposes only body kits, rear wings, bumpers, hoods, and
   side skirts; selecting a body kit synchronizes subordinate options carrying the same kit ID.
 
-  Shaded rendering starts at `LOD0`. The preview's LOD button cycles every available detail
-  level as `LOD0`, `LOD1`, and so on. A part retains its least detailed available mesh when the
+  Shaded rendering starts at `LOD0`. The preview side panel's `LOD` tab selects every available
+  detail level as `LOD0`, `LOD1`, and so on. A part retains its least detailed available mesh when the
   assembled car has further LODs supplied by other parts. Its focus-scoped cycle command is
   unbound by default, as is the preview debug-mode cycle. The swatch masks are uploaded to the
   GPU as a 2x upsampled texture array. Imported `C_livery` section geometry is not rewritten for the preview;
@@ -320,8 +320,11 @@ exports grouped `C_group` folders and `C_livery` folders.
   the livery on top. Unmapped codes fall back to a small built-in approximation. See
   `GAMEDATA.md` for where the enumeration, materials, and textures live in the game
   media folder.
-  The preview color menu edits each supported region's primary and secondary colors
-  without replacing its finish. Authored car draw groups determine whether a mesh
+  The preview's `PAINT` tab edits each supported region's primary and secondary colors
+  without replacing its finish, and selects Gloss, Semigloss, Metallic, or Matte finishes.
+  Body edits also replace the hood, mirror, and wing records while the UI's child-part
+  override is enabled. The paint reset clears the project paint state as an undoable edit.
+  Authored car draw groups determine whether a mesh
   participates in exterior paint and livery rendering.
   Non-paint parts take their real shading from the game's shared `_library` materials:
   each mesh's materialbin (gloss, F0→metallic, base colour) is decoded and merged in
