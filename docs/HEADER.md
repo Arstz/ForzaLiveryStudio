@@ -55,7 +55,8 @@ layout. A new draft receives format version 7, the current date fields, a new
 GUID, and initialized opaque blocks.
 
 Imported header bytes remain attached to the project. Group export converts
-published metadata to a draft header and clears the description before writing
-the output folder. Livery export writes edited names and creators while retaining
-the remaining decoded header fields. Projects without an imported header receive
-a generated draft header.
+published metadata to a draft header, clears the description, synchronizes the
+decal total, and uses the destination save-profile identity before writing the
+output folder. Livery export writes edited names and creators while retaining the
+remaining decoded header fields. Projects without an imported header receive a
+generated draft header.

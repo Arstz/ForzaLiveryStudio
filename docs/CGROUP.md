@@ -54,6 +54,18 @@ layer_start = 0x24 + root_child_blocks
 
 Flat files can contain zero padding before the first shape record.
 
+An explicitly locked root replaces the counted root marker with an envelope:
+
+```text
+0x1D byte     lock marker, 21
+0x1E 8 bytes  root control area
+0x26 bytes    markerless counted root group
+```
+
+The markerless group begins with its `u16` child count and otherwise follows the
+markerless group layout below. Ownership metadata can cause the game to emit this
+envelope when it rewrites a group.
+
 ## Transforms
 
 Transform payload:

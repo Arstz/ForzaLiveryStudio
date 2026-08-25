@@ -984,6 +984,99 @@ Project decodeProjectDocument(const QByteArray &fileBytes) {
 
 namespace {
 
+QByteArray creatorTagFromSavePath(const QString &path) {
+    QString currentPath = QFileInfo(path).absoluteFilePath();
+    while (!currentPath.isEmpty()) {
+        const QFileInfo currentInfo(currentPath);
+        const QString directoryName = currentInfo.fileName();
+        if (directoryName.startsWith(QStringLiteral("u_"), Qt::CaseInsensitive)) {
+            const QString profileIdText = directoryName.mid(2).section(QLatin1Char('_'), 0, 0);
+            bool validProfileId = false;
+            const quint64 profileId = profileIdText.toULongLong(&validProfileId);
+            if (validProfileId) {
+                QByteArray creatorTag;
+                creatorTag.reserve(8);
+                for (int byteIndex = 0; byteIndex < 8; ++byteIndex) {
+                    creatorTag.append(static_cast<char>((profileId >> (byteIndex * 8)) & 0xff));
+                }
+
+                return creatorTag;
+            }
+        }
+
+        const QString parentPath = currentInfo.absoluteDir().absolutePath();
+        if (parentPath == currentPath) {
+            break;
+        }
+        currentPath = parentPath;
+    }
+
+    return {};
+}
+
+quint64 exportedShapeCount(const scene::Layer &node) {
+    if (!node.visible) {
+        return 0;
+    }
+    if (node.kind() == scene::LayerKind::Shape) {
+        return 1;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return 0;
+    }
+
+    quint64 count = 0;
+    for (const auto &child : static_cast<const scene::Group &>(node).children) {
+        count += exportedShapeCount(*child);
+    }
+
+    return count;
+}
+
+quint32 exportedGroupShapeCount(const Project &project) {
+    if (project.root == nullptr) {
+        return 0;
+    }
+
+    quint64 count = 0;
+    for (const auto &child : project.root->children) {
+        count += exportedShapeCount(*child);
+    }
+    if (count > std::numeric_limits<quint32>::max()) {
+        throw std::runtime_error("group export has too many shapes for header metadata");
+    }
+
+    return static_cast<quint32>(count);
+}
+
+QByteArray buildGroupHeader(const Project &project, const QString &outputName,
+                            const QString &outputFolder) {
+    std::optional<HeaderMetadata> metadata;
+    QByteArray sourceHeaderFallback;
+    if (!project.sourceHeader.isEmpty()) {
+        try {
+            metadata = parseHeader(project.sourceHeader);
+        } catch (const std::exception &) {
+            sourceHeaderFallback = renameHeader(project.sourceHeader, outputName);
+        }
+    }
+    if (!metadata && project.headerMetadata) {
+        metadata = *project.headerMetadata;
+    }
+    if (!metadata) {
+        return sourceHeaderFallback;
+    }
+
+    metadata->name = outputName;
+    metadata->typeValue = exportedGroupShapeCount(project);
+    const QByteArray destinationCreatorTag = creatorTagFromSavePath(outputFolder);
+    if (!destinationCreatorTag.isEmpty()) {
+        metadata->creatorTag = destinationCreatorTag;
+    }
+
+    return buildHeader(*metadata);
+}
+
 void writeExportFolder(const Project &project, const QString &outputFolder,
                        const QString &name, const QByteArray &payload) {
     if (outputFolder.isEmpty()) {
@@ -1000,14 +1093,7 @@ void writeExportFolder(const Project &project, const QString &outputFolder,
     writeCGroupFile(outputDir.filePath(QStringLiteral("C_group")), payload);
 
     const QString outputName = name.isEmpty() ? QFileInfo(outputFolder).fileName() : name;
-    QByteArray headerBytes;
-    if (!project.sourceHeader.isEmpty()) {
-        headerBytes = renameHeader(project.sourceHeader, outputName);
-    } else if (project.headerMetadata) {
-        HeaderMetadata meta = *project.headerMetadata;
-        meta.name = outputName;
-        headerBytes = buildHeader(meta);
-    }
+    const QByteArray headerBytes = buildGroupHeader(project, outputName, outputFolder);
     if (!headerBytes.isEmpty()) {
         QFile headerFile(outputDir.filePath(QStringLiteral("header")));
         if (!headerFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

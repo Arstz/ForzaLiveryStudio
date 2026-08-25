@@ -1,5 +1,7 @@
 #include "wgs_save_reader.h"
 
+#include "header_codec.h"
+#include "layer.h"
 #include "project_codec.h"
 
 #include <QCoreApplication>
@@ -181,6 +183,36 @@ void testSyntheticSave() {
             "group payload GUID mismatch");
 }
 
+void testGroupExportOwnershipMetadata() {
+    QTemporaryDir temporary;
+    QByteArray expectedCreatorTag;
+    constexpr quint64 kProfileId = 0x0102030405060708;
+
+    require(temporary.isValid(), "could not create temporary directory");
+    appendU64(expectedCreatorTag, kProfileId);
+
+    fls::Project project;
+    project.name = QStringLiteral("Ownership metadata");
+    project.headerMetadata = fls::defaultDraftHeader(project.name, QStringLiteral("Creator"));
+    for (int index = 0; index < 2; ++index) {
+        auto shape = std::make_unique<fls::scene::Shape>();
+        shape->id = QStringLiteral("shape-%1").arg(index);
+        shape->setVectorShape(static_cast<quint16>(index + 1));
+        project.root->append(std::move(shape));
+    }
+
+    const QString profileDirectory = QStringLiteral("u_%1_ABCDEF").arg(kProfileId);
+    const QString outputFolder = QDir(temporary.path()).filePath(
+        profileDirectory + QStringLiteral("/current/ContainersRoot/LayerGroup_Test"));
+    fls::exportNestedProjectFolder(project, outputFolder, project.name);
+
+    QFile headerFile(QDir(outputFolder).filePath(QStringLiteral("header")));
+    require(headerFile.open(QIODevice::ReadOnly), "group export header was not created");
+    const fls::HeaderMetadata metadata = fls::parseHeader(headerFile.readAll());
+    require(metadata.creatorTag == expectedCreatorTag, "group export creator identity mismatch");
+    require(metadata.typeValue == 2, "group export shape count mismatch");
+}
+
 QByteArray readFixtureFile(const QString &path) {
     if (path.isEmpty()) {
         return {};
@@ -228,6 +260,7 @@ int main(int argc, char *argv[]) {
     QCoreApplication application(argc, argv);
     try {
         testSyntheticSave();
+        testGroupExportOwnershipMetadata();
         if (application.arguments().size() > 1) {
             testImportedSave(application.arguments().at(1));
         }
