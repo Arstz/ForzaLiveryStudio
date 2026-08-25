@@ -1243,7 +1243,8 @@ QByteArray buildLiveryDescriptorTable(const Project &project) {
 }
 
 QByteArray buildNewLiveryPayload(const Project &project, const QByteArray &gyvl,
-                                 const std::array<int, 11> &counts) {
+                                 const std::array<int, 11> &counts,
+                                 const QByteArray &creatorTag) {
     QByteArray payload("vlrc", 4);
     detail::appendLeU32(payload, 2);
     detail::appendLeU32(payload, 0);
@@ -1254,7 +1255,7 @@ QByteArray buildNewLiveryPayload(const Project &project, const QByteArray &gyvl,
 
     payload.append("yrvl", 4);
     detail::appendLeU32(payload, 19);
-    payload.append(normalizedCreatorTag(project));
+    payload.append(creatorTag);
     detail::appendLeU32(payload, 1);
     payload.append('\0');
     detail::appendLeU32(payload, static_cast<quint32>(gyvl.size()));
@@ -1272,7 +1273,8 @@ QByteArray buildNewLiveryPayload(const Project &project, const QByteArray &gyvl,
     return payload;
 }
 
-QByteArray buildLiveryHeader(const Project &project, const QVector<int> &sectionCounts) {
+QByteArray buildLiveryHeader(const Project &project, const QVector<int> &sectionCounts,
+                             const QByteArray &creatorTag) {
     const quint32 decalCount = static_cast<quint32>(
         std::accumulate(sectionCounts.cbegin(), sectionCounts.cend(), 0));
     std::optional<HeaderMetadata> sourceMetadata;
@@ -1293,6 +1295,7 @@ QByteArray buildLiveryHeader(const Project &project, const QVector<int> &section
         metadata.name = project.name;
         metadata.carId = static_cast<quint32>(project.carId);
         metadata.typeValue = decalCount;
+        metadata.creatorTag = creatorTag;
         return buildHeader(metadata);
     }
 
@@ -1302,31 +1305,42 @@ QByteArray buildLiveryHeader(const Project &project, const QVector<int> &section
         metadata.name = project.name;
         metadata.carId = static_cast<quint32>(project.carId);
         metadata.typeValue = decalCount;
+        metadata.creatorTag = creatorTag;
         return buildHeader(metadata);
     }
     HeaderMetadata metadata = defaultDraftHeader(
         project.name, QString(), static_cast<quint32>(project.carId));
     metadata.typeValue = decalCount;
+    metadata.creatorTag = creatorTag;
     return buildHeader(metadata);
 }
 
-} // namespace
-
-QByteArray encodeCLiveryPayload(const Project &project) {
+QByteArray encodeCLiveryPayloadWithCreatorTag(const Project &project,
+                                              const QByteArray &creatorTag) {
     if (!project.isLivery) {
         throw std::runtime_error("not a livery project");
     }
     std::array<int, 11> counts{};
     const QByteArray gyvl = buildLiveryGyvl(project, &counts);
 
-    return buildNewLiveryPayload(project, gyvl, counts);
+    return buildNewLiveryPayload(project, gyvl, counts, creatorTag);
+}
+
+} // namespace
+
+QByteArray encodeCLiveryPayload(const Project &project) {
+    return encodeCLiveryPayloadWithCreatorTag(project, normalizedCreatorTag(project));
 }
 
 void exportCLivery(const Project &project, const QString &outputFolder) {
     if (outputFolder.isEmpty()) {
         throw std::runtime_error("export output folder is empty");
     }
-    const QByteArray payload = encodeCLiveryPayload(project);
+    QByteArray creatorTag = creatorTagFromSavePath(outputFolder);
+    if (creatorTag.isEmpty()) {
+        creatorTag = normalizedCreatorTag(project);
+    }
+    const QByteArray payload = encodeCLiveryPayloadWithCreatorTag(project, creatorTag);
 
     if (!QDir().mkpath(outputFolder)) {
         throw std::runtime_error(("could not create export folder: " + outputFolder).toStdString());
@@ -1336,7 +1350,7 @@ void exportCLivery(const Project &project, const QString &outputFolder) {
     writeCGroupFile(outputDir.filePath(QStringLiteral("C_livery")), payload);
 
     const LiveryPayload encoded = parseInflatedLiveryPayload(payload);
-    const QByteArray header = buildLiveryHeader(project, encoded.sectionCounts);
+    const QByteArray header = buildLiveryHeader(project, encoded.sectionCounts, creatorTag);
     if (!header.isEmpty()) {
         writeRawFile(outputDir.filePath(QStringLiteral("header")), header);
     }

@@ -2,6 +2,7 @@
 
 #include "header_codec.h"
 #include "layer.h"
+#include "livery_codec.h"
 #include "project_codec.h"
 
 #include <QCoreApplication>
@@ -213,6 +214,40 @@ void testGroupExportOwnershipMetadata() {
     require(metadata.typeValue == 2, "group export shape count mismatch");
 }
 
+void testLiveryExportOwnershipMetadata() {
+    QTemporaryDir temporary;
+    QByteArray expectedCreatorTag;
+    constexpr quint64 kProfileId = 0x0102030405060708;
+
+    require(temporary.isValid(), "could not create temporary directory");
+    appendU64(expectedCreatorTag, kProfileId);
+
+    fls::Project project;
+    project.name = QStringLiteral("Livery ownership metadata");
+    project.carId = 1229;
+    project.isLivery = true;
+    project.headerMetadata = fls::defaultDraftHeader(
+        project.name, QStringLiteral("Creator"), static_cast<quint32>(project.carId));
+    project.headerMetadata->creatorTag = QByteArray(8, '\x7f');
+
+    const QString profileDirectory = QStringLiteral("u_%1_ABCDEF").arg(kProfileId);
+    const QString outputFolder = QDir(temporary.path()).filePath(
+        profileDirectory + QStringLiteral("/current/ContainersRoot/Livery_Test"));
+    fls::exportCLivery(project, outputFolder);
+
+    QFile headerFile(QDir(outputFolder).filePath(QStringLiteral("header")));
+    require(headerFile.open(QIODevice::ReadOnly), "livery export header was not created");
+    const fls::HeaderMetadata metadata = fls::parseHeader(headerFile.readAll());
+    require(metadata.creatorTag == expectedCreatorTag,
+            "livery export header creator identity mismatch");
+
+    const fls::LiveryPayload payload = fls::readLiveryPayload(outputFolder);
+    const int metadataOffset = payload.raw.indexOf(QByteArray("yrvl", 4));
+    require(metadataOffset >= 0, "livery export metadata record was not created");
+    require(payload.raw.mid(metadataOffset + 8, 8) == expectedCreatorTag,
+            "livery export payload creator identity mismatch");
+}
+
 QByteArray readFixtureFile(const QString &path) {
     if (path.isEmpty()) {
         return {};
@@ -261,6 +296,7 @@ int main(int argc, char *argv[]) {
     try {
         testSyntheticSave();
         testGroupExportOwnershipMetadata();
+        testLiveryExportOwnershipMetadata();
         if (application.arguments().size() > 1) {
             testImportedSave(application.arguments().at(1));
         }

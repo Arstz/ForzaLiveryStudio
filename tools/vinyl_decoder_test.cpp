@@ -5,6 +5,7 @@
 #include <QtCore>
 
 #include <array>
+#include <cmath>
 #include <exception>
 
 namespace {
@@ -35,6 +36,28 @@ void appendShape(QByteArray &payload, quint8 marker, bool framed) {
     }
     payload.append(static_cast<char>(marker));
     appendShapePayload(payload);
+}
+
+void appendLiveryRoot(QByteArray &payload, int count, quint8 bitmap) {
+    fls::detail::appendLeU16(payload, static_cast<quint16>(count));
+    fls::detail::appendLeU16(payload, 1);
+    payload.append(QByteArray(2, '\0'));
+    payload.append(static_cast<char>(bitmap));
+}
+
+void appendLiveryLockedGroup(QByteArray &payload, quint8 transformMarker,
+                             quint8 frameMarker) {
+    payload.append(static_cast<char>(transformMarker));
+    fls::detail::appendLeFloat(payload, 10.0f);
+    fls::detail::appendLeFloat(payload, -20.0f);
+    fls::detail::appendLeFloat(payload, -2.0f);
+    fls::detail::appendLeFloat(payload, 25.0f);
+    payload.append(static_cast<char>(frameMarker));
+    payload.append(QByteArray::fromHex("1122334455667788"));
+    fls::detail::appendLeFloat(payload, 3.0f);
+    appendLiveryRoot(payload, kRootChildCount, 0x00);
+    appendShape(payload, kGeneration3ShapeMarker, false);
+    appendShape(payload, kGeneration3ShapeMarker, false);
 }
 
 void appendTransform(QByteArray &payload, quint8 terminator) {
@@ -152,6 +175,46 @@ bool testGeneration3TrailingMasks() {
                            "generation-3 terminal mask state was lost");
 }
 
+bool testLiveryLockedTransformFrames() {
+    QByteArray body;
+    appendLiveryRoot(body, kRootChildCount, 0x03);
+    appendLiveryLockedGroup(body, 0x00, 0x71);
+    appendLiveryLockedGroup(body, 0x01, 0x31);
+
+    const QVector<fls::LiverySection> sections = fls::buildLiverySections(
+        body, QVector<int>{kRootChildCount * 2});
+    if (sections.size() != 11) {
+        qCritical() << "livery locked frame test decoded" << sections.size() << "sections";
+        return false;
+    }
+    const fls::VinylGroup &section = sections.front().subtree;
+    if (section.items.size() != 1 || section.items.front().isShape()) {
+        qCritical() << "livery locked frame root was not decoded";
+        return false;
+    }
+    const fls::VinylGroup &root = *std::get<fls::VinylGroupPtr>(section.items.front().value);
+    if (root.items.size() != kRootChildCount
+        || root.items.front().isShape() || root.items.back().isShape()) {
+        qCritical() << "livery locked frame hierarchy was not decoded";
+        return false;
+    }
+    const fls::VinylGroup &masked = *std::get<fls::VinylGroupPtr>(root.items.front().value);
+    const fls::VinylGroup &plain = *std::get<fls::VinylGroupPtr>(root.items.back().value);
+    const auto validTransform = [](const fls::VinylGroup &group) {
+        return std::abs(group.px - 10.0) < 1e-6
+            && std::abs(group.py + 20.0) < 1e-6
+            && std::abs(group.sx + 2.0) < 1e-6
+            && std::abs(group.sy - 3.0) < 1e-6
+            && std::abs(group.rot - 25.0) < 1e-6;
+    };
+
+    return masked.items.size() == kRootChildCount
+        && plain.items.size() == kRootChildCount
+        && masked.isMask && (masked.flags & 0x40)
+        && !plain.isMask && !(plain.flags & 0x40)
+        && validTransform(masked) && validTransform(plain);
+}
+
 bool verifyUnmaskedGroup(const QString &path) {
     const fls::VinylGroup group = fls::decodeGroup(fls::readCGroupPayload(path), nullptr);
     QVector<const fls::VinylShape *> shapes;
@@ -180,5 +243,6 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
-    return testGeneration2MaskFraming() && testGeneration3TrailingMasks() ? 0 : 1;
+    return testGeneration2MaskFraming() && testGeneration3TrailingMasks()
+        && testLiveryLockedTransformFrames() ? 0 : 1;
 }

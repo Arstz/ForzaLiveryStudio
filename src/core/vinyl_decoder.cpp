@@ -51,6 +51,7 @@ struct TransformRecord {
     int size = 0;
     Transform transform;
     QByteArray marker;
+    int flags = 0;
 };
 
 bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> bytes) {
@@ -385,14 +386,38 @@ bool childBitmapBit(const QByteArray &bitmap, int index) {
         && (static_cast<quint8>(bitmap[byteIndex]) & (1 << (index % 8)));
 }
 
-constexpr int kLiveryTransformTrailerSize = 9;
+struct LiveryTransformTrailer {
+    int size = 0;
+    std::optional<double> sy;
+    int flags = 0;
+};
 
-bool isLiveryTransformTrailerAt(const QByteArray &data, int pos, int end) {
-    return pos >= 0 && pos + kLiveryTransformTrailerSize <= end
-        && pos + kLiveryTransformTrailerSize <= data.size()
-        && static_cast<quint8>(data[pos]) == 0x21
-        && static_cast<quint8>(data[pos + 7]) == 0x09
-        && static_cast<quint8>(data[pos + 8]) == 0x00;
+std::optional<LiveryTransformTrailer> liveryTransformTrailerAt(
+    const QByteArray &data, int pos, int end) {
+    constexpr int baseSize = 9;
+    if (pos < 0 || pos + baseSize > end || pos + baseSize > data.size()) {
+        return std::nullopt;
+    }
+    const quint8 lead = static_cast<quint8>(data[pos]);
+    if ((lead & ~0x50) != 0x21) {
+        return std::nullopt;
+    }
+
+    LiveryTransformTrailer trailer;
+    trailer.size = baseSize;
+    trailer.flags = lead & 0x40;
+    if (lead & 0x10) {
+        if (pos + baseSize + 4 > end || pos + baseSize + 4 > data.size()) {
+            return std::nullopt;
+        }
+        const double sy = readLeFloat(data, pos + baseSize);
+        if (!std::isfinite(sy) || std::abs(sy) < 0.0001 || std::abs(sy) > 5000.0) {
+            return std::nullopt;
+        }
+        trailer.size += 4;
+        trailer.sy = sy;
+    }
+    return trailer;
 }
 
 // Transform leads are opaque; the surrounding record structure establishes their role.
@@ -430,9 +455,10 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end) {
             || validMarkerlessGroupAt(data, child, end, true, true)) {
             return true;
         }
-        if (isLiveryTransformTrailerAt(data, child, end)
-            && (validCountedGroupAt(data, child + kLiveryTransformTrailerSize, end, true)
-                || validMarkerlessGroupAt(data, child + kLiveryTransformTrailerSize, end,
+        const auto trailer = liveryTransformTrailerAt(data, child, end);
+        if (trailer
+            && (validCountedGroupAt(data, child + trailer->size, end, true)
+                || validMarkerlessGroupAt(data, child + trailer->size, end,
                                           true, true))) {
             return true;
         }
@@ -536,9 +562,13 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
                     child += 5;
                 }
             }
-            if (isLiveryTransformTrailerAt(data, child, end)) {
-                child += kLiveryTransformTrailerSize;
-                transformSize += kLiveryTransformTrailerSize;
+            if (const auto trailer = liveryTransformTrailerAt(data, child, end)) {
+                child += trailer->size;
+                transformSize += trailer->size;
+                if (trailer->sy) {
+                    candidate->sy = *trailer->sy;
+                    candidate->hasSy = true;
+                }
             }
             if (groupAtOrAfterControlByte(data, child, end, true)) {
                 info.inlineTransform = *candidate;
@@ -714,9 +744,10 @@ bool liveryTransformEndsAtGroup(const QByteArray &data, int pos, int end) {
             || validMarkerlessGroupAt(data, next, end, true, true)) {
             return true;
         }
-        if (isLiveryTransformTrailerAt(data, next, end)
-            && (validCountedGroupAt(data, next + kLiveryTransformTrailerSize, end, true)
-                || validMarkerlessGroupAt(data, next + kLiveryTransformTrailerSize,
+        const auto trailer = liveryTransformTrailerAt(data, next, end);
+        if (trailer
+            && (validCountedGroupAt(data, next + trailer->size, end, true)
+                || validMarkerlessGroupAt(data, next + trailer->size,
                                           end, true, true))) {
             return true;
         }
@@ -754,10 +785,11 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
             const int alignedNext = pos + 1 + alignedSize;
             const bool groupFollowsExactly = validCountedGroupAt(data, alignedNext, end, true)
                 || validMarkerlessGroupAt(data, alignedNext, end, true, true);
-            const bool trailerThenGroup = isLiveryTransformTrailerAt(data, alignedNext, end)
-                && (validCountedGroupAt(data, alignedNext + kLiveryTransformTrailerSize, end, true)
+            const auto alignedTrailer = liveryTransformTrailerAt(data, alignedNext, end);
+            const bool trailerThenGroup = alignedTrailer
+                && (validCountedGroupAt(data, alignedNext + alignedTrailer->size, end, true)
                     || validMarkerlessGroupAt(data,
-                                              alignedNext + kLiveryTransformTrailerSize,
+                                              alignedNext + alignedTrailer->size,
                                               end, true, true));
             if (groupFollowsExactly || trailerThenGroup) {
                 return std::nullopt;
@@ -785,18 +817,24 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
         const bool groupFollowsControl = next + 1 < end && !isValidShapeAt(data, next, end)
             && (validCountedGroupAt(data, next + 1, end, true)
                 || validMarkerlessGroupAt(data, next + 1, end, true, true));
-        const bool groupFollowsTrailer = isLiveryTransformTrailerAt(data, next, end)
-            && (validCountedGroupAt(data, next + kLiveryTransformTrailerSize, end, true)
-                || validMarkerlessGroupAt(data, next + kLiveryTransformTrailerSize, end,
+        const auto trailer = liveryTransformTrailerAt(data, next, end);
+        const bool groupFollowsTrailer = trailer
+            && (validCountedGroupAt(data, next + trailer->size, end, true)
+                || validMarkerlessGroupAt(data, next + trailer->size, end,
                                           true, true));
         if (groupFollowsImmediately || groupFollowsControl || groupFollowsTrailer) {
             const int groupPos = groupFollowsImmediately ? next
-                : (groupFollowsControl ? next + 1 : next + kLiveryTransformTrailerSize);
+                : (groupFollowsControl ? next + 1 : next + trailer->size);
             auto successorGroup = validCountedGroupAt(data, groupPos, end, true);
             if (!successorGroup) {
                 successorGroup = validMarkerlessGroupAt(data, groupPos, end, true, true);
             }
-            const bool maskTransform = successorGroup && (successorGroup->flags & 0x40);
+            if (groupFollowsTrailer && trailer->sy) {
+                transform->sy = *trailer->sy;
+                transform->hasSy = true;
+            }
+            const bool maskTransform = (successorGroup && (successorGroup->flags & 0x40))
+                || (groupFollowsTrailer && (trailer->flags & 0x40));
             const double transformSy = transform->hasSy ? transform->sy : transform->sx;
             const bool mirroredTransform = transform->sx * transformSy < 0.0;
             bool scaledFirstChildFrame = false;
@@ -808,7 +846,7 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
                     || std::abs(std::abs(childSy) - 1.0) > 1e-6;
             }
             if (groupFollowsTrailer) {
-                size += kLiveryTransformTrailerSize;
+                size += trailer->size;
             }
             const QByteArray marker = data.mid(pos, markerSize);
             if (invertOddRotation && marker == QByteArray("\x01", 1)
@@ -816,7 +854,8 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
                 && scaledFirstChildFrame) {
                 transform->rot = -transform->rot;
             }
-            return TransformRecord{size, *transform, marker};
+            return TransformRecord{size, *transform, marker,
+                                   groupFollowsTrailer ? trailer->flags : 0};
         }
     }
     return std::nullopt;
@@ -1157,6 +1196,8 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
             s.pendingTransform = liveryTransform->transform;
             s.pendingTransformMarker = liveryTransform->marker;
             s.pendingTransformPrefix.clear();
+            s.pendingFlags |= liveryTransform->flags;
+            s.pendingMask = s.pendingMask || (liveryTransform->flags & 0x40);
             return pos + liveryTransform->size;
         }
     }
