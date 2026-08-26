@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstring>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #define NOMINMAX
@@ -142,6 +143,46 @@ bool associationOwnedByApplication() {
         QSettings::NativeFormat);
     return extension.value(QStringLiteral(".")).toString()
         == QLatin1String(kProjectProgId);
+}
+
+bool applicationUsesPowerSavingGpuPreference() {
+    constexpr wchar_t kGpuPreferencesRegistryPath[] =
+        L"Software\\Microsoft\\DirectX\\UserGpuPreferences";
+    const QString path = executablePath();
+    const wchar_t *valueName = reinterpret_cast<const wchar_t *>(path.utf16());
+
+    DWORD valueType = 0;
+    DWORD valueSize = 0;
+    LONG result = RegGetValueW(
+        HKEY_CURRENT_USER,
+        kGpuPreferencesRegistryPath,
+        valueName,
+        RRF_RT_REG_SZ,
+        &valueType,
+        nullptr,
+        &valueSize);
+    if (result != ERROR_SUCCESS || valueSize < sizeof(wchar_t)) {
+        return false;
+    }
+
+    std::vector<wchar_t> value(valueSize / sizeof(wchar_t) + 1, L'\0');
+    result = RegGetValueW(
+        HKEY_CURRENT_USER,
+        kGpuPreferencesRegistryPath,
+        valueName,
+        RRF_RT_REG_SZ,
+        &valueType,
+        value.data(),
+        &valueSize);
+    if (result != ERROR_SUCCESS) {
+        return false;
+    }
+
+    const QString preference = QString::fromWCharArray(value.data());
+    static const QRegularExpression powerSavingPreference(
+        QStringLiteral(R"((?:^|;)\s*GpuPreference\s*=\s*1\s*(?:;|$))"),
+        QRegularExpression::CaseInsensitiveOption);
+    return powerSavingPreference.match(preference).hasMatch();
 }
 #else
 QIcon applicationIcon(SystemIconSet iconSet) {
@@ -328,6 +369,23 @@ void applySystemWindowIcon(QWidget &window) {
     if (smallIcon != nullptr) {
         SendMessageW(handle, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
     }
+#endif
+}
+
+void warnIfPowerSavingGpuPreference(QWidget &parent) {
+#ifdef Q_OS_WIN
+    if (!applicationUsesPowerSavingGpuPreference()) {
+        return;
+    }
+
+    QMessageBox::warning(
+        &parent,
+        QStringLiteral("Integrated Graphics"),
+        QStringLiteral(
+            "Forza Livery Studio is currently set to use the CPU's integrated graphics. "
+            "If it is not switched to the main GPU, the 3D preview renderer might not work correctly."));
+#else
+    Q_UNUSED(parent);
 #endif
 }
 

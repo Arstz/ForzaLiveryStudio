@@ -28,6 +28,7 @@ bool setProjectFileAssociationEnabled(bool enabled,
                                       QString *error = nullptr);
 void configureSystemIntegration(QApplication &app);
 void applySystemWindowIcon(QWidget &window);
+void warnIfPowerSavingGpuPreference(QWidget &parent);
 void offerProjectFileAssociation(QWidget &parent);
 
 } // namespace gui

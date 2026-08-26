@@ -95,6 +95,7 @@ int main(int argc, char *argv[]) {
     window.show();
     gui::applySystemWindowIcon(window);
     QTimer::singleShot(0, &window, [&window]() {
+        gui::warnIfPowerSavingGpuPreference(window);
         gui::offerProjectFileAssociation(window);
     });
     return QApplication::exec();
