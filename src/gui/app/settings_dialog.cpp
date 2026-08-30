@@ -22,6 +22,25 @@ using SettingTips = QHash<QString, SettingTip>;
 constexpr auto kShortcutConflictStyle =
     "QLineEdit { border: 2px solid #d9534f; }";
 
+class ImmediateToolTipButton final : public QToolButton {
+public:
+    using QToolButton::QToolButton;
+
+protected:
+    void enterEvent(QEnterEvent *event) override {
+        QToolButton::enterEvent(event);
+        if (!toolTip().isEmpty()) {
+            QToolTip::showText(
+                mapToGlobal(QPoint(0, height())), toolTip(), this, rect());
+        }
+    }
+
+    void leaveEvent(QEvent *event) override {
+        QToolTip::hideText();
+        QToolButton::leaveEvent(event);
+    }
+};
+
 void setShortcutConflictStyle(QKeySequenceEdit *edit, bool conflict) {
     if (edit == nullptr) {
         return;
@@ -75,7 +94,7 @@ QWidget *settingLabel(const QString &text,
     layout->addStretch(1);
     const SettingTip tip = tips.value(id);
     if (tip.hasTip && !tip.tip.isEmpty()) {
-        auto *help = new QToolButton(container);
+        auto *help = new ImmediateToolTipButton(container);
         help->setText(QStringLiteral("?"));
         help->setAutoRaise(true);
         help->setCursor(Qt::WhatsThisCursor);

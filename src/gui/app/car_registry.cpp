@@ -63,6 +63,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
     const QJsonObject root = document.object();
     QHash<int, QString> parsed;
     QHash<int, QString> parsedModels;
+    QHash<int, QString> parsedVersions;
     for (auto it = root.begin(); it != root.end(); ++it) {
         bool ok = false;
         const int id = it.key().toInt(&ok);
@@ -71,10 +72,16 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
         }
         QString name;
         QString model;
+        QString version = QStringLiteral("FH6");
         if (it.value().isObject()) {
             const QJsonObject entry = it.value().toObject();
             model = entry.value(QStringLiteral("model")).toString().trimmed();
             name = entry.value(QStringLiteral("name")).toString().trimmed();
+            const QString parsedVersion =
+                entry.value(QStringLiteral("version")).toString().trimmed();
+            if (!parsedVersion.isEmpty()) {
+                version = parsedVersion;
+            }
             if (name.isEmpty()) {
                 name = model;
             }
@@ -83,6 +90,7 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
         }
         if (!name.isEmpty()) {
             parsed.insert(id, name);
+            parsedVersions.insert(id, version);
         }
         if (!model.isEmpty()) {
             parsedModels.insert(id, model);
@@ -91,10 +99,11 @@ bool CarRegistry::loadFromFile(const QString &path, QString *error) {
 
     names_ = parsed;
     models_ = parsedModels;
+    versions_ = parsedVersions;
     sorted_.clear();
     sorted_.reserve(names_.size());
     for (auto it = names_.constBegin(); it != names_.constEnd(); ++it) {
-        sorted_.push_back({it.key(), it.value()});
+        sorted_.push_back({it.key(), it.value(), versions_.value(it.key())});
     }
     std::sort(sorted_.begin(), sorted_.end(), [](const Entry &a, const Entry &b) {
         return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
@@ -109,6 +118,14 @@ QString CarRegistry::name(int id) const {
 QString CarRegistry::modelCode(int id) const {
     const QString code = models_.value(id);
     return code.isEmpty() ? names_.value(id) : code;
+}
+
+QString CarRegistry::version(int id) const {
+    return versions_.value(id);
+}
+
+bool CarRegistry::isFh5Only(int id) const {
+    return versions_.value(id).compare(QStringLiteral("FH5"), Qt::CaseInsensitive) == 0;
 }
 
 QString CarRegistry::displayName(int id) const {

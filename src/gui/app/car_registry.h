@@ -13,6 +13,7 @@ public:
     struct Entry {
         int id = 0;
         QString name;
+        QString version;
     };
 
     bool loadDefault(QString *error = nullptr);
@@ -20,13 +21,16 @@ public:
 
     QString name(int id) const;
     QString modelCode(int id) const;
+    QString version(int id) const;
     QString displayName(int id) const;
+    bool isFh5Only(int id) const;
     const QVector<Entry> &entries() const { return sorted_; }
     bool isEmpty() const { return names_.isEmpty(); }
 
 private:
     QHash<int, QString> names_;
     QHash<int, QString> models_;
+    QHash<int, QString> versions_;
     QVector<Entry> sorted_;
 };
 

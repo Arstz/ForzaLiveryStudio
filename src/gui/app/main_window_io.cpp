@@ -807,6 +807,23 @@ void MainWindow::exportDialog() {
         QMessageBox::information(this, QStringLiteral("Export"), QStringLiteral("Open a project before exporting."));
         return;
     }
+    if (state_->project_.isLivery
+        && sharedCarRegistry().isFh5Only(state_->project_.carId)) {
+        QMessageBox warning(this);
+        warning.setIcon(QMessageBox::Warning);
+        warning.setWindowTitle(QStringLiteral("Unsupported FH6 Car"));
+        warning.setText(QStringLiteral(
+            "This car is currently only available in Forza Horizon 5 and is not supported "
+            "in Forza Horizon 6 yet. The exported livery will not be available in the game."));
+        QPushButton *proceed = warning.addButton(
+            QStringLiteral("Proceed"), QMessageBox::AcceptRole);
+        QPushButton *cancel = warning.addButton(QMessageBox::Cancel);
+        warning.setDefaultButton(cancel);
+        warning.exec();
+        if (warning.clickedButton() != proceed) {
+            return;
+        }
+    }
     const QString folder = QFileDialog::getExistingDirectory(this,
                                                             QStringLiteral("Export Folder"),
                                                             importDialogStartDirectoryWithFallbacks(
