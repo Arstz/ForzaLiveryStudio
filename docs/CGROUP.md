@@ -46,6 +46,9 @@ bit = 1  direct root child is a group
 bit = 0  direct root child is a shape
 ```
 
+The root group marker may be `00` while retaining the same count, control,
+bitmap, and layer-data layout.
+
 Layer data begins after the root bitmap:
 
 ```text
@@ -132,15 +135,15 @@ satisfied.
 
 ## Markerless Groups
 
-After a pending transform, a counted group can omit the `20/60` marker:
+A counted group can omit the `20/60` marker:
 
 ```text
 u16 child_count + u16 child_blocks + reserved[2] + bitmap[ceil(child_count / 8)]
 ```
 
-This markerless form is accepted only after a pending transform and only when
-the following bytes continue with a valid child record or an inline transform
-for the first child.
+This markerless form is accepted after a pending transform or when the parent
+bitmap requires a group. The following bytes must continue with a valid child
+record or an inline transform for the first child.
 
 Because the markerless form is ambiguous inside shape data, it is accepted only
 when the declared bitmap and following child record are structurally valid.
@@ -148,8 +151,9 @@ when the declared bitmap and following child record are structurally valid.
 ## Inline First-Child Transforms
 
 Group records can carry a transform after their reserved bytes and child bitmap.
-If the next token is another group, the transform belongs to the first child rather
-than the current group.
+If the next child is another group, the transform belongs to the first child
+rather than the current group. Its header can start immediately or after one
+control byte.
 
 First-child inline transform markers include:
 
@@ -172,11 +176,12 @@ from standalone `C_group`: a separate group transform is usually a single lead
 byte plus the 16-byte transform payload, and the `00` family can retain a
 `00 01` prefix before that payload.
 
-The following group can start immediately, after one control byte, or after the
-framed 9-byte livery trailer `21 ?? ?? ?? ?? ?? ?? 09 00`. The trailer is consumed
-as one opaque unit. It is not a free-form scan allowance: only successor offsets
-0, 1, and the exact 9-byte frame are accepted, each requiring a structurally valid
-group at the resulting position. See [`CLIVERY.md`](CLIVERY.md) for the full
+A following group can start immediately, after one control byte, or after the
+framed 9-byte transform trailer `21 ?? ?? ?? ?? ?? ?? 09 00`. The trailer is
+shared by standalone and embedded streams and is consumed as one opaque unit.
+It is not a free-form scan allowance: only successor offsets 0, 1, and the exact
+9-byte frame are accepted, each requiring a structurally valid group at the
+resulting position. See [`CLIVERY.md`](CLIVERY.md) for the full embedded
 transform-dialect and section-boundary rules.
 
 The section walker retains the ancestry produced by counted records and bounded
@@ -210,14 +215,17 @@ u8  a
 ```
 
 Standalone streams identify their record generation in the root transform
-marker. Generation 2 uses `01` for shape records and `02` as the transform
-terminator. Generation 3 uses the markers shown above. The shared tree walk
+marker. Generations 1 and 2 use `01` for shape records. Generation 1 uses `01`
+as its transform terminator, generation 2 uses `02`, and generation 3 uses the
+markers shown above. The shared tree walk
 selects the record dialect from the root header and decodes the original bytes.
 The direct-child bitmap selects whether each following child is a shape or a
 group, so marker-like bytes outside that child type are not interpreted as
-records.
+records. It also resolves ambiguous bytes immediately after a group header:
+a shape bit selects a valid shape record, while a group bit permits a
+markerless child group without requiring a preceding transform record.
 
-Generation 2 uses odd record and transform leads as traversal framing. Their
+Generations 1 and 2 use odd record and transform leads as traversal framing. Their
 parity does not carry trailing mask state. Generation 3 assigns trailing mask
 state to the contextual odd leads described below.
 

@@ -11,16 +11,18 @@
 namespace {
 
 constexpr quint16 kShapeId = 101;
+constexpr quint16 kImpactLowercaseAWireAlias = 3000;
+constexpr quint16 kImpactLowercaseA = 3001;
 constexpr int kRootChildCount = 2;
 constexpr quint8 kGeneration2Marker = 0x02;
-constexpr quint8 kGeneration2ShapeMarker = 0x01;
+constexpr quint8 kLegacyShapeMarker = 0x01;
 constexpr quint8 kGeneration2TransformTerminator = 0x02;
 constexpr quint8 kGeneration3Marker = 0x03;
 constexpr quint8 kGeneration3ShapeMarker = 0x02;
 constexpr quint8 kGeneration3TransformTerminator = 0x03;
 
-void appendShapePayload(QByteArray &payload) {
-    fls::detail::appendLeU16(payload, kShapeId);
+void appendShapePayload(QByteArray &payload, quint16 shapeId = kShapeId) {
+    fls::detail::appendLeU16(payload, shapeId);
     fls::detail::appendLeFloat(payload, 0.0f);
     fls::detail::appendLeFloat(payload, 0.0f);
     fls::detail::appendLeFloat(payload, 0.0f);
@@ -30,15 +32,16 @@ void appendShapePayload(QByteArray &payload) {
     payload.append(QByteArray::fromHex("ffffffff"));
 }
 
-void appendShape(QByteArray &payload, quint8 marker, bool framed) {
+void appendShape(QByteArray &payload, quint8 marker, bool framed,
+                 quint16 shapeId = kShapeId) {
     if (framed) {
         payload.append('\x01');
     }
     payload.append(static_cast<char>(marker));
-    appendShapePayload(payload);
+    appendShapePayload(payload, shapeId);
 }
 
-void appendLiveryRoot(QByteArray &payload, int count, quint8 bitmap) {
+void appendMarkerlessGroupHeader(QByteArray &payload, int count, quint8 bitmap) {
     fls::detail::appendLeU16(payload, static_cast<quint16>(count));
     fls::detail::appendLeU16(payload, 1);
     payload.append(QByteArray(2, '\0'));
@@ -55,7 +58,7 @@ void appendLiveryLockedGroup(QByteArray &payload, quint8 transformMarker,
     payload.append(static_cast<char>(frameMarker));
     payload.append(QByteArray::fromHex("1122334455667788"));
     fls::detail::appendLeFloat(payload, 3.0f);
-    appendLiveryRoot(payload, kRootChildCount, 0x00);
+    appendMarkerlessGroupHeader(payload, kRootChildCount, 0x00);
     appendShape(payload, kGeneration3ShapeMarker, false);
     appendShape(payload, kGeneration3ShapeMarker, false);
 }
@@ -69,6 +72,18 @@ void appendTransform(QByteArray &payload, quint8 terminator) {
     fls::detail::appendLeFloat(payload, 0.0f);
 }
 
+void appendGeneration1Transform(QByteArray &payload, float px) {
+    payload.append('\x01');
+    fls::detail::appendLeFloat(payload, px);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 1.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+}
+
+void appendTransformTrailer(QByteArray &payload) {
+    payload.append(QByteArray::fromHex("21949fe18af9010900"));
+}
+
 void appendNestedShapeGroup(QByteArray &payload, quint8 shapeMarker) {
     payload.append('\x20');
     fls::detail::appendLeU16(payload, 1);
@@ -80,7 +95,7 @@ void appendNestedShapeGroup(QByteArray &payload, quint8 shapeMarker) {
 
 QByteArray makePayload(quint8 generationMarker, quint8 shapeMarker,
                        quint8 transformTerminator, bool framedSecondShape,
-                       bool terminalFlag) {
+                       bool terminalFlag, quint16 firstShapeId = kShapeId) {
     QByteArray payload("gyvl", 4);
     const quint8 childBitmap = framedSecondShape ? 0x00 : 0x02;
 
@@ -96,7 +111,7 @@ QByteArray makePayload(quint8 generationMarker, quint8 shapeMarker,
     payload.append('\x01');
     payload.append(QByteArray(3, '\0'));
     payload.append(static_cast<char>(childBitmap));
-    appendShape(payload, shapeMarker, false);
+    appendShape(payload, shapeMarker, false, firstShapeId);
     if (framedSecondShape) {
         appendShape(payload, shapeMarker, true);
     } else {
@@ -106,6 +121,102 @@ QByteArray makePayload(quint8 generationMarker, quint8 shapeMarker,
     if (terminalFlag) {
         payload.append('\x01');
     }
+
+    return payload;
+}
+
+QByteArray makeMarkerlessRootPayload() {
+    QByteArray payload("gyvl", 4);
+
+    fls::detail::appendLeU32(payload, 1);
+    fls::detail::appendLeU32(payload, 0);
+    payload.append(static_cast<char>(0x01));
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 1.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    payload.append('\0');
+    fls::detail::appendLeU16(payload, kRootChildCount);
+    payload.append('\x01');
+    payload.append(QByteArray(3, '\0'));
+    payload.append('\0');
+    appendShape(payload, kLegacyShapeMarker, false);
+    appendShape(payload, kLegacyShapeMarker, false);
+
+    return payload;
+}
+
+QByteArray makeGeneration1NestedPayload() {
+    QByteArray payload("gyvl", 4);
+
+    fls::detail::appendLeU32(payload, 1);
+    fls::detail::appendLeU32(payload, 0);
+    payload.append('\x01');
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 1.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    payload.append('\0');
+    fls::detail::appendLeU16(payload, 1);
+    payload.append('\x01');
+    payload.append(QByteArray(3, '\0'));
+    payload.append('\x01');
+    appendMarkerlessGroupHeader(payload, kRootChildCount, 0x00);
+    appendShape(payload, kLegacyShapeMarker, false);
+    appendShape(payload, kLegacyShapeMarker, false);
+
+    return payload;
+}
+
+QByteArray makeGeneration1SiblingTransformPayload() {
+    QByteArray payload("gyvl", 4);
+
+    fls::detail::appendLeU32(payload, 1);
+    fls::detail::appendLeU32(payload, 0);
+    payload.append('\x01');
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 1.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    payload.append('\0');
+    fls::detail::appendLeU16(payload, 1);
+    payload.append('\x01');
+    payload.append(QByteArray(3, '\0'));
+    payload.append('\x01');
+    appendMarkerlessGroupHeader(payload, kRootChildCount, 0x03);
+    appendGeneration1Transform(payload, 10.0f);
+    payload.append('\0');
+    appendMarkerlessGroupHeader(payload, kRootChildCount, 0x00);
+    appendShape(payload, kLegacyShapeMarker, false);
+    appendShape(payload, kLegacyShapeMarker, false);
+    appendGeneration1Transform(payload, 20.0f);
+    appendMarkerlessGroupHeader(payload, kRootChildCount, 0x00);
+    appendShape(payload, kLegacyShapeMarker, false);
+    appendShape(payload, kLegacyShapeMarker, false);
+
+    return payload;
+}
+
+QByteArray makeStandaloneTransformTrailerPayload() {
+    QByteArray payload("gyvl", 4);
+
+    fls::detail::appendLeU32(payload, 1);
+    fls::detail::appendLeU32(payload, 0);
+    payload.append(static_cast<char>(kGeneration3Marker));
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    fls::detail::appendLeFloat(payload, 1.0f);
+    fls::detail::appendLeFloat(payload, 0.0f);
+    payload.append('\x20');
+    fls::detail::appendLeU16(payload, 1);
+    payload.append('\x01');
+    payload.append(QByteArray(3, '\0'));
+    payload.append('\x01');
+    appendTransform(payload, kGeneration3TransformTerminator);
+    appendTransformTrailer(payload);
+    appendMarkerlessGroupHeader(payload, kRootChildCount, 0x00);
+    appendShape(payload, kGeneration3ShapeMarker, false);
+    appendShape(payload, kGeneration3ShapeMarker, false);
 
     return payload;
 }
@@ -141,13 +252,13 @@ bool expectMaskState(const QByteArray &payload, const std::array<bool, 2> &expec
 
 bool testGeneration2MaskFraming() {
     const QByteArray transformPayload = makePayload(
-        kGeneration2Marker, kGeneration2ShapeMarker,
+        kGeneration2Marker, kLegacyShapeMarker,
         kGeneration2TransformTerminator, false, false);
     const QByteArray shapePayload = makePayload(
-        kGeneration2Marker, kGeneration2ShapeMarker,
+        kGeneration2Marker, kLegacyShapeMarker,
         kGeneration2TransformTerminator, true, false);
     const QByteArray terminalPayload = makePayload(
-        kGeneration2Marker, kGeneration2ShapeMarker,
+        kGeneration2Marker, kLegacyShapeMarker,
         kGeneration2TransformTerminator, true, true);
     return expectMaskState(transformPayload, {false, false},
                            "generation-2 transform framing set mask state")
@@ -175,9 +286,82 @@ bool testGeneration3TrailingMasks() {
                            "generation-3 terminal mask state was lost");
 }
 
+bool testShapeIdAliases() {
+    const QByteArray payload = makePayload(
+        kGeneration3Marker, kGeneration3ShapeMarker,
+        kGeneration3TransformTerminator, true, false,
+        kImpactLowercaseAWireAlias);
+
+    const fls::VinylGroup group = fls::decodeGroup(payload, nullptr);
+    QVector<const fls::VinylShape *> shapes;
+    collectShapes(group, shapes);
+
+    return shapes.size() == kRootChildCount
+        && shapes.front()->shapeId == kImpactLowercaseA;
+}
+
+bool testStandaloneTransformTrailer() {
+    const fls::VinylGroup root = fls::decodeGroup(
+        makeStandaloneTransformTrailerPayload(), nullptr);
+    QVector<const fls::VinylShape *> shapes;
+    collectShapes(root, shapes);
+    if (root.items.size() != 1 || root.items.front().isShape()) {
+        return false;
+    }
+    const fls::VinylGroup &group = *std::get<fls::VinylGroupPtr>(
+        root.items.front().value);
+
+    return root.totalChildren() == 1
+        && group.expectedChildren == kRootChildCount
+        && group.totalChildren() == kRootChildCount
+        && shapes.size() == kRootChildCount
+        && std::abs(group.px - 32.0) < 1e-6;
+}
+
+bool testGeneration1MarkerlessRoot() {
+    const QByteArray payload = makeMarkerlessRootPayload();
+    fls::LayerData layerData;
+    const fls::VinylGroup group = fls::decodeGroup(payload, &layerData);
+    QVector<const fls::VinylShape *> shapes;
+    collectShapes(group, shapes);
+
+    const fls::VinylGroup nestedRoot = fls::decodeGroup(
+        makeGeneration1NestedPayload(), nullptr);
+    QVector<const fls::VinylShape *> nestedShapes;
+    collectShapes(nestedRoot, nestedShapes);
+    const bool validNestedGroup = nestedRoot.items.size() == 1
+        && !nestedRoot.items.front().isShape()
+        && std::get<fls::VinylGroupPtr>(nestedRoot.items.front().value)->totalChildren()
+            == kRootChildCount;
+
+    const fls::VinylGroup transformedRoot = fls::decodeGroup(
+        makeGeneration1SiblingTransformPayload(), nullptr);
+    const bool hasTransformParent = transformedRoot.items.size() == 1
+        && !transformedRoot.items.front().isShape();
+    const fls::VinylGroupPtr transformParent = hasTransformParent
+        ? std::get<fls::VinylGroupPtr>(transformedRoot.items.front().value)
+        : fls::VinylGroupPtr{};
+    const bool validSiblingTransforms = transformParent
+        && std::abs(transformParent->px) < 1e-6
+        && transformParent->items.size() == kRootChildCount
+        && !transformParent->items.front().isShape()
+        && !transformParent->items.back().isShape()
+        && std::abs(std::get<fls::VinylGroupPtr>(
+            transformParent->items.front().value)->px - 10.0) < 1e-6
+        && std::abs(std::get<fls::VinylGroupPtr>(
+            transformParent->items.back().value)->px - 20.0) < 1e-6;
+
+    return layerData.start == 37
+        && group.expectedChildren == kRootChildCount
+        && shapes.size() == kRootChildCount
+        && validNestedGroup
+        && nestedShapes.size() == kRootChildCount
+        && validSiblingTransforms;
+}
+
 bool testLiveryLockedTransformFrames() {
     QByteArray body;
-    appendLiveryRoot(body, kRootChildCount, 0x03);
+    appendMarkerlessGroupHeader(body, kRootChildCount, 0x03);
     appendLiveryLockedGroup(body, 0x00, 0x71);
     appendLiveryLockedGroup(body, 0x01, 0x31);
 
@@ -216,9 +400,19 @@ bool testLiveryLockedTransformFrames() {
 }
 
 bool verifyUnmaskedGroup(const QString &path) {
-    const fls::VinylGroup group = fls::decodeGroup(fls::readCGroupPayload(path), nullptr);
+    const fls::VinylGroup group = fls::decodeGroup(
+        fls::readCGroupPayload(path), nullptr);
     QVector<const fls::VinylShape *> shapes;
     collectShapes(group, shapes);
+    const QVector<QString> errors = fls::validateTree(group);
+    for (const QString &error : errors) {
+        qCritical().noquote() << error;
+    }
+    if (!errors.isEmpty()
+        || (group.expectedChildren
+            && group.totalChildren() != *group.expectedChildren)) {
+        return false;
+    }
     for (const fls::VinylShape *shape : shapes) {
         if (shape->isMask) {
             qCritical() << "unexpected mask at payload offset" << shape->absPos;
@@ -243,6 +437,8 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
-    return testGeneration2MaskFraming() && testGeneration3TrailingMasks()
+    return testGeneration1MarkerlessRoot()
+        && testGeneration2MaskFraming() && testGeneration3TrailingMasks()
+        && testShapeIdAliases() && testStandaloneTransformTrailer()
         && testLiveryLockedTransformFrames() ? 0 : 1;
 }

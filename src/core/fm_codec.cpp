@@ -92,8 +92,7 @@ bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos,
     if (idPos < 0 || endPos > data.size())
         return false;
     const quint16 encodedShapeId = readLeU16(data, idPos);
-    const quint16 shapeId = encodedShapeId == 0x0bb8
-        ? 0x0bb9 : detail::canonicalShapeId(encodedShapeId);
+    const quint16 shapeId = detail::canonicalShapeId(encodedShapeId);
     if (!detail::isKnownShapeId(shapeId) && encodedShapeId < 0x8000)
         return false;
     const double rotation = readLeFloat(data, transformPos);
@@ -174,22 +173,12 @@ QByteArray normalizeFM2023Records(QByteArray data) {
             && (static_cast<quint8>(data[pos + 1]) == 0x01
                 || static_cast<quint8>(data[pos + 1]) == 0x02)
             && isFM2023ShapePayloadAt(data, pos + 2, pos + 4, pos + 32)) {
-            const quint16 encodedShapeId = readLeU16(data, pos + 2);
             data[pos + 1] = static_cast<char>(0x02);
-            if (encodedShapeId == 0x0bb8) {
-                data[pos + 2] = static_cast<char>(0xb9);
-                data[pos + 3] = static_cast<char>(0x0b);
-            }
             pos += 32;
             continue;
         }
         if (isFM2023BareShapeAt(data, pos)) {
-            const quint16 encodedShapeId = readLeU16(data, pos + 1);
             data[pos] = static_cast<char>(0x02);
-            if (encodedShapeId == 0x0bb8) {
-                data[pos + 1] = static_cast<char>(0xb9);
-                data[pos + 2] = static_cast<char>(0x0b);
-            }
             pos += 31;
         } else if (const int transformSize = fm2023TransformSizeAt(data, pos)) {
             data[pos] = static_cast<char>(0x03);
@@ -246,7 +235,6 @@ void finalizeFM2023Group(VinylGroup &root, const QByteArray &payload,
 
 VinylDecoderOptions fm2023DecoderOptions() {
     VinylDecoderOptions options;
-    options.markerlessRootHeader = true;
     options.appendLiveryTailPadding = true;
     options.normalizeRecords = normalizeFM2023Records;
     options.finalizeGroup = finalizeFM2023Group;

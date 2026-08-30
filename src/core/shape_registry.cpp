@@ -8,6 +8,11 @@ struct ShapeRange {
     const char *prefix;
 };
 
+constexpr quint16 kLowerLetters1WireAlias = 2000;
+constexpr quint16 kLowerLetters1Start = 2001;
+constexpr quint16 kImpactLowercaseAWireAlias = 3000;
+constexpr quint16 kImpactLowercaseA = 3001;
+
 // Keep this table aligned with the keys in assets/vector/shape_names.json.
 // Each shipped shape family contains 40 consecutive IDs.
 constexpr ShapeRange kShapeRanges[] = {
@@ -62,8 +67,14 @@ const ShapeRange *rangeForShape(quint16 shapeId) {
 namespace fls::detail {
 
 quint16 canonicalShapeId(quint16 encodedShapeId) {
-    // Wire aliases are normalized to the shared asset registry.
-    return encodedShapeId == 0x07d0 ? 0x07d1 : encodedShapeId;
+    switch (encodedShapeId) {
+    case kLowerLetters1WireAlias:
+        return kLowerLetters1Start;
+    case kImpactLowercaseAWireAlias:
+        return kImpactLowercaseA;
+    default:
+        return encodedShapeId;
+    }
 }
 
 bool isKnownShapeId(quint16 shapeId) {
