@@ -1279,9 +1279,11 @@ void MainWindow::refreshHeaderMetadataWidget() {
         meta.name = state_->project_.name;
     }
 
+    const int carId = state_->project_.carId;
     headerMetadata_->setMetadata(
-        meta, sharedCarRegistry().displayName(state_->project_.carId),
-        true, state_->project_.isLivery);
+        meta, sharedCarRegistry().displayName(carId),
+        true, state_->project_.isLivery,
+        carId == 0 || sharedCarRegistry().isFh6Supported(carId));
 }
 
 void MainWindow::showHeaderMetadataDock() {

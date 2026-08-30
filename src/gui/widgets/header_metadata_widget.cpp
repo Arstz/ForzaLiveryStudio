@@ -67,7 +67,7 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
 
 void HeaderMetadataWidget::setMetadata(
     const fls::HeaderMetadata &seed, const QString &targetCar,
-    bool hasProject, bool canChangeTargetCar) {
+    bool hasProject, bool canChangeTargetCar, bool targetCarSupported) {
     seed_ = seed;
 
     nameEdit_->setText(seed.name);
@@ -75,6 +75,10 @@ void HeaderMetadataWidget::setMetadata(
     yearSpin_->setValue(seed.year == 0 ? QDate::currentDate().year() : seed.year);
     publishedCheck_->setChecked(seed.published);
     targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
+    targetCar_->setStyleSheet(
+        !targetCar.isEmpty() && !targetCarSupported
+            ? QStringLiteral("color: rgb(255, 213, 79);")
+            : QString());
 
     nameEdit_->setEnabled(hasProject);
     creatorEdit_->setEnabled(hasProject);

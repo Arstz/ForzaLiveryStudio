@@ -257,7 +257,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   font's average glyph width, computed separately for upper- and lower-case.
 - Edit project metadata from the Header dock. Name, creator, and year changes
   rebuild the project header when input finishes. Livery projects also expose
-  their target car and a Change button there. The Project dock remains a
+  their target car and a Change button there. Cars absent from FH6 are shown in
+  yellow in both the header and target-car picker. The Project dock remains a
   read-only summary.
 - Align and distribute the current selection from the **Edit** menu. **Align**
   (Top/Bottom/Left/Right/Horizontal Centre/Vertical Centre) snaps each selected
@@ -280,6 +281,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   assembled with their per-part transforms), or a zipped car folder (`.zip`) and
   shows it in the **3D Preview** dock.
   The vinyl scene is rasterized into a configurable paint-canvas texture (4x by default).
+  Until a model is rendered, the dock reports model loading, model availability,
+  or graphics API availability.
   Imported sections retain their XML origins and are stored in isolated paint regions.
   Mesh UV channel 3 is transformed by the corresponding per-mesh texture-coordinate
   vector from the model bundle. The fragment shader converts the transformed coordinates

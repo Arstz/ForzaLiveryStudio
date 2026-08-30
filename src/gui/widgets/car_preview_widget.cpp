@@ -1268,6 +1268,17 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     referenceNote_->adjustSize();
     referenceNote_->raise();
 
+    modelStatus_ = new QLabel(this);
+    modelStatus_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    modelStatus_->setAlignment(Qt::AlignCenter);
+    modelStatus_->setStyleSheet(QStringLiteral(
+        "QLabel {"
+        " color: rgba(235, 236, 240, 220);"
+        " background: rgba(0, 0, 0, 105);"
+        " border-radius: 4px;"
+        " padding: 6px 10px;"
+        "}"));
+
     sidePanel_ = new QFrame(this);
     sidePanel_->setObjectName(QStringLiteral("previewSidePanel"));
     sidePanel_->setAttribute(Qt::WA_StyledBackground, true);
@@ -1395,6 +1406,7 @@ CarPreviewWidget::CarPreviewWidget(QWidget *parent)
     updateCarColorControl();
     updateLodControl();
     setSidePanelVisible(false);
+    updateModelStatus();
 }
 
 CarPreviewWidget::~CarPreviewWidget() {
@@ -1407,6 +1419,9 @@ CarPreviewWidget::~CarPreviewWidget() {
 void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callback) {
     const bool loadCarTextures = loadCarTextures_;
     const quint64 generation = ++carLoadGeneration_;
+
+    modelLoadPending_ = true;
+    updateModelStatus();
     QPointer<CarPreviewWidget> guard(this);
     QThreadPool::globalInstance()->start(
         [guard, path, loadCarTextures, generation, callback = std::move(callback)]() mutable {
@@ -1423,7 +1438,9 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     if (!guard || guard->carLoadGeneration_ != generation) {
                         return;
                     }
+                    guard->modelLoadPending_ = false;
                     if (!prepared) {
+                        guard->updateModelStatus();
                         if (callback) {
                             callback(false, error);
                         }
@@ -1447,6 +1464,7 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
                     guard->liveryMasksPending_ = true;
                     guard->invalidateCachedLivery();
                     guard->updateLodControl();
+                    guard->updateModelStatus();
                     guard->update();
                     if (callback) {
                         callback(true, {});
@@ -1458,6 +1476,8 @@ void CarPreviewWidget::loadCarAsync(const QString &path, CarLoadCallback callbac
 
 void CarPreviewWidget::cancelCarLoad() {
     ++carLoadGeneration_;
+    modelLoadPending_ = false;
+    updateModelStatus();
 }
 
 bool CarPreviewWidget::hasModel() const {
@@ -1509,6 +1529,7 @@ void CarPreviewWidget::clearModel() {
         rebuildPartsPanel();
         updateCarColorControl();
         updateLodControl();
+        updateModelStatus();
         return;
     }
     model_ = fls::CarModel{};
@@ -1529,6 +1550,7 @@ void CarPreviewWidget::clearModel() {
         carRenderer_.clearModel();
         doneCurrent();
     }
+    updateModelStatus();
     update();
 }
 
@@ -1984,6 +2006,7 @@ void CarPreviewWidget::markLiverySectionsDirty(const QVector<QString> &nodeIds) 
 }
 
 void CarPreviewWidget::initializeGL() {
+    graphicsInitializationAttempted_ = true;
     context()->functions()->glEnable(GL_MULTISAMPLE);
     geometryLoaded_ = geometry_.loadDefault();
     shapeRenderer_.initialize();
@@ -1991,9 +2014,11 @@ void CarPreviewWidget::initializeGL() {
         shapeRenderer_.uploadGeometry(geometry_);
     }
     carRenderer_.initialize();
+    graphicsApiSuitable_ = carRenderer_.isInitialized();
     liveryTexture_ = 0;
     liveLiveryFullDirty_ = true;
     liveryDirty_ = true;
+    updateModelStatus();
 }
 
 void CarPreviewWidget::resizeGL(int width, int) {
@@ -2015,6 +2040,7 @@ void CarPreviewWidget::paintGL() {
             fitCameraToModel();
             modelFitPending_ = false;
         }
+        updateModelStatus();
     }
     if (liveryMasksPending_ && carRenderer_.isInitialized()) {
         carRenderer_.setLivery(model_, liveryMasks_);
@@ -2165,6 +2191,15 @@ void CarPreviewWidget::paintGL() {
         paintFinishes_.loaded() ? &paintFinishes_ : nullptr);
 }
 
+void CarPreviewWidget::paintEvent(QPaintEvent *event) {
+    QOpenGLWidget::paintEvent(event);
+    if (!graphicsInitializationAttempted_) {
+        graphicsInitializationAttempted_ = true;
+        graphicsApiSuitable_ = false;
+        updateModelStatus();
+    }
+}
+
 void CarPreviewWidget::setGameFolder(const QString &folder) {
     if (folder == gameFolder_) {
         return;
@@ -2291,12 +2326,40 @@ void CarPreviewWidget::layoutOverlayControls() {
     sidePanel_->setGeometry(width() - panelWidth, 0, panelWidth, height());
     sidePanel_->setVisible(sidePanelVisible_);
 
+    if (modelStatus_ != nullptr) {
+        modelStatus_->adjustSize();
+        const int viewportWidth = previewViewportWidth();
+        modelStatus_->move(
+            std::max(0, (viewportWidth - modelStatus_->width()) / 2),
+            std::max(0, (height() - modelStatus_->height()) / 2));
+        modelStatus_->raise();
+    }
+
     const int toggleX = sidePanelVisible_
         ? std::max(3, width() - panelWidth + 5)
         : std::max(3, width() - sidePanelToggle_->width() - 5);
     sidePanelToggle_->move(toggleX, 5);
     sidePanel_->raise();
     sidePanelToggle_->raise();
+}
+
+void CarPreviewWidget::updateModelStatus() {
+    if (modelStatus_ == nullptr) {
+        return;
+    }
+
+    QString status;
+    if (graphicsInitializationAttempted_ && !graphicsApiSuitable_) {
+        status = QStringLiteral("No suitable graphics API");
+    } else if (!carRenderer_.hasModel()) {
+        status = modelLoadPending_ || modelUploadPending_
+            ? QStringLiteral("Loading model")
+            : QStringLiteral("No model found");
+    }
+
+    modelStatus_->setText(status);
+    modelStatus_->setVisible(!status.isEmpty());
+    layoutOverlayControls();
 }
 
 void CarPreviewWidget::setSidePanelVisible(bool visible) {

@@ -18,6 +18,8 @@
 namespace gui {
 namespace {
 
+const QColor kUnsupportedCarColor(255, 213, 79);
+
 QStringList candidateAssetPaths() {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
@@ -128,6 +130,13 @@ bool CarRegistry::isFh5Only(int id) const {
     return versions_.value(id).compare(QStringLiteral("FH5"), Qt::CaseInsensitive) == 0;
 }
 
+bool CarRegistry::isFh6Supported(int id) const {
+    const QStringList games = versions_.value(id).split(QLatin1Char(','), Qt::SkipEmptyParts);
+    return std::any_of(games.cbegin(), games.cend(), [](const QString &game) {
+        return game.trimmed().compare(QStringLiteral("FH6"), Qt::CaseInsensitive) == 0;
+    });
+}
+
 QString CarRegistry::displayName(int id) const {
     if (id == 0) {
         return QString();
@@ -165,6 +174,9 @@ bool chooseCarModel(QWidget *parent, int currentId, int *outId) {
     for (const CarRegistry::Entry &entry : registry.entries()) {
         auto *item = new QListWidgetItem(entry.name, list);
         item->setData(Qt::UserRole, entry.id);
+        if (!registry.isFh6Supported(entry.id)) {
+            item->setForeground(kUnsupportedCarColor);
+        }
         if (entry.id == currentId) {
             list->setCurrentItem(item);
         }

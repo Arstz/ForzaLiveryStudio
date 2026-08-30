@@ -74,6 +74,7 @@ protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
+    void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -90,6 +91,7 @@ private:
     QTransform liveryWorldToScreen(const QSize &textureSize) const;
     void fitCameraToModel();
     void invalidateCachedLivery();
+    void updateModelStatus();
     void updateLodControl();
     void layoutOverlayControls();
     void rebuildPartsPanel();
@@ -129,6 +131,9 @@ private:
     std::unique_ptr<QTemporaryDir> extractedCarDir_;
     QString loadedCarPath_;
     quint64 carLoadGeneration_ = 0;
+    bool modelLoadPending_ = false;
+    bool graphicsInitializationAttempted_ = false;
+    bool graphicsApiSuitable_ = false;
     bool loadCarTextures_ = false;
 
     fls::LiveryMaskSet liveryMasks_;
@@ -148,6 +153,7 @@ private:
     bool transparentBackground_ = false;
 
     QLabel *referenceNote_ = nullptr;
+    QLabel *modelStatus_ = nullptr;
     QFrame *sidePanel_ = nullptr;
     QToolButton *sidePanelToggle_ = nullptr;
     QButtonGroup *categoryButtons_ = nullptr;
