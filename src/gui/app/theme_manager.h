@@ -57,6 +57,7 @@ struct BehaviorSettings {
     QString gameFolder;
     bool discardModelOnLiveryOpen = true;
     bool loadCarTextures = false;
+    bool pasteInPlace = false;
     bool verticalToolbar = false;
     bool separateOpacityAndSkewTools = false;
 };

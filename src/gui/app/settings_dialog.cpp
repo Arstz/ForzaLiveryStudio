@@ -409,6 +409,10 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     valueEditingWheelCheck_->setChecked(behaviorSettings_.valueEditingWheelEnabled);
     addSettingRow(editorPage, QStringLiteral("editor.value_wheel"),
                   QStringLiteral("Edit values with mouse wheel"), valueEditingWheelCheck_, tips);
+    pasteInPlace_ = new QCheckBox(editorPage.widget);
+    pasteInPlace_->setChecked(behaviorSettings_.pasteInPlace);
+    addSettingRow(editorPage, QStringLiteral("editor.paste_in_place"),
+                  QStringLiteral("Paste copied selection in place"), pasteInPlace_, tips);
     discardModelOnLiveryOpen_ = new QCheckBox(editorPage.widget);
     discardModelOnLiveryOpen_->setChecked(behaviorSettings_.discardModelOnLiveryOpen);
     addSettingRow(editorPage, QStringLiteral("editor.discard_model"),
@@ -570,6 +574,7 @@ BehaviorSettings SettingsDialog::selectedBehaviorSettings() const {
     result.liveryTextureScale = liveryTextureScale_->value();
     result.autosaveIntervalMinutes = autosaveIntervalMinutes_->value();
     result.valueEditingWheelEnabled = valueEditingWheelCheck_->isChecked();
+    result.pasteInPlace = pasteInPlace_->isChecked();
     result.verticalToolbar = toolbarViewCombo_->currentData().toBool();
     result.separateOpacityAndSkewTools = separateOpacityAndSkewToolsCheck_->isChecked();
     result.gameFolder = gameFolder_->text().trimmed();

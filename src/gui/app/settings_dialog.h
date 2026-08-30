@@ -83,6 +83,7 @@ private:
     QLineEdit *gameFolder_ = nullptr;
     QCheckBox *discardModelOnLiveryOpen_ = nullptr;
     QCheckBox *loadCarTextures_ = nullptr;
+    QCheckBox *pasteInPlace_ = nullptr;
     QComboBox *toolbarViewCombo_ = nullptr;
     QCheckBox *separateOpacityAndSkewToolsCheck_ = nullptr;
     QCheckBox *valueEditingWheelCheck_ = nullptr;

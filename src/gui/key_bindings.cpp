@@ -192,6 +192,7 @@ QKeySequence defaultShortcut(const QString &id) {
         {QStringLiteral("stamp"), QKeySequence(Qt::Key_Y)},
         {QStringLiteral("flip_selection"), QKeySequence(Qt::Key_Tab)},
         {QStringLiteral("center_view_on_selection"), QKeySequence(Qt::Key_F1)},
+        {QStringLiteral("fit_view_to_visible_area"), QKeySequence(Qt::CTRL | Qt::Key_0)},
         {QStringLiteral("align_top"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Up)},
         {QStringLiteral("align_bottom"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Down)},
         {QStringLiteral("align_left"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Left)},

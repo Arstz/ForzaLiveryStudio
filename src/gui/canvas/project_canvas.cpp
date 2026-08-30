@@ -909,6 +909,23 @@ bool ProjectCanvas::centerViewOnSelection() {
     return true;
 }
 
+bool ProjectCanvas::fitViewToVisibleArea() {
+    if (project_ == nullptr || !options_.borderResolution.isValid()) {
+        return false;
+    }
+    const QRectF visibleArea(
+        -options_.borderResolution.width() * 0.5,
+        -options_.borderResolution.height() * 0.5,
+        options_.borderResolution.width(),
+        options_.borderResolution.height());
+    camera_.reset();
+    camera_.setViewBounds(visibleArea);
+    updateViewTransform();
+    invalidateSceneCache();
+    update();
+    return true;
+}
+
 QPointF ProjectCanvas::viewCenterWorld() {
     updateViewTransform();
     return screenToWorld(QPointF(kRulerExtent + (width() - kRulerExtent) * 0.5,

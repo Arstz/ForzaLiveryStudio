@@ -199,6 +199,8 @@ BehaviorSettings loadBehaviorSettings() {
     result.gameFolder = settings.value(QStringLiteral("ui/behavior/gameFolder")).toString();
     result.discardModelOnLiveryOpen = settings.value(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), result.discardModelOnLiveryOpen).toBool();
     result.loadCarTextures = settings.value(QStringLiteral("ui/behavior/loadCarTextures"), result.loadCarTextures).toBool();
+    result.pasteInPlace = settings.value(
+        QStringLiteral("ui/behavior/pasteInPlace"), result.pasteInPlace).toBool();
     result.verticalToolbar = settings.value(QStringLiteral("ui/behavior/verticalToolbar"), result.verticalToolbar).toBool();
     result.separateOpacityAndSkewTools = settings.value(
         QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
@@ -248,6 +250,7 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/gameFolder"), settings.gameFolder);
     qsettings.setValue(QStringLiteral("ui/behavior/discardModelOnLiveryOpen"), settings.discardModelOnLiveryOpen);
     qsettings.setValue(QStringLiteral("ui/behavior/loadCarTextures"), settings.loadCarTextures);
+    qsettings.setValue(QStringLiteral("ui/behavior/pasteInPlace"), settings.pasteInPlace);
     qsettings.setValue(QStringLiteral("ui/behavior/verticalToolbar"), settings.verticalToolbar);
     qsettings.setValue(QStringLiteral("ui/behavior/separateOpacityAndSkewTools"),
                        settings.separateOpacityAndSkewTools);

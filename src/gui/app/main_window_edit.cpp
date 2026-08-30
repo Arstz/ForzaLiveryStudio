@@ -1356,7 +1356,9 @@ void MainWindow::pasteClipboard() {
         return;
     }
 
-    const QPointF pasteCenter = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
+    const bool pasteInPlace = loadBehaviorSettings().pasteInPlace;
+    const QPointF pasteCenter = canvas_ == nullptr || pasteInPlace
+        ? QPointF() : canvas_->viewCenterWorld();
     state_->beginProjectEdit();
     QSet<QString> newLayerSelection;
     QSet<QString> newGuideSelection;
@@ -1368,11 +1370,13 @@ void MainWindow::pasteClipboard() {
     state_->selectedEntryIds_.clear();
     if (canvas_ != nullptr) {
         canvas_->invalidateSelectionCache();
-        const QRectF pastedBounds = canvas_->selectionWorldBounds();
-        if (pastedBounds.isValid() && !pastedBounds.isEmpty()) {
-            const QPointF delta = pasteCenter - pastedBounds.center();
-            state_->transformEntryFrames(
-                insertedRootIds, QTransform::fromTranslate(delta.x(), delta.y()));
+        if (!pasteInPlace) {
+            const QRectF pastedBounds = canvas_->selectionWorldBounds();
+            if (pastedBounds.isValid() && !pastedBounds.isEmpty()) {
+                const QPointF delta = pasteCenter - pastedBounds.center();
+                state_->transformEntryFrames(
+                    insertedRootIds, QTransform::fromTranslate(delta.x(), delta.y()));
+            }
         }
     }
     state_->commitProjectEdit();
@@ -1950,6 +1954,14 @@ void MainWindow::centerViewOnSelection() {
         return;
     }
     statusBar()->showMessage(QStringLiteral("Centered view on selection"), 1500);
+}
+
+void MainWindow::fitViewToVisibleArea() {
+    if (canvas_ == nullptr || !canvas_->fitViewToVisibleArea()) {
+        statusBar()->showMessage(QStringLiteral("Open a project to fit the visible area"), 1500);
+        return;
+    }
+    statusBar()->showMessage(QStringLiteral("Fit view to visible area"), 1500);
 }
 
 void MainWindow::noteProjectGeometryChanged(bool refreshPreviews) {

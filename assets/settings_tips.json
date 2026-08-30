@@ -71,6 +71,10 @@
     "hasTip": true,
     "tip": "Allows the mouse wheel to change values in Properties widget."
   },
+  "editor.paste_in_place": {
+    "hasTip": true,
+    "tip": "Pastes copied shapes, groups, and guides directly over their original position instead of moving them to the center of the current view."
+  },
   "editor.discard_model": {
     "hasTip": true,
     "tip": "Unloads the current car model when another livery project is opened."

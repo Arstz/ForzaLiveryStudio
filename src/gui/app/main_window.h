@@ -78,6 +78,7 @@ public:
     void noteProjectGeometryChanged(bool refreshPreviews = false);
     void noteProjectStructureChanged();
     void centerViewOnSelection();
+    void fitViewToVisibleArea();
     void alignSelection(ProjectCanvas::AlignEdge edge);
     void distributeSelection(ProjectCanvas::DistributeAxis axis);
     void setToolName(const QString &name);

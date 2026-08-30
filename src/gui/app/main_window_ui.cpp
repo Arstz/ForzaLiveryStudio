@@ -410,6 +410,8 @@ void MainWindow::setupEditMenu() {
     editMenu->addSeparator();
     addEditEntry(QStringLiteral("Center View on Selection"), QStringLiteral("center_view_on_selection"), QStringLiteral("Center View on Selection"),
                  QStringLiteral("ToolbarSelect.xpm"), &MainWindow::centerViewOnSelection);
+    addEditEntry(QStringLiteral("Fit View to Visible Area"), QStringLiteral("fit_view_to_visible_area"), QStringLiteral("Fit View to Visible Area"),
+                 QStringLiteral("ToolbarSelect.xpm"), &MainWindow::fitViewToVisibleArea);
 
     editMenu->addSeparator();
     auto *alignMenu = editMenu->addMenu(QStringLiteral("&Align"));

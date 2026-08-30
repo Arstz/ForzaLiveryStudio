@@ -54,6 +54,7 @@ public:
     void resetRelativeSelectionFrame();
     void refitView();
     bool centerViewOnSelection();
+    bool fitViewToVisibleArea();
     QPointF viewCenterWorld();
     QRectF selectionWorldBounds() const;
     void setCanvasColor(const QColor &color);
