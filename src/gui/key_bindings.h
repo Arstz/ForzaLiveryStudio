@@ -41,6 +41,7 @@ enum class KeyEventPhase {
 
 QKeySequence defaultShortcut(const QString &id);
 QString interactionShortcutText(KeyInteraction interaction);
+QKeyCombination keyBindingCombination(const QKeyEvent &event);
 std::optional<QKeySequence> capturedTabShortcut(const QKeyEvent &event);
 
 class KeyBindingRouter final : public QObject {

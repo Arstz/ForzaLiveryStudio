@@ -193,7 +193,8 @@ public:
 
 protected:
     bool event(QEvent *event) override {
-        if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+        if (event->type() == QEvent::ShortcutOverride
+            || event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);
             const std::optional<QKeySequence> captured = capturedTabShortcut(*keyEvent);
             if (captured.has_value()) {
@@ -203,6 +204,18 @@ protected:
                 event->accept();
                 return true;
             }
+        }
+        if (event->type() == QEvent::KeyPress) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            const QKeyCombination combination = keyBindingCombination(*keyEvent);
+            QKeyEvent physicalEvent(
+                QEvent::KeyPress,
+                combination.key(),
+                combination.keyboardModifiers(),
+                keyEvent->text(),
+                keyEvent->isAutoRepeat(),
+                keyEvent->count());
+            return QKeySequenceEdit::event(&physicalEvent);
         }
         return QKeySequenceEdit::event(event);
     }

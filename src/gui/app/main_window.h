@@ -20,6 +20,7 @@
 class QDockWidget;
 class QAction;
 class QLabel;
+class QLockFile;
 class QMenu;
 class QProgressBar;
 class QObject;
@@ -57,6 +58,7 @@ public:
     bool newProject(bool livery, QString *error, int carId = 0);
     bool saveProjectJson(const QString &path, QString *error = nullptr);
     bool loadProjectJson(const QString &path, QString *error = nullptr);
+    bool recoverUnexpectedScratchProject();
     void deleteSelectedLayers();
     void copySelection();
     void cutSelection();
@@ -112,6 +114,10 @@ private:
     void saveProjectJsonDialog();
     void saveProjectJsonAsDialog();
     void autosaveProject();
+    void initializeScratchSession();
+    void saveScratchProject();
+    bool writeScratchCopy(QString *error = nullptr);
+    void clearScratchCopy();
     void loadProjectJsonDialog();
     void openRecentProjectJson(const QString &path);
     void rememberRecentProjectJson(const QString &path);
@@ -253,6 +259,7 @@ private:
     QAction *skewToolAction_ = nullptr;
     QAction *opacityToolAction_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
+    QTimer *scratchTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;
     PropertyPanel *properties_ = nullptr;
@@ -260,7 +267,9 @@ private:
     QMenu *recentProjectMenu_ = nullptr;
     QString creatorName_;
     QString projectJsonPath_;
+    QString scratchSessionId_;
     QByteArray defaultLayoutState_;
+    std::unique_ptr<QLockFile> scratchLock_;
     bool syncingSelection_ = false;
     bool suppressTreeReveal_ = false;
     bool loadingProperties_ = false;

@@ -34,6 +34,7 @@ constexpr int kSectionBarLabelSlots[fls::kLiverySideCount] = {
 } // namespace
 
 void MainWindow::setProject(fls::Project project) {
+    clearScratchCopy();
     if (carPreview_ != nullptr) {
         carPreview_->cancelCarLoad();
     }

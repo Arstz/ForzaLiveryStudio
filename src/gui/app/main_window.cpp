@@ -2,6 +2,8 @@
 
 #include "main_window_internal.h"
 
+#include <QLockFile>
+
 namespace gui {
 
 using namespace mw_detail;
@@ -9,6 +11,7 @@ using namespace mw_detail;
 namespace {
 
 constexpr int kGeneratedFillElapsedIntervalMs = 250;
+constexpr int kScratchSaveIntervalMs = 60 * 1000;
 
 }
 
@@ -23,6 +26,11 @@ MainWindow::MainWindow(QWidget *parent)
     state_ = new EditorState(this);
     autosaveTimer_ = new QTimer(this);
     connect(autosaveTimer_, &QTimer::timeout, this, &MainWindow::autosaveProject);
+    scratchTimer_ = new QTimer(this);
+    scratchTimer_->setInterval(kScratchSaveIntervalMs);
+    connect(scratchTimer_, &QTimer::timeout, this, &MainWindow::saveScratchProject);
+    initializeScratchSession();
+    scratchTimer_->start();
     generatedFillElapsedTimer_ = new QTimer(this);
     generatedFillElapsedTimer_->setInterval(
         kGeneratedFillElapsedIntervalMs);

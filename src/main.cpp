@@ -90,11 +90,14 @@ int main(int argc, char *argv[]) {
     }
 
     gui::configureSystemIntegration(app);
+    const QStringList startupPaths = QCoreApplication::arguments().mid(1);
     gui::MainWindow window;
-    openStartupFiles(window, QCoreApplication::arguments().mid(1));
     window.show();
     gui::applySystemWindowIcon(window);
-    QTimer::singleShot(0, &window, [&window]() {
+    QTimer::singleShot(0, &window, [&window, startupPaths]() {
+        if (!window.recoverUnexpectedScratchProject()) {
+            openStartupFiles(window, startupPaths);
+        }
         gui::warnIfPowerSavingGpuPreference(window);
         gui::offerProjectFileAssociation(window);
     });

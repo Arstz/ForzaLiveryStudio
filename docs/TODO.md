@@ -1,8 +1,4 @@
 Small changes:
-    -Ignore keyboard layout for binds
-    -Selection cache not invalidated on ungroup
-    -Connect path to cursor in Pen tool like in Lining
-    -Remove timeout on Setting tip
 
 Medium changes:
 

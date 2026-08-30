@@ -18,6 +18,7 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 
 namespace gui {
@@ -31,10 +32,49 @@ struct InteractionDefinition {
     QKeySequence sequence;
 };
 
+struct ScanCodeKey {
+    quint32 scanCode;
+    Qt::Key key;
+};
+
+Qt::Key layoutIndependentKey(const QKeyEvent &event) {
+#ifdef Q_OS_WIN
+    static constexpr std::array<ScanCodeKey, 47> kKeys = {{
+        {0x02, Qt::Key_1}, {0x03, Qt::Key_2}, {0x04, Qt::Key_3},
+        {0x05, Qt::Key_4}, {0x06, Qt::Key_5}, {0x07, Qt::Key_6},
+        {0x08, Qt::Key_7}, {0x09, Qt::Key_8}, {0x0a, Qt::Key_9},
+        {0x0b, Qt::Key_0}, {0x0c, Qt::Key_Minus}, {0x0d, Qt::Key_Equal},
+        {0x10, Qt::Key_Q}, {0x11, Qt::Key_W}, {0x12, Qt::Key_E},
+        {0x13, Qt::Key_R}, {0x14, Qt::Key_T}, {0x15, Qt::Key_Y},
+        {0x16, Qt::Key_U}, {0x17, Qt::Key_I}, {0x18, Qt::Key_O},
+        {0x19, Qt::Key_P}, {0x1a, Qt::Key_BracketLeft},
+        {0x1b, Qt::Key_BracketRight}, {0x1e, Qt::Key_A},
+        {0x1f, Qt::Key_S}, {0x20, Qt::Key_D}, {0x21, Qt::Key_F},
+        {0x22, Qt::Key_G}, {0x23, Qt::Key_H}, {0x24, Qt::Key_J},
+        {0x25, Qt::Key_K}, {0x26, Qt::Key_L}, {0x27, Qt::Key_Semicolon},
+        {0x28, Qt::Key_Apostrophe}, {0x29, Qt::Key_QuoteLeft},
+        {0x2b, Qt::Key_Backslash}, {0x2c, Qt::Key_Z}, {0x2d, Qt::Key_X},
+        {0x2e, Qt::Key_C}, {0x2f, Qt::Key_V}, {0x30, Qt::Key_B},
+        {0x31, Qt::Key_N}, {0x32, Qt::Key_M}, {0x33, Qt::Key_Comma},
+        {0x34, Qt::Key_Period}, {0x35, Qt::Key_Slash},
+    }};
+    const quint32 scanCode = event.nativeScanCode() & 0xff;
+    const auto found = std::find_if(kKeys.cbegin(), kKeys.cend(),
+                                    [scanCode](const ScanCodeKey &entry) {
+        return entry.scanCode == scanCode;
+    });
+    if (found != kKeys.cend()) {
+        return found->key;
+    }
+#endif
+
+    return static_cast<Qt::Key>(event.key());
+}
+
 QKeyCombination normalizedCombination(const QKeyEvent &event) {
     Qt::KeyboardModifiers modifiers = event.modifiers()
         & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
-    Qt::Key key = static_cast<Qt::Key>(event.key());
+    Qt::Key key = layoutIndependentKey(event);
     if (key == Qt::Key_Backtab) {
         key = Qt::Key_Tab;
         modifiers |= Qt::ShiftModifier;
@@ -167,6 +207,10 @@ bool textInputClaims(const QKeyEvent &event, const QWidget *focus) {
     return false;
 }
 
+}
+
+QKeyCombination keyBindingCombination(const QKeyEvent &event) {
+    return normalizedCombination(event);
 }
 
 QKeySequence defaultShortcut(const QString &id) {
@@ -405,10 +449,12 @@ bool KeyBindingRouter::routeKeyRelease(QKeyEvent &event) {
 }
 
 bool KeyBindingRouter::routeInteraction(QKeyEvent &event, KeyEventPhase phase) {
-    const QKeySequence pressed(normalizedCombination(event));
+    const QKeyCombination combination = normalizedCombination(event);
+    const QKeySequence pressed(combination);
+    const Qt::Key pressedKey = combination.key();
     for (InteractionBinding &binding : interactions_) {
         if (!binding.activePress
-            || binding.activeKey != static_cast<Qt::Key>(event.key())) {
+            || binding.activeKey != pressedKey) {
             continue;
         }
         if (phase == KeyEventPhase::Press) {
@@ -444,7 +490,7 @@ bool KeyBindingRouter::routeInteraction(QKeyEvent &event, KeyEventPhase phase) {
     InteractionBinding &binding = interactions_[bestIndex];
     const bool handled = binding.handler(binding.interaction, phase, event.isAutoRepeat());
     binding.activePress = handled;
-    binding.activeKey = handled ? static_cast<Qt::Key>(event.key()) : Qt::Key_unknown;
+    binding.activeKey = handled ? pressedKey : Qt::Key_unknown;
 
     return handled;
 }

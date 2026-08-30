@@ -17,8 +17,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   `root` of kind-discriminated layer nodes). Packed `.3so` is the only recognized
   project file; the legacy v1 flat and plain-`.json` documents are no longer
   loaded. Imported livery paint-material colors, selectors, and finishes are stored
-  as project metadata. Periodic autosave is enabled by default and can be suspended
-  independently of its configured interval from Settings.
+  as project metadata. Each editor instance writes a locked scratch copy of its current
+  project every minute, including unsaved projects. A clean project replacement or exit
+  removes that instance's copy; abandoned copies are offered for recovery at startup.
+  Configurable autosave is enabled by default and writes only to an associated `.3so`.
 - Drag/drop projects (`.3so`), `C_group`/`C_livery` files/folders, and
   image guide layers from Explorer.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining

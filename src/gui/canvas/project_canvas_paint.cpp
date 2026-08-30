@@ -33,10 +33,11 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
             break;
         }
     }
-    if (!activePoints.isEmpty()
-        && activePoints.back().kind == PenPointKind::Soft) {
+    if (activePoints.back().kind == PenPointKind::Soft) {
         path.quadTo(activePoints.back().position,
-                    (activePoints.back().position + pen_.hoverWorld) * 0.5);
+                    pen_.hoverWorld);
+    } else {
+        path.lineTo(pen_.hoverWorld);
     }
     return path;
 }
@@ -121,13 +122,6 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
         drawOpenPath(screenPath);
     } else {
         drawFilledPath(screenPath);
-    }
-
-    if (!closed && !activePoints.isEmpty()) {
-        QPen guide(QColor(190, 195, 205, 180), 1.0, Qt::DashLine);
-        guide.setCosmetic(true);
-        painter.setPen(guide);
-        painter.drawLine(worldToScreen(activePoints.back().position), worldToScreen(pen_.hoverWorld));
     }
 
     const auto drawLoopPoints = [&](const QVector<PenPoint> &points, int loopIndex) {

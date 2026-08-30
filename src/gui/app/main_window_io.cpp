@@ -18,6 +18,12 @@
 
 #include <QtGui>
 
+#include <QLockFile>
+#include <QLocale>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <QUuid>
+
 #include <algorithm>
 #include <exception>
 #include <iterator>
@@ -44,6 +50,78 @@ constexpr const char *kEmptyLiverySectionNames[] = {
     "LeftWindow",
     "RightWindow",
 };
+constexpr char kScratchProjectSuffix[] = ".3so";
+constexpr char kScratchMetadataSuffix[] = ".json";
+constexpr char kScratchLockSuffix[] = ".lock";
+
+QString absoluteProjectPath(const QString &path) {
+    return QFileInfo(path).absoluteFilePath();
+}
+
+QString scratchRootPath() {
+    QString dataRoot = QStandardPaths::writableLocation(
+        QStandardPaths::AppLocalDataLocation);
+    if (dataRoot.isEmpty()) {
+        dataRoot = QStandardPaths::writableLocation(
+            QStandardPaths::TempLocation);
+    }
+
+    return QDir(dataRoot).filePath(QStringLiteral("scratch"));
+}
+
+QString scratchSessionPath(const QString &sessionId,
+                           const char *suffix) {
+    return QDir(scratchRootPath()).filePath(
+        sessionId + QString::fromLatin1(suffix));
+}
+
+void removeScratchSessionFiles(const QString &sessionId) {
+    if (sessionId.isEmpty()) {
+        return;
+    }
+    QFile::remove(scratchSessionPath(sessionId, kScratchProjectSuffix));
+    QFile::remove(scratchSessionPath(sessionId, kScratchMetadataSuffix));
+}
+
+void writeBytesAtomically(const QByteArray &bytes,
+                          const QString &path) {
+    const QFileInfo target(path);
+    if (!QDir().mkpath(target.absolutePath())) {
+        throw std::runtime_error(
+            ("could not create project directory: "
+             + target.absolutePath()).toStdString());
+    }
+    QSaveFile file(target.absoluteFilePath());
+    if (!file.open(QIODevice::WriteOnly)) {
+        throw std::runtime_error(
+            ("could not open project file for writing: "
+             + target.absoluteFilePath()).toStdString());
+    }
+    if (file.write(bytes) != bytes.size()) {
+        throw std::runtime_error("short write while saving project");
+    }
+    if (!file.commit()) {
+        throw std::runtime_error(
+            ("could not commit project file: "
+             + target.absoluteFilePath()).toStdString());
+    }
+}
+
+void writeProjectDocument(const fls::Project &project,
+                          const QString &path) {
+    writeBytesAtomically(fls::encodeProjectDocument(project), path);
+}
+
+fls::Project readProjectDocument(const QString &path) {
+    QFile projectFile(path);
+    if (!projectFile.open(QIODevice::ReadOnly)) {
+        throw std::runtime_error(
+            ("could not open project file: " + path).toStdString());
+    }
+    const QByteArray savedBytes = projectFile.readAll();
+
+    return fls::decodeProjectDocument(savedBytes);
+}
 
 QString generatedGroupId(int index) {
     return QStringLiteral("group-%1").arg(index, 4, 10, QLatin1Char('0'));
@@ -126,6 +204,186 @@ fls::HeaderMetadata effectiveHeaderMetadata(const fls::Project &project,
 }
 
 } // namespace
+
+void MainWindow::initializeScratchSession() {
+    const QString rootPath = scratchRootPath();
+    if (!QDir().mkpath(rootPath)) {
+        qWarning().noquote() << QStringLiteral(
+            "Could not create scratch directory: %1").arg(rootPath);
+        return;
+    }
+
+    scratchSessionId_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    scratchLock_ = std::make_unique<QLockFile>(
+        scratchSessionPath(scratchSessionId_, kScratchLockSuffix));
+    if (!scratchLock_->tryLock()) {
+        qWarning().noquote() << QStringLiteral(
+            "Could not lock scratch session: %1").arg(scratchSessionId_);
+        scratchLock_.reset();
+        scratchSessionId_.clear();
+    }
+}
+
+bool MainWindow::writeScratchCopy(QString *error) {
+    if (state_ == nullptr || !state_->hasProject()
+        || scratchSessionId_.isEmpty() || scratchLock_ == nullptr) {
+        return false;
+    }
+
+    try {
+        QJsonObject metadata;
+        metadata.insert(QStringLiteral("project_path"), projectJsonPath_);
+        metadata.insert(
+            QStringLiteral("updated_utc"),
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+        writeProjectDocument(
+            state_->project_,
+            scratchSessionPath(scratchSessionId_, kScratchProjectSuffix));
+        writeBytesAtomically(
+            QJsonDocument(metadata).toJson(QJsonDocument::Compact),
+            scratchSessionPath(scratchSessionId_, kScratchMetadataSuffix));
+        return true;
+    } catch (const std::exception &ex) {
+        if (error != nullptr) {
+            *error = QString::fromUtf8(ex.what());
+        }
+        return false;
+    }
+}
+
+void MainWindow::saveScratchProject() {
+    QString error;
+    if (!writeScratchCopy(&error) && !error.isEmpty()) {
+        statusBar()->showMessage(
+            QStringLiteral("Recovery save failed: %1").arg(error), 5000);
+    }
+}
+
+void MainWindow::clearScratchCopy() {
+    removeScratchSessionFiles(scratchSessionId_);
+}
+
+bool MainWindow::recoverUnexpectedScratchProject() {
+    QDir scratchDirectory(scratchRootPath());
+    const QFileInfoList lockFiles = scratchDirectory.entryInfoList(
+        QStringList{QStringLiteral("*.lock")}, QDir::Files);
+    for (const QFileInfo &lockInfo : lockFiles) {
+        const QString sessionId = lockInfo.completeBaseName();
+        if (sessionId == scratchSessionId_
+            || QFileInfo::exists(scratchSessionPath(
+                sessionId, kScratchMetadataSuffix))
+            || QFileInfo::exists(scratchSessionPath(
+                sessionId, kScratchProjectSuffix))) {
+            continue;
+        }
+        QLockFile orphanLock(lockInfo.absoluteFilePath());
+        if (orphanLock.tryLock()) {
+            orphanLock.unlock();
+        }
+    }
+
+    const QFileInfoList metadataFiles = scratchDirectory.entryInfoList(
+        QStringList{QStringLiteral("*.json")}, QDir::Files, QDir::Time);
+    for (const QFileInfo &metadataInfo : metadataFiles) {
+        const QString sessionId = metadataInfo.completeBaseName();
+        if (sessionId == scratchSessionId_) {
+            continue;
+        }
+
+        QLockFile candidateLock(
+            scratchSessionPath(sessionId, kScratchLockSuffix));
+        if (!candidateLock.tryLock()) {
+            continue;
+        }
+
+        const QString projectScratchPath = scratchSessionPath(
+            sessionId, kScratchProjectSuffix);
+        QFile projectScratchFile(projectScratchPath);
+        QFile metadataFile(metadataInfo.absoluteFilePath());
+        if (!projectScratchFile.open(QIODevice::ReadOnly)) {
+            removeScratchSessionFiles(sessionId);
+            continue;
+        }
+        const QByteArray scratchBytes = projectScratchFile.readAll();
+        projectScratchFile.close();
+        QJsonObject metadata;
+        if (metadataFile.open(QIODevice::ReadOnly)) {
+            const QJsonDocument document = QJsonDocument::fromJson(
+                metadataFile.readAll());
+            if (document.isObject()) {
+                metadata = document.object();
+            }
+            metadataFile.close();
+        }
+        const QString sourcePath = metadata.value(
+            QStringLiteral("project_path")).toString();
+        const QDateTime updatedUtc = QDateTime::fromString(
+            metadata.value(QStringLiteral("updated_utc")).toString(),
+            Qt::ISODateWithMs);
+        if (!sourcePath.isEmpty()) {
+            QFile sourceFile(sourcePath);
+            if (sourceFile.open(QIODevice::ReadOnly)
+                && sourceFile.readAll() == scratchBytes) {
+                removeScratchSessionFiles(sessionId);
+                continue;
+            }
+        }
+
+        fls::Project recoveredProject;
+        try {
+            recoveredProject = fls::decodeProjectDocument(scratchBytes);
+        } catch (const std::exception &) {
+            removeScratchSessionFiles(sessionId);
+            continue;
+        }
+
+        const QString projectLabel = sourcePath.isEmpty()
+            ? recoveredProject.name
+            : QFileInfo(sourcePath).fileName();
+        const QString recoveryTime = updatedUtc.isValid()
+            ? QLocale().toString(updatedUtc.toLocalTime(), QLocale::ShortFormat)
+            : QLocale().toString(metadataInfo.lastModified(), QLocale::ShortFormat);
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(QStringLiteral("Recover Project"));
+        box.setText(QStringLiteral(
+            "An editor session ended without closing properly."));
+        box.setInformativeText(
+            QStringLiteral("Recover %1 from %2?")
+                .arg(projectLabel.isEmpty() ? QStringLiteral("Untitled") : projectLabel,
+                     recoveryTime));
+        QPushButton *recoverButton = box.addButton(
+            QStringLiteral("Recover"), QMessageBox::AcceptRole);
+        QPushButton *discardButton = box.addButton(
+            QStringLiteral("Discard"), QMessageBox::DestructiveRole);
+        box.addButton(QStringLiteral("Not Now"), QMessageBox::RejectRole);
+        box.setDefaultButton(recoverButton);
+        box.exec();
+        if (box.clickedButton() == recoverButton) {
+            setProject(std::move(recoveredProject));
+            projectJsonPath_ = sourcePath;
+            state_->setModified(true);
+            removeScratchSessionFiles(sessionId);
+            writeScratchCopy();
+            if (!sourcePath.isEmpty()) {
+                rememberRecentProjectJson(sourcePath);
+            }
+            statusBar()->showMessage(
+                QStringLiteral("Recovered %1")
+                    .arg(projectLabel.isEmpty()
+                             ? QStringLiteral("Untitled") : projectLabel),
+                5000);
+            return true;
+        }
+        if (box.clickedButton() == discardButton) {
+            removeScratchSessionFiles(sessionId);
+            continue;
+        }
+        return false;
+    }
+
+    return false;
+}
 
 MainWindow::ExternalDropKind MainWindow::classifyExternalDropPath(const QString &path) const {
     const QFileInfo info(path);
@@ -240,6 +498,7 @@ void MainWindow::dropEvent(QDropEvent *event) {
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     if (restartRequested_ || confirmDiscardUnsavedChanges()) {
+        clearScratchCopy();
         event->accept();
     } else {
         event->ignore();
@@ -264,6 +523,7 @@ bool MainWindow::confirmDiscardUnsavedChanges() {
 
     QAbstractButton *clicked = box.clickedButton();
     if (clicked == dontSaveBtn) {
+        clearScratchCopy();
         return true;
     }
     if (clicked == saveJsonBtn) {
@@ -294,7 +554,8 @@ bool MainWindow::loadImportedProject(const std::function<fls::Project()> &load,
                                      const QString &statusMessage,
                                      QString *error) {
     try {
-        setProject(load());
+        fls::Project project = load();
+        setProject(std::move(project));
         statusBar()->showMessage(statusMessage, 5000);
         return true;
     } catch (const std::exception &ex) {
@@ -398,19 +659,20 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error) {
     }
 
     try {
-        const QByteArray bytes = fls::encodeProjectDocument(state_->project_);
-        QFile file(path);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            throw std::runtime_error(("could not open project file for writing: " + path).toStdString());
-        }
-        if (file.write(bytes) != bytes.size()) {
-            throw std::runtime_error("short write while saving project");
-        }
-        file.close();
-        projectJsonPath_ = path;
-        rememberRecentProjectJson(path);
+        const QString targetPath = absoluteProjectPath(path);
+        QString scratchError;
+
+        writeProjectDocument(state_->project_, targetPath);
+        projectJsonPath_ = targetPath;
+        rememberRecentProjectJson(targetPath);
         state_->setModified(false);
-        statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
+        writeScratchCopy(&scratchError);
+        statusBar()->showMessage(
+            scratchError.isEmpty()
+                ? QStringLiteral("Saved %1").arg(targetPath)
+                : QStringLiteral("Saved %1; recovery save failed: %2")
+                      .arg(targetPath, scratchError),
+            5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -422,14 +684,13 @@ bool MainWindow::saveProjectJson(const QString &path, QString *error) {
 
 bool MainWindow::loadProjectJson(const QString &path, QString *error) {
     try {
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-            throw std::runtime_error(("could not open project file: " + path).toStdString());
-        }
-        setProject(fls::decodeProjectDocument(file.readAll()));
-        projectJsonPath_ = path;
-        rememberRecentProjectJson(path);
-        statusBar()->showMessage(QStringLiteral("Opened %1").arg(path), 5000);
+        const QString targetPath = absoluteProjectPath(path);
+        fls::Project loadedProject = readProjectDocument(targetPath);
+
+        setProject(std::move(loadedProject));
+        projectJsonPath_ = targetPath;
+        rememberRecentProjectJson(targetPath);
+        statusBar()->showMessage(QStringLiteral("Opened %1").arg(targetPath), 5000);
         return true;
     } catch (const std::exception &ex) {
         if (error != nullptr) {
@@ -924,7 +1185,11 @@ void MainWindow::autosaveProject() {
 
     QString error;
     if (!saveProjectJson(projectJsonPath_, &error)) {
-        statusBar()->showMessage(QStringLiteral("Autosave failed: %1").arg(error), 5000);
+        statusBar()->showMessage(
+            QStringLiteral("Autosave failed: %1").arg(error), 5000);
+    } else {
+        statusBar()->showMessage(
+            QStringLiteral("Autosaved %1").arg(projectJsonPath_), 3000);
     }
 }
 

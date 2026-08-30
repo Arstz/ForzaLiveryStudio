@@ -5,7 +5,7 @@
   },
   "general.autosave_interval": {
     "hasTip": true,
-    "tip": "Minutes between autosave attempts. Set to 0 to disable autosave. Will not apply unless .3so file present."
+    "tip": "Minutes between saves to the associated .3so project. Set to 0 to disable autosave. Independent crash recovery remains active."
   },
   "theme.theme": {
     "hasTip": false,
