@@ -26,6 +26,7 @@ constexpr int kNameRole = Qt::UserRole + 4;
 constexpr int kKindRole = Qt::UserRole + 5;
 constexpr int kThumbnailRole = Qt::UserRole + 6;
 constexpr int kWgsAssetIndexRole = Qt::UserRole + 7;
+constexpr int kDescriptionRole = Qt::UserRole + 8;
 constexpr int kGridWidth = 184;
 constexpr int kGridMargin = 2;
 constexpr int kTilePadding = 4;
@@ -33,9 +34,11 @@ constexpr int kLabelHeight = 42;
 constexpr int kGridPreviewHeight = 97;
 constexpr int kGridHeight = 2 * (kGridMargin + kTilePadding)
     + kGridPreviewHeight + kLabelHeight;
+constexpr int kExpandedDescriptionSpacing = 6;
+constexpr int kMaximumWrappedTextHeight = 10000;
 constexpr int kFolderGridIconExtent = 64;
 constexpr int kThumbnailCacheWidth = 512;
-constexpr int kAssetRowHeight = 86;
+constexpr int kAssetRowHeight = 104;
 constexpr int kFolderRowPadding = 12;
 constexpr bool kShowGenericForzaFoldersDefault = true;
 
@@ -62,6 +65,7 @@ bool isNonEmptyFile(const QString &path) {
 struct AssetInfo {
     AssetKind kind = AssetKind::None;
     QString name;
+    QString description;
     QString creator;
     QString date;
     QString thumbnailPath;
@@ -144,9 +148,11 @@ void readHeaderMetadata(const QString &headerPath, AssetInfo &asset) {
     if (!file.open(QIODevice::ReadOnly)) {
         return;
     }
+    const QByteArray bytes = file.readAll();
     try {
-        const fls::HeaderMetadata metadata = fls::parseHeader(file.readAll());
+        const fls::HeaderMetadata metadata = fls::parseHeader(bytes);
         asset.name = metadata.name.trimmed();
+        asset.description = metadata.description.trimmed();
         asset.creator = metadata.creatorName.trimmed();
         if (metadata.year != 0 && metadata.month != 0) {
             asset.date = QStringLiteral("%1-%2")
@@ -157,6 +163,11 @@ void readHeaderMetadata(const QString &headerPath, AssetInfo &asset) {
             }
         }
     } catch (const std::exception &) {
+        try {
+            asset.name = fls::parseHeaderName(bytes).trimmed();
+            asset.description = fls::parseHeaderDescription(bytes).trimmed();
+        } catch (const std::exception &) {
+        }
     }
 }
 
@@ -241,6 +252,23 @@ QString assetKindLabel(AssetKind kind) {
     return {};
 }
 
+QString assetDisplayText(const QString &name, const AssetInfo &asset) {
+    QStringList details{assetKindLabel(asset.kind)};
+    if (!asset.creator.isEmpty()) {
+        details.push_back(asset.creator);
+    }
+    if (!asset.date.isEmpty()) {
+        details.push_back(asset.date);
+    }
+
+    QStringList lines{name, details.join(QStringLiteral("  |  "))};
+    if (!asset.description.isEmpty()) {
+        lines.push_back(asset.description.simplified());
+    }
+
+    return lines.join(QLatin1Char('\n'));
+}
+
 QImage readThumbnail(const QString &path) {
     if (path.isEmpty()) {
         return {};
@@ -252,6 +280,16 @@ QImage readThumbnail(const QString &path) {
 
     return image.scaledToWidth(
         kThumbnailCacheWidth, Qt::SmoothTransformation);
+}
+
+QFont detailFont(QFont font) {
+    if (font.pointSizeF() > 1.0) {
+        font.setPointSizeF(font.pointSizeF() - 1.0);
+    } else if (font.pixelSize() > 1) {
+        font.setPixelSize(font.pixelSize() - 1);
+    }
+
+    return font;
 }
 
 class ImportAssetGridDelegate final : public QStyledItemDelegate {
@@ -270,6 +308,57 @@ public:
         return QSize(kGridWidth, kGridHeight);
     }
 
+    QRect expandedRect(const QModelIndex &index) const {
+        if (view_ == nullptr) {
+            return {};
+        }
+        QRect rect = view_->visualRect(index);
+        const QString description = index.data(kDescriptionRole).toString();
+        if (description.isEmpty()) {
+            return rect;
+        }
+
+        const int textWidth = rect.width()
+            - 2 * (kGridMargin + kTilePadding);
+        const QFontMetrics metrics(detailFont(view_->font()));
+        const QRect descriptionBounds = metrics.boundingRect(
+            QRect(0, 0, textWidth, kMaximumWrappedTextHeight),
+            Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+            description);
+        rect.setHeight(
+            kGridHeight + kExpandedDescriptionSpacing
+            + std::max(metrics.height(), descriptionBounds.height())
+            + kTilePadding);
+
+        const QRect viewportRect = view_->viewport()->rect();
+        if (rect.height() >= viewportRect.height()) {
+            rect.setTop(viewportRect.top());
+            rect.setBottom(viewportRect.bottom());
+        } else if (rect.bottom() > viewportRect.bottom()) {
+            rect.moveBottom(viewportRect.bottom());
+        }
+        if (rect.top() < viewportRect.top()) {
+            rect.moveTop(viewportRect.top());
+        }
+
+        return rect;
+    }
+
+    void paintExpandedTile(QPainter *painter, const QModelIndex &index) const {
+        if (view_ == nullptr || index.data(kDescriptionRole).toString().isEmpty()) {
+            return;
+        }
+
+        QStyleOptionViewItem option;
+        option.initFrom(view_);
+        option.rect = expandedRect(index);
+        option.state.setFlag(QStyle::State_MouseOver, true);
+        option.state.setFlag(
+            QStyle::State_Selected,
+            view_->selectionModel()->isSelected(index));
+        paintGridTile(painter, option, index, true);
+    }
+
     void paint(QPainter *painter,
                const QStyleOptionViewItem &option,
                const QModelIndex &index) const override {
@@ -278,6 +367,15 @@ public:
             QStyledItemDelegate::paint(painter, option, index);
             return;
         }
+
+        paintGridTile(painter, option, index, false);
+    }
+
+private:
+    void paintGridTile(QPainter *painter,
+                       const QStyleOptionViewItem &option,
+                       const QModelIndex &index,
+                       bool expanded) const {
 
         const bool dark = isDarkTheme(currentUiTheme());
         const bool hovered =
@@ -374,14 +472,12 @@ public:
                 title);
         }
         if (lines.size() > 1) {
-            QFont detailFont = painter->font();
-            detailFont.setPointSizeF(
-                std::max(1.0, detailFont.pointSizeF() - 1.0));
-            painter->setFont(detailFont);
-            const QFontMetrics detailMetrics(detailFont);
+            const QFont smallerFont = detailFont(painter->font());
+            painter->setFont(smallerFont);
+            const QFontMetrics detailMetrics(smallerFont);
             const QString details =
                 detailMetrics.elidedText(
-                    lines.mid(1).join(QStringLiteral("  |  ")),
+                    lines.at(1),
                     Qt::ElideRight, labelRect.width());
             painter->drawText(
                 QRect(labelRect.left(),
@@ -390,11 +486,79 @@ public:
                 Qt::AlignHCenter | Qt::AlignBottom,
                 details);
         }
+        const QString description = index.data(kDescriptionRole).toString();
+        if (expanded && !description.isEmpty()) {
+            const QFont descriptionFont = detailFont(view_->font());
+            painter->setFont(descriptionFont);
+            const int descriptionTop = labelRect.bottom()
+                + 1 + kExpandedDescriptionSpacing;
+            const QRect descriptionRect(
+                contentRect.left(), descriptionTop,
+                contentRect.width(),
+                std::max(0, contentRect.bottom() - descriptionTop + 1));
+            painter->drawText(
+                descriptionRect,
+                Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                description);
+        }
         painter->restore();
     }
 
-private:
     QListWidget *view_ = nullptr;
+};
+
+class ImportAssetListWidget final : public QListWidget {
+public:
+    explicit ImportAssetListWidget(QWidget *parent)
+        : QListWidget(parent) {
+        setMouseTracking(true);
+        viewport()->setMouseTracking(true);
+    }
+
+protected:
+    bool viewportEvent(QEvent *event) override {
+        if (event->type() == QEvent::MouseMove) {
+            const auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            const QPoint position = mouseEvent->position().toPoint();
+            const auto *delegate = dynamic_cast<const ImportAssetGridDelegate *>(itemDelegate());
+            const bool remainsHovered = property("flsGridMode").toBool()
+                && hoveredIndex_.isValid()
+                && delegate != nullptr
+                && delegate->expandedRect(hoveredIndex_).contains(position);
+            if (!remainsHovered) {
+                setHoveredIndex(indexAt(position));
+            }
+        } else if (event->type() == QEvent::Leave) {
+            setHoveredIndex({});
+        }
+
+        return QListWidget::viewportEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *event) override {
+        QListWidget::paintEvent(event);
+        if (!property("flsGridMode").toBool() || !hoveredIndex_.isValid()) {
+            return;
+        }
+        const auto *delegate = dynamic_cast<const ImportAssetGridDelegate *>(itemDelegate());
+        if (delegate == nullptr) {
+            return;
+        }
+
+        QPainter painter(viewport());
+        delegate->paintExpandedTile(&painter, hoveredIndex_);
+    }
+
+private:
+    void setHoveredIndex(const QModelIndex &index) {
+        if (hoveredIndex_ == index) {
+            return;
+        }
+        hoveredIndex_ = QPersistentModelIndex(index);
+        viewport()->update();
+    }
+
+    QPersistentModelIndex hoveredIndex_;
 };
 
 class ImportAssetDialog final : public QDialog {
@@ -462,7 +626,7 @@ public:
         filters->addWidget(listViewButton_);
         layout->addLayout(filters);
 
-        list_ = new QListWidget(this);
+        list_ = new ImportAssetListWidget(this);
         list_->setIconSize(QSize(112, 76));
         list_->setSelectionMode(QAbstractItemView::SingleSelection);
         list_->setDragDropMode(QAbstractItemView::NoDragDrop);
@@ -697,19 +861,10 @@ private:
                     asset.thumbnailPath = wgsAsset.thumbnailPath;
                     readHeaderMetadata(wgsAsset.headerPath, asset);
                     QString name = wgsAsset.containerName;
-                    QString text = name;
                     if (!asset.name.isEmpty()) {
                         name = asset.name;
-                        text = name;
                     }
-                    QStringList details{assetKindLabel(asset.kind)};
-                    if (!asset.creator.isEmpty()) {
-                        details.push_back(asset.creator);
-                    }
-                    if (!asset.date.isEmpty()) {
-                        details.push_back(asset.date);
-                    }
-                    text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
+                    const QString text = assetDisplayText(name, asset);
                     detailsRequests.push_back({
                         wgsAsset.payloadPath, wgsAsset.thumbnailPath, asset.kind});
 
@@ -721,6 +876,7 @@ private:
                     item->setData(kNameRole, name);
                     item->setData(kKindRole, static_cast<int>(asset.kind));
                     item->setData(kWgsAssetIndexRole, index);
+                    item->setData(kDescriptionRole, asset.description);
                     item->setToolTip(QStringLiteral("WGS: %1").arg(wgsAsset.containerName));
                     updateItemSizeHint(item);
                 }
@@ -755,16 +911,8 @@ private:
                 if (asset.valid()) {
                     if (!asset.name.isEmpty()) {
                         name = asset.name;
-                        text = name;
                     }
-                    QStringList details{assetKindLabel(asset.kind)};
-                    if (!asset.creator.isEmpty()) {
-                        details.push_back(asset.creator);
-                    }
-                    if (!asset.date.isEmpty()) {
-                        details.push_back(asset.date);
-                    }
-                    text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
+                    text = assetDisplayText(name, asset);
                     if (!asset.thumbnailPath.isEmpty()
                         || asset.kind == AssetKind::HorizonLivery
                         || asset.kind == AssetKind::MotorsportLivery) {
@@ -779,6 +927,7 @@ private:
                 item->setData(kBaseTextRole, text);
                 item->setData(kNameRole, name);
                 item->setData(kKindRole, static_cast<int>(asset.kind));
+                item->setData(kDescriptionRole, asset.description);
                 item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
                 updateItemSizeHint(item);
             }
@@ -794,19 +943,10 @@ private:
                 }
 
                 QString name = file.completeBaseName();
-                QString text = name;
                 if (!asset.name.isEmpty()) {
                     name = asset.name;
-                    text = name;
                 }
-                QStringList details{assetKindLabel(asset.kind)};
-                if (!asset.creator.isEmpty()) {
-                    details.push_back(asset.creator);
-                }
-                if (!asset.date.isEmpty()) {
-                    details.push_back(asset.date);
-                }
-                text += QLatin1Char('\n') + details.join(QStringLiteral("  |  "));
+                const QString text = assetDisplayText(name, asset);
                 detailsRequests.push_back({
                     file.absoluteFilePath(), asset.thumbnailPath, asset.kind});
 
@@ -817,6 +957,7 @@ private:
                 item->setData(kBaseTextRole, text);
                 item->setData(kNameRole, name);
                 item->setData(kKindRole, static_cast<int>(asset.kind));
+                item->setData(kDescriptionRole, asset.description);
                 item->setToolTip(QDir::toNativeSeparators(file.absoluteFilePath()));
                 updateItemSizeHint(item);
             }
@@ -933,8 +1074,14 @@ private:
                     }
                 }
                 if (!car.isEmpty()) {
-                    item->setText(item->data(kBaseTextRole).toString()
-                                  + QStringLiteral("  |  %1").arg(car));
+                    QStringList lines = item->data(kBaseTextRole)
+                                            .toString().split(QLatin1Char('\n'));
+                    if (lines.size() < 2) {
+                        lines.push_back(car);
+                    } else {
+                        lines[1] += QStringLiteral("  |  %1").arg(car);
+                    }
+                    item->setText(lines.join(QLatin1Char('\n')));
                 }
                 return;
             }

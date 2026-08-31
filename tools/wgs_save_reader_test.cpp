@@ -55,6 +55,20 @@ void appendString(QByteArray &bytes, const QString &value) {
     }
 }
 
+void testHeaderNamePrefix() {
+    QByteArray header;
+    QString paddedName = QStringLiteral("Legacy Name");
+    paddedName.append(QString(3, QChar::Null));
+    appendU32(header, 4);
+    appendString(header, paddedName);
+    appendString(header, QStringLiteral("Readable description"));
+
+    require(fls::parseHeaderName(header) == QStringLiteral("Legacy Name"),
+            "legacy header name mismatch");
+    require(fls::parseHeaderDescription(header) == QStringLiteral("Readable description"),
+            "legacy header description mismatch");
+}
+
 QByteArray guidBytes(quint8 base) {
     QByteArray bytes;
     for (int index = 0; index < 16; ++index) {
@@ -294,6 +308,7 @@ void testImportedSave(const QString &path) {
 int main(int argc, char *argv[]) {
     QCoreApplication application(argc, argv);
     try {
+        testHeaderNamePrefix();
         testSyntheticSave();
         testGroupExportOwnershipMetadata();
         testLiveryExportOwnershipMetadata();

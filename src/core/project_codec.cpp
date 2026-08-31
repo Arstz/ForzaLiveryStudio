@@ -290,6 +290,41 @@ void enforcePrivacyPolicyForCLivery(const LiveryPayload &livery) {
 #endif
 }
 
+void applyImportedHeaderMetadata(Project &project) {
+    if (project.sourceHeader.isEmpty()) {
+        return;
+    }
+    try {
+        project.headerMetadata = parseHeader(project.sourceHeader);
+        if (!project.headerMetadata->name.trimmed().isEmpty()) {
+            project.name = project.headerMetadata->name;
+        }
+        return;
+    } catch (const std::exception &) {
+    }
+
+    QString name;
+    QString description;
+    try {
+        name = parseHeaderName(project.sourceHeader).trimmed();
+    } catch (const std::exception &) {
+    }
+    try {
+        description = parseHeaderDescription(project.sourceHeader).trimmed();
+    } catch (const std::exception &) {
+    }
+    if (!name.isEmpty()) {
+        project.name = name;
+    }
+    if (!description.isEmpty()) {
+        HeaderMetadata metadata = defaultDraftHeader(
+            project.name, QString(), static_cast<quint32>(project.carId));
+        metadata.published = true;
+        metadata.description = description;
+        project.headerMetadata = std::move(metadata);
+    }
+}
+
 Project newImportProject(const QString &folderOrFile, const QByteArray &payload) {
     QFileInfo info(folderOrFile);
     Project project;
@@ -302,6 +337,7 @@ Project newImportProject(const QString &folderOrFile, const QByteArray &payload)
     }
     project.sourceDecPrefix = payload.left(0x1d);
     project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
+    applyImportedHeaderMetadata(project);
     return project;
 }
 
@@ -311,6 +347,7 @@ Project newImportProject(const QString &name, const QByteArray &payload,
     project.name = name;
     project.sourceDecPrefix = payload.left(0x1d);
     project.sourceHeader = header;
+    applyImportedHeaderMetadata(project);
 
     return project;
 }
@@ -683,15 +720,7 @@ static Project importCLiveryDecoded(const LiveryPayload &livery, Project project
     project.carId = livery.carId;
     project.liverySource = livery.raw;
     project.liveryPaint = livery.paint;
-    if (!project.sourceHeader.isEmpty()) {
-        try {
-            project.headerMetadata = parseHeader(project.sourceHeader);
-            if (!project.headerMetadata->name.trimmed().isEmpty()) {
-                project.name = project.headerMetadata->name;
-            }
-        } catch (const std::exception &) {
-        }
-    }
+    applyImportedHeaderMetadata(project);
     scene::ensureProjectSceneRoot(project);
 
     int shapeIndex = 0;
@@ -1059,6 +1088,9 @@ QByteArray buildGroupHeader(const Project &project, const QString &outputName,
         } catch (const std::exception &) {
             sourceHeaderFallback = renameHeader(project.sourceHeader, outputName);
         }
+    }
+    if (!sourceHeaderFallback.isEmpty()) {
+        return sourceHeaderFallback;
     }
     if (!metadata && project.headerMetadata) {
         metadata = *project.headerMetadata;

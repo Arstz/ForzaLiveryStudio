@@ -27,10 +27,10 @@ HeaderMetadataWidget::HeaderMetadataWidget(QWidget *parent)
     publishedCheck_->setEnabled(false);
     publishedCheck_->setStyleSheet(QStringLiteral("QCheckBox:disabled { color: palette(mid); }"));
     form->addRow(QString(), publishedCheck_);
-    auto *descEdit = new QPlainTextEdit(this);
-    descEdit->setPlaceholderText(QStringLiteral("Description (published only)"));
-    descEdit->setReadOnly(true);
-    form->addRow(QStringLiteral("Description"), descEdit);
+    descriptionEdit_ = new QPlainTextEdit(this);
+    descriptionEdit_->setPlaceholderText(QStringLiteral("Description (published only)"));
+    descriptionEdit_->setReadOnly(true);
+    form->addRow(QStringLiteral("Description"), descriptionEdit_);
 
     auto *targetCarRow = new QWidget(this);
     auto *targetCarLayout = new QHBoxLayout(targetCarRow);
@@ -74,6 +74,7 @@ void HeaderMetadataWidget::setMetadata(
     creatorEdit_->setText(seed.creatorName);
     yearSpin_->setValue(seed.year == 0 ? QDate::currentDate().year() : seed.year);
     publishedCheck_->setChecked(seed.published);
+    descriptionEdit_->setPlainText(seed.description);
     targetCar_->setText(targetCar.isEmpty() ? QStringLiteral("Not set") : targetCar);
     targetCar_->setStyleSheet(
         !targetCar.isEmpty() && !targetCarSupported
@@ -92,8 +93,6 @@ fls::HeaderMetadata HeaderMetadataWidget::metadata() const {
     meta.name = nameEdit_->text();
     meta.creatorName = creatorEdit_->text();
     meta.year = static_cast<quint16>(yearSpin_->value());
-    meta.published = false;
-    meta.description.clear();
     return meta;
 }
 

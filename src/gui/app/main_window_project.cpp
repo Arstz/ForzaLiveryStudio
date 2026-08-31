@@ -630,8 +630,6 @@ void MainWindow::setTargetCarDialog() {
         }
     }
     metadata.carId = static_cast<quint32>(carId);
-    metadata.published = false;
-    metadata.description.clear();
     state_->project_.carId = carId;
     state_->project_.sourceHeader.clear();
     state_->project_.headerMetadata = std::move(metadata);

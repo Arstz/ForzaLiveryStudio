@@ -25,6 +25,16 @@ QString readUtf16(const QByteArray &bytes, int offset, quint32 charCount) {
         static_cast<qsizetype>(charCount));
 }
 
+QString readHeaderTextField(const QByteArray &bytes, int offset, quint32 charCount) {
+    QString text = readUtf16(bytes, offset, charCount);
+    const qsizetype terminator = text.indexOf(QChar::Null);
+    if (terminator >= 0) {
+        text.truncate(terminator);
+    }
+
+    return text;
+}
+
 void appendUtf16(QByteArray &out, const QString &text) {
     out.append(reinterpret_cast<const char *>(text.utf16()),
                text.size() * static_cast<int>(sizeof(char16_t)));
@@ -43,14 +53,14 @@ HeaderMetadata parseHeader(const QByteArray &bytes) {
     offset += 4;
     const quint32 nameLen = detail::readLeU32(bytes, offset);
     offset += 4;
-    meta.name = readUtf16(bytes, offset, nameLen);
+    meta.name = readHeaderTextField(bytes, offset, nameLen);
     offset += static_cast<int>(nameLen) * 2;
 
     const quint32 descLenOrNull = detail::readLeU32(bytes, offset);
     offset += 4;
     if (descLenOrNull != 0) {
         meta.published = true;
-        meta.description = readUtf16(bytes, offset, descLenOrNull);
+        meta.description = readHeaderTextField(bytes, offset, descLenOrNull);
         offset += static_cast<int>(descLenOrNull) * 2;
     } else {
         meta.published = false;
@@ -101,6 +111,32 @@ HeaderMetadata parseHeader(const QByteArray &bytes) {
     meta.trailing = bytes.mid(offset);
     meta.parsedOk = true;
     return meta;
+}
+
+QString parseHeaderName(const QByteArray &bytes) {
+    if (bytes.size() < 8) {
+        throw std::runtime_error("header too small to parse");
+    }
+
+    const quint32 nameLength = detail::readLeU32(bytes, 4);
+    return readHeaderTextField(bytes, 8, nameLength);
+}
+
+QString parseHeaderDescription(const QByteArray &bytes) {
+    if (bytes.size() < 12) {
+        throw std::runtime_error("header too small to parse");
+    }
+
+    const quint32 nameLength = detail::readLeU32(bytes, 4);
+    const qsizetype descriptionLengthOffset = 8 + static_cast<qsizetype>(nameLength) * 2;
+    if (descriptionLengthOffset + 4 > bytes.size()) {
+        throw std::runtime_error("unexpected end of data while reading header description length");
+    }
+    const quint32 descriptionLength = detail::readLeU32(
+        bytes, static_cast<int>(descriptionLengthOffset));
+
+    return readHeaderTextField(
+        bytes, static_cast<int>(descriptionLengthOffset + 4), descriptionLength);
 }
 
 QByteArray buildHeader(const HeaderMetadata &meta) {

@@ -9,6 +9,7 @@
 class QCheckBox;
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 
@@ -33,6 +34,7 @@ private:
     QLineEdit *creatorEdit_ = nullptr;
     QSpinBox *yearSpin_ = nullptr;
     QCheckBox *publishedCheck_ = nullptr;
+    QPlainTextEdit *descriptionEdit_ = nullptr;
     QLabel *targetCar_ = nullptr;
     QPushButton *changeTargetCar_ = nullptr;
     QLabel *hint_ = nullptr;

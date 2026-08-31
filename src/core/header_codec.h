@@ -29,6 +29,8 @@ struct HeaderMetadata {
 };
 
 HeaderMetadata parseHeader(const QByteArray &bytes);
+QString parseHeaderName(const QByteArray &bytes);
+QString parseHeaderDescription(const QByteArray &bytes);
 QByteArray buildHeader(const HeaderMetadata &meta);
 
 HeaderMetadata defaultDraftHeader(const QString &name, const QString &creatorName, quint32 carId = 0);
