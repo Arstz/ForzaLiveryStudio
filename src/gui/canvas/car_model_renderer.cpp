@@ -65,6 +65,7 @@ uniform vec3 material_emissive;
 uniform vec3 eye_position;
 uniform int has_livery;
 uniform int use_direct_uv;
+uniform vec2 direct_uv_scale;
 uniform int side_count;
 uniform vec4 side_axis[11];
 uniform vec2 side_emin[11];
@@ -250,20 +251,20 @@ void main()
     bool finishUvValid = false;
     if (has_livery == 1 && side_count > 0) {
         if (use_direct_uv == 1) {
-            vec2 atlasUv = vec2(v_uv.x * 0.5, v_uv.y);
+            vec2 atlasUv = v_uv * direct_uv_scale;
             float coverage = 0.0;
+            float coveredFacing = -2.0;
             int coveredSide = -1;
             if (atlasUv.x >= 0.0 && atlasUv.x <= 1.0 && atlasUv.y >= 0.0 && atlasUv.y <= 1.0) {
                 for (int s = 0; s < side_count; ++s) {
                     if ((allowed_sides & (1 << s)) == 0) {
                         continue;
                     }
-                    if (dot(side_facing[s], normalize(v_normal)) <= 0.0) {
-                        continue;
-                    }
                     float candidate = texture(side_masks, vec3(atlasUv, float(s))).r;
-                    if (candidate > coverage) {
+                    float facing = dot(side_facing[s], normalize(v_normal));
+                    if (candidate > 0.5 && facing > coveredFacing) {
                         coverage = candidate;
+                        coveredFacing = facing;
                         coveredSide = s;
                     }
                 }
@@ -457,6 +458,19 @@ bool isBodyPaintMaterial(const QString &material) {
         return false;
     }
     return name.startsWith(QStringLiteral("carpaint")) || name.startsWith(QStringLiteral("car_paint"));
+}
+
+bool isBodyPaintMesh(const fls::CarMesh &mesh) {
+    return isBodyPaintMaterial(mesh.materialName)
+        || fls::material_hashes::contains(
+            fls::material_hashes::binding::kDefaultCarPaintGroups,
+            mesh.paintMaterialHash);
+}
+
+bool hasDirectLiveryUv(const fls::CarMesh &mesh) {
+    return mesh.liveryUvChannel == 3
+        && mesh.uvChannels.size() > 3
+        && mesh.uvChannels[3].size() == mesh.positions.size();
 }
 
 bool isCockpitOnly(const fls::CarMesh &mesh) {
@@ -691,6 +705,7 @@ void CarModelRenderer::initialize() {
     basePaintLocation_ = program_.uniformLocation("base_paint");
     hasLiveryLocation_ = program_.uniformLocation("has_livery");
     useDirectUvLocation_ = program_.uniformLocation("use_direct_uv");
+    directUvScaleLocation_ = program_.uniformLocation("direct_uv_scale");
     sideMasksLocation_ = program_.uniformLocation("side_masks");
     sideCountLocation_ = program_.uniformLocation("side_count");
     sideAxisLocation_ = program_.uniformLocation("side_axis");
@@ -757,6 +772,7 @@ void CarModelRenderer::release() {
     basePaintLocation_ = -1;
     hasLiveryLocation_ = -1;
     useDirectUvLocation_ = -1;
+    directUvScaleLocation_ = -1;
     sideMasksLocation_ = -1;
     sideCountLocation_ = -1;
     sideAxisLocation_ = -1;
@@ -828,6 +844,7 @@ void CarModelRenderer::clearLivery() {
         sideMaskArray_ = 0;
     }
     sideCount_ = 0;
+    directUvScale_ = QVector2D(0.5f, 1.0f);
     sideAxis_.clear();
     sideEMin_.clear();
     sideEMax_.clear();
@@ -1137,7 +1154,7 @@ int allowedWindowSidesForPart(const QString &rawName) {
 
 int projectionSidesForMesh(const fls::CarMesh &mesh) {
     int sides = 0;
-    if (isBodyPaintMaterial(mesh.materialName)) {
+    if (isBodyPaintMesh(mesh)) {
         if (isSpoilerMesh(mesh.name)) {
             sides = kSideSpoiler;
         } else if (isTrunkPanelMesh(mesh.name)) {
@@ -1170,8 +1187,10 @@ int projectionSidesForMesh(const fls::CarMesh &mesh) {
 
 int renderedLiverySidesForMesh(const fls::CarMesh &mesh) {
     int sides = 0;
-    if (isBodyPaintMaterial(mesh.materialName)) {
-        if (isSpoilerMesh(mesh.name)) {
+    if (isBodyPaintMesh(mesh)) {
+        if (hasDirectLiveryUv(mesh)) {
+            sides = kAllBodySides | kSideSpoiler;
+        } else if (isSpoilerMesh(mesh.name)) {
             sides = kSideSpoiler;
         } else if (isTrunkPanelMesh(mesh.name)) {
             sides = kSideBack | kSideTop;
@@ -1744,8 +1763,14 @@ QPointF projectedMaskPoint(const fls::CarMesh &mesh,
     if (directUv) {
         const fls::ModelVec2 &uv = mesh.uvChannels[3][vertexIndex];
         const fls::TexCoordTransform &transform = mesh.texCoordTransforms[3];
-        const double u = (uv.u * transform.scaleU + transform.offsetU) * 0.5;
-        const double v = uv.v * transform.scaleV + transform.offsetV;
+        const double width = side.mask.width > 0
+            ? side.mask.width : 2.0 * fls::kLiveryCanvasHalfWidth;
+        const double height = side.mask.height > 0
+            ? side.mask.height : 2.0 * fls::kLiveryCanvasHalfHeight;
+        const double u = (uv.u * transform.scaleU + transform.offsetU)
+            * fls::kLiveryCanvasHalfWidth / width;
+        const double v = (uv.v * transform.scaleV + transform.offsetV)
+            * 2.0 * fls::kLiveryCanvasHalfHeight / height;
 
         return QPointF(
             u * 2.0 * fls::kLiveryCanvasHalfWidth
@@ -1790,9 +1815,7 @@ QPainterPath projectedLiveryGeometryPath(
             || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
-        const bool directUv = mesh.liveryUvChannel == 3
-            && mesh.uvChannels.size() > 3
-            && mesh.uvChannels[3].size() == mesh.positions.size();
+        const bool directUv = hasDirectLiveryUv(mesh);
         for (size_t indexOffset = 0;
              indexOffset + 2 < mesh.indices.size();
              indexOffset += 3) {
@@ -1823,7 +1846,7 @@ QPainterPath projectedLiveryGeometryPath(
                     haveNormals = false;
                 }
             }
-            if (!valid || (haveNormals && facing <= 0.0)) {
+            if (!valid || (!directUv && haveNormals && facing <= 0.0)) {
                 continue;
             }
             path.addPolygon(triangle);
@@ -1855,9 +1878,7 @@ QPainterPath projectedLiveryWireframePath(
             || mesh.positions.empty() || mesh.indices.empty()) {
             continue;
         }
-        const bool directUv = mesh.liveryUvChannel == 3
-            && mesh.uvChannels.size() > 3
-            && mesh.uvChannels[3].size() == mesh.positions.size();
+        const bool directUv = hasDirectLiveryUv(mesh);
         QSet<quint64> edges;
         for (size_t indexOffset = 0;
              indexOffset + 2 < mesh.indices.size();
@@ -1890,7 +1911,7 @@ QPainterPath projectedLiveryWireframePath(
                     haveNormals = false;
                 }
             }
-            if (!valid || (haveNormals && facing <= 0.0)) {
+            if (!valid || (!directUv && haveNormals && facing <= 0.0)) {
                 continue;
             }
             for (int corner = 0; corner < 3; ++corner) {
@@ -2173,6 +2194,9 @@ void CarModelRenderer::setLivery(const fls::CarModel &model, const fls::LiveryMa
     if (sourceW == 0 || sourceH == 0) {
         return;
     }
+    directUvScale_ = QVector2D(
+        fls::kLiveryCanvasHalfWidth / static_cast<float>(sourceW),
+        2.0f * fls::kLiveryCanvasHalfHeight / static_cast<float>(sourceH));
     const int texW = sourceW * kMaskTextureScale;
     const int texH = sourceH * kMaskTextureScale;
     const LiveryProjectionData projection =
@@ -2364,7 +2388,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             && mesh.uvChannels[mesh.liveryUvChannel].size() == mesh.positions.size()) {
             uv = &mesh.uvChannels[mesh.liveryUvChannel];
         }
-        const bool hasDirectLiveryUv = uv != nullptr && mesh.liveryUvChannel == 3;
+        const bool directLiveryUv = hasDirectLiveryUv(mesh);
         const bool cockpitOnly = isCockpitOnly(mesh);
         const bool brakeRotor = isBrakeRotorMesh(mesh);
         const bool windowGlass = isWindowGlassMaterial(mesh);
@@ -2443,8 +2467,8 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         buffers->stockPart = mesh.stockPart;
         buffers->partOptionIds = mesh.partOptionIds;
         buffers->indexCount = static_cast<int>(mesh.indices.size());
-        buffers->hasDirectLiveryUv = hasDirectLiveryUv;
-        buffers->bodyPaint = isBodyPaintMaterial(mesh.materialName)
+        buffers->hasDirectLiveryUv = directLiveryUv;
+        buffers->bodyPaint = isBodyPaintMesh(mesh)
             && !cockpitOnly && !brakeRotor;
         buffers->windowGlass = windowGlass;
         buffers->allowedSides = cockpitOnly ? 0 : renderedLiverySidesForMesh(mesh);
@@ -2665,9 +2689,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
                 continue;
             }
 
-            const bool directUv = mesh.liveryUvChannel == 3
-                && mesh.uvChannels.size() > 3
-                && mesh.uvChannels[3].size() == mesh.positions.size();
+            const bool directUv = hasDirectLiveryUv(mesh);
             const fls::TexCoordTransform &uvTransform = mesh.texCoordTransforms[3];
             std::vector<float> interleaved;
             interleaved.reserve(mesh.positions.size() * 8);
@@ -2962,6 +2984,7 @@ void CarModelRenderer::render(
 
         program_.setUniformValue(sideCountLocation_, sideCount_);
         program_.setUniformValue(debugModeLocation_, debugMode_);
+        program_.setUniformValue(directUvScaleLocation_, directUvScale_);
         program_.setUniformValueArray(sideAxisLocation_, sideAxis_.constData(), sideAxis_.size());
         program_.setUniformValueArray(sideEMinLocation_, sideEMin_.constData(), sideEMin_.size());
         program_.setUniformValueArray(sideEMaxLocation_, sideEMax_.constData(), sideEMax_.size());

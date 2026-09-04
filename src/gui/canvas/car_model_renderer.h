@@ -142,6 +142,7 @@ private:
 
     GLuint sideMaskArray_ = 0;
     int sideCount_ = 0;
+    QVector2D directUvScale_{0.5f, 1.0f};
     int debugMode_ = 0;
     QHash<int, int> partSelections_;
     QVector<QVector4D> sideAxis_;
@@ -158,6 +159,7 @@ private:
     int basePaintLocation_ = -1;
     int hasLiveryLocation_ = -1;
     int useDirectUvLocation_ = -1;
+    int directUvScaleLocation_ = -1;
     int sideMasksLocation_ = -1;
     int sideCountLocation_ = -1;
     int sideAxisLocation_ = -1;
