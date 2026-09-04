@@ -212,9 +212,9 @@ float finishGlitter(vec3 worldPos, float facing)
     float rnd2 = fract(rnd * 251.7);
     // Sparse: only a fraction of cells hold a flake, and each lights only very close to
     // the highlight so the result reads as occasional sparkle, not salt-and-pepper noise.
-    float active = step(1.0 - 0.3 * finish_flake, rnd);
+    float activeFlake = step(1.0 - 0.3 * finish_flake, rnd);
     float lit = smoothstep(0.92, 1.0, facing + (rnd2 - 0.5) * 0.05);
-    return active * lit;
+    return activeFlake * lit;
 }
 
 void main()
