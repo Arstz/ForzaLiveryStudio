@@ -85,6 +85,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   priority over auto-select. Disable it to retain bounds-gated interaction.
 - Keep a selected contour-leeway group's world geometry cached while panning and
   zooming the canvas. Scene edits invalidate the cached overlay.
+- Holding Space on the canvas shows an open hand cursor; panning shows a closed
+  hand. Releasing the pan shortcut restores the active tool cursor. Hand artwork
+  is bundled as XPM with its Qt license notice in `assets/icons/`.
 - Nudge selected layers/guides precisely in Move or Transform with arrow keys;
   normal and Shift step sizes are configurable in Settings.
 - Read world coordinates from pan/zoom-aware canvas rulers and manage persistent

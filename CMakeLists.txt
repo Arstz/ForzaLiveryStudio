@@ -525,7 +525,10 @@ endif()
 set(FLS_GUI_ASSETS
     CompVisibility.xpm
     Cursor.xpm
+    CursorClosedHand.xpm
+    CursorOpenHand.xpm
     CursorPipette.xpm
+    LICENSE.QtHandCursors.txt
     MenuCopy.xpm
     MenuCut.xpm
     MenuDelete.xpm

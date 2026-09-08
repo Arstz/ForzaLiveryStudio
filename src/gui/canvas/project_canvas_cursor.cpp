@@ -24,6 +24,9 @@ QString iconAssetPath(const QString &fileName) {
 }
 
 constexpr int kLogicalCursorSize = 21;
+constexpr int kLogicalHandCursorSize = 32;
+constexpr int kHandCursorHotspotX = 10;
+constexpr int kHandCursorHotspotY = 12;
 constexpr int kPipetteCursorSourceExtent = 32;
 constexpr int kPipetteCursorHotspotX = 0;
 constexpr int kPipetteCursorHotspotY = 31;
@@ -51,8 +54,11 @@ QCursor assetCursor(const QString &fileName) {
         return cursor;
     }
 
+    const bool handCursor = fileName == QStringLiteral("CursorOpenHand.xpm")
+        || fileName == QStringLiteral("CursorClosedHand.xpm");
     const double scale = cursorScaleFactor();
-    const double logical = kLogicalCursorSize * (fileName == QStringLiteral("Cursor.xpm") ? 0.5 : 1.0);
+    const double logical = handCursor ? kLogicalHandCursorSize
+        : kLogicalCursorSize * (fileName == QStringLiteral("Cursor.xpm") ? 0.5 : 1.0);
     const int target = std::max(1, qRound(logical * scale));
     if (pixmap.width() != target || pixmap.height() != target) {
         pixmap = pixmap.scaled(target, target, Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -61,6 +67,8 @@ QCursor assetCursor(const QString &fileName) {
 
     if (fileName == QStringLiteral("Cursor.xpm")) {
         cursor = QCursor(pixmap, 0, 0);
+    } else if (handCursor) {
+        cursor = QCursor(pixmap, kHandCursorHotspotX, kHandCursorHotspotY);
     } else if (fileName == QStringLiteral("CursorPipette.xpm")) {
         const double hotspotScale = static_cast<double>(pixmap.width() - 1)
             / (kPipetteCursorSourceExtent - 1);
@@ -264,6 +272,10 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point) {
         return;
     }
 
+    if (drag_.mode == DragMode::Pan) {
+        setCursor(assetCursor(QStringLiteral("CursorClosedHand.xpm")));
+        return;
+    }
     if (drag_.mode == DragMode::Rotate) {
         const SelectionBox box = drag_.startBox.valid ? drag_.startBox : currentSelectionBox();
         setCursor(box.valid ? rotateCursorForPoint(point, box) : rotateCursor());
@@ -300,6 +312,10 @@ void ProjectCanvas::updateCursorForPoint(const QPointF &point) {
             shape = Qt::CrossCursor;
         }
         setCursor(QCursor(shape));
+        return;
+    }
+    if (drag_.mode == DragMode::None && spaceDown_) {
+        setCursor(assetCursor(QStringLiteral("CursorOpenHand.xpm")));
         return;
     }
     if (activeTool_ != nullptr) {
