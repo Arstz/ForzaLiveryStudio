@@ -1,5 +1,4 @@
 Small changes:
-    -Retain selection on guide layer after bucket operaion
 
 Medium changes:
 

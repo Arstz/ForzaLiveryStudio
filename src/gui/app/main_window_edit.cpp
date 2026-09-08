@@ -565,6 +565,9 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     prepareGeneratedFill(
         fillColor, fillLabel, fillTool,
         fillMask);
+    if (fillColor.has_value()) {
+        generatedFillGuideSelection_ = state_->selectedGuideLayerIds();
+    }
     PenFillRequest request;
     request.loops = loops;
     if (differential) {
@@ -793,6 +796,7 @@ void MainWindow::clearGeneratedFillState() {
     generatedFillCoveredArea_ = 0.0;
     generatedFillInsertionEntries_.clear();
     generatedFillLabel_.clear();
+    generatedFillGuideSelection_.clear();
     generatedFillTool_.clear();
     generatedFillLeewayGroupId_.clear();
     generatedFillMask_ = false;
@@ -1034,8 +1038,10 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
             }
         }
     }
-    state_->selectedLayerIds_ = generatedIds;
-    state_->selectedGuideLayerIds_.clear();
+    state_->selectedGuideLayerIds_ =
+        state_->existingGuideLayerIds(generatedFillGuideSelection_);
+    state_->selectedLayerIds_ = state_->selectedGuideLayerIds_.isEmpty()
+        ? generatedIds : QSet<QString>{};
     state_->selectedEntryIds_.clear();
     state_->commitProjectEdit();
     generatedFillInsertionEntries_.clear();

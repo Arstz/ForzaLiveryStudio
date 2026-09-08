@@ -319,6 +319,7 @@ private:
     double lastSelectedShapeScaleY_ = 1.0;
     std::shared_ptr<std::atomic_bool> generatedFillCancel_;
     QVector<QString> generatedFillInsertionEntries_;
+    QSet<QString> generatedFillGuideSelection_;
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;

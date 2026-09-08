@@ -78,7 +78,7 @@ exports grouped `C_group` folders and `C_livery` folders.
   quadratic when its bow reaches 0.75 pixels and remains straight otherwise. Invalid
   hybrid contours recover through the conservative Pen conversion. The later Pen
   boundary-fitting tolerance remains independent of color tolerance and contour
-  conversion.
+  conversion. Completing a Bucket-derived fill retains the guide-layer selection.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
   drag the current selection from outside its bounds and giving that selection
