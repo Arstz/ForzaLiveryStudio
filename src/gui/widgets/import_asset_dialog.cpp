@@ -13,6 +13,7 @@
 #include <QtGui>
 #include <QtWidgets>
 
+#include <algorithm>
 #include <exception>
 
 namespace gui {
@@ -40,6 +41,7 @@ constexpr int kFolderGridIconExtent = 64;
 constexpr int kThumbnailCacheWidth = 512;
 constexpr int kAssetRowHeight = 104;
 constexpr int kFolderRowPadding = 12;
+constexpr int kMaximumRecentFolders = 10;
 constexpr bool kShowGenericForzaFoldersDefault = true;
 
 enum class AssetKind {
@@ -586,11 +588,28 @@ public:
                              QDir::toNativeSeparators(drive.absoluteFilePath()),
                              drive.absoluteFilePath());
         }
+        recentFolders_ = new QComboBox(this);
+        recentFolders_->setPlaceholderText(QStringLiteral("Recent folders"));
+        recentFolders_->setToolTip(QStringLiteral("Recently visited folders"));
+        recentFolders_->setMaxVisibleItems(kMaximumRecentFolders);
+        recentFolders_->ensurePolished();
+        QPalette recentFoldersPalette = recentFolders_->palette();
+        recentFoldersPalette.setColor(QPalette::PlaceholderText, Qt::white);
+        recentFolders_->setPalette(recentFoldersPalette);
+        QStyleOptionComboBox recentFoldersStyle;
+        recentFoldersStyle.initFrom(recentFolders_);
+        recentFoldersStyle.currentText = recentFolders_->placeholderText();
+        recentFolders_->setFixedWidth(recentFolders_->style()->sizeFromContents(
+            QStyle::CT_ComboBox, &recentFoldersStyle,
+            recentFolders_->fontMetrics().size(
+                Qt::TextSingleLine, recentFoldersStyle.currentText),
+            recentFolders_).width());
         pathEdit_ = new QLineEdit(this);
         pathEdit_->setClearButtonEnabled(true);
         navigation->addWidget(backButton_);
         navigation->addWidget(upButton_);
         navigation->addWidget(drives_);
+        navigation->addWidget(recentFolders_);
         navigation->addWidget(pathEdit_, 1);
         layout->addLayout(navigation);
 
@@ -659,6 +678,16 @@ public:
         connect(upButton_, &QToolButton::clicked, this, [this]() { goUp(); });
         connect(drives_, &QComboBox::activated, this, [this](int index) {
             navigate(drives_->itemData(index).toString());
+        });
+        connect(recentFolders_, &QComboBox::activated, this, [this](int index) {
+            const QString directory = recentFolders_->itemData(index).toString();
+
+            recentFolders_->setCurrentIndex(-1);
+            if (!QFileInfo(directory).isDir()) {
+                hint_->setText(QStringLiteral("Folder not found."));
+                return;
+            }
+            navigate(directory);
         });
         connect(pathEdit_, &QLineEdit::returnPressed, this, [this]() {
             const QString requested = QDir::fromNativeSeparators(pathEdit_->text().trimmed());
@@ -801,13 +830,51 @@ private:
                 : folderIconExtent + kFolderRowPadding));
     }
 
+    void rememberRecentFolder() {
+        QSettings settings;
+        const QString settingsKey = QStringLiteral("import/sourceBrowserRecentFolders");
+        const QStringList savedFolders = settings.value(settingsKey).toStringList();
+        QStringList folders{currentDirectory_};
+        const QIcon folderIcon = style()->standardIcon(QStyle::SP_DirIcon);
+        const QSignalBlocker blocker(recentFolders_);
+
+        for (const QString &path : savedFolders) {
+            if (folders.size() >= kMaximumRecentFolders) {
+                break;
+            }
+            if (path.isEmpty()) {
+                continue;
+            }
+            const QString directory = QDir::cleanPath(
+                QFileInfo(path).absoluteFilePath());
+            const bool duplicate = std::any_of(
+                folders.cbegin(), folders.cend(), [&directory](const QString &folder) {
+                    return QDir(folder) == QDir(directory);
+                });
+            if (!duplicate) {
+                folders.push_back(directory);
+            }
+        }
+        settings.setValue(settingsKey, folders);
+        recentFolders_->clear();
+        for (const QString &directory : folders) {
+            const QString label = QDir::toNativeSeparators(directory);
+
+            recentFolders_->addItem(folderIcon, label, directory);
+            recentFolders_->setItemData(
+                recentFolders_->count() - 1, label, Qt::ToolTipRole);
+        }
+        recentFolders_->setCurrentIndex(-1);
+    }
+
     void navigate(const QString &path, bool recordHistory = true) {
         const QFileInfo info(path);
         if (!info.isDir()) {
             return;
         }
-        currentDirectory_ = info.absoluteFilePath();
+        currentDirectory_ = QDir::cleanPath(info.absoluteFilePath());
         QSettings().setValue(QStringLiteral("import/sourceBrowserDirectory"), currentDirectory_);
+        rememberRecentFolder();
         if (recordHistory) {
             while (history_.size() > historyIndex_ + 1) {
                 history_.removeLast();
@@ -1132,6 +1199,7 @@ private:
     QToolButton *backButton_ = nullptr;
     QToolButton *upButton_ = nullptr;
     QComboBox *drives_ = nullptr;
+    QComboBox *recentFolders_ = nullptr;
     QLineEdit *pathEdit_ = nullptr;
     QLineEdit *searchEdit_ = nullptr;
     QComboBox *typeFilter_ = nullptr;
