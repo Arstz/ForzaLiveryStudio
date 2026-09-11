@@ -467,6 +467,32 @@ bool isBodyPaintMesh(const fls::CarMesh &mesh) {
             mesh.paintMaterialHash);
 }
 
+bool isPrebakedLiveryMesh(const fls::CarMesh &mesh) {
+    if (mesh.materialName.compare(QStringLiteral("livery_sticker"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    if (!mesh.material) {
+        return false;
+    }
+    QString resourcePath = mesh.material->resourcePath;
+    resourcePath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (resourcePath.contains(QStringLiteral("/livery_sticker.materialbin"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    for (const fls::ModelMaterialParameter &parameter : mesh.material->parameters) {
+        if (parameter.type != fls::ModelMaterialParameterType::Texture2D) {
+            continue;
+        }
+        QString texturePath = parameter.texturePath;
+        texturePath.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (texturePath.contains(QStringLiteral("/textures/livery/"), Qt::CaseInsensitive)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool hasDirectLiveryUv(const fls::CarMesh &mesh) {
     return mesh.liveryUvChannel == 3
         && mesh.uvChannels.size() > 3
@@ -2273,12 +2299,15 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
     const std::vector<fls::CarMesh> &variantMeshes = model.variantMeshesForLod(lodIndex);
     std::vector<const fls::CarMesh *> renderMeshes;
     renderMeshes.reserve(stockMeshes.size() + variantMeshes.size());
-    for (const fls::CarMesh &mesh : stockMeshes) {
-        renderMeshes.push_back(&mesh);
-    }
-    for (const fls::CarMesh &mesh : variantMeshes) {
-        renderMeshes.push_back(&mesh);
-    }
+    const auto appendRenderableMeshes = [&renderMeshes](const std::vector<fls::CarMesh> &meshes) {
+        for (const fls::CarMesh &mesh : meshes) {
+            if (!isPrebakedLiveryMesh(mesh)) {
+                renderMeshes.push_back(&mesh);
+            }
+        }
+    };
+    appendRenderableMeshes(stockMeshes);
+    appendRenderableMeshes(variantMeshes);
 
     const auto textureKey = [](const std::shared_ptr<const fls::ModelMaterialTexture> &texture,
                                bool srgb) {
