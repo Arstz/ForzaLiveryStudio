@@ -17,7 +17,9 @@
 #include <QtGui>
 
 #include <algorithm>
+#include <array>
 #include <optional>
+#include <tuple>
 
 namespace gui {
 
@@ -518,9 +520,30 @@ void MainWindow::setupOptionsMenu() {
     };
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Color for New Shapes"), QStringLiteral("toggle_insert_last_color"), &BehaviorSettings::insertShapeWithLastSelectedColor);
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
-    addBehaviorOption(optionsMenu, QStringLiteral("Differential Contour Fill"),
-                      QStringLiteral("toggle_differential_contour_fill"),
-                      &BehaviorSettings::differentialContourFill);
+    QMenu *contourFillMenu = optionsMenu->addMenu(QStringLiteral("Contour Fill"));
+    auto *contourFillActions = new QActionGroup(contourFillMenu);
+    const std::array<std::tuple<ContourFillMode, QString, QString>, 4> fillModes = {{
+        {ContourFillMode::Analytic, QStringLiteral("Analytic"), QStringLiteral("select_analytic_contour_fill")},
+        {ContourFillMode::Differential, QStringLiteral("Differential"), QStringLiteral("toggle_differential_contour_fill")},
+        {ContourFillMode::CatalogCover, QStringLiteral("Catalog Cover"), QStringLiteral("select_catalog_contour_fill")},
+        {ContourFillMode::CompactFit, QStringLiteral("Compact Fit (experimental)"), QStringLiteral("select_compact_contour_fill")},
+    }};
+    for (const auto &[mode, label, shortcut] : fillModes) {
+        QAction *action = contourFillMenu->addAction(label);
+        action->setCheckable(true);
+        action->setChecked(loadBehaviorSettings().contourFillMode == mode);
+        contourFillActions->addAction(action);
+        registerShortcutAction(action, shortcut, QStringLiteral("Contour Fill: %1").arg(label));
+        addAction(action);
+        connect(action, &QAction::triggered, this, [this, mode]() {
+            BehaviorSettings settings = loadBehaviorSettings();
+            settings.contourFillMode = mode;
+            applyBehaviorSettings(settings);
+        });
+        connect(contourFillMenu, &QMenu::aboutToShow, action, [action, mode]() {
+            action->setChecked(loadBehaviorSettings().contourFillMode == mode);
+        });
+    }
     addBehaviorOption(optionsMenu, QStringLiteral("Show Property Debug"), QStringLiteral("toggle_property_debug"), &BehaviorSettings::showPropertyDebug);
     addBehaviorOption(optionsMenu, QStringLiteral("Move Tool Auto-Select"), QStringLiteral("toggle_move_auto_select"), &BehaviorSettings::moveToolAutoSelect);
     addBehaviorOption(optionsMenu, QStringLiteral("Allow Move Outside Bounding Box"),

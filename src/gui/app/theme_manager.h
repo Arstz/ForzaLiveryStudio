@@ -31,10 +31,17 @@ struct TransformModeSettings {
     bool relativeMode = false;
 };
 
+enum class ContourFillMode {
+    Analytic,
+    Differential,
+    CatalogCover,
+    CompactFit,
+};
+
 struct BehaviorSettings {
     bool insertShapeWithLastSelectedColor = true;
     bool insertShapeWithLastSelectedScale = false;
-    bool differentialContourFill = false;
+    ContourFillMode contourFillMode = ContourFillMode::Analytic;
     bool showPropertyDebug = false;
     bool moveToolAutoSelect = false;
     bool allowMoveOutsideBoundingBox = true;

@@ -20,7 +20,11 @@ if(FLS_ENABLE_CUDA)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
         if(WIN32)
             file(GLOB FLS_CUDART_DLLS
-                "${CUDAToolkit_BIN_DIR}/x64/cudart64_*.dll")
+                "${CUDAToolkit_BIN_DIR}/x64/cudart64_*.dll"
+                "${CUDAToolkit_BIN_DIR}/cudart64_*.dll")
+            if(NOT FLS_CUDART_DLLS)
+                message(FATAL_ERROR "CUDA runtime DLL was not found in ${CUDAToolkit_BIN_DIR}")
+            endif()
             list(GET FLS_CUDART_DLLS 0 FLS_CUDART_DLL)
         endif()
     endif()
@@ -216,6 +220,17 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/svg_vector_objects.cpp
     src/gui/fill/svg_vector_objects.h
     src/gui/fill/differential_cover.cpp
+    src/gui/fill/catalog_cover.cpp
+    src/gui/fill/compact_fit.cpp
+    src/gui/fill/profile_fit.cpp
+    src/gui/fill/profile_fit.h
+    src/gui/fill/compact_fit_quality.cpp
+    src/gui/fill/compact_fit_quality.h
+    src/gui/fill/compact_fit.h
+    src/gui/fill/catalog_cover_compact.cpp
+    src/gui/fill/catalog_cover.h
+    src/gui/fill/catalog_cover_geometry.cpp
+    src/gui/fill/catalog_cover_internal.h
     src/gui/fill/differential_cover.h
     src/gui/fill/differential_cover_candidates.cpp
     src/gui/fill/differential_cover_geometry.cpp
@@ -344,6 +359,31 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(FLS_BUILD_TESTS)
+    add_executable(fls_catalog_cover_tests
+        tools/catalog_cover_test.cpp
+        src/gui/fill/compact_fit.cpp
+        src/gui/fill/profile_fit.cpp
+        src/gui/fill/compact_fit_quality.cpp
+        src/gui/fill/catalog_cover.cpp
+        src/gui/fill/catalog_cover_compact.cpp
+        src/gui/fill/catalog_cover_geometry.cpp
+        src/gui/fill/pen_fill.cpp
+        src/gui/fill/polygon_mesh.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_catalog_cover_tests PRIVATE
+        src/gui/fill src/gui/widgets
+    )
+    target_compile_definitions(fls_catalog_cover_tests PRIVATE
+        FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(fls_catalog_cover_tests PRIVATE
+        fls_core clipper2 Qt6::Core Qt6::Gui
+    )
+    add_test(NAME catalog_cover COMMAND fls_catalog_cover_tests)
+    add_test(NAME compact_fit COMMAND fls_catalog_cover_tests --compact-tests)
+    add_test(NAME profile_fit COMMAND fls_catalog_cover_tests --profile-tests)
+
     add_executable(fls_wgs_save_reader_tests
         tools/wgs_save_reader_test.cpp
     )
@@ -603,6 +643,9 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/differential_shapes.json"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/catalog_cover_shapes.json"
+        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/catalog_cover_shapes.json"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/settings_tips.json"
         "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/settings_tips.json"

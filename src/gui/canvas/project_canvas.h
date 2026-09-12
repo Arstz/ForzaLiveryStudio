@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bucket_fill.h"
+#include "catalog_cover.h"
 #include "svg_vector_objects.h"
 #include "car_unwrap_overlay.h"
 #include "differential_cover.h"
@@ -89,6 +90,7 @@ public:
             bool)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
+    QVector<catalog::Primitive> catalogCoverPrimitives(QString *error = nullptr) const;
     QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
     bool canAssignContourLeeway() const;
     void setContourLeewayGroupId(const QString &groupId);

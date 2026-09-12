@@ -330,6 +330,8 @@ private:
     QProgressBar *generatedFillProgress_ = nullptr;
     quint64 generatedFillGeneration_ = 0;
     int generatedFillPlacementCount_ = 0;
+    int generatedFillWorkCompleted_ = 0;
+    int generatedFillWorkTotal_ = 0;
     double generatedFillTargetArea_ = 0.0;
     double generatedFillCoveredArea_ = 0.0;
     bool generatedFillMask_ = false;

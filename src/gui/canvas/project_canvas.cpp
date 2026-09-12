@@ -538,6 +538,10 @@ QVector<PenPrimitive> ProjectCanvas::penPrimitiveCatalog() const {
     return buildPenPrimitiveCatalog(geometry_);
 }
 
+QVector<catalog::Primitive> ProjectCanvas::catalogCoverPrimitives(QString *error) const {
+    return catalog::buildCatalog(geometry_, error);
+}
+
 QVector<cover::ShapeMesh> ProjectCanvas::differentialCoverCatalog(QString *error) const {
     return cover::buildShapeCatalog(geometry_, error);
 }

@@ -4,6 +4,9 @@
 
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
+#include "catalog_cover.h"
+#include "compact_fit.h"
+#include "profile_fit.h"
 #include "differential_cover.h"
 #include "image_io.h"
 #include "layer_tree_view.h"
@@ -84,7 +87,7 @@ QString elapsedDuration(double seconds) {
         .arg((rounded % 3600) / 60, 2, 10, QLatin1Char('0'));
 }
 
-void writePenFillLog(const PenFillRequest &request,
+QJsonObject writePenFillLog(const PenFillRequest &request,
                      const PenFillResult &result,
                      const QString &strategy,
                      const cover::FillProfile *profile = nullptr,
@@ -487,11 +490,13 @@ void writePenFillLog(const PenFillRequest &request,
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         qWarning().noquote() << "Could not write Pen fill log to" << path;
-        return;
+        return root;
     }
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     file.close();
     qWarning().noquote() << "Pen fill log written to" << path;
+
+    return root;
 }
 
 PenFillResult differentialContourFill(
@@ -555,13 +560,29 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         }
         return;
     }
-    const bool differential = loadBehaviorSettings().differentialContourFill;
-    const QString fillLabel = differential
-        ? QStringLiteral("Differential contour fill")
-        : QStringLiteral("Analytic contour fill");
-    const QString fillTool = differential
-        ? QStringLiteral("differential")
-        : QStringLiteral("analytic");
+    const ContourFillMode fillMode = loadBehaviorSettings().contourFillMode;
+    const bool differential = fillMode == ContourFillMode::Differential;
+    const bool catalogCover = fillMode == ContourFillMode::CatalogCover;
+    const bool compactFit = fillMode == ContourFillMode::CompactFit;
+    const QString fillLabel = compactFit ? QStringLiteral("Compact fit") : (catalogCover ? QStringLiteral("Catalog cover fill")
+        : (differential ? QStringLiteral("Differential contour fill")
+                        : QStringLiteral("Analytic contour fill")));
+    const QString fillTool = compactFit ? QStringLiteral("compact") : (catalogCover ? QStringLiteral("catalog")
+        : (differential ? QStringLiteral("differential") : QStringLiteral("analytic")));
+    compact::FillOptions compactOptions;
+    if (compactFit && !fillMask) {
+        bool accepted = false;
+        compactOptions.boundaryAllowance = QInputDialog::getDouble(this,
+            QStringLiteral("Compact Fit"),
+            QStringLiteral("Outward allowance (world units, per axis):\nInward gaps: at most %1 world units. Total area error: %2%.\nSmooth boundaries and sharp corners are checked separately.")
+                .arg(compactOptions.inwardAllowance, 0, 'g', 3)
+                .arg(compactOptions.areaErrorRatio * 100.0, 0, 'g', 3),
+            compactOptions.boundaryAllowance, 0.01, 1000.0, 2, &accepted);
+        if (!accepted) {
+            canvas_->setPenFillRunning(false);
+            return;
+        }
+    }
     prepareGeneratedFill(
         fillColor, fillLabel, fillTool,
         fillMask);
@@ -570,6 +591,55 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     }
     PenFillRequest request;
     request.loops = loops;
+    if (catalogCover || compactFit) {
+        QString catalogError;
+        generatedFillColor_[3] = 255;
+        const QVector<catalog::Primitive> primitives = canvas_->catalogCoverPrimitives(&catalogError);
+        if (primitives.isEmpty() || fillMask) {
+            canvas_->setPenFillRunning(false);
+            clearGeneratedFillState();
+            statusBar()->showMessage(fillMask
+                ? QStringLiteral("%1 requires an opaque color fill").arg(fillLabel)
+                : QStringLiteral("%1 failed: %2").arg(fillLabel, catalogError), 5000);
+            return;
+        }
+        generatedFillProgress_->setRange(0, 0);
+        generatedFillProgress_->setFormat(QStringLiteral("%1 | Preparing region").arg(fillLabel));
+        generatedFillProgress_->show();
+        canvas_->setPenFillRunning(true, QStringLiteral("Optimizing %1…").arg(fillLabel));
+        statusBar()->showMessage(QStringLiteral("Optimizing %1… Press %2 to cancel")
+            .arg(fillLabel, interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
+        const QString strategy = fillTool + (fillColor.has_value()
+            ? QStringLiteral("-bucket") : QStringLiteral("-pen"));
+        startGeneratedFillTask([request = std::move(request), primitives, strategy, compactFit, compactOptions](
+            const std::function<bool()> &cancelled, const GeneratedFillProgress &progress) {
+            auto options = compactOptions;
+            QElapsedTimer timer;
+            timer.start();
+            options.workProgress = [progress](int count, int evaluated, int budget) {
+                progress(count, budget, evaluated);
+            };
+            catalog::FillResult result = compactFit
+                ? profile::fillRegion(request, primitives, options, cancelled)
+                : catalog::fillRegion(request, primitives, {}, cancelled, progress);
+            const auto replay = writePenFillLog(request, result.fill, strategy);
+            QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(compactFit
+                ? QStringLiteral("compact_fit.log") : QStringLiteral("catalog_cover.log")));
+            result.diagnostics.insert(QStringLiteral("error"), result.fill.error);
+            result.diagnostics.insert(QStringLiteral("cancelled"), result.fill.cancelled);
+            result.diagnostics.insert(QStringLiteral("elapsedMilliseconds"), timer.elapsed());
+            if (compactFit) {
+                result.diagnostics.insert(QStringLiteral("request"), replay.value(QStringLiteral("request")));
+                result.diagnostics.insert(QStringLiteral("result"), replay.value(QStringLiteral("result")));
+            }
+            if (log.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                log.write(QJsonDocument(result.diagnostics).toJson(QJsonDocument::Indented));
+            }
+
+            return result.fill;
+        });
+        return;
+    }
     if (differential) {
         QString catalogError;
         const QVector<cover::ShapeMesh> catalog =
@@ -737,8 +807,17 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
     const quint64 generation = ++generatedFillGeneration_;
     const auto token = std::make_shared<std::atomic_bool>(false);
     generatedFillCancel_ = token;
-    if (generatedFillTool_ == QStringLiteral("differential")) {
+    if (generatedFillProgress_ != nullptr) {
+        generatedFillProgress_->setToolTip(generatedFillTool_ == QStringLiteral("compact")
+            ? QStringLiteral("Percentage of the search score budget used, not a time estimate. Preparation and verification depend on contour complexity.")
+            : QString());
+    }
+    if (generatedFillTool_ == QStringLiteral("differential")
+        || generatedFillTool_ == QStringLiteral("catalog")
+        || generatedFillTool_ == QStringLiteral("compact")) {
         generatedFillPlacementCount_ = 0;
+        generatedFillWorkCompleted_ = 0;
+        generatedFillWorkTotal_ = 0;
         generatedFillTargetArea_ = 0.0;
         generatedFillCoveredArea_ = 0.0;
         generatedFillElapsed_.restart();
@@ -792,6 +871,8 @@ void MainWindow::clearGeneratedFillState() {
         generatedFillProgress_->hide();
     }
     generatedFillPlacementCount_ = 0;
+    generatedFillWorkCompleted_ = 0;
+    generatedFillWorkTotal_ = 0;
     generatedFillTargetArea_ = 0.0;
     generatedFillCoveredArea_ = 0.0;
     generatedFillInsertionEntries_.clear();
@@ -844,7 +925,9 @@ void MainWindow::cancelGeneratedFill(bool keepPartial) {
 void MainWindow::refreshGeneratedFillElapsedTime() {
     if (generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
-        || generatedFillTool_ != QStringLiteral("differential")
+        || (generatedFillTool_ != QStringLiteral("differential")
+            && generatedFillTool_ != QStringLiteral("catalog")
+            && generatedFillTool_ != QStringLiteral("compact"))
         || generatedFillProgress_ == nullptr
         || !generatedFillElapsed_.isValid()) {
         return;
@@ -854,14 +937,26 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
     const double elapsedSeconds =
         static_cast<double>(generatedFillElapsed_.elapsed()) / 1000.0;
     const QString duration = elapsedDuration(elapsedSeconds);
+    if (generatedFillTool_ == QStringLiteral("compact")) {
+        const double fraction = generatedFillWorkTotal_ > 0
+            ? std::clamp(static_cast<double>(generatedFillWorkCompleted_) / generatedFillWorkTotal_, 0.0, 1.0) : 0.0;
+        generatedFillProgress_->setRange(0, generatedFillWorkTotal_ > 0 ? kProgressResolution : 0);
+        generatedFillProgress_->setValue(static_cast<int>(fraction * kProgressResolution));
+        generatedFillProgress_->setFormat(QStringLiteral("Compact fit | Work %1% | Elapsed %2 | %3 shapes")
+            .arg(fraction * 100.0, 0, 'f', 1).arg(duration).arg(generatedFillPlacementCount_));
+        generatedFillProgress_->show();
+        return;
+    }
+    const QString fillName = generatedFillTool_ == QStringLiteral("catalog")
+        ? QStringLiteral("Catalog cover") : QStringLiteral("Differential fill");
     if (!std::isfinite(generatedFillTargetArea_)
         || generatedFillTargetArea_ <= 0.0
         || !std::isfinite(generatedFillCoveredArea_)) {
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(
             QStringLiteral(
-                "Differential fill | Elapsed %1 | %2 shapes")
-                .arg(duration)
+                "%1 | Elapsed %2 | %3 shapes")
+                .arg(fillName, duration)
                 .arg(generatedFillPlacementCount_));
         generatedFillProgress_->show();
         return;
@@ -875,8 +970,8 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
         QString::number(fraction * 100.0, 'f', 1);
     const QString format =
         QStringLiteral(
-            "Differential fill %1% | Elapsed %2 | %3 shapes")
-            .arg(percentage, duration)
+            "%1 %2% | Elapsed %3 | %4 shapes")
+            .arg(fillName, percentage, duration)
             .arg(generatedFillPlacementCount_);
 
     generatedFillProgress_->setRange(0, kProgressResolution);
@@ -896,7 +991,9 @@ void MainWindow::updateGeneratedFillProgress(quint64 generation,
     if (generation != generatedFillGeneration_
         || generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
-        || generatedFillTool_ != QStringLiteral("differential")
+        || (generatedFillTool_ != QStringLiteral("differential")
+            && generatedFillTool_ != QStringLiteral("catalog")
+            && generatedFillTool_ != QStringLiteral("compact"))
         || generatedFillProgress_ == nullptr
         || !std::isfinite(targetArea) || targetArea <= 0.0
         || !std::isfinite(coveredArea)) {
@@ -904,6 +1001,12 @@ void MainWindow::updateGeneratedFillProgress(quint64 generation,
     }
 
     generatedFillPlacementCount_ = placementCount;
+    if (generatedFillTool_ == QStringLiteral("compact")) {
+        generatedFillWorkTotal_ = static_cast<int>(targetArea);
+        generatedFillWorkCompleted_ = static_cast<int>(coveredArea);
+        refreshGeneratedFillElapsedTime();
+        return;
+    }
     generatedFillTargetArea_ = targetArea;
     generatedFillCoveredArea_ = coveredArea;
     refreshGeneratedFillElapsedTime();
@@ -950,12 +1053,23 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         placements.push_back({placement.shapeId, placement.transform});
     }
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
+    const bool catalogCover = generatedFillTool_ == QStringLiteral("catalog");
+    const bool compactFit = generatedFillTool_ == QStringLiteral("compact");
     const QString groupName = lining
         ? QStringLiteral("Lining")
-        : (differential
+        : (compactFit ? QStringLiteral("Compact Fit") : (catalogCover ? QStringLiteral("Catalog Cover Fill") : (differential
                ? QStringLiteral("Differential Contour Fill")
-               : QStringLiteral("Analytic Contour Fill"));
+               : QStringLiteral("Analytic Contour Fill"))));
     insertGeneratedFill(groupName, groupName, placements);
+    if (catalogCover) {
+        statusBar()->showMessage(QStringLiteral("Created Catalog Cover Fill with %1 shapes; spill %2 world²")
+            .arg(placements.size()).arg(result.outsideArea, 0, 'g', 6), 5000);
+    }
+    if (compactFit) {
+        statusBar()->showMessage(QStringLiteral("Created Compact Fit with %1 shapes; missing %2, spill %3 world²")
+            .arg(placements.size()).arg(result.targetArea - result.coveredArea, 0, 'g', 6)
+            .arg(result.outsideArea, 0, 'g', 6), 8000);
+    }
     if (differential) {
         const double residualArea =
             std::max(0.0, result.targetArea - result.coveredArea);
@@ -1059,7 +1173,7 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
 void MainWindow::toggleContourLeewayGroup(
     const QString &groupId) {
     if (canvas_ == nullptr
-        || !loadBehaviorSettings().differentialContourFill) {
+        || loadBehaviorSettings().contourFillMode != ContourFillMode::Differential) {
         statusBar()->showMessage(
             QStringLiteral("Contour leeway requires Differential Contour Fill"),
             3000);

@@ -34,7 +34,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
-  A persistent, default-off **Differential Contour Fill** option replaces that commit
+  **Options → Contour Fill** selects **Analytic**, **Differential**,
+  **Catalog Cover**, or **Compact Fit** and preserves the selected mode between launches. Analytic
+  is the default. The Differential mode replaces that commit
   path with a slow analytic greedy cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, stays within
   the contour tolerance, and inserts a measured partial result when progress
@@ -61,8 +63,78 @@ exports grouped `C_group` folders and `C_livery` folders.
   verification remains authoritative, and backend failure advances automatically.
   Its status-bar progress reports exact covered area and updates elapsed time
   independently of placement completion.
-  Bucket-derived Pen
-  contours use the same selected mode.
+  Catalog Cover is experimental. It uses a curated dictionary of opaque silhouettes, including
+  shapes with holes and disconnected parts. A subdivided quadratic control-hull
+  enclosure supplies its required region; a bounded exterior envelope limits
+  placements. It constructs a complete mesh cover, ranks affine catalog
+  candidates, and reduces the selection with greedy replacement, bounded
+  witness-based search, and exact residual checks on a 1e-6 world-coordinate
+  grid. Candidate transforms are reconstructed through float-valued scene
+  fields before verification. Mesh completion tries alternate triangle mappings,
+  oriented rectangle covers, and bounded subdivision with verified overlap.
+  Accepted placements leave numerical clearance inside the permitted envelope.
+  A boundary-first pass fits catalog contour profiles to authored quadratic
+  spans and also verifies proposals from the Analytic fitter. It simplifies an
+  overlapping core only where selected shapes cover the removed area or the
+  permitted envelope contains added area, then remeshes the core and tries
+  verified affine rectangle merges. The smaller complete plan becomes the
+  search incumbent. The original mesh remains available when compaction fails.
+  Search work is bounded by operation counts and runs on the CPU.
+  A failed coverage, spill, or shape-budget check produces no
+  inserted result. The mode uses opaque colors and rejects mask fills.
+  `assets/catalog_cover_shapes.json` contains its primary and reserve IDs;
+  `catalog_cover.log` records the processing stage, catalog size, search work,
+  mesh and final counts, rectangle completion count, residuals, and the numerical
+  verification model beside the executable. Boundary fitting, core simplification,
+  merge counts, and final shape-ID counts are recorded separately.
+  This bounded search does not claim globally minimum shape count or exact
+  real-arithmetic containment after game rendering. It can retain the complete
+  starting mesh when catalog boundary matches do not reduce its count.
+  Bucket-derived Pen contours use the same selected mode.
+  Compact Fit is an experimental curve-first approximation with separate
+  contour-quality checks. Its initialization fits 24 catalog perimeter families
+  to long boundary spans, including spans across authored control points. A
+  point-to-line affine fit includes endpoint position and tangent constraints.
+  Straight runs seed sheared rectangles; convex corners can seed triangles and
+  curved corner shapes. Interior proposals use six shape types at separated
+  centers. Cover selection combines interior cells and boundary witnesses,
+  followed by redundant-placement removal and catalog substitution.
+  The selected seed is an approximation, not an insertable result. Full-union
+  refinement and verification must succeed before the editor inserts a group.
+  Its dialog specifies outward support distance in
+  world units per axis, initially 2. The inward allowance is 0.5 world units;
+  missing-plus-spill area is limited to 2% of the target. These tests use triangle
+  unions on the 1e-6 grid and reconstructed float transforms.
+  Boundary fitting compares tangent direction and local turning at two scales,
+  penalizes isolated kinks, and retains detected sharp corners. Final checks
+  also compare component and hole counts at an observation scale of 1 world
+  unit. Observation-only closing discounts narrow cracks; it changes neither
+  placements nor the geometric support checks. These sampled checks are not a
+  perceptual-equivalence or mathematical smoothness guarantee, and the scale
+  is not automatically calibrated to source-image pixels.
+  Local substitutions use 28 selected shape types, with multi-contour types
+  added for regions with holes. Whole-region recognition starts from the
+  96-shape curated catalog and filters proposals by affine-invariant convexity.
+  Candidate retention keeps distinct shape types. Refitting after deletion
+  is restricted to nearby placements.
+  A final replacement stage follows adjacency along the exposed union boundary,
+  where neighboring contour pieces can have distant centers.
+  Candidate generation permits 160,000 profile trials, separately capped straight
+  and corner searches, and 24 interior centers. The selection uses at most 160
+  placements before refinement. A verified incumbent survives the fixed
+  60,000-score refinement budget. The last portion of that budget is reserved
+  for a stronger continuity pass. Boundary-aware moves must stay inside the
+  exterior envelope. The status bar combines normalized initialization work
+  with refinement evaluations and reports elapsed time and current shape count.
+  Work percentage is not a time estimate, and setup and verification cost vary
+  with contour complexity. A failed quality check inserts no group.
+  The mode emits opaque shapes and rejects masks. `compact_fit.log` records
+  the replayable request and result, count/error history, shape IDs, elapsed
+  time, work limits, topology, corner displacement, and boundary-quality
+  measurements, together with the curve-first seed diagnostics. The older
+  Analytic-seeded optimizer remains available through headless tests; the editor
+  uses curve-first initialization. The isolated-region implementation does not infer future
+  occluders or optimize full-image order. Lining retains its separate fitter.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated
   Primitive catalog. Selection follows the authored point structure, ranks
