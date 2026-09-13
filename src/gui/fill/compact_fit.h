@@ -16,6 +16,7 @@ struct FillOptions {
     std::function<void(int, int, int)> workProgress;
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;
+    bool retainFailedFill = false;
     double boundaryAllowance = kDefaultBoundaryAllowance;
     double areaErrorRatio = kDefaultAreaErrorRatio;
     double inwardAllowance = kDefaultInwardAllowance;

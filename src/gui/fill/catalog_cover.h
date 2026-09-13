@@ -19,6 +19,7 @@ struct FillOptions {
     int candidateLimit = kDefaultCandidateLimit;
     int searchNodes = kDefaultSearchNodes;
     int refinementSteps = kDefaultRefinementSteps;
+    bool retainFailedFill = false;
 };
 
 struct FillResult {

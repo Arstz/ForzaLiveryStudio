@@ -28,6 +28,7 @@ constexpr double kScoreEpsilon = 1e-7;
 constexpr double kMissingWeight = 4.0;
 constexpr double kBoundaryWeight = 8.0;
 constexpr double kGapRepairWeight = 128.0;
+constexpr double kRefinementExtent = 512.0;
 constexpr double kBoundaryEnergyPerLength = 0.025;
 constexpr double kLengthPerDefect = 80.0;
 constexpr int kWorkReportInterval = 256;
@@ -207,8 +208,12 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
     };
     double best = evaluate(piece);
     const double extent = std::max(piece.bounds.width(), piece.bounds.height());
-    for (int level = 0; level < kRefinementLevels && !stopped(cancelled); ++level) {
-        const double fraction = std::ldexp(kInitialStepFraction, -level);
+    const double initialFraction = boundaryAware ? kInitialStepFraction * std::min(1.0, kRefinementExtent / extent) : kInitialStepFraction;
+    const int levels = boundaryAware && extent > kRefinementExtent
+        ? std::max(kRefinementLevels, 1 + static_cast<int>(std::ceil(std::log2(initialFraction * extent
+            / (context.objective->fittingInwardAllowance * 0.25))))) : kRefinementLevels;
+    for (int level = 0; level < levels && !stopped(cancelled); ++level) {
+        const double fraction = std::ldexp(initialFraction, -level);
         for (int iteration = 0; iteration < kMovesPerLevel; ++iteration) {
             bool changed = false;
             for (int parameter = 0; parameter < 6; ++parameter) {
@@ -871,22 +876,56 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             histogram[key] = histogram[key].toInt() + 1;
         }
         result.diagnostics.insert(QStringLiteral("shapeCounts"), histogram);
+        const auto metrics = objective.boundary->measure(coverage);
+        const double areaError = result.fill.targetArea - result.fill.coveredArea + result.fill.outsideArea;
+        QStringList failedChecks;
+        if (coverage.isEmpty()) {
+            failedChecks.push_back(QStringLiteral("nonempty coverage"));
+        }
+        if (areaError > objective.areaBudget) {
+            failedChecks.push_back(QStringLiteral("area error"));
+        }
+        if (result.diagnostics.value(QStringLiteral("missingBeyondInward")).toDouble() > 0) {
+            failedChecks.push_back(QStringLiteral("interior coverage"));
+        }
+        if (result.diagnostics.value(QStringLiteral("outsideEnvelope")).toDouble() > 0) {
+            failedChecks.push_back(QStringLiteral("outward margin"));
+        }
+        if (objective.boundary->energy(metrics) > objective.qualityLimit
+            || metrics.maximumExcessTurn > kMaximumExcessTurn || metrics.cornerDefects > objective.defectLimit) {
+            failedChecks.push_back(QStringLiteral("contour continuity"));
+        }
+        if (metrics.maximumCornerDistance > objective.cornerAllowance) {
+            failedChecks.push_back(QStringLiteral("sharp-corner position"));
+        }
+        if (metrics.components != objective.targetMetrics.components || metrics.holes != objective.targetMetrics.holes) {
+            failedChecks.push_back(QStringLiteral("region topology"));
+        }
+        result.diagnostics.insert(QStringLiteral("failedChecks"), QJsonArray::fromStringList(failedChecks));
+        result.diagnostics.insert(QStringLiteral("areaError"), areaError);
+        result.diagnostics.insert(QStringLiteral("areaErrorLimit"), objective.areaBudget);
         result.diagnostics.insert(QStringLiteral("approximationVerified"), acceptable(coverage, objective));
-        if (!result.fill.cancelled && !acceptable(coverage, objective)) {
-            throw std::runtime_error("Compact fit could not meet the requested approximation allowance");
-        }
-        if (pieces.size() > options.shapeBudget) {
-            throw std::runtime_error("Compact fit exceeds the shape budget");
-        }
         if (!result.fill.cancelled) {
             for (const auto &piece : pieces) {
                 result.fill.placements.push_back(piece.placement);
             }
         }
+        if (!result.fill.cancelled && !acceptable(coverage, objective)) {
+            throw std::runtime_error(QStringLiteral("Compact fit failed: %1. The outward margin does not relax the other limits.")
+                .arg(failedChecks.join(QStringLiteral(", "))).toStdString());
+        }
+        if (pieces.size() > options.shapeBudget) {
+            throw std::runtime_error("Compact fit exceeds the shape budget");
+        }
     } catch (const std::exception &exception) {
         result.fill.error = QString::fromUtf8(exception.what());
         result.fill.cancelled = stopped(cancelled);
+        if (!options.retainFailedFill || result.fill.cancelled) {
+            result.fill.placements.clear();
+        }
     }
+    result.diagnostics.insert(QStringLiteral("retainedAfterError"),
+        !result.fill.error.isEmpty() && !result.fill.placements.isEmpty());
 
     return result;
 }

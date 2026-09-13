@@ -80,8 +80,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   verified affine rectangle merges. The smaller complete plan becomes the
   search incumbent. The original mesh remains available when compaction fails.
   Search work is bounded by operation counts and runs on the CPU.
-  A failed coverage, spill, or shape-budget check produces no
-  inserted result. The mode uses opaque colors and rejects mask fills.
+  A failed coverage, spill, or shape-budget check retains the computed cover
+  for insertion with a warning. A later search error can retain the completed
+  mesh. The mode uses opaque colors and rejects mask fills.
   `assets/catalog_cover_shapes.json` contains its primary and reserve IDs;
   `catalog_cover.log` records the processing stage, catalog size, search work,
   mesh and final counts, rectangle completion count, residuals, and the numerical
@@ -99,8 +100,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   curved corner shapes. Interior proposals use six shape types at separated
   centers. Cover selection combines interior cells and boundary witnesses,
   followed by redundant-placement removal and catalog substitution.
-  The selected seed is an approximation, not an insertable result. Full-union
-  refinement and verification must succeed before the editor inserts a group.
+  The selected seed is an approximation. Full-union refinement and verification
+  assess the generated result. The editor inserts available shapes even when
+  these checks fail, with the failure reported as a warning. If refinement
+  errors leave no result, the generated seed remains available for insertion.
   Its dialog specifies outward support distance in
   world units per axis, initially 2. The inward allowance is 0.5 world units;
   missing-plus-spill area is limited to 2% of the target. These tests use triangle
@@ -119,19 +122,35 @@ exports grouped `C_group` folders and `C_livery` folders.
   is restricted to nearby placements.
   A final replacement stage follows adjacency along the exposed union boundary,
   where neighboring contour pieces can have distant centers.
-  Candidate generation permits 160,000 profile trials, separately capped straight
-  and corner searches, and 24 interior centers. The selection uses at most 160
+  Candidate generation plans spans around every boundary before assigning work.
+  Its profile budget grows from 160,000 to at most 640,000 trials, divided across
+  the planned spans. Retention capacity is also divided across the remaining
+  spans. Proposal lengths and structural depths scale with region extent;
+  fitting tolerances and the observation scale remain in world units.
+  Straight and corner searches have separate caps, with 24 interior centers.
+  The selection uses at most 160
   placements before refinement. A verified incumbent survives the fixed
   60,000-score refinement budget. The last portion of that budget is reserved
   for a stronger continuity pass. Boundary-aware moves must stay inside the
   exterior envelope. The status bar combines normalized initialization work
   with refinement evaluations and reports elapsed time and current shape count.
+  Large placements use bounded initial adjustments and finer refinement levels
+  tied to the inward allowance. An outward allowance above the default first
+  tries the default allowance, then the requested allowance if verification
+  fails. A valid tight result is retained. Progress includes the possible retry;
+  the area, inward-distance, and continuity limits are unchanged.
   Work percentage is not a time estimate, and setup and verification cost vary
-  with contour complexity. A failed quality check inserts no group.
+  with contour complexity. Quality checks remain active and their failures are
+  recorded; they do not block insertion of available shapes. Cancellation still
+  discards Compact Fit and Catalog Cover output. Failures before any placements
+  exist leave the contour available for correction and retry.
   The mode emits opaque shapes and rejects masks. `compact_fit.log` records
   the replayable request and result, count/error history, shape IDs, elapsed
   time, work limits, topology, corner displacement, and boundary-quality
-  measurements, together with the curve-first seed diagnostics. The older
+  measurements, together with planned and processed span counts, requested and
+  effective allowances, attempt history, failed verification checks, and whether
+  placements were retained after an error. Headless callers default to strict
+  rejection and can enable `retainFailedFill` to match editor insertion. The older
   Analytic-seeded optimizer remains available through headless tests; the editor
   uses curve-first initialization. The isolated-region implementation does not infer future
   occluders or optimize full-image order. Lining retains its separate fitter.

@@ -136,6 +136,8 @@ QJsonObject writePenFillLog(const PenFillRequest &request,
     resultObject.insert(QStringLiteral("cancelled"), result.cancelled);
     resultObject.insert(QStringLiteral("timedOut"), result.timedOut);
     resultObject.insert(QStringLiteral("error"), result.error);
+    resultObject.insert(QStringLiteral("retainedAfterError"),
+        !result.cancelled && !result.error.isEmpty() && !result.placements.isEmpty());
     QJsonArray placements;
     for (const PenPlacement &placement :
          result.placements) {
@@ -570,11 +572,12 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     const QString fillTool = compactFit ? QStringLiteral("compact") : (catalogCover ? QStringLiteral("catalog")
         : (differential ? QStringLiteral("differential") : QStringLiteral("analytic")));
     compact::FillOptions compactOptions;
+    compactOptions.retainFailedFill = true;
     if (compactFit && !fillMask) {
         bool accepted = false;
         compactOptions.boundaryAllowance = QInputDialog::getDouble(this,
             QStringLiteral("Compact Fit"),
-            QStringLiteral("Outward allowance (world units, per axis):\nInward gaps: at most %1 world units. Total area error: %2%.\nSmooth boundaries and sharp corners are checked separately.")
+            QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nSmooth boundaries and sharp corners are checked separately.\nGenerated shapes are kept with a warning if checks fail.")
                 .arg(compactOptions.inwardAllowance, 0, 'g', 3)
                 .arg(compactOptions.areaErrorRatio * 100.0, 0, 'g', 3),
             compactOptions.boundaryAllowance, 0.01, 1000.0, 2, &accepted);
@@ -614,6 +617,8 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         startGeneratedFillTask([request = std::move(request), primitives, strategy, compactFit, compactOptions](
             const std::function<bool()> &cancelled, const GeneratedFillProgress &progress) {
             auto options = compactOptions;
+            catalog::FillOptions catalogOptions;
+            catalogOptions.retainFailedFill = true;
             QElapsedTimer timer;
             timer.start();
             options.workProgress = [progress](int count, int evaluated, int budget) {
@@ -621,7 +626,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             };
             catalog::FillResult result = compactFit
                 ? profile::fillRegion(request, primitives, options, cancelled)
-                : catalog::fillRegion(request, primitives, {}, cancelled, progress);
+                : catalog::fillRegion(request, primitives, catalogOptions, cancelled, progress);
             const auto replay = writePenFillLog(request, result.fill, strategy);
             QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(compactFit
                 ? QStringLiteral("compact_fit.log") : QStringLiteral("catalog_cover.log")));
@@ -1038,7 +1043,8 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         clearGeneratedFillState();
         return;
     }
-    if (!result.error.isEmpty() || result.placements.isEmpty() || !state_->hasProject()) {
+    const bool lining = generatedFillTool_ == QStringLiteral("lining");
+    if ((lining && !result.error.isEmpty()) || result.placements.isEmpty() || !state_->hasProject()) {
         statusBar()->showMessage(QStringLiteral("%1 failed: %2")
                                      .arg(generatedFillLabel_)
                                      .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
@@ -1052,7 +1058,6 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
     for (const PenPlacement &placement : result.placements) {
         placements.push_back({placement.shapeId, placement.transform});
     }
-    const bool lining = generatedFillTool_ == QStringLiteral("lining");
     const bool catalogCover = generatedFillTool_ == QStringLiteral("catalog");
     const bool compactFit = generatedFillTool_ == QStringLiteral("compact");
     const QString groupName = lining
@@ -1081,6 +1086,10 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
                     .arg(residualArea, 0, 'g', 10),
                 5000);
         }
+    }
+    if (!result.error.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Created %1 with %2 shapes. Warning: %3")
+            .arg(groupName).arg(placements.size()).arg(result.error), 15000);
     }
     if (canvas_ != nullptr) {
         if (lining) {

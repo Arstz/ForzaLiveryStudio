@@ -20,6 +20,7 @@ constexpr int kFitIterations = 4;
 constexpr int kCandidatesPerSpan = 6;
 constexpr int kMaximumCandidates = 2400;
 constexpr int kMaximumTrials = 160000;
+constexpr int kMaximumProfileWork = 640000;
 constexpr int kMaximumSelected = 160;
 constexpr int kGridExtent = 640;
 constexpr int kBodyCenters = 24;
@@ -29,6 +30,7 @@ constexpr double kProfileError = 0.65;
 constexpr double kTangentError = 0.2;
 constexpr double kBoundaryOffset = 0.3;
 constexpr double kMinimumLength = 1e-8;
+constexpr double kSearchExtent = 512.0;
 constexpr std::array<int, 24> kCurveShapes = {102, 109, 110, 120, 122, 124, 126, 127,
     128, 129, 130, 136, 139, 812, 901, 930, 2110, 2113, 2117, 2118, 2134, 2135, 2136, 2321};
 
@@ -44,6 +46,12 @@ struct Profile {
     QTransform normalization;
     QTransform anchors;
     int primitive = 0;
+};
+
+struct CurveJob {
+    QPolygonF target;
+    QTransform anchors;
+    double length = 0.0;
 };
 
 struct Candidate {
@@ -329,22 +337,25 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
     return result;
 }
 
-void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
-                        const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
-                        const compact::FillOptions &options, const std::function<bool()> &cancelled,
-                        QVector<Candidate> *pool, QJsonObject *diagnostics) {
-    const auto profiles = sourceProfiles(primitives);
-    const auto envelope = catalog::painterPath(outer);
-    int trials = 0;
-    int fits = 0;
+double searchScale(const catalog::Region &region, double observationScale) {
+    return std::max(observationScale, std::max(region.bounds.width(), region.bounds.height()) / kSearchExtent);
+}
+
+QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOptions &options,
+                           const std::function<bool()> &cancelled) {
+    QVector<CurveJob> result;
+    const double scale = searchScale(region, options.observationScale);
     for (const auto &polygon : region.required) {
         const auto trace = makeTrace(polygon);
         QVector<double> starts = trace.corners;
-        for (double offset = 0; offset < trace.perimeter; offset += options.observationScale * 12.0) {
+        for (double offset = 0; offset < trace.perimeter; offset += scale * 12.0) {
             starts.push_back(offset);
         }
         std::sort(starts.begin(), starts.end());
         for (double start : starts) {
+            if (stopped(cancelled)) {
+                return result;
+            }
             double available = trace.perimeter * 0.5;
             for (double corner : trace.corners) {
                 const double distance = std::fmod(corner - start + trace.perimeter, trace.perimeter);
@@ -354,14 +365,15 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
             }
             double previousLength = -1.0;
             for (double requested : {356.0, 220.0, 136.0, 84.0, 52.0, 32.0, 20.0, 12.0}) {
-                const double length = std::min(available, requested * options.observationScale);
+                const double length = std::min(available, requested * scale);
                 if (length < options.observationScale * 6.0 || std::abs(length - previousLength) < kMinimumLength) {
                     continue;
                 }
                 previousLength = length;
                 auto target = sampleArc(trace, start, length);
                 const auto chord = target.back() - target.front();
-                if (std::abs(cross(chord, target[kProfileSamples / 2] - target.front())) < QLineF({}, chord).length() * options.observationScale * 0.1) {
+                if (std::abs(cross(chord, target[kProfileSamples / 2] - target.front()))
+                    < QLineF({}, chord).length() * options.observationScale * 0.1) {
                     continue;
                 }
                 const auto original = target;
@@ -370,72 +382,92 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                         - original[std::max(0, index - 1)]);
                     target[index] += QPointF(tangent.y(), -tangent.x()) * (kBoundaryOffset * options.observationScale);
                 }
-                const auto targetAnchors = catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
+                const auto anchors = catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
                     {target.front(), target[kProfileSamples / 2], target.back()});
-                QVector<Candidate> retained;
-                for (const auto &profile : profiles) {
-                    if (++trials > kMaximumTrials || stopped(cancelled)) {
-                        break;
-                    }
-                    if (options.workProgress && trials % 1024 == 0) {
-                        options.workProgress(0, trials, kMaximumTrials);
-                    }
-                    const auto &shape = primitives[profile.primitive].shape;
-                    const auto initial = profile.anchors * targetAnchors;
-                    const auto transform = profile.normalization * initial;
-                    const double area = shape.area * std::abs(transform.determinant());
-                    if (!std::isfinite(area) || area > region.area * 1.02 || area < options.observationScale * options.observationScale
-                        || !probesInside(shape, transform, envelope)) {
-                        continue;
-                    }
-                    const auto initialArc = initial.map(profile.points);
-                    if (arcError(initialArc, target) > std::max(options.observationScale * 2.0, length * 0.03)) {
-                        continue;
-                    }
-                    ++fits;
-                    const auto fitted = fitArc(profile, target, initial);
-                    const auto normalizedFit = profile.normalization.inverted() * fitted;
-                    const double error = arcError(normalizedFit.map(profile.points), target);
-                    if (error > kProfileError * options.observationScale || !probesInside(shape, fitted, envelope)) {
-                        continue;
-                    }
-                    auto candidate = candidateFor(shape, fitted, region, outer, boundary, options.observationScale);
-                    if (!candidate) {
-                        continue;
-                    }
-                    candidate->error = error;
-                    candidate->span = length;
-                    const auto duplicate = std::find_if(retained.begin(), retained.end(), [&](const auto &other) {
-                        return other.placement.shapeId == candidate->placement.shapeId;
-                    });
-                    if (duplicate != retained.end()) {
-                        if (duplicate->placement.area >= candidate->placement.area) {
-                            continue;
-                        }
-                        retained.erase(duplicate);
-                    }
-                    const auto position = std::find_if(retained.begin(), retained.end(), [&](const auto &other) {
-                        return candidate->placement.area > other.placement.area;
-                    });
-                    retained.insert(position, std::move(*candidate));
-                    if (retained.size() > kCandidatesPerSpan) {
-                        retained.removeLast();
-                    }
-                }
-                *pool += retained;
-                if (trials >= kMaximumTrials || pool->size() >= kMaximumCandidates || stopped(cancelled)) {
-                    break;
-                }
-            }
-            if (trials >= kMaximumTrials || pool->size() >= kMaximumCandidates || stopped(cancelled)) {
-                break;
+                result.push_back({std::move(target), anchors, length});
             }
         }
     }
+
+    return result;
+}
+
+void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
+                        const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
+                        const compact::FillOptions &options, const std::function<bool()> &cancelled,
+                        QVector<Candidate> *pool, QJsonObject *diagnostics) {
+    const auto profiles = sourceProfiles(primitives);
+    const auto jobs = curveJobs(region, options, cancelled);
+    const auto envelope = catalog::painterPath(outer);
+    const int budget = static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
+        kMaximumTrials, kMaximumProfileWork));
+    int trials = 0;
+    int fits = 0;
+    int processed = 0;
+    for (int index = 0; index < jobs.size() && !stopped(cancelled); ++index) {
+        const auto &job = jobs[index];
+        const int remaining = jobs.size() - index;
+        const int limit = std::min(static_cast<int>(profiles.size()), (budget - trials) / remaining);
+        const int capacity = std::min(kCandidatesPerSpan, std::max(0, (kMaximumCandidates - static_cast<int>(pool->size())) / remaining));
+        QVector<Candidate> retained;
+        for (int sample = 0; sample < limit && !stopped(cancelled); ++sample) {
+            const auto &profile = profiles[static_cast<qint64>(sample) * profiles.size() / limit];
+            ++trials;
+            if (options.workProgress && trials % 1024 == 0) {
+                options.workProgress(0, trials, budget);
+            }
+            const auto &shape = primitives[profile.primitive].shape;
+            const auto initial = profile.anchors * job.anchors;
+            const auto transform = profile.normalization * initial;
+            const double area = shape.area * std::abs(transform.determinant());
+            if (!std::isfinite(area) || area > region.area * 1.02 || area < options.observationScale * options.observationScale
+                || !probesInside(shape, transform, envelope)) {
+                continue;
+            }
+            if (arcError(initial.map(profile.points), job.target) > std::max(options.observationScale * 2.0, job.length * 0.03)) {
+                continue;
+            }
+            ++fits;
+            const auto fitted = fitArc(profile, job.target, initial);
+            const auto normalizedFit = profile.normalization.inverted() * fitted;
+            const double error = arcError(normalizedFit.map(profile.points), job.target);
+            if (error > kProfileError * options.observationScale || !probesInside(shape, fitted, envelope)) {
+                continue;
+            }
+            auto candidate = candidateFor(shape, fitted, region, outer, boundary, options.observationScale);
+            if (!candidate) {
+                continue;
+            }
+            candidate->error = error;
+            candidate->span = job.length;
+            const auto duplicate = std::find_if(retained.begin(), retained.end(), [&](const auto &other) {
+                return other.placement.shapeId == candidate->placement.shapeId;
+            });
+            if (duplicate != retained.end()) {
+                if (duplicate->placement.area >= candidate->placement.area) {
+                    continue;
+                }
+                retained.erase(duplicate);
+            }
+            const auto position = std::find_if(retained.begin(), retained.end(), [&](const auto &other) {
+                return candidate->placement.area > other.placement.area;
+            });
+            retained.insert(position, std::move(*candidate));
+            if (retained.size() > capacity) {
+                retained.removeLast();
+            }
+        }
+        *pool += retained;
+        processed += limit > 0;
+    }
     diagnostics->insert(QStringLiteral("profiles"), profiles.size());
     diagnostics->insert(QStringLiteral("profileTrials"), trials);
+    diagnostics->insert(QStringLiteral("profileTrialBudget"), budget);
     diagnostics->insert(QStringLiteral("profileFits"), fits);
     diagnostics->insert(QStringLiteral("curveCandidates"), pool->size());
+    diagnostics->insert(QStringLiteral("curveJobs"), jobs.size());
+    diagnostics->insert(QStringLiteral("processedCurveJobs"), processed);
+    diagnostics->insert(QStringLiteral("searchScale"), searchScale(region, options.observationScale));
 }
 
 void setRange(Bits *bits, int first, int end) {
@@ -624,15 +656,16 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
 void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
                            const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                            double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
+    const double placementScale = searchScale(region, scale);
     int trials = 0;
     for (const auto &polygon : region.required) {
         const auto trace = makeTrace(polygon);
         QVector<double> starts = trace.corners;
-        for (double offset = 0; offset < trace.perimeter; offset += 20.0 * scale) {
+        for (double offset = 0; offset < trace.perimeter; offset += 20.0 * placementScale) {
             starts.push_back(offset);
         }
         for (int index = 0; index < polygon.size(); ++index) {
-            if (trace.lengths[index + 1] - trace.lengths[index] > scale * 4.0) {
+            if (trace.lengths[index + 1] - trace.lengths[index] > placementScale * 4.0) {
                 starts.push_back(trace.lengths[index]);
             }
         }
@@ -689,7 +722,7 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
                             }
                             const auto transform = catalog::affineFromAnchors({contour[0], contour[1], contour[0] + sourceNormal * QLineF(contour[0], contour[1]).length()},
                                 {target.front() - inward * (scale * 0.02), target.back() - inward * (scale * 0.02),
-                                    target.front() + (inward + tangent * shear) * (depth * scale)});
+                                    target.front() + (inward + tangent * shear) * (depth * placementScale)});
                             auto candidate = candidateFor(*shape, transform, region, outer, boundary, scale);
                             if (candidate) {
                                 pool->push_back(std::move(*candidate));
@@ -707,6 +740,7 @@ void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
                          const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                          double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
     const auto envelope = catalog::painterPath(outer);
+    const double placementScale = searchScale(region, scale);
     int trials = 0;
     for (const auto &polygon : region.required) {
         const auto trace = makeTrace(polygon);
@@ -738,7 +772,7 @@ void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
                                     return;
                                 }
                                 const auto transform = catalog::affineFromAnchors({sourceCorner, sourceCorner + sourceFirst, sourceCorner + sourceSecond},
-                                    {corner, corner + first * (length * scale), corner + second * (length * ratio * scale)});
+                                    {corner, corner + first * (length * placementScale), corner + second * (length * ratio * placementScale)});
                                 if (!probesInside(*shape, transform, envelope)) {
                                     continue;
                                 }
@@ -981,7 +1015,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
 
 } // namespace
 
-catalog::FillResult fillRegion(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
+static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                const std::function<void(int, double, double)> &progress) {
     if (!options.initialPlacements.isEmpty()) {
@@ -1011,16 +1045,64 @@ catalog::FillResult fillRegion(const PenFillRequest &request, const QVector<cata
     refinement.initialPlacements = seed.fill.placements;
     refinement.workProgress = [&](int count, int evaluated, int) {
         if (options.workProgress) {
-            options.workProgress(count, seedWork + evaluated, totalWork);
+            options.workProgress(count, seedWork + std::min(evaluated, options.evaluationBudget), totalWork);
         }
     };
     auto result = compact::fillRegion(request, primitives, refinement, cancelled, progress);
+    if (options.retainFailedFill && !result.fill.error.isEmpty() && result.fill.placements.isEmpty()
+        && !result.fill.cancelled && !stopped(cancelled)) {
+        seed.fill.error = result.fill.error;
+        seed.fill.shapeLimit = options.shapeBudget;
+        result.fill = std::move(seed.fill);
+        result.diagnostics.insert(QStringLiteral("retainedAfterError"), true);
+        result.diagnostics.insert(QStringLiteral("retainedProfileSeed"), true);
+        result.diagnostics.insert(QStringLiteral("approximationVerified"), false);
+    }
     result.diagnostics.insert(QStringLiteral("strategy"), QStringLiteral("curve-first profile cover with union refinement"));
     result.diagnostics.insert(QStringLiteral("profileSeed"), seed.diagnostics);
-    result.diagnostics.insert(QStringLiteral("profileTrialBudget"), kMaximumTrials);
+    result.diagnostics.insert(QStringLiteral("profileTrialBudget"), seed.diagnostics.value(QStringLiteral("profileTrialBudget")));
     result.diagnostics.insert(QStringLiteral("structuralTrialBudget"), kStructuralTrials);
     if (options.workProgress && !result.fill.cancelled) {
         options.workProgress(result.fill.placements.size(), totalWork, totalWork);
+    }
+
+    return result;
+}
+
+catalog::FillResult fillRegion(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
+                               const compact::FillOptions &options, const std::function<bool()> &cancelled,
+                               const std::function<void(int, double, double)> &progress) {
+    const bool retry = options.initialPlacements.isEmpty() && std::isfinite(options.boundaryAllowance)
+        && options.boundaryAllowance > compact::kDefaultBoundaryAllowance;
+    const int attempts = retry ? 2 : 1;
+    const int attemptWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
+    catalog::FillResult result;
+    QJsonArray history;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        auto current = options;
+        if (retry && attempt == 0) {
+            current.boundaryAllowance = compact::kDefaultBoundaryAllowance;
+        }
+        current.workProgress = [&](int count, int evaluated, int) {
+            if (options.workProgress) {
+                options.workProgress(count, attempt * attemptWork + evaluated, attempts * attemptWork);
+            }
+        };
+        auto candidate = fillAttempt(request, primitives, current, cancelled, progress);
+        history.push_back(QJsonObject{{QStringLiteral("boundaryAllowance"), current.boundaryAllowance},
+            {QStringLiteral("error"), candidate.fill.error}, {QStringLiteral("count"), candidate.fill.placements.size()}});
+        const bool finished = candidate.fill.error.isEmpty() || candidate.fill.cancelled || stopped(cancelled);
+        if (finished || result.fill.placements.isEmpty() || !candidate.fill.placements.isEmpty()) {
+            result = std::move(candidate);
+        }
+        if (finished) {
+            break;
+        }
+    }
+    result.diagnostics.insert(QStringLiteral("requestedBoundaryAllowance"), options.boundaryAllowance);
+    result.diagnostics.insert(QStringLiteral("attempts"), history);
+    if (options.workProgress && !result.fill.cancelled && options.evaluationBudget > 0) {
+        options.workProgress(result.fill.placements.size(), attempts * attemptWork, attempts * attemptWork);
     }
 
     return result;

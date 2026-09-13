@@ -439,6 +439,37 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
     }
     require(workCalls > 0, QStringLiteral("Compact fit did not report bounded work"));
     options.workProgress = {};
+    if (profile) {
+        auto enlarged = ring;
+        for (auto &loop : enlarged.loops) {
+            for (auto &point : loop.points) {
+                point.position *= 20.0;
+            }
+        }
+        const auto enlargedResult = fit(enlarged, catalog, options);
+        requireApproximation(enlarged, enlargedResult, catalog, options);
+        const auto jobs = enlargedResult.diagnostics.value(QStringLiteral("profileSeed")).toObject();
+        require(jobs.value(QStringLiteral("processedCurveJobs")).toInt() == jobs.value(QStringLiteral("curveJobs")).toInt(),
+            QStringLiteral("Large-region search skipped contour spans"));
+        auto wider = options;
+        wider.boundaryAllowance = 8.0;
+        reportedWork = 0;
+        wider.workProgress = [&](int count, int evaluated, int budget) {
+            require(count >= 0 && evaluated >= reportedWork && budget == 2 * (options.evaluationBudget + options.evaluationBudget / 5),
+                QStringLiteral("Profile retry progress is invalid"));
+            reportedWork = evaluated;
+        };
+        const auto widerResult = fit(square, catalog, wider);
+        const auto tighterResult = fit(square, catalog, options);
+        requireApproximation(square, widerResult, catalog, wider);
+        require(widerResult.fill.placements.size() == tighterResult.fill.placements.size(), QStringLiteral("Wider margin changed a feasible tight count"));
+        for (int index = 0; index < widerResult.fill.placements.size(); ++index) {
+            require(widerResult.fill.placements[index].shapeId == tighterResult.fill.placements[index].shapeId
+                && widerResult.fill.placements[index].transform == tighterResult.fill.placements[index].transform,
+                QStringLiteral("Wider margin changed a feasible tight placement"));
+        }
+        output << "Large-region and wider-margin regressions passed\n" << Qt::flush;
+    }
     const auto nativeResult = fit(native, catalog, options);
     require(nativeResult.fill.placements.size() == 1 && nativeResult.fill.placements.front().shapeId != 101
         && nativeResult.fill.placements.front().shapeId != 103, QStringLiteral("Native curved fit is not one catalog shape"));
@@ -460,7 +491,79 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
     auto invalid = options;
     invalid.boundaryAllowance = std::numeric_limits<double>::quiet_NaN();
     require(!fit(square, catalog, invalid).fill.error.isEmpty(), QStringLiteral("Invalid compact allowance accepted"));
+    invalid.boundaryAllowance = std::numeric_limits<double>::infinity();
+    require(!fit(square, catalog, invalid).fill.error.isEmpty(), QStringLiteral("Infinite compact allowance accepted"));
     output << "Compact approximation, native shape, repeatability, budget and cancellation tests passed\n" << Qt::flush;
+}
+
+void failedFillTests(const QVector<gui::catalog::Primitive> &catalog) {
+    const gui::PenFillRequest square{{}, {polygonLoop({{-40, -30}, {40, -30}, {40, 30}, {-40, 30}})}};
+    auto ring = square;
+    ring.loops.push_back(polygonLoop({{-10, -10}, {10, -10}, {10, 10}, {-10, 10}}, gui::PenLoopKind::Cutout));
+    gui::compact::FillOptions strict;
+    strict.evaluationBudget = 1;
+    const auto exact = gui::profile::fillRegion(square, catalog, strict);
+    requireApproximation(square, exact, catalog, strict);
+    strict.initialPlacements = exact.fill.placements;
+    QTransform offset;
+    offset.translate(3, 0);
+    for (auto &placement : strict.initialPlacements) {
+        placement.transform *= offset;
+    }
+    const auto rejected = gui::profile::fillRegion(square, catalog, strict);
+    require(!rejected.fill.error.isEmpty() && rejected.fill.placements.isEmpty(), QStringLiteral("Strict failure returned shapes"));
+    auto review = strict;
+    review.retainFailedFill = true;
+    const auto retained = gui::profile::fillRegion(square, catalog, review);
+    require(retained.fill.error == rejected.fill.error && !retained.fill.placements.isEmpty(),
+        QStringLiteral("Failed approximation lost its shapes or error"));
+    require(!retained.diagnostics.value(QStringLiteral("approximationVerified")).toBool()
+        && retained.diagnostics.value(QStringLiteral("retainedAfterError")).toBool()
+        && retained.diagnostics.value(QStringLiteral("failedChecks")).toArray().contains(QStringLiteral("sharp-corner position")),
+        QStringLiteral("Retained approximation lost its failed verification"));
+    require(!outputPath(retained.fill, catalog).isEmpty(), QStringLiteral("Retained placements have no drawable geometry"));
+    const auto repeated = gui::profile::fillRegion(square, catalog, review);
+    require(repeated.fill.placements.size() == retained.fill.placements.size(), QStringLiteral("Retained count changed on repeat"));
+    for (int index = 0; index < retained.fill.placements.size(); ++index) {
+        require(retained.fill.placements[index].shapeId == repeated.fill.placements[index].shapeId
+            && retained.fill.placements[index].transform == repeated.fill.placements[index].transform,
+            QStringLiteral("Retained geometry changed on repeat"));
+    }
+    const auto cancelled = gui::profile::fillRegion(square, catalog, review, [] { return true; });
+    require(cancelled.fill.cancelled && cancelled.fill.placements.isEmpty(), QStringLiteral("Cancelled review retained shapes"));
+    review.initialPlacements.clear();
+    const auto recovered = gui::profile::fillRegion(square, catalog, review, {},
+        [](int, double, double) { throw std::runtime_error("Injected refinement failure"); });
+    require(recovered.fill.error == QStringLiteral("Injected refinement failure") && !recovered.fill.placements.isEmpty()
+        && recovered.diagnostics.value(QStringLiteral("retainedProfileSeed")).toBool(),
+        QStringLiteral("Refinement exception discarded the profile seed"));
+    const auto accepted = gui::profile::fillRegion(square, catalog, review);
+    requireApproximation(square, accepted, catalog, review);
+    require(accepted.fill.placements.size() == exact.fill.placements.size()
+        && accepted.fill.placements.front().transform == exact.fill.placements.front().transform,
+        QStringLiteral("Retention changed a successful fill"));
+    review.boundaryAllowance = std::numeric_limits<double>::quiet_NaN();
+    const auto invalid = gui::profile::fillRegion(square, catalog, review);
+    require(!invalid.fill.error.isEmpty() && invalid.fill.placements.isEmpty(), QStringLiteral("Invalid input produced fallback shapes"));
+    gui::catalog::FillOptions mesh;
+    mesh.candidateLimit = 0;
+    mesh.searchNodes = 0;
+    mesh.shapeBudget = 1;
+    mesh.retainFailedFill = true;
+    const auto overBudget = gui::catalog::fillRegion(ring, catalog, mesh);
+    require(!overBudget.fill.error.isEmpty() && overBudget.fill.placements.size() > mesh.shapeBudget
+        && overBudget.diagnostics.value(QStringLiteral("retainedAfterError")).toBool(),
+        QStringLiteral("Catalog failure discarded the completed cover"));
+    const auto failedSearch = gui::catalog::fillRegion(square, catalog, mesh, {},
+        [](int, double, double) { throw std::runtime_error("Injected catalog failure"); });
+    require(failedSearch.fill.error == QStringLiteral("Injected catalog failure") && !failedSearch.fill.placements.isEmpty(),
+        QStringLiteral("Catalog exception discarded its completed mesh"));
+    bool cancelAfterMesh = false;
+    const auto cancelledSearch = gui::catalog::fillRegion(square, catalog, mesh,
+        [&] { return cancelAfterMesh; }, [&](int, double, double) { cancelAfterMesh = true; });
+    require(cancelledSearch.fill.cancelled && cancelledSearch.fill.placements.isEmpty(),
+        QStringLiteral("Catalog cancellation retained its fallback mesh"));
+    QTextStream(stdout) << "Failed verification retention, exception recovery, repeatability and cancellation passed\n";
 }
 
 } // namespace
@@ -481,6 +584,10 @@ int main(int argc, char **argv) {
         }
         const QVector<gui::catalog::Primitive> fullCatalog = gui::catalog::buildCatalog(geometry, &error);
         require(error.isEmpty(), error);
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--failed-fill-tests")) {
+            failedFillTests(fullCatalog);
+            return 0;
+        }
         if (application.arguments().size() == 2 && (application.arguments()[1] == QStringLiteral("--compact-tests")
             || application.arguments()[1] == QStringLiteral("--profile-tests"))) {
             compactTests(fullCatalog, application.arguments()[1] == QStringLiteral("--profile-tests"));

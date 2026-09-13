@@ -383,6 +383,12 @@ if(FLS_BUILD_TESTS)
     add_test(NAME catalog_cover COMMAND fls_catalog_cover_tests)
     add_test(NAME compact_fit COMMAND fls_catalog_cover_tests --compact-tests)
     add_test(NAME profile_fit COMMAND fls_catalog_cover_tests --profile-tests)
+    add_test(NAME failed_fill_retention COMMAND fls_catalog_cover_tests --failed-fill-tests)
+    add_test(NAME profile_fit_manual COMMAND fls_catalog_cover_tests --profile-fit
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_manual.json" 8)
+    add_test(NAME profile_fit_large COMMAND fls_catalog_cover_tests --profile-fit
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_large.json" 8)
+    set_tests_properties(profile_fit_manual profile_fit_large PROPERTIES LABELS "slow")
 
     add_executable(fls_wgs_save_reader_tests
         tools/wgs_save_reader_test.cpp

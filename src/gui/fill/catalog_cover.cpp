@@ -667,6 +667,7 @@ FillResult fillRegion(const PenFillRequest &request, const QVector<Primitive> &p
                       const FillOptions &options, const std::function<bool()> &cancelled,
                       const std::function<void(int, double, double)> &progress) {
     FillResult result;
+    PenFillResult completedMesh;
     result.fill.shapeLimit = options.shapeBudget;
     result.diagnostics.insert(QStringLiteral("stage"), QStringLiteral("parameters"));
     result.diagnostics.insert(QStringLiteral("geometryModel"), QStringLiteral("world polygons on a 1e-6 grid; reconstructed float transforms"));
@@ -705,6 +706,17 @@ FillResult fillRegion(const PenFillRequest &request, const QVector<Primitive> &p
         QVector<int> meshIndices(meshCount);
         std::iota(meshIndices.begin(), meshIndices.end(), 0);
         const Polygons meshMissing = subtract(region.required, selectedUnion(candidates, meshIndices));
+        if (options.retainFailedFill) {
+            const auto coverage = selectedUnion(candidates, meshIndices);
+            completedMesh.targetArea = region.originalArea;
+            completedMesh.coveredArea = std::max(0.0, region.originalArea - area(meshMissing));
+            completedMesh.outsideArea = std::max(0.0, area(coverage) - region.originalArea);
+            completedMesh.unfilled = painterPath(meshMissing);
+            completedMesh.shapeLimit = options.shapeBudget;
+            for (const auto &candidate : candidates) {
+                completedMesh.placements.push_back(candidate.placement);
+            }
+        }
         if (!meshMissing.isEmpty()) {
             throw std::runtime_error(QStringLiteral("Catalog cover completion mesh leaves %1 uncovered area in %2 components")
                                          .arg(area(meshMissing), 0, 'g', 12).arg(meshMissing.size()).toStdString());
@@ -782,13 +794,6 @@ FillResult fillRegion(const PenFillRequest &request, const QVector<Primitive> &p
         result.diagnostics.insert(QStringLiteral("missingArea"), area(missing));
         result.diagnostics.insert(QStringLiteral("outsideEnvelopeArea"), area(outside));
         result.diagnostics.insert(QStringLiteral("coverageVerifiedOnGrid"), missing.isEmpty() && outside.isEmpty());
-        if (!missing.isEmpty() || !outside.isEmpty()) {
-            throw std::runtime_error("Catalog cover final coverage or spill verification failed");
-        }
-        if (selected.size() > options.shapeBudget) {
-            throw std::runtime_error(QStringLiteral("Complete catalog cover needs %1 shapes; budget is %2")
-                                         .arg(selected.size()).arg(options.shapeBudget).toStdString());
-        }
         for (int index : selected) {
             PenPlacement placement = candidates[index].placement;
             placement.area = candidates[index].gain;
@@ -806,12 +811,29 @@ FillResult fillRegion(const PenFillRequest &request, const QVector<Primitive> &p
             shapeCounts.insert(key, shapeCounts.value(key).toInt() + 1);
         }
         result.diagnostics.insert(QStringLiteral("shapeCounts"), shapeCounts);
+        if (!missing.isEmpty() || !outside.isEmpty()) {
+            throw std::runtime_error("Catalog cover final coverage or spill verification failed");
+        }
+        if (selected.size() > options.shapeBudget) {
+            throw std::runtime_error(QStringLiteral("Complete catalog cover needs %1 shapes; budget is %2")
+                                         .arg(selected.size()).arg(options.shapeBudget).toStdString());
+        }
         result.diagnostics.insert(QStringLiteral("stage"), QStringLiteral("complete"));
     } catch (const std::exception &failure) {
-        result.fill.placements.clear();
+        if (options.retainFailedFill && result.fill.placements.isEmpty() && !isCancelled(cancelled)) {
+            result.fill = std::move(completedMesh);
+        }
         result.fill.cancelled = isCancelled(cancelled);
         result.fill.error = QString::fromUtf8(failure.what());
+        if (!options.retainFailedFill || result.fill.cancelled) {
+            result.fill.placements.clear();
+        }
     }
+    if (result.fill.cancelled) {
+        result.fill.placements.clear();
+    }
+    result.diagnostics.insert(QStringLiteral("retainedAfterError"),
+        !result.fill.error.isEmpty() && !result.fill.placements.isEmpty());
 
     return result;
 }
