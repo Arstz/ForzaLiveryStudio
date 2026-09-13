@@ -361,6 +361,9 @@ void MainWindow::setupFileMenu() {
                  QStringLiteral("import_guide_layer"), QStringLiteral("Import Guide Layer"), &MainWindow::importGuideLayerDialog);
     addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("&Export..."),
                  QStringLiteral("export"), QStringLiteral("Export"), &MainWindow::exportDialog);
+    addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("Export Car &Template..."),
+                 QStringLiteral("export_car_template"), QStringLiteral("Export Car Template"),
+                 &MainWindow::exportCarTemplate);
     fileMenu->addSeparator();
     addIconEntry(QStringLiteral("MenuExit.xpm"), QStringLiteral("E&xit"),
                  QStringLiteral("exit"), QStringLiteral("Exit"), &QWidget::close);

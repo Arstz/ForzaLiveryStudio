@@ -108,6 +108,7 @@ private:
     void applyLiverySectionVisibility(const QString &sectionGroupId);
     void updateCarUnwrapOverlay();
     void exportDialog();
+    void exportCarTemplate();
     bool exportFolderImpl(const QString &folder, QString *error);
     void setTargetCarDialog();
     void newProjectDialog();

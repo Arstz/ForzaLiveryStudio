@@ -1105,6 +1105,67 @@ void MainWindow::exportDialog() {
     }
 }
 
+void MainWindow::exportCarTemplate() {
+    if (carPreview_ == nullptr || !carPreview_->hasModel()) {
+        QMessageBox::information(this, QStringLiteral("Export Car Template"),
+            QStringLiteral("Load a car model first (File \342\206\222 Import Car Model)."));
+        return;
+    }
+    const CarUnwrapOverlay overlay = carPreview_->unwrapOverlay(-1);
+    if (overlay.empty()) {
+        QMessageBox::information(this, QStringLiteral("Export Car Template"),
+            QStringLiteral("This car has no paintable unwrap to export."));
+        return;
+    }
+
+    const QString startDir = importDialogStartDirectoryWithFallbacks(
+        this, QStringLiteral("exportFolder"),
+        QStringList{QStringLiteral("exportNested")});
+    const QString path = QFileDialog::getSaveFileName(this,
+        QStringLiteral("Export Car Template"),
+        startDir + QStringLiteral("/car_template.png"),
+        QStringLiteral("PNG image (*.png)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    rememberImportDirectory(QFileInfo(path).absolutePath(), QStringLiteral("exportFolder"));
+
+    // The livery canvas spans [-halfW, halfW] x [-halfH, halfH]; render it 1:1.
+    const int w = static_cast<int>(fls::kLiveryCanvasHalfWidth * 2.0f);
+    const int h = static_cast<int>(fls::kLiveryCanvasHalfHeight * 2.0f);
+    QImage image(w, h, QImage::Format_ARGB32);
+    image.fill(QColor(248, 248, 248));
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    // Canvas (x,y) -> pixel (x + halfW, halfH - y): match the editor's mapping.
+    painter.translate(fls::kLiveryCanvasHalfWidth, fls::kLiveryCanvasHalfHeight);
+    painter.scale(1.0, -1.0);
+
+    const QColor panelFill(232, 226, 214);
+    const QPen outlinePen(QColor(70, 70, 70), 2.0);
+    const QPen wirePen(QColor(150, 150, 150, 120), 1.0);
+    for (const CarUnwrapSide &side : overlay.sides) {
+        if (!side.valid()) {
+            continue;
+        }
+        painter.fillPath(side.path, panelFill);
+        if (!side.wireframe.isEmpty()) {
+            painter.strokePath(side.wireframe, wirePen);
+        }
+        painter.strokePath(side.path, outlinePen);
+    }
+    painter.end();
+
+    if (!image.save(path, "PNG")) {
+        QMessageBox::critical(this, QStringLiteral("Export failed"),
+            QStringLiteral("Could not write %1").arg(path));
+        return;
+    }
+    statusBar()->showMessage(
+        QStringLiteral("Exported car template %1").arg(path), 5000);
+}
+
 void MainWindow::newProjectDialog() {
     if (!confirmDiscardUnsavedChanges()) {
         return;
