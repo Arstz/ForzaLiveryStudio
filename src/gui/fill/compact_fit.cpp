@@ -73,6 +73,9 @@ struct Context {
     Polygons others;
     Polygons innerResidual;
     mutable std::optional<Polygons> inwardResidual;
+    mutable std::optional<Polygons> observedOthers;
+    mutable std::optional<BoundaryModel::ObservationWindow> observationWindow;
+    mutable std::optional<Polygons> spillExclusion;
     const Objective *objective = nullptr;
 };
 
@@ -136,10 +139,20 @@ double boundaryCost(const Polygons &coverage, const Objective &objective) {
 }
 
 double qualityGain(const Piece &piece, const Context &context) {
-    const double areaGain = gain(piece, context);
+    ++context.objective->evaluations;
+    if (context.objective->workProgress && context.objective->evaluations % kWorkReportInterval == 0) {
+        context.objective->workProgress(context.objective->evaluations);
+    }
     if (!catalog::subtract(piece.polygons, context.objective->outer).isEmpty()) {
         return -std::numeric_limits<double>::infinity();
     }
+    if (!context.spillExclusion) {
+        context.spillExclusion = catalog::unite(context.others + context.objective->target);
+    }
+    const double covered = catalog::area(catalog::intersect(piece.polygons, context.residual));
+    const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
+    const double spill = catalog::area(catalog::subtract(piece.polygons, *context.spillExclusion));
+    const double areaGain = kMissingWeight * covered + kDeepErrorWeight * deepCovered - spill;
     const auto coverage = catalog::unite(context.others + piece.polygons);
     if (!context.inwardResidual) {
         context.inwardResidual = catalog::subtract(context.objective->target,
@@ -147,9 +160,18 @@ double qualityGain(const Piece &piece, const Context &context) {
     }
     const double missingBeyondAllowance = catalog::area(catalog::subtract(*context.inwardResidual,
         catalog::expanded(piece.polygons, context.objective->fittingInwardAllowance)));
+    if (!context.observedOthers && !context.others.isEmpty()) {
+        context.observedOthers = context.objective->boundary->observationSupport(context.others);
+    }
+    if (context.observedOthers && (!context.observationWindow || !context.observationWindow->additionBounds.contains(piece.bounds))) {
+        context.observationWindow = context.objective->boundary->observationWindow(context.others, *context.observedOthers, piece.bounds);
+    }
+    const auto observed = context.observedOthers
+        ? context.objective->boundary->observationSupport(piece.polygons, *context.observationWindow)
+        : context.objective->boundary->observationSupport(coverage);
     ++context.objective->qualityEvaluations;
 
-    return areaGain - context.objective->boundaryWeight * context.objective->boundary->energy(context.objective->boundary->measure(coverage))
+    return areaGain - context.objective->boundaryWeight * context.objective->boundary->energy(context.objective->boundary->measure(coverage, observed))
         - kGapRepairWeight * missingBeyondAllowance;
 }
 
@@ -664,6 +686,13 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                                const std::function<bool()> &cancelled,
                                const std::function<void(int, double, double)> &progress) {
     catalog::FillResult result;
+    QJsonObject timings;
+    QElapsedTimer stageTimer;
+    stageTimer.start();
+    const auto recordTime = [&](const QString &name) {
+        timings.insert(name, stageTimer.nsecsElapsed() / 1e6);
+        stageTimer.start();
+    };
     try {
         if (!std::isfinite(options.boundaryAllowance) || options.boundaryAllowance <= 0
             || !std::isfinite(options.areaErrorRatio) || options.areaErrorRatio <= 0
@@ -739,6 +768,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
         };
         report();
+        recordTime(QStringLiteral("setup"));
         if (pieces.size() > 1 && !recognitionCatalog.isEmpty() && !stopWork()) {
             const auto context = contextFor({}, {}, objective);
             for (const auto &replacement : replacementSeeds(objective.target, context, recognitionCatalog, stopWork, true)) {
@@ -749,6 +779,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                 }
             }
         }
+        recordTime(QStringLiteral("recognition"));
         if (pieces.size() > 1) {
             const auto original = pieces;
             const auto score = [&](const QVector<Piece> &candidate) {
@@ -790,6 +821,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         if (!acceptable(support(pieces), objective) && !incumbent.isEmpty()) {
             pieces = incumbent;
         }
+        recordTime(QStringLiteral("initialRefit"));
         prune(&pieces, objective, stopWork);
         report();
         for (int round = 0; round < kMergeRounds && pieces.size() > 1 && !stopSpatialSearch(); ++round) {
@@ -826,6 +858,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             report();
         }
         result.diagnostics.insert(QStringLiteral("exposedBoundaryMerges"), exposedMerges);
+        recordTime(QStringLiteral("compaction"));
         if (!incumbent.isEmpty()) {
             pieces = incumbent;
         }
@@ -842,6 +875,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
         }
         const auto coverage = support(pieces);
+        recordTime(QStringLiteral("polish"));
         result.fill.cancelled = stopped(cancelled);
         result.fill.shapeLimit = options.shapeBudget;
         result.fill.targetArea = region.area;
@@ -864,6 +898,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("boundaryQuality"), objective.boundary->diagnostics(objective.boundary->measure(coverage)));
         result.diagnostics.insert(QStringLiteral("boundaryEnergyLimit"), objective.qualityLimit);
         result.diagnostics.insert(QStringLiteral("qualityEvaluations"), objective.qualityEvaluations);
+        result.diagnostics.insert(QStringLiteral("qualityTimings"), objective.boundary->performance());
         result.diagnostics.insert(QStringLiteral("mergeRefinements"), objective.mergeRefinements);
         result.diagnostics.insert(QStringLiteral("evaluations"), objective.evaluations);
         result.diagnostics.insert(QStringLiteral("evaluationBudget"), options.evaluationBudget);
@@ -905,6 +940,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("areaError"), areaError);
         result.diagnostics.insert(QStringLiteral("areaErrorLimit"), objective.areaBudget);
         result.diagnostics.insert(QStringLiteral("approximationVerified"), acceptable(coverage, objective));
+        recordTime(QStringLiteral("verification"));
         if (!result.fill.cancelled) {
             for (const auto &piece : pieces) {
                 result.fill.placements.push_back(piece.placement);
@@ -926,6 +962,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
     }
     result.diagnostics.insert(QStringLiteral("retainedAfterError"),
         !result.fill.error.isEmpty() && !result.fill.placements.isEmpty());
+    result.diagnostics.insert(QStringLiteral("stageMilliseconds"), timings);
 
     return result;
 }

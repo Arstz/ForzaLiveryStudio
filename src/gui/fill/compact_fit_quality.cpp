@@ -19,6 +19,7 @@ constexpr double kMaximumGridExtent = 128.0;
 constexpr double kSubpixelClosingFraction = 0.15;
 constexpr double kPeakTurnWeight = 64.0;
 constexpr int kIndexedCornerThreshold = 8;
+constexpr double kObservationWindowSlack = 0.1;
 
 QPointF normalized(const QPointF &point) {
     const double length = std::hypot(point.x(), point.y());
@@ -91,12 +92,57 @@ BoundaryReference BoundaryModel::reference(const QPointF &point) const {
 }
 
 catalog::Polygons BoundaryModel::observationSupport(const catalog::Polygons &coverage) const {
-    return closeSubpixelGaps(coverage, scale_ * kSubpixelClosingFraction);
+    QElapsedTimer timer;
+    timer.start();
+    auto result = closeSubpixelGaps(coverage, scale_ * kSubpixelClosingFraction);
+    closingNanoseconds_ += timer.nsecsElapsed();
+
+    return result;
+}
+
+BoundaryModel::ObservationWindow BoundaryModel::observationWindow(const catalog::Polygons &unchanged,
+                                                                  const catalog::Polygons &unchangedObserved,
+                                                                  const QRectF &addedBounds) const {
+    ObservationWindow result;
+    QElapsedTimer timer;
+    const double radius = scale_ * kSubpixelClosingFraction;
+    const double padding = radius * 2.0 + catalog::kVerificationClearance * 4.0;
+    const double slack = std::max(scale_ * 2.0, std::max(addedBounds.width(), addedBounds.height()) * kObservationWindowSlack);
+    const QRectF additionBounds = addedBounds.adjusted(-slack, -slack, slack, slack);
+    const QRectF affected = additionBounds.adjusted(-padding, -padding, padding, padding);
+    const QRectF window = affected.adjusted(-padding, -padding, padding, padding);
+    const catalog::Polygons affectedPolygon{QPolygonF({affected.topLeft(), affected.topRight(), affected.bottomRight(), affected.bottomLeft()})};
+    const catalog::Polygons windowPolygon{QPolygonF({window.topLeft(), window.topRight(), window.bottomRight(), window.bottomLeft()})};
+
+    timer.start();
+    result.unchanged = catalog::subtract(unchangedObserved, affectedPolygon);
+    result.neighborhood = catalog::intersect(unchanged, windowPolygon);
+    result.clip = affectedPolygon;
+    result.additionBounds = additionBounds;
+    closingNanoseconds_ += timer.nsecsElapsed();
+
+    return result;
+}
+
+catalog::Polygons BoundaryModel::observationSupport(const catalog::Polygons &addition, const ObservationWindow &window) const {
+    QElapsedTimer timer;
+    timer.start();
+    const auto local = closeSubpixelGaps(catalog::unite(window.neighborhood + addition), scale_ * kSubpixelClosingFraction);
+    auto result = catalog::unite(window.unchanged + catalog::intersect(local, window.clip));
+    closingNanoseconds_ += timer.nsecsElapsed();
+
+    return result;
 }
 
 BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage) const {
+    return measure(coverage, observationSupport(coverage));
+}
+
+BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const catalog::Polygons &observed) const {
     BoundaryMetrics result;
+    QElapsedTimer timer;
     std::unique_ptr<BoundaryModel> outputBoundary;
+    timer.start();
     if (loops_.isEmpty()) {
         return result;
     }
@@ -122,7 +168,9 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage) const 
         result.maximumCornerDistance = std::max(result.maximumCornerDistance, std::sqrt(squaredDistance));
         result.cornerEnergy += squaredDistance;
     }
-    for (const auto &polygon : observationSupport(coverage)) {
+    cornerNanoseconds_ += timer.nsecsElapsed();
+    timer.start();
+    for (const auto &polygon : observed) {
         if (catalog::signedArea(polygon) > 0) {
             ++result.components;
         } else {
@@ -164,6 +212,9 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage) const 
         }
     }
 
+    samplingNanoseconds_ += timer.nsecsElapsed();
+    ++measurements_;
+
     return result;
 }
 
@@ -187,6 +238,13 @@ QJsonObject BoundaryModel::diagnostics(const BoundaryMetrics &metrics) const {
         {QStringLiteral("components"), metrics.components},
         {QStringLiteral("holes"), metrics.holes},
         {QStringLiteral("samples"), metrics.samples}};
+}
+
+QJsonObject BoundaryModel::performance() const {
+    return {{QStringLiteral("measurements"), measurements_},
+        {QStringLiteral("cornerMilliseconds"), cornerNanoseconds_ / 1e6},
+        {QStringLiteral("closingMilliseconds"), closingNanoseconds_ / 1e6},
+        {QStringLiteral("samplingMilliseconds"), samplingNanoseconds_ / 1e6}};
 }
 
 double BoundaryModel::perimeter() const {

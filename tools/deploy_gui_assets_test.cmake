@@ -1,0 +1,66 @@
+cmake_minimum_required(VERSION 3.24)
+
+if(NOT IS_ABSOLUTE "${FLS_TEST_ROOT}")
+    message(FATAL_ERROR "An absolute test root is required")
+endif()
+string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef suffix)
+set(test_directory "${FLS_TEST_ROOT}/asset-deployment-${suffix}")
+if(EXISTS "${test_directory}")
+    message(FATAL_ERROR "Test directory already exists")
+endif()
+set(source "${test_directory}/source")
+set(destination "${test_directory}/release/assets")
+set(manifest "${test_directory}/manifest.cmake")
+set(deploy "${CMAKE_CURRENT_LIST_DIR}/deploy_gui_assets.cmake")
+file(MAKE_DIRECTORY "${source}/vector" "${source}/icons" "${destination}/vector")
+file(WRITE "${source}/vector/catalog.txt" "new geometry")
+file(WRITE "${destination}/vector/catalog.txt" "previous geometry")
+file(WRITE "${destination}/previous-only.txt" "previous payload")
+file(WRITE "${manifest}" "set(FLS_GUI_ASSET_FILES vector/catalog.txt icons/notice.txt)\n")
+
+function(run_deployment expected_success)
+    execute_process(COMMAND "${CMAKE_COMMAND}"
+        "-DFLS_ASSET_SOURCE=${source}"
+        "-DFLS_ASSET_DESTINATION=${destination}"
+        "-DFLS_ASSET_MANIFEST=${manifest}"
+        -P "${deploy}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    if(expected_success AND NOT result EQUAL 0)
+        message(FATAL_ERROR "Deployment failed: ${output}${error}")
+    elseif(NOT expected_success AND result EQUAL 0)
+        message(FATAL_ERROR "Invalid deployment succeeded")
+    endif()
+endfunction()
+
+run_deployment(FALSE)
+file(READ "${destination}/vector/catalog.txt" preserved)
+if(NOT preserved STREQUAL "previous geometry" OR NOT EXISTS "${destination}/previous-only.txt")
+    message(FATAL_ERROR "A missing source file damaged the deployed assets")
+endif()
+
+file(WRITE "${source}/icons/notice.txt" "fixture notice")
+run_deployment(TRUE)
+file(READ "${destination}/vector/catalog.txt" published)
+if(NOT published STREQUAL "new geometry" OR NOT EXISTS "${destination}/icons/notice.txt"
+        OR EXISTS "${destination}/previous-only.txt")
+    message(FATAL_ERROR "Complete asset replacement failed")
+endif()
+run_deployment(TRUE)
+
+file(WRITE "${manifest}" "set(FLS_GUI_ASSET_FILES vector/catalog.txt vector/catalog.txt/child)\n")
+run_deployment(FALSE)
+file(READ "${destination}/vector/catalog.txt" preserved)
+if(NOT preserved STREQUAL "new geometry" OR NOT EXISTS "${destination}/icons/notice.txt")
+    message(FATAL_ERROR "A rejected replacement damaged the deployed assets")
+endif()
+
+file(WRITE "${manifest}" "set(FLS_GUI_ASSET_FILES ../manifest.cmake)\n")
+run_deployment(FALSE)
+file(WRITE "${manifest}" "set(FLS_GUI_ASSET_FILES)\n")
+run_deployment(FALSE)
+file(GLOB leftovers "${test_directory}/release/assets.stage-*" "${test_directory}/release/assets.previous-*")
+if(leftovers)
+    message(FATAL_ERROR "Deployment left a staged or backup payload: ${leftovers}")
+endif()
+file(REMOVE_RECURSE "${test_directory}")
+message(STATUS "Asset deployment preserves existing payloads on missing input and rejects unsafe manifests; replacement and repeat deployment passed")

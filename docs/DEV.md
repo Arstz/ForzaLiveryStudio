@@ -35,7 +35,7 @@ exports grouped `C_group` folders and `C_livery` folders.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
   **Options → Contour Fill** selects **Analytic**, **Differential**,
-  **Catalog Cover**, or **Compact Fit** and preserves the selected mode between launches. Analytic
+  or **Compact Fit** and preserves the selected mode between launches. Analytic
   is the default. The Differential mode replaces that commit
   path with a slow analytic greedy cover for the active contour. It optimizes
   affine catalog shapes against an exact world-coordinate residual, stays within
@@ -63,43 +63,24 @@ exports grouped `C_group` folders and `C_livery` folders.
   verification remains authoritative, and backend failure advances automatically.
   Its status-bar progress reports exact covered area and updates elapsed time
   independently of placement completion.
-  Catalog Cover is experimental. It uses a curated dictionary of opaque silhouettes, including
-  shapes with holes and disconnected parts. A subdivided quadratic control-hull
-  enclosure supplies its required region; a bounded exterior envelope limits
-  placements. It constructs a complete mesh cover, ranks affine catalog
-  candidates, and reduces the selection with greedy replacement, bounded
-  witness-based search, and exact residual checks on a 1e-6 world-coordinate
-  grid. Candidate transforms are reconstructed through float-valued scene
-  fields before verification. Mesh completion tries alternate triangle mappings,
-  oriented rectangle covers, and bounded subdivision with verified overlap.
-  Accepted placements leave numerical clearance inside the permitted envelope.
-  A boundary-first pass fits catalog contour profiles to authored quadratic
-  spans and also verifies proposals from the Analytic fitter. It simplifies an
-  overlapping core only where selected shapes cover the removed area or the
-  permitted envelope contains added area, then remeshes the core and tries
-  verified affine rectangle merges. The smaller complete plan becomes the
-  search incumbent. The original mesh remains available when compaction fails.
-  Search work is bounded by operation counts and runs on the CPU.
-  A failed coverage, spill, or shape-budget check retains the computed cover
-  for insertion with a warning. A later search error can retain the completed
-  mesh. The mode uses opaque colors and rejects mask fills.
-  `assets/catalog_cover_shapes.json` contains its primary and reserve IDs;
-  `catalog_cover.log` records the processing stage, catalog size, search work,
-  mesh and final counts, rectangle completion count, residuals, and the numerical
-  verification model beside the executable. Boundary fitting, core simplification,
-  merge counts, and final shape-ID counts are recorded separately.
-  This bounded search does not claim globally minimum shape count or exact
-  real-arithmetic containment after game rendering. It can retain the complete
-  starting mesh when catalog boundary matches do not reduce its count.
-  Bucket-derived Pen contours use the same selected mode.
+  Bucket-derived Pen contours use the same selected mode. Saved Catalog Cover
+  preferences load as Compact Fit. Compact Fit uses the shared opaque silhouette
+  dictionary in `assets/catalog_cover_shapes.json`; the legacy cover solver is
+  excluded from the editor build and remains only in headless comparison tools.
   Compact Fit is an experimental curve-first approximation with separate
   contour-quality checks. Its initialization fits 24 catalog perimeter families
   to long boundary spans, including spans across authored control points. A
   point-to-line affine fit includes endpoint position and tangent constraints.
   Straight runs seed sheared rectangles; convex corners can seed triangles and
-  curved corner shapes. Interior proposals use six shape types at separated
+  curved corner shapes. Straight runs meeting at a convex corner also propose a
+  Triangle fitted directly to their endpoints. These proposals compete with the
+  curved catalog shapes; triangle count has no minimum or quota.
+  Interior proposals use six shape types at separated
   centers. Cover selection combines interior cells and boundary witnesses,
-  followed by redundant-placement removal and catalog substitution.
+  followed by redundant-placement removal and catalog substitution. A priority
+  queue reuses marginal-score upper bounds between selections. It produces the
+  same greedy order and index-based tie breaks as exhaustive rescoring while
+  evaluating fewer unchanged candidates.
   The selected seed is an approximation. Full-union refinement and verification
   assess the generated result. The editor inserts available shapes even when
   these checks fail, with the failure reported as a warning. If refinement
@@ -142,7 +123,7 @@ exports grouped `C_group` folders and `C_livery` folders.
   Work percentage is not a time estimate, and setup and verification cost vary
   with contour complexity. Quality checks remain active and their failures are
   recorded; they do not block insertion of available shapes. Cancellation still
-  discards Compact Fit and Catalog Cover output. Failures before any placements
+  discards Compact Fit output. Failures before any placements
   exist leave the contour available for correction and retry.
   The mode emits opaque shapes and rejects masks. `compact_fit.log` records
   the replayable request and result, count/error history, shape IDs, elapsed
@@ -154,6 +135,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   Analytic-seeded optimizer remains available through headless tests; the editor
   uses curve-first initialization. The isolated-region implementation does not infer future
   occluders or optimize full-image order. Lining retains its separate fitter.
+  Boundary-aware refinement caches the unaffected observed support and the
+  spill-exclusion union. Narrow-gap closing is recomputed within a padded window
+  around each candidate. The window includes the closing operator's full local
+  support and is rebuilt when a candidate leaves it. Integer-grid clipping can
+  slightly change the search score; final verification still measures the full
+  union through the original global closing operation. Work budgets and quality
+  thresholds are unchanged. Logs include per-stage and quality-check timings.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated
   Primitive catalog. Selection follows the authored point structure, ranks
@@ -491,6 +479,16 @@ group-to-shape state transitions, and complete positional remnants.
 
 The scripts use `VCPKG_ROOT`, defaulting to `C:\vcpkg` or `C:\vcpkg\vcpkg`,
 and target `x64-windows`. Build output is written to `build\Release`.
+GUI asset deployment validates every manifest entry before it changes the live
+asset directory. Files are copied into a separate staging directory, then the
+previous assets are preserved while the staged directory is published. A missing
+source file or a staging-copy failure leaves the live assets intact. Publication
+failure attempts to restore the previous directory and reports any recovery paths.
+Shape data and fill catalogs are checked together by the headless
+`release_shape_catalog` test, which runs with an isolated working directory to
+exclude source-tree fallback. `gui_asset_deployment` tests replacement and failure
+preservation. Restart the editor after restoring missing runtime assets, since
+the canvas and shape browser load their geometry during initialization.
 The vcpkg installation must include `qtsvg:x64-windows` in addition to the
 existing Qt base and image-format packages.
 Test executables are excluded by default. Configure with

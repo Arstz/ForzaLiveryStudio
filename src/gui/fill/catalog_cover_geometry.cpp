@@ -517,6 +517,9 @@ QVector<Primitive> buildCatalog(const ShapeGeometryStore &geometry, QString *err
         QDir::current().filePath(QStringLiteral("assets/catalog_cover_shapes.json")),
     };
     try {
+        if (geometry.shapeIds().isEmpty()) {
+            throw std::runtime_error("Shape geometry is not loaded. Restore assets/vector/shape_geometry.json.gz and restart the editor.");
+        }
         QByteArray bytes;
         for (const QString &path : paths) {
             QFile file(path);
@@ -537,8 +540,15 @@ QVector<Primitive> buildCatalog(const ShapeGeometryStore &geometry, QString *err
                 Primitive primitive;
                 const int shapeId = value.toInt(-1);
                 const ShapeGeometry *source = geometry.shape(shapeId);
-                if (source == nullptr || value.toDouble(-1) != shapeId || seen.contains(shapeId)) {
-                    throw std::runtime_error("Catalog cover contains an unavailable or duplicate shape ID");
+                if (shapeId < 0 || value.toDouble(-1) != shapeId) {
+                    throw std::runtime_error("Fill catalog contains an invalid shape ID");
+                }
+                if (seen.contains(shapeId)) {
+                    throw std::runtime_error(QStringLiteral("Fill catalog contains duplicate shape ID %1").arg(shapeId).toStdString());
+                }
+                if (source == nullptr) {
+                    throw std::runtime_error(QStringLiteral("Fill catalog shape %1 is unavailable in the loaded geometry. Restore the runtime assets and restart the editor.")
+                        .arg(shapeId).toStdString());
                 }
                 seen.insert(shapeId);
                 primitive.reserve = key == QStringLiteral("reserve_shape_ids");

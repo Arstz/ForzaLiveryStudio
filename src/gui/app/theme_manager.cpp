@@ -171,10 +171,8 @@ BehaviorSettings loadBehaviorSettings() {
         legacyDifferentialFill).toBool();
     const QString fillMode = settings.value(QStringLiteral("ui/behavior/contourFillMode"),
         differential ? QStringLiteral("differential") : QStringLiteral("analytic")).toString();
-    if (fillMode == QStringLiteral("compact")) {
+    if (fillMode == QStringLiteral("compact") || fillMode == QStringLiteral("catalog")) {
         result.contourFillMode = ContourFillMode::CompactFit;
-    } else if (fillMode == QStringLiteral("catalog")) {
-        result.contourFillMode = ContourFillMode::CatalogCover;
     } else if (fillMode == QStringLiteral("differential")) {
         result.contourFillMode = ContourFillMode::Differential;
     }
@@ -234,10 +232,8 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/differentialContourFill"),
                        settings.contourFillMode == ContourFillMode::Differential);
     const QString fillMode = settings.contourFillMode == ContourFillMode::CompactFit
-        ? QStringLiteral("compact") : (settings.contourFillMode == ContourFillMode::CatalogCover
-        ? QStringLiteral("catalog")
-        : (settings.contourFillMode == ContourFillMode::Differential
-               ? QStringLiteral("differential") : QStringLiteral("analytic")));
+        ? QStringLiteral("compact") : (settings.contourFillMode == ContourFillMode::Differential
+               ? QStringLiteral("differential") : QStringLiteral("analytic"));
     qsettings.setValue(QStringLiteral("ui/behavior/contourFillMode"), fillMode);
     qsettings.remove(QStringLiteral("ui/behavior/differentiablePenFill"));
     qsettings.setValue(QStringLiteral("ui/behavior/showPropertyDebug"), settings.showPropertyDebug);

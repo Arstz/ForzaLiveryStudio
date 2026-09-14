@@ -522,10 +522,9 @@ void MainWindow::setupOptionsMenu() {
     addBehaviorOption(optionsMenu, QStringLiteral("Use Last Selected Shape Scale for New Shapes"), QStringLiteral("toggle_insert_last_scale"), &BehaviorSettings::insertShapeWithLastSelectedScale);
     QMenu *contourFillMenu = optionsMenu->addMenu(QStringLiteral("Contour Fill"));
     auto *contourFillActions = new QActionGroup(contourFillMenu);
-    const std::array<std::tuple<ContourFillMode, QString, QString>, 4> fillModes = {{
+    const std::array<std::tuple<ContourFillMode, QString, QString>, 3> fillModes = {{
         {ContourFillMode::Analytic, QStringLiteral("Analytic"), QStringLiteral("select_analytic_contour_fill")},
         {ContourFillMode::Differential, QStringLiteral("Differential"), QStringLiteral("toggle_differential_contour_fill")},
-        {ContourFillMode::CatalogCover, QStringLiteral("Catalog Cover"), QStringLiteral("select_catalog_contour_fill")},
         {ContourFillMode::CompactFit, QStringLiteral("Compact Fit (experimental)"), QStringLiteral("select_compact_contour_fill")},
     }};
     for (const auto &[mode, label, shortcut] : fillModes) {

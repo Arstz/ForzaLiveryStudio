@@ -27,12 +27,25 @@ struct BoundaryReference {
 
 class BoundaryModel {
 public:
+    struct ObservationWindow {
+        catalog::Polygons unchanged;
+        catalog::Polygons neighborhood;
+        catalog::Polygons clip;
+        QRectF additionBounds;
+    };
+
     explicit BoundaryModel(const catalog::Polygons &target, double observationScale);
     BoundaryReference reference(const QPointF &point) const;
     catalog::Polygons observationSupport(const catalog::Polygons &coverage) const;
+    ObservationWindow observationWindow(const catalog::Polygons &unchanged,
+                                         const catalog::Polygons &unchangedObserved,
+                                         const QRectF &addedBounds) const;
+    catalog::Polygons observationSupport(const catalog::Polygons &addition, const ObservationWindow &window) const;
     BoundaryMetrics measure(const catalog::Polygons &coverage) const;
+    BoundaryMetrics measure(const catalog::Polygons &coverage, const catalog::Polygons &observed) const;
     double energy(const BoundaryMetrics &metrics) const;
     QJsonObject diagnostics(const BoundaryMetrics &metrics) const;
+    QJsonObject performance() const;
     double perimeter() const;
 
 private:
@@ -67,6 +80,10 @@ private:
     QHash<qint64, QVector<int>> cells_;
     QHash<qint64, QVector<QPointF>> cornerCells_;
     QRectF bounds_;
+    mutable qint64 cornerNanoseconds_ = 0;
+    mutable qint64 closingNanoseconds_ = 0;
+    mutable qint64 samplingNanoseconds_ = 0;
+    mutable int measurements_ = 0;
     double scale_ = 1.0;
     double cellSize_ = 1.0;
 };

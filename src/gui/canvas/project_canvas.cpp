@@ -538,7 +538,7 @@ QVector<PenPrimitive> ProjectCanvas::penPrimitiveCatalog() const {
     return buildPenPrimitiveCatalog(geometry_);
 }
 
-QVector<catalog::Primitive> ProjectCanvas::catalogCoverPrimitives(QString *error) const {
+QVector<catalog::Primitive> ProjectCanvas::compactFillPrimitives(QString *error) const {
     return catalog::buildCatalog(geometry_, error);
 }
 

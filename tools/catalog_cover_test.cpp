@@ -5,15 +5,19 @@
 #include "compact_fit.h"
 #include "profile_fit.h"
 #include "compact_fit_quality.h"
+#include "greedy_cover.h"
 #include "matrix_math.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QTemporaryDir>
 #include <QTextStream>
 
 #include <algorithm>
+#include <bit>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace {
@@ -440,6 +444,11 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
     require(workCalls > 0, QStringLiteral("Compact fit did not report bounded work"));
     options.workProgress = {};
     if (profile) {
+        const gui::PenFillRequest triangle{{}, {polygonLoop({{-40, -30}, {40, -30}, {-40, 30}})}};
+        const auto triangleResult = fit(triangle, catalog, options);
+        requireApproximation(triangle, triangleResult, catalog, options);
+        require(triangleResult.fill.placements.size() == 1 && triangleResult.fill.placements.front().shapeId == 103,
+            QStringLiteral("A triangular region should select one Triangle"));
         auto enlarged = ring;
         for (auto &loop : enlarged.loops) {
             for (auto &point : loop.points) {
@@ -494,6 +503,140 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
     invalid.boundaryAllowance = std::numeric_limits<double>::infinity();
     require(!fit(square, catalog, invalid).fill.error.isEmpty(), QStringLiteral("Infinite compact allowance accepted"));
     output << "Compact approximation, native shape, repeatability, budget and cancellation tests passed\n" << Qt::flush;
+}
+
+void benchmarkBoundary(const QString &path, const QVector<gui::catalog::Primitive> &catalog) {
+    const auto region = gui::catalog::buildRegion(readRequest(path), {});
+    QFile file(path);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    const auto object = QJsonDocument::fromJson(file.readAll()).object();
+    const auto placements = object.value(QStringLiteral("result")).toObject().value(QStringLiteral("placements")).toArray();
+    gui::catalog::Polygons coverage;
+    QVector<gui::catalog::Polygons> pieces;
+    for (const auto &entry : placements) {
+        const auto placement = entry.toObject();
+        const auto fields = placement.value(QStringLiteral("transform")).toArray();
+        const int id = placement.value(QStringLiteral("shapeId")).toInt();
+        const auto found = std::find_if(catalog.begin(), catalog.end(), [id](const auto &shape) { return shape.shape.shapeId == id; });
+        require(found != catalog.end() && fields.size() == 6, QStringLiteral("Invalid benchmark placement"));
+        pieces.push_back(gui::catalog::mapped(found->shape, QTransform(fields[0].toDouble(), fields[1].toDouble(),
+            fields[2].toDouble(), fields[3].toDouble(), fields[4].toDouble(), fields[5].toDouble())));
+        coverage += pieces.back();
+    }
+    require(!coverage.isEmpty(), QStringLiteral("Benchmark needs recorded placements"));
+    coverage = gui::catalog::unite(coverage);
+    const gui::compact::BoundaryModel model(region.required, 1.0);
+    gui::compact::BoundaryMetrics metrics;
+    for (int index = 0; index < 100; ++index) {
+        metrics = model.measure(coverage);
+    }
+    QTextStream(stdout) << QJsonDocument(QJsonObject{{QStringLiteral("quality"), model.diagnostics(metrics)},
+        {QStringLiteral("timing"), model.performance()}}).toJson(QJsonDocument::Compact) << '\n';
+    const gui::compact::BoundaryModel localModel(region.required, 1.0);
+    double maximumDifference = 0;
+    double maximumEnergyDifference = 0;
+    int topologyDifferences = 0;
+    for (int piece = 0; piece < pieces.size(); ++piece) {
+        gui::catalog::Polygons others;
+        for (int index = 0; index < pieces.size(); ++index) {
+            if (index != piece) {
+                others += pieces[index];
+            }
+        }
+        others = gui::catalog::unite(others);
+        const auto observedOthers = model.observationSupport(others);
+        const auto bounds = gui::catalog::painterPath(pieces[piece]).boundingRect();
+        const auto window = model.observationWindow(others, observedOthers, bounds);
+        const auto local = localModel.observationSupport(pieces[piece], window);
+        const auto global = model.observationSupport(coverage);
+        const double difference = gui::catalog::area(gui::catalog::subtract(local, global))
+            + gui::catalog::area(gui::catalog::subtract(global, local));
+        maximumDifference = std::max(maximumDifference, difference);
+        const auto localMetrics = localModel.measure(coverage, local);
+        maximumEnergyDifference = std::max(maximumEnergyDifference, std::abs(localModel.energy(localMetrics) - model.energy(metrics)));
+        topologyDifferences += localMetrics.components != metrics.components || localMetrics.holes != metrics.holes;
+    }
+    QTextStream(stdout) << QJsonDocument(QJsonObject{{QStringLiteral("localTiming"), localModel.performance()},
+        {QStringLiteral("maximumSymmetricDifference"), maximumDifference},
+        {QStringLiteral("maximumEnergyDifference"), maximumEnergyDifference},
+        {QStringLiteral("topologyDifferences"), topologyDifferences}}).toJson(QJsonDocument::Compact) << '\n';
+}
+
+void fastQualityTests() {
+    quint64 random = 7812387;
+    for (int trial = 0; trial < 64; ++trial) {
+        QVector<quint64> masks;
+        for (int index = 0; index < 48; ++index) {
+            random = random * 6364136223846793005ULL + 1442695040888963407ULL;
+            masks.push_back(random & (random >> (trial % 5)));
+        }
+        quint64 missing = ~quint64(0);
+        const auto score = [&](int index) { return std::popcount(masks[index] & missing) / (1.0 + index % 7 * 0.25); };
+        const auto accept = [&](int index) { missing &= ~masks[index]; };
+        QVector<int> expected;
+        for (int iteration = 0; iteration < 16; ++iteration) {
+            int best = -1;
+            double bestScore = 0;
+            for (int index = 0; index < masks.size(); ++index) {
+                if (score(index) > bestScore) {
+                    best = index;
+                    bestScore = score(index);
+                }
+            }
+            if (best < 0) {
+                break;
+            }
+            expected.push_back(best);
+            accept(best);
+        }
+        missing = ~quint64(0);
+        const auto actual = gui::profile::greedyCover(masks.size(), 16, score, accept, [] { return false; });
+        require(actual == expected, QStringLiteral("Lazy cover changed exhaustive greedy selection"));
+    }
+    require(gui::profile::greedyCover(5, 5, [](int) { return 1.0; }, [](int) {}, [] { return true; }).isEmpty(),
+        QStringLiteral("Lazy cover ignored cancellation"));
+    const gui::catalog::Polygons target{QPolygonF({{-50, -40}, {50, -40}, {50, 40}, {-50, 40}})};
+    const auto others = gui::catalog::subtract(target, {QPolygonF({{-10, -40}, {10, -40}, {10, 20}, {-10, 20}}),
+        QPolygonF({{25, -10}, {35, -10}, {35, 10}, {25, 10}})});
+    const gui::compact::BoundaryModel model(target, 1.0);
+    const auto base = model.observationSupport(others);
+    std::optional<gui::compact::BoundaryModel::ObservationWindow> cachedWindow;
+    int reusedWindows = 0;
+    for (int index = 0; index < 48; ++index) {
+        QTransform movement;
+        movement.translate(index * 0.13 - 3, index * 0.09 - 2);
+        movement.rotate(index * 7.3);
+        const gui::catalog::Polygons addition{movement.map(QPolygonF({{-14, -41}, {14, -41}, {8, 23}, {-8, 23}}))};
+        const auto coverage = gui::catalog::unite(others + addition);
+        const auto bounds = gui::catalog::painterPath(addition).boundingRect();
+        const auto window = model.observationWindow(others, base, bounds);
+        const auto local = model.observationSupport(addition, window);
+        const auto global = model.observationSupport(coverage);
+        const double difference = gui::catalog::area(gui::catalog::subtract(local, global))
+            + gui::catalog::area(gui::catalog::subtract(global, local));
+        require(difference < 0.001, QStringLiteral("Local closing changed support beyond grid rounding"));
+        const auto measured = model.measure(coverage, local);
+        const auto reference = model.measure(coverage, global);
+        require(measured.components == reference.components && measured.holes == reference.holes,
+            QStringLiteral("Local closing changed observed topology"));
+        const double oldSpill = gui::catalog::area(gui::catalog::subtract(gui::catalog::subtract(addition, others), target));
+        const double newSpill = gui::catalog::area(gui::catalog::subtract(addition, gui::catalog::unite(others + target)));
+        require(std::abs(oldSpill - newSpill) < 0.001, QStringLiteral("Cached spill exclusion changed area beyond grid rounding"));
+        if (!cachedWindow || !cachedWindow->additionBounds.contains(bounds)) {
+            cachedWindow = model.observationWindow(others, base, bounds);
+        } else {
+            ++reusedWindows;
+        }
+        const auto cached = model.observationSupport(addition, *cachedWindow);
+        const double cachedDifference = gui::catalog::area(gui::catalog::subtract(cached, global))
+            + gui::catalog::area(gui::catalog::subtract(global, cached));
+        require(cachedDifference < 0.001, QStringLiteral("Reusing an observation window changed support beyond grid rounding"));
+        const auto cachedMetrics = model.measure(coverage, cached);
+        require(cachedMetrics.components == reference.components && cachedMetrics.holes == reference.holes,
+            QStringLiteral("Reusing an observation window changed topology"));
+    }
+    require(reusedWindows > 0, QStringLiteral("Local quality test did not exercise window reuse"));
+    QTextStream(stdout) << "Lazy greedy equivalence, local quality support, spill cache and cancellation passed\n";
 }
 
 void failedFillTests(const QVector<gui::catalog::Primitive> &catalog) {
@@ -573,6 +716,34 @@ int main(int argc, char **argv) {
     QTextStream output(stdout);
     QDir::setCurrent(QStringLiteral(FLS_SOURCE_DIR));
     try {
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--release-catalog-test")) {
+            QTemporaryDir directory;
+            require(directory.isValid() && QDir::setCurrent(directory.path()), QStringLiteral("Cannot isolate the catalog test working directory"));
+            gui::ShapeGeometryStore geometry;
+            QString error;
+            require(gui::catalog::buildCatalog(geometry, &error).isEmpty() && error.contains(QStringLiteral("Shape geometry is not loaded")),
+                QStringLiteral("An unloaded geometry store reported a duplicate shape ID"));
+            error.clear();
+            require(geometry.loadDefault(&error), error);
+            const auto catalog = gui::catalog::buildCatalog(geometry, &error);
+            require(error.isEmpty() && !catalog.isEmpty(), error);
+            gui::ShapeGeometryStore source;
+            require(source.loadFromFile(QStringLiteral(FLS_SOURCE_DIR "/assets/vector/shape_geometry.json.gz"), &error), error);
+            auto loadedIds = geometry.shapeIds();
+            auto sourceIds = source.shapeIds();
+            std::sort(loadedIds.begin(), loadedIds.end());
+            std::sort(sourceIds.begin(), sourceIds.end());
+            require(!loadedIds.isEmpty() && loadedIds == sourceIds, QStringLiteral("Deployed geometry differs from the source shape catalog"));
+            const gui::PenFillRequest square{{}, {polygonLoop({{-40, -30}, {40, -30}, {40, 30}, {-40, 30}})}};
+            gui::compact::FillOptions options;
+            options.evaluationBudget = 12000;
+            const auto result = gui::profile::fillRegion(square, catalog, options);
+            requireApproximation(square, result, catalog, options);
+            output << "Release assets loaded " << loadedIds.size() << " shape geometries and " << catalog.size()
+                << " fill primitives without source-directory fallback; Compact Fit produced " << result.fill.placements.size() << " verified shapes\n";
+            QDir::setCurrent(QStringLiteral(FLS_SOURCE_DIR));
+            return 0;
+        }
         gui::ShapeGeometryStore geometry;
         QString error;
         require(geometry.loadDefault(&error), error);
@@ -584,6 +755,14 @@ int main(int argc, char **argv) {
         }
         const QVector<gui::catalog::Primitive> fullCatalog = gui::catalog::buildCatalog(geometry, &error);
         require(error.isEmpty(), error);
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--fast-quality-tests")) {
+            fastQualityTests();
+            return 0;
+        }
+        if (application.arguments().size() == 3 && application.arguments()[1] == QStringLiteral("--benchmark-boundary")) {
+            benchmarkBoundary(application.arguments()[2], fullCatalog);
+            return 0;
+        }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--failed-fill-tests")) {
             failedFillTests(fullCatalog);
             return 0;
@@ -596,12 +775,14 @@ int main(int argc, char **argv) {
         if (application.arguments().size() >= 3 && (application.arguments()[1] == QStringLiteral("--compact-fit")
             || application.arguments()[1] == QStringLiteral("--profile-fit")
             || application.arguments()[1] == QStringLiteral("--profile-project")
+            || application.arguments()[1] == QStringLiteral("--profile-retained")
             || application.arguments()[1] == QStringLiteral("--profile-polish")
             || application.arguments()[1] == QStringLiteral("--profile-repeat")
             || application.arguments()[1] == QStringLiteral("--compact-project")
             || application.arguments()[1] == QStringLiteral("--compact-polish")
             || application.arguments()[1] == QStringLiteral("--compact-repeat"))) {
             gui::compact::FillOptions options;
+            options.retainFailedFill = application.arguments()[1] == QStringLiteral("--profile-retained");
             if (application.arguments().size() > 3) {
                 options.boundaryAllowance = application.arguments()[3].toDouble();
             }
@@ -627,8 +808,17 @@ int main(int argc, char **argv) {
                 });
             output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
             output << "Completed in " << timer.elapsed() << " ms\n" << Qt::flush;
-            require(result.fill.error.isEmpty(), result.fill.error);
-            requireApproximation(readRequest(application.arguments()[2]), result, fullCatalog, options);
+            if (options.retainFailedFill) {
+                require(!result.fill.cancelled && !result.fill.placements.isEmpty(), QStringLiteral("Replay returned no retained fill"));
+                output << "Retained " << result.fill.placements.size() << " shapes: " << result.fill.error << '\n' << Qt::flush;
+                if (application.arguments().size() == 6) {
+                    saveComparison(application.arguments()[4], application.arguments()[5], result.fill,
+                        QStringLiteral("Compact Fit - local quality"));
+                }
+            } else {
+                require(result.fill.error.isEmpty(), result.fill.error);
+                requireApproximation(readRequest(application.arguments()[2]), result, fullCatalog, options);
+            }
             if (application.arguments()[1] == QStringLiteral("--compact-project") || application.arguments()[1] == QStringLiteral("--profile-project")) {
                 require(application.arguments().size() == 6, QStringLiteral("Expected request, allowance, source project and new destination"));
                 saveComparison(application.arguments()[4], application.arguments()[5], result.fill,

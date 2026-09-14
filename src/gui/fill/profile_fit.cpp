@@ -1,5 +1,6 @@
 #include "profile_fit.h"
 #include "compact_fit_quality.h"
+#include "greedy_cover.h"
 
 #include <algorithm>
 #include <array>
@@ -25,7 +26,10 @@ constexpr int kMaximumSelected = 160;
 constexpr int kGridExtent = 640;
 constexpr int kBodyCenters = 24;
 constexpr int kStructuralTrials = 50000;
+constexpr int kTriangleShapeId = 103;
 constexpr double kCornerAngle = 0.3;
+constexpr double kMinimumTriangleCornerCross = 0.1;
+constexpr double kTriangleStraightnessFraction = 0.1;
 constexpr double kProfileError = 0.65;
 constexpr double kTangentError = 0.2;
 constexpr double kBoundaryOffset = 0.3;
@@ -736,6 +740,49 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
     }
 }
 
+void addCornerTriangles(const catalog::Region &region, const Polygons &outer,
+                        const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
+                        double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
+    const auto *shape = primitiveFor(kTriangleShapeId, primitives);
+    if (!shape || shape->contours.size() != 1) {
+        return;
+    }
+    const auto source = catalog::convexHull(shape->contours.front());
+    if (source.size() != 3) {
+        return;
+    }
+    for (const auto &polygon : region.required) {
+        const auto trace = makeTrace(polygon);
+        for (int index = 0; index < trace.corners.size() && !stopped(cancelled); ++index) {
+            const double start = trace.corners[(index + trace.corners.size() - 1) % trace.corners.size()];
+            const double middle = trace.corners[index];
+            const double end = trace.corners[(index + 1) % trace.corners.size()];
+            const auto corner = pointAt(trace, middle);
+            const auto first = pointAt(trace, start);
+            const auto last = pointAt(trace, end);
+            if (cross(unit(first - corner), unit(last - corner)) >= -kMinimumTriangleCornerCross) {
+                continue;
+            }
+            const auto straight = [&](double offset, double finish) {
+                const auto points = sampleArc(trace, offset, std::fmod(finish - offset + trace.perimeter, trace.perimeter));
+                const auto tangent = unit(points.back() - points.front());
+
+                return std::all_of(points.begin(), points.end(), [&](const auto &point) {
+                    return std::abs(cross(tangent, point - points.front())) <= scale * kTriangleStraightnessFraction;
+                });
+            };
+            if (!straight(start, middle) || !straight(middle, end)) {
+                continue;
+            }
+            const auto transform = catalog::affineFromAnchors({source[0], source[1], source[2]}, {first, corner, last});
+            auto candidate = candidateFor(*shape, transform, region, outer, boundary, scale);
+            if (candidate) {
+                pool->push_back(std::move(*candidate));
+            }
+        }
+    }
+}
+
 void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
                          const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                          double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
@@ -914,7 +961,7 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
                               QJsonObject *diagnostics) {
     Bits missing = grid.target;
     Bits boundary((witnesses.size() + 63) / 64, 0);
-    QVector<int> selected;
+    int scoreEvaluations = 0;
     setRange(&boundary, 0, witnesses.size());
     for (auto &candidate : *pool) {
         if (stopped(cancelled)) {
@@ -923,25 +970,19 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
         indexCandidate(&candidate, grid, witnesses);
     }
     const double boundaryWeight = region.area / std::max(1, static_cast<int>(witnesses.size())) * 4.0;
-    for (int iteration = 0; iteration < std::min(kMaximumSelected, options.shapeBudget) && !stopped(cancelled); ++iteration) {
-        int best = -1;
-        double bestScore = 0.0;
-        for (int index = 0; index < pool->size(); ++index) {
+    const auto selected = greedyCover(pool->size(), std::min(kMaximumSelected, options.shapeBudget),
+        [&](int index) {
+            ++scoreEvaluations;
             const auto &candidate = (*pool)[index];
-            const double score = (marginal(candidate.cells, missing) * grid.step * grid.step
+
+            return (marginal(candidate.cells, missing) * grid.step * grid.step
                 + marginal(candidate.boundary, boundary) * boundaryWeight) / (1.0 + candidate.error * 0.5 / options.observationScale);
-            if (score > bestScore) {
-                bestScore = score;
-                best = index;
-            }
-        }
-        if (best < 0) {
-            break;
-        }
-        selected.push_back(best);
-        removeCovered(&missing, (*pool)[best].cells);
-        removeCovered(&boundary, (*pool)[best].boundary);
-    }
+        },
+        [&](int index) {
+            removeCovered(&missing, (*pool)[index].cells);
+            removeCovered(&boundary, (*pool)[index].boundary);
+        }, [&] { return stopped(cancelled); });
+    diagnostics->insert(QStringLiteral("selectionScoreEvaluations"), scoreEvaluations);
     diagnostics->insert(QStringLiteral("missingCells"), marginal(missing, missing));
     diagnostics->insert(QStringLiteral("missingWitnesses"), marginal(boundary, boundary));
 
@@ -951,6 +992,13 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled) {
     catalog::FillResult result;
+    QJsonObject timings;
+    QElapsedTimer stageTimer;
+    stageTimer.start();
+    const auto recordTime = [&](const QString &name) {
+        timings.insert(name, stageTimer.nsecsElapsed() / 1e6);
+        stageTimer.start();
+    };
     try {
         if (!std::isfinite(options.boundaryAllowance) || options.boundaryAllowance <= 0
             || !std::isfinite(options.observationScale) || options.observationScale <= 0 || options.shapeBudget < 1
@@ -965,17 +1013,27 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         const auto grid = makeGrid(region, options.observationScale);
         const auto witnesses = boundaryWitnesses(region, options.observationScale);
         QVector<Candidate> pool;
+        recordTime(QStringLiteral("setup"));
         addCurveCandidates(region, outer, primitives, boundary, options, cancelled, &pool, &result.diagnostics);
+        recordTime(QStringLiteral("curves"));
         addStraightCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+        recordTime(QStringLiteral("straightEdges"));
+        const int beforeTriangles = pool.size();
+        addCornerTriangles(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+        result.diagnostics.insert(QStringLiteral("cornerTriangleCandidates"), pool.size() - beforeTriangles);
         addCornerCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+        recordTime(QStringLiteral("corners"));
         result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
         addBodyCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+        recordTime(QStringLiteral("interior"));
         result.diagnostics.insert(QStringLiteral("totalCandidates"), pool.size());
         auto selected = selectCandidates(&pool, region, grid, witnesses, options, cancelled, &result.diagnostics);
+        recordTime(QStringLiteral("selection"));
         result.diagnostics.insert(QStringLiteral("greedyCount"), selected.size());
         if (!pool.isEmpty() && !stopped(cancelled)) {
             reduceSelection(pool, grid, boundary, region, options, cancelled, &selected);
         }
+        recordTime(QStringLiteral("reduction"));
         const auto coverage = coverageOf(pool, selected);
         const auto missing = catalog::subtract(region.required, coverage);
         const auto spill = catalog::subtract(coverage, region.required);
@@ -1009,6 +1067,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         result.fill.cancelled = stopped(cancelled);
         result.fill.placements.clear();
     }
+    result.diagnostics.insert(QStringLiteral("stageMilliseconds"), timings);
 
     return result;
 }

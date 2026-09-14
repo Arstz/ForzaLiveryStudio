@@ -90,7 +90,7 @@ public:
             bool)> callback);
     void setPenFillCancelCallback(std::function<void()> callback);
     QVector<PenPrimitive> penPrimitiveCatalog() const;
-    QVector<catalog::Primitive> catalogCoverPrimitives(QString *error = nullptr) const;
+    QVector<catalog::Primitive> compactFillPrimitives(QString *error = nullptr) const;
     QVector<cover::ShapeMesh> differentialCoverCatalog(QString *error = nullptr) const;
     bool canAssignContourLeeway() const;
     void setContourLeewayGroupId(const QString &groupId);

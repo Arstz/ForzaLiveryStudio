@@ -34,7 +34,6 @@ struct TransformModeSettings {
 enum class ContourFillMode {
     Analytic,
     Differential,
-    CatalogCover,
     CompactFit,
 };
 

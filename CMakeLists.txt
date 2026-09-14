@@ -220,14 +220,13 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/svg_vector_objects.cpp
     src/gui/fill/svg_vector_objects.h
     src/gui/fill/differential_cover.cpp
-    src/gui/fill/catalog_cover.cpp
     src/gui/fill/compact_fit.cpp
     src/gui/fill/profile_fit.cpp
     src/gui/fill/profile_fit.h
+    src/gui/fill/greedy_cover.h
     src/gui/fill/compact_fit_quality.cpp
     src/gui/fill/compact_fit_quality.h
     src/gui/fill/compact_fit.h
-    src/gui/fill/catalog_cover_compact.cpp
     src/gui/fill/catalog_cover.h
     src/gui/fill/catalog_cover_geometry.cpp
     src/gui/fill/catalog_cover_internal.h
@@ -384,6 +383,15 @@ if(FLS_BUILD_TESTS)
     add_test(NAME compact_fit COMMAND fls_catalog_cover_tests --compact-tests)
     add_test(NAME profile_fit COMMAND fls_catalog_cover_tests --profile-tests)
     add_test(NAME failed_fill_retention COMMAND fls_catalog_cover_tests --failed-fill-tests)
+    add_test(NAME compact_fast_quality COMMAND fls_catalog_cover_tests --fast-quality-tests)
+    add_test(NAME release_shape_catalog COMMAND fls_catalog_cover_tests --release-catalog-test)
+    add_test(NAME gui_asset_deployment COMMAND "${CMAKE_COMMAND}"
+        "-DFLS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deploy_gui_assets_test.cmake")
+    add_executable(fls_behavior_settings_tests tools/behavior_settings_test.cpp src/gui/app/theme_manager.cpp)
+    target_include_directories(fls_behavior_settings_tests PRIVATE src/gui/app)
+    target_link_libraries(fls_behavior_settings_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+    add_test(NAME behavior_settings COMMAND fls_behavior_settings_tests)
     add_test(NAME profile_fit_manual COMMAND fls_catalog_cover_tests --profile-fit
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_manual.json" 8)
     add_test(NAME profile_fit_large COMMAND fls_catalog_cover_tests --profile-fit
@@ -574,7 +582,6 @@ set(FLS_GUI_ASSETS
     CursorClosedHand.xpm
     CursorOpenHand.xpm
     CursorPipette.xpm
-    LICENSE.QtHandCursors.txt
     MenuCopy.xpm
     MenuCut.xpm
     MenuDelete.xpm
@@ -636,61 +643,34 @@ set(FLS_GUI_ASSETS
     WidgetShapesBrowser.xpm
 )
 
-set(FLS_GUI_ASSET_SOURCES)
+set(FLS_GUI_ASSET_FILES
+    differential_shapes.json
+    catalog_cover_shapes.json
+    settings_tips.json
+    vector/shape_geometry.json.gz
+    vector/shape_names.json
+    raster/decal_textures.bin
+    raster/logo_names.json
+    raster/MissingTexture.png
+    cars/car_ids.json
+    cars/part_names.json
+    cars/wheel_sizes.json
+)
 foreach(asset_name IN LISTS FLS_GUI_ASSETS)
-    list(APPEND FLS_GUI_ASSET_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/${asset_name}")
+    list(APPEND FLS_GUI_ASSET_FILES "icons/${asset_name}")
 endforeach()
+set(FLS_GUI_ASSET_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/gui_assets_manifest.cmake")
+file(GENERATE OUTPUT "${FLS_GUI_ASSET_MANIFEST}"
+    CONTENT "set(FLS_GUI_ASSET_FILES \"${FLS_GUI_ASSET_FILES}\")\n")
 
 add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E remove_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/differential_shapes.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/differential_shapes.json"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/catalog_cover_shapes.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/catalog_cover_shapes.json"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/settings_tips.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/settings_tips.json"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/icons"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        ${FLS_GUI_ASSET_SOURCES}
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/icons"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_geometry.json.gz"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_geometry.json.gz"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/vector/shape_names.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/vector/shape_names.json"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/decal_textures.bin"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/decal_textures.bin"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/logo_names.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/logo_names.json"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/raster/MissingTexture.png"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/raster/MissingTexture.png"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/car_ids.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/car_ids.json"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/part_names.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/part_names.json"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/cars/wheel_sizes.json"
-        "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets/cars/wheel_sizes.json"
+    COMMAND "${CMAKE_COMMAND}"
+        "-DFLS_ASSET_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        "-DFLS_ASSET_DESTINATION=$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/assets"
+        "-DFLS_ASSET_MANIFEST=${FLS_GUI_ASSET_MANIFEST}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deploy_gui_assets.cmake"
     COMMENT "Deploying used GUI assets"
+    VERBATIM
 )
 
 if(NOT FLS_BUILD_HELPER_TOOLS)
