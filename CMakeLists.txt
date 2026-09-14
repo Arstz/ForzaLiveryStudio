@@ -226,6 +226,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/differential_cover_postprocess.cpp
     src/gui/fill/differential_cover_strategies.cpp
     src/gui/fill/fill_contour.h
+    src/gui/fill/image_import_fill.cpp
+    src/gui/fill/image_import_fill.h
     src/gui/canvas/drag_cursors.cpp
     src/gui/canvas/drag_cursors.h
     src/gui/canvas/native_shape_renderer.cpp
@@ -447,6 +449,34 @@ if(FLS_BUILD_TESTS)
     )
     add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
 
+    add_executable(fls_image_import_tests
+        tools/image_import_test.cpp
+        src/gui/fill/bucket_fill.cpp
+        src/gui/fill/image_import_fill.cpp
+        src/gui/fill/lining_fill.cpp
+        src/gui/fill/pen_fill.cpp
+        src/gui/fill/polygon_mesh.cpp
+        src/gui/fill/region_extract.cpp
+        src/gui/fill/region_fill.cpp
+        src/gui/fill/region_fill_batch.cpp
+        src/gui/fill/region_layer_plan.cpp
+        src/gui/fill/svg_vector_objects.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_image_import_tests PRIVATE
+        src/gui/canvas
+        src/gui/fill
+        src/gui/widgets
+    )
+    target_link_libraries(fls_image_import_tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Svg
+        ZLIB::ZLIB
+        potrace
+    )
+    add_test(NAME image_import COMMAND fls_image_import_tests)
+
     add_executable(fls_differential_cover_tests
         tools/differential_cover_test.cpp
         src/gui/fill/differential_cover.cpp
@@ -517,6 +547,7 @@ else()
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_guide_preprocess_metadata_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_image_preprocessor_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_region_pen_conversion_tests${CMAKE_EXECUTABLE_SUFFIX}"
+            "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_image_import_tests${CMAKE_EXECUTABLE_SUFFIX}"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/fls_differential_cover_tests${CMAKE_EXECUTABLE_SUFFIX}"
         COMMENT "Removing disabled tests from release output"
     )

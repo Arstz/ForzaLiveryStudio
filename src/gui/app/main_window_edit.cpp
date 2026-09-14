@@ -806,6 +806,7 @@ void MainWindow::clearGeneratedFillState() {
 void MainWindow::cancelActiveFills() {
     cancelGeneratedFill();
     cancelRegionFill();
+    cancelImageImport();
 }
 
 void MainWindow::cancelGeneratedFill(bool keepPartial) {
@@ -1258,6 +1259,84 @@ void MainWindow::insertGeneratedRegionVariants(
                                  .arg(shapeCount)
                                  .arg(differenceText),
                              3500);
+}
+
+bool MainWindow::insertImportedImageShapes(const QString &groupName,
+                                           const QVector<ImageImportFilledUnit> &units,
+                                           const QTransform &imageToWorld,
+                                           const QVector<QString> &insertionEntries) {
+    if (units.isEmpty() || !state_->hasProject()) {
+        return false;
+    }
+
+    auto group = std::make_unique<fls::scene::Group>();
+    group->id = state_->uniqueGroupId();
+    const QString groupId = group->id;
+    group->name = groupName;
+    QSet<QString> generatedIds;
+    for (int unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
+        const ImageImportFilledUnit &unit = units[unitIndex];
+        if (!unit.filled()) {
+            continue;
+        }
+        auto objectGroup = std::make_unique<fls::scene::Group>();
+        objectGroup->id = QStringLiteral("group_%1").arg(
+            QUuid::createUuid().toString(QUuid::WithoutBraces));
+        objectGroup->name = QStringLiteral("Object %1").arg(unitIndex + 1);
+        const std::array<quint8, 4> color = colorBytes(unit.color);
+        for (const PenPlacement &placement : unit.placements) {
+            auto shape = std::make_unique<fls::scene::Shape>();
+            shape->id = QStringLiteral("layer_%1").arg(
+                QUuid::createUuid().toString(QUuid::WithoutBraces));
+            shape->name = fls::detail::shapeName(static_cast<quint16>(placement.shapeId));
+            shape->setVectorShape(static_cast<quint16>(placement.shapeId));
+            shape->transform = fls::decomposeTransform2D(
+                generatedShapeMatrix(placement.transform * imageToWorld));
+            shape->color = color;
+            generatedIds.insert(shape->id);
+            objectGroup->append(std::move(shape));
+        }
+        if (objectGroup->children.size() == 1) {
+            group->append(objectGroup->takeAt(0));
+        } else {
+            group->append(std::move(objectGroup));
+        }
+    }
+    if (generatedIds.isEmpty()) {
+        return false;
+    }
+
+    state_->beginProjectEdit();
+    state_->insertLayerAboveSelection(std::move(group), insertionEntries);
+    if (fls::scene::Group *inserted = state_->groupForId(groupId); inserted != nullptr) {
+        const QString parentId = state_->parentGroupForEntry(groupId);
+        if (const fls::scene::Group *parent = state_->groupForId(parentId); parent != nullptr) {
+            // The new groups carry identity frames, so each leaf moves from
+            // world space straight into the parent's frame.
+            const fls::Matrix3 parentInverse = fls::invertAffine(parent->worldMatrix());
+            std::function<void(fls::scene::Group &)> rebaseLeaves =
+                [&](fls::scene::Group &node) {
+                    for (const auto &child : node.children) {
+                        if (child->kind() == fls::scene::LayerKind::Group) {
+                            rebaseLeaves(static_cast<fls::scene::Group &>(*child));
+                            continue;
+                        }
+                        child->transform = fls::decomposeTransform2D(
+                            fls::detail::multiply(parentInverse, child->transform.matrix()));
+                    }
+                };
+            rebaseLeaves(*inserted);
+        }
+    }
+    state_->selectedLayerIds_ = generatedIds;
+    state_->selectedGuideLayerIds_.clear();
+    state_->selectedEntryIds_.clear();
+    state_->commitProjectEdit();
+    state_->noteProjectStructureChanged();
+    if (canvas_ != nullptr) {
+        canvas_->setFocus();
+    }
+    return true;
 }
 
 fls::Project *MainWindow::project() {

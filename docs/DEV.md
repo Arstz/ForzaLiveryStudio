@@ -38,7 +38,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   curved boundaries (with one hundred-thousandth of the area as the floor);
   beyond that a single-loop core sheds fitted primitives until it complies, and a
   core with cutouts is rebuilt with every curve sampled, then rejected if it still
-  spills. The cap is `shapeLimitPerPoint` times the Pen point count, 2 by default.
+  spills. The cap is `shapeLimitPerPoint` times the Pen point count, 2 for the
+  interactive tools and 6 for image import.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
@@ -117,6 +118,23 @@ exports grouped `C_group` folders and `C_livery` folders.
   the project container and ignored by game export. Guide layers can render above
   or below shapes, can be shown or hidden together, and can be sampled by the
   Pipette/color picker ignoring guide opacity.
+- Import an SVG directly as shapes from **File → Import Image as Shapes…** (also
+  on the toolbar). The document goes through the same vector-object capture the
+  SVG Bucket uses, so its fallback reasons apply unchanged and refuse the import.
+  `image_import_fill.*` converts each captured object into Pen loops (authored
+  curves first, the raster Bucket's sampled reconstruction as fallback), runs the
+  analytic contour fill per connected component on half the CPU threads under a
+  per-component time budget of 3 s plus 40 ms per Pen point (the fitting search
+  grows faster than linearly), and records each component's outcome. The main
+  window runs the batch off the UI thread with the Fill Regions progress bar and
+  cancel binding, then inserts the filled objects as one group named after the
+  file with one child group per multi-shape object, mapped one-to-one from image
+  pixels to world space at the view centre, as a single undoable edit. Every
+  import writes `image_import.log` beside the executable with per-object and
+  per-failed-component lines; when any component failed or timed out a warning
+  dialog reports the counts, the top reasons, and the log path. Raster images are
+  not accepted by this action yet. `fls_image_import_tests --report <svg>` runs
+  the same pipeline on a file and prints the per-component outcomes.
 - Preprocess one selected, unlocked guide from **ImgGen → Preprocess Image…**.
   The Qt/C++ pipeline starts from the `anime_detail` settings, performs
   edge-preserving smoothing, median flattening, and circular-hue HSV palette

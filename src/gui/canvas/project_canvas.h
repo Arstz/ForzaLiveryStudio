@@ -56,6 +56,7 @@ public:
     bool centerViewOnSelection();
     bool fitViewToVisibleArea();
     QPointF viewCenterWorld();
+    QTransform imagePixelsToWorldAtViewCenter(const QSize &imageSize);
     QRectF selectionWorldBounds() const;
     void setCanvasColor(const QColor &color);
     QColor canvasColor() const;

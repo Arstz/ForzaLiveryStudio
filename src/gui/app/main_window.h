@@ -2,6 +2,7 @@
 
 #include "core_types.h"
 #include "editor_state.h"
+#include "image_import_fill.h"
 #include "layer_tree_model.h"
 #include "layer_tree_view.h"
 #include "gui/key_bindings.h"
@@ -72,6 +73,7 @@ public:
     void saveCurrentSelectionAsCustomGroup();
     void insertCustomGroup(const QString &name, const ProjectClipboard &clipboard);
     bool importGuideLayer(const QString &path, QString *error = nullptr);
+    bool importImageAsShapes(const QString &path, QString *error = nullptr);
     void groupOrUngroupSelection();
     void ungroupSelectionFlat();
     void collapseAllGroups();
@@ -188,6 +190,16 @@ private:
     void updateRegionFillProgress(quint64 generation, const QString &phase,
                                   int completed, int total);
     void finishRegionFill(quint64 generation, RegionFillBatchResult result);
+    void importImageAsShapesDialog();
+    void cancelImageImport();
+    void updateImageImportProgress(quint64 generation, int completed, int total);
+    void finishImageImport(quint64 generation, ImageImportFillResult result);
+    QString writeImageImportLog(const QString &sourcePath,
+                                const ImageImportFillResult &result) const;
+    bool insertImportedImageShapes(const QString &groupName,
+                                   const QVector<ImageImportFilledUnit> &units,
+                                   const QTransform &imageToWorld,
+                                   const QVector<QString> &insertionEntries);
     void insertGeneratedFill(const QString &groupName,
                              const QString &displayName,
                              const QVector<QPair<int, QTransform>> &placements);
@@ -258,6 +270,7 @@ private:
     QToolBar *toolBar_ = nullptr;
     QAction *skewToolAction_ = nullptr;
     QAction *opacityToolAction_ = nullptr;
+    QAction *importImageShapesAction_ = nullptr;
     QTimer *autosaveTimer_ = nullptr;
     QTimer *scratchTimer_ = nullptr;
     HeaderMetadataWidget *headerMetadata_ = nullptr;
@@ -339,6 +352,12 @@ private:
     quint64 regionFillGeneration_ = 0;
     QVector<QString> regionFillInsertionEntries_;
     QProgressBar *regionFillProgress_ = nullptr;
+    std::shared_ptr<std::atomic_bool> imageImportCancel_;
+    quint64 imageImportGeneration_ = 0;
+    QVector<QString> imageImportInsertionEntries_;
+    QTransform imageImportToWorld_;
+    QString imageImportGroupName_;
+    QString imageImportSourcePath_;
 };
 
 } // namespace gui

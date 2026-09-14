@@ -63,13 +63,21 @@ void MainWindow::setupCanvas() {
     keyBindings_->registerInteraction(
         KeyInteraction::CancelActiveFill, this, KeyBindingRouter::Scope::Window,
         [this](KeyInteraction, KeyEventPhase phase, bool) {
-            if (phase != KeyEventPhase::Press || regionFillCancel_ == nullptr) {
+            if (phase != KeyEventPhase::Press) {
                 return false;
             }
-            cancelRegionFill();
-            return true;
+            if (regionFillCancel_ != nullptr) {
+                cancelRegionFill();
+                return true;
+            }
+            if (imageImportCancel_ != nullptr) {
+                cancelImageImport();
+                return true;
+            }
+            return false;
         },
-        [this]() { return regionFillCancel_ != nullptr; }, kOverrideKeyBindingPriority);
+        [this]() { return regionFillCancel_ != nullptr || imageImportCancel_ != nullptr; },
+        kOverrideKeyBindingPriority);
     const QVector<KeyInteraction> canvasInteractions = {
         KeyInteraction::CanvasPan,
         KeyInteraction::CanvasRemovePathPoint,
@@ -359,6 +367,9 @@ void MainWindow::setupFileMenu() {
                  QStringLiteral("import_car_model"), QStringLiteral("Import Car Model"), &MainWindow::importCarModel);
     addIconEntry(QStringLiteral("ImportGuide.xpm"), QStringLiteral("Import &Guide Layer..."),
                  QStringLiteral("import_guide_layer"), QStringLiteral("Import Guide Layer"), &MainWindow::importGuideLayerDialog);
+    importImageShapesAction_ = addIconEntry(QStringLiteral("ImportGuide.xpm"), QStringLiteral("Import Image as &Shapes..."),
+                                            QStringLiteral("import_image_shapes"), QStringLiteral("Import Image as Shapes"),
+                                            &MainWindow::importImageAsShapesDialog);
     addIconEntry(QStringLiteral("MenuExportFlat.xpm"), QStringLiteral("&Export..."),
                  QStringLiteral("export"), QStringLiteral("Export"), &MainWindow::exportDialog);
     fileMenu->addSeparator();
@@ -656,6 +667,9 @@ void MainWindow::setupToolbar() {
                            QStringLiteral("PropertyName.xpm"));
     addAction(placeTextAction);
     connect(placeTextAction, &QAction::triggered, this, [this]() { placeTextDialog(); });
+    if (importImageShapesAction_ != nullptr) {
+        toolBar_->addAction(importImageShapesAction_);
+    }
     const BehaviorSettings settings = loadBehaviorSettings();
     skewToolAction_->setVisible(settings.separateOpacityAndSkewTools);
     opacityToolAction_->setVisible(settings.separateOpacityAndSkewTools);

@@ -932,6 +932,15 @@ QPointF ProjectCanvas::viewCenterWorld() {
                                  kRulerExtent + (height() - kRulerExtent) * 0.5));
 }
 
+// Image pixels map to world one-to-one, centred on the view, using the same
+// y-flip a freshly imported guide layer of the same size would receive.
+QTransform ProjectCanvas::imagePixelsToWorldAtViewCenter(const QSize &imageSize) {
+    const QPointF center = viewCenterWorld();
+
+    return pc_detail::guideImageToLocal(imageSize, QSizeF(imageSize))
+        * QTransform::fromTranslate(center.x(), center.y());
+}
+
 QRectF ProjectCanvas::selectionWorldBounds() const {
     return cachedSelectionWorldBounds();
 }

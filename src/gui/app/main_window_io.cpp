@@ -1057,6 +1057,254 @@ void MainWindow::finishRegionFill(quint64 generation, RegionFillBatchResult resu
     canvas_->hideRegionOverlay();
 }
 
+void MainWindow::importImageAsShapesDialog() {
+    const QString path = QFileDialog::getOpenFileName(
+        this,
+        QStringLiteral("Import Image as Shapes"),
+        importDialogStartDirectoryWithFallbacks(this, QStringLiteral("imageShapes"),
+                                                {QStringLiteral("guideLayer")}),
+        QStringLiteral("SVG images (*.svg)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    rememberImportDirectory(path, QStringLiteral("imageShapes"));
+
+    QString error;
+    if (!importImageAsShapes(path, &error)) {
+        QMessageBox::critical(this, QStringLiteral("Image import failed"), error);
+    }
+}
+
+bool MainWindow::importImageAsShapes(const QString &path, QString *error) {
+    const auto fail = [error](const QString &message) {
+        if (error != nullptr) {
+            *error = message;
+        }
+        return false;
+    };
+    if (!ensureProjectForInsertion() || canvas_ == nullptr) {
+        return fail(QStringLiteral("no project is loaded"));
+    }
+
+    QString decodeError;
+    QByteArray decodedFormat;
+    const QImage image = readGuideImage(path, &decodedFormat, &decodeError);
+    if (image.isNull()) {
+        return fail(decodeError.isEmpty()
+                        ? QStringLiteral("could not decode image: %1").arg(path)
+                        : decodeError);
+    }
+    if (decodedFormat != QByteArrayLiteral("svg")) {
+        return fail(QStringLiteral("only SVG images can be imported as shapes: %1").arg(path));
+    }
+    QFile source(path);
+    if (!source.open(QIODevice::ReadOnly)) {
+        return fail(QStringLiteral("could not read SVG image: %1").arg(path));
+    }
+    const QString fileName = QFileInfo(path).fileName();
+    const SvgVectorDocument document = extractSvgVectorObjects(source.readAll(), image.size());
+    if (!document.supportsObjectSelection()) {
+        return fail(QStringLiteral("%1 cannot be imported as shapes: %2")
+                        .arg(fileName, document.fallbackReason));
+    }
+    ImageImportFillRequest request;
+    request.units = svgImageImportUnits(document);
+    request.primitives = canvas_->penPrimitiveCatalog();
+    if (request.units.isEmpty()) {
+        return fail(QStringLiteral("%1 contains no filled vector objects").arg(fileName));
+    }
+    if (request.primitives.isEmpty()) {
+        return fail(QStringLiteral("Pen primitive geometry is unavailable"));
+    }
+
+    cancelActiveFills();
+    const quint64 generation = ++imageImportGeneration_;
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    const int objectCount = request.units.size();
+    imageImportCancel_ = token;
+    imageImportInsertionEntries_ = selectedEntryIds();
+    imageImportToWorld_ = canvas_->imagePixelsToWorldAtViewCenter(image.size());
+    imageImportGroupName_ = QFileInfo(path).completeBaseName();
+    if (imageImportGroupName_.isEmpty()) {
+        imageImportGroupName_ = QStringLiteral("Imported Image");
+    }
+    imageImportSourcePath_ = QFileInfo(path).absoluteFilePath();
+    regionFillProgress_->setRange(0, objectCount);
+    regionFillProgress_->setValue(0);
+    regionFillProgress_->setFormat(QStringLiteral("Importing shapes %v/%m"));
+    regionFillProgress_->show();
+    statusBar()->showMessage(QStringLiteral("Importing %1 objects as shapes… Press %2 to cancel")
+                                 .arg(objectCount)
+                                 .arg(interactionShortcutText(KeyInteraction::CancelActiveFill)));
+
+    QPointer<MainWindow> guard(this);
+    auto *task = QRunnable::create(
+        [guard, generation, request = std::move(request), token]() mutable {
+            ImageImportFillResult result = computeImageImportFills(
+                request,
+                [guard, generation](int completed, int total) {
+                    if (guard.isNull()) {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        guard.data(),
+                        [guard, generation, completed, total]() {
+                            if (!guard.isNull()) {
+                                guard->updateImageImportProgress(generation, completed, total);
+                            }
+                        },
+                        Qt::QueuedConnection);
+                },
+                [token]() { return token->load(std::memory_order_relaxed); });
+            if (guard.isNull()) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                guard.data(),
+                [guard, generation, result = std::move(result)]() mutable {
+                    if (!guard.isNull()) {
+                        guard->finishImageImport(generation, std::move(result));
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+    return true;
+}
+
+void MainWindow::cancelImageImport() {
+    if (imageImportCancel_ == nullptr) {
+        return;
+    }
+    imageImportCancel_->store(true, std::memory_order_relaxed);
+    imageImportCancel_.reset();
+    ++imageImportGeneration_;
+    imageImportInsertionEntries_.clear();
+    if (regionFillProgress_ != nullptr) {
+        regionFillProgress_->hide();
+    }
+    statusBar()->showMessage(QStringLiteral("Image import cancelled"), 1500);
+}
+
+void MainWindow::updateImageImportProgress(quint64 generation, int completed, int total) {
+    if (generation != imageImportGeneration_ || imageImportCancel_ == nullptr
+        || regionFillProgress_ == nullptr) {
+        return;
+    }
+    const int maximum = std::max(1, total);
+
+    regionFillProgress_->setRange(0, maximum);
+    regionFillProgress_->setValue(std::clamp(completed, 0, maximum));
+}
+
+void MainWindow::finishImageImport(quint64 generation, ImageImportFillResult result) {
+    if (generation != imageImportGeneration_ || imageImportCancel_ == nullptr) {
+        return;
+    }
+    imageImportCancel_.reset();
+    regionFillProgress_->hide();
+    const QVector<QString> insertionEntries = imageImportInsertionEntries_;
+    const QString groupName = imageImportGroupName_;
+    imageImportInsertionEntries_.clear();
+    if (result.cancelled) {
+        statusBar()->showMessage(QStringLiteral("Image import cancelled"), 1500);
+        return;
+    }
+    if (!result.error.isEmpty() || !state_->hasProject()) {
+        statusBar()->showMessage(QStringLiteral("Image import failed: %1")
+                                     .arg(result.error.isEmpty()
+                                              ? QStringLiteral("no project is loaded")
+                                              : result.error),
+                                 5000);
+        return;
+    }
+    if (!insertImportedImageShapes(groupName, result.units, imageImportToWorld_, insertionEntries)) {
+        statusBar()->showMessage(QStringLiteral("Image import produced no shapes"), 4000);
+        return;
+    }
+    statusBar()->showMessage(QStringLiteral("Imported %1: %2").arg(groupName, result.summary), 5000);
+
+    const QString logPath = writeImageImportLog(imageImportSourcePath_, result);
+    if (result.complete()) {
+        return;
+    }
+    QStringList reasons;
+    for (auto it = result.componentFailureReasons.constBegin();
+         it != result.componentFailureReasons.constEnd(); ++it) {
+        reasons.push_back(QStringLiteral("%1 x %2").arg(it.value()).arg(it.key()));
+    }
+    std::sort(reasons.begin(), reasons.end(), [](const QString &left, const QString &right) {
+        return left.section(QLatin1Char(' '), 0, 0).toInt()
+            > right.section(QLatin1Char(' '), 0, 0).toInt();
+    });
+    QMessageBox::warning(
+        this,
+        QStringLiteral("Image import incomplete"),
+        QStringLiteral("%1 was imported with gaps.\n\n%2\n\nFailed components were skipped, "
+                       "so parts of the artwork are missing.\n\nReasons:\n  %3\n\nDetails: %4")
+            .arg(groupName,
+                 result.summary,
+                 reasons.mid(0, 4).join(QStringLiteral("\n  ")),
+                 logPath.isEmpty() ? QStringLiteral("(log could not be written)")
+                                   : QDir::toNativeSeparators(logPath)));
+}
+
+QString MainWindow::writeImageImportLog(const QString &sourcePath,
+                                        const ImageImportFillResult &result) const {
+    const QString logPath = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/image_import.log");
+    QFile file(logPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        return {};
+    }
+    QTextStream stream(&file);
+    stream << "Image import diagnostic\n"
+           << "source=" << sourcePath << '\n'
+           << "time=" << QDateTime::currentDateTime().toString(Qt::ISODate) << '\n'
+           << "summary=" << result.summary << '\n'
+           << "objects=" << result.units.size()
+           << " components=" << result.componentCount
+           << " filled=" << result.filledComponentCount
+           << " failed=" << result.failedComponentCount
+           << " timed_out=" << result.timedOutComponentCount
+           << " shapes=" << result.placementCount << "\n\n";
+    for (auto it = result.componentFailureReasons.constBegin();
+         it != result.componentFailureReasons.constEnd(); ++it) {
+        stream << "reason " << it.value() << " x " << it.key() << '\n';
+    }
+    stream << '\n';
+    for (int index = 0; index < result.units.size(); ++index) {
+        const ImageImportFilledUnit &unit = result.units[index];
+        stream << "object " << index + 1
+               << " color=" << unit.color.name(QColor::HexArgb)
+               << " via=" << unit.via
+               << " components=" << unit.componentCount
+               << " failed=" << unit.failedComponentCount
+               << " timed_out=" << unit.timedOutComponentCount
+               << " shapes=" << unit.placements.size()
+               << " elapsed_ms=" << unit.elapsedMs;
+        if (!unit.error.isEmpty()) {
+            stream << " error=" << unit.error;
+        }
+        stream << '\n';
+        for (int componentIndex = 0; componentIndex < unit.components.size(); ++componentIndex) {
+            const ImageImportComponentResult &component = unit.components[componentIndex];
+            if (component.filled()) {
+                continue;
+            }
+            stream << "  component " << componentIndex + 1
+                   << " loops=" << component.loopCount
+                   << " points=" << component.pointCount
+                   << " elapsed_ms=" << component.elapsedMs
+                   << " error=" << component.error << '\n';
+        }
+    }
+    file.close();
+
+    return logPath;
+}
+
 bool MainWindow::importFM2023Folder(const QString &path, QString *error) {
     rememberImportDirectory(path, QStringLiteral("motorsportFolder"));
     return loadImportedProject([&path]() { return fls::importFM2023Asset(path); },
