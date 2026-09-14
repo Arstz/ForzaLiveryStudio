@@ -528,7 +528,6 @@ set(FLS_GUI_ASSETS
     CursorClosedHand.xpm
     CursorOpenHand.xpm
     CursorPipette.xpm
-    LICENSE.QtHandCursors.txt
     MenuCopy.xpm
     MenuCut.xpm
     MenuDelete.xpm
@@ -681,10 +680,16 @@ if(WIN32)
     )
     target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE "${FLS_WINDOWS_RESOURCES}")
     target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32 shell32 gdi32 advapi32)
+    # Plugin locations come from the imported targets Qt exports so the same
+    # rules work for a vcpkg Qt (Qt6/plugins beside share/) and an Online
+    # Installer kit (plugins/ beside lib/).
+    if(NOT TARGET Qt6::QWindowsIntegrationPlugin)
+        message(FATAL_ERROR "Qt Windows platform plugin target was not found in ${Qt6_DIR}")
+    endif()
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${Qt6_DIR}/../../Qt6/plugins/platforms/qwindows.dll"
+            "$<TARGET_FILE:Qt6::QWindowsIntegrationPlugin>"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms/qwindows.dll"
         COMMENT "Deploying Qt platform plugin for ${FORZA_LIVERY_STUDIO_TARGET}"
     )
@@ -693,21 +698,23 @@ if(WIN32)
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats/qico.dll"
         COMMENT "Removing redundant Qt ICO imageformat plugin"
     )
-    set(QT_WEBP_PLUGIN "${Qt6_DIR}/../../Qt6/plugins/imageformats/qwebp.dll")
-    if(NOT EXISTS "${QT_WEBP_PLUGIN}")
-        message(FATAL_ERROR "Qt WebP imageformat plugin was not found. Install qtimageformats with the webp feature, e.g. vcpkg install qtimageformats[webp]:x64-windows")
+    if(NOT TARGET Qt6::QWebpPlugin)
+        message(FATAL_ERROR "Qt WebP imageformat plugin was not found in ${Qt6_DIR}. Install the Qt Image Formats module: vcpkg install qtimageformats[webp]:x64-windows, or the \"Qt Image Formats\" component in the Qt Online Installer")
     endif()
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${QT_WEBP_PLUGIN}"
+            "$<TARGET_FILE:Qt6::QWebpPlugin>"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats/qwebp.dll"
         COMMENT "Deploying Qt WEBP imageformat plugin"
     )
+    # A vcpkg WebP plugin links libwebp dynamically and ships those DLLs in
+    # the Qt bin directory; an Online Installer kit links it statically and
+    # has none, so this loop finds nothing there.
     set(QT_WEBP_RUNTIME_DLLS)
     foreach(webp_dll IN ITEMS libwebp.dll libwebpdecoder.dll libwebpdemux.dll libwebpmux.dll libsharpyuv.dll)
-        if(EXISTS "${Qt6_DIR}/../../bin/${webp_dll}")
-            list(APPEND QT_WEBP_RUNTIME_DLLS "${Qt6_DIR}/../../bin/${webp_dll}")
+        if(EXISTS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}/${webp_dll}")
+            list(APPEND QT_WEBP_RUNTIME_DLLS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}/${webp_dll}")
         endif()
     endforeach()
     if(QT_WEBP_RUNTIME_DLLS)
