@@ -476,6 +476,8 @@ if(FLS_BUILD_TESTS)
         potrace
     )
     add_test(NAME image_import COMMAND fls_image_import_tests)
+    add_test(NAME image_import_golden
+        COMMAND fls_image_import_tests --golden-check "${CMAKE_CURRENT_SOURCE_DIR}/tools/golden")
 
     add_executable(fls_differential_cover_tests
         tools/differential_cover_test.cpp

@@ -40,6 +40,24 @@ exports grouped `C_group` folders and `C_livery` folders.
   core with cutouts is rebuilt with every curve sampled, then rejected if it still
   spills. The cap is `shapeLimitPerPoint` times the Pen point count, 2 for the
   interactive tools and 6 for image import.
+  Candidate primitives are validated against the target clipped once to the
+  candidates' joint window (a candidate meets the same target inside any window
+  that contains it; oversized candidates keep the full target), a candidate
+  larger than the target by more than the spill allowance is rejected before any
+  boolean, containment queries go through a per-fill grid whose boundary-free
+  cells are classified once, and coverage is united pairwise instead of into one
+  growing accumulator. These keep placements identical except that the
+  negligible-placement cleanup, whose safety check compares union areas within a
+  1e-8 noise margin, now succeeds where accumulated union noise used to block it
+  and so can drop slivers below one thousandth of the contour area.
+  `fls_image_import_tests --golden-record <dir> [svg...]` records every
+  placement for the built-in fixture contours plus any SVGs given, and
+  `--golden-check <dir> [svg...]` re-runs and diffs them, explaining any changed
+  component by unmatched placements, their area, and rasterized coverage.
+  `tools/golden/` holds the tracked baseline for the built-in fixtures (ring,
+  thick ring, disc with hole, multi-object, blob with holes, tendrils) and the
+  `image_import_golden` ctest checks it; an engine change that is meant to alter
+  output re-records that directory in the same commit.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.

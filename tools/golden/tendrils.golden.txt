@@ -1,0 +1,1 @@
+component unit0/component0 placements 0 error Could not fill the Pen core: Could not triangulate the lasso polygon
