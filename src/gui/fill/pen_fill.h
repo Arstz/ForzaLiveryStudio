@@ -70,6 +70,7 @@ struct PenFillRequest {
     QVector<PenLoop> loops;
     QVector<PenPrimitive> primitives;
     double boundaryTolerance = 0.1;
+    int shapeLimitPerPoint = 2;
     bool discardNegligiblePlacements = true;
 };
 

@@ -30,7 +30,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   pick through a persistent, default-on Options toggle.
   Pen builds a closed hard/soft quadratic compound contour with editable interior cutouts,
   fits affine vector primitives along curved boundaries, and prepares an interior
-  boundary before meshing the remaining area.
+  boundary before meshing the remaining area. A curved boundary that received no
+  primitive and is too tight for a single interior point is traced along the
+  curve, each sample nudged along the normal into the contour only as far as its
+  chords require, with the sample count shared out of the shape cap. The core may
+  spill outside the contour by no more than the chord sag accepted along its
+  curved boundaries (with one hundred-thousandth of the area as the floor);
+  beyond that a single-loop core sheds fitted primitives until it complies, and a
+  core with cutouts is rebuilt with every curve sampled, then rejected if it still
+  spills. The cap is `shapeLimitPerPoint` times the Pen point count, 2 by default.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.

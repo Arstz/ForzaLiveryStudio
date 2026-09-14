@@ -29,6 +29,12 @@ constexpr double kMaximumDiscardedAreaRatio = 1e-3;
 constexpr double kMaximumDiscardedThicknessRatio = 0.0025;
 constexpr int kInteriorCoreSteps = 16;
 constexpr int kChordContainmentSamples = 32;
+constexpr double kCoreCurveSagittaRatio = 0.005;
+constexpr int kMinimumCoreCurvePieces = 2;
+constexpr int kMaximumCoreCurvePieces = 16;
+constexpr double kCoreCurveNudgeStepRatio = 0.25;
+constexpr int kMaximumCoreCurveNudgeSteps = 32;
+constexpr int kCoreCurveRelaxationPasses = 4;
 constexpr double kMaximumTangentJump = 0.35;
 constexpr double kMaximumCurvatureJump = 0.75;
 constexpr double kMaximumSpanErrorRatio = 0.05;
@@ -1051,6 +1057,125 @@ std::optional<QPointF> interiorCorePoint(const PenBoundarySegment &segment,
     return std::nullopt;
 }
 
+double coreCurveSagitta(const PenBoundarySegment &segment, double boundaryTolerance) {
+    const QRectF bounds =
+        QPolygonF({segment.start, segment.control, segment.end}).boundingRect();
+    const double diagonal = std::hypot(bounds.width(), bounds.height());
+
+    return std::max(boundaryTolerance, diagonal * kCoreCurveSagittaRatio);
+}
+
+// The core may spill outside the contour by as much as the chord sag the
+// sampling already accepts on the inside, summed along every curved boundary,
+// so a sub-pixel sliver on a long thin shape is tolerated while a gross
+// overshoot is not.
+double coreSpillAllowance(const QVector<PenBoundarySegment> &segments,
+                          double targetArea,
+                          double boundaryTolerance) {
+    double sagArea = 0.0;
+    for (const PenBoundarySegment &segment : segments) {
+        if (segment.curved) {
+            sagArea += QLineF(segment.start, segment.end).length()
+                * coreCurveSagitta(segment, boundaryTolerance);
+        }
+    }
+
+    return std::max({1e-6, targetArea * kMaximumCoreOutsideRatio, sagArea});
+}
+
+// A quadratic's chord sag shrinks with the square of its piece count.
+int coreCurvePieces(const PenBoundarySegment &segment, double boundaryTolerance) {
+    const double bow = std::sqrt(
+        distanceSquaredToSegment(segment.control, segment.start, segment.end));
+    const double sagitta = coreCurveSagitta(segment, boundaryTolerance);
+
+    return std::clamp(static_cast<int>(std::ceil(std::sqrt(bow * 0.5 / sagitta))),
+                      kMinimumCoreCurvePieces,
+                      kMaximumCoreCurvePieces);
+}
+
+QPointF curveNormalTowardInterior(const PenBoundarySegment &segment,
+                                  double t,
+                                  const QPainterPath &target,
+                                  double probe) {
+    const QPointF derivative = segmentDerivative(segment, t);
+    const double length = std::hypot(derivative.x(), derivative.y());
+    if (length <= kEpsilon) {
+        return QPointF();
+    }
+    const QPointF normal(-derivative.y() / length, derivative.x() / length);
+    const QPointF point = segmentPoint(segment, t);
+    if (target.contains(point + normal * probe)) {
+        return normal;
+    }
+    if (target.contains(point - normal * probe)) {
+        return -normal;
+    }
+
+    return QPointF();
+}
+
+// A curved boundary without a fitted primitive is traced along the curve
+// itself, densely enough that no chord sags past the tolerance. Each sample
+// then steps along the curve normal into the target only as far as its chords
+// need to stay inside, so a cutout's samples clear the hole by about one chord
+// sag while a convex outer boundary's samples stay on the curve.
+QVector<QPointF> sampledCoreCurve(const PenBoundarySegment &segment,
+                                  const QPainterPath &target,
+                                  double boundaryTolerance,
+                                  int pieces) {
+    const double step = coreCurveSagitta(segment, boundaryTolerance) * kCoreCurveNudgeStepRatio;
+
+    QVector<QPointF> samples;
+    QVector<QPointF> normals;
+    samples.reserve(pieces - 1);
+    normals.reserve(pieces - 1);
+    for (int piece = 1; piece < pieces; ++piece) {
+        const double t = static_cast<double>(piece) / pieces;
+        samples.push_back(segmentPoint(segment, t));
+        normals.push_back(curveNormalTowardInterior(segment, t, target, step));
+    }
+    QVector<double> offsets(samples.size(), 0.0);
+    const auto position = [&](int index) {
+        return samples[index] + normals[index] * offsets[index];
+    };
+    const auto chordsInside = [&](int index, const QPointF &candidate) {
+        const QPointF before = index == 0 ? segment.start : position(index - 1);
+        const QPointF after = index + 1 == samples.size() ? segment.end : position(index + 1);
+        return chordInsideTarget(before, candidate, target)
+            && chordInsideTarget(candidate, after, target);
+    };
+    for (int pass = 0; pass < kCoreCurveRelaxationPasses; ++pass) {
+        bool changed = false;
+        for (int index = 0; index < samples.size(); ++index) {
+            if (normals[index].isNull() || chordsInside(index, position(index))) {
+                continue;
+            }
+            const double previousOffset = offsets[index];
+            bool settled = false;
+            for (int count = 1; count <= kMaximumCoreCurveNudgeSteps && !settled; ++count) {
+                offsets[index] = previousOffset + step * count;
+                settled = chordsInside(index, position(index));
+            }
+            if (!settled) {
+                offsets[index] = previousOffset;
+            } else {
+                changed = true;
+            }
+        }
+        if (!changed) {
+            break;
+        }
+    }
+    QVector<QPointF> points;
+    points.reserve(samples.size());
+    for (int index = 0; index < samples.size(); ++index) {
+        points.push_back(position(index));
+    }
+
+    return points;
+}
+
 struct InwardCurvePlacement {
     CurvePlacement curve;
     QPointF coreMiddle;
@@ -1647,7 +1772,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         pointCount += loop.points.size();
     }
     result.targetArea = pathArea(contour.path);
-    result.shapeLimit = pointCount * 2;
+    result.shapeLimit = pointCount * std::max(1, request.shapeLimitPerPoint);
     const PolygonMeshSources meshSources = penMeshSources(primitives);
     if (loops.size() > 1) {
         QVector<CurvePrimitive> outwardCaps;
@@ -1670,10 +1795,20 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             return result;
         }
 
-        QVector<QVector<QPointF>> coreContours;
-        coreContours.reserve(contour.loops.size());
+        struct LoopFit {
+            QVector<PenBoundarySegment> segments;
+            QVector<CurveSpanPlacement> curveSpans;
+            QVector<int> spanAtStart;
+            QVector<std::optional<InwardCurvePlacement>> inwardCurves;
+            QVector<int> curvePieces;
+        };
+        QVector<LoopFit> loopFits;
+        loopFits.reserve(contour.loops.size());
         QPainterPath coverage;
         coverage.setFillRule(Qt::WindingFill);
+        int reservedPlacements = 0;
+        int desiredSamplesWithFits = 0;
+        int desiredSamplesWithoutFits = 0;
         for (const PenContourLoop &loop : contour.loops) {
             PenContour loopContour;
             loopContour.segments = loop.segments;
@@ -1757,67 +1892,149 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                     request.boundaryTolerance);
             }
 
-            QVector<QPointF> corePoints;
-            corePoints.push_back(segments.front().start);
-            for (int segmentIndex = 0; segmentIndex < segments.size();) {
-                const int spanIndex = spanAtStart[segmentIndex];
-                if (spanIndex >= 0) {
-                    const CurveSpanPlacement &span = curveSpans[spanIndex];
-                    result.placements.push_back(span.curve.placement);
-                    coverage = coverage.united(span.curve.path);
-                    corePoints.push_back(segments[span.last].end);
-                    segmentIndex = span.last + 1;
+            QVector<int> curvePieces(segments.size(), 0);
+            for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
+                if (!segments[segmentIndex].curved) {
                     continue;
                 }
-                const PenBoundarySegment &segment = segments[segmentIndex];
-                if (inwardCurves[segmentIndex]) {
-                    result.placements.push_back(inwardCurves[segmentIndex]->curve.placement);
-                    coverage = coverage.united(inwardCurves[segmentIndex]->curve.path);
-                    corePoints.push_back(inwardCurves[segmentIndex]->coreMiddle);
-                } else if (segment.curved
-                           && !chordInsideTarget(segment.start,
-                                                 segment.end,
-                                                 contour.path)) {
-                    const auto point = interiorCorePoint(segment, contour.path);
-                    corePoints.push_back(point ? *point : segment.control);
-                }
-                corePoints.push_back(segment.end);
-                ++segmentIndex;
-            }
-            QVector<QPointF> normalized;
-            normalized.reserve(corePoints.size());
-            for (const QPointF &point : std::as_const(corePoints)) {
-                if (normalized.isEmpty()
-                    || QLineF(normalized.back(), point).length() > kEpsilon) {
-                    normalized.push_back(point);
+                curvePieces[segmentIndex] =
+                    coreCurvePieces(segments[segmentIndex], request.boundaryTolerance);
+                desiredSamplesWithoutFits += curvePieces[segmentIndex] - 1;
+                if (!spanCovered[segmentIndex] && !inwardCurves[segmentIndex]) {
+                    desiredSamplesWithFits += curvePieces[segmentIndex] - 1;
+                } else if (inwardCurves[segmentIndex]) {
+                    ++reservedPlacements;
                 }
             }
-            if (normalized.size() > 1
-                && QLineF(normalized.front(), normalized.back()).length() <= kEpsilon) {
-                normalized.removeLast();
-            }
-            if (normalized.size() < 3) {
-                result.error = QStringLiteral("The Pen contour left no polygonal core");
-                result.placements.clear();
-                return result;
-            }
-            coreContours.push_back(std::move(normalized));
+            reservedPlacements += curveSpans.size();
+            loopFits.push_back({segments, curveSpans, spanAtStart,
+                                std::move(inwardCurves), std::move(curvePieces)});
         }
 
-        PolygonMeshRequest meshRequest;
-        meshRequest.sources = meshSources;
-        meshRequest.mergeSquares = false;
-        meshRequest.contours = std::move(coreContours);
-        const PolygonMeshResult mesh = meshPolygon(meshRequest, cancelled);
-        if (mesh.cancelled || (cancelled && cancelled())) {
-            result.placements.clear();
-            result.cancelled = true;
-            result.error = QStringLiteral("Pen core mesh timed out");
-            return result;
+        // Curve samples become core triangles almost one for one, so they
+        // share whatever the shape cap leaves after the hard points and the
+        // fitted primitives; a starved segment keeps at least its midpoint.
+        const auto budgetedPieces = [](const LoopFit &fit, int desired, int budget) {
+            QVector<int> pieces = fit.curvePieces;
+            if (desired > budget) {
+                for (int &count : pieces) {
+                    if (count > 0) {
+                        count = std::max(kMinimumCoreCurvePieces,
+                                         1 + (count - 1) * budget / desired);
+                    }
+                }
+            }
+            return pieces;
+        };
+        // Primitives fitted on different loops can leave core polygons that
+        // cross or spill; the core is then rebuilt with every curve sampled.
+        const auto buildCore = [&](bool useFits,
+                                   QVector<QVector<QPointF>> *cores,
+                                   QVector<PenPlacement> *fittedPlacements,
+                                   QPainterPath *fittedCoverage,
+                                   QString *error) {
+            const int reserved = useFits ? reservedPlacements : 0;
+            const int desired = useFits ? desiredSamplesWithFits : desiredSamplesWithoutFits;
+            const int budget = std::max(0, result.shapeLimit - pointCount - reserved);
+            for (const LoopFit &fit : loopFits) {
+                const QVector<PenBoundarySegment> &segments = fit.segments;
+                const QVector<int> pieces = budgetedPieces(fit, desired, budget);
+                QVector<QPointF> corePoints;
+                corePoints.push_back(segments.front().start);
+                for (int segmentIndex = 0; segmentIndex < segments.size();) {
+                    const int spanIndex = useFits ? fit.spanAtStart[segmentIndex] : -1;
+                    if (spanIndex >= 0) {
+                        const CurveSpanPlacement &span = fit.curveSpans[spanIndex];
+                        fittedPlacements->push_back(span.curve.placement);
+                        *fittedCoverage = fittedCoverage->united(span.curve.path);
+                        corePoints.push_back(segments[span.last].end);
+                        segmentIndex = span.last + 1;
+                        continue;
+                    }
+                    const PenBoundarySegment &segment = segments[segmentIndex];
+                    if (useFits && fit.inwardCurves[segmentIndex]) {
+                        fittedPlacements->push_back(fit.inwardCurves[segmentIndex]->curve.placement);
+                        *fittedCoverage = fittedCoverage->united(
+                            fit.inwardCurves[segmentIndex]->curve.path);
+                        corePoints.push_back(fit.inwardCurves[segmentIndex]->coreMiddle);
+                    } else if (pieces[segmentIndex] > 0) {
+                        corePoints += sampledCoreCurve(segment, contour.path,
+                                                       request.boundaryTolerance,
+                                                       pieces[segmentIndex]);
+                    }
+                    corePoints.push_back(segment.end);
+                    ++segmentIndex;
+                }
+                QVector<QPointF> normalized;
+                normalized.reserve(corePoints.size());
+                for (const QPointF &point : std::as_const(corePoints)) {
+                    if (normalized.isEmpty()
+                        || QLineF(normalized.back(), point).length() > kEpsilon) {
+                        normalized.push_back(point);
+                    }
+                }
+                if (normalized.size() > 1
+                    && QLineF(normalized.front(), normalized.back()).length() <= kEpsilon) {
+                    normalized.removeLast();
+                }
+                if (normalized.size() < 3) {
+                    *error = QStringLiteral("The Pen contour left no polygonal core");
+                    return false;
+                }
+                cores->push_back(std::move(normalized));
+            }
+
+            QPainterPath corePath;
+            corePath.setFillRule(Qt::OddEvenFill);
+            for (const QVector<QPointF> &core : std::as_const(*cores)) {
+                corePath.addPolygon(QPolygonF(core));
+                corePath.closeSubpath();
+            }
+            const double maximumCoreOutsideArea = coreSpillAllowance(
+                contour.segments, result.targetArea, request.boundaryTolerance);
+            const double outsideArea = pathArea(corePath.subtracted(contour.path));
+            if (outsideArea > maximumCoreOutsideArea) {
+                *error = QStringLiteral("The Pen core extends outside the contour "
+                                        "(%1 over the %2 allowed)")
+                             .arg(outsideArea, 0, 'g', 4)
+                             .arg(maximumCoreOutsideArea, 0, 'g', 4);
+                return false;
+            }
+            return true;
+        };
+
+        PolygonMeshResult mesh;
+        QString coreError;
+        for (const bool useFits : {true, false}) {
+            QVector<QVector<QPointF>> cores;
+            QVector<PenPlacement> fittedPlacements;
+            QPainterPath fittedCoverage;
+            fittedCoverage.setFillRule(Qt::WindingFill);
+            if (!buildCore(useFits, &cores, &fittedPlacements, &fittedCoverage, &coreError)) {
+                continue;
+            }
+            PolygonMeshRequest meshRequest;
+            meshRequest.sources = meshSources;
+            meshRequest.mergeSquares = false;
+            meshRequest.contours = std::move(cores);
+            mesh = meshPolygon(meshRequest, cancelled);
+            if (mesh.cancelled || (cancelled && cancelled())) {
+                result.placements.clear();
+                result.cancelled = true;
+                result.error = QStringLiteral("Pen core mesh timed out");
+                return result;
+            }
+            if (mesh.error.isEmpty()) {
+                result.placements += fittedPlacements;
+                coverage = coverage.united(fittedCoverage);
+                coreError.clear();
+                break;
+            }
+            coreError = QStringLiteral("Could not fill the Pen core: %1").arg(mesh.error);
         }
-        if (!mesh.error.isEmpty()) {
+        if (!coreError.isEmpty()) {
             result.placements.clear();
-            result.error = QStringLiteral("Could not fill the Pen core: %1").arg(mesh.error);
+            result.error = coreError;
             return result;
         }
         const QVector<PolygonMeshPlacement> corePlacements = optimizePolygonMeshWithEllipses(
@@ -1972,8 +2189,9 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 activeSpanCovered[i] = true;
             }
         }
-        QHash<int, QPointF> interiorCorePoints;
+        QHash<int, QVector<QPointF>> interiorCorePoints;
         QVector<int> activeMidpointCandidates;
+        QVector<int> sampledSegments;
         for (int i = 0; i < segments.size(); ++i) {
             if (enabledInwardCurves[i]) {
                 ++activeInwardCount;
@@ -1989,22 +2207,42 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                            && chordInsideTarget(curveMiddle,
                                                 segments[i].end,
                                                 contour.path)) {
-                    interiorCorePoints.insert(i, curveMiddle);
+                    interiorCorePoints.insert(i, {curveMiddle});
+                } else if (const auto point = interiorCorePoint(segments[i], contour.path)) {
+                    interiorCorePoints.insert(i, {*point});
                 } else {
-                    const auto point = interiorCorePoint(segments[i], contour.path);
-                    if (point) {
-                        interiorCorePoints.insert(i, *point);
-                    } else {
-                        interiorCorePoints.insert(i, segments[i].control);
-                    }
+                    sampledSegments.push_back(i);
                 }
             }
         }
+        // A curve too tight for one interior point is traced along the curve
+        // as in the cutout branch, sharing the shape cap with the other core
+        // vertices.
         const int capCount = activeSpanCount + activeInwardCount;
         const int baseVertices = segments.size() - activeRemovedVertices
             + activeInwardCount + interiorCorePoints.size();
         const int maximumCoreVertices = std::max(3, result.shapeLimit - capCount + 2);
-        const int midpointBudget = std::max(0, maximumCoreVertices - baseVertices);
+        const int sampleBudget = std::max(0, maximumCoreVertices - baseVertices);
+        int desiredSamples = 0;
+        QHash<int, int> desiredPieces;
+        for (const int i : std::as_const(sampledSegments)) {
+            const int pieces = coreCurvePieces(segments[i], request.boundaryTolerance);
+            desiredPieces.insert(i, pieces);
+            desiredSamples += pieces - 1;
+        }
+        int sampledPointCount = 0;
+        for (const int i : std::as_const(sampledSegments)) {
+            int pieces = desiredPieces.value(i);
+            if (desiredSamples > sampleBudget) {
+                pieces = std::max(kMinimumCoreCurvePieces,
+                                  1 + (pieces - 1) * sampleBudget / desiredSamples);
+            }
+            QVector<QPointF> sampled = sampledCoreCurve(
+                segments[i], contour.path, request.boundaryTolerance, pieces);
+            sampledPointCount += sampled.size();
+            interiorCorePoints.insert(i, std::move(sampled));
+        }
+        const int midpointBudget = std::max(0, sampleBudget - sampledPointCount);
         std::sort(activeMidpointCandidates.begin(),
                   activeMidpointCandidates.end(),
                   [&](int a, int b) {
@@ -2038,7 +2276,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             if (enabledInwardCurves[i]) {
                 layout.points.push_back(inwardCurves[i]->coreMiddle);
             } else if (interiorCorePoints.contains(i)) {
-                layout.points.push_back(interiorCorePoints.value(i));
+                layout.points += interiorCorePoints.value(i);
             } else if (segment.curved && midpointSegments.contains(i)) {
                 layout.points.push_back(segmentPoint(segment, 0.5));
             }
@@ -2061,8 +2299,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     };
     CoreLayout layout = coreLayout(activeSpans, activeInwardCurves);
     PolygonContour coreContour = buildPolygonContour(layout.points);
-    const double maximumCoreOutsideArea =
-        std::max(1e-6, result.targetArea * kMaximumCoreOutsideRatio);
+    const double maximumCoreOutsideArea = coreSpillAllowance(
+        contour.segments, result.targetArea, request.boundaryTolerance);
     const auto coreOutsideArea = [&](const PolygonContour &candidateContour) {
         if (!candidateContour.valid()) {
             return std::numeric_limits<double>::max();
@@ -2147,7 +2385,10 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         return result;
     }
     if (outsideCoreArea > maximumCoreOutsideArea) {
-        result.error = QStringLiteral("The Pen core could not remain within its contour");
+        result.error = QStringLiteral("The Pen core could not remain within its contour "
+                                      "(%1 over the %2 allowed)")
+                           .arg(outsideCoreArea, 0, 'g', 4)
+                           .arg(maximumCoreOutsideArea, 0, 'g', 4);
         return result;
     }
     QPainterPath coverage;
