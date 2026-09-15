@@ -1,5 +1,6 @@
 #include "profile_fit.h"
 #include "profile_fit_batch.h"
+#include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
 #include "greedy_cover.h"
 
@@ -31,8 +32,6 @@ constexpr double kCornerAngle = 0.3;
 constexpr double kMinimumTriangleCornerCross = 0.1;
 constexpr double kTriangleStraightnessFraction = 0.1;
 constexpr double kProfileError = 0.65;
-constexpr double kRankArcWeight = 2.0;
-constexpr double kRankTangentWeight = 4.0;
 constexpr double kTangentError = 0.2;
 constexpr double kBoundaryOffset = 0.3;
 constexpr double kMinimumLength = 1e-8;
@@ -314,7 +313,7 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
 struct RankedFit {
     compute::Fit fit;
     int profile = 0;
-    double score = 0.0;
+    double area = 0.0;
 };
 
 QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int capacity, const CurveJob &job,
@@ -325,15 +324,29 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
     const auto envelope = catalog::painterPath(outer);
     const auto localBoundary = boundary;
     QVector<Candidate> result;
+    std::vector<ProfileAlternative> alternatives;
+    std::vector<ProfileAlternative> validatedAlternatives;
+    const int validationCapacity = capacity + std::min(capacity, 2);
+    for (const auto &fit : fits) {
+        alternatives.push_back({fit.area, fit.fit.error / scale, fit.fit.tangentError, 0.0});
+    }
     localRegion.requiredPath = catalog::painterPath(region.required);
-    for (const auto &ranked : fits) {
-        if (result.size() >= capacity) {
+    for (int index : profileAlternativeOrder(alternatives)) {
+        const auto &ranked = fits[index];
+        if (result.size() >= validationCapacity) {
             break;
         }
         const auto &profile = profiles[ranked.profile];
         const auto &shape = primitives[profile.primitive].shape;
+        if (std::count_if(result.cbegin(), result.cend(), [&](const auto &candidate) {
+                return candidate.placement.shapeId == shape.shapeId;
+            }) >= 2) {
+            continue;
+        }
         if (std::any_of(result.cbegin(), result.cend(), [&](const auto &candidate) {
-            return candidate.placement.shapeId == shape.shapeId;
+            return candidate.placement.shapeId == shape.shapeId
+                && candidate.placement.transform == catalog::emittedTransform(
+                    profile.normalization * fittedTransform(ranked.fit.transform));
         })) {
             continue;
         }
@@ -346,11 +359,25 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
         if (candidate) {
             candidate->error = ranked.fit.error;
             candidate->span = job.length;
+            validatedAlternatives.push_back({candidate->placement.area - candidate->spill,
+                ranked.fit.error / scale, ranked.fit.tangentError,
+                candidate->spill / std::max(candidate->placement.area, kMinimumLength)});
             result.push_back(std::move(*candidate));
         }
     }
 
-    return result;
+    QVector<Candidate> retained;
+    const auto order = profileAlternativeOrder(validatedAlternatives);
+    for (int index : order) {
+        const int familyCount = std::count_if(retained.cbegin(), retained.cend(), [&](const auto &candidate) {
+            return candidate.placement.shapeId == result[index].placement.shapeId;
+        });
+        if (familyCount < 2 && retained.size() < capacity) {
+            retained.push_back(result[index]);
+        }
+    }
+
+    return retained;
 }
 
 void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
@@ -423,14 +450,7 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                 || !std::isfinite(area) || area > region.area * 1.02 || area <= 0) {
                 continue;
             }
-            const double score = area / (1.0 + kRankArcWeight * fit.error / options.observationScale
-                + kRankTangentWeight * fit.tangentError);
-            ranked[numeric.target - start].push_back({fit, numeric.source, score});
-        }
-        for (auto &span : ranked) {
-            std::stable_sort(span.begin(), span.end(), [](const auto &first, const auto &second) {
-                return first.score > second.score;
-            });
+            ranked[numeric.target - start].push_back({fit, numeric.source, area});
         }
         QElapsedTimer timer;
         timer.start();

@@ -74,8 +74,11 @@ exports grouped `C_group` folders and `C_livery` folders.
   Independent profile fits and arc residuals run in double-precision CUDA batches
   when available, with bounded parallel CPU fallback. Complete silhouette checks
   stay on the CPU. Candidates are ranked by area, arc error, and endpoint tangent
-  error before parallel geometry validation. Failed candidates allow the next
-  ranked fit to compete; retained fits preserve distinct shape IDs per span.
+  error before parallel geometry validation. Nondominated alternatives compete
+  through alternating coverage, arc-error, tangent-error, and spill rankings.
+  Validation checks up to two extra accepted alternatives per span. Retention
+  permits two different transforms from one family and preserves the existing
+  total candidate limit. Failed candidates allow the next ranked fit to compete.
   Job order, retention slots, and tie breaks are fixed before each batch is
   committed. CPU and GPU results need not be bitwise identical.
   Straight runs seed sheared rectangles; convex corners can seed triangles and
@@ -103,6 +106,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   placements nor the geometric support checks. These sampled checks are not a
   perceptual-equivalence or mathematical smoothness guarantee, and the scale
   is not automatically calibrated to source-image pixels.
+  Tangent and turning measurements compare the observed output with the target
+  after the same observation operator. The observed target is cached. Protected
+  corner distances still use the original target and raw emitted support.
   Local substitutions use 28 selected shape types, with multi-contour types
   added for regions with holes. Whole-region recognition starts from the
   96-shape curated catalog and filters proposals by affine-invariant convexity.
@@ -129,6 +135,32 @@ exports grouped `C_group` folders and `C_livery` folders.
   those placements more adjustment work without increasing the total budget.
   Recognition tries moment-aligned catalog fits before distributing orientation
   trials across the catalog.
+  Initial repair reserves half its remaining evaluations for placement refits
+  and the rest for residual-driven insertion. Refits cannot introduce new deep
+  missing support or new observed hole defects, or worsen protected corners
+  beyond their current error or the configured allowance. Shallow boundary
+  adjustments remain possible within the inward tolerance. Temporary area-error
+  increases can occur during refits; a coverage-safe stage fallback and separate
+  verified incumbent protect the retained result.
+  Residual search prioritizes connected deep-missing regions, finds interior
+  anchors with bounded deterministic subdivision, and tests catalog shapes
+  against the surrounding target plus existing support. Placements can overlap
+  other shapes instead of following the residual perimeter. Oriented bridge
+  proposals reach the nearest existing support inside the target. A body patch
+  can include a separately validated thin Square connector. Ranking uses deep
+  coverage gained per added placement with a bounded connection bonus, then
+  total missing-area gain. Both placements count toward the caller limit.
+  New support must
+  stay inside the target; intended cutouts are not filled. A growing partial
+  cover may contain temporary islands while coverage is repaired. Final topology
+  verification still applies. Insertion obeys the caller's shape budget and
+  shares the existing repair-stage evaluation allowance. Unused insertion work
+  can refit the repaired cover before transfer to compaction. Coverage guards
+  reuse the corner distances already computed by the quality measurement.
+  Half of the exposed-boundary stage's remaining work tests simultaneous affine
+  moves of adjacent placement pairs before catalog merges. Both pieces move in
+  one scored proposal; neither individual move needs to improve the score.
+  Accepted pair results retain the coverage constraints and area-error bound.
   Local count reductions can proceed in unverified results if missing and spill
   area, contour metrics, and topology do not worsen and no new deep-missing area
   appears. Both the current state and a fixed compaction baseline constrain these
@@ -164,7 +196,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   union through the original global closing operation. Work budgets and quality
   thresholds are unchanged. Logs include per-stage and quality-check timings,
   stage evaluation allowances and stop reasons, approximate reductions, selection
-  limit exhaustion, and the profile backend's setup, transfer, numeric, and
+  limit exhaustion, coverage-guard rejections, residual insertions, joint moves,
+  and the profile backend's setup, transfer, numeric, and
   geometry-validation timings.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated

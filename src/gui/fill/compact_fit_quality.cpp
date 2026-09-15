@@ -43,7 +43,7 @@ catalog::Polygons closeSubpixelGaps(const catalog::Polygons &polygons, double ra
 } // namespace
 
 BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observationScale)
-    : bounds_(catalog::painterPath(target).boundingRect()),
+    : target_(target), bounds_(catalog::painterPath(target).boundingRect()),
       scale_(std::max(observationScale, kMinimumLength)),
       cellSize_(std::max(scale_ * kCellScale,
           std::max(bounds_.width(), bounds_.height()) / kMaximumGridExtent)) {
@@ -146,6 +146,11 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
     if (loops_.isEmpty()) {
         return result;
     }
+    if (!observedReference_) {
+        observedReference_ = std::make_shared<BoundaryModel>(
+            observationSupport(target_), scale_);
+    }
+    const auto &referenceModel = observedReference_->loops_.isEmpty() ? *this : *observedReference_;
     if (corners_.size() > kIndexedCornerThreshold && !coverage.isEmpty()) {
         outputBoundary = std::make_unique<BoundaryModel>(coverage, scale_);
     }
@@ -165,7 +170,9 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
                 }
             }
         }
-        result.maximumCornerDistance = std::max(result.maximumCornerDistance, std::sqrt(squaredDistance));
+        const double distance = std::sqrt(squaredDistance);
+        result.cornerDistances.push_back(distance);
+        result.maximumCornerDistance = std::max(result.maximumCornerDistance, distance);
         result.cornerEnergy += squaredDistance;
     }
     cornerNanoseconds_ += timer.nsecsElapsed();
@@ -186,8 +193,8 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
         for (int sample = 0; sample < samples; ++sample) {
             const double offset = (sample + 0.5) * spacing;
             const auto point = pointAt(loop, offset);
-            const auto reference = closest(point);
-            const auto &target = loops_[reference.loop];
+            const auto reference = referenceModel.closest(point);
+            const auto &target = referenceModel.loops_[reference.loop];
             for (double radius : {scale_, scale_ * 2.0}) {
                 const auto before = pointAt(loop, offset - radius);
                 const auto after = pointAt(loop, offset + radius);

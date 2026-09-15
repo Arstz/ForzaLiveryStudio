@@ -16,7 +16,6 @@ bool noGreater(double after, double before) {
 ReductionState reductionState(const catalog::Polygons &coverage, const catalog::Polygons &target,
                                 const BoundaryModel &boundary, double inwardAllowance) {
     const auto observed = boundary.observationSupport(coverage);
-    const BoundaryModel output(coverage, inwardAllowance);
     ReductionState result;
     result.coverage = coverage;
     result.deepMissing = catalog::subtract(target, catalog::expanded(coverage, inwardAllowance));
@@ -28,9 +27,18 @@ ReductionState reductionState(const catalog::Polygons &coverage, const catalog::
         }
     }
     result.observedHoles = catalog::intersect(catalog::unite(result.observedHoles), target);
-    for (const auto &corner : boundary.protectedCorners()) {
-        result.cornerDistances.push_back(output.reference(corner).distance);
+    catalog::Polygons intendedHoles;
+    for (auto polygon : target) {
+        if (catalog::signedArea(polygon) < 0) {
+            std::reverse(polygon.begin(), polygon.end());
+            intendedHoles.push_back(std::move(polygon));
+        }
     }
+    if (!intendedHoles.isEmpty()) {
+        result.observedHoles = catalog::subtract(result.observedHoles,
+            catalog::expanded(catalog::unite(intendedHoles), inwardAllowance));
+    }
+    result.cornerDistances = result.metrics.cornerDistances;
     result.missingArea = catalog::area(catalog::subtract(target, coverage));
     result.spillArea = catalog::area(catalog::subtract(coverage, target));
 
@@ -66,6 +74,23 @@ bool nonWorseningReduction(const ReductionState &after, const ReductionState &be
 
     return catalog::area(catalog::subtract(after.deepMissing, before.deepMissing)) <= kComparisonSlack
         && catalog::area(catalog::subtract(after.observedHoles, before.observedHoles)) <= kComparisonSlack;
+}
+
+bool preservesCoverage(const ReductionState &after, const ReductionState &before,
+                        const BoundaryMetrics &target, double cornerAllowance, bool growing) {
+    if (after.coverage.isEmpty() || after.cornerDistances.size() != before.cornerDistances.size()
+        || (!growing && std::abs(after.metrics.components - target.components) > std::abs(before.metrics.components - target.components))
+        || catalog::area(catalog::subtract(after.deepMissing, before.deepMissing)) > kComparisonSlack
+        || catalog::area(catalog::subtract(after.observedHoles, before.observedHoles)) > kComparisonSlack) {
+        return false;
+    }
+    for (int index = 0; index < after.cornerDistances.size(); ++index) {
+        if (!noGreater(after.cornerDistances[index], std::max(cornerAllowance, before.cornerDistances[index]))) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 } // namespace gui::compact

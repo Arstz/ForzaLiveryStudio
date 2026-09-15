@@ -18,5 +18,7 @@ ReductionState reductionState(const catalog::Polygons &coverage, const catalog::
                                 const BoundaryModel &boundary, double inwardAllowance);
 bool nonWorseningReduction(const ReductionState &after, const ReductionState &before,
                             const BoundaryMetrics &target);
+bool preservesCoverage(const ReductionState &after, const ReductionState &before,
+                        const BoundaryMetrics &target, double cornerAllowance, bool growing = false);
 
 } // namespace gui::compact

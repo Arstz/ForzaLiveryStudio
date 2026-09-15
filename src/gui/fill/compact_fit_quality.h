@@ -2,10 +2,12 @@
 
 #include "catalog_cover_internal.h"
 #include <limits>
+#include <memory>
 
 namespace gui::compact {
 
 struct BoundaryMetrics {
+    QVector<double> cornerDistances;
     int cornerDefects = 0;
     int samples = 0;
     int components = 0;
@@ -80,6 +82,8 @@ private:
     QVector<QPointF> corners_;
     QHash<qint64, QVector<int>> cells_;
     QHash<qint64, QVector<QPointF>> cornerCells_;
+    catalog::Polygons target_;
+    mutable std::shared_ptr<const BoundaryModel> observedReference_;
     QRectF bounds_;
     mutable qint64 cornerNanoseconds_ = 0;
     mutable qint64 closingNanoseconds_ = 0;

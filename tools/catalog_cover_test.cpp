@@ -4,6 +4,7 @@
 #include "layer.h"
 #include "compact_fit.h"
 #include "profile_fit.h"
+#include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
@@ -316,6 +317,9 @@ void saveComparison(const QString &source, const QString &destination, const gui
 
 void requireApproximation(const gui::PenFillRequest &request, const gui::catalog::FillResult &result,
                           const QVector<gui::catalog::Primitive> &catalog, const gui::compact::FillOptions &options) {
+    if (!result.fill.error.isEmpty()) {
+        QTextStream(stdout) << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    }
     require(result.fill.error.isEmpty() && !result.fill.cancelled && !result.fill.placements.isEmpty(), result.fill.error);
     const auto region = gui::catalog::buildRegion(request, {});
     gui::catalog::Polygons polygons;
@@ -626,6 +630,7 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
     placement.transform = transform;
     FillOptions options;
     options.initialPlacements = {placement, placement, placement};
+    options.shapeBudget = options.initialPlacements.size();
     options.evaluationBudget = 400;
     options.retainFailedFill = true;
     const gui::PenFillRequest request{{}, {polygonLoop({{0, 0}, {20, 0}, {20, 8}, {100, 8},
@@ -654,6 +659,85 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
     require(stages.value("repair").toObject().value("refitPlacements").toInt() >= options.initialPlacements.size(),
         QStringLiteral("Repair did not reach all placements"));
     QTextStream(stdout) << "Stage budgets, local reductions, topology and baseline checks passed\n";
+}
+
+void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
+    using namespace gui::compact;
+    using gui::catalog::Polygons;
+    const std::vector<gui::profile::ProfileAlternative> alternatives{
+        {100, 0.3, 0.1, 0.01}, {20, 0.001, 0.01, 0.0}, {10, 0.5, 0.2, 0.02}, {30, 0.1, 0.001, 0.0}};
+    const auto order = gui::profile::profileAlternativeOrder(alternatives);
+    require(order.size() == alternatives.size() && order[0] == 0 && order[1] == 1
+        && order[2] == 3 && order.back() == 2, QStringLiteral("Boundary alternatives lost the accuracy or tangent extreme"));
+    require(order == gui::profile::profileAlternativeOrder(alternatives), QStringLiteral("Alternative order is unstable"));
+    const Polygons target{QPolygonF({{0, 0}, {100, 0}, {100, 100}, {51, 100},
+        {51, 20}, {50.8, 20}, {50.8, 100}, {0, 100}})};
+    const BoundaryModel reference(target, 1);
+    const auto metrics = reference.measure(target);
+    require(reference.energy(metrics) < 1e-6 && metrics.maximumExcessTurn < 1e-6,
+        QStringLiteral("Observation changes are incorrectly attributed to the generated contour"));
+    const auto exact = reductionState(target, target, reference, 0.5);
+    const Polygons hole{QPolygonF({{20, 20}, {30, 20}, {30, 30}, {20, 30}})};
+    const auto broken = reductionState(gui::catalog::subtract(target, hole), target, reference, 0.5);
+    require(!preservesCoverage(broken, exact, metrics, 0.5), QStringLiteral("Polishing can open an interior hole"));
+    require(preservesCoverage(exact, broken, metrics, 0.5), QStringLiteral("Coverage repair was rejected"));
+    auto damaged = exact;
+    damaged.cornerDistances.front() = 2;
+    require(!preservesCoverage(damaged, exact, metrics, 0.5), QStringLiteral("Coverage repair can damage a protected corner"));
+    const auto square = std::find_if(catalog.cbegin(), catalog.cend(), [](const auto &entry) { return entry.shape.shapeId == 101; });
+    require(square != catalog.cend(), QStringLiteral("Missing repair square"));
+    const auto &bounds = square->shape.bounds;
+    gui::PenPlacement placement;
+    placement.shapeId = 101;
+    placement.transform.scale(20 / bounds.width(), 20 / bounds.height());
+    placement.transform.translate(-bounds.left(), -bounds.top());
+    FillOptions options;
+    options.initialPlacements = {placement};
+    options.evaluationBudget = 6000;
+    options.shapeBudget = 30;
+    options.retainFailedFill = true;
+    const gui::PenFillRequest request{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
+        polygonLoop({{60, 60}, {80, 60}, {80, 80}, {60, 80}}, gui::PenLoopKind::Cutout)}};
+    const auto region = gui::catalog::buildRegion(request, {});
+    const double originalMissing = gui::catalog::area(gui::catalog::subtract(region.required,
+        gui::catalog::expanded(gui::catalog::mapped(square->shape, placement.transform), options.inwardAllowance)));
+    const auto result = gui::compact::fillRegion(request, {*square}, options);
+    QTextStream(stdout) << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    require(!result.fill.cancelled && result.diagnostics.value("residualInsertions").toInt() > 0,
+        QStringLiteral("Residual repair did not insert any shapes"));
+    require(result.fill.placements.size() <= options.shapeBudget
+        && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
+        QStringLiteral("Repair exceeded a caller budget"));
+    require(result.diagnostics.value("missingBeyondInward").toDouble() < originalMissing * 0.5,
+        QStringLiteral("Residual repair failed to recover most missing coverage"));
+    require(result.diagnostics.value("boundaryQuality").toObject().value("components").toInt() == 1,
+        QStringLiteral("Residual repair left isolated patches"));
+    double previousDeep = originalMissing;
+    for (const auto &checkpoint : result.diagnostics.value("history").toArray()) {
+        const double deep = checkpoint.toObject().value("deepMissing").toDouble();
+        require(deep <= previousDeep + 1e-5, QStringLiteral("Refinement reopened deep missing area"));
+        previousDeep = deep;
+    }
+    Polygons coverage;
+    for (const auto &entry : result.fill.placements) {
+        coverage += gui::catalog::mapped(square->shape, entry.transform);
+    }
+    const Polygons cutout{QPolygonF({{61, 61}, {79, 61}, {79, 79}, {61, 79}})};
+    require(gui::catalog::intersect(gui::catalog::unite(coverage), cutout).isEmpty(),
+        QStringLiteral("Repair filled an intended hole"));
+    const auto repeated = gui::compact::fillRegion(request, {*square}, options);
+    require(repeated.fill.placements.size() == result.fill.placements.size(), QStringLiteral("Repair count is not deterministic"));
+    for (int index = 0; index < result.fill.placements.size(); ++index) {
+        require(result.fill.placements[index].transform == repeated.fill.placements[index].transform,
+            QStringLiteral("Repair transforms are not deterministic"));
+    }
+    const auto cancelled = gui::compact::fillRegion(request, {*square}, options, [] { return true; });
+    require(cancelled.fill.cancelled, QStringLiteral("Repair ignored cancellation"));
+    options.evaluationBudget = 2000;
+    const auto expandedCatalog = gui::compact::fillRegion(request, catalog, options);
+    require(expandedCatalog.diagnostics.value("missingBeyondInward").toDouble() < originalMissing * 0.5,
+        QStringLiteral("Catalog expansion starved the interior clearance proposals"));
+    QTextStream(stdout) << "Residual repair, coverage guards, reference calibration and boundary retention passed\n";
 }
 
 void fastQualityTests() {
@@ -851,6 +935,10 @@ int main(int argc, char **argv) {
         require(error.isEmpty(), error);
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--compact-search-tests")) {
             compactSearchTests(fullCatalog);
+            return 0;
+        }
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--coverage-repair-tests")) {
+            coverageRepairTests(fullCatalog);
             return 0;
         }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--fast-quality-tests")) {
