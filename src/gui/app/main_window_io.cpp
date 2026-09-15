@@ -8,6 +8,7 @@
 #include "fm_codec.h"
 #include "gui_constants.h"
 #include "header_metadata_widget.h"
+#include "image_import_options_dialog.h"
 #include "image_io.h"
 #include "image_preprocess_dialog.h"
 #include "import_asset_dialog.h"
@@ -1063,19 +1064,46 @@ void MainWindow::importImageAsShapesDialog() {
         QStringLiteral("Import Image as Shapes"),
         importDialogStartDirectoryWithFallbacks(this, QStringLiteral("imageShapes"),
                                                 {QStringLiteral("guideLayer")}),
-        QStringLiteral("SVG images (*.svg)"));
+        imageDialogFilter());
     if (path.isEmpty()) {
         return;
     }
     rememberImportDirectory(path, QStringLiteral("imageShapes"));
 
+    QString decodeError;
+    QByteArray decodedFormat;
+    const QImage image = readGuideImage(path, &decodedFormat, &decodeError);
+    if (image.isNull()) {
+        QMessageBox::critical(this, QStringLiteral("Image import failed"),
+                              decodeError.isEmpty()
+                                  ? QStringLiteral("could not decode image: %1").arg(path)
+                                  : decodeError);
+        return;
+    }
+    ImageImportOptionsDialog dialog(ImageImportOptions::load(),
+                                    decodedFormat != QByteArrayLiteral("svg"),
+                                    image.size(), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const ImageImportOptions options = dialog.options();
+    options.save();
+
     QString error;
-    if (!importImageAsShapes(path, &error)) {
+    if (!importImageAsShapes(path, options, &error)) {
         QMessageBox::critical(this, QStringLiteral("Image import failed"), error);
     }
 }
 
 bool MainWindow::importImageAsShapes(const QString &path, QString *error) {
+    return importImageAsShapes(path, ImageImportOptions::load(), error);
+}
+
+// An SVG contributes its filled vector objects; any other image its colour
+// regions. Both go through the same fill runner, placement, and insertion.
+bool MainWindow::importImageAsShapes(const QString &path,
+                                     const ImageImportOptions &options,
+                                     QString *error) {
     const auto fail = [error](const QString &message) {
         if (error != nullptr) {
             *error = message;
@@ -1094,25 +1122,32 @@ bool MainWindow::importImageAsShapes(const QString &path, QString *error) {
                         ? QStringLiteral("could not decode image: %1").arg(path)
                         : decodeError);
     }
-    if (decodedFormat != QByteArrayLiteral("svg")) {
-        return fail(QStringLiteral("only SVG images can be imported as shapes: %1").arg(path));
-    }
-    QFile source(path);
-    if (!source.open(QIODevice::ReadOnly)) {
-        return fail(QStringLiteral("could not read SVG image: %1").arg(path));
-    }
     const QString fileName = QFileInfo(path).fileName();
-    const SvgVectorDocument document = extractSvgVectorObjects(source.readAll(), image.size());
-    if (!document.supportsObjectSelection()) {
-        return fail(QStringLiteral("%1 cannot be imported as shapes: %2")
-                        .arg(fileName, document.fallbackReason));
-    }
     ImageImportFillRequest request;
-    request.units = svgImageImportUnits(document);
-    request.primitives = canvas_->penPrimitiveCatalog();
-    if (request.units.isEmpty()) {
-        return fail(QStringLiteral("%1 contains no filled vector objects").arg(fileName));
+    if (decodedFormat == QByteArrayLiteral("svg")) {
+        QFile source(path);
+        if (!source.open(QIODevice::ReadOnly)) {
+            return fail(QStringLiteral("could not read SVG image: %1").arg(path));
+        }
+        const SvgVectorDocument document = extractSvgVectorObjects(source.readAll(), image.size());
+        if (!document.supportsObjectSelection()) {
+            return fail(QStringLiteral("%1 cannot be imported as shapes: %2")
+                            .arg(fileName, document.fallbackReason));
+        }
+        request.units = svgImageImportUnits(document);
+        if (request.units.isEmpty()) {
+            return fail(QStringLiteral("%1 contains no filled vector objects").arg(fileName));
+        }
+    } else {
+        const RasterImportUnits raster = rasterImageImportUnits(image, options.raster);
+        if (!raster.valid()) {
+            return fail(QStringLiteral("%1 cannot be imported as shapes: %2")
+                            .arg(fileName, raster.error));
+        }
+        request.units = raster.units;
     }
+    request.outlineSimplification = options.outlineSimplification;
+    request.primitives = canvas_->penPrimitiveCatalog();
     if (request.primitives.isEmpty()) {
         return fail(QStringLiteral("Pen primitive geometry is unavailable"));
     }

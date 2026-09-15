@@ -38,6 +38,8 @@ class QToolBar;
 
 namespace gui {
 
+struct ImageImportOptions;
+
 class CarPreviewWidget;
 class ClipboardBufferWidget;
 class ColorPaletteWidget;
@@ -74,6 +76,9 @@ public:
     void insertCustomGroup(const QString &name, const ProjectClipboard &clipboard);
     bool importGuideLayer(const QString &path, QString *error = nullptr);
     bool importImageAsShapes(const QString &path, QString *error = nullptr);
+    bool importImageAsShapes(const QString &path,
+                             const ImageImportOptions &options,
+                             QString *error);
     void groupOrUngroupSelection();
     void ungroupSelectionFlat();
     void collapseAllGroups();

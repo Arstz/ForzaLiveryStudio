@@ -439,35 +439,290 @@ void repeatedRunsAreDeterministic(TestContext *test,
 
 // Runs the import pipeline on a real SVG and prints per-object and
 // per-component outcomes, for diagnosing files that import badly.
+// A file becomes import units the same way the application does it: an SVG
+// through its vector objects, anything else through colour region extraction
+// with the default raster options.
+struct ImportSource {
+    QVector<gui::ImageImportFillUnit> units;
+    QSize size;
+    QString description;
+    QString error;
+};
+
+ImportSource loadImportSource(const QByteArray &bytes, const QString &path)
+{
+    ImportSource source;
+    if (QFileInfo(path).suffix().compare(QStringLiteral("svg"), Qt::CaseInsensitive) == 0
+        || bytes.startsWith("<")) {
+        QSvgRenderer renderer(bytes);
+        if (!renderer.isValid()) {
+            source.error = QStringLiteral("not a valid SVG");
+            return source;
+        }
+        source.size = renderer.defaultSize();
+        if (source.size.isEmpty()) {
+            source.size = renderer.viewBoxF().size().toSize();
+        }
+        const gui::SvgVectorDocument document = gui::extractSvgVectorObjects(bytes, source.size);
+        source.units = gui::svgImageImportUnits(document);
+        source.description = QStringLiteral("objects %1 fallback '%2'")
+            .arg(document.objects.size()).arg(document.fallbackReason);
+        return source;
+    }
+    const QImage image = QImage::fromData(bytes);
+    if (image.isNull()) {
+        source.error = QStringLiteral("not a readable image");
+        return source;
+    }
+    source.size = image.size();
+    // Harness knobs for trying the raster options on a real file.
+    gui::RasterImportOptions options;
+    options.separateThinLines = qEnvironmentVariableIsSet("FLS_HARNESS_THIN_LINES");
+    if (qEnvironmentVariableIsSet("FLS_HARNESS_MAX_DIMENSION")) {
+        options.maximumDimension = qEnvironmentVariable("FLS_HARNESS_MAX_DIMENSION").toInt();
+    }
+    if (qEnvironmentVariableIsSet("FLS_HARNESS_MIN_AREA")) {
+        options.minimumRegionArea = qEnvironmentVariable("FLS_HARNESS_MIN_AREA").toInt();
+    }
+    if (qEnvironmentVariableIsSet("FLS_HARNESS_MAX_COLORS")) {
+        options.maximumColors = qEnvironmentVariable("FLS_HARNESS_MAX_COLORS").toInt();
+    }
+    if (qEnvironmentVariableIsSet("FLS_HARNESS_SMOOTHING")) {
+        options.traceSmoothing = qEnvironmentVariable("FLS_HARNESS_SMOOTHING").toDouble();
+    }
+    if (qEnvironmentVariableIsSet("FLS_HARNESS_SPECKLE")) {
+        options.speckleSize = qEnvironmentVariable("FLS_HARNESS_SPECKLE").toInt();
+    }
+    if (qEnvironmentVariableIsSet("FLS_HARNESS_OVERLAP")) {
+        options.neighbourOverlap = qEnvironmentVariable("FLS_HARNESS_OVERLAP").toInt();
+    }
+    const gui::RasterImportUnits raster = gui::rasterImageImportUnits(image, options);
+    source.units = raster.units;
+    source.error = raster.error;
+    source.description = QStringLiteral("regions %1 thin-line %2 processed %3x%4")
+        .arg(raster.units.size()).arg(raster.thinLineCount)
+        .arg(raster.processedSize.width()).arg(raster.processedSize.height());
+    return source;
+}
+
+QImage rasterFixture(int width, int height, const std::function<void(QPainter &)> &draw)
+{
+    QImage image(width, height, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setPen(Qt::NoPen);
+    draw(painter);
+    painter.end();
+    return image;
+}
+
+int componentsWithCutouts(const gui::ImageImportUnitLoops &loops, int *cutouts)
+{
+    *cutouts = 0;
+    for (const QVector<gui::PenLoop> &component : loops.components) {
+        *cutouts += component.size() - 1;
+    }
+    return loops.components.size();
+}
+
+// Two opaque colours on a transparent ground: one unit each, largest first,
+// the enclosed square cut out of the disc, and nothing for the background.
+void rasterColorRegionsBecomeUnits(TestContext *test, const QVector<gui::PenPrimitive> &primitives)
+{
+    const QImage image = rasterFixture(96, 96, [](QPainter &painter) {
+        painter.setBrush(QColor(200, 40, 30));
+        painter.drawEllipse(QPoint(48, 48), 36, 36);
+        painter.setBrush(QColor(20, 60, 220));
+        painter.drawRect(38, 38, 20, 20);
+    });
+    const gui::RasterImportUnits raster = gui::rasterImageImportUnits(image);
+    test->expect(raster.valid(), "raster fixture should yield units");
+    test->expect(raster.units.size() == 2, "two opaque colours should give two units");
+    if (raster.units.size() != 2) {
+        return;
+    }
+    test->expect(raster.units[0].color.red() > 150 && raster.units[0].color.blue() < 100,
+                 "the larger disc unit should come first");
+    test->expect(raster.units[1].color.blue() > 150, "the square unit should come second");
+    int cutouts = 0;
+    const gui::ImageImportUnitLoops discLoops = gui::imageImportUnitLoops(raster.units[0].outline);
+    test->expect(componentsWithCutouts(discLoops, &cutouts) == 1 && cutouts == 1,
+                 "the disc should be one component with the square cut out");
+    gui::ImageImportFillRequest request;
+    request.units = raster.units;
+    request.primitives = primitives;
+    const gui::ImageImportFillResult result = gui::computeImageImportFills(request);
+    reportUnit("raster disc+square", result);
+    test->expect(result.complete(), "raster units should fill completely");
+}
+
+// Alpha decides membership: a translucent block is empty at the default
+// threshold and a region of its own below it.
+void rasterAlphaThresholdSelectsPixels(TestContext *test, const QVector<gui::PenPrimitive> &primitives)
+{
+    Q_UNUSED(primitives);
+    const QImage image = rasterFixture(80, 80, [](QPainter &painter) {
+        painter.setBrush(QColor(30, 30, 30));
+        painter.drawRect(4, 4, 40, 72);
+        painter.setBrush(QColor(240, 200, 20, 90));
+        painter.drawRect(50, 10, 24, 60);
+    });
+    gui::RasterImportOptions options;
+    const gui::RasterImportUnits strict = gui::rasterImageImportUnits(image, options);
+    test->expect(strict.units.size() == 1, "a block at 35% alpha is empty at the 50% threshold");
+    options.alphaThreshold = 0.25;
+    const gui::RasterImportUnits loose = gui::rasterImageImportUnits(image, options);
+    test->expect(loose.units.size() == 2, "the same block is a region at a 25% threshold");
+}
+
+// The motivating case: a thin light outline around a dark shape on a
+// transparent ground must arrive as one ring unit with one cutout, not as a
+// scatter of small thin-line pieces.
+void rasterThinOutlineStaysOneRegion(TestContext *test, const QVector<gui::PenPrimitive> &primitives)
+{
+    Q_UNUSED(primitives);
+    const QImage image = rasterFixture(160, 160, [](QPainter &painter) {
+        painter.setBrush(QColor(250, 250, 250));
+        painter.drawEllipse(QPoint(80, 80), 60, 60);
+        painter.setBrush(QColor(30, 25, 25));
+        painter.drawEllipse(QPoint(80, 80), 56, 56);
+    });
+    for (const bool separateThinLines : {false, true}) {
+        gui::RasterImportOptions options;
+        options.separateThinLines = separateThinLines;
+        const gui::RasterImportUnits raster = gui::rasterImageImportUnits(image, options);
+        std::cout << "  thin outline (separateThinLines=" << (separateThinLines ? "on" : "off")
+                  << "): units=" << raster.units.size() << " thin-line=" << raster.thinLineCount
+                  << " error='" << raster.error.toStdString() << "'" << '\n';
+        test->expect(raster.units.size() == 2, "a dark disc with a light ring should give two units");
+        if (raster.units.size() != 2) {
+            continue;
+        }
+        const gui::ImageImportFillUnit &ring = raster.units[0].color.lightness() > 128
+            ? raster.units[0] : raster.units[1];
+        int cutouts = 0;
+        const gui::ImageImportUnitLoops loops = gui::imageImportUnitLoops(ring.outline);
+        test->expect(componentsWithCutouts(loops, &cutouts) == 1 && cutouts == 1,
+                     "the light ring should be one component with one cutout");
+    }
+}
+
+// Two colours sharing an edge, the red one larger so it is drawn first: with
+// the overlap on, red extends under blue and their outlines intersect, while
+// blue, on top, keeps its exact outline; with it off they only touch. Neither
+// grows into the transparent ground on the far side.
+void rasterNeighboursOverlap(TestContext *test, const QVector<gui::PenPrimitive> &primitives)
+{
+    Q_UNUSED(primitives);
+    const QImage image = rasterFixture(120, 80, [](QPainter &painter) {
+        painter.setBrush(QColor(200, 40, 30));
+        painter.drawRect(10, 10, 50, 60);
+        painter.setBrush(QColor(20, 60, 220));
+        painter.drawRect(60, 10, 40, 60);
+    });
+    const auto find = [](const gui::RasterImportUnits &raster, bool red) -> const gui::ImageImportFillUnit * {
+        for (const gui::ImageImportFillUnit &unit : raster.units) {
+            if ((unit.color.red() > unit.color.blue()) == red) {
+                return &unit;
+            }
+        }
+        return nullptr;
+    };
+    gui::RasterImportOptions options;
+    for (const int overlap : {1, 0}) {
+        options.neighbourOverlap = overlap;
+        const gui::RasterImportUnits raster = gui::rasterImageImportUnits(image, options);
+        test->expect(raster.units.size() == 2, "two touching colours should give two units");
+        const gui::ImageImportFillUnit *red = find(raster, true);
+        const gui::ImageImportFillUnit *blue = find(raster, false);
+        if (red == nullptr || blue == nullptr) {
+            continue;
+        }
+        const double shared = filledPathArea(red->outline.intersected(blue->outline));
+        const QRectF redBounds = red->outline.boundingRect();
+        const QRectF blueBounds = blue->outline.boundingRect();
+        std::cout << "  neighbour overlap " << overlap << ": shared area " << shared
+                  << " red x " << redBounds.left() << ".." << redBounds.right()
+                  << " blue x " << blueBounds.left() << ".." << blueBounds.right() << '\n';
+        if (overlap > 0) {
+            test->expect(shared > 40.0, "the region behind should extend under the one on top");
+            test->expect(redBounds.right() > 60.5, "the larger region should cross the shared edge");
+        } else {
+            test->expect(shared < 4.0, "without overlap the regions should only touch");
+        }
+        test->expect(blueBounds.left() > 59.5, "the region on top must keep its own outline");
+        test->expect(redBounds.left() > 8.0 && blueBounds.right() < 102.0
+                         && redBounds.top() > 8.0 && redBounds.bottom() < 72.0,
+                     "regions must not grow into the transparent ground");
+    }
+}
+
+// Outline simplification is off unless asked for: zero keeps the source
+// curves, a positive tolerance routes the outline through sampling.
+void outlineSimplificationIsOptIn(TestContext *test, const QVector<gui::PenPrimitive> &primitives)
+{
+    Q_UNUSED(primitives);
+    const QByteArray svg = QByteArrayLiteral(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\">"
+        "<circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"#123456\"/></svg>");
+    const gui::SvgVectorDocument document = gui::extractSvgVectorObjects(svg, QSize(100, 100));
+    const QVector<gui::ImageImportFillUnit> units = gui::svgImageImportUnits(document);
+    test->expect(units.size() == 1, "the circle should be one unit");
+    if (units.size() != 1) {
+        return;
+    }
+    gui::ImageImportFillRequest request;
+    test->expect(request.outlineSimplification == 0.0, "outline simplification defaults to off");
+    const gui::ImageImportUnitLoops authored = gui::imageImportUnitLoops(units.front().outline);
+    test->expect(authored.via == QStringLiteral("authored-curves"),
+                 "without simplification the source curves are kept");
+    const gui::ImageImportUnitLoops sampled = gui::imageImportUnitLoops(units.front().outline, 1.0);
+    test->expect(sampled.via == QStringLiteral("sampled-rdp"),
+                 "a positive simplification samples the outline");
+    int authoredPoints = 0;
+    int sampledPoints = 0;
+    for (const QVector<gui::PenLoop> &component : authored.components) {
+        for (const gui::PenLoop &loop : component) {
+            authoredPoints += loop.points.size();
+        }
+    }
+    for (const QVector<gui::PenLoop> &component : sampled.components) {
+        for (const gui::PenLoop &loop : component) {
+            sampledPoints += loop.points.size();
+        }
+    }
+    test->expect(sampledPoints > 0 && authoredPoints > 0,
+                 "both routes should produce Pen points");
+}
+
 int reportSvgImport(const QString &path,
                     const QVector<gui::PenPrimitive> &primitives,
                     int shapeLimitPerPoint,
-                    qint64 componentBudgetMs)
+                    qint64 componentBudgetMs,
+                    qint64 componentBudgetMsPerPoint)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         std::cerr << "could not open " << path.toStdString() << '\n';
         return 2;
     }
-    const QByteArray svg = file.readAll();
-    QSvgRenderer renderer(svg);
-    if (!renderer.isValid()) {
-        std::cerr << "not a valid SVG\n";
+    const ImportSource source = loadImportSource(file.readAll(), path);
+    if (!source.error.isEmpty()) {
+        std::cerr << source.error.toStdString() << '\n';
         return 2;
     }
-    QSize size = renderer.defaultSize();
-    if (size.isEmpty()) {
-        size = renderer.viewBoxF().size().toSize();
-    }
-    const gui::SvgVectorDocument document = gui::extractSvgVectorObjects(svg, size);
+    const QSize size = source.size;
     std::cout << "size " << size.width() << "x" << size.height()
-              << " objects " << document.objects.size()
-              << " fallback '" << document.fallbackReason.toStdString() << "'\n";
+              << " " << source.description.toStdString() << '\n';
     gui::ImageImportFillRequest request;
-    request.units = gui::svgImageImportUnits(document);
+    request.units = source.units;
     request.primitives = primitives;
     request.shapeLimitPerPoint = shapeLimitPerPoint;
     request.componentBudgetMs = componentBudgetMs;
+    if (componentBudgetMsPerPoint >= 0) {
+        request.componentBudgetMsPerPoint = componentBudgetMsPerPoint;
+    }
     for (int index = 0; index < request.units.size(); ++index) {
         const gui::ImageImportFillUnit &unit = request.units[index];
         const gui::ImageImportUnitLoops loops = gui::imageImportUnitLoops(unit.outline);
@@ -508,6 +763,10 @@ int reportSvgImport(const QString &path,
             if (component.elapsedMs > slowest) {
                 slowest = component.elapsedMs;
                 slowestIndex = componentIndex;
+            }
+            if (!component.via.isEmpty()) {
+                std::cout << "  component " << componentIndex << " filled via "
+                          << component.via.toStdString() << '\n';
             }
             if (!component.filled()) {
                 std::cout << "  component " << componentIndex << " loops " << component.loopCount
@@ -816,14 +1075,10 @@ QString explainPlacementDiff(const GoldenComponent &before,
 GoldenRun runGolden(const GoldenFixture &fixture, const QVector<gui::PenPrimitive> &primitives)
 {
     GoldenRun run;
-    QSvgRenderer renderer(fixture.svg);
-    QSize size = renderer.defaultSize();
-    if (size.isEmpty()) {
-        size = renderer.viewBoxF().size().toSize();
-    }
-    const gui::SvgVectorDocument document = gui::extractSvgVectorObjects(fixture.svg, size);
+    const ImportSource source = loadImportSource(
+        fixture.svg, fixture.path.isEmpty() ? fixture.name + QStringLiteral(".svg") : fixture.path);
     gui::ImageImportFillRequest request;
-    request.units = gui::svgImageImportUnits(document);
+    request.units = source.units;
     request.primitives = primitives;
     request.componentBudgetMs = 3600000;
     request.componentBudgetMsPerPoint = 0;
@@ -940,19 +1195,14 @@ int renderSvgImport(const QString &path,
         std::cerr << "could not open " << path.toStdString() << '\n';
         return 2;
     }
-    const QByteArray svg = file.readAll();
-    QSvgRenderer renderer(svg);
-    if (!renderer.isValid()) {
-        std::cerr << "not a valid SVG\n";
+    const ImportSource source = loadImportSource(file.readAll(), path);
+    if (!source.error.isEmpty()) {
+        std::cerr << source.error.toStdString() << '\n';
         return 2;
     }
-    QSize size = renderer.defaultSize();
-    if (size.isEmpty()) {
-        size = renderer.viewBoxF().size().toSize();
-    }
-    const gui::SvgVectorDocument document = gui::extractSvgVectorObjects(svg, size);
+    const QSize size = source.size;
     gui::ImageImportFillRequest request;
-    request.units = gui::svgImageImportUnits(document);
+    request.units = source.units;
     request.primitives = primitives;
     request.componentBudgetMs = 3600000;
     request.componentBudgetMsPerPoint = 0;
@@ -990,6 +1240,29 @@ int renderSvgImport(const QString &path,
     painter.setPen(QPen(QColor(220, 30, 30), 1.0 / scale));
     for (const gui::ImageImportFillUnit &unit : request.units) {
         painter.drawPath(unit.outline);
+    }
+    // Components that failed or timed out get a thick magenta outline so
+    // they can be found at a glance; the console lists them by unit.
+    painter.setPen(QPen(QColor(230, 0, 200), 3.0 / scale));
+    for (int unitIndex = 0; unitIndex < result.units.size() && unitIndex < request.units.size();
+         ++unitIndex) {
+        const gui::ImageImportFilledUnit &unit = result.units[unitIndex];
+        const gui::ImageImportUnitLoops loops = gui::imageImportUnitLoops(
+            request.units[unitIndex].outline, request.outlineSimplification);
+        for (int componentIndex = 0; componentIndex < unit.components.size(); ++componentIndex) {
+            const gui::ImageImportComponentResult &component = unit.components[componentIndex];
+            if (component.filled() || componentIndex >= loops.outlines.size()) {
+                continue;
+            }
+            const QRectF bounds = loops.outlines[componentIndex].boundingRect();
+            painter.drawPath(loops.outlines[componentIndex]);
+            std::cout << "  failed unit " << unitIndex << " component " << componentIndex
+                      << " colour " << request.units[unitIndex].color.name().toStdString()
+                      << " at x=" << qRound(bounds.left()) << ".." << qRound(bounds.right())
+                      << " y=" << qRound(bounds.top()) << ".." << qRound(bounds.bottom())
+                      << " points " << component.pointCount
+                      << " error '" << component.error.toStdString() << "'" << '\n';
+        }
     }
     painter.end();
     if (!image.save(outputPath)) {
@@ -1169,8 +1442,9 @@ int main(int argc, char **argv)
     if (argc >= 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--report")) {
         const int shapeLimitPerPoint = argc >= 4 ? QString::fromLocal8Bit(argv[3]).toInt() : 6;
         const qint64 componentBudgetMs = argc >= 5 ? QString::fromLocal8Bit(argv[4]).toLongLong() : 3000;
+        const qint64 componentBudgetMsPerPoint = argc >= 6 ? QString::fromLocal8Bit(argv[5]).toLongLong() : -1;
         return reportSvgImport(QString::fromLocal8Bit(argv[2]), primitives,
-                               shapeLimitPerPoint, componentBudgetMs);
+                               shapeLimitPerPoint, componentBudgetMs, componentBudgetMsPerPoint);
     }
     rectangleFillsCompletely(&test, primitives);
     ringPreservesItsHole(&test, primitives);
@@ -1183,6 +1457,11 @@ int main(int argc, char **argv)
     unsupportedDocumentYieldsNoUnits(&test);
     emptyAndCancelledRequestsAreReported(&test, primitives);
     repeatedRunsAreDeterministic(&test, primitives);
+    rasterColorRegionsBecomeUnits(&test, primitives);
+    rasterAlphaThresholdSelectsPixels(&test, primitives);
+    rasterThinOutlineStaysOneRegion(&test, primitives);
+    rasterNeighboursOverlap(&test, primitives);
+    outlineSimplificationIsOptIn(&test, primitives);
     if (test.failures() > 0) {
         std::cerr << test.failures() << " image import test(s) failed\n";
         return 1;

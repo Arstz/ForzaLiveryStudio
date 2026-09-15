@@ -1,5 +1,6 @@
 #include "image_import_fill.h"
 
+#include "region_extract.h"
 #include "region_fill.h"
 
 #include <QElapsedTimer>
@@ -35,8 +36,14 @@ RegionPenLoopConversionResult convertPreservingCurves(const QPainterPath &outlin
     return regionOutlineToPenLoops(outline, options);
 }
 
-RegionPenLoopConversionResult convertSampled(const QPainterPath &outline) {
-    return regionOutlineToPenLoops(outline, RegionPenLoopConversionOptions{});
+RegionPenLoopConversionResult convertSampled(const QPainterPath &outline,
+                                             double simplifyEpsilon) {
+    RegionPenLoopConversionOptions options;
+    if (simplifyEpsilon > 0.0) {
+        options.simplifyEpsilon = simplifyEpsilon;
+    }
+
+    return regionOutlineToPenLoops(outline, options);
 }
 
 double polygonArea(const QPolygonF &polygon) {
@@ -133,19 +140,25 @@ QVector<OutlineLoop> outlineLoops(const QPainterPath &outline) {
 
 bool convertComponents(const QVector<QPainterPath> &components,
                        bool preferSampled,
+                       double simplifyEpsilon,
                        ImageImportUnitLoops *result) {
     result->components.clear();
+    result->outlines.clear();
     result->components.reserve(components.size());
+    result->outlines.reserve(components.size());
     bool anySampled = false;
     for (const QPainterPath &component : components) {
-        const ImageImportPenLoops loops = imageImportPenLoops(component, preferSampled);
+        const ImageImportPenLoops loops =
+            imageImportPenLoops(component, preferSampled, simplifyEpsilon);
         if (!loops.valid()) {
             result->error = loops.error;
             result->components.clear();
+            result->outlines.clear();
             return false;
         }
         anySampled = anySampled || loops.via != authoredCurvesVia();
         result->components.push_back(loops.loops);
+        result->outlines.push_back(component);
     }
     result->error.clear();
     result->via = anySampled ? sampledVia() : authoredCurvesVia();
@@ -197,6 +210,163 @@ QVector<ImageImportFillUnit> svgImageImportUnits(const SvgVectorDocument &docume
     return units;
 }
 
+namespace {
+
+// Traces a region again after growing it under the neighbours that are drawn
+// on top of it, one ring per requested pixel of overlap. A pixel is claimed
+// only when its region has a later draw rank than this one, so the extension
+// is always hidden: the region on top keeps its exact outline, a thin region
+// such as an outline effect is never eaten from either side, and empty pixels
+// are never claimed, so the silhouette is unchanged. Thin-line regions are
+// traced from a separate label space and keep their extracted outline.
+QPainterPath overlappingRegionOutline(const RegionRasterData &raster,
+                                      const QSize &size,
+                                      const ExtractedRegion &region,
+                                      const std::vector<int> &drawRankOfLabel,
+                                      int overlap) {
+    const int width = size.width();
+    const int height = size.height();
+    if (width <= 0 || height <= 0
+        || raster.labels.size() != static_cast<size_t>(width) * height) {
+        return {};
+    }
+    QRect bounds = region.bounds.adjusted(-overlap, -overlap, overlap, overlap)
+        .intersected(QRect(0, 0, width, height));
+    if (bounds.isEmpty()) {
+        return {};
+    }
+    const auto rankOf = [&](int label) {
+        return label >= 0 && label < static_cast<int>(drawRankOfLabel.size())
+            ? drawRankOfLabel[static_cast<size_t>(label)] : -1;
+    };
+    const int ownRank = rankOf(region.id);
+    if (ownRank < 0) {
+        return {};
+    }
+    std::vector<std::uint8_t> mask(static_cast<size_t>(width) * height, 0);
+    const auto at = [&](int x, int y) { return static_cast<size_t>(y) * width + x; };
+    for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
+        for (int x = bounds.left(); x <= bounds.right(); ++x) {
+            mask[at(x, y)] = raster.labels[at(x, y)] == region.id ? 1 : 0;
+        }
+    }
+    for (int ring = 0; ring < overlap; ++ring) {
+        std::vector<std::uint8_t> next = mask;
+        for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
+            for (int x = bounds.left(); x <= bounds.right(); ++x) {
+                if (mask[at(x, y)] != 0 || rankOf(raster.labels[at(x, y)]) <= ownRank) {
+                    continue;
+                }
+                const bool touches = (x > 0 && mask[at(x - 1, y)] != 0)
+                    || (x + 1 < width && mask[at(x + 1, y)] != 0)
+                    || (y > 0 && mask[at(x, y - 1)] != 0)
+                    || (y + 1 < height && mask[at(x, y + 1)] != 0);
+                if (touches) {
+                    next[at(x, y)] = 1;
+                }
+            }
+        }
+        mask.swap(next);
+    }
+    return traceMaskToPath(mask, width, height, bounds, raster.traceParams);
+}
+
+} // namespace
+
+// Regions come out of the extractor traced in the space it processed, which
+// is the source image downscaled when a dimension cap applied; the units are
+// scaled back so one unit always means one source pixel. Larger regions come
+// first so they sit behind the smaller ones they surround, and anything a
+// fitted shape spills lands on a neighbour it would have overlapped anyway.
+RasterImportUnits rasterImageImportUnits(const QImage &image,
+                                         const RasterImportOptions &options) {
+    RasterImportUnits result;
+    if (image.isNull()) {
+        result.error = QStringLiteral("The image is empty");
+        return result;
+    }
+    RegionExtractionParams params;
+    params.alphaThreshold = std::clamp(options.alphaThreshold, 0.0, 1.0);
+    params.maxColorCount = std::max(2, options.maximumColors);
+    params.minRegionArea = std::max(1, options.minimumRegionArea);
+    params.smallRegionMergeArea = params.minRegionArea;
+    params.traceSpeckle = std::max(0, options.speckleSize);
+    params.traceAlphaMax = std::clamp(options.traceSmoothing, 0.0, 1.3334);
+    params.maxDimension = std::max(0, options.maximumDimension);
+    // Blurring would feather crisp alpha edges before the threshold sees them.
+    params.blurPasses = 0;
+    if (!options.separateThinLines) {
+        params.lineWidthCapFraction = 0.0;
+        params.lineWidthCapFloor = 0.0;
+    }
+    const RegionExtractionResult regions =
+        extractRegions(image.convertToFormat(QImage::Format_ARGB32), params);
+    if (!regions.valid()) {
+        result.error = regions.error.isEmpty()
+            ? QStringLiteral("No colour regions were found above the alpha threshold")
+            : regions.error;
+        return result;
+    }
+    result.processedSize = regions.imageSize;
+    const double scaleX = regions.imageSize.width() > 0
+        ? static_cast<double>(image.width()) / regions.imageSize.width() : 1.0;
+    const double scaleY = regions.imageSize.height() > 0
+        ? static_cast<double>(image.height()) / regions.imageSize.height() : 1.0;
+    const QTransform toSource = QTransform::fromScale(scaleX, scaleY);
+
+    // Draw order first: largest region first, extraction order on ties. The
+    // overlap needs it to know which neighbour ends up on top.
+    QVector<int> order;
+    order.reserve(regions.regions.size());
+    for (int index = 0; index < regions.regions.size(); ++index) {
+        if (!regions.regions[index].outline.isEmpty()) {
+            order.push_back(index);
+        }
+    }
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        const int areaA = regions.regions[a].area;
+        const int areaB = regions.regions[b].area;
+        if (areaA != areaB) {
+            return areaA > areaB;
+        }
+        return a < b;
+    });
+    std::vector<int> drawRankOfLabel;
+    for (int rank = 0; rank < order.size(); ++rank) {
+        const ExtractedRegion &region = regions.regions[order[rank]];
+        if (region.lineart || region.id < 0) {
+            continue;
+        }
+        if (region.id >= static_cast<int>(drawRankOfLabel.size())) {
+            drawRankOfLabel.resize(static_cast<size_t>(region.id) + 1, -1);
+        }
+        drawRankOfLabel[static_cast<size_t>(region.id)] = rank;
+    }
+
+    result.units.reserve(order.size());
+    for (const int index : order) {
+        const ExtractedRegion &region = regions.regions[index];
+        QColor color = region.color;
+        color.setAlpha(255);
+        QPainterPath outline = region.outline;
+        if (options.neighbourOverlap > 0 && !region.lineart && regions.raster) {
+            const QPainterPath grown = overlappingRegionOutline(
+                *regions.raster, regions.imageSize, region, drawRankOfLabel,
+                options.neighbourOverlap);
+            if (!grown.isEmpty()) {
+                outline = grown;
+            }
+        }
+        result.units.push_back({toSource.map(outline), color});
+        result.thinLineCount += region.lineart ? 1 : 0;
+    }
+    if (result.units.isEmpty()) {
+        result.error = QStringLiteral("No colour regions were found above the alpha threshold");
+    }
+
+    return result;
+}
+
 // Loops nested at an even depth are islands and start a component; loops at
 // an odd depth are cutouts of the innermost island containing them. A single
 // SVG path can therefore hold several letters, each with its own holes.
@@ -233,21 +403,23 @@ QVector<QPainterPath> imageImportOutlineComponents(const QPainterPath &outline) 
 // with no resampling; a boundary the Pen rules reject falls back to the same
 // sampled reconstruction the raster Bucket uses. A simplified outline has had
 // its curves flattened, so sampling is preferred there.
-ImageImportPenLoops imageImportPenLoops(const QPainterPath &component, bool preferSampled) {
+ImageImportPenLoops imageImportPenLoops(const QPainterPath &component,
+                                        bool preferSampled,
+                                        double simplifyEpsilon) {
     ImageImportPenLoops result;
     if (component.isEmpty()) {
         result.error = QStringLiteral("The object has no outline");
         return result;
     }
     const RegionPenLoopConversionResult first = preferSampled
-        ? convertSampled(component) : convertPreservingCurves(component);
+        ? convertSampled(component, simplifyEpsilon) : convertPreservingCurves(component);
     if (first.valid()) {
         result.loops = first.loops;
         result.via = preferSampled ? sampledVia() : authoredCurvesVia();
         return result;
     }
     const RegionPenLoopConversionResult second = preferSampled
-        ? convertPreservingCurves(component) : convertSampled(component);
+        ? convertPreservingCurves(component) : convertSampled(component, simplifyEpsilon);
     if (second.valid()) {
         result.loops = second.loops;
         result.via = preferSampled ? authoredCurvesVia() : sampledVia();
@@ -264,7 +436,8 @@ ImageImportPenLoops imageImportPenLoops(const QPainterPath &component, bool pref
 
 // Stroked outlines and other self-overlapping paths only become valid Pen
 // contours after Qt merges their overlaps into one non-crossing outline.
-ImageImportUnitLoops imageImportUnitLoops(const QPainterPath &outline) {
+ImageImportUnitLoops imageImportUnitLoops(const QPainterPath &outline,
+                                          double outlineSimplification) {
     ImageImportUnitLoops result;
     if (outline.isEmpty()) {
         result.error = QStringLiteral("The object has no outline");
@@ -275,14 +448,15 @@ ImageImportUnitLoops imageImportUnitLoops(const QPainterPath &outline) {
         result.error = QStringLiteral("The object has no fillable area");
         return result;
     }
-    if (convertComponents(components, false, &result)) {
+    const bool sampleFirst = outlineSimplification > 0.0;
+    if (convertComponents(components, sampleFirst, outlineSimplification, &result)) {
         return result;
     }
     const QString directError = result.error;
     const QVector<QPainterPath> simplifiedComponents =
         imageImportOutlineComponents(outline.simplified());
     if (!simplifiedComponents.isEmpty()
-        && convertComponents(simplifiedComponents, true, &result)) {
+        && convertComponents(simplifiedComponents, true, outlineSimplification, &result)) {
         result.via = simplifiedVia();
         return result;
     }
@@ -335,7 +509,8 @@ ImageImportFillResult computeImageImportFills(
                 if (!globallyCancelled()) {
                     QElapsedTimer unitClock;
                     unitClock.start();
-                    const ImageImportUnitLoops unitLoops = imageImportUnitLoops(unit.outline);
+                    const ImageImportUnitLoops unitLoops =
+                        imageImportUnitLoops(unit.outline, request.outlineSimplification);
                     QString firstError;
                     if (!unitLoops.valid()) {
                         firstError = unitLoops.error;
@@ -343,7 +518,9 @@ ImageImportFillResult computeImageImportFills(
                         work.via = unitLoops.via;
                         work.componentCount = unitLoops.components.size();
                         work.components.reserve(work.componentCount);
-                        for (const QVector<PenLoop> &loops : unitLoops.components) {
+                        for (int componentIndex = 0;
+                             componentIndex < unitLoops.components.size(); ++componentIndex) {
+                            const QVector<PenLoop> &loops = unitLoops.components[componentIndex];
                             if (globallyCancelled()) {
                                 break;
                             }
@@ -370,6 +547,27 @@ ImageImportFillResult computeImageImportFills(
                             fill.shapeLimitPerPoint = request.shapeLimitPerPoint;
                             fill.spillWithinTolerance = true;
                             PenFillResult fit = fillPenPath(fill, componentCancelled);
+                            // A traced or authored outline can pass the Pen
+                            // rules and still defeat the fill (a tiny loop at a
+                            // corner, say); the sampled reconstruction smooths
+                            // such detail away, so it gets one try within the
+                            // same budget before the component is given up.
+                            if (!fit.error.isEmpty() && !fit.cancelled
+                                && componentIndex < unitLoops.outlines.size()) {
+                                const ImageImportPenLoops resampled = imageImportPenLoops(
+                                    unitLoops.outlines[componentIndex], true,
+                                    request.outlineSimplification);
+                                if (resampled.valid()) {
+                                    fill.loops = resampled.loops;
+                                    PenFillResult retry = fillPenPath(fill, componentCancelled);
+                                    if (retry.error.isEmpty() && !retry.placements.isEmpty()) {
+                                        fit = std::move(retry);
+                                        component.via = QStringLiteral("sampled-retry");
+                                    } else if (retry.cancelled) {
+                                        fit = std::move(retry);
+                                    }
+                                }
+                            }
                             component.elapsedMs = componentClock.elapsed();
                             if (fit.cancelled && !globallyCancelled()) {
                                 component.timedOut = true;

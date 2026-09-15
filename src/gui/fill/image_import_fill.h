@@ -18,10 +18,43 @@ struct ImageImportFillUnit {
     QColor color;
 };
 
+// How a raster image becomes import units: one unit per colour region, with
+// pixels below the alpha threshold left empty.
+struct RasterImportOptions {
+    double alphaThreshold = 0.5;      // fraction of full alpha a pixel needs to count
+    int maximumColors = 8;            // palette size the regions are quantised to
+    int minimumRegionArea = 128;      // pixels; smaller regions merge into a neighbour
+    int speckleSize = 2;              // tracer speckle suppression, in pixels
+    double traceSmoothing = 1.0;      // tracer corner smoothing, 0 keeps every corner
+    int maximumDimension = 1024;      // longest side processed, 0 processes full size
+    bool separateThinLines = false;   // give thin high-contrast strokes their own regions
+    // Pixels each region grows under the neighbours drawn on top of it before
+    // tracing, so adjacent outlines overlap instead of meeting along a traced
+    // edge that the two sides smooth differently and leave a hairline gap
+    // between. Growth only goes under a region that is drawn later, never over
+    // one drawn earlier and never into empty pixels, so nothing visible changes
+    // size; 0 traces each region exactly as extracted.
+    int neighbourOverlap = 2;
+};
+
+struct RasterImportUnits {
+    QVector<ImageImportFillUnit> units;  // source pixel space, largest area first
+    QSize processedSize;                 // size the regions were extracted at
+    int thinLineCount = 0;               // units that came from thin-line regions
+    QString error;
+
+    bool valid() const { return error.isEmpty() && !units.isEmpty(); }
+};
+
 struct ImageImportFillRequest {
     QVector<ImageImportFillUnit> units;
     QVector<PenPrimitive> primitives;
     double boundaryTolerance = 0.1;
+    // Outline simplification tolerance in pixels. Zero keeps the source curves
+    // and only samples an outline the Pen rules reject; a positive value
+    // samples every outline at that tolerance, trading fidelity for fewer
+    // shapes.
+    double outlineSimplification = 0.0;
     qint64 componentBudgetMs = 3000;
     qint64 componentBudgetMsPerPoint = 40;
     int shapeLimitPerPoint = 6;
@@ -39,6 +72,7 @@ struct ImageImportPenLoops {
 // Pen loops for every connected component of one object.
 struct ImageImportUnitLoops {
     QVector<QVector<PenLoop>> components;
+    QVector<QPainterPath> outlines;  // the component each entry of components came from
     QString via;
     QString error;
 
@@ -48,6 +82,7 @@ struct ImageImportUnitLoops {
 // The outcome for one connected component of one object.
 struct ImageImportComponentResult {
     QString error;
+    QString via;  // set when the component only filled after its outline was resampled
     qint64 elapsedMs = 0;
     int loopCount = 0;
     int pointCount = 0;
@@ -96,12 +131,17 @@ using ImageImportFillProgress = std::function<void(int completed, int total)>;
 
 QVector<ImageImportFillUnit> svgImageImportUnits(const SvgVectorDocument &document);
 
+RasterImportUnits rasterImageImportUnits(const QImage &image,
+                                         const RasterImportOptions &options = {});
+
 QVector<QPainterPath> imageImportOutlineComponents(const QPainterPath &outline);
 
 ImageImportPenLoops imageImportPenLoops(const QPainterPath &component,
-                                        bool preferSampled = false);
+                                        bool preferSampled = false,
+                                        double simplifyEpsilon = 0.0);
 
-ImageImportUnitLoops imageImportUnitLoops(const QPainterPath &outline);
+ImageImportUnitLoops imageImportUnitLoops(const QPainterPath &outline,
+                                          double outlineSimplification = 0.0);
 
 ImageImportFillResult computeImageImportFills(
     const ImageImportFillRequest &request,

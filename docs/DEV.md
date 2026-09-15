@@ -154,9 +154,31 @@ exports grouped `C_group` folders and `C_livery` folders.
   the project container and ignored by game export. Guide layers can render above
   or below shapes, can be shown or hidden together, and can be sampled by the
   Pipette/color picker ignoring guide opacity.
-- Import an SVG directly as shapes from **File → Import Image as Shapes…** (also
-  on the toolbar). The document goes through the same vector-object capture the
-  SVG Bucket uses, so its fallback reasons apply unchanged and refuse the import.
+- Import an SVG or raster image directly as shapes from **File → Import Image as
+  Shapes…** (also on the toolbar). An SVG goes through the same vector-object
+  capture the SVG Bucket uses, so its fallback reasons apply unchanged and refuse
+  the import. A raster image goes through `rasterImageImportUnits`: colour region
+  extraction (`region_extract.*`) with blurring off so crisp alpha edges are not
+  feathered before the alpha threshold, thin-line classification off unless asked
+  for, and the outlines scaled back to source pixels when a dimension cap
+  downscaled the image; one unit per region, largest first so a small region's
+  spill lands on the larger neighbour behind it. Neighbouring regions are traced
+  from masks that abut along the pixel boundary, and the tracer smooths each
+  side differently, so adjacent outlines leave a hairline gap; with
+  `neighbourOverlap` (default 2 px) each region's mask is first grown that many
+  rings, only into pixels of regions with a later draw rank (never over a
+  region drawn earlier, never into the empty ground), and traced again from the
+  label raster. The extension is therefore always hidden under the region on
+  top: a thin outline effect keeps its width even when it has coloured
+  neighbours on both sides, and the silhouette is unchanged. Growing in both
+  directions instead ate thin regions from both sides at 2 to 3 px. `RasterImportOptions` defaults
+  to 8 colours and a 128 px minimum region area because a 16-colour, 12 px
+  extraction of an anti-aliased logo fragments its edge blends into about a
+  thousand slivers. `ImageImportOptionsDialog` (`image_import_options_dialog.*`)
+  collects the raster options plus `outlineSimplification`, persisted under
+  `imageImport/` in QSettings; simplification is 0 by default (source curves,
+  sampled fallback) and a positive value samples every outline at that tolerance,
+  for SVG and raster alike.
   `image_import_fill.*` converts each captured object into Pen loops (authored
   curves first, the raster Bucket's sampled reconstruction as fallback), runs the
   analytic contour fill per connected component on half the CPU threads under a
@@ -168,9 +190,16 @@ exports grouped `C_group` folders and `C_livery` folders.
   pixels to world space at the view centre, as a single undoable edit. Every
   import writes `image_import.log` beside the executable with per-object and
   per-failed-component lines; when any component failed or timed out a warning
-  dialog reports the counts, the top reasons, and the log path. Raster images are
-  not accepted by this action yet. `fls_image_import_tests --report <svg>` runs
-  the same pipeline on a file and prints the per-component outcomes.
+  dialog reports the counts, the top reasons, and the log path.
+  `fls_image_import_tests --report <file> [shapeLimitPerPoint] [budgetMs] [budgetMsPerPoint]`
+  runs the same pipeline on an SVG or raster file and prints the per-component
+  outcomes; `--render` and the golden modes accept raster files too, using the
+  default raster options (`FLS_HARNESS_MAX_COLORS`, `FLS_HARNESS_MIN_AREA`,
+  `FLS_HARNESS_MAX_DIMENSION`, `FLS_HARNESS_THIN_LINES` override them for
+  experiments). Known limits: a light outline effect around many letters is one
+  region with a cutout per letter, and such thousand-point multi-hole regions
+  need a minute or more of fill time, beyond the default budget; and a few small
+  traced regions can still fail with a self-crossing core.
 - Preprocess one selected, unlocked guide from **ImgGen → Preprocess Image…**.
   The Qt/C++ pipeline starts from the `anime_detail` settings, performs
   edge-preserving smoothing, median flattening, and circular-hue HSV palette
