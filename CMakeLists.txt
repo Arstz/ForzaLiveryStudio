@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(FLS_ENABLE_CUDA "Build the optional CUDA differential optimizer" ON)
+option(FLS_ENABLE_CUDA "Build the optional CUDA fill accelerators" ON)
 set(FLS_CUDA_AVAILABLE OFF)
 if(FLS_ENABLE_CUDA)
     check_language(CUDA)
@@ -51,6 +51,22 @@ add_library(clipper2 STATIC
 )
 target_include_directories(clipper2 PUBLIC third_party/clipper2/include)
 set_target_properties(clipper2 PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+
+add_library(fls_profile_compute STATIC src/gui/fill/profile_fit_batch.cpp)
+target_include_directories(fls_profile_compute PUBLIC src/gui/fill)
+target_link_libraries(fls_profile_compute PUBLIC Qt6::Core)
+set_target_properties(fls_profile_compute PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+if(FLS_CUDA_AVAILABLE)
+    target_sources(fls_profile_compute PRIVATE src/gui/fill/profile_fit_cuda.cu)
+    target_compile_definitions(fls_profile_compute PUBLIC FLS_HAS_CUDA=1)
+    target_compile_options(fls_profile_compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+        $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
+    target_link_libraries(fls_profile_compute PRIVATE CUDA::cudart)
+    set_target_properties(fls_profile_compute PROPERTIES CUDA_ARCHITECTURES all-major CUDA_RUNTIME_LIBRARY Shared)
+endif()
 
 add_library(fls_core STATIC
     src/core/binary_io.cpp
@@ -221,6 +237,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/svg_vector_objects.h
     src/gui/fill/differential_cover.cpp
     src/gui/fill/compact_fit.cpp
+    src/gui/fill/compact_fit_reduction.cpp
     src/gui/fill/profile_fit.cpp
     src/gui/fill/profile_fit.h
     src/gui/fill/greedy_cover.h
@@ -343,6 +360,7 @@ target_include_directories(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
 target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
     PRIVATE
         fls_core
+        fls_profile_compute
         clipper2
         potrace
         Qt6::Gui
@@ -358,9 +376,18 @@ target_compile_definitions(${FORZA_LIVERY_STUDIO_TARGET}
 )
 
 if(FLS_BUILD_TESTS)
+    add_executable(fls_profile_compute_tests tools/profile_fit_compute_test.cpp)
+    target_link_libraries(fls_profile_compute_tests PRIVATE fls_profile_compute)
+    if(FLS_CUDA_AVAILABLE AND WIN32)
+        add_custom_command(TARGET fls_profile_compute_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FLS_CUDART_DLL}"
+                "$<TARGET_FILE_DIR:fls_profile_compute_tests>")
+    endif()
+    add_test(NAME profile_compute COMMAND fls_profile_compute_tests)
     add_executable(fls_catalog_cover_tests
         tools/catalog_cover_test.cpp
         src/gui/fill/compact_fit.cpp
+        src/gui/fill/compact_fit_reduction.cpp
         src/gui/fill/profile_fit.cpp
         src/gui/fill/compact_fit_quality.cpp
         src/gui/fill/catalog_cover.cpp
@@ -377,13 +404,19 @@ if(FLS_BUILD_TESTS)
         FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(fls_catalog_cover_tests PRIVATE
-        fls_core clipper2 Qt6::Core Qt6::Gui
+        fls_core fls_profile_compute clipper2 Qt6::Core Qt6::Gui
     )
+    if(FLS_CUDA_AVAILABLE AND WIN32)
+        add_custom_command(TARGET fls_catalog_cover_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FLS_CUDART_DLL}"
+                "$<TARGET_FILE_DIR:fls_catalog_cover_tests>")
+    endif()
     add_test(NAME catalog_cover COMMAND fls_catalog_cover_tests)
     add_test(NAME compact_fit COMMAND fls_catalog_cover_tests --compact-tests)
     add_test(NAME profile_fit COMMAND fls_catalog_cover_tests --profile-tests)
     add_test(NAME failed_fill_retention COMMAND fls_catalog_cover_tests --failed-fill-tests)
     add_test(NAME compact_fast_quality COMMAND fls_catalog_cover_tests --fast-quality-tests)
+    add_test(NAME compact_search COMMAND fls_catalog_cover_tests --compact-search-tests)
     add_test(NAME release_shape_catalog COMMAND fls_catalog_cover_tests --release-catalog-test)
     add_test(NAME gui_asset_deployment COMMAND "${CMAKE_COMMAND}"
         "-DFLS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests"

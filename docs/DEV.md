@@ -71,6 +71,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   contour-quality checks. Its initialization fits 24 catalog perimeter families
   to long boundary spans, including spans across authored control points. A
   point-to-line affine fit includes endpoint position and tangent constraints.
+  Independent profile fits and arc residuals run in double-precision CUDA batches
+  when available, with bounded parallel CPU fallback. Complete silhouette checks
+  stay on the CPU. Candidates are ranked by area, arc error, and endpoint tangent
+  error before parallel geometry validation. Failed candidates allow the next
+  ranked fit to compete; retained fits preserve distinct shape IDs per span.
+  Job order, retention slots, and tie breaks are fixed before each batch is
+  committed. CPU and GPU results need not be bitwise identical.
   Straight runs seed sheared rectangles; convex corners can seed triangles and
   curved corner shapes. Straight runs meeting at a convex corner also propose a
   Triangle fitted directly to their endpoints. These proposals compete with the
@@ -109,11 +116,25 @@ exports grouped `C_group` folders and `C_livery` folders.
   spans. Proposal lengths and structural depths scale with region extent;
   fitting tolerances and the observation scale remain in world units.
   Straight and corner searches have separate caps, with 24 interior centers.
-  The selection uses at most 160
-  placements before refinement. A verified incumbent survives the fixed
-  60,000-score refinement budget. The last portion of that budget is reserved
-  for a stronger continuity pass. Boundary-aware moves must stay inside the
-  exterior envelope. The status bar combines normalized initialization work
+  Selection uses the caller's shape limit, which defaults to 3,000; the separate
+  160-placement seed ceiling is removed. A verified incumbent survives the fixed
+  60,000-score refinement budget. Cumulative stage ceilings are 5% for recognition,
+  55% after initial repair, 80% after spatial reduction, 90% after exposed-boundary
+  reduction, and 100% after polishing. Unused work carries forward. Nested score
+  evaluations obey the active stage ceiling.
+  Individual refit passes divide their work across placements and refinement
+  scales so coarse moves or early placements cannot consume the entire pass.
+  Half of each pass's allocation is shared uniformly and half follows unresolved
+  protected-corner error at the exposed boundary. Stable priority ordering gives
+  those placements more adjustment work without increasing the total budget.
+  Recognition tries moment-aligned catalog fits before distributing orientation
+  trials across the catalog.
+  Local count reductions can proceed in unverified results if missing and spill
+  area, contour metrics, and topology do not worsen and no new deep-missing area
+  appears. Both the current state and a fixed compaction baseline constrain these
+  edits. Protected corners are compared individually, and observed holes cannot
+  move outside the baseline's hole defects. Verified baselines still require verified replacements. Boundary-aware
+  moves must stay inside the exterior envelope. The status bar combines normalized initialization work
   with refinement evaluations and reports elapsed time and current shape count.
   Large placements use bounded initial adjustments and finer refinement levels
   tied to the inward allowance. An outward allowance above the default first
@@ -141,7 +162,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   support and is rebuilt when a candidate leaves it. Integer-grid clipping can
   slightly change the search score; final verification still measures the full
   union through the original global closing operation. Work budgets and quality
-  thresholds are unchanged. Logs include per-stage and quality-check timings.
+  thresholds are unchanged. Logs include per-stage and quality-check timings,
+  stage evaluation allowances and stop reasons, approximate reductions, selection
+  limit exhaustion, and the profile backend's setup, transfer, numeric, and
+  geometry-validation timings.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
   constant-width ribbon, and selects a ranked sequence from its dedicated
   Primitive catalog. Selection follows the authored point structure, ranks

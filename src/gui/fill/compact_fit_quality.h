@@ -47,6 +47,7 @@ public:
     QJsonObject diagnostics(const BoundaryMetrics &metrics) const;
     QJsonObject performance() const;
     double perimeter() const;
+    const QVector<QPointF> &protectedCorners() const;
 
 private:
     struct Loop {

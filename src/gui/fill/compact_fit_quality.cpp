@@ -256,6 +256,10 @@ double BoundaryModel::perimeter() const {
     return result;
 }
 
+const QVector<QPointF> &BoundaryModel::protectedCorners() const {
+    return corners_;
+}
+
 BoundaryModel::Loop BoundaryModel::makeLoop(const QPolygonF &points) {
     Loop loop;
     loop.points = points;

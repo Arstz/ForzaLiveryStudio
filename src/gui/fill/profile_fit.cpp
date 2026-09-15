@@ -1,4 +1,5 @@
 #include "profile_fit.h"
+#include "profile_fit_batch.h"
 #include "compact_fit_quality.h"
 #include "greedy_cover.h"
 
@@ -16,13 +17,12 @@ namespace {
 using catalog::Polygons;
 using Bits = QVector<quint64>;
 
-constexpr int kProfileSamples = 17;
-constexpr int kFitIterations = 4;
+constexpr int kProfileSamples = compute::kSamples;
+constexpr int kSpanBatchSize = 32;
 constexpr int kCandidatesPerSpan = 6;
 constexpr int kMaximumCandidates = 2400;
 constexpr int kMaximumTrials = 160000;
 constexpr int kMaximumProfileWork = 640000;
-constexpr int kMaximumSelected = 160;
 constexpr int kGridExtent = 640;
 constexpr int kBodyCenters = 24;
 constexpr int kStructuralTrials = 50000;
@@ -31,6 +31,8 @@ constexpr double kCornerAngle = 0.3;
 constexpr double kMinimumTriangleCornerCross = 0.1;
 constexpr double kTriangleStraightnessFraction = 0.1;
 constexpr double kProfileError = 0.65;
+constexpr double kRankArcWeight = 2.0;
+constexpr double kRankTangentWeight = 4.0;
 constexpr double kTangentError = 0.2;
 constexpr double kBoundaryOffset = 0.3;
 constexpr double kMinimumLength = 1e-8;
@@ -187,110 +189,23 @@ QVector<Profile> sourceProfiles(const QVector<catalog::Primitive> &primitives) {
     return result;
 }
 
-std::pair<QPointF, QPointF> nearestOnArc(const QPolygonF &arc, const QPointF &point) {
-    std::pair<QPointF, QPointF> result;
-    double best = std::numeric_limits<double>::infinity();
-    for (int index = 0; index + 1 < arc.size(); ++index) {
-        const auto delta = arc[index + 1] - arc[index];
-        const double squaredLength = QPointF::dotProduct(delta, delta);
-        const double fraction = squaredLength > kMinimumLength
-            ? std::clamp(QPointF::dotProduct(point - arc[index], delta) / squaredLength, 0.0, 1.0) : 0.0;
-        const auto closest = arc[index] + delta * fraction;
-        const auto distance = closest - point;
-        const double squaredDistance = QPointF::dotProduct(distance, distance);
-        if (squaredDistance < best) {
-            best = squaredDistance;
-            result = {closest, unit(delta)};
-        }
+compute::Arc numericArc(const QPolygonF &points) {
+    compute::Arc result;
+    for (int index = 0; index < compute::kSamples; ++index) {
+        result.points[index] = {points[index].x(), points[index].y()};
     }
 
     return result;
 }
 
-std::optional<std::array<double, 6>> solve(std::array<std::array<double, 7>, 6> matrix) {
-    std::array<double, 6> result;
-    for (int column = 0; column < 6; ++column) {
-        int pivot = column;
-        for (int row = column + 1; row < 6; ++row) {
-            if (std::abs(matrix[row][column]) > std::abs(matrix[pivot][column])) {
-                pivot = row;
-            }
-        }
-        if (std::abs(matrix[pivot][column]) < 1e-12) {
-            return {};
-        }
-        std::swap(matrix[pivot], matrix[column]);
-        const double divisor = matrix[column][column];
-        for (int field = column; field < 7; ++field) {
-            matrix[column][field] /= divisor;
-        }
-        for (int row = 0; row < 6; ++row) {
-            if (row == column) {
-                continue;
-            }
-            const double multiplier = matrix[row][column];
-            for (int field = column; field < 7; ++field) {
-                matrix[row][field] -= multiplier * matrix[column][field];
-            }
-        }
-    }
-    for (int index = 0; index < 6; ++index) {
-        result[index] = matrix[index][6];
-    }
-
-    return result;
+compute::Transform numericTransform(const QTransform &transform) {
+    return {{transform.m11(), transform.m12(), transform.m21(), transform.m22(), transform.dx(), transform.dy()}};
 }
 
-QTransform fitArc(const Profile &source, const QPolygonF &target, QTransform transform) {
-    for (int iteration = 0; iteration < kFitIterations; ++iteration) {
-        std::array<std::array<double, 7>, 6> matrix{};
-        const auto add = [&](const std::array<double, 6> &row, double value, double weight) {
-            for (int first = 0; first < 6; ++first) {
-                for (int second = 0; second < 6; ++second) {
-                    matrix[first][second] += weight * row[first] * row[second];
-                }
-                matrix[first][6] += weight * row[first] * value;
-            }
-        };
-        for (const auto &point : source.points) {
-            const auto [closest, tangent] = nearestOnArc(target, transform.map(point));
-            const QPointF normal(tangent.y(), -tangent.x());
-            add({normal.x() * point.x(), normal.y() * point.x(), normal.x() * point.y(),
-                normal.y() * point.y(), normal.x(), normal.y()}, QPointF::dotProduct(normal, closest), 1.0);
-        }
-        for (int endpoint : {0, kProfileSamples - 1}) {
-            const auto point = source.points[endpoint];
-            const auto targetPoint = target[endpoint];
-            const int neighbor = endpoint == 0 ? 1 : kProfileSamples - 2;
-            const auto direction = unit(source.points[neighbor] - point);
-            const auto tangent = unit(target[neighbor] - targetPoint);
-            const QPointF normal(tangent.y(), -tangent.x());
-            add({1.0 * point.x(), 0, point.y(), 0, 1, 0}, targetPoint.x(), 6.0);
-            add({0, point.x(), 0, point.y(), 0, 1}, targetPoint.y(), 6.0);
-            add({normal.x() * direction.x(), normal.y() * direction.x(), normal.x() * direction.y(),
-                normal.y() * direction.y(), 0, 0}, 0, 0.1);
-        }
-        const auto parameters = solve(matrix);
-        if (!parameters) {
-            break;
-        }
-        transform = QTransform((*parameters)[0], (*parameters)[1], (*parameters)[2],
-            (*parameters)[3], (*parameters)[4], (*parameters)[5]);
-    }
+QTransform fittedTransform(const compute::Transform &transform) {
+    const auto &values = transform.values;
 
-    return source.normalization * transform;
-}
-
-double arcError(const QPolygonF &source, const QPolygonF &target) {
-    double error = 0.0;
-    for (const auto &point : target) {
-        error = std::max(error, QLineF(point, nearestOnArc(source, point).first).length());
-    }
-    for (const auto &point : source) {
-        error = std::max(error, QLineF(point, nearestOnArc(target, point).first).length());
-    }
-
-    return error;
+    return QTransform(values[0], values[1], values[2], values[3], values[4], values[5]);
 }
 
 bool probesInside(const PenPrimitive &shape, const QTransform &transform, const QPainterPath &envelope) {
@@ -396,74 +311,150 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
     return result;
 }
 
+struct RankedFit {
+    compute::Fit fit;
+    int profile = 0;
+    double score = 0.0;
+};
+
+QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int capacity, const CurveJob &job,
+                                      const QVector<Profile> &profiles, const QVector<catalog::Primitive> &primitives,
+                                      const catalog::Region &region, const Polygons &outer,
+                                      const compact::BoundaryModel &boundary, double scale, int *validated) {
+    auto localRegion = region;
+    const auto envelope = catalog::painterPath(outer);
+    const auto localBoundary = boundary;
+    QVector<Candidate> result;
+    localRegion.requiredPath = catalog::painterPath(region.required);
+    for (const auto &ranked : fits) {
+        if (result.size() >= capacity) {
+            break;
+        }
+        const auto &profile = profiles[ranked.profile];
+        const auto &shape = primitives[profile.primitive].shape;
+        if (std::any_of(result.cbegin(), result.cend(), [&](const auto &candidate) {
+            return candidate.placement.shapeId == shape.shapeId;
+        })) {
+            continue;
+        }
+        const auto transform = profile.normalization * fittedTransform(ranked.fit.transform);
+        if (!probesInside(shape, transform, envelope)) {
+            continue;
+        }
+        ++*validated;
+        auto candidate = candidateFor(shape, transform, localRegion, outer, localBoundary, scale);
+        if (candidate) {
+            candidate->error = ranked.fit.error;
+            candidate->span = job.length;
+            result.push_back(std::move(*candidate));
+        }
+    }
+
+    return result;
+}
+
 void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                         const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                         const compact::FillOptions &options, const std::function<bool()> &cancelled,
                         QVector<Candidate> *pool, QJsonObject *diagnostics) {
     const auto profiles = sourceProfiles(primitives);
     const auto jobs = curveJobs(region, options, cancelled);
-    const auto envelope = catalog::painterPath(outer);
     const int budget = static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
         kMaximumTrials, kMaximumProfileWork));
+    std::vector<compute::Arc> sources;
+    std::vector<compute::Arc> targets;
+    for (const auto &profile : profiles) {
+        sources.push_back(numericArc(profile.points));
+    }
+    for (const auto &job : jobs) {
+        targets.push_back(numericArc(job.target));
+    }
+    ProfileFitter fitter(std::move(sources), std::move(targets), options.useGpu);
+    ProfileWorkers workers;
     int trials = 0;
     int fits = 0;
     int processed = 0;
-    for (int index = 0; index < jobs.size() && !stopped(cancelled); ++index) {
-        const auto &job = jobs[index];
-        const int remaining = jobs.size() - index;
-        const int limit = std::min(static_cast<int>(profiles.size()), (budget - trials) / remaining);
-        const int capacity = std::min(kCandidatesPerSpan, std::max(0, (kMaximumCandidates - static_cast<int>(pool->size())) / remaining));
-        QVector<Candidate> retained;
-        for (int sample = 0; sample < limit && !stopped(cancelled); ++sample) {
-            const auto &profile = profiles[static_cast<qint64>(sample) * profiles.size() / limit];
-            ++trials;
-            if (options.workProgress && trials % 1024 == 0) {
-                options.workProgress(0, trials, budget);
-            }
-            const auto &shape = primitives[profile.primitive].shape;
-            const auto initial = profile.anchors * job.anchors;
-            const auto transform = profile.normalization * initial;
-            const double area = shape.area * std::abs(transform.determinant());
-            if (!std::isfinite(area) || area > region.area * 1.02 || area < options.observationScale * options.observationScale
-                || !probesInside(shape, transform, envelope)) {
-                continue;
-            }
-            if (arcError(initial.map(profile.points), job.target) > std::max(options.observationScale * 2.0, job.length * 0.03)) {
-                continue;
-            }
-            ++fits;
-            const auto fitted = fitArc(profile, job.target, initial);
-            const auto normalizedFit = profile.normalization.inverted() * fitted;
-            const double error = arcError(normalizedFit.map(profile.points), job.target);
-            if (error > kProfileError * options.observationScale || !probesInside(shape, fitted, envelope)) {
-                continue;
-            }
-            auto candidate = candidateFor(shape, fitted, region, outer, boundary, options.observationScale);
-            if (!candidate) {
-                continue;
-            }
-            candidate->error = error;
-            candidate->span = job.length;
-            const auto duplicate = std::find_if(retained.begin(), retained.end(), [&](const auto &other) {
-                return other.placement.shapeId == candidate->placement.shapeId;
-            });
-            if (duplicate != retained.end()) {
-                if (duplicate->placement.area >= candidate->placement.area) {
+    int validations = 0;
+    double validationMilliseconds = 0.0;
+    for (int start = 0; start < jobs.size() && !stopped(cancelled); start += kSpanBatchSize) {
+        const int end = std::min(start + kSpanBatchSize, static_cast<int>(jobs.size()));
+        const int remainingSpans = jobs.size() - start;
+        const int remainingSlots = std::max(0, kMaximumCandidates - static_cast<int>(pool->size()));
+        std::vector<compute::Job> numericJobs;
+        std::vector<int> capacities(end - start);
+        std::vector<std::vector<RankedFit>> ranked(end - start);
+        for (int index = start; index < end; ++index) {
+            const auto &job = jobs[index];
+            const int remaining = jobs.size() - index;
+            const int limit = std::min(static_cast<int>(profiles.size()), (budget - trials) / remaining);
+            const int local = index - start;
+            capacities[local] = std::min(kCandidatesPerSpan,
+                remainingSlots * (local + 1) / remainingSpans - remainingSlots * local / remainingSpans);
+            for (int sample = 0; sample < limit; ++sample) {
+                const int profileIndex = static_cast<qint64>(sample) * profiles.size() / limit;
+                const auto &profile = profiles[profileIndex];
+                const auto &shape = primitives[profile.primitive].shape;
+                const auto initial = profile.anchors * job.anchors;
+                const auto transform = profile.normalization * initial;
+                const double area = shape.area * std::abs(transform.determinant());
+                ++trials;
+                if (capacities[local] == 0 || !std::isfinite(area) || area > region.area * 1.02
+                    || area < options.observationScale * options.observationScale) {
                     continue;
                 }
-                retained.erase(duplicate);
+                numericJobs.push_back({numericTransform(initial), profileIndex, index,
+                    std::max(options.observationScale * 2.0, job.length * 0.03)});
             }
-            const auto position = std::find_if(retained.begin(), retained.end(), [&](const auto &other) {
-                return candidate->placement.area > other.placement.area;
-            });
-            retained.insert(position, std::move(*candidate));
-            if (retained.size() > capacity) {
-                retained.removeLast();
-            }
+            processed += limit > 0;
         }
-        *pool += retained;
-        processed += limit > 0;
+        std::vector<compute::Fit> fitted;
+        if (!fitter.evaluate(numericJobs, &fitted, cancelled)) {
+            break;
+        }
+        for (size_t index = 0; index < fitted.size(); ++index) {
+            const auto &fit = fitted[index];
+            const auto &numeric = numericJobs[index];
+            const auto &profile = profiles[numeric.source];
+            const auto &shape = primitives[profile.primitive].shape;
+            const auto transform = profile.normalization * fittedTransform(fit.transform);
+            const double area = shape.area * std::abs(transform.determinant());
+            fits += fit.fitted;
+            if (!fit.valid || fit.error > kProfileError * options.observationScale
+                || !std::isfinite(area) || area > region.area * 1.02 || area <= 0) {
+                continue;
+            }
+            const double score = area / (1.0 + kRankArcWeight * fit.error / options.observationScale
+                + kRankTangentWeight * fit.tangentError);
+            ranked[numeric.target - start].push_back({fit, numeric.source, score});
+        }
+        for (auto &span : ranked) {
+            std::stable_sort(span.begin(), span.end(), [](const auto &first, const auto &second) {
+                return first.score > second.score;
+            });
+        }
+        QElapsedTimer timer;
+        timer.start();
+        std::vector<QVector<Candidate>> retained(end - start);
+        std::vector<int> checked(end - start, 0);
+        if (!workers.run(end - start, [&](int local) {
+            retained[local] = validateCurveFits(ranked[local], capacities[local], jobs[start + local],
+                profiles, primitives, region, outer, boundary, options.observationScale, &checked[local]);
+        }, cancelled)) {
+            break;
+        }
+        validationMilliseconds += timer.nsecsElapsed() / 1e6;
+        for (int local = 0; local < end - start; ++local) {
+            *pool += retained[local];
+            validations += checked[local];
+        }
+        if (options.workProgress) {
+            options.workProgress(0, trials, budget);
+        }
     }
+    auto backend = fitter.diagnostics();
+    backend.insert(QStringLiteral("validationMilliseconds"), validationMilliseconds);
+    backend.insert(QStringLiteral("geometryValidations"), validations);
+    diagnostics->insert(QStringLiteral("profileCompute"), backend);
     diagnostics->insert(QStringLiteral("profiles"), profiles.size());
     diagnostics->insert(QStringLiteral("profileTrials"), trials);
     diagnostics->insert(QStringLiteral("profileTrialBudget"), budget);
@@ -970,7 +961,7 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
         indexCandidate(&candidate, grid, witnesses);
     }
     const double boundaryWeight = region.area / std::max(1, static_cast<int>(witnesses.size())) * 4.0;
-    const auto selected = greedyCover(pool->size(), std::min(kMaximumSelected, options.shapeBudget),
+    const auto selected = greedyCover(pool->size(), options.shapeBudget,
         [&](int index) {
             ++scoreEvaluations;
             const auto &candidate = (*pool)[index];
@@ -983,6 +974,8 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
             removeCovered(&boundary, (*pool)[index].boundary);
         }, [&] { return stopped(cancelled); });
     diagnostics->insert(QStringLiteral("selectionScoreEvaluations"), scoreEvaluations);
+    diagnostics->insert(QStringLiteral("selectionShapeLimit"), options.shapeBudget);
+    diagnostics->insert(QStringLiteral("selectionShapeLimitReached"), selected.size() >= options.shapeBudget);
     diagnostics->insert(QStringLiteral("missingCells"), marginal(missing, missing));
     diagnostics->insert(QStringLiteral("missingWitnesses"), marginal(boundary, boundary));
 

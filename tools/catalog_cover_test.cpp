@@ -5,6 +5,8 @@
 #include "compact_fit.h"
 #include "profile_fit.h"
 #include "compact_fit_quality.h"
+#include "compact_fit_budget.h"
+#include "compact_fit_reduction.h"
 #include "greedy_cover.h"
 #include "matrix_math.h"
 
@@ -430,6 +432,10 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         reportedWork = 0;
         const auto result = fit(request, catalog, options);
         requireApproximation(request, result, catalog, options);
+        if (profile) {
+            require(result.diagnostics.value("profileSeed").toObject().value("selectionShapeLimit").toInt() == options.shapeBudget,
+                QStringLiteral("Profile seed has a separate shape limit"));
+        }
         output << "Compact fixture: " << result.fill.placements.size() << " shapes\n" << Qt::flush;
         reportedWork = 0;
         const auto repeat = fit(request, catalog, options);
@@ -480,6 +486,9 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         output << "Large-region and wider-margin regressions passed\n" << Qt::flush;
     }
     const auto nativeResult = fit(native, catalog, options);
+    if (nativeResult.fill.placements.size() != 1) {
+        output << QJsonDocument(nativeResult.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    }
     require(nativeResult.fill.placements.size() == 1 && nativeResult.fill.placements.front().shapeId != 101
         && nativeResult.fill.placements.front().shapeId != 103, QStringLiteral("Native curved fit is not one catalog shape"));
     auto initialized = options;
@@ -560,6 +569,91 @@ void benchmarkBoundary(const QString &path, const QVector<gui::catalog::Primitiv
         {QStringLiteral("maximumSymmetricDifference"), maximumDifference},
         {QStringLiteral("maximumEnergyDifference"), maximumEnergyDifference},
         {QStringLiteral("topologyDifferences"), topologyDifferences}}).toJson(QJsonDocument::Compact) << '\n';
+}
+
+void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
+    using namespace gui::compact;
+    using gui::catalog::Polygons;
+    require(FillOptions{}.shapeBudget == 3000, QStringLiteral("Default shape budget changed"));
+    require(gui::profile::greedyCover(180, FillOptions{}.shapeBudget, [](int) { return 1.0; }, [](int) {}, [] { return false; }).size() == 180,
+        QStringLiteral("Selection stopped at the removed seed ceiling"));
+    for (int total : {1, 3, 99, 12000, 60000, std::numeric_limits<int>::max()}) {
+        int previous = 0;
+        for (auto stage : {WorkStage::Recognition, WorkStage::Repair, WorkStage::SpatialReduction,
+                WorkStage::ExposedReduction, WorkStage::Polish}) {
+            const int ceiling = stageLimit(total, stage);
+            require(ceiling >= previous && ceiling <= total, QStringLiteral("Invalid stage allocation"));
+            previous = ceiling;
+        }
+        require(previous == total, QStringLiteral("Stage allocation lost work"));
+    }
+    const Polygons target{QPolygonF({{0, 0}, {100, 0}, {100, 100}, {0, 100}})};
+    const Polygons hole{QPolygonF({{10, 10}, {20, 10}, {20, 20}, {10, 20}})};
+    const BoundaryModel model(target, 1);
+    const auto targetMetrics = model.measure(target);
+    const auto exact = reductionState(target, target, model, 0.5);
+    const auto broken = reductionState(gui::catalog::subtract(target, hole), target, model, 0.5);
+    require(nonWorseningReduction(broken, broken, targetMetrics), QStringLiteral("Unchanged remote defect rejected"));
+    require(!nonWorseningReduction(broken, exact, targetMetrics), QStringLiteral("New interior hole accepted"));
+    auto relocated = broken;
+    QTransform shift;
+    shift.translate(60, 60);
+    relocated.deepMissing = {shift.map(broken.deepMissing.front())};
+    require(!nonWorseningReduction(relocated, broken, targetMetrics), QStringLiteral("Relocated defect accepted"));
+    relocated = broken;
+    relocated.observedHoles = {shift.map(broken.observedHoles.front())};
+    require(!nonWorseningReduction(relocated, broken, targetMetrics), QStringLiteral("Relocated observed hole accepted"));
+    auto worse = broken;
+    worse.cornerDistances.front() += 1;
+    require(!nonWorseningReduction(worse, broken, targetMetrics), QStringLiteral("Aggregate metrics hid a damaged corner"));
+    worse = broken;
+    worse.metrics.maximumExcessTurn += 0.1;
+    require(!nonWorseningReduction(worse, broken, targetMetrics), QStringLiteral("New contour kink accepted"));
+    auto first = broken;
+    auto second = broken;
+    first.missingArea += 0.75e-7;
+    second.missingArea += 1.5e-7;
+    require(nonWorseningReduction(second, first, targetMetrics)
+        && !nonWorseningReduction(second, broken, targetMetrics), QStringLiteral("Fixed baseline does not stop tolerance creep"));
+    const auto square = std::find_if(catalog.cbegin(), catalog.cend(), [](const auto &entry) { return entry.shape.shapeId == 101; });
+    require(square != catalog.cend(), QStringLiteral("Missing square"));
+    const auto &bounds = square->shape.bounds;
+    QTransform transform;
+    transform.scale(20 / bounds.width(), 20 / bounds.height());
+    transform.translate(-bounds.left(), -bounds.top());
+    gui::PenPlacement placement;
+    placement.shapeId = 101;
+    placement.transform = transform;
+    FillOptions options;
+    options.initialPlacements = {placement, placement, placement};
+    options.evaluationBudget = 400;
+    options.retainFailedFill = true;
+    const gui::PenFillRequest request{{}, {polygonLoop({{0, 0}, {20, 0}, {20, 8}, {100, 8},
+        {100, 0}, {120, 0}, {120, 20}, {100, 20}, {100, 12}, {20, 12}, {20, 20}, {0, 20}})}};
+    const auto result = gui::compact::fillRegion(request, {*square}, options);
+    if (result.fill.placements.size() >= options.initialPlacements.size()) {
+        QTextStream(stdout) << result.fill.error << '\n' << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    }
+    require(!result.fill.cancelled && !result.fill.error.isEmpty() && !result.fill.placements.isEmpty()
+        && result.fill.placements.size() < options.initialPlacements.size(),
+        QStringLiteral("Remote quality failure prevented duplicate removal"));
+    require(result.diagnostics.value("approximateReductions").toInt() > 0, QStringLiteral("Approximate reduction was not recorded"));
+    const auto stages = result.diagnostics.value("stageWork").toObject();
+    int used = 0;
+    for (const auto &name : {"recognition", "repair", "spatialReduction", "exposedReduction", "polish"}) {
+        const auto stage = stages.value(name).toObject();
+        require(!stage.isEmpty() && stage.value("start").toInt() == used,
+            QStringLiteral("Stage work accounting is discontinuous"));
+        used += stage.value("evaluations").toInt();
+        require(used <= stage.value("ceiling").toInt(), QStringLiteral("Stage budget overrun"));
+    }
+    require(used == result.diagnostics.value("evaluations").toInt() && used <= options.evaluationBudget,
+        QStringLiteral("Total work accounting differs"));
+    require(stages.value("polish").toObject().value("evaluations").toInt() > 0,
+        QStringLiteral("Polishing was starved"));
+    require(stages.value("repair").toObject().value("refitPlacements").toInt() >= options.initialPlacements.size(),
+        QStringLiteral("Repair did not reach all placements"));
+    QTextStream(stdout) << "Stage budgets, local reductions, topology and baseline checks passed\n";
 }
 
 void fastQualityTests() {
@@ -755,6 +849,10 @@ int main(int argc, char **argv) {
         }
         const QVector<gui::catalog::Primitive> fullCatalog = gui::catalog::buildCatalog(geometry, &error);
         require(error.isEmpty(), error);
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--compact-search-tests")) {
+            compactSearchTests(fullCatalog);
+            return 0;
+        }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--fast-quality-tests")) {
             fastQualityTests();
             return 0;

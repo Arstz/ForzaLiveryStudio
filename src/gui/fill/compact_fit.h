@@ -17,6 +17,7 @@ struct FillOptions {
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;
     bool retainFailedFill = false;
+    bool useGpu = true;
     double boundaryAllowance = kDefaultBoundaryAllowance;
     double areaErrorRatio = kDefaultAreaErrorRatio;
     double inwardAllowance = kDefaultInwardAllowance;

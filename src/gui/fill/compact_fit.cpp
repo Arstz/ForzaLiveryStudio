@@ -1,11 +1,14 @@
 #include "compact_fit.h"
 #include "catalog_cover_internal.h"
 #include "compact_fit_quality.h"
+#include "compact_fit_budget.h"
+#include "compact_fit_reduction.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <optional>
 
 namespace gui::compact {
@@ -35,6 +38,8 @@ constexpr int kWorkReportInterval = 256;
 constexpr int kMaximumMergeRefinements = 12;
 constexpr double kMaximumExcessTurn = 0.6;
 constexpr double kConvexitySlack = 0.005;
+constexpr double kCornerWorkShare = 0.5;
+constexpr double kOwnershipClearance = 1e-5;
 constexpr std::array<int, 28> kSearchShapeIds = {101, 102, 103, 109, 110, 120, 122, 124,
     126, 127, 128, 129, 130, 136, 139, 812, 901, 930, 2110, 2113, 2117, 2118,
     2123, 2133, 2134, 2135, 2136, 2321};
@@ -54,10 +59,14 @@ struct Objective {
     Polygons outer;
     std::shared_ptr<BoundaryModel> boundary;
     BoundaryMetrics targetMetrics;
+    std::optional<ReductionState> reductionBaseline;
     std::function<void(int)> workProgress;
     mutable int evaluations = 0;
     mutable int qualityEvaluations = 0;
     mutable int mergeRefinements = 0;
+    mutable int approximateReductions = 0;
+    mutable int refitPlacements = 0;
+    int evaluationLimit = 0;
     int defectLimit = 0;
     double allowance = 0.0;
     double areaBudget = 0.0;
@@ -117,6 +126,9 @@ Context contextFor(const QVector<Piece> &pieces, const QVector<int> &excluded,
 }
 
 double gain(const Piece &piece, const Context &context) {
+    if (context.objective->evaluations >= context.objective->evaluationLimit) {
+        return -std::numeric_limits<double>::infinity();
+    }
     ++context.objective->evaluations;
     if (context.objective->workProgress && context.objective->evaluations % kWorkReportInterval == 0) {
         context.objective->workProgress(context.objective->evaluations);
@@ -139,6 +151,9 @@ double boundaryCost(const Polygons &coverage, const Objective &objective) {
 }
 
 double qualityGain(const Piece &piece, const Context &context) {
+    if (context.objective->evaluations >= context.objective->evaluationLimit) {
+        return -std::numeric_limits<double>::infinity();
+    }
     ++context.objective->evaluations;
     if (context.objective->workProgress && context.objective->evaluations % kWorkReportInterval == 0) {
         context.objective->workProgress(context.objective->evaluations);
@@ -201,6 +216,36 @@ bool acceptable(const Polygons &coverage, const Objective &objective) {
         && metrics.holes == objective.targetMetrics.holes;
 }
 
+struct ReductionContext {
+    ReductionState state;
+    bool verified = false;
+};
+
+ReductionContext reductionContext(const QVector<Piece> &pieces, const Objective &objective) {
+    const auto coverage = support(pieces);
+
+    return {reductionState(coverage, objective.target, *objective.boundary, objective.inwardAllowance),
+        acceptable(coverage, objective)};
+}
+
+bool reductionAllowed(const Polygons &coverage, const ReductionContext &before, const Objective &objective) {
+    if (acceptable(coverage, objective)) {
+        return true;
+    }
+    if (before.verified || !objective.reductionBaseline
+        || !catalog::subtract(coverage, objective.outer).isEmpty()) {
+        return false;
+    }
+    const auto after = reductionState(coverage, objective.target, *objective.boundary, objective.inwardAllowance);
+    if (nonWorseningReduction(after, before.state, objective.targetMetrics)
+        && nonWorseningReduction(after, *objective.reductionBaseline, objective.targetMetrics)) {
+        ++objective.approximateReductions;
+        return true;
+    }
+
+    return false;
+}
+
 QTransform movedTransform(const Piece &piece, int parameter, double amount) {
     const QPointF center = piece.bounds.center();
     QTransform movement;
@@ -224,7 +269,15 @@ QTransform movedTransform(const Piece &piece, int parameter, double amount) {
 }
 
 Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
-              const std::function<bool()> &cancelled, bool boundaryAware = false) {
+              const std::function<bool()> &cancelled, bool boundaryAware = false,
+              int evaluationLimit = std::numeric_limits<int>::max()) {
+    const int limit = std::min(evaluationLimit, context.objective->evaluationLimit);
+    const auto stopRefinement = [&] {
+        return stopped(cancelled) || context.objective->evaluations >= limit;
+    };
+    if (stopRefinement()) {
+        return piece;
+    }
     const auto evaluate = [&](const Piece &candidate) {
         return boundaryAware ? qualityGain(candidate, context) : gain(candidate, context);
     };
@@ -234,12 +287,20 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
     const int levels = boundaryAware && extent > kRefinementExtent
         ? std::max(kRefinementLevels, 1 + static_cast<int>(std::ceil(std::log2(initialFraction * extent
             / (context.objective->fittingInwardAllowance * 0.25))))) : kRefinementLevels;
-    for (int level = 0; level < levels && !stopped(cancelled); ++level) {
+    for (int level = 0; level < levels && !stopRefinement(); ++level) {
+        const int levelLimit = boundaryAware ? context.objective->evaluations
+            + (limit - context.objective->evaluations) / (levels - level) : limit;
+        const auto stopLevel = [&] {
+            return stopRefinement() || context.objective->evaluations >= levelLimit;
+        };
         const double fraction = std::ldexp(initialFraction, -level);
-        for (int iteration = 0; iteration < kMovesPerLevel; ++iteration) {
+        for (int iteration = 0; iteration < kMovesPerLevel && !stopLevel(); ++iteration) {
             bool changed = false;
-            for (int parameter = 0; parameter < 6; ++parameter) {
+            for (int parameter = 0; parameter < 6 && !stopLevel(); ++parameter) {
                 for (double sign : {-1.0, 1.0}) {
+                    if (stopLevel()) {
+                        break;
+                    }
                     const double step = sign * fraction * (parameter < 2 ? extent : 1.0);
                     const auto transform = movedTransform(piece, parameter, step);
                     if (std::abs(transform.determinant()) < catalog::kMinimumDeterminant) {
@@ -274,14 +335,78 @@ const PenPrimitive &primitiveFor(int id, const QVector<catalog::Primitive> &prim
     return found->shape;
 }
 
+double boundaryDistanceSquared(const Polygons &polygons, const QPointF &point) {
+    double result = std::numeric_limits<double>::infinity();
+    for (const auto &polygon : polygons) {
+        for (int index = 0; index < polygon.size(); ++index) {
+            const auto delta = polygon[(index + 1) % polygon.size()] - polygon[index];
+            const double length = QPointF::dotProduct(delta, delta);
+            const double parameter = length > catalog::kMinimumDeterminant
+                ? std::clamp(QPointF::dotProduct(point - polygon[index], delta) / length, 0.0, 1.0) : 0.0;
+            const auto displacement = polygon[index] + delta * parameter - point;
+            result = std::min(result, QPointF::dotProduct(displacement, displacement));
+        }
+    }
+
+    return result;
+}
+
+QVector<double> refitWeights(const QVector<Piece> &pieces, const Objective &objective) {
+    QVector<double> weights(pieces.size(), 0.0);
+    if (pieces.isEmpty()) {
+        return weights;
+    }
+    const BoundaryModel output(support(pieces), objective.cornerAllowance * 2.0);
+    for (const auto &corner : objective.boundary->protectedCorners()) {
+        const auto reference = output.reference(corner);
+        if (reference.distance <= objective.cornerAllowance) {
+            continue;
+        }
+        QVector<int> owners;
+        for (int index = 0; index < pieces.size(); ++index) {
+            if (pieces[index].bounds.adjusted(-kOwnershipClearance, -kOwnershipClearance,
+                kOwnershipClearance, kOwnershipClearance).contains(reference.point)
+                && boundaryDistanceSquared(pieces[index].polygons, reference.point) <= kOwnershipClearance * kOwnershipClearance) {
+                owners.push_back(index);
+            }
+        }
+        for (int owner : owners) {
+            weights[owner] += reference.distance * reference.distance / owners.size();
+        }
+    }
+    const double sum = std::accumulate(weights.cbegin(), weights.cend(), 0.0);
+    for (auto &weight : weights) {
+        weight = sum > 0 ? (1.0 - kCornerWorkShare) / pieces.size() + kCornerWorkShare * weight / sum
+            : 1.0 / pieces.size();
+    }
+
+    return weights;
+}
+
 void refit(QVector<Piece> *pieces, const Objective &objective,
             const QVector<catalog::Primitive> &primitives,
             const std::function<bool()> &cancelled, int passes = kRefitPasses) {
     for (int pass = 0; pass < passes && !stopped(cancelled); ++pass) {
-        for (int index = 0; index < pieces->size() && !stopped(cancelled); ++index) {
+        const int passLimit = objective.evaluations
+            + (objective.evaluationLimit - objective.evaluations) / (passes - pass);
+        const auto weights = refitWeights(*pieces, objective);
+        QVector<int> order(pieces->size());
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(), [&](int first, int second) { return weights[first] > weights[second]; });
+        double remainingWeight = std::accumulate(weights.cbegin(), weights.cend(), 0.0);
+        for (int position = 0; position < order.size() && !stopped(cancelled); ++position) {
+            const int index = order[position];
+            const int pieceLimit = objective.evaluations
+                + (position + 1 == order.size() ? passLimit - objective.evaluations
+                    : static_cast<int>((passLimit - objective.evaluations) * weights[index] / remainingWeight));
+            remainingWeight -= weights[index];
+            if (pieceLimit <= objective.evaluations) {
+                continue;
+            }
+            ++objective.refitPlacements;
             const auto context = contextFor(*pieces, {index}, objective);
             (*pieces)[index] = refine((*pieces)[index],
-                primitiveFor((*pieces)[index].placement.shapeId, primitives), context, cancelled, true);
+                primitiveFor((*pieces)[index].placement.shapeId, primitives), context, cancelled, true, pieceLimit);
         }
     }
 }
@@ -303,10 +428,11 @@ void refitNeighborhood(QVector<Piece> *pieces, const QRectF &changed,
     }
 }
 
-QVector<int> removalOrder(const QVector<Piece> &pieces, const Objective &objective) {
+QVector<int> removalOrder(const QVector<Piece> &pieces, const Objective &objective,
+                           const std::function<bool()> &cancelled) {
     QVector<std::pair<double, int>> scores;
     QVector<int> result;
-    for (int index = 0; index < pieces.size(); ++index) {
+    for (int index = 0; index < pieces.size() && !stopped(cancelled); ++index) {
         const auto context = contextFor(pieces, {index}, objective);
         scores.push_back({gain(pieces[index], context), index});
     }
@@ -322,9 +448,13 @@ void prune(QVector<Piece> *pieces, const Objective &objective,
            const std::function<bool()> &cancelled) {
     bool changed = true;
     while (changed && pieces->size() > 1 && !stopped(cancelled)) {
+        const auto before = reductionContext(*pieces, objective);
         changed = false;
-        for (int index : removalOrder(*pieces, objective)) {
-            if (acceptable(support(*pieces, {index}), objective)) {
+        for (int index : removalOrder(*pieces, objective, cancelled)) {
+            if (stopped(cancelled)) {
+                break;
+            }
+            if (reductionAllowed(support(*pieces, {index}), before, objective)) {
                 pieces->removeAt(index);
                 changed = true;
                 break;
@@ -402,88 +532,87 @@ QPointF radialAnchor(const Polygons &polygons, const QTransform &normalization) 
 QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
                                  const QVector<catalog::Primitive> &primitives,
                                  const std::function<bool()> &cancelled, bool broad) {
-    QVector<std::pair<double, Piece>> ranked;
+    QVector<std::pair<double, Piece>> ranked(primitives.size(), {-std::numeric_limits<double>::infinity(), {}});
+    QVector<QTransform> sourceFrames;
     QVector<Piece> result;
+    std::optional<Piece> recognized;
     QPolygonF points;
     for (const auto &polygon : target) {
         points += polygon;
     }
-    if (points.size() < 3) {
+    if (points.size() < 3 || stopped(cancelled)) {
         return result;
     }
     const auto targetFrame = momentFrame(target);
     const auto targetAnchor = radialAnchor(target, targetFrame.inverted());
-    for (const auto &primitive : primitives) {
-        if (stopped(cancelled)) {
-            return {};
+    const int proposalLimit = context.objective->evaluations
+        + static_cast<int>(static_cast<qint64>(context.objective->evaluationLimit - context.objective->evaluations) * 2 / 3);
+    const auto stopProposals = [&] {
+        return recognized.has_value() || stopped(cancelled) || context.objective->evaluations >= proposalLimit;
+    };
+    const auto consider = [&](int index, const QTransform &transform) {
+        if (stopProposals()) {
+            return;
         }
-        if (!broad) {
-            std::pair<double, Piece> best{-std::numeric_limits<double>::infinity(), {}};
-            for (int orientation = 0; orientation < kPrimaryOrientations; ++orientation) {
-                for (bool reflected : {false, true}) {
-                    auto piece = makePiece(primitive.shape, boundsTransform(primitive.shape, points,
-                        orientation * std::numbers::pi / kPrimaryOrientations, reflected));
-                    const double score = gain(piece, context);
-                    if (score > best.first + kScoreEpsilon) {
-                        best = {score, std::move(piece)};
-                    }
-                }
-            }
-            const auto position = std::find_if(ranked.begin(), ranked.end(), [&](const auto &entry) {
-                return best.first > entry.first + kScoreEpsilon;
-            });
-            if (position != ranked.end() || ranked.size() < kPrimaryRetainedSeeds) {
-                ranked.insert(position, std::move(best));
-                if (ranked.size() > kPrimaryRetainedSeeds) {
-                    ranked.removeLast();
-                }
-            }
-            continue;
+        auto piece = makePiece(primitives[index].shape, transform);
+        const double score = gain(piece, context);
+        if (broad && context.others.isEmpty() && acceptable(piece.polygons, *context.objective)) {
+            recognized = piece;
         }
-        const auto sourceFrame = momentFrame(primitive.shape.contours).inverted();
-        const auto sourceAnchor = radialAnchor(primitive.shape.contours, sourceFrame);
-        std::pair<double, Piece> best{-std::numeric_limits<double>::infinity(), {}};
-        for (bool reflected : {false, true}) {
-            const double angle = std::atan2(targetAnchor.y(), targetAnchor.x())
-                - std::atan2(sourceAnchor.y(), reflected ? -sourceAnchor.x() : sourceAnchor.x());
-            QTransform orientation;
-            orientation.rotateRadians(angle);
-            orientation.scale(reflected ? -1.0 : 1.0, 1.0);
-            auto piece = makePiece(primitive.shape, sourceFrame * orientation * targetFrame);
-            const double score = gain(piece, context);
-            if (score > best.first + kScoreEpsilon) {
-                best = {score, std::move(piece)};
-            }
+        if (score > ranked[index].first + kScoreEpsilon) {
+            ranked[index] = {score, std::move(piece)};
         }
-        for (int orientation = 0; orientation < kSeedOrientations; ++orientation) {
+    };
+    if (broad) {
+        for (int index = 0; index < primitives.size() && !stopProposals(); ++index) {
+            const auto &primitive = primitives[index];
+            const auto sourceFrame = momentFrame(primitive.shape.contours).inverted();
+            const auto sourceAnchor = radialAnchor(primitive.shape.contours, sourceFrame);
+            sourceFrames.push_back(sourceFrame);
             for (bool reflected : {false, true}) {
-                const double angle = orientation * 2.0 * std::numbers::pi / kSeedOrientations;
-                QTransform orientationFrame;
-                orientationFrame.rotateRadians(angle);
-                orientationFrame.scale(reflected ? -1.0 : 1.0, 1.0);
-                for (const auto &transform : {boundsTransform(primitive.shape, points, angle, reflected),
-                        sourceFrame * orientationFrame * targetFrame}) {
-                    auto piece = makePiece(primitive.shape, transform);
-                    const double score = gain(piece, context);
-                    if (score > best.first + kScoreEpsilon) {
-                        best = {score, std::move(piece)};
-                    }
-                }
-            }
-        }
-        const auto position = std::find_if(ranked.begin(), ranked.end(), [&](const auto &entry) {
-            return best.first > entry.first + kScoreEpsilon;
-        });
-        if (position != ranked.end() || ranked.size() < kRetainedSeeds) {
-            ranked.insert(position, std::move(best));
-            if (ranked.size() > kRetainedSeeds) {
-                ranked.removeLast();
+                const double angle = std::atan2(targetAnchor.y(), targetAnchor.x())
+                    - std::atan2(sourceAnchor.y(), reflected ? -sourceAnchor.x() : sourceAnchor.x());
+                QTransform orientation;
+                orientation.rotateRadians(angle);
+                orientation.scale(reflected ? -1.0 : 1.0, 1.0);
+                consider(index, sourceFrame * orientation * targetFrame);
             }
         }
     }
-    for (auto &entry : ranked) {
+    const int orientations = broad ? kSeedOrientations : kPrimaryOrientations;
+    for (int orientation = 0; orientation < orientations && !stopProposals(); ++orientation) {
+        const double angle = orientation * std::numbers::pi * (broad ? 2.0 : 1.0) / orientations;
+        for (int index = 0; index < primitives.size() && !stopProposals(); ++index) {
+            for (bool reflected : {false, true}) {
+                consider(index, boundsTransform(primitives[index].shape, points, angle, reflected));
+                if (broad && index < sourceFrames.size()) {
+                    QTransform frame;
+                    frame.rotateRadians(angle);
+                    frame.scale(reflected ? -1.0 : 1.0, 1.0);
+                    consider(index, sourceFrames[index] * frame * targetFrame);
+                }
+            }
+        }
+    }
+    std::stable_sort(ranked.begin(), ranked.end(), [](const auto &first, const auto &second) {
+        return first.first > second.first;
+    });
+    if (recognized) {
+        return {*recognized};
+    }
+    const int retained = std::min(broad ? kRetainedSeeds : kPrimaryRetainedSeeds, static_cast<int>(ranked.size()));
+    for (int index = 0; index < retained; ++index) {
+        auto &entry = ranked[index];
+        if (!std::isfinite(entry.first)) {
+            continue;
+        }
         const auto &primitive = primitiveFor(entry.second.placement.shapeId, primitives);
-        result.push_back(refine(std::move(entry.second), primitive, context, cancelled));
+        const int localLimit = context.objective->evaluations
+            + (context.objective->evaluationLimit - context.objective->evaluations) / (retained - index);
+        const auto stopRefinement = [&] {
+            return stopped(cancelled) || context.objective->evaluations >= localLimit;
+        };
+        result.push_back(refine(std::move(entry.second), primitive, context, stopRefinement));
     }
 
     return result;
@@ -557,7 +686,8 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
             const QVector<catalog::Primitive> &primitives,
             const std::function<bool()> &cancelled, bool broad, bool exposed = false) {
     const auto adjacency = exposed ? exposedNeighbors(*pieces, objective) : QVector<QVector<int>>();
-    const auto order = removalOrder(*pieces, objective);
+    const auto order = removalOrder(*pieces, objective, cancelled);
+    const auto before = reductionContext(*pieces, objective);
     for (int index : order) {
         if (stopped(cancelled)) {
             return false;
@@ -576,6 +706,9 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
         std::sort(neighbors.begin(), neighbors.end());
         QVector<int> excluded = {index};
         for (int neighbor = 0; neighbor < std::min(kMergeNeighbors, static_cast<int>(neighbors.size())); ++neighbor) {
+            if (stopped(cancelled)) {
+                return false;
+            }
             excluded.push_back(neighbors[neighbor].second);
             const auto context = contextFor(*pieces, excluded, objective);
             Polygons local;
@@ -591,19 +724,21 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
                     }
                 }
                 trial.push_back(replacement);
-                if (acceptable(support(trial), objective)) {
+                if (reductionAllowed(support(trial), before, objective)) {
                     *pieces = std::move(trial);
                     return true;
                 }
                 const auto trialSupport = support(trial);
                 if (objective.mergeRefinements < kMaximumMergeRefinements && !stopped(cancelled)
-                    && error(trialSupport, objective) < objective.areaBudget * 1.25
+                    && error(trialSupport, objective) < std::max(objective.areaBudget * 1.25,
+                        (before.state.missingArea + before.state.spillArea) * 1.05)
                     && catalog::area(catalog::subtract(objective.target,
-                        catalog::expanded(trialSupport, objective.inwardAllowance))) < objective.areaBudget * 0.02
+                        catalog::expanded(trialSupport, objective.inwardAllowance)))
+                        < objective.areaBudget * 0.02 + catalog::area(before.state.deepMissing)
                     && catalog::area(catalog::subtract(trialSupport, objective.outer)) < objective.areaBudget * 0.001) {
                     ++objective.mergeRefinements;
                     trial.back() = refine(replacement, primitiveFor(replacement.placement.shapeId, primitives), context, cancelled, true);
-                    if (acceptable(support(trial), objective)) {
+                    if (reductionAllowed(support(trial), before, objective)) {
                         *pieces = std::move(trial);
                         return true;
                     }
@@ -703,6 +838,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         const auto region = catalog::buildRegion(request, cancelled);
         auto objective = makeObjective(region, options);
+        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Recognition);
         const auto recognitionCatalog = wholeRegionCatalog(objective, primitives);
         int currentCount = 0;
         objective.workProgress = [&](int evaluated) {
@@ -711,13 +847,25 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
         };
         const auto stopWork = [&] {
-            return stopped(cancelled) || objective.evaluations >= options.evaluationBudget;
+            return stopped(cancelled) || objective.evaluations >= objective.evaluationLimit;
         };
-        const auto stopSpatialSearch = [&] {
-            return stopWork() || objective.evaluations >= options.evaluationBudget - options.evaluationBudget / 5;
-        };
-        const auto stopMerging = [&] {
-            return stopWork() || objective.evaluations >= options.evaluationBudget - options.evaluationBudget / 10;
+        QJsonObject stageWork;
+        int stageStart = 0;
+        int stageRefitStart = 0;
+        const auto finishStage = [&](const QString &name) {
+            stageWork.insert(name, QJsonObject{{QStringLiteral("start"), stageStart},
+                {QStringLiteral("ceiling"), objective.evaluationLimit},
+                {QStringLiteral("available"), objective.evaluationLimit - stageStart},
+                {QStringLiteral("evaluations"), objective.evaluations - stageStart},
+                {QStringLiteral("refitPlacements"), objective.refitPlacements - stageRefitStart},
+                {QStringLiteral("stopReason"), stopped(cancelled) ? QStringLiteral("cancelled")
+                    : objective.evaluations >= objective.evaluationLimit ? QStringLiteral("stage budget")
+                    : QStringLiteral("search completed")}});
+            stageStart = objective.evaluations;
+            stageRefitStart = objective.refitPlacements;
+            if (objective.workProgress) {
+                objective.workProgress(objective.evaluations);
+            }
         };
         PenFillRequest seedRequest = request;
         QVector<Piece> pieces;
@@ -780,7 +928,9 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
         }
         recordTime(QStringLiteral("recognition"));
-        if (pieces.size() > 1) {
+        finishStage(QStringLiteral("recognition"));
+        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Repair);
+        if (pieces.size() > 1 && !stopWork()) {
             const auto original = pieces;
             const auto score = [&](const QVector<Piece> &candidate) {
                 const auto coverage = support(candidate);
@@ -822,43 +972,55 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             pieces = incumbent;
         }
         recordTime(QStringLiteral("initialRefit"));
+        finishStage(QStringLiteral("repair"));
+        objective.reductionBaseline = reductionState(support(pieces), objective.target,
+            *objective.boundary, objective.inwardAllowance);
+        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::SpatialReduction);
         prune(&pieces, objective, stopWork);
         report();
-        for (int round = 0; round < kMergeRounds && pieces.size() > 1 && !stopSpatialSearch(); ++round) {
+        for (int round = 0; round < kMergeRounds && pieces.size() > 1 && !stopWork(); ++round) {
             bool reduced = false;
-            const auto order = removalOrder(pieces, objective);
+            const auto order = removalOrder(pieces, objective, stopWork);
+            const auto before = reductionContext(pieces, objective);
             for (int trialIndex = 0; trialIndex < std::min(kDeletionTrials, static_cast<int>(order.size())); ++trialIndex) {
+                if (stopWork()) {
+                    break;
+                }
                 auto trial = pieces;
                 const auto changed = trial[order[trialIndex]].bounds;
                 trial.removeAt(order[trialIndex]);
-                refitNeighborhood(&trial, changed, objective, primitives, stopSpatialSearch);
-                if (acceptable(support(trial), objective)) {
+                refitNeighborhood(&trial, changed, objective, primitives, stopWork);
+                if (reductionAllowed(support(trial), before, objective)) {
                     pieces = std::move(trial);
                     reduced = true;
                     break;
                 }
             }
             if (!reduced) {
-                reduced = merge(&pieces, objective, searchCatalog, stopSpatialSearch, false);
+                reduced = merge(&pieces, objective, searchCatalog, stopWork, false);
             }
-            if (!reduced && !stopSpatialSearch()) {
-                reduced = merge(&pieces, objective, searchCatalog, stopSpatialSearch, true);
+            if (!reduced && !stopWork()) {
+                reduced = merge(&pieces, objective, searchCatalog, stopWork, true);
             }
             if (!reduced) {
                 break;
             }
-            prune(&pieces, objective, stopSpatialSearch);
+            prune(&pieces, objective, stopWork);
             report();
         }
+        finishStage(QStringLiteral("spatialReduction"));
+        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::ExposedReduction);
         int exposedMerges = 0;
-        while (!incumbent.isEmpty() && pieces.size() > 1 && !stopMerging()
-                && merge(&pieces, objective, searchCatalog, stopMerging, false, true)) {
+        while (pieces.size() > 1 && !stopWork()
+                && merge(&pieces, objective, searchCatalog, stopWork, false, true)) {
             ++exposedMerges;
             prune(&pieces, objective, stopWork);
             report();
         }
         result.diagnostics.insert(QStringLiteral("exposedBoundaryMerges"), exposedMerges);
         recordTime(QStringLiteral("compaction"));
+        finishStage(QStringLiteral("exposedReduction"));
+        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Polish);
         if (!incumbent.isEmpty()) {
             pieces = incumbent;
         }
@@ -868,7 +1030,11 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             refit(&polished, objective, primitives, stopWork, 1);
             const auto before = support(pieces);
             const auto after = support(polished);
-            if (acceptable(after, objective)
+            const bool preservesQuality = acceptable(after, objective)
+                || (!acceptable(before, objective) && catalog::subtract(after, objective.outer).isEmpty()
+                    && nonWorseningReduction(reductionState(after, objective.target, *objective.boundary, objective.inwardAllowance),
+                        reductionState(before, objective.target, *objective.boundary, objective.inwardAllowance), objective.targetMetrics));
+            if (preservesQuality
                 && objective.boundary->energy(objective.boundary->measure(after))
                     < objective.boundary->energy(objective.boundary->measure(before))) {
                 pieces = std::move(polished);
@@ -876,6 +1042,9 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         const auto coverage = support(pieces);
         recordTime(QStringLiteral("polish"));
+        finishStage(QStringLiteral("polish"));
+        result.diagnostics.insert(QStringLiteral("stageWork"), stageWork);
+        result.diagnostics.insert(QStringLiteral("approximateReductions"), objective.approximateReductions);
         result.fill.cancelled = stopped(cancelled);
         result.fill.shapeLimit = options.shapeBudget;
         result.fill.targetArea = region.area;
