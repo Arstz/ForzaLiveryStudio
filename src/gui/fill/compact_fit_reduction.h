@@ -6,6 +6,7 @@ namespace gui::compact {
 
 struct ReductionState {
     catalog::Polygons coverage;
+    catalog::Polygons observed;
     catalog::Polygons deepMissing;
     catalog::Polygons observedHoles;
     QVector<double> cornerDistances;
@@ -20,6 +21,8 @@ ReductionState reductionState(const catalog::Polygons &coverage,
                               const catalog::Polygons &leeway,
                               const BoundaryModel &boundary,
                               double inwardAllowance);
+catalog::Polygons repairResidual(const ReductionState &state, const catalog::Polygons &target,
+                                 const catalog::Polygons &interior, const BoundaryMetrics &targetMetrics);
 bool nonWorseningReduction(const ReductionState &after, const ReductionState &before,
                             const BoundaryMetrics &target);
 bool preservesCoverage(const ReductionState &after, const ReductionState &before,

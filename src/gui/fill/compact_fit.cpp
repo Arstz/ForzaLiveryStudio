@@ -43,6 +43,7 @@ constexpr double kCornerWorkShare = 0.5;
 constexpr double kOwnershipClearance = 1e-5;
 constexpr int kResidualTrialsPerComponent = 384;
 constexpr int kResidualCenterTrials = 256;
+constexpr int kRepairNeighbors = 4;
 constexpr int kJointTrialsPerPair = 192;
 constexpr double kRepairConnectionBonus = 1.25;
 constexpr std::array<int, 28> kSearchShapeIds = {101, 102, 103, 109, 110, 120, 122, 124,
@@ -69,6 +70,7 @@ struct Objective {
     BoundaryMetrics targetMetrics;
     std::optional<ReductionState> reductionBaseline;
     mutable QJsonObject coverageRejections;
+    mutable QJsonObject connectorDiagnostics;
     std::function<void(int)> workProgress;
     mutable int evaluations = 0;
     mutable int qualityEvaluations = 0;
@@ -78,6 +80,10 @@ struct Objective {
     mutable int coverageRejected = 0;
     mutable int residualInsertions = 0;
     mutable int residualConnectors = 0;
+    mutable int neighborhoodRepairs = 0;
+    mutable int topologyRepairs = 0;
+    mutable int feasibleCheckpoints = 0;
+    mutable int feasibleRestores = 0;
     mutable int jointMoves = 0;
     int evaluationLimit = 0;
     int defectLimit = 0;
@@ -317,7 +323,8 @@ QTransform movedTransform(const Piece &piece, int parameter, double amount) {
 
 Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
               const std::function<bool()> &cancelled, bool boundaryAware = false,
-              int evaluationLimit = std::numeric_limits<int>::max()) {
+              int evaluationLimit = std::numeric_limits<int>::max(),
+              const std::function<void(const Piece &, const ReductionState &)> &accepted = {}) {
     const int limit = std::min(evaluationLimit, context.objective->evaluationLimit);
     const auto stopRefinement = [&] {
         return stopped(cancelled) || context.objective->evaluations >= limit;
@@ -372,6 +379,9 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
                         }
                         piece = std::move(trial);
                         best = score;
+                        if (accepted && safeState) {
+                            accepted(piece, *safeState);
+                        }
                         changed = true;
                     }
                 }
@@ -447,7 +457,8 @@ QVector<double> refitWeights(const QVector<Piece> &pieces, const Objective &obje
 
 void refit(QVector<Piece> *pieces, const Objective &objective,
             const QVector<catalog::Primitive> &primitives,
-            const std::function<bool()> &cancelled, int passes = kRefitPasses) {
+            const std::function<bool()> &cancelled, int passes = kRefitPasses,
+            const std::function<void(int, const Piece &, const ReductionState &)> &accepted = {}) {
     for (int pass = 0; pass < passes && !stopped(cancelled); ++pass) {
         const int passLimit = objective.evaluations
             + (objective.evaluationLimit - objective.evaluations) / (passes - pass);
@@ -468,9 +479,47 @@ void refit(QVector<Piece> *pieces, const Objective &objective,
             ++objective.refitPlacements;
             const auto context = contextFor(*pieces, {index}, objective);
             (*pieces)[index] = refine((*pieces)[index],
-                primitiveFor((*pieces)[index].placement.shapeId, primitives), context, cancelled, true, pieceLimit);
+                primitiveFor((*pieces)[index].placement.shapeId, primitives), context, cancelled, true, pieceLimit,
+                [&](const Piece &piece, const ReductionState &state) {
+                    if (accepted) {
+                        accepted(index, piece, state);
+                    }
+                });
         }
     }
+}
+
+void refitFeasible(QVector<Piece> *pieces, const Objective &objective,
+                    const QVector<catalog::Primitive> &primitives, const std::function<bool()> &cancelled) {
+    const auto baseline = reductionState(support(*pieces), objective.target, *objective.boundary, objective.inwardAllowance);
+    const double areaLimit = std::max(objective.areaBudget, baseline.missingArea + baseline.spillArea);
+    const auto cost = [&](const ReductionState &state) {
+        return kMissingWeight * state.missingArea + state.spillArea
+            + kGapRepairWeight * catalog::area(state.deepMissing)
+            + objective.boundaryWeight * objective.boundary->energy(state.metrics);
+    };
+    auto retained = *pieces;
+    double bestCost = cost(baseline);
+    bool endpointRetained = true;
+    refit(pieces, objective, primitives, cancelled, 1,
+        [&](int index, const Piece &piece, const ReductionState &state) {
+            endpointRetained = false;
+            if (state.missingArea + state.spillArea > areaLimit + kScoreEpsilon) {
+                return;
+            }
+            const double candidateCost = cost(state);
+            if (candidateCost < bestCost - kScoreEpsilon && coverageMoveAllowed(state, baseline, objective)) {
+                retained = *pieces;
+                retained[index] = piece;
+                bestCost = candidateCost;
+                endpointRetained = true;
+                ++objective.feasibleCheckpoints;
+            }
+        });
+    if (!endpointRetained) {
+        ++objective.feasibleRestores;
+    }
+    *pieces = std::move(retained);
 }
 
 void refitNeighborhood(QVector<Piece> *pieces, const QRectF &changed,
@@ -730,9 +779,13 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
     const auto stopRepair = [&] {
         return stopped(cancelled) || objective.evaluations >= evaluationLimit;
     };
-    while (pieces->size() < shapeBudget && !stopRepair()) {
+    const auto connectorEvent = [&](const QString &reason) {
+        objective.connectorDiagnostics[reason] = objective.connectorDiagnostics.value(reason).toInt() + 1;
+    };
+    while (!stopRepair()) {
         const auto before = reductionStateFor(support(*pieces), objective);
-        auto components = before.deepMissing;
+        const auto residual = repairResidual(before, objective.target, objective.inner, objective.targetMetrics);
+        auto components = residual;
         std::stable_sort(components.begin(), components.end(), [](const auto &first, const auto &second) {
             return catalog::signedArea(first) > catalog::signedArea(second);
         });
@@ -741,7 +794,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
             if (catalog::signedArea(outline) <= kScoreEpsilon || stopRepair()) {
                 continue;
             }
-            const auto component = catalog::intersect({outline}, before.deepMissing);
+            const auto component = catalog::intersect({outline}, residual);
             const auto center = residualCenter(component, stopRepair);
             if (!center) {
                 continue;
@@ -773,12 +826,20 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
             const int componentLimit = objective.evaluations
                 + std::min(kResidualTrialsPerComponent, evaluationLimit - objective.evaluations);
             QVector<Piece> best;
+            Polygons replacementOthers;
+            int bestReplacement = -1;
+            bool bestConnector = false;
             std::optional<Piece> connector;
             const auto square = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &primitive) {
                 return primitive.shape.shapeId == 101;
             });
-            if (square != primitives.cend() && pieces->size() + 1 < shapeBudget) {
+            if (square != primitives.cend() && pieces->size() < shapeBudget) {
                 for (double width : {1.0, 0.5, 0.125}) {
+                    if (stopRepair() || objective.evaluations >= componentLimit) {
+                        break;
+                    }
+                    ++objective.evaluations;
+                    connectorEvent(QStringLiteral("attempts"));
                     QTransform narrowing;
                     narrowing.translate((start.x() + end.x()) * 0.5, (start.y() + end.y()) * 0.5);
                     narrowing.rotateRadians(bridgeAngle);
@@ -786,20 +847,30 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                     narrowing.rotateRadians(-bridgeAngle);
                     narrowing.translate(-(start.x() + end.x()) * 0.5, -(start.y() + end.y()) * 0.5);
                     auto bridge = makePiece(square->shape, boundsTransform(square->shape, frames[2], bridgeAngle, false) * narrowing);
-                    if (catalog::subtract(bridge.polygons, permitted).isEmpty()
-                        && catalog::subtract(bridge.polygons, objective.outer).isEmpty()
-                        && !catalog::intersect(bridge.polygons, before.coverage).isEmpty()) {
+                    if (!catalog::subtract(bridge.polygons, permitted).isEmpty()) {
+                        connectorEvent(QStringLiteral("new spill or cutout"));
+                    } else if (!catalog::subtract(bridge.polygons, objective.outer).isEmpty()) {
+                        connectorEvent(QStringLiteral("outer envelope"));
+                    } else if (catalog::intersect(bridge.polygons, before.coverage).isEmpty()) {
+                        connectorEvent(QStringLiteral("no support overlap"));
+                    } else {
                         connector = std::move(bridge);
+                        connectorEvent(QStringLiteral("legal"));
                         break;
                     }
                 }
+            } else {
+                connectorEvent(square == primitives.cend() ? QStringLiteral("square unavailable") : QStringLiteral("shape limit"));
             }
             double bestGain = kScoreEpsilon;
             double bestScore = 0.0;
             double bestMissingGain = 0.0;
             bool bestConnected = false;
-            const auto consider = [&](const PenPrimitive &shape, const QTransform &transform) {
+            const auto consider = [&](const PenPrimitive &shape, const QTransform &transform, int replacement = -1) {
                 if (stopRepair() || objective.evaluations >= componentLimit) {
+                    return;
+                }
+                if (pieces->size() + 1 - (replacement >= 0) > shapeBudget) {
                     return;
                 }
                 ++objective.evaluations;
@@ -813,33 +884,119 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                 }
                 QVector<Piece> proposal{piece};
                 auto proposed = piece.polygons;
-                const bool overlaps = !catalog::intersect(proposed, before.coverage).isEmpty();
-                if (!overlaps && connector && !catalog::intersect(proposed, connector->polygons).isEmpty()) {
-                    proposal.push_back(*connector);
-                    proposed = catalog::unite(proposed + connector->polygons);
+                const auto &unchanged = replacement >= 0 ? replacementOthers : before.coverage;
+                const bool overlaps = !catalog::intersect(proposed, unchanged).isEmpty();
+                if (!overlaps && connector) {
+                    if (pieces->size() + 2 - (replacement >= 0) > shapeBudget) {
+                        connectorEvent(QStringLiteral("compound shape limit"));
+                    } else if (catalog::intersect(proposed, connector->polygons).isEmpty()) {
+                        connectorEvent(QStringLiteral("no body overlap"));
+                    } else if (catalog::intersect(connector->polygons, unchanged).isEmpty()) {
+                        connectorEvent(QStringLiteral("removed support"));
+                    } else {
+                        proposal.push_back(*connector);
+                        proposed = catalog::unite(proposed + connector->polygons);
+                        connectorEvent(QStringLiteral("compound trials"));
+                    }
                 }
-                const double gained = catalog::area(catalog::intersect(proposed, before.deepMissing));
+                const double gained = catalog::area(catalog::intersect(proposed, residual));
                 if (gained <= kScoreEpsilon) {
+                    if (proposal.size() > 1) {
+                        connectorEvent(QStringLiteral("compound no residual gain"));
+                    }
                     return;
                 }
-                const double missingGain = catalog::area(catalog::subtract(proposed, before.coverage));
-                const double upperScore = gained * kRepairConnectionBonus / proposal.size();
+                const int added = proposal.size() - (replacement >= 0);
+                const double placementCost = 1.0 + added;
+                const double upperScore = gained * kRepairConnectionBonus / placementCost;
                 if (upperScore < bestScore - kScoreEpsilon) {
+                    if (proposal.size() > 1) {
+                        connectorEvent(QStringLiteral("compound score bound"));
+                    }
                     return;
                 }
-                const auto after = reductionStateFor(catalog::unite(before.coverage + proposed), objective);
-                const bool connected = after.metrics.components <= before.metrics.components;
-                const double score = gained * (connected ? kRepairConnectionBonus : 1.0) / proposal.size();
+                const auto after = reductionStateFor(catalog::unite(unchanged + proposed), objective);
+                const double missingGain = before.missingArea - after.missingArea;
+                const bool connected = std::abs(after.metrics.components - objective.targetMetrics.components)
+                    <= std::abs(before.metrics.components - objective.targetMetrics.components);
+                if (!connected || std::abs(after.metrics.holes - objective.targetMetrics.holes)
+                    > std::abs(before.metrics.holes - objective.targetMetrics.holes)
+                    || missingGain < -kScoreEpsilon || after.missingArea + after.spillArea
+                        > std::max(objective.areaBudget, before.missingArea + before.spillArea) + kScoreEpsilon
+                    || !coverageMoveAllowed(after, before, objective)) {
+                    if (proposal.size() > 1) {
+                        connectorEvent(QStringLiteral("compound coverage or topology"));
+                    }
+                    return;
+                }
+                const bool topologyImproved = after.metrics.components < before.metrics.components
+                    || catalog::area(after.observedHoles) < catalog::area(before.observedHoles) - kScoreEpsilon;
+                const double score = gained * (topologyImproved ? kRepairConnectionBonus : 1.0) / placementCost;
                 const bool improves = best.isEmpty() || score > bestScore + kScoreEpsilon
                     || (std::abs(score - bestScore) <= kScoreEpsilon && missingGain > bestMissingGain);
-                if (improves && coverageMoveAllowed(after, before, objective, true)) {
+                if (improves) {
+                    if (bestConnector) {
+                        connectorEvent(QStringLiteral("compound superseded"));
+                    }
+                    if (proposal.size() > 1) {
+                        connectorEvent(QStringLiteral("compound finalists"));
+                    }
                     bestGain = gained;
                     bestScore = score;
                     bestMissingGain = missingGain;
                     bestConnected = connected;
+                    bestReplacement = replacement;
+                    bestConnector = proposal.size() > 1;
                     best = std::move(proposal);
+                } else if (proposal.size() > 1) {
+                    connectorEvent(QStringLiteral("compound lower score"));
                 }
             };
+            QVector<std::pair<double, int>> neighbors;
+            for (int index = 0; index < pieces->size(); ++index) {
+                neighbors.push_back({boundaryDistanceSquared((*pieces)[index].polygons, *center), index});
+            }
+            std::sort(neighbors.begin(), neighbors.end());
+            const int neighborhoodLimit = objective.evaluations + (componentLimit - objective.evaluations) / 3;
+            for (int neighbor = 0; neighbor < std::min(kRepairNeighbors, static_cast<int>(neighbors.size()))
+                && !stopRepair() && objective.evaluations < neighborhoodLimit; ++neighbor) {
+                const int index = neighbors[neighbor].second;
+                const auto &original = (*pieces)[index];
+                const int neighborLimit = objective.evaluations + (neighborhoodLimit - objective.evaluations)
+                    / (std::min(kRepairNeighbors, static_cast<int>(neighbors.size())) - neighbor);
+                replacementOthers = support(*pieces, {index});
+                QPolygonF anchors;
+                for (const auto &polygon : original.polygons) {
+                    anchors += polygon;
+                }
+                for (const auto &polygon : component) {
+                    anchors += polygon;
+                }
+                const double angle = std::atan2(original.placement.transform.m12(), original.placement.transform.m11());
+                QVector<const PenPrimitive *> shapes;
+                const auto same = std::find_if(primitives.cbegin(), primitives.cend(), [&](const auto &primitive) {
+                    return primitive.shape.shapeId == original.placement.shapeId;
+                });
+                if (same != primitives.cend()) {
+                    shapes.push_back(&same->shape);
+                }
+                for (const auto &primitive : primitives) {
+                    if (primitive.shape.shapeId != original.placement.shapeId) {
+                        shapes.push_back(&primitive.shape);
+                    }
+                }
+                for (const auto *shape : shapes) {
+                    for (double rotation : {angle, 0.0, angle + std::numbers::pi / 2.0}) {
+                        if (stopRepair() || objective.evaluations >= neighborLimit) {
+                            break;
+                        }
+                        consider(*shape, boundsTransform(*shape, anchors, rotation, false), index);
+                    }
+                    if (stopRepair() || objective.evaluations >= neighborLimit) {
+                        break;
+                    }
+                }
+            }
             for (double scale : {1.0, 2.0, 0.5}) {
                 if (bestConnected && bestGain >= componentArea - kScoreEpsilon) {
                     break;
@@ -869,8 +1026,18 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                 }
             }
             if (!best.isEmpty()) {
-                objective.residualInsertions += best.size();
-                objective.residualConnectors += best.size() > 1;
+                objective.residualInsertions += best.size() - (bestReplacement >= 0);
+                objective.residualConnectors += bestConnector;
+                if (bestConnector) {
+                    connectorEvent(QStringLiteral("accepted"));
+                }
+                if (bestReplacement >= 0) {
+                    pieces->removeAt(bestReplacement);
+                    ++objective.neighborhoodRepairs;
+                }
+                if (catalog::intersect(component, before.deepMissing).isEmpty()) {
+                    ++objective.topologyRepairs;
+                }
                 *pieces += best;
                 inserted = true;
                 break;
@@ -1322,11 +1489,10 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
             report();
         }
-        const auto coverageFallback = pieces;
         const int repairLimit = objective.evaluationLimit;
         objective.evaluationLimit = objective.evaluations + (repairLimit - objective.evaluations) / 2;
         for (int pass = 0; pass < kRefitPasses && !stopWork(); ++pass) {
-            refit(&pieces, objective, primitives, stopWork, 1);
+            refitFeasible(&pieces, objective, primitives, stopWork);
             report();
             if (acceptable(support(pieces), objective)) {
                 break;
@@ -1350,6 +1516,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                     before.missingArea + before.spillArea) + kScoreEpsilon) {
                 pieces = repaired;
             }
+            refitFeasible(&pieces, objective, primitives, stopWork);
             report();
         }
         if (!acceptable(support(pieces), objective) && !incumbent.isEmpty()) {
@@ -1435,6 +1602,11 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("coverageRejections"), objective.coverageRejections);
         result.diagnostics.insert(QStringLiteral("residualInsertions"), objective.residualInsertions);
         result.diagnostics.insert(QStringLiteral("residualConnectors"), objective.residualConnectors);
+        result.diagnostics.insert(QStringLiteral("connectorDiagnostics"), objective.connectorDiagnostics);
+        result.diagnostics.insert(QStringLiteral("neighborhoodRepairs"), objective.neighborhoodRepairs);
+        result.diagnostics.insert(QStringLiteral("topologyRepairs"), objective.topologyRepairs);
+        result.diagnostics.insert(QStringLiteral("feasibleCheckpoints"), objective.feasibleCheckpoints);
+        result.diagnostics.insert(QStringLiteral("feasibleRestores"), objective.feasibleRestores);
         result.diagnostics.insert(QStringLiteral("jointBoundaryMoves"), objective.jointMoves);
         result.diagnostics.insert(QStringLiteral("qualityReference"), QStringLiteral("matched observation support; raw protected corners"));
         result.fill.cancelled = stopped(cancelled);
@@ -1459,6 +1631,10 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("cornerDefectLimit"), objective.defectLimit);
         result.diagnostics.insert(QStringLiteral("missingBeyondInward"), catalog::area(catalog::subtract(objective.target,
             catalog::expanded(coverage, objective.inwardAllowance))));
+        const auto finalState = reductionState(coverage, objective.target, *objective.boundary, objective.inwardAllowance);
+        result.diagnostics.insert(QStringLiteral("repairResidualArea"), catalog::area(
+            repairResidual(finalState, objective.target, objective.inner, objective.targetMetrics)));
+        result.diagnostics.insert(QStringLiteral("observedHoleDefectArea"), catalog::area(finalState.observedHoles));
         result.diagnostics.insert(QStringLiteral("outsideEnvelope"), catalog::area(catalog::subtract(coverage, objective.outer)));
         result.diagnostics.insert(QStringLiteral("boundaryQuality"), objective.boundary->diagnostics(
             objective.boundary->measure(visibleCoverage)));

@@ -681,6 +681,35 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     const auto broken = reductionState(gui::catalog::subtract(target, hole), target, reference, 0.5);
     require(!preservesCoverage(broken, exact, metrics, 0.5), QStringLiteral("Polishing can open an interior hole"));
     require(preservesCoverage(exact, broken, metrics, 0.5), QStringLiteral("Coverage repair was rejected"));
+    const Polygons rectangle{QPolygonF({{0, 0}, {100, 0}, {100, 100}, {0, 100}})};
+    const Polygons interior{QPolygonF({{1, 1}, {99, 1}, {99, 99}, {1, 99}})};
+    const BoundaryModel rectangleReference(rectangle, 1);
+    const auto rectangleMetrics = rectangleReference.measure(rectangle);
+    const Polygons slit{QPolygonF({{49.7, 0}, {50.3, 0}, {50.3, 100}, {49.7, 100}})};
+    const auto split = reductionState(gui::catalog::subtract(rectangle, slit), rectangle, rectangleReference, 0.5);
+    require(gui::catalog::area(split.deepMissing) < 1e-6 && split.metrics.components == 2,
+        QStringLiteral("Shallow crack fixture did not separate observed components"));
+    require(gui::catalog::area(repairResidual(split, rectangle, interior, rectangleMetrics)) > 50,
+        QStringLiteral("Deep-coverage tolerance hid a visible disconnected crack"));
+    const Polygons smallHole{QPolygonF({{49.7, 40}, {50.3, 40}, {50.3, 60}, {49.7, 60}})};
+    const auto perforated = reductionState(gui::catalog::subtract(rectangle, smallHole), rectangle, rectangleReference, 0.5);
+    require(gui::catalog::area(perforated.deepMissing) < 1e-6 && perforated.metrics.holes == 1
+        && gui::catalog::area(repairResidual(perforated, rectangle, interior, rectangleMetrics)) > 10,
+        QStringLiteral("Shallow unintended hole was not scheduled for repair"));
+    const Polygons notch{QPolygonF({{49.7, 0}, {50.3, 0}, {50.3, 60}, {49.7, 60}})};
+    const auto cracked = reductionState(gui::catalog::subtract(rectangle, notch), rectangle, rectangleReference, 0.5);
+    require(cracked.metrics.components == 1 && cracked.metrics.holes == 0
+        && gui::catalog::area(repairResidual(cracked, rectangle, interior, rectangleMetrics)) > 30,
+        QStringLiteral("Open interior crack was ignored because topology counts matched"));
+    const Polygons subpixelSlit{QPolygonF({{49.95, 0}, {50.05, 0}, {50.05, 100}, {49.95, 100}})};
+    const auto subpixel = reductionState(gui::catalog::subtract(rectangle, subpixelSlit), rectangle, rectangleReference, 0.5);
+    require(gui::catalog::area(repairResidual(subpixel, rectangle, interior, rectangleMetrics)) < 1e-6,
+        QStringLiteral("Observation-invisible crack generated a repair task"));
+    const auto intendedTarget = gui::catalog::subtract(rectangle, smallHole);
+    const BoundaryModel intendedReference(intendedTarget, 1);
+    const auto intended = reductionState(intendedTarget, intendedTarget, intendedReference, 0.5);
+    require(repairResidual(intended, intendedTarget, interior, intendedReference.measure(intendedTarget)).isEmpty(),
+        QStringLiteral("Intentional cutout generated a repair task"));
     auto damaged = exact;
     damaged.cornerDistances.front() = 2;
     require(!preservesCoverage(damaged, exact, metrics, 0.5), QStringLiteral("Coverage repair can damage a protected corner"));
@@ -708,6 +737,12 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     require(result.fill.placements.size() <= options.shapeBudget
         && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
         QStringLiteral("Repair exceeded a caller budget"));
+    require(!result.diagnostics.value("connectorDiagnostics").toObject().isEmpty()
+        && result.diagnostics.contains("feasibleCheckpoints") && result.diagnostics.contains("feasibleRestores"),
+        QStringLiteral("Repair diagnostics are missing"));
+    require(result.diagnostics.value("residualConnectors").toInt() > 0
+        && result.diagnostics.value("neighborhoodRepairs").toInt() > 0,
+        QStringLiteral("Connected compound or replacement repair was not exercised"));
     require(result.diagnostics.value("missingBeyondInward").toDouble() < originalMissing * 0.5,
         QStringLiteral("Residual repair failed to recover most missing coverage"));
     require(result.diagnostics.value("boundaryQuality").toObject().value("components").toInt() == 1,
@@ -737,6 +772,39 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     const auto expandedCatalog = gui::compact::fillRegion(request, catalog, options);
     require(expandedCatalog.diagnostics.value("missingBeyondInward").toDouble() < originalMissing * 0.5,
         QStringLiteral("Catalog expansion starved the interior clearance proposals"));
+    options.shapeBudget = 1;
+    const auto limited = gui::compact::fillRegion(request, {*square}, options);
+    require(!limited.fill.placements.isEmpty() && limited.fill.placements.size() <= options.shapeBudget
+        && limited.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
+        QStringLiteral("Shape-limited repair lost the retained cover or exceeded work"));
+    const auto placedRectangle = [&](const QRectF &frame) {
+        gui::PenPlacement piece;
+        piece.shapeId = 101;
+        piece.transform.translate(frame.left(), frame.top());
+        piece.transform.scale(frame.width() / bounds.width(), frame.height() / bounds.height());
+        piece.transform.translate(-bounds.left(), -bounds.top());
+        return piece;
+    };
+    const gui::PenFillRequest splitRingRequest{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
+        polygonLoop({{20, 20}, {80, 20}, {80, 80}, {20, 80}}, gui::PenLoopKind::Cutout)}};
+    FillOptions splitOptions;
+    splitOptions.initialPlacements = {placedRectangle({0, 0, 100, 20}), placedRectangle({0, 80, 100, 20}),
+        placedRectangle({80, 20, 20, 60}), placedRectangle({0, 20, 20, 29.7}), placedRectangle({0, 50.3, 20, 29.7})};
+    splitOptions.shapeBudget = splitOptions.initialPlacements.size();
+    splitOptions.evaluationBudget = 6000;
+    splitOptions.retainFailedFill = true;
+    const auto joinedRing = gui::compact::fillRegion(splitRingRequest, {*square}, splitOptions);
+    QTextStream(stdout) << "Joined ring " << QJsonDocument(joinedRing.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    const auto joinedMetrics = joinedRing.diagnostics.value("boundaryQuality").toObject();
+    require(!joinedRing.fill.placements.isEmpty() && joinedRing.fill.placements.size() <= splitOptions.shapeBudget
+        && joinedRing.diagnostics.value("evaluations").toInt() <= splitOptions.evaluationBudget,
+        QStringLiteral("Connected repair exceeded an exhausted shape budget"));
+    require(joinedMetrics.value("components").toInt() == 1 && joinedMetrics.value("holes").toInt() == 1
+        && joinedRing.diagnostics.value("repairResidualArea").toDouble() < 1e-6,
+        QStringLiteral("Shallow ring crack remained after shape-limited repair"));
+    require(joinedRing.diagnostics.value("feasibleCheckpoints").toInt() > 0
+        && joinedRing.diagnostics.value("feasibleRestores").toInt() > 0,
+        QStringLiteral("Feasible intermediate restoration was not exercised"));
     QTextStream(stdout) << "Residual repair, coverage guards, reference calibration and boundary retention passed\n";
 }
 

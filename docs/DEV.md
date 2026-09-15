@@ -140,20 +140,31 @@ exports grouped `C_group` folders and `C_livery` folders.
   missing support or new observed hole defects, or worsen protected corners
   beyond their current error or the configured allowance. Shallow boundary
   adjustments remain possible within the inward tolerance. Temporary area-error
-  increases can occur during refits; a coverage-safe stage fallback and separate
-  verified incumbent protect the retained result.
-  Residual search prioritizes connected deep-missing regions, finds interior
+  increases can occur during refits. Each accepted move can update a feasible
+  checkpoint, constrained by the refit's starting coverage and area allowance.
+  The best feasible checkpoint survives an infeasible endpoint; a separate
+  verified incumbent remains available.
+  Residual search includes deep-missing regions, observed unintended holes,
+  and observed interior cracks. Excess observed components also enable shallow
+  boundary-gap tasks. Gaps removed by the observation operator do not create
+  shallow repair tasks. Search finds interior
   anchors with bounded deterministic subdivision, and tests catalog shapes
   against the surrounding target plus existing support. Placements can overlap
   other shapes instead of following the residual perimeter. Oriented bridge
   proposals reach the nearest existing support inside the target. A body patch
-  can include a separately validated thin Square connector. Ranking uses deep
-  coverage gained per added placement with a bounded connection bonus, then
-  total missing-area gain. Both placements count toward the caller limit.
-  New support must
-  stay inside the target; intended cutouts are not filled. A growing partial
-  cover may contain temporary islands while coverage is repaired. Final topology
-  verification still applies. Insertion obeys the caller's shape budget and
+  can include a separately validated thin Square connector. Before insertion,
+  a third of each residual's trial allocation tests replacements of up to four
+  nearby placements. Replacement anchors combine existing support with the gap,
+  and the current shape type competes with catalog alternatives. The replacement
+  and optional connector are scored as one union. Same-count repairs remain
+  available at the caller's shape limit. Ranking uses residual area gained
+  divided by one plus the added count, with a bounded topology-improvement
+  bonus, then total missing-area gain. Both placements count toward the caller limit.
+  New support must stay inside the target; intended cutouts are not filled.
+  Residual transactions retain non-worsening observed component and hole count
+  errors. They cannot increase missing area, create new deep or observed
+  hole defects, or exceed the current area allowance. Final topology
+  verification still applies. Repair obeys the caller's shape budget and
   shares the existing repair-stage evaluation allowance. Unused insertion work
   can refit the repaired cover before transfer to compaction. Coverage guards
   reuse the corner distances already computed by the quality measurement.
@@ -197,6 +208,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   thresholds are unchanged. Logs include per-stage and quality-check timings,
   stage evaluation allowances and stop reasons, approximate reductions, selection
   limit exhaustion, coverage-guard rejections, residual insertions, joint moves,
+  shallow repairs, neighborhood replacements, feasible checkpoints and restores,
+  remaining repair area, observed hole-defect area, connector proposal outcomes,
   and the profile backend's setup, transfer, numeric, and
   geometry-validation timings.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a

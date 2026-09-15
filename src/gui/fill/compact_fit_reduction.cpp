@@ -24,6 +24,7 @@ ReductionState reductionState(const catalog::Polygons &coverage,
     const auto observed = boundary.observationSupport(visibleCoverage);
     ReductionState result;
     result.coverage = coverage;
+    result.observed = observed;
     result.deepMissing = catalog::subtract(required, catalog::expanded(coverage, inwardAllowance));
     result.metrics = boundary.measure(visibleCoverage, observed);
     for (auto polygon : observed) {
@@ -49,6 +50,15 @@ ReductionState reductionState(const catalog::Polygons &coverage,
     result.spillArea = catalog::area(catalog::subtract(visibleCoverage, visibleTarget));
 
     return result;
+}
+
+catalog::Polygons repairResidual(const ReductionState &state, const catalog::Polygons &target,
+                                 const catalog::Polygons &interior, const BoundaryMetrics &targetMetrics) {
+    const auto visibleMissing = catalog::subtract(target, catalog::unite(state.observed + state.coverage));
+    const auto cracks = state.metrics.components > targetMetrics.components
+        ? visibleMissing : catalog::intersect(visibleMissing, interior);
+
+    return catalog::unite(state.deepMissing + state.observedHoles + cracks);
 }
 
 bool nonWorseningReduction(const ReductionState &after, const ReductionState &before,
