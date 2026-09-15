@@ -4,6 +4,9 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <vector>
+
+#include <earcut.hpp>
 
 namespace gui {
 namespace {
@@ -344,6 +347,40 @@ QVector<MeshTriangle> triangulate(const QPolygonF &polygon,
     return triangles;
 }
 
+// Triangulates an outer contour with cutouts. earcut bridges the cutouts into
+// the outer boundary (right-to-left, so a bridge never crosses an unbridged
+// cutout) and clips ears robustly on the resulting weakly simple polygon. The
+// triangle indices refer to the vertices of every contour concatenated in
+// order, which is what the returned polygon holds.
+QVector<MeshTriangle> triangulateWithCutouts(const QVector<QPolygonF> &contours,
+                                             QPolygonF *vertices,
+                                             QString *error) {
+    using Point = std::array<double, 2>;
+    std::vector<std::vector<Point>> rings;
+    rings.reserve(static_cast<size_t>(contours.size()));
+    vertices->clear();
+    for (const QPolygonF &contour : contours) {
+        std::vector<Point> ring;
+        ring.reserve(static_cast<size_t>(contour.size()));
+        for (const QPointF &point : contour) {
+            ring.push_back({point.x(), point.y()});
+            vertices->push_back(point);
+        }
+        rings.push_back(std::move(ring));
+    }
+
+    const std::vector<int> indices = mapbox::earcut<int>(rings);
+    QVector<MeshTriangle> triangles;
+    triangles.reserve(static_cast<int>(indices.size() / 3));
+    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+        triangles.push_back({indices[i], indices[i + 1], indices[i + 2]});
+    }
+    if (triangles.isEmpty() && error != nullptr) {
+        *error = QStringLiteral("Could not triangulate the polygon with its cutouts");
+    }
+    return triangles;
+}
+
 quint64 edgeKey(int a, int b) {
     const quint32 low = static_cast<quint32>(std::min(a, b));
     const quint32 high = static_cast<quint32>(std::max(a, b));
@@ -529,103 +566,6 @@ QPainterPath polygonPath(const QPolygonF &polygon) {
     return path;
 }
 
-bool samePoint(const QPointF &left, const QPointF &right, double tolerance) {
-    return QLineF(left, right).length() <= tolerance;
-}
-
-bool bridgeVisible(const QPointF &holePoint,
-                   const QPointF &outerPoint,
-                   const QVector<QPolygonF> &contours,
-                   const QPainterPath &target,
-                   double tolerance) {
-    for (int sample = 1; sample < 8; ++sample) {
-        const double t = static_cast<double>(sample) / 8.0;
-        if (!target.contains(holePoint * (1.0 - t) + outerPoint * t)) {
-            return false;
-        }
-    }
-    for (const QPolygonF &contour : contours) {
-        for (int edge = 0; edge < contour.size(); ++edge) {
-            const QPointF &start = contour[edge];
-            const QPointF &end = contour[(edge + 1) % contour.size()];
-            QPointF crossing;
-            if (!segmentIntersection(holePoint, outerPoint,
-                                     start, end, tolerance, &crossing)) {
-                continue;
-            }
-            if (!samePoint(crossing, holePoint, tolerance)
-                && !samePoint(crossing, outerPoint, tolerance)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-QPolygonF bridgeCutouts(QVector<QPolygonF> contours,
-                        const QPainterPath &target,
-                        QString *error) {
-    QPolygonF merged = contours.front();
-    if (signedArea(merged) < 0.0) {
-        std::reverse(merged.begin(), merged.end());
-    }
-    for (int contourIndex = 1; contourIndex < contours.size(); ++contourIndex) {
-        QPolygonF hole = contours[contourIndex];
-        if (signedArea(hole) > 0.0) {
-            std::reverse(hole.begin(), hole.end());
-        }
-        int holeVertex = 0;
-        for (int index = 1; index < hole.size(); ++index) {
-            if (hole[index].x() > hole[holeVertex].x()
-                || (hole[index].x() == hole[holeVertex].x()
-                    && hole[index].y() < hole[holeVertex].y())) {
-                holeVertex = index;
-            }
-        }
-        int outerVertex = -1;
-        double bestDistance = std::numeric_limits<double>::max();
-        const double tolerance = polygonCoordinateEpsilon(merged);
-        QVector<QPolygonF> visibilityContours = contours;
-        visibilityContours.push_back(merged);
-        for (int index = 0; index < merged.size(); ++index) {
-            if (!bridgeVisible(hole[holeVertex], merged[index],
-                               visibilityContours, target, tolerance)) {
-                continue;
-            }
-            const QPointF delta = merged[index] - hole[holeVertex];
-            const double distance = QPointF::dotProduct(delta, delta);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                outerVertex = index;
-            }
-        }
-        if (outerVertex < 0) {
-            if (error != nullptr) {
-                *error = QStringLiteral("Could not connect a polygon cutout to its outer boundary");
-            }
-            return {};
-        }
-
-        QPolygonF next;
-        next.reserve(merged.size() + hole.size() + 2);
-        for (int index = 0; index <= outerVertex; ++index) {
-            next.push_back(merged[index]);
-        }
-        for (int offset = 0; offset < hole.size(); ++offset) {
-            next.push_back(hole[(holeVertex + offset) % hole.size()]);
-        }
-        next.push_back(hole[holeVertex]);
-        next.push_back(merged[outerVertex]);
-        for (int index = outerVertex + 1; index < merged.size(); ++index) {
-            next.push_back(merged[index]);
-        }
-        merged = std::move(next);
-    }
-
-    return merged;
-}
-
 double pathArea(const QPainterPath &path) {
     double result = 0.0;
     for (const QPolygonF &polygon : path.toFillPolygons()) {
@@ -705,6 +645,7 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
         return result;
     }
     QPolygonF polygon;
+    QVector<MeshTriangle> cutoutTriangles;
     if (request.contours.isEmpty()) {
         const PolygonContour contour = buildPolygonContour(request.points);
         if (!contour.valid()) {
@@ -737,8 +678,8 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
             }
             result.contour.addPath(polygonPath(contours[index]));
         }
-        polygon = bridgeCutouts(contours, result.contour, &result.error);
-        if (polygon.isEmpty()) {
+        cutoutTriangles = triangulateWithCutouts(contours, &polygon, &result.error);
+        if (cutoutTriangles.isEmpty()) {
             return result;
         }
     }
@@ -746,10 +687,9 @@ PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
     const double epsilon = std::max(kEpsilon,
                                     polygonCoordinateEpsilon(polygon) * scale);
     QString triangulationError;
-    const QVector<MeshTriangle> triangles = triangulate(polygon,
-                                                        epsilon,
-                                                        cancelled,
-                                                        &triangulationError);
+    const QVector<MeshTriangle> triangles = request.contours.isEmpty()
+        ? triangulate(polygon, epsilon, cancelled, &triangulationError)
+        : cutoutTriangles;
     if (cancelled && cancelled()) {
         result.cancelled = true;
         return result;

@@ -55,10 +55,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   `--golden-check <dir> [svg...]` re-runs and diffs them, explaining any changed
   component by unmatched placements, their area, and rasterized coverage.
   `tools/golden/` holds the tracked baseline for the built-in fixtures (ring,
-  thick ring, disc with hole, multi-object, blob with holes, tendrils) and the
-  `image_import_golden` ctest checks it; an engine change that is meant to alter
-  output re-records that directory in the same commit.
-  The polygonal core uses deterministic ear clipping and compatible Square merging.
+  thick ring, disc with hole, multi-object, blob with holes, tendrils, capsule
+  logo, text logo) and the `image_import_golden` ctest checks it; an engine
+  change that is meant to alter output re-records that directory in the same
+  commit. A check also prints per-object totals (shape count, curved Primitive
+  count, rasterized coverage) before and after for any fixture that changed.
+  The polygonal core of a single loop uses deterministic ear clipping and
+  compatible Square merging; a core with cutouts is triangulated by earcut.
   Placements are emitted from the boundary inward under a `2 * point count` shape
   cap, and the result is an ordinary single-colour scene group.
   A persistent, default-off **Differential Contour Fill** option replaces that commit
@@ -652,8 +655,11 @@ The codebase is designed to build on both Windows (via vcpkg) and Linux (via sys
     `lining_fill.*` owns open-centreline construction, semantic span fitting,
     stroke containment, and overlap-connected lining Primitive selection;
     `polygon_mesh.*` owns polygon normalization, intersection validation,
-    deterministic ear clipping, maximum compatible square pairing, and exact
-    Square/Triangle affine placement;
+    deterministic ear clipping (single loops), earcut triangulation of loops
+    with cutouts (vendored `third_party/earcut`, which bridges cutouts
+    right-to-left and survives the weakly simple polygons that bridging
+    produces), maximum compatible square pairing, and exact Square/Triangle
+    affine placement;
     OpenGL shape rendering (`native_shape_renderer`, which walks the `scene::Group`
     tree with a matrix stack — composing each group's frame into its descendants and
     dispatching vector vs raster off the visual container — and also exposes

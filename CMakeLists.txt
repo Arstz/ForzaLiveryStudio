@@ -42,6 +42,11 @@ target_include_directories(potrace PUBLIC third_party/potrace)
 target_compile_definitions(potrace PRIVATE VERSION="1.16" HAVE_INTTYPES_H=1 HAVE_STDINT_H=1)
 set_target_properties(potrace PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
+# Vendored earcut.hpp polygon triangulator (header only), ISC licensed. See
+# third_party/earcut/VENDORING.md.
+add_library(earcut INTERFACE)
+target_include_directories(earcut INTERFACE third_party/earcut)
+
 add_library(clipper2 STATIC
     third_party/clipper2/src/clipper.engine.cpp
 )
@@ -333,6 +338,7 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         fls_core
         clipper2
         potrace
+        earcut
         Qt6::Gui
         Qt6::Widgets
         Qt6::OpenGL
@@ -446,6 +452,7 @@ if(FLS_BUILD_TESTS)
         Qt6::Svg
         ZLIB::ZLIB
         potrace
+        earcut
     )
     add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
 
@@ -474,6 +481,7 @@ if(FLS_BUILD_TESTS)
         Qt6::Svg
         ZLIB::ZLIB
         potrace
+        earcut
     )
     add_test(NAME image_import COMMAND fls_image_import_tests)
     add_test(NAME image_import_golden
@@ -502,6 +510,7 @@ if(FLS_BUILD_TESTS)
         PRIVATE FLS_DIFFERENTIAL_COVER_TESTS=1)
     target_link_libraries(fls_differential_cover_tests PRIVATE
         clipper2
+        earcut
         Qt6::Core
         Qt6::Gui
         ZLIB::ZLIB

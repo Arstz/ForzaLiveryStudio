@@ -632,6 +632,18 @@ QVector<GoldenFixture> goldenFixtures()
     tendrils += "\"/></svg>";
     fixtures.push_back({QStringLiteral("tendrils"), tendrils, {}});
 
+    // Logo-class shapes: a rounded capsule with a circular hole next to a
+    // rectangle merged with a half disc, and bold text with counters.
+    fixtures.push_back({QStringLiteral("capsuleLogo"), QByteArrayLiteral(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\"220\">"
+        "<path fill=\"#d04020\" fill-rule=\"evenodd\" d=\"M60 60 A50 50 0 0 1 160 60 L160 160 "
+        "A50 50 0 0 1 60 160 Z M85 80 A25 25 0 1 0 135 80 A25 25 0 1 0 85 80 Z\"/>"
+        "<path fill=\"#2060c0\" d=\"M200 60 A40 40 0 1 1 280 60 L280 200 L200 200 Z\"/></svg>"), {}});
+    fixtures.push_back({QStringLiteral("textLogo"), QByteArrayLiteral(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"320\" height=\"220\">"
+        "<text x=\"10\" y=\"180\" font-size=\"200\" font-family=\"Arial\" font-weight=\"bold\" "
+        "fill=\"#123456\">SB</text></svg>"), {}});
+
     return fixtures;
 }
 
@@ -1015,6 +1027,35 @@ int goldenCheck(const QString &directory, const QStringList &extraPaths,
                   << actual.shapes << " shapes, " << actual.elapsedMs << " ms (slowest "
                   << actual.slowestKey.toStdString() << " " << actual.slowestMs << " ms), diffs "
                   << diffs << ", sub-1e-4 numerical noise in " << noiseOnly << " components\n";
+        // Per-object totals so a run can be judged on what the livery would
+        // show: shape count, curved Primitive count, and rasterised coverage of
+        // the object outline, before and after.
+        if (diffs > 0 && expected.components.size() == actual.components.size()) {
+            for (int unit = 0; unit < actual.unitOutlines.size(); ++unit) {
+                QVector<GoldenPlacement> before;
+                QVector<GoldenPlacement> after;
+                for (int i = 0; i < actual.components.size(); ++i) {
+                    if (actual.componentUnit.value(i, -1) != unit) {
+                        continue;
+                    }
+                    before += expected.components[i].placements;
+                    after += actual.components[i].placements;
+                }
+                const auto curved = [](const QVector<GoldenPlacement> &placements) {
+                    return static_cast<int>(std::count_if(placements.begin(), placements.end(),
+                        [](const GoldenPlacement &placement) {
+                            return placement.shapeId != 101 && placement.shapeId != 103;
+                        }));
+                };
+                const auto covered = [&](const QVector<GoldenPlacement> &placements) {
+                    return QString::number(rasterCoveredFraction(placements, actual.unitOutlines[unit],
+                                                                 primitives) * 100.0, 'f', 3).toStdString();
+                };
+                std::cout << "    unit" << unit << " totals: shapes " << before.size() << " -> "
+                          << after.size() << " (curved " << curved(before) << " -> " << curved(after)
+                          << "), outline covered " << covered(before) << "% -> " << covered(after) << "%\n";
+            }
+        }
         for (const QString &detail : details) {
             std::cout << "    " << detail.toStdString() << '\n';
         }
