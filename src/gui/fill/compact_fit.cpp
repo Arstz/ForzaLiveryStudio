@@ -59,9 +59,12 @@ struct Piece {
 
 struct Objective {
     Polygons target;
+    Polygons visibleTarget;
     Polygons preferred;
     Polygons inner;
     Polygons outer;
+    Polygons spillFree;
+    Polygons leeway;
     std::shared_ptr<BoundaryModel> boundary;
     BoundaryMetrics targetMetrics;
     std::optional<ReductionState> reductionBaseline;
@@ -124,6 +127,16 @@ Polygons support(const QVector<Piece> &pieces, const QVector<int> &excluded = {}
     return catalog::unite(result);
 }
 
+Polygons visibleSupport(const Polygons &coverage, const Objective &objective) {
+    return objective.leeway.isEmpty()
+        ? coverage : catalog::subtract(coverage, objective.leeway);
+}
+
+ReductionState reductionStateFor(const Polygons &coverage, const Objective &objective) {
+    return reductionState(coverage, objective.target, objective.visibleTarget,
+        objective.leeway, *objective.boundary, objective.inwardAllowance);
+}
+
 Context contextFor(const QVector<Piece> &pieces, const QVector<int> &excluded,
                    const Objective &objective) {
     Context result;
@@ -146,7 +159,7 @@ double gain(const Piece &piece, const Context &context) {
     const auto exclusive = catalog::subtract(piece.polygons, context.others);
     const double covered = catalog::area(catalog::intersect(piece.polygons, context.residual));
     const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
-    const double spill = catalog::area(catalog::subtract(exclusive, context.objective->target));
+    const double spill = catalog::area(catalog::subtract(exclusive, context.objective->spillFree));
     const double deepSpill = catalog::area(catalog::subtract(exclusive, context.objective->outer));
 
     return kMissingWeight * covered - spill + kDeepErrorWeight * (deepCovered - deepSpill);
@@ -156,7 +169,8 @@ double boundaryCost(const Polygons &coverage, const Objective &objective) {
     const double missingBeyondAllowance = catalog::area(catalog::subtract(objective.target,
         catalog::expanded(coverage, objective.fittingInwardAllowance)));
 
-    return objective.boundaryWeight * objective.boundary->energy(objective.boundary->measure(coverage))
+    return objective.boundaryWeight * objective.boundary->energy(
+        objective.boundary->measure(visibleSupport(coverage, objective)))
         + kGapRepairWeight * missingBeyondAllowance;
 }
 
@@ -172,7 +186,7 @@ double qualityGain(const Piece &piece, const Context &context) {
         return -std::numeric_limits<double>::infinity();
     }
     if (!context.spillExclusion) {
-        context.spillExclusion = catalog::unite(context.others + context.objective->target);
+        context.spillExclusion = catalog::unite(context.others + context.objective->spillFree);
     }
     const double covered = catalog::area(catalog::intersect(piece.polygons, context.residual));
     const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
@@ -186,23 +200,31 @@ double qualityGain(const Piece &piece, const Context &context) {
     const double missingBeyondAllowance = catalog::area(catalog::subtract(*context.inwardResidual,
         catalog::expanded(piece.polygons, context.objective->fittingInwardAllowance)));
     if (!context.observedOthers && !context.others.isEmpty()) {
-        context.observedOthers = context.objective->boundary->observationSupport(context.others);
+        context.observedOthers = context.objective->boundary->observationSupport(
+            visibleSupport(context.others, *context.objective));
     }
     if (context.observedOthers && (!context.observationWindow || !context.observationWindow->additionBounds.contains(piece.bounds))) {
-        context.observationWindow = context.objective->boundary->observationWindow(context.others, *context.observedOthers, piece.bounds);
+        context.observationWindow = context.objective->boundary->observationWindow(
+            visibleSupport(context.others, *context.objective), *context.observedOthers, piece.bounds);
     }
     const auto observed = context.observedOthers
-        ? context.objective->boundary->observationSupport(piece.polygons, *context.observationWindow)
-        : context.objective->boundary->observationSupport(coverage);
+        ? context.objective->boundary->observationSupport(
+            visibleSupport(piece.polygons, *context.objective), *context.observationWindow)
+        : context.objective->boundary->observationSupport(
+            visibleSupport(coverage, *context.objective));
     ++context.objective->qualityEvaluations;
 
-    return areaGain - context.objective->boundaryWeight * context.objective->boundary->energy(context.objective->boundary->measure(coverage, observed))
+    return areaGain - context.objective->boundaryWeight * context.objective->boundary->energy(
+        context.objective->boundary->measure(
+            visibleSupport(coverage, *context.objective), observed))
         - kGapRepairWeight * missingBeyondAllowance;
 }
 
 double error(const Polygons &coverage, const Objective &objective) {
-    return catalog::area(catalog::subtract(objective.target, coverage))
-        + catalog::area(catalog::subtract(coverage, objective.target));
+    const Polygons visibleCoverage = visibleSupport(coverage, objective);
+
+    return catalog::area(catalog::subtract(objective.visibleTarget, visibleCoverage))
+        + catalog::area(catalog::subtract(visibleCoverage, objective.visibleTarget));
 }
 
 bool acceptable(const Polygons &coverage, const Objective &objective) {
@@ -216,7 +238,8 @@ bool acceptable(const Polygons &coverage, const Objective &objective) {
     if (!catalog::subtract(objective.target, catalog::expanded(coverage, objective.inwardAllowance)).isEmpty()) {
         return false;
     }
-    const auto metrics = objective.boundary->measure(coverage);
+    const auto metrics = objective.boundary->measure(
+        visibleSupport(coverage, objective));
 
     return objective.boundary->energy(metrics) <= objective.qualityLimit
         && metrics.maximumExcessTurn <= kMaximumExcessTurn
@@ -248,7 +271,7 @@ bool coverageMoveAllowed(const ReductionState &after, const ReductionState &befo
 ReductionContext reductionContext(const QVector<Piece> &pieces, const Objective &objective) {
     const auto coverage = support(pieces);
 
-    return {reductionState(coverage, objective.target, *objective.boundary, objective.inwardAllowance),
+    return {reductionStateFor(coverage, objective),
         acceptable(coverage, objective)};
 }
 
@@ -260,7 +283,7 @@ bool reductionAllowed(const Polygons &coverage, const ReductionContext &before, 
         || !catalog::subtract(coverage, objective.outer).isEmpty()) {
         return false;
     }
-    const auto after = reductionState(coverage, objective.target, *objective.boundary, objective.inwardAllowance);
+    const auto after = reductionStateFor(coverage, objective);
     if (nonWorseningReduction(after, before.state, objective.targetMetrics)
         && nonWorseningReduction(after, *objective.reductionBaseline, objective.targetMetrics)) {
         ++objective.approximateReductions;
@@ -336,11 +359,11 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
                     if (score > best + kScoreEpsilon) {
                         if (boundaryAware) {
                             if (!safeState) {
-                                safeState = reductionState(catalog::unite(context.others + piece.polygons),
-                                    context.objective->target, *context.objective->boundary, context.objective->inwardAllowance);
+                                safeState = reductionStateFor(catalog::unite(context.others + piece.polygons),
+                                    *context.objective);
                             }
-                            auto after = reductionState(catalog::unite(context.others + trial.polygons),
-                                context.objective->target, *context.objective->boundary, context.objective->inwardAllowance);
+                            auto after = reductionStateFor(catalog::unite(context.others + trial.polygons),
+                                *context.objective);
                             if (!coverageMoveAllowed(after, *safeState, *context.objective)) {
                                 ++context.objective->coverageRejected;
                                 continue;
@@ -394,7 +417,8 @@ QVector<double> refitWeights(const QVector<Piece> &pieces, const Objective &obje
     if (pieces.isEmpty()) {
         return weights;
     }
-    const BoundaryModel output(support(pieces), objective.cornerAllowance * 2.0);
+    const BoundaryModel output(visibleSupport(support(pieces), objective),
+        objective.cornerAllowance * 2.0);
     for (const auto &corner : objective.boundary->protectedCorners()) {
         const auto reference = output.reference(corner);
         if (reference.distance <= objective.cornerAllowance) {
@@ -707,7 +731,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
         return stopped(cancelled) || objective.evaluations >= evaluationLimit;
     };
     while (pieces->size() < shapeBudget && !stopRepair()) {
-        const auto before = reductionState(support(*pieces), objective.target, *objective.boundary, objective.inwardAllowance);
+        const auto before = reductionStateFor(support(*pieces), objective);
         auto components = before.deepMissing;
         std::stable_sort(components.begin(), components.end(), [](const auto &first, const auto &second) {
             return catalog::signedArea(first) > catalog::signedArea(second);
@@ -728,7 +752,8 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
             const double padding = objective.inwardAllowance * 2.0;
             const QRectF localBounds = gapBounds.adjusted(-padding, -padding, padding, padding);
             const QRectF safeBounds(*center - QPointF(side, side) * 0.5, QSizeF(side, side));
-            const BoundaryModel currentBoundary(catalog::intersect(before.coverage, objective.target), objective.inwardAllowance);
+            const BoundaryModel currentBoundary(catalog::intersect(
+                visibleSupport(before.coverage, objective), objective.visibleTarget), objective.inwardAllowance);
             const QPointF connection = currentBoundary.reference(*center).point;
             const QPointF delta = connection - *center;
             const double bridgeAngle = std::atan2(delta.y(), delta.x());
@@ -743,7 +768,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                 QPolygonF({safeBounds.topLeft(), safeBounds.topRight(), safeBounds.bottomRight(), safeBounds.bottomLeft()}),
                 QPolygonF({start - normal * bridgeRadius, end - normal * bridgeRadius,
                     end + normal * bridgeRadius, start + normal * bridgeRadius})};
-            const auto permitted = catalog::unite(before.coverage + objective.target);
+            const auto permitted = catalog::unite(before.coverage + objective.spillFree);
             const double componentArea = catalog::area(component);
             const int componentLimit = objective.evaluations
                 + std::min(kResidualTrialsPerComponent, evaluationLimit - objective.evaluations);
@@ -802,8 +827,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                 if (upperScore < bestScore - kScoreEpsilon) {
                     return;
                 }
-                const auto after = reductionState(catalog::unite(before.coverage + proposed),
-                    objective.target, *objective.boundary, objective.inwardAllowance);
+                const auto after = reductionStateFor(catalog::unite(before.coverage + proposed), objective);
                 const bool connected = after.metrics.components <= before.metrics.components;
                 const double score = gained * (connected ? kRepairConnectionBonus : 1.0) / proposal.size();
                 const bool improves = best.isEmpty() || score > bestScore + kScoreEpsilon
@@ -860,7 +884,8 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
 
 QVector<QVector<int>> exposedNeighbors(const QVector<Piece> &pieces, const Objective &objective) {
     QVector<QVector<int>> neighbors(pieces.size());
-    for (const auto &polygon : objective.boundary->observationSupport(support(pieces))) {
+    for (const auto &polygon : objective.boundary->observationSupport(
+             visibleSupport(support(pieces), objective))) {
         QVector<int> owners;
         for (int edge = 0; edge < polygon.size(); ++edge) {
             const QPointF point = (polygon[edge] + polygon[(edge + 1) % polygon.size()]) * 0.5;
@@ -957,8 +982,7 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
         }
         auto current = group((*pieces)[first], (*pieces)[second]);
         double best = qualityGain(current, context);
-        auto before = reductionState(catalog::unite(context.others + current.polygons), objective.target,
-            *objective.boundary, objective.inwardAllowance);
+        auto before = reductionStateFor(catalog::unite(context.others + current.polygons), objective);
         const double areaLimit = std::max(objective.areaBudget, before.missingArea + before.spillArea);
         const int previousMoves = objective.jointMoves;
         for (int level = 0; level < 4 && objective.evaluations < limit && !stopped(cancelled); ++level) {
@@ -980,8 +1004,7 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
                         if (score <= best + kScoreEpsilon) {
                             continue;
                         }
-                        auto after = reductionState(catalog::unite(context.others + candidate.polygons), objective.target,
-                            *objective.boundary, objective.inwardAllowance);
+                        auto after = reductionStateFor(catalog::unite(context.others + candidate.polygons), objective);
                         if (!coverageMoveAllowed(after, before, objective)) {
                             ++objective.coverageRejected;
                             continue;
@@ -1074,8 +1097,13 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
 
 Objective makeObjective(const catalog::Region &region, const FillOptions &options) {
     Objective result;
+    const catalog::Region leewayRegion = catalog::leewayAdjustedRegion(
+        region, options.leeway, options.boundaryAllowance);
+    if (leewayRegion.required.isEmpty() || leewayRegion.visible.isEmpty()) {
+        throw std::runtime_error("Contour leeway leaves no visible fillable area");
+    }
     Polygons boundary;
-    for (const auto &polygon : region.required) {
+    for (const auto &polygon : leewayRegion.required) {
         for (int index = 0; index < polygon.size(); ++index) {
             const QPointF delta(options.inwardAllowance, options.inwardAllowance);
             const QPointF start = polygon[index];
@@ -1088,16 +1116,19 @@ Objective makeObjective(const catalog::Region &region, const FillOptions &option
             boundary.push_back(catalog::convexHull(corners));
         }
     }
-    result.target = region.required;
-    result.preferred = catalog::expanded(region.required, options.inwardAllowance * 0.5);
-    result.boundary = std::make_shared<BoundaryModel>(region.required, options.observationScale);
-    result.targetMetrics = result.boundary->measure(region.required);
+    result.target = leewayRegion.required;
+    result.visibleTarget = leewayRegion.visible;
+    result.preferred = catalog::expanded(leewayRegion.required, options.inwardAllowance * 0.5);
+    result.boundary = std::make_shared<BoundaryModel>(leewayRegion.visible, options.observationScale);
+    result.targetMetrics = result.boundary->measure(leewayRegion.visible);
     result.qualityLimit = std::max(1.0, result.boundary->perimeter() * kBoundaryEnergyPerLength);
     result.defectLimit = std::max(1, static_cast<int>(result.boundary->perimeter() / (options.observationScale * kLengthPerDefect)));
-    result.inner = catalog::subtract(region.required, catalog::unite(boundary));
-    result.outer = catalog::expanded(region.required, options.boundaryAllowance);
+    result.inner = catalog::subtract(leewayRegion.required, catalog::unite(boundary));
+    result.outer = leewayRegion.permitted;
+    result.spillFree = leewayRegion.spillFree;
+    result.leeway = catalog::unite(options.leeway);
     result.allowance = options.boundaryAllowance;
-    result.areaBudget = region.area * options.areaErrorRatio;
+    result.areaBudget = catalog::area(leewayRegion.visible) * options.areaErrorRatio;
     result.inwardAllowance = options.inwardAllowance;
     result.fittingInwardAllowance = std::max(options.inwardAllowance * 0.5,
         options.inwardAllowance - options.observationScale * 0.1);
@@ -1217,15 +1248,17 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("seedCount"), pieces.size());
         result.diagnostics.insert(QStringLiteral("searchCatalogSize"), searchCatalog.size());
         result.diagnostics.insert(QStringLiteral("wholeRegionCatalogSize"), recognitionCatalog.size());
-        result.diagnostics.insert(QStringLiteral("seedBoundary"), objective.boundary->diagnostics(objective.boundary->measure(support(pieces))));
+        result.diagnostics.insert(QStringLiteral("seedBoundary"), objective.boundary->diagnostics(
+            objective.boundary->measure(visibleSupport(support(pieces), objective))));
         if (acceptable(support(pieces), objective)) {
             incumbent = pieces;
         }
         auto report = [&] {
             currentCount = pieces.size();
             const auto coverage = support(pieces);
-            const double missing = catalog::area(catalog::subtract(objective.target, coverage));
-            const double spill = catalog::area(catalog::subtract(coverage, objective.target));
+            const Polygons visibleCoverage = visibleSupport(coverage, objective);
+            const double missing = catalog::area(catalog::subtract(objective.visibleTarget, visibleCoverage));
+            const double spill = catalog::area(catalog::subtract(visibleCoverage, objective.visibleTarget));
             history.push_back(QJsonObject{{QStringLiteral("count"), pieces.size()},
                 {QStringLiteral("missing"), missing}, {QStringLiteral("spill"), spill},
                 {QStringLiteral("deepMissing"), catalog::area(catalog::subtract(objective.target,
@@ -1256,8 +1289,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Repair);
         if (pieces.size() > 1 && !stopWork()) {
             const auto original = pieces;
-            const auto originalState = reductionState(support(original), objective.target,
-                *objective.boundary, objective.inwardAllowance);
+            const auto originalState = reductionStateFor(support(original), objective);
             const auto score = [&](const QVector<Piece> &candidate) {
                 const auto coverage = support(candidate);
                 if (!catalog::subtract(coverage, objective.outer).isEmpty()) {
@@ -1280,8 +1312,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                     piece = makePiece(primitiveFor(piece.placement.shapeId, primitives), piece.placement.transform * expansion);
                 }
                 const double candidateScore = score(trial);
-                const auto after = reductionState(support(trial), objective.target,
-                    *objective.boundary, objective.inwardAllowance);
+                const auto after = reductionStateFor(support(trial), objective);
                 if (candidateScore > bestScore && coverageMoveAllowed(after, originalState, objective)
                     && after.missingArea + after.spillArea <= std::max(objective.areaBudget,
                         originalState.missingArea + originalState.spillArea) + kScoreEpsilon) {
@@ -1303,19 +1334,17 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         objective.evaluationLimit = repairLimit;
         if (error(support(pieces), objective) > std::max(objective.areaBudget, error(support(coverageFallback), objective)) + kScoreEpsilon
-            || !coverageMoveAllowed(reductionState(support(pieces), objective.target, *objective.boundary, objective.inwardAllowance),
-                reductionState(support(coverageFallback), objective.target, *objective.boundary, objective.inwardAllowance), objective)) {
+            || !coverageMoveAllowed(reductionStateFor(support(pieces), objective),
+                reductionStateFor(support(coverageFallback), objective), objective)) {
             pieces = coverageFallback;
         }
         repairResiduals(&pieces, objective, searchCatalog, options.shapeBudget, repairLimit, stopWork);
         report();
         if (!stopWork() && !acceptable(support(pieces), objective)) {
             const auto repaired = pieces;
-            const auto before = reductionState(support(repaired), objective.target,
-                *objective.boundary, objective.inwardAllowance);
+            const auto before = reductionStateFor(support(repaired), objective);
             refit(&pieces, objective, primitives, stopWork, 1);
-            const auto after = reductionState(support(pieces), objective.target,
-                *objective.boundary, objective.inwardAllowance);
+            const auto after = reductionStateFor(support(pieces), objective);
             if (!coverageMoveAllowed(after, before, objective)
                 || after.missingArea + after.spillArea > std::max(objective.areaBudget,
                     before.missingArea + before.spillArea) + kScoreEpsilon) {
@@ -1328,8 +1357,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("initialRefit"));
         finishStage(QStringLiteral("repair"));
-        objective.reductionBaseline = reductionState(support(pieces), objective.target,
-            *objective.boundary, objective.inwardAllowance);
+        objective.reductionBaseline = reductionStateFor(support(pieces), objective);
         objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::SpatialReduction);
         prune(&pieces, objective, stopWork);
         report();
@@ -1390,8 +1418,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             const auto after = support(polished);
             const bool preservesQuality = acceptable(after, objective)
                 || (!acceptable(before, objective) && catalog::subtract(after, objective.outer).isEmpty()
-                    && nonWorseningReduction(reductionState(after, objective.target, *objective.boundary, objective.inwardAllowance),
-                        reductionState(before, objective.target, *objective.boundary, objective.inwardAllowance), objective.targetMetrics));
+                    && nonWorseningReduction(reductionStateFor(after, objective),
+                        reductionStateFor(before, objective), objective.targetMetrics));
             if (preservesQuality
                 && objective.boundary->energy(objective.boundary->measure(after))
                     < objective.boundary->energy(objective.boundary->measure(before))) {
@@ -1411,13 +1439,17 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("qualityReference"), QStringLiteral("matched observation support; raw protected corners"));
         result.fill.cancelled = stopped(cancelled);
         result.fill.shapeLimit = options.shapeBudget;
-        result.fill.targetArea = region.area;
-        result.fill.coveredArea = catalog::area(catalog::intersect(coverage, objective.target));
-        result.fill.outsideArea = catalog::area(catalog::subtract(coverage, objective.target));
-        result.fill.unfilled = catalog::painterPath(catalog::subtract(objective.target, coverage));
+        const Polygons visibleCoverage = visibleSupport(coverage, objective);
+        result.fill.targetArea = catalog::area(objective.visibleTarget);
+        result.fill.coveredArea = catalog::area(catalog::intersect(visibleCoverage, objective.visibleTarget));
+        result.fill.outsideArea = catalog::area(catalog::subtract(visibleCoverage, objective.visibleTarget));
+        result.fill.unfilled = catalog::painterPath(catalog::subtract(objective.visibleTarget, visibleCoverage));
         result.diagnostics.insert(QStringLiteral("history"), history);
         result.diagnostics.insert(QStringLiteral("boundaryAllowance"), options.boundaryAllowance);
         result.diagnostics.insert(QStringLiteral("areaErrorRatio"), options.areaErrorRatio);
+        result.diagnostics.insert(QStringLiteral("leewayArea"), catalog::area(objective.leeway));
+        result.diagnostics.insert(QStringLiteral("requiredTargetArea"), catalog::area(objective.target));
+        result.diagnostics.insert(QStringLiteral("visibleTargetArea"), result.fill.targetArea);
         result.diagnostics.insert(QStringLiteral("inwardAllowance"), options.inwardAllowance);
         result.diagnostics.insert(QStringLiteral("fittingInwardAllowance"), objective.fittingInwardAllowance);
         result.diagnostics.insert(QStringLiteral("targetBoundary"), objective.boundary->diagnostics(objective.targetMetrics));
@@ -1428,7 +1460,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("missingBeyondInward"), catalog::area(catalog::subtract(objective.target,
             catalog::expanded(coverage, objective.inwardAllowance))));
         result.diagnostics.insert(QStringLiteral("outsideEnvelope"), catalog::area(catalog::subtract(coverage, objective.outer)));
-        result.diagnostics.insert(QStringLiteral("boundaryQuality"), objective.boundary->diagnostics(objective.boundary->measure(coverage)));
+        result.diagnostics.insert(QStringLiteral("boundaryQuality"), objective.boundary->diagnostics(
+            objective.boundary->measure(visibleCoverage)));
         result.diagnostics.insert(QStringLiteral("boundaryEnergyLimit"), objective.qualityLimit);
         result.diagnostics.insert(QStringLiteral("qualityEvaluations"), objective.qualityEvaluations);
         result.diagnostics.insert(QStringLiteral("qualityTimings"), objective.boundary->performance());
@@ -1444,7 +1477,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             histogram[key] = histogram[key].toInt() + 1;
         }
         result.diagnostics.insert(QStringLiteral("shapeCounts"), histogram);
-        const auto metrics = objective.boundary->measure(coverage);
+        const auto metrics = objective.boundary->measure(visibleCoverage);
         const double areaError = result.fill.targetArea - result.fill.coveredArea + result.fill.outsideArea;
         QStringList failedChecks;
         if (coverage.isEmpty()) {

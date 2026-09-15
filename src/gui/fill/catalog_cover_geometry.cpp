@@ -25,6 +25,17 @@ double cross(const QPointF &left, const QPointF &right) {
     return left.x() * right.y() - left.y() * right.x();
 }
 
+Polygons polygonsFromPath(const QPainterPath &path) {
+    Polygons result;
+    for (QPolygonF polygon : path.toSubpathPolygons()) {
+        if (polygon.size() >= 3) {
+            result.push_back(std::move(polygon));
+        }
+    }
+
+    return unite(result);
+}
+
 Clipper2Lib::Paths64 integerPaths(const Polygons &polygons) {
     Clipper2Lib::Paths64 result;
     result.reserve(polygons.size());
@@ -499,13 +510,48 @@ Region buildRegion(const PenFillRequest &request, const std::function<bool()> &c
     result.required = unite(result.required);
     result.permitted = expanded(result.required,
         request.boundaryTolerance * kEnvelopeFraction / std::sqrt(2.0));
+    result.visible = result.required;
+    result.spillFree = result.required;
     result.requiredPath = painterPath(result.required);
     result.permittedPath = painterPath(result.permitted);
+    result.spillFreePath = result.requiredPath;
     result.bounds = result.requiredPath.boundingRect();
     result.area = area(result.required);
     if (result.area <= 0.0 || !std::isfinite(result.area)) {
         throw std::runtime_error("Catalog cover target has no fillable area");
     }
+
+    return result;
+}
+
+Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
+                            double outwardAllowance) {
+    const Polygons leeway = unite(inputLeeway);
+    if (leeway.isEmpty()) {
+        Region result = region;
+        result.permitted = expanded(region.required, outwardAllowance);
+        result.permittedPath = painterPath(result.permitted);
+
+        return result;
+    }
+    QPainterPathStroker stroker;
+    stroker.setWidth(region.tolerance * 2.0);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setCapStyle(Qt::RoundCap);
+    const QPainterPath leewayPath = painterPath(leeway);
+    const Polygons leewayCore = polygonsFromPath(
+        leewayPath.subtracted(stroker.createStroke(leewayPath)));
+    Region result = region;
+    result.required = subtract(region.required, leewayCore);
+    result.visible = subtract(region.required, leeway);
+    result.spillFree = unite(region.required + leeway);
+    result.leeway = leeway;
+    result.permitted = unite(expanded(region.required, outwardAllowance) + leeway);
+    result.requiredPath = painterPath(result.required);
+    result.permittedPath = painterPath(result.permitted);
+    result.spillFreePath = painterPath(result.spillFree);
+    result.bounds = result.requiredPath.boundingRect();
+    result.area = area(result.required);
 
     return result;
 }

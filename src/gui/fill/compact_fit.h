@@ -13,6 +13,7 @@ inline constexpr double kDefaultObservationScale = 1.0;
 
 struct FillOptions {
     QVector<PenPlacement> initialPlacements;
+    QVector<QPolygonF> leeway;
     std::function<void(int, int, int)> workProgress;
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;

@@ -604,6 +604,19 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
                 : QStringLiteral("%1 failed: %2").arg(fillLabel, catalogError), 5000);
             return;
         }
+        if (!contourLeewayGroupId_.isEmpty()) {
+            QString leewayError;
+            const QPainterPath leewayPath = canvas_->contourLeewayPath(&leewayError);
+            if (leewayPath.isEmpty()) {
+                canvas_->setPenFillRunning(false);
+                clearGeneratedFillState();
+                statusBar()->showMessage(
+                    QStringLiteral("Compact Fit failed: %1").arg(leewayError), 5000);
+                return;
+            }
+            compactOptions.leeway = cover::polygonsFromPainterPath(leewayPath);
+            generatedFillLeewayGroupId_ = contourLeewayGroupId_;
+        }
         generatedFillProgress_->setRange(0, 0);
         generatedFillProgress_->setFormat(QStringLiteral("%1 | Preparing region").arg(fillLabel));
         generatedFillProgress_->show();
@@ -1164,9 +1177,10 @@ void MainWindow::insertGeneratedFill(const QString &groupName,
 void MainWindow::toggleContourLeewayGroup(
     const QString &groupId) {
     if (canvas_ == nullptr
-        || loadBehaviorSettings().contourFillMode != ContourFillMode::Differential) {
+        || (loadBehaviorSettings().contourFillMode != ContourFillMode::Differential
+            && loadBehaviorSettings().contourFillMode != ContourFillMode::CompactFit)) {
         statusBar()->showMessage(
-            QStringLiteral("Contour leeway requires Differential Contour Fill"),
+            QStringLiteral("Contour leeway requires Differential or Compact Fit Contour Fill"),
             3000);
         return;
     }

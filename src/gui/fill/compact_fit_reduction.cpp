@@ -13,22 +13,28 @@ bool noGreater(double after, double before) {
 
 } // namespace
 
-ReductionState reductionState(const catalog::Polygons &coverage, const catalog::Polygons &target,
-                                const BoundaryModel &boundary, double inwardAllowance) {
-    const auto observed = boundary.observationSupport(coverage);
+ReductionState reductionState(const catalog::Polygons &coverage,
+                              const catalog::Polygons &required,
+                              const catalog::Polygons &visibleTarget,
+                              const catalog::Polygons &leeway,
+                              const BoundaryModel &boundary,
+                              double inwardAllowance) {
+    const auto visibleCoverage = leeway.isEmpty()
+        ? coverage : catalog::subtract(coverage, leeway);
+    const auto observed = boundary.observationSupport(visibleCoverage);
     ReductionState result;
     result.coverage = coverage;
-    result.deepMissing = catalog::subtract(target, catalog::expanded(coverage, inwardAllowance));
-    result.metrics = boundary.measure(coverage, observed);
+    result.deepMissing = catalog::subtract(required, catalog::expanded(coverage, inwardAllowance));
+    result.metrics = boundary.measure(visibleCoverage, observed);
     for (auto polygon : observed) {
         if (catalog::signedArea(polygon) < 0) {
             std::reverse(polygon.begin(), polygon.end());
             result.observedHoles.push_back(std::move(polygon));
         }
     }
-    result.observedHoles = catalog::intersect(catalog::unite(result.observedHoles), target);
+    result.observedHoles = catalog::intersect(catalog::unite(result.observedHoles), visibleTarget);
     catalog::Polygons intendedHoles;
-    for (auto polygon : target) {
+    for (auto polygon : visibleTarget) {
         if (catalog::signedArea(polygon) < 0) {
             std::reverse(polygon.begin(), polygon.end());
             intendedHoles.push_back(std::move(polygon));
@@ -39,8 +45,8 @@ ReductionState reductionState(const catalog::Polygons &coverage, const catalog::
             catalog::expanded(catalog::unite(intendedHoles), inwardAllowance));
     }
     result.cornerDistances = result.metrics.cornerDistances;
-    result.missingArea = catalog::area(catalog::subtract(target, coverage));
-    result.spillArea = catalog::area(catalog::subtract(coverage, target));
+    result.missingArea = catalog::area(catalog::subtract(visibleTarget, visibleCoverage));
+    result.spillArea = catalog::area(catalog::subtract(visibleCoverage, visibleTarget));
 
     return result;
 }

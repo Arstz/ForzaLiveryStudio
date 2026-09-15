@@ -20,8 +20,12 @@ using Polygons = QVector<QPolygonF>;
 struct Region {
     Polygons required;
     Polygons permitted;
+    Polygons visible;
+    Polygons spillFree;
+    Polygons leeway;
     QPainterPath requiredPath;
     QPainterPath permittedPath;
+    QPainterPath spillFreePath;
     QRectF bounds;
     double area = 0.0;
     double originalArea = 0.0;
@@ -51,6 +55,8 @@ QTransform affineFromAnchors(const std::array<QPointF, 3> &source,
                              const std::array<QPointF, 3> &target);
 Region buildRegion(const PenFillRequest &request,
                    const std::function<bool()> &cancelled);
+Region leewayAdjustedRegion(const Region &region, const Polygons &leeway,
+                            double outwardAllowance);
 QVector<Candidate> completeCover(const Region &region,
                                 const QVector<Primitive> &primitives,
                                 const std::function<bool()> &cancelled);

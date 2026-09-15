@@ -14,8 +14,12 @@ struct ReductionState {
     double spillArea = 0.0;
 };
 
-ReductionState reductionState(const catalog::Polygons &coverage, const catalog::Polygons &target,
-                                const BoundaryModel &boundary, double inwardAllowance);
+ReductionState reductionState(const catalog::Polygons &coverage,
+                              const catalog::Polygons &required,
+                              const catalog::Polygons &visibleTarget,
+                              const catalog::Polygons &leeway,
+                              const BoundaryModel &boundary,
+                              double inwardAllowance);
 bool nonWorseningReduction(const ReductionState &after, const ReductionState &before,
                             const BoundaryMetrics &target);
 bool preservesCoverage(const ReductionState &after, const ReductionState &before,

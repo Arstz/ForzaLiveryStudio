@@ -220,6 +220,27 @@ bool probesInside(const PenPrimitive &shape, const QTransform &transform, const 
     return true;
 }
 
+std::optional<QTransform> containedTransform(const PenPrimitive &shape,
+                                             const QTransform &transform,
+                                             const QPainterPath &envelope) {
+    if (probesInside(shape, transform, envelope)) {
+        return transform;
+    }
+    const QPointF center = transform.mapRect(shape.bounds).center();
+    for (double scale : {0.995, 0.99, 0.98, 0.96, 0.92, 0.88}) {
+        QTransform contraction;
+        contraction.translate(center.x(), center.y());
+        contraction.scale(scale, scale);
+        contraction.translate(-center.x(), -center.y());
+        const QTransform candidate = transform * contraction;
+        if (probesInside(shape, candidate, envelope)) {
+            return candidate;
+        }
+    }
+
+    return std::nullopt;
+}
+
 std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransform &transform,
                                      const catalog::Region &region, const Polygons &outer,
                                      const compact::BoundaryModel &boundary, double scale) {
@@ -236,7 +257,7 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
             const auto tangent = unit(next - polygon[index]);
             for (double fraction : {0.0, 0.5}) {
                 const auto point = polygon[index] + (next - polygon[index]) * fraction;
-                if (region.requiredPath.contains(point)) {
+                if (region.spillFreePath.contains(point)) {
                     continue;
                 }
                 const auto reference = boundary.reference(point);
@@ -249,7 +270,7 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
     }
     result.path = catalog::painterPath(result.polygons);
     result.bounds = result.path.boundingRect();
-    result.spill = catalog::area(catalog::subtract(result.polygons, region.required));
+    result.spill = catalog::area(catalog::subtract(result.polygons, region.spillFree));
     result.placement.area = catalog::area(result.polygons);
 
     return result;
@@ -350,12 +371,13 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
         })) {
             continue;
         }
-        const auto transform = profile.normalization * fittedTransform(ranked.fit.transform);
-        if (!probesInside(shape, transform, envelope)) {
+        const auto transform = containedTransform(
+            shape, profile.normalization * fittedTransform(ranked.fit.transform), envelope);
+        if (!transform) {
             continue;
         }
         ++*validated;
-        auto candidate = candidateFor(shape, transform, localRegion, outer, localBoundary, scale);
+        auto candidate = candidateFor(shape, *transform, localRegion, outer, localBoundary, scale);
         if (candidate) {
             candidate->error = ranked.fit.error;
             candidate->span = job.length;
@@ -542,6 +564,19 @@ Grid makeGrid(const catalog::Region &region, double scale) {
     const QRectF frame = region.bounds.adjusted(-scale * 2.0, -scale * 2.0, scale * 2.0, scale * 2.0);
     const Polygons complement = catalog::subtract({QPolygonF(frame)}, region.required);
     result.target = rasterize(catalog::subtract(region.required, catalog::expanded(complement, scale * 0.35)), result);
+
+    return result;
+}
+
+catalog::Region curveRegion(const catalog::Region &authored,
+                            const catalog::Region &coverage) {
+    catalog::Region result = authored;
+    result.permitted = coverage.permitted;
+    result.visible = coverage.visible;
+    result.spillFree = coverage.spillFree;
+    result.leeway = coverage.leeway;
+    result.permittedPath = coverage.permittedPath;
+    result.spillFreePath = coverage.spillFreePath;
 
     return result;
 }
@@ -928,7 +963,10 @@ void reduceSelection(const QVector<Candidate> &pool, const Grid &grid, const com
             privateCells.push_back(std::move(cells));
             privateBoundary.push_back(std::move(boundary));
         }
-        const double baselineEnergy = model.energy(model.measure(coverageOf(pool, *selected)));
+        const auto selectedCoverage = coverageOf(pool, *selected);
+        const Polygons selectedVisibleCoverage = region.leeway.isEmpty()
+            ? selectedCoverage : catalog::subtract(selectedCoverage, region.leeway);
+        const double baselineEnergy = model.energy(model.measure(selectedVisibleCoverage));
         QVector<int> best = *selected;
         for (int replacement = 0; replacement < pool.size() && !stopped(cancelled); ++replacement) {
             QVector<int> eligible;
@@ -952,10 +990,12 @@ void reduceSelection(const QVector<Candidate> &pool, const Grid &grid, const com
                 continue;
             }
             const auto coverage = coverageOf(pool, trial);
-            const double errorArea = catalog::area(catalog::subtract(region.required, coverage))
-                + catalog::area(catalog::subtract(coverage, region.required));
+            const Polygons visibleCoverage = region.leeway.isEmpty()
+                ? coverage : catalog::subtract(coverage, region.leeway);
+            const double errorArea = catalog::area(catalog::subtract(region.visible, visibleCoverage))
+                + catalog::area(catalog::subtract(visibleCoverage, region.visible));
             if (errorArea <= region.area * options.areaErrorRatio
-                && model.energy(model.measure(coverage)) <= baselineEnergy + options.observationScale * 0.01) {
+                && model.energy(model.measure(visibleCoverage)) <= baselineEnergy + options.observationScale * 0.01) {
                 best = std::move(trial);
             }
         }
@@ -1020,11 +1060,17 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             || options.evaluationBudget < 1) {
             throw std::runtime_error("Profile fit requires positive contour allowances and a shape budget");
         }
-        const auto region = catalog::buildRegion(request, cancelled);
-        const auto outer = catalog::expanded(region.required, options.boundaryAllowance);
-        const compact::BoundaryModel boundary(region.required, options.observationScale);
-        const auto grid = makeGrid(region, options.observationScale);
-        const auto witnesses = boundaryWitnesses(region, options.observationScale);
+        const auto authoredRegion = catalog::buildRegion(request, cancelled);
+        const auto coverageRegion = catalog::leewayAdjustedRegion(
+            authoredRegion, options.leeway, options.boundaryAllowance);
+        if (coverageRegion.required.isEmpty() || coverageRegion.visible.isEmpty()) {
+            throw std::runtime_error("Contour leeway leaves no visible fillable area");
+        }
+        const auto region = curveRegion(authoredRegion, coverageRegion);
+        const auto outer = region.permitted;
+        const compact::BoundaryModel boundary(coverageRegion.visible, options.observationScale);
+        const auto grid = makeGrid(coverageRegion, options.observationScale);
+        const auto witnesses = boundaryWitnesses(coverageRegion, options.observationScale);
         QVector<Candidate> pool;
         recordTime(QStringLiteral("setup"));
         addCurveCandidates(region, outer, primitives, boundary, options, cancelled, &pool, &result.diagnostics);
@@ -1037,28 +1083,35 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         addCornerCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
         recordTime(QStringLiteral("corners"));
         result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
-        addBodyCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+        addBodyCandidates(coverageRegion, outer, primitives, boundary, options.observationScale, cancelled, &pool);
         recordTime(QStringLiteral("interior"));
         result.diagnostics.insert(QStringLiteral("totalCandidates"), pool.size());
-        auto selected = selectCandidates(&pool, region, grid, witnesses, options, cancelled, &result.diagnostics);
+        auto selected = selectCandidates(&pool, coverageRegion, grid, witnesses, options, cancelled, &result.diagnostics);
         recordTime(QStringLiteral("selection"));
         result.diagnostics.insert(QStringLiteral("greedyCount"), selected.size());
         if (!pool.isEmpty() && !stopped(cancelled)) {
-            reduceSelection(pool, grid, boundary, region, options, cancelled, &selected);
+            reduceSelection(pool, grid, boundary, coverageRegion, options, cancelled, &selected);
         }
         recordTime(QStringLiteral("reduction"));
         const auto coverage = coverageOf(pool, selected);
-        const auto missing = catalog::subtract(region.required, coverage);
-        const auto spill = catalog::subtract(coverage, region.required);
-        result.fill.targetArea = region.area;
-        result.fill.coveredArea = region.area - catalog::area(missing);
+        const Polygons visibleCoverage = coverageRegion.leeway.isEmpty()
+            ? coverage : catalog::subtract(coverage, coverageRegion.leeway);
+        const auto missing = catalog::subtract(coverageRegion.visible, visibleCoverage);
+        const auto spill = catalog::subtract(visibleCoverage, coverageRegion.visible);
+        result.fill.targetArea = catalog::area(coverageRegion.visible);
+        result.fill.coveredArea = result.fill.targetArea - catalog::area(missing);
         result.fill.outsideArea = catalog::area(spill);
         result.fill.unfilled = catalog::painterPath(missing);
-        result.diagnostics.insert(QStringLiteral("boundary"), boundary.diagnostics(boundary.measure(coverage)));
+        result.diagnostics.insert(QStringLiteral("boundary"), boundary.diagnostics(
+            boundary.measure(visibleCoverage)));
         result.diagnostics.insert(QStringLiteral("count"), selected.size());
         result.diagnostics.insert(QStringLiteral("missingArea"), catalog::area(missing));
         result.diagnostics.insert(QStringLiteral("spillArea"), catalog::area(spill));
-        result.diagnostics.insert(QStringLiteral("deepMissingArea"), catalog::area(catalog::subtract(region.required, catalog::expanded(coverage, options.inwardAllowance))));
+        result.diagnostics.insert(QStringLiteral("leewayArea"), catalog::area(coverageRegion.leeway));
+        result.diagnostics.insert(QStringLiteral("requiredTargetArea"), coverageRegion.area);
+        result.diagnostics.insert(QStringLiteral("visibleTargetArea"), result.fill.targetArea);
+        result.diagnostics.insert(QStringLiteral("deepMissingArea"), catalog::area(
+            catalog::subtract(coverageRegion.required, catalog::expanded(coverage, options.inwardAllowance))));
         QJsonObject counts;
         QJsonArray selectedDetails;
         for (int index : selected) {
