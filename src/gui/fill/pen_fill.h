@@ -72,6 +72,11 @@ struct PenFillRequest {
     double boundaryTolerance = 0.1;
     int shapeLimitPerPoint = 2;
     bool discardNegligiblePlacements = true;
+    // Lets a fitted curve Primitive spill outside the contour by as much as
+    // its boundary error allowance, the same distance it may already fall
+    // short inside. Without it any spill beyond a hundred-thousandth of the
+    // area rejects the fit and the boundary is meshed with triangles instead.
+    bool spillWithinTolerance = false;
 };
 
 struct PenFillResult {

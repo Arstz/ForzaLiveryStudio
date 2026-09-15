@@ -47,6 +47,11 @@ struct PolygonMeshResult {
 
 PolygonContour buildPolygonContour(const QVector<QPointF> &points,
                                    double tolerance = 1e-7);
+// Number of places where edges of two different loops meet, and where. Loops
+// that are each simple can still cross one another, and such a set cannot be
+// meshed.
+int polygonLoopCrossings(const QVector<QPolygonF> &loops,
+                         QVector<QPointF> *points = nullptr);
 PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry);
 PolygonMeshResult meshPolygon(const PolygonMeshRequest &request,
                               const std::function<bool()> &cancelled = {});

@@ -927,6 +927,81 @@ bool readGolden(const QString &path, GoldenRun *run)
     return true;
 }
 
+// Draws an import result over its source outlines so a fill can be judged by
+// eye: triangles and squares in grey, curved Primitives in blue, outlines in
+// red. Runs with the unlimited budget the golden corpus uses.
+int renderSvgImport(const QString &path,
+                    const QString &outputPath,
+                    const QVector<gui::PenPrimitive> &primitives,
+                    double scale)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        std::cerr << "could not open " << path.toStdString() << '\n';
+        return 2;
+    }
+    const QByteArray svg = file.readAll();
+    QSvgRenderer renderer(svg);
+    if (!renderer.isValid()) {
+        std::cerr << "not a valid SVG\n";
+        return 2;
+    }
+    QSize size = renderer.defaultSize();
+    if (size.isEmpty()) {
+        size = renderer.viewBoxF().size().toSize();
+    }
+    const gui::SvgVectorDocument document = gui::extractSvgVectorObjects(svg, size);
+    gui::ImageImportFillRequest request;
+    request.units = gui::svgImageImportUnits(document);
+    request.primitives = primitives;
+    request.componentBudgetMs = 3600000;
+    request.componentBudgetMsPerPoint = 0;
+    const gui::ImageImportFillResult result = gui::computeImageImportFills(request);
+
+    QImage image(QSize(static_cast<int>(std::ceil(size.width() * scale)),
+                       static_cast<int>(std::ceil(size.height() * scale))),
+                 QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.scale(scale, scale);
+    painter.setPen(Qt::NoPen);
+    int curved = 0;
+    for (const gui::ImageImportFilledUnit &unit : result.units) {
+        for (const gui::PenPlacement &placement : unit.placements) {
+            const gui::PenPrimitive *primitive = nullptr;
+            for (const gui::PenPrimitive &candidate : primitives) {
+                if (candidate.shapeId == placement.shapeId) {
+                    primitive = &candidate;
+                    break;
+                }
+            }
+            if (primitive == nullptr) {
+                continue;
+            }
+            const bool isCurved = placement.shapeId != 101 && placement.shapeId != 103;
+            curved += isCurved ? 1 : 0;
+            painter.setBrush(isCurved ? QColor(40, 90, 220, 110) : QColor(90, 90, 90, 90));
+            painter.setPen(QPen(isCurved ? QColor(20, 50, 160) : QColor(60, 60, 60), 0.4 / scale));
+            painter.drawPath(placement.transform.map(primitive->silhouette));
+        }
+    }
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(QColor(220, 30, 30), 1.0 / scale));
+    for (const gui::ImageImportFillUnit &unit : request.units) {
+        painter.drawPath(unit.outline);
+    }
+    painter.end();
+    if (!image.save(outputPath)) {
+        std::cerr << "could not write " << outputPath.toStdString() << '\n';
+        return 2;
+    }
+    std::cout << "summary: " << result.summary.toStdString() << '\n'
+              << "placements " << result.placementCount << " curved " << curved
+              << " -> " << QDir::toNativeSeparators(outputPath).toStdString() << '\n';
+    return 0;
+}
+
 int goldenRecord(const QString &directory, const QStringList &extraPaths,
                  const QVector<gui::PenPrimitive> &primitives)
 {
@@ -1085,6 +1160,11 @@ int main(int argc, char **argv)
         return QString::fromLocal8Bit(argv[1]) == QStringLiteral("--golden-record")
             ? goldenRecord(directory, extraPaths, primitives)
             : goldenCheck(directory, extraPaths, primitives);
+    }
+    if (argc >= 4 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--render")) {
+        const double scale = argc >= 5 ? QString::fromLocal8Bit(argv[4]).toDouble() : 4.0;
+        return renderSvgImport(QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3]),
+                               primitives, scale > 0.0 ? scale : 4.0);
     }
     if (argc >= 3 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--report")) {
         const int shapeLimitPerPoint = argc >= 4 ? QString::fromLocal8Bit(argv[3]).toInt() : 6;

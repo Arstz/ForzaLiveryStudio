@@ -23,6 +23,10 @@ constexpr int kGarlicShapeId = 139;
 constexpr int kToothShapeId = 2123;
 constexpr double kConcaveArcInnerRadiusRatio = 0.65;
 constexpr double kMaximumCurveOutsideRatio = 1e-5;
+constexpr double kSpillEnvelopeStepRatio = 1.5;
+constexpr double kMaximumUncoveredSpanRatio = 0.05;
+constexpr int kMaximumCoreRepairSteps = 64;
+constexpr double kPreferredUncoveredSpanRatio = 0.02;
 constexpr double kMaximumCoreOutsideRatio = 1e-5;
 constexpr double kMaximumNegligiblePlacementAreaRatio = 1e-3;
 constexpr double kMaximumDiscardedAreaRatio = 1e-3;
@@ -713,6 +717,7 @@ struct CurvePlacement {
     double boundaryError = 0.0;
     double outsideArea = 0.0;
     double insideArea = 0.0;
+    double uncoveredArea = 0.0;
 };
 
 struct ArcProfile {
@@ -952,15 +957,90 @@ std::optional<QTransform> ellipseLeastSquares(const PenPrimitive &primitive,
     return ok ? std::optional<QTransform>(transform) : std::nullopt;
 }
 
+// The contour dilated by a boundary distance: spill inside it is within the
+// same allowance the fit already has for falling short of the boundary, so it
+// is legal. Envelopes are built on a geometric ladder of distances and shared
+// by every candidate evaluated with that allowance; the ladder step below the
+// requested distance is used, so no candidate is granted more than its span.
+class SpillEnvelopes {
+public:
+    struct Envelope {
+        QPainterPath path;
+        double area = 0.0;
+    };
+
+    SpillEnvelopes(const QPainterPath &target, double baseDistance)
+        : target_(target), baseDistance_(std::max(baseDistance, kEpsilon)) {}
+
+    const Envelope &forDistance(double distance) {
+        const int step = distance <= baseDistance_
+            ? 0
+            : static_cast<int>(std::floor(std::log(distance / baseDistance_)
+                                          / std::log(kSpillEnvelopeStepRatio)));
+        auto it = envelopes_.find(step);
+        if (it == envelopes_.end()) {
+            QPainterPathStroker stroker;
+            stroker.setWidth(2.0 * baseDistance_ * std::pow(kSpillEnvelopeStepRatio, step));
+            stroker.setJoinStyle(Qt::RoundJoin);
+            stroker.setCapStyle(Qt::RoundCap);
+            Envelope envelope;
+            envelope.path = target_.united(stroker.createStroke(target_));
+            envelope.area = pathArea(envelope.path);
+            it = envelopes_.insert(step, std::move(envelope));
+        }
+        return it.value();
+    }
+
+private:
+    const QPainterPath &target_;
+    double baseDistance_;
+    QHash<int, Envelope> envelopes_;
+};
+
+// The target a candidate is judged against, and the envelope its spill may
+// legally occupy (empty when spill is not allowed).
+struct PlacementTarget {
+    QPainterPath target;
+    QPainterPath envelope;
+    double envelopeArea = 0.0;
+    bool hasEnvelope = false;
+};
+
+// The part of the contour a fitted Primitive stands in for: the region
+// between the boundary it replaces and the chord (or core point) the core
+// polygon continues from. Legal spill lets a fit sit outside the boundary,
+// so the fit must also be held to covering that region, or a cap could win
+// on spill and leave a visible gap the mesh would have filled.
+struct CoverageDuty {
+    QPainterPath region;
+    double maximumUncoveredArea = 0.0;
+    double preferredUncoveredArea = 0.0;
+};
+
+CoverageDuty coverageDuty(const QVector<QPointF> &outline) {
+    CoverageDuty duty;
+    if (outline.size() < 3) {
+        return duty;
+    }
+    duty.region.addPolygon(QPolygonF(outline));
+    duty.region.closeSubpath();
+    const double area = pathArea(duty.region);
+    duty.maximumUncoveredArea = kMaximumUncoveredSpanRatio * area;
+    duty.preferredUncoveredArea = kPreferredUncoveredSpanRatio * area;
+    return duty;
+}
+
 std::optional<CurvePlacement> evaluateCurvePlacement(const PenPrimitive &primitive,
                                                      const QVector<QPointF> &samples,
                                                      const QTransform &transform,
-                                                     const QPainterPath &target,
+                                                     const PlacementTarget &placementTarget,
                                                      double targetArea,
-                                                     double maximumBoundaryError = std::numeric_limits<double>::max()) {
+                                                     double maximumBoundaryError = std::numeric_limits<double>::max(),
+                                                     const CoverageDuty *duty = nullptr) {
     if (!transform.isAffine() || std::abs(transform.determinant()) <= kEpsilon) {
         return std::nullopt;
     }
+    const QPainterPath &target = placementTarget.target;
     CurvePlacement result;
     // The silhouette is simplified once when the primitive is built; an affine
     // map of a simple polygon is still simple, so no per-candidate pass is needed.
@@ -969,10 +1049,13 @@ std::optional<CurvePlacement> evaluateCurvePlacement(const PenPrimitive &primiti
     if (area <= kEpsilon) {
         return std::nullopt;
     }
-    // Inside area can never exceed the target, so a candidate this much larger
-    // than the target is bound to fail the spill test whatever it overlaps.
+    // Inside area can never exceed the target (or the envelope when spill is
+    // legal), so a candidate this much larger is bound to fail the spill test
+    // whatever it overlaps.
+    const double coverableArea = placementTarget.hasEnvelope
+        ? placementTarget.envelopeArea : targetArea;
     if (targetArea > kEpsilon
-        && area - targetArea > kMaximumCurveOutsideRatio * targetArea) {
+        && area - coverableArea > kMaximumCurveOutsideRatio * targetArea) {
         return std::nullopt;
     }
     const QVector<QPolygonF> boundaries = result.path.toSubpathPolygons();
@@ -985,9 +1068,23 @@ std::optional<CurvePlacement> evaluateCurvePlacement(const PenPrimitive &primiti
     }
     result.insideArea = pathArea(result.path.intersected(target));
     result.outsideArea = std::max(0.0, area - result.insideArea);
-    if (targetArea <= kEpsilon
-        || result.outsideArea / targetArea > kMaximumCurveOutsideRatio) {
+    if (targetArea <= kEpsilon) {
         return std::nullopt;
+    }
+    // Spill is only measured against the envelope once the plain outside
+    // area is too much, so a fit that stays inside costs no extra clip.
+    double illegalArea = result.outsideArea;
+    if (illegalArea / targetArea > kMaximumCurveOutsideRatio && placementTarget.hasEnvelope) {
+        illegalArea = pathArea(result.path.subtracted(placementTarget.envelope));
+    }
+    if (illegalArea / targetArea > kMaximumCurveOutsideRatio) {
+        return std::nullopt;
+    }
+    if (duty != nullptr && !duty->region.isEmpty()) {
+        result.uncoveredArea = pathArea(duty->region.subtracted(result.path));
+        if (result.uncoveredArea > duty->maximumUncoveredArea) {
+            return std::nullopt;
+        }
     }
     result.placement.shapeId = primitive.shapeId;
     result.placement.transform = transform;
@@ -1008,6 +1105,20 @@ bool betterCurvePlacement(const CurvePlacement &candidate, const CurvePlacement 
     return candidate.placement.shapeId < best.placement.shapeId;
 }
 
+// A fit that covers nearly all of its region beats any fit that merely
+// covers most of it, whatever their inside areas; among equals the usual
+// order decides. Without a duty every fit is in the first tier.
+bool betterDutifulPlacement(const CurvePlacement &candidate,
+                            const CurvePlacement &best,
+                            const CoverageDuty &duty) {
+    const bool candidatePreferred = candidate.uncoveredArea <= duty.preferredUncoveredArea;
+    const bool bestPreferred = best.uncoveredArea <= duty.preferredUncoveredArea;
+    if (candidatePreferred != bestPreferred) {
+        return candidatePreferred;
+    }
+    return betterCurvePlacement(candidate, best);
+}
+
 struct CandidateTransform {
     const PenPrimitive *primitive = nullptr;
     QTransform transform;
@@ -1022,8 +1133,10 @@ constexpr double kLocalCandidateAreaRatio = 0.1;
 // target so it cannot inflate the shared window.
 class LocalTarget {
 public:
-    LocalTarget(const QPainterPath &target, const QVector<CandidateTransform> &candidates)
-        : target_(target) {
+    LocalTarget(const QPainterPath &target,
+                const SpillEnvelopes::Envelope *envelope,
+                const QVector<CandidateTransform> &candidates)
+        : target_(target), envelope_(envelope) {
         const QRectF targetBounds = target.controlPointRect();
         const double maximumLocalArea =
             targetBounds.width() * targetBounds.height() * kLocalCandidateAreaRatio;
@@ -1046,13 +1159,13 @@ public:
         QPainterPath window;
         window.addRect(bounds);
         window_ = bounds;
-        local_ = target.intersected(window);
+        local_ = clipped(window);
         haveLocal_ = true;
     }
 
     // A candidate outside the shared window gets its own clip unless its
     // bounds already cover the whole target.
-    QPainterPath forCandidate(const CandidateTransform &candidate) const {
+    PlacementTarget forCandidate(const CandidateTransform &candidate) const {
         QRectF candidateBounds = candidate.transform.mapRect(candidate.primitive->bounds);
         if (haveLocal_ && window_.contains(candidateBounds)) {
             return local_;
@@ -1062,17 +1175,42 @@ public:
             1e-3 + 1e-6 * std::max(candidateBounds.width(), candidateBounds.height());
         candidateBounds.adjust(-margin, -margin, margin, margin);
         if (candidateBounds.contains(targetBounds)) {
-            return target_;
+            return whole();
         }
         QPainterPath window;
         window.addRect(candidateBounds);
 
-        return target_.intersected(window);
+        return clipped(window);
     }
 
 private:
+    PlacementTarget whole() const {
+        PlacementTarget result;
+        result.target = target_;
+        if (envelope_ != nullptr) {
+            result.envelope = envelope_->path;
+            result.envelopeArea = envelope_->area;
+            result.hasEnvelope = true;
+        }
+        return result;
+    }
+
+    // The window never cuts a candidate it contains, so the envelope area of
+    // the whole contour stays a valid bound for what the candidate can cover.
+    PlacementTarget clipped(const QPainterPath &window) const {
+        PlacementTarget result;
+        result.target = target_.intersected(window);
+        if (envelope_ != nullptr) {
+            result.envelope = envelope_->path.intersected(window);
+            result.envelopeArea = envelope_->area;
+            result.hasEnvelope = true;
+        }
+        return result;
+    }
+
     const QPainterPath &target_;
-    QPainterPath local_;
+    const SpillEnvelopes::Envelope *envelope_ = nullptr;
+    PlacementTarget local_;
     QRectF window_;
     bool haveLocal_ = false;
 };
@@ -1081,8 +1219,12 @@ std::optional<CurvePlacement> bestCandidatePlacement(const QVector<CandidateTran
                                                      const QVector<QPointF> &samples,
                                                      const QPainterPath &target,
                                                      double targetArea,
-                                                     double maximumBoundaryError) {
-    const LocalTarget local(target, candidates);
+                                                     double maximumBoundaryError,
+                                                     const SpillEnvelopes::Envelope *envelope) {
+    const LocalTarget local(target, envelope, candidates);
+    // Without legal spill a fit lies inside the contour, so whatever it fails
+    // to cover is already bounded by its boundary error.
+    const CoverageDuty duty = envelope != nullptr ? coverageDuty(samples) : CoverageDuty();
     std::optional<CurvePlacement> best;
     for (const CandidateTransform &candidate : candidates) {
         const auto placement = evaluateCurvePlacement(*candidate.primitive,
@@ -1090,8 +1232,9 @@ std::optional<CurvePlacement> bestCandidatePlacement(const QVector<CandidateTran
                                                       candidate.transform,
                                                       local.forCandidate(candidate),
                                                       targetArea,
-                                                      maximumBoundaryError);
-        if (placement && (!best || betterCurvePlacement(*placement, *best))) {
+                                                      maximumBoundaryError,
+                                                      &duty);
+        if (placement && (!best || betterDutifulPlacement(*placement, *best, duty))) {
             best = placement;
         }
     }
@@ -1103,7 +1246,8 @@ std::optional<CurvePlacement> outwardCurvePlacement(const QVector<CurvePrimitive
                                                      const PenBoundarySegment &segment,
                                                      const QPainterPath &target,
                                                      double targetArea,
-                                                     double maximumBoundaryError) {
+                                                     double maximumBoundaryError,
+                                                     SpillEnvelopes *envelopes) {
     const QVector<QPointF> samples = sampleSegment(segment, kCurveSamples);
     const QPointF middle = segmentPoint(segment, 0.5);
     QVector<CandidateTransform> candidates;
@@ -1138,7 +1282,9 @@ std::optional<CurvePlacement> outwardCurvePlacement(const QVector<CurvePrimitive
         }
     }
 
-    return bestCandidatePlacement(candidates, samples, target, targetArea, maximumBoundaryError);
+    return bestCandidatePlacement(candidates, samples, target, targetArea, maximumBoundaryError,
+                                  envelopes != nullptr
+                                      ? &envelopes->forDistance(maximumBoundaryError) : nullptr);
 }
 
 // Cells of the target's bounding rectangle that no path element touches are
@@ -1426,7 +1572,8 @@ std::optional<InwardCurvePlacement> inwardCurvePlacement(
     const QPainterPath &target,
     double targetArea,
     double boundaryTolerance,
-    const ContainmentGrid *grid = nullptr) {
+    const ContainmentGrid *grid = nullptr,
+    SpillEnvelopes *envelopes = nullptr) {
     const QPointF middle = segmentPoint(segment, 0.5);
     QPolygonF controlPoints({segment.start, segment.control, segment.end});
     const QRectF bounds = controlPoints.boundingRect();
@@ -1453,15 +1600,24 @@ std::optional<InwardCurvePlacement> inwardCurvePlacement(
             }
         }
     }
-    const LocalTarget local(target, candidates);
+    const SpillEnvelopes::Envelope *envelope =
+        envelopes != nullptr ? &envelopes->forDistance(maximumError) : nullptr;
+    const LocalTarget local(target, envelope, candidates);
     std::optional<InwardCurvePlacement> best;
     for (const InwardCandidate &inward : inwardCandidates) {
+        CoverageDuty duty;
+        if (envelope != nullptr) {
+            QVector<QPointF> region = samples;
+            region.push_back(inward.coreMiddle);
+            duty = coverageDuty(region);
+        }
         const auto placement = evaluateCurvePlacement(*inward.candidate.primitive,
                                                       samples,
                                                       inward.candidate.transform,
                                                       local.forCandidate(inward.candidate),
                                                       targetArea,
-                                                      maximumError);
+                                                      maximumError,
+                                                      &duty);
         if (!placement) {
             continue;
         }
@@ -1471,7 +1627,7 @@ std::optional<InwardCurvePlacement> inwardCurvePlacement(
             continue;
         }
         InwardCurvePlacement candidate{*placement, inward.coreMiddle};
-        if (!best || betterCurvePlacement(candidate.curve, best->curve)) {
+        if (!best || betterDutifulPlacement(candidate.curve, best->curve, duty)) {
             best = std::move(candidate);
         }
     }
@@ -1485,7 +1641,8 @@ std::optional<CurvePlacement> outwardSpanPlacement(const QVector<CurvePrimitive>
                                                    const QPainterPath &target,
                                                    double targetArea,
                                                    double maximumBoundaryError,
-                                                   const ContainmentGrid *grid = nullptr) {
+                                                   const ContainmentGrid *grid = nullptr,
+                                                   SpillEnvelopes *envelopes = nullptr) {
     const QVector<QPointF> samples = sampleSegmentSpan(segments, first, last);
     if (!chordInsideTarget(samples.front(), samples.back(), target, grid)) {
         return std::nullopt;
@@ -1528,7 +1685,9 @@ std::optional<CurvePlacement> outwardSpanPlacement(const QVector<CurvePrimitive>
         }
     }
 
-    return bestCandidatePlacement(candidates, samples, target, targetArea, maximumBoundaryError);
+    return bestCandidatePlacement(candidates, samples, target, targetArea, maximumBoundaryError,
+                                  envelopes != nullptr
+                                      ? &envelopes->forDistance(maximumBoundaryError) : nullptr);
 }
 
 QVector<PenBoundarySegment> curvatureOrderedSegments(const QVector<PenBoundarySegment> &segments,
@@ -1610,7 +1769,8 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                                              double boundaryTolerance,
                                              const std::function<bool()> &cancelled,
                                              bool *wasCancelled,
-                                             const ContainmentGrid *grid = nullptr) {
+                                             const ContainmentGrid *grid = nullptr,
+                                             SpillEnvelopes *envelopes = nullptr) {
     const int count = segments.size();
     QVector<bool> outward(count, false);
     QVector<CurveSpanPlacement> candidates;
@@ -1661,7 +1821,8 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                                                          segments[i],
                                                          target,
                                                          targetArea,
-                                                         maximumError)) {
+                                                         maximumError,
+                                                         envelopes)) {
             candidatesAt[i].push_back(candidates.size());
             candidates.push_back({i, i, *placement});
         }
@@ -1712,7 +1873,8 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                                                              target,
                                                              targetArea,
                                                              maximumError,
-                                                             grid);
+                                                             grid,
+                                                             envelopes);
                 if (!placement) {
                     continue;
                 }
@@ -2019,6 +2181,11 @@ PenFillResult fillPenPath(const PenFillRequest &request,
     result.targetArea = pathArea(contour.path);
     result.shapeLimit = pointCount * std::max(1, request.shapeLimitPerPoint);
     const ContainmentGrid containment(contour.path);
+    std::optional<SpillEnvelopes> spillEnvelopes;
+    if (request.spillWithinTolerance) {
+        spillEnvelopes.emplace(contour.path, request.boundaryTolerance);
+    }
+    SpillEnvelopes *const envelopes = spillEnvelopes ? &*spillEnvelopes : nullptr;
     const PolygonMeshSources meshSources = penMeshSources(primitives);
     if (loops.size() > 1) {
         QVector<CurvePrimitive> outwardCaps;
@@ -2052,9 +2219,6 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         loopFits.reserve(contour.loops.size());
         QPainterPath coverage;
         coverage.setFillRule(Qt::WindingFill);
-        int reservedPlacements = 0;
-        int desiredSamplesWithFits = 0;
-        int desiredSamplesWithoutFits = 0;
         for (const PenContourLoop &loop : contour.loops) {
             PenContour loopContour;
             loopContour.segments = loop.segments;
@@ -2075,7 +2239,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 request.boundaryTolerance,
                 cancelled,
                 &selectionCancelled,
-                &containment);
+                &containment,
+                envelopes);
             if (selectionCancelled) {
                 result.cancelled = true;
                 result.error = QStringLiteral("Pen curve-span selection timed out");
@@ -2137,7 +2302,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                     contour.path,
                     result.targetArea,
                     request.boundaryTolerance,
-                    &containment);
+                    &containment,
+                    envelopes);
             }
 
             QVector<int> curvePieces(segments.size(), 0);
@@ -2147,14 +2313,7 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 }
                 curvePieces[segmentIndex] =
                     coreCurvePieces(segments[segmentIndex], request.boundaryTolerance);
-                desiredSamplesWithoutFits += curvePieces[segmentIndex] - 1;
-                if (!spanCovered[segmentIndex] && !inwardCurves[segmentIndex]) {
-                    desiredSamplesWithFits += curvePieces[segmentIndex] - 1;
-                } else if (inwardCurves[segmentIndex]) {
-                    ++reservedPlacements;
-                }
             }
-            reservedPlacements += curveSpans.size();
             loopFits.push_back({segments, curveSpans, spanAtStart,
                                 std::move(inwardCurves), std::move(curvePieces)});
         }
@@ -2174,41 +2333,99 @@ PenFillResult fillPenPath(const PenFillRequest &request,
             }
             return pieces;
         };
-        // Primitives fitted on different loops can leave core polygons that
-        // cross or spill; the core is then rebuilt with every curve sampled.
-        const auto buildCore = [&](bool useFits,
-                                   QVector<QVector<QPointF>> *cores,
-                                   QVector<PenPlacement> *fittedPlacements,
-                                   QVector<QPainterPath> *fittedPaths,
-                                   QString *error) {
-            const int reserved = useFits ? reservedPlacements : 0;
-            const int desired = useFits ? desiredSamplesWithFits : desiredSamplesWithoutFits;
+        // Which fits are still in use; a fit whose core geometry crosses or
+        // spills is dropped on its own, so one bad fit does not cost the rest.
+        QVector<QVector<bool>> activeSpans(loopFits.size());
+        QVector<QVector<bool>> activeInwardCurves(loopFits.size());
+        for (int loopIndex = 0; loopIndex < loopFits.size(); ++loopIndex) {
+            activeSpans[loopIndex].fill(true, loopFits[loopIndex].curveSpans.size());
+            activeInwardCurves[loopIndex].fill(false, loopFits[loopIndex].segments.size());
+            for (int i = 0; i < loopFits[loopIndex].segments.size(); ++i) {
+                activeInwardCurves[loopIndex][i] = loopFits[loopIndex].inwardCurves[i].has_value();
+            }
+        }
+        // Sampled curves depend only on the segment and its piece count, so
+        // each is built once however many times the core is reassembled.
+        QHash<quint64, QVector<QPointF>> sampledCurves;
+        const auto sampledCurve = [&](int loopIndex, int segmentIndex, int pieces) {
+            const quint64 key = (static_cast<quint64>(loopIndex) << 48)
+                | (static_cast<quint64>(segmentIndex) << 16)
+                | static_cast<quint64>(pieces);
+            auto it = sampledCurves.find(key);
+            if (it == sampledCurves.end()) {
+                it = sampledCurves.insert(key, sampledCoreCurve(
+                    loopFits[loopIndex].segments[segmentIndex], contour.path,
+                    request.boundaryTolerance, pieces, &containment));
+            }
+            return it.value();
+        };
+        struct CoreBuild {
+            QVector<QVector<QPointF>> cores;
+            QVector<PenPlacement> fittedPlacements;
+            QVector<QPainterPath> fittedPaths;
+            // Self-crossings of each loop plus crossings between loops: an
+            // inward fit on a cutout can push its core across the outer core
+            // without either loop crossing itself, and such a core cannot be
+            // meshed.
+            int crossings = 0;
+            double outsideArea = 0.0;
+            // Where the trouble is, so the repair only tries the fits nearby.
+            QVector<QPointF> crossingPoints;
+            QVector<QRectF> spillBounds;
+            QString error;
+        };
+        const double maximumCoreOutsideArea = coreSpillAllowance(
+            contour.segments, result.targetArea, request.boundaryTolerance);
+        const auto buildCore = [&]() {
+            CoreBuild build;
+            int reserved = 0;
+            int desired = 0;
+            for (int loopIndex = 0; loopIndex < loopFits.size(); ++loopIndex) {
+                const LoopFit &fit = loopFits[loopIndex];
+                QVector<bool> covered(fit.segments.size(), false);
+                for (int spanIndex = 0; spanIndex < fit.curveSpans.size(); ++spanIndex) {
+                    if (!activeSpans[loopIndex][spanIndex]) {
+                        continue;
+                    }
+                    ++reserved;
+                    for (int i = fit.curveSpans[spanIndex].first;
+                         i <= fit.curveSpans[spanIndex].last; ++i) {
+                        covered[i] = true;
+                    }
+                }
+                for (int i = 0; i < fit.segments.size(); ++i) {
+                    if (activeInwardCurves[loopIndex][i]) {
+                        ++reserved;
+                    } else if (!covered[i] && fit.curvePieces[i] > 0) {
+                        desired += fit.curvePieces[i] - 1;
+                    }
+                }
+            }
             const int budget = std::max(0, result.shapeLimit - pointCount - reserved);
-            for (const LoopFit &fit : loopFits) {
+            for (int loopIndex = 0; loopIndex < loopFits.size(); ++loopIndex) {
+                const LoopFit &fit = loopFits[loopIndex];
                 const QVector<PenBoundarySegment> &segments = fit.segments;
                 const QVector<int> pieces = budgetedPieces(fit, desired, budget);
                 QVector<QPointF> corePoints;
                 corePoints.push_back(segments.front().start);
                 for (int segmentIndex = 0; segmentIndex < segments.size();) {
-                    const int spanIndex = useFits ? fit.spanAtStart[segmentIndex] : -1;
-                    if (spanIndex >= 0) {
+                    const int spanIndex = fit.spanAtStart[segmentIndex];
+                    if (spanIndex >= 0 && activeSpans[loopIndex][spanIndex]) {
                         const CurveSpanPlacement &span = fit.curveSpans[spanIndex];
-                        fittedPlacements->push_back(span.curve.placement);
-                        fittedPaths->push_back(span.curve.path);
+                        build.fittedPlacements.push_back(span.curve.placement);
+                        build.fittedPaths.push_back(span.curve.path);
                         corePoints.push_back(segments[span.last].end);
                         segmentIndex = span.last + 1;
                         continue;
                     }
                     const PenBoundarySegment &segment = segments[segmentIndex];
-                    if (useFits && fit.inwardCurves[segmentIndex]) {
-                        fittedPlacements->push_back(fit.inwardCurves[segmentIndex]->curve.placement);
-                        fittedPaths->push_back(fit.inwardCurves[segmentIndex]->curve.path);
-                        corePoints.push_back(fit.inwardCurves[segmentIndex]->coreMiddle);
+                    if (activeInwardCurves[loopIndex][segmentIndex]) {
+                        const InwardCurvePlacement &inward = *fit.inwardCurves[segmentIndex];
+                        build.fittedPlacements.push_back(inward.curve.placement);
+                        build.fittedPaths.push_back(inward.curve.path);
+                        corePoints.push_back(inward.coreMiddle);
                     } else if (pieces[segmentIndex] > 0) {
-                        corePoints += sampledCoreCurve(segment, contour.path,
-                                                       request.boundaryTolerance,
-                                                       pieces[segmentIndex],
-                                                       &containment);
+                        corePoints += sampledCurve(loopIndex, segmentIndex, pieces[segmentIndex]);
                     }
                     corePoints.push_back(segment.end);
                     ++segmentIndex;
@@ -2226,45 +2443,186 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                     normalized.removeLast();
                 }
                 if (normalized.size() < 3) {
-                    *error = QStringLiteral("The Pen contour left no polygonal core");
-                    return false;
+                    build.error = QStringLiteral("The Pen contour left no polygonal core");
+                    build.crossings = std::numeric_limits<int>::max();
+                    return build;
                 }
-                cores->push_back(std::move(normalized));
+                const PolygonContour coreContour = buildPolygonContour(normalized);
+                build.crossings += coreContour.crossings.size();
+                build.crossingPoints += coreContour.crossings;
+                build.cores.push_back(std::move(normalized));
             }
 
+            QVector<QPolygonF> corePolygons;
+            corePolygons.reserve(build.cores.size());
             QPainterPath corePath;
             corePath.setFillRule(Qt::OddEvenFill);
-            for (const QVector<QPointF> &core : std::as_const(*cores)) {
-                corePath.addPolygon(QPolygonF(core));
+            for (const QVector<QPointF> &core : std::as_const(build.cores)) {
+                corePolygons.push_back(QPolygonF(core));
+                corePath.addPolygon(corePolygons.back());
                 corePath.closeSubpath();
             }
-            const double maximumCoreOutsideArea = coreSpillAllowance(
-                contour.segments, result.targetArea, request.boundaryTolerance);
-            const double outsideArea = pathArea(corePath.subtracted(contour.path));
-            if (outsideArea > maximumCoreOutsideArea) {
-                *error = QStringLiteral("The Pen core extends outside the contour "
-                                        "(%1 over the %2 allowed)")
-                             .arg(outsideArea, 0, 'g', 4)
-                             .arg(maximumCoreOutsideArea, 0, 'g', 4);
-                return false;
+            build.crossings += polygonLoopCrossings(corePolygons, &build.crossingPoints);
+            for (int coreIndex = 1; coreIndex < corePolygons.size(); ++coreIndex) {
+                if (!corePolygons.front().containsPoint(corePolygons[coreIndex].front(),
+                                                        Qt::OddEvenFill)) {
+                    ++build.crossings;
+                    build.crossingPoints.push_back(corePolygons[coreIndex].front());
+                }
             }
-            return true;
+            if (build.crossings > 0) {
+                build.error = QStringLiteral("The Pen core loops cross");
+            }
+            const QPainterPath spill = corePath.subtracted(contour.path);
+            build.outsideArea = pathArea(spill);
+            for (const QPolygonF &polygon : spill.toFillPolygons()) {
+                build.spillBounds.push_back(polygon.boundingRect());
+            }
+            if (build.crossings == 0 && build.outsideArea > maximumCoreOutsideArea) {
+                build.error = QStringLiteral("The Pen core extends outside the contour "
+                                             "(%1 over the %2 allowed)")
+                                  .arg(build.outsideArea, 0, 'g', 4)
+                                  .arg(maximumCoreOutsideArea, 0, 'g', 4);
+            }
+            return build;
+        };
+        const auto acceptable = [&](const CoreBuild &build) {
+            return build.crossings == 0 && build.outsideArea <= maximumCoreOutsideArea;
+        };
+        const auto betterBuild = [](const CoreBuild &candidate, const CoreBuild &best) {
+            if (candidate.crossings != best.crossings) {
+                return candidate.crossings < best.crossings;
+            }
+            return candidate.outsideArea < best.outsideArea;
         };
 
-        PolygonMeshResult mesh;
-        QString coreError;
+        // A fit is implicated when its core geometry (the chord a span leaves,
+        // or the wedge to an inward fit's core point) reaches a crossing or a
+        // spill; only those are worth trying to remove.
+        const double implicationMargin = request.boundaryTolerance * 4.0 + 1e-3;
+        const auto implicated = [&](const CoreBuild &build, QRectF bounds) {
+            bounds.adjust(-implicationMargin, -implicationMargin,
+                          implicationMargin, implicationMargin);
+            for (const QPointF &point : build.crossingPoints) {
+                if (bounds.contains(point)) {
+                    return true;
+                }
+            }
+            for (const QRectF &spill : build.spillBounds) {
+                if (bounds.intersects(spill)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto spanBounds = [&](int loopIndex, int spanIndex) {
+            const LoopFit &fit = loopFits[loopIndex];
+            const CurveSpanPlacement &span = fit.curveSpans[spanIndex];
+            return QRectF(fit.segments[span.first].start,
+                          fit.segments[span.last].end).normalized();
+        };
+        const auto inwardBounds = [&](int loopIndex, int segmentIndex) {
+            const LoopFit &fit = loopFits[loopIndex];
+            const PenBoundarySegment &segment = fit.segments[segmentIndex];
+            return QPolygonF({segment.start, segment.end,
+                              fit.inwardCurves[segmentIndex]->coreMiddle}).boundingRect();
+        };
+
+        // Drop fits one at a time, each time the one whose removal helps the
+        // core most, until every loop is simple and the core stays inside.
+        CoreBuild build = buildCore();
+        for (int step = 0; !acceptable(build); ++step) {
+            if (step >= kMaximumCoreRepairSteps) {
+                break;
+            }
+            std::optional<CoreBuild> bestBuild;
+            int bestLoop = -1;
+            int bestIndex = -1;
+            bool bestIsSpan = true;
+            for (int loopIndex = 0; loopIndex < loopFits.size(); ++loopIndex) {
+                for (int spanIndex = 0; spanIndex < activeSpans[loopIndex].size(); ++spanIndex) {
+                    if (!activeSpans[loopIndex][spanIndex]
+                        || !implicated(build, spanBounds(loopIndex, spanIndex))) {
+                        continue;
+                    }
+                    if (cancelled && cancelled()) {
+                        result.cancelled = true;
+                        result.error = QStringLiteral("Pen core repair timed out");
+                        return result;
+                    }
+                    activeSpans[loopIndex][spanIndex] = false;
+                    CoreBuild candidate = buildCore();
+                    activeSpans[loopIndex][spanIndex] = true;
+                    if (!bestBuild || betterBuild(candidate, *bestBuild)) {
+                        bestBuild = std::move(candidate);
+                        bestLoop = loopIndex;
+                        bestIndex = spanIndex;
+                        bestIsSpan = true;
+                    }
+                }
+                for (int i = 0; i < activeInwardCurves[loopIndex].size(); ++i) {
+                    if (!activeInwardCurves[loopIndex][i]
+                        || !implicated(build, inwardBounds(loopIndex, i))) {
+                        continue;
+                    }
+                    if (cancelled && cancelled()) {
+                        result.cancelled = true;
+                        result.error = QStringLiteral("Pen core repair timed out");
+                        return result;
+                    }
+                    activeInwardCurves[loopIndex][i] = false;
+                    CoreBuild candidate = buildCore();
+                    activeInwardCurves[loopIndex][i] = true;
+                    if (!bestBuild || betterBuild(candidate, *bestBuild)) {
+                        bestBuild = std::move(candidate);
+                        bestLoop = loopIndex;
+                        bestIndex = i;
+                        bestIsSpan = false;
+                    }
+                }
+            }
+            if (!bestBuild) {
+                break;
+            }
+            if (bestIsSpan) {
+                activeSpans[bestLoop][bestIndex] = false;
+            } else {
+                activeInwardCurves[bestLoop][bestIndex] = false;
+            }
+            build = std::move(*bestBuild);
+        }
         QVector<QPainterPath> coveragePaths;
-        for (const bool useFits : {true, false}) {
-            QVector<QVector<QPointF>> cores;
-            QVector<PenPlacement> fittedPlacements;
-            QVector<QPainterPath> fittedPaths;
-            if (!buildCore(useFits, &cores, &fittedPlacements, &fittedPaths, &coreError)) {
-                continue;
+        PolygonMeshResult mesh;
+        for (const bool keepFits : {true, false}) {
+            if (!keepFits || !acceptable(build)) {
+                // The repair ran out of steps or of implicated fits, or the
+                // mesher rejected a core the metrics accepted; the fully
+                // sampled core is the last resort, as it always was.
+                bool anyFit = false;
+                for (int loopIndex = 0; loopIndex < loopFits.size(); ++loopIndex) {
+                    anyFit = anyFit || activeSpans[loopIndex].contains(true)
+                        || activeInwardCurves[loopIndex].contains(true);
+                    activeSpans[loopIndex].fill(false);
+                    activeInwardCurves[loopIndex].fill(false);
+                }
+                if (!anyFit) {
+                    if (!acceptable(build)) {
+                        mesh.error = build.error.isEmpty()
+                            ? QStringLiteral("The polygon crosses itself") : build.error;
+                    }
+                    break;
+                }
+                build = buildCore();
+                if (!acceptable(build)) {
+                    mesh.error = build.error.isEmpty()
+                        ? QStringLiteral("The polygon crosses itself") : build.error;
+                    break;
+                }
             }
             PolygonMeshRequest meshRequest;
             meshRequest.sources = meshSources;
             meshRequest.mergeSquares = false;
-            meshRequest.contours = std::move(cores);
+            meshRequest.contours = build.cores;
             mesh = meshPolygon(meshRequest, cancelled);
             if (mesh.cancelled || (cancelled && cancelled())) {
                 result.placements.clear();
@@ -2273,18 +2631,15 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                 return result;
             }
             if (mesh.error.isEmpty()) {
-                result.placements += fittedPlacements;
-                coveragePaths += fittedPaths;
-                coreError.clear();
                 break;
             }
-            coreError = QStringLiteral("Could not fill the Pen core: %1").arg(mesh.error);
         }
-        if (!coreError.isEmpty()) {
-            result.placements.clear();
-            result.error = coreError;
+        if (!mesh.error.isEmpty()) {
+            result.error = QStringLiteral("Could not fill the Pen core: %1").arg(mesh.error);
             return result;
         }
+        result.placements += build.fittedPlacements;
+        coveragePaths += build.fittedPaths;
         const QVector<PolygonMeshPlacement> corePlacements = optimizePolygonMeshWithEllipses(
             mesh.placements, meshSources, mesh.contour, cancelled);
         for (const PolygonMeshPlacement &placement : corePlacements) {
@@ -2359,7 +2714,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                                                                    request.boundaryTolerance,
                                                                    cancelled,
                                                                    &selectionCancelled,
-                                                                   &containment);
+                                                                   &containment,
+                                                                   envelopes);
     if (selectionCancelled) {
         result.cancelled = true;
         result.error = QStringLiteral("Pen curve-span selection timed out");
@@ -2411,7 +2767,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                                                    contour.path,
                                                    result.targetArea,
                                                    request.boundaryTolerance,
-                                                   &containment);
+                                                   &containment,
+                                                   envelopes);
         }
     }
     QVector<bool> activeSpans(curveSpans.size(), true);

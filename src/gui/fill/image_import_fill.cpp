@@ -368,6 +368,7 @@ ImageImportFillResult computeImageImportFills(
                             fill.primitives = request.primitives;
                             fill.boundaryTolerance = request.boundaryTolerance;
                             fill.shapeLimitPerPoint = request.shapeLimitPerPoint;
+                            fill.spillWithinTolerance = true;
                             PenFillResult fit = fillPenPath(fill, componentCancelled);
                             component.elapsedMs = componentClock.elapsed();
                             if (fit.cancelled && !globallyCancelled()) {

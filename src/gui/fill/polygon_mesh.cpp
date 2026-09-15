@@ -624,6 +624,55 @@ PolygonContour buildPolygonContour(const QVector<QPointF> &points, double tolera
     return result;
 }
 
+int polygonLoopCrossings(const QVector<QPolygonF> &loops, QVector<QPointF> *points) {
+    struct Edge {
+        QPointF a;
+        QPointF b;
+        QRectF bounds;
+        int loop = -1;
+    };
+
+    QVector<Edge> edges;
+    double coordinateEpsilon = 1e-12;
+    for (int loop = 0; loop < loops.size(); ++loop) {
+        const QPolygonF &polygon = loops[loop];
+        coordinateEpsilon = std::max(coordinateEpsilon, polygonCoordinateEpsilon(polygon));
+        for (int i = 0; i < polygon.size(); ++i) {
+            const QPointF a = polygon[i];
+            const QPointF b = polygon[(i + 1) % polygon.size()];
+            edges.push_back({a, b, QRectF(a, b).normalized(), loop});
+        }
+    }
+    std::sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) {
+        return a.bounds.left() < b.bounds.left();
+    });
+
+    int crossings = 0;
+    for (int i = 0; i < edges.size(); ++i) {
+        const Edge &first = edges[i];
+        for (int j = i + 1; j < edges.size(); ++j) {
+            const Edge &second = edges[j];
+            if (second.bounds.left() > first.bounds.right() + coordinateEpsilon) {
+                break;
+            }
+            if (first.loop == second.loop
+                || second.bounds.top() > first.bounds.bottom() + coordinateEpsilon
+                || first.bounds.top() > second.bounds.bottom() + coordinateEpsilon) {
+                continue;
+            }
+            QPointF point;
+            if (segmentIntersection(first.a, first.b, second.a, second.b,
+                                    coordinateEpsilon, &point)) {
+                ++crossings;
+                if (points != nullptr) {
+                    points->push_back(point);
+                }
+            }
+        }
+    }
+    return crossings;
+}
+
 PolygonMeshSources buildPolygonMeshSources(const ShapeGeometryStore &geometry) {
     return {geometryHull(geometry.shape(102)),
             geometryHull(geometry.shape(101)),

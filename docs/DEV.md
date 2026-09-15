@@ -36,10 +36,22 @@ exports grouped `C_group` folders and `C_livery` folders.
   chords require, with the sample count shared out of the shape cap. The core may
   spill outside the contour by no more than the chord sag accepted along its
   curved boundaries (with one hundred-thousandth of the area as the floor);
-  beyond that a single-loop core sheds fitted primitives until it complies, and a
-  core with cutouts is rebuilt with every curve sampled, then rejected if it still
-  spills. The cap is `shapeLimitPerPoint` times the Pen point count, 2 for the
-  interactive tools and 6 for image import.
+  beyond that the core sheds fitted primitives one at a time, each time the one
+  whose removal helps most, until it complies. With cutouts only the fits whose
+  chord or core wedge reaches a crossing or a spill are tried, cutout cores must
+  not cross one another or leave the outer core, and the fully sampled core
+  remains the last resort. The cap is `shapeLimitPerPoint` times the Pen point
+  count, 2 for the interactive tools and 6 for image import.
+  A fitted primitive may spill outside the contour by a hundred-thousandth of
+  the area at most, unless the request sets `spillWithinTolerance` (image import
+  does): then spill inside the contour dilated by the fit's boundary error
+  allowance is legal, the same distance the fit may already fall short inside.
+  Envelopes are built per component on a 1.5x ladder of distances and shared by
+  every candidate. Because a spilling fit can win on area while leaving a gap
+  the mesh would have filled, such a fit must also cover the region it stands
+  in for (the boundary it replaces down to its chord, or to its core point):
+  a fit leaving more than 5% of that region is rejected, and one leaving more
+  than 2% only wins when no better-covering fit exists.
   Candidate primitives are validated against the target clipped once to the
   candidates' joint window (a candidate meets the same target inside any window
   that contains it; oversized candidates keep the full target), a candidate
@@ -60,6 +72,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   change that is meant to alter output re-records that directory in the same
   commit. A check also prints per-object totals (shape count, curved Primitive
   count, rasterized coverage) before and after for any fixture that changed.
+  `--render <svg> <png> [scale]` draws a fill over its source outlines
+  (triangles and Squares grey, curved Primitives blue, outlines red) for
+  judging a result by eye.
   The polygonal core of a single loop uses deterministic ear clipping and
   compatible Square merging; a core with cutouts is triangulated by earcut.
   Placements are emitted from the boundary inward under a `2 * point count` shape
