@@ -1,6 +1,7 @@
 #pragma once
 
 #include "catalog_cover.h"
+#include <memory>
 
 namespace gui::compact {
 
@@ -11,9 +12,16 @@ inline constexpr int kDefaultEvaluationBudget = 60000;
 inline constexpr double kDefaultInwardAllowance = 0.5;
 inline constexpr double kDefaultObservationScale = 1.0;
 
+struct ReusableCandidate {
+    PenPlacement placement;
+    QVector<QPolygonF> polygons;
+    QRectF bounds;
+};
+
 struct FillOptions {
     QVector<PenPlacement> initialPlacements;
     QVector<QPolygonF> leeway;
+    std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     std::function<void(int, int, int)> workProgress;
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;

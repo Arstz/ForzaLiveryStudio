@@ -397,6 +397,19 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         {QPolygonF({{36, 30}, {40, 26}, {40, 30}})});
     require(cornerModel.measure(cutCorner).maximumCornerDistance > 1,
         QStringLiteral("Loss of a genuine corner was ignored"));
+    const auto observedCorner = cornerModel.observationSupport(cutCorner);
+    const auto globalCornerMetrics = cornerModel.measure(cutCorner, observedCorner);
+    const auto fullWindowMetrics = cornerModel.measure(cutCorner, observedCorner, QRectF(-100, -100, 200, 200));
+    require(cornerModel.diagnostics(globalCornerMetrics) == cornerModel.diagnostics(fullWindowMetrics),
+        QStringLiteral("A complete measurement window changed boundary metrics"));
+    const auto leftWindowMetrics = cornerModel.measure(cutCorner, observedCorner, QRectF(-45, -35, 20, 70));
+    require(leftWindowMetrics.maximumCornerDistance < 1e-6
+        && leftWindowMetrics.samples < globalCornerMetrics.samples,
+        QStringLiteral("Local boundary scoring includes remote corner defects"));
+    const gui::catalog::Polygons smallIsland{QPolygonF(QRectF(200, 200, 1, 1))};
+    const gui::compact::BoundaryModel islandModel(squareRegion.required + smallIsland, 1.0);
+    require(islandModel.measure(squareRegion.required + smallIsland).components == 2,
+        QStringLiteral("Local evaluation silently ignores a small intended component"));
     QPolygonF star;
     for (int index = 0; index < 16; ++index) {
         QTransform rotation;
@@ -488,6 +501,33 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
                 QStringLiteral("Wider margin changed a feasible tight placement"));
         }
         output << "Large-region and wider-margin regressions passed\n" << Qt::flush;
+        gui::PenFillRequest thinBand;
+        QTransform outerBand, innerBand;
+        outerBand.scale(1.5, 1.5);
+        innerBand.scale(1.375, 1.375);
+        thinBand.loops = {polygonLoop(outerBand.map(circle->shape.contours.front())),
+            polygonLoop(innerBand.map(circle->shape.contours.front()), gui::PenLoopKind::Cutout)};
+        auto thinOptions = options;
+        thinOptions.evaluationBudget = 1200;
+        thinOptions.retainFailedFill = true;
+        const auto thinResult = fit(thinBand, catalog, thinOptions);
+        const auto thinSeed = thinResult.diagnostics.value("profileSeed").toObject();
+        require(!thinResult.fill.placements.isEmpty() && thinSeed.value("thinRegionCandidates").toBool()
+            && thinSeed.value("bodyCenters").toInt() > 24 && thinSeed.value("bodyCandidates").toInt() > 0,
+            QStringLiteral("Thin-band seed did not use clearance-spaced catalog candidates"));
+        require(std::abs(thinResult.diagnostics.value("areaErrorLimit").toDouble()
+                - thinResult.fill.targetArea * thinOptions.areaErrorRatio) < 1e-6
+            && thinResult.diagnostics.value("maximumExcessTurnLimit").toDouble() == 0.6,
+            QStringLiteral("Thin-band seeding relaxed verification limits"));
+        const auto thinRepeat = fit(thinBand, catalog, thinOptions);
+        require(thinRepeat.fill.placements.size() == thinResult.fill.placements.size(),
+            QStringLiteral("Thin-band repeat count changed"));
+        for (int index = 0; index < thinResult.fill.placements.size(); ++index) {
+            require(thinRepeat.fill.placements[index].shapeId == thinResult.fill.placements[index].shapeId
+                && thinRepeat.fill.placements[index].transform == thinResult.fill.placements[index].transform,
+                QStringLiteral("Thin-band repeat transform changed"));
+        }
+        output << "Thin band " << QJsonDocument(thinResult.diagnostics).toJson(QJsonDocument::Compact) << '\n';
     }
     const auto nativeResult = fit(native, catalog, options);
     if (nativeResult.fill.placements.size() != 1) {
@@ -516,6 +556,51 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
     invalid.boundaryAllowance = std::numeric_limits<double>::infinity();
     require(!fit(square, catalog, invalid).fill.error.isEmpty(), QStringLiteral("Infinite compact allowance accepted"));
     output << "Compact approximation, native shape, repeatability, budget and cancellation tests passed\n" << Qt::flush;
+}
+
+void benchmarkExactReduction(const QString &path, const QVector<gui::catalog::Primitive> &catalog) {
+    QFile file(path);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    const auto recorded = QJsonDocument::fromJson(file.readAll()).object().value("result").toObject().value("placements").toArray();
+    QVector<gui::PenPlacement> placements;
+    for (const auto &entry : recorded) {
+        const auto fields = entry.toObject().value("transform").toArray();
+        require(fields.size() == 6, QStringLiteral("Invalid recorded transform"));
+        gui::PenPlacement placement;
+        placement.shapeId = entry.toObject().value("shapeId").toInt();
+        placement.transform = QTransform(fields[0].toDouble(), fields[1].toDouble(), fields[2].toDouble(),
+            fields[3].toDouble(), fields[4].toDouble(), fields[5].toDouble());
+        placements.push_back(placement);
+    }
+    require(!placements.isEmpty(), QStringLiteral("Exact benchmark needs recorded placements"));
+    const auto coverage = [&](const QVector<gui::PenPlacement> &pieces) {
+        gui::catalog::Polygons polygons;
+        for (const auto &piece : pieces) {
+            const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [&](const auto &entry) {
+                return entry.shape.shapeId == piece.shapeId;
+            });
+            require(primitive != catalog.cend(), QStringLiteral("Recorded primitive is unavailable"));
+            polygons += gui::catalog::mapped(primitive->shape, piece.transform);
+        }
+        return gui::catalog::unite(polygons);
+    };
+    QElapsedTimer timer;
+    timer.start();
+    const auto result = gui::compact::reduceExactCoverage(placements, catalog, {});
+    const auto elapsed = timer.elapsed();
+    const auto before = coverage(placements);
+    const auto after = coverage(result.placements);
+    require(gui::catalog::subtract(before, after).isEmpty() && gui::catalog::subtract(after, before).isEmpty(),
+        QStringLiteral("Exact benchmark changed coverage"));
+    const auto repeat = gui::compact::reduceExactCoverage(placements, catalog, {});
+    require(repeat.placements.size() == result.placements.size(), QStringLiteral("Exact benchmark repeat count differs"));
+    for (int index = 0; index < result.placements.size(); ++index) {
+        require(result.placements[index].shapeId == repeat.placements[index].shapeId
+            && result.placements[index].transform == repeat.placements[index].transform,
+            QStringLiteral("Exact benchmark repeat transform differs"));
+    }
+    QTextStream(stdout) << QJsonDocument(QJsonObject{{"elapsedMilliseconds", elapsed},
+        {"diagnostics", result.diagnostics}, {"sameCoverage", true}, {"deterministic", true}}).toJson(QJsonDocument::Compact) << '\n';
 }
 
 void benchmarkBoundary(const QString &path, const QVector<gui::catalog::Primitive> &catalog) {
@@ -593,6 +678,62 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
     }
     const Polygons target{QPolygonF({{0, 0}, {100, 0}, {100, 100}, {0, 100}})};
     const Polygons hole{QPolygonF({{10, 10}, {20, 10}, {20, 20}, {10, 20}})};
+    CoverageOwnership ownership;
+    QVector<Polygons> footprints{target, target, hole};
+    ownership.synchronize(footprints);
+    require(ownership.exclusive({0}).isEmpty() && ownership.exclusive({1}).isEmpty(),
+        QStringLiteral("Duplicate support was not recognized"));
+    const auto joint = ownership.exclusive({0, 1});
+    require(std::abs(gui::catalog::area(joint) - 9900) < 1e-6,
+        QStringLiteral("Group ownership was incorrectly reduced to individual private areas"));
+    ownership.exclusive({0});
+    require(ownership.diagnostics().value("cacheHits").toInt() > 0,
+        QStringLiteral("Ownership cache did not reuse a footprint"));
+    ownership.rememberFailure({0, 1}, false);
+    require(ownership.failed({1, 0}, false) && !ownership.failed({0, 1}, true),
+        QStringLiteral("Failed merge cache ignored group order or search mode"));
+    ownership.erase(1);
+    footprints.removeAt(1);
+    ownership.synchronize(footprints);
+    require(!ownership.failed({0, 1}, false) && std::abs(gui::catalog::area(ownership.exclusive({0})) - 9900) < 1e-6,
+        QStringLiteral("Deletion retained stale ownership or failed-merge data"));
+    QTransform remoteShift;
+    remoteShift.translate(300, 0);
+    footprints.push_back({remoteShift.map(target.front())});
+    ownership.synchronize(footprints);
+    ownership.exclusive({2});
+    const int hitsBeforeErase = ownership.diagnostics().value("cacheHits").toInt();
+    ownership.erase(1);
+    footprints.removeAt(1);
+    ownership.synchronize(footprints);
+    ownership.exclusive({1});
+    require(ownership.diagnostics().value("cacheHits").toInt() == hitsBeforeErase + 1,
+        QStringLiteral("Remote ownership was invalidated by a local deletion"));
+    for (int trial = 0; trial < 12; ++trial) {
+        footprints.clear();
+        for (int index = 0; index < 8; ++index) {
+            QTransform placement;
+            placement.translate(index * 13 + trial, index % 3 * 17);
+            placement.rotate(index * 9 + trial);
+            placement.shear(trial * 0.01, 0);
+            footprints.push_back({placement.map(target.front())});
+        }
+        footprints[3] = gui::catalog::subtract(footprints[3], hole);
+        ownership.synchronize(footprints);
+        for (int index = 0; index < footprints.size(); ++index) {
+            for (const QVector<int> &members : {QVector<int>{index}, QVector<int>{index, (index + 1) % 8}}) {
+                Polygons chosen, remaining;
+                for (int member = 0; member < footprints.size(); ++member) {
+                    (members.contains(member) ? chosen : remaining) += footprints[member];
+                }
+                const auto expected = gui::catalog::subtract(gui::catalog::unite(chosen), gui::catalog::unite(remaining));
+                const auto actual = ownership.exclusive(members);
+                require(gui::catalog::area(gui::catalog::subtract(expected, actual))
+                    + gui::catalog::area(gui::catalog::subtract(actual, expected)) < 1e-4,
+                    QStringLiteral("Local ownership differs from full-union subtraction"));
+            }
+        }
+    }
     const BoundaryModel model(target, 1);
     const auto targetMetrics = model.measure(target);
     const auto exact = reductionState(target, target, model, 0.5);
@@ -642,7 +783,10 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
     require(!result.fill.cancelled && !result.fill.error.isEmpty() && !result.fill.placements.isEmpty()
         && result.fill.placements.size() < options.initialPlacements.size(),
         QStringLiteral("Remote quality failure prevented duplicate removal"));
-    require(result.diagnostics.value("approximateReductions").toInt() > 0, QStringLiteral("Approximate reduction was not recorded"));
+    require(result.diagnostics.value("approximateReductions").toInt()
+        + result.diagnostics.value("exactReductions").toInt() > 0, QStringLiteral("Reduction was not recorded"));
+    require(result.diagnostics.value("exactReductions").toInt() > 0,
+        QStringLiteral("Duplicate removal did not use exact-union verification"));
     const auto stages = result.diagnostics.value("stageWork").toObject();
     int used = 0;
     for (const auto &name : {"recognition", "repair", "spatialReduction", "exposedReduction", "polish"}) {
@@ -785,6 +929,65 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
         piece.transform.translate(-bounds.left(), -bounds.top());
         return piece;
     };
+    const gui::PenFillRequest separatedRequest{{}, {polygonLoop({{0, 0}, {1240, 0}, {1240, 40}, {0, 40}}),
+        polygonLoop({{600, 10}, {620, 10}, {620, 30}, {600, 30}}, gui::PenLoopKind::Cutout)}};
+    FillOptions separatedOptions;
+    for (int index = 0; index < 31; ++index) {
+        const double x = index * 40.0;
+        if (index == 15) {
+            separatedOptions.initialPlacements += {placedRectangle({600, 0, 40, 10}),
+                placedRectangle({600, 30, 40, 10}), placedRectangle({620, 10, 20, 20})};
+        } else {
+            separatedOptions.initialPlacements.push_back(placedRectangle({x, 0, 40, 40}));
+        }
+    }
+    separatedOptions.shapeBudget = separatedOptions.initialPlacements.size();
+    separatedOptions.evaluationBudget = 1200;
+    separatedOptions.retainFailedFill = true;
+    const auto separated = gui::compact::fillRegion(separatedRequest, {*square}, separatedOptions);
+    QTextStream(stdout) << "Separated scoring " << QJsonDocument(separated.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    require(separated.diagnostics.value("localContexts").toInt() > 0
+        && separated.diagnostics.value("localEvaluations").toInt() > 0
+        && separated.diagnostics.value("boundaryQuality").toObject().value("components").toInt() == 1
+        && separated.diagnostics.value("boundaryQuality").toObject().value("holes").toInt() == 1
+        && separated.diagnostics.value("missingBeyondInward").toDouble() < 1e-6
+        && separated.diagnostics.value("outsideEnvelope").toDouble() < 1e-6,
+        QStringLiteral("Local scoring lost remote coverage or did not run"));
+    const auto separatedRepeat = gui::compact::fillRegion(separatedRequest, {*square}, separatedOptions);
+    require(separatedRepeat.fill.placements.size() == separated.fill.placements.size(),
+        QStringLiteral("Local scoring count is not deterministic"));
+    for (int index = 0; index < separated.fill.placements.size(); ++index) {
+        require(separatedRepeat.fill.placements[index].shapeId == separated.fill.placements[index].shapeId
+            && separatedRepeat.fill.placements[index].transform == separated.fill.placements[index].transform,
+            QStringLiteral("Local scoring transforms are not deterministic"));
+    }
+    const gui::PenFillRequest pairedRequest{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
+        polygonLoop({{20, 20}, {80, 20}, {80, 80}, {20, 80}}, gui::PenLoopKind::Cutout)}};
+    FillOptions pairedOptions;
+    pairedOptions.initialPlacements = {placedRectangle({0, 0, 100, 20}), placedRectangle({0, 80, 100, 20}),
+        placedRectangle({80, 20, 20, 60}), placedRectangle({0, 20, 20, 29}), placedRectangle({0, 51, 20, 29})};
+    pairedOptions.shapeBudget = pairedOptions.initialPlacements.size();
+    pairedOptions.evaluationBudget = 160;
+    pairedOptions.boundaryAllowance = 0.01;
+    pairedOptions.retainFailedFill = true;
+    const auto paired = gui::compact::fillRegion(pairedRequest, {*square}, pairedOptions);
+    QTextStream(stdout) << "Paired repair " << QJsonDocument(paired.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    require(paired.diagnostics.value("jointRepairs").toInt() > 0
+        && paired.diagnostics.value("residualInsertions").toInt() == 0
+        && paired.diagnostics.value("approximationVerified").toBool()
+        && paired.diagnostics.value("evaluations").toInt() <= pairedOptions.evaluationBudget
+        && paired.fill.placements.size() <= pairedOptions.shapeBudget
+        && paired.diagnostics.value("missingBeyondInward").toDouble() < 1e-6
+        && paired.diagnostics.value("outsideEnvelope").toDouble() < 1e-6,
+        QStringLiteral("Paired repair failed to close a gap without adding shapes"));
+    const auto pairedRepeat = gui::compact::fillRegion(pairedRequest, {*square}, pairedOptions);
+    require(pairedRepeat.fill.placements.size() == paired.fill.placements.size(),
+        QStringLiteral("Paired repair count is not deterministic"));
+    for (int index = 0; index < paired.fill.placements.size(); ++index) {
+        require(pairedRepeat.fill.placements[index].shapeId == paired.fill.placements[index].shapeId
+            && pairedRepeat.fill.placements[index].transform == paired.fill.placements[index].transform,
+            QStringLiteral("Paired repair transforms are not deterministic"));
+    }
     const gui::PenFillRequest splitRingRequest{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
         polygonLoop({{20, 20}, {80, 20}, {80, 80}, {20, 80}}, gui::PenLoopKind::Cutout)}};
     FillOptions splitOptions;
@@ -805,6 +1008,143 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     require(joinedRing.diagnostics.value("feasibleCheckpoints").toInt() > 0
         && joinedRing.diagnostics.value("feasibleRestores").toInt() > 0,
         QStringLiteral("Feasible intermediate restoration was not exercised"));
+    auto poolOptions = splitOptions;
+    poolOptions.initialPlacements = {placedRectangle({0, 0, 50, 20}), placedRectangle({50, 0, 50, 20}),
+        placedRectangle({0, 80, 50, 20}), placedRectangle({50, 80, 50, 20}),
+        placedRectangle({0, 20, 20, 30}), placedRectangle({0, 50, 20, 30}),
+        placedRectangle({80, 20, 20, 30}), placedRectangle({80, 50, 20, 30})};
+    poolOptions.shapeBudget = poolOptions.initialPlacements.size();
+    auto reusePool = std::make_shared<QVector<ReusableCandidate>>();
+    for (const QRectF &frame : {QRectF(0, 0, 100, 20), QRectF(0, 80, 100, 20),
+            QRectF(0, 20, 20, 60), QRectF(80, 20, 20, 60)}) {
+        const auto placement = placedRectangle(frame);
+        reusePool->push_back({placement, gui::catalog::mapped(square->shape, placement.transform), frame});
+    }
+    poolOptions.replacementCandidates = reusePool;
+    const auto reusedRing = gui::compact::fillRegion(splitRingRequest, {*square}, poolOptions);
+    QTextStream(stdout) << "Reused ring " << QJsonDocument(reusedRing.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    require(reusedRing.diagnostics.value("reusedMerges").toInt() > 0
+        && reusedRing.diagnostics.value("reusedPairs").toInt() > 0
+        && reusedRing.fill.placements.size() < poolOptions.initialPlacements.size()
+        && reusedRing.diagnostics.value("approximationVerified").toBool(),
+        QStringLiteral("Candidate reuse failed to reduce a verified cover"));
+    const auto reuseRepeat = gui::compact::fillRegion(splitRingRequest, {*square}, poolOptions);
+    require(reuseRepeat.fill.placements.size() == reusedRing.fill.placements.size(),
+        QStringLiteral("Candidate reuse count is not deterministic"));
+    for (int index = 0; index < reusedRing.fill.placements.size(); ++index) {
+        require(reuseRepeat.fill.placements[index].transform == reusedRing.fill.placements[index].transform,
+            QStringLiteral("Candidate reuse transform is not deterministic"));
+    }
+    auto uncachedOptions = poolOptions;
+    uncachedOptions.replacementCandidates.reset();
+    const auto uncachedRing = gui::compact::fillRegion(splitRingRequest, {*square}, uncachedOptions);
+    QTextStream(stdout) << "Uncached ring " << QJsonDocument(uncachedRing.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    require(uncachedRing.diagnostics.value("approximationVerified").toBool()
+        && uncachedRing.fill.placements.size() < uncachedOptions.initialPlacements.size()
+        && uncachedRing.diagnostics.value("boundaryQuality").toObject().value("energy").toDouble() == 0,
+        QStringLiteral("Exact final reduction failed to preserve the uncached cover"));
+    const auto exactRing = reduceExactCoverage(uncachedOptions.initialPlacements, {*square}, {});
+    require(exactRing.placements.size() == 4, QStringLiteral("Exact envelope reduction failed to join split sides"));
+    const auto exactCoverage = [&](const QVector<gui::PenPlacement> &placements) {
+        Polygons polygons;
+        for (const auto &piece : placements) {
+            polygons += gui::catalog::mapped(square->shape, piece.transform);
+        }
+        return gui::catalog::unite(polygons);
+    };
+    const auto ringBefore = exactCoverage(uncachedOptions.initialPlacements);
+    const auto ringAfter = exactCoverage(exactRing.placements);
+    require(gui::catalog::subtract(ringBefore, ringAfter).isEmpty()
+        && gui::catalog::subtract(ringAfter, ringBefore).isEmpty(),
+        QStringLiteral("Exact reduction changed the union or filled an intended hole"));
+    const auto exactRepeat = reduceExactCoverage(uncachedOptions.initialPlacements, {*square}, {});
+    require(exactRepeat.placements.size() == exactRing.placements.size(), QStringLiteral("Exact reduction count changed"));
+    for (int index = 0; index < exactRing.placements.size(); ++index) {
+        require(exactRepeat.placements[index].transform == exactRing.placements[index].transform,
+            QStringLiteral("Exact reduction transforms changed"));
+    }
+    const auto exactCancelled = reduceExactCoverage(uncachedOptions.initialPlacements, {*square}, {}, [] { return true; });
+    require(exactCancelled.placements.size() == uncachedOptions.initialPlacements.size(),
+        QStringLiteral("Cancelled exact reduction changed the cover"));
+    QTextStream(stdout) << "Exact ring " << QJsonDocument(exactRing.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    const auto native = std::find_if(catalog.cbegin(), catalog.cend(), [](const auto &entry) { return entry.shape.shapeId == 2117; });
+    require(native != catalog.cend(), QStringLiteral("Missing curved exact-reduction shape"));
+    const auto primitive = [&](int id, const Polygons &polygons) {
+        gui::catalog::Primitive entry;
+        entry.shape.shapeId = id;
+        entry.shape.contours = polygons;
+        entry.shape.silhouette = gui::catalog::painterPath(polygons);
+        entry.shape.bounds = entry.shape.silhouette.boundingRect();
+        entry.shape.area = gui::catalog::area(polygons);
+        return entry;
+    };
+    const auto nativeCoverage = gui::catalog::mapped(native->shape, QTransform());
+    const auto nativeBounds = native->shape.bounds;
+    const Polygons leftHalf{QPolygonF(QRectF(nativeBounds.left(), nativeBounds.top(),
+        nativeBounds.width() / 2, nativeBounds.height()))};
+    const auto left = primitive(900001, gui::catalog::intersect(nativeCoverage, leftHalf));
+    const auto right = primitive(900002, gui::catalog::subtract(nativeCoverage, leftHalf));
+    gui::PenPlacement leftPlacement, rightPlacement, nativePlacement;
+    leftPlacement.shapeId = left.shape.shapeId;
+    rightPlacement.shapeId = right.shape.shapeId;
+    nativePlacement.shapeId = native->shape.shapeId;
+    const QVector<ReusableCandidate> curvedPool{{nativePlacement, nativeCoverage, nativeBounds}};
+    const auto curvedExact = reduceExactCoverage({leftPlacement, rightPlacement}, {left, right, *native}, curvedPool);
+    require(curvedExact.placements.size() == 1 && curvedExact.placements.front().shapeId == native->shape.shapeId,
+        QStringLiteral("Exact candidate replacement could not use a non-basic catalog shape"));
+    const auto firstShared = primitive(900003, {QPolygonF(QRectF(0, 0, 60, 20))});
+    const auto secondShared = primitive(900004, {QPolygonF(QRectF(40, 0, 60, 20))});
+    const auto sharedHole = primitive(900005, {QPolygonF(QRectF(0, 0, 40, 20)), QPolygonF(QRectF(60, 0, 40, 20))});
+    leftPlacement.shapeId = firstShared.shape.shapeId;
+    rightPlacement.shapeId = secondShared.shape.shapeId;
+    nativePlacement.shapeId = sharedHole.shape.shapeId;
+    const auto sharedExact = reduceExactCoverage({leftPlacement, rightPlacement}, {firstShared, secondShared, sharedHole},
+        {{nativePlacement, sharedHole.shape.contours, sharedHole.shape.bounds}});
+    require(sharedExact.placements.size() == 2 && sharedExact.diagnostics.value("merges").toInt() == 0,
+        QStringLiteral("Individual ownership allowed loss of jointly owned support"));
+    const auto remote = primitive(900006, {QPolygonF(QRectF(120, 0, 20, 20))});
+    const auto sharedReplacement = primitive(900007, sharedHole.shape.contours + remote.shape.contours);
+    gui::PenPlacement remotePlacement;
+    remotePlacement.shapeId = remote.shape.shapeId;
+    nativePlacement.shapeId = sharedReplacement.shape.shapeId;
+    const auto restoredExact = reduceExactCoverage({leftPlacement, rightPlacement, remotePlacement},
+        {firstShared, secondShared, remote, sharedReplacement},
+        {{nativePlacement, sharedReplacement.shape.contours, sharedReplacement.shape.bounds}});
+    require(restoredExact.placements.size() == 2 && restoredExact.diagnostics.value("merges").toInt() == 1,
+        QStringLiteral("Shared-support restoration could not retain a smaller exact replacement"));
+    for (int trial = 0; trial < 16; ++trial) {
+        auto transformed = uncachedOptions.initialPlacements;
+        QTransform frame;
+        frame.translate(trial * 7.25, trial * -3.5);
+        frame.rotate(trial * 11.25);
+        frame.shear(trial * 0.03125, 0);
+        frame.scale(trial % 2 == 0 ? -1 : 1, 0.5 + trial * 0.125);
+        for (auto &piece : transformed) {
+            piece.transform = gui::catalog::emittedTransform(piece.transform * frame);
+        }
+        const auto reduced = reduceExactCoverage(transformed, {*square}, {});
+        const auto transformedBefore = exactCoverage(transformed);
+        const auto transformedAfter = exactCoverage(reduced.placements);
+        require(reduced.placements.size() <= transformed.size()
+            && gui::catalog::subtract(transformedBefore, transformedAfter).isEmpty()
+            && gui::catalog::subtract(transformedAfter, transformedBefore).isEmpty(),
+            QStringLiteral("Exact reduction changed a reflected or affine-transformed union"));
+    }
+    auto stalePool = curvedPool;
+    stalePool.front().placement.transform.translate(10000, 10000);
+    leftPlacement.shapeId = left.shape.shapeId;
+    rightPlacement.shapeId = right.shape.shapeId;
+    const auto staleExact = reduceExactCoverage({leftPlacement, rightPlacement}, {left, right, *native}, stalePool);
+    require(staleExact.placements.size() == 2, QStringLiteral("Exact reduction trusted stale cached geometry"));
+    auto forgedPool = std::make_shared<QVector<ReusableCandidate>>(*reusePool);
+    for (auto &candidate : *forgedPool) {
+        candidate.placement.transform.translate(10000, 10000);
+    }
+    poolOptions.replacementCandidates = forgedPool;
+    const auto forgedResult = gui::compact::fillRegion(splitRingRequest, {*square}, poolOptions);
+    require(forgedResult.diagnostics.value("reusedMerges").toInt() == 0
+        && forgedResult.diagnostics.value("outsideEnvelope").toDouble() < 1e-6,
+        QStringLiteral("Cached geometry bypassed emitted-transform verification"));
     QTextStream(stdout) << "Residual repair, coverage guards, reference calibration and boundary retention passed\n";
 }
 
@@ -1001,6 +1341,10 @@ int main(int argc, char **argv) {
         }
         const QVector<gui::catalog::Primitive> fullCatalog = gui::catalog::buildCatalog(geometry, &error);
         require(error.isEmpty(), error);
+        if (application.arguments().size() == 3 && application.arguments()[1] == QStringLiteral("--exact-reduction")) {
+            benchmarkExactReduction(application.arguments()[2], fullCatalog);
+            return 0;
+        }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--compact-search-tests")) {
             compactSearchTests(fullCatalog);
             return 0;
@@ -1060,6 +1404,24 @@ int main(int argc, char **argv) {
                     output << count << " shapes, missing " << missing << ", spill " << spill
                            << ", " << timer.elapsed() << " ms\n" << Qt::flush;
                 });
+            QJsonObject footprintCounts;
+            for (double threshold : {1.0, 10.0, 25.0, 100.0}) {
+                int count = 0;
+                double area = 0.0;
+                for (const auto &placement : result.fill.placements) {
+                    const auto primitive = std::find_if(fullCatalog.cbegin(), fullCatalog.cend(), [&](const auto &entry) {
+                        return entry.shape.shapeId == placement.shapeId;
+                    });
+                    require(primitive != fullCatalog.cend(), QStringLiteral("Replay placement missing from catalog"));
+                    const double footprint = gui::catalog::area(gui::catalog::mapped(primitive->shape, placement.transform));
+                    if (footprint < threshold) {
+                        ++count;
+                        area += footprint;
+                    }
+                }
+                footprintCounts.insert(QString::number(threshold), QJsonObject{{"count", count}, {"area", area}});
+            }
+            result.diagnostics.insert(QStringLiteral("replayFootprintsBelow"), footprintCounts);
             output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
             output << "Completed in " << timer.elapsed() << " ms\n" << Qt::flush;
             if (options.retainFailedFill) {

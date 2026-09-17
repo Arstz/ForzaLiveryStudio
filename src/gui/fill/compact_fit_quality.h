@@ -45,6 +45,8 @@ public:
     catalog::Polygons observationSupport(const catalog::Polygons &addition, const ObservationWindow &window) const;
     BoundaryMetrics measure(const catalog::Polygons &coverage) const;
     BoundaryMetrics measure(const catalog::Polygons &coverage, const catalog::Polygons &observed) const;
+    BoundaryMetrics measure(const catalog::Polygons &coverage, const catalog::Polygons &observed,
+                              const QRectF &window) const;
     double energy(const BoundaryMetrics &metrics) const;
     QJsonObject diagnostics(const BoundaryMetrics &metrics) const;
     QJsonObject performance() const;

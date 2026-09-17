@@ -44,8 +44,14 @@ constexpr double kOwnershipClearance = 1e-5;
 constexpr int kResidualTrialsPerComponent = 384;
 constexpr int kResidualCenterTrials = 256;
 constexpr int kRepairNeighbors = 4;
+constexpr int kReuseCandidates = 48;
+constexpr int kReuseFirstChoices = 4;
+constexpr int kReuseSecondChoices = 8;
 constexpr int kJointTrialsPerPair = 192;
 constexpr double kRepairConnectionBonus = 1.25;
+constexpr double kLocalWindowExtent = 1.5;
+constexpr double kLocalWindowFraction = 0.75;
+constexpr double kJointRepairMinimumFraction = 0.5;
 constexpr std::array<int, 28> kSearchShapeIds = {101, 102, 103, 109, 110, 120, 122, 124,
     126, 127, 128, 129, 130, 136, 139, 812, 901, 930, 2110, 2113, 2117, 2118,
     2123, 2133, 2134, 2135, 2136, 2321};
@@ -69,6 +75,8 @@ struct Objective {
     std::shared_ptr<BoundaryModel> boundary;
     BoundaryMetrics targetMetrics;
     std::optional<ReductionState> reductionBaseline;
+    mutable CoverageOwnership ownership;
+    std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     mutable QJsonObject coverageRejections;
     mutable QJsonObject connectorDiagnostics;
     std::function<void(int)> workProgress;
@@ -85,6 +93,18 @@ struct Objective {
     mutable int feasibleCheckpoints = 0;
     mutable int feasibleRestores = 0;
     mutable int jointMoves = 0;
+    mutable int exactReductions = 0;
+    mutable int ownershipMergeTrials = 0;
+    mutable int ownershipMerges = 0;
+    mutable int reusedCandidates = 0;
+    mutable int reuseChecks = 0;
+    mutable int reusedMerges = 0;
+    mutable int reusedPairs = 0;
+    mutable int localContexts = 0;
+    mutable int localEvaluations = 0;
+    mutable int globalMoveChecks = 0;
+    mutable int jointRepairTrials = 0;
+    mutable int jointRepairs = 0;
     int evaluationLimit = 0;
     int defectLimit = 0;
     double allowance = 0.0;
@@ -100,6 +120,11 @@ struct Context {
     Polygons residual;
     Polygons others;
     Polygons innerResidual;
+    Polygons target;
+    Polygons globalParts;
+    QRectF window;
+    QRectF measuredWindow;
+    mutable std::optional<Polygons> globalOthers;
     mutable std::optional<Polygons> inwardResidual;
     mutable std::optional<Polygons> observedOthers;
     mutable std::optional<BoundaryModel::ObservationWindow> observationWindow;
@@ -147,11 +172,72 @@ Context contextFor(const QVector<Piece> &pieces, const QVector<int> &excluded,
                    const Objective &objective) {
     Context result;
     result.objective = &objective;
+    result.target = objective.target;
     result.others = support(pieces, excluded);
     result.residual = catalog::subtract(objective.preferred, result.others);
     result.innerResidual = catalog::subtract(objective.inner, result.others);
 
     return result;
+}
+
+Context localContextFor(const QVector<Piece> &pieces, const QVector<int> &excluded,
+                        const Objective &objective) {
+    QRectF bounds;
+    for (int index : excluded) {
+        bounds = bounds.isNull() ? pieces[index].bounds : bounds.united(pieces[index].bounds);
+    }
+    const auto targetBounds = catalog::painterPath(objective.target).boundingRect();
+    const double extent = std::max(bounds.width(), bounds.height());
+    const double inset = objective.cornerAllowance * 4.0 + catalog::kVerificationClearance * 4.0;
+    const double margin = extent * kLocalWindowExtent + objective.allowance * 4.0
+        + objective.cornerAllowance * 16.0 + objective.inwardAllowance * 4.0;
+    const auto window = bounds.adjusted(-margin, -margin, margin, margin);
+    const auto overlap = window.intersected(targetBounds);
+    if (excluded.isEmpty() || overlap.width() * overlap.height()
+            >= targetBounds.width() * targetBounds.height() * kLocalWindowFraction) {
+        return contextFor(pieces, excluded, objective);
+    }
+    Context result;
+    Polygons nearby;
+    const Polygons clip{QPolygonF(window)};
+    result.objective = &objective;
+    result.window = window;
+    result.measuredWindow = window.adjusted(inset, inset, -inset, -inset);
+    result.target = catalog::intersect(objective.target, clip);
+    for (int index = 0; index < pieces.size(); ++index) {
+        if (!excluded.contains(index)) {
+            result.globalParts += pieces[index].polygons;
+            if (pieces[index].bounds.intersects(window)) {
+                nearby += pieces[index].polygons;
+            }
+        }
+    }
+    result.others = catalog::intersect(catalog::unite(nearby), clip);
+    result.residual = catalog::subtract(catalog::intersect(objective.preferred, clip), result.others);
+    result.innerResidual = catalog::subtract(catalog::intersect(objective.inner, clip), result.others);
+    ++objective.localContexts;
+
+    return result;
+}
+
+Polygons completeCoverage(const Context &context, const Polygons &addition) {
+    if (context.window.isNull()) {
+        return catalog::unite(context.others + addition);
+    }
+    if (!context.globalOthers) {
+        context.globalOthers = catalog::unite(context.globalParts);
+    }
+
+    return catalog::unite(*context.globalOthers + addition);
+}
+
+void synchronizeOwnership(const QVector<Piece> &pieces, const Objective &objective) {
+    QVector<Polygons> polygons;
+    polygons.reserve(pieces.size());
+    for (const auto &piece : pieces) {
+        polygons.push_back(piece.polygons);
+    }
+    objective.ownership.synchronize(polygons);
 }
 
 double gain(const Piece &piece, const Context &context) {
@@ -185,14 +271,16 @@ double qualityGain(const Piece &piece, const Context &context) {
         return -std::numeric_limits<double>::infinity();
     }
     ++context.objective->evaluations;
+    context.objective->localEvaluations += !context.window.isNull();
     if (context.objective->workProgress && context.objective->evaluations % kWorkReportInterval == 0) {
         context.objective->workProgress(context.objective->evaluations);
     }
-    if (!catalog::subtract(piece.polygons, context.objective->outer).isEmpty()) {
+    if ((!context.window.isNull() && !context.measuredWindow.contains(piece.bounds))
+        || !catalog::subtract(piece.polygons, context.objective->outer).isEmpty()) {
         return -std::numeric_limits<double>::infinity();
     }
     if (!context.spillExclusion) {
-        context.spillExclusion = catalog::unite(context.others + context.objective->spillFree);
+        context.spillExclusion = catalog::unite(context.others + context.spillFree);
     }
     const double covered = catalog::area(catalog::intersect(piece.polygons, context.residual));
     const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
@@ -200,7 +288,7 @@ double qualityGain(const Piece &piece, const Context &context) {
     const double areaGain = kMissingWeight * covered + kDeepErrorWeight * deepCovered - spill;
     const auto coverage = catalog::unite(context.others + piece.polygons);
     if (!context.inwardResidual) {
-        context.inwardResidual = catalog::subtract(context.objective->target,
+        context.inwardResidual = catalog::subtract(context.target,
             catalog::expanded(context.others, context.objective->fittingInwardAllowance));
     }
     const double missingBeyondAllowance = catalog::area(catalog::subtract(*context.inwardResidual,
@@ -221,8 +309,9 @@ double qualityGain(const Piece &piece, const Context &context) {
     ++context.objective->qualityEvaluations;
 
     return areaGain - context.objective->boundaryWeight * context.objective->boundary->energy(
+        
         context.objective->boundary->measure(
-            visibleSupport(coverage, *context.objective), observed))
+            visibleSupport(coverage, *context.objective), observed, context.measuredWindow))
         - kGapRepairWeight * missingBeyondAllowance;
 }
 
@@ -366,10 +455,11 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
                     if (score > best + kScoreEpsilon) {
                         if (boundaryAware) {
                             if (!safeState) {
-                                safeState = reductionStateFor(catalog::unite(context.others + piece.polygons),
+                                safeState = reductionStateFor(completeCoverage(context, piece.polygons),
                                     *context.objective);
                             }
-                            auto after = reductionStateFor(catalog::unite(context.others + trial.polygons),
+                            ++context.objective->globalMoveChecks;
+                            auto after = reductionStateFor(completeCoverage(context, trial.polygons),
                                 *context.objective);
                             if (!coverageMoveAllowed(after, *safeState, *context.objective)) {
                                 ++context.objective->coverageRejected;
@@ -477,7 +567,7 @@ void refit(QVector<Piece> *pieces, const Objective &objective,
                 continue;
             }
             ++objective.refitPlacements;
-            const auto context = contextFor(*pieces, {index}, objective);
+            const auto context = localContextFor(*pieces, {index}, objective);
             (*pieces)[index] = refine((*pieces)[index],
                 primitiveFor((*pieces)[index].placement.shapeId, primitives), context, cancelled, true, pieceLimit,
                 [&](const Piece &piece, const ReductionState &state) {
@@ -533,7 +623,7 @@ void refitNeighborhood(QVector<Piece> *pieces, const QRectF &changed,
     std::sort(neighbors.begin(), neighbors.end());
     for (int neighbor = 0; neighbor < std::min(kRefitNeighbors, static_cast<int>(neighbors.size())) && !stopped(cancelled); ++neighbor) {
         const int index = neighbors[neighbor].second;
-        const auto context = contextFor(*pieces, {index}, objective);
+        const auto context = localContextFor(*pieces, {index}, objective);
         (*pieces)[index] = refine((*pieces)[index], primitiveFor((*pieces)[index].placement.shapeId, primitives),
             context, cancelled, true);
     }
@@ -543,9 +633,21 @@ QVector<int> removalOrder(const QVector<Piece> &pieces, const Objective &objecti
                            const std::function<bool()> &cancelled) {
     QVector<std::pair<double, int>> scores;
     QVector<int> result;
+    synchronizeOwnership(pieces, objective);
     for (int index = 0; index < pieces.size() && !stopped(cancelled); ++index) {
-        const auto context = contextFor(pieces, {index}, objective);
-        scores.push_back({gain(pieces[index], context), index});
+        if (objective.evaluations >= objective.evaluationLimit) {
+            break;
+        }
+        const auto exclusive = objective.ownership.exclusive({index});
+        const double score = kMissingWeight * catalog::area(catalog::intersect(exclusive, objective.preferred))
+            - catalog::area(catalog::subtract(exclusive, objective.target))
+            + kDeepErrorWeight * (catalog::area(catalog::intersect(exclusive, objective.inner))
+                - catalog::area(catalog::subtract(exclusive, objective.outer)));
+        ++objective.evaluations;
+        if (objective.workProgress && objective.evaluations % kWorkReportInterval == 0) {
+            objective.workProgress(objective.evaluations);
+        }
+        scores.push_back({score, index});
     }
     std::sort(scores.begin(), scores.end());
     for (const auto &entry : scores) {
@@ -565,7 +667,13 @@ void prune(QVector<Piece> *pieces, const Objective &objective,
             if (stopped(cancelled)) {
                 break;
             }
-            if (reductionAllowed(support(*pieces, {index}), before, objective)) {
+            const auto remaining = support(*pieces, {index});
+            const bool identical = objective.ownership.exclusive({index}).isEmpty()
+                && catalog::subtract(before.state.coverage, remaining).isEmpty()
+                && catalog::subtract(remaining, before.state.coverage).isEmpty();
+            if (identical || reductionAllowed(remaining, before, objective)) {
+                objective.exactReductions += identical;
+                objective.ownership.erase(index);
                 pieces->removeAt(index);
                 changed = true;
                 break;
@@ -642,12 +750,15 @@ QPointF radialAnchor(const Polygons &polygons, const QTransform &normalization) 
 
 QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
                                  const QVector<catalog::Primitive> &primitives,
-                                 const std::function<bool()> &cancelled, bool broad) {
+                                 const std::function<bool()> &cancelled, bool broad, bool *complete = nullptr) {
     QVector<std::pair<double, Piece>> ranked(primitives.size(), {-std::numeric_limits<double>::infinity(), {}});
     QVector<QTransform> sourceFrames;
     QVector<Piece> result;
     std::optional<Piece> recognized;
     QPolygonF points;
+    if (complete) {
+        *complete = false;
+    }
     for (const auto &polygon : target) {
         points += polygon;
     }
@@ -711,6 +822,7 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
     if (recognized) {
         return {*recognized};
     }
+    bool completed = !stopped(cancelled) && context.objective->evaluations < proposalLimit;
     const int retained = std::min(broad ? kRetainedSeeds : kPrimaryRetainedSeeds, static_cast<int>(ranked.size()));
     for (int index = 0; index < retained; ++index) {
         auto &entry = ranked[index];
@@ -724,6 +836,10 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
             return stopped(cancelled) || context.objective->evaluations >= localLimit;
         };
         result.push_back(refine(std::move(entry.second), primitive, context, stopRefinement));
+        completed = completed && !stopRefinement();
+    }
+    if (complete) {
+        *complete = completed;
     }
 
     return result;
@@ -773,6 +889,113 @@ std::optional<QPointF> residualCenter(const Polygons &component, const std::func
     return result;
 }
 
+Piece stretchedToward(const Piece &piece, const PenPrimitive &shape, const QPointF &point,
+                       int axis, double fraction, double padding) {
+    bool invertible = false;
+    const auto inverse = piece.placement.transform.inverted(&invertible);
+    if (!invertible) {
+        return piece;
+    }
+    const auto target = inverse.map(point);
+    const auto bounds = shape.bounds;
+    const double coordinate = axis == 0 ? target.x() : target.y();
+    const double center = axis == 0 ? bounds.center().x() : bounds.center().y();
+    const double extent = axis == 0 ? bounds.width() : bounds.height();
+    const double direction = coordinate >= center ? 1.0 : -1.0;
+    const double worldScale = axis == 0 ? std::hypot(piece.placement.transform.m11(), piece.placement.transform.m12())
+        : std::hypot(piece.placement.transform.m21(), piece.placement.transform.m22());
+    if (extent <= 0.0 || worldScale <= catalog::kMinimumDeterminant) {
+        return piece;
+    }
+    const double growth = std::max(0.0, std::abs(coordinate - center) - extent * 0.5)
+        + padding / worldScale;
+    const double factor = 1.0 + fraction * growth / extent;
+    const auto anchor = axis == 0 ? QPointF(center - direction * extent * 0.5, bounds.center().y())
+        : QPointF(bounds.center().x(), center - direction * extent * 0.5);
+    QTransform stretch;
+    stretch.translate(anchor.x(), anchor.y());
+    stretch.scale(axis == 0 ? factor : 1.0, axis == 1 ? factor : 1.0);
+    stretch.translate(-anchor.x(), -anchor.y());
+
+    return makePiece(shape, stretch * piece.placement.transform);
+}
+
+bool repairJointNeighborhood(QVector<Piece> *pieces, const QVector<std::pair<double, int>> &neighbors,
+    const Polygons &component, const QPointF &center, const ReductionState &before,
+    const Objective &objective, const QVector<catalog::Primitive> &primitives,
+    int evaluationLimit, const std::function<bool()> &cancelled) {
+    const auto permitted = catalog::unite(before.coverage + objective.target);
+    const double componentArea = catalog::area(component);
+    const double areaLimit = std::max(objective.areaBudget, before.missingArea + before.spillArea);
+    const double boundaryLimit = objective.boundary->energy(before.metrics);
+    const int count = std::min(kRepairNeighbors, static_cast<int>(neighbors.size()));
+    QVector<Piece> best;
+    double bestGain = kScoreEpsilon;
+    const auto stop = [&] {
+        return stopped(cancelled) || objective.evaluations >= evaluationLimit;
+    };
+    for (int left = 0; left < count && !stop(); ++left) {
+        for (int right = left + 1; right < count && !stop(); ++right) {
+            const int first = neighbors[left].second;
+            const int second = neighbors[right].second;
+            const auto context = localContextFor(*pieces, {first, second}, objective);
+            const auto &firstShape = primitiveFor((*pieces)[first].placement.shapeId, primitives);
+            const auto &secondShape = primitiveFor((*pieces)[second].placement.shapeId, primitives);
+            for (double fraction : {1.0, 0.5, 0.25}) {
+                for (int firstAxis = 0; firstAxis < 2 && !stop(); ++firstAxis) {
+                    for (int secondAxis = 0; secondAxis < 2 && !stop(); ++secondAxis) {
+                        ++objective.evaluations;
+                        ++objective.jointRepairTrials;
+                        if (objective.workProgress && objective.evaluations % kWorkReportInterval == 0) {
+                            objective.workProgress(objective.evaluations);
+                        }
+                        auto firstPiece = stretchedToward((*pieces)[first], firstShape, center,
+                            firstAxis, fraction, objective.inwardAllowance);
+                        auto secondPiece = stretchedToward((*pieces)[second], secondShape, center,
+                            secondAxis, fraction, objective.inwardAllowance);
+                        const auto proposal = catalog::unite(firstPiece.polygons + secondPiece.polygons);
+                        if (!catalog::subtract(proposal, permitted).isEmpty()
+                            || !catalog::subtract(proposal, objective.outer).isEmpty()) {
+                            continue;
+                        }
+                        const double gained = catalog::area(catalog::intersect(proposal, component));
+                        if (gained <= bestGain || gained < componentArea * kJointRepairMinimumFraction) {
+                            continue;
+                        }
+                        ++objective.globalMoveChecks;
+                        const auto after = reductionState(completeCoverage(context, proposal),
+                            objective.target, *objective.boundary, objective.inwardAllowance);
+                        if (!coverageMoveAllowed(after, before, objective)
+                            || after.missingArea >= before.missingArea - kScoreEpsilon
+                            || after.missingArea + after.spillArea > areaLimit + kScoreEpsilon
+                            || std::abs(after.metrics.holes - objective.targetMetrics.holes)
+                                > std::abs(before.metrics.holes - objective.targetMetrics.holes)
+                            || objective.boundary->energy(after.metrics) > boundaryLimit + kScoreEpsilon) {
+                            continue;
+                        }
+                        best = *pieces;
+                        best[first] = std::move(firstPiece);
+                        best[second] = std::move(secondPiece);
+                        bestGain = gained;
+                        if (bestGain >= componentArea - kScoreEpsilon) {
+                            *pieces = std::move(best);
+                            ++objective.jointRepairs;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (best.isEmpty() || stopped(cancelled)) {
+        return false;
+    }
+    *pieces = std::move(best);
+    ++objective.jointRepairs;
+
+    return true;
+}
+
 void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                      const QVector<catalog::Primitive> &primitives, int shapeBudget,
                      int evaluationLimit, const std::function<bool()> &cancelled) {
@@ -799,6 +1022,19 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
             if (!center) {
                 continue;
             }
+            const int componentLimit = objective.evaluations
+                + std::min(kResidualTrialsPerComponent, evaluationLimit - objective.evaluations);
+            QVector<std::pair<double, int>> neighbors;
+            for (int index = 0; index < pieces->size(); ++index) {
+                neighbors.push_back({boundaryDistanceSquared((*pieces)[index].polygons, *center), index});
+            }
+            std::sort(neighbors.begin(), neighbors.end());
+            const int jointLimit = objective.evaluations + (componentLimit - objective.evaluations) / 3;
+            if (repairJointNeighborhood(pieces, neighbors, component, *center, before,
+                    objective, primitives, jointLimit, stopRepair)) {
+                inserted = true;
+                break;
+            }
             const auto gapBounds = catalog::painterPath(component).boundingRect();
             const double clearance = std::sqrt(boundaryDistanceSquared(objective.target, *center));
             const double side = std::sqrt(2.0) * clearance * 0.99;
@@ -823,8 +1059,6 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                     end + normal * bridgeRadius, start + normal * bridgeRadius})};
             const auto permitted = catalog::unite(before.coverage + objective.spillFree);
             const double componentArea = catalog::area(component);
-            const int componentLimit = objective.evaluations
-                + std::min(kResidualTrialsPerComponent, evaluationLimit - objective.evaluations);
             QVector<Piece> best;
             Polygons replacementOthers;
             int bestReplacement = -1;
@@ -952,11 +1186,6 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                     connectorEvent(QStringLiteral("compound lower score"));
                 }
             };
-            QVector<std::pair<double, int>> neighbors;
-            for (int index = 0; index < pieces->size(); ++index) {
-                neighbors.push_back({boundaryDistanceSquared((*pieces)[index].polygons, *center), index});
-            }
-            std::sort(neighbors.begin(), neighbors.end());
             const int neighborhoodLimit = objective.evaluations + (componentLimit - objective.evaluations) / 3;
             for (int neighbor = 0; neighbor < std::min(kRepairNeighbors, static_cast<int>(neighbors.size()))
                 && !stopRepair() && objective.evaluations < neighborhoodLimit; ++neighbor) {
@@ -1134,7 +1363,7 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
         const auto [first, second] = pairs[index];
         const auto originalLeft = (*pieces)[first];
         const auto originalRight = (*pieces)[second];
-        const auto context = contextFor(*pieces, {first, second}, objective);
+        const auto context = localContextFor(*pieces, {first, second}, objective);
         const int limit = objective.evaluations + std::min(kJointTrialsPerPair,
             (evaluationLimit - objective.evaluations) / std::min(8, static_cast<int>(pairs.size()) - index));
         const auto group = [](const Piece &left, const Piece &right) {
@@ -1149,7 +1378,7 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
         }
         auto current = group((*pieces)[first], (*pieces)[second]);
         double best = qualityGain(current, context);
-        auto before = reductionStateFor(catalog::unite(context.others + current.polygons), objective);
+        auto before = reductionStateFor(completeCoverage(context, current.polygons), objective);
         const double areaLimit = std::max(objective.areaBudget, before.missingArea + before.spillArea);
         const int previousMoves = objective.jointMoves;
         for (int level = 0; level < 4 && objective.evaluations < limit && !stopped(cancelled); ++level) {
@@ -1171,7 +1400,8 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
                         if (score <= best + kScoreEpsilon) {
                             continue;
                         }
-                        auto after = reductionStateFor(catalog::unite(context.others + candidate.polygons), objective);
+                        ++objective.globalMoveChecks;
+                        auto after = reductionStateFor(completeCoverage(context, candidate.polygons), objective);
                         if (!coverageMoveAllowed(after, before, objective)) {
                             ++objective.coverageRejected;
                             continue;
@@ -1192,6 +1422,122 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
             objective.jointMoves = previousMoves;
         }
     }
+}
+
+bool reuseCandidates(QVector<Piece> *pieces, const QVector<int> &excluded, const Polygons &required,
+                       const Objective &objective, const QVector<catalog::Primitive> &primitives,
+                       const ReductionContext &before, const std::function<bool()> &cancelled) {
+    if (!objective.replacementCandidates || required.isEmpty()) {
+        return false;
+    }
+    struct Choice {
+        Polygons covered;
+        int index = 0;
+        double gain = 0.0;
+    };
+    const auto &pool = *objective.replacementCandidates;
+    const auto bounds = catalog::painterPath(required).boundingRect();
+    const double boundsArea = bounds.width() * bounds.height();
+    QVector<std::pair<double, int>> ranked;
+    QVector<Choice> choices;
+    const auto advance = [&] {
+        if (stopped(cancelled) || objective.evaluations >= objective.evaluationLimit) {
+            return false;
+        }
+        ++objective.evaluations;
+        if (objective.workProgress && objective.evaluations % kWorkReportInterval == 0) {
+            objective.workProgress(objective.evaluations);
+        }
+        return true;
+    };
+    for (int index = 0; index < pool.size() && !stopped(cancelled); ++index) {
+        const auto overlap = bounds.intersected(pool[index].bounds);
+        if (!overlap.isEmpty()) {
+            const double area = pool[index].bounds.width() * pool[index].bounds.height();
+            ranked.push_back({-overlap.width() * overlap.height() / std::sqrt(std::max(area, boundsArea)), index});
+        }
+    }
+    const int retained = std::min(kReuseCandidates, static_cast<int>(ranked.size()));
+    std::partial_sort(ranked.begin(), ranked.begin() + retained, ranked.end());
+    for (int position = 0; position < retained; ++position) {
+        if (!advance()) {
+            return false;
+        }
+        const int index = ranked[position].second;
+        const auto available = std::find_if(primitives.cbegin(), primitives.cend(), [&](const auto &primitive) {
+            return primitive.shape.shapeId == pool[index].placement.shapeId;
+        });
+        if (available == primitives.cend()) {
+            continue;
+        }
+        auto covered = catalog::intersect(required, pool[index].polygons);
+        const double gained = catalog::area(covered);
+        ++objective.reusedCandidates;
+        if (gained > kScoreEpsilon) {
+            choices.push_back({std::move(covered), index, gained});
+        }
+    }
+    std::stable_sort(choices.begin(), choices.end(), [](const auto &first, const auto &second) {
+        return first.gain > second.gain;
+    });
+    const auto accept = [&](const QVector<int> &indices) {
+        if (indices.size() >= excluded.size() || !advance()) {
+            return false;
+        }
+        QVector<Piece> trial;
+        for (int index = 0; index < pieces->size(); ++index) {
+            if (!excluded.contains(index)) {
+                trial.push_back((*pieces)[index]);
+            }
+        }
+        for (int index : indices) {
+            const auto &candidate = pool[choices[index].index];
+            trial.push_back(makePiece(primitiveFor(candidate.placement.shapeId, primitives), candidate.placement.transform));
+        }
+        ++objective.reuseChecks;
+        if (reductionAllowed(support(trial), before, objective)) {
+            *pieces = std::move(trial);
+            ++objective.reusedMerges;
+            objective.reusedPairs += indices.size() == 2;
+            return true;
+        }
+        return false;
+    };
+    for (int first = 0; first < std::min(kReuseFirstChoices, static_cast<int>(choices.size())); ++first) {
+        if (stopped(cancelled) || objective.evaluations >= objective.evaluationLimit) {
+            return false;
+        }
+        if (accept({first})) {
+            return true;
+        }
+        if (excluded.size() < 3) {
+            continue;
+        }
+        QVector<std::pair<double, int>> partners;
+        for (int second = 0; second < choices.size(); ++second) {
+            if (second == first) {
+                continue;
+            }
+            if (!advance()) {
+                return false;
+            }
+            const double gained = catalog::area(catalog::subtract(choices[second].covered, choices[first].covered));
+            if (gained > kScoreEpsilon) {
+                partners.push_back({-gained, second});
+            }
+        }
+        std::sort(partners.begin(), partners.end());
+        for (int partner = 0; partner < std::min(kReuseSecondChoices, static_cast<int>(partners.size())); ++partner) {
+            if (stopped(cancelled) || objective.evaluations >= objective.evaluationLimit) {
+                return false;
+            }
+            if (accept({first, partners[partner].second})) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 bool merge(QVector<Piece> *pieces, const Objective &objective,
@@ -1222,13 +1568,18 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
                 return false;
             }
             excluded.push_back(neighbors[neighbor].second);
-            const auto context = contextFor(*pieces, excluded, objective);
-            Polygons local;
-            for (int member : excluded) {
-                local += (*pieces)[member].polygons;
+            if (objective.ownership.failed(excluded, broad)) {
+                continue;
             }
-            const auto target = catalog::intersect(catalog::unite(local), objective.target);
-            for (const auto &replacement : replacementSeeds(target, context, primitives, cancelled, broad)) {
+            const auto context = contextFor(*pieces, excluded, objective);
+            const auto target = objective.ownership.exclusive(excluded);
+            ++objective.ownershipMergeTrials;
+            if (reuseCandidates(pieces, excluded, target, objective, primitives, before, cancelled)) {
+                ++objective.ownershipMerges;
+                return true;
+            }
+            bool complete = false;
+            for (const auto &replacement : replacementSeeds(target, context, primitives, cancelled, broad, &complete)) {
                 QVector<Piece> trial;
                 for (int member = 0; member < pieces->size(); ++member) {
                     if (!excluded.contains(member)) {
@@ -1237,6 +1588,7 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
                 }
                 trial.push_back(replacement);
                 if (reductionAllowed(support(trial), before, objective)) {
+                    ++objective.ownershipMerges;
                     *pieces = std::move(trial);
                     return true;
                 }
@@ -1251,10 +1603,14 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
                     ++objective.mergeRefinements;
                     trial.back() = refine(replacement, primitiveFor(replacement.placement.shapeId, primitives), context, cancelled, true);
                     if (reductionAllowed(support(trial), before, objective)) {
+                        ++objective.ownershipMerges;
                         *pieces = std::move(trial);
                         return true;
                     }
                 }
+            }
+            if (complete && !stopped(cancelled) && objective.evaluations < objective.evaluationLimit) {
+                objective.ownership.rememberFailure(excluded, broad);
             }
         }
     }
@@ -1358,6 +1714,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         const auto region = catalog::buildRegion(request, cancelled);
         auto objective = makeObjective(region, options);
+        objective.replacementCandidates = options.replacementCandidates;
         objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Recognition);
         const auto recognitionCatalog = wholeRegionCatalog(objective, primitives);
         int currentCount = 0;
@@ -1593,11 +1950,51 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                 pieces = std::move(polished);
             }
         }
-        const auto coverage = support(pieces);
         recordTime(QStringLiteral("polish"));
         finishStage(QStringLiteral("polish"));
+        if (!stopped(cancelled) && pieces.size() > 1) {
+            QVector<PenPlacement> placements;
+            for (const auto &piece : pieces) {
+                placements.push_back(piece.placement);
+            }
+            try {
+                const auto exact = reduceExactCoverage(placements, primitives,
+                    objective.replacementCandidates ? *objective.replacementCandidates : QVector<ReusableCandidate>(), cancelled);
+                if (exact.placements.size() < pieces.size()) {
+                    QVector<Piece> trial;
+                    for (const auto &placement : exact.placements) {
+                        trial.push_back(makePiece(primitiveFor(placement.shapeId, primitives), placement.transform));
+                    }
+                    const auto before = support(pieces);
+                    const auto after = support(trial);
+                    if (catalog::subtract(before, after).isEmpty() && catalog::subtract(after, before).isEmpty()) {
+                        pieces = std::move(trial);
+                        report();
+                    }
+                }
+                result.diagnostics.insert(QStringLiteral("exactFinalReduction"), exact.diagnostics);
+            } catch (const std::exception &failure) {
+                result.diagnostics.insert(QStringLiteral("exactFinalReductionError"), QString::fromUtf8(failure.what()));
+            }
+        }
+        recordTime(QStringLiteral("exactReduction"));
+        const auto coverage = support(pieces);
         result.diagnostics.insert(QStringLiteral("stageWork"), stageWork);
         result.diagnostics.insert(QStringLiteral("approximateReductions"), objective.approximateReductions);
+        result.diagnostics.insert(QStringLiteral("exactReductions"), objective.exactReductions);
+        result.diagnostics.insert(QStringLiteral("coverageOwnership"), objective.ownership.diagnostics());
+        result.diagnostics.insert(QStringLiteral("ownershipMergeTrials"), objective.ownershipMergeTrials);
+        result.diagnostics.insert(QStringLiteral("ownershipMerges"), objective.ownershipMerges);
+        result.diagnostics.insert(QStringLiteral("reusePoolSize"), objective.replacementCandidates ? objective.replacementCandidates->size() : 0);
+        result.diagnostics.insert(QStringLiteral("reusedCandidates"), objective.reusedCandidates);
+        result.diagnostics.insert(QStringLiteral("reuseChecks"), objective.reuseChecks);
+        result.diagnostics.insert(QStringLiteral("reusedMerges"), objective.reusedMerges);
+        result.diagnostics.insert(QStringLiteral("reusedPairs"), objective.reusedPairs);
+        result.diagnostics.insert(QStringLiteral("localContexts"), objective.localContexts);
+        result.diagnostics.insert(QStringLiteral("localEvaluations"), objective.localEvaluations);
+        result.diagnostics.insert(QStringLiteral("globalMoveChecks"), objective.globalMoveChecks);
+        result.diagnostics.insert(QStringLiteral("jointRepairTrials"), objective.jointRepairTrials);
+        result.diagnostics.insert(QStringLiteral("jointRepairs"), objective.jointRepairs);
         result.diagnostics.insert(QStringLiteral("coverageRejected"), objective.coverageRejected);
         result.diagnostics.insert(QStringLiteral("coverageRejections"), objective.coverageRejections);
         result.diagnostics.insert(QStringLiteral("residualInsertions"), objective.residualInsertions);

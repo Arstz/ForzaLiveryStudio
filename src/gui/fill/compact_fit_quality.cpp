@@ -139,6 +139,11 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage) const 
 }
 
 BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const catalog::Polygons &observed) const {
+    return measure(coverage, observed, QRectF());
+}
+
+BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const catalog::Polygons &observed,
+                                        const QRectF &window) const {
     BoundaryMetrics result;
     QElapsedTimer timer;
     std::unique_ptr<BoundaryModel> outputBoundary;
@@ -155,6 +160,10 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
         outputBoundary = std::make_unique<BoundaryModel>(coverage, scale_);
     }
     for (const auto &corner : corners_) {
+        if (!window.isNull() && !window.contains(corner)) {
+            result.cornerDistances.push_back(0.0);
+            continue;
+        }
         double squaredDistance = std::numeric_limits<double>::infinity();
         if (outputBoundary) {
             squaredDistance = outputBoundary->closest(corner).squaredDistance;
@@ -193,6 +202,9 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
         for (int sample = 0; sample < samples; ++sample) {
             const double offset = (sample + 0.5) * spacing;
             const auto point = pointAt(loop, offset);
+            if (!window.isNull() && !window.contains(point)) {
+                continue;
+            }
             const auto reference = referenceModel.closest(point);
             const auto &target = referenceModel.loops_[reference.loop];
             for (double radius : {scale_, scale_ * 2.0}) {

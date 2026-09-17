@@ -26,6 +26,10 @@ constexpr int kMaximumTrials = 160000;
 constexpr int kMaximumProfileWork = 640000;
 constexpr int kGridExtent = 640;
 constexpr int kBodyCenters = 24;
+constexpr int kThinBodyCenters = 200;
+constexpr int kBodyGridExtent = 4096;
+constexpr double kThinRegionScales = 16.0;
+constexpr double kBodyTangentStep = 15.0;
 constexpr int kStructuralTrials = 50000;
 constexpr int kTriangleShapeId = 103;
 constexpr double kCornerAngle = 0.3;
@@ -671,13 +675,125 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
     }
 }
 
+class BodyContainmentGrid {
+public:
+    BodyContainmentGrid(const catalog::Region &region, double scale)
+        : origin_(region.bounds.topLeft()),
+          step_(std::max(scale * 0.25, std::max(region.bounds.width(), region.bounds.height()) / kBodyGridExtent)) {
+        image_ = QImage(static_cast<int>(std::ceil(region.bounds.width() / step_)) + 1,
+            static_cast<int>(std::ceil(region.bounds.height() / step_)) + 1, QImage::Format_Grayscale8);
+        image_.fill(0);
+        QPainter painter(&image_);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.scale(1.0 / step_, 1.0 / step_);
+        painter.translate(-origin_);
+        painter.fillPath(region.requiredPath, Qt::white);
+    }
+
+    bool contains(const QPointF &point) const {
+        const int x = static_cast<int>(std::floor((point.x() - origin_.x()) / step_));
+        const int y = static_cast<int>(std::floor((point.y() - origin_.y()) / step_));
+        if (x < 1 || y < 1 || x + 1 >= image_.width() || y + 1 >= image_.height()) {
+            return false;
+        }
+        for (int row = y - 1; row <= y + 1; ++row) {
+            const auto *pixels = image_.constScanLine(row);
+            for (int column = x - 1; column <= x + 1; ++column) {
+                if (pixels[column] == 0) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+private:
+    QImage image_;
+    QPointF origin_;
+    double step_;
+};
+
+void addThinBodyAt(const QPointF &center, const catalog::Region &region, const Polygons &outer,
+                   const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
+                   const BodyContainmentGrid &grid, double scale, const std::function<bool()> &cancelled,
+                   QVector<Candidate> *pool) {
+    const auto reference = boundary.reference(center);
+    const double angle = std::atan2(reference.tangent.y(), reference.tangent.x()) * 180.0 / std::numbers::pi;
+    for (int id : {102, 101, 109, 110, 124, 2117}) {
+        const auto *shape = primitiveFor(id, primitives);
+        if (!shape) {
+            continue;
+        }
+        for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
+            for (double offset : {-kBodyTangentStep, 0.0, kBodyTangentStep, 180.0 - kBodyTangentStep, 180.0, 180.0 + kBodyTangentStep}) {
+                if (stopped(cancelled)) {
+                    return;
+                }
+                double lower = 0.0;
+                double upper = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
+                for (int iteration = 0; iteration < 12; ++iteration) {
+                    const double radius = (lower + upper) * 0.5;
+                    const auto transform = bodyTransform(*shape, center, angle + offset, ratio, radius);
+                    bool inside = true;
+                    for (const auto &polygon : shape->contours) {
+                        const int stride = std::max(1, static_cast<int>(polygon.size()) / 16);
+                        for (int index = 0; index < polygon.size(); index += stride) {
+                            if (!grid.contains(transform.map(polygon[index]))) {
+                                inside = false;
+                                break;
+                            }
+                        }
+                        if (!inside) {
+                            break;
+                        }
+                    }
+                    (inside ? lower : upper) = radius;
+                }
+                if (lower < scale) {
+                    continue;
+                }
+                auto candidate = candidateFor(*shape, bodyTransform(*shape, center, angle + offset, ratio, lower * 0.995),
+                    region, outer, boundary, scale);
+                if (candidate && candidate->spill < scale * scale * 0.01) {
+                    pool->push_back(std::move(*candidate));
+                }
+            }
+        }
+    }
+}
+
 void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
                        const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
-                       double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
+                       double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool,
+                       QJsonObject *diagnostics) {
     QVector<std::pair<QPointF, double>> centers;
-    const double spacing = std::max(region.bounds.width(), region.bounds.height()) / 24.0;
+    const double coarse = std::max(region.bounds.width(), region.bounds.height()) / kBodyCenters;
+    const double thickness = boundary.perimeter() > 0.0 ? 2.0 * region.area / boundary.perimeter() : region.area;
+    const bool thin = thickness < scale * kThinRegionScales;
+    const int candidateStart = pool->size();
+    double spacing = coarse;
+    if (thin) {
+        QVector<double> clearances;
+        for (double y = region.bounds.top() + coarse * 0.5; y < region.bounds.bottom(); y += coarse) {
+            for (double x = region.bounds.left() + coarse * 0.5; x < region.bounds.right(); x += coarse) {
+                if (stopped(cancelled)) {
+                    return;
+                }
+                if (region.requiredPath.contains({x, y})) {
+                    clearances.push_back(boundary.reference({x, y}).distance);
+                }
+            }
+        }
+        std::sort(clearances.begin(), clearances.end());
+        const double clearance = clearances.isEmpty() ? thickness * 0.5 : clearances[clearances.size() / 2];
+        spacing = std::clamp(clearance * 1.25, std::min(coarse, std::max(scale * 2.0, coarse / 8.0)), coarse);
+    }
     for (double ordinate = region.bounds.top() + spacing * 0.5; ordinate < region.bounds.bottom(); ordinate += spacing) {
         for (double abscissa = region.bounds.left() + spacing * 0.5; abscissa < region.bounds.right(); abscissa += spacing) {
+            if (stopped(cancelled)) {
+                return;
+            }
             const QPointF point(abscissa, ordinate);
             if (region.requiredPath.contains(point)) {
                 centers.push_back({point, boundary.reference(point).distance});
@@ -688,6 +804,10 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
         return first.second > second.second;
     });
     QVector<QPointF> retained;
+    std::optional<BodyContainmentGrid> grid;
+    if (thin) {
+        grid.emplace(region, scale);
+    }
     for (const auto &[center, distance] : centers) {
         const bool nearby = std::any_of(retained.begin(), retained.end(), [&](const auto &other) {
             return QLineF(center, other).length() < std::max(spacing, distance * 0.65);
@@ -696,11 +816,19 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
             continue;
         }
         retained.push_back(center);
-        addBodyAt(center, region, outer, primitives, boundary, scale, pool);
-        if (retained.size() >= kBodyCenters || stopped(cancelled)) {
+        if (thin) {
+            addThinBodyAt(center, region, outer, primitives, boundary, *grid, scale, cancelled, pool);
+        } else {
+            addBodyAt(center, region, outer, primitives, boundary, scale, pool);
+        }
+        if (retained.size() >= (thin ? kThinBodyCenters : kBodyCenters) || stopped(cancelled)) {
             break;
         }
     }
+    diagnostics->insert(QStringLiteral("thinRegionCandidates"), thin);
+    diagnostics->insert(QStringLiteral("bodyCenters"), retained.size());
+    diagnostics->insert(QStringLiteral("bodyCandidates"), pool->size() - candidateStart);
+    diagnostics->insert(QStringLiteral("meanThickness"), thickness);
 }
 
 void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
@@ -1043,7 +1171,8 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
 }
 
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
-                               const compact::FillOptions &options, const std::function<bool()> &cancelled) {
+                               const compact::FillOptions &options, const std::function<bool()> &cancelled,
+                               QVector<compact::ReusableCandidate> *reusable) {
     catalog::FillResult result;
     QJsonObject timings;
     QElapsedTimer stageTimer;
@@ -1083,7 +1212,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         addCornerCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
         recordTime(QStringLiteral("corners"));
         result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
-        addBodyCandidates(coverageRegion, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+        addBodyCandidates(coverageRegion, outer, primitives, boundary, options.observationScale, cancelled, &pool, &result.diagnostics);
         recordTime(QStringLiteral("interior"));
         result.diagnostics.insert(QStringLiteral("totalCandidates"), pool.size());
         auto selected = selectCandidates(&pool, coverageRegion, grid, witnesses, options, cancelled, &result.diagnostics);
@@ -1124,6 +1253,12 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         }
         result.diagnostics.insert(QStringLiteral("selected"), selectedDetails);
         result.diagnostics.insert(QStringLiteral("shapeIds"), counts);
+        if (!stopped(cancelled)) {
+            reusable->reserve(pool.size());
+            for (const auto &candidate : pool) {
+                reusable->push_back({candidate.placement, candidate.polygons, candidate.bounds});
+            }
+        }
         if (stopped(cancelled)) {
             result.fill.cancelled = true;
             result.fill.placements.clear();
@@ -1154,7 +1289,8 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
             options.workProgress(count, static_cast<int>(static_cast<double>(evaluated) * seedWork / budget), totalWork);
         }
     };
-    auto seed = buildSeed(request, primitives, seedOptions, cancelled);
+    auto reusable = std::make_shared<QVector<compact::ReusableCandidate>>();
+    auto seed = buildSeed(request, primitives, seedOptions, cancelled, reusable.get());
     if (!seed.fill.error.isEmpty() || seed.fill.cancelled) {
         return seed;
     }
@@ -1168,6 +1304,7 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
     }
     auto refinement = options;
     refinement.initialPlacements = seed.fill.placements;
+    refinement.replacementCandidates = std::move(reusable);
     refinement.workProgress = [&](int count, int evaluated, int) {
         if (options.workProgress) {
             options.workProgress(count, seedWork + std::min(evaluated, options.evaluationBudget), totalWork);

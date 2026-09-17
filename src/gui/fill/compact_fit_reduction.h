@@ -1,8 +1,35 @@
 #pragma once
 
 #include "compact_fit_quality.h"
+#include "compact_fit.h"
+#include <QSet>
+#include <optional>
 
 namespace gui::compact {
+
+class CoverageOwnership {
+public:
+    void synchronize(const QVector<catalog::Polygons> &pieces);
+    catalog::Polygons exclusive(const QVector<int> &members) const;
+    void erase(int index);
+    bool failed(const QVector<int> &members, bool broad) const;
+    void rememberFailure(const QVector<int> &members, bool broad);
+    QJsonObject diagnostics() const;
+
+private:
+    static QString groupKey(const QVector<int> &members, bool broad);
+
+    QVector<catalog::Polygons> pieces_;
+    QVector<QRectF> bounds_;
+    QVector<QVector<int>> neighbors_;
+    mutable QVector<std::optional<catalog::Polygons>> exclusive_;
+    QSet<QString> failures_;
+    mutable int computations_ = 0;
+    mutable int hits_ = 0;
+    mutable int failureHits_ = 0;
+    int rebuilds_ = 0;
+    int invalidations_ = 0;
+};
 
 struct ReductionState {
     catalog::Polygons coverage;
@@ -14,6 +41,15 @@ struct ReductionState {
     double missingArea = 0.0;
     double spillArea = 0.0;
 };
+
+struct ExactReductionResult {
+    QVector<PenPlacement> placements;
+    QJsonObject diagnostics;
+};
+
+ExactReductionResult reduceExactCoverage(const QVector<PenPlacement> &placements,
+    const QVector<catalog::Primitive> &primitives, const QVector<ReusableCandidate> &candidates,
+    const std::function<bool()> &cancelled = {});
 
 ReductionState reductionState(const catalog::Polygons &coverage,
                               const catalog::Polygons &required,

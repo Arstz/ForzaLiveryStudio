@@ -114,14 +114,59 @@ exports grouped `C_group` folders and `C_livery` folders.
   96-shape curated catalog and filters proposals by affine-invariant convexity.
   Candidate retention keeps distinct shape types. Refitting after deletion
   is restricted to nearby placements.
+  Candidate scoring during local refits uses a padded window around the changed
+  placements. Remote boundary samples do not enter that score. Accepted moves
+  still reconstruct and check the complete region, including coverage, cutouts,
+  and protected corners. Windows covering most of the target use global scoring.
+  Logs distinguish local evaluations from complete-region move checks.
   A final replacement stage follows adjacency along the exposed union boundary,
   where neighboring contour pieces can have distant centers.
+  Coverage ownership caches each placement's unique support using only
+  overlapping placement bounds. Deletion invalidates overlapping neighbors;
+  other geometry changes rebuild the snapshot. Removal ranking reuses these
+  footprints and retains its evaluation accounting. An empty private footprint
+  permits a fast exact-removal check, but both differences of the complete
+  before/after unions must be empty before boundary measurement is skipped.
+  Group replacement anchors use the group's joint unique support, including
+  its exposed spill, rather than the footprint already hidden by surviving
+  shapes. Group ownership is computed jointly, not by adding individual private
+  footprints. All other reduction and final quality checks remain active.
+  Completed failed group searches can be skipped within an unchanged placement
+  snapshot. Budget-interrupted searches are not cached as complete failures.
+  Logs include ownership cache work, invalidations, exact removals, and
+  ownership-driven merge trials and accepted merges.
+  Initialization retains the geometry and transforms of its existing candidate
+  pool for reuse during compaction. Each merge group screens up to 48 candidates
+  from a bounds-ranked shortlist, then tests up to four single replacements
+  and up to eight complementary partners per first choice. Two-candidate
+  replacements require at least three removed placements. These trials share
+  the existing stage budget and precede fresh fitting. Cached footprints only
+  guide selection; accepted trials reconstruct emitted transforms and verify
+  the complete union. The pool is temporary working data, not project content.
+  After polishing, an exact-union pass removes redundant placements and tests
+  many-to-one replacements without a quality allowance. It reuses catalog
+  candidates and adds rectangle envelopes in world and placement coordinates.
+  A replacement must remain inside the polished union and supply the selected
+  group's joint private support. Both differences of the reconstructed complete
+  unions must be empty before committing. The pass preserves existing holes,
+  spill, missing areas, and contour positions on the clipping grid; it cannot
+  repair an existing defect. It does not change the earlier fitting search.
+  Bounds ranking prioritizes potential count savings with stable tie breaks.
+  The pass checks at most 512 candidate containments and 64 contained candidates;
+  these are separate geometric operations after the score-evaluation budget,
+  not additional fitting evaluations. Timing and counts are recorded under
+  `exactReduction` and `exactFinalReduction`. Runtime is not guaranteed to stay
+  unchanged, and an irreducible union may retain its original placement count.
   Candidate generation plans spans around every boundary before assigning work.
   Its profile budget grows from 160,000 to at most 640,000 trials, divided across
   the planned spans. Retention capacity is also divided across the remaining
   spans. Proposal lengths and structural depths scale with region extent;
   fitting tolerances and the observation scale remain in world units.
-  Straight and corner searches have separate caps, with 24 interior centers.
+  Straight and corner searches have separate caps. Interior seeding uses 24
+  centers normally. Regions with low area relative to perimeter use up to 200
+  clearance-spaced centers and elongated catalog proposals aligned to nearby
+  boundary tangents. A bounded occupancy grid screens proposals; emitted
+  triangle-union geometry remains authoritative. Quality limits are unchanged.
   Selection uses the caller's shape limit, which defaults to 3,000; the separate
   160-placement seed ceiling is removed. A verified incumbent survives the fixed
   60,000-score refinement budget. Cumulative stage ceilings are 5% for recognition,
@@ -153,10 +198,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   other shapes instead of following the residual perimeter. Oriented bridge
   proposals reach the nearest existing support inside the target. A body patch
   can include a separately validated thin Square connector. Before insertion,
-  a third of each residual's trial allocation tests replacements of up to four
-  nearby placements. Replacement anchors combine existing support with the gap,
-  and the current shape type competes with catalog alternatives. The replacement
-  and optional connector are scored as one union. Same-count repairs remain
+  bounded paired-neighbor trials use up to a third of each residual's trial
+  allocation. Each trial stretches
+  two existing placements toward the residual while anchoring their opposite
+  edges. It must recover at least half the residual component, reduce total
+  missing area, and pass complete-region coverage, topology, area, and boundary
+  energy checks. Accepted paired repairs add no placements. The trials share
+  the existing repair allocation; small shapes remain available when needed.
+  Single-neighbor replacement uses a third of the remaining allocation and
+  considers up to four nearby placements. Its anchors combine existing support
+  with the gap, and the current type competes with catalog alternatives.
+  The replacement and optional connector are scored as one union. Same-count repairs remain
   available at the caller's shape limit. Ranking uses residual area gained
   divided by one plus the added count, with a bounded topology-improvement
   bonus, then total missing-area gain. Both placements count toward the caller limit.
