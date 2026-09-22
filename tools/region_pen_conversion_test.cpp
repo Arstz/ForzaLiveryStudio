@@ -71,6 +71,93 @@ void svgVectorObjectConvertsDirectlyToPen(TestContext *test)
                  "direct SVG conversion should use one soft control per authored cubic");
 }
 
+void tracedCurvesPreserveTangentsAndCutouts(TestContext *test) {
+    QPainterPath path;
+    path.setFillRule(Qt::OddEvenFill);
+    path.addEllipse(QRectF(0, 0, 200, 120));
+    path.addRect(QRectF(98, 58, 2, 2));
+    gui::RegionPenLoopConversionOptions options;
+    options.fitTracedCurves = true;
+    const auto fitted = gui::regionOutlineToPenLoops(path, options);
+    const auto repeated = gui::regionOutlineToPenLoops(path, options);
+    test->expect(fitted.valid() && fitted.loops.size() == 2 && fitted.discardedCutoutCount == 0,
+        "curve-preserving conversion must retain small intended cutouts");
+    if (!fitted.valid() || fitted.loops.size() != 2 || repeated.loops.size() != fitted.loops.size()) {
+        return;
+    }
+    const auto contour = gui::buildPenContour(fitted.loops.front().points);
+    test->expect(contour.valid() && fitted.fittedCurveSegments > 4,
+        "cubic conversion must subdivide when one quadratic cannot meet its bound");
+    for (int index = 0; index < contour.segments.size(); ++index) {
+        const auto &before = contour.segments[index];
+        const auto &after = contour.segments[(index + 1) % contour.segments.size()];
+        const auto first = before.end - before.control;
+        const auto second = after.control - after.start;
+        const double cross = first.x() * second.y() - first.y() * second.x();
+        test->expect(QPointF::dotProduct(first, second) > 0.0
+            && std::abs(cross) < 1e-6 * QLineF({}, first).length() * QLineF({}, second).length(),
+            "smooth traced joins must retain matching tangent directions");
+        for (int sample = 0; sample <= 16; ++sample) {
+            const double t = sample / 16.0;
+            const auto point = before.start * ((1-t)*(1-t)) + before.control * (2*t*(1-t)) + before.end * (t*t);
+            const double normalized = std::hypot((point.x()-100)/100, (point.y()-60)/60);
+            test->expect(std::abs(normalized - 1.0) * 100 < 0.75,
+                "curve conversion exceeded its boundary displacement bound");
+        }
+    }
+    const auto cutout = gui::buildPenContour(fitted.loops.back().points);
+    test->expect(cutout.segments.size() == 4
+        && std::none_of(cutout.segments.cbegin(), cutout.segments.cend(), [](const auto &s) { return s.curved; }),
+        "authored sharp corners must remain sharp");
+    for (int loop = 0; loop < fitted.loops.size(); ++loop) {
+        test->expect(fitted.loops[loop].points.size() == repeated.loops[loop].points.size(),
+            "curve conversion must return a deterministic count");
+        for (int point = 0; point < std::min(fitted.loops[loop].points.size(), repeated.loops[loop].points.size()); ++point) {
+            test->expect(fitted.loops[loop].points[point].position == repeated.loops[loop].points[point].position,
+                "curve conversion must return deterministic coordinates");
+        }
+    }
+}
+
+void tracedInflectionRemainsSmooth(TestContext *test) {
+    QPainterPath path;
+    path.moveTo(0, 0);
+    path.cubicTo(22, 48, 72, -27, 100, 0);
+    path.lineTo(100, 80);
+    path.lineTo(0, 80);
+    path.closeSubpath();
+    gui::RegionPenLoopConversionOptions options;
+    options.fitTracedCurves = true;
+    const auto fitted = gui::regionOutlineToPenLoops(path, options);
+    test->expect(fitted.valid() && fitted.fittedCurveSegments > 1,
+        "An asymmetric inflection must convert without losing the curve");
+    if (!fitted.valid()) {
+        return;
+    }
+    const auto contour = gui::buildPenContour(fitted.loops);
+    bool positive = false;
+    bool negative = false;
+    for (int index = 0; index < contour.segments.size(); ++index) {
+        const auto &segment = contour.segments[index];
+        if (!segment.curved) {
+            continue;
+        }
+        const auto incoming = segment.control - segment.start;
+        const auto outgoing = segment.end - segment.control;
+        const double turn = incoming.x() * outgoing.y() - incoming.y() * outgoing.x();
+        positive |= turn > 1e-6;
+        negative |= turn < -1e-6;
+        if (index + 1 < contour.segments.size() && contour.segments[index + 1].curved) {
+            const auto next = contour.segments[index + 1].control - segment.end;
+            const double cross = outgoing.x() * next.y() - outgoing.y() * next.x();
+            test->expect(QPointF::dotProduct(outgoing, next) > 0.0
+                && std::abs(cross) <= 1e-6 * QLineF({}, outgoing).length() * QLineF({}, next).length(),
+                "Subdivision at an inflection must retain its shared tangent");
+        }
+    }
+    test->expect(positive && negative, "Curve merging must retain both curvature signs");
+}
+
 void quadraticTo(QPainterPath *path, const QPointF &control, const QPointF &end)
 {
     const QPointF start = path->currentPosition();
@@ -705,6 +792,13 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
     test->expect(gui::regionContours(traced, 32).size() == 5,
                   "unfiltered Potrace output should expose small and boundary-adjacent internal contours");
     test->expect(!traced.isEmpty(), "Potrace should vectorize the bucket mask");
+    gui::RegionPenLoopConversionOptions fittedOptions;
+    fittedOptions.fitTracedCurves = true;
+    const auto fitted = gui::regionOutlineToPenLoops(traced, fittedOptions);
+    test->expect(fitted.valid() && fitted.loops.size() == 5 && fitted.discardedCutoutCount == 0,
+        "Curve-preserving bucket conversion must retain small and nearby cutouts");
+    test->expect(gui::buildPenContour(fitted.loops).valid() && fitted.fittedCurveSegments > 0,
+        "Curve-preserving bucket conversion must produce a usable curved compound path");
     gui::RegionPenLoopConversionOptions conversionOptions;
     conversionOptions.fallback.comparisonImageSize = image.size();
     conversionOptions.discardedCutoutAreaCeiling = 5.0;
@@ -2723,6 +2817,8 @@ int main(int argc, char **argv)
     }
     TestContext test;
     svgVectorObjectConvertsDirectlyToPen(&test);
+    tracedCurvesPreserveTangentsAndCutouts(&test);
+    tracedInflectionRemainsSmooth(&test);
     centuryGothicLowercaseAUsesFullWidth(&test);
     alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);

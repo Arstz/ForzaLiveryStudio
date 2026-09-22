@@ -356,8 +356,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
             : bucket_.fill.averageColor;
         fillMask = bucket_.fill.transparentTarget;
         conversionOptions.fallback.comparisonImageSize = image.size();
-        conversionOptions.discardedCutoutAreaCeiling = 5.0;
-        conversionOptions.discardedCutoutBoundaryClearance = 2.0;
+        conversionOptions.fitTracedCurves = true;
     }
     RegionPenLoopConversionResult conversion =
         regionOutlineToPenLoops(outline, conversionOptions);

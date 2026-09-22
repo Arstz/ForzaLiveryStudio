@@ -98,6 +98,8 @@ struct RegionPenConversionResult {
 struct RegionPenLoopConversionOptions {
     RegionPenConversionOptions fallback;
     bool preserveInputCurves = false;
+    bool fitTracedCurves = false;
+    double curveFitTolerance = 0.5;
     double simplifyEpsilon = 2.0;
     double minimumCurveBow = 0.75;
     double discardedCutoutAreaCeiling = 0.0;
@@ -111,6 +113,7 @@ struct RegionPenLoopConversionResult {
     int discardedCutoutCount = 0;
     int discardedCutoutAreaCount = 0;
     int discardedCutoutBoundaryCount = 0;
+    int fittedCurveSegments = 0;
 
     bool valid() const { return error.isEmpty() && !loops.isEmpty(); }
 };

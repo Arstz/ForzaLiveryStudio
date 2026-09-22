@@ -657,7 +657,7 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
                 double upper = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
                 for (int iteration = 0; iteration < 12; ++iteration) {
                     const double radius = (lower + upper) * 0.5;
-                    if (probesInside(*shape, bodyTransform(*shape, center, angle, ratio, radius), region.requiredPath)) {
+                    if (probesInside(*shape, bodyTransform(*shape, center, angle, ratio, radius), region.spillFreePath)) {
                         lower = radius;
                     } else {
                         upper = radius;
@@ -678,16 +678,18 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
 class BodyContainmentGrid {
 public:
     BodyContainmentGrid(const catalog::Region &region, double scale)
-        : origin_(region.bounds.topLeft()),
-          step_(std::max(scale * 0.25, std::max(region.bounds.width(), region.bounds.height()) / kBodyGridExtent)) {
-        image_ = QImage(static_cast<int>(std::ceil(region.bounds.width() / step_)) + 1,
-            static_cast<int>(std::ceil(region.bounds.height() / step_)) + 1, QImage::Format_Grayscale8);
+        : origin_(region.spillFreePath.boundingRect().topLeft()),
+          step_(std::max(scale * 0.25, std::max(region.spillFreePath.boundingRect().width(),
+              region.spillFreePath.boundingRect().height()) / kBodyGridExtent)) {
+        const auto bounds = region.spillFreePath.boundingRect();
+        image_ = QImage(static_cast<int>(std::ceil(bounds.width() / step_)) + 1,
+            static_cast<int>(std::ceil(bounds.height() / step_)) + 1, QImage::Format_Grayscale8);
         image_.fill(0);
         QPainter painter(&image_);
         painter.setRenderHint(QPainter::Antialiasing, false);
         painter.scale(1.0 / step_, 1.0 / step_);
         painter.translate(-origin_);
-        painter.fillPath(region.requiredPath, Qt::white);
+        painter.fillPath(region.spillFreePath, Qt::white);
     }
 
     bool contains(const QPointF &point) const {

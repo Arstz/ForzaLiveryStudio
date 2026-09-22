@@ -193,26 +193,31 @@ exports grouped `C_group` folders and `C_livery` folders.
   and observed interior cracks. Excess observed components also enable shallow
   boundary-gap tasks. Gaps removed by the observation operator do not create
   shallow repair tasks. Search finds interior
-  anchors with bounded deterministic subdivision, and tests catalog shapes
-  against the surrounding target plus existing support. Placements can overlap
-  other shapes instead of following the residual perimeter. Oriented bridge
-  proposals reach the nearest existing support inside the target. A body patch
+  anchors with bounded deterministic subdivision, and clusters nearby gaps using
+  the extent of neighboring placements. Catalog shapes can overlap existing
+  support and use the configured outward corridor, including explicit leeway.
+  Oriented bridge proposals reach the nearest existing support. A body patch
   can include a separately validated thin Square connector. Before insertion,
-  bounded paired-neighbor trials use up to a third of each residual's trial
-  allocation. Each trial stretches
-  two existing placements toward the residual while anchoring their opposite
-  edges. It must recover at least half the residual component, reduce total
+  bounded neighbor trials use up to a third of each residual's trial allocation.
+  They test native-axis growth and translation, scale, rotation, and shear moves
+  of one placement, then independent pairs from retained alternatives. Affine
+  moves use a sampled boundary anchor when available. Each transaction must
+  recover at least half the residual cluster, reduce total
   missing area, and pass complete-region coverage, topology, area, and boundary
-  energy checks. Accepted paired repairs add no placements. The trials share
+  energy checks. Accepted neighbor adjustments add no placements. The trials share
   the existing repair allocation; small shapes remain available when needed.
-  Single-neighbor replacement uses a third of the remaining allocation and
-  considers up to four nearby placements. Its anchors combine existing support
-  with the gap, and the current type competes with catalog alternatives.
-  The replacement and optional connector are scored as one union. Same-count repairs remain
-  available at the caller's shape limit. Ranking uses residual area gained
-  divided by one plus the added count, with a bounded topology-improvement
-  bonus, then total missing-area gain. Both placements count toward the caller limit.
-  New support must stay inside the target; intended cutouts are not filled.
+  Neighborhood replacement uses a third of the remaining allocation, split
+  between groups of two to four placements and single-neighbor replacements.
+  Group anchors use their joint unique support plus the gap cluster. One broad
+  catalog placement can replace several overlapping patches. The replacement
+  and optional connector are scored as one union. Same-count and count-reducing
+  repairs remain available at the caller's shape limit. Ranking uses residual
+  gain per added placement with a topology bonus, minus a placement cost of
+  four times observation scale squared. Low-benefit insertions are rejected;
+  recovery of deep missing coverage remains eligible. This area-based cost is
+  a count preference, not a contrast-aware perceptual metric. Small placements
+  are not discarded solely because of their footprint. All proposed placements
+  count toward the caller limit and must stay within the permitted envelope.
   Residual transactions retain non-worsening observed component and hole count
   errors. They cannot increase missing area, create new deep or observed
   hole defects, or exceed the current area allowance. Final topology
@@ -262,6 +267,7 @@ exports grouped `C_group` folders and `C_livery` folders.
   limit exhaustion, coverage-guard rejections, residual insertions, joint moves,
   shallow repairs, neighborhood replacements, feasible checkpoints and restores,
   remaining repair area, observed hole-defect area, connector proposal outcomes,
+  clustered gap searches, accepted group replacements, rejected low-benefit insertions,
   and the profile backend's setup, transfer, numeric, and
   geometry-validation timings.
   Lining builds an editable open hard/soft quadratic centreline, expands it to a
@@ -274,12 +280,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
-  selected mask, preserves its outer and interior boundaries, and samples each traced boundary before cyclic RDP at epsilon 2.0
-  in source-image pixels. Each retained span is reconstructed as a least-squares
-  quadratic when its bow reaches 0.75 pixels and remains straight otherwise. Invalid
-  hybrid contours recover through the conservative Pen conversion. The later Pen
-  boundary-fitting tolerance remains independent of color tolerance and contour
-  conversion. Completing a Bucket-derived fill retains the guide-layer selection.
+  selected mask, and converts traced cubics into tangent-preserving quadratic
+  Pen spans. Adaptive subdivision bounds conversion error to 0.5 source-image
+  pixels. Compatible smooth neighbors merge under the same accumulated bound;
+  sharp joins and changes in curvature sign remain. Compound validation retries
+  with a tighter tolerance when needed. Small and boundary-adjacent cutouts are
+  retained. The bound is relative to the traced path, not the original raster;
+  subpixel image-edge refinement is not implemented. Conversion precedes the
+  guide transform and is independent of viewport zoom, color tolerance, and
+  fill margin. Completing a Bucket-derived fill retains the guide-layer selection.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
   drag the current selection from outside its bounds and giving that selection

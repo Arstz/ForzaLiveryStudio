@@ -34,6 +34,9 @@ namespace {
 constexpr double kGeometryEpsilon = 1e-9;
 constexpr int kBoundarySamplesPerCurve = 32;
 constexpr int kCircleShapeId = 102;
+constexpr int kTraceSubdivisionDepth = 16;
+constexpr double kTraceTangentSlack = 1e-7;
+constexpr double kMinimumTraceTolerance = 1.0 / 64.0;
 
 struct Op {
     enum Kind { Line, Cubic } kind = Line;
@@ -69,6 +72,198 @@ QPointF cubicPoint(const QPointF &p0, const QPointF &c1, const QPointF &c2, cons
         + c1 * (3.0 * u * u * t)
         + c2 * (3.0 * u * t * t)
         + p3 * (t * t * t);
+}
+
+struct FittedTraceSpan {
+    QPointF start;
+    QPointF control;
+    QPointF end;
+    double error = 0.0;
+    bool curved = true;
+};
+
+double traceCross(const QPointF &first, const QPointF &second) {
+    return first.x() * second.y() - first.y() * second.x();
+}
+
+bool traceControl(const QPointF &start, const QPointF &end, const QPointF &incoming,
+                  const QPointF &outgoing, QPointF *control) {
+    const double firstLength = std::hypot(incoming.x(), incoming.y());
+    const double secondLength = std::hypot(outgoing.x(), outgoing.y());
+    const double denominator = traceCross(incoming, outgoing);
+    if (firstLength <= kGeometryEpsilon || secondLength <= kGeometryEpsilon
+        || std::abs(denominator) <= kGeometryEpsilon * firstLength * secondLength) {
+        return false;
+    }
+    const double first = traceCross(end - start, outgoing) / denominator;
+    const double second = traceCross(incoming, end - start) / denominator;
+    if (first <= 0.0 || second <= 0.0) {
+        return false;
+    }
+    *control = start + incoming * first;
+
+    return std::isfinite(control->x()) && std::isfinite(control->y());
+}
+
+double traceInflectionParameter(const QPointF &start, const QPointF &first,
+                                const QPointF &second, const QPointF &end) {
+    const QPointF cubic = end - second * 3.0 + first * 3.0 - start;
+    const QPointF quadratic = (start - first * 2.0 + second) * 3.0;
+    const QPointF linear = (first - start) * 3.0;
+    const double a = -3.0 * traceCross(cubic, quadratic);
+    const double b = 3.0 * traceCross(linear, cubic);
+    const double c = traceCross(linear, quadratic);
+    const double coefficientScale = std::max({std::abs(a), std::abs(b), std::abs(c), kGeometryEpsilon});
+    double parameter = 0.0;
+    const auto choose = [&](double root) {
+        if (std::isfinite(root) && root > kTraceTangentSlack && root < 1.0 - kTraceTangentSlack) {
+            parameter = root;
+        }
+    };
+    if (std::abs(a) <= kGeometryEpsilon * coefficientScale) {
+        if (std::abs(b) > kGeometryEpsilon * coefficientScale) {
+            choose(-c / b);
+        }
+    } else if (const double discriminant = b * b - 4.0 * a * c; discriminant >= 0.0) {
+        const double numerator = -0.5 * (b + std::copysign(std::sqrt(discriminant), b));
+        choose(numerator / a);
+        if (numerator != 0.0) {
+            choose(c / numerator);
+        }
+    }
+
+    return parameter;
+}
+
+bool fitTraceCubic(const QPointF &start, const QPointF &first, const QPointF &second,
+                   const QPointF &end, double tolerance, int depth, QVector<FittedTraceSpan> *spans) {
+    const QPointF chord = end - start;
+    const double lengthSquared = QPointF::dotProduct(chord, chord);
+    const double inflection = traceInflectionParameter(start, first, second, end);
+    QPointF control;
+    if (QLineF(start, end).length() <= kGeometryEpsilon
+        && QLineF(start, first).length() <= kGeometryEpsilon
+        && QLineF(start, second).length() <= kGeometryEpsilon) {
+        return true;
+    }
+    if (lengthSquared > kGeometryEpsilon
+        && std::abs(traceCross(chord, first - start)) <= kGeometryEpsilon * lengthSquared
+        && std::abs(traceCross(chord, second - start)) <= kGeometryEpsilon * lengthSquared
+        && QPointF::dotProduct(first - start, chord) >= 0.0
+        && QPointF::dotProduct(second - first, chord) >= 0.0
+        && QPointF::dotProduct(end - second, chord) >= 0.0) {
+        spans->push_back({start, (start + end) * 0.5, end, 0.0, false});
+        return true;
+    }
+    const QPointF incoming = QLineF(start, first).length() > kGeometryEpsilon ? first - start : second - start;
+    const QPointF outgoing = QLineF(second, end).length() > kGeometryEpsilon ? end - second : end - first;
+    if (inflection == 0.0 && traceControl(start, end, incoming, outgoing, &control)) {
+        const double error = std::max(QLineF(first, (start + control * 2.0) / 3.0).length(),
+            QLineF(second, (end + control * 2.0) / 3.0).length());
+        if (error <= tolerance) {
+            spans->push_back({start, control, end, error, true});
+            return true;
+        }
+    }
+    if (depth >= kTraceSubdivisionDepth) {
+        return false;
+    }
+    const double parameter = inflection == 0.0 ? 0.5 : inflection;
+    const auto mix = [parameter](const QPointF &left, const QPointF &right) {
+        return left * (1.0 - parameter) + right * parameter;
+    };
+    const QPointF left = mix(start, first);
+    const QPointF middle = mix(first, second);
+    const QPointF right = mix(second, end);
+    const QPointF leftControl = mix(left, middle);
+    const QPointF rightControl = mix(middle, right);
+    const QPointF split = mix(leftControl, rightControl);
+
+    return fitTraceCubic(start, left, leftControl, split, tolerance, depth + 1, spans)
+        && fitTraceCubic(split, rightControl, right, end, tolerance, depth + 1, spans);
+}
+
+bool mergeTraceSpans(const FittedTraceSpan &first, const FittedTraceSpan &second,
+                     double tolerance, FittedTraceSpan *merged) {
+    const QPointF incoming = first.end - first.control;
+    const QPointF outgoing = second.control - second.start;
+    const double tangentProduct = std::hypot(incoming.x(), incoming.y()) * std::hypot(outgoing.x(), outgoing.y());
+    const double firstLength = QLineF(first.start, first.end).length();
+    const double secondLength = QLineF(second.start, second.end).length();
+    QPointF control;
+    if (tangentProduct <= kGeometryEpsilon || firstLength + secondLength <= kGeometryEpsilon
+        || QPointF::dotProduct(incoming, outgoing) <= 0.0
+        || std::abs(traceCross(incoming, outgoing)) > kTraceTangentSlack * tangentProduct
+        || traceCross(first.control - first.start, first.end - first.control)
+            * traceCross(second.control - second.start, second.end - second.control) < 0.0) {
+        return false;
+    }
+    const bool curved = first.curved || second.curved;
+    if (curved) {
+        if (!traceControl(first.start, second.end, first.control - first.start,
+                second.end - second.control, &control)) {
+            return false;
+        }
+    } else {
+        control = (first.start + second.end) * 0.5;
+    }
+    const double parameter = firstLength / (firstLength + secondLength);
+    const QPointF left = first.start * (1.0 - parameter) + control * parameter;
+    const QPointF right = control * (1.0 - parameter) + second.end * parameter;
+    const QPointF split = left * (1.0 - parameter) + right * parameter;
+    const double addedError = std::max({QLineF(first.control, left).length(),
+        QLineF(first.end, split).length(), QLineF(second.control, right).length()});
+    const double error = std::max(first.error, second.error) + addedError;
+    if (error > tolerance) {
+        return false;
+    }
+    *merged = {first.start, control, second.end, error, curved};
+
+    return true;
+}
+
+QVector<PenPoint> fitTracedSubpath(const Subpath &subpath, double tolerance, int *curveCount) {
+    QVector<FittedTraceSpan> spans;
+    QVector<PenPoint> points;
+    QPointF start = subpath.start;
+    if (!std::isfinite(tolerance) || tolerance <= 0.0) {
+        return {};
+    }
+    for (const auto &op : subpath.ops) {
+        if (op.kind == Op::Line) {
+            if (QLineF(start, op.end).length() > kGeometryEpsilon) {
+                spans.push_back({start, (start + op.end) * 0.5, op.end, 0.0, false});
+            }
+        } else if (!fitTraceCubic(start, op.control1, op.control2, op.end, tolerance * 0.5, 0, &spans)) {
+            return {};
+        }
+        start = op.end;
+    }
+    for (int index = 0; index + 1 < spans.size() && spans.size() > 2;) {
+        FittedTraceSpan merged;
+        if (mergeTraceSpans(spans[index], spans[index + 1], tolerance, &merged)) {
+            spans[index] = merged;
+            spans.removeAt(index + 1);
+            index = std::max(0, index - 1);
+        } else {
+            ++index;
+        }
+    }
+    if (spans.isEmpty()) {
+        return {};
+    }
+    points.push_back({spans.front().start, PenPointKind::Hard});
+    for (int index = 0; index < spans.size(); ++index) {
+        if (spans[index].curved) {
+            points.push_back({spans[index].control, PenPointKind::Soft});
+            ++*curveCount;
+        }
+        if (index + 1 < spans.size()) {
+            points.push_back({spans[index].end, PenPointKind::Hard});
+        }
+    }
+
+    return points;
 }
 
 QVector<Subpath> toSubpaths(const QPainterPath &path, double closureTolerance = 1e-6) {
@@ -1519,7 +1714,14 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
         }
         const Subpath &subpath = candidate.subpath;
         QVector<PenPoint> points;
-        if (options.preserveInputCurves) {
+        if (options.fitTracedCurves) {
+            points = fitTracedSubpath(subpath, options.curveFitTolerance, &result.fittedCurveSegments);
+            if (points.isEmpty()) {
+                result.error = QStringLiteral("The traced curves could not be fitted within the curve tolerance");
+                result.loops.clear();
+                return result;
+            }
+        } else if (options.preserveInputCurves) {
             RegionPenConversionOptions directOptions = options.fallback;
             directOptions.mergeTolerance = 0.0;
             directOptions.adaptiveSearchSteps = 0;
@@ -1558,6 +1760,11 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
 
     const PenContour compound = buildPenContour(result.loops);
     if (!compound.valid()) {
+        if (options.fitTracedCurves && options.curveFitTolerance > kMinimumTraceTolerance) {
+            auto retry = options;
+            retry.curveFitTolerance *= 0.5;
+            return regionOutlineToPenLoops(outline, retry);
+        }
         result.error = compound.error.isEmpty()
             ? QStringLiteral("The traced region is not a valid Pen contour")
             : compound.error;
