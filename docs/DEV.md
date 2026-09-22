@@ -288,10 +288,12 @@ exports grouped `C_group` folders and `C_livery` folders.
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
-  selected mask, and samples each boundary before cyclic RDP at epsilon 2.0
+  selected mask, and samples each boundary before cyclic RDP at epsilon 1.0
   source-image pixels. It merges neighboring anchors when a fitted quadratic
-  remains within a bounded sampled-boundary deviation, then removes smooth
-  hard junctions between quadratic controls. Merge scores update locally after
+  remains within a bounded sampled-boundary deviation. The deviation limit
+  scales down with local feature size, and resolved opposing bends retain
+  separate spans. It then removes smooth hard junctions between quadratic
+  controls under the same local-detail guard. Merge scores update locally after
   each removal. Retained spans use a fitted quadratic when their bow is at
   least 0.2 pixels and a line otherwise. Each optimized loop is accepted only
   when the complete compound contour remains valid; the sampled hybrid loop

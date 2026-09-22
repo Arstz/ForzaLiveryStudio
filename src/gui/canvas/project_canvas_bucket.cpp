@@ -11,6 +11,7 @@ namespace gui {
 namespace {
 
 constexpr double kBucketCurveBow = 0.2;
+constexpr double kBucketSimplifyEpsilon = 1.0;
 constexpr double kBucketSmoothSpanTolerance = 2.5;
 
 } // namespace
@@ -359,6 +360,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
             : bucket_.fill.averageColor;
         fillMask = bucket_.fill.transparentTarget;
         conversionOptions.fallback.comparisonImageSize = image.size();
+        conversionOptions.simplifyEpsilon = kBucketSimplifyEpsilon;
         conversionOptions.minimumCurveBow = kBucketCurveBow;
         conversionOptions.smoothSpanTolerance = kBucketSmoothSpanTolerance;
         conversionOptions.smoothHybridJunctions = true;

@@ -900,6 +900,7 @@ void rasterStaircaseUsesCompactContour(TestContext *test) {
     gui::RegionPenLoopConversionOptions options;
     options.fallback.comparisonImageSize = image.size();
     const auto baseline = gui::regionOutlineToPenLoops(traced, options);
+    options.simplifyEpsilon = 1.0;
     options.minimumCurveBow = 0.2;
     options.smoothSpanTolerance = 2.5;
     options.smoothHybridJunctions = true;
@@ -968,6 +969,85 @@ void smoothRasterConversionPreservesSharpNotch(TestContext *test) {
         });
     test->expect(hardNotch && gui::buildPenContour(converted.loops).valid(),
         "Smooth raster conversion must retain an intentional sharp notch");
+}
+
+void smoothRasterConversionPreservesSmallCurves(TestContext *test) {
+    QPainterPath outline;
+    outline.moveTo(0.0, 20.0);
+    for (int x = 1; x <= 64; ++x) {
+        const double offset = x >= 16 && x <= 48
+            ? 2.5 * std::sin((x - 16) * std::acos(-1.0) / 8.0)
+            : 0.0;
+        outline.lineTo(x, 20.0 + offset);
+    }
+    outline.lineTo(64.0, 80.0);
+    outline.lineTo(0.0, 80.0);
+    outline.closeSubpath();
+
+    gui::RegionPenLoopConversionOptions options;
+    options.simplifyEpsilon = 1.0;
+    options.minimumCurveBow = 0.2;
+    options.smoothSpanTolerance = 2.5;
+    options.smoothHybridJunctions = true;
+    const auto converted = gui::regionOutlineToPenLoops(outline, options);
+    const auto contour = gui::buildPenContour(converted.loops);
+    test->expect(converted.valid() && contour.valid(),
+        "Small-curve raster conversion must produce a valid contour");
+    if (!contour.valid()) {
+        return;
+    }
+    const bool firstInward = !contour.path.contains(QPointF(20.0, 20.75));
+    const bool firstOutward = contour.path.contains(QPointF(28.0, 19.25));
+    const bool secondInward = !contour.path.contains(QPointF(36.0, 20.75));
+    const bool secondOutward = contour.path.contains(QPointF(44.0, 19.25));
+    if (!firstInward || !firstOutward || !secondInward || !secondOutward) {
+        std::cerr << "Small curve checks: " << firstInward << firstOutward
+            << secondInward << secondOutward << "; points="
+            << converted.loops.front().points.size() << '\n';
+        for (const auto &point : converted.loops.front().points) {
+            std::cerr << (point.kind == gui::PenPointKind::Hard ? 'H' : 'S')
+                << '(' << point.position.x() << ',' << point.position.y() << ") ";
+        }
+        std::cerr << '\n';
+    }
+    test->expect(firstInward && firstOutward && secondInward && secondOutward,
+        "Small opposing curves must survive raster contour smoothing");
+}
+
+void bucketTracePreservesSmallCurves(TestContext *test) {
+    QImage image(96, 64, QImage::Format_ARGB32);
+    image.fill(QColor(20, 40, 60));
+    for (int x = 8; x < 88; ++x) {
+        const double wave = x >= 24 && x <= 56
+            ? 3.0 * std::sin((x - 24) * std::acos(-1.0) / 8.0)
+            : 0.0;
+        const int top = 16 + static_cast<int>(std::round(wave));
+        for (int y = top; y < 56; ++y) {
+            image.setPixelColor(x, y, QColor(220, 50, 40));
+        }
+    }
+    const auto selected = gui::floodGuideRegion(image, QPoint(40, 40), 0);
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    const auto traced = gui::traceMaskToPath(selected.mask, image.width(), image.height(),
+        selected.bounds, traceOptions);
+    gui::RegionPenLoopConversionOptions options;
+    options.simplifyEpsilon = 1.0;
+    options.minimumCurveBow = 0.2;
+    options.smoothSpanTolerance = 2.5;
+    options.smoothHybridJunctions = true;
+    const auto converted = gui::regionOutlineToPenLoops(traced, options);
+    const auto contour = gui::buildPenContour(converted.loops);
+    test->expect(selected.valid() && converted.valid() && contour.valid(),
+        "Bucket tracing must keep small curves in a valid contour");
+    if (!contour.valid()) {
+        return;
+    }
+    test->expect(!contour.path.contains(QPointF(28.5, 17.5))
+        && contour.path.contains(QPointF(36.5, 14.5))
+        && !contour.path.contains(QPointF(44.5, 17.5))
+        && contour.path.contains(QPointF(52.5, 14.5)),
+        "Bucket tracing must retain successive small boundary bends");
 }
 
 void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
@@ -2969,6 +3049,8 @@ int main(int argc, char **argv)
     bucketMaskTracesIntoPenContour(&test);
     rasterStaircaseUsesCompactContour(&test);
     smoothRasterConversionPreservesSharpNotch(&test);
+    smoothRasterConversionPreservesSmallCurves(&test);
+    bucketTracePreservesSmallCurves(&test);
     rdpHybridQuadraticMatchesAnalyzer(&test);
     if (test.failures() == 0) {
         std::cout << "All region Pen conversion tests passed\n";

@@ -1534,10 +1534,44 @@ QPolygonF quadraticSamples(const QPointF &start, const QPointF &control,
                            const QPointF &end, int samples);
 double openPolylineDeviation(const QPolygonF &first, const QPolygonF &second);
 
+double featureAwareTolerance(const QPolygonF &polyline, double tolerance) {
+    constexpr double kTolerancePerUnitLength = 0.1;
+    double length = 0.0;
+    for (int index = 1; index < polyline.size(); ++index) {
+        length += QLineF(polyline[index - 1], polyline[index]).length();
+    }
+
+    return std::min(tolerance, length * kTolerancePerUnitLength);
+}
+
+bool hasResolvedInflection(const QPolygonF &polyline) {
+    constexpr double kMinimumOpposingBow = 1.25;
+    if (polyline.size() < 4) {
+        return false;
+    }
+    const QPointF chord = polyline.back() - polyline.front();
+    const double length = std::hypot(chord.x(), chord.y());
+    if (length <= kGeometryEpsilon) {
+        return false;
+    }
+    double positiveBow = 0.0;
+    double negativeBow = 0.0;
+    for (int index = 1; index + 1 < polyline.size(); ++index) {
+        const QPointF offset = polyline[index] - polyline.front();
+        const double bow = (chord.x() * offset.y() - chord.y() * offset.x()) / length;
+        positiveBow = std::max(positiveBow, bow);
+        negativeBow = std::max(negativeBow, -bow);
+    }
+
+    return positiveBow >= kMinimumOpposingBow
+        && negativeBow >= kMinimumOpposingBow;
+}
+
 QVector<int> mergeQuadraticAnchors(const QPolygonF &polygon,
                                   QVector<int> anchors, double tolerance) {
     constexpr int kCornerSampleOffset = 3;
     constexpr double kSmoothTurnCosine = 0.5;
+    constexpr double kTolerancePerAdjacentSpan = 0.2;
     constexpr int kMinimumFitSamples = 12;
     constexpr int kMaximumFitSamples = 32;
     struct Candidate {
@@ -1582,12 +1616,22 @@ QVector<int> mergeQuadraticAnchors(const QPolygonF &polygon,
         for (int index : arcIndices) {
             arc.push_back(polygon[index]);
         }
+        if (hasResolvedInflection(arc)) {
+            return std::numeric_limits<double>::infinity();
+        }
         const QPointF control = quadraticReconstructionControl(polygon, arcIndices);
         const int samples = std::clamp(static_cast<int>(arc.size() / 2),
             kMinimumFitSamples, kMaximumFitSamples);
         const QPolygonF fit = quadraticSamples(polygon[start], control, polygon[end], samples);
 
-        return openPolylineDeviation(arc, fit);
+        const double deviation = openPolylineDeviation(arc, fit);
+        const double leftSpan = QLineF(polygon[start], polygon[middle]).length();
+        const double rightSpan = QLineF(polygon[middle], polygon[end]).length();
+        const double localTolerance = std::min(featureAwareTolerance(arc, tolerance),
+            std::min(leftSpan, rightSpan) * kTolerancePerAdjacentSpan);
+
+        return deviation <= localTolerance + kGeometryEpsilon
+            ? deviation : std::numeric_limits<double>::infinity();
     };
     std::priority_queue<Candidate, std::vector<Candidate>, GreaterCandidate> queue;
     const auto enqueue = [&](int position) {
@@ -1728,7 +1772,15 @@ double hybridJunctionDeviation(const QVector<PenPoint> &points, int index) {
     replacement += quadraticSamples(middle, points[next].position,
         right, kJunctionSamples);
 
-    return openPolylineDeviation(original, replacement);
+    if (hasResolvedInflection(original)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    const double deviation = openPolylineDeviation(original, replacement);
+    const double localTolerance = featureAwareTolerance(original,
+        std::numeric_limits<double>::infinity());
+
+    return deviation <= localTolerance + kGeometryEpsilon
+        ? deviation : std::numeric_limits<double>::infinity();
 }
 
 QVector<PenPoint> smoothHybridJunctions(const QVector<PenPoint> &points,
