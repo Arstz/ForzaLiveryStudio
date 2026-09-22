@@ -289,14 +289,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   diagnostics to `lining_fill.log` beside the executable.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
   selected mask, and samples each boundary before cyclic RDP at epsilon 2.0
-  source-image pixels. Retained spans use a fitted quadratic when their bow is
-  at least 0.75 pixels and a line otherwise. Invalid hybrid loops retry with
-  the conservative Pen converter. Small and boundary-adjacent cutouts remain
-  available to the compound contour. The stricter traced-cubic converter is
-  available to headless callers but is not the raster bucket default because
-  pixel-scale turns made its control-point count impractical. Conversion precedes
-  the guide transform and is independent of viewport zoom, color tolerance,
-  and fill margin. Completing a Bucket-derived fill retains the guide-layer selection.
+  source-image pixels. It merges neighboring anchors when a fitted quadratic
+  remains within a bounded sampled-boundary deviation, then removes smooth
+  hard junctions between quadratic controls. Merge scores update locally after
+  each removal. Retained spans use a fitted quadratic when their bow is at
+  least 0.2 pixels and a line otherwise. Each optimized loop is accepted only
+  when the complete compound contour remains valid; the sampled hybrid loop
+  stays as fallback. Small and boundary-adjacent cutouts remain available.
+  The stricter traced-cubic converter remains available to headless callers.
+  Conversion precedes the guide transform and is independent of viewport zoom,
+  color tolerance, and fill margin. Completing a Bucket-derived fill retains
+  the guide-layer selection.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
   drag the current selection from outside its bounds and giving that selection

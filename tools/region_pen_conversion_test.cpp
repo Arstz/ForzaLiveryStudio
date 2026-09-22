@@ -799,6 +799,14 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
         "Curve-preserving bucket conversion must retain small and nearby cutouts");
     test->expect(gui::buildPenContour(fitted.loops).valid() && fitted.fittedCurveSegments > 0,
         "Curve-preserving bucket conversion must produce a usable curved compound path");
+    gui::RegionPenLoopConversionOptions smoothOptions;
+    smoothOptions.minimumCurveBow = 0.2;
+    smoothOptions.smoothSpanTolerance = 2.5;
+    smoothOptions.smoothHybridJunctions = true;
+    const auto smooth = gui::regionOutlineToPenLoops(traced, smoothOptions);
+    test->expect(smooth.valid() && smooth.loops.size() == 5
+        && gui::buildPenContour(smooth.loops).valid(),
+        "Smooth bucket conversion must retain a valid compound contour with cutouts");
     gui::RegionPenLoopConversionOptions conversionOptions;
     conversionOptions.fallback.comparisonImageSize = image.size();
     conversionOptions.discardedCutoutAreaCeiling = 5.0;
@@ -891,15 +899,75 @@ void rasterStaircaseUsesCompactContour(TestContext *test) {
         selected.bounds, traceOptions);
     gui::RegionPenLoopConversionOptions options;
     options.fallback.comparisonImageSize = image.size();
+    const auto baseline = gui::regionOutlineToPenLoops(traced, options);
+    options.minimumCurveBow = 0.2;
+    options.smoothSpanTolerance = 2.5;
+    options.smoothHybridJunctions = true;
+    options.smoothJunctionTolerance = 2.5;
     const auto converted = gui::regionOutlineToPenLoops(traced, options);
     int pointCount = 0;
+    int hardCount = 0;
+    int baselineHardCount = 0;
+    int baselinePointCount = 0;
+    for (const auto &loop : baseline.loops) {
+        baselinePointCount += loop.points.size();
+        baselineHardCount += static_cast<int>(std::count_if(loop.points.cbegin(), loop.points.cend(),
+            [](const auto &point) { return point.kind == gui::PenPointKind::Hard; }));
+    }
     for (const auto &loop : converted.loops) {
         pointCount += loop.points.size();
+        hardCount += static_cast<int>(std::count_if(loop.points.cbegin(), loop.points.cend(),
+            [](const auto &point) { return point.kind == gui::PenPointKind::Hard; }));
     }
     test->expect(converted.valid() && gui::buildPenContour(converted.loops).valid(),
         "Raster staircase conversion must produce a valid contour");
     test->expect(pointCount > 0 && pointCount < 160,
         "Raster staircase conversion must fit long spans instead of retaining pixel turns");
+    test->expect(pointCount <= baselinePointCount,
+        "Quadratic span merging must not increase the contour point count");
+    if (hardCount * 4 > baselineHardCount * 3) {
+        std::cerr << "Raster points: " << pointCount << " of " << baselinePointCount
+            << "; hard joins: " << hardCount << " of " << baselineHardCount << '\n';
+    }
+    test->expect(hardCount * 4 <= baselineHardCount * 3,
+        "Smooth raster spans must use fewer hard joins than the unsmoothed hybrid contour");
+    const auto repeated = gui::regionOutlineToPenLoops(traced, options);
+    bool identical = repeated.valid() && repeated.loops.size() == converted.loops.size();
+    for (int loopIndex = 0; identical && loopIndex < converted.loops.size(); ++loopIndex) {
+        const auto &first = converted.loops[loopIndex].points;
+        const auto &second = repeated.loops[loopIndex].points;
+        identical = first.size() == second.size();
+        for (int pointIndex = 0; identical && pointIndex < first.size(); ++pointIndex) {
+            identical = first[pointIndex].kind == second[pointIndex].kind
+                && first[pointIndex].position == second[pointIndex].position;
+        }
+    }
+    test->expect(identical, "Smooth raster conversion must be deterministic");
+}
+
+void smoothRasterConversionPreservesSharpNotch(TestContext *test) {
+    QPainterPath outline;
+    outline.moveTo(0, 0);
+    outline.lineTo(100, 0);
+    outline.lineTo(100, 100);
+    outline.lineTo(60, 100);
+    outline.lineTo(50, 70);
+    outline.lineTo(40, 100);
+    outline.lineTo(0, 100);
+    outline.closeSubpath();
+    gui::RegionPenLoopConversionOptions options;
+    options.minimumCurveBow = 0.2;
+    options.smoothSpanTolerance = 2.5;
+    options.smoothHybridJunctions = true;
+    const auto converted = gui::regionOutlineToPenLoops(outline, options);
+    const bool hardNotch = converted.valid() && std::any_of(
+        converted.loops.front().points.cbegin(), converted.loops.front().points.cend(),
+        [](const gui::PenPoint &point) {
+            return point.kind == gui::PenPointKind::Hard
+                && QLineF(point.position, QPointF(50, 70)).length() < 1e-6;
+        });
+    test->expect(hardNotch && gui::buildPenContour(converted.loops).valid(),
+        "Smooth raster conversion must retain an intentional sharp notch");
 }
 
 void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
@@ -2900,6 +2968,7 @@ int main(int argc, char **argv)
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     rasterStaircaseUsesCompactContour(&test);
+    smoothRasterConversionPreservesSharpNotch(&test);
     rdpHybridQuadraticMatchesAnalyzer(&test);
     if (test.failures() == 0) {
         std::cout << "All region Pen conversion tests passed\n";

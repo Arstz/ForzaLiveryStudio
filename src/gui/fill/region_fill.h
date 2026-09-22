@@ -102,6 +102,9 @@ struct RegionPenLoopConversionOptions {
     double curveFitTolerance = 0.5;
     double simplifyEpsilon = 2.0;
     double minimumCurveBow = 0.75;
+    double smoothSpanTolerance = 0.0;
+    bool smoothHybridJunctions = false;
+    double smoothJunctionTolerance = 2.5;
     double discardedCutoutAreaCeiling = 0.0;
     double discardedCutoutBoundaryClearance = 0.0;
     int curveSamples = 32;
@@ -152,7 +155,8 @@ QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon);
 QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
     const QPolygonF &polygon,
     double epsilon,
-    double minimumCurveBow);
+    double minimumCurveBow,
+    double smoothSpanTolerance = 0.0);
 
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,

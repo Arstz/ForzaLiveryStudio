@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <queue>
+#include <vector>
 
 namespace gui {
 
@@ -37,6 +39,8 @@ constexpr int kCircleShapeId = 102;
 constexpr int kTraceSubdivisionDepth = 16;
 constexpr double kTraceTangentSlack = 1e-7;
 constexpr double kMinimumTraceTolerance = 1.0 / 64.0;
+constexpr double kMinimumSmoothJunctionTolerance = 0.125;
+constexpr double kMinimumSmoothSpanTolerance = 0.125;
 
 struct Op {
     enum Kind { Line, Cubic } kind = Line;
@@ -1526,18 +1530,128 @@ QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon) 
     return approximateClosedPolygon(polygon, epsilon);
 }
 
+QPolygonF quadraticSamples(const QPointF &start, const QPointF &control,
+                           const QPointF &end, int samples);
+double openPolylineDeviation(const QPolygonF &first, const QPolygonF &second);
+
+QVector<int> mergeQuadraticAnchors(const QPolygonF &polygon,
+                                  QVector<int> anchors, double tolerance) {
+    constexpr int kCornerSampleOffset = 3;
+    constexpr double kSmoothTurnCosine = 0.5;
+    constexpr int kMinimumFitSamples = 12;
+    constexpr int kMaximumFitSamples = 32;
+    struct Candidate {
+        double deviation = 0.0;
+        int position = 0;
+        int version = 0;
+    };
+    struct GreaterCandidate {
+        bool operator()(const Candidate &left, const Candidate &right) const {
+            if (left.deviation != right.deviation) {
+                return left.deviation > right.deviation;
+            }
+            return left.position > right.position;
+        }
+    };
+    const int count = anchors.size();
+    QVector<int> previous(count);
+    QVector<int> next(count);
+    QVector<int> versions(count, 0);
+    QVector<bool> active(count, true);
+    for (int index = 0; index < count; ++index) {
+        previous[index] = (index + count - 1) % count;
+        next[index] = (index + 1) % count;
+    }
+    const auto deviationFor = [&](int position) {
+        const int middle = anchors[position];
+        const QPointF incoming = polygon[middle]
+            - polygon[(middle + polygon.size() - kCornerSampleOffset) % polygon.size()];
+        const QPointF outgoing = polygon[(middle + kCornerSampleOffset) % polygon.size()]
+            - polygon[middle];
+        const double lengths = std::hypot(incoming.x(), incoming.y())
+            * std::hypot(outgoing.x(), outgoing.y());
+        if (lengths <= kGeometryEpsilon
+            || QPointF::dotProduct(incoming, outgoing) < kSmoothTurnCosine * lengths) {
+            return std::numeric_limits<double>::infinity();
+        }
+        const int start = anchors[previous[position]];
+        const int end = anchors[next[position]];
+        const QVector<int> arcIndices = cyclicArcIndices(polygon.size(), start, end);
+        QPolygonF arc;
+        arc.reserve(arcIndices.size());
+        for (int index : arcIndices) {
+            arc.push_back(polygon[index]);
+        }
+        const QPointF control = quadraticReconstructionControl(polygon, arcIndices);
+        const int samples = std::clamp(static_cast<int>(arc.size() / 2),
+            kMinimumFitSamples, kMaximumFitSamples);
+        const QPolygonF fit = quadraticSamples(polygon[start], control, polygon[end], samples);
+
+        return openPolylineDeviation(arc, fit);
+    };
+    std::priority_queue<Candidate, std::vector<Candidate>, GreaterCandidate> queue;
+    const auto enqueue = [&](int position) {
+        if (!active[position]) {
+            return;
+        }
+        const double deviation = deviationFor(position);
+        if (std::isfinite(deviation)) {
+            queue.push({deviation, position, versions[position]});
+        }
+    };
+    for (int position = 0; position < count; ++position) {
+        enqueue(position);
+    }
+    int remaining = count;
+    while (remaining > 3 && !queue.empty()) {
+        const Candidate candidate = queue.top();
+        queue.pop();
+        if (!active[candidate.position]
+            || versions[candidate.position] != candidate.version) {
+            continue;
+        }
+        if (candidate.deviation > tolerance + kGeometryEpsilon) {
+            break;
+        }
+        const int left = previous[candidate.position];
+        const int right = next[candidate.position];
+        active[candidate.position] = false;
+        next[left] = right;
+        previous[right] = left;
+        --remaining;
+        ++versions[left];
+        ++versions[right];
+        enqueue(left);
+        enqueue(right);
+    }
+    QVector<int> merged;
+    merged.reserve(remaining);
+    for (int position = 0; position < count; ++position) {
+        if (active[position]) {
+            merged.push_back(anchors[position]);
+        }
+    }
+
+    return merged;
+}
+
 QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
     const QPolygonF &polygon,
     double epsilon,
-    double minimumCurveBow) {
+    double minimumCurveBow,
+    double smoothSpanTolerance) {
     QVector<PenPoint> result;
     if (polygon.size() < 3 || !std::isfinite(epsilon) || epsilon <= 0.0
-        || !std::isfinite(minimumCurveBow) || minimumCurveBow < 0.0) {
+        || !std::isfinite(minimumCurveBow) || minimumCurveBow < 0.0
+        || !std::isfinite(smoothSpanTolerance) || smoothSpanTolerance < 0.0) {
         return result;
     }
-    const QVector<int> anchors = cyclicRdpIndices(polygon, epsilon);
+    QVector<int> anchors = cyclicRdpIndices(polygon, epsilon);
     if (anchors.size() < 3) {
         return result;
+    }
+    if (smoothSpanTolerance > 0.0) {
+        anchors = mergeQuadraticAnchors(polygon, std::move(anchors), smoothSpanTolerance);
     }
     result.reserve(anchors.size() * 2);
     for (int anchorPosition = 0; anchorPosition < anchors.size(); ++anchorPosition) {
@@ -1561,6 +1675,138 @@ QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
     }
 
     return result;
+}
+
+QPolygonF quadraticSamples(const QPointF &start, const QPointF &control,
+                           const QPointF &end, int samples) {
+    QPolygonF result;
+    result.reserve(samples + 1);
+    for (int step = 0; step <= samples; ++step) {
+        const double t = static_cast<double>(step) / samples;
+        const double u = 1.0 - t;
+        result.push_back(start * (u * u) + control * (2.0 * u * t) + end * (t * t));
+    }
+
+    return result;
+}
+
+double openPolylineDeviation(const QPolygonF &first, const QPolygonF &second) {
+    const auto directed = [](const QPolygonF &source, const QPolygonF &target) {
+        double maximum = 0.0;
+        for (const QPointF &point : source) {
+            double nearest = std::numeric_limits<double>::infinity();
+            for (int index = 1; index < target.size(); ++index) {
+                nearest = std::min(nearest, perpendicularDistance(point,
+                    target[index - 1], target[index]));
+            }
+            maximum = std::max(maximum, nearest);
+        }
+        return maximum;
+    };
+
+    return std::max(directed(first, second), directed(second, first));
+}
+
+double hybridJunctionDeviation(const QVector<PenPoint> &points, int index) {
+    constexpr int kJunctionSamples = 12;
+    const int count = points.size();
+    const int previous = (index + count - 1) % count;
+    const int next = (index + 1) % count;
+    const PenPoint &before = points[(index + count - 2) % count];
+    const PenPoint &after = points[(index + 2) % count];
+    const QPointF left = before.kind == PenPointKind::Hard
+        ? before.position : (before.position + points[previous].position) * 0.5;
+    const QPointF right = after.kind == PenPointKind::Hard
+        ? after.position : (points[next].position + after.position) * 0.5;
+    const QPointF middle = (points[previous].position + points[next].position) * 0.5;
+    QPolygonF original = quadraticSamples(left, points[previous].position,
+        points[index].position, kJunctionSamples);
+    QPolygonF replacement = quadraticSamples(left, points[previous].position,
+        middle, kJunctionSamples);
+    original += quadraticSamples(points[index].position, points[next].position,
+        right, kJunctionSamples);
+    replacement += quadraticSamples(middle, points[next].position,
+        right, kJunctionSamples);
+
+    return openPolylineDeviation(original, replacement);
+}
+
+QVector<PenPoint> smoothHybridJunctions(const QVector<PenPoint> &points,
+                                      double tolerance) {
+    constexpr double kSmoothTurnCosine = 0.5;
+    constexpr int kGlobalSamples = 8;
+    constexpr qint64 kGlobalComparisonLimit = 10'000'000;
+    if (points.size() < 3 || tolerance <= 0.0) {
+        return points;
+    }
+    QVector<PenPoint> smoothed = points;
+    QVector<int> originalIndices;
+    QSet<int> rejected;
+    originalIndices.reserve(points.size());
+    for (int index = 0; index < points.size(); ++index) {
+        originalIndices.push_back(index);
+    }
+    int hardCount = static_cast<int>(std::count_if(points.cbegin(), points.cend(),
+        [](const PenPoint &point) { return point.kind == PenPointKind::Hard; }));
+    while (hardCount > 1) {
+        QVector<std::pair<double, int>> candidates;
+        for (int index = 0; index < smoothed.size(); ++index) {
+            if (smoothed[index].kind != PenPointKind::Hard
+                || rejected.contains(originalIndices[index])) {
+                continue;
+            }
+            const int previous = (index + smoothed.size() - 1) % smoothed.size();
+            const int next = (index + 1) % smoothed.size();
+            if (smoothed[previous].kind != PenPointKind::Soft
+                || smoothed[next].kind != PenPointKind::Soft) {
+                continue;
+            }
+            const QPointF incoming = smoothed[index].position - smoothed[previous].position;
+            const QPointF outgoing = smoothed[next].position - smoothed[index].position;
+            const double lengths = std::hypot(incoming.x(), incoming.y())
+                * std::hypot(outgoing.x(), outgoing.y());
+            if (lengths <= kGeometryEpsilon
+                || QPointF::dotProduct(incoming, outgoing) < kSmoothTurnCosine * lengths) {
+                continue;
+            }
+            const double deviation = hybridJunctionDeviation(smoothed, index);
+            if (deviation <= tolerance + kGeometryEpsilon) {
+                candidates.push_back({deviation, index});
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        bool changed = false;
+        for (const auto &[deviation, index] : candidates) {
+            Q_UNUSED(deviation);
+            QVector<PenPoint> trial = smoothed;
+            trial.removeAt(index);
+            if (!buildPenContour(trial).valid()) {
+                rejected.insert(originalIndices[index]);
+                continue;
+            }
+            smoothed = std::move(trial);
+            originalIndices.removeAt(index);
+            --hardCount;
+            changed = true;
+            break;
+        }
+        if (!changed) {
+            break;
+        }
+    }
+    if (smoothed.size() == points.size()) {
+        return points;
+    }
+    const PenContour original = buildPenContour(points);
+    const PenContour replacement = buildPenContour(smoothed);
+    const QPolygonF originalSamples = flattenPenContour(original, kGlobalSamples);
+    const QPolygonF replacementSamples = flattenPenContour(replacement, kGlobalSamples);
+    if (static_cast<qint64>(originalSamples.size()) * replacementSamples.size() <= kGlobalComparisonLimit
+        && boundaryDeviation(originalSamples, replacementSamples) > tolerance * 2.0) {
+        return points;
+    }
+
+    return smoothed;
 }
 
 QPolygonF simplifyClosedPolygonCorridor(
@@ -1655,6 +1901,10 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
         || options.simplifyEpsilon <= 0.0
         || !std::isfinite(options.minimumCurveBow)
         || options.minimumCurveBow < 0.0
+        || !std::isfinite(options.smoothSpanTolerance)
+        || options.smoothSpanTolerance < 0.0
+        || !std::isfinite(options.smoothJunctionTolerance)
+        || options.smoothJunctionTolerance < 0.0
         || !std::isfinite(options.discardedCutoutAreaCeiling)
         || options.discardedCutoutAreaCeiling < 0.0
         || !std::isfinite(options.discardedCutoutBoundaryClearance)
@@ -1691,6 +1941,8 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
     }
 
     result.loops.reserve(candidates.size());
+    QVector<int> includedCandidateIndices;
+    includedCandidateIndices.reserve(candidates.size());
     for (int candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
         const LoopCandidate &candidate = candidates[candidateIndex];
         if (candidateIndex > 0) {
@@ -1740,6 +1992,12 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
             points = simplifyClosedPolygonRdpHybridQuadratic(
                 candidate.sampled, options.simplifyEpsilon, options.minimumCurveBow);
             if (!buildPenContour(points).valid()) {
+                const double conservativeBow = RegionPenLoopConversionOptions{}.minimumCurveBow;
+                if (options.minimumCurveBow < conservativeBow) {
+                    auto retry = options;
+                    retry.minimumCurveBow = conservativeBow;
+                    return regionOutlineToPenLoops(outline, retry);
+                }
                 const RegionPenConversionResult conversion = regionOutlineToPenPoints(
                     subpathPainterPath(subpath), options.fallback);
                 if (!conversion.valid()) {
@@ -1756,10 +2014,18 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
             std::move(points),
             candidateIndex == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout,
         });
+        includedCandidateIndices.push_back(candidateIndex);
     }
 
     const PenContour compound = buildPenContour(result.loops);
     if (!compound.valid()) {
+        const double conservativeBow = RegionPenLoopConversionOptions{}.minimumCurveBow;
+        if (!options.fitTracedCurves && !options.preserveInputCurves
+            && options.minimumCurveBow < conservativeBow) {
+            auto retry = options;
+            retry.minimumCurveBow = conservativeBow;
+            return regionOutlineToPenLoops(outline, retry);
+        }
         if (options.fitTracedCurves && options.curveFitTolerance > kMinimumTraceTolerance) {
             auto retry = options;
             retry.curveFitTolerance *= 0.5;
@@ -1769,6 +2035,55 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
             ? QStringLiteral("The traced region is not a valid Pen contour")
             : compound.error;
         result.loops.clear();
+        return result;
+    }
+    if (!options.fitTracedCurves && !options.preserveInputCurves
+        && (options.smoothSpanTolerance > 0.0 || options.smoothHybridJunctions)) {
+        const auto accepts = [&](int index, const QVector<PenPoint> &points) {
+            if (!buildPenContour(points).valid()) {
+                return false;
+            }
+            auto trial = result.loops;
+            trial[index].points = points;
+            if (!buildPenContour(trial).valid()) {
+                return false;
+            }
+            result.loops = std::move(trial);
+            return true;
+        };
+        for (int index = 0; index < result.loops.size(); ++index) {
+            bool accepted = false;
+            for (double tolerance = options.smoothSpanTolerance;
+                 tolerance >= kMinimumSmoothSpanTolerance && !accepted; tolerance *= 0.5) {
+                QVector<PenPoint> merged = simplifyClosedPolygonRdpHybridQuadratic(
+                    candidates[includedCandidateIndices[index]].sampled, options.simplifyEpsilon,
+                    options.minimumCurveBow, tolerance);
+                if (options.smoothHybridJunctions && buildPenContour(merged).valid()) {
+                    for (double junctionTolerance = options.smoothJunctionTolerance;
+                         junctionTolerance >= kMinimumSmoothJunctionTolerance;
+                         junctionTolerance *= 0.5) {
+                        auto smoothed = smoothHybridJunctions(merged, junctionTolerance);
+                        if (smoothed.size() < merged.size() && accepts(index, smoothed)) {
+                            accepted = true;
+                            break;
+                        }
+                    }
+                }
+                if (!accepted && merged.size() != result.loops[index].points.size()) {
+                    accepted = accepts(index, merged);
+                }
+            }
+            if (!accepted && options.smoothHybridJunctions) {
+                for (double tolerance = options.smoothJunctionTolerance;
+                     tolerance >= kMinimumSmoothJunctionTolerance; tolerance *= 0.5) {
+                    auto smoothed = smoothHybridJunctions(result.loops[index].points, tolerance);
+                    if (smoothed.size() < result.loops[index].points.size()
+                        && accepts(index, smoothed)) {
+                        break;
+                    }
+                }
+            }
+        }
     }
     return result;
 }

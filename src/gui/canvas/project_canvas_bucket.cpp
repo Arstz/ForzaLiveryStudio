@@ -10,6 +10,9 @@
 namespace gui {
 namespace {
 
+constexpr double kBucketCurveBow = 0.2;
+constexpr double kBucketSmoothSpanTolerance = 2.5;
+
 } // namespace
 
 using namespace pc_detail;
@@ -356,6 +359,9 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
             : bucket_.fill.averageColor;
         fillMask = bucket_.fill.transparentTarget;
         conversionOptions.fallback.comparisonImageSize = image.size();
+        conversionOptions.minimumCurveBow = kBucketCurveBow;
+        conversionOptions.smoothSpanTolerance = kBucketSmoothSpanTolerance;
+        conversionOptions.smoothHybridJunctions = true;
     }
     RegionPenLoopConversionResult conversion =
         regionOutlineToPenLoops(outline, conversionOptions);
