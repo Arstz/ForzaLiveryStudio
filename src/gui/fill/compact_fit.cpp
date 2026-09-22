@@ -54,6 +54,12 @@ constexpr double kLocalWindowFraction = 0.75;
 constexpr double kJointRepairMinimumFraction = 0.5;
 constexpr double kRepairPlacementCost = 4.0;
 constexpr int kRepairRetainedMoves = 4;
+constexpr int kBroadRepairWork = 512;
+constexpr int kBroadRepairMinimumWork = kResidualTrialsPerComponent * 4;
+constexpr int kBroadRepairClusters = 8;
+constexpr int kBroadRepairMembers = 12;
+constexpr double kBroadRepairRadius = 64.0;
+constexpr double kBroadRepairFootprint = 64.0;
 constexpr std::array<int, 28> kSearchShapeIds = {101, 102, 103, 109, 110, 120, 122, 124,
     126, 127, 128, 129, 130, 136, 139, 812, 901, 930, 2110, 2113, 2117, 2118,
     2123, 2133, 2134, 2135, 2136, 2321};
@@ -84,6 +90,7 @@ struct Objective {
     std::function<void(int)> workProgress;
     mutable int evaluations = 0;
     mutable int qualityEvaluations = 0;
+    mutable int qualityBoundsRejected = 0;
     mutable int mergeRefinements = 0;
     mutable int approximateReductions = 0;
     mutable int refitPlacements = 0;
@@ -110,6 +117,8 @@ struct Objective {
     mutable int repairClusters = 0;
     mutable int repairGroupReplacements = 0;
     mutable int repairBenefitRejected = 0;
+    mutable int broadRepairTrials = 0;
+    mutable int broadRepairReplacements = 0;
     int evaluationLimit = 0;
     int defectLimit = 0;
     double allowance = 0.0;
@@ -271,7 +280,8 @@ double boundaryCost(const Polygons &coverage, const Objective &objective) {
         + kGapRepairWeight * missingBeyondAllowance;
 }
 
-double qualityGain(const Piece &piece, const Context &context) {
+double qualityGain(const Piece &piece, const Context &context,
+                   double minimumScore = -std::numeric_limits<double>::infinity()) {
     if (context.objective->evaluations >= context.objective->evaluationLimit) {
         return -std::numeric_limits<double>::infinity();
     }
@@ -291,13 +301,17 @@ double qualityGain(const Piece &piece, const Context &context) {
     const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
     const double spill = catalog::area(catalog::subtract(piece.polygons, *context.spillExclusion));
     const double areaGain = kMissingWeight * covered + kDeepErrorWeight * deepCovered - spill;
-    const auto coverage = catalog::unite(context.others + piece.polygons);
     if (!context.inwardResidual) {
         context.inwardResidual = catalog::subtract(context.target,
             catalog::expanded(context.others, context.objective->fittingInwardAllowance));
     }
     const double missingBeyondAllowance = catalog::area(catalog::subtract(*context.inwardResidual,
         catalog::expanded(piece.polygons, context.objective->fittingInwardAllowance)));
+    if (areaGain - kGapRepairWeight * missingBeyondAllowance <= minimumScore) {
+        ++context.objective->qualityBoundsRejected;
+        return -std::numeric_limits<double>::infinity();
+    }
+    const auto coverage = catalog::unite(context.others + piece.polygons);
     if (!context.observedOthers && !context.others.isEmpty()) {
         context.observedOthers = context.objective->boundary->observationSupport(
             visibleSupport(context.others, *context.objective));
@@ -425,10 +439,10 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
     if (stopRefinement()) {
         return piece;
     }
-    const auto evaluate = [&](const Piece &candidate) {
-        return boundaryAware ? qualityGain(candidate, context) : gain(candidate, context);
+    const auto evaluate = [&](const Piece &candidate, double threshold) {
+        return boundaryAware ? qualityGain(candidate, context, threshold) : gain(candidate, context);
     };
-    double best = evaluate(piece);
+    double best = evaluate(piece, -std::numeric_limits<double>::infinity());
     std::optional<ReductionState> safeState;
     const double extent = std::max(piece.bounds.width(), piece.bounds.height());
     const double initialFraction = boundaryAware ? kInitialStepFraction * std::min(1.0, kRefinementExtent / extent) : kInitialStepFraction;
@@ -455,7 +469,7 @@ Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
                         continue;
                     }
                     Piece trial = makePiece(shape, transform);
-                    const double score = evaluate(trial);
+                    const double score = evaluate(trial, best + kScoreEpsilon);
                     if (score > best + kScoreEpsilon) {
                         if (boundaryAware) {
                             if (!safeState) {
@@ -1413,6 +1427,126 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
     }
 }
 
+void consolidateRepairPatches(QVector<Piece> *pieces, const Objective &objective,
+    const QVector<catalog::Primitive> &primitives, int evaluationLimit,
+    const std::function<bool()> &cancelled) {
+    const auto circle = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &primitive) {
+        return primitive.shape.shapeId == 102;
+    });
+    if (circle == primitives.cend() || pieces->size() < 4) {
+        return;
+    }
+    const double radius = kBroadRepairRadius * objective.cornerAllowance * 2.0;
+    const double footprintLimit = kBroadRepairFootprint * std::pow(objective.cornerAllowance * 2.0, 2.0);
+    QVector<bool> visited(pieces->size(), false);
+    int clusters = 0;
+    for (int anchor = pieces->size() - 1; anchor >= 0 && clusters < kBroadRepairClusters
+        && !stopped(cancelled) && objective.evaluations < evaluationLimit; --anchor) {
+        if (visited[anchor] || (*pieces)[anchor].placement.area > footprintLimit) {
+            continue;
+        }
+        QVector<std::pair<double, int>> nearby;
+        for (int index = 0; index < pieces->size(); ++index) {
+            if ((*pieces)[index].placement.area > footprintLimit) {
+                continue;
+            }
+            const QPointF delta = (*pieces)[index].bounds.center() - (*pieces)[anchor].bounds.center();
+            const double distanceSquared = QPointF::dotProduct(delta, delta);
+            if (distanceSquared <= radius * radius) {
+                nearby.push_back({distanceSquared, index});
+            }
+        }
+        std::sort(nearby.begin(), nearby.end());
+        if (nearby.size() < 4) {
+            continue;
+        }
+        nearby.resize(std::min(kBroadRepairMembers, static_cast<int>(nearby.size())));
+        ++clusters;
+        for (const auto &[distance, index] : nearby) {
+            visited[index] = true;
+        }
+        const auto before = reductionStateFor(support(*pieces), objective);
+        QVector<Piece> best;
+        int bestSaving = 0;
+        double bestError = std::numeric_limits<double>::infinity();
+        QVector<int> groupSizes{4, 8, static_cast<int>(nearby.size())};
+        std::sort(groupSizes.begin(), groupSizes.end());
+        groupSizes.erase(std::unique(groupSizes.begin(), groupSizes.end()), groupSizes.end());
+        for (int size : groupSizes) {
+            if (nearby.size() < size || stopped(cancelled) || objective.evaluations >= evaluationLimit) {
+                continue;
+            }
+            QVector<int> members;
+            Polygons removed;
+            QPolygonF anchors;
+            for (int index = 0; index < size; ++index) {
+                members.push_back(nearby[index].second);
+                removed += (*pieces)[nearby[index].second].polygons;
+                for (const auto &polygon : (*pieces)[nearby[index].second].polygons) {
+                    anchors += polygon;
+                }
+            }
+            const auto others = support(*pieces, members);
+            const auto necessary = catalog::subtract(catalog::unite(removed), others);
+            const QRectF frame = anchors.boundingRect();
+            QVector<std::pair<double, Piece>> ranked;
+            for (double angle : {0.0, std::numbers::pi / 12.0}) {
+                for (double factor : {1.0, 2.0, 3.0}) {
+                    for (double shift : {-0.25, 0.0, 0.25}) {
+                        if (stopped(cancelled) || objective.evaluations >= evaluationLimit) {
+                            break;
+                        }
+                        ++objective.evaluations;
+                        ++objective.broadRepairTrials;
+                        QTransform adjustment;
+                        adjustment.translate(frame.center().x() + shift * frame.width(), frame.center().y());
+                        adjustment.scale(factor, factor);
+                        adjustment.translate(-frame.center().x(), -frame.center().y());
+                        auto candidate = makePiece(circle->shape,
+                            boundsTransform(circle->shape, anchors, angle, false) * adjustment);
+                        if (!catalog::subtract(candidate.polygons, objective.outer).isEmpty()) {
+                            continue;
+                        }
+                        const double uncovered = catalog::area(catalog::subtract(necessary, candidate.polygons));
+                        const double spill = catalog::area(catalog::subtract(candidate.polygons, objective.spillFree));
+                        ranked.push_back({uncovered * kMissingWeight + spill, std::move(candidate)});
+                    }
+                }
+            }
+            std::stable_sort(ranked.begin(), ranked.end(), [](const auto &left, const auto &right) {
+                return left.first < right.first;
+            });
+            for (int candidateIndex = 0; candidateIndex < std::min(4, static_cast<int>(ranked.size())); ++candidateIndex) {
+                if (stopped(cancelled)) {
+                    break;
+                }
+                const auto &candidate = ranked[candidateIndex].second;
+                const auto after = reductionStateFor(catalog::unite(others + candidate.polygons), objective);
+                if (!repairQualityAllowed(after, before, objective)) {
+                    continue;
+                }
+                const double areaError = after.missingArea + after.spillArea;
+                const int saving = size - 1;
+                if (saving > bestSaving || (saving == bestSaving && areaError < bestError - kScoreEpsilon)) {
+                    best = *pieces;
+                    std::sort(members.begin(), members.end(), std::greater<int>());
+                    for (int member : members) {
+                        best.removeAt(member);
+                    }
+                    best.push_back(candidate);
+                    bestSaving = saving;
+                    bestError = areaError;
+                }
+            }
+        }
+        if (!best.isEmpty()) {
+            *pieces = std::move(best);
+            ++objective.broadRepairReplacements;
+            return;
+        }
+    }
+}
+
 QVector<QVector<int>> exposedNeighbors(const QVector<Piece> &pieces, const Objective &objective) {
     QVector<QVector<int>> neighbors(pieces.size());
     for (const auto &polygon : objective.boundary->observationSupport(
@@ -1531,13 +1665,15 @@ void fitBoundaryPairs(QVector<Piece> *pieces, const Objective &objective,
                         auto right = makePiece(primitiveFor((*pieces)[second].placement.shapeId, primitives),
                             movedTransform((*pieces)[second], parameter, secondSign * amount));
                         auto candidate = group(left, right);
-                        const double score = qualityGain(candidate, context);
+                        const double score = qualityGain(candidate, context, best + kScoreEpsilon);
                         if (score <= best + kScoreEpsilon) {
                             continue;
                         }
                         ++objective.globalMoveChecks;
                         auto after = reductionStateFor(completeCoverage(context, candidate.polygons), objective);
-                        if (!coverageMoveAllowed(after, before, objective)) {
+                        if (!coverageMoveAllowed(after, before, objective)
+                            || std::abs(after.metrics.holes - objective.targetMetrics.holes)
+                                > std::abs(before.metrics.holes - objective.targetMetrics.holes)) {
                             ++objective.coverageRejected;
                             continue;
                         }
@@ -1931,6 +2067,38 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                 progress(pieces.size(), missing, spill);
             }
         };
+        const auto reduceExact = [&](const QString &diagnostic, bool deletionsOnly) {
+            if (stopped(cancelled) || pieces.size() < 2) {
+                return;
+            }
+            QVector<PenPlacement> placements;
+            for (const auto &piece : pieces) {
+                placements.push_back(piece.placement);
+            }
+            try {
+                const auto exact = reduceExactCoverage(placements, primitives,
+                    objective.replacementCandidates ? *objective.replacementCandidates : QVector<ReusableCandidate>(),
+                    cancelled, deletionsOnly);
+                if (exact.placements.size() < pieces.size()) {
+                    QVector<Piece> trial;
+                    for (const auto &placement : exact.placements) {
+                        trial.push_back(makePiece(primitiveFor(placement.shapeId, primitives), placement.transform));
+                    }
+                    const auto before = support(pieces);
+                    const auto after = support(trial);
+                    if (catalog::subtract(before, after).isEmpty() && catalog::subtract(after, before).isEmpty()) {
+                        if (deletionsOnly) {
+                            objective.exactReductions += pieces.size() - trial.size();
+                        }
+                        pieces = std::move(trial);
+                        report();
+                    }
+                }
+                result.diagnostics.insert(diagnostic, exact.diagnostics);
+            } catch (const std::exception &failure) {
+                result.diagnostics.insert(diagnostic + QStringLiteral("Error"), QString::fromUtf8(failure.what()));
+            }
+        };
         report();
         recordTime(QStringLiteral("setup"));
         if (pieces.size() > 1 && !recognitionCatalog.isEmpty() && !stopWork()) {
@@ -1982,7 +2150,11 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             report();
         }
         const int repairLimit = objective.evaluationLimit;
-        objective.evaluationLimit = objective.evaluations + (repairLimit - objective.evaluations) / 2;
+        const int availableRepair = repairLimit - objective.evaluations;
+        const int broadWork = availableRepair > kBroadRepairMinimumWork
+            ? std::min(kBroadRepairWork, availableRepair / 8) : 0;
+        const int broadStart = repairLimit - broadWork;
+        objective.evaluationLimit = objective.evaluations + (broadStart - objective.evaluations) / 2;
         for (int pass = 0; pass < kRefitPasses && !stopWork(); ++pass) {
             refitFeasible(&pieces, objective, primitives, stopWork);
             report();
@@ -1991,7 +2163,9 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             }
         }
         objective.evaluationLimit = repairLimit;
-        repairResiduals(&pieces, objective, searchCatalog, options.shapeBudget, repairLimit, stopWork);
+        repairResiduals(&pieces, objective, searchCatalog, options.shapeBudget, broadStart, stopWork);
+        report();
+        consolidateRepairPatches(&pieces, objective, primitives, repairLimit, stopWork);
         report();
         if (!stopWork() && !acceptable(support(pieces), objective)) {
             refitFeasible(&pieces, objective, primitives, stopWork);
@@ -2002,6 +2176,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("initialRefit"));
         finishStage(QStringLiteral("repair"));
+        reduceExact(QStringLiteral("exactEarlyReduction"), true);
+        recordTime(QStringLiteral("earlyExactReduction"));
         objective.reductionBaseline = reductionStateFor(support(pieces), objective);
         objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::SpatialReduction);
         prune(&pieces, objective, stopWork);
@@ -2073,31 +2249,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("polish"));
         finishStage(QStringLiteral("polish"));
-        if (!stopped(cancelled) && pieces.size() > 1) {
-            QVector<PenPlacement> placements;
-            for (const auto &piece : pieces) {
-                placements.push_back(piece.placement);
-            }
-            try {
-                const auto exact = reduceExactCoverage(placements, primitives,
-                    objective.replacementCandidates ? *objective.replacementCandidates : QVector<ReusableCandidate>(), cancelled);
-                if (exact.placements.size() < pieces.size()) {
-                    QVector<Piece> trial;
-                    for (const auto &placement : exact.placements) {
-                        trial.push_back(makePiece(primitiveFor(placement.shapeId, primitives), placement.transform));
-                    }
-                    const auto before = support(pieces);
-                    const auto after = support(trial);
-                    if (catalog::subtract(before, after).isEmpty() && catalog::subtract(after, before).isEmpty()) {
-                        pieces = std::move(trial);
-                        report();
-                    }
-                }
-                result.diagnostics.insert(QStringLiteral("exactFinalReduction"), exact.diagnostics);
-            } catch (const std::exception &failure) {
-                result.diagnostics.insert(QStringLiteral("exactFinalReductionError"), QString::fromUtf8(failure.what()));
-            }
-        }
+        reduceExact(QStringLiteral("exactFinalReduction"), false);
         recordTime(QStringLiteral("exactReduction"));
         const auto coverage = support(pieces);
         result.diagnostics.insert(QStringLiteral("stageWork"), stageWork);
@@ -2119,6 +2271,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("repairClusters"), objective.repairClusters);
         result.diagnostics.insert(QStringLiteral("repairGroupReplacements"), objective.repairGroupReplacements);
         result.diagnostics.insert(QStringLiteral("repairBenefitRejected"), objective.repairBenefitRejected);
+        result.diagnostics.insert(QStringLiteral("broadRepairTrials"), objective.broadRepairTrials);
+        result.diagnostics.insert(QStringLiteral("broadRepairReplacements"), objective.broadRepairReplacements);
         result.diagnostics.insert(QStringLiteral("coverageRejected"), objective.coverageRejected);
         result.diagnostics.insert(QStringLiteral("coverageRejections"), objective.coverageRejections);
         result.diagnostics.insert(QStringLiteral("residualInsertions"), objective.residualInsertions);
@@ -2161,6 +2315,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             objective.boundary->measure(visibleCoverage)));
         result.diagnostics.insert(QStringLiteral("boundaryEnergyLimit"), objective.qualityLimit);
         result.diagnostics.insert(QStringLiteral("qualityEvaluations"), objective.qualityEvaluations);
+        result.diagnostics.insert(QStringLiteral("qualityBoundsRejected"), objective.qualityBoundsRejected);
         result.diagnostics.insert(QStringLiteral("qualityTimings"), objective.boundary->performance());
         result.diagnostics.insert(QStringLiteral("mergeRefinements"), objective.mergeRefinements);
         result.diagnostics.insert(QStringLiteral("evaluations"), objective.evaluations);

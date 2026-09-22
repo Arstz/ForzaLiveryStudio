@@ -874,6 +874,34 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
                  "the confirmed Bucket fill should fit a curve Primitive to its Potrace boundary");
 }
 
+void rasterStaircaseUsesCompactContour(TestContext *test) {
+    QImage image(512, 256, QImage::Format_ARGB32);
+    image.fill(QColor(20, 40, 60));
+    for (int x = 16; x < 496; ++x) {
+        const int top = 62 + static_cast<int>(std::floor(14 * std::sin(x * 0.017)));
+        const int bottom = 192 + static_cast<int>(std::floor(11 * std::sin(x * 0.012)));
+        for (int y = top; y < bottom; ++y) {
+            image.setPixelColor(x, y, QColor(220, 50, 40));
+        }
+    }
+    const auto selected = gui::floodGuideRegion(image, QPoint(200, 120), 0);
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    const auto traced = gui::traceMaskToPath(selected.mask, image.width(), image.height(),
+        selected.bounds, traceOptions);
+    gui::RegionPenLoopConversionOptions options;
+    options.fallback.comparisonImageSize = image.size();
+    const auto converted = gui::regionOutlineToPenLoops(traced, options);
+    int pointCount = 0;
+    for (const auto &loop : converted.loops) {
+        pointCount += loop.points.size();
+    }
+    test->expect(converted.valid() && gui::buildPenContour(converted.loops).valid(),
+        "Raster staircase conversion must produce a valid contour");
+    test->expect(pointCount > 0 && pointCount < 160,
+        "Raster staircase conversion must fit long spans instead of retaining pixel turns");
+}
+
 void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
     QPolygonF circle;
     constexpr int kPointCount = 64;
@@ -2871,6 +2899,7 @@ int main(int argc, char **argv)
     longSoftRunUsesOverlappingArcs(&test);
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
+    rasterStaircaseUsesCompactContour(&test);
     rdpHybridQuadraticMatchesAnalyzer(&test);
     if (test.failures() == 0) {
         std::cout << "All region Pen conversion tests passed\n";

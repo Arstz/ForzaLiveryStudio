@@ -230,7 +230,7 @@ QString CoverageOwnership::groupKey(const QVector<int> &members, bool broad) {
 
 ExactReductionResult reduceExactCoverage(const QVector<PenPlacement> &placements,
     const QVector<catalog::Primitive> &primitives, const QVector<ReusableCandidate> &candidates,
-    const std::function<bool()> &cancelled) {
+    const std::function<bool()> &cancelled, bool deletionsOnly) {
     ExactReductionResult result{placements, {}};
     QVector<ReusableCandidate> pieces;
     CoverageOwnership ownership;
@@ -251,7 +251,8 @@ ExactReductionResult reduceExactCoverage(const QVector<PenPlacement> &placements
     }
     const auto original = exactSupport(pieces);
     auto bounds = ownershipBounds(pieces, &ownership);
-    auto pool = exactEnvelopeCandidates(pieces, primitives, &ownership, cancelled);
+    auto pool = deletionsOnly ? QVector<ReusableCandidate>()
+        : exactEnvelopeCandidates(pieces, primitives, &ownership, cancelled);
     const int envelopes = pool.size();
     pool += candidates;
     QVector<bool> tried(pool.size(), false);
@@ -268,6 +269,16 @@ ExactReductionResult reduceExactCoverage(const QVector<PenPlacement> &placements
         }
     }
     bounds = ownershipBounds(pieces, &ownership);
+    if (deletionsOnly) {
+        result.placements.clear();
+        for (const auto &piece : pieces) {
+            result.placements.push_back(piece.placement);
+        }
+        result.diagnostics = {{QStringLiteral("before"), placements.size()},
+            {QStringLiteral("after"), pieces.size()}, {QStringLiteral("deletions"), deletions},
+            {QStringLiteral("unionChecks"), unionChecks}, {QStringLiteral("ownership"), ownership.diagnostics()}};
+        return result;
+    }
     while (pieces.size() > 1 && trials < kExactCandidateTrials && containmentTrials < kExactContainmentTrials
             && !(cancelled && cancelled())) {
         if (rankNeeded) {

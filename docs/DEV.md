@@ -218,6 +218,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   a count preference, not a contrast-aware perceptual metric. Small placements
   are not discarded solely because of their footprint. All proposed placements
   count toward the caller limit and must stay within the permitted envelope.
+  A bounded Circle replacement also tests nearby groups of small placements
+  together after gap repair. It uses remaining repair-stage work and checks the
+  complete union before accepting a lower placement count.
   Residual transactions retain non-worsening observed component and hole count
   errors. They cannot increase missing area, create new deep or observed
   hole defects, or exceed the current area allowance. Final topology
@@ -225,6 +228,11 @@ exports grouped `C_group` folders and `C_livery` folders.
   shares the existing repair-stage evaluation allowance. Unused insertion work
   can refit the repaired cover before transfer to compaction. Coverage guards
   reuse the corner distances already computed by the quality measurement.
+  Exact-union deletions remove redundant placements before spatial compaction;
+  catalog replacements remain in the final exact pass. Boundary-aware refits
+  skip observed-boundary measurements when an upper bound on area and gap score
+  proves that a trial cannot improve the current candidate. Paired boundary
+  moves also cannot increase the error in the number of enclosed holes.
   Half of the exposed-boundary stage's remaining work tests simultaneous affine
   moves of adjacent placement pairs before catalog merges. Both pieces move in
   one scored proposal; neither individual move needs to improve the score.
@@ -280,15 +288,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
-  selected mask, and converts traced cubics into tangent-preserving quadratic
-  Pen spans. Adaptive subdivision bounds conversion error to 0.5 source-image
-  pixels. Compatible smooth neighbors merge under the same accumulated bound;
-  sharp joins and changes in curvature sign remain. Compound validation retries
-  with a tighter tolerance when needed. Small and boundary-adjacent cutouts are
-  retained. The bound is relative to the traced path, not the original raster;
-  subpixel image-edge refinement is not implemented. Conversion precedes the
-  guide transform and is independent of viewport zoom, color tolerance, and
-  fill margin. Completing a Bucket-derived fill retains the guide-layer selection.
+  selected mask, and samples each boundary before cyclic RDP at epsilon 2.0
+  source-image pixels. Retained spans use a fitted quadratic when their bow is
+  at least 0.75 pixels and a line otherwise. Invalid hybrid loops retry with
+  the conservative Pen converter. Small and boundary-adjacent cutouts remain
+  available to the compound contour. The stricter traced-cubic converter is
+  available to headless callers but is not the raster bucket default because
+  pixel-scale turns made its control-point count impractical. Conversion precedes
+  the guide transform and is independent of viewport zoom, color tolerance,
+  and fill margin. Completing a Bucket-derived fill retains the guide-layer selection.
 - Use Move tool auto-select from the Options menu to select clicked layer groups.
   **Allow Move Outside Bounding Box** is on by default, letting Move and Transform
   drag the current selection from outside its bounds and giving that selection

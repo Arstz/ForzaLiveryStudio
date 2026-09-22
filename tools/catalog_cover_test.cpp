@@ -1013,6 +1013,25 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
             && pairedRepeat.fill.placements[index].transform == paired.fill.placements[index].transform,
             QStringLiteral("Paired repair transforms are not deterministic"));
     }
+    const auto circle = std::find_if(catalog.cbegin(), catalog.cend(), [](const auto &entry) {
+        return entry.shape.shapeId == 102;
+    });
+    require(circle != catalog.cend(), QStringLiteral("Missing broad repair shape"));
+    FillOptions patchOptions;
+    patchOptions.initialPlacements = {placedRectangle({0, 0, 100, 20}),
+        placedRectangle({0, 80, 100, 20}), placedRectangle({80, 20, 20, 60}),
+        placedRectangle({0, 20, 20, 60})};
+    for (int index = 0; index < 8; ++index) {
+        patchOptions.initialPlacements.push_back(placedRectangle({5.0 + 4.0 * (index % 2),
+            25.0 + 4.0 * (index / 2), 2.0, 2.0}));
+    }
+    patchOptions.evaluationBudget = 6000;
+    patchOptions.retainFailedFill = true;
+    const auto consolidated = gui::compact::fillRegion(pairedRequest, {*square, *circle}, patchOptions);
+    require(consolidated.diagnostics.value("broadRepairReplacements").toInt() > 0
+        && consolidated.fill.placements.size() == 4
+        && consolidated.diagnostics.value("approximationVerified").toBool(),
+        QStringLiteral("Broad patch consolidation did not replace a cluster with one shape"));
     const gui::PenFillRequest splitRingRequest{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
         polygonLoop({{20, 20}, {80, 20}, {80, 80}, {20, 80}}, gui::PenLoopKind::Cutout)}};
     FillOptions splitOptions;

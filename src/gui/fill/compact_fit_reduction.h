@@ -49,7 +49,7 @@ struct ExactReductionResult {
 
 ExactReductionResult reduceExactCoverage(const QVector<PenPlacement> &placements,
     const QVector<catalog::Primitive> &primitives, const QVector<ReusableCandidate> &candidates,
-    const std::function<bool()> &cancelled = {});
+    const std::function<bool()> &cancelled = {}, bool deletionsOnly = false);
 
 ReductionState reductionState(const catalog::Polygons &coverage,
                               const catalog::Polygons &required,
