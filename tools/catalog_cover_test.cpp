@@ -6,6 +6,7 @@
 #include "profile_fit.h"
 #include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
+#include "compact_fit_gpu_rank.h"
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
 #include "greedy_cover.h"
@@ -1192,6 +1193,63 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     QTextStream(stdout) << "Residual repair, coverage guards, reference calibration and boundary retention passed\n";
 }
 
+#ifdef FLS_HAS_CUDA
+void gpuRasterRankTests() {
+    const auto appendRectangle = [](gui::compact::gpu::Geometry *geometry,
+                                    float left, float top, float right, float bottom) {
+        const int pointOffset = static_cast<int>(geometry->points.size());
+        const int loopOffset = static_cast<int>(geometry->loops.size());
+        geometry->points.insert(geometry->points.end(), {
+            {left, top}, {right, top}, {right, bottom}, {left, bottom}});
+        geometry->loops.push_back({pointOffset, 4});
+        geometry->pieces.push_back({loopOffset, 1});
+    };
+    gui::compact::gpu::Geometry target;
+    appendRectangle(&target, 0, 0, 100, 100);
+    gui::compact::gpu::Geometry pieces;
+    appendRectangle(&pieces, 0, 0, 60, 100);
+    appendRectangle(&pieces, 40, 0, 100, 100);
+    appendRectangle(&pieces, 0, 0, 60, 100);
+    auto ranker = gui::compact::gpu::createRasterRanker(
+        target, target, target, target, target, 1.0);
+    std::vector<double> first;
+    std::vector<double> second;
+    require(ranker && ranker->evaluate(pieces, &first)
+        && ranker->evaluate(pieces, &second),
+        QStringLiteral("CUDA ownership ranking failed"));
+    require(first == second && first.size() == 3
+        && first[0] == first[2] && first[1] > first[0],
+        QStringLiteral("CUDA ownership ranking is unstable or incorrect"));
+    gui::compact::gpu::Geometry coverage;
+    appendRectangle(&coverage, 0, 0, 45, 100);
+    gui::compact::gpu::Geometry candidates;
+    appendRectangle(&candidates, 35, 0, 55, 100);
+    appendRectangle(&candidates, 35, 0, 75, 100);
+    require(ranker->prepareAdditionCoverage(coverage)
+        && ranker->evaluateAdditions(candidates, &first)
+        && ranker->evaluateAdditions(candidates, &second)
+        && first == second && first.size() == 2 && first[1] > first[0],
+        QStringLiteral("CUDA refinement ranking is unstable or incorrect"));
+    gui::compact::gpu::Geometry splitCoverage;
+    appendRectangle(&splitCoverage, 0, 0, 49, 100);
+    appendRectangle(&splitCoverage, 50, 0, 100, 100);
+    gui::compact::gpu::Geometry joinCandidates;
+    appendRectangle(&joinCandidates, 49, 0, 50, 100);
+    appendRectangle(&joinCandidates, 20, 0, 21, 100);
+    const gui::compact::gpu::AdditionWeights joinWeights{0.0, 0.0, 0.0, 1.0};
+    require(ranker->prepareAdditionCoverage(splitCoverage)
+        && ranker->evaluateAdditions(joinCandidates, &first, joinWeights)
+        && first.size() == 2 && first[0] > first[1],
+        QStringLiteral("CUDA refinement ranking did not prefer a closed crack"));
+    const auto stats = ranker->stats();
+    require(stats.error.empty() && stats.calls == 2
+        && stats.refinementPreparations == 2 && stats.refinementCalls == 3
+        && stats.columns > 0
+        && stats.rows > 0 && stats.cellSize >= 1.0,
+        QStringLiteral("CUDA ownership ranking diagnostics are incomplete"));
+}
+#endif
+
 void fastQualityTests() {
     quint64 random = 7812387;
     for (int trial = 0; trial < 64; ++trial) {
@@ -1266,6 +1324,9 @@ void fastQualityTests() {
             QStringLiteral("Reusing an observation window changed topology"));
     }
     require(reusedWindows > 0, QStringLiteral("Local quality test did not exercise window reuse"));
+#ifdef FLS_HAS_CUDA
+    gpuRasterRankTests();
+#endif
     QTextStream(stdout) << "Lazy greedy equivalence, local quality support, spill cache and cancellation passed\n";
 }
 

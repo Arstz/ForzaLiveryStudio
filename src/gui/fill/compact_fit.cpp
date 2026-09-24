@@ -3,6 +3,7 @@
 #include "compact_fit_quality.h"
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
+#include "compact_fit_gpu_rank.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,7 +26,15 @@ constexpr int kSeedOrientations = 16;
 constexpr int kPrimaryOrientations = 8;
 constexpr int kPrimaryRetainedSeeds = 3;
 constexpr int kDeletionTrials = 2;
+constexpr int kMinimumGpuOwnershipPieces = 16;
+constexpr int kGpuExactRankingCandidates = 12;
+constexpr int kGpuPipelinePasses = 3;
+constexpr int kGpuBalancedPasses = 2;
 constexpr int kRefitNeighbors = 4;
+constexpr double kGpuRepairInnerWeight = 256.0;
+constexpr double kGpuMaximumTurnRegression = 0.1;
+constexpr double kGpuMinimumFootprint = 100.0;
+constexpr double kGpuMaximumCornerRegression = 0.5;
 constexpr double kDeepErrorWeight = 16.0;
 constexpr double kInitialStepFraction = 0.04;
 constexpr double kScoreEpsilon = 1e-7;
@@ -84,9 +93,13 @@ struct Objective {
     BoundaryMetrics targetMetrics;
     std::optional<ReductionState> reductionBaseline;
     mutable CoverageOwnership ownership;
+#ifdef FLS_HAS_CUDA
+    mutable std::shared_ptr<gpu::RasterRanker> gpuRanker;
+#endif
     std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     mutable QJsonObject coverageRejections;
     mutable QJsonObject connectorDiagnostics;
+    mutable QJsonObject gpuPipelineCandidate;
     std::function<void(int)> workProgress;
     mutable int evaluations = 0;
     mutable int qualityEvaluations = 0;
@@ -119,8 +132,19 @@ struct Objective {
     mutable int repairBenefitRejected = 0;
     mutable int broadRepairTrials = 0;
     mutable int broadRepairReplacements = 0;
+    mutable int gpuRankerFallbacks = 0;
+    mutable int gpuRefinementBatches = 0;
+    mutable int gpuRefinementCandidates = 0;
+    mutable int gpuRefinementCommits = 0;
+    mutable int gpuRefinementCheckpoints = 0;
+    mutable int gpuPipelinePasses = 0;
+    mutable int gpuPipelinePruned = 0;
+    mutable int gpuPipelineRestores = 0;
+    mutable int gpuPipelineExpanded = 0;
     int evaluationLimit = 0;
     int defectLimit = 0;
+    bool gpuRankingEnabled = false;
+    mutable bool gpuRankingDisabled = false;
     double allowance = 0.0;
     double areaBudget = 0.0;
     double inwardAllowance = 0.0;
@@ -160,6 +184,64 @@ Piece makePiece(const PenPrimitive &shape, const QTransform &transform) {
 
     return result;
 }
+
+#ifdef FLS_HAS_CUDA
+gpu::Geometry gpuGeometry(const Polygons &polygons) {
+    gpu::Geometry result;
+    const int firstLoop = static_cast<int>(result.loops.size());
+    for (const QPolygonF &polygon : polygons) {
+        const int firstPoint = static_cast<int>(result.points.size());
+        for (const QPointF &point : polygon) {
+            result.points.push_back({static_cast<float>(point.x()),
+                static_cast<float>(point.y())});
+        }
+        result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
+    }
+    result.pieces.push_back({firstLoop,
+        static_cast<int>(result.loops.size()) - firstLoop});
+
+    return result;
+}
+
+gpu::Geometry gpuGeometry(const QVector<Piece> &pieces) {
+    gpu::Geometry result;
+    for (const Piece &piece : pieces) {
+        const int firstLoop = static_cast<int>(result.loops.size());
+        for (const QPolygonF &polygon : piece.polygons) {
+            const int firstPoint = static_cast<int>(result.points.size());
+            for (const QPointF &point : polygon) {
+                result.points.push_back({static_cast<float>(point.x()),
+                    static_cast<float>(point.y())});
+            }
+            result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
+        }
+        result.pieces.push_back({firstLoop,
+            static_cast<int>(result.loops.size()) - firstLoop});
+    }
+
+    return result;
+}
+
+bool prepareGpuRanker(const Objective &objective) {
+    if (!objective.gpuRankingEnabled || objective.gpuRankingDisabled) {
+        return false;
+    }
+    if (!objective.gpuRanker) {
+        objective.gpuRanker = gpu::createRasterRanker(
+            gpuGeometry(objective.preferred), gpuGeometry(objective.target),
+            gpuGeometry(objective.inner), gpuGeometry(objective.outer),
+            gpuGeometry(objective.spillFree), objective.cornerAllowance * 0.5);
+    }
+    if (!objective.gpuRanker
+        || !objective.gpuRanker->stats().error.empty()) {
+        objective.gpuRankingDisabled = true;
+        ++objective.gpuRankerFallbacks;
+        return false;
+    }
+
+    return true;
+}
+#endif
 
 Polygons support(const QVector<Piece> &pieces, const QVector<int> &excluded = {}) {
     Polygons result;
@@ -428,10 +510,139 @@ QTransform movedTransform(const Piece &piece, int parameter, double amount) {
     return piece.placement.transform * movement;
 }
 
+#ifdef FLS_HAS_CUDA
+std::optional<Piece> refineGpu(Piece piece, const PenPrimitive &shape,
+                              const Context &context,
+                              const std::function<bool()> &cancelled,
+                              int evaluationLimit,
+                              const std::function<void(const Piece &,
+                                  const ReductionState &)> &accepted,
+                              const gpu::Geometry *coverageOverride = nullptr,
+                              const gpu::AdditionWeights &weights = {}) {
+    const int limit = std::min(evaluationLimit, context.objective->evaluationLimit);
+    const auto stopRefinement = [&] {
+        return stopped(cancelled) || context.objective->evaluations >= limit;
+    };
+    if (stopRefinement() || !prepareGpuRanker(*context.objective)) {
+        return {};
+    }
+    gpu::Geometry localCoverage;
+    if (!coverageOverride) {
+        localCoverage = gpuGeometry(context.others);
+    }
+    const gpu::Geometry &coverage = coverageOverride ? *coverageOverride : localCoverage;
+    if (!context.objective->gpuRanker->prepareAdditionCoverage(coverage)) {
+        context.objective->gpuRankingDisabled = true;
+        ++context.objective->gpuRankerFallbacks;
+        return {};
+    }
+    std::vector<double> currentScore;
+    if (!context.objective->gpuRanker->evaluateAdditions(
+            gpuGeometry(QVector<Piece>{piece}), &currentScore, weights)
+        || currentScore.size() != 1) {
+        context.objective->gpuRankingDisabled = true;
+        ++context.objective->gpuRankerFallbacks;
+        return {};
+    }
+    ++context.objective->evaluations;
+    double best = currentScore.front();
+    bool changed = false;
+    const double extent = std::max(piece.bounds.width(), piece.bounds.height());
+    const double initialFraction = kInitialStepFraction
+        * std::min(1.0, kRefinementExtent / extent);
+    const int levels = extent > kRefinementExtent
+        ? std::max(kRefinementLevels, 1 + static_cast<int>(std::ceil(std::log2(
+            initialFraction * extent
+            / (context.objective->fittingInwardAllowance * 0.25)))))
+        : kRefinementLevels;
+    for (int level = 0; level < levels && !stopRefinement(); ++level) {
+        const int levelLimit = context.objective->evaluations
+            + (limit - context.objective->evaluations) / (levels - level);
+        const double fraction = std::ldexp(initialFraction, -level);
+        for (int iteration = 0; iteration < kMovesPerLevel
+                && !stopRefinement() && context.objective->evaluations < levelLimit;
+             ++iteration) {
+            QVector<Piece> trials;
+            const int available = levelLimit - context.objective->evaluations;
+            const double minimumArea = kGpuMinimumFootprint
+                * std::pow(context.objective->cornerAllowance * 2.0, 2.0);
+            for (int parameter = 0; parameter < 6 && trials.size() < available; ++parameter) {
+                for (double sign : {-1.0, 1.0}) {
+                    const double step = sign * fraction * (parameter < 2 ? extent : 1.0);
+                    const auto transform = movedTransform(piece, parameter, step);
+                    if (std::abs(transform.determinant()) >= catalog::kMinimumDeterminant) {
+                        Piece trial = makePiece(shape, transform);
+                        if (trial.placement.area >= minimumArea) {
+                            trials.push_back(std::move(trial));
+                        }
+                    }
+                    if (trials.size() >= available) {
+                        break;
+                    }
+                }
+            }
+            if (trials.isEmpty()) {
+                break;
+            }
+            std::vector<double> approximate;
+            if (!context.objective->gpuRanker->evaluateAdditions(
+                    gpuGeometry(trials), &approximate, weights)
+                || approximate.size() != static_cast<size_t>(trials.size())) {
+                context.objective->gpuRankingDisabled = true;
+                ++context.objective->gpuRankerFallbacks;
+                return piece;
+            }
+            ++context.objective->gpuRefinementBatches;
+            context.objective->gpuRefinementCandidates += trials.size();
+            int selected = -1;
+            double selectedScore = best;
+            for (int index = 0; index < trials.size(); ++index) {
+                if (approximate[index] > selectedScore + kScoreEpsilon) {
+                    selected = index;
+                    selectedScore = approximate[index];
+                }
+            }
+            for (int index = 0; index < trials.size()
+                    && context.objective->evaluations < levelLimit
+                    && !stopped(cancelled); ++index) {
+                ++context.objective->evaluations;
+                if (context.objective->workProgress
+                    && context.objective->evaluations % kWorkReportInterval == 0) {
+                    context.objective->workProgress(context.objective->evaluations);
+                }
+            }
+            if (selected < 0) {
+                break;
+            }
+            piece = std::move(trials[selected]);
+            best = selectedScore;
+            changed = true;
+            ++context.objective->gpuRefinementCommits;
+        }
+    }
+    if (changed && accepted && !stopped(cancelled)) {
+        ++context.objective->gpuRefinementCheckpoints;
+        accepted(piece, reductionStateFor(completeCoverage(context, piece.polygons),
+            *context.objective));
+    }
+
+    return piece;
+}
+#endif
+
 Piece refine(Piece piece, const PenPrimitive &shape, const Context &context,
               const std::function<bool()> &cancelled, bool boundaryAware = false,
               int evaluationLimit = std::numeric_limits<int>::max(),
               const std::function<void(const Piece &, const ReductionState &)> &accepted = {}) {
+#ifdef FLS_HAS_CUDA
+    if (boundaryAware) {
+        const auto batched = refineGpu(piece, shape, context, cancelled,
+            evaluationLimit, accepted);
+        if (batched) {
+            return *batched;
+        }
+    }
+#endif
     const int limit = std::min(evaluationLimit, context.objective->evaluationLimit);
     const auto stopRefinement = [&] {
         return stopped(cancelled) || context.objective->evaluations >= limit;
@@ -647,20 +858,69 @@ void refitNeighborhood(QVector<Piece> *pieces, const QRectF &changed,
     }
 }
 
+double removalScore(const Polygons &exclusive, const Objective &objective) {
+    return kMissingWeight * catalog::area(catalog::intersect(exclusive, objective.preferred))
+        - catalog::area(catalog::subtract(exclusive, objective.target))
+        + kDeepErrorWeight * (catalog::area(catalog::intersect(exclusive, objective.inner))
+            - catalog::area(catalog::subtract(exclusive, objective.outer)));
+}
+
 QVector<int> removalOrder(const QVector<Piece> &pieces, const Objective &objective,
-                           const std::function<bool()> &cancelled) {
+                          const std::function<bool()> &cancelled) {
     QVector<std::pair<double, int>> scores;
     QVector<int> result;
     synchronizeOwnership(pieces, objective);
+#ifdef FLS_HAS_CUDA
+    if (objective.gpuRankingEnabled && !objective.gpuRankingDisabled
+        && pieces.size() >= kMinimumGpuOwnershipPieces && !stopped(cancelled)) {
+        std::vector<double> approximate;
+        if (prepareGpuRanker(objective)
+            && objective.gpuRanker->evaluate(gpuGeometry(pieces), &approximate)
+            && approximate.size() == static_cast<size_t>(pieces.size())) {
+            const int candidates = std::min(static_cast<int>(pieces.size()), std::max(0,
+                objective.evaluationLimit - objective.evaluations));
+            for (int index = 0; index < pieces.size(); ++index) {
+                scores.push_back({approximate[index], index});
+            }
+            std::sort(scores.begin(), scores.end());
+            scores.resize(candidates);
+            for (int index = 0; index < candidates; ++index) {
+                ++objective.evaluations;
+                if (objective.workProgress
+                    && objective.evaluations % kWorkReportInterval == 0) {
+                    objective.workProgress(objective.evaluations);
+                }
+            }
+            QVector<std::pair<double, int>> exact;
+            const int reranked = std::min(kGpuExactRankingCandidates,
+                static_cast<int>(scores.size()));
+            for (int position = 0; position < reranked; ++position) {
+                exact.push_back({removalScore(
+                    objective.ownership.exclusive({scores[position].second}), objective),
+                    scores[position].second});
+            }
+            std::sort(exact.begin(), exact.end());
+            for (const auto &entry : exact) {
+                result.push_back(entry.second);
+            }
+            for (int position = reranked; position < scores.size(); ++position) {
+                result.push_back(scores[position].second);
+            }
+
+            return result;
+        }
+        if (!objective.gpuRankingDisabled) {
+            objective.gpuRankingDisabled = true;
+            ++objective.gpuRankerFallbacks;
+        }
+    }
+#endif
     for (int index = 0; index < pieces.size() && !stopped(cancelled); ++index) {
         if (objective.evaluations >= objective.evaluationLimit) {
             break;
         }
         const auto exclusive = objective.ownership.exclusive({index});
-        const double score = kMissingWeight * catalog::area(catalog::intersect(exclusive, objective.preferred))
-            - catalog::area(catalog::subtract(exclusive, objective.target))
-            + kDeepErrorWeight * (catalog::area(catalog::intersect(exclusive, objective.inner))
-                - catalog::area(catalog::subtract(exclusive, objective.outer)));
+        const double score = removalScore(exclusive, objective);
         ++objective.evaluations;
         if (objective.workProgress && objective.evaluations % kWorkReportInterval == 0) {
             objective.workProgress(objective.evaluations);
@@ -699,6 +959,149 @@ void prune(QVector<Piece> *pieces, const Objective &objective,
         }
     }
 }
+
+#ifdef FLS_HAS_CUDA
+bool pruneGpu(QVector<Piece> *pieces, const Objective &objective,
+              const std::function<bool()> &cancelled) {
+    while (pieces->size() > 1 && !stopped(cancelled)) {
+        const int available = objective.evaluationLimit - objective.evaluations;
+        if (available < pieces->size() || !prepareGpuRanker(objective)) {
+            break;
+        }
+        std::vector<double> scores;
+        if (!objective.gpuRanker->evaluate(gpuGeometry(*pieces), &scores)
+            || scores.size() != static_cast<size_t>(pieces->size())) {
+            objective.gpuRankingDisabled = true;
+            ++objective.gpuRankerFallbacks;
+            return false;
+        }
+        int selected = 0;
+        for (int index = 1; index < pieces->size(); ++index) {
+            if (scores[index] < scores[selected]) {
+                selected = index;
+            }
+        }
+        objective.evaluations += pieces->size();
+        if (objective.workProgress) {
+            objective.workProgress(objective.evaluations);
+        }
+        if (scores[selected] > kScoreEpsilon) {
+            break;
+        }
+        pieces->removeAt(selected);
+        ++objective.gpuPipelinePruned;
+    }
+
+    return true;
+}
+
+bool optimizeGpu(QVector<Piece> *pieces, const Objective &objective,
+                 const QVector<catalog::Primitive> &primitives,
+                 const std::function<bool()> &cancelled) {
+    const QVector<Piece> original = *pieces;
+    Context context;
+    context.objective = &objective;
+    const double minimumArea = kGpuMinimumFootprint
+        * std::pow(objective.cornerAllowance * 2.0, 2.0);
+    for (Piece &piece : *pieces) {
+        if (piece.placement.area >= minimumArea
+            || piece.placement.area <= catalog::kMinimumDeterminant) {
+            continue;
+        }
+        Piece expanded;
+        QTransform expansion;
+        const double scale = std::sqrt(minimumArea / piece.placement.area);
+
+        expansion.translate(piece.bounds.center().x(), piece.bounds.center().y());
+        expansion.scale(scale, scale);
+        expansion.translate(-piece.bounds.center().x(), -piece.bounds.center().y());
+        expanded = makePiece(primitiveFor(piece.placement.shapeId, primitives),
+            piece.placement.transform * expansion);
+        if (catalog::subtract(expanded.polygons, objective.outer).isEmpty()) {
+            piece = std::move(expanded);
+            ++objective.gpuPipelineExpanded;
+        }
+    }
+    for (int pass = 0; pass < kGpuPipelinePasses && !stopped(cancelled); ++pass) {
+        const gpu::AdditionWeights weights{4.0,
+            pass < kGpuBalancedPasses ? 16.0 : kGpuRepairInnerWeight,
+            4.0, 32.0};
+        const bool repairPass = pass >= kGpuBalancedPasses;
+        for (int index = 0; index < pieces->size() && !stopped(cancelled); ++index) {
+            const int remainingPieces = pieces->size() - index
+                + (kGpuPipelinePasses - pass - 1) * pieces->size();
+            const int pieceLimit = objective.evaluations
+                + (objective.evaluationLimit - objective.evaluations)
+                    / std::max(1, remainingPieces);
+            if (pieceLimit <= objective.evaluations) {
+                break;
+            }
+            QVector<Piece> others;
+            others.reserve(pieces->size() - 1);
+            for (int other = 0; other < pieces->size(); ++other) {
+                if (other != index) {
+                    others.push_back((*pieces)[other]);
+                }
+            }
+            const gpu::Geometry coverage = gpuGeometry(others);
+            const auto refined = refineGpu((*pieces)[index],
+                primitiveFor((*pieces)[index].placement.shapeId, primitives),
+                context, cancelled, pieceLimit, {}, &coverage, weights);
+            if (!refined) {
+                *pieces = original;
+                return false;
+            }
+            (*pieces)[index] = *refined;
+        }
+        ++objective.gpuPipelinePasses;
+        if (!repairPass && !pruneGpu(pieces, objective, cancelled)) {
+            *pieces = original;
+            return false;
+        }
+    }
+    const auto before = reductionStateFor(support(original), objective);
+    const auto afterCoverage = support(*pieces);
+    const auto after = reductionStateFor(afterCoverage, objective);
+    const double outsideEnvelope = catalog::area(
+        catalog::subtract(afterCoverage, objective.outer));
+    objective.gpuPipelineCandidate = {
+        {QStringLiteral("count"), pieces->size()},
+        {QStringLiteral("missingArea"), after.missingArea},
+        {QStringLiteral("spillArea"), after.spillArea},
+        {QStringLiteral("deepMissingArea"), catalog::area(after.deepMissing)},
+        {QStringLiteral("outsideEnvelope"), outsideEnvelope},
+        {QStringLiteral("boundary"), objective.boundary->diagnostics(after.metrics)}};
+    const double beforeError = before.missingArea + before.spillArea;
+    const double afterError = after.missingArea + after.spillArea;
+    const double beforeDeep = catalog::area(before.deepMissing);
+    const double afterDeep = catalog::area(after.deepMissing);
+    const double beforeEnergy = objective.boundary->energy(before.metrics);
+    const double afterEnergy = objective.boundary->energy(after.metrics);
+    const double envelopeTolerance = std::pow(objective.cornerAllowance * 0.5, 2.0);
+    const bool aggregateImprovement = !after.coverage.isEmpty()
+        && outsideEnvelope <= envelopeTolerance + kScoreEpsilon
+        && afterError <= std::max(objective.areaBudget, beforeError) + kScoreEpsilon
+        && afterDeep <= beforeDeep + kScoreEpsilon
+        && afterEnergy <= beforeEnergy + kScoreEpsilon
+        && after.metrics.maximumCornerDistance
+            <= std::max(objective.cornerAllowance,
+                before.metrics.maximumCornerDistance)
+                    + kGpuMaximumCornerRegression
+        && after.metrics.maximumExcessTurn
+            <= before.metrics.maximumExcessTurn + kGpuMaximumTurnRegression
+        && after.metrics.cornerDefects <= before.metrics.cornerDefects
+        && std::abs(after.metrics.components - objective.targetMetrics.components)
+            <= std::abs(before.metrics.components - objective.targetMetrics.components)
+        && std::abs(after.metrics.holes - objective.targetMetrics.holes)
+            <= std::abs(before.metrics.holes - objective.targetMetrics.holes);
+    if (!acceptable(afterCoverage, objective) && !aggregateImprovement) {
+        *pieces = original;
+        ++objective.gpuPipelineRestores;
+    }
+
+    return true;
+}
+#endif
 
 QTransform boundsTransform(const PenPrimitive &shape, const QPolygonF &points,
                             double angle, bool reflected) {
@@ -1927,6 +2330,7 @@ Objective makeObjective(const catalog::Region &region, const FillOptions &option
     result.fittingInwardAllowance = std::max(options.inwardAllowance * 0.5,
         options.inwardAllowance - options.observationScale * 0.1);
     result.cornerAllowance = options.observationScale * 0.5;
+    result.gpuRankingEnabled = options.useGpu;
 
     return result;
 }
@@ -2101,6 +2505,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         };
         report();
         recordTime(QStringLiteral("setup"));
+        bool fullGpuPipeline = false;
         if (pieces.size() > 1 && !recognitionCatalog.isEmpty() && !stopWork()) {
             const auto context = contextFor({}, {}, objective);
             for (const auto &replacement : replacementSeeds(objective.target, context, recognitionCatalog, stopWork, true)) {
@@ -2113,7 +2518,24 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("recognition"));
         finishStage(QStringLiteral("recognition"));
-        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Repair);
+#ifdef FLS_HAS_CUDA
+        if (options.useGpu && !pieces.isEmpty() && !stopped(cancelled)) {
+            const int gpuStart = objective.evaluations;
+            objective.evaluationLimit = options.evaluationBudget;
+            fullGpuPipeline = optimizeGpu(&pieces, objective, primitives, stopWork);
+            if (!fullGpuPipeline) {
+                objective.evaluations = gpuStart;
+            }
+        }
+#endif
+        if (fullGpuPipeline) {
+            report();
+            recordTime(QStringLiteral("gpuPipeline"));
+            finishStage(QStringLiteral("gpuPipeline"));
+            objective.evaluationLimit = objective.evaluations;
+        }
+        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
+            : stageLimit(options.evaluationBudget, WorkStage::Repair);
         if (pieces.size() > 1 && !stopWork()) {
             const auto original = pieces;
             const auto originalState = reductionStateFor(support(original), objective);
@@ -2171,15 +2593,20 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             refitFeasible(&pieces, objective, primitives, stopWork);
             report();
         }
-        if (!acceptable(support(pieces), objective) && !incumbent.isEmpty()) {
+        if (!fullGpuPipeline && !acceptable(support(pieces), objective) && !incumbent.isEmpty()) {
             pieces = incumbent;
         }
         recordTime(QStringLiteral("initialRefit"));
         finishStage(QStringLiteral("repair"));
-        reduceExact(QStringLiteral("exactEarlyReduction"), true);
+        if (!fullGpuPipeline) {
+            reduceExact(QStringLiteral("exactEarlyReduction"), true);
+        }
         recordTime(QStringLiteral("earlyExactReduction"));
-        objective.reductionBaseline = reductionStateFor(support(pieces), objective);
-        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::SpatialReduction);
+        if (!fullGpuPipeline) {
+            objective.reductionBaseline = reductionStateFor(support(pieces), objective);
+        }
+        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
+            : stageLimit(options.evaluationBudget, WorkStage::SpatialReduction);
         prune(&pieces, objective, stopWork);
         report();
         for (int round = 0; round < kMergeRounds && pieces.size() > 1 && !stopWork(); ++round) {
@@ -2213,7 +2640,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             report();
         }
         finishStage(QStringLiteral("spatialReduction"));
-        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::ExposedReduction);
+        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
+            : stageLimit(options.evaluationBudget, WorkStage::ExposedReduction);
         fitBoundaryPairs(&pieces, objective, primitives,
             objective.evaluations + (objective.evaluationLimit - objective.evaluations) / 2, stopWork);
         report();
@@ -2227,11 +2655,12 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("exposedBoundaryMerges"), exposedMerges);
         recordTime(QStringLiteral("compaction"));
         finishStage(QStringLiteral("exposedReduction"));
-        objective.evaluationLimit = stageLimit(options.evaluationBudget, WorkStage::Polish);
-        if (!incumbent.isEmpty()) {
+        objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
+            : stageLimit(options.evaluationBudget, WorkStage::Polish);
+        if (!fullGpuPipeline && !incumbent.isEmpty()) {
             pieces = incumbent;
         }
-        if (!pieces.isEmpty()) {
+        if (!fullGpuPipeline && !pieces.isEmpty()) {
             auto polished = pieces;
             objective.boundaryWeight *= 4.0;
             refit(&polished, objective, primitives, stopWork, 1);
@@ -2249,13 +2678,53 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("polish"));
         finishStage(QStringLiteral("polish"));
-        reduceExact(QStringLiteral("exactFinalReduction"), false);
+        if (!fullGpuPipeline) {
+            reduceExact(QStringLiteral("exactFinalReduction"), false);
+        }
         recordTime(QStringLiteral("exactReduction"));
         const auto coverage = support(pieces);
         result.diagnostics.insert(QStringLiteral("stageWork"), stageWork);
         result.diagnostics.insert(QStringLiteral("approximateReductions"), objective.approximateReductions);
         result.diagnostics.insert(QStringLiteral("exactReductions"), objective.exactReductions);
         result.diagnostics.insert(QStringLiteral("coverageOwnership"), objective.ownership.diagnostics());
+#ifdef FLS_HAS_CUDA
+        if (objective.gpuRanker) {
+            const auto stats = objective.gpuRanker->stats();
+            result.diagnostics.insert(QStringLiteral("gpuRasterRank"), QJsonObject{
+                {QStringLiteral("adapter"), QString::fromStdString(stats.adapter)},
+                {QStringLiteral("error"), QString::fromStdString(stats.error)},
+                {QStringLiteral("columns"), stats.columns},
+                {QStringLiteral("rows"), stats.rows},
+                {QStringLiteral("cellSize"), stats.cellSize},
+                {QStringLiteral("calls"), stats.calls},
+                {QStringLiteral("refinementPreparations"), stats.refinementPreparations},
+                {QStringLiteral("refinementCalls"), stats.refinementCalls},
+                {QStringLiteral("setupMilliseconds"), stats.setupMilliseconds},
+                {QStringLiteral("evaluationMilliseconds"), stats.evaluationMilliseconds},
+                {QStringLiteral("refinementMilliseconds"), stats.refinementMilliseconds},
+                {QStringLiteral("fallbacks"), objective.gpuRankerFallbacks}});
+        }
+#endif
+        result.diagnostics.insert(QStringLiteral("gpuRefinementBatches"),
+            objective.gpuRefinementBatches);
+        result.diagnostics.insert(QStringLiteral("gpuRefinementCandidates"),
+            objective.gpuRefinementCandidates);
+        result.diagnostics.insert(QStringLiteral("gpuRefinementCommits"),
+            objective.gpuRefinementCommits);
+        result.diagnostics.insert(QStringLiteral("gpuRefinementCheckpoints"),
+            objective.gpuRefinementCheckpoints);
+        result.diagnostics.insert(QStringLiteral("gpuPipelinePasses"),
+            objective.gpuPipelinePasses);
+        result.diagnostics.insert(QStringLiteral("gpuPipelinePruned"),
+            objective.gpuPipelinePruned);
+        result.diagnostics.insert(QStringLiteral("gpuPipelineRestores"),
+            objective.gpuPipelineRestores);
+        result.diagnostics.insert(QStringLiteral("gpuPipelineExpanded"),
+            objective.gpuPipelineExpanded);
+        result.diagnostics.insert(QStringLiteral("gpuPipelineCandidate"),
+            objective.gpuPipelineCandidate);
+        result.diagnostics.insert(QStringLiteral("optimizerBackend"),
+            fullGpuPipeline ? QStringLiteral("CUDA raster") : QStringLiteral("CPU exact"));
         result.diagnostics.insert(QStringLiteral("ownershipMergeTrials"), objective.ownershipMergeTrials);
         result.diagnostics.insert(QStringLiteral("ownershipMerges"), objective.ownershipMerges);
         result.diagnostics.insert(QStringLiteral("reusePoolSize"), objective.replacementCandidates ? objective.replacementCandidates->size() : 0);

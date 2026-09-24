@@ -72,8 +72,18 @@ exports grouped `C_group` folders and `C_livery` folders.
   to long boundary spans, including spans across authored control points. A
   point-to-line affine fit includes endpoint position and tangent constraints.
   Independent profile fits and arc residuals run in double-precision CUDA batches
-  when available, with bounded parallel CPU fallback. Complete silhouette checks
-  stay on the CPU. Candidates are ranked by area, arc error, and endpoint tangent
+  when available, with bounded parallel CPU fallback. With GPU computation enabled,
+  the post-seed optimizer uses a persistent quarter-unit CUDA occupancy grid. It
+  commits complete coordinate-move batches from weighted target, interior, spill,
+  and crack-joining scores without per-candidate CPU geometry checks. Two balanced
+  passes are followed by an interior-repair pass. GPU exclusive-support pruning
+  removes raster-redundant placements. Small seed fragments are expanded only
+  when the exact result stays inside the outer envelope, and new refinement moves
+  cannot create sub-footprint fragments. One exact CPU checkpoint accepts an
+  aggregate improvement or restores the seed. It tolerates no more than one GPU
+  raster cell of envelope residue; final output verification remains exact. CUDA
+  failure restores the CPU optimizer. Candidates are ranked by area,
+  arc error, and endpoint tangent
   error before parallel geometry validation. Nondominated alternatives compete
   through alternating coverage, arc-error, tangent-error, and spill rankings.
   Validation checks up to two extra accepted alternatives per span. Retention

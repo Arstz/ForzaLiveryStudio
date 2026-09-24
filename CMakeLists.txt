@@ -243,6 +243,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/greedy_cover.h
     src/gui/fill/compact_fit_quality.cpp
     src/gui/fill/compact_fit_quality.h
+    src/gui/fill/compact_fit_gpu_rank.h
     src/gui/fill/compact_fit.h
     src/gui/fill/catalog_cover.h
     src/gui/fill/catalog_cover_geometry.cpp
@@ -322,6 +323,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
 
 if(FLS_CUDA_AVAILABLE)
     target_sources(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
+        src/gui/fill/compact_fit_gpu_rank.cu
         src/gui/fill/differential_cover_cuda.cpp
         src/gui/fill/differential_cover_cuda.cu
         src/gui/fill/differential_cover_cuda_kernel.h
@@ -390,6 +392,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/compact_fit_reduction.cpp
         src/gui/fill/profile_fit.cpp
         src/gui/fill/compact_fit_quality.cpp
+        src/gui/fill/compact_fit_gpu_rank.h
         src/gui/fill/catalog_cover.cpp
         src/gui/fill/catalog_cover_compact.cpp
         src/gui/fill/catalog_cover_geometry.cpp
@@ -406,6 +409,18 @@ if(FLS_BUILD_TESTS)
     target_link_libraries(fls_catalog_cover_tests PRIVATE
         fls_core fls_profile_compute clipper2 Qt6::Core Qt6::Gui
     )
+    if(FLS_CUDA_AVAILABLE)
+        target_sources(fls_catalog_cover_tests PRIVATE
+            src/gui/fill/compact_fit_gpu_rank.cu)
+        target_compile_definitions(fls_catalog_cover_tests PRIVATE FLS_HAS_CUDA=1)
+        target_compile_options(fls_catalog_cover_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
+        target_link_libraries(fls_catalog_cover_tests PRIVATE CUDA::cudart)
+        set_target_properties(fls_catalog_cover_tests PROPERTIES
+            CUDA_ARCHITECTURES all-major CUDA_RUNTIME_LIBRARY Shared)
+    endif()
     if(FLS_CUDA_AVAILABLE AND WIN32)
         add_custom_command(TARGET fls_catalog_cover_tests POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FLS_CUDART_DLL}"
