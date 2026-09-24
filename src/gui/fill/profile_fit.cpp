@@ -2,6 +2,7 @@
 #include "profile_fit_batch.h"
 #include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
+#include "compact_fit_gpu_rank.h"
 #include "greedy_cover.h"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <numbers>
 #include <optional>
 
@@ -21,7 +23,9 @@ using Bits = QVector<quint64>;
 constexpr int kProfileSamples = compute::kSamples;
 constexpr int kSpanBatchSize = 32;
 constexpr int kCandidatesPerSpan = 6;
+constexpr int kGpuProfileShortlistFactor = 4;
 constexpr int kMaximumCandidates = 2400;
+constexpr int kGpuSelectionShortlist = 12000;
 constexpr int kMaximumTrials = 160000;
 constexpr int kMaximumProfileWork = 640000;
 constexpr int kGridExtent = 640;
@@ -82,6 +86,51 @@ struct Grid {
     int height = 0;
     double step = 1.0;
 };
+
+compact::gpu::Geometry gpuGeometry(const Polygons &polygons) {
+    compact::gpu::Geometry result;
+    const int firstLoop = static_cast<int>(result.loops.size());
+    for (const QPolygonF &polygon : polygons) {
+        const int firstPoint = static_cast<int>(result.points.size());
+        for (const QPointF &point : polygon) {
+            result.points.push_back({static_cast<float>(point.x()),
+                static_cast<float>(point.y())});
+        }
+        result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
+    }
+    result.pieces.push_back({firstLoop,
+        static_cast<int>(result.loops.size()) - firstLoop});
+
+    return result;
+}
+
+compact::gpu::Geometry gpuGeometry(const QVector<Candidate> &candidates) {
+    compact::gpu::Geometry result;
+    for (const Candidate &candidate : candidates) {
+        const int firstLoop = static_cast<int>(result.loops.size());
+        for (const QPolygonF &polygon : candidate.polygons) {
+            const int firstPoint = static_cast<int>(result.points.size());
+            for (const QPointF &point : polygon) {
+                result.points.push_back({static_cast<float>(point.x()),
+                    static_cast<float>(point.y())});
+            }
+            result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
+        }
+        result.pieces.push_back({firstLoop,
+            static_cast<int>(result.loops.size()) - firstLoop});
+    }
+
+    return result;
+}
+
+compact::gpu::Affine gpuAffine(const QTransform &transform) {
+    return {static_cast<float>(transform.m11()),
+        static_cast<float>(transform.m12()),
+        static_cast<float>(transform.m21()),
+        static_cast<float>(transform.m22()),
+        static_cast<float>(transform.dx()),
+        static_cast<float>(transform.dy())};
+}
 
 QPointF unit(const QPointF &point) {
     const double length = std::hypot(point.x(), point.y());
@@ -341,10 +390,85 @@ struct RankedFit {
     double area = 0.0;
 };
 
+bool screenCurveFitsGpu(const std::vector<std::vector<RankedFit>> &ranked,
+                        const std::vector<int> &capacities,
+                        const QVector<Profile> &profiles,
+                        const QVector<catalog::Primitive> &primitives,
+                        compact::gpu::RasterRanker *ranker,
+                        std::vector<std::vector<char>> *eligible,
+                        int *screened) {
+    struct Reference {
+        int local = 0;
+        int fit = 0;
+        QTransform transform;
+    };
+    eligible->clear();
+    eligible->resize(ranked.size());
+    for (int local = 0; local < static_cast<int>(ranked.size()); ++local) {
+        (*eligible)[local].assign(ranked[local].size(), ranker == nullptr);
+    }
+    if (ranker == nullptr) {
+        return true;
+    }
+    std::vector<std::vector<Reference>> byPrimitive(primitives.size());
+    for (int local = 0; local < static_cast<int>(ranked.size()); ++local) {
+        for (int fit = 0; fit < static_cast<int>(ranked[local].size()); ++fit) {
+            const RankedFit &entry = ranked[local][fit];
+            const Profile &profile = profiles[entry.profile];
+            byPrimitive[profile.primitive].push_back({local, fit,
+                profile.normalization * fittedTransform(entry.fit.transform)});
+        }
+    }
+    std::vector<std::vector<std::pair<double, int>>> scored(ranked.size());
+    for (int primitive = 0; primitive < static_cast<int>(byPrimitive.size()); ++primitive) {
+        const auto &references = byPrimitive[primitive];
+        if (references.empty()) {
+            continue;
+        }
+        std::vector<compact::gpu::Affine> transforms;
+        transforms.reserve(references.size());
+        for (const Reference &reference : references) {
+            transforms.push_back(gpuAffine(reference.transform));
+        }
+        std::vector<double> scores;
+        if (!ranker->evaluateTransforms(
+                gpuGeometry(primitives[primitive].shape.contours), transforms,
+                &scores, {4.0, 8.0, 4.0, 0.0, 2.0})
+            || scores.size() != references.size()) {
+            for (int local = 0; local < static_cast<int>(ranked.size()); ++local) {
+                (*eligible)[local].assign(ranked[local].size(), true);
+            }
+            return false;
+        }
+        for (int index = 0; index < static_cast<int>(references.size()); ++index) {
+            if (std::isfinite(scores[index])) {
+                const Reference &reference = references[index];
+                scored[reference.local].push_back({scores[index], reference.fit});
+            }
+        }
+        *screened += static_cast<int>(references.size());
+    }
+    for (int local = 0; local < static_cast<int>(ranked.size()); ++local) {
+        std::stable_sort(scored[local].begin(), scored[local].end(),
+            [](const auto &first, const auto &second) {
+                return first.first > second.first;
+            });
+        const int limit = std::min(static_cast<int>(scored[local].size()),
+            std::max(capacities[local] + 2,
+                capacities[local] * kGpuProfileShortlistFactor));
+        for (int index = 0; index < limit; ++index) {
+            (*eligible)[local][scored[local][index].second] = true;
+        }
+    }
+
+    return true;
+}
+
 QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int capacity, const CurveJob &job,
                                       const QVector<Profile> &profiles, const QVector<catalog::Primitive> &primitives,
                                       const catalog::Region &region, const Polygons &outer,
-                                      const compact::BoundaryModel &boundary, double scale, int *validated) {
+                                      const compact::BoundaryModel &boundary, double scale,
+                                      const std::vector<char> *gpuEligible, int *validated) {
     auto localRegion = region;
     const auto envelope = catalog::painterPath(outer);
     const auto localBoundary = boundary;
@@ -357,6 +481,9 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
     }
     localRegion.requiredPath = catalog::painterPath(region.required);
     for (int index : profileAlternativeOrder(alternatives)) {
+        if (gpuEligible && !(*gpuEligible)[index]) {
+            continue;
+        }
         const auto &ranked = fits[index];
         if (result.size() >= validationCapacity) {
             break;
@@ -409,6 +536,7 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
 void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                         const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                         const compact::FillOptions &options, const std::function<bool()> &cancelled,
+                        compact::gpu::RasterRanker *gpuRanker,
                         QVector<Candidate> *pool, QJsonObject *diagnostics) {
     const auto profiles = sourceProfiles(primitives);
     const auto jobs = curveJobs(region, options, cancelled);
@@ -428,6 +556,7 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
     int fits = 0;
     int processed = 0;
     int validations = 0;
+    int gpuScreened = 0;
     double validationMilliseconds = 0.0;
     for (int start = 0; start < jobs.size() && !stopped(cancelled); start += kSpanBatchSize) {
         const int end = std::min(start + kSpanBatchSize, static_cast<int>(jobs.size()));
@@ -480,11 +609,18 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
         }
         QElapsedTimer timer;
         timer.start();
+        std::vector<std::vector<char>> gpuEligible;
+        const bool gpuScreenComplete = screenCurveFitsGpu(ranked, capacities,
+            profiles, primitives, gpuRanker, &gpuEligible, &gpuScreened);
+        if (!gpuScreenComplete) {
+            gpuRanker = nullptr;
+        }
         std::vector<QVector<Candidate>> retained(end - start);
         std::vector<int> checked(end - start, 0);
         if (!workers.run(end - start, [&](int local) {
             retained[local] = validateCurveFits(ranked[local], capacities[local], jobs[start + local],
-                profiles, primitives, region, outer, boundary, options.observationScale, &checked[local]);
+                profiles, primitives, region, outer, boundary, options.observationScale,
+                gpuRanker ? &gpuEligible[local] : nullptr, &checked[local]);
         }, cancelled)) {
             break;
         }
@@ -500,6 +636,7 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
     auto backend = fitter.diagnostics();
     backend.insert(QStringLiteral("validationMilliseconds"), validationMilliseconds);
     backend.insert(QStringLiteral("geometryValidations"), validations);
+    backend.insert(QStringLiteral("gpuGeometryScreens"), gpuScreened);
     diagnostics->insert(QStringLiteral("profileCompute"), backend);
     diagnostics->insert(QStringLiteral("profiles"), profiles.size());
     diagnostics->insert(QStringLiteral("profileTrials"), trials);
@@ -1136,14 +1273,68 @@ void reduceSelection(const QVector<Candidate> &pool, const Grid &grid, const com
     }
 }
 
+void shortlistCandidatesGpu(QVector<Candidate> *pool,
+                            compact::gpu::RasterRanker *ranker,
+                            QJsonObject *diagnostics) {
+    const int originalSize = pool->size();
+    if (ranker == nullptr || pool->size() <= kGpuSelectionShortlist
+        || !ranker->prepareAdditionCoverage({})) {
+        diagnostics->insert(QStringLiteral("gpuSelectionCandidates"), originalSize);
+        diagnostics->insert(QStringLiteral("gpuSelectionRetained"), originalSize);
+        return;
+    }
+    std::vector<double> scores;
+    if (!ranker->evaluateAdditions(gpuGeometry(*pool), &scores,
+            {4.0, 8.0, 4.0, 0.0, 2.0})
+        || scores.size() != static_cast<size_t>(pool->size())) {
+        diagnostics->insert(QStringLiteral("gpuSelectionCandidates"), originalSize);
+        diagnostics->insert(QStringLiteral("gpuSelectionRetained"), originalSize);
+        return;
+    }
+    QVector<int> order(pool->size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int first, int second) {
+        return scores[first] > scores[second];
+    });
+    QVector<char> retained(pool->size(), false);
+    int count = 0;
+    for (int index = 0; index < pool->size(); ++index) {
+        if ((*pool)[index].span > 0.0) {
+            retained[index] = true;
+            ++count;
+        }
+    }
+    for (int index : order) {
+        if (count >= kGpuSelectionShortlist) {
+            break;
+        }
+        if (!retained[index] && std::isfinite(scores[index])) {
+            retained[index] = true;
+            ++count;
+        }
+    }
+    QVector<Candidate> shortlisted;
+    shortlisted.reserve(count);
+    for (int index = 0; index < pool->size(); ++index) {
+        if (retained[index]) {
+            shortlisted.push_back(std::move((*pool)[index]));
+        }
+    }
+    *pool = std::move(shortlisted);
+    diagnostics->insert(QStringLiteral("gpuSelectionCandidates"), originalSize);
+    diagnostics->insert(QStringLiteral("gpuSelectionRetained"), pool->size());
+}
+
 QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &region,
                               const Grid &grid, const QVector<QPointF> &witnesses,
                               const compact::FillOptions &options, const std::function<bool()> &cancelled,
+                              compact::gpu::RasterRanker *gpuRanker,
                               QJsonObject *diagnostics) {
     Bits missing = grid.target;
     Bits boundary((witnesses.size() + 63) / 64, 0);
     int scoreEvaluations = 0;
     setRange(&boundary, 0, witnesses.size());
+    shortlistCandidatesGpu(pool, gpuRanker, diagnostics);
     for (auto &candidate : *pool) {
         if (stopped(cancelled)) {
             return {};
@@ -1203,8 +1394,31 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         const auto grid = makeGrid(coverageRegion, options.observationScale);
         const auto witnesses = boundaryWitnesses(coverageRegion, options.observationScale);
         QVector<Candidate> pool;
+#ifdef FLS_HAS_CUDA
+        std::unique_ptr<compact::gpu::RasterRanker> gpuRanker;
+        if (options.useGpu) {
+            gpuRanker = compact::gpu::createRasterRanker(
+                gpuGeometry(coverageRegion.required),
+                gpuGeometry(coverageRegion.required),
+                gpuGeometry(coverageRegion.required), gpuGeometry(outer),
+                gpuGeometry(coverageRegion.spillFree),
+                searchScale(region, options.observationScale) * 2.0);
+            if (!gpuRanker || !gpuRanker->stats().error.empty()
+                || !gpuRanker->prepareAdditionCoverage({})) {
+                gpuRanker.reset();
+            }
+        }
+#endif
         recordTime(QStringLiteral("setup"));
-        addCurveCandidates(region, outer, primitives, boundary, options, cancelled, &pool, &result.diagnostics);
+        addCurveCandidates(region, outer, primitives, boundary, options, cancelled,
+#ifdef FLS_HAS_CUDA
+            searchScale(region, options.observationScale)
+                    > options.observationScale * 1.25
+                ? gpuRanker.get() : nullptr,
+#else
+            nullptr,
+#endif
+            &pool, &result.diagnostics);
         recordTime(QStringLiteral("curves"));
         addStraightCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
         recordTime(QStringLiteral("straightEdges"));
@@ -1217,7 +1431,14 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         addBodyCandidates(coverageRegion, outer, primitives, boundary, options.observationScale, cancelled, &pool, &result.diagnostics);
         recordTime(QStringLiteral("interior"));
         result.diagnostics.insert(QStringLiteral("totalCandidates"), pool.size());
-        auto selected = selectCandidates(&pool, coverageRegion, grid, witnesses, options, cancelled, &result.diagnostics);
+        auto selected = selectCandidates(&pool, coverageRegion, grid, witnesses,
+            options, cancelled,
+#ifdef FLS_HAS_CUDA
+            gpuRanker.get(),
+#else
+            nullptr,
+#endif
+            &result.diagnostics);
         recordTime(QStringLiteral("selection"));
         result.diagnostics.insert(QStringLiteral("greedyCount"), selected.size());
         if (!pool.isEmpty() && !stopped(cancelled)) {

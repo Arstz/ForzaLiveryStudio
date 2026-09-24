@@ -1225,9 +1225,15 @@ void gpuRasterRankTests() {
     gui::compact::gpu::Geometry candidates;
     appendRectangle(&candidates, 35, 0, 55, 100);
     appendRectangle(&candidates, 35, 0, 75, 100);
+    gui::compact::gpu::Geometry primitive;
+    appendRectangle(&primitive, 0, 0, 20, 100);
+    gui::compact::gpu::Geometry current;
+    appendRectangle(&current, 35, 0, 55, 100);
+    const std::vector<gui::compact::gpu::Affine> transforms{
+        {1, 0, 0, 1, 35, 0}, {2, 0, 0, 1, 35, 0}};
     require(ranker->prepareAdditionCoverage(coverage)
         && ranker->evaluateAdditions(candidates, &first)
-        && ranker->evaluateAdditions(candidates, &second)
+        && ranker->evaluateTransforms(primitive, transforms, &second)
         && first == second && first.size() == 2 && first[1] > first[0],
         QStringLiteral("CUDA refinement ranking is unstable or incorrect"));
     gui::compact::gpu::Geometry splitCoverage;
@@ -1236,14 +1242,20 @@ void gpuRasterRankTests() {
     gui::compact::gpu::Geometry joinCandidates;
     appendRectangle(&joinCandidates, 49, 0, 50, 100);
     appendRectangle(&joinCandidates, 20, 0, 21, 100);
-    const gui::compact::gpu::AdditionWeights joinWeights{0.0, 0.0, 0.0, 1.0};
+    const gui::compact::gpu::AdditionWeights joinWeights{
+        0.0, 0.0, 0.0, 1.0, 0.0};
     require(ranker->prepareAdditionCoverage(splitCoverage)
         && ranker->evaluateAdditions(joinCandidates, &first, joinWeights)
         && first.size() == 2 && first[0] > first[1],
         QStringLiteral("CUDA refinement ranking did not prefer a closed crack"));
+    require(ranker->preparePlacementCoverage(candidates)
+        && ranker->prepareReplacementCoverage(current)
+        && ranker->commitReplacement(current, coverage),
+        QStringLiteral("CUDA persistent coverage update failed"));
     const auto stats = ranker->stats();
     require(stats.error.empty() && stats.calls == 2
-        && stats.refinementPreparations == 2 && stats.refinementCalls == 3
+        && stats.refinementPreparations == 3 && stats.refinementCalls == 3
+        && stats.persistentPreparations == 1 && stats.persistentCommits == 1
         && stats.columns > 0
         && stats.rows > 0 && stats.cellSize >= 1.0,
         QStringLiteral("CUDA ownership ranking diagnostics are incomplete"));

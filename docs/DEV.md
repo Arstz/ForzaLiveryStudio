@@ -74,12 +74,20 @@ exports grouped `C_group` folders and `C_livery` folders.
   Independent profile fits and arc residuals run in double-precision CUDA batches
   when available, with bounded parallel CPU fallback. With GPU computation enabled,
   the post-seed optimizer uses a persistent quarter-unit CUDA occupancy grid. It
-  commits complete coordinate-move batches from weighted target, interior, spill,
-  and crack-joining scores without per-candidate CPU geometry checks. Two balanced
-  passes are followed by an interior-repair pass. GPU exclusive-support pruning
-  removes raster-redundant placements. Small seed fragments are expanded only
+  subtracts and updates one placement in that resident coverage instead of
+  rebuilding all other placements. Trial transforms upload affine matrices and
+  reuse the primitive silhouette. A propagated boundary field adds displacement
+  and normal-direction terms to target, interior, spill, and crack-joining scores.
+  Two balanced passes are followed by an interior-repair pass. GPU
+  exclusive-support pruning removes raster-redundant placements. Small seed
+  fragments are expanded only
   when the exact result stays inside the outer envelope, and new refinement moves
-  cannot create sub-footprint fragments. One exact CPU checkpoint accepts an
+  cannot create sub-footprint fragments. Remaining small fragments compete in
+  two-placement transactions against fitted catalog replacements. Each accepted
+  transaction reduces count and passes an exact aggregate quality check. Large
+  profile-fit batches use a coarse CUDA geometry shortlist before exact validation;
+  the complete candidate pool receives a device-ranked shortlist before exact
+  witness selection. One exact CPU checkpoint accepts an
   aggregate improvement or restores the seed. It tolerates no more than one GPU
   raster cell of envelope residue; final output verification remains exact. CUDA
   failure restores the CPU optimizer. Candidates are ranked by area,
