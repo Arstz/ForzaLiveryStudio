@@ -13,6 +13,7 @@ namespace {
 constexpr double kBucketCurveBow = 0.2;
 constexpr double kBucketSimplifyEpsilon = 1.0;
 constexpr double kBucketSmoothSpanTolerance = 2.5;
+constexpr double kBucketOutwardFitMargin = 5.0;
 
 } // namespace
 
@@ -363,6 +364,10 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
         conversionOptions.simplifyEpsilon = kBucketSimplifyEpsilon;
         conversionOptions.minimumCurveBow = kBucketCurveBow;
         conversionOptions.smoothSpanTolerance = kBucketSmoothSpanTolerance;
+        conversionOptions.outwardFitMargin = kBucketOutwardFitMargin;
+        conversionOptions.requiredPixelMask = &bucket_.fill.mask;
+        conversionOptions.requiredPixelMaskSize = bucket_.fill.imageSize;
+        conversionOptions.requiredPixelBounds = bucket_.fill.bounds;
         conversionOptions.smoothHybridJunctions = true;
     }
     RegionPenLoopConversionResult conversion =

@@ -103,6 +103,10 @@ struct RegionPenLoopConversionOptions {
     double simplifyEpsilon = 2.0;
     double minimumCurveBow = 0.75;
     double smoothSpanTolerance = 0.0;
+    double outwardFitMargin = 0.0;
+    const std::vector<std::uint8_t> *requiredPixelMask = nullptr;
+    QSize requiredPixelMaskSize;
+    QRect requiredPixelBounds;
     bool smoothHybridJunctions = false;
     double smoothJunctionTolerance = 2.5;
     double discardedCutoutAreaCeiling = 0.0;

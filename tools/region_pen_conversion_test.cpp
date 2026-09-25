@@ -946,6 +946,123 @@ void rasterStaircaseUsesCompactContour(TestContext *test) {
     test->expect(identical, "Smooth raster conversion must be deterministic");
 }
 
+void thinRasterStrokeUsesCompactSmoothContour(TestContext *test) {
+    constexpr int kWidth = 768;
+    constexpr int kHeight = 256;
+    QImage image(kWidth, kHeight, QImage::Format_ARGB32);
+    image.fill(QColor(20, 40, 60));
+    for (int x = 12; x < kWidth - 12; ++x) {
+        const double center = 128.0
+            + 42.0 * std::sin(x * 0.011)
+            + 11.0 * std::sin(x * 0.043);
+        const int halfWidth = 6 + static_cast<int>(std::round(
+            1.5 * std::sin(x * 0.019)));
+        const int top = static_cast<int>(std::round(center)) - halfWidth;
+        const int bottom = static_cast<int>(std::round(center)) + halfWidth;
+        for (int y = top; y <= bottom; ++y) {
+            image.setPixelColor(x, y, QColor(220, 50, 40));
+        }
+    }
+    const int seedX = 384;
+    const int seedY = static_cast<int>(std::round(128.0
+        + 42.0 * std::sin(seedX * 0.011)
+        + 11.0 * std::sin(seedX * 0.043)));
+    const auto selected = gui::floodGuideRegion(image, QPoint(seedX, seedY), 0);
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    const auto traced = gui::traceMaskToPath(selected.mask, image.width(), image.height(),
+        selected.bounds, traceOptions);
+    gui::RegionPenLoopConversionOptions baselineOptions;
+    baselineOptions.fallback.comparisonImageSize = image.size();
+    baselineOptions.simplifyEpsilon = 1.0;
+    baselineOptions.minimumCurveBow = 0.2;
+    const auto baseline = gui::regionOutlineToPenLoops(traced, baselineOptions);
+    gui::RegionPenLoopConversionOptions options = baselineOptions;
+    options.smoothSpanTolerance = 2.5;
+    options.outwardFitMargin = 5.0;
+    options.requiredPixelMask = &selected.mask;
+    options.requiredPixelMaskSize = selected.imageSize;
+    options.requiredPixelBounds = selected.bounds;
+    options.smoothHybridJunctions = true;
+    options.smoothJunctionTolerance = 2.5;
+    const auto converted = gui::regionOutlineToPenLoops(traced, options);
+    const auto baselineContour = gui::buildPenContour(baseline.loops);
+    const auto contour = gui::buildPenContour(converted.loops);
+    int baselinePoints = 0;
+    int baselineHard = 0;
+    int points = 0;
+    int hard = 0;
+    for (const auto &loop : baseline.loops) {
+        baselinePoints += loop.points.size();
+        baselineHard += static_cast<int>(std::count_if(
+            loop.points.cbegin(), loop.points.cend(), [](const auto &point) {
+                return point.kind == gui::PenPointKind::Hard;
+            }));
+    }
+    for (const auto &loop : converted.loops) {
+        points += loop.points.size();
+        hard += static_cast<int>(std::count_if(
+            loop.points.cbegin(), loop.points.cend(), [](const auto &point) {
+                return point.kind == gui::PenPointKind::Hard;
+            }));
+    }
+    if (!converted.valid() || !contour.valid()
+        || points * 3 > baselinePoints * 2 || hard * 3 > baselineHard * 2) {
+        std::cerr << "Thin raster points: " << points << " of " << baselinePoints
+            << "; hard joins: " << hard << " of " << baselineHard << '\n';
+    }
+    test->expect(selected.valid() && converted.valid() && contour.valid(),
+        "Thin raster conversion must produce a valid contour");
+    test->expect(points * 3 <= baselinePoints * 2,
+        "Pixel-covering raster conversion must remove at least one third of its sampled points");
+    test->expect(hard * 3 <= baselineHard * 2,
+        "Pixel-covering raster conversion must remove at least one third of its hard joins");
+
+    int baselineMismatchedPixels = 0;
+    int mismatchedPixels = 0;
+    QPainterPath requiredPixelSquares;
+    requiredPixelSquares.setFillRule(Qt::WindingFill);
+    for (int y = selected.bounds.top(); y <= selected.bounds.bottom(); ++y) {
+        for (int x = selected.bounds.left(); x <= selected.bounds.right(); ++x) {
+            const bool selectedPixel = selected.mask[
+                static_cast<size_t>(y) * image.width() + x] != 0;
+            if (selectedPixel) {
+                requiredPixelSquares.addRect(QRectF(x, y, 1.0, 1.0));
+            }
+            const bool baselinePixel = baselineContour.path.contains(
+                QPointF(x + 0.5, y + 0.5));
+            const bool contourPixel = contour.path.contains(QPointF(x + 0.5, y + 0.5));
+            baselineMismatchedPixels += selectedPixel != baselinePixel ? 1 : 0;
+            mismatchedPixels += selectedPixel != contourPixel ? 1 : 0;
+        }
+    }
+    requiredPixelSquares = requiredPixelSquares.simplified();
+    const bool coversPixelSquares = filledPathArea(
+        requiredPixelSquares.subtracted(contour.path)) <= 0.1;
+    test->expect(coversPixelSquares,
+        "Thin raster conversion must cover every complete selected pixel square");
+    if (mismatchedPixels > baselineMismatchedPixels + selected.area * 2 / 5) {
+        std::cerr << "Thin raster mismatched pixels: " << mismatchedPixels
+            << " vs baseline " << baselineMismatchedPixels
+            << " of " << selected.area << '\n';
+    }
+    test->expect(mismatchedPixels <= baselineMismatchedPixels + selected.area * 2 / 5,
+        "Full-square coverage must keep its two-pixel smoothing envelope bounded");
+
+    const auto repeated = gui::regionOutlineToPenLoops(traced, options);
+    bool identical = repeated.valid() && repeated.loops.size() == converted.loops.size();
+    for (int loopIndex = 0; identical && loopIndex < converted.loops.size(); ++loopIndex) {
+        const auto &first = converted.loops[loopIndex];
+        const auto &second = repeated.loops[loopIndex];
+        identical = first.kind == second.kind && first.points.size() == second.points.size();
+        for (int pointIndex = 0; identical && pointIndex < first.points.size(); ++pointIndex) {
+            identical = first.points[pointIndex].kind == second.points[pointIndex].kind
+                && first.points[pointIndex].position == second.points[pointIndex].position;
+        }
+    }
+    test->expect(identical, "Thin raster conversion must be deterministic");
+}
+
 void smoothRasterConversionPreservesSharpNotch(TestContext *test) {
     QPainterPath outline;
     outline.moveTo(0, 0);
@@ -2971,6 +3088,181 @@ int checkLoggedRegion(const QString &path, const QSize &imageSize)
     return 0;
 }
 
+int inspectBucketImage(const QString &path, const QPoint &seed, int tolerance,
+                       double outwardFitMargin)
+{
+    const QImage image(path);
+    if (image.isNull()) {
+        std::cerr << "Could not load Bucket source image\n";
+        return 2;
+    }
+    const auto selected = gui::floodGuideRegion(image, seed, tolerance);
+    if (!selected.valid()) {
+        std::cerr << selected.error.toStdString() << '\n';
+        return 2;
+    }
+    std::cout << "image=" << image.width() << 'x' << image.height()
+              << " seed=" << seed.x() << ',' << seed.y()
+              << " seed_rgba=" << selected.seedColor.red() << ','
+              << selected.seedColor.green() << ',' << selected.seedColor.blue() << ','
+              << selected.seedColor.alpha()
+              << " area=" << selected.area
+              << " bounds=" << selected.bounds.x() << ',' << selected.bounds.y()
+              << ',' << selected.bounds.width() << ',' << selected.bounds.height()
+              << std::endl;
+    gui::RegionExtractionParams traceOptions;
+    traceOptions.traceSpeckle = 0;
+    const QPainterPath traced = gui::traceMaskToPath(
+        selected.mask, image.width(), image.height(), selected.bounds, traceOptions);
+    gui::RegionPenLoopConversionOptions options;
+    options.fallback.comparisonImageSize = image.size();
+    options.simplifyEpsilon = 1.0;
+    options.minimumCurveBow = 0.2;
+    options.smoothSpanTolerance = 2.5;
+    options.outwardFitMargin = outwardFitMargin;
+    options.requiredPixelMask = &selected.mask;
+    options.requiredPixelMaskSize = selected.imageSize;
+    options.requiredPixelBounds = selected.bounds;
+    options.smoothHybridJunctions = true;
+    options.smoothJunctionTolerance = 2.5;
+    const auto converted = gui::regionOutlineToPenLoops(traced, options);
+    const gui::PenContour contour = gui::buildPenContour(converted.loops);
+    QPainterPath required;
+    required.setFillRule(Qt::WindingFill);
+    for (int y = selected.bounds.top(); y <= selected.bounds.bottom(); ++y) {
+        const size_t row = static_cast<size_t>(y) * image.width();
+        int x = selected.bounds.left();
+        while (x <= selected.bounds.right()) {
+            while (x <= selected.bounds.right() && selected.mask[row + x] == 0) {
+                ++x;
+            }
+            const int start = x;
+            while (x <= selected.bounds.right() && selected.mask[row + x] != 0) {
+                ++x;
+            }
+            if (start < x) {
+                required.addRect(QRectF(start, y, x - start, 1.0));
+            }
+        }
+    }
+    required = required.simplified();
+    QPainterPathStroker stroker;
+    stroker.setCapStyle(Qt::RoundCap);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setWidth(4.0);
+    const QPainterPath allowed = required.united(stroker.createStroke(required));
+    int points = 0;
+    int hard = 0;
+    for (const auto &loop : converted.loops) {
+        points += loop.points.size();
+        hard += static_cast<int>(std::count_if(
+            loop.points.cbegin(), loop.points.cend(), [](const auto &point) {
+                return point.kind == gui::PenPointKind::Hard;
+            }));
+    }
+    std::cout << "path_elements=" << traced.elementCount()
+              << " loops=" << converted.loops.size()
+              << " points=" << points
+              << " hard=" << hard
+              << " soft=" << points - hard
+              << " missing_area="
+              << (contour.valid()
+                      ? filledPathArea(required.subtracted(contour.path)) : -1.0)
+              << " outside_2px_area="
+              << (contour.valid()
+                      ? filledPathArea(contour.path.subtracted(allowed)) : -1.0);
+    if (!converted.error.isEmpty()) {
+        std::cout << " error=" << converted.error.toStdString();
+    }
+    std::cout << '\n';
+    return converted.valid() ? 0 : 1;
+}
+
+int inspectBucketPenLog(const QString &imagePath, const QPoint &seed,
+                        int tolerance, const QString &logPath)
+{
+    const QImage image(imagePath);
+    QFile file(logPath);
+    if (image.isNull() || !file.open(QIODevice::ReadOnly)) {
+        std::cerr << "Could not load Bucket image or Pen log\n";
+        return 2;
+    }
+    const auto selected = gui::floodGuideRegion(image, seed, tolerance);
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!selected.valid() || !document.isObject()) {
+        std::cerr << "Could not read Bucket region or Pen contour\n";
+        return 2;
+    }
+    const QJsonObject request = document.object()
+        .value(QStringLiteral("request")).toObject();
+    QVector<gui::PenLoop> loops;
+    for (const QJsonValue &loopValue : request.value(QStringLiteral("loops")).toArray()) {
+        const QJsonObject loopObject = loopValue.toObject();
+        gui::PenLoop loop;
+        loop.kind = loopObject.value(QStringLiteral("kind")).toString()
+                == QStringLiteral("cutout")
+            ? gui::PenLoopKind::Cutout : gui::PenLoopKind::Outer;
+        for (const QJsonValue &pointValue : loopObject
+                 .value(QStringLiteral("points")).toArray()) {
+            const QJsonObject pointObject = pointValue.toObject();
+            const QJsonArray position = pointObject
+                .value(QStringLiteral("position")).toArray();
+            if (position.size() != 2) {
+                continue;
+            }
+            const QPointF world(position[0].toDouble(), position[1].toDouble());
+            loop.points.push_back({
+                {world.x() + image.width() * 0.5,
+                 image.height() * 0.5 - world.y()},
+                pointObject.value(QStringLiteral("kind")).toString()
+                        == QStringLiteral("hard")
+                    ? gui::PenPointKind::Hard : gui::PenPointKind::Soft,
+            });
+        }
+        loops.push_back(std::move(loop));
+    }
+    const gui::PenContour contour = gui::buildPenContour(loops);
+    if (!contour.valid()) {
+        std::cerr << "Logged Pen contour is invalid\n";
+        return 2;
+    }
+    QPainterPath required;
+    required.setFillRule(Qt::WindingFill);
+    for (int y = selected.bounds.top(); y <= selected.bounds.bottom(); ++y) {
+        const size_t row = static_cast<size_t>(y) * image.width();
+        int x = selected.bounds.left();
+        while (x <= selected.bounds.right()) {
+            while (x <= selected.bounds.right() && selected.mask[row + x] == 0) {
+                ++x;
+            }
+            const int start = x;
+            while (x <= selected.bounds.right() && selected.mask[row + x] != 0) {
+                ++x;
+            }
+            if (start < x) {
+                required.addRect(QRectF(start, y, x - start, 1.0));
+            }
+        }
+    }
+    required = required.simplified();
+    QPainterPathStroker stroker;
+    stroker.setCapStyle(Qt::RoundCap);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setWidth(4.0);
+    const QPainterPath allowed = required.united(stroker.createStroke(required));
+    int points = 0;
+    for (const gui::PenLoop &loop : loops) {
+        points += loop.points.size();
+    }
+    std::cout << "points=" << points
+              << " selected_pixels=" << selected.area
+              << " contour_area=" << filledPathArea(contour.path)
+              << " missing_area=" << filledPathArea(required.subtracted(contour.path))
+              << " outside_2px_area=" << filledPathArea(contour.path.subtracted(allowed))
+              << '\n';
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -2990,6 +3282,41 @@ int main(int argc, char **argv)
             return 2;
         }
         return checkLoggedRegion(QString::fromLocal8Bit(argv[2]), QSize(width, height));
+    }
+    if ((argc == 6 || argc == 7)
+        && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--inspect-bucket-image")) {
+        bool xOk = false;
+        bool yOk = false;
+        bool toleranceOk = false;
+        const int x = QString::fromLocal8Bit(argv[3]).toInt(&xOk);
+        const int y = QString::fromLocal8Bit(argv[4]).toInt(&yOk);
+        const int tolerance = QString::fromLocal8Bit(argv[5]).toInt(&toleranceOk);
+        bool marginOk = true;
+        const double outwardFitMargin = argc == 7
+            ? QString::fromLocal8Bit(argv[6]).toDouble(&marginOk) : 2.0;
+        if (!xOk || !yOk || !toleranceOk || !marginOk
+            || outwardFitMargin < 0.0) {
+            std::cerr << "Invalid Bucket diagnostic arguments\n";
+            return 2;
+        }
+        return inspectBucketImage(
+            QString::fromLocal8Bit(argv[2]), QPoint(x, y), tolerance,
+            outwardFitMargin);
+    }
+    if (argc == 7
+        && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--inspect-bucket-pen-log")) {
+        bool xOk = false;
+        bool yOk = false;
+        bool toleranceOk = false;
+        const int x = QString::fromLocal8Bit(argv[3]).toInt(&xOk);
+        const int y = QString::fromLocal8Bit(argv[4]).toInt(&yOk);
+        const int tolerance = QString::fromLocal8Bit(argv[5]).toInt(&toleranceOk);
+        if (!xOk || !yOk || !toleranceOk) {
+            std::cerr << "Invalid Bucket/Pen diagnostic arguments\n";
+            return 2;
+        }
+        return inspectBucketPenLog(QString::fromLocal8Bit(argv[2]), QPoint(x, y),
+                                   tolerance, QString::fromLocal8Bit(argv[6]));
     }
     TestContext test;
     svgVectorObjectConvertsDirectlyToPen(&test);
@@ -3048,6 +3375,7 @@ int main(int argc, char **argv)
     bucketFloodIsContiguousAndToleranceBounded(&test);
     bucketMaskTracesIntoPenContour(&test);
     rasterStaircaseUsesCompactContour(&test);
+    thinRasterStrokeUsesCompactSmoothContour(&test);
     smoothRasterConversionPreservesSharpNotch(&test);
     smoothRasterConversionPreservesSmallCurves(&test);
     bucketTracePreservesSmallCurves(&test);

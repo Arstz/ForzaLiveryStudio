@@ -41,6 +41,11 @@ constexpr double kTraceTangentSlack = 1e-7;
 constexpr double kMinimumTraceTolerance = 1.0 / 64.0;
 constexpr double kMinimumSmoothJunctionTolerance = 0.125;
 constexpr double kMinimumSmoothSpanTolerance = 0.125;
+constexpr double kCoverageAreaNoise = 0.1;
+constexpr double kExteriorAreaNoise = 0.5;
+constexpr double kPixelEnvelopeMargin = 2.1;
+constexpr double kPixelEnvelopeRetryMargin = 2.25;
+constexpr int kPixelEnvelopeCurveSamples = 4;
 
 struct Op {
     enum Kind { Line, Cubic } kind = Line;
@@ -419,6 +424,134 @@ QPolygonF flattenPenContour(const PenContour &contour, int curveSamples) {
         polygon.removeLast();
     }
     return polygon;
+}
+
+QPolygonF samplePenBoundary(const PenContour &contour, double spacing) {
+    constexpr int kMaximumSegmentSamples = 4096;
+    QPolygonF samples;
+    if (contour.segments.isEmpty() || spacing <= 0.0) {
+        return samples;
+    }
+    samples.push_back(contour.segments.front().start);
+    for (const PenBoundarySegment &segment : contour.segments) {
+        const double lengthEstimate = segment.curved
+            ? QLineF(segment.start, segment.control).length()
+                + QLineF(segment.control, segment.end).length()
+            : QLineF(segment.start, segment.end).length();
+        const int steps = std::clamp(
+            static_cast<int>(std::ceil(lengthEstimate / spacing)),
+            1, kMaximumSegmentSamples);
+        for (int step = 1; step <= steps; ++step) {
+            const double parameter = static_cast<double>(step) / steps;
+            if (!segment.curved) {
+                samples.push_back(segment.start * (1.0 - parameter)
+                    + segment.end * parameter);
+                continue;
+            }
+            const double remaining = 1.0 - parameter;
+            samples.push_back(segment.start * (remaining * remaining)
+                + segment.control * (2.0 * remaining * parameter)
+                + segment.end * (parameter * parameter));
+        }
+    }
+    while (samples.size() > 1
+           && QLineF(samples.back(), samples.front()).length() <= kGeometryEpsilon) {
+        samples.removeLast();
+    }
+
+    return samples;
+}
+
+QPainterPath boundaryCorridor(const QPainterPath &path, double margin) {
+    QPainterPathStroker stroker;
+    stroker.setCapStyle(Qt::RoundCap);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setWidth(std::max(2.0 * margin, kGeometryEpsilon));
+
+    return stroker.createStroke(path);
+}
+
+bool withinAsymmetricBoundaryMargin(const PenContour &reference,
+                                    const QPolygonF &referenceSamples,
+                                    const PenContour &candidate,
+                                    const QPolygonF &candidateSamples,
+                                    double candidateOutsideMargin,
+                                    double candidateInsideMargin) {
+    const QPainterPath referenceCorridor = boundaryCorridor(
+        reference.path, candidateOutsideMargin);
+    for (const QPointF &point : candidateSamples) {
+        if (!reference.path.contains(point)
+            && !referenceCorridor.contains(point)) {
+            return false;
+        }
+    }
+    const QPainterPath candidateCorridor = boundaryCorridor(
+        candidate.path, candidateInsideMargin);
+    for (const QPointF &point : referenceSamples) {
+        if (!candidate.path.contains(point)
+            && !candidateCorridor.contains(point)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+QPainterPath requiredPixelSquaresPath(const std::vector<std::uint8_t> &mask,
+                                      const QSize &size,
+                                      const QRect &bounds) {
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+    const QRect imageRect(QPoint(0, 0), size);
+    const QRect checkedBounds = bounds.intersected(imageRect);
+    if (checkedBounds.isEmpty()
+        || mask.size() != static_cast<size_t>(size.width()) * size.height()) {
+        return path;
+    }
+    for (int y = checkedBounds.top(); y <= checkedBounds.bottom(); ++y) {
+        const size_t row = static_cast<size_t>(y) * size.width();
+        int x = checkedBounds.left();
+        while (x <= checkedBounds.right()) {
+            while (x <= checkedBounds.right() && mask[row + x] == 0) {
+                ++x;
+            }
+            const int start = x;
+            while (x <= checkedBounds.right() && mask[row + x] != 0) {
+                ++x;
+            }
+            if (start < x) {
+                path.addRect(QRectF(start, y, x - start, 1.0));
+            }
+        }
+    }
+    path = path.simplified();
+    path.setFillRule(Qt::WindingFill);
+
+    return path;
+}
+
+QPainterPath expandedPath(const QPainterPath &path, double margin) {
+    if (path.isEmpty() || margin <= 0.0) {
+        return path;
+    }
+    QPainterPathStroker stroker;
+    stroker.setCapStyle(Qt::RoundCap);
+    stroker.setJoinStyle(Qt::RoundJoin);
+    stroker.setWidth(2.0 * margin);
+    QPainterPath expanded = path.united(stroker.createStroke(path));
+    expanded.setFillRule(Qt::WindingFill);
+
+    return expanded;
+}
+
+double pathDifferenceArea(const QPainterPath &contained,
+                          const QPainterPath &container) {
+    double area = 0.0;
+    for (const QPolygonF &polygon : contained.subtracted(container).toFillPolygons()) {
+        area += std::abs(signedArea(polygon));
+    }
+
+    return area;
 }
 
 struct SsimAccumulation {
@@ -1679,6 +1812,258 @@ QVector<int> mergeQuadraticAnchors(const QPolygonF &polygon,
     return merged;
 }
 
+QVector<PenPoint> fitClosedQuadraticCorridor(const QPolygonF &polygon,
+                                             const std::vector<std::uint8_t> &mask,
+                                             const QSize &maskSize,
+                                             double allowedMargin,
+                                             double minimumCurveBow) {
+    struct Span {
+        int first = 0;
+        int last = 0;
+        QPointF start;
+        QPointF control;
+        QPointF end;
+        bool curved = false;
+    };
+    constexpr double kSampleSpacing = 0.2;
+    constexpr int kMaximumSamples = 16384;
+    if (polygon.size() < 3 || !maskSize.isValid() || allowedMargin <= 0.0
+        || mask.size() != static_cast<size_t>(maskSize.width()) * maskSize.height()) {
+        return {};
+    }
+    const auto selectedPixel = [&](int x, int y) {
+        return x >= 0 && y >= 0 && x < maskSize.width() && y < maskSize.height()
+            && mask[static_cast<size_t>(y) * maskSize.width() + x] != 0;
+    };
+    const auto insideRequired = [&](const QPointF &point) {
+        return selectedPixel(static_cast<int>(std::floor(point.x())),
+                             static_cast<int>(std::floor(point.y())));
+    };
+    const auto insideAllowed = [&](const QPointF &point) {
+        const int radius = static_cast<int>(std::ceil(allowedMargin));
+        const int centerX = static_cast<int>(std::floor(point.x()));
+        const int centerY = static_cast<int>(std::floor(point.y()));
+        const double maximumDistanceSquared = allowedMargin * allowedMargin
+            + kGeometryEpsilon;
+        for (int y = centerY - radius; y <= centerY + radius; ++y) {
+            for (int x = centerX - radius; x <= centerX + radius; ++x) {
+                if (!selectedPixel(x, y)) {
+                    continue;
+                }
+                const double dx = std::max({static_cast<double>(x) - point.x(),
+                                            0.0,
+                                            point.x() - (x + 1.0)});
+                const double dy = std::max({static_cast<double>(y) - point.y(),
+                                            0.0,
+                                            point.y() - (y + 1.0)});
+                if (dx * dx + dy * dy <= maximumDistanceSquared) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    QPolygonF source = polygon;
+    source.push_back(source.front());
+    const double orientationSign = signedArea(polygon) >= 0.0 ? 1.0 : -1.0;
+    QVector<Span> spans;
+    spans.reserve(polygon.size());
+    const auto fitSpan = [&](int first, int last, Span *span,
+                             int *suggestedSplit, double *sourceDeviation) {
+        if (last <= first || span == nullptr) {
+            return false;
+        }
+        if (last == first + 1) {
+            *span = {first, last, source[first],
+                     (source[first] + source[last]) * 0.5,
+                     source[last], false};
+            if (sourceDeviation != nullptr) {
+                *sourceDeviation = 0.0;
+            }
+            return true;
+        }
+        QVector<double> distances;
+        distances.reserve(last - first + 1);
+        double length = 0.0;
+        for (int index = first; index <= last; ++index) {
+            if (index > first) {
+                length += QLineF(source[index - 1], source[index]).length();
+            }
+            distances.push_back(length);
+        }
+        QPointF numerator;
+        double denominator = 0.0;
+        for (int position = 0; position < distances.size(); ++position) {
+            const double parameter = length > kGeometryEpsilon
+                ? distances[position] / length : 0.0;
+            const double remaining = 1.0 - parameter;
+            const double weight = 2.0 * remaining * parameter;
+            const QPointF fixed = source[first] * (remaining * remaining)
+                + source[last] * (parameter * parameter);
+            numerator += (source[first + position] - fixed) * weight;
+            denominator += weight * weight;
+        }
+        const QPointF control = denominator > kGeometryEpsilon
+            ? numerator / denominator : (source[first] + source[last]) * 0.5;
+        const double lengthEstimate = QLineF(source[first], control).length()
+            + QLineF(control, source[last]).length();
+        const int steps = std::clamp(
+            static_cast<int>(std::ceil(lengthEstimate / kSampleSpacing)),
+            2, kMaximumSamples);
+        const QPointF chord = source[last] - source[first];
+        const double chordLength = std::hypot(chord.x(), chord.y());
+        if (chordLength <= kGeometryEpsilon) {
+            return false;
+        }
+        const QPointF outward = chordLength > kGeometryEpsilon
+            ? QPointF(orientationSign * chord.y() / chordLength,
+                      -orientationSign * chord.x() / chordLength)
+            : QPointF();
+        bool insideCorridor = false;
+        QPointF acceptedControl = control;
+        constexpr int kOutwardControlSteps = 12;
+        constexpr double kOutwardControlStep = 0.2;
+        for (int offsetStep = 0;
+             !insideCorridor && offsetStep <= kOutwardControlSteps;
+             ++offsetStep) {
+            const QPointF candidateControl = control
+                + outward * (offsetStep * kOutwardControlStep);
+            insideCorridor = true;
+            for (int step = 1; insideCorridor && step < steps; ++step) {
+                const double parameter = static_cast<double>(step) / steps;
+                const double remaining = 1.0 - parameter;
+                const QPointF point = source[first] * (remaining * remaining)
+                    + candidateControl * (2.0 * remaining * parameter)
+                    + source[last] * (parameter * parameter);
+                insideCorridor = !insideRequired(point) && insideAllowed(point);
+            }
+            if (insideCorridor) {
+                acceptedControl = candidateControl;
+            }
+        }
+        if (insideCorridor) {
+            double maximumSourceDeviation = 0.0;
+            for (int index = first + 1; index < last; ++index) {
+                const double parameter = length > kGeometryEpsilon
+                    ? distances[index - first] / length
+                    : static_cast<double>(index - first) / (last - first);
+                const double remaining = 1.0 - parameter;
+                const QPointF fitted = source[first] * (remaining * remaining)
+                    + acceptedControl * (2.0 * remaining * parameter)
+                    + source[last] * (parameter * parameter);
+                maximumSourceDeviation = std::max(
+                    maximumSourceDeviation, QLineF(source[index], fitted).length());
+            }
+            const double bow = perpendicularDistance(
+                acceptedControl, source[first], source[last]) * 0.5;
+            *span = {first, last, source[first], acceptedControl, source[last],
+                     bow >= minimumCurveBow};
+            if (sourceDeviation != nullptr) {
+                *sourceDeviation = maximumSourceDeviation;
+            }
+            return true;
+        }
+        int split = first + (last - first) / 2;
+        double maximumDeviation = -1.0;
+        for (int index = first + 1; index < last; ++index) {
+            const double parameter = length > kGeometryEpsilon
+                ? distances[index - first] / length
+                : static_cast<double>(index - first) / (last - first);
+            const double remaining = 1.0 - parameter;
+            const QPointF fitted = source[first] * (remaining * remaining)
+                + control * (2.0 * remaining * parameter)
+                + source[last] * (parameter * parameter);
+            const double deviation = QLineF(source[index], fitted).length();
+            if (deviation > maximumDeviation) {
+                maximumDeviation = deviation;
+                split = index;
+            }
+        }
+        if (suggestedSplit != nullptr) {
+            *suggestedSplit = split;
+        }
+        return false;
+    };
+    const auto recurse = [&](auto &&self, int first, int last) -> void {
+        if (last <= first) {
+            return;
+        }
+        Span span;
+        int split = first + (last - first) / 2;
+        if (fitSpan(first, last, &span, &split, nullptr)) {
+            spans.push_back(std::move(span));
+            return;
+        }
+        self(self, first, split);
+        self(self, split, last);
+    };
+    int opposite = 1;
+    double maximumSpan = 0.0;
+    for (int index = 1; index < polygon.size(); ++index) {
+        const double span = QLineF(source.front(), source[index]).length();
+        if (span > maximumSpan) {
+            maximumSpan = span;
+            opposite = index;
+        }
+    }
+    recurse(recurse, 0, opposite);
+    recurse(recurse, opposite, polygon.size());
+    if (spans.size() < 2) {
+        return {};
+    }
+    constexpr int kMaximumMergeSpanCount = 192;
+    if (spans.size() <= kMaximumMergeSpanCount) {
+        const QVector<Span> initialSpans = spans;
+        const int count = initialSpans.size();
+        const int unreachable = std::numeric_limits<int>::max() / 2;
+        QVector<int> best(count + 1, unreachable);
+        QVector<int> next(count, -1);
+        QVector<Span> selected(count);
+        best[count] = 0;
+        for (int firstSpan = count - 1; firstSpan >= 0; --firstSpan) {
+            for (int lastSpan = count - 1; lastSpan >= firstSpan; --lastSpan) {
+                if (best[lastSpan + 1] >= unreachable) {
+                    continue;
+                }
+                Span candidate;
+                double sourceDeviation = 0.0;
+                if (!fitSpan(initialSpans[firstSpan].first,
+                             initialSpans[lastSpan].last,
+                             &candidate, nullptr, &sourceDeviation)
+                    || sourceDeviation > allowedMargin + kGeometryEpsilon) {
+                    continue;
+                }
+                const int cost = best[lastSpan + 1] + 1;
+                if (cost < best[firstSpan]) {
+                    best[firstSpan] = cost;
+                    next[firstSpan] = lastSpan + 1;
+                    selected[firstSpan] = std::move(candidate);
+                }
+            }
+        }
+        if (next.front() > 0) {
+            QVector<Span> merged;
+            merged.reserve(best.front());
+            for (int index = 0; index < count; index = next[index]) {
+                merged.push_back(selected[index]);
+            }
+            spans = std::move(merged);
+        }
+    }
+    QVector<PenPoint> result;
+    result.reserve(spans.size() * 2);
+    result.push_back({spans.front().start, PenPointKind::Hard});
+    for (int index = 0; index < spans.size(); ++index) {
+        if (spans[index].curved) {
+            result.push_back({spans[index].control, PenPointKind::Soft});
+        }
+        if (index + 1 < spans.size()) {
+            result.push_back({spans[index].end, PenPointKind::Hard});
+        }
+    }
+    return buildPenContour(result).valid() ? result : QVector<PenPoint>{};
+}
+
 QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
     const QPolygonF &polygon,
     double epsilon,
@@ -1751,7 +2136,8 @@ double openPolylineDeviation(const QPolygonF &first, const QPolygonF &second) {
     return std::max(directed(first, second), directed(second, first));
 }
 
-double hybridJunctionDeviation(const QVector<PenPoint> &points, int index) {
+double hybridJunctionDeviation(const QVector<PenPoint> &points, int index,
+                               bool enforceFeatureTolerance) {
     constexpr int kJunctionSamples = 12;
     const int count = points.size();
     const int previous = (index + count - 1) % count;
@@ -1776,16 +2162,23 @@ double hybridJunctionDeviation(const QVector<PenPoint> &points, int index) {
         return std::numeric_limits<double>::infinity();
     }
     const double deviation = openPolylineDeviation(original, replacement);
-    const double localTolerance = featureAwareTolerance(original,
-        std::numeric_limits<double>::infinity());
+    if (enforceFeatureTolerance) {
+        const double localTolerance = featureAwareTolerance(
+            original, std::numeric_limits<double>::infinity());
+        if (deviation > localTolerance + kGeometryEpsilon) {
+            return std::numeric_limits<double>::infinity();
+        }
+    }
 
-    return deviation <= localTolerance + kGeometryEpsilon
-        ? deviation : std::numeric_limits<double>::infinity();
+    return deviation;
 }
 
 QVector<PenPoint> smoothHybridJunctions(const QVector<PenPoint> &points,
-                                      double tolerance) {
-    constexpr double kSmoothTurnCosine = 0.5;
+                                      double tolerance,
+                                      bool enforceFeatureTolerance = true,
+                                      double minimumTurnCosine = 0.5,
+                                      int maximumRemovals =
+                                          std::numeric_limits<int>::max()) {
     constexpr int kGlobalSamples = 8;
     constexpr qint64 kGlobalComparisonLimit = 10'000'000;
     if (points.size() < 3 || tolerance <= 0.0) {
@@ -1800,7 +2193,8 @@ QVector<PenPoint> smoothHybridJunctions(const QVector<PenPoint> &points,
     }
     int hardCount = static_cast<int>(std::count_if(points.cbegin(), points.cend(),
         [](const PenPoint &point) { return point.kind == PenPointKind::Hard; }));
-    while (hardCount > 1) {
+    int removedCount = 0;
+    while (hardCount > 1 && removedCount < maximumRemovals) {
         QVector<std::pair<double, int>> candidates;
         for (int index = 0; index < smoothed.size(); ++index) {
             if (smoothed[index].kind != PenPointKind::Hard
@@ -1818,10 +2212,12 @@ QVector<PenPoint> smoothHybridJunctions(const QVector<PenPoint> &points,
             const double lengths = std::hypot(incoming.x(), incoming.y())
                 * std::hypot(outgoing.x(), outgoing.y());
             if (lengths <= kGeometryEpsilon
-                || QPointF::dotProduct(incoming, outgoing) < kSmoothTurnCosine * lengths) {
+                || QPointF::dotProduct(incoming, outgoing)
+                    < minimumTurnCosine * lengths) {
                 continue;
             }
-            const double deviation = hybridJunctionDeviation(smoothed, index);
+            const double deviation = hybridJunctionDeviation(
+                smoothed, index, enforceFeatureTolerance);
             if (deviation <= tolerance + kGeometryEpsilon) {
                 candidates.push_back({deviation, index});
             }
@@ -1839,6 +2235,7 @@ QVector<PenPoint> smoothHybridJunctions(const QVector<PenPoint> &points,
             smoothed = std::move(trial);
             originalIndices.removeAt(index);
             --hardCount;
+            ++removedCount;
             changed = true;
             break;
         }
@@ -1955,6 +2352,14 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
         || options.minimumCurveBow < 0.0
         || !std::isfinite(options.smoothSpanTolerance)
         || options.smoothSpanTolerance < 0.0
+        || !std::isfinite(options.outwardFitMargin)
+        || options.outwardFitMargin < 0.0
+        || (options.requiredPixelMask != nullptr
+            && (!options.requiredPixelMaskSize.isValid()
+                || options.requiredPixelBounds.isEmpty()
+                || options.requiredPixelMask->size()
+                    != static_cast<size_t>(options.requiredPixelMaskSize.width())
+                        * options.requiredPixelMaskSize.height()))
         || !std::isfinite(options.smoothJunctionTolerance)
         || options.smoothJunctionTolerance < 0.0
         || !std::isfinite(options.discardedCutoutAreaCeiling)
@@ -2091,39 +2496,235 @@ RegionPenLoopConversionResult regionOutlineToPenLoops(
     }
     if (!options.fitTracedCurves && !options.preserveInputCurves
         && (options.smoothSpanTolerance > 0.0 || options.smoothHybridJunctions)) {
-        const auto accepts = [&](int index, const QVector<PenPoint> &points) {
+        constexpr qint64 kBoundaryComparisonLimit = 10'000'000;
+        constexpr double kBoundaryMarginSampleSpacing = 0.5;
+        QVector<PenContour> referenceContours;
+        QVector<QPolygonF> referenceMarginSamples;
+        QVector<QPolygonF> referencePolygons;
+        QPainterPath requiredPixels;
+        QPainterPath allowedPixels;
+        if (options.requiredPixelMask != nullptr) {
+            requiredPixels = requiredPixelSquaresPath(
+                *options.requiredPixelMask,
+                options.requiredPixelMaskSize,
+                options.requiredPixelBounds);
+            allowedPixels = expandedPath(requiredPixels, options.outwardFitMargin);
+            for (int index = result.loops.size() - 1; index > 0; --index) {
+                auto trial = result.loops;
+                trial.removeAt(index);
+                const PenContour withoutCutout = buildPenContour(trial);
+                const QPainterPath addedFill = withoutCutout.path.subtracted(
+                    compound.path);
+                if (withoutCutout.valid()
+                    && pathDifferenceArea(addedFill, allowedPixels)
+                        <= kExteriorAreaNoise) {
+                    result.loops = std::move(trial);
+                    includedCandidateIndices.removeAt(index);
+                }
+            }
+        }
+        referenceContours.reserve(result.loops.size());
+        referenceMarginSamples.reserve(result.loops.size());
+        referencePolygons.reserve(result.loops.size());
+        for (const PenLoop &loop : result.loops) {
+            PenContour contour = buildPenContour(loop.points);
+            referenceMarginSamples.push_back(samplePenBoundary(
+                contour, kBoundaryMarginSampleSpacing));
+            referencePolygons.push_back(flattenPenContour(
+                contour, kBoundarySamplesPerCurve));
+            referenceContours.push_back(std::move(contour));
+        }
+        const auto preservesReference = [&](int index, const QVector<PenPoint> &points) {
+            const PenContour contour = buildPenContour(points);
+            if (!contour.valid()) {
+                return false;
+            }
+            if (options.requiredPixelMask != nullptr) {
+                return true;
+            }
+            if (options.outwardFitMargin > 0.0) {
+                const bool cutout = result.loops[index].kind == PenLoopKind::Cutout;
+                const double protectedInwardMargin = options.simplifyEpsilon;
+                const double outsideMargin = cutout
+                    ? protectedInwardMargin : options.outwardFitMargin;
+                const double insideMargin = cutout
+                    ? options.outwardFitMargin : protectedInwardMargin;
+                const bool withinMargin = withinAsymmetricBoundaryMargin(
+                    referenceContours[index], referenceMarginSamples[index],
+                    contour, samplePenBoundary(contour, kBoundaryMarginSampleSpacing),
+                    outsideMargin, insideMargin);
+                return withinMargin;
+            }
+            const QPolygonF polygon = flattenPenContour(
+                contour, kBoundarySamplesPerCurve);
+            const QPolygonF &reference = referencePolygons[index];
+            if (static_cast<qint64>(reference.size()) * polygon.size()
+                    <= kBoundaryComparisonLimit
+                && boundaryDeviation(reference, polygon)
+                    > options.simplifyEpsilon + kGeometryEpsilon) {
+                return false;
+            }
+            if (options.fallback.comparisonImageSize.isValid()
+                && contourDssim(reference, polygon,
+                    options.fallback.comparisonImageSize,
+                    options.fallback.dssimSupersample)
+                    > options.fallback.maximumDssim + kGeometryEpsilon) {
+                return false;
+            }
+
+            return true;
+        };
+        const auto compoundFits = [&](const QVector<PenLoop> &trial) {
+            const PenContour compoundTrial = buildPenContour(trial);
+            if (!compoundTrial.valid()) {
+                return false;
+            }
+            if (options.requiredPixelMask != nullptr) {
+                const bool coversRequired = pathDifferenceArea(
+                    requiredPixels, compoundTrial.path) <= kCoverageAreaNoise;
+                const bool staysAllowed = pathDifferenceArea(
+                    compoundTrial.path, allowedPixels) <= kExteriorAreaNoise;
+                if (!coversRequired || !staysAllowed) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+        const auto candidateFits = [&](int index, const QVector<PenPoint> &points) {
             if (!buildPenContour(points).valid()) {
                 return false;
             }
             auto trial = result.loops;
             trial[index].points = points;
-            if (!buildPenContour(trial).valid()) {
+            return compoundFits(trial);
+        };
+        const auto accepts = [&](int index, const QVector<PenPoint> &points) {
+            if (!candidateFits(index, points)) {
                 return false;
             }
+            auto trial = result.loops;
+            trial[index].points = points;
             result.loops = std::move(trial);
+
             return true;
         };
-        for (int index = 0; index < result.loops.size(); ++index) {
-            bool accepted = false;
-            for (double tolerance = options.smoothSpanTolerance;
-                 tolerance >= kMinimumSmoothSpanTolerance && !accepted; tolerance *= 0.5) {
-                QVector<PenPoint> merged = simplifyClosedPolygonRdpHybridQuadratic(
-                    candidates[includedCandidateIndices[index]].sampled, options.simplifyEpsilon,
-                    options.minimumCurveBow, tolerance);
-                if (options.smoothHybridJunctions && buildPenContour(merged).valid()) {
-                    for (double junctionTolerance = options.smoothJunctionTolerance;
-                         junctionTolerance >= kMinimumSmoothJunctionTolerance;
-                         junctionTolerance *= 0.5) {
-                        auto smoothed = smoothHybridJunctions(merged, junctionTolerance);
-                        if (smoothed.size() < merged.size() && accepts(index, smoothed)) {
-                            accepted = true;
-                            break;
+        const auto attempts = [&](int index, const QVector<PenPoint> &merged,
+                                  bool requireReferenceFidelity) {
+            const auto acceptCandidate = [&](const QVector<PenPoint> &points) {
+                return (!requireReferenceFidelity || preservesReference(index, points))
+                    && accepts(index, points);
+            };
+            if (options.smoothHybridJunctions && buildPenContour(merged).valid()) {
+                for (double junctionTolerance = options.smoothJunctionTolerance;
+                     junctionTolerance >= kMinimumSmoothJunctionTolerance;
+                     junctionTolerance *= 0.5) {
+                    const auto smoothed = smoothHybridJunctions(
+                        merged, junctionTolerance);
+                    if (smoothed.size() < merged.size()
+                        && acceptCandidate(smoothed)) {
+                        return true;
+                    }
+                }
+            }
+            return merged.size() != result.loops[index].points.size()
+                && acceptCandidate(merged);
+        };
+        bool usedPixelCompoundEnvelope = false;
+        if (options.requiredPixelMask != nullptr) {
+            double previousEnvelopeMargin = -1.0;
+            for (const double configuredMargin : {
+                     kPixelEnvelopeMargin, kPixelEnvelopeRetryMargin}) {
+                const double envelopeMargin = std::min(
+                    options.outwardFitMargin, configuredMargin);
+                if (envelopeMargin <= previousEnvelopeMargin + kGeometryEpsilon) {
+                    continue;
+                }
+                previousEnvelopeMargin = envelopeMargin;
+                QVector<QPolygonF> pixelEnvelopeLoops = regionContours(
+                    expandedPath(requiredPixels, envelopeMargin),
+                    kPixelEnvelopeCurveSamples);
+                std::sort(pixelEnvelopeLoops.begin(), pixelEnvelopeLoops.end(),
+                          [](const QPolygonF &left, const QPolygonF &right) {
+                              return std::abs(signedArea(left))
+                                  > std::abs(signedArea(right));
+                          });
+                QVector<PenLoop> curveTrial;
+                curveTrial.reserve(pixelEnvelopeLoops.size());
+                bool completeCurveTrial = !pixelEnvelopeLoops.isEmpty();
+                for (int index = 0; index < pixelEnvelopeLoops.size(); ++index) {
+                    PenLoop loop;
+                    loop.kind = index == 0
+                        ? PenLoopKind::Outer : PenLoopKind::Cutout;
+                    loop.points = fitClosedQuadraticCorridor(
+                        pixelEnvelopeLoops[index], *options.requiredPixelMask,
+                        options.requiredPixelMaskSize,
+                        options.outwardFitMargin,
+                        options.minimumCurveBow);
+                    completeCurveTrial = completeCurveTrial && !loop.points.isEmpty();
+                    curveTrial.push_back(std::move(loop));
+                }
+                if (completeCurveTrial && compoundFits(curveTrial)) {
+                    result.loops = std::move(curveTrial);
+                    usedPixelCompoundEnvelope = true;
+                    break;
+                }
+            }
+            if (usedPixelCompoundEnvelope && options.smoothHybridJunctions) {
+                for (int index = 0; index < result.loops.size(); ++index) {
+                    for (double tolerance = options.smoothJunctionTolerance;
+                         tolerance >= kMinimumSmoothJunctionTolerance;
+                         tolerance *= 0.5) {
+                        while (true) {
+                            const int originalSize = result.loops[index].points.size();
+                            const QVector<PenPoint> fullySmoothed =
+                                smoothHybridJunctions(result.loops[index].points,
+                                    tolerance, false, -0.25);
+                            const int removable = originalSize - fullySmoothed.size();
+                            if (removable <= 0) {
+                                break;
+                            }
+                            if (candidateFits(index, fullySmoothed)) {
+                                accepts(index, fullySmoothed);
+                                continue;
+                            }
+                            QVector<PenPoint> best;
+                            int lower = 1;
+                            int upper = removable - 1;
+                            while (lower <= upper) {
+                                const int count = lower + (upper - lower) / 2;
+                                const QVector<PenPoint> partial =
+                                    smoothHybridJunctions(
+                                        result.loops[index].points, tolerance,
+                                        false, -0.25, count);
+                                if (partial.size() < originalSize
+                                    && candidateFits(index, partial)) {
+                                    best = partial;
+                                    lower = count + 1;
+                                } else {
+                                    upper = count - 1;
+                                }
+                            }
+                            if (best.isEmpty()) {
+                                break;
+                            }
+                            accepts(index, best);
                         }
                     }
                 }
-                if (!accepted && merged.size() != result.loops[index].points.size()) {
-                    accepted = accepts(index, merged);
-                }
+            }
+        }
+        for (int index = 0;
+             !usedPixelCompoundEnvelope && index < result.loops.size();
+             ++index) {
+            bool accepted = false;
+            for (double tolerance = options.smoothSpanTolerance;
+                 tolerance >= kMinimumSmoothSpanTolerance && !accepted; tolerance *= 0.5) {
+                const QPolygonF &sampled = candidates[includedCandidateIndices[index]].sampled;
+                const QVector<PenPoint> merged = simplifyClosedPolygonRdpHybridQuadratic(
+                    sampled, options.simplifyEpsilon,
+                    options.minimumCurveBow, tolerance);
+                accepted = attempts(index, merged, false);
             }
             if (!accepted && options.smoothHybridJunctions) {
                 for (double tolerance = options.smoothJunctionTolerance;
