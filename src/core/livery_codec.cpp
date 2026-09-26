@@ -536,6 +536,42 @@ int sourcePopulatedSlotSize(const LiverySection *section) {
     return std::max(0, end - section->absPos);
 }
 
+void collectMissingShapeStates(const VinylGroup &group,
+                               QVector<QPair<int, char>> &states) {
+    bool previousMask = false;
+    for (int i = 0; i < group.items.size(); ++i) {
+        const VinylItem &item = group.items[i];
+        if (item.isShape()) {
+            const VinylShape &shape = std::get<VinylShape>(item.value);
+            if (i > 0 && shape.marker == QByteArray("\x02", 1)) {
+                states.push_back({shape.absPos, previousMask ? '\x01' : '\0'});
+            }
+            previousMask = shape.isMask;
+        } else {
+            const auto &child = *std::get<VinylGroupPtr>(item.value);
+            collectMissingShapeStates(child, states);
+            QVector<SourceShapeView> leaves;
+            collectSourceShapes(child, Matrix3{}, child.isMask, leaves);
+            previousMask = !leaves.isEmpty() && leaves.back().mask;
+        }
+    }
+}
+
+void repairSourceShapeStates(QByteArray &bytes, const LiverySection &section) {
+    QVector<QPair<int, char>> states;
+    collectMissingShapeStates(section.subtree, states);
+    // Work backwards so all offsets still refer to the original source.
+    std::sort(states.begin(), states.end(), [](const auto &a, const auto &b) {
+        return a.first > b.first;
+    });
+    for (const auto &state : states) {
+        const int offset = state.first - section.absPos;
+        if (offset >= 0 && offset < bytes.size()) {
+            bytes.insert(offset, state.second);
+        }
+    }
+}
+
 QByteArray defaultRemnant(int slot) {
     QByteArray out(9, '\0');
     detail::appendLeFloat(out, 1.0f);
@@ -546,8 +582,18 @@ QByteArray defaultRemnant(int slot) {
 
 QByteArray sourceRemnant(const SourceLivery *source, int slot) {
     const QByteArray slotBytes = sourceSlotBytes(source, slot);
-    if (slotBytes.size() >= 18) {
-        return slotBytes.right(18);
+    // A final populated section may contain only its terminal state byte.
+    // Read after the terminal record, never backward into its shape payload.
+    const int populatedSize = sourcePopulatedSlotSize(sourceSection(source, slot));
+    if (populatedSize > 0 && slotBytes.size() >= populatedSize + 17) {
+        const QByteArray remnant = slotBytes.mid(populatedSize - 1, 18);
+        if (static_cast<quint8>(remnant[0]) <= 1
+            && remnant.mid(1, 8) == QByteArray(8, '\0')
+            && remnant.mid(9, 4) == QByteArray("\x00\x00\x80\x3f", 4)
+            && std::isfinite(detail::readLeFloat(remnant, 13))
+            && remnant[17] == '\0') {
+            return remnant;
+        }
     }
     return defaultRemnant(slot);
 }
@@ -565,10 +611,20 @@ QByteArray defaultEmptySlot(int slot) {
 }
 
 bool isEmptySlotRecord(const QByteArray &bytes) {
-    return bytes.size() >= kLiveryEmptySlotBytes
-        && bytes.left(8) == QByteArray(8, '\0')
+    if (bytes.size() < kLiveryEmptySlotBytes) {
+        return false;
+    }
+    const bool trailingFrame = bytes.left(8) == QByteArray(8, '\0')
         && bytes.mid(8, 4) == QByteArray("\x00\x00\x80\x3f", 4)
+        && std::isfinite(detail::readLeFloat(bytes, 12))
         && bytes.mid(16, 7) == QByteArray(7, '\0');
+    // Native files also use an empty six-byte group header followed by
+    // the transform, before later populated sections.
+    const bool leadingFrame = bytes.left(14) == QByteArray(14, '\0')
+        && bytes.mid(14, 4) == QByteArray("\x00\x00\x80\x3f", 4)
+        && std::isfinite(detail::readLeFloat(bytes, 18))
+        && bytes[22] == '\0';
+    return trailingFrame || leadingFrame;
 }
 
 QByteArray sourceEmptySlot(const SourceLivery *source, int slot) {
@@ -688,7 +744,9 @@ bool hasSourceArtworkMarker(const scene::Shape &shape) {
 }
 
 bool liveryArtworkBare(const scene::Shape &shape, bool fallback) {
-    return hasSourceArtworkMarker(shape) ? shape.marker.size() == 1 : fallback;
+    // A bare lead belongs to the first child, not to the shape's identity.
+    // Imported first children can move behind another shape or group.
+    return fallback && (!hasSourceArtworkMarker(shape) || shape.marker.size() == 1);
 }
 
 quint8 liveryArtworkLead(const scene::Shape &shape, quint8 fallback,
@@ -1258,9 +1316,17 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
             if (shapes.isEmpty()) {
                 const int expectedSize = kLiveryEmptySlotBytes
                     + (slot == kLiverySectionCount - 1 ? kLiveryBodyTruncate : 0);
-                body.append(preserved.size() == expectedSize
-                                ? preserved
-                                : sourceEmptySlot(sourcePtr, slot));
+                if (preserved.size() != expectedSize || !isEmptySlotRecord(preserved)) {
+                    const bool hasFullFinalRecord = slot == kLiverySectionCount - 1
+                        && preserved.size() >= expectedSize;
+                    preserved = sourceEmptySlot(sourcePtr, slot);
+                    // Match sourceSlotBytes' virtual tail before the final trim.
+                    // Entirely empty native files can end in only six real bytes.
+                    if (hasFullFinalRecord) {
+                        preserved.append(QByteArray(kLiveryBodyTruncate, '\0'));
+                    }
+                }
+                body.append(preserved);
                 counts[static_cast<size_t>(slot)] = 0;
             } else {
                 if (slot == lastPopulatedSlot && slot + 1 < kLiverySectionCount) {
@@ -1270,6 +1336,7 @@ QByteArray buildLiveryGyvl(const Project &project, std::array<int, kLiverySectio
                         adjustedTrailingSlots = true;
                     }
                 }
+                repairSourceShapeStates(preserved, *section);
                 body.append(preserved);
                 counts[static_cast<size_t>(slot)] = exportCount;
             }

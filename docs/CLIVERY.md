@@ -110,6 +110,13 @@ nesting, so this transition does not carry one unwind byte per group depth.
 Shape leads reflect traversal state across group boundaries. A markerless root
 can begin with the bare `02` form.
 
+Bare `02` framing belongs to the first child position, not to an imported
+shape's identity. Moving a first child behind another child requires a state
+byte before `02`, including when the preceding child is a raster logo.
+Unchanged source slots are also checked for noninitial bare shapes: missing
+state bytes are inserted backwards by source offset so the remaining artwork
+bytes and transforms stay intact. Import remains tolerant of these records.
+
 ## Sections
 
 The Horizon artwork stream contains eleven ordered section slots:
@@ -157,6 +164,17 @@ contains its section root, artwork, and an 18-byte remnant even when its termina
 child is nested. The remnant contains state and reserved fields followed by unit
 scale, section rotation, and a trailing control field. The final populated slot
 can instead end with its one-byte terminal state.
+
+Source empty scaffolds are preserved only when their reserved bytes, unit scale,
+and finite rotation validate. Both observed 23-byte layouts are accepted: unit
+scale at offset 8 and rotation at offset 12, or a leading six-byte empty group
+header with unit scale at offset 14 and rotation at offset 18. Invalid scaffolds
+are rebuilt for their section, including the final slot's temporary tail padding.
+Section remnants are read
+forward from the terminal artwork record and validated before reuse; a one-byte
+terminal state must never cause the encoder to copy the preceding decal bytes
+as a remnant. Import remains tolerant so damaged artwork can be recovered by
+exporting it again.
 
 Section counters describe logical decal occupancy rather than byte length. The
 decoder reserves the remaining section footprint while walking each slot so record

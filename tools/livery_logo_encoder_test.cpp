@@ -284,6 +284,211 @@ bool testLogoShapeLimit() {
     return false;
 }
 
+bool testMovedBareShapeFraming() {
+    // Imported first-child markers must not follow shapes into later positions.
+    // Cover vector/logo records, preceding groups, and trailing mask state.
+    for (bool logo : {false, true}) {
+        for (bool precedingGroup : {false, true}) {
+            for (bool mask : {false, true}) {
+                QTemporaryDir temporary;
+                fls::Project project;
+                project.isLivery = true;
+                project.carId = 1069;
+                project.root = std::make_unique<fls::scene::Group>();
+                auto *top = appendSection(project, 2);
+                auto first = makeVector(QStringLiteral("first"), 12.0, 24.0);
+                first->mask = mask;
+                if (precedingGroup) {
+                    auto group = std::make_unique<fls::scene::Group>();
+                    group->append(makeVector(QStringLiteral("inner"), 4.0, 8.0));
+                    group->append(std::move(first));
+                    top->append(std::move(group));
+                } else {
+                    top->append(std::move(first));
+                }
+                auto moved = logo ? makeLogo(QStringLiteral("moved"), 204, 36.0, 48.0)
+                                  : makeVector(QStringLiteral("moved"), 36.0, 48.0);
+                moved->marker = QByteArray("\x02", 1);
+                top->append(std::move(moved));
+                fls::exportCLivery(project, temporary.path());
+                const auto clean = fls::readLiveryPayload(temporary.path());
+                const auto sections = fls::buildLiverySections(clean.body, clean.sectionCounts);
+                const auto *terminal = terminalShape(sections[2].subtree);
+                const QByteArray expectedMarker = mask ? QByteArray("\x01\x02", 2)
+                                                      : QByteArray("\x00\x02", 2);
+                if (!terminal || terminal->marker != expectedMarker) {
+                    qCritical() << "moved first-child marker omitted sibling state"
+                                << logo << precedingGroup << mask;
+                    return false;
+                }
+                // Reproduce an already exported malformed noninitial bare record.
+                // Leave mask recovery to explicit scene state; a missing mask bit
+                // cannot be inferred from an unmasked damaged record.
+                if (!mask) {
+                    QByteArray damaged = clean.raw;
+                    damaged.remove(clean.gyvlOffset + 0x15 + terminal->absPos, 1);
+                    writeLeU32(damaged, clean.gyvlOffset - 4,
+                               fls::detail::readLeU32(damaged, clean.gyvlOffset - 4) - 1);
+                    fls::writeCGroupFile(QDir(temporary.path()).filePath("C_livery"), damaged);
+                    auto reopened = fls::importCLivery(temporary.path());
+                    if (fls::encodeCLiveryPayload(reopened) != clean.raw) {
+                        qCritical() << "unchanged export failed to repair missing sibling state"
+                                    << logo << precedingGroup;
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool testEmptySectionRepair() {
+    // Exercise every positional section, including an empty final section.
+    for (int emptySlot = 0; emptySlot < kSectionCount; ++emptySlot) {
+        QTemporaryDir temporary;
+        fls::Project seed;
+        seed.name = QStringLiteral("Empty section repair");
+        seed.isLivery = true;
+        seed.carId = 1069;
+        seed.root = std::make_unique<fls::scene::Group>();
+        for (int slot = 0; slot < kSectionCount; ++slot) {
+            auto *group = appendSection(seed, slot);
+            if (slot != emptySlot) {
+                group->append(makeVector(QString::number(slot), 10.0, 20.0));
+            }
+        }
+        fls::exportCLivery(seed, temporary.path());
+        for (bool editArtwork : {false, true}) {
+            auto project = fls::importCLivery(temporary.path());
+            if (editArtwork) {
+                auto *group = section(project, (emptySlot + 1) % kSectionCount);
+                group->append(makeVector(QStringLiteral("added"), 30.0, 40.0));
+            }
+            const auto payload = fls::parseInflatedLiveryPayload(project.liverySource);
+            const auto sections = fls::buildLiverySections(payload.body, payload.sectionCounts);
+            const int offset = payload.gyvlOffset + 0x15 + sections[emptySlot].absPos;
+            const QByteArray cleanSource = project.liverySource;
+            const QByteArray expected = fls::encodeCLiveryPayload(project);
+            // Copied decal tail, NaN-only rotation, and nonzero reserved padding.
+            for (int corruption = 0; corruption < 3; ++corruption) {
+                project.liverySource = cleanSource;
+                if (corruption == 0) {
+                    project.liverySource.replace(offset, 16,
+                        QByteArray::fromHex("5f29c7c0bed94e3f32310d25a100ffff"));
+                } else if (corruption == 1) {
+                    writeLeU32(project.liverySource, offset + 12, 0x7fc00000u);
+                } else {
+                    project.liverySource[offset + 16] = '\x7f';
+                }
+                if (fls::encodeCLiveryPayload(project) != expected) {
+                    qCritical() << "empty section repair changed artwork or retained corruption"
+                                << emptySlot << editArtwork << corruption;
+                    return false;
+                }
+            }
+            // A valid source-specific rotation must survive unchanged export.
+            if (!editArtwork) {
+                project.liverySource = cleanSource;
+                writeLeU32(project.liverySource, offset + 12, 0x42340000u); // 45 degrees
+                const auto rebuilt = fls::parseInflatedLiveryPayload(
+                    fls::encodeCLiveryPayload(project));
+                const auto rebuiltSections = fls::buildLiverySections(
+                    rebuilt.body, rebuilt.sectionCounts);
+                if (fls::detail::readLeFloat(rebuilt.body,
+                        rebuiltSections[emptySlot].absPos + 12) != 45.0f) {
+                    qCritical() << "valid empty-section rotation was discarded" << emptySlot;
+                    return false;
+                }
+                if (emptySlot + 1 < kSectionCount) {
+                    // Native empty sections before later artwork have their
+                    // six-byte group header before, rather than after, the transform.
+                    const QByteArray native = QByteArray(14, '\0')
+                        + QByteArray::fromHex("0000803f0000344200");
+                    project.liverySource = cleanSource;
+                    project.liverySource.replace(offset, 23, native);
+                    const auto nativeResult = fls::parseInflatedLiveryPayload(
+                        fls::encodeCLiveryPayload(project));
+                    if (nativeResult.body.mid(sections[emptySlot].absPos, 23) != native) {
+                        qCritical() << "valid native empty section was discarded" << emptySlot;
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool testTerminalSectionRemnant() {
+    // A one-byte terminal state must never be expanded by copying shape bytes.
+    for (int lastSlot = 0; lastSlot < kSectionCount - 1; ++lastSlot) {
+        QTemporaryDir temporary;
+        fls::Project seed;
+        seed.name = QStringLiteral("Terminal section remnant");
+        seed.isLivery = true;
+        seed.carId = 1069;
+        seed.root = std::make_unique<fls::scene::Group>();
+        auto *group = appendSection(seed, lastSlot);
+        auto shape = makeVector(QStringLiteral("terminal"), 13.0, 27.0);
+        shape->color = {0xa1, 0, 0xff, 0xff};
+        group->append(std::move(shape));
+        fls::exportCLivery(seed, temporary.path());
+        auto project = fls::importCLivery(temporary.path());
+        section(project, lastSlot)->append(makeVector(QStringLiteral("added"), 37.0, 41.0));
+        const auto payload = fls::parseInflatedLiveryPayload(fls::encodeCLiveryPayload(project));
+        const auto sections = fls::buildLiverySections(payload.body, payload.sectionCounts);
+        ArtworkStats artwork;
+        collectArtwork(sections[lastSlot].subtree, artwork);
+        if (artwork.vectors != 2) {
+            qCritical() << "terminal rebuild lost artwork" << lastSlot;
+            return false;
+        }
+        for (int slot = lastSlot + 1; slot < kSectionCount; ++slot) {
+            const QByteArray bytes = payload.body.mid(sections[slot].absPos, 23);
+            if (bytes.size() != 23 || bytes.left(8) != QByteArray(8, '\0')
+                || fls::detail::readLeFloat(bytes, 8) != 1.0f
+                || !std::isfinite(fls::detail::readLeFloat(bytes, 12))
+                || bytes.mid(16) != QByteArray(7, '\0')) {
+                qCritical() << "terminal rebuild leaked shape bytes into empty section"
+                            << lastSlot << slot << bytes.toHex();
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool testEntirelyEmptySource() {
+    QTemporaryDir temporary;
+    fls::Project seed;
+    seed.name = QStringLiteral("Entirely empty source");
+    seed.isLivery = true;
+    seed.carId = 1069;
+    seed.root = std::make_unique<fls::scene::Group>();
+    for (int slot = 0; slot < kSectionCount; ++slot) {
+        appendSection(seed, slot);
+    }
+    fls::exportCLivery(seed, temporary.path());
+    auto project = fls::importCLivery(temporary.path());
+    // Native empty files use ten complete leading frames and a six-byte tail.
+    const QByteArray frame = QByteArray(14, '\0') + QByteArray::fromHex("0000803f0000000000");
+    auto payload = fls::parseInflatedLiveryPayload(project.liverySource);
+    const QByteArray body = frame.repeated(10) + QByteArray(6, '\0');
+    if (body.size() != payload.body.size()) {
+        qCritical() << "empty source fixture has unexpected size";
+        return false;
+    }
+    project.liverySource.replace(payload.gyvlOffset + 0x15, body.size(), body);
+    const auto rebuilt = fls::parseInflatedLiveryPayload(fls::encodeCLiveryPayload(project));
+    if (rebuilt.body != body) {
+        qCritical() << "empty source gained padding or lost native frames"
+                    << body.size() << rebuilt.body.size();
+        return false;
+    }
+    return true;
+}
+
 bool testPartialSourceRebuild() {
     constexpr int kTopSlot = 2;
     constexpr int kNativeLogicalCount = 5;
@@ -300,8 +505,11 @@ bool testPartialSourceRebuild() {
 
     std::array<int, kSectionCount> counts{};
     const QByteArray rebuilt = fls::buildLiveryGyvl(project, &counts);
-    const QByteArray original = source.mid(gyvl, stats - gyvl);
-    if (counts[kTopSlot] != 2 || rebuilt == original) {
+    const QVector<int> decodedCounts(counts.cbegin(), counts.cend());
+    const auto sections = fls::buildLiverySections(rebuilt.mid(0x15), decodedCounts);
+    ArtworkStats artwork;
+    collectArtwork(sections[kTopSlot].subtree, artwork);
+    if (counts[kTopSlot] != 2 || artwork.vectors != 2) {
         qCritical() << "partially decoded source section was not rebuilt from editable artwork";
         return false;
     }
@@ -1245,7 +1453,9 @@ int main(int argc, char *argv[]) {
                        " [--generate-fixtures <source-root> <output-root>]";
         return 2;
     }
-    return testLogoEncoding() && testLogoShapeLimit() && testPartialSourceRebuild()
+    return testLogoEncoding() && testLogoShapeLimit() && testMovedBareShapeFraming()
+            && testEmptySectionRepair() && testTerminalSectionRemnant()
+            && testEntirelyEmptySource() && testPartialSourceRebuild()
             && testCanonicalFh6Envelope() && testLegacyFivePanelSourcePreservation()
             && testLegacyArtworkRebuild()
             && testNestedMaskGroupTransforms() && testSourceGroupHeaderPreservation()
