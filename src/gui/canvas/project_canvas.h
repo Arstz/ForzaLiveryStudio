@@ -231,6 +231,7 @@ private:
         QPointF screenPosition;
         int pointIndex = -1;
         int loopIndex = -1;
+        int handle = 0;
     };
 
     struct PenHitEdgeEntry {
@@ -254,6 +255,7 @@ private:
     struct PenPointHit {
         int pointIndex = -1;
         int loopIndex = -1;
+        int handle = 0;
         double screenDistance = std::numeric_limits<double>::max();
 
         bool valid() const { return pointIndex >= 0; }

@@ -480,6 +480,11 @@ bool testWeightedCandidatePath(
     spans[3].curved = true;
     spans[3].control =
         QPointF(-kExtent - kBow, 0.0);
+    for (auto &span : spans) {
+        const QPointF bow = span.control - (span.start + span.end) * 0.5;
+        span.control = span.start + (span.end - span.start) / 3 + bow * (2.0 / 3);
+        span.control2 = span.start + (span.end - span.start) * (2.0 / 3) + bow * (2.0 / 3);
+    }
 
     cover::FillInput input;
     input.mustCover = {polygon};
@@ -730,13 +735,10 @@ bool testApproximateStructuralT(
         if (index == 4) {
             const QPointF control =
                 mapPoint(2.0, 3.015);
-            boundarySpans.push_back({
-                start,
-                control,
-                end,
-                true,
-            });
-            path.quadTo(control, end);
+            const QPointF c1 = start + (control - start) * (2.0 / 3);
+            const QPointF c2 = end + (control - end) * (2.0 / 3);
+            boundarySpans.push_back({start, c1, end, true, c2});
+            path.cubicTo(c1, c2, end);
         } else {
             boundarySpans.push_back({
                 start,
@@ -886,6 +888,13 @@ bool loadLoggedContour(QVector<PenPoint> *points, bool *available) {
     }
     const QJsonObject request =
         document.object().value(QStringLiteral("request")).toObject();
+    if (request.value(QStringLiteral("curveModel")).toString() !=
+        QStringLiteral("cubic-anchors-v1")) {
+        *available = false;
+        std::cout
+            << "Historical quadratic pen_fill.log skipped; capture a native cubic log for replay\n";
+        return true;
+    }
     QJsonArray sourcePoints = request.value(QStringLiteral("points")).toArray();
     if (sourcePoints.isEmpty()) {
         const QJsonArray sourceLoops = request.value(QStringLiteral("loops")).toArray();
@@ -916,6 +925,13 @@ bool loadLoggedContour(QVector<PenPoint> *points, bool *available) {
                 == QStringLiteral("soft")
             ? PenPointKind::Soft
             : PenPointKind::Hard;
+        const auto incoming = object.value(QStringLiteral("incoming")).toArray();
+        const auto outgoing = object.value(QStringLiteral("outgoing")).toArray();
+        point.explicitHandles = object.value(QStringLiteral("explicitHandles")).toBool();
+        if (point.explicitHandles && incoming.size() == 2 && outgoing.size() == 2) {
+            point.incoming = {incoming[0].toDouble(), incoming[1].toDouble()};
+            point.outgoing = {outgoing[0].toDouble(), outgoing[1].toDouble()};
+        }
         points->push_back(point);
     }
 
@@ -937,58 +953,8 @@ bool repeatablePlacement(const cover::Placement &left,
 QPainterPath loggedContourPath(
     const QVector<PenPoint> &points,
     QVector<cover::ContourSpan> *boundarySpans) {
-    const auto firstHard = std::find_if(
-        points.cbegin(), points.cend(),
-        [](const PenPoint &point) {
-            return point.kind == PenPointKind::Hard;
-        });
-    if (firstHard == points.cend()) {
-        return {};
-    }
-    QVector<PenPoint> ordered;
-    ordered.reserve(points.size());
-    const int firstIndex = static_cast<int>(
-        std::distance(points.cbegin(), firstHard));
-    for (int i = 0; i < points.size(); ++i) {
-        ordered.push_back(points[(firstIndex + i) % points.size()]);
-    }
-
-    QPainterPath result;
-    result.setFillRule(Qt::WindingFill);
-    result.moveTo(ordered.front().position);
-    QPointF current = ordered.front().position;
-    int index = 1;
-    while (index <= ordered.size()) {
-        const PenPoint &next = ordered[index % ordered.size()];
-        if (next.kind == PenPointKind::Hard) {
-            boundarySpans->push_back({
-                current,
-                {},
-                next.position,
-                false,
-            });
-            result.lineTo(next.position);
-            current = next.position;
-            ++index;
-            continue;
-        }
-        const PenPoint &after = ordered[(index + 1) % ordered.size()];
-        const QPointF end = after.kind == PenPointKind::Hard
-            ? after.position
-            : (next.position + after.position) * 0.5;
-        boundarySpans->push_back({
-            current,
-            next.position,
-            end,
-            true,
-        });
-        result.quadTo(next.position, end);
-        current = end;
-        index += after.kind == PenPointKind::Hard ? 2 : 1;
-    }
-    result.closeSubpath();
-
-    return result;
+    *boundarySpans = gui::penSegments(points);
+    return gui::penPath(points);
 }
 
 bool testLoggedContour(const QVector<cover::ShapeMesh> &catalog) {
@@ -1589,27 +1555,98 @@ bool testContourLeewayShapeSavings(
 }
 
 QVector<PenPoint> continuityPruneRegressionPoints() {
+    // Native cubic anchors retain the full precision of the historical contour.
     return {
-        {{176.19, -587.30}, PenPointKind::Hard},
-        {{160.95, -615.16}, PenPointKind::Hard},
-        {{143.19, -687.83}, PenPointKind::Hard},
-        {{141.83, -695.93}, PenPointKind::Soft},
-        {{150.43, -738.92}, PenPointKind::Soft},
-        {{174.90, -759.47}, PenPointKind::Soft},
-        {{197.93, -763.16}, PenPointKind::Soft},
-        {{217.32, -758.45}, PenPointKind::Soft},
-        {{234.33, -749.34}, PenPointKind::Soft},
-        {{259.69, -719.98}, PenPointKind::Soft},
-        {{261.99, -701.77}, PenPointKind::Hard},
-        {{273.11, -631.50}, PenPointKind::Hard},
-        {{289.45, -570.59}, PenPointKind::Hard},
-        {{292.69, -555.38}, PenPointKind::Soft},
-        {{289.55, -527.76}, PenPointKind::Soft},
-        {{274.95, -508.73}, PenPointKind::Soft},
-        {{251.17, -500.52}, PenPointKind::Soft},
-        {{223.27, -507.72}, PenPointKind::Soft},
-        {{198.67, -529.13}, PenPointKind::Soft},
-        {{181.90, -565.24}, PenPointKind::Soft},
+        {{176.19, -587.29999999999995},
+         PenPointKind::Hard,
+         {3.806666666666672, 14.706666666666592},
+         {-5.0800000000000125, -9.2866666666666333},
+         true},
+        {{160.94999999999999, -615.15999999999997},
+         PenPointKind::Hard,
+         {5.0800000000000125, 9.2866666666666333},
+         {-5.9199999999999875, -24.223333333333358},
+         true},
+        {{143.19, -687.83000000000004},
+         PenPointKind::Hard,
+         {5.9199999999999875, 24.223333333333358},
+         {-0.90666666666666629, -5.3999999999999773},
+         true},
+        {{146.13, -717.42499999999995},
+         PenPointKind::Soft,
+         {-2.8666666666666458, 14.330000000000041},
+         {2.8666666666666742, -14.330000000000041},
+         true},
+        {{162.66500000000002, -749.19499999999994},
+         PenPointKind::Soft,
+         {-8.1566666666666663, 6.8500000000000227},
+         {8.1566666666666663, -6.8500000000001364},
+         true},
+        {{186.41500000000002, -761.31500000000005},
+         PenPointKind::Soft,
+         {-7.6766666666666765, 1.2300000000000182},
+         {7.6766666666666765, -1.2300000000000182},
+         true},
+        {{207.625, -760.80500000000006},
+         PenPointKind::Soft,
+         {-6.4633333333333383, -1.5699999999999363},
+         {6.4633333333333383, 1.57000000000005},
+         true},
+        {{225.82499999999999, -753.89499999999998},
+         PenPointKind::Soft,
+         {-5.6700000000000159, -3.036666666666747},
+         {5.6700000000000159, 3.036666666666747},
+         true},
+        {{247.00999999999999, -734.66000000000008},
+         PenPointKind::Soft,
+         {-8.4533333333332905, -9.7866666666666333},
+         {8.4533333333333474, 9.786666666666747},
+         true},
+        {{261.99000000000001, -701.76999999999998},
+         PenPointKind::Hard,
+         {-1.5333333333333599, -12.139999999999986},
+         {3.7066666666666492, 23.423333333333289},
+         true},
+        {{273.11000000000001, -631.5},
+         PenPointKind::Hard,
+         {-3.7066666666666492, -23.423333333333289},
+         {5.4466666666666583, 20.303333333333285},
+         true},
+        {{289.44999999999999, -570.59000000000003},
+         PenPointKind::Hard,
+         {-5.4466666666666583, -20.303333333333285},
+         {2.1599999999999682, 10.1400000000001},
+         true},
+        {{291.12, -541.56999999999994},
+         PenPointKind::Soft,
+         {1.0466666666666811, -9.2066666666667061},
+         {-1.0466666666666811, 9.2066666666665924},
+         true},
+        {{282.25, -518.245},
+         PenPointKind::Soft,
+         {4.8666666666666742, -6.3433333333332484},
+         {-4.8666666666666742, 6.3433333333333621},
+         true},
+        {{263.06, -504.625},
+         PenPointKind::Soft,
+         {7.9266666666666765, -2.7366666666666788},
+         {-7.9266666666666765, 2.7366666666666788},
+         true},
+        {{237.22, -504.12},
+         PenPointKind::Soft,
+         {9.2999999999999829, 2.4000000000000341},
+         {-9.3000000000000114, -2.3999999999999773},
+         true},
+        {{210.97, -518.42499999999995},
+         PenPointKind::Soft,
+         {8.1999999999999886, 7.1366666666665992},
+         {-8.2000000000000171, -7.1366666666666561},
+         true},
+        {{190.285, -547.18499999999995},
+         PenPointKind::Soft,
+         {5.5900000000000034, 12.036666666666633},
+         {-5.589999999999975, -12.036666666666747},
+         true},
     };
 }
 
@@ -1785,6 +1822,8 @@ bool testLetterONegativeSpace(
     QVector<PenLoop> reversedLoops = loops;
     for (PenLoop &loop : reversedLoops) {
         std::reverse(loop.points.begin(), loop.points.end());
+        for (auto &point : loop.points)
+            std::swap(point.incoming, point.outgoing);
     }
     const PenContour reversedContour = buildPenContour(reversedLoops);
     cover::FillInput reversedInput;
@@ -1820,6 +1859,8 @@ int main(int argc, char **argv) {
     }
     const QVector<cover::ShapeMesh> catalog =
         cover::buildShapeCatalog(geometry, &error);
+    if (application.arguments().contains(QStringLiteral("--continuity-only")))
+        return testContinuityPruneRegression(catalog) ? 0 : 1;
     if (!check(error.isEmpty(),
                qPrintable(QStringLiteral("catalog build failed: %1").arg(error)))
         || !testCatalogAndGradient(catalog)

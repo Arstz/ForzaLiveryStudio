@@ -842,12 +842,9 @@ StructuralCoverPlan structuralCoverPlan(
             }
             double maximumBow = 0.0;
             if (span.curved) {
-                maximumBow =
-                    std::abs(
-                        pointCross(
-                            chord,
-                            span.control - span.start))
-                    / length * 0.5;
+                maximumBow = std::max(std::abs(pointCross(chord, span.control - span.start)),
+                                      std::abs(pointCross(chord, span.control2 - span.start))) /
+                             length;
                 if (maximumBow
                     > coordinateTolerance) {
                     result.reason =

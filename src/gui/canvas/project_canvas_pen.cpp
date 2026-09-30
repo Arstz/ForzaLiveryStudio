@@ -15,14 +15,8 @@ constexpr double kRadiansToDegrees =
 constexpr double kDegreesToRadians =
     3.14159265358979323846 / 180.0;
 
-QPointF quadraticPoint(const PenBoundarySegment &segment, double t) {
-    if (!segment.curved) {
-        return segment.start * (1.0 - t) + segment.end * t;
-    }
-    const double u = 1.0 - t;
-    return segment.start * (u * u)
-        + segment.control * (2.0 * u * t)
-        + segment.end * (t * t);
+QPointF cubicPoint(const PenBoundarySegment &segment, double t) {
+    return segment.point(t);
 }
 
 quint64 penHitCellKey(int x, int y) {
@@ -75,70 +69,17 @@ const ProjectCanvas::PenGeometryCache &ProjectCanvas::penGeometryCache() const {
         if (points.isEmpty()) {
             return;
         }
-        const auto firstHard = std::find_if(
-            points.cbegin(), points.cend(), [](const PenPoint &point) {
-                return point.kind == PenPointKind::Hard;
-            });
-        if (firstHard == points.cend()) {
-            return;
-        }
-        const int offset = static_cast<int>(firstHard - points.cbegin());
         CachedPenLoop loop;
         loop.loopIndex = loopIndex;
-        loop.openPath.moveTo(firstHard->position);
-        int openIndex = 1;
-        while (openIndex < points.size()) {
-            const int nextIndex = (offset + openIndex) % points.size();
-            const PenPoint &next = points[nextIndex];
-            if (next.kind == PenPointKind::Hard) {
-                loop.openPath.lineTo(next.position);
-                ++openIndex;
-                continue;
-            }
-            if (openIndex + 1 >= points.size()) {
-                break;
-            }
-            const PenPoint &after = points[(offset + openIndex + 1) % points.size()];
-            const QPointF end = after.kind == PenPointKind::Hard
-                ? after.position
-                : (next.position + after.position) * 0.5;
-            loop.openPath.quadTo(next.position, end);
-            openIndex += after.kind == PenPointKind::Hard ? 2 : 1;
-        }
+        loop.openPath = penPath(points, false);
         if (points.size() < 3) {
             cache.loops.push_back(std::move(loop));
             return;
         }
-        loop.path.setFillRule(Qt::WindingFill);
-        QPointF current = firstHard->position;
-        loop.path.moveTo(current);
-        int index = 1;
-        while (index <= points.size()) {
-            const int nextIndex = (offset + index) % points.size();
-            const PenPoint &next = points[nextIndex];
-            int insertIndex = nextIndex == 0 ? points.size() : nextIndex;
-            if (next.kind == PenPointKind::Hard) {
-                loop.segments.push_back({{current, {}, next.position, false},
-                                         insertIndex});
-                loop.path.lineTo(next.position);
-                current = next.position;
-                ++index;
-                continue;
-            }
-            const int afterIndex = (offset + index + 1) % points.size();
-            const PenPoint &after = points[afterIndex];
-            const QPointF end = after.kind == PenPointKind::Hard
-                ? after.position
-                : (next.position + after.position) * 0.5;
-            insertIndex = std::min(nextIndex + 1,
-                                   static_cast<int>(points.size()));
-            loop.segments.push_back({{current, next.position, end, true},
-                                     insertIndex});
-            loop.path.quadTo(next.position, end);
-            current = end;
-            index += after.kind == PenPointKind::Hard ? 2 : 1;
-        }
-        loop.path.closeSubpath();
+        loop.path = penPath(points);
+        const auto segments = penSegments(points);
+        for (int i = 0; i < segments.size(); ++i)
+            loop.segments.push_back({segments[i], i + 1});
         cache.worldPath.addPath(loop.path);
         if (!drawingCutout || loopIndex != activeCutout) {
             cache.completedWorldPath.addPath(loop.path);
@@ -186,12 +127,23 @@ void ProjectCanvas::rebuildPenHitCache() const {
     const auto appendPoints = [&cache, &matrix](const QVector<PenPoint> &points,
                                                 int loopIndex) {
         for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex) {
-            const QPointF screen = matrix.map(points[pointIndex].position);
-            const int entryIndex = cache.points.size();
-            cache.points.push_back({screen, pointIndex, loopIndex});
-            cache.pointCells[penHitCellKey(
-                penHitCellCoordinate(screen.x()),
-                penHitCellCoordinate(screen.y()))].push_back(entryIndex);
+            const auto &point = points[pointIndex];
+            for (int handle : {0, -1, 1}) {
+                if (handle && !point.explicitHandles)
+                    continue;
+                const QPointF offset = handle < 0   ? point.incoming
+                                       : handle > 0 ? point.outgoing
+                                                    : QPointF{};
+                const QPointF screen = matrix.map(point.position + offset);
+                if (handle && QLineF(screen, matrix.map(point.position)).length() < 10)
+                    continue;
+                const int entryIndex = cache.points.size();
+                cache.points.push_back({screen, pointIndex, loopIndex, handle});
+                cache
+                    .pointCells[penHitCellKey(penHitCellCoordinate(screen.x()),
+                                              penHitCellCoordinate(screen.y()))]
+                    .push_back(entryIndex);
+            }
         }
     };
     appendPoints(pen_.points, -1);
@@ -207,7 +159,7 @@ void ProjectCanvas::rebuildPenHitCache() const {
             QPointF previousScreen = matrix.map(previousWorld);
             for (int sample = 1; sample <= samples; ++sample) {
                 const double t = static_cast<double>(sample) / samples;
-                const QPointF nextWorld = quadraticPoint(segment, t);
+                const QPointF nextWorld = cubicPoint(segment, t);
                 const QPointF nextScreen = matrix.map(nextWorld);
                 const int edgeIndex = cache.edges.size();
                 cache.edges.push_back({previousScreen, nextScreen,
@@ -259,6 +211,7 @@ ProjectCanvas::PenPointHit ProjectCanvas::penPointAtScreen(
                     && distance < result.screenDistance) {
                     result.pointIndex = entry.pointIndex;
                     result.loopIndex = entry.loopIndex;
+                    result.handle = entry.handle;
                     result.screenDistance = distance;
                 }
             }
@@ -288,7 +241,7 @@ void ProjectCanvas::accumulateCurveHit(const PenBoundarySegment &segment,
     QPointF previousScreen = worldToScreen(previousWorld);
     for (int sample = 1; sample <= kCurveHitSamples; ++sample) {
         const double endT = static_cast<double>(sample) / kCurveHitSamples;
-        const QPointF nextWorld = quadraticPoint(segment, endT);
+        const QPointF nextWorld = cubicPoint(segment, endT);
         const QPointF nextScreen = worldToScreen(nextWorld);
         double localT = 0.0;
         const double distance =
@@ -313,12 +266,14 @@ void ProjectCanvas::appendPointEditHints(QStringList &lines,
     lines.push_back(QString());
     if (hoverPoint >= 0) {
         if (points[hoverPoint].kind == PenPointKind::Soft) {
-            lines.push_back(QStringLiteral("Ctrl+LMB: Make hard"));
+            lines.push_back(QStringLiteral("Ctrl+LMB: Make corner"));
+        } else {
+            lines.push_back(QStringLiteral("Ctrl+LMB: Make smooth"));
         }
-        lines.push_back(QStringLiteral("Alt+drag: Move point"));
+        lines.push_back(QStringLiteral("Alt+drag: Move anchor or handle"));
         lines.push_back(QStringLiteral("RMB: Remove point"));
     } else {
-        lines.push_back(QStringLiteral("Ctrl+LMB: Add soft point"));
+        lines.push_back(QStringLiteral("Ctrl+LMB: Add smooth anchor"));
     }
 }
 
@@ -476,6 +431,9 @@ void ProjectCanvas::validatePenInteraction() {
     if (!pen_.closed || !pen_.cutoutClosed) {
         return;
     }
+    materializePenHandles(pen_.points);
+    for (auto &cutout : pen_.cutouts)
+        materializePenHandles(cutout);
     const double worldPerPixel = 1.0 / std::max(camera_.scale(), 1e-8);
     const PenContour contour = buildPenContour(currentPenLoops(), worldPerPixel * 0.25);
     if (!contour.valid()) {
@@ -511,6 +469,7 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
               &angleDegrees);
     pen_.hoverPoint = -1;
     pen_.hoverLoop = -1;
+    pen_.hoverHandle = 0;
     pen_.hoverCurve = {};
     if (!pen_.closed || drawingCutout) {
         if (std::isfinite(angleDegrees)) {
@@ -547,6 +506,7 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
     if (pointHit.valid()) {
         pen_.hoverPoint = pointHit.pointIndex;
         pen_.hoverLoop = pointHit.loopIndex;
+        pen_.hoverHandle = pointHit.handle;
     }
     if (pen_.hoverPoint < 0) {
         pen_.hoverCurve = penCurveAtScreen(screenPoint);
@@ -583,17 +543,7 @@ PenCurveHit ProjectCanvas::liningCurveAtScreen(const QPointF &screenPoint) const
 
     int pointIndex = 1;
     for (const PenBoundarySegment &segment : path.segments) {
-        int insertIndex = pointIndex;
-        if (pointIndex < lining_.points.size()
-            && lining_.points[pointIndex].kind == PenPointKind::Soft) {
-            insertIndex = pointIndex + 1;
-            pointIndex += pointIndex + 1 < lining_.points.size()
-                    && lining_.points[pointIndex + 1].kind == PenPointKind::Hard
-                ? 2
-                : 1;
-        } else {
-            ++pointIndex;
-        }
+        const int insertIndex = pointIndex++;
 
         accumulateCurveHit(segment, std::min(insertIndex, static_cast<int>(lining_.points.size())),
                            screenPoint, best);

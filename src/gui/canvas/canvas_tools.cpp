@@ -325,14 +325,7 @@ bool PenTool::handlePress(QMouseEvent *event) {
         if (event->button() == Qt::RightButton) {
             if (pointIndex >= 0) {
                 QVector<PenPoint> &points = c.penPointsForLoop(loopIndex);
-                const bool removingOnlyHard =
-                    points[pointIndex].kind == PenPointKind::Hard
-                    && std::count_if(points.cbegin(),
-                                     points.cend(),
-                                     [](const PenPoint &point) {
-                    return point.kind == PenPointKind::Hard;
-                }) == 1;
-                if (loopIndex >= 0 && (points.size() <= 3 || removingOnlyHard)) {
+                if (loopIndex >= 0 && points.size() <= 3) {
                     c.beginPathEdit(c.pen_);
                     c.pen_.cutouts.removeAt(loopIndex);
                     c.pen_.activeCutout = c.pen_.cutouts.isEmpty()
@@ -340,10 +333,9 @@ bool PenTool::handlePress(QMouseEvent *event) {
                     c.validatePenInteraction();
                     c.commitPathEdit(c.pen_);
                     c.refreshPenInteractionHint(event->position(), event->modifiers());
-                } else if (points.size() <= 3 || removingOnlyHard) {
-                    const QString removalMessage = points.size() <= 3
-                        ? QStringLiteral("A closed Pen path needs at least three points")
-                        : QStringLiteral("A closed Pen path needs at least one hard point");
+                } else if (points.size() <= 3) {
+                    const QString removalMessage =
+                        QStringLiteral("A closed Pen path needs at least three anchors");
                     c.validatePenInteraction();
                     c.refreshPenInteractionHint(event->position(), event->modifiers());
                     QStringList lines = c.cursorHintLines_;
@@ -369,7 +361,12 @@ bool PenTool::handlePress(QMouseEvent *event) {
             c.beginPathEdit(c.pen_);
             c.pen_.dragPoint = pointIndex;
             c.pen_.dragLoop = loopIndex;
-            c.pen_.dragOffsetWorld = c.penPointsForLoop(loopIndex)[pointIndex].position - world;
+            c.pen_.dragHandle = c.pen_.hoverHandle;
+            const auto &point = c.penPointsForLoop(loopIndex)[pointIndex];
+            c.pen_.dragOffsetWorld = point.position - world +
+                                     (c.pen_.dragHandle < 0   ? point.incoming
+                                      : c.pen_.dragHandle > 0 ? point.outgoing
+                                                              : QPointF{});
             c.updateCursorForPoint(event->position());
             event->accept();
             return true;
@@ -379,15 +376,22 @@ bool PenTool::handlePress(QMouseEvent *event) {
             c.beginPathEdit(c.pen_);
             if (pointIndex >= 0) {
                 QVector<PenPoint> &points = c.penPointsForLoop(loopIndex);
-                if (points[pointIndex].kind == PenPointKind::Soft) {
-                    points[pointIndex].kind = PenPointKind::Hard;
-                    c.normalizePenPointOrder(points);
-                    c.validatePenInteraction();
+                auto &point = points[pointIndex];
+                point.kind =
+                    point.kind == PenPointKind::Soft ? PenPointKind::Hard : PenPointKind::Soft;
+                if (point.kind == PenPointKind::Soft && point.explicitHandles) {
+                    QPointF direction = point.outgoing - point.incoming;
+                    const double n = QLineF({}, direction).length();
+                    if (n > 1e-9) {
+                        direction /= n;
+                        point.incoming = -direction * QLineF({}, point.incoming).length();
+                        point.outgoing = direction * QLineF({}, point.outgoing).length();
+                    }
                 }
+                c.validatePenInteraction();
             } else if (c.pen_.hoverCurve.valid()) {
-                c.penPointsForLoop(c.pen_.hoverCurve.loopIndex)
-                    .insert(c.pen_.hoverCurve.insertIndex,
-                            {c.pen_.hoverCurve.worldPosition, PenPointKind::Soft});
+                insertPenAnchor(c.penPointsForLoop(c.pen_.hoverCurve.loopIndex),
+                                c.pen_.hoverCurve.insertIndex, c.pen_.hoverCurve.worldPosition);
                 c.validatePenInteraction();
             } else if (buildPenContour(c.currentPenLoops()).path.contains(world)) {
                 c.pen_.cutouts.push_back({{world, PenPointKind::Hard}});
@@ -448,8 +452,20 @@ bool PenTool::handleMove(QMouseEvent *event) {
         || c.pen_.dragPoint >= c.penPointsForLoop(c.pen_.dragLoop).size()) {
         return false;
     }
-    c.penPointsForLoop(c.pen_.dragLoop)[c.pen_.dragPoint].position =
-        c.screenToWorld(event->position()) + c.pen_.dragOffsetWorld;
+    auto &point = c.penPointsForLoop(c.pen_.dragLoop)[c.pen_.dragPoint];
+    const QPointF destination = c.screenToWorld(event->position()) + c.pen_.dragOffsetWorld;
+    if (!c.pen_.dragHandle)
+        point.position = destination;
+    else {
+        QPointF &handle = c.pen_.dragHandle < 0 ? point.incoming : point.outgoing;
+        QPointF &other = c.pen_.dragHandle < 0 ? point.outgoing : point.incoming;
+        handle = destination - point.position;
+        if (point.kind == PenPointKind::Soft) {
+            const double n = QLineF({}, handle).length();
+            if (n > 1e-9)
+                other = -handle * (QLineF({}, other).length() / n);
+        }
+    }
     c.invalidatePenGeometryCache();
     c.validatePenInteraction();
     c.refreshPenInteractionHint(event->position(), event->modifiers());

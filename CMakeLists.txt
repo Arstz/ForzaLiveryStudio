@@ -264,6 +264,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/native_shape_renderer.h
     src/gui/fill/lining_fill.cpp
     src/gui/fill/lining_fill.h
+    src/gui/fill/cubic_contour.cpp
     src/gui/fill/pen_fill.cpp
     src/gui/fill/pen_fill.h
     src/gui/fill/polygon_mesh.cpp
@@ -396,6 +397,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/catalog_cover.cpp
         src/gui/fill/catalog_cover_compact.cpp
         src/gui/fill/catalog_cover_geometry.cpp
+        src/gui/fill/cubic_contour.cpp
         src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
@@ -527,6 +529,7 @@ if(FLS_BUILD_TESTS)
         tools/region_pen_conversion_test.cpp
         src/gui/fill/bucket_fill.cpp
         src/gui/fill/lining_fill.cpp
+        src/gui/fill/cubic_contour.cpp
         src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
         src/gui/fill/region_extract.cpp
@@ -550,6 +553,19 @@ if(FLS_BUILD_TESTS)
     )
     add_test(NAME region_pen_conversion COMMAND fls_region_pen_conversion_tests)
 
+    add_executable(fls_cubic_contour_tests
+        src/gui/fill/polygon_mesh.cpp
+        tools/cubic_contour_test.cpp
+        src/gui/fill/cubic_contour.cpp
+        src/gui/fill/bucket_fill.cpp
+        src/gui/fill/pen_fill.cpp
+        src/gui/widgets/shape_geometry_store.cpp
+    )
+    target_include_directories(fls_cubic_contour_tests PRIVATE src/gui/fill src/gui/widgets)
+    target_compile_definitions(fls_cubic_contour_tests PRIVATE FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(fls_cubic_contour_tests PRIVATE Qt6::Core Qt6::Gui ZLIB::ZLIB)
+    add_test(NAME cubic_contour COMMAND fls_cubic_contour_tests)
+
     add_executable(fls_differential_cover_tests
         tools/differential_cover_test.cpp
         src/gui/fill/differential_cover.cpp
@@ -559,6 +575,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/differential_cover_metrics.cpp
         src/gui/fill/differential_cover_postprocess.cpp
         src/gui/fill/differential_cover_strategies.cpp
+        src/gui/fill/cubic_contour.cpp
         src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
@@ -593,7 +610,7 @@ if(FLS_BUILD_TESTS)
         target_link_libraries(
             fls_differential_cover_tests PRIVATE CUDA::cudart)
         set_target_properties(fls_differential_cover_tests PROPERTIES
-            CUDA_ARCHITECTURES native
+            CUDA_ARCHITECTURES all-major
             CUDA_RUNTIME_LIBRARY Shared
         )
         if(WIN32)

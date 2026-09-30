@@ -42,8 +42,10 @@ struct PathInteraction {
     QString fillMessage;
     int hoverPoint = -1;
     int hoverLoop = -1;
+    int hoverHandle = 0;
     int dragPoint = -1;
     int dragLoop = -1;
+    int dragHandle = 0;
     int activeCutout = -1;
     bool closed = false;
     bool cutoutClosed = true;
@@ -60,6 +62,7 @@ struct PathInteraction {
         hoverLoop = -1;
         dragPoint = -1;
         dragLoop = -1;
+        hoverHandle = dragHandle = 0;
     }
 
     void reset() {

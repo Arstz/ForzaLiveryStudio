@@ -94,13 +94,7 @@ double pathArea(const QPainterPath &path) {
 }
 
 QPointF segmentPoint(const PenBoundarySegment &segment, double t) {
-    if (!segment.curved) {
-        return segment.start * (1.0 - t) + segment.end * t;
-    }
-    const double u = 1.0 - t;
-    return segment.start * (u * u)
-        + segment.control * (2.0 * u * t)
-        + segment.end * (t * t);
+    return segment.point(t);
 }
 
 QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples) {
@@ -113,11 +107,7 @@ QVector<QPointF> sampleSegment(const PenBoundarySegment &segment, int samples) {
 }
 
 QPointF segmentDerivative(const PenBoundarySegment &segment, double t) {
-    if (!segment.curved) {
-        return segment.end - segment.start;
-    }
-    return (segment.control - segment.start) * (2.0 * (1.0 - t))
-        + (segment.end - segment.control) * (2.0 * t);
+    return segment.derivative(t);
 }
 
 double segmentCurvature(const PenBoundarySegment &segment, double t) {
@@ -129,7 +119,7 @@ double segmentCurvature(const PenBoundarySegment &segment, double t) {
     if (speed <= kEpsilon) {
         return 0.0;
     }
-    const QPointF second = (segment.end - segment.control * 2.0 + segment.start) * 2.0;
+    const QPointF second = segment.secondDerivative(t);
     return cross(derivative, second) / (speed * speed * speed);
 }
 
@@ -242,6 +232,12 @@ double distanceSquaredToSegment(const QPointF &point, const QPointF &a, const QP
     return QPointF::dotProduct(delta, delta);
 }
 
+double segmentBow(const PenBoundarySegment &segment) {
+    return std::sqrt(
+        std::max(distanceSquaredToSegment(segment.control, segment.start, segment.end),
+                 distanceSquaredToSegment(segment.control2, segment.start, segment.end)));
+}
+
 double distanceToPolygons(const QPointF &point, const QVector<QPolygonF> &polygons) {
     double best = std::numeric_limits<double>::max();
     for (const QPolygonF &polygon : polygons) {
@@ -327,9 +323,7 @@ QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, d
         const PenBoundarySegment &segment = segments[segmentIndex];
         int samples = segment.curved ? kCurveSamples : 1;
         if (segment.curved) {
-            const double deviation = std::sqrt(distanceSquaredToSegment(segment.control,
-                                                                         segment.start,
-                                                                         segment.end));
+            const double deviation = segment.flatness();
             samples = std::clamp(static_cast<int>(std::ceil(std::sqrt(std::max(1.0, deviation / std::max(tolerance, 1e-5))))) * 2,
                                  8,
                                  128);
@@ -1038,16 +1032,24 @@ bool chordInsideTarget(const QPointF &start,
 std::optional<QPointF> interiorCorePoint(const PenBoundarySegment &segment,
                                          const QPainterPath &target) {
     const QPointF curveMiddle = segmentPoint(segment, 0.5);
-    for (int step = 1; step <= kInteriorCoreSteps; ++step) {
-        const double fraction = static_cast<double>(step) / kInteriorCoreSteps;
-        const QPointF candidate = curveMiddle
-            + (segment.control - curveMiddle) * fraction;
-        if (target.contains(candidate)
-            && chordInsideTarget(segment.start, candidate, target)
-            && chordInsideTarget(candidate, segment.end, target)) {
-            return candidate;
-        }
+    QVector<QPointF> candidates{segment.control, segment.control2,
+                                (segment.control + segment.control2) * 0.5};
+    const QPointF incoming = segment.derivative(0), outgoing = segment.derivative(1);
+    const double determinant = cross(incoming, outgoing);
+    if (std::abs(determinant) > 1e-9) {
+        const double t = cross(segment.end - segment.start, outgoing) / determinant;
+        const QPointF intersection = segment.start + incoming * t;
+        if (QLineF(intersection, curveMiddle).length() < segment.controlLength() * 2)
+            candidates.prepend(intersection);
     }
+    for (const auto support : candidates)
+        for (int step = 1; step <= kInteriorCoreSteps; ++step) {
+            const QPointF candidate =
+                curveMiddle + (support - curveMiddle) * (double(step) / kInteriorCoreSteps);
+            if (target.contains(candidate) && chordInsideTarget(segment.start, candidate, target) &&
+                chordInsideTarget(candidate, segment.end, target))
+                return candidate;
+        }
     return std::nullopt;
 }
 
@@ -1063,7 +1065,7 @@ std::optional<InwardCurvePlacement> inwardCurvePlacement(
     double targetArea,
     double boundaryTolerance) {
     const QPointF middle = segmentPoint(segment, 0.5);
-    QPolygonF controlPoints({segment.start, segment.control, segment.end});
+    QPolygonF controlPoints({segment.start, segment.control, segment.control2, segment.end});
     const QRectF bounds = controlPoints.boundingRect();
     const double diagonal = std::hypot(bounds.width(), bounds.height());
     const double maximumError = std::max(boundaryTolerance,
@@ -1258,8 +1260,8 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
         const PenBoundarySegment &b = segments[right];
         const double aChord = QLineF(a.start, a.end).length();
         const double bChord = QLineF(b.start, b.end).length();
-        const double aBow = std::sqrt(distanceSquaredToSegment(a.control, a.start, a.end));
-        const double bBow = std::sqrt(distanceSquaredToSegment(b.control, b.start, b.end));
+        const double aBow = segmentBow(a);
+        const double bBow = segmentBow(b);
         const double aImportance = aChord * std::max(aBow, boundaryTolerance * 0.25);
         const double bImportance = bChord * std::max(bBow, boundaryTolerance * 0.25);
         if (std::abs(aImportance - bImportance) > kEpsilon) {
@@ -1280,9 +1282,8 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
             *wasCancelled = true;
             return {};
         }
-        QPolygonF controlPoints({segments[i].start,
-                                 segments[i].control,
-                                 segments[i].end});
+        QPolygonF controlPoints(
+            {segments[i].start, segments[i].control, segments[i].control2, segments[i].end});
         const QRectF bounds = controlPoints.boundingRect();
         const double diagonal = std::hypot(bounds.width(), bounds.height());
         const double maximumError = std::max(boundaryTolerance,
@@ -1329,6 +1330,7 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
                 for (int i = first; i <= last; ++i) {
                     spanControlPoints.push_back(segments[i].start);
                     spanControlPoints.push_back(segments[i].control);
+                    spanControlPoints.push_back(segments[i].control2);
                     spanControlPoints.push_back(segments[i].end);
                 }
                 const QRectF bounds = spanControlPoints.boundingRect();
@@ -1394,55 +1396,140 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
 
 } // namespace
 
+QVector<PenBoundarySegment> penSegments(const QVector<PenPoint> &points, bool closed) {
+    QVector<PenBoundarySegment> result;
+    const int n = static_cast<int>(points.size());
+    if (n < 2)
+        return result;
+    const auto tangent = [&](int i) {
+        const QPointF before = points[(i + n - 1) % n].position;
+        const QPointF after = points[(i + 1) % n].position;
+        QPointF direction = after - before;
+        if (!closed && i == 0)
+            direction = after - points[i].position;
+        if (!closed && i == n - 1)
+            direction = points[i].position - before;
+        const double length = std::hypot(direction.x(), direction.y());
+        return length > 1e-12 ? direction / length : QPointF{};
+    };
+    for (int i = 0; i < (closed ? n : n - 1); ++i) {
+        const int j = (i + 1) % n;
+        const auto &a = points[i], &b = points[j];
+        const QPointF chord = b.position - a.position;
+        const double length = std::hypot(chord.x(), chord.y());
+        const QPointF c1 = a.position + (a.explicitHandles              ? a.outgoing
+                                         : a.kind == PenPointKind::Soft ? tangent(i) * (length / 3)
+                                                                        : chord / 3);
+        const QPointF c2 = b.position + (b.explicitHandles              ? b.incoming
+                                         : b.kind == PenPointKind::Soft ? -tangent(j) * (length / 3)
+                                                                        : -chord / 3);
+        const bool curved = QLineF(c1, a.position + chord / 3).length() > 1e-9 ||
+                            QLineF(c2, b.position - chord / 3).length() > 1e-9;
+        result.push_back({a.position, c1, b.position, curved, c2});
+    }
+    return result;
+}
+
+QPainterPath penPath(const QVector<PenPoint> &points, bool closed) {
+    QPainterPath path;
+    if (points.isEmpty())
+        return path;
+    path.moveTo(points.front().position);
+    for (const auto &segment : penSegments(points, closed))
+        segment.appendTo(path);
+    if (closed)
+        path.closeSubpath();
+    return path;
+}
+
+void materializePenHandles(QVector<PenPoint> &points, bool closed) {
+    const auto segments = penSegments(points, closed);
+    if (segments.isEmpty())
+        return;
+    for (int i = 0; i < points.size(); ++i) {
+        if (points[i].explicitHandles)
+            continue;
+        if (i < segments.size())
+            points[i].outgoing = segments[i].control - points[i].position;
+        if (i > 0 || closed)
+            points[i].incoming =
+                segments[(i + segments.size() - 1) % segments.size()].control2 - points[i].position;
+        points[i].explicitHandles = true;
+    }
+}
+
+void transformPenPoint(PenPoint &point, const QTransform &transform) {
+    const QPointF position = transform.map(point.position);
+    point.incoming = transform.map(point.position + point.incoming) - position;
+    point.outgoing = transform.map(point.position + point.outgoing) - position;
+    point.position = position;
+}
+
+void insertPenAnchor(QVector<PenPoint> &points, int insertIndex, const QPointF &nearPoint) {
+    if (points.size() < 2)
+        return;
+    const int next = insertIndex % points.size(),
+              previous = (next + points.size() - 1) % points.size();
+    const auto segment = penSegments(points)[previous];
+    double bestT = 0.5, bestDistance = std::numeric_limits<double>::max();
+    for (int i = 1; i < 128; ++i) {
+        const double t = i / 128.0, distance = QLineF(segment.point(t), nearPoint).length();
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestT = t;
+        }
+    }
+    double lo = std::max(0.001, bestT - 1.0 / 128), hi = std::min(0.999, bestT + 1.0 / 128);
+    for (int i = 0; i < 50; ++i) {
+        const double a = (2 * lo + hi) / 3, b = (lo + 2 * hi) / 3;
+        if (QLineF(segment.point(a), nearPoint).length() <
+            QLineF(segment.point(b), nearPoint).length())
+            hi = b;
+        else
+            lo = a;
+    }
+    // Freeze automatic handles before splitting, preserving every adjacent span.
+    const auto segments = penSegments(points);
+    for (int i = 0; i < points.size(); ++i) {
+        points[i].outgoing = segments[i].curved ? segments[i].control - points[i].position
+                                                : (segments[i].end - points[i].position) / 3;
+        const auto &before = segments[(i + points.size() - 1) % points.size()];
+        points[i].incoming = before.curved ? before.control2 - points[i].position
+                                           : (before.start - points[i].position) / 3;
+        points[i].explicitHandles = true;
+    }
+    auto [left, right] = segment.split((lo + hi) * 0.5);
+    if (!segment.curved) {
+        left.control = left.start + (left.end - left.start) / 3;
+        left.control2 = left.start + (left.end - left.start) * (2.0 / 3);
+        right.control = right.start + (right.end - right.start) / 3;
+        right.control2 = right.start + (right.end - right.start) * (2.0 / 3);
+    }
+    points[previous].outgoing = left.control - left.start;
+    points[next].incoming = right.control2 - right.end;
+    points.insert(insertIndex, {left.end, PenPointKind::Soft, left.control2 - left.end,
+                                right.control - right.start, true});
+}
+
 PenContour buildPenContour(const QVector<PenPoint> &points, double flatnessTolerance) {
     PenContour result;
     if (points.size() < 3) {
         result.error = QStringLiteral("A Pen path needs at least three points");
         return result;
     }
-    int firstHard = -1;
-    for (int i = 0; i < points.size(); ++i) {
-        if (points[i].kind == PenPointKind::Hard) {
-            firstHard = i;
-            break;
-        }
-    }
-    if (firstHard < 0) {
-        result.error = QStringLiteral("A Pen path needs at least one hard point");
-        return result;
-    }
-    QVector<PenPoint> ordered;
-    ordered.reserve(points.size());
-    for (int i = 0; i < points.size(); ++i) {
-        ordered.push_back(points[(firstHard + i) % points.size()]);
-    }
-    QPointF current = ordered.front().position;
-    result.path.setFillRule(Qt::WindingFill);
-    result.path.moveTo(current);
-    int index = 1;
-    while (index <= ordered.size()) {
-        const PenPoint &next = ordered[index % ordered.size()];
-        if (next.kind == PenPointKind::Hard) {
-            if (QLineF(current, next.position).length() > kEpsilon) {
-                result.segments.push_back({current, {}, next.position, false});
-                result.path.lineTo(next.position);
+    for (const auto &point : points) {
+        for (const QPointF value : {point.position, point.incoming, point.outgoing}) {
+            if (!std::isfinite(value.x()) || !std::isfinite(value.y())) {
+                result.error = QStringLiteral("The Pen path contains non-finite coordinates");
+                return result;
             }
-            current = next.position;
-            ++index;
-            continue;
         }
-        const PenPoint &after = ordered[(index + 1) % ordered.size()];
-        const QPointF end = after.kind == PenPointKind::Hard
-            ? after.position
-            : (next.position + after.position) * 0.5;
-        if (QLineF(current, end).length() > kEpsilon
-            || QLineF(current, next.position).length() > kEpsilon) {
-            result.segments.push_back({current, next.position, end, true});
-            result.path.quadTo(next.position, end);
-        }
-        current = end;
-        index += after.kind == PenPointKind::Hard ? 2 : 1;
     }
+    result.segments = penSegments(points);
+    result.path.setFillRule(Qt::WindingFill);
+    result.path.moveTo(points.front().position);
+    for (const auto &segment : result.segments)
+        segment.appendTo(result.path);
     result.path.closeSubpath();
     if (result.segments.size() < 2) {
         result.path = {};
@@ -1721,18 +1808,15 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                     inwardCandidates.push_back(segmentIndex);
                 }
             }
-            std::sort(inwardCandidates.begin(), inwardCandidates.end(),
-                      [&](int left, int right) {
+            std::sort(inwardCandidates.begin(), inwardCandidates.end(), [&](int left, int right) {
                 const PenBoundarySegment &a = segments[left];
                 const PenBoundarySegment &b = segments[right];
-                const double aImportance = QLineF(a.start, a.end).length()
-                    * std::max(std::sqrt(distanceSquaredToSegment(
-                                   a.control, a.start, a.end)),
-                               request.boundaryTolerance * 0.25);
-                const double bImportance = QLineF(b.start, b.end).length()
-                    * std::max(std::sqrt(distanceSquaredToSegment(
-                                   b.control, b.start, b.end)),
-                               request.boundaryTolerance * 0.25);
+                const double aImportance =
+                    QLineF(a.start, a.end).length() *
+                    std::max(segmentBow(a), request.boundaryTolerance * 0.25);
+                const double bImportance =
+                    QLineF(b.start, b.end).length() *
+                    std::max(segmentBow(b), request.boundaryTolerance * 0.25);
                 if (std::abs(aImportance - bImportance) > kEpsilon) {
                     return aImportance > bImportance;
                 }
@@ -1779,7 +1863,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                                                  segment.end,
                                                  contour.path)) {
                     const auto point = interiorCorePoint(segment, contour.path);
-                    corePoints.push_back(point ? *point : segment.control);
+                    corePoints.push_back(point ? *point
+                                               : (segment.control + segment.control2) * 0.5);
                 }
                 corePoints.push_back(segment.end);
                 ++segmentIndex;
@@ -1918,12 +2003,10 @@ PenFillResult fillPenPath(const PenFillRequest &request,
         std::sort(inwardCandidates.begin(), inwardCandidates.end(), [&](int left, int right) {
             const PenBoundarySegment &a = segments[left];
             const PenBoundarySegment &b = segments[right];
-            const double aImportance = QLineF(a.start, a.end).length()
-                * std::max(std::sqrt(distanceSquaredToSegment(a.control, a.start, a.end)),
-                           request.boundaryTolerance * 0.25);
-            const double bImportance = QLineF(b.start, b.end).length()
-                * std::max(std::sqrt(distanceSquaredToSegment(b.control, b.start, b.end)),
-                           request.boundaryTolerance * 0.25);
+            const double aImportance = QLineF(a.start, a.end).length() *
+                                       std::max(segmentBow(a), request.boundaryTolerance * 0.25);
+            const double bImportance = QLineF(b.start, b.end).length() *
+                                       std::max(segmentBow(b), request.boundaryTolerance * 0.25);
             if (std::abs(aImportance - bImportance) > kEpsilon) {
                 return aImportance > bImportance;
             }
@@ -1995,7 +2078,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                     if (point) {
                         interiorCorePoints.insert(i, *point);
                     } else {
-                        interiorCorePoints.insert(i, segments[i].control);
+                        interiorCorePoints.insert(i, (segments[i].control + segments[i].control2) *
+                                                         0.5);
                     }
                 }
             }
@@ -2010,10 +2094,8 @@ PenFillResult fillPenPath(const PenFillRequest &request,
                   [&](int a, int b) {
             const PenBoundarySegment &left = segments[a];
             const PenBoundarySegment &right = segments[b];
-            const double leftCurvature = std::sqrt(
-                distanceSquaredToSegment(left.control, left.start, left.end));
-            const double rightCurvature = std::sqrt(
-                distanceSquaredToSegment(right.control, right.start, right.end));
+            const double leftCurvature = segmentBow(left);
+            const double rightCurvature = segmentBow(right);
             if (std::abs(leftCurvature - rightCurvature) > kEpsilon) {
                 return leftCurvature > rightCurvature;
             }

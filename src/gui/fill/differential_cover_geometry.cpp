@@ -1145,12 +1145,7 @@ double contourSpanLength(const ContourSpan &span) {
         const double parameter =
             static_cast<double>(sample)
             / static_cast<double>(kCurveSamples);
-        const double inverse = 1.0 - parameter;
-        const QPointF point =
-            span.start * (inverse * inverse)
-            + span.control
-                * (2.0 * inverse * parameter)
-            + span.end * (parameter * parameter);
+        const QPointF point = span.point(parameter);
         result += QLineF(previous, point).length();
         previous = point;
     }
@@ -1191,11 +1186,7 @@ QVector<ContourFeature> extractContourFeatures(
                 % spans.size()];
         const ContourSpan &next = spans[index];
         const QPointF incoming =
-            normalizedPoint(
-                previous.end
-                - (previous.curved
-                       ? previous.control
-                       : previous.start));
+            normalizedPoint(previous.end - (previous.curved ? previous.control2 : previous.start));
         const QPointF outgoing =
             normalizedPoint(
                 (next.curved

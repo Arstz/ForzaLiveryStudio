@@ -87,9 +87,7 @@ QPointF supportPoint(const QPolygonF &polygon, const QPointF &direction) {
 }
 
 QPointF curvePoint(const PenBoundarySegment &segment, double parameter) {
-    return segment.start * ((1.0 - parameter) * (1.0 - parameter))
-        + segment.control * (2.0 * parameter * (1.0 - parameter))
-        + segment.end * (parameter * parameter);
+    return segment.point(parameter);
 }
 
 QVector<Candidate> contourProposals(const PenFillRequest &request, const Region &region,
@@ -155,8 +153,7 @@ QVector<Candidate> contourProposals(const PenFillRequest &request, const Region 
                 for (int index = 1; index < 8; ++index) {
                     const double parameter = interval.first
                         + (interval.second - interval.first) * index / 8.0;
-                    const QPointF tangent = (segment.control - segment.start) * (1.0 - parameter)
-                        + (segment.end - segment.control) * parameter;
+                    const QPointF tangent = segment.derivative(parameter);
                     QPointF normal(tangent.y(), -tangent.x());
                     const double magnitude = std::hypot(normal.x(), normal.y());
                     if (magnitude > 0.0) {

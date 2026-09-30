@@ -129,6 +129,16 @@ gui::PenFillRequest readRequest(const QString &path) {
             loop.points.push_back({QPointF(position[0].toDouble(), position[1].toDouble()),
                 point.value(QStringLiteral("kind")).toString() == QStringLiteral("soft")
                     ? gui::PenPointKind::Soft : gui::PenPointKind::Hard});
+            auto &anchor = loop.points.back();
+            const auto incoming = point.value(QStringLiteral("incoming")).toArray();
+            const auto outgoing = point.value(QStringLiteral("outgoing")).toArray();
+            anchor.explicitHandles = point.value(QStringLiteral("explicitHandles")).toBool();
+            if (anchor.explicitHandles) {
+                require(incoming.size() == 2 && outgoing.size() == 2,
+                        QStringLiteral("Missing cubic replay handles"));
+                anchor.incoming = {incoming[0].toDouble(), incoming[1].toDouble()};
+                anchor.outgoing = {outgoing[0].toDouble(), outgoing[1].toDouble()};
+            }
         }
         request.loops.push_back(loop);
     }
@@ -477,6 +487,8 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         for (auto &loop : enlarged.loops) {
             for (auto &point : loop.points) {
                 point.position *= 20.0;
+                point.incoming *= 20.0;
+                point.outgoing *= 20.0;
             }
         }
         const auto enlargedResult = fit(enlarged, catalog, options);
@@ -1670,11 +1682,36 @@ int main(int argc, char **argv) {
 
         gui::PenFillRequest curved;
         curved.points = {
-            {{-40, -20}, gui::PenPointKind::Hard}, {{0, -45}, gui::PenPointKind::Soft},
-            {{40, -20}, gui::PenPointKind::Hard}, {{60, 0}, gui::PenPointKind::Soft},
-            {{40, 20}, gui::PenPointKind::Hard}, {{0, 45}, gui::PenPointKind::Soft},
-            {{-40, 20}, gui::PenPointKind::Hard}, {{-60, 0}, gui::PenPointKind::Soft},
+            {{-40, -20},
+             gui::PenPointKind::Hard,
+             {-13.3333333333333, 13.3333333333333},
+             {26.6666666666667, -16.6666666666667},
+             true},
+            {{40, -20},
+             gui::PenPointKind::Hard,
+             {-26.6666666666667, -16.6666666666667},
+             {13.3333333333333, 13.3333333333333},
+             true},
+            {{40, 20},
+             gui::PenPointKind::Hard,
+             {13.3333333333333, -13.3333333333333},
+             {-26.6666666666667, 16.6666666666667},
+             true},
+            {{-40, 20},
+             gui::PenPointKind::Hard,
+             {26.6666666666667, 16.6666666666667},
+             {-13.3333333333333, -13.3333333333333},
+             true},
         };
+        // These unequal handles cannot be represented by a single quadratic span.
+        curved.points[0].outgoing = {18, -24};
+        curved.points[1].incoming = {-34, -12};
+        const auto cubicRegion = gui::catalog::buildRegion(curved, {});
+        double exactArea = 0;
+        for (const auto &segment : gui::penSegments(curved.points))
+            exactArea += segment.signedArea();
+        require(std::abs(cubicRegion.originalArea - std::abs(exactArea)) < 1e-8,
+                QStringLiteral("Catalog region lost the native cubic area"));
         const auto curvedFill = gui::catalog::fillRegion(curved, smallCatalog, meshOptions);
         requireComplete(curvedFill);
         output << "Bezier fallback verified with " << curvedFill.fill.placements.size() << " placements\n" << Qt::flush;
@@ -1698,7 +1735,7 @@ int main(int argc, char **argv) {
             gui::PenFillRequest transformed = curved;
             transformed.boundaryTolerance = index % 4 ? 0.1 : 0.01;
             for (auto &point : transformed.points) {
-                point.position = transform.map(point.position);
+                gui::transformPenPoint(point, transform);
             }
             output << "Checking transformed completion " << index << '\n' << Qt::flush;
             checkCompletion(transformed, smallCatalog);

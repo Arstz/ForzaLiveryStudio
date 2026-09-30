@@ -1976,8 +1976,7 @@ QPainterPath rdpUnwrapPath(const QPainterPath &geometry,
                 static_cast<double>(point.x) / kUnwrapPathScale,
                 static_cast<double>(point.y) / kUnwrapPathScale));
         }
-        const QVector<PenPoint> points = simplifyClosedPolygonRdpHybridQuadratic(
-            polygon, options.simplifyEpsilon, options.minimumCurveBow);
+        const QVector<PenPoint> points = fitClosedPolygonCubic(polygon, options.simplifyEpsilon);
         const PenContour contour = buildPenContour(points);
         if (contour.valid()) {
             path.addPath(contour.path);

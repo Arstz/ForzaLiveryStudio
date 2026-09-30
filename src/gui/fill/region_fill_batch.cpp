@@ -520,12 +520,13 @@ RegionFillBatchResult computeRegionFills(
 
         stream << "\n[optimized_pen_points]\n"
                << "count=" << biggestWork.optimizedPenPoints.size() << '\n'
-               << "index,kind,x,y\n";
+               << "index,kind,x,y,in_x,in_y,out_x,out_y,explicit_handles\n";
         for (int i = 0; i < biggestWork.optimizedPenPoints.size(); ++i) {
             const PenPoint &point = biggestWork.optimizedPenPoints[i];
-            stream << i << ','
-                   << (point.kind == PenPointKind::Hard ? "hard" : "soft") << ','
-                   << point.position.x() << ',' << point.position.y() << '\n';
+            stream << i << ',' << (point.kind == PenPointKind::Hard ? "hard" : "soft") << ','
+                   << point.position.x() << ',' << point.position.y() << ',' << point.incoming.x()
+                   << ',' << point.incoming.y() << ',' << point.outgoing.x() << ','
+                   << point.outgoing.y() << ',' << point.explicitHandles << '\n';
         }
 
         stream << "\n[flattened_optimized_contour]\n"

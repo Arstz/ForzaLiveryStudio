@@ -110,39 +110,26 @@ void appendSegment(const PenBoundarySegment &segment, double tolerance,
     if (chords->size() >= kMaximumBoundarySegments || depth > kMaximumSubdivisionDepth) {
         throw std::runtime_error("Catalog cover boundary refinement exceeds its work limit");
     }
-    const QPointF midpoint = (segment.start + segment.end) * 0.5;
-    if (!segment.curved || QLineF(segment.control, midpoint).length() * 2.0 <= tolerance) {
+    if (!segment.curved || segment.flatness() <= tolerance) {
         chords->push_back(segment.start);
         if (segment.curved) {
-            const QPolygonF hull = convexHull({segment.start, segment.control, segment.end});
-            if (hull.size() >= 3) {
+            const QPolygonF hull =
+                convexHull({segment.start, segment.control, segment.control2, segment.end});
+            if (hull.size() >= 3)
                 hulls->push_back(hull);
-            }
         }
         return;
     }
-    const QPointF leftControl = (segment.start + segment.control) * 0.5;
-    const QPointF rightControl = (segment.control + segment.end) * 0.5;
-    const QPointF middle = (leftControl + rightControl) * 0.5;
-    appendSegment({segment.start, leftControl, middle, true}, tolerance,
-                  chords, hulls, depth + 1, cancelled);
-    appendSegment({middle, rightControl, segment.end, true}, tolerance,
-                  chords, hulls, depth + 1, cancelled);
+    const auto [left, right] = segment.split();
+    appendSegment(left, tolerance, chords, hulls, depth + 1, cancelled);
+    appendSegment(right, tolerance, chords, hulls, depth + 1, cancelled);
 }
 
 double contourArea(const QVector<PenBoundarySegment> &segments) {
-    double result = 0.0;
-    for (const PenBoundarySegment &segment : segments) {
-        if (segment.curved) {
-            result += (cross(segment.start, segment.control)
-                       + cross(segment.control, segment.end)) / 3.0
-                + cross(segment.start, segment.end) / 6.0;
-        } else {
-            result += cross(segment.start, segment.end) * 0.5;
-        }
-    }
-
-    return std::abs(result);
+    double area = 0;
+    for (const auto &segment : segments)
+        area += segment.signedArea();
+    return std::abs(area);
 }
 
 const PenPrimitive *findShape(const QVector<Primitive> &primitives, int shapeId) {

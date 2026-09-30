@@ -106,6 +106,11 @@ QJsonObject writePenFillLog(const PenFillRequest &request,
                                    : QStringLiteral("soft"));
             pointObject.insert(QStringLiteral("position"),
                                QJsonArray{point.position.x(), point.position.y()});
+            pointObject.insert(QStringLiteral("incoming"),
+                               QJsonArray{point.incoming.x(), point.incoming.y()});
+            pointObject.insert(QStringLiteral("outgoing"),
+                               QJsonArray{point.outgoing.x(), point.outgoing.y()});
+            pointObject.insert(QStringLiteral("explicitHandles"), point.explicitHandles);
             points.push_back(pointObject);
         }
         QJsonObject loopObject;
@@ -118,6 +123,7 @@ QJsonObject writePenFillLog(const PenFillRequest &request,
     }
 
     QJsonObject requestObject;
+    requestObject.insert(QStringLiteral("curveModel"), QStringLiteral("cubic-anchors-v1"));
     requestObject.insert(QStringLiteral("strategy"), strategy);
     requestObject.insert(QStringLiteral("boundaryTolerance"), request.boundaryTolerance);
     requestObject.insert(QStringLiteral("discardNegligiblePlacements"),

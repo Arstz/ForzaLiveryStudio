@@ -25,20 +25,9 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     if (closeToStart && activePoints.size() >= 3) {
         return penGeometryCache().worldPath;
     }
-    const int activeLoopIndex = drawingCutout ? pen_.activeCutout : -1;
-    QPainterPath path;
-    for (const CachedPenLoop &loop : penGeometryCache().loops) {
-        if (loop.loopIndex == activeLoopIndex) {
-            path = loop.openPath;
-            break;
-        }
-    }
-    if (activePoints.back().kind == PenPointKind::Soft) {
-        path.quadTo(activePoints.back().position,
-                    pen_.hoverWorld);
-    } else {
-        path.lineTo(pen_.hoverWorld);
-    }
+    auto preview = activePoints;
+    preview.push_back({pen_.hoverWorld, PenPointKind::Soft});
+    QPainterPath path = penPath(preview, false);
     return path;
 }
 
@@ -128,6 +117,18 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
         for (int i = 0; i < points.size(); ++i) {
             const PenPoint &point = points[i];
             const QPointF screen = worldToScreen(point.position);
+            if (point.explicitHandles) {
+                painter.setPen(QPen(QColor(185, 190, 200, 150), 1));
+                painter.setBrush(QColor(145, 185, 225));
+                for (const auto offset : {point.incoming, point.outgoing}) {
+                    const QPointF handle = worldToScreen(point.position + offset);
+                    if (QLineF(screen, handle).length() < 10)
+                        continue;
+                    painter.drawLine(screen, handle);
+                    painter.drawRect(QRectF(handle - QPointF(3, 3), QSizeF(6, 6)));
+                }
+            }
+
             const bool hovered = pen_.cutoutClosed
                 && loopIndex == pen_.hoverLoop && i == pen_.hoverPoint;
             const double radius = (i == 0 ? 5.5 : 4.5) + (hovered ? 1.5 : 0.0);

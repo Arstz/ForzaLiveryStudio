@@ -1,5 +1,6 @@
 #include "project_canvas.h"
 
+#include "cubic_contour.h"
 #include "editor_state.h"
 #include "image_io.h"
 #include "project_canvas_internal.h"
@@ -8,15 +9,6 @@
 #include <cmath>
 
 namespace gui {
-namespace {
-
-constexpr double kBucketCurveBow = 0.2;
-constexpr double kBucketSimplifyEpsilon = 1.0;
-constexpr double kBucketSmoothSpanTolerance = 2.5;
-constexpr double kBucketOutwardFitMargin = 5.0;
-
-} // namespace
-
 using namespace pc_detail;
 
 bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
@@ -327,6 +319,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
     QColor fillColor;
     bool fillMask = false;
     RegionPenLoopConversionOptions conversionOptions;
+    RegionPenLoopConversionResult conversion;
     if (bucket_.vectorMode) {
         outline = bucket_.vectorHit.path;
         sourceSize = QSize(guide->image->width, guide->image->height);
@@ -341,37 +334,16 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
             update();
             return false;
         }
-        RegionExtractionParams traceParams;
-        traceParams.traceSpeckle = 0;
-        outline = traceMaskToPath(bucket_.fill.mask,
-                                  bucket_.fill.imageSize.width(),
-                                  bucket_.fill.imageSize.height(),
-                                  bucket_.fill.bounds,
-                                  traceParams);
-        if (outline.isEmpty()) {
-            setCursorHint(screenPoint,
-                          {QStringLiteral("Tolerance: %1").arg(bucket_.tolerance),
-                           QStringLiteral("Potrace could not trace this region")});
-            update();
-            return false;
-        }
+        conversion.loops = fitMaskContours(bucket_.fill.mask, bucket_.fill.imageSize,
+                                           bucket_.fill.bounds, {}, &conversion.error);
         sourceSize = image.size();
         fillColor = bucket_.fill.transparentTarget
             ? kTransparentBucketColor
             : bucket_.fill.averageColor;
         fillMask = bucket_.fill.transparentTarget;
-        conversionOptions.fallback.comparisonImageSize = image.size();
-        conversionOptions.simplifyEpsilon = kBucketSimplifyEpsilon;
-        conversionOptions.minimumCurveBow = kBucketCurveBow;
-        conversionOptions.smoothSpanTolerance = kBucketSmoothSpanTolerance;
-        conversionOptions.outwardFitMargin = kBucketOutwardFitMargin;
-        conversionOptions.requiredPixelMask = &bucket_.fill.mask;
-        conversionOptions.requiredPixelMaskSize = bucket_.fill.imageSize;
-        conversionOptions.requiredPixelBounds = bucket_.fill.bounds;
-        conversionOptions.smoothHybridJunctions = true;
     }
-    RegionPenLoopConversionResult conversion =
-        regionOutlineToPenLoops(outline, conversionOptions);
+    if (bucket_.vectorMode)
+        conversion = regionOutlineToPenLoops(outline, conversionOptions);
     if (!conversion.valid()) {
         setCursorHint(screenPoint,
                       {bucket_.vectorMode
@@ -402,7 +374,7 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
     QVector<PenLoop> worldLoops = std::move(imageLoops);
     for (PenLoop &loop : worldLoops) {
         for (PenPoint &point : loop.points) {
-            point.position = imageToWorld.map(point.position);
+            transformPenPoint(point, imageToWorld);
         }
     }
     const PenContour worldContour = buildPenContour(worldLoops);

@@ -126,14 +126,8 @@ double pathArea(const QPainterPath &path) {
     return result;
 }
 
-QPointF quadraticPoint(const PenBoundarySegment &segment, double t) {
-    if (!segment.curved) {
-        return segment.start * (1.0 - t) + segment.end * t;
-    }
-    const double u = 1.0 - t;
-    return segment.start * (u * u)
-        + segment.control * (2.0 * u * t)
-        + segment.end * (t * t);
+QPointF cubicPoint(const PenBoundarySegment &segment, double t) {
+    return segment.point(t);
 }
 
 QVector<QPointF> sampleCenterline(const LiningPath &path,
@@ -149,7 +143,7 @@ QVector<QPointF> sampleCenterline(const LiningPath &path,
         double estimatedLength = 0.0;
         QPointF previous = segment.start;
         for (int i = 1; i <= 16; ++i) {
-            const QPointF point = quadraticPoint(segment, static_cast<double>(i) / 16.0);
+            const QPointF point = cubicPoint(segment, static_cast<double>(i) / 16.0);
             estimatedLength += QLineF(previous, point).length();
             previous = point;
         }
@@ -158,7 +152,7 @@ QVector<QPointF> sampleCenterline(const LiningPath &path,
             result.push_back(segment.start);
         }
         for (int i = 1; i <= steps; ++i) {
-            result.push_back(quadraticPoint(segment, static_cast<double>(i) / steps));
+            result.push_back(cubicPoint(segment, static_cast<double>(i) / steps));
         }
         if (segmentBoundaries != nullptr) {
             segmentBoundaries->push_back(result.size() - 1);
@@ -630,43 +624,8 @@ LiningPath buildLiningPath(const QVector<PenPoint> &points) {
         result.error = QStringLiteral("A lining path needs at least two points");
         return result;
     }
-    if (points.front().kind != PenPointKind::Hard
-        || points.back().kind != PenPointKind::Hard) {
-        result.error = QStringLiteral("A lining path needs hard endpoints");
-        return result;
-    }
-
-    result.centerline.moveTo(points.front().position);
-    QPointF current = points.front().position;
-    int index = 1;
-    while (index < points.size()) {
-        const PenPoint &next = points[index];
-        PenBoundarySegment segment;
-        segment.start = current;
-        if (next.kind == PenPointKind::Hard) {
-            segment.end = next.position;
-            result.centerline.lineTo(segment.end);
-            ++index;
-        } else {
-            if (index + 1 >= points.size()) {
-                result.error = QStringLiteral("A lining path ends with an unfinished curve");
-                return result;
-            }
-            const PenPoint &after = points[index + 1];
-            segment.control = next.position;
-            segment.end = after.kind == PenPointKind::Hard
-                ? after.position
-                : (next.position + after.position) * 0.5;
-            segment.curved = true;
-            result.centerline.quadTo(segment.control, segment.end);
-            index += after.kind == PenPointKind::Hard ? 2 : 1;
-        }
-        if (QLineF(segment.start, segment.end).length() > kEpsilon
-            || (segment.curved && QLineF(segment.start, segment.control).length() > kEpsilon)) {
-            result.segments.push_back(segment);
-        }
-        current = segment.end;
-    }
+    result.segments = penSegments(points, false);
+    result.centerline = penPath(points, false);
     if (result.segments.isEmpty()) {
         result.error = QStringLiteral("The lining path has no length");
     }
@@ -730,13 +689,14 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
     diagnostic.add(QStringLiteral("path segments=%1").arg(path.segments.size()));
     for (int index = 0; index < path.segments.size(); ++index) {
         const PenBoundarySegment &segment = path.segments[index];
-        diagnostic.add(QStringLiteral("pathSegment[%1] curved=%2 start=%3 control=%4 end=%5")
-                           .arg(index)
-                           .arg(segment.curved ? QStringLiteral("true")
-                                               : QStringLiteral("false"))
-                           .arg(pointText(segment.start))
-                           .arg(pointText(segment.control))
-                           .arg(pointText(segment.end)));
+        diagnostic.add(
+            QStringLiteral("pathSegment[%1] curved=%2 start=%3 control1=%4 control2=%5 end=%6")
+                .arg(index)
+                .arg(segment.curved ? QStringLiteral("true") : QStringLiteral("false"))
+                .arg(pointText(segment.start))
+                .arg(pointText(segment.control))
+                .arg(pointText(segment.control2))
+                .arg(pointText(segment.end)));
     }
     if (!std::isfinite(request.width) || request.width <= 0.0) {
         diagnostic.add(QStringLiteral("invalid width"));
@@ -1024,10 +984,8 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
         }
         const PenBoundarySegment &before = path.segments[join - 1];
         const PenBoundarySegment &after = path.segments[join];
-        const QPointF incoming = unitDirection(before.end
-                                               - (before.curved
-                                                      ? before.control
-                                                      : before.start));
+        const QPointF incoming =
+            unitDirection(before.end - (before.curved ? before.control2 : before.start));
         const QPointF outgoing = unitDirection((after.curved
                                                     ? after.control
                                                     : after.end)
@@ -1134,7 +1092,7 @@ PenFillResult fillLiningPath(const LiningFillRequest &request,
                 : absoluteIndex(windowEnd);
         }
         const QPointF startDirection = unitDirection(segment.control - segment.start);
-        const QPointF endDirection = unitDirection(segment.end - segment.control);
+        const QPointF endDirection = unitDirection(segment.end - segment.control2);
         const double tangentDot = std::clamp(QPointF::dotProduct(startDirection,
                                                                  endDirection),
                                              -1.0,

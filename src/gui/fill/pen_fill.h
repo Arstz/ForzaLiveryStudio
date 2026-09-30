@@ -18,6 +18,11 @@ enum class PenPointKind {
 struct PenPoint {
     QPointF position;
     PenPointKind kind = PenPointKind::Soft;
+    // Handle offsets move with the anchor. Automatic anchors derive tangents from neighbours.
+    QPointF incoming;
+    QPointF outgoing;
+    bool explicitHandles = false;
+    bool operator==(const PenPoint &) const = default;
 };
 
 enum class PenLoopKind {
@@ -31,6 +36,12 @@ struct PenLoop {
 };
 
 using PenBoundarySegment = FillBoundarySegment;
+
+QVector<PenBoundarySegment> penSegments(const QVector<PenPoint> &points, bool closed = true);
+QPainterPath penPath(const QVector<PenPoint> &points, bool closed = true);
+void materializePenHandles(QVector<PenPoint> &points, bool closed = true);
+void transformPenPoint(PenPoint &point, const QTransform &transform);
+void insertPenAnchor(QVector<PenPoint> &points, int insertIndex, const QPointF &nearPoint);
 
 struct PenContourLoop {
     QPainterPath path;

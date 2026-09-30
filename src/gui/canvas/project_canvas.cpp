@@ -35,8 +35,7 @@ bool pathStatesEqual(const PathInteractionState &left, const PathInteractionStat
         return false;
     }
     for (qsizetype i = 0; i < left.points.size(); ++i) {
-        if (left.points[i].position != right.points[i].position
-            || left.points[i].kind != right.points[i].kind) {
+        if (!(left.points[i] == right.points[i])) {
             return false;
         }
     }
@@ -48,8 +47,7 @@ bool pathStatesEqual(const PathInteractionState &left, const PathInteractionStat
              pointIndex < left.cutouts[loopIndex].size(); ++pointIndex) {
             const PenPoint &leftPoint = left.cutouts[loopIndex][pointIndex];
             const PenPoint &rightPoint = right.cutouts[loopIndex][pointIndex];
-            if (leftPoint.position != rightPoint.position
-                || leftPoint.kind != rightPoint.kind) {
+            if (!(leftPoint == rightPoint)) {
                 return false;
             }
         }

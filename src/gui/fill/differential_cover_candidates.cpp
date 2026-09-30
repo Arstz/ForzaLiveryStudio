@@ -588,10 +588,7 @@ QVector<FixedCandidate> polygonMeshCandidates(
         request.points.push_back(span.start);
         const double chordLength =
             QLineF(span.start, span.end).length();
-        const double spanLength = span.curved
-            ? QLineF(span.start, span.control).length()
-                + QLineF(span.control, span.end).length()
-            : chordLength;
+        const double spanLength = span.curved ? span.controlLength() : chordLength;
         totalLength += spanLength;
         if (!span.curved) {
             straightLength += chordLength;
@@ -686,30 +683,14 @@ double hardTriangleQuality(const QPointF &first,
         * twiceArea / edgeSquares;
 }
 
-QPointF quadraticPoint(
-    const ContourSpan &span,
-    double parameter) {
-    const double inverse = 1.0 - parameter;
-
-    return span.start * (inverse * inverse)
-        + span.control
-            * (2.0 * inverse * parameter)
-        + span.end * (parameter * parameter);
+QPointF cubicPoint(const ContourSpan &span, double parameter) {
+    return span.point(parameter);
 }
 
-QPointF quadraticTangent(
-    const ContourSpan &span,
-    double parameter) {
-    const QPointF derivative =
-        (span.control - span.start)
-            * (1.0 - parameter)
-        + (span.end - span.control)
-            * parameter;
-    const double length = std::hypot(
-        derivative.x(), derivative.y());
-
-    return length > kGeometryEpsilon
-        ? derivative / length : QPointF{};
+QPointF cubicTangent(const ContourSpan &span, double parameter) {
+    const QPointF derivative = span.derivative(parameter);
+    const double length = std::hypot(derivative.x(), derivative.y());
+    return length > kGeometryEpsilon ? derivative / length : QPointF{};
 }
 
 double curveSpanLength(
@@ -723,8 +704,7 @@ double curveSpanLength(
             static_cast<double>(sample)
             / static_cast<double>(
                 kCurveRunLengthSamples);
-        const QPointF point =
-            quadraticPoint(span, parameter);
+        const QPointF point = cubicPoint(span, parameter);
         result += QLineF(previous, point).length();
         previous = point;
     }
@@ -740,11 +720,8 @@ bool softCurveJoin(
             > kSoftCurveJoinTolerance) {
         return false;
     }
-    const QPointF expected =
-        (left.control + right.control) * 0.5;
-
-    return QLineF(left.end, expected).length()
-        <= kSoftCurveJoinTolerance;
+    const QPointF incoming = cubicTangent(left, 1), outgoing = cubicTangent(right, 0);
+    return QPointF::dotProduct(incoming, outgoing) > 0.999;
 }
 
 bool outwardCurveRun(
@@ -768,20 +745,13 @@ bool outwardCurveRun(
             spans[(first + offset) % spans.size()];
         const QPointF spanChord =
             span.end - span.start;
-        const QPointF spanMiddle =
-            quadraticPoint(span, 0.5);
+        const QPointF spanMiddle = cubicPoint(span, 0.5);
         const QPointF chordMiddle =
             (span.start + span.end) * 0.5;
-        if (hardPointCross(
-                spanChord,
-                spanMiddle - chordMiddle)
-                    * orientation
-                >= -kGeometryEpsilon
-            || hardPointCross(
-                runChord,
-                span.control - runStart)
-                    * orientation
-                >= -kGeometryEpsilon) {
+        if (hardPointCross(spanChord, spanMiddle - chordMiddle) * orientation >=
+                -kGeometryEpsilon ||
+            hardPointCross(runChord, span.point(0.5) - runStart) * orientation >=
+                -kGeometryEpsilon) {
             return false;
         }
     }
@@ -830,8 +800,7 @@ std::optional<CurveRunMiddle> curveRunMiddle(
                 static_cast<double>(sample)
                 / static_cast<double>(
                     kCurveRunLengthSamples);
-            const QPointF point =
-                quadraticPoint(span, parameter);
+            const QPointF point = cubicPoint(span, parameter);
             const double segmentLength =
                 QLineF(previous, point).length();
             if (localLength + segmentLength
@@ -854,9 +823,7 @@ std::optional<CurveRunMiddle> curveRunMiddle(
                     + fraction
                         / static_cast<double>(
                             kCurveRunLengthSamples);
-                const QPointF tangent =
-                    quadraticTangent(
-                        span, middleParameter);
+                const QPointF tangent = cubicTangent(span, middleParameter);
                 if (QPointF::dotProduct(
                         tangent, tangent)
                     <= kGeometryEpsilon) {
@@ -864,8 +831,7 @@ std::optional<CurveRunMiddle> curveRunMiddle(
                 }
 
                 return CurveRunMiddle{
-                    quadraticPoint(
-                        span, middleParameter),
+                    cubicPoint(span, middleParameter),
                     tangent,
                 };
             }

@@ -99,7 +99,7 @@ struct RegionPenLoopConversionOptions {
     RegionPenConversionOptions fallback;
     bool preserveInputCurves = false;
     bool fitTracedCurves = false;
-    double curveFitTolerance = 0.5;
+    double curveFitTolerance = 1.0;
     double simplifyEpsilon = 2.0;
     double minimumCurveBow = 0.75;
     double smoothSpanTolerance = 0.0;
@@ -156,11 +156,7 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon);
 
 QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon);
 
-QVector<PenPoint> simplifyClosedPolygonRdpHybridQuadratic(
-    const QPolygonF &polygon,
-    double epsilon,
-    double minimumCurveBow,
-    double smoothSpanTolerance = 0.0);
+QVector<PenPoint> fitClosedPolygonCubic(const QPolygonF &polygon, double epsilon);
 
 QPolygonF simplifyClosedPolygonCorridor(
     const QPolygonF &polygon, double epsilon,

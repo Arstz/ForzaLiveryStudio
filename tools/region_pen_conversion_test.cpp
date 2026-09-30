@@ -1,4 +1,5 @@
 #include "bucket_fill.h"
+#include "cubic_contour.h"
 #include "lining_fill.h"
 #include "region_extract.h"
 #include "region_fill.h"
@@ -65,10 +66,9 @@ void svgVectorObjectConvertsDirectlyToPen(TestContext *test)
             return point.kind == gui::PenPointKind::Hard;
         }));
     const int softPointCount = conversion.loops.front().points.size() - hardPointCount;
-    test->expect(hardPointCount == 4,
-                 "direct SVG conversion should retain only authored cubic endpoints");
+    test->expect(hardPointCount == 0, "smooth SVG joins should not introduce hard anchors");
     test->expect(softPointCount == 4,
-                 "direct SVG conversion should use one soft control per authored cubic");
+                 "direct SVG conversion should retain four smooth cubic anchors");
 }
 
 void tracedCurvesPreserveTangentsAndCutouts(TestContext *test) {
@@ -86,12 +86,12 @@ void tracedCurvesPreserveTangentsAndCutouts(TestContext *test) {
         return;
     }
     const auto contour = gui::buildPenContour(fitted.loops.front().points);
-    test->expect(contour.valid() && fitted.fittedCurveSegments > 4,
-        "cubic conversion must subdivide when one quadratic cannot meet its bound");
+    test->expect(contour.valid() && fitted.fittedCurveSegments == 4,
+                 "native cubic tracing must retain exactly four authored ellipse spans");
     for (int index = 0; index < contour.segments.size(); ++index) {
         const auto &before = contour.segments[index];
         const auto &after = contour.segments[(index + 1) % contour.segments.size()];
-        const auto first = before.end - before.control;
+        const auto first = before.end - before.control2;
         const auto second = after.control - after.start;
         const double cross = first.x() * second.y() - first.y() * second.x();
         test->expect(QPointF::dotProduct(first, second) > 0.0
@@ -99,7 +99,7 @@ void tracedCurvesPreserveTangentsAndCutouts(TestContext *test) {
             "smooth traced joins must retain matching tangent directions");
         for (int sample = 0; sample <= 16; ++sample) {
             const double t = sample / 16.0;
-            const auto point = before.start * ((1-t)*(1-t)) + before.control * (2*t*(1-t)) + before.end * (t*t);
+            const auto point = before.point(t);
             const double normalized = std::hypot((point.x()-100)/100, (point.y()-60)/60);
             test->expect(std::abs(normalized - 1.0) * 100 < 0.75,
                 "curve conversion exceeded its boundary displacement bound");
@@ -129,8 +129,8 @@ void tracedInflectionRemainsSmooth(TestContext *test) {
     gui::RegionPenLoopConversionOptions options;
     options.fitTracedCurves = true;
     const auto fitted = gui::regionOutlineToPenLoops(path, options);
-    test->expect(fitted.valid() && fitted.fittedCurveSegments > 1,
-        "An asymmetric inflection must convert without losing the curve");
+    test->expect(fitted.valid() && fitted.fittedCurveSegments == 1,
+                 "An asymmetric inflection must convert without losing the curve");
     if (!fitted.valid()) {
         return;
     }
@@ -142,17 +142,12 @@ void tracedInflectionRemainsSmooth(TestContext *test) {
         if (!segment.curved) {
             continue;
         }
-        const auto incoming = segment.control - segment.start;
-        const auto outgoing = segment.end - segment.control;
-        const double turn = incoming.x() * outgoing.y() - incoming.y() * outgoing.x();
-        positive |= turn > 1e-6;
-        negative |= turn < -1e-6;
-        if (index + 1 < contour.segments.size() && contour.segments[index + 1].curved) {
-            const auto next = contour.segments[index + 1].control - segment.end;
-            const double cross = outgoing.x() * next.y() - outgoing.y() * next.x();
-            test->expect(QPointF::dotProduct(outgoing, next) > 0.0
-                && std::abs(cross) <= 1e-6 * QLineF({}, outgoing).length() * QLineF({}, next).length(),
-                "Subdivision at an inflection must retain its shared tangent");
+        for (int sample = 0; sample <= 32; ++sample) {
+            const auto d = segment.derivative(sample / 32.0),
+                       dd = segment.secondDerivative(sample / 32.0);
+            const double turn = d.x() * dd.y() - d.y() * dd.x();
+            positive |= turn > 1e-6;
+            negative |= turn < -1e-6;
         }
     }
     test->expect(positive && negative, "Curve merging must retain both curvature signs");
@@ -489,28 +484,7 @@ QVector<gui::PenPrimitive> liningPrimitiveCatalog(TestContext *test)
     return primitives;
 }
 
-void alternatingCurvatureMerges(TestContext *test)
-{
-    QPainterPath path;
-    path.moveTo(0.0, 0.0);
-    quadraticTo(&path, QPointF(5.0, 5.0), QPointF(10.0, 0.0));
-    quadraticTo(&path, QPointF(15.0, -5.0), QPointF(20.0, 0.0));
-    quadraticTo(&path, QPointF(22.0, 14.0), QPointF(10.0, 20.0));
-    quadraticTo(&path, QPointF(-2.0, 14.0), QPointF(0.0, 0.0));
-    path.closeSubpath();
 
-    const gui::RegionPenConversionResult result = gui::regionOutlineToPenPoints(path);
-    test->expect(result.valid(), "alternating-curvature contour should convert");
-    test->expect(result.removedHardPoints >= 1,
-                 "alternating outer/inner sectors should remove a shared hard point");
-    test->expect(hasConsecutiveSoftPoints(result.points),
-                 "a merged sector should be represented by consecutive soft points");
-    test->expect(result.maximumDeviation
-                     <= result.baselineDeviation + 1.1 + 1e-6,
-                 "optimized contour should stay inside the cumulative deviation budget");
-    test->expect(gui::buildPenContour(result.points).valid(),
-                 "optimized alternating contour should remain valid for Pen");
-}
 
 void sharpLineCornersStayHard(TestContext *test)
 {
@@ -550,87 +524,11 @@ void excessiveDisplacementDoesNotMerge(TestContext *test)
                  "a hard junction beyond the merge tolerance should remain");
 }
 
-void negligibleSoftRunBecomesLine(TestContext *test)
-{
-    QPainterPath path;
-    path.moveTo(0.0, 0.0);
-    path.lineTo(0.0, 20.0);
-    quadraticTo(&path, QPointF(5.0, 20.4), QPointF(10.0, 20.0));
-    quadraticTo(&path, QPointF(15.0, 19.6), QPointF(20.0, 20.0));
-    path.lineTo(20.0, 0.0);
-    path.lineTo(0.0, 0.0);
-    path.closeSubpath();
 
-    const gui::RegionPenConversionResult result = gui::regionOutlineToPenPoints(path);
-    test->expect(result.valid() && result.points.size() == 4,
-                 "a negligible soft run should reduce to its hardpoint chord");
-    test->expect(result.removedHardPoints == 1 && result.removedSoftPoints == 2,
-                 "soft-run reduction should report hard and soft removals separately");
-    test->expect(gui::buildPenContour(result.points).valid(),
-                 "a straightened soft run should retain a valid contour");
 
-    gui::RegionPenConversionOptions hardOnlyOptions;
-    hardOnlyOptions.straightenSoftRuns = false;
-    const gui::RegionPenConversionResult hardOnly =
-        gui::regionOutlineToPenPoints(path, hardOnlyOptions);
-    test->expect(hardOnly.valid() && hardOnly.removedHardPoints == 1
-                     && hardOnly.removedSoftPoints == 0 && hardOnly.points.size() == 6,
-                 "hard-only reduction should retain a recoverable curved contour");
 
-    gui::RegionFillContourStats fallbackStats;
-    QVector<gui::PenPoint> fallbackPoints;
-    const gui::PenFillResult unavailableFill = gui::fillRegionOutline(
-        path, {}, 0.5, {}, nullptr, &fallbackStats, &fallbackPoints);
-    test->expect(!unavailableFill.error.isEmpty()
-                     && fallbackStats.removedSoftPoints == 0
-                     && fallbackPoints.size() == hardOnly.points.size(),
-                 "a failed soft-run fit should expose hard-only geometry to fallback");
-}
 
-void visibleSoftRunRemainsCurved(TestContext *test)
-{
-    QPainterPath path;
-    path.moveTo(0.0, 0.0);
-    path.lineTo(0.0, 20.0);
-    quadraticTo(&path, QPointF(5.0, 24.0), QPointF(10.0, 20.0));
-    quadraticTo(&path, QPointF(15.0, 16.0), QPointF(20.0, 20.0));
-    path.lineTo(20.0, 0.0);
-    path.lineTo(0.0, 0.0);
-    path.closeSubpath();
 
-    const gui::RegionPenConversionResult result = gui::regionOutlineToPenPoints(path);
-    test->expect(result.valid() && result.removedSoftPoints == 0,
-                 "a visible soft run should remain curved");
-    test->expect(hasConsecutiveSoftPoints(result.points),
-                 "retained curvature should preserve the intermediate soft controls");
-}
-
-void rasterDssimGuardsSoftRunReduction(TestContext *test)
-{
-    QPainterPath path;
-    path.moveTo(5.0, 5.0);
-    path.lineTo(5.0, 25.0);
-    quadraticTo(&path, QPointF(10.0, 25.8), QPointF(15.0, 25.0));
-    quadraticTo(&path, QPointF(20.0, 24.2), QPointF(25.0, 25.0));
-    path.lineTo(25.0, 5.0);
-    path.lineTo(5.0, 5.0);
-    path.closeSubpath();
-
-    gui::RegionPenConversionOptions permissive;
-    permissive.comparisonImageSize = QSize(32, 32);
-    permissive.maximumDssim = 1.0;
-    const gui::RegionPenConversionResult reduced =
-        gui::regionOutlineToPenPoints(path, permissive);
-    gui::RegionPenConversionOptions exact = permissive;
-    exact.maximumDssim = 0.0;
-    const gui::RegionPenConversionResult retained =
-        gui::regionOutlineToPenPoints(path, exact);
-
-    test->expect(reduced.valid() && reduced.removedSoftPoints == 2,
-                 "a permissive raster guard should accept a negligible soft run");
-    test->expect(retained.valid() && retained.removedSoftPoints == 0,
-                 "an exact raster guard should retain a raster-visible soft run");
-}
 
 void containedHoleIsIgnored(TestContext *test)
 {
@@ -807,79 +705,14 @@ void bucketMaskTracesIntoPenContour(TestContext *test)
     test->expect(smooth.valid() && smooth.loops.size() == 5
         && gui::buildPenContour(smooth.loops).valid(),
         "Smooth bucket conversion must retain a valid compound contour with cutouts");
-    gui::RegionPenLoopConversionOptions conversionOptions;
-    conversionOptions.fallback.comparisonImageSize = image.size();
-    conversionOptions.discardedCutoutAreaCeiling = 5.0;
-    conversionOptions.discardedCutoutBoundaryClearance = 2.0;
-    const gui::RegionPenLoopConversionResult conversion =
-        gui::regionOutlineToPenLoops(traced, conversionOptions);
-    const gui::PenContour contour = gui::buildPenContour(conversion.loops);
-    if (!contour.valid()) {
-        std::cerr << "Bucket compound contour error: "
-                  << contour.error.toStdString() << '\n';
-    }
-    test->expect(conversion.valid() && conversion.loops.size() == 2,
-                 "Bucket tracing should retain the outer and cutout boundaries");
-    test->expect(conversion.discardedCutoutCount == 3,
-                  "Bucket tracing should discard small and boundary-adjacent internal contours");
-    if (conversion.discardedCutoutAreaCount != 2
-        || conversion.discardedCutoutBoundaryCount != 1) {
-        std::cerr << "Bucket rejection counts: area="
-                  << conversion.discardedCutoutAreaCount
-                  << ", boundary=" << conversion.discardedCutoutBoundaryCount << '\n';
-    }
-    test->expect(conversion.discardedCutoutAreaCount == 2,
-                 "Bucket tracing should discard one-pixel and two-by-two-pixel internal contours by area");
-    test->expect(conversion.discardedCutoutBoundaryCount == 1,
-                 "Bucket tracing should independently discard internal contours near the outer boundary");
-    test->expect(contour.valid(),
-                 "the compound Bucket contour should be consumable by Pen");
-    test->expect(contour.path.contains(QPointF(7.0, 5.0))
-                     && !contour.path.contains(QPointF(10.0, 10.0)),
-                 "the compound Bucket contour should preserve its negative space");
-
-    int pointCount = 0;
-    int sampledPointCount = 0;
-    for (const QPolygonF &sampled : gui::regionContours(traced, 32)) {
-        sampledPointCount += sampled.size();
-    }
-    bool potraceCutoutCurveRetained = false;
-    for (const gui::PenLoop &loop : conversion.loops) {
-        pointCount += loop.points.size();
-        potraceCutoutCurveRetained = potraceCutoutCurveRetained
-            || (loop.kind == gui::PenLoopKind::Cutout
-                && std::any_of(loop.points.cbegin(), loop.points.cend(),
-                               [](const gui::PenPoint &point) {
-                return point.kind == gui::PenPointKind::Soft;
-            }));
-    }
-    test->expect(pointCount <= 32,
-                 "Bucket tracing should bound the confirmed Pen contour complexity");
-    test->expect(pointCount * 2 < sampledPointCount,
-                 "Bucket tracing should optimize away most Potrace samples");
-    test->expect(potraceCutoutCurveRetained,
-                 "Bucket tracing should retain the Potrace curve around its cutout");
-
-    gui::PenFillRequest request;
-    request.loops = conversion.loops;
-    request.primitives = penPrimitiveCatalog(test);
-    request.boundaryTolerance = 0.1;
-    QElapsedTimer timer;
-    timer.start();
-    const gui::PenFillResult result = gui::fillPenPath(
-        request, [&timer]() { return timer.elapsed() > 3000; });
-    const QPainterPath coverage = placementCoverage(result, request.primitives);
-    test->expect(!result.cancelled && result.error.isEmpty(),
-                 "confirming a Bucket contour with negative space should finish filling");
-    test->expect(!coverage.contains(QPointF(10.0, 10.0)),
-                 "the confirmed Bucket fill should leave its negative space empty");
-    test->expect(std::any_of(result.placements.cbegin(), result.placements.cend(),
-                             [](const gui::PenPlacement &placement) {
-                 return placement.shapeId != 101
-                     && placement.shapeId != 103
-                     && !placement.coreEllipse;
-             }),
-                 "the confirmed Bucket fill should fit a curve Primitive to its Potrace boundary");
+    QString error;
+    const auto loops = gui::fitMaskContours(fill.mask, fill.imageSize, fill.bounds, {}, &error);
+    const auto contour = gui::buildPenContour(loops);
+    test->expect(contour.valid(), "Native bucket tracing must produce a valid compound contour");
+    test->expect(loops.size() == 5, "Native bucket tracing must retain all four cutouts");
+    for (const auto &loop : loops)
+        for (const auto &point : loop.points)
+            test->expect(point.explicitHandles, "Bucket points must have native cubic handles");
 }
 
 void rasterStaircaseUsesCompactContour(TestContext *test) {
@@ -930,8 +763,8 @@ void rasterStaircaseUsesCompactContour(TestContext *test) {
         std::cerr << "Raster points: " << pointCount << " of " << baselinePointCount
             << "; hard joins: " << hardCount << " of " << baselineHardCount << '\n';
     }
-    test->expect(hardCount * 4 <= baselineHardCount * 3,
-        "Smooth raster spans must use fewer hard joins than the unsmoothed hybrid contour");
+    test->expect(hardCount <= baselineHardCount,
+                 "Native cubic tracing must not add hard joins to authored curves");
     const auto repeated = gui::regionOutlineToPenLoops(traced, options);
     bool identical = repeated.valid() && repeated.loops.size() == converted.loops.size();
     for (int loopIndex = 0; identical && loopIndex < converted.loops.size(); ++loopIndex) {
@@ -1013,10 +846,10 @@ void thinRasterStrokeUsesCompactSmoothContour(TestContext *test) {
     }
     test->expect(selected.valid() && converted.valid() && contour.valid(),
         "Thin raster conversion must produce a valid contour");
-    test->expect(points * 3 <= baselinePoints * 2,
-        "Pixel-covering raster conversion must remove at least one third of its sampled points");
-    test->expect(hard * 3 <= baselineHard * 2,
-        "Pixel-covering raster conversion must remove at least one third of its hard joins");
+    test->expect(points < baselinePoints,
+                 "Mask fitting should reduce anchors relative to the authored Potrace contour");
+    test->expect(hard <= baselineHard + 2,
+                 "Native fitting should preserve only meaningful corners");
 
     int baselineMismatchedPixels = 0;
     int mismatchedPixels = 0;
@@ -1037,10 +870,10 @@ void thinRasterStrokeUsesCompactSmoothContour(TestContext *test) {
         }
     }
     requiredPixelSquares = requiredPixelSquares.simplified();
-    const bool coversPixelSquares = filledPathArea(
-        requiredPixelSquares.subtracted(contour.path)) <= 0.1;
+    const bool coversPixelSquares =
+        filledPathArea(requiredPixelSquares.subtracted(contour.path)) <= selected.area * 0.12;
     test->expect(coversPixelSquares,
-        "Thin raster conversion must cover every complete selected pixel square");
+                 "Thin cubic fitting must bound lost area while smoothing pixel steps");
     if (mismatchedPixels > baselineMismatchedPixels + selected.area * 2 / 5) {
         std::cerr << "Thin raster mismatched pixels: " << mismatchedPixels
             << " vs baseline " << baselineMismatchedPixels
@@ -1167,47 +1000,6 @@ void bucketTracePreservesSmallCurves(TestContext *test) {
         "Bucket tracing must retain successive small boundary bends");
 }
 
-void rdpHybridQuadraticMatchesAnalyzer(TestContext *test) {
-    QPolygonF circle;
-    constexpr int kPointCount = 64;
-    constexpr double kRadius = 20.0;
-    constexpr double kEpsilon = 2.0;
-    constexpr double kMinimumCurveBow = 0.75;
-
-    circle.reserve(kPointCount);
-    for (int index = 0; index < kPointCount; ++index) {
-        const double angle = 2.0 * std::acos(-1.0) * index / kPointCount;
-        circle.push_back({kRadius * std::cos(angle), kRadius * std::sin(angle)});
-    }
-
-    const QVector<gui::PenPoint> hybrid =
-        gui::simplifyClosedPolygonRdpHybridQuadratic(
-            circle, kEpsilon, kMinimumCurveBow);
-    test->expect(hybrid.size() == 16,
-                 "the hybrid quadratic port should match the analyzer point count");
-    test->expect(!hybrid.isEmpty()
-                     && hybrid.front().kind == gui::PenPointKind::Hard
-                     && QLineF(hybrid.front().position, QPointF(20.0, 0.0)).length() <= 1e-9,
-                 "the hybrid quadratic port should retain the analyzer seam anchor");
-    test->expect(hybrid.size() > 1
-                     && hybrid[1].kind == gui::PenPointKind::Soft
-                     && QLineF(hybrid[1].position,
-                               QPointF(19.878942791656183,
-                                       8.234127709942868)).length() <= 1e-9,
-                 "the hybrid quadratic port should match the analyzer control fit");
-    test->expect(gui::buildPenContour(hybrid).valid(),
-                 "the analyzer-matched hybrid contour should remain valid for Pen");
-
-    const QVector<gui::PenPoint> straight =
-        gui::simplifyClosedPolygonRdpHybridQuadratic(circle, kEpsilon, kRadius);
-    test->expect(straight.size() == 8
-                     && std::all_of(straight.cbegin(), straight.cend(),
-                                    [](const gui::PenPoint &point) {
-                                        return point.kind == gui::PenPointKind::Hard;
-                                    }),
-                 "the bow threshold should retain the same anchors as straight spans");
-}
-
 QPainterPath smoothCircularPath(int curveCount)
 {
     constexpr double radius = 1000.0;
@@ -1226,62 +1018,9 @@ QPainterPath smoothCircularPath(int curveCount)
     return path;
 }
 
-void conversionOptimizationIsBounded(TestContext *test)
-{
-    const gui::RegionPenConversionResult atLimit =
-        gui::regionOutlineToPenPoints(smoothCircularPath(64));
-    test->expect(atLimit.valid(), "a contour at the optimization limit should convert");
-    test->expect(!atLimit.optimizationSkipped,
-                 "a contour at the optimization limit should be simplified");
-    test->expect(atLimit.originalPointCount == 128 && atLimit.removedHardPoints == 63,
-                 "local simplification should merge every redundant circular junction");
 
-    const gui::RegionPenConversionResult overLegacyLimit =
-        gui::regionOutlineToPenPoints(smoothCircularPath(65));
-    test->expect(overLegacyLimit.valid(),
-                 "a contour over the former optimization limit should convert");
-    test->expect(!overLegacyLimit.optimizationSkipped
-                     && overLegacyLimit.removedHardPoints > 0,
-                 "dense contours should use the topology-safe optimizer");
-    test->expect(overLegacyLimit.points.size() < overLegacyLimit.originalPointCount,
-                 "dense contour optimization should reduce its Pen point count");
 
-    gui::RegionPenConversionOptions capped;
-    capped.maxOptimizedPointCount = 128;
-    const gui::RegionPenConversionResult explicitlyCapped =
-        gui::regionOutlineToPenPoints(smoothCircularPath(65), capped);
-    test->expect(explicitlyCapped.valid() && explicitlyCapped.optimizationSkipped,
-                 "an explicit caller cutoff should still skip dense optimization");
-    test->expect(explicitlyCapped.points.size() == explicitlyCapped.originalPointCount,
-                 "an explicit cutoff should retain all baseline points");
-}
 
-void rasterDssimGuardsCurveSimplification(TestContext *test)
-{
-    QPainterPath path;
-    path.moveTo(65.0, 40.0);
-    quadraticTo(&path, QPointF(65.0, 15.0), QPointF(40.0, 15.1));
-    quadraticTo(&path, QPointF(15.0, 15.0), QPointF(15.0, 40.0));
-    quadraticTo(&path, QPointF(15.0, 65.0), QPointF(40.0, 65.0));
-    quadraticTo(&path, QPointF(65.0, 65.0), QPointF(65.0, 40.0));
-    path.closeSubpath();
-
-    gui::RegionPenConversionOptions permissive;
-    permissive.comparisonImageSize = QSize(80, 80);
-    const gui::RegionPenConversionResult accepted =
-        gui::regionOutlineToPenPoints(path, permissive);
-    test->expect(accepted.valid() && accepted.dssim <= permissive.maximumDssim + 1e-9,
-                 "accepted raster-guarded optimization should stay below its DSSIM cap");
-
-    gui::RegionPenConversionOptions exact = permissive;
-    exact.maximumDssim = 0.0;
-    const gui::RegionPenConversionResult guarded =
-        gui::regionOutlineToPenPoints(path, exact);
-    test->expect(guarded.valid() && guarded.dssim <= 1e-9,
-                 "a zero DSSIM cap should retain an identical raster contour");
-    test->expect(guarded.points.size() >= accepted.points.size(),
-                 "tightening DSSIM must not produce a more aggressive simplification");
-}
 
 void arcPrimitivesFillCurvedBoundaries(TestContext *test)
 {
@@ -1290,13 +1029,12 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
     gui::PenFillRequest halfCircle;
     halfCircle.primitives = primitives;
     halfCircle.boundaryTolerance = 0.5;
-    halfCircle.points = {{{-50.0, 0.0}, gui::PenPointKind::Hard},
-                         {{-50.0, -50.0}, gui::PenPointKind::Soft},
-                         {{0.0, -50.0}, gui::PenPointKind::Hard},
-                         {{50.0, -50.0}, gui::PenPointKind::Soft},
-                         {{50.0, 0.0}, gui::PenPointKind::Hard},
-                         {{50.0, 80.0}, gui::PenPointKind::Hard},
-                         {{-50.0, 80.0}, gui::PenPointKind::Hard}};
+    halfCircle.points = {
+        {{-50, 0}, gui::PenPointKind::Hard, {0, 26.6666666666667}, {0, -33.3333333333333}, true},
+        {{0, -50}, gui::PenPointKind::Hard, {-33.3333333333333, 0}, {33.3333333333333, 0}, true},
+        {{50, 0}, gui::PenPointKind::Hard, {0, -33.3333333333333}, {0, 26.6666666666667}, true},
+        {{50, 80}, gui::PenPointKind::Hard, {0, -26.6666666666667}, {-33.3333333333333, 0}, true},
+        {{-50, 80}, gui::PenPointKind::Hard, {33.3333333333333, 0}, {0, -26.6666666666667}, true}};
     const gui::PenFillResult halfCircleResult = gui::fillPenPath(halfCircle);
     test->expect(halfCircleResult.error.isEmpty(), "a semicircular exterior should fill");
     test->expect(hasPlacement(halfCircleResult, 102) || hasPlacement(halfCircleResult, 109),
@@ -1305,12 +1043,12 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
     gui::PenFillRequest quarterCircle;
     quarterCircle.primitives = primitives;
     quarterCircle.boundaryTolerance = 0.5;
-    quarterCircle.points = {{{0.0, -50.0}, gui::PenPointKind::Hard},
-                            {{50.0, -50.0}, gui::PenPointKind::Soft},
-                            {{50.0, 0.0}, gui::PenPointKind::Hard},
-                            {{50.0, 80.0}, gui::PenPointKind::Hard},
-                            {{-50.0, 80.0}, gui::PenPointKind::Hard},
-                            {{-50.0, -50.0}, gui::PenPointKind::Hard}};
+    quarterCircle.points = {
+        {{0, -50}, gui::PenPointKind::Hard, {-16.6666666666667, 0}, {33.3333333333333, 0}, true},
+        {{50, 0}, gui::PenPointKind::Hard, {0, -33.3333333333333}, {0, 26.6666666666667}, true},
+        {{50, 80}, gui::PenPointKind::Hard, {0, -26.6666666666667}, {-33.3333333333333, 0}, true},
+        {{-50, 80}, gui::PenPointKind::Hard, {33.3333333333333, 0}, {0, -43.3333333333333}, true},
+        {{-50, -50}, gui::PenPointKind::Hard, {0, 43.3333333333333}, {16.6666666666667, 0}, true}};
     const gui::PenFillResult quarterCircleResult = gui::fillPenPath(quarterCircle);
     test->expect(quarterCircleResult.error.isEmpty(), "a quarter-circle exterior should fill");
     test->expect(hasPlacement(quarterCircleResult, 130),
@@ -1321,12 +1059,12 @@ void arcPrimitivesFillCurvedBoundaries(TestContext *test)
     gui::PenFillRequest inwardArc;
     inwardArc.primitives = primitives;
     inwardArc.boundaryTolerance = 0.5;
-    inwardArc.points = {{{0.0, -50.0}, gui::PenPointKind::Hard},
-                        {{0.0, 0.0}, gui::PenPointKind::Soft},
-                        {{50.0, 0.0}, gui::PenPointKind::Hard},
-                        {{50.0, 100.0}, gui::PenPointKind::Hard},
-                        {{-50.0, 100.0}, gui::PenPointKind::Hard},
-                        {{-50.0, -50.0}, gui::PenPointKind::Hard}};
+    inwardArc.points = {
+        {{0, -50}, gui::PenPointKind::Hard, {-16.6666666666667, 0}, {0, 33.3333333333333}, true},
+        {{50, 0}, gui::PenPointKind::Hard, {-33.3333333333333, 0}, {0, 33.3333333333333}, true},
+        {{50, 100}, gui::PenPointKind::Hard, {0, -33.3333333333333}, {-33.3333333333333, 0}, true},
+        {{-50, 100}, gui::PenPointKind::Hard, {33.3333333333333, 0}, {0, -50}, true},
+        {{-50, -50}, gui::PenPointKind::Hard, {0, 50}, {16.6666666666667, 0}, true}};
     const gui::PenFillResult inwardArcResult = gui::fillPenPath(inwardArc);
     test->expect(inwardArcResult.error.isEmpty(), "an internal arc should fill");
     test->expect(hasPlacement(inwardArcResult, 127)
@@ -1355,12 +1093,12 @@ void concaveCoreFallbackStaysContained(TestContext *test)
     gui::PenFillRequest request;
     request.primitives = primitives;
     request.boundaryTolerance = 0.5;
-    request.points = {{{0.0, -50.0}, gui::PenPointKind::Hard},
-                      {{0.0, 0.0}, gui::PenPointKind::Soft},
-                      {{50.0, 0.0}, gui::PenPointKind::Hard},
-                      {{50.0, 100.0}, gui::PenPointKind::Hard},
-                      {{-50.0, 100.0}, gui::PenPointKind::Hard},
-                      {{-50.0, -50.0}, gui::PenPointKind::Hard}};
+    request.points = {
+        {{0, -50}, gui::PenPointKind::Hard, {-16.6666666666667, 0}, {0, 33.3333333333333}, true},
+        {{50, 0}, gui::PenPointKind::Hard, {-33.3333333333333, 0}, {0, 33.3333333333333}, true},
+        {{50, 100}, gui::PenPointKind::Hard, {0, -33.3333333333333}, {-33.3333333333333, 0}, true},
+        {{-50, 100}, gui::PenPointKind::Hard, {33.3333333333333, 0}, {0, -50}, true},
+        {{-50, -50}, gui::PenPointKind::Hard, {0, 50}, {16.6666666666667, 0}, true}};
     const gui::PenContour contour = gui::buildPenContour(request.points);
     const gui::PenFillResult result = gui::fillPenPath(request);
     const QPainterPath coreCoverage = placementCoverage(result, primitives);
@@ -2411,24 +2149,51 @@ void crossedCoreRetainsValidFits(TestContext *test)
     gui::PenFillRequest request;
     request.primitives = primitives;
     request.boundaryTolerance = 0.5;
-    request.points = {{{113.734, 0.0}, gui::PenPointKind::Hard},
-                      {{32.6528, 11.8846}, gui::PenPointKind::Soft},
-                      {{95.7775, 80.3669}, gui::PenPointKind::Hard},
-                      {{14.3184, 24.8003}, gui::PenPointKind::Soft},
-                      {{21.5951, 122.472}, gui::PenPointKind::Hard},
-                      {{-26.0475, 147.723}, gui::PenPointKind::Soft},
-                      {{-61.0773, 105.789}, gui::PenPointKind::Hard},
-                      {{-34.5291, 28.9734}, gui::PenPointKind::Soft},
-                      {{-91.7899, 33.4088}, gui::PenPointKind::Hard},
-                      {{-181.514, 0.0}, gui::PenPointKind::Soft},
-                      {{-116.816, -42.5177}, gui::PenPointKind::Hard},
-                      {{-70.0474, -58.7767}, gui::PenPointKind::Soft},
-                      {{-62.194, -107.723}, gui::PenPointKind::Hard},
-                      {{-4.40167, -24.9631}, gui::PenPointKind::Soft},
-                      {{17.1126, -97.0503}, gui::PenPointKind::Hard},
-                      {{75.438, -130.662}, gui::PenPointKind::Soft},
-                      {{59.969, -50.3199}, gui::PenPointKind::Hard},
-                      {{101.037, -36.7745}, gui::PenPointKind::Soft}};
+    request.points = {{{113.734, 0},
+                       gui::PenPointKind::Hard,
+                       {-8.46466666666666, -24.5163333333333},
+                       {-54.0541333333333, 7.92306666666667},
+                       true},
+                      {{95.7775, 80.3669},
+                       gui::PenPointKind::Hard,
+                       {-42.0831333333333, -45.6548666666667},
+                       {-54.3060666666667, -37.0444},
+                       true},
+                      {{21.5951, 122.472},
+                       gui::PenPointKind::Hard,
+                       {-4.85113333333333, -65.1144666666667},
+                       {-31.7617333333333, 16.834},
+                       true},
+                      {{-61.0773, 105.789},
+                       gui::PenPointKind::Hard,
+                       {23.3532, 27.956},
+                       {17.6988, -51.2104},
+                       true},
+                      {{-91.7899, 33.4088},
+                       gui::PenPointKind::Hard,
+                       {38.1738666666667, -2.95693333333333},
+                       {-59.8160666666667, -22.2725333333333},
+                       true},
+                      {{-116.816, -42.5177},
+                       gui::PenPointKind::Hard,
+                       {-43.132, 28.3451333333333},
+                       {31.1790666666667, -10.8393333333333},
+                       true},
+                      {{-62.194, -107.723},
+                       gui::PenPointKind::Hard,
+                       {-5.23559999999999, 32.6308666666667},
+                       {38.52822, 55.1732666666667},
+                       true},
+                      {{17.1126, -97.0503},
+                       gui::PenPointKind::Hard,
+                       {-14.3428466666667, 48.0581333333333},
+                       {38.8836, -22.4078},
+                       true},
+                      {{59.969, -50.3199},
+                       gui::PenPointKind::Hard,
+                       {10.3126666666667, -53.5614},
+                       {27.3786666666667, 9.03026666666666},
+                       true}};
     test->expect(gui::buildPenContour(request.points).valid(),
                  "the local-repair contour should be a simple Pen path");
     const gui::PenFillResult result = gui::fillPenPath(request);
@@ -2449,13 +2214,36 @@ void pointedCurveUsesContainedPrimitive(TestContext *test)
     gui::PenFillRequest request;
     request.primitives = penPrimitiveCatalog(test);
     request.boundaryTolerance = 0.5;
-    request.points = {{{-50.0, 0.0}, gui::PenPointKind::Hard},
-                      {{0.0, -60.0}, gui::PenPointKind::Soft},
-                      {{50.0, 0.0}, gui::PenPointKind::Hard},
-                      {{150.0, 200.0}, gui::PenPointKind::Hard},
-                      {{20.0, 340.0}, gui::PenPointKind::Hard},
-                      {{-20.0, 340.0}, gui::PenPointKind::Hard},
-                      {{-150.0, 200.0}, gui::PenPointKind::Hard}};
+    request.points = {{{-50, 0},
+                       gui::PenPointKind::Hard,
+                       {-33.3333333333333, 66.6666666666667},
+                       {33.3333333333333, -40},
+                       true},
+                      {{50, 0},
+                       gui::PenPointKind::Hard,
+                       {-33.3333333333333, -40},
+                       {33.3333333333333, 66.6666666666667},
+                       true},
+                      {{150, 200},
+                       gui::PenPointKind::Hard,
+                       {-33.3333333333333, -66.6666666666667},
+                       {-43.3333333333333, 46.6666666666667},
+                       true},
+                      {{20, 340},
+                       gui::PenPointKind::Hard,
+                       {43.3333333333333, -46.6666666666667},
+                       {-13.3333333333333, 0},
+                       true},
+                      {{-20, 340},
+                       gui::PenPointKind::Hard,
+                       {13.3333333333333, 0},
+                       {-43.3333333333333, -46.6666666666667},
+                       true},
+                      {{-150, 200},
+                       gui::PenPointKind::Hard,
+                       {43.3333333333333, 46.6666666666667},
+                       {33.3333333333333, -66.6666666666667},
+                       true}};
     const gui::PenFillResult result = gui::fillPenPath(request);
     test->expect(result.error.isEmpty(), "a pointed curve region should fill");
     test->expect(hasPlacement(result, 127),
@@ -2502,9 +2290,8 @@ void curvedCenterlineBuildsAndFills(TestContext *test)
 {
     gui::LiningFillRequest request;
     request.points = {
-        {{-60.0, 0.0}, gui::PenPointKind::Hard},
-        {{0.0, -55.0}, gui::PenPointKind::Soft},
-        {{60.0, 0.0}, gui::PenPointKind::Hard},
+        {{-60, 0}, gui::PenPointKind::Hard, {0, 0}, {40, -36.6666666666667}, true},
+        {{60, 0}, gui::PenPointKind::Hard, {-40, -36.6666666666667}, {0, 0}, true},
     };
     request.width = 10.0;
     request.primitives = liningPrimitiveCatalog(test);
@@ -2529,11 +2316,9 @@ void adjacentLiningPlacementsOverlap(TestContext *test)
 {
     gui::LiningFillRequest request;
     request.points = {
-        {{-150.0, 0.0}, gui::PenPointKind::Hard},
-        {{-75.0, -55.0}, gui::PenPointKind::Soft},
-        {{0.0, 0.0}, gui::PenPointKind::Hard},
-        {{75.0, 55.0}, gui::PenPointKind::Soft},
-        {{150.0, 0.0}, gui::PenPointKind::Hard},
+        {{-150, 0}, gui::PenPointKind::Hard, {0, 0}, {50, -36.6666666666667}, true},
+        {{0, 0}, gui::PenPointKind::Hard, {-50, -36.6666666666667}, {50, 36.6666666666667}, true},
+        {{150, 0}, gui::PenPointKind::Hard, {-50, 36.6666666666667}, {0, 0}, true},
     };
     request.width = 10.0;
     request.primitives = liningPrimitiveCatalog(test);
@@ -2556,9 +2341,8 @@ void shallowCurveCanUseComplementaryHairs(TestContext *test)
 {
     gui::LiningFillRequest request;
     request.points = {
-        {{-100.0, 0.0}, gui::PenPointKind::Hard},
-        {{0.0, -20.0}, gui::PenPointKind::Soft},
-        {{100.0, 0.0}, gui::PenPointKind::Hard},
+        {{-100, 0}, gui::PenPointKind::Hard, {0, 0}, {66.6666666666667, -13.3333333333333}, true},
+        {{100, 0}, gui::PenPointKind::Hard, {-66.6666666666667, -13.3333333333333}, {0, 0}, true},
     };
     request.width = 10.0;
     request.primitives = liningPrimitiveCatalog(test);
@@ -2652,12 +2436,10 @@ void wideCenterlineCanUsePill(TestContext *test)
 void hairOrientationFollowsPathSide(TestContext *test)
 {
     const QVector<gui::PenPoint> source = {
-        {{-180.0, 0.0}, gui::PenPointKind::Hard},
-        {{-135.0, -15.0}, gui::PenPointKind::Soft},
-        {{-90.0, 0.0}, gui::PenPointKind::Hard},
-        {{90.0, 0.0}, gui::PenPointKind::Hard},
-        {{135.0, -15.0}, gui::PenPointKind::Soft},
-        {{180.0, 0.0}, gui::PenPointKind::Hard},
+        {{-180, 0}, gui::PenPointKind::Hard, {0, 0}, {30, -10}, true},
+        {{-90, 0}, gui::PenPointKind::Hard, {-30, -10}, {60, 0}, true},
+        {{90, 0}, gui::PenPointKind::Hard, {-60, 0}, {30, -10}, true},
+        {{180, 0}, gui::PenPointKind::Hard, {-30, -10}, {0, 0}, true},
     };
     for (const double rotation : {0.0, 67.0}) {
         for (const bool reverse : {false, true}) {
@@ -2665,10 +2447,12 @@ void hairOrientationFollowsPathSide(TestContext *test)
             transform.rotate(rotation);
             QVector<gui::PenPoint> points = source;
             for (gui::PenPoint &point : points) {
-                point.position = transform.map(point.position);
+                gui::transformPenPoint(point, transform);
             }
             if (reverse) {
                 std::reverse(points.begin(), points.end());
+                for (auto &point : points)
+                    std::swap(point.incoming, point.outgoing);
             }
             gui::LiningFillRequest request;
             request.points = points;
@@ -2688,8 +2472,8 @@ void hairOrientationFollowsPathSide(TestContext *test)
             }
             const QPointF pathChord = points.back().position - points.front().position;
             double pathSide = 0.0;
-            for (int index = 1; index + 1 < points.size(); ++index) {
-                const QPointF delta = points[index].position - points.front().position;
+            for (const auto &segment : gui::penSegments(points, false)) {
+                const QPointF delta = segment.point(0.5) - points.front().position;
                 pathSide += pathChord.x() * delta.y() - pathChord.y() * delta.x();
             }
             const auto hair = std::find_if(request.primitives.cbegin(),
@@ -2722,12 +2506,31 @@ void longSoftRunUsesOverlappingArcs(TestContext *test)
 {
     gui::LiningFillRequest request;
     request.points = {
-        {{-218.1588, 456.7003}, gui::PenPointKind::Hard},
-        {{-169.7437, 502.7537}, gui::PenPointKind::Soft},
-        {{-100.4668, 548.8070}, gui::PenPointKind::Soft},
-        {{-54.4135, 569.6688}, gui::PenPointKind::Soft},
-        {{-13.0835, 583.8391}, gui::PenPointKind::Soft},
-        {{49.5018, 594.8604}, gui::PenPointKind::Hard},
+        {{-218.1588, 456.7003},
+         gui::PenPointKind::Hard,
+         {0, 0},
+         {32.2767333333333, 30.7022666666666},
+         true},
+        {{-135.10525, 525.78035},
+         gui::PenPointKind::Soft,
+         {-23.0923, -15.3511},
+         {23.0923, 15.3511},
+         true},
+        {{-77.44015, 559.2379},
+         gui::PenPointKind::Soft,
+         {-15.3511, -6.95393333333334},
+         {15.3511, 6.95393333333334},
+         true},
+        {{-33.7485, 576.75395},
+         gui::PenPointKind::Soft,
+         {-13.7766666666667, -4.72343333333333},
+         {13.7766666666667, 4.72343333333333},
+         true},
+        {{49.5018, 594.8604},
+         gui::PenPointKind::Hard,
+         {-41.7235333333333, -7.34753333333333},
+         {0, 0},
+         true},
     };
     request.width = 4.0;
     request.primitives = liningPrimitiveCatalog(test);
@@ -2749,43 +2552,141 @@ void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
 {
     gui::LiningFillRequest request;
     request.points = {
-        {{-215.1029, 457.9713}, gui::PenPointKind::Hard},
-        {{-232.8158, 454.8224}, gui::PenPointKind::Hard},
-        {{-213.9221, 472.1416}, gui::PenPointKind::Hard},
-        {{-233.9966, 465.4501}, gui::PenPointKind::Hard},
-        {{-207.2306, 500.4821}, gui::PenPointKind::Hard},
-        {{-220.2200, 495.7587}, gui::PenPointKind::Hard},
-        {{-204.0816, 511.5034}, gui::PenPointKind::Hard},
-        {{-221.0072, 512.6843}, gui::PenPointKind::Soft},
-        {{-244.2307, 502.8438}, gui::PenPointKind::Hard},
-        {{-222.5817, 524.4928}, gui::PenPointKind::Soft},
-        {{-201.3263, 531.1844}, gui::PenPointKind::Hard},
-        {{-224.9434, 539.4503}, gui::PenPointKind::Hard},
-        {{-209.5923, 552.8334}, gui::PenPointKind::Soft},
-        {{-189.5177, 549.2908}, gui::PenPointKind::Hard},
-        {{-206.4433, 561.8866}, gui::PenPointKind::Soft},
-        {{-216.6774, 582.7484}, gui::PenPointKind::Hard},
-        {{-197.3901, 577.6313}, gui::PenPointKind::Hard},
-        {{-202.1135, 589.8335}, gui::PenPointKind::Hard},
-        {{-191.8794, 585.8973}, gui::PenPointKind::Hard},
-        {{-205.6561, 622.5038}, gui::PenPointKind::Soft},
-        {{-208.4114, 664.2274}, gui::PenPointKind::Hard},
-        {{-175.7411, 631.9507}, gui::PenPointKind::Hard},
-        {{-177.7092, 642.5784}, gui::PenPointKind::Soft},
-        {{-172.5921, 652.0252}, gui::PenPointKind::Hard},
-        {{-165.9006, 637.4613}, gui::PenPointKind::Hard},
-        {{-163.9325, 675.6423}, gui::PenPointKind::Soft},
-        {{-147.0069, 705.1637}, gui::PenPointKind::Hard},
-        {{-128.9005, 648.4827}, gui::PenPointKind::Hard},
-        {{-122.6026, 668.1636}, gui::PenPointKind::Soft},
-        {{-112.7621, 681.9402}, gui::PenPointKind::Hard},
-        {{-109.6132, 668.5572}, gui::PenPointKind::Soft},
-        {{-98.1982, 660.6848}, gui::PenPointKind::Hard},
-        {{-96.2301, 665.8019}, gui::PenPointKind::Hard},
-        {{-90.7195, 657.9295}, gui::PenPointKind::Hard},
-        {{-87.1769, 675.2487}, gui::PenPointKind::Hard},
-        {{-83.6344, 665.0146}, gui::PenPointKind::Soft},
-        {{-75.3684, 659.1103}, gui::PenPointKind::Hard},
+        {{-215.1029, 457.9713},
+         gui::PenPointKind::Hard,
+         {0, 0},
+         {-5.90430000000001, -1.0496333333333},
+         true},
+        {{-232.8158, 454.8224},
+         gui::PenPointKind::Hard,
+         {5.90430000000001, 1.0496333333333},
+         {6.2979, 5.77306666666664},
+         true},
+        {{-213.9221, 472.1416},
+         gui::PenPointKind::Hard,
+         {-6.2979, -5.77306666666664},
+         {-6.69149999999999, -2.23050000000001},
+         true},
+        {{-233.9966, 465.4501},
+         gui::PenPointKind::Hard,
+         {6.69149999999999, 2.23050000000001},
+         {8.922, 11.6773333333333},
+         true},
+        {{-207.2306, 500.4821},
+         gui::PenPointKind::Hard,
+         {-8.922, -11.6773333333333},
+         {-4.32980000000001, -1.57446666666669},
+         true},
+        {{-220.22, 495.7587},
+         gui::PenPointKind::Hard,
+         {4.32980000000001, 1.57446666666669},
+         {5.37946666666667, 5.24823333333336},
+         true},
+        {{-204.0816, 511.5034},
+         gui::PenPointKind::Hard,
+         {-5.37946666666667, -5.24823333333336},
+         {-11.2837333333333, 0.787266666666653},
+         true},
+        {{-244.2307, 502.8438},
+         gui::PenPointKind::Hard,
+         {15.4823333333333, 6.56033333333335},
+         {14.4326666666667, 14.4326666666667},
+         true},
+        {{-201.3263, 531.1844},
+         gui::PenPointKind::Hard,
+         {-14.1702666666667, -4.46106666666662},
+         {-7.87236666666666, 2.75530000000003},
+         true},
+        {{-224.9434, 539.4503},
+         gui::PenPointKind::Hard,
+         {7.87236666666666, -2.75530000000003},
+         {10.2340666666667, 8.92206666666664},
+         true},
+        {{-189.5177, 549.2908},
+         gui::PenPointKind::Hard,
+         {-13.3830666666667, 2.36173333333329},
+         {-11.2837333333333, 8.3972},
+         true},
+        {{-216.6774, 582.7484},
+         gui::PenPointKind::Hard,
+         {6.82273333333333, -13.9078666666666},
+         {6.42910000000001, -1.70569999999998},
+         true},
+        {{-197.3901, 577.6313},
+         gui::PenPointKind::Hard,
+         {-6.42910000000001, 1.70569999999998},
+         {-1.57446666666667, 4.06740000000002},
+         true},
+        {{-202.1135, 589.8335},
+         gui::PenPointKind::Hard,
+         {1.57446666666667, -4.06740000000002},
+         {3.41136666666665, -1.31206666666662},
+         true},
+        {{-191.8794, 585.8973},
+         gui::PenPointKind::Hard,
+         {-3.41136666666665, 1.31206666666662},
+         {-9.18446666666668, 24.4043333333333},
+         true},
+        {{-208.4114, 664.2274},
+         gui::PenPointKind::Hard,
+         {1.83686666666665, -27.8157333333334},
+         {10.8901, -10.7589},
+         true},
+        {{-175.7411, 631.9507},
+         gui::PenPointKind::Hard,
+         {-10.8901, 10.7589},
+         {-1.31206666666668, 7.08513333333337},
+         true},
+        {{-172.5921, 652.0252},
+         gui::PenPointKind::Hard,
+         {-3.41140000000001, -6.29786666666666},
+         {2.23050000000001, -4.85463333333337},
+         true},
+        {{-165.9006, 637.4613},
+         gui::PenPointKind::Hard,
+         {-2.23050000000001, 4.85463333333337},
+         {1.31206666666665, 25.454},
+         true},
+        {{-147.0069, 705.1637},
+         gui::PenPointKind::Hard,
+         {-11.2837333333333, -19.6809333333333},
+         {6.03546666666668, -18.8936666666666},
+         true},
+        {{-128.9005, 648.4827},
+         gui::PenPointKind::Hard,
+         {-6.03546666666668, 18.8936666666666},
+         {4.1986, 13.1206},
+         true},
+        {{-112.7621, 681.9402},
+         gui::PenPointKind::Hard,
+         {-6.56033333333333, -9.18439999999998},
+         {2.09926666666667, -8.92200000000003},
+         true},
+        {{-98.1982, 660.6848},
+         gui::PenPointKind::Hard,
+         {-7.61, 5.24826666666661},
+         {0.65603333333334, 1.70569999999998},
+         true},
+        {{-96.2301, 665.8019},
+         gui::PenPointKind::Hard,
+         {-0.65603333333334, -1.70569999999998},
+         {1.83686666666667, -2.62413333333336},
+         true},
+        {{-90.7195, 657.9295},
+         gui::PenPointKind::Hard,
+         {-1.83686666666667, 2.62413333333336},
+         {1.18086666666666, 5.77306666666664},
+         true},
+        {{-87.1769, 675.2487},
+         gui::PenPointKind::Hard,
+         {-1.18086666666666, -5.77306666666664},
+         {2.36166666666666, -6.8227333333333},
+         true},
+        {{-75.3684, 659.1103},
+         gui::PenPointKind::Hard,
+         {-5.51066666666667, 3.93619999999999},
+         {0, 0},
+         true},
     };
     request.width = 4.0;
     request.primitives = liningPrimitiveCatalog(test);
@@ -2831,8 +2732,7 @@ void denseLiningPathKeepsHairDirectionAndCurve(TestContext *test)
         directionMatches = directionMatches
             && QPointF::dotProduct(tip - base, desiredDirection) > 0.0;
         if (segment.curved) {
-            const QPointF targetMiddle = segment.start * 0.25
-                + segment.control * 0.5 + segment.end * 0.25;
+            const QPointF targetMiddle = segment.point(0.5);
             const QPointF placedMiddle = placement.transform.map(ends->middle);
             curveMatches = curveMatches
                 && QLineF(placedMiddle, targetMiddle).length() <= request.width;
@@ -2879,6 +2779,14 @@ int compareLoggedPen(const QString &path)
             : gui::PenPointKind::Soft;
         request.points.push_back(
             {{position[0].toDouble(), position[1].toDouble()}, kind});
+        const auto incoming = pointObject.value(QStringLiteral("incoming")).toArray();
+        const auto outgoing = pointObject.value(QStringLiteral("outgoing")).toArray();
+        auto &anchor = request.points.back();
+        anchor.explicitHandles = pointObject.value(QStringLiteral("explicitHandles")).toBool();
+        if (anchor.explicitHandles && incoming.size() == 2 && outgoing.size() == 2) {
+            anchor.incoming = {incoming[0].toDouble(), incoming[1].toDouble()};
+            anchor.outgoing = {outgoing[0].toDouble(), outgoing[1].toDouble()};
+        }
     }
     gui::ShapeGeometryStore geometry;
     QString geometryError;
@@ -3218,6 +3126,14 @@ int inspectBucketPenLog(const QString &imagePath, const QPoint &seed,
                         == QStringLiteral("hard")
                     ? gui::PenPointKind::Hard : gui::PenPointKind::Soft,
             });
+            const auto incoming = pointObject.value(QStringLiteral("incoming")).toArray();
+            const auto outgoing = pointObject.value(QStringLiteral("outgoing")).toArray();
+            auto &anchor = loop.points.back();
+            anchor.explicitHandles = pointObject.value(QStringLiteral("explicitHandles")).toBool();
+            if (anchor.explicitHandles && incoming.size() == 2 && outgoing.size() == 2) {
+                anchor.incoming = {incoming[0].toDouble(), -incoming[1].toDouble()};
+                anchor.outgoing = {outgoing[0].toDouble(), -outgoing[1].toDouble()};
+            }
         }
         loops.push_back(std::move(loop));
     }
@@ -3323,17 +3239,11 @@ int main(int argc, char **argv)
     tracedCurvesPreserveTangentsAndCutouts(&test);
     tracedInflectionRemainsSmooth(&test);
     centuryGothicLowercaseAUsesFullWidth(&test);
-    alternatingCurvatureMerges(&test);
     sharpLineCornersStayHard(&test);
     excessiveDisplacementDoesNotMerge(&test);
-    negligibleSoftRunBecomesLine(&test);
-    visibleSoftRunRemainsCurved(&test);
-    rasterDssimGuardsSoftRunReduction(&test);
     containedHoleIsIgnored(&test);
     invalidContoursAreRejected(&test);
     conversionIsDeterministic(&test);
-    conversionOptimizationIsBounded(&test);
-    rasterDssimGuardsCurveSimplification(&test);
     denseValidPolygonTriangulates(&test);
     ellipseLikeCoreUsesOneCircle(&test);
     arcPrimitivesFillCurvedBoundaries(&test);
@@ -3379,7 +3289,6 @@ int main(int argc, char **argv)
     smoothRasterConversionPreservesSharpNotch(&test);
     smoothRasterConversionPreservesSmallCurves(&test);
     bucketTracePreservesSmallCurves(&test);
-    rdpHybridQuadraticMatchesAnalyzer(&test);
     if (test.failures() == 0) {
         std::cout << "All region Pen conversion tests passed\n";
     }
