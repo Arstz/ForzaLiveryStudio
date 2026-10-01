@@ -37,15 +37,25 @@ void geometry() {
     auto loops = gui::cubicPathLoops(path, &error);
     require(!loops.isEmpty(), qPrintable(error));
     const auto before = gui::penSegments(loops[0].points);
-    require(norm(before[0].control - s.control) < 1e-9 &&
-                norm(before[0].control2 - s.control2) < 1e-9,
-            "Authored cubics must retain both controls exactly");
+    require(before.size() >= 4 && before[0].curved && before[1].curved,
+            "A curved hard-to-hard span needs a soft anchor");
+    for (int i = 0; i <= 20; ++i) {
+        const double t = i / 20.0;
+        require(norm(before[0].point(t) - s.point(t * 0.5)) < 1e-9
+            && norm(before[1].point(t) - s.point(0.5 + t * 0.5)) < 1e-9,
+            "Authored cubic changed while splitting hard endpoints");
+    }
+    for (int i = 0; i < loops[0].points.size(); ++i)
+        if (loops[0].points[i].kind == gui::PenPointKind::Hard
+            && loops[0].points[(i + 1) % loops[0].points.size()].kind == gui::PenPointKind::Hard)
+            require(!before[i].curved, "Hard-to-hard segment retained a curve");
     gui::insertPenAnchor(loops[0].points, 1, s.point(0.4));
     const auto after = gui::penSegments(loops[0].points);
     require(after.size() == before.size() + 1, "Inserting an anchor must split one span");
     require(norm(after[0].point(1) - s.point(0.4)) < 1e-6, "Inserted anchor misses curve");
     require(norm(after[1].control2 - s.control2) > 1, "Split must retain native cubic handles");
-    require(std::abs(after[0].signedArea() + after[1].signedArea() - s.signedArea()) < 1e-8,
+    require(std::abs(after[0].signedArea() + after[1].signedArea()
+        + after[2].signedArea() - s.signedArea()) < 1e-8,
             "Split changed area");
     QTransform transform;
     transform.scale(2, 0.4);
@@ -59,6 +69,12 @@ void geometry() {
             require(norm(transformed[i].point(j / 20.0) - transform.map(after[i].point(j / 20.0))) <
                         1e-8,
                     "Transform lost cubic handles");
+    const QVector<gui::PenPoint> hardCorners{
+        {{0, 0}, gui::PenPointKind::Hard, {0, -40}, {0, 40}, true},
+        {{100, 0}, gui::PenPointKind::Hard, {0, 40}, {0, -40}, true},
+        {{50, 80}, gui::PenPointKind::Hard, {40, 0}, {-40, 0}, true}};
+    for (const auto &segment : gui::penSegments(hardCorners))
+        require(!segment.curved, "Hard-to-hard connection must be straight");
     QPainterPath ellipse;
     ellipse.addEllipse(QRectF(0, 0, 100, 70));
     const auto smooth = gui::cubicPathLoops(ellipse);
@@ -172,6 +188,12 @@ void masks(const QString &output) {
     QPainterPath rectangle;
     rectangle.addRect(4, 5, 80, 60);
     checkMask("rectangle", rectangle, {100, 80}, {10, 10}, 4, 0);
+    const auto rectangleMask = gui::floodGuideRegion(raster(rectangle, {100, 80}), {10, 10}, 0);
+    const auto rectangleLoops = gui::fitMaskContours(
+        rectangleMask.mask, rectangleMask.imageSize, rectangleMask.bounds);
+    require(rectangleLoops.size() == 1, "Rectangle contour was not fitted");
+    for (const auto &segment : gui::penSegments(rectangleLoops.front().points))
+        require(!segment.curved, "Straight hard-to-hard edge retained curved handles");
     QPainterPath ellipse;
     ellipse.addEllipse(10, 10, 140, 90);
     checkMask("ellipse", ellipse, {170, 120}, {80, 50}, 12, 0);

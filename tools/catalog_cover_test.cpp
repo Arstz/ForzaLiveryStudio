@@ -143,6 +143,7 @@ gui::PenFillRequest readRequest(const QString &path) {
                 anchor.outgoing = {outgoing[0].toDouble(), outgoing[1].toDouble()};
             }
         }
+        gui::splitCurvedHardSpans(loop.points);
         request.loops.push_back(loop);
     }
     require(!request.loops.isEmpty(), QStringLiteral("Replay log has no contour loops"));
@@ -1210,6 +1211,35 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
 
 #ifdef FLS_HAS_CUDA
 void gpuRasterRankTests() {
+    const std::vector<gui::compact::gpu::MaskWord> maskWords{
+        {0, 0b0011}, {1, 0b0001}, {0, 0b0110}, {1, 0b0010}};
+    const std::vector<int> maskOffsets{0, 2, 4};
+    const std::vector<std::uint64_t> missing{0b0111, 0b0011};
+    auto bitmask = gui::compact::gpu::createBitmaskCover(maskWords, maskOffsets, missing, 1);
+    std::vector<gui::compact::gpu::MaskCounts> maskCounts;
+    require(bitmask && bitmask->error().empty() && bitmask->score(&maskCounts)
+        && maskCounts.size() == 2 && maskCounts[0].cells == 2
+        && maskCounts[0].boundary == 1 && maskCounts[1].cells == 2
+        && maskCounts[1].boundary == 1 && bitmask->remove(0)
+        && bitmask->score(&maskCounts) && maskCounts[0].cells == 0
+        && maskCounts[0].boundary == 0 && maskCounts[1].cells == 1
+        && maskCounts[1].boundary == 1,
+        QStringLiteral("CUDA bitmask marginal counts or coverage update failed"));
+    gui::compact::gpu::MaskGeometry maskGeometry;
+    maskGeometry.points = {{0, 0}, {4, 0}, {4, 4}, {0, 4},
+                           {4, 0}, {8, 0}, {8, 4}, {4, 4}};
+    maskGeometry.loops = {{0, 4}, {4, 4}};
+    maskGeometry.pieces = {{0, 1}, {1, 1}};
+    maskGeometry.bounds = {{0, 0, 4, 4}, {4, 0, 8, 4}};
+    std::vector<std::uint64_t> rasterMasks;
+    std::vector<std::uint64_t> witnessMasks;
+    std::string rasterError;
+    require(gui::compact::gpu::rasterizeBitmasks(maskGeometry,
+        {0, 0, 1, 8, 4}, {{0.5, 0.5}, {4.5, 0.5}, {7.5, 3.5}},
+        &rasterMasks, &witnessMasks, &rasterError)
+        && rasterMasks == std::vector<std::uint64_t>{0x0f0f0f0f, 0xf0f0f0f0}
+        && witnessMasks == std::vector<std::uint64_t>{0b001, 0b110},
+        QStringLiteral("CUDA profile grid rasterization changed pixel coverage"));
     const auto appendRectangle = [](gui::compact::gpu::Geometry *geometry,
                                     float left, float top, float right, float bottom) {
         const int pointOffset = static_cast<int>(geometry->points.size());
@@ -1598,13 +1628,13 @@ int main(int argc, char **argv) {
                 replayOptions.searchNodes = 0;
             } else if (application.arguments()[1] == QStringLiteral("--replay-seed")) {
                 // Seed-only replay keeps large contour comparisons practical.
-            } else if (application.arguments()[1] == QStringLiteral("--replay-profile")) {
-                // Profile replay uses the same default fit options as the application.
             } else if (application.arguments()[1] == QStringLiteral("--replay-compact")) {
                 replayOptions.candidateLimit = 1;
                 replayOptions.searchNodes = 0;
             } else {
-                require(application.arguments()[1] == QStringLiteral("--replay"),
+                require(application.arguments()[1] == QStringLiteral("--replay")
+                        || application.arguments()[1] == QStringLiteral("--replay-profile")
+                        || application.arguments()[1] == QStringLiteral("--replay-profile-cpu"),
                         QStringLiteral("Unknown replay mode"));
             }
             const auto request = readRequest(application.arguments()[2]);
@@ -1637,12 +1667,15 @@ int main(int argc, char **argv) {
             timer.start();
             gui::compact::FillOptions profileOptions;
             profileOptions.retainFailedFill = true;
+            profileOptions.useGpu = application.arguments()[1] != QStringLiteral("--replay-profile-cpu");
             profileOptions.seedOnly = application.arguments()[1] == QStringLiteral("--replay-seed");
             const auto replay = application.arguments()[1] == QStringLiteral("--replay-seed")
                 || application.arguments()[1] == QStringLiteral("--replay-profile")
+                || application.arguments()[1] == QStringLiteral("--replay-profile-cpu")
                 ? gui::profile::fillRegion(request, fullCatalog, profileOptions)
                 : gui::catalog::fillRegion(request, fullCatalog, replayOptions);
-            if (application.arguments()[1] == QStringLiteral("--replay-profile")
+            if ((application.arguments()[1] == QStringLiteral("--replay-profile")
+                 || application.arguments()[1] == QStringLiteral("--replay-profile-cpu"))
                 && !replay.fill.placements.isEmpty()) {
                 const auto region = gui::catalog::buildRegion(request, {});
                 const QRectF bounds = region.bounds.adjusted(-20, -20, 20, 20);

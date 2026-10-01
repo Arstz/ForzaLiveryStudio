@@ -1165,16 +1165,47 @@ std::optional<CurvePlacement> outwardSpanPlacement(const QVector<CurvePrimitive>
     return best;
 }
 
+std::optional<PenBoundarySegment> mergedHalfCubic(const PenBoundarySegment &left,
+                                                   const PenBoundarySegment &right) {
+    if (!left.curved || !right.curved || QLineF(left.end, right.start).length() > 1e-8)
+        return std::nullopt;
+    PenBoundarySegment merged{left.start, left.start + (left.control - left.start) * 2,
+        right.end, true, right.end + (right.control2 - right.end) * 2};
+    const auto [first, second] = merged.split();
+    const double tolerance = std::max(1.0, QLineF(merged.start, merged.end).length()) * 1e-7;
+    if (QLineF(first.control, left.control).length() > tolerance
+        || QLineF(first.control2, left.control2).length() > tolerance
+        || QLineF(first.end, left.end).length() > tolerance
+        || QLineF(second.control, right.control).length() > tolerance
+        || QLineF(second.control2, right.control2).length() > tolerance)
+        return std::nullopt;
+    return merged;
+}
+
 QVector<PenBoundarySegment> curvatureOrderedSegments(const QVector<PenBoundarySegment> &segments,
                                                      double orientationSign) {
     if (segments.size() < 2) {
         return segments;
     }
+    QVector<PenBoundarySegment> consolidated;
+    consolidated.reserve(segments.size());
+    for (int i = 0; i < segments.size(); ++i) {
+        if (i + 1 < segments.size()) {
+            if (auto merged = mergedHalfCubic(segments[i], segments[i + 1])) {
+                consolidated.push_back(*merged);
+                ++i;
+                continue;
+            }
+        }
+        consolidated.push_back(segments[i]);
+    }
+    if (consolidated.size() < 2)
+        return consolidated;
     int seam = 0;
     double bestSeparation = -1.0;
-    for (int i = 0; i < segments.size(); ++i) {
-        const PenBoundarySegment &left = segments[(i + segments.size() - 1) % segments.size()];
-        const PenBoundarySegment &right = segments[i];
+    for (int i = 0; i < consolidated.size(); ++i) {
+        const PenBoundarySegment &left = consolidated[(i + consolidated.size() - 1) % consolidated.size()];
+        const PenBoundarySegment &right = consolidated[i];
         double separation = junctionSeparation(left, right);
         if (!isOutwardCurve(left, orientationSign)
             || !isOutwardCurve(right, orientationSign)) {
@@ -1186,9 +1217,9 @@ QVector<PenBoundarySegment> curvatureOrderedSegments(const QVector<PenBoundarySe
         }
     }
     QVector<PenBoundarySegment> result;
-    result.reserve(segments.size());
-    for (int i = 0; i < segments.size(); ++i) {
-        result.push_back(segments[(seam + i) % segments.size()]);
+    result.reserve(consolidated.size());
+    for (int i = 0; i < consolidated.size(); ++i) {
+        result.push_back(consolidated[(seam + i) % consolidated.size()]);
     }
     return result;
 }
@@ -1396,6 +1427,35 @@ QVector<CurveSpanPlacement> selectCurveSpans(const QVector<CurvePrimitive> &caps
 
 } // namespace
 
+void splitCurvedHardSpans(QVector<PenPoint> &points) {
+    if (points.size() < 2)
+        return;
+    for (int index = points.size() - 1; index >= 0; --index) {
+        const int next = (index + 1) % points.size();
+        const PenPoint &start = points[index], &end = points[next];
+        if (start.kind != PenPointKind::Hard || end.kind != PenPointKind::Hard
+            || !start.explicitHandles || !end.explicitHandles)
+            continue;
+        const FillBoundarySegment curve{start.position, start.position + start.outgoing,
+            end.position, true, end.position + end.incoming};
+        if (curve.flatness() <= 1e-9)
+            continue;
+        const auto [left, right] = curve.split();
+        points[index].outgoing = left.control - left.start;
+        points[next].incoming = right.control2 - right.end;
+        points.insert(index + 1, {left.end, PenPointKind::Soft,
+            left.control2 - left.end, right.control - right.start, true});
+    }
+    for (int index = 0; index < points.size(); ++index) {
+        const int next = (index + 1) % points.size();
+        if (points[index].kind == PenPointKind::Hard
+            && points[next].kind == PenPointKind::Hard) {
+            points[index].outgoing = {};
+            points[next].incoming = {};
+        }
+    }
+}
+
 QVector<PenBoundarySegment> penSegments(const QVector<PenPoint> &points, bool closed) {
     QVector<PenBoundarySegment> result;
     const int n = static_cast<int>(points.size());
@@ -1417,6 +1477,11 @@ QVector<PenBoundarySegment> penSegments(const QVector<PenPoint> &points, bool cl
         const auto &a = points[i], &b = points[j];
         const QPointF chord = b.position - a.position;
         const double length = std::hypot(chord.x(), chord.y());
+        if (closed && a.kind == PenPointKind::Hard && b.kind == PenPointKind::Hard) {
+            result.push_back({a.position, a.position + chord / 3, b.position,
+                              false, a.position + chord * (2.0 / 3.0)});
+            continue;
+        }
         const QPointF c1 = a.position + (a.explicitHandles              ? a.outgoing
                                          : a.kind == PenPointKind::Soft ? tangent(i) * (length / 3)
                                                                         : chord / 3);

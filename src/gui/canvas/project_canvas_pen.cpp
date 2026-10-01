@@ -125,12 +125,17 @@ void ProjectCanvas::rebuildPenHitCache() const {
     cache.revision = penGeometryRevision_;
     cache.camera = matrix;
     const auto appendPoints = [&cache, &matrix](const QVector<PenPoint> &points,
-                                                int loopIndex) {
+                                                int loopIndex, bool closed) {
         for (int pointIndex = 0; pointIndex < points.size(); ++pointIndex) {
             const auto &point = points[pointIndex];
             for (int handle : {0, -1, 1}) {
                 if (handle && !point.explicitHandles)
                     continue;
+                if (closed && handle && point.kind == PenPointKind::Hard) {
+                    const int neighbor = (pointIndex + (handle < 0 ? points.size() - 1 : 1)) % points.size();
+                    if (points[neighbor].kind == PenPointKind::Hard)
+                        continue;
+                }
                 const QPointF offset = handle < 0   ? point.incoming
                                        : handle > 0 ? point.outgoing
                                                     : QPointF{};
@@ -146,9 +151,10 @@ void ProjectCanvas::rebuildPenHitCache() const {
             }
         }
     };
-    appendPoints(pen_.points, -1);
+    appendPoints(pen_.points, -1, pen_.closed);
     for (int loopIndex = 0; loopIndex < pen_.cutouts.size(); ++loopIndex) {
-        appendPoints(pen_.cutouts[loopIndex], loopIndex);
+        appendPoints(pen_.cutouts[loopIndex], loopIndex,
+                     loopIndex != pen_.activeCutout || pen_.cutoutClosed);
     }
 
     for (const CachedPenLoop &loop : penGeometryCache().loops) {

@@ -114,13 +114,20 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
     }
 
     const auto drawLoopPoints = [&](const QVector<PenPoint> &points, int loopIndex) {
+        const bool loopClosed = loopIndex < 0 ? pen_.closed
+            : loopIndex != pen_.activeCutout || pen_.cutoutClosed;
         for (int i = 0; i < points.size(); ++i) {
             const PenPoint &point = points[i];
             const QPointF screen = worldToScreen(point.position);
             if (point.explicitHandles) {
                 painter.setPen(QPen(QColor(185, 190, 200, 150), 1));
                 painter.setBrush(QColor(145, 185, 225));
-                for (const auto offset : {point.incoming, point.outgoing}) {
+                for (int handle : {-1, 1}) {
+                    const int neighbor = (i + (handle < 0 ? points.size() - 1 : 1)) % points.size();
+                    if (loopClosed && point.kind == PenPointKind::Hard
+                        && points[neighbor].kind == PenPointKind::Hard)
+                        continue;
+                    const QPointF offset = handle < 0 ? point.incoming : point.outgoing;
                     const QPointF handle = worldToScreen(point.position + offset);
                     if (QLineF(screen, handle).length() < 10)
                         continue;

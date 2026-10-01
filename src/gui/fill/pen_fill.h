@@ -38,6 +38,7 @@ struct PenLoop {
 using PenBoundarySegment = FillBoundarySegment;
 
 QVector<PenBoundarySegment> penSegments(const QVector<PenPoint> &points, bool closed = true);
+void splitCurvedHardSpans(QVector<PenPoint> &points);
 QPainterPath penPath(const QVector<PenPoint> &points, bool closed = true);
 void materializePenHandles(QVector<PenPoint> &points, bool closed = true);
 void transformPenPoint(PenPoint &point, const QTransform &transform);

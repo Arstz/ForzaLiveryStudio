@@ -998,7 +998,289 @@ private:
     int cells_ = 0;
 };
 
+__global__ void bitmaskScoreKernel(const MaskWord *words, const int *offsets,
+                                   const std::uint64_t *missing, int cellWords,
+                                   int candidates, MaskCounts *counts) {
+    const int candidate = blockIdx.x * blockDim.x + threadIdx.x;
+    if (candidate >= candidates)
+        return;
+    MaskCounts count{};
+    for (int entry = offsets[candidate]; entry < offsets[candidate + 1]; ++entry) {
+        const MaskWord word = words[entry];
+        const unsigned int matched = __popcll(word.bits & missing[word.index]);
+        if (word.index < cellWords)
+            count.cells += matched;
+        else
+            count.boundary += matched;
+    }
+    counts[candidate] = count;
+}
+
+__global__ void bitmaskRemoveKernel(const MaskWord *words, const int *offsets,
+                                    std::uint64_t *missing, int candidate) {
+    for (int entry = offsets[candidate] + threadIdx.x;
+         entry < offsets[candidate + 1]; entry += blockDim.x) {
+        const MaskWord word = words[entry];
+        missing[word.index] &= ~word.bits;
+    }
+}
+
+class CudaBitmaskCover final : public BitmaskCover {
+public:
+    CudaBitmaskCover(const std::vector<MaskWord> &words,
+                     const std::vector<int> &offsets,
+                     const std::vector<std::uint64_t> &missing, int cellWords)
+        : candidateCount_(static_cast<int>(offsets.size()) - 1), cellWords_(cellWords) {
+        if (offsets.empty() || missing.empty() || cellWords < 0
+            || cellWords > static_cast<int>(missing.size())
+            || offsets.back() != static_cast<int>(words.size())) {
+            error_ = "Invalid bitmask cover";
+            return;
+        }
+        if (!check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking))
+            || !check(deviceWords_.reserve(words.size()))
+            || !check(deviceOffsets_.reserve(offsets.size()))
+            || !check(deviceMissing_.reserve(missing.size()))
+            || !check(deviceCounts_.reserve(candidateCount_))
+            || !check(cudaMemcpyAsync(deviceWords_.data(), words.data(),
+                words.size() * sizeof(MaskWord), cudaMemcpyHostToDevice, stream_))
+            || !check(cudaMemcpyAsync(deviceOffsets_.data(), offsets.data(),
+                offsets.size() * sizeof(int), cudaMemcpyHostToDevice, stream_))
+            || !check(cudaMemcpyAsync(deviceMissing_.data(), missing.data(),
+                missing.size() * sizeof(std::uint64_t), cudaMemcpyHostToDevice, stream_))
+            || !check(cudaStreamSynchronize(stream_)))
+            return;
+    }
+
+    ~CudaBitmaskCover() override {
+        if (stream_ != nullptr)
+            cudaStreamDestroy(stream_);
+    }
+
+    bool score(std::vector<MaskCounts> *counts) override {
+        if (!counts || !error_.empty())
+            return false;
+        counts->resize(candidateCount_);
+        bitmaskScoreKernel<<<(candidateCount_ + kThreads - 1) / kThreads,
+            kThreads, 0, stream_>>>(deviceWords_.data(), deviceOffsets_.data(),
+            deviceMissing_.data(), cellWords_, candidateCount_, deviceCounts_.data());
+
+        return check(cudaGetLastError())
+            && check(cudaMemcpyAsync(counts->data(), deviceCounts_.data(),
+                candidateCount_ * sizeof(MaskCounts), cudaMemcpyDeviceToHost, stream_))
+            && check(cudaStreamSynchronize(stream_));
+    }
+
+    bool remove(int candidate) override {
+        if (!error_.empty() || candidate < 0 || candidate >= candidateCount_)
+            return false;
+        bitmaskRemoveKernel<<<1, kThreads, 0, stream_>>>(deviceWords_.data(),
+            deviceOffsets_.data(), deviceMissing_.data(), candidate);
+
+        return check(cudaGetLastError());
+    }
+
+    std::string error() const override {
+        return error_;
+    }
+
+private:
+    bool check(cudaError_t status) {
+        if (status != cudaSuccess) {
+            error_ = cudaGetErrorString(status);
+            return false;
+        }
+
+        return true;
+    }
+
+    DeviceBuffer<MaskWord> deviceWords_;
+    DeviceBuffer<int> deviceOffsets_;
+    DeviceBuffer<std::uint64_t> deviceMissing_;
+    DeviceBuffer<MaskCounts> deviceCounts_;
+    cudaStream_t stream_ = nullptr;
+    std::string error_;
+    int candidateCount_ = 0;
+    int cellWords_ = 0;
+};
+
+struct MaskTile {
+    int candidate = 0;
+    int left = 0;
+    int top = 0;
+    int width = 0;
+    int height = 0;
+};
+
+struct MaskWitnessJob {
+    int candidate = 0;
+    int witness = 0;
+};
+
+__device__ bool maskContains(double x, double y, const MaskPoint *points,
+                             const Loop *loops, Piece piece) {
+    int winding = 0;
+    for (int loopIndex = piece.loopOffset;
+         loopIndex < piece.loopOffset + piece.loopCount; ++loopIndex) {
+        const Loop loop = loops[loopIndex];
+        for (int index = 0; index < loop.pointCount; ++index) {
+            const MaskPoint first = points[loop.pointOffset + index];
+            const MaskPoint second = points[loop.pointOffset + (index + 1) % loop.pointCount];
+            if (y < fmin(first.y, second.y) || y >= fmax(first.y, second.y))
+                continue;
+            const double crossing = first.x + (second.x - first.x)
+                * (y - first.y) / (second.y - first.y);
+            if (crossing <= x)
+                winding += second.y > first.y ? 1 : -1;
+        }
+    }
+
+    return winding != 0;
+}
+
+__global__ void bitmaskRasterKernel(const MaskPoint *points, const Loop *loops,
+                                    const Piece *pieces, const MaskTile *tiles,
+                                    MaskGrid grid, int wordsPerCandidate,
+                                    std::uint64_t *masks) {
+    const MaskTile tile = tiles[blockIdx.x];
+    const int column = tile.left + threadIdx.x;
+    const int row = tile.top + threadIdx.y;
+    if (threadIdx.x >= tile.width || threadIdx.y >= tile.height)
+        return;
+    const double x = grid.originX + (column + 0.5) * grid.step;
+    const double y = grid.originY + (row + 0.5) * grid.step;
+    const Piece piece = pieces[tile.candidate];
+    if (maskContains(x, y, points, loops, piece)) {
+        const int bit = row * grid.width + column;
+        auto *words = reinterpret_cast<unsigned long long *>(masks);
+        atomicOr(&words[tile.candidate * wordsPerCandidate + bit / 64],
+            1ULL << (bit % 64));
+    }
+}
+
+__global__ void bitmaskWitnessKernel(const MaskPoint *points, const Loop *loops,
+                                     const Piece *pieces, const MaskPoint *witnesses,
+                                     const MaskWitnessJob *jobs, int jobCount,
+                                     int wordsPerCandidate, std::uint64_t *masks) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= jobCount)
+        return;
+    const MaskWitnessJob job = jobs[index];
+    const MaskPoint witness = witnesses[job.witness];
+    if (maskContains(witness.x, witness.y, points, loops, pieces[job.candidate])) {
+        auto *words = reinterpret_cast<unsigned long long *>(masks);
+        atomicOr(&words[job.candidate * wordsPerCandidate + job.witness / 64],
+            1ULL << (job.witness % 64));
+    }
+}
+
 } // namespace
+
+bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
+                       const std::vector<MaskPoint> &witnesses,
+                       std::vector<std::uint64_t> *masks,
+                       std::vector<std::uint64_t> *boundaryMasks,
+                       std::string *error) {
+    if (!masks || !boundaryMasks || !error || grid.width <= 0 || grid.height <= 0
+        || grid.step <= 0 || geometry.pieces.size() != geometry.bounds.size())
+        return false;
+    error->clear();
+    const int wordsPerCandidate = (grid.width * grid.height + 63) / 64;
+    const int boundaryWordsPerCandidate = (static_cast<int>(witnesses.size()) + 63) / 64;
+    std::vector<MaskTile> tiles;
+    std::vector<MaskWitnessJob> jobs;
+    for (int candidate = 0; candidate < static_cast<int>(geometry.pieces.size()); ++candidate) {
+        const MaskBounds bounds = geometry.bounds[candidate];
+        const int left = std::clamp(static_cast<int>(std::floor(
+            (bounds.left - grid.originX) / grid.step - 0.5)) - 1, 0, grid.width);
+        const int top = std::clamp(static_cast<int>(std::floor(
+            (bounds.top - grid.originY) / grid.step - 0.5)) - 1, 0, grid.height);
+        const int right = std::clamp(static_cast<int>(std::ceil(
+            (bounds.right - grid.originX) / grid.step - 0.5)) + 1, 0, grid.width);
+        const int bottom = std::clamp(static_cast<int>(std::ceil(
+            (bounds.bottom - grid.originY) / grid.step - 0.5)) + 1, 0, grid.height);
+        for (int row = top; row < bottom; row += kTileExtent)
+            for (int column = left; column < right; column += kTileExtent)
+                tiles.push_back({candidate, column, row,
+                    std::min(kTileExtent, right - column),
+                    std::min(kTileExtent, bottom - row)});
+        for (int witness = 0; witness < static_cast<int>(witnesses.size()); ++witness) {
+            const MaskPoint point = witnesses[witness];
+            if (point.x >= bounds.left && point.x <= bounds.right
+                && point.y >= bounds.top && point.y <= bounds.bottom)
+                jobs.push_back({candidate, witness});
+        }
+    }
+    const size_t wordCount = geometry.pieces.size() * wordsPerCandidate;
+    const size_t boundaryWordCount = geometry.pieces.size() * boundaryWordsPerCandidate;
+    DeviceBuffer<MaskPoint> devicePoints;
+    DeviceBuffer<MaskPoint> deviceWitnesses;
+    DeviceBuffer<Loop> deviceLoops;
+    DeviceBuffer<Piece> devicePieces;
+    DeviceBuffer<MaskTile> deviceTiles;
+    DeviceBuffer<MaskWitnessJob> deviceJobs;
+    DeviceBuffer<std::uint64_t> deviceMasks;
+    DeviceBuffer<std::uint64_t> deviceBoundaryMasks;
+    const auto check = [&](cudaError_t status) {
+        if (status != cudaSuccess) {
+            *error = cudaGetErrorString(status);
+            return false;
+        }
+
+        return true;
+    };
+    if (!check(devicePoints.reserve(geometry.points.size()))
+        || !check(deviceWitnesses.reserve(witnesses.size()))
+        || !check(deviceLoops.reserve(geometry.loops.size()))
+        || !check(devicePieces.reserve(geometry.pieces.size()))
+        || !check(deviceTiles.reserve(tiles.size()))
+        || !check(deviceJobs.reserve(jobs.size()))
+        || !check(deviceMasks.reserve(wordCount))
+        || !check(deviceBoundaryMasks.reserve(boundaryWordCount))
+        || !check(cudaMemcpy(devicePoints.data(), geometry.points.data(),
+            geometry.points.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceWitnesses.data(), witnesses.data(),
+            witnesses.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceLoops.data(), geometry.loops.data(),
+            geometry.loops.size() * sizeof(Loop), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(devicePieces.data(), geometry.pieces.data(),
+            geometry.pieces.size() * sizeof(Piece), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceTiles.data(), tiles.data(),
+            tiles.size() * sizeof(MaskTile), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceJobs.data(), jobs.data(),
+            jobs.size() * sizeof(MaskWitnessJob), cudaMemcpyHostToDevice))
+        || !check(cudaMemset(deviceMasks.data(), 0,
+            wordCount * sizeof(std::uint64_t)))
+        || !check(cudaMemset(deviceBoundaryMasks.data(), 0,
+            boundaryWordCount * sizeof(std::uint64_t))))
+        return false;
+    if (!tiles.empty()) {
+        bitmaskRasterKernel<<<static_cast<unsigned int>(tiles.size()),
+            dim3(kTileExtent, kTileExtent)>>>(devicePoints.data(), deviceLoops.data(),
+            devicePieces.data(), deviceTiles.data(), grid, wordsPerCandidate,
+            deviceMasks.data());
+    }
+    if (!jobs.empty()) {
+        bitmaskWitnessKernel<<<(jobs.size() + kThreads - 1) / kThreads,
+            kThreads>>>(devicePoints.data(), deviceLoops.data(), devicePieces.data(),
+            deviceWitnesses.data(), deviceJobs.data(), static_cast<int>(jobs.size()),
+            boundaryWordsPerCandidate, deviceBoundaryMasks.data());
+    }
+    masks->resize(wordCount);
+    boundaryMasks->resize(boundaryWordCount);
+
+    return check(cudaGetLastError())
+        && check(cudaMemcpy(masks->data(), deviceMasks.data(),
+            wordCount * sizeof(std::uint64_t), cudaMemcpyDeviceToHost))
+        && check(cudaMemcpy(boundaryMasks->data(), deviceBoundaryMasks.data(),
+            boundaryWordCount * sizeof(std::uint64_t), cudaMemcpyDeviceToHost));
+}
+
+std::unique_ptr<BitmaskCover> createBitmaskCover(
+    const std::vector<MaskWord> &words, const std::vector<int> &offsets,
+    const std::vector<std::uint64_t> &missing, int cellWords) {
+    return std::make_unique<CudaBitmaskCover>(words, offsets, missing, cellWords);
+}
 
 std::unique_ptr<RasterRanker> createRasterRanker(
     const Geometry &preferred, const Geometry &target,

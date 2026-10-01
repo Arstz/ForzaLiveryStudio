@@ -970,6 +970,68 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
     diagnostics->insert(QStringLiteral("meanThickness"), thickness);
 }
 
+bool indexCandidatesGpu(QVector<Candidate> *pool, const Grid &grid,
+                        const QVector<QPointF> &witnesses,
+                        const compact::FillOptions &options, QJsonObject *diagnostics) {
+#ifdef FLS_HAS_CUDA
+    if (!options.useGpu || pool->size() < 1024)
+        return false;
+    QElapsedTimer timer;
+    timer.start();
+    compact::gpu::MaskGeometry geometry;
+    geometry.pieces.reserve(pool->size());
+    geometry.bounds.reserve(pool->size());
+    for (const Candidate &candidate : *pool) {
+        const int firstLoop = static_cast<int>(geometry.loops.size());
+        for (const QPolygonF &polygon : candidate.polygons) {
+            const int firstPoint = static_cast<int>(geometry.points.size());
+            for (const QPointF &point : polygon)
+                geometry.points.push_back({point.x(), point.y()});
+            geometry.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
+        }
+        geometry.pieces.push_back({firstLoop,
+            static_cast<int>(geometry.loops.size()) - firstLoop});
+        geometry.bounds.push_back({candidate.bounds.left(), candidate.bounds.top(),
+            candidate.bounds.right(), candidate.bounds.bottom()});
+    }
+    const compact::gpu::MaskGrid maskGrid{grid.origin.x(), grid.origin.y(),
+        grid.step, grid.width, grid.height};
+    std::vector<compact::gpu::MaskPoint> maskWitnesses;
+    maskWitnesses.reserve(witnesses.size());
+    for (const QPointF &point : witnesses)
+        maskWitnesses.push_back({point.x(), point.y()});
+    std::vector<std::uint64_t> masks;
+    std::vector<std::uint64_t> boundaryMasks;
+    std::string error;
+    if (!compact::gpu::rasterizeBitmasks(geometry, maskGrid, maskWitnesses,
+        &masks, &boundaryMasks, &error)) {
+        diagnostics->insert(QStringLiteral("indexGpuError"), QString::fromStdString(error));
+        return false;
+    }
+    const int wordsPerCandidate = grid.target.size();
+    const int boundaryWordsPerCandidate = (witnesses.size() + 63) / 64;
+    for (int candidate = 0; candidate < pool->size(); ++candidate) {
+        (*pool)[candidate].cells.resize(wordsPerCandidate);
+        std::copy_n(masks.begin() + static_cast<size_t>(candidate) * wordsPerCandidate,
+            wordsPerCandidate, (*pool)[candidate].cells.begin());
+        (*pool)[candidate].boundary.resize(boundaryWordsPerCandidate);
+        std::copy_n(boundaryMasks.begin()
+            + static_cast<size_t>(candidate) * boundaryWordsPerCandidate,
+            boundaryWordsPerCandidate, (*pool)[candidate].boundary.begin());
+    }
+    diagnostics->insert(QStringLiteral("indexBackend"), QStringLiteral("CUDA raster"));
+    diagnostics->insert(QStringLiteral("indexGpuMilliseconds"), timer.elapsed());
+    return true;
+#else
+    Q_UNUSED(pool)
+    Q_UNUSED(grid)
+    Q_UNUSED(witnesses)
+    Q_UNUSED(options)
+    Q_UNUSED(diagnostics)
+    return false;
+#endif
+}
+
 void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &outer,
                                 const QVector<catalog::Primitive> &primitives,
                                 const compact::BoundaryModel &boundary, const Grid &grid,
@@ -977,7 +1039,8 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
                                 QVector<Candidate> *pool, QJsonObject *diagnostics) {
     Bits missing = grid.target;
     for (const auto &candidate : *pool)
-        removeCovered(&missing, rasterize(candidate.polygons, grid));
+        removeCovered(&missing, candidate.cells.size() == grid.target.size()
+            ? candidate.cells : rasterize(candidate.polygons, grid));
     const int initiallyMissing = marginal(missing, missing);
     if (initiallyMissing == 0) {
         diagnostics->insert(QStringLiteral("uncoveredBodyCenters"), 0);
@@ -1402,6 +1465,97 @@ void shortlistCandidatesGpu(QVector<Candidate> *pool,
     diagnostics->insert(QStringLiteral("gpuSelectionRetained"), pool->size());
 }
 
+std::optional<QVector<int>> selectBitmasksGpu(
+        const QVector<Candidate> &pool, const Grid &grid, const Bits &initialBoundary,
+        const compact::FillOptions &options, double boundaryWeight,
+        const std::function<bool()> &cancelled, Bits *missing,
+        Bits *boundary, QJsonObject *diagnostics) {
+#ifdef FLS_HAS_CUDA
+    if (!options.useGpu || pool.size() < 1024)
+        return std::nullopt;
+    QElapsedTimer timer;
+    timer.start();
+    std::vector<compact::gpu::MaskWord> words;
+    std::vector<int> offsets;
+    offsets.reserve(pool.size() + 1);
+    for (const Candidate &candidate : pool) {
+        offsets.push_back(static_cast<int>(words.size()));
+        for (int index = 0; index < candidate.cells.size(); ++index)
+            if (candidate.cells[index])
+                words.push_back({index, candidate.cells[index]});
+        for (int index = 0; index < candidate.boundary.size(); ++index)
+            if (candidate.boundary[index])
+                words.push_back({static_cast<int>(grid.target.size()) + index,
+                    candidate.boundary[index]});
+    }
+    offsets.push_back(static_cast<int>(words.size()));
+    std::vector<std::uint64_t> initialMissing;
+    initialMissing.reserve(grid.target.size() + initialBoundary.size());
+    for (quint64 word : grid.target)
+        initialMissing.push_back(word);
+    for (quint64 word : initialBoundary)
+        initialMissing.push_back(word);
+    auto cover = compact::gpu::createBitmaskCover(
+        words, offsets, initialMissing, grid.target.size());
+    if (cover && cover->error().empty()) {
+        QVector<int> selected;
+        std::vector<char> used(pool.size(), false);
+        std::vector<compact::gpu::MaskCounts> counts;
+        for (int round = 0; round < options.shapeBudget && !stopped(cancelled); ++round) {
+            if (!cover->score(&counts))
+                break;
+            int best = -1;
+            double bestScore = 0.0;
+            for (int index = 0; index < pool.size(); ++index) {
+                if (used[index])
+                    continue;
+                const double score = (counts[index].cells * grid.step * grid.step
+                    + counts[index].boundary * boundaryWeight)
+                    / (1.0 + pool[index].error * 0.5 / options.observationScale);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = index;
+                }
+            }
+            if (best < 0)
+                break;
+            if (!cover->remove(best))
+                break;
+            used[best] = true;
+            selected.push_back(best);
+        }
+        if (cover->error().empty() || stopped(cancelled)) {
+            for (int index : selected) {
+                removeCovered(missing, pool[index].cells);
+                removeCovered(boundary, pool[index].boundary);
+            }
+            diagnostics->insert(QStringLiteral("selectionBackend"), QStringLiteral("CUDA bitmask"));
+            diagnostics->insert(QStringLiteral("selectionGpuMilliseconds"), timer.elapsed());
+            diagnostics->insert(QStringLiteral("selectionScoreEvaluations"),
+                static_cast<double>(pool.size()) * (selected.size() + 1));
+
+            return selected;
+        }
+        diagnostics->insert(QStringLiteral("selectionGpuError"),
+            QString::fromStdString(cover->error()));
+    } else if (cover) {
+        diagnostics->insert(QStringLiteral("selectionGpuError"),
+            QString::fromStdString(cover->error()));
+    }
+#else
+    Q_UNUSED(pool)
+    Q_UNUSED(grid)
+    Q_UNUSED(initialBoundary)
+    Q_UNUSED(options)
+    Q_UNUSED(boundaryWeight)
+    Q_UNUSED(cancelled)
+    Q_UNUSED(missing)
+    Q_UNUSED(boundary)
+    Q_UNUSED(diagnostics)
+#endif
+    return std::nullopt;
+}
+
 QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &region,
                               const Grid &grid, const QVector<QPointF> &witnesses,
                               const compact::FillOptions &options, double boundaryWeightFactor,
@@ -1413,33 +1567,41 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
     int scoreEvaluations = 0;
     setRange(&boundary, 0, witnesses.size());
     shortlistCandidatesGpu(pool, gpuRanker, diagnostics);
+    const bool gpuIndexed = indexCandidatesGpu(pool, grid, witnesses, options, diagnostics);
     for (auto &candidate : *pool) {
         if (stopped(cancelled)) {
             return {};
         }
-        indexCandidate(&candidate, grid, witnesses);
+        if (!gpuIndexed)
+            indexCandidate(&candidate, grid, witnesses);
     }
     const double boundaryWeight = region.area / std::max(1, static_cast<int>(witnesses.size()))
         * boundaryWeightFactor;
-    const auto selected = greedyCover(pool->size(), options.shapeBudget,
-        [&](int index) {
-            ++scoreEvaluations;
-            const auto &candidate = (*pool)[index];
+    auto selected = selectBitmasksGpu(*pool, grid, boundary, options, boundaryWeight,
+        cancelled, &missing, &boundary, diagnostics);
+    if (!selected) {
+        selected = greedyCover(pool->size(), options.shapeBudget,
+            [&](int index) {
+                ++scoreEvaluations;
+                const auto &candidate = (*pool)[index];
 
-            return (marginal(candidate.cells, missing) * grid.step * grid.step
-                + marginal(candidate.boundary, boundary) * boundaryWeight) / (1.0 + candidate.error * 0.5 / options.observationScale);
-        },
-        [&](int index) {
-            removeCovered(&missing, (*pool)[index].cells);
-            removeCovered(&boundary, (*pool)[index].boundary);
-        }, [&] { return stopped(cancelled); });
-    diagnostics->insert(QStringLiteral("selectionScoreEvaluations"), scoreEvaluations);
+                return (marginal(candidate.cells, missing) * grid.step * grid.step
+                    + marginal(candidate.boundary, boundary) * boundaryWeight)
+                    / (1.0 + candidate.error * 0.5 / options.observationScale);
+            },
+            [&](int index) {
+                removeCovered(&missing, (*pool)[index].cells);
+                removeCovered(&boundary, (*pool)[index].boundary);
+            }, [&] { return stopped(cancelled); });
+        diagnostics->insert(QStringLiteral("selectionBackend"), QStringLiteral("CPU"));
+        diagnostics->insert(QStringLiteral("selectionScoreEvaluations"), scoreEvaluations);
+    }
     diagnostics->insert(QStringLiteral("selectionShapeLimit"), options.shapeBudget);
-    diagnostics->insert(QStringLiteral("selectionShapeLimitReached"), selected.size() >= options.shapeBudget);
+    diagnostics->insert(QStringLiteral("selectionShapeLimitReached"), selected->size() >= options.shapeBudget);
     diagnostics->insert(QStringLiteral("missingCells"), marginal(missing, missing));
     diagnostics->insert(QStringLiteral("missingWitnesses"), marginal(boundary, boundary));
 
-    return selected;
+    return *selected;
 }
 
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,

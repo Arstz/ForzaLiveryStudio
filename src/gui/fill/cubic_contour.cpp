@@ -167,6 +167,24 @@ Span fitSpan(const Reference &ref, Knot a, Knot b) {
     return result;
 }
 
+double lineError(const Reference &ref, const Span &span) {
+    const auto data = samples(ref, span.a.s, span.b.s);
+    const QPointF start = data.front(), end = data.back();
+    double error = 0;
+    for (const QPointF &point : data)
+        error = std::max(error, std::sqrt(distance2(point, start, end)));
+    const int steps = std::clamp(int(std::ceil(length(end - start) / 0.5)), 8, 1024);
+    for (int i = 1; i < steps; ++i) {
+        const QPointF point = start + (end - start) * (double(i) / steps);
+        double nearest = std::numeric_limits<double>::max();
+        for (int j = 1; j < data.size(); ++j)
+            nearest = std::min(nearest, distance2(point, data[j - 1], data[j]));
+        error = std::max(error, std::sqrt(nearest));
+    }
+
+    return error;
+}
+
 void fitRecursive(const Reference &ref, Knot a, Knot b, double tolerance, double tangentScale,
                   QVector<Span> &out, int depth = 0) {
     Span span = fitSpan(ref, a, b);
@@ -311,33 +329,31 @@ std::vector<std::uint8_t> removeRasterPinholes(const std::vector<std::uint8_t> &
     return cleaned;
 }
 
-CubicFitOptions rasterFitOptions(const QVector<QPolygonF> &polygons,
+CubicFitOptions rasterFitOptions(const QPolygonF &polygon,
                                  const CubicFitOptions &options) {
     if (!options.adaptToRasterNoise)
         return options;
     QVector<double> deviations;
-    double perimeter = 0, signedArea = 0;
-    for (const auto &polygon : polygons) {
-        const Reference ref(polygon);
-        // Pixel teeth inflate the exact perimeter and make A/P claim the stroke is
-        // narrower precisely when its boundary needs more smoothing.
-        const int chords = std::max(8, int(std::ceil(ref.perimeter / 8)));
-        QPointF previous = ref.point(0);
-        for (int i = 1; i <= chords; ++i) {
-            const QPointF current = ref.point(ref.perimeter * i / chords);
-            perimeter += length(current - previous);
-            previous = current;
-        }
-        signedArea += area(polygon);
-        const double radius = std::min(8.0, ref.perimeter / 12);
-        for (double s = 0; s < ref.perimeter; s += 1.0) {
-            const QPointF before = ref.point(s - radius), after = ref.point(s + radius);
-            const QPointF chord = after - before;
-            const double n = length(chord);
-            if (n > 1e-9)
-                deviations.push_back(std::abs(cross(ref.point(s) - (before + after) * 0.5, chord)) /
-                                     n);
-        }
+    double perimeter = 0;
+    const Reference ref(polygon);
+    // Pixel teeth inflate the exact perimeter and make A/P claim the stroke is
+    // narrower precisely when its boundary needs more smoothing.
+    const int chords = std::max(8, int(std::ceil(ref.perimeter / 8)));
+    QPointF previous = ref.point(0);
+    for (int i = 1; i <= chords; ++i) {
+        const QPointF current = ref.point(ref.perimeter * i / chords);
+        perimeter += length(current - previous);
+        previous = current;
+    }
+    const double signedArea = area(polygon);
+    const double radius = std::min(8.0, ref.perimeter / 12);
+    for (double s = 0; s < ref.perimeter; s += 1.0) {
+        const QPointF before = ref.point(s - radius), after = ref.point(s + radius);
+        const QPointF chord = after - before;
+        const double n = length(chord);
+        if (n > 1e-9)
+            deviations.push_back(std::abs(cross(ref.point(s) - (before + after) * 0.5, chord)) /
+                                 n);
     }
     if (deviations.isEmpty() || perimeter <= 0)
         return options;
@@ -522,6 +538,29 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
         if (!changed)
             break;
     }
+    for (Span &span : spans) {
+        if (!span.a.corner || !span.b.corner)
+            continue;
+        const QPointF start = span.curve.start, end = span.curve.end;
+        const double chordLength = length(end - start);
+        double bow = 0;
+        if (options.adaptToRasterNoise && chordLength <= 25.0) {
+            for (int sample = 1; sample < 16; ++sample)
+                bow = std::max(bow, std::sqrt(distance2(
+                    span.curve.point(double(sample) / 16), start, end)));
+        }
+        const double areaChange = std::abs(span.curve.signedArea() - cross(start, end) * 0.5);
+        const bool shallowRasterSpan = options.adaptToRasterNoise && chordLength <= 25.0
+            && bow <= 4.0 && areaChange <= 50.0;
+        const double error = shallowRasterSpan ? 0.0 : lineError(ref, span);
+        if (!shallowRasterSpan && error > options.tolerance)
+            continue;
+        const QPointF chord = span.curve.end - span.curve.start;
+        span.curve.control = span.curve.start + chord / 3;
+        span.curve.control2 = span.curve.start + chord * (2.0 / 3.0);
+        span.curve.curved = false;
+        span.error = error;
+    }
     QVector<PenPoint> result;
     for (int i = 0; i < spans.size(); ++i) {
         const auto &curve = spans[i].curve,
@@ -529,6 +568,7 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
         result.push_back({curve.start, spans[i].a.corner ? PenPointKind::Hard : PenPointKind::Soft,
                           before.control2 - curve.start, curve.control - curve.start, true});
     }
+    splitCurvedHardSpans(result);
     return result;
 }
 
@@ -561,6 +601,8 @@ QVector<PenLoop> cubicPathLoops(const QPainterPath &path, QString *error) {
             points.clear();
             return;
         }
+        classifyJoins(points);
+        splitCurvedHardSpans(points);
         // A two-cubic closed shape is valid; split one span to support existing editing minima.
         if (points.size() == 2)
             insertPenAnchor(points, 1, penSegments(points)[0].point(0.5));
@@ -636,17 +678,21 @@ QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize si
                 *error = QStringLiteral("The selected mask contains disconnected regions");
             return {};
         }
-    const auto rasterOptions = rasterFitOptions(polygons, options);
+    QVector<CubicFitOptions> rasterOptions;
+    rasterOptions.reserve(polygons.size());
+    for (const auto &polygon : polygons)
+        rasterOptions.push_back(rasterFitOptions(polygon, options));
     for (int retry = 0; retry < 4; ++retry) {
-        auto fit = rasterOptions;
-        fit.tolerance *= std::pow(0.5, retry);
-        fit.cornerScale = std::max(options.cornerScale, 4 * fit.tolerance);
-        if (fit.tolerance < 2.0)
-            fit.outlierFraction = 0;
         QVector<PenLoop> loops;
-        for (int i = 0; i < polygons.size(); ++i)
+        for (int i = 0; i < polygons.size(); ++i) {
+            auto fit = rasterOptions[i];
+            fit.tolerance *= std::pow(0.5, retry);
+            fit.cornerScale = std::max(options.cornerScale, 4 * fit.tolerance);
+            if (fit.tolerance < 2.0)
+                fit.outlierFraction = 0;
             loops.push_back({fitCubicContour(polygons[i], fit),
                              i == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout});
+        }
         const auto contour = buildPenContour(loops);
         if (contour.valid()) {
             if (error)

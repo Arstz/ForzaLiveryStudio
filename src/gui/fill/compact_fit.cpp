@@ -2709,6 +2709,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         report();
         recordTime(QStringLiteral("setup"));
         bool fullGpuPipeline = false;
+        bool gpuPipelineApplied = false;
+        int gpuPipelineEvaluations = 0;
         if (pieces.size() > 1 && !recognitionCatalog.isEmpty() && !stopWork()) {
             const auto context = contextFor({}, {}, objective);
             for (const auto &replacement : replacementSeeds(objective.target, context, recognitionCatalog, stopWork, true)) {
@@ -2726,16 +2728,25 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             const int gpuStart = objective.evaluations;
             objective.evaluationLimit = options.evaluationBudget;
             fullGpuPipeline = optimizeGpu(&pieces, objective, primitives, stopWork);
-            if (!fullGpuPipeline) {
+            gpuPipelineApplied = fullGpuPipeline;
+            if (!gpuPipelineApplied) {
                 objective.evaluations = gpuStart;
+            } else {
+                gpuPipelineEvaluations = objective.evaluations - gpuStart;
             }
         }
 #endif
-        if (fullGpuPipeline) {
+        if (gpuPipelineApplied) {
             report();
             recordTime(QStringLiteral("gpuPipeline"));
             finishStage(QStringLiteral("gpuPipeline"));
-            objective.evaluationLimit = objective.evaluations;
+            if (gpuPipelineEvaluations > options.evaluationBudget / 2
+                || acceptable(support(pieces), objective)) {
+                objective.evaluationLimit = objective.evaluations;
+            } else {
+                fullGpuPipeline = false;
+                objective.evaluations -= gpuPipelineEvaluations;
+            }
         }
         objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
             : stageLimit(options.evaluationBudget, WorkStage::Repair);
@@ -2933,7 +2944,10 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         result.diagnostics.insert(QStringLiteral("gpuPipelineCandidate"),
             objective.gpuPipelineCandidate);
         result.diagnostics.insert(QStringLiteral("optimizerBackend"),
-            fullGpuPipeline ? QStringLiteral("CUDA raster") : QStringLiteral("CPU exact"));
+            fullGpuPipeline ? QStringLiteral("CUDA raster")
+            : gpuPipelineApplied ? QStringLiteral("CUDA raster + CPU exact")
+            : QStringLiteral("CPU exact"));
+        result.diagnostics.insert(QStringLiteral("gpuPipelineEvaluations"), gpuPipelineEvaluations);
         result.diagnostics.insert(QStringLiteral("ownershipMergeTrials"), objective.ownershipMergeTrials);
         result.diagnostics.insert(QStringLiteral("ownershipMerges"), objective.ownershipMerges);
         result.diagnostics.insert(QStringLiteral("reusePoolSize"), objective.replacementCandidates ? objective.replacementCandidates->size() : 0);

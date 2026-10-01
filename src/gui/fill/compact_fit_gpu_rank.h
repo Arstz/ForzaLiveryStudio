@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -77,7 +78,60 @@ public:
     virtual RankStats stats() const = 0;
 };
 
+struct MaskWord {
+    int index = 0;
+    std::uint64_t bits = 0;
+};
+
+struct MaskCounts {
+    unsigned int cells = 0;
+    unsigned int boundary = 0;
+};
+
+struct MaskPoint {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+struct MaskBounds {
+    double left = 0.0;
+    double top = 0.0;
+    double right = 0.0;
+    double bottom = 0.0;
+};
+
+struct MaskGeometry {
+    std::vector<MaskPoint> points;
+    std::vector<Loop> loops;
+    std::vector<Piece> pieces;
+    std::vector<MaskBounds> bounds;
+};
+
+struct MaskGrid {
+    double originX = 0.0;
+    double originY = 0.0;
+    double step = 1.0;
+    int width = 0;
+    int height = 0;
+};
+
+class BitmaskCover {
+public:
+    virtual ~BitmaskCover() = default;
+    virtual bool score(std::vector<MaskCounts> *counts) = 0;
+    virtual bool remove(int candidate) = 0;
+    virtual std::string error() const = 0;
+};
+
 #ifdef FLS_HAS_CUDA
+bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
+                       const std::vector<MaskPoint> &witnesses,
+                       std::vector<std::uint64_t> *masks,
+                       std::vector<std::uint64_t> *boundaryMasks,
+                       std::string *error);
+std::unique_ptr<BitmaskCover> createBitmaskCover(
+    const std::vector<MaskWord> &words, const std::vector<int> &offsets,
+    const std::vector<std::uint64_t> &missing, int cellWords);
 std::unique_ptr<RasterRanker> createRasterRanker(
     const Geometry &preferred, const Geometry &target,
     const Geometry &inner, const Geometry &outer,
