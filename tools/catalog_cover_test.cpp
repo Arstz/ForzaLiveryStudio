@@ -15,11 +15,14 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QImage>
+#include <QPainter>
 #include <QTemporaryDir>
 #include <QTextStream>
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -1593,6 +1596,10 @@ int main(int argc, char **argv) {
             if (application.arguments()[1] == QStringLiteral("--replay-mesh")) {
                 replayOptions.candidateLimit = 0;
                 replayOptions.searchNodes = 0;
+            } else if (application.arguments()[1] == QStringLiteral("--replay-seed")) {
+                // Seed-only replay keeps large contour comparisons practical.
+            } else if (application.arguments()[1] == QStringLiteral("--replay-profile")) {
+                // Profile replay uses the same default fit options as the application.
             } else if (application.arguments()[1] == QStringLiteral("--replay-compact")) {
                 replayOptions.candidateLimit = 1;
                 replayOptions.searchNodes = 0;
@@ -1628,9 +1635,32 @@ int main(int argc, char **argv) {
             }
             QElapsedTimer timer;
             timer.start();
-            const auto replay = gui::catalog::fillRegion(request, fullCatalog, replayOptions);
+            gui::compact::FillOptions profileOptions;
+            profileOptions.retainFailedFill = true;
+            profileOptions.seedOnly = application.arguments()[1] == QStringLiteral("--replay-seed");
+            const auto replay = application.arguments()[1] == QStringLiteral("--replay-seed")
+                || application.arguments()[1] == QStringLiteral("--replay-profile")
+                ? gui::profile::fillRegion(request, fullCatalog, profileOptions)
+                : gui::catalog::fillRegion(request, fullCatalog, replayOptions);
+            if (application.arguments()[1] == QStringLiteral("--replay-profile")
+                && !replay.fill.placements.isEmpty()) {
+                const auto region = gui::catalog::buildRegion(request, {});
+                const QRectF bounds = region.bounds.adjusted(-20, -20, 20, 20);
+                QImage preview(std::max(1, static_cast<int>(std::ceil(bounds.width()))),
+                               std::max(1, static_cast<int>(std::ceil(bounds.height()))),
+                               QImage::Format_ARGB32_Premultiplied);
+                preview.fill(QColor(143, 143, 143));
+                QPainter painter(&preview);
+                painter.setTransform(QTransform(1, 0, 0, -1, -bounds.left(), bounds.bottom()));
+                painter.setPen(Qt::NoPen);
+                painter.fillPath(region.requiredPath, QColor(170, 75, 112));
+                painter.fillPath(outputPath(replay.fill, fullCatalog), QColor(39, 182, 235, 160));
+                painter.end();
+                preview.save(QStringLiteral("build/profile-replay.bmp"));
+            }
             output << QJsonDocument(replay.diagnostics).toJson(QJsonDocument::Compact) << '\n';
-            requireComplete(replay);
+            if (application.arguments()[1] != QStringLiteral("--replay-seed"))
+                requireComplete(replay);
             output << "Replay completed: " << replay.fill.placements.size() << " placements, "
                    << timer.elapsed() << " ms\n";
             return 0;

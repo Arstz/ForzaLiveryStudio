@@ -203,6 +203,16 @@ void masks(const QString &output) {
             "Disconnected masks must not become cutouts");
     require(gui::pixelBoundaryLoops({1}, {2, 2}, {0, 0, 2, 2}).isEmpty(),
             "Invalid mask size must be rejected");
+    std::vector<std::uint8_t> pinhole(8 * 8, 1);
+    for (int y = 3; y < 5; ++y)
+        for (int x = 3; x < 5; ++x)
+            pinhole[y * 8 + x] = 0;
+    require(gui::fitMaskContours(pinhole, {8, 8}, {0, 0, 8, 8}).size() == 1,
+            "Raster pinholes should be removed before fitting");
+    gui::CubicFitOptions exact;
+    exact.adaptToRasterNoise = false;
+    require(gui::fitMaskContours(pinhole, {8, 8}, {0, 0, 8, 8}, exact).size() == 2,
+            "Explicit exact-mask fitting must retain small holes");
 }
 
 void realBucketMask() {
@@ -267,6 +277,36 @@ void realBucketMask() {
               << " deep errors=" << deepErrors << '\n';
     require(deepErrors == 0, "Real stroke changed outside the raster uncertainty band");
     require(differing < fill.area * 0.12, "Real stroke lost too much of its silhouette");
+
+    QImage translucent(source.size(), QImage::Format_ARGB32);
+    translucent.fill(qRgba(255, 255, 255, 0));
+    for (int y = fill.bounds.top(); y <= fill.bounds.bottom(); ++y) {
+        auto *row = reinterpret_cast<QRgb *>(translucent.scanLine(y));
+        for (int x = fill.bounds.left(); x <= fill.bounds.right(); ++x) {
+            if (!fill.mask[size_t(y) * source.width() + x])
+                continue;
+            const int hash = (x * 73 + y * 151 + x * y * 13) % 19;
+            row[x] = qRgba(243, 125, 168, hash < 2 ? 114 : hash > 16 ? 142 : 128);
+        }
+    }
+    const QPoint translucentSeed = offset + QPoint(seed[0].toInt(), seed[1].toInt());
+    translucent.setPixel(translucentSeed, qRgba(243, 125, 168, 128));
+    int previousNodes = -1;
+    for (int tolerance : {8, 16}) {
+        const auto selected = gui::floodGuideRegion(translucent, translucentSeed, tolerance);
+        require(selected.valid(), "Half-opacity selection failed");
+        const auto fittedLoops =
+            gui::fitMaskContours(selected.mask, selected.imageSize, selected.bounds, {}, &error);
+        require(error.isEmpty() && fittedLoops.size() == 1,
+                "Half-opacity noise broke the stroke topology");
+        const int nodes = fittedLoops.front().points.size();
+        std::cout << "half-opacity tolerance " << tolerance << ": nodes=" << nodes << '\n';
+        require(nodes <= 36, "Half-opacity noise created too many anchors");
+        if (previousNodes >= 0)
+            require(std::abs(nodes - previousNodes) <= 16,
+                    "Nearby bucket tolerances produced inconsistent contours");
+        previousNodes = nodes;
+    }
 }
 void replayImage(int argc, char **argv) {
     const QImage image(QString::fromLocal8Bit(argv[2]));
@@ -282,6 +322,34 @@ void replayImage(int argc, char **argv) {
     const auto loops =
         gui::fitMaskContours(fill.mask, fill.imageSize, fill.bounds, options, &error);
     require(!loops.isEmpty(), qPrintable(error));
+    if (argc > 9) {
+        QJsonArray outputLoops;
+        for (const auto &loop : loops) {
+            QJsonArray points;
+            for (const auto &point : loop.points) {
+                const QPointF world(point.position.x() - image.width() * 0.5,
+                                    image.height() * 0.5 - point.position.y());
+                QJsonObject entry;
+                entry.insert("position", QJsonArray{world.x(), world.y()});
+                entry.insert("kind", point.kind == gui::PenPointKind::Hard ? "hard" : "soft");
+                entry.insert("incoming", QJsonArray{point.incoming.x(), -point.incoming.y()});
+                entry.insert("outgoing", QJsonArray{point.outgoing.x(), -point.outgoing.y()});
+                entry.insert("explicitHandles", point.explicitHandles);
+                points.push_back(entry);
+            }
+            QJsonObject entry;
+            entry.insert("kind", loop.kind == gui::PenLoopKind::Outer ? "outer" : "cutout");
+            entry.insert("points", points);
+            outputLoops.push_back(entry);
+        }
+        QJsonObject request;
+        request.insert("curveModel", "cubic-anchors-v1");
+        request.insert("boundaryTolerance", 0.1);
+        request.insert("loops", outputLoops);
+        QFile output(QString::fromLocal8Bit(argv[9]));
+        require(output.open(QIODevice::WriteOnly), "Cannot write contour replay request");
+        output.write(QJsonDocument(QJsonObject{{"request", request}}).toJson());
+    }
     int nodes = 0, corners = 0;
     for (const auto &loop : loops)
         for (const auto &p : loop.points) {

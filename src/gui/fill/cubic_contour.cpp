@@ -38,7 +38,9 @@ struct Reference {
     QPolygonF p;
     QVector<double> arc;
     double perimeter = 0;
-    explicit Reference(QPolygonF polygon) : p(std::move(polygon)) {
+    double outlierFraction = 0;
+    explicit Reference(QPolygonF polygon, double trim = 0)
+        : p(std::move(polygon)), outlierFraction(trim) {
         while (p.size() > 1 && p.front() == p.back())
             p.removeLast();
         for (int i = 0; i < p.size(); ++i) {
@@ -134,12 +136,21 @@ Span fitSpan(const Reference &ref, Knot a, Knot b) {
     }
     double maximum = 0;
     int worst = data.size() / 2;
+    QVector<double> errors;
+    errors.reserve(std::max(0, int(data.size()) - 2));
     for (int i = 1; i + 1 < data.size(); ++i) {
         const double error = length(curve.point(u[i]) - data[i]);
+        errors.push_back(error);
         if (error > maximum) {
             maximum = error;
             worst = i;
         }
+    }
+    if (ref.outlierFraction > 0 && !errors.isEmpty()) {
+        const int keep = std::clamp(int(std::ceil(errors.size() * (1 - ref.outlierFraction))) - 1,
+                                    0, int(errors.size()) - 1);
+        std::nth_element(errors.begin(), errors.begin() + keep, errors.end());
+        maximum = errors[keep];
     }
     // Also measure curve -> boundary. Corresponding sample error alone can miss a bulge.
     const int steps = std::clamp(int(std::ceil(curve.controlLength() / 0.5)), 8, 1024);
@@ -252,6 +263,54 @@ void classifyJoins(QVector<PenPoint> &points) {
     }
 }
 
+std::vector<std::uint8_t> removeRasterPinholes(const std::vector<std::uint8_t> &mask, QSize size,
+                                               QRect bounds) {
+    if (size.width() <= 0 || size.height() <= 0 ||
+        mask.size() != size_t(size.width()) * size.height())
+        return mask;
+    bounds = bounds.intersected(QRect(QPoint(0, 0), size));
+    auto cleaned = mask;
+    std::vector<std::uint8_t> seen(mask.size());
+    QVector<int> pending, component;
+    constexpr int kMaximumPinholeArea = 8;
+    const int width = size.width();
+    for (int y = bounds.top(); y <= bounds.bottom(); ++y)
+        for (int x = bounds.left(); x <= bounds.right(); ++x) {
+            const int first = y * width + x;
+            if (mask[first] || seen[first])
+                continue;
+            pending.clear();
+            component.clear();
+            pending.push_back(first);
+            seen[first] = 1;
+            bool exterior = false;
+            while (!pending.isEmpty()) {
+                const int index = pending.back();
+                pending.removeLast();
+                const int px = index % width, py = index / width;
+                if (px == bounds.left() || px == bounds.right() || py == bounds.top() ||
+                    py == bounds.bottom())
+                    exterior = true;
+                if (component.size() <= kMaximumPinholeArea)
+                    component.push_back(index);
+                for (const QPoint neighbor : {QPoint(px - 1, py), QPoint(px + 1, py),
+                                              QPoint(px, py - 1), QPoint(px, py + 1)}) {
+                    if (!bounds.contains(neighbor))
+                        continue;
+                    const int adjacent = neighbor.y() * width + neighbor.x();
+                    if (!mask[adjacent] && !seen[adjacent]) {
+                        seen[adjacent] = 1;
+                        pending.push_back(adjacent);
+                    }
+                }
+            }
+            if (!exterior && component.size() <= kMaximumPinholeArea)
+                for (int index : component)
+                    cleaned[index] = 1;
+        }
+    return cleaned;
+}
+
 CubicFitOptions rasterFitOptions(const QVector<QPolygonF> &polygons,
                                  const CubicFitOptions &options) {
     if (!options.adaptToRasterNoise)
@@ -260,7 +319,15 @@ CubicFitOptions rasterFitOptions(const QVector<QPolygonF> &polygons,
     double perimeter = 0, signedArea = 0;
     for (const auto &polygon : polygons) {
         const Reference ref(polygon);
-        perimeter += ref.perimeter;
+        // Pixel teeth inflate the exact perimeter and make A/P claim the stroke is
+        // narrower precisely when its boundary needs more smoothing.
+        const int chords = std::max(8, int(std::ceil(ref.perimeter / 8)));
+        QPointF previous = ref.point(0);
+        for (int i = 1; i <= chords; ++i) {
+            const QPointF current = ref.point(ref.perimeter * i / chords);
+            perimeter += length(current - previous);
+            previous = current;
+        }
         signedArea += area(polygon);
         const double radius = std::min(8.0, ref.perimeter / 12);
         for (double s = 0; s < ref.perimeter; s += 1.0) {
@@ -284,6 +351,8 @@ CubicFitOptions rasterFitOptions(const QVector<QPolygonF> &polygons,
     result.tolerance = std::max(options.tolerance, std::min(noiseTolerance, strokeWidth * 0.3));
     // Detect persistent corners beyond the noise band, not the tips of raster teeth.
     result.cornerScale = std::max(options.cornerScale, 4 * result.tolerance);
+    if (result.tolerance >= 2.0)
+        result.outlierFraction = std::max(options.outlierFraction, 0.05);
     return result;
 }
 } // namespace
@@ -377,7 +446,7 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
     for (auto p : boundary)
         if (!std::isfinite(p.x()) || !std::isfinite(p.y()))
             return {};
-    const Reference ref(boundary);
+    const Reference ref(boundary, options.outlierFraction);
     if (ref.perimeter <= 1e-9)
         return {};
     const double scale = std::min(options.cornerScale, ref.perimeter / 12);
@@ -553,7 +622,8 @@ QVector<PenLoop> cubicPathLoops(const QPainterPath &path, QString *error) {
 
 QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize size, QRect bounds,
                                  const CubicFitOptions &options, QString *error) {
-    const auto polygons = pixelBoundaryLoops(mask, size, bounds);
+    const auto cleaned = options.adaptToRasterNoise ? removeRasterPinholes(mask, size, bounds) : mask;
+    const auto polygons = pixelBoundaryLoops(cleaned, size, bounds);
     if (polygons.isEmpty()) {
         if (error)
             *error = QStringLiteral("The selected mask has no closed boundary");
@@ -570,6 +640,9 @@ QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize si
     for (int retry = 0; retry < 4; ++retry) {
         auto fit = rasterOptions;
         fit.tolerance *= std::pow(0.5, retry);
+        fit.cornerScale = std::max(options.cornerScale, 4 * fit.tolerance);
+        if (fit.tolerance < 2.0)
+            fit.outlierFraction = 0;
         QVector<PenLoop> loops;
         for (int i = 0; i < polygons.size(); ++i)
             loops.push_back({fitCubicContour(polygons[i], fit),

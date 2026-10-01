@@ -27,6 +27,8 @@ struct FillOptions {
     int evaluationBudget = kDefaultEvaluationBudget;
     bool retainFailedFill = false;
     bool useGpu = true;
+    // Diagnostic replay can inspect the profile seed before Compact Fit refinement.
+    bool seedOnly = false;
     double boundaryAllowance = kDefaultBoundaryAllowance;
     double areaErrorRatio = kDefaultAreaErrorRatio;
     double inwardAllowance = kDefaultInwardAllowance;
