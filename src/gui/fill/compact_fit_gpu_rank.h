@@ -93,6 +93,15 @@ struct MaskPoint {
     double y = 0.0;
 };
 
+struct MaskAffine {
+    double m11 = 1.0;
+    double m12 = 0.0;
+    double m21 = 0.0;
+    double m22 = 1.0;
+    double dx = 0.0;
+    double dy = 0.0;
+};
+
 struct MaskBounds {
     double left = 0.0;
     double top = 0.0;
@@ -129,6 +138,12 @@ bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
                        std::vector<std::uint64_t> *masks,
                        std::vector<std::uint64_t> *boundaryMasks,
                        std::string *error);
+bool screenTransformContainment(const MaskGeometry &envelope,
+                                const std::vector<MaskPoint> &probes,
+                                const std::vector<MaskAffine> &transforms,
+                                double clearance,
+                                std::vector<std::uint8_t> *possible,
+                                std::string *error);
 std::unique_ptr<BitmaskCover> createBitmaskCover(
     const std::vector<MaskWord> &words, const std::vector<int> &offsets,
     const std::vector<std::uint64_t> &missing, int cellWords);

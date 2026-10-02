@@ -1174,6 +1174,73 @@ __global__ void bitmaskWitnessKernel(const MaskPoint *points, const Loop *loops,
     }
 }
 
+__device__ bool outsideEnvelope(double x, double y, const MaskPoint *points,
+                                const Loop *loops, int loopCount,
+                                double clearanceSquared) {
+    int winding = 0;
+    for (int loopIndex = 0; loopIndex < loopCount; ++loopIndex) {
+        const Loop loop = loops[loopIndex];
+        for (int index = 0; index < loop.pointCount; ++index) {
+            const MaskPoint first = points[loop.pointOffset + index];
+            const MaskPoint second = points[loop.pointOffset + (index + 1) % loop.pointCount];
+            if (y >= fmin(first.y, second.y) && y < fmax(first.y, second.y)) {
+                const double crossing = first.x + (second.x - first.x)
+                    * (y - first.y) / (second.y - first.y);
+                if (crossing <= x)
+                    winding += second.y > first.y ? 1 : -1;
+            }
+        }
+    }
+
+    if (winding != 0)
+        return false;
+    double nearestSquared = 1.0e300;
+    for (int loopIndex = 0; loopIndex < loopCount; ++loopIndex) {
+        const Loop loop = loops[loopIndex];
+        for (int index = 0; index < loop.pointCount; ++index) {
+            const MaskPoint first = points[loop.pointOffset + index];
+            const MaskPoint second = points[loop.pointOffset + (index + 1) % loop.pointCount];
+            const double deltaX = second.x - first.x;
+            const double deltaY = second.y - first.y;
+            const double lengthSquared = deltaX * deltaX + deltaY * deltaY;
+            const double fraction = lengthSquared > 0.0
+                ? fmin(1.0, fmax(0.0, ((x - first.x) * deltaX
+                    + (y - first.y) * deltaY) / lengthSquared)) : 0.0;
+            const double offsetX = x - first.x - deltaX * fraction;
+            const double offsetY = y - first.y - deltaY * fraction;
+            nearestSquared = fmin(nearestSquared,
+                offsetX * offsetX + offsetY * offsetY);
+        }
+    }
+
+    return nearestSquared > clearanceSquared;
+}
+
+__global__ void containmentScreenKernel(const MaskPoint *points,
+                                        const Loop *loops, int loopCount,
+                                        const MaskPoint *probes, int probeCount,
+                                        const MaskAffine *transforms,
+                                        int transformCount, double clearanceSquared,
+                                        std::uint8_t *possible) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= transformCount)
+        return;
+    const MaskAffine transform = transforms[index];
+    for (int probe = 0; probe < probeCount; ++probe) {
+        const MaskPoint point = probes[probe];
+        const double x = transform.m11 * point.x + transform.m21 * point.y
+            + transform.dx;
+        const double y = transform.m12 * point.x + transform.m22 * point.y
+            + transform.dy;
+        if (outsideEnvelope(x, y, points, loops, loopCount,
+                clearanceSquared)) {
+            possible[index] = 0;
+            return;
+        }
+    }
+    possible[index] = 1;
+}
+
 } // namespace
 
 bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
@@ -1274,6 +1341,58 @@ bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
             wordCount * sizeof(std::uint64_t), cudaMemcpyDeviceToHost))
         && check(cudaMemcpy(boundaryMasks->data(), deviceBoundaryMasks.data(),
             boundaryWordCount * sizeof(std::uint64_t), cudaMemcpyDeviceToHost));
+}
+
+bool screenTransformContainment(const MaskGeometry &envelope,
+                                const std::vector<MaskPoint> &probes,
+                                const std::vector<MaskAffine> &transforms,
+                                double clearance,
+                                std::vector<std::uint8_t> *possible,
+                                std::string *error) {
+    if (!possible || !error || !std::isfinite(clearance) || clearance <= 0.0
+        || envelope.loops.empty() || probes.empty())
+        return false;
+    error->clear();
+    possible->assign(transforms.size(), 1);
+    if (transforms.empty())
+        return true;
+    DeviceBuffer<MaskPoint> devicePoints;
+    DeviceBuffer<MaskPoint> deviceProbes;
+    DeviceBuffer<Loop> deviceLoops;
+    DeviceBuffer<MaskAffine> deviceTransforms;
+    DeviceBuffer<std::uint8_t> devicePossible;
+    const auto check = [&](cudaError_t status) {
+        if (status != cudaSuccess) {
+            *error = cudaGetErrorString(status);
+            return false;
+        }
+
+        return true;
+    };
+    if (!check(devicePoints.reserve(envelope.points.size()))
+        || !check(deviceProbes.reserve(probes.size()))
+        || !check(deviceLoops.reserve(envelope.loops.size()))
+        || !check(deviceTransforms.reserve(transforms.size()))
+        || !check(devicePossible.reserve(transforms.size()))
+        || !check(cudaMemcpy(devicePoints.data(), envelope.points.data(),
+            envelope.points.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceProbes.data(), probes.data(),
+            probes.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceLoops.data(), envelope.loops.data(),
+            envelope.loops.size() * sizeof(Loop), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceTransforms.data(), transforms.data(),
+            transforms.size() * sizeof(MaskAffine), cudaMemcpyHostToDevice)))
+        return false;
+    containmentScreenKernel<<<(transforms.size() + kThreads - 1) / kThreads,
+        kThreads>>>(devicePoints.data(), deviceLoops.data(),
+        static_cast<int>(envelope.loops.size()), deviceProbes.data(),
+        static_cast<int>(probes.size()), deviceTransforms.data(),
+        static_cast<int>(transforms.size()), clearance * clearance,
+        devicePossible.data());
+
+    return check(cudaGetLastError())
+        && check(cudaMemcpy(possible->data(), devicePossible.data(),
+            possible->size() * sizeof(std::uint8_t), cudaMemcpyDeviceToHost));
 }
 
 std::unique_ptr<BitmaskCover> createBitmaskCover(

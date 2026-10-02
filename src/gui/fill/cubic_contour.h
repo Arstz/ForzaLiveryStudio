@@ -14,6 +14,7 @@ struct CubicFitOptions {
     // above is its minimum; narrow strokes cap how far this band can expand.
     bool adaptToRasterNoise = true;
     double outlierFraction = 0.0;
+    bool preserveRasterNotches = false;
 };
 
 // Pixel-square boundaries; foreground uses four-neighbour connectivity.

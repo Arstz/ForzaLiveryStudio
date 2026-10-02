@@ -32,6 +32,7 @@ constexpr int kGpuPipelinePasses = 3;
 constexpr int kGpuBalancedPasses = 2;
 constexpr int kGpuGroupCandidates = 8;
 constexpr int kGpuGroupFragments = 12;
+constexpr int kGpuExactTailTrials = 256;
 constexpr int kRefitNeighbors = 4;
 constexpr double kGpuRepairInnerWeight = 256.0;
 constexpr double kGpuMaximumTurnRegression = 0.1;
@@ -2747,6 +2748,21 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
                 fullGpuPipeline = false;
                 objective.evaluations -= gpuPipelineEvaluations;
             }
+        }
+        if (fullGpuPipeline && !acceptable(support(pieces), objective)
+            && !stopped(cancelled)) {
+            const int start = objective.evaluations;
+            const int limit = std::min(options.evaluationBudget,
+                start + kGpuExactTailTrials);
+            const int before = pieces.size();
+            objective.evaluationLimit = limit;
+            repairResiduals(&pieces, objective, searchCatalog,
+                options.shapeBudget, limit, stopWork);
+            result.diagnostics.insert(QStringLiteral("gpuExactTailShapes"),
+                pieces.size() - before);
+            result.diagnostics.insert(QStringLiteral("gpuExactTailEvaluations"),
+                objective.evaluations - start);
+            report();
         }
         objective.evaluationLimit = fullGpuPipeline ? objective.evaluations
             : stageLimit(options.evaluationBudget, WorkStage::Repair);

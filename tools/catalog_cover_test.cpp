@@ -1626,7 +1626,8 @@ int main(int argc, char **argv) {
             if (application.arguments()[1] == QStringLiteral("--replay-mesh")) {
                 replayOptions.candidateLimit = 0;
                 replayOptions.searchNodes = 0;
-            } else if (application.arguments()[1] == QStringLiteral("--replay-seed")) {
+            } else if (application.arguments()[1] == QStringLiteral("--replay-seed")
+                       || application.arguments()[1] == QStringLiteral("--replay-seed-cpu")) {
                 // Seed-only replay keeps large contour comparisons practical.
             } else if (application.arguments()[1] == QStringLiteral("--replay-compact")) {
                 replayOptions.candidateLimit = 1;
@@ -1667,9 +1668,12 @@ int main(int argc, char **argv) {
             timer.start();
             gui::compact::FillOptions profileOptions;
             profileOptions.retainFailedFill = true;
-            profileOptions.useGpu = application.arguments()[1] != QStringLiteral("--replay-profile-cpu");
-            profileOptions.seedOnly = application.arguments()[1] == QStringLiteral("--replay-seed");
+            profileOptions.useGpu = application.arguments()[1] != QStringLiteral("--replay-profile-cpu")
+                && application.arguments()[1] != QStringLiteral("--replay-seed-cpu");
+            profileOptions.seedOnly = application.arguments()[1] == QStringLiteral("--replay-seed")
+                || application.arguments()[1] == QStringLiteral("--replay-seed-cpu");
             const auto replay = application.arguments()[1] == QStringLiteral("--replay-seed")
+                || application.arguments()[1] == QStringLiteral("--replay-seed-cpu")
                 || application.arguments()[1] == QStringLiteral("--replay-profile")
                 || application.arguments()[1] == QStringLiteral("--replay-profile-cpu")
                 ? gui::profile::fillRegion(request, fullCatalog, profileOptions)
@@ -1692,7 +1696,8 @@ int main(int argc, char **argv) {
                 preview.save(QStringLiteral("build/profile-replay.bmp"));
             }
             output << QJsonDocument(replay.diagnostics).toJson(QJsonDocument::Compact) << '\n';
-            if (application.arguments()[1] != QStringLiteral("--replay-seed"))
+            if (application.arguments()[1] != QStringLiteral("--replay-seed")
+                && application.arguments()[1] != QStringLiteral("--replay-seed-cpu"))
                 requireComplete(replay);
             output << "Replay completed: " << replay.fill.placements.size() << " placements, "
                    << timer.elapsed() << " ms\n";

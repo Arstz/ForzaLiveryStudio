@@ -7,6 +7,12 @@
 
 namespace gui {
 namespace {
+constexpr double kNotchMaximumSpan = 100.0;
+constexpr double kNotchAxialEdgeLength = 6.0;
+constexpr double kNotchAxialFraction = 0.2;
+constexpr double kNotchSimplificationTolerance = 2.5;
+constexpr int kNotchMaximumPoints = 10;
+
 double length(QPointF p) {
     return std::hypot(p.x(), p.y());
 }
@@ -29,6 +35,38 @@ double distance2(QPointF p, QPointF a, QPointF b) {
     const double t = n > 1e-20 ? std::clamp(QPointF::dotProduct(p - a, d) / n, 0.0, 1.0) : 0;
     const QPointF delta = p - a - d * t;
     return QPointF::dotProduct(delta, delta);
+}
+QPolygonF simplifyPolyline(const QPolygonF &points, double tolerance) {
+    if (points.size() < 3)
+        return points;
+    QVector<char> retained(points.size(), false);
+    retained.front() = true;
+    retained.back() = true;
+    QVector<std::pair<int, int>> pending{{0, points.size() - 1}};
+    while (!pending.isEmpty()) {
+        const auto [first, last] = pending.back();
+        pending.removeLast();
+        double maximum = tolerance * tolerance;
+        int split = -1;
+        for (int index = first + 1; index < last; ++index) {
+            const double error = distance2(points[index], points[first], points[last]);
+            if (error > maximum) {
+                maximum = error;
+                split = index;
+            }
+        }
+        if (split >= 0) {
+            retained[split] = true;
+            pending.push_back({first, split});
+            pending.push_back({split, last});
+        }
+    }
+    QPolygonF simplified;
+    for (int index = 0; index < points.size(); ++index)
+        if (retained[index])
+            simplified.push_back(points[index]);
+
+    return simplified;
 }
 quint64 key(QPoint p) {
     return (quint64(quint32(p.x())) << 32) | quint32(p.y());
@@ -80,6 +118,45 @@ struct Span {
     double error = 0;
     double split = 0;
 };
+
+QPolygonF rectilinearNotch(const Reference &ref, double start, double end) {
+    if (end - start > kNotchMaximumSpan)
+        return {};
+    QVector<std::pair<double, QPointF>> ordered{{start, ref.point(start)},
+                                                {end, ref.point(end)}};
+    double axialLength = 0.0;
+    int axialEdges = 0;
+    for (int index = 0; index < ref.p.size(); ++index) {
+        const QPointF edge = ref.p[(index + 1) % ref.p.size()] - ref.p[index];
+        const bool axial = length(edge) >= kNotchAxialEdgeLength
+            && std::min(std::abs(edge.x()), std::abs(edge.y())) < 0.01;
+        for (double shift : {0.0, ref.perimeter}) {
+            const double edgeStart = ref.arc[index] + shift;
+            const double edgeEnd = ref.arc[index + 1] + shift;
+            const double overlap = std::max(0.0,
+                std::min(end, edgeEnd) - std::max(start, edgeStart));
+            if (axial && overlap > 0.0) {
+                axialLength += overlap;
+                ++axialEdges;
+            }
+            if (edgeStart > start + 1e-6 && edgeStart < end - 1e-6)
+                ordered.push_back({edgeStart, ref.p[index]});
+        }
+    }
+    if (axialEdges < 1 || axialLength < (end - start) * kNotchAxialFraction)
+        return {};
+    std::sort(ordered.begin(), ordered.end(), [](const auto &left, const auto &right) {
+        return left.first < right.first;
+    });
+    QPolygonF raw;
+    for (const auto &entry : ordered)
+        if (raw.isEmpty() || length(entry.second - raw.back()) > 1e-6)
+            raw.push_back(entry.second);
+    const auto simplified = simplifyPolyline(raw, kNotchSimplificationTolerance);
+
+    return simplified.size() >= 3 && simplified.size() <= kNotchMaximumPoints
+        ? simplified : QPolygonF();
+}
 
 QVector<QPointF> samples(const Reference &ref, double a, double b) {
     const int count = std::max(2, int(std::ceil((b - a) / 0.75)));
@@ -568,6 +645,65 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
         result.push_back({curve.start, spans[i].a.corner ? PenPointKind::Hard : PenPointKind::Soft,
                           before.control2 - curve.start, curve.control - curve.start, true});
     }
+    if (options.preserveRasterNotches) {
+        QVector<char> removed(result.size(), false);
+        QVector<char> linearIncoming(result.size(), false);
+        QVector<char> linearOutgoing(result.size(), false);
+        QVector<QPolygonF> inserted(result.size());
+        for (int first = 0; first < spans.size(); ++first) {
+            if (!spans[first].a.corner)
+                continue;
+            int last = (first + 1) % spans.size();
+            int interior = 0;
+            while (last != first && !spans[last].a.corner) {
+                ++interior;
+                last = (last + 1) % spans.size();
+            }
+            if (last == first || (interior == 0
+                && spans[first].curve.flatness() <= 1e-9))
+                continue;
+            const double start = spans[first].a.s;
+            const double end = spans[last].a.s
+                + (last <= first ? ref.perimeter : 0.0);
+            const auto notch = rectilinearNotch(ref, start, end);
+            if (notch.isEmpty())
+                continue;
+            linearOutgoing[first] = true;
+            linearIncoming[last] = true;
+            for (int index = (first + 1) % spans.size(); index != last;
+                 index = (index + 1) % spans.size())
+                removed[index] = true;
+            for (int index = 1; index + 1 < notch.size(); ++index)
+                inserted[first].push_back(notch[index]);
+        }
+        QVector<PenPoint> adjusted;
+        QVector<char> linearEdge;
+        for (int index = 0; index < result.size(); ++index) {
+            if (removed[index])
+                continue;
+            PenPoint point = result[index];
+            if (linearIncoming[index])
+                point.incoming = {};
+            if (linearOutgoing[index])
+                point.outgoing = {};
+            adjusted.push_back(point);
+            linearEdge.push_back(linearOutgoing[index]);
+            for (const QPointF &position : inserted[index]) {
+                adjusted.push_back({position, PenPointKind::Hard, {}, {}, true});
+                linearEdge.push_back(true);
+            }
+        }
+        result = std::move(adjusted);
+        for (int index = 0; index < result.size(); ++index) {
+            const int next = (index + 1) % result.size();
+            if (linearEdge[index] && result[index].kind == PenPointKind::Hard
+                && result[next].kind == PenPointKind::Hard) {
+                const QPointF handle = (result[next].position - result[index].position) / 3;
+                result[index].outgoing = handle;
+                result[next].incoming = -handle;
+            }
+        }
+    }
     splitCurvedHardSpans(result);
     return result;
 }
@@ -686,6 +822,7 @@ QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize si
         QVector<PenLoop> loops;
         for (int i = 0; i < polygons.size(); ++i) {
             auto fit = rasterOptions[i];
+            fit.preserveRasterNotches = i > 0 && fit.adaptToRasterNoise;
             fit.tolerance *= std::pow(0.5, retry);
             fit.cornerScale = std::max(options.cornerScale, 4 * fit.tolerance);
             if (fit.tolerance < 2.0)

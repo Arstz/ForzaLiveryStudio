@@ -202,6 +202,25 @@ void masks(const QString &output) {
     ring.addEllipse(10, 10, 140, 90);
     ring.addEllipse(30, 25, 100, 60);
     checkMask("ring", ring, {170, 120}, {80, 15}, 24, 1);
+    QPainterPath steppedRing;
+    steppedRing.setFillRule(Qt::OddEvenFill);
+    steppedRing.addRect(10, 10, 110, 90);
+    steppedRing.addPolygon(QPolygonF{{35, 35}, {55, 35}, {55, 47}, {65, 47},
+                                    {65, 35}, {85, 35}, {85, 75}, {35, 75}});
+    checkMask("stepped cutout", steppedRing, {130, 110}, {20, 20}, 30, 1);
+    const auto steppedImage = raster(steppedRing, {130, 110});
+    const auto steppedMask = gui::floodGuideRegion(steppedImage, {20, 20}, 0);
+    const auto steppedLoops = gui::fitMaskContours(steppedMask.mask,
+        steppedMask.imageSize, steppedMask.bounds);
+    require(steppedLoops.size() == 2, "Stepped cutout was lost");
+    for (const QPointF corner : {QPointF(55, 35), QPointF(55, 47),
+                                 QPointF(65, 47), QPointF(65, 35)}) {
+        bool preserved = false;
+        for (const auto &point : steppedLoops[1].points)
+            preserved |= point.kind == gui::PenPointKind::Hard
+                && norm(point.position - corner) <= 2.5;
+        require(preserved, "A stepped cutout corner was rounded away");
+    }
     QPainterPath stroke;
     stroke.moveTo(20, 150);
     stroke.cubicTo(20, 100, 40, 15, 60, 15);
