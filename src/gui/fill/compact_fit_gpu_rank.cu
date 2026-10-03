@@ -15,6 +15,8 @@ namespace {
 
 constexpr int kTileExtent = 16;
 constexpr int kThreads = 256;
+constexpr int kProofThreads = 128;
+constexpr int kParallelProofBatchLimit = 2048;
 constexpr int kBoundaryFieldPasses = 12;
 constexpr long long kMaximumCells = 32LL * 1024 * 1024;
 constexpr float kInvalidCoordinate = 3.402823466e+38F;
@@ -1216,6 +1218,279 @@ __device__ bool outsideEnvelope(double x, double y, const MaskPoint *points,
     return nearestSquared > clearanceSquared;
 }
 
+__device__ bool strictlyInsideEnvelope(double x, double y,
+                                       const MaskPoint *points, const Loop *loops,
+                                       int loopCount, double clearanceSquared) {
+    int winding = 0;
+    double nearestSquared = 1.0e300;
+    for (int loopIndex = 0; loopIndex < loopCount; ++loopIndex) {
+        const Loop loop = loops[loopIndex];
+        for (int index = 0; index < loop.pointCount; ++index) {
+            const MaskPoint first = points[loop.pointOffset + index];
+            const MaskPoint second = points[loop.pointOffset + (index + 1) % loop.pointCount];
+            if (y >= fmin(first.y, second.y) && y < fmax(first.y, second.y)) {
+                const double crossing = first.x + (second.x - first.x)
+                    * (y - first.y) / (second.y - first.y);
+                if (crossing <= x)
+                    winding += second.y > first.y ? 1 : -1;
+            }
+            const double deltaX = second.x - first.x;
+            const double deltaY = second.y - first.y;
+            const double lengthSquared = deltaX * deltaX + deltaY * deltaY;
+            const double fraction = lengthSquared > 0.0
+                ? fmin(1.0, fmax(0.0, ((x - first.x) * deltaX
+                    + (y - first.y) * deltaY) / lengthSquared)) : 0.0;
+            const double offsetX = x - first.x - deltaX * fraction;
+            const double offsetY = y - first.y - deltaY * fraction;
+            nearestSquared = fmin(nearestSquared,
+                offsetX * offsetX + offsetY * offsetY);
+        }
+    }
+
+    return winding != 0 && nearestSquared > clearanceSquared;
+}
+
+__device__ double pointSegmentDistanceSquared(const MaskPoint &point,
+                                             const MaskPoint &first,
+                                             const MaskPoint &second) {
+    const double deltaX = second.x - first.x;
+    const double deltaY = second.y - first.y;
+    const double lengthSquared = deltaX * deltaX + deltaY * deltaY;
+    const double fraction = lengthSquared > 0.0
+        ? fmin(1.0, fmax(0.0, ((point.x - first.x) * deltaX
+            + (point.y - first.y) * deltaY) / lengthSquared)) : 0.0;
+    const double offsetX = point.x - first.x - deltaX * fraction;
+    const double offsetY = point.y - first.y - deltaY * fraction;
+
+    return offsetX * offsetX + offsetY * offsetY;
+}
+
+__device__ double segmentSide(const MaskPoint &first, const MaskPoint &second,
+                              const MaskPoint &point) {
+    return (second.x - first.x) * (point.y - first.y)
+        - (second.y - first.y) * (point.x - first.x);
+}
+
+__device__ bool segmentsNear(const MaskPoint &first, const MaskPoint &second,
+                             const MaskPoint &otherFirst, const MaskPoint &otherSecond,
+                             double clearance, double clearanceSquared) {
+    if (fmax(first.x, second.x) + clearance < fmin(otherFirst.x, otherSecond.x)
+        || fmax(otherFirst.x, otherSecond.x) + clearance < fmin(first.x, second.x)
+        || fmax(first.y, second.y) + clearance < fmin(otherFirst.y, otherSecond.y)
+        || fmax(otherFirst.y, otherSecond.y) + clearance < fmin(first.y, second.y))
+        return false;
+    const double firstSide = segmentSide(first, second, otherFirst);
+    const double secondSide = segmentSide(first, second, otherSecond);
+    const double otherFirstSide = segmentSide(otherFirst, otherSecond, first);
+    const double otherSecondSide = segmentSide(otherFirst, otherSecond, second);
+    if ((firstSide >= 0.0 && secondSide <= 0.0
+         || firstSide <= 0.0 && secondSide >= 0.0)
+        && (otherFirstSide >= 0.0 && otherSecondSide <= 0.0
+            || otherFirstSide <= 0.0 && otherSecondSide >= 0.0))
+        return true;
+
+    return pointSegmentDistanceSquared(first, otherFirst, otherSecond) <= clearanceSquared
+        || pointSegmentDistanceSquared(second, otherFirst, otherSecond) <= clearanceSquared
+        || pointSegmentDistanceSquared(otherFirst, first, second) <= clearanceSquared
+        || pointSegmentDistanceSquared(otherSecond, first, second) <= clearanceSquared;
+}
+
+__device__ MaskPoint mappedPoint(const MaskPoint &point, const MaskAffine &transform) {
+    return {transform.m11 * point.x + transform.m21 * point.y + transform.dx,
+        transform.m12 * point.x + transform.m22 * point.y + transform.dy};
+}
+
+__global__ void containmentProofKernel(const MaskPoint *envelopePoints,
+                                       const Loop *envelopeLoops, int envelopeLoopCount,
+                                       const MaskPoint *shapePoints,
+                                       const Loop *shapeLoops, int shapeLoopCount,
+                                       const MaskAffine *transforms,
+                                       int transformCount, double clearance,
+                                       double clearanceSquared,
+                                       std::uint8_t *contained) {
+    const int candidate = blockIdx.x * blockDim.x + threadIdx.x;
+    if (candidate >= transformCount)
+        return;
+    const MaskAffine transform = transforms[candidate];
+    const double determinant = transform.m11 * transform.m22
+        - transform.m12 * transform.m21;
+    if (!isfinite(determinant) || fabs(determinant) < 1.0e-18) {
+        contained[candidate] = 0;
+        return;
+    }
+    for (int shapeLoopIndex = 0; shapeLoopIndex < shapeLoopCount; ++shapeLoopIndex) {
+        const Loop shapeLoop = shapeLoops[shapeLoopIndex];
+        for (int shapeIndex = 0; shapeIndex < shapeLoop.pointCount; ++shapeIndex) {
+            const MaskPoint first = mappedPoint(shapePoints[shapeLoop.pointOffset
+                + shapeIndex], transform);
+            const MaskPoint second = mappedPoint(shapePoints[shapeLoop.pointOffset
+                + (shapeIndex + 1) % shapeLoop.pointCount], transform);
+            if (!strictlyInsideEnvelope(first.x, first.y, envelopePoints,
+                    envelopeLoops, envelopeLoopCount, clearanceSquared)) {
+                contained[candidate] = 0;
+                return;
+            }
+            for (int envelopeLoopIndex = 0; envelopeLoopIndex < envelopeLoopCount;
+                 ++envelopeLoopIndex) {
+                const Loop envelopeLoop = envelopeLoops[envelopeLoopIndex];
+                for (int envelopeIndex = 0; envelopeIndex < envelopeLoop.pointCount;
+                     ++envelopeIndex) {
+                    const MaskPoint otherFirst = envelopePoints[envelopeLoop.pointOffset
+                        + envelopeIndex];
+                    const MaskPoint otherSecond = envelopePoints[envelopeLoop.pointOffset
+                        + (envelopeIndex + 1) % envelopeLoop.pointCount];
+                    if (segmentsNear(first, second, otherFirst, otherSecond,
+                            clearance, clearanceSquared)) {
+                        contained[candidate] = 0;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    for (int envelopeLoopIndex = 0; envelopeLoopIndex < envelopeLoopCount;
+         ++envelopeLoopIndex) {
+        const Loop envelopeLoop = envelopeLoops[envelopeLoopIndex];
+        const MaskPoint point = envelopePoints[envelopeLoop.pointOffset];
+        const double relativeX = point.x - transform.dx;
+        const double relativeY = point.y - transform.dy;
+        const double localX = (transform.m22 * relativeX
+            - transform.m21 * relativeY) / determinant;
+        const double localY = (transform.m11 * relativeY
+            - transform.m12 * relativeX) / determinant;
+        if (!outsideEnvelope(localX, localY, shapePoints,
+                shapeLoops, shapeLoopCount, 0.0)) {
+            contained[candidate] = 0;
+            return;
+        }
+    }
+    contained[candidate] = 1;
+}
+
+__global__ void containmentProofParallelKernel(const MaskPoint *envelopePoints,
+                                               const Loop *envelopeLoops,
+                                               int envelopeLoopCount,
+                                               const MaskPoint *shapePoints,
+                                               const Loop *shapeLoops,
+                                               int shapeLoopCount,
+                                               const MaskAffine *transforms,
+                                               int transformCount,
+                                               double clearance,
+                                               double clearanceSquared,
+                                               std::uint8_t *contained) {
+    const int candidate = blockIdx.x;
+    if (candidate >= transformCount)
+        return;
+    __shared__ int winding[kProofThreads];
+    __shared__ double nearest[kProofThreads];
+    __shared__ int ambiguous;
+    if (threadIdx.x == 0)
+        ambiguous = 0;
+    __syncthreads();
+    const MaskAffine transform = transforms[candidate];
+    const double determinant = transform.m11 * transform.m22
+        - transform.m12 * transform.m21;
+    if (!isfinite(determinant) || fabs(determinant) < 1.0e-18) {
+        if (threadIdx.x == 0)
+            contained[candidate] = 0;
+        return;
+    }
+    for (int shapeLoopIndex = 0; shapeLoopIndex < shapeLoopCount; ++shapeLoopIndex) {
+        const Loop shapeLoop = shapeLoops[shapeLoopIndex];
+        const MaskPoint point = mappedPoint(shapePoints[shapeLoop.pointOffset], transform);
+        int localWinding = 0;
+        double localNearest = 1.0e300;
+        for (int envelopeLoopIndex = 0; envelopeLoopIndex < envelopeLoopCount;
+             ++envelopeLoopIndex) {
+            const Loop envelopeLoop = envelopeLoops[envelopeLoopIndex];
+            for (int index = threadIdx.x; index < envelopeLoop.pointCount;
+                 index += blockDim.x) {
+                const MaskPoint first = envelopePoints[envelopeLoop.pointOffset + index];
+                const MaskPoint second = envelopePoints[envelopeLoop.pointOffset
+                    + (index + 1) % envelopeLoop.pointCount];
+                if (point.y >= fmin(first.y, second.y)
+                    && point.y < fmax(first.y, second.y)) {
+                    const double crossing = first.x + (second.x - first.x)
+                        * (point.y - first.y) / (second.y - first.y);
+                    if (crossing <= point.x)
+                        localWinding += second.y > first.y ? 1 : -1;
+                }
+                localNearest = fmin(localNearest,
+                    pointSegmentDistanceSquared(point, first, second));
+            }
+        }
+        winding[threadIdx.x] = localWinding;
+        nearest[threadIdx.x] = localNearest;
+        __syncthreads();
+        for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+            if (threadIdx.x < stride) {
+                winding[threadIdx.x] += winding[threadIdx.x + stride];
+                nearest[threadIdx.x] = fmin(nearest[threadIdx.x],
+                    nearest[threadIdx.x + stride]);
+            }
+            __syncthreads();
+        }
+        if (winding[0] == 0 || nearest[0] <= clearanceSquared) {
+            if (threadIdx.x == 0)
+                contained[candidate] = 0;
+            return;
+        }
+    }
+    bool near = false;
+    for (int shapeLoopIndex = 0; shapeLoopIndex < shapeLoopCount && !near;
+         ++shapeLoopIndex) {
+        const Loop shapeLoop = shapeLoops[shapeLoopIndex];
+        for (int shapeIndex = 0; shapeIndex < shapeLoop.pointCount && !near;
+             ++shapeIndex) {
+            const MaskPoint first = mappedPoint(shapePoints[shapeLoop.pointOffset
+                + shapeIndex], transform);
+            const MaskPoint second = mappedPoint(shapePoints[shapeLoop.pointOffset
+                + (shapeIndex + 1) % shapeLoop.pointCount], transform);
+            for (int envelopeLoopIndex = 0; envelopeLoopIndex < envelopeLoopCount && !near;
+                 ++envelopeLoopIndex) {
+                const Loop envelopeLoop = envelopeLoops[envelopeLoopIndex];
+                for (int index = threadIdx.x; index < envelopeLoop.pointCount;
+                     index += blockDim.x) {
+                    const MaskPoint otherFirst = envelopePoints[envelopeLoop.pointOffset
+                        + index];
+                    const MaskPoint otherSecond = envelopePoints[envelopeLoop.pointOffset
+                        + (index + 1) % envelopeLoop.pointCount];
+                    if (segmentsNear(first, second, otherFirst, otherSecond,
+                            clearance, clearanceSquared)) {
+                        near = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (near)
+        atomicOr(&ambiguous, 1);
+    __syncthreads();
+    if (ambiguous) {
+        if (threadIdx.x == 0)
+            contained[candidate] = 0;
+        return;
+    }
+    for (int envelopeLoopIndex = threadIdx.x; envelopeLoopIndex < envelopeLoopCount;
+         envelopeLoopIndex += blockDim.x) {
+        const Loop envelopeLoop = envelopeLoops[envelopeLoopIndex];
+        const MaskPoint point = envelopePoints[envelopeLoop.pointOffset];
+        const double relativeX = point.x - transform.dx;
+        const double relativeY = point.y - transform.dy;
+        const double localX = (transform.m22 * relativeX
+            - transform.m21 * relativeY) / determinant;
+        const double localY = (transform.m11 * relativeY
+            - transform.m12 * relativeX) / determinant;
+        if (!outsideEnvelope(localX, localY, shapePoints,
+                shapeLoops, shapeLoopCount, 0.0))
+            atomicOr(&ambiguous, 1);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0)
+        contained[candidate] = ambiguous ? 0 : 1;
+}
+
 __global__ void containmentScreenKernel(const MaskPoint *points,
                                         const Loop *loops, int loopCount,
                                         const MaskPoint *probes, int probeCount,
@@ -1239,6 +1514,112 @@ __global__ void containmentScreenKernel(const MaskPoint *points,
         }
     }
     possible[index] = 1;
+}
+
+__global__ void containmentRadiusKernel(const MaskPoint *points,
+                                       const Loop *loops, int loopCount,
+                                       const MaskPoint *probes, int probeCount,
+                                       const MaskPoint *centers,
+                                       const MaskAffine *unitTransforms,
+                                       int transformCount, double maximumRadius,
+                                       int iterations, double clearanceSquared,
+                                       double *radii) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= transformCount)
+        return;
+    const MaskPoint center = centers[index];
+    const MaskAffine transform = unitTransforms[index];
+    double lower = 0.0;
+    double upper = maximumRadius;
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        const double radius = (lower + upper) * 0.5;
+        bool inside = true;
+        for (int probe = 0; probe < probeCount; ++probe) {
+            const MaskPoint point = probes[probe];
+            const double x = center.x + radius * (transform.m11 * point.x
+                + transform.m21 * point.y + transform.dx - center.x);
+            const double y = center.y + radius * (transform.m12 * point.x
+                + transform.m22 * point.y + transform.dy - center.y);
+            if (outsideEnvelope(x, y, points, loops, loopCount,
+                    clearanceSquared)) {
+                inside = false;
+                break;
+            }
+        }
+        (inside ? lower : upper) = radius;
+    }
+    radii[index] = lower;
+}
+
+__global__ void containmentRadiusParallelKernel(const MaskPoint *points,
+                                                const Loop *loops, int loopCount,
+                                                const MaskPoint *probes, int probeCount,
+                                                const MaskPoint *centers,
+                                                const MaskAffine *unitTransforms,
+                                                int transformCount,
+                                                double maximumRadius,
+                                                int iterations,
+                                                double clearanceSquared,
+                                                double *radii) {
+    const int candidate = blockIdx.x;
+    if (candidate >= transformCount)
+        return;
+    __shared__ int winding[kProofThreads];
+    __shared__ double nearest[kProofThreads];
+    const MaskPoint center = centers[candidate];
+    const MaskAffine transform = unitTransforms[candidate];
+    double lower = 0.0;
+    double upper = maximumRadius;
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        const double radius = (lower + upper) * 0.5;
+        bool inside = true;
+        for (int probe = 0; probe < probeCount; ++probe) {
+            const MaskPoint source = probes[probe];
+            const MaskPoint point{
+                center.x + radius * (transform.m11 * source.x
+                    + transform.m21 * source.y + transform.dx - center.x),
+                center.y + radius * (transform.m12 * source.x
+                    + transform.m22 * source.y + transform.dy - center.y)};
+            int localWinding = 0;
+            double localNearest = 1.0e300;
+            for (int loopIndex = 0; loopIndex < loopCount; ++loopIndex) {
+                const Loop loop = loops[loopIndex];
+                for (int index = threadIdx.x; index < loop.pointCount;
+                     index += blockDim.x) {
+                    const MaskPoint first = points[loop.pointOffset + index];
+                    const MaskPoint second = points[loop.pointOffset
+                        + (index + 1) % loop.pointCount];
+                    if (point.y >= fmin(first.y, second.y)
+                        && point.y < fmax(first.y, second.y)) {
+                        const double crossing = first.x + (second.x - first.x)
+                            * (point.y - first.y) / (second.y - first.y);
+                        if (crossing <= point.x)
+                            localWinding += second.y > first.y ? 1 : -1;
+                    }
+                    localNearest = fmin(localNearest,
+                        pointSegmentDistanceSquared(point, first, second));
+                }
+            }
+            winding[threadIdx.x] = localWinding;
+            nearest[threadIdx.x] = localNearest;
+            __syncthreads();
+            for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+                if (threadIdx.x < stride) {
+                    winding[threadIdx.x] += winding[threadIdx.x + stride];
+                    nearest[threadIdx.x] = fmin(nearest[threadIdx.x],
+                        nearest[threadIdx.x + stride]);
+                }
+                __syncthreads();
+            }
+            if (winding[0] == 0 && nearest[0] > clearanceSquared) {
+                inside = false;
+                break;
+            }
+        }
+        (inside ? lower : upper) = radius;
+    }
+    if (threadIdx.x == 0)
+        radii[candidate] = lower;
 }
 
 } // namespace
@@ -1393,6 +1774,140 @@ bool screenTransformContainment(const MaskGeometry &envelope,
     return check(cudaGetLastError())
         && check(cudaMemcpy(possible->data(), devicePossible.data(),
             possible->size() * sizeof(std::uint8_t), cudaMemcpyDeviceToHost));
+}
+
+bool fitContainmentRadii(const MaskGeometry &envelope,
+                         const std::vector<MaskPoint> &probes,
+                         const std::vector<MaskPoint> &centers,
+                         const std::vector<MaskAffine> &unitTransforms,
+                         double maximumRadius, int iterations, double clearance,
+                         std::vector<double> *radii, std::string *error) {
+    if (!radii || !error || envelope.loops.empty() || probes.empty()
+        || centers.size() != unitTransforms.size()
+        || !std::isfinite(maximumRadius) || maximumRadius <= 0.0
+        || !std::isfinite(clearance) || clearance <= 0.0 || iterations <= 0)
+        return false;
+    error->clear();
+    radii->assign(centers.size(), 0.0);
+    if (centers.empty())
+        return true;
+    DeviceBuffer<MaskPoint> devicePoints;
+    DeviceBuffer<MaskPoint> deviceProbes;
+    DeviceBuffer<MaskPoint> deviceCenters;
+    DeviceBuffer<Loop> deviceLoops;
+    DeviceBuffer<MaskAffine> deviceTransforms;
+    DeviceBuffer<double> deviceRadii;
+    const auto check = [&](cudaError_t status) {
+        if (status != cudaSuccess) {
+            *error = cudaGetErrorString(status);
+            return false;
+        }
+
+        return true;
+    };
+    if (!check(devicePoints.reserve(envelope.points.size()))
+        || !check(deviceProbes.reserve(probes.size()))
+        || !check(deviceCenters.reserve(centers.size()))
+        || !check(deviceLoops.reserve(envelope.loops.size()))
+        || !check(deviceTransforms.reserve(unitTransforms.size()))
+        || !check(deviceRadii.reserve(centers.size()))
+        || !check(cudaMemcpy(devicePoints.data(), envelope.points.data(),
+            envelope.points.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceProbes.data(), probes.data(),
+            probes.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceCenters.data(), centers.data(),
+            centers.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceLoops.data(), envelope.loops.data(),
+            envelope.loops.size() * sizeof(Loop), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceTransforms.data(), unitTransforms.data(),
+            unitTransforms.size() * sizeof(MaskAffine), cudaMemcpyHostToDevice)))
+        return false;
+    if (centers.size() < kParallelProofBatchLimit) {
+        containmentRadiusParallelKernel<<<static_cast<unsigned int>(centers.size()),
+            kProofThreads>>>(devicePoints.data(), deviceLoops.data(),
+            static_cast<int>(envelope.loops.size()), deviceProbes.data(),
+            static_cast<int>(probes.size()), deviceCenters.data(),
+            deviceTransforms.data(), static_cast<int>(centers.size()),
+            maximumRadius, iterations, clearance * clearance,
+            deviceRadii.data());
+    } else {
+        containmentRadiusKernel<<<(centers.size() + kThreads - 1) / kThreads,
+            kThreads>>>(devicePoints.data(), deviceLoops.data(),
+            static_cast<int>(envelope.loops.size()), deviceProbes.data(),
+            static_cast<int>(probes.size()), deviceCenters.data(),
+            deviceTransforms.data(), static_cast<int>(centers.size()),
+            maximumRadius, iterations, clearance * clearance,
+            deviceRadii.data());
+    }
+
+    return check(cudaGetLastError())
+        && check(cudaMemcpy(radii->data(), deviceRadii.data(),
+            radii->size() * sizeof(double), cudaMemcpyDeviceToHost));
+}
+
+bool proveTransformContainment(const MaskGeometry &envelope,
+                               const MaskGeometry &shape,
+                               const std::vector<MaskAffine> &transforms,
+                               double clearance,
+                               std::vector<std::uint8_t> *contained,
+                               std::string *error) {
+    if (!contained || !error || envelope.loops.empty() || shape.loops.empty()
+        || !std::isfinite(clearance) || clearance <= 0.0)
+        return false;
+    error->clear();
+    contained->assign(transforms.size(), 0);
+    if (transforms.empty())
+        return true;
+    DeviceBuffer<MaskPoint> deviceEnvelopePoints;
+    DeviceBuffer<Loop> deviceEnvelopeLoops;
+    DeviceBuffer<MaskPoint> deviceShapePoints;
+    DeviceBuffer<Loop> deviceShapeLoops;
+    DeviceBuffer<MaskAffine> deviceTransforms;
+    DeviceBuffer<std::uint8_t> deviceContained;
+    const auto check = [&](cudaError_t status) {
+        if (status != cudaSuccess) {
+            *error = cudaGetErrorString(status);
+            return false;
+        }
+
+        return true;
+    };
+    if (!check(deviceEnvelopePoints.reserve(envelope.points.size()))
+        || !check(deviceEnvelopeLoops.reserve(envelope.loops.size()))
+        || !check(deviceShapePoints.reserve(shape.points.size()))
+        || !check(deviceShapeLoops.reserve(shape.loops.size()))
+        || !check(deviceTransforms.reserve(transforms.size()))
+        || !check(deviceContained.reserve(transforms.size()))
+        || !check(cudaMemcpy(deviceEnvelopePoints.data(), envelope.points.data(),
+            envelope.points.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceEnvelopeLoops.data(), envelope.loops.data(),
+            envelope.loops.size() * sizeof(Loop), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceShapePoints.data(), shape.points.data(),
+            shape.points.size() * sizeof(MaskPoint), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceShapeLoops.data(), shape.loops.data(),
+            shape.loops.size() * sizeof(Loop), cudaMemcpyHostToDevice))
+        || !check(cudaMemcpy(deviceTransforms.data(), transforms.data(),
+            transforms.size() * sizeof(MaskAffine), cudaMemcpyHostToDevice)))
+        return false;
+    if (transforms.size() < kParallelProofBatchLimit) {
+        containmentProofParallelKernel<<<static_cast<unsigned int>(transforms.size()),
+            kProofThreads>>>(deviceEnvelopePoints.data(), deviceEnvelopeLoops.data(),
+            static_cast<int>(envelope.loops.size()), deviceShapePoints.data(),
+            deviceShapeLoops.data(), static_cast<int>(shape.loops.size()),
+            deviceTransforms.data(), static_cast<int>(transforms.size()),
+            clearance, clearance * clearance, deviceContained.data());
+    } else {
+        containmentProofKernel<<<(transforms.size() + kThreads - 1) / kThreads,
+            kThreads>>>(deviceEnvelopePoints.data(), deviceEnvelopeLoops.data(),
+            static_cast<int>(envelope.loops.size()), deviceShapePoints.data(),
+            deviceShapeLoops.data(), static_cast<int>(shape.loops.size()),
+            deviceTransforms.data(), static_cast<int>(transforms.size()),
+            clearance, clearance * clearance, deviceContained.data());
+    }
+
+    return check(cudaGetLastError())
+        && check(cudaMemcpy(contained->data(), deviceContained.data(),
+            contained->size() * sizeof(std::uint8_t), cudaMemcpyDeviceToHost));
 }
 
 std::unique_ptr<BitmaskCover> createBitmaskCover(

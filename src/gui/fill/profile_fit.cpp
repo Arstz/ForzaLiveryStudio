@@ -32,8 +32,14 @@ constexpr int kGridExtent = 640;
 constexpr int kBodyCenters = 24;
 constexpr int kThinBodyCenters = 200;
 constexpr int kBodyGridExtent = 4096;
+constexpr int kBodyRadiusIterations = 12;
 constexpr double kThinRegionScales = 16.0;
 constexpr double kBodyTangentStep = 15.0;
+constexpr double kBodyGpuClearanceFraction = 0.02;
+constexpr double kBodyRadiusPadding = 0.995;
+constexpr double kGpuProofMinimumClearance = 0.0001;
+constexpr double kGpuProofScaleFraction = 0.00001;
+constexpr std::array<int, 6> kBodyShapeIds{102, 101, 109, 110, 124, 2117};
 constexpr int kStructuralTrials = 50000;
 constexpr int kTriangleShapeId = 103;
 constexpr double kCornerAngle = 0.3;
@@ -86,6 +92,10 @@ struct CandidateValidationStats {
     int trials = 0;
     int clipRejected = 0;
     int tangentRejected = 0;
+    int containsChecks = 0;
+    int whollySpillFree = 0;
+    int clipProofUsed = 0;
+    int spillProofUsed = 0;
 };
 
 struct Grid {
@@ -325,7 +335,10 @@ std::optional<QTransform> containedTransform(const PenPrimitive &shape,
 std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransform &transform,
                                      const catalog::Region &region, const Polygons &outer,
                                      const compact::BoundaryModel &boundary, double scale,
-                                     CandidateValidationStats *stats = nullptr) {
+                                     CandidateValidationStats *stats = nullptr,
+                                     bool precheckSpill = false,
+                                     bool provenInsideOuter = false,
+                                     bool provenInsideSpillFree = false) {
     QElapsedTimer timer;
     if (stats) {
         ++stats->trials;
@@ -336,7 +349,10 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
     result.placement.transform = catalog::emittedTransform(transform);
     result.polygons = catalog::mapped(shape, result.placement.transform);
     const bool clipped = result.polygons.isEmpty()
-        || !catalog::subtract(result.polygons, outer).isEmpty();
+        || (!provenInsideOuter && !catalog::subtract(result.polygons, outer).isEmpty());
+    if (stats && provenInsideOuter && !result.polygons.isEmpty()) {
+        ++stats->clipProofUsed;
+    }
     if (stats) {
         stats->clipNanoseconds += timer.nsecsElapsed();
         timer.restart();
@@ -346,23 +362,38 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
             ++stats->clipRejected;
         return {};
     }
-    for (const auto &polygon : result.polygons) {
-        for (int index = 0; index < polygon.size(); ++index) {
-            const auto next = polygon[(index + 1) % polygon.size()];
-            const auto tangent = unit(next - polygon[index]);
-            for (double fraction : {0.0, 0.5}) {
-                const auto point = polygon[index] + (next - polygon[index]) * fraction;
-                if (region.spillFreePath.contains(point)) {
-                    continue;
-                }
-                const auto reference = boundary.reference(point);
-                if (!reference.corner && reference.distance > scale * 0.02
-                    && std::abs(cross(tangent, reference.tangent)) > kTangentError) {
-                    if (stats) {
-                        stats->tangentNanoseconds += timer.nsecsElapsed();
-                        ++stats->tangentRejected;
+    Polygons spillPolygons;
+    if (precheckSpill) {
+        if (!provenInsideSpillFree) {
+            spillPolygons = catalog::subtract(result.polygons, region.spillFree);
+        }
+        if (stats) {
+            stats->spillNanoseconds += timer.nsecsElapsed();
+            stats->whollySpillFree += spillPolygons.isEmpty();
+            timer.restart();
+        }
+    }
+    if (!provenInsideSpillFree && (!precheckSpill || !spillPolygons.isEmpty())) {
+        for (const auto &polygon : result.polygons) {
+            for (int index = 0; index < polygon.size(); ++index) {
+                const auto next = polygon[(index + 1) % polygon.size()];
+                const auto tangent = unit(next - polygon[index]);
+                for (double fraction : {0.0, 0.5}) {
+                    const auto point = polygon[index] + (next - polygon[index]) * fraction;
+                    if (stats)
+                        ++stats->containsChecks;
+                    if (region.spillFreePath.contains(point)) {
+                        continue;
                     }
-                    return {};
+                    const auto reference = boundary.reference(point);
+                    if (!reference.corner && reference.distance > scale * 0.02
+                        && std::abs(cross(tangent, reference.tangent)) > kTangentError) {
+                        if (stats) {
+                            stats->tangentNanoseconds += timer.nsecsElapsed();
+                            ++stats->tangentRejected;
+                        }
+                        return {};
+                    }
                 }
             }
         }
@@ -373,10 +404,14 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
     }
     result.path = catalog::painterPath(result.polygons);
     result.bounds = result.path.boundingRect();
-    result.spill = catalog::area(catalog::subtract(result.polygons, region.spillFree));
+    if (!precheckSpill && !provenInsideSpillFree)
+        spillPolygons = catalog::subtract(result.polygons, region.spillFree);
+    result.spill = catalog::area(spillPolygons);
     result.placement.area = catalog::area(result.polygons);
-    if (stats)
+    if (stats) {
+        stats->spillProofUsed += provenInsideSpillFree;
         stats->spillNanoseconds += timer.nsecsElapsed();
+    }
 
     return result;
 }
@@ -832,31 +867,40 @@ QTransform bodyTransform(const PenPrimitive &shape, const QPointF &center, doubl
     return transform;
 }
 
+double bodyRadiusCpu(const PenPrimitive &shape, const QPointF &center, double angle,
+                     double ratio, const catalog::Region &region) {
+    double lower = 0.0;
+    double upper = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
+    for (int iteration = 0; iteration < kBodyRadiusIterations; ++iteration) {
+        const double radius = (lower + upper) * 0.5;
+        if (probesInside(shape, bodyTransform(shape, center, angle, ratio, radius),
+                region.spillFreePath)) {
+            lower = radius;
+        } else {
+            upper = radius;
+        }
+    }
+
+    return lower;
+}
+
 void addBodyAt(const QPointF &center, const catalog::Region &region, const Polygons &outer,
                const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                double scale, QVector<Candidate> *pool,
                CandidateValidationStats *stats = nullptr) {
-    for (int id : {102, 101, 109, 110, 124, 2117}) {
+    for (int id : kBodyShapeIds) {
         const auto *shape = primitiveFor(id, primitives);
         if (!shape) {
             continue;
         }
         for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
             for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360); angle += ratio == 1.0 && id == 102 ? 180 : 30) {
-                double lower = 0.0;
-                double upper = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
-                for (int iteration = 0; iteration < 12; ++iteration) {
-                    const double radius = (lower + upper) * 0.5;
-                    if (probesInside(*shape, bodyTransform(*shape, center, angle, ratio, radius), region.spillFreePath)) {
-                        lower = radius;
-                    } else {
-                        upper = radius;
-                    }
-                }
+                const double lower = bodyRadiusCpu(*shape, center, angle, ratio, region);
                 if (lower < scale) {
                     continue;
                 }
-                auto candidate = candidateFor(*shape, bodyTransform(*shape, center, angle, ratio, lower * 0.995), region, outer, boundary, scale, stats);
+                auto candidate = candidateFor(*shape, bodyTransform(*shape, center, angle, ratio,
+                    lower * kBodyRadiusPadding), region, outer, boundary, scale, stats, true);
                 if (candidate && candidate->spill < scale * scale * 0.01) {
                     pool->push_back(std::move(*candidate));
                 }
@@ -864,6 +908,186 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
         }
     }
 }
+
+#ifdef FLS_HAS_CUDA
+bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region &region,
+                          const Polygons &outer, const QVector<catalog::Primitive> &primitives,
+                          const compact::BoundaryModel &boundary, double scale,
+                          const std::function<bool()> &cancelled, QVector<Candidate> *pool,
+                          CandidateValidationStats *stats, QJsonObject *diagnostics) {
+    struct BodyJob {
+        const PenPrimitive *shape = nullptr;
+        QPointF center;
+        double angle = 0.0;
+        double ratio = 1.0;
+        double lower = 0.0;
+        double upper = 0.0;
+    };
+    QVector<BodyJob> jobs;
+    const double maximumRadius = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
+    for (const QPointF &center : centers) {
+        for (int id : kBodyShapeIds) {
+            const auto *shape = primitiveFor(id, primitives);
+            if (!shape) {
+                continue;
+            }
+            for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
+                for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360);
+                     angle += ratio == 1.0 && id == 102 ? 180 : 30) {
+                    jobs.push_back({shape, center, static_cast<double>(angle), ratio,
+                        0.0, maximumRadius});
+                }
+            }
+        }
+    }
+    if (jobs.size() < 128) {
+        return false;
+    }
+    const auto envelope = maskGeometry(region.spillFree);
+    const double clearance = std::max(scale * kBodyGpuClearanceFraction, 0.01);
+    QElapsedTimer timer;
+    timer.start();
+    int calls = 0;
+    for (int id : kBodyShapeIds) {
+        if (stopped(cancelled)) {
+            return true;
+        }
+        const auto *shape = primitiveFor(id, primitives);
+        if (!shape) {
+            continue;
+        }
+        std::vector<compact::gpu::MaskPoint> probes;
+        for (const QPolygonF &polygon : shape->contours) {
+            const int stride = std::max(1, static_cast<int>(polygon.size()) / 16);
+            for (int index = 0; index < polygon.size(); index += stride) {
+                probes.push_back({polygon[index].x(), polygon[index].y()});
+            }
+        }
+        std::vector<compact::gpu::MaskPoint> centers;
+        std::vector<compact::gpu::MaskAffine> transforms;
+        QVector<int> indices;
+        for (int index = 0; index < jobs.size(); ++index) {
+            const BodyJob &job = jobs[index];
+            if (job.shape != shape) {
+                continue;
+            }
+            centers.push_back({job.center.x(), job.center.y()});
+            transforms.push_back(maskAffine(bodyTransform(*shape, job.center,
+                job.angle, job.ratio, 1.0)));
+            indices.push_back(index);
+        }
+        std::vector<double> radii;
+        std::string error;
+        if (!compact::gpu::fitContainmentRadii(envelope, probes, centers,
+                transforms, maximumRadius, kBodyRadiusIterations, clearance,
+                &radii, &error)) {
+            diagnostics->insert(QStringLiteral("bodyGpuScreenError"),
+                QString::fromStdString(error));
+            return false;
+        }
+        ++calls;
+        for (int position = 0; position < indices.size(); ++position) {
+            BodyJob &job = jobs[indices[position]];
+            job.lower = radii[position];
+            job.upper = job.lower + maximumRadius
+                / static_cast<double>(1 << kBodyRadiusIterations);
+        }
+    }
+    diagnostics->insert(QStringLiteral("bodyGpuScreenMilliseconds"),
+        timer.nsecsElapsed() / 1e6);
+    diagnostics->insert(QStringLiteral("bodyGpuScreenCalls"), calls);
+    int exactFallbacks = 0;
+    QVector<double> finalRadii(jobs.size(), 0.0);
+    for (int index = 0; index < jobs.size(); ++index) {
+        if (stopped(cancelled)) {
+            break;
+        }
+        const BodyJob &job = jobs[index];
+        double radius = job.lower;
+        if (radius >= scale && (!probesInside(*job.shape, bodyTransform(*job.shape,
+                job.center, job.angle, job.ratio, radius), region.spillFreePath)
+            || probesInside(*job.shape, bodyTransform(*job.shape, job.center,
+                job.angle, job.ratio, job.upper), region.spillFreePath))) {
+            radius = bodyRadiusCpu(*job.shape, job.center, job.angle, job.ratio, region);
+            ++exactFallbacks;
+        } else if (radius < scale && job.upper >= scale
+            && probesInside(*job.shape, bodyTransform(*job.shape, job.center,
+                job.angle, job.ratio, scale), region.spillFreePath)) {
+            radius = bodyRadiusCpu(*job.shape, job.center, job.angle, job.ratio, region);
+            ++exactFallbacks;
+        }
+        if (radius >= scale) {
+            finalRadii[index] = radius;
+        }
+    }
+    diagnostics->insert(QStringLiteral("bodyGpuExactFallbacks"), exactFallbacks);
+    timer.restart();
+    std::vector<std::uint8_t> provenOuter(jobs.size(), 0);
+    std::vector<std::uint8_t> provenSpillFree(jobs.size(), 0);
+    const bool spillInsideOuter = catalog::subtract(region.spillFree, outer).isEmpty();
+    for (int id : kBodyShapeIds) {
+        if (stopped(cancelled)) {
+            break;
+        }
+        const auto *shape = primitiveFor(id, primitives);
+        if (!shape) {
+            continue;
+        }
+        std::vector<compact::gpu::MaskAffine> transforms;
+        QVector<int> indices;
+        for (int index = 0; index < jobs.size(); ++index) {
+            const BodyJob &job = jobs[index];
+            if (job.shape != shape || finalRadii[index] < scale) {
+                continue;
+            }
+            transforms.push_back(maskAffine(catalog::emittedTransform(bodyTransform(
+                *shape, job.center, job.angle, job.ratio,
+                finalRadii[index] * kBodyRadiusPadding))));
+            indices.push_back(index);
+        }
+        if (transforms.empty()) {
+            continue;
+        }
+        std::vector<std::uint8_t> spillFreeContained;
+        std::string error;
+        const double proofClearance = std::max(kGpuProofMinimumClearance,
+            scale * kGpuProofScaleFraction);
+        const auto geometry = maskGeometry(shape->contours);
+        if (!compact::gpu::proveTransformContainment(envelope, geometry,
+                transforms, proofClearance, &spillFreeContained, &error)) {
+            diagnostics->insert(QStringLiteral("bodyGpuProofError"),
+                QString::fromStdString(error));
+            break;
+        }
+        for (int position = 0; position < indices.size(); ++position) {
+            provenSpillFree[indices[position]] = spillFreeContained[position];
+            provenOuter[indices[position]] = spillInsideOuter
+                && spillFreeContained[position];
+        }
+    }
+    diagnostics->insert(QStringLiteral("bodyGpuProofMilliseconds"), timer.nsecsElapsed() / 1e6);
+    diagnostics->insert(QStringLiteral("bodyGpuProvenOuter"),
+        static_cast<int>(std::count(provenOuter.begin(), provenOuter.end(), std::uint8_t(1))));
+    diagnostics->insert(QStringLiteral("bodyGpuProvenSpillFree"),
+        static_cast<int>(std::count(provenSpillFree.begin(), provenSpillFree.end(), std::uint8_t(1))));
+    for (int index = 0; index < jobs.size(); ++index) {
+        if (stopped(cancelled)) {
+            break;
+        }
+        const BodyJob &job = jobs[index];
+        if (finalRadii[index] < scale) {
+            continue;
+        }
+        auto candidate = candidateFor(*job.shape, bodyTransform(*job.shape, job.center,
+            job.angle, job.ratio, finalRadii[index] * kBodyRadiusPadding), region, outer, boundary,
+            scale, stats, true, provenOuter[index], provenSpillFree[index]);
+        if (candidate && candidate->spill < scale * scale * 0.01) {
+            pool->push_back(std::move(*candidate));
+        }
+    }
+    return true;
+}
+#endif
 
 class BodyContainmentGrid {
 public:
@@ -909,9 +1133,12 @@ private:
 void addThinBodyAt(const QPointF &center, const catalog::Region &region, const Polygons &outer,
                    const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                    const BodyContainmentGrid &grid, double scale, const std::function<bool()> &cancelled,
-                   QVector<Candidate> *pool, CandidateValidationStats *stats = nullptr) {
+                   QVector<Candidate> *pool, CandidateValidationStats *stats = nullptr,
+                   bool useGpu = false, bool spillInsideOuter = false,
+                   QJsonObject *diagnostics = nullptr) {
     const auto reference = boundary.reference(center);
     const double angle = std::atan2(reference.tangent.y(), reference.tangent.x()) * 180.0 / std::numbers::pi;
+    QVector<std::pair<const PenPrimitive *, QTransform>> proposals;
     for (int id : {102, 101, 109, 110, 124, 2117}) {
         const auto *shape = primitiveFor(id, primitives);
         if (!shape) {
@@ -945,19 +1172,80 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
                 if (lower < scale) {
                     continue;
                 }
-                auto candidate = candidateFor(*shape, bodyTransform(*shape, center, angle + offset, ratio, lower * 0.995),
-                    region, outer, boundary, scale, stats);
-                if (candidate && candidate->spill < scale * scale * 0.01) {
-                    pool->push_back(std::move(*candidate));
+                proposals.push_back({shape, bodyTransform(*shape, center,
+                    angle + offset, ratio, lower * kBodyRadiusPadding)});
+            }
+        }
+    }
+    std::vector<std::uint8_t> provenSpillFree(proposals.size(), 0);
+#ifdef FLS_HAS_CUDA
+    if (useGpu && proposals.size() >= 16) {
+        QElapsedTimer timer;
+        timer.start();
+        const auto envelope = maskGeometry(region.spillFree);
+        for (int id : kBodyShapeIds) {
+            const auto *shape = primitiveFor(id, primitives);
+            if (!shape) {
+                continue;
+            }
+            std::vector<compact::gpu::MaskAffine> transforms;
+            QVector<int> indices;
+            for (int index = 0; index < proposals.size(); ++index) {
+                if (proposals[index].first == shape) {
+                    transforms.push_back(maskAffine(catalog::emittedTransform(
+                        proposals[index].second)));
+                    indices.push_back(index);
                 }
             }
+            if (transforms.empty()) {
+                continue;
+            }
+            std::vector<std::uint8_t> contained;
+            std::string error;
+            const double clearance = std::max(kGpuProofMinimumClearance,
+                scale * kGpuProofScaleFraction);
+            if (!compact::gpu::proveTransformContainment(envelope,
+                    maskGeometry(shape->contours), transforms, clearance,
+                    &contained, &error)) {
+                if (diagnostics) {
+                    diagnostics->insert(QStringLiteral("uncoveredGpuProofError"),
+                        QString::fromStdString(error));
+                }
+                break;
+            }
+            for (int position = 0; position < indices.size(); ++position) {
+                provenSpillFree[indices[position]] = contained[position];
+            }
+        }
+        if (diagnostics) {
+            diagnostics->insert(QStringLiteral("uncoveredGpuProofMilliseconds"),
+                diagnostics->value(QStringLiteral("uncoveredGpuProofMilliseconds")).toDouble()
+                    + timer.nsecsElapsed() / 1e6);
+        }
+    }
+#else
+    Q_UNUSED(useGpu)
+    Q_UNUSED(spillInsideOuter)
+    Q_UNUSED(diagnostics)
+#endif
+    for (int index = 0; index < proposals.size(); ++index) {
+        if (stopped(cancelled)) {
+            return;
+        }
+        const auto &[shape, transform] = proposals[index];
+        auto candidate = candidateFor(*shape, transform, region, outer, boundary,
+            scale, stats, true, spillInsideOuter && provenSpillFree[index],
+            provenSpillFree[index]);
+        if (candidate && candidate->spill < scale * scale * 0.01) {
+            pool->push_back(std::move(*candidate));
         }
     }
 }
 
 void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
                        const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
-                       double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool,
+                       double scale, bool useGpu, const std::function<bool()> &cancelled,
+                       QVector<Candidate> *pool,
                        QJsonObject *diagnostics) {
     QVector<std::pair<QPointF, double>> centers;
     const double coarse = std::max(region.bounds.width(), region.bounds.height()) / kBodyCenters;
@@ -997,10 +1285,6 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
         return first.second > second.second;
     });
     QVector<QPointF> retained;
-    std::optional<BodyContainmentGrid> grid;
-    if (thin) {
-        grid.emplace(region, scale);
-    }
     for (const auto &[center, distance] : centers) {
         const bool nearby = std::any_of(retained.begin(), retained.end(), [&](const auto &other) {
             return QLineF(center, other).length() < std::max(spacing, distance * 0.65);
@@ -1009,13 +1293,35 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
             continue;
         }
         retained.push_back(center);
-        if (thin) {
-            addThinBodyAt(center, region, outer, primitives, boundary, *grid, scale, cancelled, pool, &validation);
-        } else {
-            addBodyAt(center, region, outer, primitives, boundary, scale, pool, &validation);
-        }
         if (retained.size() >= (thin ? kThinBodyCenters : kBodyCenters) || stopped(cancelled)) {
             break;
+        }
+    }
+    bool gpuGenerated = false;
+#ifdef FLS_HAS_CUDA
+    if (useGpu && !thin && !stopped(cancelled)) {
+        gpuGenerated = addBodyCandidatesGpu(retained, region, outer, primitives,
+            boundary, scale, cancelled, pool, &validation, diagnostics);
+    }
+#else
+    Q_UNUSED(useGpu)
+#endif
+    if (!gpuGenerated && !stopped(cancelled)) {
+        std::optional<BodyContainmentGrid> grid;
+        if (thin) {
+            grid.emplace(region, scale);
+        }
+        for (const QPointF &center : retained) {
+            if (stopped(cancelled)) {
+                break;
+            }
+            if (thin) {
+                addThinBodyAt(center, region, outer, primitives, boundary,
+                    *grid, scale, cancelled, pool, &validation);
+            } else {
+                addBodyAt(center, region, outer, primitives, boundary,
+                    scale, pool, &validation);
+            }
         }
     }
     diagnostics->insert(QStringLiteral("thinRegionCandidates"), thin);
@@ -1024,9 +1330,13 @@ void addBodyCandidates(const catalog::Region &region, const Polygons &outer,
     diagnostics->insert(QStringLiteral("meanThickness"), thickness);
     diagnostics->insert(QStringLiteral("bodyValidationTrials"), validation.trials);
     diagnostics->insert(QStringLiteral("bodyClipRejected"), validation.clipRejected);
+    diagnostics->insert(QStringLiteral("bodyClipProofUsed"), validation.clipProofUsed);
+    diagnostics->insert(QStringLiteral("bodySpillProofUsed"), validation.spillProofUsed);
     diagnostics->insert(QStringLiteral("bodyTangentRejected"), validation.tangentRejected);
     diagnostics->insert(QStringLiteral("bodyClipMilliseconds"), validation.clipNanoseconds / 1e6);
     diagnostics->insert(QStringLiteral("bodyTangentMilliseconds"), validation.tangentNanoseconds / 1e6);
+    diagnostics->insert(QStringLiteral("bodyContainsChecks"), validation.containsChecks);
+    diagnostics->insert(QStringLiteral("bodyWhollySpillFree"), validation.whollySpillFree);
     diagnostics->insert(QStringLiteral("bodySpillMilliseconds"), validation.spillNanoseconds / 1e6);
 }
 
@@ -1095,7 +1405,8 @@ bool indexCandidatesGpu(QVector<Candidate> *pool, const Grid &grid,
 void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &outer,
                                 const QVector<catalog::Primitive> &primitives,
                                 const compact::BoundaryModel &boundary, const Grid &grid,
-                                double scale, const std::function<bool()> &cancelled,
+                                double scale, bool useGpu,
+                                const std::function<bool()> &cancelled,
                                 QVector<Candidate> *pool, QJsonObject *diagnostics) {
     Bits missing = grid.target;
     for (const auto &candidate : *pool)
@@ -1129,6 +1440,12 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
         return first.clearance > second.clearance;
     });
     const BodyContainmentGrid containment(region, scale);
+#ifdef FLS_HAS_CUDA
+    const bool spillInsideOuter = useGpu
+        && catalog::subtract(region.spillFree, outer).isEmpty();
+#else
+    const bool spillInsideOuter = false;
+#endif
     int used = 0;
     const int firstCandidate = pool->size();
     QElapsedTimer repairTimer;
@@ -1144,7 +1461,8 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
         const QPointF point = center(cell.index);
         repairTimer.start();
         addThinBodyAt(point, region, outer, primitives, boundary, containment,
-                      scale, cancelled, pool, &validation);
+                      scale, cancelled, pool, &validation, useGpu,
+                      spillInsideOuter, diagnostics);
         if (pool->size() == before)
             addBodyAt(point, region, outer, primitives, boundary, scale, pool,
                 &validation);
@@ -1167,10 +1485,16 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
         validation.clipNanoseconds / 1e6);
     diagnostics->insert(QStringLiteral("uncoveredBodyTangentMilliseconds"),
         validation.tangentNanoseconds / 1e6);
+    diagnostics->insert(QStringLiteral("uncoveredBodyContainsChecks"),
+        validation.containsChecks);
+    diagnostics->insert(QStringLiteral("uncoveredBodyWhollySpillFree"),
+        validation.whollySpillFree);
     diagnostics->insert(QStringLiteral("uncoveredBodySpillMilliseconds"),
         validation.spillNanoseconds / 1e6);
     diagnostics->insert(QStringLiteral("uncoveredBodyValidationTrials"),
         validation.trials);
+    diagnostics->insert(QStringLiteral("uncoveredClipProofUsed"), validation.clipProofUsed);
+    diagnostics->insert(QStringLiteral("uncoveredSpillProofUsed"), validation.spillProofUsed);
 }
 
 void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
@@ -1303,6 +1627,47 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
         screenTimer.nsecsElapsed() / 1e6);
     diagnostics->insert(QStringLiteral("straightGpuScreenRejected"), rejected);
     diagnostics->insert(QStringLiteral("straightGpuScreenTrials"), transforms.size());
+    std::vector<std::uint8_t> provenOuter(transforms.size(), 0);
+    std::vector<std::uint8_t> provenSpillFree(transforms.size(), 0);
+#ifdef FLS_HAS_CUDA
+    if (useGpu && transforms.size() >= 128) {
+        QElapsedTimer proofTimer;
+        proofTimer.start();
+        std::vector<compact::gpu::MaskAffine> affine;
+        QVector<int> indices;
+        for (int index = 0; index < transforms.size(); ++index) {
+            if (!possible[index]) {
+                continue;
+            }
+            affine.push_back(maskAffine(catalog::emittedTransform(transforms[index])));
+            indices.push_back(index);
+        }
+        const auto shapeGeometry = maskGeometry(shape->contours);
+        std::vector<std::uint8_t> outerContained;
+        std::vector<std::uint8_t> spillFreeContained;
+        std::string error;
+        const double clearance = std::max(kGpuProofMinimumClearance,
+            scale * kGpuProofScaleFraction);
+        if (compact::gpu::proveTransformContainment(maskGeometry(outer),
+                shapeGeometry, affine, clearance, &outerContained, &error)
+            && compact::gpu::proveTransformContainment(maskGeometry(region.spillFree),
+                shapeGeometry, affine, clearance, &spillFreeContained, &error)) {
+            for (int position = 0; position < indices.size(); ++position) {
+                provenOuter[indices[position]] = outerContained[position];
+                provenSpillFree[indices[position]] = spillFreeContained[position];
+            }
+        } else {
+            diagnostics->insert(QStringLiteral("straightGpuProofError"),
+                QString::fromStdString(error));
+        }
+        diagnostics->insert(QStringLiteral("straightGpuProofMilliseconds"),
+            proofTimer.nsecsElapsed() / 1e6);
+        diagnostics->insert(QStringLiteral("straightGpuProvenOuter"),
+            static_cast<int>(std::count(provenOuter.begin(), provenOuter.end(), std::uint8_t(1))));
+        diagnostics->insert(QStringLiteral("straightGpuProvenSpillFree"),
+            static_cast<int>(std::count(provenSpillFree.begin(), provenSpillFree.end(), std::uint8_t(1))));
+    }
+#endif
     CandidateValidationStats validation;
     int first = 0;
     int trials = 0;
@@ -1315,7 +1680,7 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
             if (!possible[index])
                 continue;
             auto candidate = candidateFor(*shape, transforms[index], region,
-                outer, boundary, scale, &validation);
+                outer, boundary, scale, &validation, false, provenOuter[index]);
             if (candidate) {
                 pool->push_back(std::move(*candidate));
                 break;
@@ -1328,6 +1693,7 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
     diagnostics->insert(QStringLiteral("straightAnchorStarts"), anchorStarts);
     diagnostics->insert(QStringLiteral("straightValidationTrials"), validation.trials);
     diagnostics->insert(QStringLiteral("straightClipRejected"), validation.clipRejected);
+    diagnostics->insert(QStringLiteral("straightClipProofUsed"), validation.clipProofUsed);
     diagnostics->insert(QStringLiteral("straightTangentRejected"), validation.tangentRejected);
     diagnostics->insert(QStringLiteral("straightClipMilliseconds"), validation.clipNanoseconds / 1e6);
     diagnostics->insert(QStringLiteral("straightTangentMilliseconds"), validation.tangentNanoseconds / 1e6);
@@ -1823,7 +2189,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         recordTime(QStringLiteral("corners"));
         result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
         addBodyCandidates(coverageRegion, outer, primitives, boundary,
-            options.observationScale, cancelled, &pool, &result.diagnostics);
+            options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
         recordTime(QStringLiteral("interior"));
         QElapsedTimer selectionTimer;
         selectionTimer.start();
@@ -1835,6 +2201,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             nullptr,
 #endif
             &result.diagnostics);
+        result.diagnostics.insert(QStringLiteral("initialSelectionCount"), selected.size());
         result.diagnostics.insert(QStringLiteral("initialSelectionMilliseconds"),
             selectionTimer.nsecsElapsed() / 1e6);
         // Smooth raster contours can leave grid cells that no structural candidate
@@ -1851,7 +2218,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             if (initialMissing > std::max(4.0, coverageRegion.area * 0.005)) {
                 selectionTimer.restart();
                 addUncoveredBodyCandidates(coverageRegion, outer, primitives, boundary, grid,
-                    options.observationScale, cancelled, &pool, &result.diagnostics);
+                    options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
                 result.diagnostics.insert(QStringLiteral("uncoveredBodyMilliseconds"),
                     selectionTimer.nsecsElapsed() / 1e6);
                 // On the repair pass, favor covered area over dense boundary witnesses.

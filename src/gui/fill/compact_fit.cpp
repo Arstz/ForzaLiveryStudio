@@ -32,6 +32,7 @@ constexpr int kGpuPipelinePasses = 3;
 constexpr int kGpuBalancedPasses = 2;
 constexpr int kGpuGroupCandidates = 8;
 constexpr int kGpuGroupFragments = 12;
+constexpr int kGpuGroupNeighbors = 2;
 constexpr int kGpuExactTailTrials = 256;
 constexpr int kRefitNeighbors = 4;
 constexpr double kGpuRepairInnerWeight = 256.0;
@@ -1058,6 +1059,7 @@ bool gpuReplacementAllowed(const ReductionState &before,
 
 bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
                            const QVector<catalog::Primitive> &primitives,
+                           int groupLimit,
                            const std::function<bool()> &cancelled) {
     struct RankedReplacement {
         Piece piece;
@@ -1076,13 +1078,13 @@ bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
     });
     fragments.resize(std::min(kGpuGroupFragments, static_cast<int>(fragments.size())));
     for (int fragmentPosition = 0;
-         fragmentPosition < fragments.size() && !stopped(cancelled); ++fragmentPosition) {
+         fragmentPosition < fragments.size() && objective.evaluations < groupLimit
+             && !stopped(cancelled); ++fragmentPosition) {
         const int fragment = fragments[fragmentPosition];
         if (fragment >= pieces->size()) {
             continue;
         }
-        int neighbor = -1;
-        double neighborDistance = std::numeric_limits<double>::infinity();
+        QVector<std::pair<double, int>> neighbors;
         for (int index = 0; index < pieces->size(); ++index) {
             if (index == fragment) {
                 continue;
@@ -1090,99 +1092,108 @@ bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
             const QPointF delta = (*pieces)[index].bounds.center()
                 - (*pieces)[fragment].bounds.center();
             const double distance = QPointF::dotProduct(delta, delta);
-            if (distance < neighborDistance) {
-                neighbor = index;
-                neighborDistance = distance;
-            }
+            neighbors.push_back({distance, index});
         }
-        if (neighbor < 0) {
+        if (neighbors.isEmpty()) {
             continue;
         }
-        const QVector<Piece> group{(*pieces)[fragment], (*pieces)[neighbor]};
-        QPolygonF groupPoints;
-        for (const Piece &member : group) {
-            for (const QPolygonF &polygon : member.polygons) {
-                groupPoints += polygon;
-            }
-        }
-        if (!objective.gpuRanker->prepareReplacementCoverage(gpuGeometry(group))) {
-            return false;
-        }
-        const QTransform neighborTransform = (*pieces)[neighbor].placement.transform;
-        const double angle = std::atan2(neighborTransform.m12(),
-            neighborTransform.m11());
-        const bool reflected = neighborTransform.determinant() < 0;
-        QVector<RankedReplacement> ranked;
-        for (const auto &primitive : primitives) {
-            if (objective.evaluations >= objective.evaluationLimit) {
-                break;
-            }
-            std::vector<gpu::Affine> numericTransforms;
-            QVector<QTransform> transforms;
-            for (double offset : {0.0, -0.12, 0.12}) {
-                const QTransform transform = boundsTransform(primitive.shape,
-                    groupPoints, angle + offset, reflected);
-                const double area = primitive.shape.area
-                    * std::abs(transform.determinant());
-                if (std::isfinite(area) && area >= minimumArea) {
-                    transforms.push_back(transform);
-                    numericTransforms.push_back(gpuAffine(transform));
-                }
-            }
-            if (transforms.empty()) {
-                continue;
-            }
-            const int available = objective.evaluationLimit - objective.evaluations;
-            if (transforms.size() > available) {
-                transforms.resize(available);
-                numericTransforms.resize(static_cast<size_t>(available));
-            }
-            std::vector<double> scores;
-            if (!objective.gpuRanker->evaluateTransforms(
-                    gpuGeometry(primitive.shape.contours), numericTransforms, &scores,
-                    {4.0, 64.0, 4.0, 32.0, 4.0})) {
-                return false;
-            }
-            objective.evaluations += static_cast<int>(scores.size());
-            objective.gpuGroupTrials += static_cast<int>(scores.size());
-            for (int index = 0; index < transforms.size(); ++index) {
-                if (!std::isfinite(scores[index])) {
-                    continue;
-                }
-                RankedReplacement replacement{
-                    makePiece(primitive.shape, transforms[index]), scores[index]};
-                const auto position = std::lower_bound(ranked.begin(), ranked.end(),
-                    replacement.score, [](const RankedReplacement &entry, double score) {
-                        return entry.score > score;
-                    });
-                ranked.insert(position, std::move(replacement));
-                if (ranked.size() > kGpuGroupCandidates) {
-                    ranked.removeLast();
-                }
-            }
-        }
+        std::sort(neighbors.begin(), neighbors.end());
+        neighbors.resize(std::min(kGpuGroupNeighbors, static_cast<int>(neighbors.size())));
         const ReductionState before = reductionStateFor(support(*pieces), objective);
         bool replaced = false;
-        for (const RankedReplacement &replacement : ranked) {
-            QVector<Piece> trial = *pieces;
-            trial[neighbor] = replacement.piece;
-            trial.removeAt(fragment);
-            const ReductionState after = reductionStateFor(support(trial), objective);
-            if (gpuReplacementAllowed(before, after, objective)) {
-                *pieces = std::move(trial);
-                ++objective.gpuGroupReplacements;
-                replaced = true;
+        for (const auto &entry : neighbors) {
+            if (objective.evaluations >= groupLimit) {
                 break;
             }
-        }
-        if (replaced) {
-            if (!objective.gpuRanker->preparePlacementCoverage(gpuGeometry(*pieces))) {
+            const int neighbor = entry.second;
+            const QVector<Piece> group{(*pieces)[fragment], (*pieces)[neighbor]};
+            QPolygonF groupPoints;
+            for (const Piece &member : group) {
+                for (const QPolygonF &polygon : member.polygons) {
+                    groupPoints += polygon;
+                }
+            }
+            if (!objective.gpuRanker->prepareReplacementCoverage(gpuGeometry(group))) {
                 return false;
             }
-            for (int &index : fragments) {
-                if (index > fragment) {
-                    --index;
+            const QTransform neighborTransform = (*pieces)[neighbor].placement.transform;
+            const double angle = std::atan2(neighborTransform.m12(),
+                neighborTransform.m11());
+            const bool reflected = neighborTransform.determinant() < 0;
+            QVector<RankedReplacement> ranked;
+            for (const auto &primitive : primitives) {
+                if (objective.evaluations >= groupLimit) {
+                    break;
                 }
+                std::vector<gpu::Affine> numericTransforms;
+                QVector<QTransform> transforms;
+                for (double offset : {0.0, -0.12, 0.12}) {
+                    const QTransform transform = boundsTransform(primitive.shape,
+                        groupPoints, angle + offset, reflected);
+                    const double area = primitive.shape.area
+                        * std::abs(transform.determinant());
+                    if (std::isfinite(area) && area >= minimumArea) {
+                        transforms.push_back(transform);
+                        numericTransforms.push_back(gpuAffine(transform));
+                    }
+                }
+                if (transforms.empty()) {
+                    continue;
+                }
+                const int available = groupLimit - objective.evaluations;
+                if (available <= 0) {
+                    break;
+                }
+                if (transforms.size() > available) {
+                    transforms.resize(available);
+                    numericTransforms.resize(static_cast<size_t>(available));
+                }
+                std::vector<double> scores;
+                if (!objective.gpuRanker->evaluateTransforms(
+                        gpuGeometry(primitive.shape.contours), numericTransforms, &scores,
+                        {4.0, 64.0, 4.0, 32.0, 4.0})) {
+                    return false;
+                }
+                objective.evaluations += static_cast<int>(scores.size());
+                objective.gpuGroupTrials += static_cast<int>(scores.size());
+                for (int index = 0; index < transforms.size(); ++index) {
+                    if (!std::isfinite(scores[index])) {
+                        continue;
+                    }
+                    RankedReplacement replacement{
+                        makePiece(primitive.shape, transforms[index]), scores[index]};
+                    const auto position = std::lower_bound(ranked.begin(), ranked.end(),
+                        replacement.score, [](const RankedReplacement &entry, double score) {
+                            return entry.score > score;
+                        });
+                    ranked.insert(position, std::move(replacement));
+                    if (ranked.size() > kGpuGroupCandidates) {
+                        ranked.removeLast();
+                    }
+                }
+            }
+            for (const RankedReplacement &replacement : ranked) {
+                QVector<Piece> trial = *pieces;
+                trial[neighbor] = replacement.piece;
+                trial.removeAt(fragment);
+                const ReductionState after = reductionStateFor(support(trial), objective);
+                if (gpuReplacementAllowed(before, after, objective)) {
+                    *pieces = std::move(trial);
+                    ++objective.gpuGroupReplacements;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (replaced) {
+                if (!objective.gpuRanker->preparePlacementCoverage(gpuGeometry(*pieces))) {
+                    return false;
+                }
+                for (int &index : fragments) {
+                    if (index > fragment) {
+                        --index;
+                    }
+                }
+                break;
             }
         }
     }
@@ -1259,7 +1270,9 @@ bool optimizeGpu(QVector<Piece> *pieces, const Objective &objective,
             return false;
         }
     }
-    if (!replaceSmallGroupsGpu(pieces, objective, primitives, cancelled)) {
+    const int groupLimit = std::max(objective.evaluations,
+        objective.evaluationLimit - std::min(kGpuExactTailTrials, objective.evaluationLimit / 20));
+    if (!replaceSmallGroupsGpu(pieces, objective, primitives, groupLimit, cancelled)) {
         *pieces = original;
         return false;
     }
@@ -1309,64 +1322,64 @@ bool optimizeGpu(QVector<Piece> *pieces, const Objective &objective,
 
 QTransform boundsTransform(const PenPrimitive &shape, const QPolygonF &points,
                             double angle, bool reflected) {
-    QTransform frame;
-    frame.rotateRadians(angle);
-    const QRectF bounds = frame.inverted().map(points).boundingRect();
-    QTransform transform;
-    transform.translate(bounds.center().x(), bounds.center().y());
-    transform.scale((reflected ? -1.0 : 1.0) * bounds.width() / shape.bounds.width(),
-                    bounds.height() / shape.bounds.height());
-    transform.translate(-shape.bounds.center().x(), -shape.bounds.center().y());
+        QTransform frame;
+        frame.rotateRadians(angle);
+        const QRectF bounds = frame.inverted().map(points).boundingRect();
+        QTransform transform;
+        transform.translate(bounds.center().x(), bounds.center().y());
+        transform.scale((reflected ? -1.0 : 1.0) * bounds.width() / shape.bounds.width(),
+                        bounds.height() / shape.bounds.height());
+        transform.translate(-shape.bounds.center().x(), -shape.bounds.center().y());
 
-    return transform * frame;
-}
-
-QTransform momentFrame(const Polygons &polygons) {
-    double twiceArea = 0.0;
-    double firstX = 0.0;
-    double firstY = 0.0;
-    double secondX = 0.0;
-    double secondY = 0.0;
-    double mixed = 0.0;
-    const QPointF origin = catalog::painterPath(polygons).boundingRect().center();
-    for (const auto &polygon : polygons) {
-        for (int index = 0; index < polygon.size(); ++index) {
-            const QPointF a = polygon[index] - origin;
-            const QPointF b = polygon[(index + 1) % polygon.size()] - origin;
-            const double cross = a.x() * b.y() - b.x() * a.y();
-            twiceArea += cross;
-            firstX += (a.x() + b.x()) * cross;
-            firstY += (a.y() + b.y()) * cross;
-            secondX += (a.x() * a.x() + a.x() * b.x() + b.x() * b.x()) * cross;
-            secondY += (a.y() * a.y() + a.y() * b.y() + b.y() * b.y()) * cross;
-            mixed += (2 * a.x() * a.y() + a.x() * b.y() + b.x() * a.y() + 2 * b.x() * b.y()) * cross;
-        }
+        return transform * frame;
     }
-    if (std::abs(twiceArea) < catalog::kMinimumDeterminant) {
-        return {};
-    }
-    const double x = firstX / (3 * twiceArea);
-    const double y = firstY / (3 * twiceArea);
-    const double horizontal = std::sqrt(std::max(catalog::kMinimumDeterminant,
-        secondX / (6 * twiceArea) - x * x));
-    const double shear = (mixed / (12 * twiceArea) - x * y) / horizontal;
-    const double vertical = std::sqrt(std::max(catalog::kMinimumDeterminant,
-        secondY / (6 * twiceArea) - y * y - shear * shear));
 
-    return QTransform(horizontal, shear, 0, vertical, x + origin.x(), y + origin.y());
-}
-
-QPointF radialAnchor(const Polygons &polygons, const QTransform &normalization) {
-    QPointF result;
-    double maximum = -1.0;
-    for (const auto &polygon : polygons) {
-        for (const auto &point : polygon) {
-            const auto normalized = normalization.map(point);
-            const double radius = QPointF::dotProduct(normalized, normalized);
-            if (radius > maximum) {
-                maximum = radius;
-                result = normalized;
+    QTransform momentFrame(const Polygons &polygons) {
+        double twiceArea = 0.0;
+        double firstX = 0.0;
+        double firstY = 0.0;
+        double secondX = 0.0;
+        double secondY = 0.0;
+        double mixed = 0.0;
+        const QPointF origin = catalog::painterPath(polygons).boundingRect().center();
+        for (const auto &polygon : polygons) {
+            for (int index = 0; index < polygon.size(); ++index) {
+                const QPointF a = polygon[index] - origin;
+                const QPointF b = polygon[(index + 1) % polygon.size()] - origin;
+                const double cross = a.x() * b.y() - b.x() * a.y();
+                twiceArea += cross;
+                firstX += (a.x() + b.x()) * cross;
+                firstY += (a.y() + b.y()) * cross;
+                secondX += (a.x() * a.x() + a.x() * b.x() + b.x() * b.x()) * cross;
+                secondY += (a.y() * a.y() + a.y() * b.y() + b.y() * b.y()) * cross;
+                mixed += (2 * a.x() * a.y() + a.x() * b.y() + b.x() * a.y() + 2 * b.x() * b.y()) * cross;
             }
+        }
+        if (std::abs(twiceArea) < catalog::kMinimumDeterminant) {
+            return {};
+        }
+        const double x = firstX / (3 * twiceArea);
+        const double y = firstY / (3 * twiceArea);
+        const double horizontal = std::sqrt(std::max(catalog::kMinimumDeterminant,
+            secondX / (6 * twiceArea) - x * x));
+        const double shear = (mixed / (12 * twiceArea) - x * y) / horizontal;
+        const double vertical = std::sqrt(std::max(catalog::kMinimumDeterminant,
+            secondY / (6 * twiceArea) - y * y - shear * shear));
+
+        return QTransform(horizontal, shear, 0, vertical, x + origin.x(), y + origin.y());
+    }
+
+    QPointF radialAnchor(const Polygons &polygons, const QTransform &normalization) {
+        QPointF result;
+        double maximum = -1.0;
+        for (const auto &polygon : polygons) {
+            for (const auto &point : polygon) {
+                const auto normalized = normalization.map(point);
+                const double radius = QPointF::dotProduct(normalized, normalized);
+                if (radius > maximum) {
+                    maximum = radius;
+                    result = normalized;
+                }
         }
     }
 

@@ -144,6 +144,18 @@ bool screenTransformContainment(const MaskGeometry &envelope,
                                 double clearance,
                                 std::vector<std::uint8_t> *possible,
                                 std::string *error);
+bool fitContainmentRadii(const MaskGeometry &envelope,
+                         const std::vector<MaskPoint> &probes,
+                         const std::vector<MaskPoint> &centers,
+                         const std::vector<MaskAffine> &unitTransforms,
+                         double maximumRadius, int iterations, double clearance,
+                         std::vector<double> *radii, std::string *error);
+bool proveTransformContainment(const MaskGeometry &envelope,
+                               const MaskGeometry &shape,
+                               const std::vector<MaskAffine> &transforms,
+                               double clearance,
+                               std::vector<std::uint8_t> *contained,
+                               std::string *error);
 std::unique_ptr<BitmaskCover> createBitmaskCover(
     const std::vector<MaskWord> &words, const std::vector<int> &offsets,
     const std::vector<std::uint64_t> &missing, int cellWords);

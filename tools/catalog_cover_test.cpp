@@ -1240,6 +1240,84 @@ void gpuRasterRankTests() {
         && rasterMasks == std::vector<std::uint64_t>{0x0f0f0f0f, 0xf0f0f0f0}
         && witnessMasks == std::vector<std::uint64_t>{0b001, 0b110},
         QStringLiteral("CUDA profile grid rasterization changed pixel coverage"));
+    const gui::catalog::Polygons envelopePolygons{
+        QPolygonF{{0, 0}, {20, 0}, {20, 20}, {0, 20}},
+        QPolygonF{{6, 6}, {6, 14}, {14, 14}, {14, 6}}};
+    const QPolygonF probePolygon{{0, 0}, {2, 0}, {2, 1}, {0, 1}};
+    const auto gpuMask = [](const gui::catalog::Polygons &polygons) {
+        gui::compact::gpu::MaskGeometry geometry;
+        for (const QPolygonF &polygon : polygons) {
+            const int offset = static_cast<int>(geometry.points.size());
+            for (const QPointF &point : polygon) {
+                geometry.points.push_back({point.x(), point.y()});
+            }
+            geometry.loops.push_back({offset, static_cast<int>(polygon.size())});
+        }
+
+        return geometry;
+    };
+    std::vector<QTransform> probeTransforms;
+    std::vector<gui::compact::gpu::MaskAffine> probeAffines;
+    for (int y = -2; y <= 20; ++y) {
+        for (int x = -2; x <= 20; ++x) {
+            for (double angle : {0.0, 23.0, 71.0}) {
+                QTransform transform;
+                transform.translate(x + 0.25, y + 0.25);
+                transform.rotate(angle);
+                probeTransforms.push_back(transform);
+                probeAffines.push_back({transform.m11(), transform.m12(),
+                    transform.m21(), transform.m22(), transform.dx(), transform.dy()});
+            }
+        }
+    }
+    std::vector<std::uint8_t> proven;
+    std::string proofError;
+    require(gui::compact::gpu::proveTransformContainment(gpuMask(envelopePolygons),
+        gpuMask({probePolygon}), probeAffines, 0.0001, &proven, &proofError),
+        QStringLiteral("CUDA containment proof failed"));
+    int provenCount = 0;
+    for (int index = 0; index < static_cast<int>(proven.size()); ++index) {
+        if (!proven[index]) {
+            continue;
+        }
+        ++provenCount;
+        require(gui::catalog::subtract({probeTransforms[index].map(probePolygon)},
+            envelopePolygons).isEmpty(),
+            QStringLiteral("CUDA containment proof accepted a clipped placement"));
+    }
+    require(provenCount > 0 && provenCount < static_cast<int>(proven.size()),
+        QStringLiteral("CUDA containment proof did not distinguish placements"));
+    const QPolygonF enclosingHole{{0, 0}, {12, 0}, {12, 12}, {0, 12}};
+    require(gui::compact::gpu::proveTransformContainment(gpuMask(envelopePolygons),
+        gpuMask({enclosingHole}), {{1, 0, 0, 1, 4, 4}}, 0.0001,
+        &proven, &proofError) && proven == std::vector<std::uint8_t>{0},
+        QStringLiteral("CUDA containment proof overlooked an interior hole"));
+    const std::vector<gui::compact::gpu::MaskPoint> radiusProbes{
+        {-0.5, -0.5}, {0.5, -0.5}, {0.5, 0.5}, {-0.5, 0.5}};
+    std::vector<gui::compact::gpu::MaskPoint> radiusCenters;
+    std::vector<gui::compact::gpu::MaskAffine> radiusTransforms;
+    for (int y = 1; y <= 18; y += 2) {
+        for (int x = 1; x <= 18; x += 2) {
+            radiusCenters.push_back({static_cast<double>(x), static_cast<double>(y)});
+            radiusTransforms.push_back({1, 0, 0, 1,
+                static_cast<double>(x), static_cast<double>(y)});
+        }
+    }
+    std::vector<double> parallelRadii;
+    require(gui::compact::gpu::fitContainmentRadii(gpuMask(envelopePolygons),
+        radiusProbes, radiusCenters, radiusTransforms, 8.0, 12, 0.01,
+        &parallelRadii, &proofError),
+        QStringLiteral("CUDA parallel radius search failed"));
+    for (int index = static_cast<int>(radiusCenters.size()); index < 2048; ++index) {
+        radiusCenters.push_back(radiusCenters[index % parallelRadii.size()]);
+        radiusTransforms.push_back(radiusTransforms[index % parallelRadii.size()]);
+    }
+    std::vector<double> serialRadii;
+    require(gui::compact::gpu::fitContainmentRadii(gpuMask(envelopePolygons),
+        radiusProbes, radiusCenters, radiusTransforms, 8.0, 12, 0.01,
+        &serialRadii, &proofError)
+        && std::equal(parallelRadii.begin(), parallelRadii.end(), serialRadii.begin()),
+        QStringLiteral("CUDA parallel and serial radius searches disagree"));
     const auto appendRectangle = [](gui::compact::gpu::Geometry *geometry,
                                     float left, float top, float right, float bottom) {
         const int pointOffset = static_cast<int>(geometry->points.size());
