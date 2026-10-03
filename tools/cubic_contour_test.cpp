@@ -363,6 +363,48 @@ void realBucketMask() {
     }
 }
 
+void outwardMouthFit() {
+    QFile file(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/bucket_algo_mouth_mask.json"));
+    require(file.open(QIODevice::ReadOnly), "Cannot open the mouth mask fixture");
+    const auto fixture = QJsonDocument::fromJson(file.readAll()).object();
+    const auto dimensions = fixture.value("size").toArray();
+    const QSize size(dimensions[0].toInt(), dimensions[1].toInt());
+    const QRect bounds(QPoint(0, 0), size);
+    std::vector<std::uint8_t> mask(size_t(size.width()) * size.height());
+    for (const auto &entry : fixture.value("runs").toArray()) {
+        const auto run = entry.toArray();
+        for (int x = run[1].toInt(); x < run[2].toInt(); ++x)
+            mask[size_t(run[0].toInt()) * size.width() + x] = 1;
+    }
+    require(std::count(mask.begin(), mask.end(), std::uint8_t{1}) == fixture.value("area").toInt(),
+            "Mouth mask fixture area changed");
+    gui::CubicFitOptions outwardOptions;
+    outwardOptions.outwardFitPixels = 2;
+    const auto original = gui::fitMaskContours(mask, size, bounds);
+    const auto outward = gui::fitMaskContours(mask, size, bounds, outwardOptions);
+    const auto originalContour = gui::buildPenContour(original);
+    const auto outwardContour = gui::buildPenContour(outward);
+    require(originalContour.valid() && outwardContour.valid() && outward.size() == 1,
+            "Outward mouth fit changed contour topology");
+    const auto originalRaster = raster(originalContour.path, size);
+    const auto outwardRaster = raster(outwardContour.path, size);
+    int originalMisses = 0, outwardMisses = 0;
+    for (int y = 0; y < size.height(); ++y)
+        for (int x = 0; x < size.width(); ++x) {
+            if (!mask[size_t(y) * size.width() + x])
+                continue;
+            originalMisses += qRed(originalRaster.pixel(x, y)) != 0;
+            outwardMisses += qRed(outwardRaster.pixel(x, y)) != 0;
+        }
+    std::cout << "mouth fit: original nodes=" << original.front().points.size()
+              << " missed=" << originalMisses << " outward nodes=" << outward.front().points.size()
+              << " missed=" << outwardMisses << '\n';
+    require(originalMisses >= 100 && outwardMisses <= 32 && outwardMisses < originalMisses / 4,
+            "Outward mouth fit did not recover the selected guide pixels");
+    require(outward.front().points.size() <= original.front().points.size() + 12,
+            "Outward mouth fit added too many nodes");
+}
+
 void realLeftHandMasks() {
     QFile file(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/bucket_tests_left_hand_mask.json"));
     require(file.open(QIODevice::ReadOnly), "Cannot open the left-hand mask fixture");
@@ -399,6 +441,17 @@ void realLeftHandMasks() {
         require(nodes <= selection.value("max_nodes").toInt()
                     && soft >= selection.value("min_soft").toInt(),
                 "A left-hand mask fell back to a pixel staircase");
+        gui::CubicFitOptions outwardOptions;
+        outwardOptions.outwardFitPixels = 2;
+        const auto outwardLoops = gui::fitMaskContours(mask, size, bounds, outwardOptions);
+        require(gui::buildPenContour(outwardLoops).valid()
+                    && outwardLoops.size() == loops.size(),
+                "Outward left-hand fit changed contour topology");
+        int outwardNodes = 0;
+        for (const auto &loop : outwardLoops)
+            outwardNodes += loop.points.size();
+        require(outwardNodes <= std::max(nodes * 2, nodes + 12),
+                "Outward left-hand fit added too many nodes");
     }
 }
 void replayImage(int argc, char **argv) {
@@ -409,6 +462,11 @@ void replayImage(int argc, char **argv) {
     options.tolerance = atof(argv[6]);
     if (argc > 8)
         options.cornerScale = atof(argv[8]);
+    if (argc > 10) {
+        require(QString::fromLocal8Bit(argv[10]) == QStringLiteral("outward"),
+                "Unknown bucket replay option");
+        options.outwardFitPixels = 2;
+    }
     QElapsedTimer timer;
     timer.start();
     QString error;
@@ -488,6 +546,7 @@ int main(int argc, char **argv) {
         geometry();
         masks(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString{});
         realBucketMask();
+        outwardMouthFit();
         realLeftHandMasks();
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';

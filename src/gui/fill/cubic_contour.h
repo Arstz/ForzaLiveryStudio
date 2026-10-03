@@ -13,6 +13,7 @@ struct CubicFitOptions {
     // For masks, treat measured raster roughness as an uncertainty band. The tolerance
     // above is its minimum; narrow strokes cap how far this band can expand.
     bool adaptToRasterNoise = true;
+    int outwardFitPixels = 0;
     double outlierFraction = 0.0;
     bool preserveRasterNotches = false;
 };

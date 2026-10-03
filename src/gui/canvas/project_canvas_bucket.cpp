@@ -10,6 +10,9 @@
 
 namespace gui {
 using namespace pc_detail;
+namespace {
+constexpr int kBucketOutwardFitPixels = 2;
+}
 
 bool ProjectCanvas::bucketGuideContext(const QPointF &screenPoint,
                                        const fls::scene::GuideLayer **guide,
@@ -334,8 +337,11 @@ bool ProjectCanvas::commitBucketPreview(const QPointF &screenPoint,
             update();
             return false;
         }
+        CubicFitOptions contourOptions;
+        contourOptions.outwardFitPixels = bucket_.fill.transparentTarget ? 0
+                                                                        : kBucketOutwardFitPixels;
         conversion.loops = fitMaskContours(bucket_.fill.mask, bucket_.fill.imageSize,
-                                           bucket_.fill.bounds, {}, &conversion.error);
+                                           bucket_.fill.bounds, contourOptions, &conversion.error);
         sourceSize = image.size();
         fillColor = bucket_.fill.transparentTarget
             ? kTransparentBucketColor

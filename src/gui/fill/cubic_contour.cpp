@@ -19,6 +19,8 @@ constexpr int kNotchMaximumPoints = 10;
 constexpr double kMaximumMaskMismatchFraction = 0.12;
 constexpr int kMaskBoundaryBand = 5;
 constexpr int kMaximumMaskFitAttempts = 5;
+constexpr double kOutwardMaskMissFraction = 0.005;
+constexpr double kOutwardMaskGrowthFraction = 0.4;
 constexpr std::array<double, 3> kHandleRepairScales{0.9, 0.75, 0.5};
 
 double length(QPointF p) {
@@ -499,6 +501,62 @@ bool matchesRasterMask(const PenContour &contour, const std::vector<std::uint8_t
 
     return differingPixels <= selectedPixels * kMaximumMaskMismatchFraction;
 }
+
+int missedSelectedPixels(const PenContour &contour, const std::vector<std::uint8_t> &mask,
+                         QSize size, QRect bounds) {
+    bounds = bounds.intersected(QRect(QPoint(0, 0), size));
+    QImage raster(bounds.size(), QImage::Format_Grayscale8);
+    raster.fill(255);
+    {
+        QPainter painter(&raster);
+        painter.translate(-bounds.topLeft());
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::black);
+        painter.drawPath(contour.path);
+    }
+    int missed = 0;
+    for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
+        const auto *row = raster.constScanLine(y - bounds.top());
+        for (int x = bounds.left(); x <= bounds.right(); ++x)
+            missed += mask[size_t(y) * size.width() + x] != 0 && row[x - bounds.left()] != 0;
+    }
+
+    return missed;
+}
+
+std::vector<std::uint8_t> expandMask(const std::vector<std::uint8_t> &mask, QSize size,
+                                     QRect bounds, int radius) {
+    auto expanded = mask;
+    const QRect imageBounds(QPoint(0, 0), size);
+    for (int step = 0; step < radius; ++step) {
+        const auto previous = expanded;
+        bounds = bounds.adjusted(-1, -1, 1, 1).intersected(imageBounds);
+        for (int y = bounds.top(); y <= bounds.bottom(); ++y)
+            for (int x = bounds.left(); x <= bounds.right(); ++x) {
+                const size_t index = size_t(y) * size.width() + x;
+                if (!previous[index])
+                    continue;
+                if (x > 0)
+                    expanded[index - 1] = 1;
+                if (x + 1 < size.width())
+                    expanded[index + 1] = 1;
+                if (y > 0)
+                    expanded[index - size.width()] = 1;
+                if (y + 1 < size.height())
+                    expanded[index + size.width()] = 1;
+            }
+    }
+
+    return expanded;
+}
+
+int contourNodeCount(const QVector<PenLoop> &loops) {
+    int count = 0;
+    for (const auto &loop : loops)
+        count += loop.points.size();
+
+    return count;
+}
 } // namespace
 
 QVector<QPolygonF> pixelBoundaryLoops(const std::vector<std::uint8_t> &mask, QSize size,
@@ -886,6 +944,56 @@ PenLoop fitMaskLoop(const QPolygonF &polygon, CubicFitOptions fit, double corner
 
 QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize size, QRect bounds,
                                  const CubicFitOptions &options, QString *error) {
+    if (options.outwardFitPixels > 0 && options.adaptToRasterNoise) {
+        CubicFitOptions baseOptions = options;
+        baseOptions.outwardFitPixels = 0;
+        auto best = fitMaskContours(mask, size, bounds, baseOptions, error);
+        if (best.isEmpty())
+            return best;
+        const int selected = int(std::count_if(mask.begin(), mask.end(),
+                                                [](std::uint8_t value) { return value != 0; }));
+        const int allowedMisses = std::max(2, int(std::floor(selected * kOutwardMaskMissFraction)));
+        if (missedSelectedPixels(buildPenContour(best), mask, size, bounds) <= allowedMisses)
+            return best;
+
+        const auto cleaned = removeRasterPinholes(mask, size, bounds);
+        const auto originalPolygons = pixelBoundaryLoops(cleaned, size, bounds);
+        const int originalArea = int(std::count_if(cleaned.begin(), cleaned.end(),
+                                                    [](std::uint8_t value) { return value != 0; }));
+        const int maximumNodes = std::max(contourNodeCount(best) * 2,
+                                          contourNodeCount(best) + 12);
+        const QRect imageBounds(QPoint(0, 0), size);
+        for (int radius = 1; radius <= options.outwardFitPixels; ++radius) {
+            const auto expanded = expandMask(cleaned, size, bounds, radius);
+            const int expandedArea = int(std::count_if(expanded.begin(), expanded.end(),
+                                                        [](std::uint8_t value) { return value != 0; }));
+            if (expandedArea > originalArea * (1.0 + kOutwardMaskGrowthFraction))
+                break;
+            const QRect expandedBounds = bounds.adjusted(-radius, -radius, radius, radius)
+                                             .intersected(imageBounds);
+            const auto polygons = pixelBoundaryLoops(expanded, size, expandedBounds);
+            if (polygons.size() != originalPolygons.size())
+                break;
+            bool sameWinding = true;
+            for (int i = 0; i < polygons.size(); ++i)
+                sameWinding &= (area(polygons[i]) > 0) == (area(originalPolygons[i]) > 0);
+            if (!sameWinding)
+                break;
+            auto candidate = fitMaskContours(expanded, size, expandedBounds, baseOptions);
+            if (candidate.isEmpty() || contourNodeCount(candidate) > maximumNodes)
+                continue;
+            const auto contour = buildPenContour(candidate);
+            if (!contour.valid())
+                continue;
+            if (missedSelectedPixels(contour, mask, size, bounds) <= allowedMisses) {
+                if (error)
+                    error->clear();
+                return candidate;
+            }
+        }
+
+        return best;
+    }
     const auto cleaned = options.adaptToRasterNoise ? removeRasterPinholes(mask, size, bounds) : mask;
     const auto polygons = pixelBoundaryLoops(cleaned, size, bounds);
     if (polygons.isEmpty()) {
