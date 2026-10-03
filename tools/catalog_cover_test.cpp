@@ -1698,7 +1698,10 @@ int main(int argc, char **argv) {
             compareProject(application.arguments()[2], readRequest(application.arguments()[3]), fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 3
+        const bool budgetedProfileReplay = application.arguments().size() == 4
+            && (application.arguments()[1] == QStringLiteral("--replay-profile")
+                || application.arguments()[1] == QStringLiteral("--replay-profile-cpu"));
+        if ((application.arguments().size() == 3 || budgetedProfileReplay)
             && application.arguments()[1].startsWith(QStringLiteral("--replay"))) {
             gui::catalog::FillOptions replayOptions;
             if (application.arguments()[1] == QStringLiteral("--replay-mesh")) {
@@ -1745,6 +1748,12 @@ int main(int argc, char **argv) {
             QElapsedTimer timer;
             timer.start();
             gui::compact::FillOptions profileOptions;
+            if (budgetedProfileReplay) {
+                bool validBudget = false;
+                const int budget = application.arguments()[3].toInt(&validBudget);
+                require(validBudget && budget > 0, QStringLiteral("Invalid profile evaluation budget"));
+                profileOptions.evaluationBudget = budget;
+            }
             profileOptions.retainFailedFill = true;
             profileOptions.useGpu = application.arguments()[1] != QStringLiteral("--replay-profile-cpu")
                 && application.arguments()[1] != QStringLiteral("--replay-seed-cpu");

@@ -1669,26 +1669,64 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
     }
 #endif
     CandidateValidationStats validation;
-    int first = 0;
-    int trials = 0;
-    for (int end : groupEnds) {
-        if (stopped(cancelled))
-            break;
-        for (int index = first; index < end; ++index) {
-            if (++trials > kStructuralTrials)
-                break;
-            if (!possible[index])
-                continue;
-            auto candidate = candidateFor(*shape, transforms[index], region,
-                outer, boundary, scale, &validation, false, provenOuter[index]);
-            if (candidate) {
-                pool->push_back(std::move(*candidate));
-                break;
+    if (transforms.size() <= kStructuralTrials && groupEnds.size() > 1) {
+        const QVector<QTransform> &candidateTransforms = transforms;
+        const QVector<int> &candidateGroupEnds = groupEnds;
+        std::vector<std::optional<Candidate>> chosen(groupEnds.size());
+        std::vector<CandidateValidationStats> groupStats(groupEnds.size());
+        ProfileWorkers workers;
+        if (!workers.run(groupEnds.size(), [&](int group) {
+            const int first = group == 0 ? 0 : candidateGroupEnds[group - 1];
+            for (int index = first; index < candidateGroupEnds[group]; ++index) {
+                if (!possible[index])
+                    continue;
+                auto candidate = candidateFor(*shape, candidateTransforms[index], region,
+                    outer, boundary, scale, &groupStats[group], false, provenOuter[index]);
+                if (candidate) {
+                    chosen[group] = std::move(*candidate);
+                    break;
+                }
             }
+        }, cancelled)) {
+            return;
         }
-        if (trials > kStructuralTrials)
-            break;
-        first = end;
+        for (int group = 0; group < groupEnds.size(); ++group) {
+            if (chosen[group])
+                pool->push_back(std::move(*chosen[group]));
+            const auto &current = groupStats[group];
+            validation.clipNanoseconds += current.clipNanoseconds;
+            validation.tangentNanoseconds += current.tangentNanoseconds;
+            validation.spillNanoseconds += current.spillNanoseconds;
+            validation.trials += current.trials;
+            validation.clipRejected += current.clipRejected;
+            validation.tangentRejected += current.tangentRejected;
+            validation.containsChecks += current.containsChecks;
+            validation.whollySpillFree += current.whollySpillFree;
+            validation.clipProofUsed += current.clipProofUsed;
+            validation.spillProofUsed += current.spillProofUsed;
+        }
+    } else {
+        int first = 0;
+        int trials = 0;
+        for (int end : groupEnds) {
+            if (stopped(cancelled))
+                break;
+            for (int index = first; index < end; ++index) {
+                if (++trials > kStructuralTrials)
+                    break;
+                if (!possible[index])
+                    continue;
+                auto candidate = candidateFor(*shape, transforms[index], region,
+                    outer, boundary, scale, &validation, false, provenOuter[index]);
+                if (candidate) {
+                    pool->push_back(std::move(*candidate));
+                    break;
+                }
+            }
+            if (trials > kStructuralTrials)
+                break;
+            first = end;
+        }
     }
     diagnostics->insert(QStringLiteral("straightAnchorStarts"), anchorStarts);
     diagnostics->insert(QStringLiteral("straightValidationTrials"), validation.trials);
