@@ -554,11 +554,9 @@ bool screenCurveFitsGpu(const std::vector<std::vector<RankedFit>> &ranked,
 QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int capacity, const CurveJob &job,
                                       const QVector<Profile> &profiles, const QVector<catalog::Primitive> &primitives,
                                       const catalog::Region &region, const Polygons &outer,
+                                      const QPainterPath &envelope,
                                       const compact::BoundaryModel &boundary, double scale,
                                       const std::vector<char> *gpuEligible, int *validated) {
-    auto localRegion = region;
-    const auto envelope = catalog::painterPath(outer);
-    const auto localBoundary = boundary;
     QVector<Candidate> result;
     std::vector<ProfileAlternative> alternatives;
     std::vector<ProfileAlternative> validatedAlternatives;
@@ -566,7 +564,6 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
     for (const auto &fit : fits) {
         alternatives.push_back({fit.area, fit.fit.error / scale, fit.fit.tangentError, 0.0});
     }
-    localRegion.requiredPath = catalog::painterPath(region.required);
     for (int index : profileAlternativeOrder(alternatives)) {
         if (gpuEligible && !(*gpuEligible)[index]) {
             continue;
@@ -595,7 +592,7 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
             continue;
         }
         ++*validated;
-        auto candidate = candidateFor(shape, *transform, localRegion, outer, localBoundary, scale);
+        auto candidate = candidateFor(shape, *transform, region, outer, boundary, scale);
         if (candidate) {
             candidate->error = ranked.fit.error;
             candidate->span = job.length;
@@ -625,6 +622,9 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                         const compact::FillOptions &options, const std::function<bool()> &cancelled,
                         compact::gpu::RasterRanker *gpuRanker,
                         QVector<Candidate> *pool, QJsonObject *diagnostics) {
+    catalog::Region validationRegion = region;
+    validationRegion.requiredPath = catalog::painterPath(region.required);
+    const QPainterPath envelope = catalog::painterPath(outer);
     const auto profiles = sourceProfiles(primitives);
     const auto jobs = curveJobs(region, options, cancelled);
     const int budget = static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
@@ -706,7 +706,7 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
         std::vector<int> checked(end - start, 0);
         if (!workers.run(end - start, [&](int local) {
             retained[local] = validateCurveFits(ranked[local], capacities[local], jobs[start + local],
-                profiles, primitives, region, outer, boundary, options.observationScale,
+                profiles, primitives, validationRegion, outer, envelope, boundary, options.observationScale,
                 gpuRanker ? &gpuEligible[local] : nullptr, &checked[local]);
         }, cancelled)) {
             break;

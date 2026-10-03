@@ -1,6 +1,10 @@
 #include "cubic_contour.h"
 
+#include <QImage>
+#include <QPainter>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -12,6 +16,10 @@ constexpr double kNotchAxialEdgeLength = 6.0;
 constexpr double kNotchAxialFraction = 0.2;
 constexpr double kNotchSimplificationTolerance = 2.5;
 constexpr int kNotchMaximumPoints = 10;
+constexpr double kMaximumMaskMismatchFraction = 0.12;
+constexpr int kMaskBoundaryBand = 5;
+constexpr int kMaximumMaskFitAttempts = 5;
+constexpr std::array<double, 3> kHandleRepairScales{0.9, 0.75, 0.5};
 
 double length(QPointF p) {
     return std::hypot(p.x(), p.y());
@@ -448,6 +456,49 @@ CubicFitOptions rasterFitOptions(const QPolygonF &polygon,
         result.outlierFraction = std::max(options.outlierFraction, 0.05);
     return result;
 }
+
+bool matchesRasterMask(const PenContour &contour, const std::vector<std::uint8_t> &mask,
+                       QSize size, QRect bounds) {
+    const QRect fittedBounds = contour.path.boundingRect().toAlignedRect();
+    const QRect checkBounds = bounds.united(fittedBounds).adjusted(-1, -1, 1, 1)
+        .intersected(QRect(QPoint(0, 0), size));
+    QImage raster(checkBounds.size(), QImage::Format_Grayscale8);
+    raster.fill(255);
+    {
+        QPainter painter(&raster);
+        painter.translate(-checkBounds.topLeft());
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::black);
+        painter.drawPath(contour.path);
+    }
+    int selectedPixels = 0;
+    int differingPixels = 0;
+    for (int y = checkBounds.top(); y <= checkBounds.bottom(); ++y) {
+        const auto *rasterRow = raster.constScanLine(y - checkBounds.top());
+        for (int x = checkBounds.left(); x <= checkBounds.right(); ++x) {
+            const bool selected = mask[size_t(y) * size.width() + x] != 0;
+            selectedPixels += selected;
+            if (selected == (rasterRow[x - checkBounds.left()] == 0))
+                continue;
+            ++differingPixels;
+            bool nearBoundary = false;
+            for (int dy = -kMaskBoundaryBand; dy <= kMaskBoundaryBand && !nearBoundary; ++dy)
+                for (int dx = -kMaskBoundaryBand; dx <= kMaskBoundaryBand; ++dx) {
+                    const int neighborX = x + dx, neighborY = y + dy;
+                    if (neighborX < 0 || neighborY < 0 || neighborX >= size.width()
+                        || neighborY >= size.height()
+                        || (mask[size_t(neighborY) * size.width() + neighborX] != 0) != selected) {
+                        nearBoundary = true;
+                        break;
+                    }
+                }
+            if (!nearBoundary)
+                return false;
+        }
+    }
+
+    return differingPixels <= selectedPixels * kMaximumMaskMismatchFraction;
+}
 } // namespace
 
 QVector<QPolygonF> pixelBoundaryLoops(const std::vector<std::uint8_t> &mask, QSize size,
@@ -798,6 +849,41 @@ QVector<PenLoop> cubicPathLoops(const QPainterPath &path, QString *error) {
     return loops;
 }
 
+namespace {
+PenLoop rawMaskLoop(const QPolygonF &polygon, PenLoopKind kind) {
+    PenLoop loop;
+    loop.kind = kind;
+    for (const QPointF point : polygon)
+        loop.points.push_back({point, PenPointKind::Hard});
+
+    return loop;
+}
+
+PenLoop fitMaskLoop(const QPolygonF &polygon, CubicFitOptions fit, double cornerScale,
+                   int firstAttempt, PenLoopKind kind) {
+    for (int attempt = firstAttempt; attempt < kMaximumMaskFitAttempts; ++attempt) {
+        auto options = fit;
+        options.tolerance *= std::pow(0.5, attempt);
+        options.cornerScale = std::max(cornerScale, 4 * options.tolerance);
+        if (options.tolerance < 2.0)
+            options.outlierFraction = 0;
+        PenLoop loop{fitCubicContour(polygon, options), kind};
+        if (buildPenContour(loop.points).valid())
+            return loop;
+        for (double scale : kHandleRepairScales) {
+            PenLoop contracted = loop;
+            for (PenPoint &point : contracted.points) {
+                point.incoming *= scale;
+                point.outgoing *= scale;
+            }
+            if (buildPenContour(contracted.points).valid())
+                return contracted;
+        }
+    }
+    return rawMaskLoop(polygon, kind);
+}
+} // namespace
+
 QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize size, QRect bounds,
                                  const CubicFitOptions &options, QString *error) {
     const auto cleaned = options.adaptToRasterNoise ? removeRasterPinholes(mask, size, bounds) : mask;
@@ -818,20 +904,24 @@ QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize si
     rasterOptions.reserve(polygons.size());
     for (const auto &polygon : polygons)
         rasterOptions.push_back(rasterFitOptions(polygon, options));
-    for (int retry = 0; retry < 4; ++retry) {
+    for (int retry = 0; retry < kMaximumMaskFitAttempts; ++retry) {
         QVector<PenLoop> loops;
         for (int i = 0; i < polygons.size(); ++i) {
             auto fit = rasterOptions[i];
             fit.preserveRasterNotches = i > 0 && fit.adaptToRasterNoise;
-            fit.tolerance *= std::pow(0.5, retry);
-            fit.cornerScale = std::max(options.cornerScale, 4 * fit.tolerance);
-            if (fit.tolerance < 2.0)
-                fit.outlierFraction = 0;
-            loops.push_back({fitCubicContour(polygons[i], fit),
-                             i == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout});
+            loops.push_back(fitMaskLoop(polygons[i], fit, options.cornerScale, retry,
+                                       i == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout));
         }
         const auto contour = buildPenContour(loops);
-        if (contour.valid()) {
+        if (contour.valid() && matchesRasterMask(contour, cleaned, size, bounds)) {
+            if (error)
+                error->clear();
+            return loops;
+        }
+        for (int i = 1; i < loops.size(); ++i)
+            loops[i] = rawMaskLoop(polygons[i], PenLoopKind::Cutout);
+        const auto simpleCutouts = buildPenContour(loops);
+        if (simpleCutouts.valid() && matchesRasterMask(simpleCutouts, cleaned, size, bounds)) {
             if (error)
                 error->clear();
             return loops;
@@ -842,11 +932,8 @@ QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize si
     // Preserve topology exactly if a thin or touching feature cannot be safely smoothed.
     QVector<PenLoop> loops;
     for (int i = 0; i < polygons.size(); ++i) {
-        PenLoop loop;
-        loop.kind = i == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout;
-        for (auto p : polygons[i])
-            loop.points.push_back({p, PenPointKind::Hard});
-        loops.push_back(loop);
+        loops.push_back(rawMaskLoop(polygons[i],
+                                   i == 0 ? PenLoopKind::Outer : PenLoopKind::Cutout));
     }
     const auto contour = buildPenContour(loops);
     if (!contour.valid()) {

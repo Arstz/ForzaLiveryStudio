@@ -234,6 +234,19 @@ void masks(const QString &output) {
     checkMask("cat ears", thick.createStroke(stroke), {200, 170}, {20, 140}, 48, 0, output);
     thick.setWidth(2);
     checkMask("thin stroke", thick.createStroke(stroke), {200, 170}, {20, 140}, 70, 0);
+    thick.setWidth(6);
+    const auto coarseImage = raster(thick.createStroke(stroke), {200, 170});
+    const auto coarseMask = gui::floodGuideRegion(coarseImage, {20, 140}, 0);
+    gui::CubicFitOptions coarseOptions;
+    coarseOptions.tolerance = 16;
+    const auto coarseLoops = gui::fitMaskContours(coarseMask.mask, coarseMask.imageSize,
+        coarseMask.bounds, coarseOptions);
+    const auto coarseContour = gui::buildPenContour(coarseLoops);
+    require(coarseContour.valid() && coarseLoops.front().points.size() <= 70,
+            "High curve tolerance lost a usable compact contour");
+    for (int sample = 1; sample < 20; ++sample)
+        require(coarseContour.path.contains(stroke.pointAtPercent(sample / 20.0)),
+                "High curve tolerance lost the center of a thin selected stroke");
     QPainterPath tiny;
     tiny.addRect(4, 4, 1, 1);
     checkMask("single pixel", tiny, {10, 10}, {4, 4}, 4, 0);
@@ -349,6 +362,45 @@ void realBucketMask() {
         previousNodes = nodes;
     }
 }
+
+void realLeftHandMasks() {
+    QFile file(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/bucket_tests_left_hand_mask.json"));
+    require(file.open(QIODevice::ReadOnly), "Cannot open the left-hand mask fixture");
+    const auto fixture = QJsonDocument::fromJson(file.readAll()).object();
+    const auto dimensions = fixture.value("size").toArray();
+    const QSize size(dimensions[0].toInt(), dimensions[1].toInt());
+    for (const auto &entry : fixture.value("selections").toArray()) {
+        const auto selection = entry.toObject();
+        std::vector<std::uint8_t> mask(size_t(size.width()) * size.height(), 0);
+        QRect bounds;
+        int area = 0;
+        for (const auto &value : selection.value("runs").toArray()) {
+            const auto run = value.toArray();
+            const int y = run[0].toInt(), first = run[1].toInt(), end = run[2].toInt();
+            require(y >= 0 && y < size.height() && first >= 0 && end <= size.width()
+                        && first < end, "Invalid left-hand mask run");
+            for (int x = first; x < end; ++x)
+                mask[size_t(y) * size.width() + x] = 1;
+            bounds = bounds.united(QRect(QPoint(first, y), QPoint(end - 1, y)));
+            area += end - first;
+        }
+        require(area == selection.value("area").toInt(), "Left-hand mask area changed");
+        QString error;
+        const auto loops = gui::fitMaskContours(mask, size, bounds, {}, &error);
+        const auto contour = gui::buildPenContour(loops);
+        require(contour.valid() && loops.size() == selection.value("expected_loops").toInt(),
+                qPrintable(error.isEmpty() ? contour.error : error));
+        int nodes = 0, soft = 0;
+        for (const auto &loop : loops)
+            for (const auto &point : loop.points) {
+                ++nodes;
+                soft += point.kind == gui::PenPointKind::Soft;
+            }
+        require(nodes <= selection.value("max_nodes").toInt()
+                    && soft >= selection.value("min_soft").toInt(),
+                "A left-hand mask fell back to a pixel staircase");
+    }
+}
 void replayImage(int argc, char **argv) {
     const QImage image(QString::fromLocal8Bit(argv[2]));
     const auto fill = gui::floodGuideRegion(image, {atoi(argv[3]), atoi(argv[4])}, atoi(argv[5]));
@@ -436,6 +488,7 @@ int main(int argc, char **argv) {
         geometry();
         masks(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString{});
         realBucketMask();
+        realLeftHandMasks();
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
         return 1;
