@@ -405,6 +405,54 @@ void outwardMouthFit() {
             "Outward mouth fit added too many nodes");
 }
 
+void outwardEarFit() {
+    QFile file(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/bucket_algo_right_ear_mask.json"));
+    require(file.open(QIODevice::ReadOnly), "Cannot open the right-ear mask fixture");
+    const auto fixture = QJsonDocument::fromJson(file.readAll()).object();
+    const auto dimensions = fixture.value("size").toArray();
+    const QSize size(dimensions[0].toInt(), dimensions[1].toInt());
+    const QRect bounds(QPoint(0, 0), size);
+    std::vector<std::uint8_t> mask(size_t(size.width()) * size.height());
+    for (const auto &entry : fixture.value("runs").toArray()) {
+        const auto run = entry.toArray();
+        for (int x = run[1].toInt(); x < run[2].toInt(); ++x)
+            mask[size_t(run[0].toInt()) * size.width() + x] = 1;
+    }
+    const int selected = fixture.value("area").toInt();
+    require(std::count(mask.begin(), mask.end(), std::uint8_t{1}) == selected,
+            "Right-ear mask fixture area changed");
+    gui::CubicFitOptions outwardOptions;
+    outwardOptions.outwardFitPixels = 2;
+    const auto original = gui::fitMaskContours(mask, size, bounds);
+    const auto outward = gui::fitMaskContours(mask, size, bounds, outwardOptions);
+    const auto originalContour = gui::buildPenContour(original);
+    const auto outwardContour = gui::buildPenContour(outward);
+    require(originalContour.valid() && outwardContour.valid()
+                && original.size() == 1 && outward.size() == 1,
+            "Right-ear bucket fit changed topology");
+    const auto originalRaster = raster(originalContour.path, size);
+    const auto outwardRaster = raster(outwardContour.path, size);
+    int originalMisses = 0, outwardMisses = 0, outwardSpill = 0;
+    for (int y = 0; y < size.height(); ++y)
+        for (int x = 0; x < size.width(); ++x) {
+            const bool selectedPixel = mask[size_t(y) * size.width() + x] != 0;
+            const bool originalCovers = qRed(originalRaster.pixel(x, y)) == 0;
+            const bool outwardCovers = qRed(outwardRaster.pixel(x, y)) == 0;
+            originalMisses += selectedPixel && !originalCovers;
+            outwardMisses += selectedPixel && !outwardCovers;
+            outwardSpill += !selectedPixel && outwardCovers;
+        }
+    std::cout << "ear fit: original nodes=" << original.front().points.size()
+              << " missed=" << originalMisses << " outward nodes=" << outward.front().points.size()
+              << " missed=" << outwardMisses << " spill=" << outwardSpill << '\n';
+    require(originalMisses >= 500 && outwardMisses <= selected * 0.0075
+                && outwardMisses < originalMisses / 4,
+            "Right-ear fit still loses the sharp-to-smooth boundary");
+    require(outwardSpill <= selected * 0.1
+                && outward.front().points.size() <= original.front().points.size() + 12,
+            "Right-ear fit traded too much area or too many nodes for coverage");
+}
+
 void realLeftHandMasks() {
     QFile file(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/bucket_tests_left_hand_mask.json"));
     require(file.open(QIODevice::ReadOnly), "Cannot open the left-hand mask fixture");
@@ -547,6 +595,7 @@ int main(int argc, char **argv) {
         masks(argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString{});
         realBucketMask();
         outwardMouthFit();
+        outwardEarFit();
         realLeftHandMasks();
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
