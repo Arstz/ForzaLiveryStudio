@@ -88,8 +88,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   profile-fit batches use a coarse CUDA geometry shortlist before exact validation;
   the complete candidate pool receives a device-ranked shortlist before exact
   witness selection. One exact CPU checkpoint accepts an
-  aggregate improvement or restores the seed. It tolerates no more than one GPU
-  raster cell of envelope residue; final output verification remains exact. CUDA
+  aggregate improvement or restores the seed. Refinement proposals and accepted
+  checkpoints stay inside the exact outer envelope. Raster-redundant deletion
+  also checks the emitted union before removing unique support. CUDA
   failure restores the CPU optimizer. Candidates are ranked by area,
   arc error, and endpoint tangent
   error before parallel geometry validation. Nondominated alternatives compete
@@ -115,7 +116,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   errors leave no result, the generated seed remains available for insertion.
   Its dialog specifies outward support distance in
   world units per axis, initially 2. The inward allowance is 0.5 world units;
-  missing-plus-spill area is limited to 2% of the target. These tests use triangle
+  missing-plus-spill area is limited to 2% of the target. The inward allowance
+  applies to the target boundary corridor. Interior support is checked directly,
+  including gaps smaller than a raster cell or the observation scale. Moves and
+  reductions must preserve that support. A bounded repair pass first tries nearby
+  placement growth, then fitted Square patches. Its energy allowance is fixed
+  from the pass's starting state and includes a small sampling margin; final
+  quality thresholds remain unchanged. These tests use triangle
   unions on the 1e-6 grid and reconstructed float transforms.
   Boundary fitting compares tangent direction and local turning at two scales,
   penalizes isolated kinks, and retains detected sharp corners. Final checks
@@ -185,6 +192,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   clearance-spaced centers and elongated catalog proposals aligned to nearby
   boundary tangents. A bounded occupancy grid screens proposals; emitted
   triangle-union geometry remains authoritative. Quality limits are unchanged.
+  Deep missing support triggers coverage-oriented seed selection even when total
+  missing area is small. Existing candidates are reused before refinement.
+  Interior radius searches run in bounded CPU batches, with proposals committed
+  in their planned order.
   Selection uses the caller's shape limit, which defaults to 3,000; the separate
   160-placement seed ceiling is removed. A verified incumbent survives the fixed
   60,000-score refinement budget. Cumulative stage ceilings are 5% for recognition,

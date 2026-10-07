@@ -287,7 +287,29 @@ __device__ unsigned long long boundaryPenalty(unsigned int exposed,
         static_cast<unsigned int>(field >> 8));
     const unsigned int mismatch = __popc(exposed & ~(field & 0xff));
 
-    return static_cast<unsigned long long>(distance + 2 * mismatch);
+    return static_cast<unsigned long long>(distance * __popc(exposed) + 2 * mismatch);
+}
+
+__device__ unsigned long long removedBoundaryPenalty(int x, int y, int columns,
+                                                       int rows,
+                                                       const unsigned int *coverage,
+                                                       const unsigned short *field) {
+    const int index = y * columns + x;
+    unsigned long long result = 0;
+    if (x > 0 && coverage[index - 1] != 0) {
+        result += boundaryPenalty(2, field[index - 1]);
+    }
+    if (x + 1 < columns && coverage[index + 1] != 0) {
+        result += boundaryPenalty(1, field[index + 1]);
+    }
+    if (y > 0 && coverage[index - columns] != 0) {
+        result += boundaryPenalty(8, field[index - columns]);
+    }
+    if (y + 1 < rows && coverage[index + columns] != 0) {
+        result += boundaryPenalty(4, field[index + columns]);
+    }
+
+    return result;
 }
 
 __global__ void transformAdditionKernel(const Point *points, const Loop *loops,
@@ -341,35 +363,33 @@ __global__ void transformAdditionKernel(const Point *points, const Loop *loops,
         if (horizontal || vertical) {
             atomicAdd(pieceCounts + 4, 1ULL);
         }
-        unsigned int exposed = 0;
-        const float worldX = originX + (x + 0.5f) * cellSize;
-        const float worldY = originY + (y + 0.5f) * cellSize;
-        const Affine transform = transforms[tile.transform];
-        if (x == 0 || (coverage[index - 1] == 0
-                && !transformedContains(worldX - cellSize, worldY,
-                    transform, points, loops, primitive))) {
-            exposed |= 1;
-        }
-        if (x + 1 == columns || (coverage[index + 1] == 0
-                && !transformedContains(worldX + cellSize, worldY,
-                    transform, points, loops, primitive))) {
-            exposed |= 2;
-        }
-        if (y == 0 || (coverage[index - columns] == 0
-                && !transformedContains(worldX, worldY - cellSize,
-                    transform, points, loops, primitive))) {
-            exposed |= 4;
-        }
-        if (y + 1 == rows || (coverage[index + columns] == 0
-                && !transformedContains(worldX, worldY + cellSize,
-                    transform, points, loops, primitive))) {
-            exposed |= 8;
-        }
-        if (exposed != 0) {
-            atomicAdd(pieceCounts + 5,
-                boundaryPenalty(exposed, boundaryField[index]));
-        }
     }
+    unsigned int exposed = 0;
+    const float worldX = originX + (x + 0.5f) * cellSize;
+    const float worldY = originY + (y + 0.5f) * cellSize;
+    const Affine transform = transforms[tile.transform];
+    if (x == 0 || (coverage[index - 1] == 0
+            && !transformedContains(worldX - cellSize, worldY,
+                transform, points, loops, primitive))) {
+        exposed |= 1;
+    }
+    if (x + 1 == columns || (coverage[index + 1] == 0
+            && !transformedContains(worldX + cellSize, worldY,
+                transform, points, loops, primitive))) {
+        exposed |= 2;
+    }
+    if (y == 0 || (coverage[index - columns] == 0
+            && !transformedContains(worldX, worldY - cellSize,
+                transform, points, loops, primitive))) {
+        exposed |= 4;
+    }
+    if (y + 1 == rows || (coverage[index + columns] == 0
+            && !transformedContains(worldX, worldY + cellSize,
+                transform, points, loops, primitive))) {
+        exposed |= 8;
+    }
+    atomicAdd(pieceCounts + 5, boundaryPenalty(exposed, boundaryField[index])
+        - removedBoundaryPenalty(x, y, columns, rows, coverage, boundaryField));
 }
 
 __global__ void scoreKernel(const unsigned char *masks,
@@ -448,34 +468,32 @@ __global__ void additionKernel(const Point *points, const Loop *loops,
         if (horizontal || vertical) {
             atomicAdd(pieceCounts + 4, 1ULL);
         }
-        unsigned int exposed = 0;
-        const float worldX = originX + (x + 0.5f) * cellSize;
-        const float worldY = originY + (y + 0.5f) * cellSize;
-        if (x == 0 || (coverage[index - 1] == 0
-                && !contains(worldX - cellSize, worldY, points, loops,
-                    piece.loopOffset, piece.loopCount))) {
-            exposed |= 1;
-        }
-        if (x + 1 == columns || (coverage[index + 1] == 0
-                && !contains(worldX + cellSize, worldY, points, loops,
-                    piece.loopOffset, piece.loopCount))) {
-            exposed |= 2;
-        }
-        if (y == 0 || (coverage[index - columns] == 0
-                && !contains(worldX, worldY - cellSize, points, loops,
-                    piece.loopOffset, piece.loopCount))) {
-            exposed |= 4;
-        }
-        if (y + 1 == rows || (coverage[index + columns] == 0
-                && !contains(worldX, worldY + cellSize, points, loops,
-                    piece.loopOffset, piece.loopCount))) {
-            exposed |= 8;
-        }
-        if (exposed != 0) {
-            atomicAdd(pieceCounts + 5,
-                boundaryPenalty(exposed, boundaryField[index]));
-        }
     }
+    unsigned int exposed = 0;
+    const float worldX = originX + (x + 0.5f) * cellSize;
+    const float worldY = originY + (y + 0.5f) * cellSize;
+    if (x == 0 || (coverage[index - 1] == 0
+            && !contains(worldX - cellSize, worldY, points, loops,
+                piece.loopOffset, piece.loopCount))) {
+        exposed |= 1;
+    }
+    if (x + 1 == columns || (coverage[index + 1] == 0
+            && !contains(worldX + cellSize, worldY, points, loops,
+                piece.loopOffset, piece.loopCount))) {
+        exposed |= 2;
+    }
+    if (y == 0 || (coverage[index - columns] == 0
+            && !contains(worldX, worldY - cellSize, points, loops,
+                piece.loopOffset, piece.loopCount))) {
+        exposed |= 4;
+    }
+    if (y + 1 == rows || (coverage[index + columns] == 0
+            && !contains(worldX, worldY + cellSize, points, loops,
+                piece.loopOffset, piece.loopCount))) {
+        exposed |= 8;
+    }
+    atomicAdd(pieceCounts + 5, boundaryPenalty(exposed, boundaryField[index])
+        - removedBoundaryPenalty(x, y, columns, rows, coverage, boundaryField));
 }
 
 std::pair<Point, Point> bounds(const Geometry &geometry) {
@@ -839,7 +857,7 @@ private:
                     + weights.inner * counts[index * 6 + 1]
                     - weights.spill * counts[index * 6 + 2]
                     + weights.join * counts[index * 6 + 4]
-                    - weights.boundary * counts[index * 6 + 5])
+                    - weights.boundary * static_cast<long long>(counts[index * 6 + 5]))
                 : -std::numeric_limits<double>::infinity();
         }
     }

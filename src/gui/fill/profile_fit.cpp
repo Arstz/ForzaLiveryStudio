@@ -33,6 +33,7 @@ constexpr int kBodyCenters = 24;
 constexpr int kThinBodyCenters = 200;
 constexpr int kBodyGridExtent = 4096;
 constexpr int kBodyRadiusIterations = 12;
+constexpr int kBodyProbeCount = 16;
 constexpr double kThinRegionScales = 16.0;
 constexpr double kBodyTangentStep = 15.0;
 constexpr double kBodyGpuClearanceFraction = 0.02;
@@ -888,6 +889,13 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
                const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                double scale, QVector<Candidate> *pool,
                CandidateValidationStats *stats = nullptr) {
+    struct BodyJob {
+        const PenPrimitive *shape = nullptr;
+        int angle = 0;
+        double ratio = 1.0;
+    };
+    QVector<BodyJob> jobs;
+    ProfileWorkers workers;
     for (int id : kBodyShapeIds) {
         const auto *shape = primitiveFor(id, primitives);
         if (!shape) {
@@ -895,16 +903,26 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
         }
         for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
             for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360); angle += ratio == 1.0 && id == 102 ? 180 : 30) {
-                const double lower = bodyRadiusCpu(*shape, center, angle, ratio, region);
-                if (lower < scale) {
-                    continue;
-                }
-                auto candidate = candidateFor(*shape, bodyTransform(*shape, center, angle, ratio,
-                    lower * kBodyRadiusPadding), region, outer, boundary, scale, stats, true);
-                if (candidate && candidate->spill < scale * scale * 0.01) {
-                    pool->push_back(std::move(*candidate));
-                }
+                jobs.push_back({shape, angle, ratio});
             }
+        }
+    }
+    const QVector<BodyJob> &plannedJobs = jobs;
+    std::vector<double> radii(jobs.size());
+    workers.run(jobs.size(), [&](int index) {
+        const auto &job = plannedJobs[index];
+        radii[index] = bodyRadiusCpu(*job.shape, center, job.angle, job.ratio, region);
+    }, {});
+    for (int index = 0; index < jobs.size(); ++index) {
+        const auto &job = plannedJobs[index];
+        const double lower = radii[index];
+        if (lower < scale) {
+            continue;
+        }
+        auto candidate = candidateFor(*job.shape, bodyTransform(*job.shape, center, job.angle, job.ratio,
+            lower * kBodyRadiusPadding), region, outer, boundary, scale, stats, true);
+        if (candidate && candidate->spill < scale * scale * 0.01) {
+            pool->push_back(std::move(*candidate));
         }
     }
 }
@@ -1136,9 +1154,17 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
                    QVector<Candidate> *pool, CandidateValidationStats *stats = nullptr,
                    bool useGpu = false, bool spillInsideOuter = false,
                    QJsonObject *diagnostics = nullptr) {
+    struct BodyJob {
+        const PenPrimitive *shape = nullptr;
+        double ratio = 1.0;
+        double angle = 0.0;
+    };
+    QVector<BodyJob> jobs;
+    QVector<std::pair<const PenPrimitive *, QTransform>> proposals;
+    ProfileWorkers workers;
     const auto reference = boundary.reference(center);
     const double angle = std::atan2(reference.tangent.y(), reference.tangent.x()) * 180.0 / std::numbers::pi;
-    QVector<std::pair<const PenPrimitive *, QTransform>> proposals;
+    const double maximumRadius = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
     for (int id : {102, 101, 109, 110, 124, 2117}) {
         const auto *shape = primitiveFor(id, primitives);
         if (!shape) {
@@ -1146,35 +1172,43 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
         }
         for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
             for (double offset : {-kBodyTangentStep, 0.0, kBodyTangentStep, 180.0 - kBodyTangentStep, 180.0, 180.0 + kBodyTangentStep}) {
-                if (stopped(cancelled)) {
-                    return;
-                }
-                double lower = 0.0;
-                double upper = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
-                for (int iteration = 0; iteration < 12; ++iteration) {
-                    const double radius = (lower + upper) * 0.5;
-                    const auto transform = bodyTransform(*shape, center, angle + offset, ratio, radius);
-                    bool inside = true;
-                    for (const auto &polygon : shape->contours) {
-                        const int stride = std::max(1, static_cast<int>(polygon.size()) / 16);
-                        for (int index = 0; index < polygon.size(); index += stride) {
-                            if (!grid.contains(transform.map(polygon[index]))) {
-                                inside = false;
-                                break;
-                            }
-                        }
-                        if (!inside) {
-                            break;
-                        }
-                    }
-                    (inside ? lower : upper) = radius;
-                }
-                if (lower < scale) {
-                    continue;
-                }
-                proposals.push_back({shape, bodyTransform(*shape, center,
-                    angle + offset, ratio, lower * kBodyRadiusPadding)});
+                jobs.push_back({shape, ratio, angle + offset});
             }
+        }
+    }
+    const QVector<BodyJob> &plannedJobs = jobs;
+    std::vector<std::optional<QTransform>> transforms(jobs.size());
+    if (!workers.run(jobs.size(), [&](int index) {
+        const auto &job = plannedJobs[index];
+        double lower = 0.0;
+        double upper = maximumRadius;
+        for (int iteration = 0; iteration < kBodyRadiusIterations; ++iteration) {
+            const double radius = (lower + upper) * 0.5;
+            const auto transform = bodyTransform(*job.shape, center, job.angle, job.ratio, radius);
+            bool inside = true;
+            for (const auto &polygon : job.shape->contours) {
+                const int stride = std::max(1, static_cast<int>(polygon.size()) / kBodyProbeCount);
+                for (int point = 0; point < polygon.size(); point += stride) {
+                    if (!grid.contains(transform.map(polygon[point]))) {
+                        inside = false;
+                        break;
+                    }
+                }
+                if (!inside) {
+                    break;
+                }
+            }
+            (inside ? lower : upper) = radius;
+        }
+        if (lower >= scale) {
+            transforms[index] = bodyTransform(*job.shape, center, job.angle, job.ratio, lower * kBodyRadiusPadding);
+        }
+    }, cancelled)) {
+        return;
+    }
+    for (int index = 0; index < jobs.size(); ++index) {
+        if (transforms[index]) {
+            proposals.push_back({plannedJobs[index].shape, *transforms[index]});
         }
     }
     std::vector<std::uint8_t> provenSpillFree(proposals.size(), 0);
@@ -2242,24 +2276,26 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         result.diagnostics.insert(QStringLiteral("initialSelectionCount"), selected.size());
         result.diagnostics.insert(QStringLiteral("initialSelectionMilliseconds"),
             selectionTimer.nsecsElapsed() / 1e6);
-        // Smooth raster contours can leave grid cells that no structural candidate
-        // reaches. Do not add body candidates to a seed that already covers well:
-        // those extra choices can increase its shape count without helping the fit.
         if (nativeCubic && !stopped(cancelled)) {
             selectionTimer.restart();
             const auto initialCoverage = coverageOf(pool, selected);
             const auto initialMissing = catalog::area(catalog::subtract(
                 coverageRegion.visible, initialCoverage));
+            const auto initialDeepMissing = catalog::subtract(
+                coverageRegion.required,
+                catalog::expanded(initialCoverage, options.inwardAllowance));
+            const double initialDeepMissingArea = catalog::area(initialDeepMissing);
             result.diagnostics.insert(QStringLiteral("initialMissingArea"), initialMissing);
+            result.diagnostics.insert(QStringLiteral("initialDeepMissingArea"), initialDeepMissingArea);
             result.diagnostics.insert(QStringLiteral("initialCoverageMilliseconds"),
                 selectionTimer.nsecsElapsed() / 1e6);
-            if (initialMissing > std::max(4.0, coverageRegion.area * 0.005)) {
+            if (!initialDeepMissing.isEmpty()
+                || initialMissing > std::max(4.0, coverageRegion.area * 0.005)) {
                 selectionTimer.restart();
                 addUncoveredBodyCandidates(coverageRegion, outer, primitives, boundary, grid,
                     options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
                 result.diagnostics.insert(QStringLiteral("uncoveredBodyMilliseconds"),
                     selectionTimer.nsecsElapsed() / 1e6);
-                // On the repair pass, favor covered area over dense boundary witnesses.
                 selectionTimer.restart();
                 selected = selectCandidates(&pool, coverageRegion, grid, witnesses,
                     options, 1.0, cancelled,

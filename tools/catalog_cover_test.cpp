@@ -822,6 +822,95 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
     QTextStream(stdout) << "Stage budgets, local reductions, topology and baseline checks passed\n";
 }
 
+void interiorCoverageTests(const QVector<gui::catalog::Primitive> &catalog) {
+    const auto square = std::find_if(catalog.cbegin(), catalog.cend(), [](const auto &entry) {
+        return entry.shape.shapeId == 101;
+    });
+    require(square != catalog.cend(), QStringLiteral("Missing interior repair square"));
+    const auto rectangle = [&](double left, double top, double right, double bottom) {
+        gui::PenPlacement placement;
+        placement.shapeId = 101;
+        placement.transform.translate(left, top);
+        placement.transform.scale((right - left) / square->shape.bounds.width(),
+            (bottom - top) / square->shape.bounds.height());
+        placement.transform.translate(-square->shape.bounds.left(), -square->shape.bounds.top());
+        return placement;
+    };
+    const gui::PenFillRequest request{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
+        polygonLoop({{60, 60}, {80, 60}, {80, 80}, {60, 80}}, gui::PenLoopKind::Cutout)}};
+    for (bool useGpu : {false, true}) {
+        gui::compact::FillOptions options;
+        options.initialPlacements = {rectangle(0, 0, 100, 29.9), rectangle(0, 30.1, 100, 60),
+            rectangle(0, 29.9, 29.9, 30.1), rectangle(30.1, 29.9, 100, 30.1),
+            rectangle(0, 80, 100, 100), rectangle(0, 60, 60, 80), rectangle(80, 60, 100, 80)};
+        options.evaluationBudget = 1600;
+        options.shapeBudget = options.initialPlacements.size();
+        options.retainFailedFill = true;
+        options.useGpu = useGpu;
+        const auto result = gui::compact::fillRegion(request, {*square}, options);
+        QTextStream(stdout) << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+        require(!result.fill.cancelled && result.diagnostics.contains("missingInteriorArea")
+            && result.diagnostics.value("missingInteriorArea").toDouble() == 0.0,
+            QStringLiteral("Interior repair left a hole smaller than the inward allowance"));
+        require(result.diagnostics.value("missingBeyondInward").toDouble() == 0.0
+            && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget
+            && result.fill.placements.size() <= options.initialPlacements.size(),
+            QStringLiteral("Interior repair exceeded the work or placement budget"));
+        gui::catalog::Polygons coverage;
+        for (const auto &placement : result.fill.placements) {
+            coverage += gui::catalog::mapped(square->shape, gui::catalog::emittedTransform(placement.transform));
+        }
+        require(gui::catalog::intersect(gui::catalog::unite(coverage),
+            {QPolygonF({{62.1, 62.1}, {77.9, 62.1}, {77.9, 77.9}, {62.1, 77.9}})}).isEmpty(),
+            QStringLiteral("Interior repair filled an intentional cutout beyond the outward allowance"));
+    }
+    QTextStream(stdout) << "Exact interior coverage, nearest-shape repair and cutout checks passed\n";
+}
+
+void qualityExamples() {
+    using gui::catalog::Polygons;
+    const Polygons target{QPolygonF({{0, 0}, {400, 0}, {400, 400}, {0, 400}})};
+    const gui::compact::BoundaryModel boundary(target, 1.0);
+    const auto reference = boundary.measure(target);
+    const auto serialize = [](const Polygons &polygons) {
+        QJsonArray result;
+        for (const auto &polygon : polygons) {
+            QJsonArray points;
+            for (const auto &point : polygon) {
+                points.push_back(QJsonArray{point.x(), point.y()});
+            }
+            result.push_back(points);
+        }
+        return result;
+    };
+    QJsonArray examples;
+    const QVector<Polygons> additions{{}, {QPolygonF({{-1.5, 0.625}, {0.625, -1.5}, {0.625, 0.625}})},
+        {QPolygonF({{198, 1}, {200, -1}, {202, 1}})}};
+    const QStringList names{"All checks passed", "Sharp-corner position failed", "Contour continuity failed"};
+    for (int index = 0; index < additions.size(); ++index) {
+        const auto coverage = gui::catalog::unite(target + additions[index]);
+        const auto metrics = boundary.measure(coverage);
+        QStringList failures;
+        if (boundary.energy(metrics) > boundary.perimeter() * 0.025
+            || metrics.maximumExcessTurn > 0.6 || metrics.cornerDefects > boundary.perimeter() / 80) {
+            failures.push_back("contour continuity");
+        }
+        if (metrics.maximumCornerDistance > 0.5) {
+            failures.push_back("sharp-corner position");
+        }
+        const QVector<QStringList> expected{{}, {"sharp-corner position"}, {"contour continuity"}};
+        require(failures == expected[index], QStringLiteral("Quality example does not isolate its named failure"));
+        require(gui::catalog::subtract(target, coverage).isEmpty()
+            && gui::catalog::subtract(coverage, gui::catalog::expanded(target, 2.0)).isEmpty()
+            && metrics.components == reference.components && metrics.holes == reference.holes,
+            QStringLiteral("Quality example damaged coverage, the envelope or topology"));
+        examples.push_back(QJsonObject{{"name", names[index]}, {"target", serialize(target)},
+            {"coverage", serialize(coverage)}, {"metrics", boundary.diagnostics(metrics)},
+            {"failedChecks", QJsonArray::fromStringList(failures)}});
+    }
+    QTextStream(stdout) << QJsonDocument(examples).toJson(QJsonDocument::Compact) << '\n';
+}
+
 void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     using namespace gui::compact;
     using gui::catalog::Polygons;
@@ -1382,6 +1471,29 @@ void gpuRasterRankTests() {
         && stats.columns > 0
         && stats.rows > 0 && stats.cellSize >= 1.0,
         QStringLiteral("CUDA ownership ranking diagnostics are incomplete"));
+    const gui::compact::gpu::AdditionWeights boundaryWeights{0.0, 0.0, 0.0, 0.0, 1.0};
+    require(ranker->prepareAdditionCoverage(splitCoverage)
+        && ranker->evaluateAdditions(joinCandidates, &first, boundaryWeights)
+        && first[0] > 0.0 && first[1] == 0.0,
+        QStringLiteral("CUDA boundary ranking did not credit removed crack edges"));
+    gui::compact::gpu::Geometry outer;
+    appendRectangle(&outer, -10, -10, 110, 110);
+    gui::compact::gpu::Geometry outwardCandidates;
+    appendRectangle(&outwardCandidates, 100, 10, 102, 90);
+    appendRectangle(&outwardCandidates, 106, 10, 108, 90);
+    auto outwardRanker = gui::compact::gpu::createRasterRanker(target, target, target,
+        outer, target, 1.0);
+    require(outwardRanker && outwardRanker->prepareAdditionCoverage({})
+        && outwardRanker->evaluateAdditions(outwardCandidates, &first, boundaryWeights)
+        && first[0] < 0.0 && first[1] < first[0],
+        QStringLiteral("CUDA boundary ranking ignored exposed edges outside the target"));
+    gui::compact::gpu::Geometry outwardPrimitive;
+    appendRectangle(&outwardPrimitive, 0, 0, 2, 80);
+    require(outwardRanker->evaluateTransforms(outwardPrimitive,
+        {{1, 0, 0, 1, 100, 10}, {1, 0, 0, 1, 106, 10}}, &second, boundaryWeights)
+        && first == second,
+        QStringLiteral("CUDA transformed boundary ranking disagrees with emitted geometry"));
+
 }
 #endif
 
@@ -1591,6 +1703,38 @@ int main(int argc, char **argv) {
         }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--coverage-repair-tests")) {
             coverageRepairTests(fullCatalog);
+            return 0;
+        }
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--interior-coverage-tests")) {
+            interiorCoverageTests(fullCatalog);
+            return 0;
+        }
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--cubic-interior-tests")) {
+            gui::compact::FillOptions options;
+            options.retainFailedFill = true;
+            QElapsedTimer timer;
+            timer.start();
+            const auto result = gui::profile::fillRegion(
+                readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cubic_interior.json")),
+                fullCatalog, options);
+            output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+            require(!result.fill.cancelled && result.diagnostics.contains("missingInteriorArea")
+                && result.diagnostics.value("missingInteriorArea").toDouble() == 0.0
+                && result.diagnostics.value("missingBeyondInward").toDouble() == 0.0
+                && result.diagnostics.value("outsideEnvelope").toDouble() == 0.0,
+                QStringLiteral("Cubic contour repair left missing interior support or exceeded the envelope"));
+            require(result.fill.placements.size() <= 184
+                && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
+                QStringLiteral("Cubic contour repair exceeded its count or work allowance"));
+            require(result.diagnostics.value("areaError").toDouble()
+                <= result.diagnostics.value("areaErrorLimit").toDouble(),
+                QStringLiteral("Cubic contour repair exceeded the area error allowance"));
+            output << "Cubic interior coverage regression passed: " << result.fill.placements.size()
+                << " placements, " << timer.elapsed() << " ms\n";
+            return 0;
+        }
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--quality-examples")) {
+            qualityExamples();
             return 0;
         }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--fast-quality-tests")) {
