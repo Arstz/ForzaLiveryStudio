@@ -437,6 +437,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME compact_coverage_repair COMMAND fls_catalog_cover_tests --coverage-repair-tests)
     add_test(NAME compact_interior_coverage COMMAND fls_catalog_cover_tests --interior-coverage-tests)
     add_test(NAME compact_cubic_interior COMMAND fls_catalog_cover_tests --cubic-interior-tests)
+    add_test(NAME compact_cornered_interior COMMAND fls_catalog_cover_tests --cornered-interior-tests)
     add_test(NAME release_shape_catalog COMMAND fls_catalog_cover_tests --release-catalog-test)
     add_test(NAME gui_asset_deployment COMMAND "${CMAKE_COMMAND}"
         "-DFLS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests"

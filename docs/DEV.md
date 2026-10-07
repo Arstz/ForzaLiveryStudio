@@ -28,7 +28,7 @@ exports grouped `C_group` folders and `C_livery` folders.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette can return to the previously used tool after a successful
   pick through a persistent, default-on Options toggle.
-  Pen builds a closed hard/soft quadratic compound contour with editable interior cutouts,
+  Pen builds a closed hard/soft cubic compound contour with editable interior cutouts,
   fits affine vector primitives along curved boundaries, and prepares an interior
   boundary before meshing the remaining area.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
@@ -79,12 +79,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   reuse the primitive silhouette. A propagated boundary field adds displacement
   and normal-direction terms to target, interior, spill, and crack-joining scores.
   Two balanced passes are followed by an interior-repair pass. GPU
-  exclusive-support pruning removes raster-redundant placements. Small seed
+  exclusive-support pruning tests raster-redundant placements and placements with
+  small unique support. Exact interior checks screen each deletion; a fixed
+  boundary-energy baseline bounds sampling changes throughout the pass. Small seed
   fragments are expanded only
   when the exact result stays inside the outer envelope, and new refinement moves
   cannot create sub-footprint fragments. Remaining small fragments compete in
   two-placement transactions against fitted catalog replacements. Each accepted
-  transaction reduces count and passes an exact aggregate quality check. Large
+  transaction reduces count and passes an exact aggregate quality check. Group
+  fits use joint unique support instead of overlapping placement bounds. Large
   profile-fit batches use a coarse CUDA geometry shortlist before exact validation;
   the complete candidate pool receives a device-ranked shortlist before exact
   witness selection. One exact CPU checkpoint accepts an
@@ -119,11 +122,23 @@ exports grouped `C_group` folders and `C_livery` folders.
   missing-plus-spill area is limited to 2% of the target. The inward allowance
   applies to the target boundary corridor. Interior support is checked directly,
   including gaps smaller than a raster cell or the observation scale. Moves and
-  reductions must preserve that support. A bounded repair pass first tries nearby
-  placement growth, then fitted Square patches. Its energy allowance is fixed
-  from the pass's starting state and includes a small sampling margin; final
-  quality thresholds remain unchanged. These tests use triangle
+  reductions must preserve that support. A bounded repair pass first tries
+  uniform and axis growth of nearby placements, then fitted Square, Circle, and
+  Pill patches with tight and boundary-scale padding. A repair must supply its
+  selected gap completely. Blocked components leave the other gaps available for
+  repair. Corner and energy guards
+  use a fixed reference with the required interior completed, since an uncovered
+  gap can otherwise provide the nearest boundary to a protected corner. The
+  energy bound includes the permitted corner and peak-turn changes. The guards
+  bound changes in existing corner and continuity failures. Valid energy
+  and turning baselines retain their verification limits. Repair logs include
+  blocked components and the active limits; final quality thresholds remain
+  unchanged. These tests use triangle
   unions on the 1e-6 grid and reconstructed float transforms.
+  Geometry checks precede complete contour measurements when evaluating repair
+  and replacement proposals. GPU coverage repair reserves at most 1,536 trials
+  within the total score budget, with at most 64 component attempts. Further
+  residual search runs when deep coverage or observed topology still needs repair.
   Boundary fitting compares tangent direction and local turning at two scales,
   penalizes isolated kinks, and retains detected sharp corners. Final checks
   also compare component and hole counts at an observation scale of 1 world
@@ -316,18 +331,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   to its curve coverage and derives asymmetric placement orientation
   from the authored path direction. Each fit writes its selection and transform
   diagnostics to `lining_fill.log` beside the executable.
-- Bucket Fill flood-selects pixels with its independent RGBA tolerance, traces the
-  selected mask, and samples each boundary before cyclic RDP at epsilon 1.0
-  source-image pixels. It merges neighboring anchors when a fitted quadratic
-  remains within a bounded sampled-boundary deviation. The deviation limit
-  scales down with local feature size, and resolved opposing bends retain
-  separate spans. It then removes smooth hard junctions between quadratic
-  controls under the same local-detail guard. Merge scores update locally after
-  each removal. Retained spans use a fitted quadratic when their bow is at
-  least 0.2 pixels and a line otherwise. Each optimized loop is accepted only
-  when the complete compound contour remains valid; the sampled hybrid loop
-  stays as fallback. Small and boundary-adjacent cutouts remain available.
-  The stricter traced-cubic converter remains available to headless callers.
+- Bucket Fill flood-selects pixels with its independent RGBA tolerance and traces
+  pixel-square boundaries. Native cubic fitting detects persistent corners at two
+  scales, shares tangents at smooth junctions, and merges spans under a sampled
+  deviation bound. Raster roughness controls a tolerance band capped by local
+  stroke width. Short stepped cutout sections also retain corners found at the
+  ends of long straight edges; small stair steps remain subject to simplification.
+  Whole-contour validity and raster comparisons gate fitted loops. A bounded
+  outward mask adjustment can improve selected-pixel coverage while retaining
+  topology and node-count limits. Small cutouts remain available.
   Conversion precedes the guide transform and is independent of viewport zoom,
   color tolerance, and fill margin. Completing a Bucket-derived fill retains
   the guide-layer selection.

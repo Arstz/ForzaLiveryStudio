@@ -120,6 +120,7 @@ gui::PenFillRequest readRequest(const QString &path) {
     const auto object = document.object().value(QStringLiteral("request")).toObject();
     gui::PenFillRequest request;
     request.boundaryTolerance = object.value(QStringLiteral("boundaryTolerance")).toDouble(0.1);
+    request.discardNegligiblePlacements = object.value(QStringLiteral("discardNegligiblePlacements")).toBool(true);
     for (const auto &value : object.value(QStringLiteral("loops")).toArray()) {
         const auto source = value.toObject();
         gui::PenLoop loop;
@@ -143,7 +144,9 @@ gui::PenFillRequest readRequest(const QString &path) {
                 anchor.outgoing = {outgoing[0].toDouble(), outgoing[1].toDouble()};
             }
         }
-        gui::splitCurvedHardSpans(loop.points);
+        if (object.value(QStringLiteral("curveModel")).toString() != QStringLiteral("cubic-anchors-v1")) {
+            gui::splitCurvedHardSpans(loop.points);
+        }
         request.loops.push_back(loop);
     }
     require(!request.loops.isEmpty(), QStringLiteral("Replay log has no contour loops"));
@@ -192,20 +195,34 @@ void auditCatalog(const gui::ShapeGeometryStore &geometry, const QString &destin
 }
 
 void compareProject(const QString &path, const gui::PenFillRequest &request,
-                    const QVector<gui::catalog::Primitive> &catalog) {
+                    const QVector<gui::catalog::Primitive> &catalog, const QString &group = {}) {
     QFile file(path);
     require(file.open(QIODevice::ReadOnly), file.errorString());
     const auto project = fls::decodeProjectDocument(file.readAll());
     const auto region = gui::catalog::buildRegion(request, {});
     QTextStream output(stdout);
     const gui::compact::BoundaryModel boundary(region.required, 1.0);
+    gui::catalog::Polygons corridor;
+    for (const auto &polygon : region.required) {
+        for (int index = 0; index < polygon.size(); ++index) {
+            QPolygonF points;
+            for (const QPointF &point : {polygon[index], polygon[(index + 1) % polygon.size()]}) {
+                points += QPolygonF({point + QPointF(-0.5, -0.5), point + QPointF(0.5, -0.5),
+                    point + QPointF(0.5, 0.5), point + QPointF(-0.5, 0.5)});
+            }
+            corridor.push_back(gui::catalog::convexHull(points));
+        }
+    }
+    const auto inner = gui::catalog::subtract(region.required, gui::catalog::unite(corridor));
     for (const auto &node : project.root->children) {
-        if (node->kind() != fls::scene::LayerKind::Group) {
+        if (node->kind() != fls::scene::LayerKind::Group
+            || (!group.isEmpty() && node->name != group)) {
             continue;
         }
         QVector<gui::catalog::Polygons> placements;
         gui::catalog::Polygons polygons;
         QJsonObject histogram;
+        QJsonArray records;
         std::function<void(const fls::scene::Layer &, const QTransform &)> collect;
         collect = [&](const auto &layer, const QTransform &parent) {
             require(layer.visible && layer.opacity == 1, QStringLiteral("Comparison expects opaque visible layers"));
@@ -231,11 +248,21 @@ void compareProject(const QString &path, const gui::PenFillRequest &request,
             polygons += support;
             const auto key = QString::number(shape.shapeId);
             histogram[key] = histogram[key].toInt() + 1;
+            records.push_back(QJsonObject{{"shapeId", shape.shapeId}, {"transform", QJsonArray{
+                transform.m11(), transform.m12(), transform.m21(), transform.m22(), transform.dx(), transform.dy()}}});
         };
         for (const auto &child : static_cast<const fls::scene::Group &>(*node).children) {
             collect(*child, QTransform());
         }
         const auto coverage = gui::catalog::unite(polygons);
+        QJsonArray interiorGaps;
+        for (const auto &polygon : gui::catalog::subtract(inner, coverage)) {
+            QJsonArray points;
+            for (const auto &point : polygon) {
+                points.push_back(QJsonArray{point.x(), point.y()});
+            }
+            interiorGaps.push_back(QJsonObject{{"area", gui::catalog::signedArea(polygon)}, {"points", points}});
+        }
         QJsonArray bands;
         for (double radius : {0.0, 0.25, 0.5, 1.0, 2.0}) {
             const auto expandedTarget = radius > 0 ? gui::catalog::expanded(region.required, radius) : region.required;
@@ -260,6 +287,9 @@ void compareProject(const QString &path, const gui::PenFillRequest &request,
             contribution.push_back(value);
         }
         output << QJsonDocument(QJsonObject{{"group", node->name}, {"count", placements.size()},
+            {"missingInteriorArea", gui::catalog::area(gui::catalog::subtract(inner, coverage))},
+            {"interiorGaps", interiorGaps},
+            {"placements", records},
             {"targetArea", region.area}, {"shapeCounts", histogram}, {"bands", bands},
             {"boundaryQuality", boundary.diagnostics(boundary.measure(coverage))},
             {"exclusiveAreasSorted", contribution}}).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
@@ -1709,13 +1739,22 @@ int main(int argc, char **argv) {
             interiorCoverageTests(fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--cubic-interior-tests")) {
+        if (application.arguments().size() == 2 && (application.arguments()[1] == QStringLiteral("--cubic-interior-tests")
+            || application.arguments()[1] == QStringLiteral("--cornered-interior-tests"))) {
+            const bool cornered = application.arguments()[1] == QStringLiteral("--cornered-interior-tests");
+            const QString fixture = cornered
+                ? QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cornered_interior.json")
+                : QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cubic_interior.json");
+            const auto request = readRequest(fixture);
+            const double expectedArea = cornered ? 222460.76653281302 : 222085.6647436226;
+            require(std::abs(gui::catalog::buildRegion(request, {}).area - expectedArea) < 1e-5,
+                QStringLiteral("Replay changed the logged cubic contour"));
             gui::compact::FillOptions options;
             options.retainFailedFill = true;
             QElapsedTimer timer;
             timer.start();
             const auto result = gui::profile::fillRegion(
-                readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cubic_interior.json")),
+                request,
                 fullCatalog, options);
             output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
             require(!result.fill.cancelled && result.diagnostics.contains("missingInteriorArea")
@@ -1723,7 +1762,9 @@ int main(int argc, char **argv) {
                 && result.diagnostics.value("missingBeyondInward").toDouble() == 0.0
                 && result.diagnostics.value("outsideEnvelope").toDouble() == 0.0,
                 QStringLiteral("Cubic contour repair left missing interior support or exceeded the envelope"));
-            require(result.fill.placements.size() <= 184
+            require(result.diagnostics.value("targetBoundary").toObject().value("protectedCorners").toInt()
+                    == (cornered ? 24 : 18), QStringLiteral("Replay changed the protected corners"));
+            require(result.fill.placements.size() <= (cornered ? 176 : 184)
                 && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
                 QStringLiteral("Cubic contour repair exceeded its count or work allowance"));
             require(result.diagnostics.value("areaError").toDouble()
@@ -1838,8 +1879,10 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
-        if (application.arguments().size() == 4 && application.arguments()[1] == QStringLiteral("--compare-project")) {
-            compareProject(application.arguments()[2], readRequest(application.arguments()[3]), fullCatalog);
+        if ((application.arguments().size() == 4 || application.arguments().size() == 5)
+            && application.arguments()[1] == QStringLiteral("--compare-project")) {
+            compareProject(application.arguments()[2], readRequest(application.arguments()[3]), fullCatalog,
+                application.arguments().size() == 5 ? application.arguments()[4] : QString());
             return 0;
         }
         const bool budgetedProfileReplay = application.arguments().size() == 4

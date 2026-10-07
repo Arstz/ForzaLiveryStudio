@@ -6,6 +6,7 @@
 #include <QPainterPathStroker>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -580,11 +581,48 @@ void replayImage(int argc, char **argv) {
     painter.end();
     require(preview.save(QString::fromLocal8Bit(argv[7])), "Cannot save real-image replay");
 }
+
+void steppedCutoutMask() {
+    QFile file(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/bucket_stepped_cutout_mask.json"));
+    require(file.open(QIODevice::ReadOnly), "Cannot open stepped cutout fixture");
+    const auto fixture = QJsonDocument::fromJson(file.readAll()).object();
+    const auto dimensions = fixture.value("size").toArray();
+    const QSize size(dimensions[0].toInt(), dimensions[1].toInt());
+    const QRect bounds(QPoint(0, 0), size);
+    std::vector<std::uint8_t> mask(size_t(size.width()) * size.height());
+    for (const auto &entry : fixture.value("runs").toArray()) {
+        const auto run = entry.toArray();
+        for (int x = run[1].toInt(); x < run[2].toInt(); ++x)
+            mask[size_t(run[0].toInt()) * size.width() + x] = 1;
+    }
+    gui::CubicFitOptions options;
+    options.outwardFitPixels = 2;
+    const auto loops = gui::fitMaskContours(mask, size, bounds, options);
+    require(loops.size() == 7 && gui::buildPenContour(loops).valid(), "Stepped contour changed topology");
+    const auto &cutout = loops[4];
+    for (const QPointF corner : {QPointF(1432, 275), QPointF(1439, 276)}) {
+        double distance = std::numeric_limits<double>::max();
+        for (const auto &point : cutout.points) {
+            if (point.kind == gui::PenPointKind::Hard)
+                distance = std::min(distance, norm(point.position - corner));
+        }
+        require(distance <= 2.5, "Short stepped corner was rounded away");
+    }
+    int nodes = 0;
+    for (const auto &loop : loops)
+        nodes += loop.points.size();
+    require(nodes <= 126, "Stepped corner preservation fragmented the contour");
+    std::cout << "Stepped cutout nodes=" << cutout.points.size() << '\n';
+}
 } // namespace
 
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
+        if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--stepped-cutout")) {
+            steppedCutoutMask();
+            return 0;
+        }
         if (argc > 1 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--image")) {
             require(argc >= 8,
                     "Usage: --image file x y colorTolerance fitTolerance output.bmp [cornerScale]");
@@ -597,6 +635,7 @@ int main(int argc, char **argv) {
         outwardMouthFit();
         outwardEarFit();
         realLeftHandMasks();
+        steppedCutoutMask();
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
         return 1;

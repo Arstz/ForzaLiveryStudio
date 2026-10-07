@@ -16,6 +16,7 @@ constexpr double kNotchAxialEdgeLength = 6.0;
 constexpr double kNotchAxialFraction = 0.2;
 constexpr double kNotchSimplificationTolerance = 2.5;
 constexpr int kNotchMaximumPoints = 10;
+constexpr double kSteppedCornerCosine = 0.5;
 constexpr double kMaximumMaskMismatchFraction = 0.12;
 constexpr int kMaskBoundaryBand = 5;
 constexpr int kMaximumMaskFitAttempts = 5;
@@ -363,6 +364,42 @@ QVector<Knot> initialKnots(const Reference &ref, double scale) {
     return seeds;
 }
 
+void preserveSteppedCorners(const Reference &ref, QVector<Knot> &knots) {
+    QPolygonF closed = ref.p;
+    closed.push_back(closed.front());
+    auto simplified = simplifyPolyline(closed, kNotchSimplificationTolerance);
+    simplified.removeLast();
+    for (int index = 0; index < simplified.size(); ++index) {
+        const QPointF before = simplified[(index + simplified.size() - 1) % simplified.size()];
+        const QPointF point = simplified[index];
+        const QPointF after = simplified[(index + 1) % simplified.size()];
+        const QPointF incoming = point - before;
+        const QPointF outgoing = after - point;
+        const auto vertex = std::find(ref.p.cbegin(), ref.p.cend(), point);
+        if (vertex == ref.p.cend()) {
+            continue;
+        }
+        const double incomingLength = length(incoming);
+        const double outgoingLength = length(outgoing);
+        const double position = ref.arc[vertex - ref.p.cbegin()];
+        if (incomingLength < kNotchAxialEdgeLength || outgoingLength < kNotchAxialEdgeLength
+            || std::min(std::abs(incoming.x()), std::abs(incoming.y())) > kNotchSimplificationTolerance
+            || std::min(std::abs(outgoing.x()), std::abs(outgoing.y())) > kNotchSimplificationTolerance
+            || QPointF::dotProduct(unit(incoming), unit(outgoing)) > kSteppedCornerCosine) {
+            continue;
+        }
+        knots.erase(std::remove_if(knots.begin(), knots.end(), [&](const Knot &knot) {
+            const double distance = std::abs(knot.s - position);
+
+            return std::min(distance, ref.perimeter - distance) < kNotchAxialEdgeLength;
+        }), knots.end());
+        knots.push_back({position, true, {}});
+    }
+    std::sort(knots.begin(), knots.end(), [](const Knot &first, const Knot &second) {
+        return first.s < second.s;
+    });
+}
+
 void classifyJoins(QVector<PenPoint> &points) {
     for (auto &p : points) {
         const auto incoming = unit(-p.incoming), outgoing = unit(p.outgoing);
@@ -670,6 +707,9 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
         return {};
     const double scale = std::min(options.cornerScale, ref.perimeter / 12);
     auto knots = initialKnots(ref, scale);
+    if (options.preserveRasterNotches) {
+        preserveSteppedCorners(ref, knots);
+    }
     const double tangentScale = std::min(scale * 2, ref.perimeter / 12);
     for (auto &k : knots)
         if (!k.corner)

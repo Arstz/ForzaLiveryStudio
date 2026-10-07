@@ -33,7 +33,7 @@ constexpr int kGpuBalancedPasses = 2;
 constexpr int kGpuGroupCandidates = 8;
 constexpr int kGpuGroupFragments = 12;
 constexpr int kGpuGroupNeighbors = 2;
-constexpr int kGpuExactTailTrials = 512;
+constexpr int kGpuExactTailTrials = 1536;
 constexpr int kRefitNeighbors = 4;
 constexpr double kGpuRepairInnerWeight = 256.0;
 constexpr double kGpuMaximumTurnRegression = 0.1;
@@ -58,8 +58,15 @@ constexpr int kResidualTrialsPerComponent = 384;
 constexpr int kResidualCenterTrials = 256;
 constexpr int kRepairNeighbors = 4;
 constexpr int kInteriorRepairNeighbors = 4;
-constexpr int kInteriorRepairRounds = 32;
+constexpr int kInteriorAxisNeighbors = 2;
+constexpr int kInteriorRepairRounds = 64;
 constexpr double kInteriorRepairEnergySlack = 0.01;
+constexpr double kCoverageRepairEnergySlack = 0.1;
+constexpr double kCoverageRepairCornerSlack = 0.5;
+constexpr double kCoverageRepairTurnSlack = 0.25;
+constexpr double kInteriorPatchPadding = 0.0009765625;
+constexpr double kRoundedPatchScale = 1.42;
+constexpr std::array<int, 3> kInteriorPatchShapeIds = {101, 102, 2133};
 constexpr double kRepairRecoveryBins = 1024.0;
 constexpr double kGpuCornerWindowScale = 16.0;
 constexpr double kGpuCornerWeight = 32.0;
@@ -110,6 +117,7 @@ struct Objective {
     std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     mutable QJsonObject coverageRejections;
     mutable QJsonObject connectorDiagnostics;
+    mutable QJsonObject interiorRepairDiagnostics;
     mutable QJsonObject gpuPipelineCandidate;
     std::function<void(int)> workProgress;
     mutable int evaluations = 0;
@@ -1078,6 +1086,10 @@ void prune(QVector<Piece> *pieces, const Objective &objective,
 #ifdef FLS_HAS_CUDA
 bool pruneGpu(QVector<Piece> *pieces, const Objective &objective,
               const std::function<bool()> &cancelled) {
+    const auto baseline = reductionStateFor(support(*pieces), objective);
+    const double baselineEnergy = objective.boundary->energy(baseline.metrics);
+    const double energyLimit = baselineEnergy > objective.qualityLimit
+        ? baselineEnergy + objective.qualityLimit * kInteriorRepairEnergySlack : objective.qualityLimit;
     while (pieces->size() > 1 && !stopped(cancelled)) {
         const int available = objective.evaluationLimit - objective.evaluations;
         if (available < pieces->size() || !prepareGpuRanker(objective)) {
@@ -1100,10 +1112,20 @@ bool pruneGpu(QVector<Piece> *pieces, const Objective &objective,
             objective.workProgress(objective.evaluations);
         }
         std::optional<ReductionState> before;
+        QVector<Polygons> supports;
+        for (const auto &piece : *pieces) {
+            supports.push_back(piece.polygons);
+        }
+        objective.ownership.synchronize(supports);
         bool removed = false;
         for (int selected : order) {
-            if (scores[selected] > kScoreEpsilon || stopped(cancelled)) {
+            if (stopped(cancelled)) {
                 break;
+            }
+            const auto exclusive = objective.ownership.exclusive({selected});
+            if (!catalog::intersect(exclusive, objective.inner).isEmpty()
+                || (scores[selected] > kScoreEpsilon && catalog::area(exclusive) >= kGpuMinimumFootprint)) {
+                continue;
             }
             const auto remaining = support(*pieces, {selected});
             if (!catalog::subtract((*pieces)[selected].polygons, remaining).isEmpty()) {
@@ -1119,7 +1141,7 @@ bool pruneGpu(QVector<Piece> *pieces, const Objective &objective,
                         before->metrics.maximumCornerDistance) + kScoreEpsilon
                     || after.metrics.maximumExcessTurn > std::max(kMaximumExcessTurn,
                         before->metrics.maximumExcessTurn) + kScoreEpsilon
-                    || objective.boundary->energy(after.metrics) > objective.boundary->energy(before->metrics) + kScoreEpsilon
+                    || objective.boundary->energy(after.metrics) > energyLimit + kScoreEpsilon
                     || std::abs(after.metrics.holes - objective.targetMetrics.holes)
                         > std::abs(before->metrics.holes - objective.targetMetrics.holes)
                     || std::abs(after.metrics.components - objective.targetMetrics.components)
@@ -1128,6 +1150,7 @@ bool pruneGpu(QVector<Piece> *pieces, const Objective &objective,
                 }
             }
             pieces->removeAt(selected);
+            objective.ownership.erase(selected);
             ++objective.gpuPipelinePruned;
             removed = true;
             break;
@@ -1177,10 +1200,15 @@ bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
         double score = 0.0;
     };
     QVector<int> fragments;
+    QVector<Polygons> supports;
     const double minimumArea = kGpuMinimumFootprint
         * std::pow(objective.cornerAllowance * 2.0, 2.0);
+    for (const auto &piece : *pieces) {
+        supports.push_back(piece.polygons);
+    }
+    objective.ownership.synchronize(supports);
     for (int index = 0; index < pieces->size(); ++index) {
-        if ((*pieces)[index].placement.area < minimumArea) {
+        if (catalog::area(objective.ownership.exclusive({index})) < minimumArea) {
             fragments.push_back(index);
         }
     }
@@ -1218,11 +1246,17 @@ bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
             }
             const int neighbor = entry.second;
             const QVector<Piece> group{(*pieces)[fragment], (*pieces)[neighbor]};
+            supports.clear();
+            for (const auto &piece : *pieces) {
+                supports.push_back(piece.polygons);
+            }
+            objective.ownership.synchronize(supports);
             QPolygonF groupPoints;
-            for (const Piece &member : group) {
-                for (const QPolygonF &polygon : member.polygons) {
-                    groupPoints += polygon;
-                }
+            for (const QPolygonF &polygon : objective.ownership.exclusive({fragment, neighbor})) {
+                groupPoints += polygon;
+            }
+            if (groupPoints.isEmpty()) {
+                continue;
             }
             if (!objective.gpuRanker->prepareReplacementCoverage(gpuGeometry(group))) {
                 return false;
@@ -1287,7 +1321,12 @@ bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
                 QVector<Piece> trial = *pieces;
                 trial[neighbor] = replacement.piece;
                 trial.removeAt(fragment);
-                const ReductionState after = reductionStateFor(support(trial), objective);
+                const auto coverage = support(trial);
+                if (!catalog::subtract(coverage, objective.outer).isEmpty()
+                    || !preservesInterior(coverage, before.coverage, objective)) {
+                    continue;
+                }
+                const ReductionState after = reductionStateFor(coverage, objective);
                 if (gpuReplacementAllowed(before, after, objective)) {
                     *pieces = std::move(trial);
                     ++objective.gpuGroupReplacements;
@@ -1831,19 +1870,49 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
         int owner = -1;
         double recovered = 0.0;
     };
-    const auto square = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &entry) {
-        return entry.shape.shapeId == 101;
-    });
+    QVector<const PenPrimitive *> patchShapes;
+    for (int id : kInteriorPatchShapeIds) {
+        const auto primitive = std::find_if(primitives.cbegin(), primitives.cend(), [id](const auto &entry) {
+            return entry.shape.shapeId == id;
+        });
+        if (primitive != primitives.cend()) {
+            patchShapes.push_back(&primitive->shape);
+        }
+    }
     const auto baseline = reductionStateFor(support(*pieces), objective);
-    const double energyLimit = std::max(objective.qualityLimit, objective.boundary->energy(baseline.metrics))
-        + objective.qualityLimit * kInteriorRepairEnergySlack;
-    const double turnLimit = std::max(kMaximumExcessTurn, baseline.metrics.maximumExcessTurn)
-        + kGpuMaximumTurnRegression;
+    const auto completedMetrics = objective.boundary->measure(visibleSupport(
+        catalog::unite(baseline.coverage + objective.inner), objective));
+    auto repairReference = completedMetrics;
+    QVector<double> cornerLimits;
+    Polygons blocked;
+    QJsonArray blockedDiagnostics;
+    repairReference.tangentEnergy = std::max(baseline.metrics.tangentEnergy, completedMetrics.tangentEnergy);
+    repairReference.turnEnergy = std::max(baseline.metrics.turnEnergy, completedMetrics.turnEnergy);
+    repairReference.cornerEnergy = 0.0;
+    for (int corner = 0; corner < baseline.cornerDistances.size(); ++corner) {
+        const double completedLimit = completedMetrics.cornerDistances[corner] > objective.cornerAllowance
+            ? completedMetrics.cornerDistances[corner] + objective.cornerAllowance * kCoverageRepairCornerSlack
+            : completedMetrics.cornerDistances[corner];
+        const double limit = std::max({objective.cornerAllowance, baseline.cornerDistances[corner], completedLimit});
+        cornerLimits.push_back(limit);
+        repairReference.cornerEnergy += limit * limit;
+    }
+    const double baselineTurn = std::max(baseline.metrics.maximumExcessTurn, completedMetrics.maximumExcessTurn);
+    const double turnLimit = baselineTurn > kMaximumExcessTurn
+        ? baselineTurn + kCoverageRepairTurnSlack : kMaximumExcessTurn;
+    repairReference.maximumExcessTurn = turnLimit;
+    const double baselineEnergy = std::max(objective.boundary->energy(baseline.metrics),
+        objective.boundary->energy(completedMetrics));
+    const double energyLimit = baselineEnergy > objective.qualityLimit
+        ? std::max(baselineEnergy, objective.boundary->energy(repairReference))
+            + objective.qualityLimit * kCoverageRepairEnergySlack : objective.qualityLimit;
     for (int round = 0; round < kInteriorRepairRounds && !stopped(cancelled)
         && objective.evaluations < evaluationLimit; ++round) {
         const auto before = reductionStateFor(support(*pieces), objective);
+        auto coverageBaseline = before;
+        coverageBaseline.cornerDistances = cornerLimits;
         const auto missingInterior = catalog::subtract(objective.inner, before.coverage);
-        const auto gaps = catalog::unite(before.deepMissing + missingInterior);
+        const auto gaps = catalog::subtract(catalog::unite(before.deepMissing + missingInterior), blocked);
         if (gaps.isEmpty()) {
             break;
         }
@@ -1860,31 +1929,37 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
         }
         const int count = std::min(kInteriorRepairNeighbors, static_cast<int>(neighbors.size()));
         std::partial_sort(neighbors.begin(), neighbors.begin() + count, neighbors.end());
+        const double gapArea = catalog::area({gap});
         const auto consider = [&](Piece candidate, int owner) {
             if (objective.evaluations >= evaluationLimit || stopped(cancelled)) {
-                return;
+                return false;
             }
             ++objective.evaluations;
             if (!catalog::subtract(candidate.polygons, objective.outer).isEmpty()) {
-                return;
+                return false;
             }
             const double recovered = catalog::area(catalog::intersect(before.deepMissing,
                 catalog::expanded(candidate.polygons, objective.inwardAllowance)))
                 + catalog::area(catalog::intersect(missingInterior, candidate.polygons));
-            if (recovered > 0.0) {
+            const bool complete = catalog::subtract({gap}, candidate.polygons).isEmpty();
+            if (complete && recovered > 0.0) {
                 trials.push_back({std::move(candidate), owner, recovered});
             }
+
+            return complete;
         };
         bool repaired = false;
-        for (int phase = 0; phase < 2 && !repaired && !stopped(cancelled)
+        for (int phase = 0; phase < 3 && !repaired && !stopped(cancelled)
             && objective.evaluations < evaluationLimit; ++phase) {
             trials.clear();
-            for (int neighbor = 0; neighbor < count && !stopped(cancelled); ++neighbor) {
+            const int growthNeighbors = phase == 0 ? count : phase == 1
+                ? std::min(count, kInteriorAxisNeighbors) : 0;
+            for (int neighbor = 0; neighbor < growthNeighbors && !stopped(cancelled); ++neighbor) {
                 const int owner = neighbors[neighbor].second;
                 const auto &original = (*pieces)[owner];
                 const auto &shape = primitiveFor(original.placement.shapeId, primitives);
-                for (double padding : kInteriorRepairPadding) {
-                    for (int axis = phase == 0 ? 2 : 0; axis < (phase == 0 ? 3 : 2); ++axis) {
+                for (int axis = phase == 0 ? 2 : 0; axis < (phase == 0 ? 3 : 2); ++axis) {
+                    for (double padding : kInteriorRepairPadding) {
                         QTransform growth;
                         const double width = axis == 2 ? std::min(original.bounds.width(), original.bounds.height())
                             : original.bounds.width();
@@ -1893,21 +1968,38 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
                         growth.scale(axis != 1 ? 1.0 + 2.0 * padding / width : 1.0,
                             axis != 0 ? 1.0 + 2.0 * padding / height : 1.0);
                         growth.translate(-original.bounds.center().x(), -original.bounds.center().y());
-                        consider(makePiece(shape, original.placement.transform * growth), owner);
+                        if (consider(makePiece(shape, original.placement.transform * growth), owner)) {
+                            break;
+                        }
                     }
                 }
             }
-            if (square != primitives.cend() && pieces->size() < shapeBudget) {
-                const double padding = objective.inwardAllowance + catalog::kVerificationClearance;
+            if (phase == 2 && !patchShapes.isEmpty() && pieces->size() < shapeBudget) {
                 const auto reference = objective.boundary->reference(center);
+                QPointF longestEdge;
+                for (int index = 0; index < gap.size(); ++index) {
+                    const QPointF edge = gap[(index + 1) % gap.size()] - gap[index];
+                    if (QPointF::dotProduct(edge, edge) > QPointF::dotProduct(longestEdge, longestEdge)) {
+                        longestEdge = edge;
+                    }
+                }
                 const double angle = std::atan2(reference.tangent.y(), reference.tangent.x());
-                for (double orientation : {angle, 0.0}) {
+                const double gapAngle = std::atan2(longestEdge.y(), longestEdge.x());
+                for (double orientation : {gapAngle, angle, 0.0}) {
                     QTransform frame;
                     frame.rotateRadians(orientation);
-                    const auto bounds = frame.inverted().map(gap).boundingRect()
-                        .adjusted(-padding, -padding, padding, padding);
-                    consider(makePiece(square->shape, boundsTransform(square->shape,
-                        frame.map(QPolygonF(bounds)), orientation, false)), -1);
+                    for (double padding : {kInteriorPatchPadding, objective.inwardAllowance}) {
+                        padding += catalog::kVerificationClearance;
+                        const auto bounds = frame.inverted().map(gap).boundingRect()
+                            .adjusted(-padding, -padding, padding, padding);
+                        for (const auto *shape : patchShapes) {
+                            const double scale = shape->shapeId == 101 ? 1.0 : kRoundedPatchScale;
+                            const QPointF halfSize(bounds.width() * scale * 0.5, bounds.height() * scale * 0.5);
+                            const QRectF envelope(bounds.center() - halfSize, bounds.center() + halfSize);
+                            consider(makePiece(*shape, boundsTransform(*shape,
+                                frame.map(QPolygonF(envelope)), orientation, false)), -1);
+                        }
+                    }
                 }
             }
             const double missingArea = catalog::area(before.deepMissing) + catalog::area(missingInterior);
@@ -1939,11 +2031,41 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
                 } else {
                     proposed[trial.owner] = trial.piece;
                 }
-                const auto after = reductionStateFor(support(proposed), objective);
-                const auto afterInterior = catalog::subtract(objective.inner, after.coverage);
+                const auto afterCoverage = support(proposed);
+                const auto afterInterior = catalog::subtract(objective.inner, afterCoverage);
+                if (!catalog::subtract(afterInterior, missingInterior).isEmpty()) {
+                    objective.coverageRejections[QStringLiteral("interior coverage")]
+                        = objective.coverageRejections.value(QStringLiteral("interior coverage")).toInt() + 1;
+                    continue;
+                }
+                const auto after = reductionStateFor(afterCoverage, objective);
+                if (trial.owner < 0) {
+                    QJsonArray corners;
+                    double cornerRegression = 0.0;
+                    for (int corner = 0; corner < after.cornerDistances.size(); ++corner) {
+                        cornerRegression = std::max(cornerRegression, after.cornerDistances[corner]
+                            - std::max(objective.cornerAllowance, before.cornerDistances[corner]));
+                        if (after.cornerDistances[corner] > std::max(objective.cornerAllowance,
+                            coverageBaseline.cornerDistances[corner]) + kScoreEpsilon) {
+                            corners.push_back(QJsonArray{corner, after.cornerDistances[corner],
+                                before.cornerDistances[corner], completedMetrics.cornerDistances[corner]});
+                        }
+                    }
+                    objective.interiorRepairDiagnostics = {
+                        {QStringLiteral("gapArea"), gapArea},
+                        {QStringLiteral("newInteriorArea"), catalog::area(catalog::subtract(afterInterior, missingInterior))},
+                        {QStringLiteral("newDeepArea"), catalog::area(catalog::subtract(after.deepMissing, before.deepMissing))},
+                        {QStringLiteral("newObservedHoleArea"), catalog::area(catalog::subtract(after.observedHoles, before.observedHoles))},
+                        {QStringLiteral("cornerRegression"), cornerRegression},
+                        {QStringLiteral("corners"), corners},
+                        {QStringLiteral("energy"), objective.boundary->energy(after.metrics)},
+                        {QStringLiteral("energyLimit"), energyLimit},
+                        {QStringLiteral("turn"), after.metrics.maximumExcessTurn},
+                        {QStringLiteral("completedTurn"), completedMetrics.maximumExcessTurn},
+                        {QStringLiteral("turnLimit"), turnLimit}};
+                }
                 if (catalog::area(after.deepMissing) + catalog::area(afterInterior) >= missingArea
-                    || !catalog::subtract(afterInterior, missingInterior).isEmpty()
-                    || !coverageMoveAllowed(after, before, objective)
+                    || !coverageMoveAllowed(after, coverageBaseline, objective)
                     || after.missingArea + after.spillArea > std::max(objective.areaBudget,
                         before.missingArea + before.spillArea) + kScoreEpsilon
                     || std::abs(after.metrics.holes - objective.targetMetrics.holes)
@@ -1963,9 +2085,14 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
             }
         }
         if (!repaired) {
-            break;
+            blocked.push_back(gap);
+            auto diagnostic = objective.interiorRepairDiagnostics;
+            diagnostic.insert(QStringLiteral("center"), QJsonArray{center.x(), center.y()});
+            diagnostic.insert(QStringLiteral("gapArea"), gapArea);
+            blockedDiagnostics.push_back(diagnostic);
         }
     }
+    objective.interiorRepairDiagnostics.insert(QStringLiteral("blocked"), blockedDiagnostics);
 }
 
 void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
@@ -3030,8 +3157,13 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             objective.evaluationLimit = limit;
             repairInteriorCoverage(&pieces, objective, primitives,
                 options.shapeBudget, limit, stopWork);
-            repairResiduals(&pieces, objective, searchCatalog,
-                primitives, options.shapeBudget, limit, stopWork);
+            const auto repaired = reductionStateFor(support(pieces), objective);
+            if (!repaired.deepMissing.isEmpty()
+                || repaired.metrics.components != objective.targetMetrics.components
+                || repaired.metrics.holes != objective.targetMetrics.holes) {
+                repairResiduals(&pieces, objective, searchCatalog,
+                    primitives, options.shapeBudget, limit, stopWork);
+            }
             result.diagnostics.insert(QStringLiteral("gpuExactTailShapes"),
                 pieces.size() - before);
             result.diagnostics.insert(QStringLiteral("gpuExactTailEvaluations"),
@@ -3195,6 +3327,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         const auto coverage = support(pieces);
         const auto missingInterior = catalog::subtract(objective.inner, coverage);
         result.diagnostics.insert(QStringLiteral("missingInteriorArea"), catalog::area(missingInterior));
+        result.diagnostics.insert(QStringLiteral("interiorRepair"), objective.interiorRepairDiagnostics);
         result.diagnostics.insert(QStringLiteral("stageWork"), stageWork);
         result.diagnostics.insert(QStringLiteral("approximateReductions"), objective.approximateReductions);
         result.diagnostics.insert(QStringLiteral("exactReductions"), objective.exactReductions);
