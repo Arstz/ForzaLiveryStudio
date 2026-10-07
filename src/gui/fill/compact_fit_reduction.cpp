@@ -169,7 +169,7 @@ catalog::Polygons CoverageOwnership::exclusive(const QVector<int> &members) cons
             overlapping += pieces_[index];
         }
     }
-    auto result = catalog::subtract(catalog::unite(local), catalog::unite(overlapping));
+    auto result = catalog::subtract(local, overlapping);
     ++computations_;
     if (ordered.size() == 1) {
         exclusive_[ordered.front()] = result;

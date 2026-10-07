@@ -3,6 +3,7 @@
 #include "catalog_cover.h"
 
 #include <array>
+#include <memory>
 #include <stdexcept>
 
 namespace gui::catalog {
@@ -17,6 +18,25 @@ inline constexpr double kMinimumDeterminant = 1e-12;
 
 using Polygons = QVector<QPolygonF>;
 
+class PointContainment {
+public:
+    explicit PointContainment(const Polygons &polygons);
+    bool contains(const QPointF &point) const;
+
+private:
+    struct Edge {
+        QPointF start;
+        QPointF end;
+        double length = 0.0;
+    };
+
+    QPainterPath path_;
+    QRectF bounds_;
+    QVector<Edge> edges_;
+    QVector<QVector<int>> bands_;
+    double step_ = 1.0;
+};
+
 struct Region {
     Polygons required;
     Polygons permitted;
@@ -26,6 +46,7 @@ struct Region {
     QPainterPath requiredPath;
     QPainterPath permittedPath;
     QPainterPath spillFreePath;
+    std::shared_ptr<const PointContainment> spillFreeContainment;
     QRectF bounds;
     double area = 0.0;
     double originalArea = 0.0;
@@ -50,6 +71,7 @@ QPainterPath painterPath(const Polygons &polygons);
 QPolygonF convexHull(QPolygonF points);
 Polygons mapped(const PenPrimitive &shape, const QTransform &transform);
 Polygons expanded(const Polygons &polygons, double radius);
+Polygons interiorSupport(const Polygons &polygons, double allowance);
 QTransform emittedTransform(const QTransform &transform);
 QTransform affineFromAnchors(const std::array<QPointF, 3> &source,
                              const std::array<QPointF, 3> &target);

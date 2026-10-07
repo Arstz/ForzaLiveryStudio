@@ -133,6 +133,8 @@ public:
 };
 
 #ifdef FLS_HAS_CUDA
+bool verifyRasterMaskIndex(const Geometry &geometry, double cellSize, std::string *error);
+
 bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
                        const std::vector<MaskPoint> &witnesses,
                        std::vector<std::uint64_t> *masks,

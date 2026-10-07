@@ -88,9 +88,11 @@ exports grouped `C_group` folders and `C_livery` folders.
   two-placement transactions against fitted catalog replacements. Each accepted
   transaction reduces count and passes an exact aggregate quality check. Group
   fits use joint unique support instead of overlapping placement bounds.
-  Final compaction examines at most 16 placements with less than 25 square units
+  Final compaction examines at most 24 placements with less than 25 square units
   of unique support at the default scale. Deletions can transfer required interior
   support to a nearby placement through centered or anchored affine growth.
+  Boundary support can also seed neighbor growth. Candidate ranking compares
+  tangent error, turning error, and join defects before choosing a reduction.
   Eight bisection steps tighten each growth proposal. Exact checks preserve
   interior coverage, the outer envelope, area limits, topology, and the fixed
   corner and continuity baseline. This pass uses at most 1,536 additional trials
@@ -99,7 +101,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   profile-fit batches use a coarse CUDA geometry shortlist before exact validation;
   the complete candidate pool receives a device-ranked shortlist before exact
   witness selection. One exact CPU checkpoint accepts an
-  aggregate improvement or restores the seed. Refinement proposals and accepted
+  aggregate improvement or restores the seed. Interior repair runs before this
+  comparison when refinement loses previously complete interior support.
+  Refinement proposals and accepted
   checkpoints stay inside the exact outer envelope. Raster-redundant deletion
   also checks the emitted union before removing unique support. CUDA
   failure restores the CPU optimizer. Candidates are ranked by area,
@@ -111,6 +115,12 @@ exports grouped `C_group` folders and `C_livery` folders.
   total candidate limit. Failed candidates allow the next ranked fit to compete.
   Job order, retention slots, and tie breaks are fixed before each batch is
   committed. CPU and GPU results need not be bitwise identical.
+  Point containment indexes contour edges by height. Boundary-adjacent probes
+  retain the painter-path containment decision. Exact clipping reuses prepared
+  operands in bounded thread-local caches. CUDA mask initialization indexes edges
+  by raster row and preserves the full traversal's winding calculation. Primitive
+  uploads are reused between transform batches. Corner penalties are evaluated
+  only while a candidate's unpenalized score can improve the selected score.
   Straight runs seed sheared rectangles; convex corners can seed triangles and
   curved corner shapes. Straight runs meeting at a convex corner also propose a
   Triangle fitted directly to their endpoints. These proposals compete with the
@@ -126,8 +136,16 @@ exports grouped `C_group` folders and `C_livery` folders.
   these checks fail, with the failure reported as a warning. If refinement
   errors leave no result, the generated seed remains available for insertion.
   Its dialog specifies outward support distance in
-  world units per axis, initially 2. The inward allowance is 0.5 world units;
-  missing-plus-spill area is limited to 2% of the target. The inward allowance
+  world units per axis, initially 2. The inward allowance is 0.5 world units.
+  The entered outward distance is a hard maximum. Seed planning compares tighter
+  allowances at half the observation scale and at the default outward distance,
+  when they fit below that maximum. Plans reuse candidate coverage masks and add
+  bounded contracted variants. A tighter plan must preserve or improve seed
+  count, coverage, area error, contour measurements, and topology. Exact envelope
+  validation follows probe screening. One selected plan proceeds to refinement;
+  seed comparisons cannot guarantee the best result of separate full searches.
+  Logs record the requested and selected distances, plans, and comparison time.
+  Missing-plus-spill area is limited to 2% of the target. The inward allowance
   applies to the target boundary corridor. Interior support is checked directly,
   including gaps smaller than a raster cell or the observation scale. Moves and
   reductions must preserve that support. A bounded repair pass first tries
@@ -280,6 +298,11 @@ exports grouped `C_group` folders and `C_livery` folders.
   shares the existing repair-stage evaluation allowance. Unused insertion work
   can refit the repaired cover before transfer to compaction. Coverage guards
   reuse the corner distances already computed by the quality measurement.
+  Independent corner candidates are validated in bounded parallel batches and
+  appended in their original order. Unchanged intermediate placements reuse
+  the previous progress report. Local deletions retain an established exterior
+  envelope; a changed neighbor is checked against that envelope before the
+  complete interior and contour measurements.
   Exact-union deletions remove redundant placements before spatial compaction;
   catalog replacements remain in the final exact pass. Boundary-aware refits
   skip observed-boundary measurements when an upper bound on area and gap score
@@ -297,10 +320,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   moves must stay inside the exterior envelope. The status bar combines normalized initialization work
   with refinement evaluations and reports elapsed time and current shape count.
   Large placements use bounded initial adjustments and finer refinement levels
-  tied to the inward allowance. An outward allowance above the default first
-  tries the default allowance, then the requested allowance if verification
-  fails. A valid tight result is retained. Progress includes the possible retry;
-  the area, inward-distance, and continuity limits are unchanged.
+  tied to the inward allowance. Shared seed selection and the single refinement
+  use one combined work allocation. GPU trials remain charged when refinement
+  continues on the CPU. The area, inward-distance, and continuity limits remain
+  unchanged.
   Work percentage is not a time estimate, and setup and verification cost vary
   with contour complexity. Quality checks remain active and their failures are
   recorded; they do not block insertion of available shapes. Cancellation still

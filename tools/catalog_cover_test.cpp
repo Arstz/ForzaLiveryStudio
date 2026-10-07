@@ -540,19 +540,18 @@ void compactTests(const QVector<gui::catalog::Primitive> &catalog, bool profile 
         wider.boundaryAllowance = 8.0;
         reportedWork = 0;
         wider.workProgress = [&](int count, int evaluated, int budget) {
-            require(count >= 0 && evaluated >= reportedWork && budget == 2 * (options.evaluationBudget + options.evaluationBudget / 5),
-                QStringLiteral("Profile retry progress is invalid"));
+            require(count >= 0 && evaluated >= reportedWork && budget == options.evaluationBudget + options.evaluationBudget / 5,
+                QStringLiteral("Profile allowance selection progress is invalid"));
             reportedWork = evaluated;
         };
         const auto widerResult = fit(square, catalog, wider);
         const auto tighterResult = fit(square, catalog, options);
         requireApproximation(square, widerResult, catalog, wider);
         require(widerResult.fill.placements.size() == tighterResult.fill.placements.size(), QStringLiteral("Wider margin changed a feasible tight count"));
-        for (int index = 0; index < widerResult.fill.placements.size(); ++index) {
-            require(widerResult.fill.placements[index].shapeId == tighterResult.fill.placements[index].shapeId
-                && widerResult.fill.placements[index].transform == tighterResult.fill.placements[index].transform,
-                QStringLiteral("Wider margin changed a feasible tight placement"));
-        }
+        require(widerResult.diagnostics.value("attempts").toArray().size() == 1
+            && widerResult.diagnostics.value("profileSeed").toObject().value("allowanceSelection")
+                .toObject().value("candidateSearches").toInt() == 1,
+            QStringLiteral("Wider margin repeated the full search"));
         output << "Large-region and wider-margin regressions passed\n" << Qt::flush;
         gui::PenFillRequest thinBand;
         QTransform outerBand, innerBand;
@@ -827,6 +826,7 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
     options.shapeBudget = options.initialPlacements.size();
     options.evaluationBudget = 400;
     options.retainFailedFill = true;
+    options.useGpu = false;
     const gui::PenFillRequest request{{}, {polygonLoop({{0, 0}, {20, 0}, {20, 8}, {100, 8},
         {100, 0}, {120, 0}, {120, 20}, {100, 20}, {100, 12}, {20, 12}, {20, 20}, {0, 20}})}};
     const auto result = gui::compact::fillRegion(request, {*square}, options);
@@ -855,6 +855,25 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
         QStringLiteral("Polishing was starved"));
     require(stages.value("repair").toObject().value("refitPlacements").toInt() >= options.initialPlacements.size(),
         QStringLiteral("Repair did not reach all placements"));
+    options.useGpu = true;
+    const auto gpuResult = gui::compact::fillRegion(request, {*square}, options);
+    require(gpuResult.fill.placements.size() < options.initialPlacements.size()
+        && gpuResult.diagnostics.value("exactReductions").toInt() > 0,
+        QStringLiteral("Rejected GPU refinement retained duplicate seed placements"));
+    int gpuUsed = 0;
+    const auto gpuStages = gpuResult.diagnostics.value("stageWork").toObject();
+    for (const auto &name : {"recognition", "gpuPipeline", "repair", "spatialReduction", "exposedReduction", "polish"}) {
+        const auto stage = gpuStages.value(name).toObject();
+        if (stage.isEmpty()) {
+            continue;
+        }
+        require(stage.value("start").toInt() == gpuUsed && stage.value("evaluations").toInt() >= 0,
+            QStringLiteral("GPU work accounting is discontinuous"));
+        gpuUsed += stage.value("evaluations").toInt();
+        require(gpuUsed <= stage.value("ceiling").toInt(), QStringLiteral("GPU stage budget overrun"));
+    }
+    require(gpuUsed == gpuResult.diagnostics.value("evaluations").toInt()
+        && gpuUsed <= options.evaluationBudget, QStringLiteral("GPU total work accounting differs"));
     QTextStream(stdout) << "Stage budgets, local reductions, topology and baseline checks passed\n";
 }
 
@@ -1099,6 +1118,7 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     const gui::PenFillRequest separatedRequest{{}, {polygonLoop({{0, 0}, {1240, 0}, {1240, 40}, {0, 40}}),
         polygonLoop({{600, 10}, {620, 10}, {620, 30}, {600, 30}}, gui::PenLoopKind::Cutout)}};
     FillOptions separatedOptions;
+    separatedOptions.useGpu = false;
     for (int index = 0; index < 31; ++index) {
         const double x = index * 40.0;
         if (index == 15) {
@@ -1131,6 +1151,7 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     const gui::PenFillRequest pairedRequest{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
         polygonLoop({{20, 20}, {80, 20}, {80, 80}, {20, 80}}, gui::PenLoopKind::Cutout)}};
     FillOptions pairedOptions;
+    pairedOptions.useGpu = false;
     pairedOptions.initialPlacements = {placedRectangle({0, 0, 100, 20}), placedRectangle({0, 80, 100, 20}),
         placedRectangle({80, 20, 20, 60}), placedRectangle({0, 20, 20, 29}), placedRectangle({0, 51, 20, 29})};
     pairedOptions.shapeBudget = pairedOptions.initialPlacements.size();
@@ -1160,6 +1181,7 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     });
     require(circle != catalog.cend(), QStringLiteral("Missing broad repair shape"));
     FillOptions patchOptions;
+    patchOptions.useGpu = false;
     patchOptions.initialPlacements = {placedRectangle({0, 0, 100, 20}),
         placedRectangle({0, 80, 100, 20}), placedRectangle({80, 20, 20, 60}),
         placedRectangle({0, 20, 20, 60})};
@@ -1177,6 +1199,7 @@ void coverageRepairTests(const QVector<gui::catalog::Primitive> &catalog) {
     const gui::PenFillRequest splitRingRequest{{}, {polygonLoop({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
         polygonLoop({{20, 20}, {80, 20}, {80, 80}, {20, 80}}, gui::PenLoopKind::Cutout)}};
     FillOptions splitOptions;
+    splitOptions.useGpu = false;
     splitOptions.initialPlacements = {placedRectangle({0, 0, 100, 20}), placedRectangle({0, 80, 100, 20}),
         placedRectangle({80, 20, 20, 60}), placedRectangle({0, 20, 20, 29.7}), placedRectangle({0, 50.3, 20, 29.7})};
     splitOptions.shapeBudget = splitOptions.initialPlacements.size();
@@ -1533,6 +1556,96 @@ void gpuRasterRankTests() {
 }
 #endif
 
+void preparedGeometryTests() {
+    int samples = 0;
+    for (const QString &fixture : {QStringLiteral("tools/fixtures/compact_fit_cornered_interior.json"),
+             QStringLiteral("tools/fixtures/compact_fit_small_contour.json")}) {
+        const auto region = gui::catalog::buildRegion(readRequest(fixture), {});
+        for (const auto &polygons : {region.required, region.permitted,
+                 gui::catalog::expanded(region.required, 2.0)}) {
+            const gui::catalog::PointContainment prepared(polygons);
+            const auto path = gui::catalog::painterPath(polygons);
+            const auto bounds = path.boundingRect().adjusted(-1, -1, 1, 1);
+            const auto check = [&](const QPointF &point) {
+                require(prepared.contains(point) == path.contains(point),
+                    QStringLiteral("Prepared point containment differs at %1,%2")
+                        .arg(point.x(), 0, 'g', 16).arg(point.y(), 0, 'g', 16));
+                ++samples;
+            };
+            for (int y = 0; y <= 160; ++y)
+                for (int x = 0; x <= 160; ++x)
+                    check(bounds.topLeft() + QPointF(bounds.width() * x / 160,
+                        bounds.height() * y / 160));
+            for (const auto &polygon : polygons)
+                for (int index = 0; index < polygon.size(); ++index)
+                    for (double fraction : {0.0, 0.5})
+                        for (double offset : {-1e-5, -1e-7, 0.0, 1e-7, 1e-5}) {
+                            const auto point = polygon[index]
+                                + (polygon[(index + 1) % polygon.size()] - polygon[index]) * fraction;
+                            check(point + QPointF(offset, 0));
+                            check(point + QPointF(0, offset));
+                        }
+        }
+    }
+    QTextStream(stdout) << "Prepared geometry: " << samples << " containment comparisons passed\n";
+}
+
+void rasterMaskIndexTests() {
+#ifdef FLS_HAS_CUDA
+    for (const QString &fixture : {QStringLiteral("tools/fixtures/compact_fit_cornered_interior.json"),
+             QStringLiteral("tools/fixtures/compact_fit_small_contour.json")}) {
+        const auto region = gui::catalog::buildRegion(readRequest(fixture), {});
+        for (double translation : {0.0, 50000000.0}) {
+            for (double scale : {0.25, 0.371}) {
+                gui::compact::gpu::Geometry geometry;
+                for (const auto &polygon : region.required) {
+                    const int first = static_cast<int>(geometry.points.size());
+                    for (const auto &point : polygon)
+                        geometry.points.push_back({static_cast<float>(point.x() + translation),
+                            static_cast<float>(point.y() + translation)});
+                    geometry.loops.push_back({first, static_cast<int>(polygon.size())});
+                }
+                geometry.pieces.push_back({0, static_cast<int>(geometry.loops.size())});
+                std::string error;
+                require(gui::compact::gpu::verifyRasterMaskIndex(geometry, scale, &error),
+                    QString::fromStdString(error));
+            }
+        }
+    }
+    QTextStream(stdout) << "Indexed raster masks match complete edge traversal\n";
+#endif
+}
+
+void smallContourTests(const QVector<gui::catalog::Primitive> &catalog) {
+    const auto request = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_small_contour.json"));
+    gui::compact::FillOptions options;
+    options.retainFailedFill = true;
+    int previous = 0;
+    options.workProgress = [&](int, int evaluated, int budget) {
+        require(evaluated >= previous && evaluated <= budget,
+            QStringLiteral("Small-contour progress moved backwards or exceeded its budget"));
+        previous = evaluated;
+    };
+    QElapsedTimer timer;
+    timer.start();
+    const auto result = gui::profile::fillRegion(request, catalog, options);
+    require(!result.fill.placements.isEmpty() && result.fill.placements.size() <= 33,
+        QStringLiteral("Small-contour repair increased the shape count"));
+    require(result.diagnostics.value("missingInteriorArea").toDouble(-1) == 0
+        && result.diagnostics.value("missingBeyondInward").toDouble(-1) == 0
+        && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0,
+        QStringLiteral("Small-contour repair lost interior coverage or exceeded the envelope"));
+    const auto quality = result.diagnostics.value("boundaryQuality").toObject();
+    require(quality.value("energy").toDouble() <= 115.181671
+        && quality.value("maximumCornerDistance").toDouble() <= 0.5,
+        QStringLiteral("Small-contour repair regressed boundary quality"));
+    for (const auto &stage : result.diagnostics.value("stageWork").toObject())
+        require(stage.toObject().value("evaluations").toInt() >= 0,
+            QStringLiteral("Small-contour stage lost evaluation accounting"));
+    QTextStream(stdout) << "Small contour: " << result.fill.placements.size() << " shapes, "
+        << timer.elapsed() << " ms; coverage and work accounting passed\n";
+}
+
 void fastQualityTests() {
     quint64 random = 7812387;
     for (int trial = 0; trial < 64; ++trial) {
@@ -1729,6 +1842,10 @@ int main(int argc, char **argv) {
         }
         const QVector<gui::catalog::Primitive> fullCatalog = gui::catalog::buildCatalog(geometry, &error);
         require(error.isEmpty(), error);
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--small-contour-tests")) {
+            smallContourTests(fullCatalog);
+            return 0;
+        }
         if (application.arguments().size() == 3 && application.arguments()[1] == QStringLiteral("--exact-reduction")) {
             benchmarkExactReduction(application.arguments()[2], fullCatalog);
             return 0;
@@ -1770,18 +1887,33 @@ int main(int argc, char **argv) {
                 QStringLiteral("Cubic contour repair left missing interior support or exceeded the envelope"));
             require(result.diagnostics.value("targetBoundary").toObject().value("protectedCorners").toInt()
                     == (cornered ? 24 : 18), QStringLiteral("Replay changed the protected corners"));
-            require(result.fill.placements.size() <= (cornered ? 155 : 174)
+            require(result.fill.placements.size() <= (cornered ? 151 : 174)
                 && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
                 QStringLiteral("Cubic contour repair exceeded its count or work allowance"));
             require(result.diagnostics.value("areaError").toDouble()
                 <= result.diagnostics.value("areaErrorLimit").toDouble(),
                 QStringLiteral("Cubic contour repair exceeded the area error allowance"));
+            if (cornered) {
+                const auto quality = result.diagnostics.value("boundaryQuality").toObject();
+                require(quality.value("tangentEnergy").toDouble() <= 83.54
+                    && quality.value("turnEnergy").toDouble() <= 63.83
+                    && quality.value("cornerDefects").toInt() <= 85,
+                    QStringLiteral("Cornered compaction regressed contour continuity"));
+            }
             output << "Cubic interior coverage regression passed: " << result.fill.placements.size()
                 << " placements, " << timer.elapsed() << " ms\n";
             return 0;
         }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--quality-examples")) {
             qualityExamples();
+            return 0;
+        }
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--prepared-geometry-tests")) {
+            preparedGeometryTests();
+            return 0;
+        }
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--raster-mask-index-tests")) {
+            rasterMaskIndexTests();
             return 0;
         }
         if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--fast-quality-tests")) {

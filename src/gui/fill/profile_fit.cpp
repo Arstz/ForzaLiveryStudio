@@ -19,6 +19,7 @@ namespace {
 
 using catalog::Polygons;
 using Bits = QVector<quint64>;
+using SparseBits = QVector<std::pair<int, quint64>>;
 
 constexpr int kProfileSamples = compute::kSamples;
 constexpr int kSpanBatchSize = 32;
@@ -299,7 +300,7 @@ QTransform fittedTransform(const compute::Transform &transform) {
     return QTransform(values[0], values[1], values[2], values[3], values[4], values[5]);
 }
 
-bool probesInside(const PenPrimitive &shape, const QTransform &transform, const QPainterPath &envelope) {
+bool probesInside(const PenPrimitive &shape, const QTransform &transform, const catalog::PointContainment &envelope) {
     for (const auto &polygon : shape.contours) {
         const int stride = std::max(1, static_cast<int>(polygon.size()) / 16);
         for (int index = 0; index < polygon.size(); index += stride) {
@@ -314,7 +315,7 @@ bool probesInside(const PenPrimitive &shape, const QTransform &transform, const 
 
 std::optional<QTransform> containedTransform(const PenPrimitive &shape,
                                              const QTransform &transform,
-                                             const QPainterPath &envelope) {
+                                             const catalog::PointContainment &envelope) {
     if (probesInside(shape, transform, envelope)) {
         return transform;
     }
@@ -383,7 +384,7 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
                     const auto point = polygon[index] + (next - polygon[index]) * fraction;
                     if (stats)
                         ++stats->containsChecks;
-                    if (region.spillFreePath.contains(point)) {
+                    if (region.spillFreeContainment->contains(point)) {
                         continue;
                     }
                     const auto reference = boundary.reference(point);
@@ -555,7 +556,7 @@ bool screenCurveFitsGpu(const std::vector<std::vector<RankedFit>> &ranked,
 QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int capacity, const CurveJob &job,
                                       const QVector<Profile> &profiles, const QVector<catalog::Primitive> &primitives,
                                       const catalog::Region &region, const Polygons &outer,
-                                      const QPainterPath &envelope,
+                                      const catalog::PointContainment &envelope,
                                       const compact::BoundaryModel &boundary, double scale,
                                       const std::vector<char> *gpuEligible, int *validated) {
     QVector<Candidate> result;
@@ -625,7 +626,7 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                         QVector<Candidate> *pool, QJsonObject *diagnostics) {
     catalog::Region validationRegion = region;
     validationRegion.requiredPath = catalog::painterPath(region.required);
-    const QPainterPath envelope = catalog::painterPath(outer);
+    const catalog::PointContainment envelope(outer);
     const auto profiles = sourceProfiles(primitives);
     const auto jobs = curveJobs(region, options, cancelled);
     const int budget = static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
@@ -806,6 +807,7 @@ catalog::Region curveRegion(const catalog::Region &authored,
     result.leeway = coverage.leeway;
     result.permittedPath = coverage.permittedPath;
     result.spillFreePath = coverage.spillFreePath;
+    result.spillFreeContainment = coverage.spillFreeContainment;
 
     return result;
 }
@@ -875,7 +877,7 @@ double bodyRadiusCpu(const PenPrimitive &shape, const QPointF &center, double an
     for (int iteration = 0; iteration < kBodyRadiusIterations; ++iteration) {
         const double radius = (lower + upper) * 0.5;
         if (probesInside(shape, bodyTransform(shape, center, angle, ratio, radius),
-                region.spillFreePath)) {
+                *region.spillFreeContainment)) {
             lower = radius;
         } else {
             upper = radius;
@@ -1023,14 +1025,14 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
         const BodyJob &job = jobs[index];
         double radius = job.lower;
         if (radius >= scale && (!probesInside(*job.shape, bodyTransform(*job.shape,
-                job.center, job.angle, job.ratio, radius), region.spillFreePath)
+                job.center, job.angle, job.ratio, radius), *region.spillFreeContainment)
             || probesInside(*job.shape, bodyTransform(*job.shape, job.center,
-                job.angle, job.ratio, job.upper), region.spillFreePath))) {
+                job.angle, job.ratio, job.upper), *region.spillFreeContainment))) {
             radius = bodyRadiusCpu(*job.shape, job.center, job.angle, job.ratio, region);
             ++exactFallbacks;
         } else if (radius < scale && job.upper >= scale
             && probesInside(*job.shape, bodyTransform(*job.shape, job.center,
-                job.angle, job.ratio, scale), region.spillFreePath)) {
+                job.angle, job.ratio, scale), *region.spillFreeContainment)) {
             radius = bodyRadiusCpu(*job.shape, job.center, job.angle, job.ratio, region);
             ++exactFallbacks;
         }
@@ -1378,7 +1380,7 @@ bool indexCandidatesGpu(QVector<Candidate> *pool, const Grid &grid,
                         const QVector<QPointF> &witnesses,
                         const compact::FillOptions &options, QJsonObject *diagnostics) {
 #ifdef FLS_HAS_CUDA
-    if (!options.useGpu || pool->size() < 1024)
+    if (!options.useGpu || pool->isEmpty())
         return false;
     QElapsedTimer timer;
     timer.start();
@@ -1815,10 +1817,15 @@ void addCornerTriangles(const catalog::Region &region, const Polygons &outer,
     }
 }
 
-void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
-                         const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
-                         double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
-    const auto envelope = catalog::painterPath(outer);
+struct CornerCandidateJob {
+    QTransform transform;
+    const PenPrimitive *shape;
+};
+
+QVector<CornerCandidateJob> cornerCandidateJobs(const catalog::Region &region,
+                                               const QVector<catalog::Primitive> &primitives,
+                                               double scale, const std::function<bool()> &cancelled) {
+    QVector<CornerCandidateJob> jobs;
     const double placementScale = searchScale(region, scale);
     int trials = 0;
     for (const auto &polygon : region.required) {
@@ -1848,17 +1855,11 @@ void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
                         for (double length : {256.0, 128.0, 64.0, 32.0, 16.0, 8.0, 4.0}) {
                             for (double ratio : {0.25, 0.5, 1.0, 2.0, 4.0}) {
                                 if (++trials > kStructuralTrials || stopped(cancelled)) {
-                                    return;
+                                    return jobs;
                                 }
                                 const auto transform = catalog::affineFromAnchors({sourceCorner, sourceCorner + sourceFirst, sourceCorner + sourceSecond},
                                     {corner, corner + first * (length * placementScale), corner + second * (length * ratio * placementScale)});
-                                if (!probesInside(*shape, transform, envelope)) {
-                                    continue;
-                                }
-                                auto candidate = candidateFor(*shape, transform, region, outer, boundary, scale);
-                                if (candidate) {
-                                    pool->push_back(std::move(*candidate));
-                                }
+                                jobs.push_back({transform, shape});
                             }
                         }
                     }
@@ -1866,6 +1867,27 @@ void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
             }
         }
     }
+
+    return jobs;
+}
+
+void addCornerCandidates(const catalog::Region &region, const Polygons &outer,
+                         const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
+                         double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
+    const auto jobs = cornerCandidateJobs(region, primitives, scale, cancelled);
+    const catalog::PointContainment envelope(outer);
+    std::vector<std::optional<Candidate>> candidates(jobs.size());
+    ProfileWorkers workers;
+
+    if (!workers.run(jobs.size(), [&](int index) {
+        const auto &job = jobs[index];
+        if (probesInside(*job.shape, job.transform, envelope))
+            candidates[index] = candidateFor(*job.shape, job.transform, region, outer, boundary, scale);
+    }, cancelled))
+        return;
+    for (auto &candidate : candidates)
+        if (candidate)
+            pool->push_back(std::move(*candidate));
 }
 
 Polygons coverageOf(const QVector<Candidate> &pool, const QVector<int> &selected) {
@@ -1891,6 +1913,22 @@ bool containsBits(const Bits &coverage, const Bits &required) {
     }
 
     return true;
+}
+
+SparseBits sparseBits(const Bits &bits) {
+    SparseBits result;
+
+    for (int index = 0; index < bits.size(); ++index)
+        if (bits[index])
+            result.push_back({index, bits[index]});
+
+    return result;
+}
+
+bool containsBits(const Bits &coverage, const SparseBits &required) {
+    return std::all_of(required.cbegin(), required.cend(), [&](const auto &word) {
+        return (word.second & ~coverage[word.first]) == 0;
+    });
 }
 
 bool removable(const QVector<Candidate> &pool, const QVector<int> &selected, int omit,
@@ -1937,7 +1975,7 @@ void reduceSelection(const QVector<Candidate> &pool, const Grid &grid, const com
                 onceBoundary[word] |= pool[index].boundary[word];
             }
         }
-        QVector<Bits> privateCells, privateBoundary;
+        QVector<SparseBits> privateCells, privateBoundary;
         for (int index : *selected) {
             Bits cells(requiredCells.size(), 0), boundary(requiredBoundary.size(), 0);
             for (int word = 0; word < cells.size(); ++word) {
@@ -1946,8 +1984,8 @@ void reduceSelection(const QVector<Candidate> &pool, const Grid &grid, const com
             for (int word = 0; word < boundary.size(); ++word) {
                 boundary[word] = pool[index].boundary[word] & requiredBoundary[word] & ~twiceBoundary[word];
             }
-            privateCells.push_back(std::move(cells));
-            privateBoundary.push_back(std::move(boundary));
+            privateCells.push_back(sparseBits(cells));
+            privateBoundary.push_back(sparseBits(boundary));
         }
         const auto selectedCoverage = coverageOf(pool, *selected);
         const Polygons selectedVisibleCoverage = region.leeway.isEmpty()
@@ -2135,25 +2173,15 @@ std::optional<QVector<int>> selectBitmasksGpu(
     return std::nullopt;
 }
 
-QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &region,
+QVector<int> selectIndexedCandidates(QVector<Candidate> *pool, const catalog::Region &region,
                               const Grid &grid, const QVector<QPointF> &witnesses,
                               const compact::FillOptions &options, double boundaryWeightFactor,
                               const std::function<bool()> &cancelled,
-                              compact::gpu::RasterRanker *gpuRanker,
                               QJsonObject *diagnostics) {
     Bits missing = grid.target;
     Bits boundary((witnesses.size() + 63) / 64, 0);
     int scoreEvaluations = 0;
     setRange(&boundary, 0, witnesses.size());
-    shortlistCandidatesGpu(pool, gpuRanker, diagnostics);
-    const bool gpuIndexed = indexCandidatesGpu(pool, grid, witnesses, options, diagnostics);
-    for (auto &candidate : *pool) {
-        if (stopped(cancelled)) {
-            return {};
-        }
-        if (!gpuIndexed)
-            indexCandidate(&candidate, grid, witnesses);
-    }
     const double boundaryWeight = region.area / std::max(1, static_cast<int>(witnesses.size()))
         * boundaryWeightFactor;
     auto selected = selectBitmasksGpu(*pool, grid, boundary, options, boundaryWeight,
@@ -2181,6 +2209,188 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
     diagnostics->insert(QStringLiteral("missingWitnesses"), marginal(boundary, boundary));
 
     return *selected;
+}
+
+QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &region,
+                              const Grid &grid, const QVector<QPointF> &witnesses,
+                              const compact::FillOptions &options, double boundaryWeightFactor,
+                              const std::function<bool()> &cancelled,
+                              compact::gpu::RasterRanker *gpuRanker, QJsonObject *diagnostics) {
+    shortlistCandidatesGpu(pool, gpuRanker, diagnostics);
+    const bool gpuIndexed = indexCandidatesGpu(pool, grid, witnesses, options, diagnostics);
+
+    for (auto &candidate : *pool) {
+        if (stopped(cancelled))
+            return {};
+        if (!gpuIndexed)
+            indexCandidate(&candidate, grid, witnesses);
+    }
+
+    return selectIndexedCandidates(pool, region, grid, witnesses, options,
+        boundaryWeightFactor, cancelled, diagnostics);
+}
+
+void trimIndexedSelection(const QVector<Candidate> &pool, const Grid &grid, QVector<int> *selected) {
+    Bits cells(grid.target.size(), 0);
+    Bits boundary(pool.front().boundary.size(), 0);
+
+    for (int index : *selected) {
+        includeBits(&cells, pool[index].cells);
+        includeBits(&boundary, pool[index].boundary);
+    }
+    for (int index = 0; index < cells.size(); ++index)
+        cells[index] &= grid.target[index];
+    for (int position = selected->size() - 1; position >= 0; --position)
+        if (removable(pool, *selected, (*selected)[position], cells, boundary))
+            selected->removeAt(position);
+}
+
+QVector<Candidate> tightenedAllowanceCandidates(const catalog::Region &authored,
+                                                 const QVector<catalog::Primitive> &primitives,
+                                                 const compact::BoundaryModel &boundary,
+                                                 const compact::FillOptions &options,
+                                                 const QVector<Candidate> &pool, const QVector<int> &selected,
+                                                 const QVector<double> &allowances, double scale,
+                                                 const std::function<bool()> &cancelled) {
+    QVector<Candidate> result;
+
+    for (double allowance : allowances) {
+        const auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance);
+        const catalog::PointContainment envelope(region.permitted);
+        for (int index : selected) {
+            const auto &source = pool[index];
+            const auto *shape = primitiveFor(source.placement.shapeId, primitives);
+            if (!shape || source.spill <= kMinimumLength || stopped(cancelled))
+                continue;
+            const auto transform = containedTransform(*shape, source.placement.transform, envelope);
+            if (!transform || *transform == source.placement.transform)
+                continue;
+            auto candidate = candidateFor(*shape, *transform, region, region.permitted, boundary, scale);
+            if (!candidate)
+                continue;
+            double displacement = 0.0;
+            for (const auto &polygon : shape->contours)
+                for (const auto &point : polygon)
+                    displacement = std::max(displacement, QLineF(source.placement.transform.map(point),
+                        candidate->placement.transform.map(point)).length());
+            candidate->error = source.error + displacement;
+            candidate->span = source.span;
+            if (candidate->error <= kProfileError * scale)
+                result.push_back(std::move(*candidate));
+        }
+    }
+
+    return result;
+}
+
+double selectAllowance(const catalog::Region &authored, const catalog::Region &coverageRegion,
+                        const QVector<catalog::Primitive> &primitives,
+                        const compact::BoundaryModel &boundary, const Grid &grid,
+                        const QVector<QPointF> &witnesses, const compact::FillOptions &options,
+                        double boundaryWeight, const std::function<bool()> &cancelled,
+                        QVector<Candidate> *pool, QVector<int> *selected, QJsonObject *diagnostics) {
+    QElapsedTimer timer;
+    timer.start();
+    QVector<double> allowances;
+    QJsonArray plans;
+    QJsonObject indexing;
+    const double scale = searchScale(coverageRegion, options.observationScale);
+    double chosen = options.boundaryAllowance;
+
+    for (double allowance : {options.observationScale * 0.5, compact::kDefaultBoundaryAllowance})
+        if (allowance < options.boundaryAllowance && !allowances.contains(allowance))
+            allowances.push_back(allowance);
+    auto tightened = tightenedAllowanceCandidates(authored, primitives, boundary, options,
+        *pool, *selected, allowances, scale, cancelled);
+    const bool indexed = !tightened.isEmpty()
+        && indexCandidatesGpu(&tightened, grid, witnesses, options, &indexing);
+    if (!indexed)
+        for (auto &candidate : tightened)
+            indexCandidate(&candidate, grid, witnesses);
+    *pool += tightened;
+    diagnostics->insert(QStringLiteral("totalCandidates"), pool->size());
+    auto bestCoverage = coverageOf(*pool, *selected);
+    const auto inner = allowances.isEmpty() ? Polygons{}
+        : catalog::interiorSupport(coverageRegion.required, options.inwardAllowance);
+    auto bestInteriorMissing = catalog::subtract(inner, bestCoverage);
+    const auto visible = [&](const Polygons &coverage) {
+        return coverageRegion.leeway.isEmpty() ? coverage : catalog::subtract(coverage, coverageRegion.leeway);
+    };
+    const auto targetMetrics = boundary.measure(coverageRegion.visible);
+    auto bestMetrics = boundary.measure(visible(bestCoverage));
+    double bestDeep = catalog::area(catalog::subtract(coverageRegion.required,
+        catalog::expanded(bestCoverage, options.inwardAllowance)));
+    double bestError = catalog::area(catalog::subtract(coverageRegion.visible, visible(bestCoverage)))
+        + catalog::area(catalog::subtract(bestCoverage, coverageRegion.spillFree));
+    for (double allowance : allowances) {
+        if (stopped(cancelled))
+            break;
+        const auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance);
+        const catalog::PointContainment envelope(region.permitted);
+        QVector<Candidate> eligible;
+        QVector<int> indices;
+        QJsonObject selection;
+        for (int index = 0; index < pool->size(); ++index) {
+            const auto &candidate = (*pool)[index];
+            const auto *shape = primitiveFor(candidate.placement.shapeId, primitives);
+            if (candidate.spill <= kMinimumLength
+                || (shape && probesInside(*shape, candidate.placement.transform, envelope))) {
+                eligible.push_back(candidate);
+                indices.push_back(index);
+            }
+        }
+        if (eligible.isEmpty())
+            continue;
+        auto trial = selectIndexedCandidates(&eligible, region, grid, witnesses, options,
+            boundaryWeight, cancelled, &selection);
+        trimIndexedSelection(eligible, grid, &trial);
+        for (int &index : trial)
+            index = indices[index];
+        const auto coverage = coverageOf(*pool, trial);
+        const auto interiorMissing = catalog::subtract(inner, coverage);
+        const auto metrics = boundary.measure(visible(coverage));
+        const double deep = catalog::area(catalog::subtract(region.required,
+            catalog::expanded(coverage, options.inwardAllowance)));
+        const double error = catalog::area(catalog::subtract(region.visible, visible(coverage)))
+            + catalog::area(catalog::subtract(coverage, region.spillFree));
+        const bool allowed = !trial.isEmpty() && trial.size() <= selected->size()
+            && catalog::subtract(coverage, region.permitted).isEmpty()
+            && catalog::subtract(interiorMissing, bestInteriorMissing).isEmpty()
+            && deep <= bestDeep + kMinimumLength && error <= bestError + kMinimumLength
+            && boundary.energy(metrics) <= boundary.energy(bestMetrics) + kMinimumLength
+            && metrics.maximumCornerDistance <= bestMetrics.maximumCornerDistance + kMinimumLength
+            && metrics.maximumExcessTurn <= bestMetrics.maximumExcessTurn + kMinimumLength
+            && metrics.cornerDefects <= bestMetrics.cornerDefects
+            && std::abs(metrics.components - targetMetrics.components)
+                <= std::abs(bestMetrics.components - targetMetrics.components)
+            && std::abs(metrics.holes - targetMetrics.holes)
+                <= std::abs(bestMetrics.holes - targetMetrics.holes)
+            && (trial.size() < selected->size() || allowance < chosen
+                || boundary.energy(metrics) < boundary.energy(bestMetrics) - kMinimumLength
+                || error < bestError - kMinimumLength);
+        plans.push_back(QJsonObject{{QStringLiteral("boundaryAllowance"), allowance},
+            {QStringLiteral("count"), trial.size()}, {QStringLiteral("deepMissingArea"), deep},
+            {QStringLiteral("missingInteriorArea"), catalog::area(interiorMissing)},
+            {QStringLiteral("areaError"), error}, {QStringLiteral("boundaryEnergy"), boundary.energy(metrics)},
+            {QStringLiteral("selected"), allowed}});
+        if (allowed) {
+            *selected = std::move(trial);
+            bestCoverage = coverage;
+            bestInteriorMissing = interiorMissing;
+            bestMetrics = metrics;
+            bestDeep = deep;
+            bestError = error;
+            chosen = allowance;
+        }
+    }
+    diagnostics->insert(QStringLiteral("allowanceSelection"), QJsonObject{
+        {QStringLiteral("plans"), plans}, {QStringLiteral("candidateSearches"), 1},
+        {QStringLiteral("refinementRuns"), options.seedOnly ? 0 : 1},
+        {QStringLiteral("tightenedCandidates"), tightened.size()},
+        {QStringLiteral("selectedBoundaryAllowance"), chosen},
+        {QStringLiteral("milliseconds"), timer.nsecsElapsed() / 1e6}});
+
+    return chosen;
 }
 
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
@@ -2273,6 +2483,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             nullptr,
 #endif
             &result.diagnostics);
+        double boundaryWeight = 4.0;
         result.diagnostics.insert(QStringLiteral("initialSelectionCount"), selected.size());
         result.diagnostics.insert(QStringLiteral("initialSelectionMilliseconds"),
             selectionTimer.nsecsElapsed() / 1e6);
@@ -2305,6 +2516,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
                     nullptr,
 #endif
                     &result.diagnostics);
+                boundaryWeight = 1.0;
                 result.diagnostics.insert(QStringLiteral("repairSelectionMilliseconds"),
                     selectionTimer.nsecsElapsed() / 1e6);
             }
@@ -2314,6 +2526,9 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         result.diagnostics.insert(QStringLiteral("greedyCount"), selected.size());
         if (!pool.isEmpty() && !stopped(cancelled)) {
             reduceSelection(pool, grid, boundary, coverageRegion, options, cancelled, &selected);
+            result.diagnostics.insert(QStringLiteral("selectedBoundaryAllowance"),
+                selectAllowance(authoredRegion, coverageRegion, primitives, boundary, grid,
+                    witnesses, options, boundaryWeight, cancelled, &pool, &selected, &result.diagnostics));
         }
         recordTime(QStringLiteral("reduction"));
         const auto coverage = coverageOf(pool, selected);
@@ -2399,6 +2614,8 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
     if (options.seedOnly)
         return seed;
     auto refinement = options;
+    refinement.boundaryAllowance = seed.diagnostics.value(QStringLiteral("selectedBoundaryAllowance"))
+        .toDouble(options.boundaryAllowance);
     refinement.initialPlacements = seed.fill.placements;
     refinement.replacementCandidates = std::move(reusable);
     refinement.workProgress = [&](int count, int evaluated, int) {
@@ -2430,39 +2647,13 @@ static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVec
 catalog::FillResult fillRegion(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                const std::function<void(int, double, double)> &progress) {
-    const bool retry = !options.seedOnly && options.initialPlacements.isEmpty()
-        && std::isfinite(options.boundaryAllowance)
-        && options.boundaryAllowance > compact::kDefaultBoundaryAllowance;
-    const int attempts = retry ? 2 : 1;
-    const int attemptWork = options.evaluationBudget + std::max(1, options.evaluationBudget / 5);
-    catalog::FillResult result;
-    QJsonArray history;
-    for (int attempt = 0; attempt < attempts; ++attempt) {
-        auto current = options;
-        if (retry && attempt == 0) {
-            current.boundaryAllowance = compact::kDefaultBoundaryAllowance;
-        }
-        current.workProgress = [&](int count, int evaluated, int) {
-            if (options.workProgress) {
-                options.workProgress(count, attempt * attemptWork + evaluated, attempts * attemptWork);
-            }
-        };
-        auto candidate = fillAttempt(request, primitives, current, cancelled, progress);
-        history.push_back(QJsonObject{{QStringLiteral("boundaryAllowance"), current.boundaryAllowance},
-            {QStringLiteral("error"), candidate.fill.error}, {QStringLiteral("count"), candidate.fill.placements.size()}});
-        const bool finished = candidate.fill.error.isEmpty() || candidate.fill.cancelled || stopped(cancelled);
-        if (finished || result.fill.placements.isEmpty() || !candidate.fill.placements.isEmpty()) {
-            result = std::move(candidate);
-        }
-        if (finished) {
-            break;
-        }
-    }
+    auto result = fillAttempt(request, primitives, options, cancelled, progress);
+    const double allowance = result.diagnostics.value(QStringLiteral("boundaryAllowance"))
+        .toDouble(options.boundaryAllowance);
     result.diagnostics.insert(QStringLiteral("requestedBoundaryAllowance"), options.boundaryAllowance);
-    result.diagnostics.insert(QStringLiteral("attempts"), history);
-    if (options.workProgress && !result.fill.cancelled && options.evaluationBudget > 0) {
-        options.workProgress(result.fill.placements.size(), attempts * attemptWork, attempts * attemptWork);
-    }
+    result.diagnostics.insert(QStringLiteral("attempts"), QJsonArray{QJsonObject{
+        {QStringLiteral("boundaryAllowance"), allowance}, {QStringLiteral("error"), result.fill.error},
+        {QStringLiteral("count"), result.fill.placements.size()}}});
 
     return result;
 }

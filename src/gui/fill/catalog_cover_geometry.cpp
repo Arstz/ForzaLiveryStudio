@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
 
 namespace gui::catalog {
 namespace {
@@ -20,6 +21,9 @@ constexpr int kMaximumCompletionDepth = 12;
 constexpr int kMaximumCompletionWork = 12000;
 constexpr double kOpaqueEpsilon = 1e-10;
 constexpr double kTransformZeroThreshold = 1e-12;
+constexpr int kPreparedOperandLimit = 16;
+constexpr int kPreparedOperandMinimumPoints = 64;
+constexpr int kContainmentBands = 256;
 
 double cross(const QPointF &left, const QPointF &right) {
     return left.x() * right.y() - left.y() * right.x();
@@ -59,14 +63,58 @@ Clipper2Lib::Paths64 integerPaths(const Polygons &polygons) {
     return result;
 }
 
+struct PreparedOperand {
+    Polygons polygons;
+    Clipper2Lib::ReuseableDataContainer64 data;
+    Clipper2Lib::PathType type;
+};
+
+std::shared_ptr<const PreparedOperand> preparedOperand(const Polygons &polygons,
+                                                      Clipper2Lib::PathType type) {
+    thread_local QVector<std::shared_ptr<const PreparedOperand>> cache;
+    int points = 0;
+
+    for (int index = 0; index < cache.size(); ++index) {
+        const auto &entry = cache[index];
+        if (entry->type == type && entry->polygons.constData() == polygons.constData()
+            && entry->polygons.size() == polygons.size()) {
+            auto result = cache.takeAt(index);
+            cache.push_front(result);
+
+            return result;
+        }
+    }
+    for (const auto &polygon : polygons)
+        points += polygon.size();
+    if (points < kPreparedOperandMinimumPoints)
+        return {};
+    auto result = std::make_shared<PreparedOperand>();
+    result->polygons = polygons;
+    result->type = type;
+    result->data.AddPaths(integerPaths(polygons), type, false);
+    if (cache.size() >= kPreparedOperandLimit)
+        cache.pop_back();
+    cache.push_front(result);
+
+    return result;
+}
+
 Polygons booleanOperation(const Polygons &subject, const Polygons &clip,
                           Clipper2Lib::ClipType operation) {
+    const auto preparedSubject = preparedOperand(subject, Clipper2Lib::PathType::Subject);
+    const auto preparedClip = preparedOperand(clip, Clipper2Lib::PathType::Clip);
     Clipper2Lib::Clipper64 engine;
     Clipper2Lib::Paths64 output;
     Polygons result;
     engine.PreserveCollinear(false);
-    engine.AddSubject(integerPaths(subject));
-    engine.AddClip(integerPaths(clip));
+    if (preparedSubject)
+        engine.AddReuseableData(preparedSubject->data);
+    else
+        engine.AddSubject(integerPaths(subject));
+    if (preparedClip)
+        engine.AddReuseableData(preparedClip->data);
+    else
+        engine.AddClip(integerPaths(clip));
     if (!engine.Execute(operation, Clipper2Lib::FillRule::NonZero, output)) {
         throw std::runtime_error("Catalog cover polygon operation failed");
     }
@@ -333,6 +381,55 @@ bool completeTriangle(const QPolygonF &target, const PenPrimitive &triangle,
 
 } // namespace
 
+PointContainment::PointContainment(const Polygons &polygons)
+    : path_(painterPath(polygons)), bounds_(path_.boundingRect()), bands_(kContainmentBands),
+      step_(std::max(bounds_.height() / kContainmentBands, kVerificationClearance)) {
+    for (const auto &polygon : polygons) {
+        for (int index = 0; index < polygon.size(); ++index) {
+            const Edge edge{polygon[index], polygon[(index + 1) % polygon.size()],
+                QLineF(polygon[index], polygon[(index + 1) % polygon.size()]).length()};
+            const int first = std::clamp(static_cast<int>(std::floor(
+                (std::min(edge.start.y(), edge.end.y()) - bounds_.top() - kVerificationClearance)
+                    / step_)), 0, kContainmentBands - 1);
+            const int last = std::clamp(static_cast<int>(std::floor(
+                (std::max(edge.start.y(), edge.end.y()) - bounds_.top() + kVerificationClearance)
+                    / step_)), 0, kContainmentBands - 1);
+            const int position = edges_.size();
+            edges_.push_back(edge);
+            for (int band = first; band <= last; ++band)
+                bands_[band].push_back(position);
+        }
+    }
+}
+
+bool PointContainment::contains(const QPointF &point) const {
+    if (!bounds_.contains(point))
+        return false;
+    const int band = std::clamp(static_cast<int>(std::floor(
+        (point.y() - bounds_.top()) / step_)), 0, kContainmentBands - 1);
+    int winding = 0;
+
+    for (int index : bands_[band]) {
+        const auto &edge = edges_[index];
+        const auto delta = edge.end - edge.start;
+        const auto offset = point - edge.start;
+        const double side = cross(delta, offset);
+        if (std::abs(side) <= kVerificationClearance * edge.length
+            && point.x() >= std::min(edge.start.x(), edge.end.x()) - kVerificationClearance
+            && point.x() <= std::max(edge.start.x(), edge.end.x()) + kVerificationClearance
+            && point.y() >= std::min(edge.start.y(), edge.end.y()) - kVerificationClearance
+            && point.y() <= std::max(edge.start.y(), edge.end.y()) + kVerificationClearance) {
+            return path_.contains(point);
+        }
+        if (edge.start.y() <= point.y() && edge.end.y() > point.y() && side > 0.0)
+            ++winding;
+        else if (edge.end.y() <= point.y() && edge.start.y() > point.y() && side < 0.0)
+            --winding;
+    }
+
+    return winding != 0;
+}
+
 double signedArea(const QPolygonF &polygon) {
     double result = 0.0;
     if (polygon.isEmpty()) {
@@ -440,6 +537,24 @@ Polygons expanded(const Polygons &polygons, double radius) {
     return unite(parts);
 }
 
+Polygons interiorSupport(const Polygons &polygons, double allowance) {
+    Polygons boundary;
+    const QPointF delta(allowance, allowance);
+
+    for (const auto &polygon : polygons) {
+        for (int index = 0; index < polygon.size(); ++index) {
+            QPolygonF corners;
+            for (const auto &point : {polygon[index], polygon[(index + 1) % polygon.size()]}) {
+                corners += QPolygonF({point - delta, point + QPointF(delta.x(), -delta.y()),
+                    point + delta, point + QPointF(-delta.x(), delta.y())});
+            }
+            boundary.push_back(convexHull(corners));
+        }
+    }
+
+    return subtract(polygons, unite(boundary));
+}
+
 QTransform emittedTransform(const QTransform &transform) {
     const fls::Matrix3 matrix = fls::affine(transform.m11(), transform.m21(), transform.dx(),
                                            transform.m12(), transform.m22(), transform.dy());
@@ -502,6 +617,7 @@ Region buildRegion(const PenFillRequest &request, const std::function<bool()> &c
     result.requiredPath = painterPath(result.required);
     result.permittedPath = painterPath(result.permitted);
     result.spillFreePath = result.requiredPath;
+    result.spillFreeContainment = std::make_shared<PointContainment>(result.spillFree);
     result.bounds = result.requiredPath.boundingRect();
     result.area = area(result.required);
     if (result.area <= 0.0 || !std::isfinite(result.area)) {
@@ -537,6 +653,7 @@ Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
     result.requiredPath = painterPath(result.required);
     result.permittedPath = painterPath(result.permitted);
     result.spillFreePath = painterPath(result.spillFree);
+    result.spillFreeContainment = std::make_shared<PointContainment>(result.spillFree);
     result.bounds = result.requiredPath.boundingRect();
     result.area = area(result.required);
 

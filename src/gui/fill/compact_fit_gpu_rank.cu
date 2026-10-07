@@ -58,10 +58,22 @@ private:
     size_t capacity_ = 0;
 };
 
+struct RowEdge {
+    int first = 0;
+    int second = 0;
+};
+
 struct SetView {
     const Point *points = nullptr;
-    const Loop *loops = nullptr;
-    int loopCount = 0;
+    const RowEdge *edges = nullptr;
+    const int *offsets = nullptr;
+};
+
+struct IndexedSet {
+    DeviceBuffer<Point> points;
+    DeviceBuffer<RowEdge> edges;
+    DeviceBuffer<int> offsets;
+    SetView view;
 };
 
 struct Tile {
@@ -101,6 +113,23 @@ __device__ bool contains(float x, float y, const Point *points,
     return winding != 0;
 }
 
+__device__ bool indexedContains(float x, float y, int row, SetView geometry) {
+    int winding = 0;
+    for (int index = geometry.offsets[row]; index < geometry.offsets[row + 1]; ++index) {
+        const RowEdge edge = geometry.edges[index];
+        const Point first = geometry.points[edge.first];
+        const Point second = geometry.points[edge.second];
+        const float cross = (second.x - first.x) * (y - first.y)
+            - (second.y - first.y) * (x - first.x);
+        if (first.y <= y && second.y > y && cross > 0.0f)
+            ++winding;
+        else if (first.y > y && second.y <= y && cross < 0.0f)
+            --winding;
+    }
+
+    return winding != 0;
+}
+
 __global__ void maskKernel(SetView preferred, SetView target, SetView inner,
                            SetView outer, SetView spillFree,
                            float originX, float originY,
@@ -112,17 +141,13 @@ __global__ void maskKernel(SetView preferred, SetView target, SetView inner,
     }
     const float x = originX + (index % columns + 0.5f) * cellSize;
     const float y = originY + (index / columns + 0.5f) * cellSize;
+    const int row = index / columns;
     unsigned char mask = 0;
-    mask |= contains(x, y, preferred.points, preferred.loops, 0,
-        preferred.loopCount) ? 1 : 0;
-    mask |= contains(x, y, target.points, target.loops, 0,
-        target.loopCount) ? 2 : 0;
-    mask |= contains(x, y, inner.points, inner.loops, 0,
-        inner.loopCount) ? 4 : 0;
-    mask |= contains(x, y, outer.points, outer.loops, 0,
-        outer.loopCount) ? 8 : 0;
-    mask |= contains(x, y, spillFree.points, spillFree.loops, 0,
-        spillFree.loopCount) ? 16 : 0;
+    mask |= indexedContains(x, y, row, preferred) ? 1 : 0;
+    mask |= indexedContains(x, y, row, target) ? 2 : 0;
+    mask |= indexedContains(x, y, row, inner) ? 4 : 0;
+    mask |= indexedContains(x, y, row, outer) ? 8 : 0;
+    mask |= indexedContains(x, y, row, spillFree) ? 16 : 0;
     masks[index] = mask;
 }
 
@@ -151,6 +176,18 @@ __global__ void boundaryFieldKernel(const unsigned char *masks, int columns,
     }
     field[index] = directions == 0 ? static_cast<unsigned short>(0xff00)
         : directions;
+}
+
+__global__ void verifyMaskIndexKernel(const Point *points, const Loop *loops, int loopCount,
+                                      const unsigned char *masks, float originX, float originY,
+                                      float cellSize, int columns, int cells, unsigned int *mismatches) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= cells)
+        return;
+    const float x = originX + (index % columns + 0.5f) * cellSize;
+    const float y = originY + (index / columns + 0.5f) * cellSize;
+    if (contains(x, y, points, loops, 0, loopCount) != ((masks[index] & 1) != 0))
+        atomicAdd(mismatches, 1U);
 }
 
 __global__ void propagateBoundaryFieldKernel(const unsigned short *source,
@@ -543,11 +580,11 @@ public:
         if (check(cudaGetDevice(&device)) && check(cudaGetDeviceProperties(&properties, device))) {
             stats_.adapter = properties.name;
         }
-        if (!uploadSet(preferred, &preferredPoints_, &preferredLoops_, &preferred_)
-            || !uploadSet(target, &targetPoints_, &targetLoops_, &target_)
-            || !uploadSet(inner, &innerPoints_, &innerLoops_, &inner_)
-            || !uploadSet(outer, &outerPoints_, &outerLoops_, &outer_)
-            || !uploadSet(spillFree, &spillFreePoints_, &spillFreeLoops_, &spillFree_)
+        if (!uploadSet(preferred, &preferred_)
+            || !uploadSet(target, &target_)
+            || !uploadSet(inner, &inner_)
+            || !uploadSet(outer, &outer_)
+            || !uploadSet(spillFree, &spillFree_)
             || !check(masks_.reserve(cells_))
             || !check(boundaryFieldA_.reserve(cells_))
             || !check(boundaryFieldB_.reserve(cells_))
@@ -557,7 +594,7 @@ public:
             return;
         }
         maskKernel<<<(cells_ + kThreads - 1) / kThreads, kThreads, 0, stream_>>>(
-            preferred_, target_, inner_, outer_, spillFree_,
+            preferred_.view, target_.view, inner_.view, outer_.view, spillFree_.view,
             originX_, originY_, cellSize_,
             columns_, cells_, masks_.data());
         boundaryFieldKernel<<<(cells_ + kThreads - 1) / kThreads,
@@ -721,6 +758,7 @@ public:
         }
         const std::vector<Tile> candidateTiles = makeTiles(candidates);
         const size_t countSize = candidates.pieces.size() * 6;
+        primitiveUploaded_ = false;
         if (!upload(candidates.points, &candidatePoints_)
             || !upload(candidates.loops, &candidateLoops_)
             || !upload(candidates.pieces, &candidates_)
@@ -766,8 +804,7 @@ public:
         const std::vector<TransformTile> candidateTiles = makeTransformTiles(
             primitive, transforms);
         const size_t countSize = transforms.size() * 6;
-        if (!upload(primitive.points, &candidatePoints_)
-            || !upload(primitive.loops, &candidateLoops_)
+        if (!uploadPrimitive(primitive)
             || !upload(transforms, &transforms_)
             || !upload(candidateTiles, &transformTiles_)
             || !check(counts_.reserve(countSize))
@@ -803,7 +840,52 @@ public:
         return stats_;
     }
 
+    bool verifyMaskIndex(const Geometry &geometry) {
+        DeviceBuffer<Loop> loops;
+        DeviceBuffer<unsigned int> mismatches;
+        unsigned int count = 0;
+
+        if (!stats_.error.empty() || !upload(geometry.loops, &loops)
+            || !check(mismatches.reserve(1))
+            || !check(cudaMemsetAsync(mismatches.data(), 0, sizeof(count), stream_)))
+            return false;
+        verifyMaskIndexKernel<<<(cells_ + kThreads - 1) / kThreads, kThreads, 0, stream_>>>(
+            preferred_.points.data(), loops.data(), static_cast<int>(geometry.loops.size()), masks_.data(),
+            originX_, originY_, cellSize_, columns_, cells_, mismatches.data());
+        if (!check(cudaGetLastError()) || !check(cudaMemcpyAsync(&count, mismatches.data(),
+                sizeof(count), cudaMemcpyDeviceToHost, stream_)) || !check(cudaStreamSynchronize(stream_)))
+            return false;
+        if (count != 0)
+            stats_.error = "Indexed raster mask differs from complete edge traversal";
+
+        return count == 0;
+    }
+
 private:
+    bool uploadPrimitive(const Geometry &primitive) {
+        const bool matches = primitiveUploaded_
+            && primitive.points.size() == primitive_.points.size()
+            && primitive.loops.size() == primitive_.loops.size()
+            && std::equal(primitive.points.begin(), primitive.points.end(), primitive_.points.begin(),
+                [](const Point &first, const Point &second) {
+                    return first.x == second.x && first.y == second.y;
+                })
+            && std::equal(primitive.loops.begin(), primitive.loops.end(), primitive_.loops.begin(),
+                [](const Loop &first, const Loop &second) {
+                    return first.pointOffset == second.pointOffset && first.pointCount == second.pointCount;
+                });
+
+        if (matches)
+            return true;
+        primitiveUploaded_ = false;
+        if (!upload(primitive.points, &candidatePoints_) || !upload(primitive.loops, &candidateLoops_))
+            return false;
+        primitive_ = primitive;
+        primitiveUploaded_ = true;
+
+        return true;
+    }
+
     bool rasterCoverage(const Geometry &geometry, unsigned int *destination) {
         const std::vector<Tile> coverageTiles = makeTiles(geometry);
         if (!upload(geometry.points, &piecePoints_)
@@ -869,12 +951,42 @@ private:
                 source.size() * sizeof(Value), cudaMemcpyHostToDevice, stream_)));
     }
 
-    bool uploadSet(const Geometry &geometry, DeviceBuffer<Point> *points,
-                   DeviceBuffer<Loop> *loops, SetView *view) {
-        if (!upload(geometry.points, points) || !upload(geometry.loops, loops)) {
+    bool uploadSet(const Geometry &geometry, IndexedSet *destination) {
+        std::vector<std::vector<RowEdge>> rows(rows_);
+        std::vector<RowEdge> edges;
+        std::vector<int> offsets;
+
+        for (const Loop &loop : geometry.loops) {
+            for (int index = 0; index < loop.pointCount; ++index) {
+                const RowEdge edge{loop.pointOffset + index,
+                    loop.pointOffset + (index + 1) % loop.pointCount};
+                const Point first = geometry.points[edge.first];
+                const Point second = geometry.points[edge.second];
+                if (first.y == second.y)
+                    continue;
+                const double rounding = std::max({std::abs(double(originY_)), std::abs(double(first.y)),
+                    std::abs(double(second.y))}) * std::numeric_limits<float>::epsilon() * 4.0;
+                const int lower = static_cast<int>(std::clamp(std::floor(
+                    (double(std::min(first.y, second.y)) - originY_ - rounding) / cellSize_ - 0.5) - 2.0,
+                    0.0, double(rows_ - 1)));
+                const int upper = static_cast<int>(std::clamp(std::ceil(
+                    (double(std::max(first.y, second.y)) - originY_ + rounding) / cellSize_ - 0.5) + 2.0,
+                    0.0, double(rows_ - 1)));
+                for (int row = lower; row <= upper; ++row)
+                    rows[row].push_back(edge);
+            }
+        }
+        offsets.reserve(rows_ + 1);
+        for (const auto &row : rows) {
+            offsets.push_back(static_cast<int>(edges.size()));
+            edges.insert(edges.end(), row.begin(), row.end());
+        }
+        offsets.push_back(static_cast<int>(edges.size()));
+        if (!upload(geometry.points, &destination->points)
+            || !upload(edges, &destination->edges) || !upload(offsets, &destination->offsets)) {
             return false;
         }
-        *view = {points->data(), loops->data(), static_cast<int>(geometry.loops.size())};
+        destination->view = {destination->points.data(), destination->edges.data(), destination->offsets.data()};
 
         return true;
     }
@@ -974,18 +1086,13 @@ private:
             std::chrono::steady_clock::now() - start).count();
     }
 
-    DeviceBuffer<Point> preferredPoints_;
-    DeviceBuffer<Point> targetPoints_;
-    DeviceBuffer<Point> innerPoints_;
-    DeviceBuffer<Point> outerPoints_;
-    DeviceBuffer<Point> spillFreePoints_;
+    IndexedSet preferred_;
+    IndexedSet target_;
+    IndexedSet inner_;
+    IndexedSet outer_;
+    IndexedSet spillFree_;
     DeviceBuffer<Point> piecePoints_;
     DeviceBuffer<Point> candidatePoints_;
-    DeviceBuffer<Loop> preferredLoops_;
-    DeviceBuffer<Loop> targetLoops_;
-    DeviceBuffer<Loop> innerLoops_;
-    DeviceBuffer<Loop> outerLoops_;
-    DeviceBuffer<Loop> spillFreeLoops_;
     DeviceBuffer<Loop> pieceLoops_;
     DeviceBuffer<Loop> candidateLoops_;
     DeviceBuffer<Piece> pieces_;
@@ -1001,15 +1108,12 @@ private:
     DeviceBuffer<unsigned int> persistentCoverage_;
     DeviceBuffer<unsigned int> ownerXor_;
     DeviceBuffer<unsigned long long> counts_;
-    SetView preferred_;
-    SetView target_;
-    SetView inner_;
-    SetView outer_;
-    SetView spillFree_;
     unsigned short *boundaryField_ = nullptr;
     RankStats stats_;
+    Geometry primitive_;
     std::mutex mutex_;
     cudaStream_t stream_ = nullptr;
+    bool primitiveUploaded_ = false;
     float originX_ = 0.0f;
     float originY_ = 0.0f;
     float cellSize_ = 1.0f;
@@ -1940,6 +2044,15 @@ std::unique_ptr<RasterRanker> createRasterRanker(
     const Geometry &spillFree, double cellSize) {
     return std::make_unique<CudaRasterRanker>(
         preferred, target, inner, outer, spillFree, cellSize);
+}
+
+bool verifyRasterMaskIndex(const Geometry &geometry, double cellSize, std::string *error) {
+    CudaRasterRanker ranker(geometry, geometry, geometry, geometry, geometry, cellSize);
+    const bool valid = ranker.verifyMaskIndex(geometry);
+    if (error)
+        *error = ranker.stats().error;
+
+    return valid;
 }
 
 } // namespace gui::compact::gpu
