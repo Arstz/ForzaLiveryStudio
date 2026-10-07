@@ -279,7 +279,13 @@ void compareProject(const QString &path, const gui::PenFillRequest &request,
                     others += placements[other];
                 }
             }
-            exclusive.push_back(gui::catalog::area(gui::catalog::subtract(placements[index], gui::catalog::unite(others))));
+            const auto privateSupport = gui::catalog::subtract(placements[index], gui::catalog::unite(others));
+            exclusive.push_back(gui::catalog::area(privateSupport));
+            auto record = records[index].toObject();
+            record.insert("footprintArea", gui::catalog::area(placements[index]));
+            record.insert("privateArea", gui::catalog::area(privateSupport));
+            record.insert("privateInteriorArea", gui::catalog::area(gui::catalog::intersect(privateSupport, inner)));
+            records[index] = record;
         }
         std::sort(exclusive.begin(), exclusive.end());
         QJsonArray contribution;
@@ -1764,7 +1770,7 @@ int main(int argc, char **argv) {
                 QStringLiteral("Cubic contour repair left missing interior support or exceeded the envelope"));
             require(result.diagnostics.value("targetBoundary").toObject().value("protectedCorners").toInt()
                     == (cornered ? 24 : 18), QStringLiteral("Replay changed the protected corners"));
-            require(result.fill.placements.size() <= (cornered ? 176 : 184)
+            require(result.fill.placements.size() <= (cornered ? 155 : 174)
                 && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
                 QStringLiteral("Cubic contour repair exceeded its count or work allowance"));
             require(result.diagnostics.value("areaError").toDouble()

@@ -87,7 +87,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   cannot create sub-footprint fragments. Remaining small fragments compete in
   two-placement transactions against fitted catalog replacements. Each accepted
   transaction reduces count and passes an exact aggregate quality check. Group
-  fits use joint unique support instead of overlapping placement bounds. Large
+  fits use joint unique support instead of overlapping placement bounds.
+  Final compaction examines at most 16 placements with less than 25 square units
+  of unique support at the default scale. Deletions can transfer required interior
+  support to a nearby placement through centered or anchored affine growth.
+  Eight bisection steps tighten each growth proposal. Exact checks preserve
+  interior coverage, the outer envelope, area limits, topology, and the fixed
+  corner and continuity baseline. This pass uses at most 1,536 additional trials
+  within the existing total evaluation budget. Small placements remain when a
+  legal reduction cannot preserve their required support. Large
   profile-fit batches use a coarse CUDA geometry shortlist before exact validation;
   the complete candidate pool receives a device-ranked shortlist before exact
   witness selection. One exact CPU checkpoint accepts an
@@ -337,6 +345,12 @@ exports grouped `C_group` folders and `C_livery` folders.
   deviation bound. Raster roughness controls a tolerance band capped by local
   stroke width. Short stepped cutout sections also retain corners found at the
   ends of long straight edges; small stair steps remain subject to simplification.
+  Smooth cutout runs between hard corners can merge into a single cubic with
+  independent endpoint handles. Additional merging permits up to four source
+  pixels, capped at 20% of the loop's mean width. The existing raster tolerance
+  remains the minimum. Curved hard-to-hard spans
+  retain one soft midpoint for editing. Failed simplification retries the stricter
+  fit at the same tolerance before reducing the tolerance or using raw pixels.
   Whole-contour validity and raster comparisons gate fitted loops. A bounded
   outward mask adjustment can improve selected-pixel coverage while retaining
   topology and node-count limits. Small cutouts remain available.

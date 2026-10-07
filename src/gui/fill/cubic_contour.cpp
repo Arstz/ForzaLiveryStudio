@@ -17,6 +17,8 @@ constexpr double kNotchAxialFraction = 0.2;
 constexpr double kNotchSimplificationTolerance = 2.5;
 constexpr int kNotchMaximumPoints = 10;
 constexpr double kSteppedCornerCosine = 0.5;
+constexpr double kCutoutMergeTolerance = 4.0;
+constexpr double kCutoutMergeWidthFraction = 0.2;
 constexpr double kMaximumMaskMismatchFraction = 0.12;
 constexpr int kMaskBoundaryBand = 5;
 constexpr int kMaximumMaskFitAttempts = 5;
@@ -89,10 +91,11 @@ quint64 key(QPoint p) {
 struct Reference {
     QPolygonF p;
     QVector<double> arc;
+    bool relaxCornerTangents = false;
     double perimeter = 0;
     double outlierFraction = 0;
-    explicit Reference(QPolygonF polygon, double trim = 0)
-        : p(std::move(polygon)), outlierFraction(trim) {
+    explicit Reference(QPolygonF polygon, double trim = 0, bool relax = false)
+        : p(std::move(polygon)), relaxCornerTangents(relax), outlierFraction(trim) {
         while (p.size() > 1 && p.front() == p.back())
             p.removeLast();
         for (int i = 0; i < p.size(); ++i) {
@@ -181,6 +184,40 @@ QVector<QPointF> samples(const Reference &ref, double a, double b) {
     return points;
 }
 
+bool fitCornerControls(const QVector<QPointF> &data, const QVector<double> &parameters,
+                       FillBoundarySegment &curve, double arc) {
+    std::array<std::array<double, 2>, 2> equations{};
+    std::array<QPointF, 2> controls;
+    const QPointF outgoing = curve.control - curve.start;
+    const QPointF incoming = curve.control2 - curve.end;
+
+    for (int index = 1; index + 1 < data.size(); ++index) {
+        const double t = parameters[index], v = 1.0 - t;
+        const double first = 3.0 * v * v * t, second = 3.0 * v * t * t;
+        const QPointF residual = data[index] - curve.start * (v * v * v + first)
+            - curve.end * (t * t * t + second);
+        equations[0][0] += first * first;
+        equations[0][1] += first * second;
+        equations[1][1] += second * second;
+        controls[0] += residual * first;
+        controls[1] += residual * second;
+    }
+    const double determinant = equations[0][0] * equations[1][1]
+        - equations[0][1] * equations[0][1];
+    if (determinant <= 1e-12)
+        return false;
+    const QPointF first = (controls[0] * equations[1][1] - controls[1] * equations[0][1]) / determinant;
+    const QPointF second = (controls[1] * equations[0][0] - controls[0] * equations[0][1]) / determinant;
+    if (length(first) > arc * 0.8 || length(second) > arc * 0.8
+        || QPointF::dotProduct(first, outgoing) < 0.0
+        || QPointF::dotProduct(second, incoming) < 0.0)
+        return false;
+    curve.control = curve.start + first;
+    curve.control2 = curve.end + second;
+
+    return true;
+}
+
 Span fitSpan(const Reference &ref, Knot a, Knot b) {
     Span result{a, b};
     const auto data = samples(ref, a.s, b.s);
@@ -216,6 +253,8 @@ Span fitSpan(const Reference &ref, Knot a, Knot b) {
         beta = std::clamp(beta, arc * 0.01, arc * 0.8);
         curve.control = p0 + ta * alpha;
         curve.control2 = p3 - tb * beta;
+        if (ref.relaxCornerTangents && a.corner && b.corner)
+            fitCornerControls(data, u, curve, arc);
         for (int i = 1; i + 1 < data.size(); ++i) {
             const QPointF d = curve.derivative(u[i]), r = curve.point(u[i]) - data[i];
             const double denominator =
@@ -286,6 +325,58 @@ void fitRecursive(const Reference &ref, Knot a, Knot b, double tolerance, double
     Knot middle{span.split, false, ref.tangent(span.split, tangentScale)};
     fitRecursive(ref, a, middle, tolerance, tangentScale, out, depth + 1);
     fitRecursive(ref, middle, b, tolerance, tangentScale, out, depth + 1);
+}
+
+void mergeSmoothSpans(QVector<Span> &spans, const Reference &ref, double tolerance,
+                      double cornerTolerance) {
+    if (!ref.relaxCornerTangents) {
+        for (int pass = 0; pass < 3; ++pass) {
+            bool changed = false;
+            for (int index = 0; index + 1 < spans.size() && spans.size() > 3;) {
+                if (!spans[index].b.corner) {
+                    const auto merged = fitSpan(ref, spans[index].a, spans[index + 1].b);
+                    if (merged.error <= tolerance) {
+                        spans[index] = merged;
+                        spans.removeAt(index + 1);
+                        changed = true;
+                        continue;
+                    }
+                }
+                ++index;
+            }
+            if (!changed)
+                break;
+        }
+        return;
+    }
+    const auto corner = std::find_if(spans.begin(), spans.end(), [](const auto &span) {
+        return span.a.corner;
+    });
+    const int firstCorner = int(corner - spans.begin());
+    const int minimum = corner == spans.end() ? 3 : 2;
+
+    if (firstCorner > 0 && firstCorner < spans.size()) {
+        std::rotate(spans.begin(), corner, spans.end());
+        for (int index = spans.size() - firstCorner; index < spans.size(); ++index) {
+            spans[index].a.s += ref.perimeter;
+            spans[index].b.s += ref.perimeter;
+        }
+    }
+    for (int index = 0; index + 1 < spans.size() && spans.size() > minimum; ++index) {
+        int last = index;
+        while (last + 1 < spans.size() && !spans[last].b.corner)
+            ++last;
+        last = std::min(last, index + int(spans.size()) - minimum);
+        for (; last > index; --last) {
+            const auto merged = fitSpan(ref, spans[index].a, spans[last].b);
+            const double limit = merged.a.corner && merged.b.corner ? cornerTolerance : tolerance;
+            if (merged.error <= limit) {
+                spans[index] = merged;
+                spans.remove(index + 1, last - index);
+                break;
+            }
+        }
+    }
 }
 
 double energy(const Span &span, const Reference &ref) {
@@ -695,14 +786,16 @@ QVector<QPolygonF> pixelBoundaryLoops(const std::vector<std::uint8_t> &mask, QSi
     return loops;
 }
 
-QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptions &options) {
+static QVector<PenPoint> fitContourSpans(const QPolygonF &boundary,
+                                        const CubicFitOptions &options, bool simplify) {
     if (boundary.size() < 3 || !std::isfinite(options.tolerance) || options.tolerance <= 0 ||
         !std::isfinite(options.cornerScale) || options.cornerScale <= 0)
         return {};
     for (auto p : boundary)
         if (!std::isfinite(p.x()) || !std::isfinite(p.y()))
             return {};
-    const Reference ref(boundary, options.outlierFraction);
+    const Reference ref(boundary, options.outlierFraction,
+        options.preserveRasterNotches && options.adaptToRasterNoise && simplify);
     if (ref.perimeter <= 1e-9)
         return {};
     const double scale = std::min(options.cornerScale, ref.perimeter / 12);
@@ -721,24 +814,11 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
             end.s += ref.perimeter;
         fitRecursive(ref, knots[i], end, options.tolerance, tangentScale, spans);
     }
-    // Merge adjacent smooth spans whenever one cubic satisfies the same error bound.
-    for (int pass = 0; pass < 3; ++pass) {
-        bool changed = false;
-        for (int i = 0; i + 1 < spans.size() && spans.size() > 3;) {
-            if (!spans[i].b.corner) {
-                const auto merged = fitSpan(ref, spans[i].a, spans[i + 1].b);
-                if (merged.error <= options.tolerance) {
-                    spans[i] = merged;
-                    spans.removeAt(i + 1);
-                    changed = true;
-                    continue;
-                }
-            }
-            ++i;
-        }
-        if (!changed)
-            break;
-    }
+    const double cornerTolerance = ref.relaxCornerTangents
+        ? std::max(options.tolerance, std::min(kCutoutMergeTolerance,
+            2.0 * std::abs(area(boundary)) / ref.perimeter * kCutoutMergeWidthFraction))
+        : options.tolerance;
+    mergeSmoothSpans(spans, ref, options.tolerance, cornerTolerance);
     // Jointly relax shared tangents and slide smooth endpoints along the reference.
     // Each accepted update lowers distance energy and keeps the maximum-error gate.
     for (int pass = 0; pass < std::clamp(options.refinementPasses, 0, 8); ++pass) {
@@ -781,6 +861,8 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
         if (!changed)
             break;
     }
+    if (ref.relaxCornerTangents)
+        mergeSmoothSpans(spans, ref, options.tolerance, cornerTolerance);
     for (Span &span : spans) {
         if (!span.a.corner || !span.b.corner)
             continue;
@@ -871,7 +953,13 @@ QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptio
         }
     }
     splitCurvedHardSpans(result);
+
     return result;
+}
+
+QVector<PenPoint> fitCubicContour(const QPolygonF &boundary, const CubicFitOptions &options) {
+
+    return fitContourSpans(boundary, options, true);
 }
 
 QVector<PenLoop> cubicPathLoops(const QPainterPath &path, QString *error) {
@@ -975,16 +1063,21 @@ PenLoop rawMaskLoop(const QPolygonF &polygon, PenLoopKind kind) {
 }
 
 PenLoop fitMaskLoop(const QPolygonF &polygon, CubicFitOptions fit, double cornerScale,
-                   int firstAttempt, PenLoopKind kind) {
+                   int firstAttempt, PenLoopKind kind, bool simplify = true) {
     for (int attempt = firstAttempt; attempt < kMaximumMaskFitAttempts; ++attempt) {
         auto options = fit;
         options.tolerance *= std::pow(0.5, attempt);
         options.cornerScale = std::max(cornerScale, 4 * options.tolerance);
         if (options.tolerance < 2.0)
             options.outlierFraction = 0;
-        PenLoop loop{fitCubicContour(polygon, options), kind};
+        PenLoop loop{fitContourSpans(polygon, options, simplify && attempt == 0), kind};
         if (buildPenContour(loop.points).valid())
             return loop;
+        if (simplify && attempt == 0) {
+            loop.points = fitContourSpans(polygon, options, false);
+            if (buildPenContour(loop.points).valid())
+                return loop;
+        }
         for (double scale : kHandleRepairScales) {
             PenLoop contracted = loop;
             for (PenPoint &point : contracted.points) {
@@ -1108,6 +1201,18 @@ QVector<PenLoop> fitMaskContours(const std::vector<std::uint8_t> &mask, QSize si
         }
         const auto contour = buildPenContour(loops);
         if (contour.valid() && matchesRasterMask(contour, cleaned, size, bounds)) {
+            if (error)
+                error->clear();
+            return loops;
+        }
+        for (int i = 1; i < loops.size(); ++i) {
+            auto fit = rasterOptions[i];
+            fit.preserveRasterNotches = fit.adaptToRasterNoise;
+            loops[i] = fitMaskLoop(polygons[i], fit, options.cornerScale, retry,
+                PenLoopKind::Cutout, false);
+        }
+        const auto conservative = buildPenContour(loops);
+        if (conservative.valid() && matchesRasterMask(conservative, cleaned, size, bounds)) {
             if (error)
                 error->clear();
             return loops;

@@ -487,6 +487,7 @@ void realLeftHandMasks() {
                 ++nodes;
                 soft += point.kind == gui::PenPointKind::Soft;
             }
+        std::cout << "left-hand nodes=" << nodes << " soft=" << soft << '\n';
         require(nodes <= selection.value("max_nodes").toInt()
                     && soft >= selection.value("min_soft").toInt(),
                 "A left-hand mask fell back to a pixel staircase");
@@ -599,6 +600,12 @@ void steppedCutoutMask() {
     options.outwardFitPixels = 2;
     const auto loops = gui::fitMaskContours(mask, size, bounds, options);
     require(loops.size() == 7 && gui::buildPenContour(loops).valid(), "Stepped contour changed topology");
+    for (int index : {1, 3}) {
+        require(loops[index].points.size() == 4, "A smooth cutout retained redundant anchors");
+        const int corners = std::count_if(loops[index].points.begin(), loops[index].points.end(),
+            [](const auto &point) { return point.kind == gui::PenPointKind::Hard; });
+        require(corners == 2, "Smooth cutout simplification changed its hard corners");
+    }
     const auto &cutout = loops[4];
     for (const QPointF corner : {QPointF(1432, 275), QPointF(1439, 276)}) {
         double distance = std::numeric_limits<double>::max();
@@ -611,7 +618,7 @@ void steppedCutoutMask() {
     int nodes = 0;
     for (const auto &loop : loops)
         nodes += loop.points.size();
-    require(nodes <= 126, "Stepped corner preservation fragmented the contour");
+    require(nodes <= 107, "Stepped corner preservation fragmented the contour");
     std::cout << "Stepped cutout nodes=" << cutout.points.size() << '\n';
 }
 } // namespace
