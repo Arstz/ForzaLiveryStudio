@@ -1,7 +1,7 @@
 #pragma once
 
 #include "bucket_fill.h"
-#include "catalog_cover.h"
+#include "compact_fit_catalog.h"
 #include "svg_vector_objects.h"
 #include "car_unwrap_overlay.h"
 #include "differential_cover.h"

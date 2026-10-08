@@ -245,9 +245,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/compact_fit_quality.h
     src/gui/fill/compact_fit_gpu_rank.h
     src/gui/fill/compact_fit.h
-    src/gui/fill/catalog_cover.h
-    src/gui/fill/catalog_cover_geometry.cpp
-    src/gui/fill/catalog_cover_internal.h
+    src/gui/fill/compact_fit_catalog.h
+    src/gui/fill/compact_fit_catalog.cpp
+    src/gui/fill/compact_fit_geometry.cpp
+    src/gui/fill/compact_fit_catalog_internal.h
     src/gui/fill/differential_cover.h
     src/gui/fill/differential_cover_candidates.cpp
     src/gui/fill/differential_cover_geometry.cpp
@@ -387,58 +388,60 @@ if(FLS_BUILD_TESTS)
                 "$<TARGET_FILE_DIR:fls_profile_compute_tests>")
     endif()
     add_test(NAME profile_compute COMMAND fls_profile_compute_tests)
-    add_executable(fls_catalog_cover_tests
-        tools/catalog_cover_test.cpp
+    add_executable(fls_compact_fit_tests
+        tools/compact_fit_test.cpp
         src/gui/fill/compact_fit.cpp
         src/gui/fill/compact_fit_reduction.cpp
         src/gui/fill/profile_fit.cpp
         src/gui/fill/compact_fit_quality.cpp
         src/gui/fill/compact_fit_gpu_rank.h
-        src/gui/fill/catalog_cover.cpp
-        src/gui/fill/catalog_cover_compact.cpp
-        src/gui/fill/catalog_cover_geometry.cpp
+        src/gui/fill/legacy_catalog_cover.cpp
+        src/gui/fill/legacy_catalog_cover_compact.cpp
+        src/gui/fill/compact_fit_catalog.cpp
+        src/gui/fill/compact_fit_geometry.cpp
         src/gui/fill/cubic_contour.cpp
         src/gui/fill/pen_fill.cpp
         src/gui/fill/polygon_mesh.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
-    target_include_directories(fls_catalog_cover_tests PRIVATE
+    target_include_directories(fls_compact_fit_tests PRIVATE
         src/gui/fill src/gui/widgets
     )
-    target_compile_definitions(fls_catalog_cover_tests PRIVATE
+    target_compile_definitions(fls_compact_fit_tests PRIVATE
         FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
-    target_link_libraries(fls_catalog_cover_tests PRIVATE
+    target_link_libraries(fls_compact_fit_tests PRIVATE
         fls_core fls_profile_compute clipper2 Qt6::Core Qt6::Gui
     )
     if(FLS_CUDA_AVAILABLE)
-        target_sources(fls_catalog_cover_tests PRIVATE
+        target_sources(fls_compact_fit_tests PRIVATE
             src/gui/fill/compact_fit_gpu_rank.cu)
-        target_compile_definitions(fls_catalog_cover_tests PRIVATE FLS_HAS_CUDA=1)
-        target_compile_options(fls_catalog_cover_tests PRIVATE
+        target_compile_definitions(fls_compact_fit_tests PRIVATE FLS_HAS_CUDA=1)
+        target_compile_options(fls_compact_fit_tests PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
-        target_link_libraries(fls_catalog_cover_tests PRIVATE CUDA::cudart)
-        set_target_properties(fls_catalog_cover_tests PROPERTIES
+        target_link_libraries(fls_compact_fit_tests PRIVATE CUDA::cudart)
+        set_target_properties(fls_compact_fit_tests PROPERTIES
             CUDA_ARCHITECTURES all-major CUDA_RUNTIME_LIBRARY Shared)
     endif()
     if(FLS_CUDA_AVAILABLE AND WIN32)
-        add_custom_command(TARGET fls_catalog_cover_tests POST_BUILD
+        add_custom_command(TARGET fls_compact_fit_tests POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FLS_CUDART_DLL}"
-                "$<TARGET_FILE_DIR:fls_catalog_cover_tests>")
+                "$<TARGET_FILE_DIR:fls_compact_fit_tests>")
     endif()
-    add_test(NAME catalog_cover COMMAND fls_catalog_cover_tests)
-    add_test(NAME compact_fit COMMAND fls_catalog_cover_tests --compact-tests)
-    add_test(NAME profile_fit COMMAND fls_catalog_cover_tests --profile-tests)
-    add_test(NAME failed_fill_retention COMMAND fls_catalog_cover_tests --failed-fill-tests)
-    add_test(NAME compact_fast_quality COMMAND fls_catalog_cover_tests --fast-quality-tests)
-    add_test(NAME compact_search COMMAND fls_catalog_cover_tests --compact-search-tests)
-    add_test(NAME compact_coverage_repair COMMAND fls_catalog_cover_tests --coverage-repair-tests)
-    add_test(NAME compact_interior_coverage COMMAND fls_catalog_cover_tests --interior-coverage-tests)
-    add_test(NAME compact_cubic_interior COMMAND fls_catalog_cover_tests --cubic-interior-tests)
-    add_test(NAME compact_cornered_interior COMMAND fls_catalog_cover_tests --cornered-interior-tests)
-    add_test(NAME release_shape_catalog COMMAND fls_catalog_cover_tests --release-catalog-test)
+    add_test(NAME legacy_catalog_cover COMMAND fls_compact_fit_tests)
+    add_test(NAME compact_fit COMMAND fls_compact_fit_tests --compact-tests)
+    add_test(NAME compact_shape_configuration COMMAND fls_compact_fit_tests --shape-config-tests)
+    add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
+    add_test(NAME failed_fill_retention COMMAND fls_compact_fit_tests --failed-fill-tests)
+    add_test(NAME compact_fast_quality COMMAND fls_compact_fit_tests --fast-quality-tests)
+    add_test(NAME compact_search COMMAND fls_compact_fit_tests --compact-search-tests)
+    add_test(NAME compact_coverage_repair COMMAND fls_compact_fit_tests --coverage-repair-tests)
+    add_test(NAME compact_interior_coverage COMMAND fls_compact_fit_tests --interior-coverage-tests)
+    add_test(NAME compact_cubic_interior COMMAND fls_compact_fit_tests --cubic-interior-tests)
+    add_test(NAME compact_cornered_interior COMMAND fls_compact_fit_tests --cornered-interior-tests)
+    add_test(NAME release_shape_catalog COMMAND fls_compact_fit_tests --release-catalog-test)
     add_test(NAME gui_asset_deployment COMMAND "${CMAKE_COMMAND}"
         "-DFLS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deploy_gui_assets_test.cmake")
@@ -446,9 +449,9 @@ if(FLS_BUILD_TESTS)
     target_include_directories(fls_behavior_settings_tests PRIVATE src/gui/app)
     target_link_libraries(fls_behavior_settings_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
     add_test(NAME behavior_settings COMMAND fls_behavior_settings_tests)
-    add_test(NAME profile_fit_manual COMMAND fls_catalog_cover_tests --profile-fit
+    add_test(NAME profile_fit_manual COMMAND fls_compact_fit_tests --profile-fit
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_manual.json" 8)
-    add_test(NAME profile_fit_large COMMAND fls_catalog_cover_tests --profile-fit
+    add_test(NAME profile_fit_large COMMAND fls_compact_fit_tests --profile-fit
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/catalog_cover_large.json" 8)
     set_tests_properties(profile_fit_manual profile_fit_large PROPERTIES LABELS "slow")
 
@@ -714,7 +717,7 @@ set(FLS_GUI_ASSETS
 
 set(FLS_GUI_ASSET_FILES
     differential_shapes.json
-    catalog_cover_shapes.json
+    compact_fit_shapes.json
     settings_tips.json
     vector/shape_geometry.json.gz
     vector/shape_names.json

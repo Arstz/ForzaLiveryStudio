@@ -1,4 +1,4 @@
-#include "catalog_cover_internal.h"
+#include "compact_fit_catalog_internal.h"
 
 #include <algorithm>
 #include <cmath>

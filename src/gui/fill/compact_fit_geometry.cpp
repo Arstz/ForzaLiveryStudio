@@ -1,4 +1,4 @@
-#include "catalog_cover_internal.h"
+#include "compact_fit_catalog_internal.h"
 
 #include "layer.h"
 #include "matrix_math.h"
@@ -19,7 +19,6 @@ constexpr int kMaximumBoundarySegments = 12000;
 constexpr int kMeshInflationAttempts = 16;
 constexpr int kMaximumCompletionDepth = 12;
 constexpr int kMaximumCompletionWork = 12000;
-constexpr double kOpaqueEpsilon = 1e-10;
 constexpr double kTransformZeroThreshold = 1e-12;
 constexpr int kPreparedOperandLimit = 16;
 constexpr int kPreparedOperandMinimumPoints = 64;
@@ -656,91 +655,6 @@ Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
     result.spillFreeContainment = std::make_shared<PointContainment>(result.spillFree);
     result.bounds = result.requiredPath.boundingRect();
     result.area = area(result.required);
-
-    return result;
-}
-
-QVector<Primitive> buildCatalog(const ShapeGeometryStore &geometry, QString *error) {
-    QVector<Primitive> result;
-    const QStringList paths = {
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("assets/catalog_cover_shapes.json")),
-        QDir::current().filePath(QStringLiteral("assets/catalog_cover_shapes.json")),
-    };
-    try {
-        if (geometry.shapeIds().isEmpty()) {
-            throw std::runtime_error("Shape geometry is not loaded. Restore assets/vector/shape_geometry.json.gz and restart the editor.");
-        }
-        QByteArray bytes;
-        for (const QString &path : paths) {
-            QFile file(path);
-            if (file.open(QIODevice::ReadOnly)) {
-                bytes = file.readAll();
-                break;
-            }
-        }
-        QJsonParseError parseError;
-        const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
-        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-            throw std::runtime_error("Catalog cover shape catalog is missing or invalid");
-        }
-        QSet<int> seen;
-        for (const QString &key : {QStringLiteral("shape_ids"), QStringLiteral("reserve_shape_ids")}) {
-            for (const QJsonValue &value : document.object().value(key).toArray()) {
-                Polygons triangles;
-                Primitive primitive;
-                const int shapeId = value.toInt(-1);
-                const ShapeGeometry *source = geometry.shape(shapeId);
-                if (shapeId < 0 || value.toDouble(-1) != shapeId) {
-                    throw std::runtime_error("Fill catalog contains an invalid shape ID");
-                }
-                if (seen.contains(shapeId)) {
-                    throw std::runtime_error(QStringLiteral("Fill catalog contains duplicate shape ID %1").arg(shapeId).toStdString());
-                }
-                if (source == nullptr) {
-                    throw std::runtime_error(QStringLiteral("Fill catalog shape %1 is unavailable in the loaded geometry. Restore the runtime assets and restart the editor.")
-                        .arg(shapeId).toStdString());
-                }
-                seen.insert(shapeId);
-                primitive.reserve = key == QStringLiteral("reserve_shape_ids");
-                for (const ShapeTriangle &triangle : source->triangles) {
-                    if (triangle.alpha0 < 1.0 - kOpaqueEpsilon
-                        || triangle.alpha1 < 1.0 - kOpaqueEpsilon
-                        || triangle.alpha2 < 1.0 - kOpaqueEpsilon) {
-                        throw std::runtime_error(QStringLiteral("Catalog cover shape %1 is not opaque")
-                                                     .arg(shapeId).toStdString());
-                    }
-                    QPolygonF polygon({triangle.p0, triangle.p1, triangle.p2});
-                    if (signedArea(polygon) < 0.0) {
-                        std::reverse(polygon.begin(), polygon.end());
-                    }
-                    triangles.push_back(polygon);
-                }
-                primitive.shape.shapeId = shapeId;
-                primitive.shape.contours = unite(triangles);
-                primitive.shape.silhouette = painterPath(primitive.shape.contours);
-                primitive.shape.bounds = primitive.shape.silhouette.boundingRect();
-                primitive.shape.area = area(primitive.shape.contours);
-                if (primitive.shape.area <= 0.0) {
-                    throw std::runtime_error("Catalog cover shape has no opaque area");
-                }
-                result.push_back(std::move(primitive));
-            }
-        }
-        if (findShape(result, 103) == nullptr) {
-            throw std::runtime_error("Catalog cover requires the Triangle completion primitive");
-        }
-        std::sort(result.begin(), result.end(), [](const Primitive &left, const Primitive &right) {
-            return left.shape.shapeId < right.shape.shapeId;
-        });
-        if (error != nullptr) {
-            error->clear();
-        }
-    } catch (const std::exception &failure) {
-        result.clear();
-        if (error != nullptr) {
-            *error = QString::fromUtf8(failure.what());
-        }
-    }
 
     return result;
 }

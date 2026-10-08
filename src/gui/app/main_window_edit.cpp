@@ -4,7 +4,7 @@
 
 #include "clipboard_buffer_widget.h"
 #include "color_palette_widget.h"
-#include "catalog_cover.h"
+#include "compact_fit_catalog.h"
 #include "compact_fit.h"
 #include "profile_fit.h"
 #include "differential_cover.h"

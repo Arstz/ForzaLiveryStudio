@@ -41,7 +41,6 @@ constexpr double kBodyGpuClearanceFraction = 0.02;
 constexpr double kBodyRadiusPadding = 0.995;
 constexpr double kGpuProofMinimumClearance = 0.0001;
 constexpr double kGpuProofScaleFraction = 0.00001;
-constexpr std::array<int, 6> kBodyShapeIds{102, 101, 109, 110, 124, 2117};
 constexpr int kStructuralTrials = 50000;
 constexpr int kTriangleShapeId = 103;
 constexpr double kCornerAngle = 0.3;
@@ -52,8 +51,6 @@ constexpr double kTangentError = 0.2;
 constexpr double kBoundaryOffset = 0.3;
 constexpr double kMinimumLength = 1e-8;
 constexpr double kSearchExtent = 512.0;
-constexpr std::array<int, 24> kCurveShapes = {102, 109, 110, 120, 122, 124, 126, 127,
-    128, 129, 130, 136, 139, 812, 901, 930, 2110, 2113, 2117, 2118, 2134, 2135, 2136, 2321};
 
 struct Trace {
     QPolygonF points;
@@ -230,7 +227,7 @@ QVector<Profile> sourceProfiles(const QVector<catalog::Primitive> &primitives) {
     QVector<Profile> result;
     for (int primitive = 0; primitive < primitives.size(); ++primitive) {
         const auto &shape = primitives[primitive].shape;
-        if (std::find(kCurveShapes.begin(), kCurveShapes.end(), shape.shapeId) == kCurveShapes.end()) {
+        if (!catalog::usesTask(primitives[primitive], catalog::ShapeTask::Curves)) {
             continue;
         }
         for (const auto &polygon : shape.contours) {
@@ -852,9 +849,11 @@ void removeCovered(Bits *missing, const Bits &candidate) {
     }
 }
 
-const PenPrimitive *primitiveFor(int id, const QVector<catalog::Primitive> &primitives) {
-    const auto found = std::find_if(primitives.begin(), primitives.end(), [id](const auto &primitive) {
-        return primitive.shape.shapeId == id;
+const PenPrimitive *primitiveFor(int id, const QVector<catalog::Primitive> &primitives,
+                                 catalog::ShapeTask task = catalog::ShapeTask::Count) {
+    const auto found = std::find_if(primitives.begin(), primitives.end(), [id, task](const auto &primitive) {
+        return primitive.shape.shapeId == id
+            && (task == catalog::ShapeTask::Count || catalog::usesTask(primitive, task));
     });
 
     return found == primitives.end() ? nullptr : &found->shape;
@@ -898,7 +897,7 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
     };
     QVector<BodyJob> jobs;
     ProfileWorkers workers;
-    for (int id : kBodyShapeIds) {
+    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
         const auto *shape = primitiveFor(id, primitives);
         if (!shape) {
             continue;
@@ -946,7 +945,7 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
     QVector<BodyJob> jobs;
     const double maximumRadius = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
     for (const QPointF &center : centers) {
-        for (int id : kBodyShapeIds) {
+        for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
             const auto *shape = primitiveFor(id, primitives);
             if (!shape) {
                 continue;
@@ -968,7 +967,7 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
     QElapsedTimer timer;
     timer.start();
     int calls = 0;
-    for (int id : kBodyShapeIds) {
+    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
         if (stopped(cancelled)) {
             return true;
         }
@@ -1045,7 +1044,7 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
     std::vector<std::uint8_t> provenOuter(jobs.size(), 0);
     std::vector<std::uint8_t> provenSpillFree(jobs.size(), 0);
     const bool spillInsideOuter = catalog::subtract(region.spillFree, outer).isEmpty();
-    for (int id : kBodyShapeIds) {
+    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
         if (stopped(cancelled)) {
             break;
         }
@@ -1167,7 +1166,7 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
     const auto reference = boundary.reference(center);
     const double angle = std::atan2(reference.tangent.y(), reference.tangent.x()) * 180.0 / std::numbers::pi;
     const double maximumRadius = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
-    for (int id : {102, 101, 109, 110, 124, 2117}) {
+    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
         const auto *shape = primitiveFor(id, primitives);
         if (!shape) {
             continue;
@@ -1219,7 +1218,7 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
         QElapsedTimer timer;
         timer.start();
         const auto envelope = maskGeometry(region.spillFree);
-        for (int id : kBodyShapeIds) {
+        for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
             const auto *shape = primitiveFor(id, primitives);
             if (!shape) {
                 continue;
@@ -1539,7 +1538,7 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
                            const std::function<bool()> &cancelled, QVector<Candidate> *pool,
                            QJsonObject *diagnostics) {
     const double placementScale = searchScale(region, scale);
-    const auto *shape = primitiveFor(101, primitives);
+    const auto *shape = primitiveFor(101, primitives, catalog::ShapeTask::StraightEdges);
     if (!shape || shape->contours.isEmpty())
         return;
     const auto &contour = shape->contours.front();
@@ -1777,7 +1776,7 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
 void addCornerTriangles(const catalog::Region &region, const Polygons &outer,
                         const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                         double scale, const std::function<bool()> &cancelled, QVector<Candidate> *pool) {
-    const auto *shape = primitiveFor(kTriangleShapeId, primitives);
+    const auto *shape = primitiveFor(kTriangleShapeId, primitives, catalog::ShapeTask::CornerTriangles);
     if (!shape || shape->contours.size() != 1) {
         return;
     }
@@ -1837,7 +1836,7 @@ QVector<CornerCandidateJob> cornerCandidateJobs(const catalog::Region &region,
             if (cross(first, second) >= -0.1) {
                 continue;
             }
-            for (int id : {101, 103, 109, 110}) {
+            for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Corners)) {
                 const auto *shape = primitiveFor(id, primitives);
                 if (!shape) {
                     continue;
@@ -2399,6 +2398,8 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
     catalog::FillResult result;
     QJsonObject timings;
     QElapsedTimer stageTimer;
+    if (!primitives.isEmpty() && primitives.front().configuration)
+        result.diagnostics.insert(QStringLiteral("shapeConfiguration"), *primitives.front().configuration);
     stageTimer.start();
     const auto recordTime = [&](const QString &name) {
         timings.insert(name, stageTimer.nsecsElapsed() / 1e6);

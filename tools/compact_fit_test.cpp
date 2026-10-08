@@ -1,5 +1,5 @@
-#include "catalog_cover.h"
-#include "catalog_cover_internal.h"
+#include "compact_fit_catalog.h"
+#include "compact_fit_catalog_internal.h"
 #include "project_codec.h"
 #include "layer.h"
 #include "compact_fit.h"
@@ -17,8 +17,10 @@
 #include <QElapsedTimer>
 #include <QImage>
 #include <QPainter>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <QUuid>
 
 #include <algorithm>
 #include <bit>
@@ -1798,6 +1800,111 @@ void failedFillTests(const QVector<gui::catalog::Primitive> &catalog) {
 
 } // namespace
 
+void shapeConfigurationTests(const gui::ShapeGeometryStore &geometry) {
+    using gui::catalog::ShapeTask;
+    const auto directory = QStringLiteral(FLS_SOURCE_DIR "/build/compact-fit-config-")
+        + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    require(QDir().mkpath(directory), QStringLiteral("Configuration test directory is unavailable"));
+    const auto cleanup = qScopeGuard([&] { QDir(directory).removeRecursively(); });
+    QFile source(QStringLiteral(FLS_SOURCE_DIR "/assets/compact_fit_shapes.json"));
+    require(source.open(QIODevice::ReadOnly), QStringLiteral("Cannot read source configuration: ") + source.fileName());
+    const auto original = QJsonDocument::fromJson(source.readAll()).object();
+    const auto path = QDir(directory).filePath(QStringLiteral("compact_fit_shapes.json"));
+    const auto write = [&](const QByteArray &bytes) {
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly | QIODevice::Truncate), QStringLiteral("Cannot write configuration: ") + path);
+        require(file.write(bytes) == bytes.size(), QStringLiteral("Incomplete configuration write: ") + path);
+    };
+    QString error;
+    write(QJsonDocument(original).toJson());
+    const auto baseline = gui::catalog::buildCatalog(geometry, path, &error);
+    require(error.isEmpty() && baseline.size() == 96,
+        QStringLiteral("Baseline catalog has %1 shapes: %2").arg(baseline.size()).arg(error));
+    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Interior) == QVector<int>({102, 101, 109, 110, 124, 2117}),
+        QStringLiteral("Configuration changed interior seed order"));
+    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves).size() == 24,
+        QStringLiteral("Configuration changed the default curve families"));
+    for (const auto &primitive : baseline)
+        require(gui::catalog::usesTask(primitive, ShapeTask::CutoutReplacements) == (primitive.shape.contours.size() > 1),
+            QStringLiteral("Configuration changed cutout replacement eligibility"));
+    auto modified = original;
+    auto tasks = original.value("tasks").toObject();
+    tasks.insert("group_replacements", QJsonObject{{"all", true}, {"exclude", QJsonArray{111, 112, 113, 114, 115, 116, 117, 118, 119}}});
+    modified.insert("tasks", tasks);
+    write(QJsonDocument(modified).toJson());
+    const auto filtered = gui::catalog::buildCatalog(geometry, path, &error);
+    require(error.isEmpty() && filtered.size() == baseline.size(), error);
+    require(gui::catalog::shapeIdsForTask(filtered, ShapeTask::GroupReplacements).size() == baseline.size() - 9,
+        QStringLiteral("Task exclusions changed the global catalog or retained frames"));
+    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::GroupReplacements).size() == baseline.size()
+        && baseline.front().configuration->value("sha256") != filtered.front().configuration->value("sha256"),
+        QStringLiteral("Reload changed the previous configuration snapshot"));
+    for (auto entry = tasks.begin(); entry != tasks.end(); ++entry)
+        entry.value() = QJsonArray{};
+    tasks.insert("interior", QJsonArray{102});
+    modified.insert("tasks", tasks);
+    write(QJsonDocument(modified).toJson());
+    const auto circles = gui::catalog::buildCatalog(geometry, path, &error);
+    require(error.isEmpty(), error);
+    gui::compact::FillOptions options;
+    options.seedOnly = true;
+    options.useGpu = false;
+    options.shapeBudget = 64;
+    options.evaluationBudget = 1200;
+    const gui::PenFillRequest request{{}, {polygonLoop({{0, 0}, {40, 0}, {40, 30}, {0, 30}})}};
+    const auto result = gui::profile::fillRegion(request, circles, options);
+    require(!result.fill.placements.isEmpty()
+        && std::all_of(result.fill.placements.cbegin(), result.fill.placements.cend(),
+            [](const gui::PenPlacement &placement) { return placement.shapeId == 102; }),
+        QStringLiteral("The profile seed ignored reloaded task eligibility"));
+    require(result.diagnostics.value("profiles").toInt(-1) == 0,
+        QStringLiteral("Disabled curve fitting still generated profiles"));
+    auto disabled = original;
+    auto ids = original.value("shape_ids").toArray();
+    ids.removeAt(0);
+    disabled.insert("shape_ids", ids);
+    write(QJsonDocument(disabled).toJson());
+    const auto withoutSquare = gui::catalog::buildCatalog(geometry, path, &error);
+    require(error.isEmpty() && withoutSquare.size() == baseline.size() - 1
+        && !gui::catalog::shapeIdsForTask(withoutSquare, ShapeTask::Interior).contains(101),
+        QStringLiteral("Global shape disabling did not override task membership"));
+    const auto reject = [&](const QJsonObject &configuration, const QString &message) {
+        write(QJsonDocument(configuration).toJson());
+        require(gui::catalog::buildCatalog(geometry, path, &error).isEmpty() && error.contains(message)
+            && error.contains(path), QStringLiteral("Invalid configuration was accepted: ") + error);
+    };
+    modified = original;
+    modified.insert("schema_version", 2);
+    reject(modified, "schema_version");
+    modified = original;
+    tasks = original.value("tasks").toObject();
+    tasks.insert("curve", QJsonArray{102});
+    modified.insert("tasks", tasks);
+    reject(modified, "Unknown tasks field");
+    tasks = original.value("tasks").toObject();
+    tasks.insert("interior", QJsonArray{99999999});
+    modified.insert("tasks", tasks);
+    reject(modified, "unavailable shape ID");
+    tasks.insert("interior", QJsonArray{102, 102});
+    modified.insert("tasks", tasks);
+    reject(modified, "duplicate shape ID");
+    tasks.insert("interior", QJsonArray{102.5});
+    modified.insert("tasks", tasks);
+    reject(modified, "invalid shape ID");
+    tasks = original.value("tasks").toObject();
+    tasks.insert("straight_edges", QJsonArray{102});
+    modified.insert("tasks", tasks);
+    reject(modified, "supports only shape ID 101");
+    tasks = original.value("tasks").toObject();
+    tasks.insert("group_replacements", QJsonObject{{"all", "false"}});
+    modified.insert("tasks", tasks);
+    reject(modified, "must be a boolean");
+    write("{invalid");
+    require(gui::catalog::buildCatalog(geometry, path, &error).isEmpty() && error.contains("Invalid JSON"),
+        QStringLiteral("Malformed JSON silently reused an earlier configuration"));
+    QTextStream(stdout) << "Shape configuration reload, snapshots, task exclusions and validation passed\n";
+}
+
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
     QTextStream output(stdout);
@@ -1834,6 +1941,10 @@ int main(int argc, char **argv) {
         gui::ShapeGeometryStore geometry;
         QString error;
         require(geometry.loadDefault(&error), error);
+        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--shape-config-tests")) {
+            shapeConfigurationTests(geometry);
+            return 0;
+        }
         if (application.arguments().size() == 3
             && application.arguments()[1] == QStringLiteral("--audit")) {
             auditCatalog(geometry, application.arguments()[2]);

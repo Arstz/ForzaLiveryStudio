@@ -1,5 +1,5 @@
 #include "compact_fit.h"
-#include "catalog_cover_internal.h"
+#include "compact_fit_catalog_internal.h"
 #include "compact_fit_quality.h"
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
@@ -70,7 +70,6 @@ constexpr double kCoverageRepairCornerSlack = 0.5;
 constexpr double kCoverageRepairTurnSlack = 0.25;
 constexpr double kInteriorPatchPadding = 0.0009765625;
 constexpr double kRoundedPatchScale = 1.42;
-constexpr std::array<int, 3> kInteriorPatchShapeIds = {101, 102, 2133};
 constexpr double kRepairRecoveryBins = 1024.0;
 constexpr double kGpuCornerWindowScale = 16.0;
 constexpr double kGpuCornerWeight = 32.0;
@@ -91,9 +90,6 @@ constexpr int kBroadRepairClusters = 8;
 constexpr int kBroadRepairMembers = 12;
 constexpr double kBroadRepairRadius = 64.0;
 constexpr double kBroadRepairFootprint = 64.0;
-constexpr std::array<int, 28> kSearchShapeIds = {101, 102, 103, 109, 110, 120, 122, 124,
-    126, 127, 128, 129, 130, 136, 139, 812, 901, 930, 2110, 2113, 2117, 2118,
-    2123, 2133, 2134, 2135, 2136, 2321};
 
 using catalog::Polygons;
 
@@ -1249,6 +1245,9 @@ bool replaceSmallGroupsGpu(QVector<Piece> *pieces, const Objective &objective,
     QVector<Polygons> supports;
     const double minimumArea = kGpuMinimumFootprint
         * std::pow(objective.cornerAllowance * 2.0, 2.0);
+
+    if (primitives.isEmpty())
+        return true;
     for (const auto &piece : *pieces) {
         supports.push_back(piece.polygons);
     }
@@ -1481,7 +1480,8 @@ bool optimizeGpu(QVector<Piece> *pieces, const Objective &objective,
     }
     const int groupLimit = std::max(objective.evaluations,
         objective.evaluationLimit - std::min(kGpuExactTailTrials, objective.evaluationLimit / 20));
-    if (!replaceSmallGroupsGpu(pieces, objective, primitives, groupLimit, cancelled)) {
+    if (!replaceSmallGroupsGpu(pieces, objective,
+            catalog::primitivesForTask(primitives, catalog::ShapeTask::GroupReplacements), groupLimit, cancelled)) {
         *pieces = original;
         return false;
     }
@@ -2131,7 +2131,7 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
         double recovered = 0.0;
     };
     QVector<const PenPrimitive *> patchShapes;
-    for (int id : kInteriorPatchShapeIds) {
+    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::GapPatches)) {
         const auto primitive = std::find_if(primitives.cbegin(), primitives.cend(), [id](const auto &entry) {
             return entry.shape.shapeId == id;
         });
@@ -2479,6 +2479,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                      const QVector<catalog::Primitive> &primitives,
                      const QVector<catalog::Primitive> &dictionary, int shapeBudget,
                      int evaluationLimit, const std::function<bool()> &cancelled) {
+    const auto repairPrimitives = catalog::primitivesForTask(primitives, catalog::ShapeTask::ResidualRepair);
     const auto stopRepair = [&] {
         return stopped(cancelled) || objective.evaluations >= evaluationLimit;
     };
@@ -2555,7 +2556,8 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
             bool bestConnector = false;
             std::optional<Piece> connector;
             const auto square = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &primitive) {
-                return primitive.shape.shapeId == 101;
+                return primitive.shape.shapeId == 101
+                    && catalog::usesTask(primitive, catalog::ShapeTask::ResidualRepair);
             });
             if (square != primitives.cend() && pieces->size() < shapeBudget) {
                 for (double width : {1.0, 0.5, 0.125}) {
@@ -2702,7 +2704,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                 for (const auto &polygon : necessary) {
                     anchors += polygon;
                 }
-                for (const auto &primitive : primitives) {
+                for (const auto &primitive : repairPrimitives) {
                     if (stopRepair() || objective.evaluations >= currentGroupLimit) {
                         break;
                     }
@@ -2738,7 +2740,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                 if (same != dictionary.cend()) {
                     shapes.push_back(&same->shape);
                 }
-                for (const auto &primitive : primitives) {
+                for (const auto &primitive : repairPrimitives) {
                     if (primitive.shape.shapeId != original.placement.shapeId) {
                         shapes.push_back(&primitive.shape);
                     }
@@ -2763,7 +2765,7 @@ void repairResiduals(QVector<Piece> *pieces, const Objective &objective,
                     if (bestConnected && bestGain >= componentArea - kScoreEpsilon) {
                         break;
                     }
-                    for (const auto &primitive : primitives) {
+                    for (const auto &primitive : repairPrimitives) {
                         for (int frame = 0; frame < static_cast<int>(frames.size()); ++frame) {
                             const auto &anchors = frames[frame];
                             const auto bounds = anchors.boundingRect();
@@ -2815,7 +2817,8 @@ void consolidateRepairPatches(QVector<Piece> *pieces, const Objective &objective
     const QVector<catalog::Primitive> &primitives, int evaluationLimit,
     const std::function<bool()> &cancelled) {
     const auto circle = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &primitive) {
-        return primitive.shape.shapeId == 102;
+        return primitive.shape.shapeId == 102
+            && catalog::usesTask(primitive, catalog::ShapeTask::PatchConsolidation);
     });
     if (circle == primitives.cend() || pieces->size() < 4) {
         return;
@@ -3320,6 +3323,8 @@ QVector<catalog::Primitive> wholeRegionCatalog(const Objective &objective,
     const double upper = (targetArea + objective.areaBudget)
         / std::max(hullArea(objective.inner), catalog::kMinimumDeterminant);
     for (const auto &primitive : primitives) {
+        if (!catalog::usesTask(primitive, catalog::ShapeTask::WholeRegion))
+            continue;
         const double convexity = primitive.shape.area
             / std::max(hullArea(primitive.shape.contours), catalog::kMinimumDeterminant);
         if (convexity + kConvexitySlack >= lower && convexity - kConvexitySlack <= upper) {
@@ -3397,8 +3402,9 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         seedRequest.primitives.clear();
         for (const auto &primitive : primitives) {
             seedRequest.primitives.push_back(primitive.shape);
-            if (std::find(kSearchShapeIds.begin(), kSearchShapeIds.end(), primitive.shape.shapeId) != kSearchShapeIds.end()
-                || (objective.targetMetrics.holes > 0 && primitive.shape.contours.size() > 1)) {
+            if (catalog::usesTask(primitive, catalog::ShapeTask::Replacements)
+                || (objective.targetMetrics.holes > 0
+                    && catalog::usesTask(primitive, catalog::ShapeTask::CutoutReplacements))) {
                 searchCatalog.push_back(primitive);
             }
         }
@@ -3414,6 +3420,8 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         for (const auto &placement : seed.placements) {
             pieces.push_back(makePiece(primitiveFor(placement.shapeId, primitives), placement.transform));
         }
+        if (!primitives.isEmpty() && primitives.front().configuration)
+            result.diagnostics.insert(QStringLiteral("shapeConfiguration"), *primitives.front().configuration);
         result.diagnostics.insert(QStringLiteral("seedCount"), pieces.size());
         result.diagnostics.insert(QStringLiteral("searchCatalogSize"), searchCatalog.size());
         result.diagnostics.insert(QStringLiteral("wholeRegionCatalogSize"), recognitionCatalog.size());

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "catalog_cover_internal.h"
+#include "compact_fit_catalog_internal.h"
 #include <limits>
 #include <memory>
 

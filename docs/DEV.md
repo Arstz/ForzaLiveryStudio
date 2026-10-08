@@ -65,10 +65,12 @@ exports grouped `C_group` folders and `C_livery` folders.
   independently of placement completion.
   Bucket-derived Pen contours use the same selected mode. Saved Catalog Cover
   preferences load as Compact Fit. Compact Fit uses the shared opaque silhouette
-  dictionary in `assets/catalog_cover_shapes.json`; the legacy cover solver is
+  dictionary and task selections in `assets/compact_fit_shapes.json`, reloaded
+  before each operation. See [Compact Fit configuration](COMPACT_FIT_CONFIG.md)
+  for task fields and deployment without recompilation. The legacy cover solver is
   excluded from the editor build and remains only in headless comparison tools.
   Compact Fit is an experimental curve-first approximation with separate
-  contour-quality checks. Its initialization fits 24 catalog perimeter families
+  contour-quality checks. Its default initialization fits 24 catalog perimeter families
   to long boundary spans, including spans across authored control points. A
   point-to-line affine fit includes endpoint position and tangent constraints.
   Independent profile fits and arc residuals run in double-precision CUDA batches

@@ -65,7 +65,8 @@ QVector<ReusableCandidate> exactEnvelopeCandidates(const QVector<ReusableCandida
     const QVector<catalog::Primitive> &primitives, CoverageOwnership *ownership,
     const std::function<bool()> &cancelled) {
     const auto square = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &entry) {
-        return entry.shape.shapeId == kSquareShapeId;
+        return entry.shape.shapeId == kSquareShapeId
+            && catalog::usesTask(entry, catalog::ShapeTask::ExactReplacements);
     });
     QVector<ReusableCandidate> result;
     if (square == primitives.cend()) {
