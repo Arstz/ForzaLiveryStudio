@@ -69,6 +69,80 @@ void readBase(const QJsonObject &o, Layer &l) {
 
 QJsonObject nodeToJson(const Layer &node);
 
+QJsonArray contourPointsToJson(const QVector<ContourPoint> &points) {
+    QJsonArray result;
+
+    for (const ContourPoint &point : points) {
+        result.append(QJsonObject{
+            {QStringLiteral("position"), QJsonArray{point.position.x(), point.position.y()}},
+            {QStringLiteral("hard"), point.kind == ContourPointKind::Hard},
+            {QStringLiteral("incoming"), QJsonArray{point.incoming.x(), point.incoming.y()}},
+            {QStringLiteral("outgoing"), QJsonArray{point.outgoing.x(), point.outgoing.y()}},
+            {QStringLiteral("explicit_handles"), point.explicitHandles}});
+    }
+    return result;
+}
+
+QVector<ContourPoint> contourPointsFromJson(const QJsonArray &array) {
+    QVector<ContourPoint> points;
+
+    for (const QJsonValue &value : array) {
+        const QJsonObject object = value.toObject();
+        const QJsonArray position = object.value(QStringLiteral("position")).toArray();
+        const QJsonArray incoming = object.value(QStringLiteral("incoming")).toArray();
+        const QJsonArray outgoing = object.value(QStringLiteral("outgoing")).toArray();
+        ContourPoint point;
+
+        point.position = QPointF(position.at(0).toDouble(), position.at(1).toDouble());
+        point.incoming = QPointF(incoming.at(0).toDouble(), incoming.at(1).toDouble());
+        point.outgoing = QPointF(outgoing.at(0).toDouble(), outgoing.at(1).toDouble());
+        point.kind = object.value(QStringLiteral("hard")).toBool()
+            ? ContourPointKind::Hard : ContourPointKind::Soft;
+        point.explicitHandles = object.value(QStringLiteral("explicit_handles")).toBool();
+        points.push_back(point);
+    }
+    return points;
+}
+
+QJsonObject contourToJson(const ContourFigure &figure) {
+    QJsonObject object;
+    QJsonArray cutouts;
+
+    writeBase(object, figure);
+    object.insert(QStringLiteral("kind"), QStringLiteral("contour"));
+    object.insert(QStringLiteral("points"), contourPointsToJson(figure.data.points));
+    for (const auto &points : figure.data.cutouts) {
+        cutouts.append(contourPointsToJson(points));
+    }
+    object.insert(QStringLiteral("cutouts"), cutouts);
+    object.insert(QStringLiteral("closed"), figure.data.closed);
+    object.insert(QStringLiteral("cutout_closed"), figure.data.cutoutClosed);
+    object.insert(QStringLiteral("fill_mask"), figure.data.fillMask);
+    if (figure.data.fillColor.has_value()) {
+        object.insert(QStringLiteral("fill_color"), figure.data.fillColor->name(QColor::HexArgb));
+    }
+
+    return object;
+}
+
+std::unique_ptr<ContourFigure> contourFromJson(const QJsonObject &object) {
+    auto figure = std::make_unique<ContourFigure>();
+
+    readBase(object, *figure);
+    figure->data.points = contourPointsFromJson(object.value(QStringLiteral("points")).toArray());
+    for (const auto &cutout : object.value(QStringLiteral("cutouts")).toArray()) {
+        figure->data.cutouts.push_back(contourPointsFromJson(cutout.toArray()));
+    }
+    figure->data.closed = object.value(QStringLiteral("closed")).toBool();
+    figure->data.cutoutClosed = object.value(QStringLiteral("cutout_closed")).toBool(true);
+    figure->data.fillMask = object.value(QStringLiteral("fill_mask")).toBool();
+    if (object.contains(QStringLiteral("fill_color"))) {
+        figure->data.fillColor = QColor(object.value(QStringLiteral("fill_color")).toString());
+    }
+
+    return figure;
+}
+
 QJsonObject shapeToJson(const Shape &s) {
     QJsonObject o;
     o.insert(QStringLiteral("kind"), QStringLiteral("shape"));
@@ -169,6 +243,8 @@ QJsonObject nodeToJson(const Layer &node) {
         return guideToJson(static_cast<const GuideLayer &>(node));
     case LayerKind::Group:
         return groupToJson(static_cast<const Group &>(node));
+    case LayerKind::Contour:
+        return contourToJson(static_cast<const ContourFigure &>(node));
     }
     return {};
 }
@@ -260,6 +336,9 @@ std::unique_ptr<Layer> nodeFromJson(const QJsonObject &o) {
     }
     if (kind == QLatin1String("guide")) {
         return guideFromJson(o);
+    }
+    if (kind == QLatin1String("contour")) {
+        return contourFromJson(o);
     }
     return shapeFromJson(o);
 }

@@ -21,14 +21,7 @@ struct PenCurveHit {
     bool valid() const { return insertIndex >= 0; }
 };
 
-struct PathInteractionState {
-    QVector<PenPoint> points;
-    QVector<QVector<PenPoint>> cutouts;
-    std::optional<QColor> fillColor;
-    bool closed = false;
-    bool cutoutClosed = true;
-    bool fillMask = false;
-};
+using PathInteractionState = fls::scene::ContourData;
 
 struct PathInteraction {
     QVector<PenPoint> points;

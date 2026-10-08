@@ -306,6 +306,7 @@ void ProjectCanvas::captureDragStarts() {
         collectDragGroups(drag_.groupIds, drag_.groupStartFrames, groupedLayerIds, groupedGuideIds);
     }
     drag_.layers.clear();
+    drag_.contours.clear();
     drag_.guides.clear();
     for (fls::scene::Shape *layer : selectedLayers()) {
         if (!groupedLayerIds.contains(layer->id)) {
@@ -314,6 +315,14 @@ void ProjectCanvas::captureDragStarts() {
                                 {layer->x, layer->y, layer->scaleX, layer->scaleY,
                                  layer->rotation, layer->skew,
                                  static_cast<double>(layer->color[ColorByteAlpha]) / 255.0});
+        }
+    }
+    for (const QString &id : state_->selectedLayerIds()) {
+        auto *figure = dynamic_cast<fls::scene::ContourFigure *>(state_->sceneNode(id));
+        if (figure != nullptr && !groupedLayerIds.contains(id) && !state_->isLayerLocked(id)) {
+            drag_.contours.push_back(figure);
+            drag_.starts.insert(id, {figure->x, figure->y, figure->scaleX, figure->scaleY,
+                                    figure->rotation, figure->skew, figure->opacity});
         }
     }
     for (fls::scene::GuideLayer *guide : selectedGuideLayers()) {
@@ -327,7 +336,13 @@ void ProjectCanvas::captureDragStarts() {
 }
 
 QVector<QString> ProjectCanvas::dragTransformTargetIds() const {
-    return buildTransformTargetIds(drag_.groupIds, drag_.layers, drag_.guides);
+    QVector<QString> result = buildTransformTargetIds(drag_.groupIds, drag_.layers, drag_.guides);
+
+    for (const auto *figure : drag_.contours) {
+        result.push_back(figure->id);
+    }
+
+    return result;
 }
 
 QString ProjectCanvas::transformSelectionSignature() const {
@@ -382,6 +397,9 @@ void ProjectCanvas::applyWorldTransformToDragItems(const QTransform &worldTransf
     for (fls::scene::Shape *layer : drag_.layers) {
         applyItem(layer, drag_.starts.value(layer->id));
     }
+    for (auto *figure : drag_.contours) {
+        applyItem(figure, drag_.starts.value(figure->id));
+    }
     for (fls::scene::GuideLayer *guide : drag_.guides) {
         applyItem(guide, drag_.guideStarts.value(guide->id));
     }
@@ -402,6 +420,26 @@ void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifi
 bool ProjectCanvas::nudgeSelection(const QPointF &delta) {
     if (state_ == nullptr || project_ == nullptr || delta.isNull()) {
         return false;
+    }
+    const QVector<QString> targets = state_->selectedTransformTargetIds();
+    const bool includesContour = std::any_of(targets.cbegin(), targets.cend(), [this](const QString &id) {
+        return dynamic_cast<const fls::scene::ContourFigure *>(state_->sceneNode(id)) != nullptr;
+    });
+
+    if (includesContour) {
+        if (std::any_of(targets.cbegin(), targets.cend(), [this](const QString &id) {
+            return state_->entryHasLockedLayer(id);
+        })) {
+            return false;
+        }
+        state_->beginTransformCommand(targets);
+        state_->transformEntryFrames(targets, QTransform::fromTranslate(delta.x(), delta.y()));
+        state_->commitTransformCommand();
+        state_->noteProjectGeometryChanged(false, targets);
+        invalidateSceneCache();
+        update();
+
+        return true;
     }
     if (selectedLayers().isEmpty() && selectedGuideLayers().isEmpty()) {
         return false;
@@ -755,7 +793,7 @@ void ProjectCanvas::applyScaleDrag(const QPointF &screenPoint, Qt::KeyboardModif
 
     const bool relativeSingle = options_.transformRelativeMode
         && drag_.groupStartFrames.isEmpty()
-        && (drag_.layers.size() + drag_.guides.size() == 1);
+        && (drag_.layers.size() + drag_.contours.size() + drag_.guides.size() == 1);
     if (relativeSingle) {
         applyDragTransform(localScale, /*preMultiply=*/true);
     } else {
@@ -784,6 +822,9 @@ void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMult
     for (fls::scene::Shape *layer : drag_.layers) {
         apply(layer, drag_.starts.value(layer->id));
     }
+    for (auto *figure : drag_.contours) {
+        apply(figure, drag_.starts.value(figure->id));
+    }
     for (fls::scene::GuideLayer *guide : drag_.guides) {
         apply(guide, drag_.guideStarts.value(guide->id));
     }
@@ -795,7 +836,7 @@ void ProjectCanvas::applyDragTransform(const QTransform &transform, bool preMult
 void ProjectCanvas::applySkewDrag(const QPointF &screenPoint) {
     updateCursorForPoint(screenPoint);
 
-    if (drag_.layers.size() + drag_.guides.size() > 1 || !drag_.groupStartFrames.isEmpty()) {
+    if (drag_.layers.size() + drag_.contours.size() + drag_.guides.size() > 1 || !drag_.groupStartFrames.isEmpty()) {
         if (!drag_.startBox.valid || drag_.startBox.localRect.isEmpty()) {
             return;
         }
@@ -832,6 +873,13 @@ void ProjectCanvas::applySkewDrag(const QPointF &screenPoint) {
         layer->skew = startState.skew + delta / std::max(size.width(), 1.0);
         displayedSkew = layer->skew;
     }
+    for (auto *figure : drag_.contours) {
+        const EntryStart startState = drag_.starts.value(figure->id);
+        const double width = sceneLocalRect(*figure, geometry_).width();
+
+        figure->skew = startState.skew + delta / std::max(width, 1.0);
+        displayedSkew = figure->skew;
+    }
     setCursorHint(screenPoint, {QStringLiteral("Skew: %1").arg(formatHintNumber(displayedSkew, 3))});
     requestLiveSceneUpdate();
 }
@@ -846,6 +894,11 @@ void ProjectCanvas::applyOpacityDrag(const QPointF &screenPoint) {
         layer->opacity = opacity;
         layer->color[ColorByteAlpha] = static_cast<quint8>(std::clamp(qRound(opacity * 255.0), 0, 255));
         displayedOpacity += opacity;
+        ++itemCount;
+    }
+    for (auto *figure : drag_.contours) {
+        figure->opacity = std::clamp(drag_.starts.value(figure->id).opacity + delta, 0.0, 1.0);
+        displayedOpacity += figure->opacity;
         ++itemCount;
     }
     for (fls::scene::GuideLayer *guide : drag_.guides) {
@@ -918,6 +971,7 @@ void ProjectCanvas::resetDragState() {
     drag_.starts.clear();
     drag_.guideStarts.clear();
     drag_.layers.clear();
+    drag_.contours.clear();
     drag_.guides.clear();
     drag_.groupIds.clear();
     drag_.groupStartFrames.clear();

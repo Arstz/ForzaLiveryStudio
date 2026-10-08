@@ -249,6 +249,9 @@ const EditorState::ProjectIndexCache &EditorState::projectIndexCache() const {
                         cache.orderByChild.insert(node.id, row);
                     }
                     switch (node.kind()) {
+                    case fls::scene::LayerKind::Contour:
+                        cache.contours.insert(node.id, static_cast<fls::scene::ContourFigure *>(&node));
+                        break;
                     case fls::scene::LayerKind::Shape:
                         cache.layers.insert(node.id, static_cast<fls::scene::Shape *>(&node));
                         break;
@@ -280,7 +283,7 @@ QVector<QString> EditorState::leafLayerIdsForEntryCached(const QString &entryId,
         return cached.value();
     }
     QVector<QString> ids;
-    if (cache.layers.contains(entryId)) {
+    if (cache.layers.contains(entryId) || cache.contours.contains(entryId)) {
         ids.push_back(entryId);
     } else if (fls::scene::Group *group = cache.groups.value(entryId, nullptr)) {
         for (const auto &child : group->children) {
@@ -292,7 +295,8 @@ QVector<QString> EditorState::leafLayerIdsForEntryCached(const QString &entryId,
 }
 
 bool EditorState::entryHasLockedLayerCached(const QString &entryId, const ProjectIndexCache &cache) const {
-    if (fls::scene::Shape *shape = cache.layers.value(entryId, nullptr)) {
+    if (fls::scene::Layer *shape = cache.nodes.value(entryId, nullptr);
+        shape != nullptr && shape->kind() != fls::scene::LayerKind::Group) {
         return shape->locked || lockedLayerIds().contains(entryId);
     }
     if (fls::scene::Group *group = cache.groups.value(entryId, nullptr)) {
@@ -366,7 +370,8 @@ QSet<QString> EditorState::lockedLayerIds() const {
     if (project_.root) {
         std::function<void(const fls::scene::Layer &, bool)> walk = [&](const fls::scene::Layer &node, bool inherited) {
             const bool effective = inherited || node.locked;
-            if (node.kind() == fls::scene::LayerKind::Shape && effective) {
+            if ((node.kind() == fls::scene::LayerKind::Shape
+                 || node.kind() == fls::scene::LayerKind::Contour) && effective) {
                 locked.insert(node.id);
             } else if (node.kind() == fls::scene::LayerKind::Group) {
                 for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
@@ -419,14 +424,14 @@ void EditorState::setLayerLockScope(const QString &layerId, bool locked) {
         setGroupAndDescendantLocked(parentGroupId, locked);
         return;
     }
-    if (fls::scene::Shape *shape = projectIndexCache().layers.value(layerId, nullptr)) {
+    if (fls::scene::Layer *shape = projectIndexCache().nodes.value(layerId, nullptr)) {
         shape->locked = locked;
         invalidateProjectIndexCache();
     }
 }
 
 void EditorState::setLayerVisible(const QString &layerId, bool visible) {
-    if (fls::scene::Shape *shape = projectIndexCache().layers.value(layerId, nullptr)) {
+    if (fls::scene::Layer *shape = projectIndexCache().nodes.value(layerId, nullptr)) {
         shape->visible = visible;
     }
 }
@@ -452,8 +457,11 @@ void EditorState::setGuideLayerLocked(const QString &guideId, bool locked) {
 
 void EditorState::setGroupDescendantVisible(const QString &groupId, bool visible) {
     if (fls::scene::Group *group = groupForId(groupId)) {
-        walkShapes(*group, [&](fls::scene::Shape &shape) {
-            shape.visible = visible;
+        walkGroup(*group, [&](fls::scene::Layer &node) {
+            if (node.kind() == fls::scene::LayerKind::Shape
+                || node.kind() == fls::scene::LayerKind::Contour) {
+                node.visible = visible;
+            }
         });
     }
 }
@@ -695,7 +703,8 @@ QSet<QString> EditorState::existingLayerIds(const QSet<QString> &ids) const {
         return {};
     }
 
-    return existingIds(ids, projectIndexCache().layers);
+    return existingIds(ids, projectIndexCache().layers)
+        + existingIds(ids, projectIndexCache().contours);
 }
 
 QSet<QString> EditorState::existingGuideLayerIds(const QSet<QString> &ids) const {

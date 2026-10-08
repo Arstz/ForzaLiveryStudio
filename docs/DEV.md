@@ -28,8 +28,16 @@ exports grouped `C_group` folders and `C_livery` folders.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette can return to the previously used tool after a successful
   pick through a persistent, default-on Options toggle.
-  Pen builds a closed hard/soft cubic compound contour with editable interior cutouts,
-  fits affine vector primitives along curved boundaries, and prepares an interior
+  Pen builds a closed hard/soft cubic compound contour with editable interior cutouts.
+  **Edit ? Save Pen Contour as Figure** stores the current open or closed contour
+  as a layer in the project. Figures retain hard/soft anchors, handle offsets,
+  cutouts and fill settings. Select a figure in **Layers** to activate Pen and edit
+  it; each completed edit updates the figure and participates in project undo.
+  **Edit ? New Pen Contour** starts a fresh contour. Saved figures support Copy,
+  Paste, Stamp, grouping and canvas transforms. They show an outline in the editor
+  and are excluded from game exports and native shape counts. Saving a `.3so`
+  preserves figures for later editing, including after a contour fill.
+  Pen fits affine vector primitives along curved boundaries, and prepares an interior
   boundary before meshing the remaining area.
   The polygonal core uses deterministic ear clipping and compatible Square merging.
   Placements are emitted from the boundary inward under a `2 * point count` shape

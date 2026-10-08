@@ -85,6 +85,15 @@ void Shape::setRasterShape(quint32 id, int width, int height) {
     visual = std::move(raster);
 }
 
+std::unique_ptr<Layer> ContourFigure::clone() const {
+    auto copy = std::make_unique<ContourFigure>();
+
+    copyBaseTo(*copy);
+    copy->data = data;
+
+    return copy;
+}
+
 std::unique_ptr<Layer> GuideLayer::clone() const {
     auto copy = std::make_unique<GuideLayer>();
     copyBaseTo(*copy);

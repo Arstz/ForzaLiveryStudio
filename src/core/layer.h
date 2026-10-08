@@ -2,6 +2,7 @@
 
 #include "core_types.h"
 #include "visual_container.h"
+#include "contour_data.h"
 
 #include <QByteArray>
 #include <QString>
@@ -14,7 +15,7 @@
 
 namespace fls::scene {
 
-enum class LayerKind { Shape, Guide, Group };
+enum class LayerKind { Shape, Guide, Group, Contour };
 
 // Transform order is translate, rotate, shear, then scale.
 struct Transform2D {
@@ -87,6 +88,14 @@ public:
     bool isRaster() const;
     void setVectorShape(quint16 id);
     void setRasterShape(quint32 id, int width = 256, int height = 256);
+};
+
+class ContourFigure : public Layer {
+public:
+    ContourData data;
+
+    LayerKind kind() const override { return LayerKind::Contour; }
+    std::unique_ptr<Layer> clone() const override;
 };
 
 class GuideLayer : public Layer {

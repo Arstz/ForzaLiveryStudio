@@ -83,7 +83,8 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
         painter->fillRect(option.rect, QColor(0x9c, 0x85, 0x5a));
     }
     QStyleOptionViewItem itemOption(option);
-    const int badgeCount = isGuide ? 2 : 3;
+    const bool isContour = index.data(LayerTreeModel::IsContourRole).toBool();
+    const int badgeCount = isGuide || isContour ? 2 : 3;
     const int badgesBlock = kLayerBadgeRightMargin + kLayerBadgeSize * badgeCount
         + kLayerBadgeGap * (badgeCount - 1);
     const QString positionText = index.data(LayerTreeModel::PositionTextRole).toString();
@@ -112,7 +113,7 @@ void LayerStateDelegate::paint(QPainter *painter, const QStyleOptionViewItem &op
         painter->drawPixmap(topLeft, colored);
     };
     drawBadge(Badge::Visible, visible ? visible_ : invisible_, 1.0);
-    if (!isGuide) {
+    if (!isGuide && !isContour) {
         drawBadge(Badge::Mask, maskOn_, mask ? 1.0 : 0.35);
     }
     drawBadge(Badge::Locked, locked ? locked_ : unlocked_, 1.0);
@@ -146,7 +147,8 @@ bool LayerStateDelegate::editorEvent(QEvent *event,
     if (badge == Badge::None) {
         return QStyledItemDelegate::editorEvent(event, model, option, index);
     }
-    if (badge == Badge::Mask && index.data(LayerTreeModel::IsGuideRole).toBool()) {
+    if (badge == Badge::Mask && (index.data(LayerTreeModel::IsGuideRole).toBool()
+        || index.data(LayerTreeModel::IsContourRole).toBool())) {
         return QStyledItemDelegate::editorEvent(event, model, option, index);
     }
     if (event->type() == QEvent::MouseButtonPress) {
@@ -209,7 +211,7 @@ void LayerStateDelegate::toggle(const QModelIndex &index, Badge badge) {
         }
         break;
     case Badge::Mask:
-        if (isGuide) {
+        if (isGuide || index.data(LayerTreeModel::IsContourRole).toBool()) {
             state_->cancelProjectEdit();
             return;
         }

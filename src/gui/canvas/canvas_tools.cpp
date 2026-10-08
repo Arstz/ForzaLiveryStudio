@@ -308,7 +308,8 @@ QString PenTool::name() const {
 
 bool PenTool::handlePress(QMouseEvent *event) {
     if ((event->button() != Qt::LeftButton && event->button() != Qt::RightButton)
-        || canvas_.pen_.fillRunning) {
+        || canvas_.pen_.fillRunning
+        || !canvas_.penFigureEditable()) {
         return false;
     }
     ProjectCanvas &c = canvas_;
@@ -490,7 +491,8 @@ bool PenTool::handleRelease(QMouseEvent *event) {
 }
 
 bool PenTool::handleDoubleClick(QMouseEvent *event) {
-    if (event->button() != Qt::LeftButton || canvas_.pen_.fillRunning) {
+    if (event->button() != Qt::LeftButton || canvas_.pen_.fillRunning
+        || !canvas_.penFigureEditable()) {
         return false;
     }
     ProjectCanvas &c = canvas_;

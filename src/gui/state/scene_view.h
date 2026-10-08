@@ -2,6 +2,7 @@
 
 #include "layer.h"
 #include "shape_geometry_store.h"
+#include "pen_fill.h"
 
 #include <QtCore>
 #include <QtGui>
@@ -56,7 +57,22 @@ inline QRectF sceneLocalRect(const QSizeF &size) {
     return QRectF(-size.width() * 0.5, -size.height() * 0.5, size.width(), size.height());
 }
 
+inline QPainterPath contourFigurePath(const fls::scene::ContourFigure &figure) {
+    QPainterPath path = penPath(figure.data.points, figure.data.closed);
+
+    path.setFillRule(Qt::OddEvenFill);
+    for (int index = 0; index < figure.data.cutouts.size(); ++index) {
+        path.addPath(penPath(figure.data.cutouts[index],
+                            figure.data.cutoutClosed || index + 1 < figure.data.cutouts.size()));
+    }
+
+    return path;
+}
+
 inline QRectF sceneLocalRect(const fls::scene::Layer &node, const ShapeGeometryStore &geometry) {
+    if (node.kind() == fls::scene::LayerKind::Contour) {
+        return contourFigurePath(static_cast<const fls::scene::ContourFigure &>(node)).boundingRect();
+    }
     return sceneLocalRect(sceneNodeSize(node, geometry));
 }
 

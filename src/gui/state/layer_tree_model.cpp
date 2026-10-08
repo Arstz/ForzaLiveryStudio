@@ -40,6 +40,9 @@ quint64 transformSignature(const fls::scene::Transform2D &transform) {
 
 void indexNode(const fls::scene::Layer &node, ProjectLookup &lookup) {
     switch (node.kind()) {
+    case fls::scene::LayerKind::Contour:
+        lookup.contours.insert(node.id, static_cast<const fls::scene::ContourFigure *>(&node));
+        break;
     case fls::scene::LayerKind::Shape:
         lookup.layers.insert(node.id, static_cast<const fls::scene::Shape *>(&node));
         break;
@@ -74,11 +77,16 @@ const fls::scene::Layer *nodeForId(const ProjectLookup &lookup, const QString &i
     if (const auto *guide = lookup.guides.value(id, nullptr)) {
         return guide;
     }
+    if (const auto *contour = lookup.contours.value(id, nullptr)) {
+        return contour;
+    }
+
     return lookup.groups.value(id, nullptr);
 }
 
 QStringList leafIdsForNode(const fls::scene::Layer &node) {
-    if (node.kind() == fls::scene::LayerKind::Shape) {
+    if (node.kind() == fls::scene::LayerKind::Shape
+        || node.kind() == fls::scene::LayerKind::Contour) {
         return {node.id};
     }
     if (node.kind() != fls::scene::LayerKind::Group) {
@@ -141,7 +149,8 @@ QString positionLabel(const QHash<QString, int> &positions, const QStringList &l
 }
 
 bool allShapeVisible(const fls::scene::Layer &node) {
-    if (node.kind() == fls::scene::LayerKind::Shape) {
+    if (node.kind() == fls::scene::LayerKind::Shape
+        || node.kind() == fls::scene::LayerKind::Contour) {
         return node.visible;
     }
     if (node.kind() != fls::scene::LayerKind::Group) {
@@ -188,6 +197,9 @@ QRectF previewNodeBounds(const fls::scene::Layer &node,
     const QTransform world = includeNodeTransform ? (sceneLocalTransform(node) * parentWorld) : parentWorld;
     if (node.kind() == fls::scene::LayerKind::Shape) {
         return world.mapRect(previewShapeLocalRect(static_cast<const fls::scene::Shape &>(node), geometry));
+    }
+    if (node.kind() == fls::scene::LayerKind::Contour) {
+        return world.mapRect(contourFigurePath(static_cast<const fls::scene::ContourFigure &>(node)).boundingRect());
     }
     if (node.kind() != fls::scene::LayerKind::Group) {
         return {};
@@ -331,6 +343,18 @@ void paintPreviewNode(QImage &image,
                           includeNodeTransform);
         return;
     }
+    if (node.kind() == fls::scene::LayerKind::Contour && node.visible) {
+        QPainter painter(&image);
+        const QTransform world = includeNodeTransform ? sceneLocalTransform(node) * parentWorld : parentWorld;
+        QPen pen(QColor(65, 175, 245), 2.0);
+
+        pen.setCosmetic(true);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath((world * worldToPreview).map(contourFigurePath(static_cast<const fls::scene::ContourFigure &>(node))));
+        return;
+    }
     if (node.kind() != fls::scene::LayerKind::Group || !node.visible) {
         return;
     }
@@ -412,6 +436,28 @@ quint64 contentSignature(const fls::scene::Layer &node, QHash<QString, quint64> 
     seed = mixHash(seed, node.visible ? 1 : 0);
     seed = mixHash(seed, hashDouble(node.opacity));
     switch (node.kind()) {
+    case fls::scene::LayerKind::Contour: {
+        const auto &figure = static_cast<const fls::scene::ContourFigure &>(node);
+        const auto hashPoints = [&seed](const QVector<PenPoint> &points) {
+            seed = mixHash(seed, points.size());
+            for (const PenPoint &point : points) {
+                for (const QPointF &value : {point.position, point.incoming, point.outgoing}) {
+                    seed = mixHash(seed, hashDouble(value.x()));
+                    seed = mixHash(seed, hashDouble(value.y()));
+                }
+                seed = mixHash(seed, static_cast<quint64>(point.kind));
+                seed = mixHash(seed, point.explicitHandles);
+            }
+        };
+
+        hashPoints(figure.data.points);
+        for (const auto &cutout : figure.data.cutouts) {
+            hashPoints(cutout);
+        }
+        seed = mixHash(seed, figure.data.closed);
+        seed = mixHash(seed, figure.data.cutoutClosed);
+        break;
+    }
     case fls::scene::LayerKind::Shape: {
         const auto &shape = static_cast<const fls::scene::Shape &>(node);
         seed = mixHash(seed, shape.raster ? 1 : 0);
@@ -521,6 +567,7 @@ bool LayerTreeModel::updateItemState(QStandardItem &item,
     item.setText(node.name);
     item.setData(isGroup, IsGroupRole);
     item.setData(isGuide, IsGuideRole);
+    item.setData(node.kind() == fls::scene::LayerKind::Contour, IsContourRole);
     item.setData(isGuide ? node.visible : allShapeVisible(node), VisibleRole);
     item.setData(!isGuide && allShapeMask(node), MaskRole);
     item.setData(node.locked, OwnLockedRole);

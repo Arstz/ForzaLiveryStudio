@@ -211,6 +211,7 @@ private:
 
     struct ProjectIndexCache {
         QHash<QString, fls::scene::Shape *> layers;
+        QHash<QString, fls::scene::ContourFigure *> contours;
         QHash<QString, fls::scene::GuideLayer *> guides;
         QHash<QString, fls::scene::Group *> groups;
         QHash<QString, fls::scene::Layer *> nodes;

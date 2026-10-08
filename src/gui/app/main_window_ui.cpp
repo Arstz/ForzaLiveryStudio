@@ -117,6 +117,12 @@ void MainWindow::setupTreeView() {
     connect(tree_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
         updateSelectionFromTree();
     });
+    connect(tree_, &QTreeView::clicked, this, [this](const QModelIndex &index) {
+        if (index.data(LayerTreeModel::IsContourRole).toBool()
+            && tree_->selectionModel()->selectedRows().size() == 1) {
+            canvas_->setTool(QStringLiteral("pen"));
+        }
+    });
     connect(tree_, &LayerTreeView::leewayGroupRequested,
             this, &MainWindow::toggleContourLeewayGroup);
 
@@ -414,6 +420,22 @@ void MainWindow::setupEditMenu() {
                  QStringLiteral("ToolbarSelect.xpm"), &MainWindow::centerViewOnSelection);
     addEditEntry(QStringLiteral("Fit View to Visible Area"), QStringLiteral("fit_view_to_visible_area"), QStringLiteral("Fit View to Visible Area"),
                  QStringLiteral("ToolbarSelect.xpm"), &MainWindow::fitViewToVisibleArea);
+
+    editMenu->addSeparator();
+    auto *saveContour = editMenu->addAction(QStringLiteral("Save Pen Contour as Figure"));
+    registerShortcutAction(saveContour, QStringLiteral("save_pen_figure"), QStringLiteral("Save Pen Contour as Figure"));
+    addAction(saveContour);
+    connect(saveContour, &QAction::triggered, this, [this]() {
+        if (canvas_->savePenFigure()) {
+            statusBar()->showMessage(QStringLiteral("Contour figure saved in Layers"), 2500);
+        } else {
+            statusBar()->showMessage(QStringLiteral("Draw a Pen contour with at least two anchors in an open project"), 4000);
+        }
+    });
+    auto *newContour = editMenu->addAction(QStringLiteral("New Pen Contour"));
+    registerShortcutAction(newContour, QStringLiteral("new_pen_contour"), QStringLiteral("New Pen Contour"));
+    addAction(newContour);
+    connect(newContour, &QAction::triggered, canvas_, &ProjectCanvas::startNewPenContour);
 
     editMenu->addSeparator();
     auto *alignMenu = editMenu->addMenu(QStringLiteral("&Align"));

@@ -99,6 +99,8 @@ public:
     void invalidateContourLeewayCache();
     void setPenFillRunning(bool running, const QString &message = QString());
     void cancelPenInteraction();
+    bool savePenFigure();
+    void startNewPenContour();
     void setLiningFillRequestedCallback(
         std::function<void(const QVector<PenPoint> &, double, const std::optional<QColor> &)> callback);
     void setLiningFillCancelCallback(std::function<void()> callback);
@@ -298,6 +300,7 @@ private:
         QHash<QString, EntryStart> guideStarts;
         QHash<QString, QTransform> groupStartFrames;
         QVector<fls::scene::Shape *> layers;
+        QVector<fls::scene::ContourFigure *> contours;
         QVector<fls::scene::GuideLayer *> guides;
         QVector<QString> groupIds;
         DragMode mode = DragMode::None;
@@ -481,6 +484,11 @@ private:
     void refreshPathAfterHistory(PathInteraction &path);
     void closePenPath();
     void drawPenOverlay(QPainter &painter);
+    void drawContourFigures(QPainter &painter);
+    void syncPenFigureSelection();
+    void reloadPenFigure();
+    void storePenFigure();
+    bool penFigureEditable() const;
     QPainterPath penPreviewPath(bool closeToStart) const;
     void rebuildContourLeewayCache() const;
     void invalidatePenGeometryCache();
@@ -563,6 +571,9 @@ private:
     std::function<void()> liningFillCancelCallback_;
     std::function<void(double)> liningWidthChangedCallback_;
     PathInteraction pen_;
+    QString penFigureId_;
+    std::optional<PathInteractionState> penDraft_;
+    bool syncingPenFigure_ = false;
     QString contourLeewayGroupId_;
     PathInteraction lining_;
     mutable QPainterPath contourLeewayPathCache_;

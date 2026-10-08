@@ -285,6 +285,22 @@ bool entryAllMasked(const GroupEntry &entry) {
     return true;
 }
 
+bool containsContourFigure(const scene::Layer &node) {
+    if (node.kind() == scene::LayerKind::Contour) {
+        return true;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return false;
+    }
+    const auto &group = static_cast<const scene::Group &>(node);
+
+    return std::any_of(group.children.cbegin(), group.children.cend(), [](const auto &child) {
+        return containsContourFigure(*child);
+    });
+}
+
+void appendGameEntry(const scene::Layer &node, QVector<GroupEntry> &entries);
+
 QVector<GroupEntry> directChildren(const GroupEntry &entry) {
     if (entry.kind == GroupEntry::Group) {
         if (entry.group == nullptr) {
@@ -292,11 +308,7 @@ QVector<GroupEntry> directChildren(const GroupEntry &entry) {
         }
         QVector<GroupEntry> entries;
         for (const auto &child : entry.group->children) {
-            if (child->kind() == scene::LayerKind::Group) {
-                entries.push_back({GroupEntry::Group, static_cast<const scene::Group *>(child.get()), nullptr, {}});
-            } else if (child->kind() == scene::LayerKind::Shape) {
-                entries.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(child.get()), {}});
-            }
+            appendGameEntry(*child, entries);
         }
         return entries;
     }
@@ -304,6 +316,26 @@ QVector<GroupEntry> directChildren(const GroupEntry &entry) {
         return entry.children;
     }
     throw std::runtime_error("layer entries cannot have children");
+}
+
+void appendGameEntry(const scene::Layer &node, QVector<GroupEntry> &entries) {
+    if (node.kind() == scene::LayerKind::Shape) {
+        entries.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(&node), {}});
+        return;
+    }
+    if (node.kind() != scene::LayerKind::Group) {
+        return;
+    }
+    const GroupEntry entry{GroupEntry::Group, static_cast<const scene::Group *>(&node), nullptr, {}};
+
+    if (containsContourFigure(node)) {
+        const QVector<GroupEntry> children = directChildren(entry);
+        if (children.size() < 2) {
+            entries += children;
+            return;
+        }
+    }
+    entries.push_back(entry);
 }
 
 int terminalDepth(const GroupEntry &entry) {
@@ -390,11 +422,7 @@ QVector<GroupEntry> rootItems(const Project &project) {
         if (!child->visible) {
             continue;
         }
-        if (child->kind() == scene::LayerKind::Group) {
-            items.push_back({GroupEntry::Group, static_cast<const scene::Group *>(child.get()), nullptr, {}});
-        } else if (child->kind() == scene::LayerKind::Shape) {
-            items.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(child.get()), {}});
-        }
+        appendGameEntry(*child, items);
     }
     return items;
 }

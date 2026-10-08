@@ -507,7 +507,7 @@ bool ProjectCanvas::handleKeyBinding(KeyInteraction interaction, KeyEventPhase p
         return false;
     }
     if (interaction == KeyInteraction::CanvasRemovePathPoint
-        && tool_ == QStringLiteral("pen") && !pen_.fillRunning
+        && tool_ == QStringLiteral("pen") && !pen_.fillRunning && penFigureEditable()
         && (!pen_.closed || !pen_.cutoutClosed)) {
         QVector<PenPoint> &points = pen_.closed
             ? pen_.cutouts[pen_.activeCutout]

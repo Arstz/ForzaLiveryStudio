@@ -12,6 +12,7 @@ namespace gui {
 
 struct ProjectLookup {
     QHash<QString, const fls::scene::Shape *> layers;
+    QHash<QString, const fls::scene::ContourFigure *> contours;
     QHash<QString, const fls::scene::GuideLayer *> guides;
     QHash<QString, const fls::scene::Group *> groups;
 };
@@ -30,6 +31,7 @@ public:
     static constexpr int IsGuideRole = Qt::UserRole + 7;
     static constexpr int GuideIdsRole = Qt::UserRole + 8;
     static constexpr int PositionTextRole = Qt::UserRole + 9;
+    static constexpr int IsContourRole = Qt::UserRole + 10;
 
     explicit LayerTreeModel(QObject *parent = nullptr);
     ~LayerTreeModel() override;

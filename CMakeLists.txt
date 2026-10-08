@@ -85,6 +85,7 @@ add_library(fls_core STATIC
     src/core/header_codec.h
     src/core/layer.cpp
     src/core/layer.h
+    src/core/contour_data.h
     src/core/visual_container.h
     src/core/flat_payload.cpp
     src/core/flat_payload.h
@@ -132,6 +133,7 @@ add_library(fls_core STATIC
 target_link_libraries(fls_core
     PUBLIC
         Qt6::Core
+        Qt6::Gui
         ZLIB::ZLIB
 )
 
@@ -495,6 +497,23 @@ if(FLS_BUILD_TESTS)
     add_test(NAME livery_legacy_five_panel
         COMMAND fls_livery_logo_encoder_tests --legacy-five-panel)
 
+    qt6_wrap_cpp(fls_contour_figure_moc src/gui/state/editor_state.h)
+    add_executable(fls_contour_figure_tests
+        ${fls_contour_figure_moc}
+        tools/contour_figure_test.cpp
+        src/gui/state/editor_state.h
+        src/gui/state/editor_state.cpp
+        src/gui/state/editor_state_selection.cpp
+        src/gui/state/editor_state_snapshot.cpp
+        src/gui/state/editor_state_clipboard.cpp
+        src/gui/state/editor_state_grouping.cpp
+    )
+    set_target_properties(fls_contour_figure_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+    target_include_directories(fls_contour_figure_tests PRIVATE
+        src/gui/state src/gui/app src/gui/widgets src/gui/fill)
+    target_link_libraries(fls_contour_figure_tests PRIVATE fls_core Qt6::Gui)
+    add_test(NAME contour_figure COMMAND fls_contour_figure_tests)
+
     add_executable(fls_guide_preprocess_metadata_tests
         tools/guide_preprocess_metadata_test.cpp
     )
@@ -553,6 +572,7 @@ if(FLS_BUILD_TESTS)
         src/gui/widgets/shape_geometry_store.cpp
     )
     target_include_directories(fls_region_pen_conversion_tests PRIVATE
+        src/core
         src/gui/canvas
         src/gui/fill
         src/gui/widgets
@@ -574,7 +594,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/pen_fill.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )
-    target_include_directories(fls_cubic_contour_tests PRIVATE src/gui/fill src/gui/widgets)
+    target_include_directories(fls_cubic_contour_tests PRIVATE src/core src/gui/fill src/gui/widgets)
     target_compile_definitions(fls_cubic_contour_tests PRIVATE FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(fls_cubic_contour_tests PRIVATE Qt6::Core Qt6::Gui ZLIB::ZLIB)
     add_test(NAME cubic_contour COMMAND fls_cubic_contour_tests)

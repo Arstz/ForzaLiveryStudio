@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fill_contour.h"
+#include "contour_data.h"
 #include "shape_geometry_store.h"
 
 #include <QtCore>
@@ -10,20 +11,8 @@
 
 namespace gui {
 
-enum class PenPointKind {
-    Hard,
-    Soft,
-};
-
-struct PenPoint {
-    QPointF position;
-    PenPointKind kind = PenPointKind::Soft;
-    // Handle offsets move with the anchor. Automatic anchors derive tangents from neighbours.
-    QPointF incoming;
-    QPointF outgoing;
-    bool explicitHandles = false;
-    bool operator==(const PenPoint &) const = default;
-};
+using PenPointKind = fls::scene::ContourPointKind;
+using PenPoint = fls::scene::ContourPoint;
 
 enum class PenLoopKind {
     Outer,

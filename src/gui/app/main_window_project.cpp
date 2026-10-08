@@ -229,7 +229,10 @@ void MainWindow::rebuildSectionBar() {
                 labelGroup = mappedGroup;
             }
         }
-        const int shapeCount = static_cast<int>(state_->leafLayerIdsForEntry(projectGroup->id).size());
+        const QVector<QString> leafIds = state_->leafLayerIdsForEntry(projectGroup->id);
+        const int shapeCount = static_cast<int>(std::count_if(leafIds.cbegin(), leafIds.cend(), [this](const QString &id) {
+            return dynamic_cast<const fls::scene::Shape *>(state_->sceneNode(id)) != nullptr;
+        }));
         sections.push_back({projectGroup->id, labelGroup->name, shapeCount,
                             fls::kEnforceLiveryShapeLimits
                                 && shapeCount > fls::liverySectionShapeLimit(projectGroup->liverySectionSlot)});
@@ -462,7 +465,11 @@ void MainWindow::syncTreeSelectionFromIds() {
             result = guideIds.size() == 1 && state_->selectedGuideLayerIds_.contains(guideIds.front());
         } else if (index.data(LayerTreeModel::IsGroupRole).toBool()) {
             const int childRows = treeModel_->rowCount(index);
-            result = childRows > 0;
+            const bool exactContour = state_->selectedLayerIds().size() == 1
+                && dynamic_cast<const fls::scene::ContourFigure *>(
+                    state_->sceneNode(*state_->selectedLayerIds().constBegin())) != nullptr
+                && !state_->selectedEntryIds_.contains(id);
+            result = childRows > 0 && !exactContour;
             for (int r = 0; r < childRows && result; ++r) {
                 result = coveredFor(treeModel_->index(r, 0, index));
             }

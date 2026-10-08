@@ -52,6 +52,9 @@ bool nodeEqual(const fls::scene::Layer &a, const fls::scene::Layer &b) {
         return false;
     }
     switch (a.kind()) {
+    case fls::scene::LayerKind::Contour:
+        return static_cast<const fls::scene::ContourFigure &>(a).data
+            == static_cast<const fls::scene::ContourFigure &>(b).data;
     case fls::scene::LayerKind::Shape: {
         const auto &sa = static_cast<const fls::scene::Shape &>(a);
         const auto &sb = static_cast<const fls::scene::Shape &>(b);
@@ -132,6 +135,10 @@ bool structureEqual(const fls::scene::Layer &a, const fls::scene::Layer &b) {
 }
 
 bool previewChange(const fls::scene::Layer &a, const fls::scene::Layer &b) {
+    if (a.kind() == fls::scene::LayerKind::Contour) {
+        return static_cast<const fls::scene::ContourFigure &>(a).data
+            != static_cast<const fls::scene::ContourFigure &>(b).data;
+    }
     if (a.kind() == fls::scene::LayerKind::Shape) {
         const auto &sa = static_cast<const fls::scene::Shape &>(a);
         const auto &sb = static_cast<const fls::scene::Shape &>(b);

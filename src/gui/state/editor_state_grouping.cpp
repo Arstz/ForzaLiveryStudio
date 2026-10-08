@@ -8,7 +8,8 @@ namespace gui {
 namespace {
 
 void collectLeafIds(const fls::scene::Layer &node, QSet<QString> &out) {
-    if (node.kind() == fls::scene::LayerKind::Shape) {
+    if (node.kind() == fls::scene::LayerKind::Shape
+        || node.kind() == fls::scene::LayerKind::Contour) {
         out.insert(node.id);
         return;
     }

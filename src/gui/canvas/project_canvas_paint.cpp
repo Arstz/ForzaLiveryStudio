@@ -31,7 +31,45 @@ QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     return path;
 }
 
+void ProjectCanvas::drawContourFigures(QPainter &painter) {
+    if (state_ == nullptr) {
+        return;
+    }
+    painter.save();
+    painter.resetTransform();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setBrush(Qt::NoBrush);
+    for (const SceneRenderEntry &entry : state_->renderEntries()) {
+        if (entry.kind != fls::scene::LayerKind::Contour || !isSectionActive(entry.sectionGroupId)
+            || (entry.nodeId == penFigureId_ && tool_ == QStringLiteral("pen"))) {
+            continue;
+        }
+        const auto &figure = static_cast<const fls::scene::ContourFigure &>(*entry.node);
+        bool visible = figure.visible;
+
+        for (const QString &ancestor : entry.ancestorGroupIds) {
+            const auto *group = state_->sceneNode(ancestor);
+            visible = visible && group != nullptr && group->visible;
+        }
+        if (!visible) {
+            continue;
+        }
+        painter.setOpacity(figure.opacity);
+        painter.setPen(QPen(QColor(65, 175, 245), 1.5, Qt::DashLine));
+        painter.drawPath((entry.worldTransform * camera_.matrix()).map(contourFigurePath(figure)));
+    }
+    painter.restore();
+}
+
 void ProjectCanvas::drawPenOverlay(QPainter &painter) {
+    if (!penFigureId_.isEmpty() && state_ != nullptr) {
+        const auto *figure = state_->sceneNode(penFigureId_);
+        for (const fls::scene::Layer *node = figure; node != nullptr; node = node->parent()) {
+            if (!node->visible) {
+                return;
+            }
+        }
+    }
     const bool showPendingBucketContour =
         tool_ == QStringLiteral("bucket") && !pen_.points.isEmpty();
     if (tool_ != QStringLiteral("pen")
@@ -682,7 +720,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
         ++loadedCount;
         return true;
     }, false);
-    const int selectedCount = state_ != nullptr ? state_->selectedLayerIds().size() : 0;
+    const int selectedCount = state_ != nullptr ? state_->selectedLayers().size() : 0;
     const QStringList countLines = {
         QStringLiteral("Shapes loaded: %1").arg(loadedCount),
         QStringLiteral("Shapes selected: %1").arg(selectedCount),
@@ -726,6 +764,7 @@ void ProjectCanvas::drawOverlay(QPainter &painter) {
                               kRulerExtent + kShapeCountMargin - padding),
                       countImage);
 
+    drawContourFigures(painter);
     drawPenOverlay(painter);
     drawLiningOverlay(painter);
     drawCursorHint(painter);
