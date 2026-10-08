@@ -433,6 +433,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME legacy_catalog_cover COMMAND fls_compact_fit_tests)
     add_test(NAME compact_fit COMMAND fls_compact_fit_tests --compact-tests)
     add_test(NAME compact_shape_configuration COMMAND fls_compact_fit_tests --shape-config-tests)
+    add_test(NAME compact_comparison_projects COMMAND fls_compact_fit_tests --comparison-project-tests)
     add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
     add_test(NAME failed_fill_retention COMMAND fls_compact_fit_tests --failed-fill-tests)
     add_test(NAME compact_fast_quality COMMAND fls_compact_fit_tests --fast-quality-tests)
@@ -441,6 +442,12 @@ if(FLS_BUILD_TESTS)
     add_test(NAME compact_interior_coverage COMMAND fls_compact_fit_tests --interior-coverage-tests)
     add_test(NAME compact_cubic_interior COMMAND fls_compact_fit_tests --cubic-interior-tests)
     add_test(NAME compact_cornered_interior COMMAND fls_compact_fit_tests --cornered-interior-tests)
+    if(FLS_CUDA_AVAILABLE)
+        add_test(NAME compact_contour_polish COMMAND fls_compact_fit_tests --contour-polish-tests
+            --shape-config "${CMAKE_CURRENT_SOURCE_DIR}/assets/compact_fit_shapes.json")
+        add_test(NAME compact_cluster_compaction COMMAND fls_compact_fit_tests --cluster-compaction-tests
+            --shape-config "${CMAKE_CURRENT_SOURCE_DIR}/assets/compact_fit_shapes.json")
+    endif()
     add_test(NAME release_shape_catalog COMMAND fls_compact_fit_tests --release-catalog-test)
     add_test(NAME gui_asset_deployment COMMAND "${CMAKE_COMMAND}"
         "-DFLS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests"
@@ -718,6 +725,7 @@ set(FLS_GUI_ASSETS
 set(FLS_GUI_ASSET_FILES
     differential_shapes.json
     compact_fit_shapes.json
+    compact_fit_shapes_combined.json
     settings_tips.json
     vector/shape_geometry.json.gz
     vector/shape_names.json

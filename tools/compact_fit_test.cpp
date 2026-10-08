@@ -11,6 +11,7 @@
 #include "compact_fit_reduction.h"
 #include "greedy_cover.h"
 #include "matrix_math.h"
+#include "shape_registry.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -338,17 +339,17 @@ QVector<gui::PenPlacement> projectSeed(const QString &source, const QString &nam
     return result;
 }
 
-void saveComparison(const QString &source, const QString &destination, const gui::PenFillResult &fill,
-                     const QString &name = QStringLiteral("Compact Fit - continuity")) {
-    QFile file(source);
-    require(file.open(QIODevice::ReadOnly), file.errorString());
-    auto project = fls::decodeProjectDocument(file.readAll());
+std::unique_ptr<fls::scene::Group> comparisonGroup(const gui::PenFillResult &fill, const QString &name) {
     auto group = std::make_unique<fls::scene::Group>();
+    group->id = QStringLiteral("group_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     group->name = name;
     group->transform.x = -750;
     for (const auto &placement : fill.placements) {
         auto shape = std::make_unique<fls::scene::Shape>();
-        shape->shapeId = placement.shapeId;
+        shape->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        shape->name = QStringLiteral("%1 [%2] #%3").arg(fls::detail::shapeName(placement.shapeId))
+            .arg(placement.shapeId).arg(group->children.size() + 1, 3, 10, QLatin1Char('0'));
+        shape->setVectorShape(placement.shapeId);
         shape->color = {252, 252, 252, 255};
         const auto &transform = placement.transform;
         fls::Matrix3 matrix;
@@ -361,11 +362,53 @@ void saveComparison(const QString &source, const QString &destination, const gui
         shape->transform = fls::decomposeTransform2D(matrix);
         group->append(std::move(shape));
     }
+
+    return group;
+}
+
+void saveComparison(const QString &source, const QString &destination, const gui::PenFillResult &fill,
+                     const QString &name = QStringLiteral("Compact Fit - continuity")) {
+    QFile file(source);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    auto project = fls::decodeProjectDocument(file.readAll());
+    auto group = comparisonGroup(fill, name);
     project.root->append(std::move(group));
     QFile output(destination);
     require(output.open(QIODevice::WriteOnly | QIODevice::NewOnly), output.errorString());
     const auto encoded = fls::encodeProjectDocument(project);
     require(output.write(encoded) == encoded.size(), output.errorString());
+}
+
+void comparisonExportTests() {
+    fls::Project project;
+    gui::PenFillResult fill;
+    fill.placements = {{101, QTransform(2, 0, 0.25, 3, 20, 30)},
+                       {101, QTransform(-1, 0.5, 0, 2, -20, 30)},
+                       {2133, QTransform(1, 0, 0, 1, 5, -7)}};
+    project.root->append(comparisonGroup(fill, QStringLiteral("Comparison")));
+    const auto loaded = fls::decodeProjectDocument(fls::encodeProjectDocument(project));
+    require(loaded.root->children.size() == 1, QStringLiteral("Comparison export lost its group"));
+    const auto &group = static_cast<const fls::scene::Group &>(*loaded.root->children.front());
+    QSet<QString> ids{group.id};
+    require(!group.id.isEmpty() && group.children.size() == fill.placements.size(),
+        QStringLiteral("Comparison export lost selectable layers"));
+    for (int index = 0; index < fill.placements.size(); ++index) {
+        const auto &shape = static_cast<const fls::scene::Shape &>(*group.children[index]);
+        require(!shape.id.isEmpty() && !ids.contains(shape.id) && shape.name.contains(QString::number(shape.shapeId))
+            && shape.shapeId == fill.placements[index].shapeId,
+            QStringLiteral("Comparison export has missing or duplicate shape identities"));
+        ids.insert(shape.id);
+        const auto matrix = shape.transform.matrix();
+        const auto &expected = fill.placements[index].transform;
+        require(std::abs(matrix.m[0][0] - expected.m11()) < 1e-8
+            && std::abs(matrix.m[1][0] - expected.m12()) < 1e-8
+            && std::abs(matrix.m[0][1] - expected.m21()) < 1e-8
+            && std::abs(matrix.m[1][1] - expected.m22()) < 1e-8
+            && std::abs(matrix.m[0][2] - expected.dx()) < 1e-8
+            && std::abs(matrix.m[1][2] - expected.dy()) < 1e-8,
+            QStringLiteral("Comparison export changed a placement transform"));
+    }
+    QTextStream(stdout) << "Comparison export preserves separate shape identities, names and transforms\n";
 }
 
 void requireApproximation(const gui::PenFillRequest &request, const gui::catalog::FillResult &result,
@@ -844,7 +887,8 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
         QStringLiteral("Duplicate removal did not use exact-union verification"));
     const auto stages = result.diagnostics.value("stageWork").toObject();
     int used = 0;
-    for (const auto &name : {"recognition", "repair", "spatialReduction", "exposedReduction", "polish"}) {
+    for (const auto &name : {"recognition", "repair", "spatialReduction", "exposedReduction", "polish",
+             "smallSupportCompaction", "clusterCompaction", "contourPolish", "neighborCompaction"}) {
         const auto stage = stages.value(name).toObject();
         require(!stage.isEmpty() && stage.value("start").toInt() == used,
             QStringLiteral("Stage work accounting is discontinuous"));
@@ -864,7 +908,8 @@ void compactSearchTests(const QVector<gui::catalog::Primitive> &catalog) {
         QStringLiteral("Rejected GPU refinement retained duplicate seed placements"));
     int gpuUsed = 0;
     const auto gpuStages = gpuResult.diagnostics.value("stageWork").toObject();
-    for (const auto &name : {"recognition", "gpuPipeline", "repair", "spatialReduction", "exposedReduction", "polish"}) {
+    for (const auto &name : {"recognition", "gpuPipeline", "repair", "spatialReduction", "exposedReduction", "polish",
+             "smallSupportCompaction", "clusterCompaction", "contourPolish", "neighborCompaction"}) {
         const auto stage = gpuStages.value(name).toObject();
         if (stage.isEmpty()) {
             continue;
@@ -1648,6 +1693,66 @@ void smallContourTests(const QVector<gui::catalog::Primitive> &catalog) {
         << timer.elapsed() << " ms; coverage and work accounting passed\n";
 }
 
+void contourPolishTests(const QVector<gui::catalog::Primitive> &catalog) {
+    const auto request = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cornered_interior.json"));
+    gui::compact::FillOptions options;
+    options.retainFailedFill = true;
+    const auto result = gui::profile::fillRegion(request, catalog, options);
+    const auto quality = result.diagnostics.value("boundaryQuality").toObject();
+    const auto polish = result.diagnostics.value("contourPolish").toObject();
+    QTextStream(stdout) << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n';
+    require(result.diagnostics.value("missingInteriorArea").toDouble(-1) == 0
+        && result.diagnostics.value("missingBeyondInward").toDouble(-1) == 0
+        && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0,
+        QStringLiteral("Contour polishing lost coverage or exceeded the outer envelope"));
+    require(!result.fill.cancelled && result.fill.placements.size() <= 127
+        && quality.value("tangentEnergy").toDouble() <= 75
+        && quality.value("turnEnergy").toDouble() <= 51
+        && quality.value("maximumExcessTurnDegrees").toDouble() <= 125,
+        QStringLiteral("Contour polishing regressed count or exposed contour quality"));
+    require(polish.value("commits").toInt() > 0 && polish.value("evaluations").toInt() <= 512
+        && polish.value("energyAfter").toDouble() < polish.value("energyBefore").toDouble()
+        && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
+        QStringLiteral("Contour polishing exceeded its work budget or failed to improve quality"));
+    require(quality.value("holes").toInt() == 6 && quality.value("components").toInt() == 1
+        && quality.value("maximumCornerDistance").toDouble() <= 5.294104,
+        QStringLiteral("Contour polishing changed topology or worsened a protected corner"));
+    QTextStream(stdout) << "Contour polishing, neighbor growth, count and exact coverage passed\n";
+}
+
+void clusterCompactionTests(const QVector<gui::catalog::Primitive> &catalog) {
+    const auto request = readRequest(QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_clustered_boundary.json"));
+    gui::compact::FillOptions options;
+    options.retainFailedFill = true;
+    QElapsedTimer timer;
+    timer.start();
+    const auto result = gui::profile::fillRegion(request, catalog, options);
+    const auto quality = result.diagnostics.value("boundaryQuality").toObject();
+    const auto cluster = result.diagnostics.value("clusterCompaction").toObject();
+    const auto neighbor = result.diagnostics.value("stageWork").toObject().value("neighborCompaction").toObject();
+    require(!result.fill.cancelled && result.fill.placements.size() <= 128,
+        QStringLiteral("Cluster compaction did not retain its shape-count improvement"));
+    require(result.diagnostics.value("missingInteriorArea").toDouble(-1) == 0
+        && result.diagnostics.value("missingBeyondInward").toDouble(-1) == 0
+        && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0,
+        QStringLiteral("Cluster compaction lost interior coverage or exceeded the envelope"));
+    require(quality.value("tangentEnergy").toDouble() <= 35
+        && quality.value("turnEnergy").toDouble() <= 14
+        && quality.value("energy").toDouble() <= 724
+        && quality.value("maximumCornerDistance").toDouble() <= 2.737574
+        && quality.value("maximumExcessTurnDegrees").toDouble() <= 111.545174,
+        QStringLiteral("Cluster compaction regressed exposed contour quality"));
+    require(quality.value("holes").toInt() == 6 && quality.value("components").toInt() == 1
+        && quality.value("protectedCorners").toInt() == 26,
+        QStringLiteral("Cluster compaction changed contour topology or corner protection"));
+    require(cluster.value("removals").toInt() > 0 && cluster.value("evaluations").toInt() <= 768
+        && neighbor.value("evaluations").toInt() <= 1536
+        && result.diagnostics.value("evaluations").toInt() <= options.evaluationBudget,
+        QStringLiteral("Cluster compaction exceeded its work limit or accepted no replacement"));
+    QTextStream(stdout) << "Cluster compaction: " << result.fill.placements.size() << " shapes, "
+        << timer.elapsed() << " ms; exact coverage, topology and contour quality passed\n";
+}
+
 void fastQualityTests() {
     quint64 random = 7812387;
     for (int trial = 0; trial < 64; ++trial) {
@@ -1703,6 +1808,17 @@ void fastQualityTests() {
         require(difference < 0.001, QStringLiteral("Local closing changed support beyond grid rounding"));
         const auto measured = model.measure(coverage, local);
         const auto reference = model.measure(coverage, global);
+        QVector<gui::compact::BoundaryDefect> defects;
+        const auto sampled = model.measure(coverage, global, QRectF(), &defects);
+        double defectEnergy = 0;
+        for (const auto &defect : defects) {
+            require(std::isfinite(defect.energy) && defect.energy > 0,
+                QStringLiteral("Contour defect has an invalid score"));
+            defectEnergy += defect.energy;
+        }
+        require(std::abs(defectEnergy - reference.tangentEnergy - 2 * reference.turnEnergy) < 1e-5
+            && std::abs(model.energy(sampled) - model.energy(reference)) < 1e-7,
+            QStringLiteral("Contour defect ranking differs from measured continuity"));
         require(measured.components == reference.components && measured.holes == reference.holes,
             QStringLiteral("Local closing changed observed topology"));
         const double oldSpill = gui::catalog::area(gui::catalog::subtract(gui::catalog::subtract(addition, others), target));
@@ -1822,7 +1938,8 @@ void shapeConfigurationTests(const gui::ShapeGeometryStore &geometry) {
         QStringLiteral("Baseline catalog has %1 shapes: %2").arg(baseline.size()).arg(error));
     require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Interior) == QVector<int>({102, 101, 109, 110, 124, 2117}),
         QStringLiteral("Configuration changed interior seed order"));
-    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves).size() == 24,
+    require(gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves).size() == 25
+        && gui::catalog::shapeIdsForTask(baseline, ShapeTask::Curves).contains(2133),
         QStringLiteral("Configuration changed the default curve families"));
     for (const auto &primitive : baseline)
         require(gui::catalog::usesTask(primitive, ShapeTask::CutoutReplacements) == (primitive.shape.contours.size() > 1),
@@ -1908,9 +2025,22 @@ void shapeConfigurationTests(const gui::ShapeGeometryStore &geometry) {
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
     QTextStream output(stdout);
+    auto arguments = application.arguments();
+    QString configurationPath;
     QDir::setCurrent(QStringLiteral(FLS_SOURCE_DIR));
     try {
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--release-catalog-test")) {
+        const int configurationArgument = arguments.indexOf(QStringLiteral("--shape-config"));
+        if (configurationArgument >= 0) {
+            require(configurationArgument + 1 < arguments.size(), QStringLiteral("--shape-config requires a JSON path"));
+            configurationPath = arguments[configurationArgument + 1];
+            arguments.removeAt(configurationArgument + 1);
+            arguments.removeAt(configurationArgument);
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--comparison-project-tests")) {
+            comparisonExportTests();
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--release-catalog-test")) {
             QTemporaryDir directory;
             require(directory.isValid() && QDir::setCurrent(directory.path()), QStringLiteral("Cannot isolate the catalog test working directory"));
             gui::ShapeGeometryStore geometry;
@@ -1941,41 +2071,51 @@ int main(int argc, char **argv) {
         gui::ShapeGeometryStore geometry;
         QString error;
         require(geometry.loadDefault(&error), error);
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--shape-config-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--shape-config-tests")) {
             shapeConfigurationTests(geometry);
             return 0;
         }
-        if (application.arguments().size() == 3
-            && application.arguments()[1] == QStringLiteral("--audit")) {
-            auditCatalog(geometry, application.arguments()[2]);
+        if (arguments.size() == 3
+            && arguments[1] == QStringLiteral("--audit")) {
+            auditCatalog(geometry, arguments[2]);
             output << "All visible catalog triangle unions audited\n";
             return 0;
         }
-        const QVector<gui::catalog::Primitive> fullCatalog = gui::catalog::buildCatalog(geometry, &error);
+        const QVector<gui::catalog::Primitive> fullCatalog = configurationPath.isEmpty()
+            ? gui::catalog::buildCatalog(geometry, &error)
+            : gui::catalog::buildCatalog(geometry, configurationPath, &error);
         require(error.isEmpty(), error);
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--small-contour-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--small-contour-tests")) {
             smallContourTests(fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 3 && application.arguments()[1] == QStringLiteral("--exact-reduction")) {
-            benchmarkExactReduction(application.arguments()[2], fullCatalog);
+        if (arguments.size() == 3 && arguments[1] == QStringLiteral("--exact-reduction")) {
+            benchmarkExactReduction(arguments[2], fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--compact-search-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--compact-search-tests")) {
             compactSearchTests(fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--coverage-repair-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--coverage-repair-tests")) {
             coverageRepairTests(fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--interior-coverage-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--interior-coverage-tests")) {
             interiorCoverageTests(fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && (application.arguments()[1] == QStringLiteral("--cubic-interior-tests")
-            || application.arguments()[1] == QStringLiteral("--cornered-interior-tests"))) {
-            const bool cornered = application.arguments()[1] == QStringLiteral("--cornered-interior-tests");
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--contour-polish-tests")) {
+            contourPolishTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--cluster-compaction-tests")) {
+            clusterCompactionTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && (arguments[1] == QStringLiteral("--cubic-interior-tests")
+            || arguments[1] == QStringLiteral("--cornered-interior-tests"))) {
+            const bool cornered = arguments[1] == QStringLiteral("--cornered-interior-tests");
             const QString fixture = cornered
                 ? QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cornered_interior.json")
                 : QStringLiteral(FLS_SOURCE_DIR "/tools/fixtures/compact_fit_cubic_interior.json");
@@ -2015,52 +2155,52 @@ int main(int argc, char **argv) {
                 << " placements, " << timer.elapsed() << " ms\n";
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--quality-examples")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--quality-examples")) {
             qualityExamples();
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--prepared-geometry-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--prepared-geometry-tests")) {
             preparedGeometryTests();
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--raster-mask-index-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--raster-mask-index-tests")) {
             rasterMaskIndexTests();
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--fast-quality-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--fast-quality-tests")) {
             fastQualityTests();
             return 0;
         }
-        if (application.arguments().size() == 3 && application.arguments()[1] == QStringLiteral("--benchmark-boundary")) {
-            benchmarkBoundary(application.arguments()[2], fullCatalog);
+        if (arguments.size() == 3 && arguments[1] == QStringLiteral("--benchmark-boundary")) {
+            benchmarkBoundary(arguments[2], fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && application.arguments()[1] == QStringLiteral("--failed-fill-tests")) {
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--failed-fill-tests")) {
             failedFillTests(fullCatalog);
             return 0;
         }
-        if (application.arguments().size() == 2 && (application.arguments()[1] == QStringLiteral("--compact-tests")
-            || application.arguments()[1] == QStringLiteral("--profile-tests"))) {
-            compactTests(fullCatalog, application.arguments()[1] == QStringLiteral("--profile-tests"));
+        if (arguments.size() == 2 && (arguments[1] == QStringLiteral("--compact-tests")
+            || arguments[1] == QStringLiteral("--profile-tests"))) {
+            compactTests(fullCatalog, arguments[1] == QStringLiteral("--profile-tests"));
             return 0;
         }
-        if (application.arguments().size() >= 3 && (application.arguments()[1] == QStringLiteral("--compact-fit")
-            || application.arguments()[1] == QStringLiteral("--profile-fit")
-            || application.arguments()[1] == QStringLiteral("--profile-project")
-            || application.arguments()[1] == QStringLiteral("--profile-retained")
-            || application.arguments()[1] == QStringLiteral("--profile-polish")
-            || application.arguments()[1] == QStringLiteral("--profile-repeat")
-            || application.arguments()[1] == QStringLiteral("--compact-project")
-            || application.arguments()[1] == QStringLiteral("--compact-polish")
-            || application.arguments()[1] == QStringLiteral("--compact-repeat"))) {
+        if (arguments.size() >= 3 && (arguments[1] == QStringLiteral("--compact-fit")
+            || arguments[1] == QStringLiteral("--profile-fit")
+            || arguments[1] == QStringLiteral("--profile-project")
+            || arguments[1] == QStringLiteral("--profile-retained")
+            || arguments[1] == QStringLiteral("--profile-polish")
+            || arguments[1] == QStringLiteral("--profile-repeat")
+            || arguments[1] == QStringLiteral("--compact-project")
+            || arguments[1] == QStringLiteral("--compact-polish")
+            || arguments[1] == QStringLiteral("--compact-repeat"))) {
             gui::compact::FillOptions options;
-            options.retainFailedFill = application.arguments()[1] == QStringLiteral("--profile-retained");
-            if (application.arguments().size() > 3) {
-                options.boundaryAllowance = application.arguments()[3].toDouble();
+            options.retainFailedFill = arguments[1] == QStringLiteral("--profile-retained");
+            if (arguments.size() > 3) {
+                options.boundaryAllowance = arguments[3].toDouble();
             }
-            if (application.arguments()[1] == QStringLiteral("--compact-polish")) {
-                require(application.arguments().size() == 6, QStringLiteral("Expected request, allowance, project and seed group"));
-                options.initialPlacements = projectSeed(application.arguments()[4], application.arguments()[5]);
+            if (arguments[1] == QStringLiteral("--compact-polish")) {
+                require(arguments.size() == 6, QStringLiteral("Expected request, allowance, project and seed group"));
+                options.initialPlacements = projectSeed(arguments[4], arguments[5]);
             }
             QElapsedTimer timer;
             timer.start();
@@ -2071,9 +2211,9 @@ int main(int argc, char **argv) {
                     reported = evaluated;
                 }
             };
-            const bool profile = application.arguments()[1].startsWith(QStringLiteral("--profile-"));
-            auto result = profile ? gui::profile::fillRegion(readRequest(application.arguments()[2]), fullCatalog, options)
-                : gui::compact::fillRegion(readRequest(application.arguments()[2]), fullCatalog, options, {},
+            const bool profile = arguments[1].startsWith(QStringLiteral("--profile-"));
+            auto result = profile ? gui::profile::fillRegion(readRequest(arguments[2]), fullCatalog, options)
+                : gui::compact::fillRegion(readRequest(arguments[2]), fullCatalog, options, {},
                 [&](int count, double missing, double spill) {
                     output << count << " shapes, missing " << missing << ", spill " << spill
                            << ", " << timer.elapsed() << " ms\n" << Qt::flush;
@@ -2096,27 +2236,36 @@ int main(int argc, char **argv) {
                 footprintCounts.insert(QString::number(threshold), QJsonObject{{"count", count}, {"area", area}});
             }
             result.diagnostics.insert(QStringLiteral("replayFootprintsBelow"), footprintCounts);
+            QJsonObject shapeCounts;
+            for (const auto &placement : result.fill.placements) {
+                const auto id = QString::number(placement.shapeId);
+                shapeCounts.insert(id, shapeCounts.value(id).toInt() + 1);
+            }
+            result.diagnostics.insert(QStringLiteral("replayShapeCounts"), shapeCounts);
+            result.diagnostics.insert(QStringLiteral("replayCount"), result.fill.placements.size());
+            result.diagnostics.insert(QStringLiteral("replayError"), result.fill.error);
+            result.diagnostics.insert(QStringLiteral("replayElapsedMilliseconds"), timer.elapsed());
             output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
             output << "Completed in " << timer.elapsed() << " ms\n" << Qt::flush;
             if (options.retainFailedFill) {
                 require(!result.fill.cancelled && !result.fill.placements.isEmpty(), QStringLiteral("Replay returned no retained fill"));
                 output << "Retained " << result.fill.placements.size() << " shapes: " << result.fill.error << '\n' << Qt::flush;
-                if (application.arguments().size() == 6) {
-                    saveComparison(application.arguments()[4], application.arguments()[5], result.fill,
+                if (arguments.size() == 6) {
+                    saveComparison(arguments[4], arguments[5], result.fill,
                         QStringLiteral("Compact Fit - local quality"));
                 }
             } else {
                 require(result.fill.error.isEmpty(), result.fill.error);
-                requireApproximation(readRequest(application.arguments()[2]), result, fullCatalog, options);
+                requireApproximation(readRequest(arguments[2]), result, fullCatalog, options);
             }
-            if (application.arguments()[1] == QStringLiteral("--compact-project") || application.arguments()[1] == QStringLiteral("--profile-project")) {
-                require(application.arguments().size() == 6, QStringLiteral("Expected request, allowance, source project and new destination"));
-                saveComparison(application.arguments()[4], application.arguments()[5], result.fill,
+            if (arguments[1] == QStringLiteral("--compact-project") || arguments[1] == QStringLiteral("--profile-project")) {
+                require(arguments.size() == 6, QStringLiteral("Expected request, allowance, source project and new destination"));
+                saveComparison(arguments[4], arguments[5], result.fill,
                     profile ? QStringLiteral("Compact Fit - curve first") : QStringLiteral("Compact Fit - continuity"));
             }
-            if (application.arguments()[1] == QStringLiteral("--compact-repeat") || application.arguments()[1] == QStringLiteral("--profile-repeat")) {
-                const auto repeat = profile ? gui::profile::fillRegion(readRequest(application.arguments()[2]), fullCatalog, options)
-                    : gui::compact::fillRegion(readRequest(application.arguments()[2]), fullCatalog, options);
+            if (arguments[1] == QStringLiteral("--compact-repeat") || arguments[1] == QStringLiteral("--profile-repeat")) {
+                const auto repeat = profile ? gui::profile::fillRegion(readRequest(arguments[2]), fullCatalog, options)
+                    : gui::compact::fillRegion(readRequest(arguments[2]), fullCatalog, options);
                 require(repeat.fill.error.isEmpty(), repeat.fill.error);
                 require(repeat.fill.placements.size() == result.fill.placements.size(), QStringLiteral("Compact repeat count differs"));
                 for (int index = 0; index < result.fill.placements.size(); ++index) {
@@ -2128,35 +2277,35 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
-        if ((application.arguments().size() == 4 || application.arguments().size() == 5)
-            && application.arguments()[1] == QStringLiteral("--compare-project")) {
-            compareProject(application.arguments()[2], readRequest(application.arguments()[3]), fullCatalog,
-                application.arguments().size() == 5 ? application.arguments()[4] : QString());
+        if ((arguments.size() == 4 || arguments.size() == 5)
+            && arguments[1] == QStringLiteral("--compare-project")) {
+            compareProject(arguments[2], readRequest(arguments[3]), fullCatalog,
+                arguments.size() == 5 ? arguments[4] : QString());
             return 0;
         }
-        const bool budgetedProfileReplay = application.arguments().size() == 4
-            && (application.arguments()[1] == QStringLiteral("--replay-profile")
-                || application.arguments()[1] == QStringLiteral("--replay-profile-cpu"));
-        if ((application.arguments().size() == 3 || budgetedProfileReplay)
-            && application.arguments()[1].startsWith(QStringLiteral("--replay"))) {
+        const bool budgetedProfileReplay = arguments.size() == 4
+            && (arguments[1] == QStringLiteral("--replay-profile")
+                || arguments[1] == QStringLiteral("--replay-profile-cpu"));
+        if ((arguments.size() == 3 || budgetedProfileReplay)
+            && arguments[1].startsWith(QStringLiteral("--replay"))) {
             gui::catalog::FillOptions replayOptions;
-            if (application.arguments()[1] == QStringLiteral("--replay-mesh")) {
+            if (arguments[1] == QStringLiteral("--replay-mesh")) {
                 replayOptions.candidateLimit = 0;
                 replayOptions.searchNodes = 0;
-            } else if (application.arguments()[1] == QStringLiteral("--replay-seed")
-                       || application.arguments()[1] == QStringLiteral("--replay-seed-cpu")) {
+            } else if (arguments[1] == QStringLiteral("--replay-seed")
+                       || arguments[1] == QStringLiteral("--replay-seed-cpu")) {
                 // Seed-only replay keeps large contour comparisons practical.
-            } else if (application.arguments()[1] == QStringLiteral("--replay-compact")) {
+            } else if (arguments[1] == QStringLiteral("--replay-compact")) {
                 replayOptions.candidateLimit = 1;
                 replayOptions.searchNodes = 0;
             } else {
-                require(application.arguments()[1] == QStringLiteral("--replay")
-                        || application.arguments()[1] == QStringLiteral("--replay-profile")
-                        || application.arguments()[1] == QStringLiteral("--replay-profile-cpu"),
+                require(arguments[1] == QStringLiteral("--replay")
+                        || arguments[1] == QStringLiteral("--replay-profile")
+                        || arguments[1] == QStringLiteral("--replay-profile-cpu"),
                         QStringLiteral("Unknown replay mode"));
             }
-            const auto request = readRequest(application.arguments()[2]);
-            QFile log(application.arguments()[2]);
+            const auto request = readRequest(arguments[2]);
+            QFile log(arguments[2]);
             if (log.open(QIODevice::ReadOnly)) {
                 const auto recorded = QJsonDocument::fromJson(log.readAll()).object()
                     .value(QStringLiteral("result")).toObject().value(QStringLiteral("placements")).toArray();
@@ -2186,23 +2335,23 @@ int main(int argc, char **argv) {
             gui::compact::FillOptions profileOptions;
             if (budgetedProfileReplay) {
                 bool validBudget = false;
-                const int budget = application.arguments()[3].toInt(&validBudget);
+                const int budget = arguments[3].toInt(&validBudget);
                 require(validBudget && budget > 0, QStringLiteral("Invalid profile evaluation budget"));
                 profileOptions.evaluationBudget = budget;
             }
             profileOptions.retainFailedFill = true;
-            profileOptions.useGpu = application.arguments()[1] != QStringLiteral("--replay-profile-cpu")
-                && application.arguments()[1] != QStringLiteral("--replay-seed-cpu");
-            profileOptions.seedOnly = application.arguments()[1] == QStringLiteral("--replay-seed")
-                || application.arguments()[1] == QStringLiteral("--replay-seed-cpu");
-            const auto replay = application.arguments()[1] == QStringLiteral("--replay-seed")
-                || application.arguments()[1] == QStringLiteral("--replay-seed-cpu")
-                || application.arguments()[1] == QStringLiteral("--replay-profile")
-                || application.arguments()[1] == QStringLiteral("--replay-profile-cpu")
+            profileOptions.useGpu = arguments[1] != QStringLiteral("--replay-profile-cpu")
+                && arguments[1] != QStringLiteral("--replay-seed-cpu");
+            profileOptions.seedOnly = arguments[1] == QStringLiteral("--replay-seed")
+                || arguments[1] == QStringLiteral("--replay-seed-cpu");
+            const auto replay = arguments[1] == QStringLiteral("--replay-seed")
+                || arguments[1] == QStringLiteral("--replay-seed-cpu")
+                || arguments[1] == QStringLiteral("--replay-profile")
+                || arguments[1] == QStringLiteral("--replay-profile-cpu")
                 ? gui::profile::fillRegion(request, fullCatalog, profileOptions)
                 : gui::catalog::fillRegion(request, fullCatalog, replayOptions);
-            if ((application.arguments()[1] == QStringLiteral("--replay-profile")
-                 || application.arguments()[1] == QStringLiteral("--replay-profile-cpu"))
+            if ((arguments[1] == QStringLiteral("--replay-profile")
+                 || arguments[1] == QStringLiteral("--replay-profile-cpu"))
                 && !replay.fill.placements.isEmpty()) {
                 const auto region = gui::catalog::buildRegion(request, {});
                 const QRectF bounds = region.bounds.adjusted(-20, -20, 20, 20);
@@ -2219,8 +2368,8 @@ int main(int argc, char **argv) {
                 preview.save(QStringLiteral("build/profile-replay.bmp"));
             }
             output << QJsonDocument(replay.diagnostics).toJson(QJsonDocument::Compact) << '\n';
-            if (application.arguments()[1] != QStringLiteral("--replay-seed")
-                && application.arguments()[1] != QStringLiteral("--replay-seed-cpu"))
+            if (arguments[1] != QStringLiteral("--replay-seed")
+                && arguments[1] != QStringLiteral("--replay-seed-cpu"))
                 requireComplete(replay);
             output << "Replay completed: " << replay.fill.placements.size() << " placements, "
                    << timer.elapsed() << " ms\n";

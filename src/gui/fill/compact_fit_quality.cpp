@@ -143,7 +143,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
 }
 
 BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const catalog::Polygons &observed,
-                                        const QRectF &window) const {
+                                        const QRectF &window, QVector<BoundaryDefect> *defects) const {
     BoundaryMetrics result;
     QElapsedTimer timer;
     std::unique_ptr<BoundaryModel> outputBoundary;
@@ -207,6 +207,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
             }
             const auto reference = referenceModel.closest(point);
             const auto &target = referenceModel.loops_[reference.loop];
+            double sampleEnergy = 0.0;
             for (double radius : {scale_, scale_ * 2.0}) {
                 const auto before = pointAt(loop, offset - radius);
                 const auto after = pointAt(loop, offset + radius);
@@ -224,10 +225,13 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
                     result.turnEnergy += spacing * excess * excess * 0.5;
                     result.maximumExcessTurn = std::max(result.maximumExcessTurn, excess);
                     result.cornerDefects += excess > kCornerDefectTurn;
+                    sampleEnergy += spacing * (tangentError * tangentError * 0.5 + excess * excess);
                 }
             }
             result.maximumDistance = std::max(result.maximumDistance, std::sqrt(reference.squaredDistance));
             ++result.samples;
+            if (defects && sampleEnergy > kMinimumLength)
+                defects->push_back({point, sampleEnergy});
         }
     }
 

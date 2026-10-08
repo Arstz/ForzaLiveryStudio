@@ -1,12 +1,17 @@
 param(
-    [string]$AssetsDirectory = ""
+    [string]$AssetsDirectory = "",
+    [string]$ConfigurationPath = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repositoryDirectory = Split-Path -Parent $PSScriptRoot
-$configurationSource = Join-Path $repositoryDirectory "assets\compact_fit_shapes.json"
+$configurationSource = if ([string]::IsNullOrWhiteSpace($ConfigurationPath)) {
+    Join-Path $repositoryDirectory "assets\compact_fit_shapes.json"
+} else {
+    (Resolve-Path -LiteralPath $ConfigurationPath).Path
+}
 if ([string]::IsNullOrWhiteSpace($AssetsDirectory)) {
     $AssetsDirectory = Join-Path $repositoryDirectory "build\Release\assets"
 }

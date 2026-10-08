@@ -27,6 +27,11 @@ struct BoundaryReference {
     double distance = 0.0;
 };
 
+struct BoundaryDefect {
+    QPointF point;
+    double energy = 0.0;
+};
+
 class BoundaryModel {
 public:
     struct ObservationWindow {
@@ -46,7 +51,7 @@ public:
     BoundaryMetrics measure(const catalog::Polygons &coverage) const;
     BoundaryMetrics measure(const catalog::Polygons &coverage, const catalog::Polygons &observed) const;
     BoundaryMetrics measure(const catalog::Polygons &coverage, const catalog::Polygons &observed,
-                              const QRectF &window) const;
+                              const QRectF &window, QVector<BoundaryDefect> *defects = nullptr) const;
     double energy(const BoundaryMetrics &metrics) const;
     QJsonObject diagnostics(const BoundaryMetrics &metrics) const;
     QJsonObject performance() const;

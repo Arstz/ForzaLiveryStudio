@@ -1,0 +1,37 @@
+{
+  "corners_137": {
+    "corners": [137]
+  },
+  "corners_expanded": {
+    "corners": [125, 131, 133, 134, 135, 137, 138]
+  },
+  "corners_selected": {
+    "corners": [125, 133, 134]
+  },
+  "curves_expanded": {
+    "curves": [132, 138]
+  },
+  "interior_expanded": {
+    "interior": [120, 122, 130, 137, 138]
+  },
+  "interior_pill": {
+    "interior": [2133]
+  },
+  "curves_pill": {
+    "curves": [2133]
+  },
+  "corners_curves": {
+    "corners": [125, 131, 133, 134, 135, 137, 138],
+    "curves": [132, 138]
+  },
+  "corners_curves_pill": {
+    "corners": [125, 131, 133, 134, 135, 137, 138],
+    "curves": [2133]
+  },
+  "combined_all": {
+    "corners": [125, 131, 133, 134, 135, 137, 138, 2138, 3138],
+    "curves": [132, 138, 2133, 2138, 3138],
+    "interior": [120, 122, 130, 137, 138, 2133, 2138, 3138],
+    "replacements": [125, 131, 132, 133, 134, 135, 137, 138, 2133, 2138, 3138]
+  }
+}

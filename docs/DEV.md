@@ -70,7 +70,7 @@ exports grouped `C_group` folders and `C_livery` folders.
   for task fields and deployment without recompilation. The legacy cover solver is
   excluded from the editor build and remains only in headless comparison tools.
   Compact Fit is an experimental curve-first approximation with separate
-  contour-quality checks. Its default initialization fits 24 catalog perimeter families
+  contour-quality checks. Its default initialization fits 25 catalog perimeter families
   to long boundary spans, including spans across authored control points. A
   point-to-line affine fit includes endpoint position and tangent constraints.
   Independent profile fits and arc residuals run in double-precision CUDA batches
@@ -99,7 +99,26 @@ exports grouped `C_group` folders and `C_livery` folders.
   interior coverage, the outer envelope, area limits, topology, and the fixed
   corner and continuity baseline. This pass uses at most 1,536 additional trials
   within the existing total evaluation budget. Small placements remain when a
-  legal reduction cannot preserve their required support. Large
+  legal reduction cannot preserve their required support.
+  A bounded cluster pass reuses seed candidates and fits curve templates to
+  aligned groups of unique support. It examines four separated neighborhoods
+  within 768 remaining trials. Candidate replacements can transfer small
+  interior gaps to nearby placements through growth. Exact checks preserve
+  required interior, the outer envelope, topology, protected corners, and
+  maximum turning error. Accepted replacements reduce count and keep boundary
+  energy and combined tangent and turning error from increasing.
+  GPU results also receive an exact contour polish within 512 remaining trials.
+  Sampled tangent and turning errors rank at most eight affected placements.
+  Small rotations and shifts compete under a continuity score that gives tangent
+  alignment extra weight. Required interior support can transfer to the two
+  nearest placements through anchored or centered growth. Each accepted
+  transaction keeps the placement count, preserves the envelope and topology,
+  bounds protected-corner displacement and worst turning error, and lowers
+  both combined continuity cost and boundary energy. Final verification uses
+  the original quality limits. A final neighbor-compaction pass examines up to
+  24 placements with less than 150 square units of unique support. It uses at
+  most 1,536 remaining trials and retains the same exact coverage and quality
+  safeguards. Growth ranking reuses cached observed coverage. Large
   profile-fit batches use a coarse CUDA geometry shortlist before exact validation;
   the complete candidate pool receives a device-ranked shortlist before exact
   witness selection. One exact CPU checkpoint accepts an
