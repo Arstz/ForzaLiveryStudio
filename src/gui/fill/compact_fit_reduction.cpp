@@ -6,11 +6,44 @@
 namespace gui::compact {
 namespace {
 
+constexpr int kHoleExclusionCacheLimit = 4;
 constexpr double kComparisonSlack = 1e-7;
 constexpr int kExactCandidateTrials = 64;
 constexpr int kExactContainmentTrials = 512;
 constexpr int kExactNeighbors = 4;
 constexpr int kSquareShapeId = 101;
+
+catalog::Polygons intendedHoleExclusion(const catalog::Polygons &target, double allowance) {
+    struct HoleExclusion {
+        catalog::Polygons target;
+        catalog::Polygons support;
+        double allowance = 0.0;
+    };
+    thread_local QVector<HoleExclusion> exclusions;
+    const auto matches = [&](const auto &entry) {
+        return entry.target.constData() == target.constData()
+            && entry.target.size() == target.size() && entry.allowance == allowance;
+    };
+    auto found = std::find_if(exclusions.cbegin(), exclusions.cend(), matches);
+
+    if (found == exclusions.cend()) {
+        catalog::Polygons intendedHoles;
+        for (auto polygon : target) {
+            if (catalog::signedArea(polygon) < 0) {
+                std::reverse(polygon.begin(), polygon.end());
+                intendedHoles.push_back(std::move(polygon));
+            }
+        }
+        const auto support = intendedHoles.isEmpty() ? catalog::Polygons()
+            : catalog::expanded(catalog::unite(intendedHoles), allowance);
+        if (exclusions.size() >= kHoleExclusionCacheLimit)
+            exclusions.pop_back();
+        exclusions.push_front({target, support, allowance});
+        found = exclusions.cbegin();
+    }
+
+    return found->support;
+}
 
 catalog::Polygons exactSupport(const QVector<ReusableCandidate> &pieces, const QVector<int> &excluded = {}) {
     catalog::Polygons polygons;
@@ -393,17 +426,9 @@ ReductionState reductionState(const catalog::Polygons &coverage,
         }
     }
     result.observedHoles = catalog::intersect(catalog::unite(result.observedHoles), visibleTarget);
-    catalog::Polygons intendedHoles;
-    for (auto polygon : visibleTarget) {
-        if (catalog::signedArea(polygon) < 0) {
-            std::reverse(polygon.begin(), polygon.end());
-            intendedHoles.push_back(std::move(polygon));
-        }
-    }
-    if (!intendedHoles.isEmpty()) {
-        result.observedHoles = catalog::subtract(result.observedHoles,
-            catalog::expanded(catalog::unite(intendedHoles), inwardAllowance));
-    }
+    const auto holeExclusion = intendedHoleExclusion(visibleTarget, inwardAllowance);
+    if (!holeExclusion.isEmpty())
+        result.observedHoles = catalog::subtract(result.observedHoles, holeExclusion);
     result.cornerDistances = result.metrics.cornerDistances;
     result.missingArea = catalog::area(catalog::subtract(visibleTarget, visibleCoverage));
     result.spillArea = catalog::area(catalog::subtract(visibleCoverage, visibleTarget));

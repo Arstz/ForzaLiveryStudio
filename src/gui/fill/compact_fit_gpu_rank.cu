@@ -99,7 +99,10 @@ __device__ bool contains(float x, float y, const Point *points,
         const Loop loop = loops[loopOffset + loopIndex];
         for (int index = 0; index < loop.pointCount; ++index) {
             const Point first = points[loop.pointOffset + index];
-            const Point second = points[loop.pointOffset + (index + 1) % loop.pointCount];
+            const int next = index + 1 == loop.pointCount ? 0 : index + 1;
+            const Point second = points[loop.pointOffset + next];
+            if ((first.y <= y) == (second.y <= y))
+                continue;
             const float cross = (second.x - first.x) * (y - first.y)
                 - (second.y - first.y) * (x - first.x);
             if (first.y <= y && second.y > y && cross > 0.0f) {

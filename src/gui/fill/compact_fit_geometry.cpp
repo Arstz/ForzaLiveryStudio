@@ -62,9 +62,133 @@ Clipper2Lib::Paths64 integerPaths(const Polygons &polygons) {
     return result;
 }
 
+class PolygonContainment {
+public:
+    explicit PolygonContainment(const Clipper2Lib::Paths64 &paths)
+        : bounds_(Clipper2Lib::GetBounds(paths)), bands_(kContainmentBands),
+          step_(std::max<int64_t>(1, (bounds_.bottom - bounds_.top) / kContainmentBands + 1)) {
+        for (const auto &path : paths) {
+            loopBounds_.push_back(Clipper2Lib::GetBounds(path));
+            for (int index = 0; index < path.size(); ++index) {
+                const Edge edge{path[index], path[(index + 1) % path.size()]};
+                const int position = edges_.size();
+                const int first = band(std::min(edge.start.y, edge.end.y));
+                const int last = band(std::max(edge.start.y, edge.end.y));
+
+                edges_.push_back(edge);
+                for (int row = first; row <= last; ++row)
+                    bands_[row].push_back(position);
+            }
+        }
+    }
+
+    bool contains(const Clipper2Lib::Paths64 &subject, const Clipper2Lib::Paths64 &clip) const {
+        const auto bounds = Clipper2Lib::GetBounds(subject);
+
+        if (edges_.isEmpty() || subject.empty() || !bounds_.Contains(bounds))
+            return false;
+        for (const auto &path : subject) {
+            if (path.empty() || !contains(path.front()))
+                return false;
+            for (int index = 0; index < path.size(); ++index) {
+                const Edge edge{path[index], path[(index + 1) % path.size()]};
+                const auto left = std::min(edge.start.x, edge.end.x);
+                const auto right = std::max(edge.start.x, edge.end.x);
+                const auto top = std::min(edge.start.y, edge.end.y);
+                const auto bottom = std::max(edge.start.y, edge.end.y);
+                const int first = band(top), last = band(bottom);
+
+                for (int row = first; row <= last; ++row) {
+                    for (int position : bands_[row]) {
+                        const auto &other = edges_[position];
+                        if (std::max(other.start.x, other.end.x) < left
+                            || std::min(other.start.x, other.end.x) > right
+                            || std::max(other.start.y, other.end.y) < top
+                            || std::min(other.start.y, other.end.y) > bottom)
+                            continue;
+                        const int firstSide = Clipper2Lib::CrossProductSign(edge.start, edge.end, other.start);
+                        const int lastSide = Clipper2Lib::CrossProductSign(edge.start, edge.end, other.end);
+                        const int startSide = Clipper2Lib::CrossProductSign(other.start, other.end, edge.start);
+                        const int endSide = Clipper2Lib::CrossProductSign(other.start, other.end, edge.end);
+                        if (firstSide * lastSide <= 0 && startSide * endSide <= 0)
+                            return false;
+                    }
+                }
+            }
+        }
+        for (int index = 0; index < clip.size(); ++index) {
+            const auto &path = clip[index];
+            if (path.empty() || !bounds.Contains(loopBounds_[index]))
+                continue;
+            for (const auto &part : subject) {
+                if (containsBoundary(path.front(), part))
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+private:
+    struct Edge {
+        Clipper2Lib::Point64 start, end;
+    };
+    Clipper2Lib::Rect64 bounds_;
+    QVector<Clipper2Lib::Rect64> loopBounds_;
+    QVector<Edge> edges_;
+    QVector<QVector<int>> bands_;
+    int64_t step_;
+
+    static bool containsBoundary(const Clipper2Lib::Point64 &point, const Clipper2Lib::Path64 &path) {
+        int winding = 0;
+
+        for (int index = 0; index < path.size(); ++index) {
+            const auto &start = path[index];
+            const auto &end = path[(index + 1) % path.size()];
+            const int side = Clipper2Lib::CrossProductSign(start, end, point);
+            if (side == 0 && point.x >= std::min(start.x, end.x) && point.x <= std::max(start.x, end.x)
+                && point.y >= std::min(start.y, end.y) && point.y <= std::max(start.y, end.y))
+                return true;
+            if (start.y <= point.y && end.y > point.y && side > 0)
+                ++winding;
+            else if (end.y <= point.y && start.y > point.y && side < 0)
+                --winding;
+        }
+
+        return winding != 0;
+    }
+
+    int band(int64_t y) const {
+
+        return int(std::clamp<int64_t>((y - bounds_.top) / step_, 0, kContainmentBands - 1));
+    }
+
+    bool contains(const Clipper2Lib::Point64 &point) const {
+        int winding = 0;
+
+        for (int position : bands_[band(point.y)]) {
+            const auto &edge = edges_[position];
+            const int side = Clipper2Lib::CrossProductSign(edge.start, edge.end, point);
+            if (side == 0 && point.x >= std::min(edge.start.x, edge.end.x)
+                && point.x <= std::max(edge.start.x, edge.end.x)
+                && point.y >= std::min(edge.start.y, edge.end.y)
+                && point.y <= std::max(edge.start.y, edge.end.y))
+                return false;
+            if (edge.start.y <= point.y && edge.end.y > point.y && side > 0)
+                ++winding;
+            else if (edge.end.y <= point.y && edge.start.y > point.y && side < 0)
+                --winding;
+        }
+
+        return winding != 0;
+    }
+};
+
 struct PreparedOperand {
     Polygons polygons;
+    Clipper2Lib::Paths64 paths;
     Clipper2Lib::ReuseableDataContainer64 data;
+    mutable std::unique_ptr<PolygonContainment> containment;
     Clipper2Lib::PathType type;
 };
 
@@ -89,8 +213,9 @@ std::shared_ptr<const PreparedOperand> preparedOperand(const Polygons &polygons,
         return {};
     auto result = std::make_shared<PreparedOperand>();
     result->polygons = polygons;
+    result->paths = integerPaths(polygons);
     result->type = type;
-    result->data.AddPaths(integerPaths(polygons), type, false);
+    result->data.AddPaths(result->paths, type, false);
     if (cache.size() >= kPreparedOperandLimit)
         cache.pop_back();
     cache.push_front(result);
@@ -102,14 +227,26 @@ Polygons booleanOperation(const Polygons &subject, const Polygons &clip,
                           Clipper2Lib::ClipType operation) {
     const auto preparedSubject = preparedOperand(subject, Clipper2Lib::PathType::Subject);
     const auto preparedClip = preparedOperand(clip, Clipper2Lib::PathType::Clip);
+    const auto subjectPaths = preparedSubject ? Clipper2Lib::Paths64() : integerPaths(subject);
+    const auto &paths = preparedSubject ? preparedSubject->paths : subjectPaths;
     Clipper2Lib::Clipper64 engine;
     Clipper2Lib::Paths64 output;
     Polygons result;
+
+    if ((operation == Clipper2Lib::ClipType::Difference
+        || operation == Clipper2Lib::ClipType::Intersection) && preparedClip) {
+        if (!preparedClip->containment)
+            preparedClip->containment = std::make_unique<PolygonContainment>(preparedClip->paths);
+        if (preparedClip->containment->contains(paths, preparedClip->paths)) {
+            return operation == Clipper2Lib::ClipType::Difference ? result
+                : booleanOperation(subject, {}, Clipper2Lib::ClipType::Union);
+        }
+    }
     engine.PreserveCollinear(false);
     if (preparedSubject)
         engine.AddReuseableData(preparedSubject->data);
     else
-        engine.AddSubject(integerPaths(subject));
+        engine.AddSubject(paths);
     if (preparedClip)
         engine.AddReuseableData(preparedClip->data);
     else

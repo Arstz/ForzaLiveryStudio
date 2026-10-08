@@ -374,6 +374,15 @@ exports grouped `C_group` folders and `C_livery` folders.
   Analytic-seeded optimizer remains available through headless tests; the editor
   uses curve-first initialization. The isolated-region implementation does not infer future
   occluders or optimize full-image order. Lining retains its separate fitter.
+  Compact Fit uses bounded caches for unchanged placement unions, reduction
+  measurements, and intended cutout exclusions. Cache keys retain immutable
+  geometry storage; changed placements receive new entries. Integer-grid
+  containment proofs skip full clipping when every subject boundary stays
+  strictly inside the clip and no enclosed clip boundary is filled. Touching
+  boundaries and inconclusive proofs use the regular clipping operation.
+  GPU point tests use explicit loop wraparound and ignore edges that do not
+  cross the sample row. Candidate order, work budgets, and verification limits
+  remain unchanged.
   Boundary-aware refinement caches the unaffected observed support and the
   spill-exclusion union. Narrow-gap closing is recomputed within a padded window
   around each candidate. The window includes the closing operator's full local

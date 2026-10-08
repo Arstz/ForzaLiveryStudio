@@ -13,6 +13,8 @@
 #include "matrix_math.h"
 #include "shape_registry.h"
 
+#include <clipper2/clipper.engine.h>
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -1603,7 +1605,108 @@ void gpuRasterRankTests() {
 }
 #endif
 
+void polygonContainmentProofTests() {
+    using gui::catalog::Polygons;
+    const auto integerPaths = [](const Polygons &polygons) {
+        Clipper2Lib::Paths64 paths;
+        for (const auto &polygon : polygons) {
+            Clipper2Lib::Path64 path;
+            for (const auto &point : polygon)
+                path.emplace_back(std::llround(point.x() * gui::catalog::kCoordinateScale),
+                    std::llround(point.y() * gui::catalog::kCoordinateScale));
+            paths.push_back(std::move(path));
+        }
+        return paths;
+    };
+    const auto canonical = [](const Clipper2Lib::Paths64 &paths) {
+        std::vector<std::vector<std::pair<int64_t, int64_t>>> result;
+        for (const auto &path : paths) {
+            std::vector<std::pair<int64_t, int64_t>> points;
+            for (const auto &point : path)
+                points.push_back({point.x, point.y});
+            if (!points.empty())
+                std::rotate(points.begin(), std::min_element(points.begin(), points.end()), points.end());
+            result.push_back(std::move(points));
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    };
+    const auto ellipse = [](QPointF center, double width, double height, int count) {
+        QPolygonF polygon;
+        for (int index = 0; index < count; ++index) {
+            const double angle = index * 2.0 * std::acos(-1.0) / count;
+            polygon.push_back(center + QPointF(std::cos(angle) * width, std::sin(angle) * height));
+        }
+        return polygon;
+    };
+    const QPolygonF outer = ellipse({}, 100, 75, 256);
+    QPolygonF hole = ellipse({15, 0}, 12, 18, 64);
+    std::reverse(hole.begin(), hole.end());
+    QPolygonF star;
+    for (int index = 0; index < 160; ++index) {
+        const double angle = index * 2.0 * std::acos(-1.0) / 160;
+        const double radius = index % 2 ? 80 : 100;
+        star.push_back({std::cos(angle) * radius, std::sin(angle) * radius});
+    }
+    int checks = 0;
+    for (const Polygons &raw : {Polygons{outer}, Polygons{outer, hole}, Polygons{star},
+             Polygons{outer, ellipse({220, 0}, 40, 40, 128)}}) {
+        const auto envelope = gui::catalog::unite(raw);
+        const auto clip = integerPaths(envelope);
+        for (int y = -10; y <= 10; ++y)
+            for (int x = -12; x <= 12; ++x)
+                for (int kind = 0; kind < 4; ++kind) {
+                    const QPointF center(x * 10.0, y * 8.0);
+                    Polygons subject{kind == 0
+                        ? QPolygonF{center + QPointF(-20, -10), center + QPointF(20, -10),
+                            center + QPointF(20, 10), center + QPointF(-20, 10)}
+                        : ellipse(center, 35, 25, 32)};
+                    if (kind == 2) {
+                        auto cutout = ellipse(center, 18, 20, 24);
+                        std::reverse(cutout.begin(), cutout.end());
+                        subject.push_back(cutout);
+                    }
+                    if (kind == 3) {
+                        const auto polygon = subject.front();
+                        subject.front() += polygon;
+                    }
+                    Clipper2Lib::Clipper64 reference;
+                    Clipper2Lib::Paths64 output;
+                    reference.PreserveCollinear(false);
+                    reference.AddSubject(integerPaths(subject));
+                    reference.AddClip(clip);
+                    require(reference.Execute(Clipper2Lib::ClipType::Difference,
+                        Clipper2Lib::FillRule::NonZero, output), QStringLiteral("Reference clipping failed"));
+                    require(gui::catalog::subtract(subject, envelope).isEmpty() == output.empty(),
+                        QStringLiteral("Prepared containment disagrees with exact clipping at %1,%2, kind %3")
+                            .arg(x).arg(y).arg(kind));
+                    require(canonical(integerPaths(gui::catalog::subtract(subject, envelope))) == canonical(output),
+                        QStringLiteral("Prepared difference changed the exact polygon boundary"));
+                    require(reference.Execute(Clipper2Lib::ClipType::Intersection,
+                        Clipper2Lib::FillRule::NonZero, output), QStringLiteral("Reference intersection failed"));
+                    require(canonical(integerPaths(gui::catalog::intersect(subject, envelope))) == canonical(output),
+                        QStringLiteral("Prepared intersection changed the exact polygon boundary"));
+                    ++checks;
+                }
+        for (double offset : {-1e-5, -1e-6, -1e-7, 0.0, 1e-7, 1e-6, 1e-5}) {
+            const Polygons subject{QPolygonF{{80, -1}, {100 + offset, -1},
+                {100 + offset, 1}, {80, 1}}};
+            Clipper2Lib::Clipper64 reference;
+            Clipper2Lib::Paths64 output;
+            reference.AddSubject(integerPaths(subject));
+            reference.AddClip(clip);
+            require(reference.Execute(Clipper2Lib::ClipType::Difference,
+                Clipper2Lib::FillRule::NonZero, output), QStringLiteral("Reference clipping failed"));
+            require(gui::catalog::subtract(subject, envelope).isEmpty() == output.empty(),
+                QStringLiteral("Prepared containment changed a subpixel boundary"));
+            ++checks;
+        }
+    }
+    QTextStream(stdout) << "Polygon containment: " << checks << " exact clipping comparisons passed\n";
+}
+
 void preparedGeometryTests() {
+    polygonContainmentProofTests();
     int samples = 0;
     for (const QString &fixture : {QStringLiteral("tools/fixtures/compact_fit_cornered_interior.json"),
              QStringLiteral("tools/fixtures/compact_fit_small_contour.json")}) {

@@ -75,6 +75,8 @@ constexpr double kRefinementExtent = 512.0;
 constexpr double kBoundaryEnergyPerLength = 0.025;
 constexpr double kLengthPerDefect = 80.0;
 constexpr int kWorkReportInterval = 256;
+constexpr int kSupportCacheLimit = 32;
+constexpr int kReductionStateCacheLimit = 16;
 constexpr int kMaximumMergeRefinements = 12;
 constexpr double kMaximumExcessTurn = 0.6;
 constexpr double kConvexitySlack = 0.005;
@@ -137,6 +139,7 @@ struct Objective {
     BoundaryMetrics targetMetrics;
     std::optional<ReductionState> reductionBaseline;
     mutable CoverageOwnership ownership;
+    mutable QVector<ReductionState> reductionStates;
 #ifdef FLS_HAS_CUDA
     mutable std::shared_ptr<gpu::RasterRanker> gpuRanker;
 #endif
@@ -310,14 +313,38 @@ bool prepareGpuRanker(const Objective &objective) {
 #endif
 
 Polygons support(const QVector<Piece> &pieces, const QVector<int> &excluded = {}) {
+    struct CachedSupport {
+        Polygons parts;
+        Polygons coverage;
+    };
+    thread_local QVector<CachedSupport> cache;
     Polygons result;
+
     for (int index = 0; index < pieces.size(); ++index) {
         if (!excluded.contains(index)) {
             result += pieces[index].polygons;
         }
     }
 
-    return catalog::unite(result);
+    for (int index = 0; index < cache.size(); ++index) {
+        const auto &entry = cache[index];
+        if (entry.parts.size() == result.size()
+            && std::equal(entry.parts.cbegin(), entry.parts.cend(), result.cbegin(),
+                [](const auto &left, const auto &right) {
+                    return left.constData() == right.constData() && left.size() == right.size();
+                })) {
+            auto reused = cache.takeAt(index);
+            cache.push_front(reused);
+
+            return reused.coverage;
+        }
+    }
+    const auto coverage = catalog::unite(result);
+    if (cache.size() >= kSupportCacheLimit)
+        cache.pop_back();
+    cache.push_front({std::move(result), coverage});
+
+    return coverage;
 }
 
 Polygons visibleSupport(const Polygons &coverage, const Objective &objective) {
@@ -333,8 +360,24 @@ bool preservesInterior(const Polygons &after, const Polygons &before, const Obje
 }
 
 ReductionState reductionStateFor(const Polygons &coverage, const Objective &objective) {
-    return reductionState(coverage, objective.target, objective.visibleTarget,
+    auto &cache = objective.reductionStates;
+
+    for (int index = 0; index < cache.size(); ++index) {
+        if (cache[index].coverage.constData() == coverage.constData()
+            && cache[index].coverage.size() == coverage.size()) {
+            auto result = cache.takeAt(index);
+            cache.push_front(result);
+
+            return result;
+        }
+    }
+    const auto result = reductionState(coverage, objective.target, objective.visibleTarget,
         objective.leeway, *objective.boundary, objective.inwardAllowance);
+    if (cache.size() >= kReductionStateCacheLimit)
+        cache.pop_back();
+    cache.push_front(result);
+
+    return result;
 }
 
 Context contextFor(const QVector<Piece> &pieces, const QVector<int> &excluded,
