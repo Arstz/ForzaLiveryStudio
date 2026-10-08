@@ -2,6 +2,8 @@
 #include "profile_fit_numeric.h"
 
 #include <QElapsedTimer>
+#include <QScopeGuard>
+#include <QSemaphore>
 #include <QThread>
 #include <algorithm>
 #include <atomic>
@@ -37,16 +39,22 @@ ProfileWorkers::ProfileWorkers() {
 
 bool ProfileWorkers::run(int count, const std::function<void(int)> &work,
                          const std::function<bool()> &cancelled) {
+    QSemaphore completed;
     std::atomic<int> next{0};
     std::atomic<bool> abort{false};
     std::exception_ptr failure;
     std::mutex failureMutex;
+    const int workers = std::min(count, pool_.maxThreadCount());
+    int submitted = 0;
+
     if (stopped(cancelled)) {
         return false;
     }
     try {
-        for (int worker = 0; worker < std::min(count, pool_.maxThreadCount()); ++worker) {
+        for (int worker = 0; worker < workers; ++worker) {
             pool_.start([&] {
+                const auto finished = qScopeGuard([&] { completed.release(); });
+
                 try {
                     while (!abort.load(std::memory_order_relaxed)) {
                         const int index = next.fetch_add(1, std::memory_order_relaxed);
@@ -61,8 +69,9 @@ bool ProfileWorkers::run(int count, const std::function<void(int)> &work,
                     abort.store(true, std::memory_order_relaxed);
                 }
             });
+            ++submitted;
         }
-        while (!pool_.waitForDone(kWaitMilliseconds)) {
+        while (!completed.tryAcquire(submitted, kWaitMilliseconds)) {
             if (stopped(cancelled)) {
                 abort.store(true, std::memory_order_relaxed);
             }

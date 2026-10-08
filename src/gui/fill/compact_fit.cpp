@@ -4,9 +4,11 @@
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
 #include "compact_fit_gpu_rank.h"
+#include "profile_fit_batch.h"
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <numbers>
 #include <numeric>
@@ -23,6 +25,7 @@ constexpr int kRefitPasses = 3;
 constexpr int kMergeRounds = 64;
 constexpr int kMergeNeighbors = 4;
 constexpr int kRetainedSeeds = 6;
+constexpr int kCpuSeedBatch = 64;
 constexpr int kSeedOrientations = 16;
 constexpr int kPrimaryOrientations = 8;
 constexpr int kPrimaryRetainedSeeds = 3;
@@ -452,6 +455,16 @@ void synchronizeOwnership(const QVector<Piece> &pieces, const Objective &objecti
     objective.ownership.synchronize(polygons);
 }
 
+double areaGain(const Piece &piece, const Context &context) {
+    const auto exclusive = catalog::subtract(piece.polygons, context.others);
+    const double covered = catalog::area(catalog::intersect(piece.polygons, context.residual));
+    const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
+    const double spill = catalog::area(catalog::subtract(exclusive, context.objective->spillFree));
+    const double deepSpill = catalog::area(catalog::subtract(exclusive, context.objective->outer));
+
+    return kMissingWeight * covered - spill + kDeepErrorWeight * (deepCovered - deepSpill);
+}
+
 double gain(const Piece &piece, const Context &context) {
     if (context.objective->evaluations >= context.objective->evaluationLimit) {
         return -std::numeric_limits<double>::infinity();
@@ -460,13 +473,8 @@ double gain(const Piece &piece, const Context &context) {
     if (context.objective->workProgress && context.objective->evaluations % kWorkReportInterval == 0) {
         context.objective->workProgress(context.objective->evaluations);
     }
-    const auto exclusive = catalog::subtract(piece.polygons, context.others);
-    const double covered = catalog::area(catalog::intersect(piece.polygons, context.residual));
-    const double deepCovered = catalog::area(catalog::intersect(piece.polygons, context.innerResidual));
-    const double spill = catalog::area(catalog::subtract(exclusive, context.objective->spillFree));
-    const double deepSpill = catalog::area(catalog::subtract(exclusive, context.objective->outer));
 
-    return kMissingWeight * covered - spill + kDeepErrorWeight * (deepCovered - deepSpill);
+    return areaGain(piece, context);
 }
 
 double boundaryCost(const Polygons &coverage, const Objective &objective) {
@@ -553,7 +561,7 @@ bool acceptableBoundary(const BoundaryMetrics &metrics, const Objective &objecti
         && metrics.holes == objective.targetMetrics.holes;
 }
 
-bool acceptable(const Polygons &coverage, const Objective &objective) {
+bool acceptableGeometry(const Polygons &coverage, const Objective &objective) {
     if (coverage.isEmpty() || error(coverage, objective) > objective.areaBudget) {
         return false;
     }
@@ -565,10 +573,12 @@ bool acceptable(const Polygons &coverage, const Objective &objective) {
         || !catalog::subtract(objective.target, catalog::expanded(coverage, objective.inwardAllowance)).isEmpty()) {
         return false;
     }
-    const auto metrics = objective.boundary->measure(
-        visibleSupport(coverage, objective));
+    return true;
+}
 
-    return acceptableBoundary(metrics, objective);
+bool acceptable(const Polygons &coverage, const Objective &objective) {
+    return acceptableGeometry(coverage, objective) && acceptableBoundary(
+        objective.boundary->measure(visibleSupport(coverage, objective)), objective);
 }
 
 bool acceptable(const ReductionState &state, const Objective &objective) {
@@ -1729,10 +1739,23 @@ QVector<catalog::Primitive> replacementCatalog(const Polygons &target, const Obj
 QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
                                  const QVector<catalog::Primitive> &dictionary,
                                  const std::function<bool()> &cancelled, bool broad, bool *complete = nullptr) {
+    struct SeedProposal {
+        QTransform transform;
+        int index = 0;
+    };
+    struct SeedEvaluation {
+        Piece piece;
+        std::exception_ptr failure;
+        bool charged = false;
+        bool geometryAllowed = false;
+        double score = 0.0;
+    };
     const auto primitives = replacementCatalog(target, *context.objective, dictionary);
     QVector<std::pair<double, Piece>> ranked(primitives.size(), {-std::numeric_limits<double>::infinity(), {}});
     QVector<QTransform> sourceFrames;
     QVector<QVector<QTransform>> proposals(primitives.size());
+    QVector<SeedProposal> cpuProposals;
+    std::optional<profile::ProfileWorkers> cpuWorkers;
     QVector<Piece> result;
     std::optional<Piece> recognized;
     QPolygonF points;
@@ -1756,6 +1779,7 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
         + static_cast<int>(static_cast<qint64>(context.objective->evaluationLimit - context.objective->evaluations) * 2 / 3);
     int queued = 0;
     bool batched = false;
+    bool cpuBatched = false;
 #ifdef FLS_HAS_CUDA
     batched = !context.others.isEmpty() && prepareGpuRanker(*context.objective)
         && context.objective->gpuRanker->prepareAdditionCoverage(gpuGeometry(context.others));
@@ -1764,6 +1788,49 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
         return recognized.has_value() || stopped(cancelled)
             || context.objective->evaluations + queued >= proposalLimit;
     };
+    const auto flushCpu = [&] {
+        if (cpuProposals.isEmpty())
+            return;
+        if (!cpuWorkers)
+            cpuWorkers.emplace();
+        QVector<SeedEvaluation> evaluations(cpuProposals.size());
+        auto *values = evaluations.data();
+        const auto *jobs = cpuProposals.constData();
+
+        if (cpuWorkers->run(cpuProposals.size(), [&](int index) {
+                auto &evaluation = values[index];
+                try {
+                    evaluation.piece = makePiece(primitives[jobs[index].index].shape, jobs[index].transform);
+                    evaluation.charged = true;
+                    evaluation.score = areaGain(evaluation.piece, context);
+                    evaluation.geometryAllowed = acceptableGeometry(evaluation.piece.polygons, *context.objective);
+                } catch (...) {
+                    evaluation.failure = std::current_exception();
+                }
+            }, cancelled)) {
+            for (int index = 0; index < evaluations.size(); ++index) {
+                if (recognized || stopped(cancelled)
+                    || context.objective->evaluations >= proposalLimit)
+                    break;
+                auto &evaluation = evaluations[index];
+                const int primitive = cpuProposals[index].index;
+                if (evaluation.failure && !evaluation.charged)
+                    std::rethrow_exception(evaluation.failure);
+                ++context.objective->evaluations;
+                if (context.objective->workProgress && context.objective->evaluations % kWorkReportInterval == 0)
+                    context.objective->workProgress(context.objective->evaluations);
+                if (evaluation.failure)
+                    std::rethrow_exception(evaluation.failure);
+                if (evaluation.geometryAllowed && acceptableBoundary(context.objective->boundary->measure(
+                        visibleSupport(evaluation.piece.polygons, *context.objective)), *context.objective))
+                    recognized = evaluation.piece;
+                if (evaluation.score > ranked[primitive].first + kScoreEpsilon)
+                    ranked[primitive] = {evaluation.score, std::move(evaluation.piece)};
+            }
+        }
+        cpuProposals.clear();
+        queued = 0;
+    };
     const auto consider = [&](int index, const QTransform &transform) {
         if (stopProposals()) {
             return;
@@ -1771,6 +1838,13 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
         if (batched) {
             proposals[index].push_back(transform);
             ++queued;
+            return;
+        }
+        if (cpuBatched) {
+            cpuProposals.push_back({transform, index});
+            ++queued;
+            if (cpuProposals.size() >= kCpuSeedBatch)
+                flushCpu();
             return;
         }
         auto piece = makePiece(primitives[index].shape, transform);
@@ -1798,6 +1872,7 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
             }
         }
     }
+    cpuBatched = broad && context.others.isEmpty();
     const int orientations = broad ? kSeedOrientations : kPrimaryOrientations;
     for (int orientation = 0; orientation < orientations && !stopProposals(); ++orientation) {
         const double angle = orientation * std::numbers::pi * (broad ? 2.0 : 1.0) / orientations;
@@ -1813,6 +1888,7 @@ QVector<Piece> replacementSeeds(const Polygons &target, const Context &context,
             }
         }
     }
+    flushCpu();
 #ifdef FLS_HAS_CUDA
     if (batched) {
         for (int index = 0; index < primitives.size() && !stopped(cancelled); ++index) {
@@ -2491,10 +2567,10 @@ void compactSmallSupport(QVector<Piece> *pieces, const Objective &objective,
             if (stopped(cancelled) || objective.evaluations >= evaluationLimit)
                 return false;
             ++objective.evaluations;
+            if (insideEnvelope && addition && !catalog::subtract(addition->polygons, objective.outer).isEmpty())
+                return false;
             const auto coverage = support(trial);
-            const bool outsideEnvelope = insideEnvelope
-                ? addition && !catalog::subtract(addition->polygons, objective.outer).isEmpty()
-                : !catalog::subtract(coverage, objective.outer).isEmpty();
+            const bool outsideEnvelope = !insideEnvelope && !catalog::subtract(coverage, objective.outer).isEmpty();
             if (outsideEnvelope
                 || !preservesInterior(coverage, before.coverage, objective))
                 return false;

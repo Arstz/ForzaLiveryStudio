@@ -380,6 +380,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   containment proofs skip full clipping when every subject boundary stays
   strictly inside the clip and no enclosed clip boundary is filled. Touching
   boundaries and inconclusive proofs use the regular clipping operation.
+  Clipping against a larger operand caches local projections around the subject.
+  Every edge that can cross that area retains its original integer endpoints;
+  exterior vertices project onto a padded rectangle, preserving interior winding.
+  Square expansion constructs swept segment boundaries directly, with the hull
+  construction retained at small radii and large coordinates. Strictly convex
+  integer contours normalize without a full clipping sweep. Boundary measurements
+  use dense spatial cells, indexed arc lengths, and cached edge lengths.
+  CPU fitting batches retain their worker threads. Independent whole-region
+  recognition proposals evaluate in parallel and apply results and failures in
+  proposal order. Geometry operation timings are available to the headless replay
+  tool through the `FLS_PROFILE_GEOMETRY` environment variable.
   GPU point tests use explicit loop wraparound and ignore edges that do not
   cross the sample row. Candidate order, work budgets, and verification limits
   remain unchanged.

@@ -62,6 +62,8 @@ struct Candidate {
     double spill = 0.0;
 };
 
+QJsonObject geometryPerformance();
+
 double signedArea(const QPolygonF &polygon);
 double area(const Polygons &polygons);
 Polygons unite(const Polygons &polygons);

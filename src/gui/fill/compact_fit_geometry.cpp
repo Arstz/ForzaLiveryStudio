@@ -7,6 +7,7 @@
 #include <clipper2/clipper.engine.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -23,6 +24,39 @@ constexpr double kTransformZeroThreshold = 1e-12;
 constexpr int kPreparedOperandLimit = 16;
 constexpr int kPreparedOperandMinimumPoints = 64;
 constexpr int kContainmentBands = 256;
+constexpr int kLocalOperandLimit = 32;
+constexpr int64_t kLocalOperandMinimumExtent = 4000000;
+constexpr int64_t kLocalOperandPadding = 16;
+constexpr double kSweptSquareMinimumRadius = 1e-5;
+constexpr double kSweptSquareMaximumCoordinate = 1000000.0;
+
+enum class GeometryOperation { Union, Difference, Intersection, Expansion, Mapping, Count };
+
+struct GeometryTiming {
+    qint64 nanoseconds = 0;
+    int calls = 0;
+};
+
+thread_local std::array<GeometryTiming, static_cast<int>(GeometryOperation::Count)> geometryTimings;
+
+class GeometryTimer {
+public:
+    explicit GeometryTimer(GeometryOperation operation) : operation_(operation) {
+        static const bool enabled = qEnvironmentVariableIsSet("FLS_PROFILE_GEOMETRY");
+        if (enabled)
+            timer_.start();
+    }
+    ~GeometryTimer() {
+        if (timer_.isValid()) {
+            auto &timing = geometryTimings[static_cast<int>(operation_)];
+            timing.nanoseconds += timer_.nsecsElapsed();
+            ++timing.calls;
+        }
+    }
+private:
+    QElapsedTimer timer_;
+    GeometryOperation operation_;
+};
 
 double cross(const QPointF &left, const QPointF &right) {
     return left.x() * right.y() - left.y() * right.x();
@@ -60,6 +94,36 @@ Clipper2Lib::Paths64 integerPaths(const Polygons &polygons) {
     }
 
     return result;
+}
+
+int strictConvexOrientation(const Clipper2Lib::Path64 &path) {
+    int orientation = 0;
+    int firstDirection = 0, previousDirection = 0, directionChanges = 0;
+
+    if (path.size() < 3)
+        return 0;
+    for (int index = 0; index < path.size(); ++index) {
+        const auto &start = path[index];
+        const int next = index + 1 == path.size() ? 0 : index + 1;
+        const int after = next + 1 == path.size() ? 0 : next + 1;
+        const auto &end = path[next];
+        const int turn = Clipper2Lib::CrossProductSign(start, end, path[after]);
+        const int direction = end.x > start.x ? 1 : end.x < start.x ? -1 : 0;
+
+        if (turn == 0 || (orientation != 0 && turn != orientation))
+            return 0;
+        orientation = turn;
+        if (direction != 0) {
+            if (firstDirection == 0)
+                firstDirection = direction;
+            else if (direction != previousDirection)
+                ++directionChanges;
+            previousDirection = direction;
+        }
+    }
+    directionChanges += previousDirection != firstDirection;
+
+    return directionChanges == 2 ? orientation : 0;
 }
 
 class PolygonContainment {
@@ -184,10 +248,17 @@ private:
     }
 };
 
+struct LocalOperand {
+    Clipper2Lib::ReuseableDataContainer64 data;
+    Clipper2Lib::Rect64 bounds;
+};
+
 struct PreparedOperand {
     Polygons polygons;
     Clipper2Lib::Paths64 paths;
     Clipper2Lib::ReuseableDataContainer64 data;
+    Clipper2Lib::Rect64 bounds;
+    mutable QVector<std::shared_ptr<const LocalOperand>> local;
     mutable std::unique_ptr<PolygonContainment> containment;
     Clipper2Lib::PathType type;
 };
@@ -214,6 +285,7 @@ std::shared_ptr<const PreparedOperand> preparedOperand(const Polygons &polygons,
     auto result = std::make_shared<PreparedOperand>();
     result->polygons = polygons;
     result->paths = integerPaths(polygons);
+    result->bounds = Clipper2Lib::GetBounds(result->paths);
     result->type = type;
     result->data.AddPaths(result->paths, type, false);
     if (cache.size() >= kPreparedOperandLimit)
@@ -223,37 +295,134 @@ std::shared_ptr<const PreparedOperand> preparedOperand(const Polygons &polygons,
     return result;
 }
 
-Polygons booleanOperation(const Polygons &subject, const Polygons &clip,
-                          Clipper2Lib::ClipType operation) {
-    const auto preparedSubject = preparedOperand(subject, Clipper2Lib::PathType::Subject);
-    const auto preparedClip = preparedOperand(clip, Clipper2Lib::PathType::Clip);
-    const auto subjectPaths = preparedSubject ? Clipper2Lib::Paths64() : integerPaths(subject);
-    const auto &paths = preparedSubject ? preparedSubject->paths : subjectPaths;
-    Clipper2Lib::Clipper64 engine;
-    Clipper2Lib::Paths64 output;
-    Polygons result;
+int64_t floorMultiple(int64_t value, int64_t step) {
 
-    if ((operation == Clipper2Lib::ClipType::Difference
-        || operation == Clipper2Lib::ClipType::Intersection) && preparedClip) {
-        if (!preparedClip->containment)
-            preparedClip->containment = std::make_unique<PolygonContainment>(preparedClip->paths);
-        if (preparedClip->containment->contains(paths, preparedClip->paths)) {
-            return operation == Clipper2Lib::ClipType::Difference ? result
-                : booleanOperation(subject, {}, Clipper2Lib::ClipType::Union);
+    return (value / step - (value < 0 && value % step != 0)) * step;
+}
+
+Clipper2Lib::Paths64 localizedPaths(const Clipper2Lib::Paths64 &paths,
+                                   const Clipper2Lib::Rect64 &bounds) {
+    Clipper2Lib::Paths64 result;
+
+    for (const auto &path : paths) {
+        std::vector<unsigned char> preserved(path.size(), 0);
+        Clipper2Lib::Path64 local;
+        std::vector<unsigned char> retained;
+        local.reserve(path.size());
+        retained.reserve(path.size());
+        for (int index = 0; index < path.size(); ++index) {
+            const int next = index + 1 == path.size() ? 0 : index + 1;
+            const auto &start = path[index];
+            const auto &end = path[next];
+            if (std::max(start.x, end.x) >= bounds.left && std::min(start.x, end.x) <= bounds.right
+                && std::max(start.y, end.y) >= bounds.top && std::min(start.y, end.y) <= bounds.bottom) {
+                preserved[index] = 1;
+                preserved[next] = 1;
+            }
+        }
+        for (int index = 0; index < path.size(); ++index) {
+            const auto point = preserved[index] ? path[index] : Clipper2Lib::Point64{
+                std::clamp(path[index].x, bounds.left, bounds.right),
+                std::clamp(path[index].y, bounds.top, bounds.bottom)};
+            if (!local.empty() && local.back() == point) {
+                retained.back() |= preserved[index];
+                continue;
+            }
+            while (local.size() >= 2 && !retained.back()) {
+                const auto &before = local[local.size() - 2];
+                const auto &previous = local.back();
+                if (Clipper2Lib::CrossProductSign(before, previous, point) != 0
+                    || previous.x < std::min(before.x, point.x) || previous.x > std::max(before.x, point.x)
+                    || previous.y < std::min(before.y, point.y) || previous.y > std::max(before.y, point.y))
+                    break;
+                local.pop_back();
+                retained.pop_back();
+            }
+            local.push_back(point);
+            retained.push_back(preserved[index]);
+        }
+        if (local.size() > 1 && local.front() == local.back())
+            local.pop_back();
+        if (local.size() >= 3)
+            result.push_back(std::move(local));
+    }
+
+    return result;
+}
+
+std::shared_ptr<const LocalOperand> localOperand(const PreparedOperand &operand,
+                                                const Clipper2Lib::Paths64 &subject) {
+    if (subject.empty())
+        return {};
+    const auto subjectBounds = Clipper2Lib::GetBounds(subject);
+    const int64_t extent = std::max(subjectBounds.Width(), subjectBounds.Height());
+    const int64_t step = static_cast<int64_t>(std::bit_ceil(static_cast<uint64_t>(
+        std::max(kLocalOperandMinimumExtent, extent / 2))));
+    const Clipper2Lib::Rect64 bounds{
+        floorMultiple(subjectBounds.left - kLocalOperandPadding, step),
+        floorMultiple(subjectBounds.top - kLocalOperandPadding, step),
+        -floorMultiple(-subjectBounds.right - kLocalOperandPadding, step),
+        -floorMultiple(-subjectBounds.bottom - kLocalOperandPadding, step)};
+
+    if (bounds.Width() >= operand.bounds.Width() && bounds.Height() >= operand.bounds.Height())
+        return {};
+    for (int index = 0; index < operand.local.size(); ++index) {
+        const auto &entry = operand.local[index];
+        if (entry->bounds.left == bounds.left && entry->bounds.right == bounds.right
+            && entry->bounds.top == bounds.top && entry->bounds.bottom == bounds.bottom) {
+            auto reused = operand.local.takeAt(index);
+            operand.local.push_front(reused);
+
+            return reused;
         }
     }
-    engine.PreserveCollinear(false);
-    if (preparedSubject)
-        engine.AddReuseableData(preparedSubject->data);
-    else
-        engine.AddSubject(paths);
-    if (preparedClip)
-        engine.AddReuseableData(preparedClip->data);
-    else
-        engine.AddClip(integerPaths(clip));
-    if (!engine.Execute(operation, Clipper2Lib::FillRule::NonZero, output)) {
-        throw std::runtime_error("Catalog cover polygon operation failed");
+    auto result = std::make_shared<LocalOperand>();
+    result->bounds = bounds;
+    result->data.AddPaths(localizedPaths(operand.paths, bounds), operand.type, false);
+    if (operand.local.size() >= kLocalOperandLimit)
+        operand.local.pop_back();
+    operand.local.push_front(result);
+
+    return result;
+}
+
+QPolygonF sweptSquare(const QPointF &start, const QPointF &end, double radius) {
+    const auto &bottom = start.y() <= end.y() ? start : end;
+    const auto &right = start.x() >= end.x() ? start : end;
+    const auto &top = start.y() >= end.y() ? start : end;
+    const auto &left = start.x() <= end.x() ? start : end;
+    const double extent = std::abs(radius);
+    const std::array<QPointF, 8> corners{
+        bottom + QPointF(-extent, -extent), bottom + QPointF(extent, -extent),
+        right + QPointF(extent, -extent), right + QPointF(extent, extent),
+        top + QPointF(extent, extent), top + QPointF(-extent, extent),
+        left + QPointF(-extent, extent), left + QPointF(-extent, -extent)};
+    QPolygonF result;
+
+    if (extent < kSweptSquareMinimumRadius || std::max({std::abs(start.x()), std::abs(start.y()),
+            std::abs(end.x()), std::abs(end.y())}) > kSweptSquareMaximumCoordinate) {
+        QPolygonF points;
+        for (const auto &offset : {QPointF(-extent, -extent), QPointF(extent, -extent),
+                 QPointF(extent, extent), QPointF(-extent, extent)}) {
+            points.push_back(start + offset);
+            points.push_back(end + offset);
+        }
+
+        return convexHull(points);
     }
+    result.reserve(corners.size());
+    for (const auto &corner : corners)
+        if (result.isEmpty() || result.back() != corner)
+            result.push_back(corner);
+    if (result.size() > 1 && result.front() == result.back())
+        result.removeLast();
+
+    return result;
+}
+
+Polygons polygonsFromIntegerPaths(const Clipper2Lib::Paths64 &output) {
+    Polygons result;
+
     for (const Clipper2Lib::Path64 &path : output) {
         QPolygonF polygon;
         polygon.reserve(path.size());
@@ -283,6 +452,63 @@ Polygons booleanOperation(const Polygons &subject, const Polygons &clip,
     });
 
     return result;
+}
+
+Polygons booleanOperation(const Polygons &subject, const Polygons &clip,
+                          Clipper2Lib::ClipType operation) {
+    const GeometryTimer timer(operation == Clipper2Lib::ClipType::Union ? GeometryOperation::Union
+        : operation == Clipper2Lib::ClipType::Difference ? GeometryOperation::Difference : GeometryOperation::Intersection);
+    const bool normalizeOnly = clip.isEmpty() && operation != Clipper2Lib::ClipType::Intersection;
+    const auto preparedSubject = normalizeOnly && subject.size() == 1
+        ? std::shared_ptr<const PreparedOperand>() : preparedOperand(subject, Clipper2Lib::PathType::Subject);
+    const auto preparedClip = preparedOperand(clip, Clipper2Lib::PathType::Clip);
+    const auto subjectPaths = preparedSubject ? Clipper2Lib::Paths64() : integerPaths(subject);
+    const auto &paths = preparedSubject ? preparedSubject->paths : subjectPaths;
+    Clipper2Lib::Clipper64 engine;
+    Clipper2Lib::Paths64 output;
+    Polygons result;
+
+    if (normalizeOnly && paths.size() == 1) {
+        const int orientation = strictConvexOrientation(paths.front());
+        if (orientation != 0) {
+            output = paths;
+            if (orientation < 0)
+                std::reverse(output.front().begin(), output.front().end());
+
+            return polygonsFromIntegerPaths(output);
+        }
+    }
+    if ((operation == Clipper2Lib::ClipType::Difference
+        || operation == Clipper2Lib::ClipType::Intersection) && preparedClip) {
+        const auto bounds = Clipper2Lib::GetBounds(paths);
+        if (paths.empty() || bounds.right < preparedClip->bounds.left
+            || bounds.left > preparedClip->bounds.right || bounds.bottom < preparedClip->bounds.top
+            || bounds.top > preparedClip->bounds.bottom) {
+            return operation == Clipper2Lib::ClipType::Intersection ? result
+                : booleanOperation(subject, {}, Clipper2Lib::ClipType::Union);
+        }
+        if (!preparedClip->containment)
+            preparedClip->containment = std::make_unique<PolygonContainment>(preparedClip->paths);
+        if (preparedClip->containment->contains(paths, preparedClip->paths)) {
+            return operation == Clipper2Lib::ClipType::Difference ? result
+                : booleanOperation(subject, {}, Clipper2Lib::ClipType::Union);
+        }
+    }
+    engine.PreserveCollinear(false);
+    if (preparedSubject)
+        engine.AddReuseableData(preparedSubject->data);
+    else
+        engine.AddSubject(paths);
+    if (preparedClip) {
+        const auto local = localOperand(*preparedClip, paths);
+        engine.AddReuseableData(local ? local->data : preparedClip->data);
+    } else {
+        engine.AddClip(integerPaths(clip));
+    }
+    if (!engine.Execute(operation, Clipper2Lib::FillRule::NonZero, output)) {
+        throw std::runtime_error("Catalog cover polygon operation failed");
+    }
+    return polygonsFromIntegerPaths(output);
 }
 
 void appendSegment(const PenBoundarySegment &segment, double tolerance,
@@ -566,6 +792,19 @@ bool PointContainment::contains(const QPointF &point) const {
     return winding != 0;
 }
 
+QJsonObject geometryPerformance() {
+    const std::array<QString, static_cast<int>(GeometryOperation::Count)> names{
+        QStringLiteral("union"), QStringLiteral("difference"), QStringLiteral("intersection"),
+        QStringLiteral("expansion"), QStringLiteral("mapping")};
+    QJsonObject result;
+
+    for (int index = 0; index < names.size(); ++index)
+        result.insert(names[index], QJsonObject{{QStringLiteral("milliseconds"), geometryTimings[index].nanoseconds / 1e6},
+            {QStringLiteral("calls"), geometryTimings[index].calls}});
+
+    return result;
+}
+
 double signedArea(const QPolygonF &polygon) {
     double result = 0.0;
     if (polygon.isEmpty()) {
@@ -641,6 +880,7 @@ QPolygonF convexHull(QPolygonF points) {
 }
 
 Polygons mapped(const PenPrimitive &shape, const QTransform &transform) {
+    const GeometryTimer timer(GeometryOperation::Mapping);
     Polygons result;
     for (const QPolygonF &polygon : shape.contours) {
         QPolygonF transformed = transform.map(polygon);
@@ -654,19 +894,13 @@ Polygons mapped(const PenPrimitive &shape, const QTransform &transform) {
 }
 
 Polygons expanded(const Polygons &polygons, double radius) {
+    const GeometryTimer timer(GeometryOperation::Expansion);
     Polygons parts = polygons;
-    const std::array<QPointF, 4> offsets = {
-        QPointF(-radius, -radius), QPointF(radius, -radius),
-        QPointF(radius, radius), QPointF(-radius, radius),
-    };
+
     for (const QPolygonF &polygon : polygons) {
         for (int index = 0; index < polygon.size(); ++index) {
-            QPolygonF points;
-            for (const QPointF &offset : offsets) {
-                points.push_back(polygon[index] + offset);
-                points.push_back(polygon[(index + 1) % polygon.size()] + offset);
-            }
-            parts.push_back(convexHull(points));
+            parts.push_back(sweptSquare(polygon[index],
+                polygon[index + 1 == polygon.size() ? 0 : index + 1], radius));
         }
     }
 
@@ -675,16 +909,11 @@ Polygons expanded(const Polygons &polygons, double radius) {
 
 Polygons interiorSupport(const Polygons &polygons, double allowance) {
     Polygons boundary;
-    const QPointF delta(allowance, allowance);
 
     for (const auto &polygon : polygons) {
         for (int index = 0; index < polygon.size(); ++index) {
-            QPolygonF corners;
-            for (const auto &point : {polygon[index], polygon[(index + 1) % polygon.size()]}) {
-                corners += QPolygonF({point - delta, point + QPointF(delta.x(), -delta.y()),
-                    point + delta, point + QPointF(-delta.x(), delta.y())});
-            }
-            boundary.push_back(convexHull(corners));
+            boundary.push_back(sweptSquare(polygon[index],
+                polygon[index + 1 == polygon.size() ? 0 : index + 1], allowance));
         }
     }
 

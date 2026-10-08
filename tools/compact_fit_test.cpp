@@ -1605,6 +1605,164 @@ void gpuRasterRankTests() {
 }
 #endif
 
+void convexUnionTests(const QVector<gui::catalog::Primitive> &catalog) {
+    using gui::catalog::Polygons;
+    const auto integerPaths = [](const Polygons &polygons) {
+        Clipper2Lib::Paths64 paths;
+        for (const auto &polygon : polygons) {
+            Clipper2Lib::Path64 path;
+            for (const auto &point : polygon)
+                path.emplace_back(std::llround(point.x() * gui::catalog::kCoordinateScale),
+                    std::llround(point.y() * gui::catalog::kCoordinateScale));
+            paths.push_back(std::move(path));
+        }
+        return paths;
+    };
+    const auto canonical = [](const Clipper2Lib::Paths64 &paths) {
+        std::vector<std::vector<std::pair<int64_t, int64_t>>> result;
+        for (const auto &path : paths) {
+            std::vector<std::pair<int64_t, int64_t>> points;
+            for (const auto &point : path)
+                points.push_back({point.x, point.y});
+            if (!points.empty())
+                std::rotate(points.begin(), std::min_element(points.begin(), points.end()), points.end());
+            result.push_back(std::move(points));
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    };
+    int checks = 0;
+    const auto check = [&](const Polygons &polygons) {
+        Clipper2Lib::Clipper64 reference;
+        Clipper2Lib::Paths64 output;
+        reference.PreserveCollinear(false);
+        reference.AddSubject(integerPaths(polygons));
+        require(reference.Execute(Clipper2Lib::ClipType::Union,
+            Clipper2Lib::FillRule::NonZero, output), QStringLiteral("Reference union failed"));
+        require(canonical(integerPaths(gui::catalog::unite(polygons))) == canonical(output),
+            QStringLiteral("Convex union changed the exact boundary at comparison %1").arg(checks));
+        require(canonical(integerPaths(gui::catalog::subtract(polygons, {}))) == canonical(output),
+            QStringLiteral("Convex empty-clip difference changed the exact boundary"));
+        ++checks;
+    };
+    for (const auto &primitive : catalog) {
+        for (int index = 0; index < 32; ++index) {
+            QTransform transform;
+            transform.translate(index % 8 == 0 ? 50000000.0 : index * 16.01 - 30, -index * 13.7);
+            transform.rotateRadians(index * 0.17);
+            transform.shear(index % 4 * 0.3, (index % 3 - 1) * 0.17);
+            transform.scale(std::pow(10.0, index % 6 - 4) * (index % 2 ? -1 : 1),
+                index % 8 == 0 ? 1e-8 : std::pow(10.0, index % 5 - 3));
+            Polygons polygons;
+            for (const auto &polygon : primitive.shape.contours)
+                polygons.push_back(transform.map(polygon));
+            check(polygons);
+        }
+    }
+    for (int vertices : {3, 5, 7, 9, 16, 32, 65}) {
+        for (int stride = 1; stride < vertices; ++stride) {
+            QPolygonF polygon;
+            for (int index = 0; index < vertices; ++index) {
+                const double angle = index * stride * 2.0 * std::acos(-1.0) / vertices;
+                polygon.push_back({std::cos(angle) * 19, std::sin(angle) * 13});
+            }
+            check({polygon});
+            std::reverse(polygon.begin(), polygon.end());
+            check({polygon});
+            const auto repeated = polygon;
+            polygon += repeated;
+            check({polygon});
+        }
+    }
+    check({QPolygonF{{0, 0}, {10, 0}, {20, 0}, {20, 20}, {0, 20}}});
+    check({QPolygonF{{0, 0}, {10, 0}, {10, 0}, {10, 10}, {0, 10}, {0, 0}}});
+    QTextStream(stdout) << "Convex normalization: " << checks << " exact union comparisons passed\n";
+}
+
+void expansionGeometryTests(const QVector<gui::catalog::Primitive> &catalog) {
+    using gui::catalog::Polygons;
+    const auto integerPaths = [](const Polygons &polygons) {
+        Clipper2Lib::Paths64 paths;
+        for (const auto &polygon : polygons) {
+            Clipper2Lib::Path64 path;
+            for (const auto &point : polygon)
+                path.emplace_back(std::llround(point.x() * gui::catalog::kCoordinateScale),
+                    std::llround(point.y() * gui::catalog::kCoordinateScale));
+            if (path.size() >= 3)
+                paths.push_back(std::move(path));
+        }
+        return paths;
+    };
+    const auto canonical = [](const Clipper2Lib::Paths64 &paths) {
+        std::vector<std::vector<std::pair<int64_t, int64_t>>> result;
+        for (const auto &path : paths) {
+            std::vector<std::pair<int64_t, int64_t>> points;
+            for (const auto &point : path)
+                points.push_back({point.x, point.y});
+            if (!points.empty())
+                std::rotate(points.begin(), std::min_element(points.begin(), points.end()), points.end());
+            result.push_back(std::move(points));
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    };
+    int checks = 0;
+    const auto check = [&](const Polygons &polygons, double radius) {
+        Polygons parts = polygons, boundary;
+        const std::array<QPointF, 4> offsets{{{-radius, -radius}, {radius, -radius},
+            {radius, radius}, {-radius, radius}}};
+        for (const auto &polygon : polygons)
+            for (int index = 0; index < polygon.size(); ++index) {
+                QPolygonF points;
+                for (const auto &offset : offsets) {
+                    points.push_back(polygon[index] + offset);
+                    points.push_back(polygon[(index + 1) % polygon.size()] + offset);
+                }
+                boundary.push_back(gui::catalog::convexHull(points));
+            }
+        parts += boundary;
+        Clipper2Lib::Clipper64 reference;
+        Clipper2Lib::Paths64 output, interior;
+        reference.PreserveCollinear(false);
+        reference.AddSubject(integerPaths(parts));
+        require(reference.Execute(Clipper2Lib::ClipType::Union,
+            Clipper2Lib::FillRule::NonZero, output), QStringLiteral("Reference expansion failed"));
+        require(canonical(integerPaths(gui::catalog::expanded(polygons, radius))) == canonical(output),
+            QStringLiteral("Expansion changed the exact boundary at comparison %1, radius %2")
+                .arg(checks).arg(radius, 0, 'g', 16));
+        const auto boundaryUnion = gui::catalog::unite(boundary);
+        reference.Clear();
+        reference.AddSubject(integerPaths(polygons));
+        reference.AddClip(integerPaths(boundaryUnion));
+        require(reference.Execute(Clipper2Lib::ClipType::Difference,
+            Clipper2Lib::FillRule::NonZero, interior), QStringLiteral("Reference erosion failed"));
+        require(canonical(integerPaths(gui::catalog::interiorSupport(polygons, radius))) == canonical(interior),
+            QStringLiteral("Interior support changed the exact boundary at comparison %1").arg(checks));
+        ++checks;
+    };
+    for (const auto &primitive : catalog)
+        for (int index = 0; index < 12; ++index) {
+            QTransform transform;
+            transform.translate(index % 6 == 0 ? 50000000.0 : index * 16.01 - 30, -index * 13.7);
+            transform.rotateRadians(index * 0.17);
+            transform.shear(index % 4 * 0.3, (index % 3 - 1) * 0.17);
+            transform.scale(std::pow(10.0, index % 6 - 4) * (index % 2 ? -1 : 1),
+                index % 6 == 0 ? 1e-8 : std::pow(10.0, index % 5 - 3));
+            Polygons polygons;
+            for (const auto &polygon : primitive.shape.contours)
+                polygons.push_back(transform.map(polygon));
+            for (double radius : {-2.0, 0.0, 1e-7, 1e-6, 0.15, 0.5, 2.0})
+                check(polygons, radius);
+        }
+    for (const QString &fixture : {QStringLiteral("tools/fixtures/compact_fit_cornered_interior.json"),
+             QStringLiteral("tools/fixtures/compact_fit_small_contour.json")}) {
+        const auto region = gui::catalog::buildRegion(readRequest(fixture), {});
+        for (double radius : {0.15, 0.5, 2.0})
+            check(region.required, radius);
+    }
+    QTextStream(stdout) << "Expansion: " << checks << " exact expansion and erosion comparisons passed\n";
+}
+
 void polygonContainmentProofTests() {
     using gui::catalog::Polygons;
     const auto integerPaths = [](const Polygons &polygons) {
@@ -1700,6 +1858,44 @@ void polygonContainmentProofTests() {
             require(gui::catalog::subtract(subject, envelope).isEmpty() == output.empty(),
                 QStringLiteral("Prepared containment changed a subpixel boundary"));
             ++checks;
+        }
+    }
+    for (const QString &fixture : {QStringLiteral("tools/fixtures/compact_fit_cornered_interior.json"),
+             QStringLiteral("tools/fixtures/compact_fit_small_contour.json")}) {
+        const auto region = gui::catalog::buildRegion(readRequest(fixture), {});
+        for (double translation : {0.0, 50000000.0}) {
+            Polygons translated;
+            const auto transform = QTransform::fromTranslate(translation, -translation);
+            for (const auto &polygon : region.required)
+                translated.push_back(transform.map(polygon));
+            const auto clipPolygons = gui::catalog::unite(translated);
+            const auto clip = integerPaths(clipPolygons);
+            for (const auto &polygon : clipPolygons)
+                for (int index = 0; index < polygon.size(); index += std::max(1, int(polygon.size()) / 32))
+                    for (double radius : {0.25, 2.0, 12.0})
+                        for (double shift : {-1e-6, 0.0, 1e-6}) {
+                            const auto center = polygon[index] + QPointF(shift, -shift);
+                            const Polygons subject{QPolygonF{center + QPointF(-radius, -radius),
+                                center + QPointF(radius, -radius), center + QPointF(radius, radius),
+                                center + QPointF(-radius, radius)}};
+                            Clipper2Lib::Clipper64 reference;
+                            Clipper2Lib::Paths64 output;
+                            reference.PreserveCollinear(false);
+                            reference.AddSubject(integerPaths(subject));
+                            reference.AddClip(clip);
+                            for (const auto operation : {Clipper2Lib::ClipType::Difference,
+                                     Clipper2Lib::ClipType::Intersection}) {
+                                require(reference.Execute(operation, Clipper2Lib::FillRule::NonZero, output),
+                                    QStringLiteral("Reference local clipping failed"));
+                                const auto actual = operation == Clipper2Lib::ClipType::Difference
+                                    ? gui::catalog::subtract(subject, clipPolygons)
+                                    : gui::catalog::intersect(subject, clipPolygons);
+                                require(canonical(integerPaths(actual)) == canonical(output),
+                                    QStringLiteral("Local clipping changed the exact boundary at comparison %1")
+                                        .arg(checks));
+                            }
+                            ++checks;
+                        }
         }
     }
     QTextStream(stdout) << "Polygon containment: " << checks << " exact clipping comparisons passed\n";
@@ -2262,6 +2458,14 @@ int main(int argc, char **argv) {
             qualityExamples();
             return 0;
         }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--convex-union-tests")) {
+            convexUnionTests(fullCatalog);
+            return 0;
+        }
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--expansion-geometry-tests")) {
+            expansionGeometryTests(fullCatalog);
+            return 0;
+        }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--prepared-geometry-tests")) {
             preparedGeometryTests();
             return 0;
@@ -2347,6 +2551,8 @@ int main(int argc, char **argv) {
             result.diagnostics.insert(QStringLiteral("replayShapeCounts"), shapeCounts);
             result.diagnostics.insert(QStringLiteral("replayCount"), result.fill.placements.size());
             result.diagnostics.insert(QStringLiteral("replayError"), result.fill.error);
+            if (qEnvironmentVariableIsSet("FLS_PROFILE_GEOMETRY"))
+                result.diagnostics.insert(QStringLiteral("geometryPerformance"), gui::catalog::geometryPerformance());
             result.diagnostics.insert(QStringLiteral("replayElapsedMilliseconds"), timer.elapsed());
             output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
             output << "Completed in " << timer.elapsed() << " ms\n" << Qt::flush;

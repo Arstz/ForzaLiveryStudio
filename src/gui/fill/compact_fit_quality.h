@@ -62,6 +62,7 @@ private:
     struct Loop {
         QPolygonF points;
         QVector<double> lengths;
+        QVector<int> bins;
         double perimeter = 0.0;
     };
     struct Edge {
@@ -69,6 +70,7 @@ private:
         QPointF delta;
         int loop = 0;
         double squaredLength = 0.0;
+        double length = 0.0;
         double offset = 0.0;
     };
     struct Location {
@@ -82,13 +84,12 @@ private:
     static QPointF pointAt(const Loop &loop, double offset);
     Location closest(const QPointF &point) const;
     bool nearCorner(const QPointF &point, double radius) const;
-    qint64 cellKey(int x, int y) const;
 
     QVector<Loop> loops_;
     QVector<Edge> edges_;
     QVector<QPointF> corners_;
-    QHash<qint64, QVector<int>> cells_;
-    QHash<qint64, QVector<QPointF>> cornerCells_;
+    QVector<QVector<int>> cells_;
+    QVector<QVector<QPointF>> cornerCells_;
     catalog::Polygons target_;
     mutable std::shared_ptr<const BoundaryModel> observedReference_;
     QRectF bounds_;
@@ -96,6 +97,8 @@ private:
     mutable qint64 closingNanoseconds_ = 0;
     mutable qint64 samplingNanoseconds_ = 0;
     mutable int measurements_ = 0;
+    int columns_ = 0;
+    int rows_ = 0;
     double scale_ = 1.0;
     double cellSize_ = 1.0;
 };

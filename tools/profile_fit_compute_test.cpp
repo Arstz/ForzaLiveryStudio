@@ -5,6 +5,8 @@
 #include <QJsonDocument>
 #include <QTextStream>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <stdexcept>
 
@@ -124,6 +126,17 @@ int main(int argc, char **argv) {
         try { workers.run(100, [](int) { throw std::runtime_error("injected worker failure"); }, {}); }
         catch (const std::exception &) { rejected = true; }
         require(rejected, "Worker exception was lost");
+        std::array<std::atomic<int>, 257> visits{};
+        for (int batch = 0; batch < 4; ++batch) {
+            for (auto &visit : visits)
+                visit.store(0);
+            require(workers.run(visits.size(), [&](int index) { ++visits[index]; }, {}),
+                "Worker pool did not recover after failure or reuse");
+            for (const auto &visit : visits)
+                require(visit.load() == 1, "Reused worker pool lost or repeated a job");
+            require(workers.run(0, [](int) { throw std::runtime_error("unexpected empty work"); }, {}),
+                "Empty worker batch failed");
+        }
         int cancellationCalls = 0;
         require(!cpu.evaluate(jobs, &actual, [&] { return ++cancellationCalls > 2; }) && actual.empty(),
             "In-flight cancellation leaked partial output");

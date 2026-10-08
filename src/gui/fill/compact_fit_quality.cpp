@@ -13,7 +13,9 @@ constexpr double kTurnSlack = 0.12;
 constexpr double kCornerDefectTurn = 0.35;
 constexpr double kTargetCornerTurn = 0.6;
 constexpr int kMaximumSamples = 2048;
+constexpr int kArcBins = 128;
 constexpr int kSearchRadius = 3;
+constexpr int kCellPadding = kSearchRadius + 1;
 constexpr double kCellScale = 8.0;
 constexpr double kMaximumGridExtent = 128.0;
 constexpr double kSubpixelClosingFraction = 0.15;
@@ -47,6 +49,10 @@ BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observation
       scale_(std::max(observationScale, kMinimumLength)),
       cellSize_(std::max(scale_ * kCellScale,
           std::max(bounds_.width(), bounds_.height()) / kMaximumGridExtent)) {
+    columns_ = static_cast<int>(std::floor(bounds_.width() / cellSize_)) + kCellPadding * 2 + 1;
+    rows_ = static_cast<int>(std::floor(bounds_.height() / cellSize_)) + kCellPadding * 2 + 1;
+    cells_.resize(columns_ * rows_);
+    cornerCells_.resize(cells_.size());
     for (const auto &polygon : target) {
         const auto loop = makeLoop(polygon);
         const int loopIndex = loops_.size();
@@ -57,10 +63,12 @@ BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observation
             if (QLineF({}, incoming).length() > scale_ * 0.5 && QLineF({}, delta).length() > scale_ * 0.5
                 && std::abs(angle(normalized(incoming), normalized(delta))) > kTargetCornerTurn) {
                 corners_.push_back(polygon[index]);
-                cornerCells_[cellKey(static_cast<int>(std::floor((polygon[index].x() - bounds_.left()) / cellSize_)),
-                    static_cast<int>(std::floor((polygon[index].y() - bounds_.top()) / cellSize_)))].push_back(polygon[index]);
+                const int column = static_cast<int>(std::floor((polygon[index].x() - bounds_.left()) / cellSize_));
+                const int row = static_cast<int>(std::floor((polygon[index].y() - bounds_.top()) / cellSize_));
+                cornerCells_[(row + kCellPadding) * columns_ + column + kCellPadding].push_back(polygon[index]);
             }
-            const Edge edge{polygon[index], delta, loopIndex, QPointF::dotProduct(delta, delta), loop.lengths[index]};
+            const double squaredLength = QPointF::dotProduct(delta, delta);
+            const Edge edge{polygon[index], delta, loopIndex, squaredLength, std::sqrt(squaredLength), loop.lengths[index]};
             const QRectF bounds = QRectF(edge.start, edge.start + edge.delta).normalized();
             const int edgeIndex = edges_.size();
             edges_.push_back(edge);
@@ -70,7 +78,7 @@ BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observation
             const int bottom = static_cast<int>(std::floor((bounds.bottom() - bounds_.top()) / cellSize_));
             for (int row = top; row <= bottom; ++row) {
                 for (int column = left; column <= right; ++column) {
-                    cells_[cellKey(column, row)].push_back(edgeIndex);
+                    cells_[(row + kCellPadding) * columns_ + column + kCellPadding].push_back(edgeIndex);
                 }
             }
         }
@@ -209,6 +217,8 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
             const auto &target = referenceModel.loops_[reference.loop];
             double sampleEnergy = 0.0;
             for (double radius : {scale_, scale_ * 2.0}) {
+                if (nearCorner(point, radius + scale_ * 0.5))
+                    continue;
                 const auto before = pointAt(loop, offset - radius);
                 const auto after = pointAt(loop, offset + radius);
                 const auto targetBefore = pointAt(target, reference.offset - radius);
@@ -219,8 +229,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
                 const double excess = std::max(0.0,
                     std::abs(std::remainder(turn - targetTurn, 2.0 * std::numbers::pi)) - kTurnSlack);
                 const double tangentError = angle(normalized(after - before), normalized(targetAfter - targetBefore));
-                const bool cornerWindow = nearCorner(point, radius + scale_ * 0.5);
-                if (!cornerWindow && std::abs(targetTurn) < kTargetCornerTurn) {
+                if (std::abs(targetTurn) < kTargetCornerTurn) {
                     result.tangentEnergy += spacing * tangentError * tangentError * 0.5;
                     result.turnEnergy += spacing * excess * excess * 0.5;
                     result.maximumExcessTurn = std::max(result.maximumExcessTurn, excess);
@@ -291,6 +300,12 @@ BoundaryModel::Loop BoundaryModel::makeLoop(const QPolygonF &points) {
         loop.perimeter += QLineF(points[index], points[(index + 1) % points.size()]).length();
     }
     loop.lengths.push_back(loop.perimeter);
+    loop.bins.reserve(kArcBins + 1);
+    for (int bin = 0; bin <= kArcBins; ++bin) {
+        const double offset = loop.perimeter * bin / kArcBins;
+        loop.bins.push_back(static_cast<int>(std::lower_bound(loop.lengths.cbegin(), loop.lengths.cend(), offset)
+            - loop.lengths.cbegin()));
+    }
 
     return loop;
 }
@@ -303,13 +318,20 @@ QPointF BoundaryModel::pointAt(const Loop &loop, double offset) {
     if (offset < 0) {
         offset += loop.perimeter;
     }
-    const auto upper = std::upper_bound(loop.lengths.begin(), loop.lengths.end(), offset);
+    const int bin = std::clamp(static_cast<int>(offset / loop.perimeter * kArcBins), 0, kArcBins - 1);
+    const int first = std::max(0, loop.bins[bin] - 1);
+    const int last = std::min(static_cast<int>(loop.lengths.size()), loop.bins[bin + 1] + 1);
+    const bool bounded = loop.lengths[first] <= offset
+        && (last == loop.lengths.size() || offset < loop.lengths[last]);
+    const auto upper = std::upper_bound(loop.lengths.cbegin() + (bounded ? first : 0),
+        loop.lengths.cbegin() + (bounded ? last : loop.lengths.size()), offset);
     const int index = std::clamp(static_cast<int>(upper - loop.lengths.begin()) - 1, 0,
         static_cast<int>(loop.points.size()) - 1);
+    const int next = index + 1 == loop.points.size() ? 0 : index + 1;
     const double length = loop.lengths[index + 1] - loop.lengths[index];
     const double parameter = length > kMinimumLength ? (offset - loop.lengths[index]) / length : 0.0;
 
-    return loop.points[index] + (loop.points[(index + 1) % loop.points.size()] - loop.points[index]) * parameter;
+    return loop.points[index] + (loop.points[next] - loop.points[index]) * parameter;
 }
 
 BoundaryModel::Location BoundaryModel::closest(const QPointF &point) const {
@@ -324,7 +346,7 @@ BoundaryModel::Location BoundaryModel::closest(const QPointF &point) const {
         const auto difference = point - closest;
         const double squaredDistance = QPointF::dotProduct(difference, difference);
         if (squaredDistance < result.squaredDistance) {
-            result = {closest, edge.loop, edge.offset + std::sqrt(edge.squaredLength) * parameter, squaredDistance};
+            result = {closest, edge.loop, edge.offset + edge.length * parameter, squaredDistance};
         }
     };
     for (int radius = 0; radius <= kSearchRadius; ++radius) {
@@ -333,11 +355,10 @@ BoundaryModel::Location BoundaryModel::closest(const QPointF &point) const {
                 if (radius > 0 && std::abs(x - column) < radius && std::abs(y - row) < radius) {
                     continue;
                 }
-                const auto found = cells_.constFind(cellKey(x, y));
-                if (found != cells_.cend()) {
-                    for (int index : *found) {
+                if (x >= -kCellPadding && x + kCellPadding < columns_
+                    && y >= -kCellPadding && y + kCellPadding < rows_) {
+                    for (int index : cells_[(y + kCellPadding) * columns_ + x + kCellPadding])
                         evaluate(index);
-                    }
                 }
             }
         }
@@ -362,11 +383,10 @@ bool BoundaryModel::nearCorner(const QPointF &point, double radius) const {
     const int extent = static_cast<int>(std::ceil(radius / cellSize_));
     for (int y = row - extent; y <= row + extent; ++y) {
         for (int x = column - extent; x <= column + extent; ++x) {
-            const auto found = cornerCells_.constFind(cellKey(x, y));
-            if (found == cornerCells_.cend()) {
+            if (x < -kCellPadding || x + kCellPadding >= columns_
+                || y < -kCellPadding || y + kCellPadding >= rows_)
                 continue;
-            }
-            for (const auto &corner : *found) {
+            for (const auto &corner : cornerCells_[(y + kCellPadding) * columns_ + x + kCellPadding]) {
                 const auto delta = point - corner;
                 if (QPointF::dotProduct(delta, delta) <= radius * radius) {
                     return true;
@@ -376,10 +396,6 @@ bool BoundaryModel::nearCorner(const QPointF &point, double radius) const {
     }
 
     return false;
-}
-
-qint64 BoundaryModel::cellKey(int x, int y) const {
-    return static_cast<qint64>((static_cast<quint64>(static_cast<quint32>(x)) << 32) | static_cast<quint32>(y));
 }
 
 } // namespace gui::compact
