@@ -1,4 +1,5 @@
 #include "project_canvas.h"
+#include "thin_fit.h"
 
 #include "project_canvas_internal.h"
 
@@ -989,6 +990,11 @@ void ProjectCanvas::setLiningWidthChangedCallback(std::function<void(double)> ca
 
 QVector<PenPrimitive> ProjectCanvas::liningPrimitiveCatalog() const {
     return buildLiningPrimitiveCatalog(geometry_);
+}
+
+QVector<catalog::Primitive> ProjectCanvas::thinFillPrimitives(QString *error) const {
+
+    return thin::buildCatalog(geometry_, error);
 }
 
 void ProjectCanvas::setLiningFillRunning(bool running, const QString &message) {

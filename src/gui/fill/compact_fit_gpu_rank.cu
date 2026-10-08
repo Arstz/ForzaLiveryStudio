@@ -1762,6 +1762,9 @@ bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
     const int boundaryWordsPerCandidate = (static_cast<int>(witnesses.size()) + 63) / 64;
     std::vector<MaskTile> tiles;
     std::vector<MaskWitnessJob> jobs;
+    const bool sortedWitnesses = std::is_sorted(witnesses.begin(), witnesses.end(), [](const auto &first, const auto &second) {
+        return first.y < second.y;
+    });
     for (int candidate = 0; candidate < static_cast<int>(geometry.pieces.size()); ++candidate) {
         const MaskBounds bounds = geometry.bounds[candidate];
         const int left = std::clamp(static_cast<int>(std::floor(
@@ -1777,11 +1780,21 @@ bool rasterizeBitmasks(const MaskGeometry &geometry, const MaskGrid &grid,
                 tiles.push_back({candidate, column, row,
                     std::min(kTileExtent, right - column),
                     std::min(kTileExtent, bottom - row)});
-        for (int witness = 0; witness < static_cast<int>(witnesses.size()); ++witness) {
-            const MaskPoint point = witnesses[witness];
+        auto begin = witnesses.begin();
+        auto end = witnesses.end();
+        if (sortedWitnesses) {
+            begin = std::lower_bound(begin, end, bounds.top, [](const auto &point, double ordinate) {
+                return point.y < ordinate;
+            });
+            end = std::upper_bound(begin, end, bounds.bottom, [](double ordinate, const auto &point) {
+                return ordinate < point.y;
+            });
+        }
+        for (auto witness = begin; witness != end; ++witness) {
+            const MaskPoint point = *witness;
             if (point.x >= bounds.left && point.x <= bounds.right
                 && point.y >= bounds.top && point.y <= bounds.bottom)
-                jobs.push_back({candidate, witness});
+                jobs.push_back({candidate, static_cast<int>(witness - witnesses.begin())});
         }
     }
     const size_t wordCount = geometry.pieces.size() * wordsPerCandidate;

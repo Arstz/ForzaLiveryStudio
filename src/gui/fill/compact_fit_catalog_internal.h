@@ -48,6 +48,7 @@ struct Region {
     QPainterPath spillFreePath;
     std::shared_ptr<const PointContainment> spillFreeContainment;
     QRectF bounds;
+    bool flexibleBoundary = false;
     double area = 0.0;
     double originalArea = 0.0;
     double tolerance = 0.0;

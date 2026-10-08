@@ -35,6 +35,7 @@ enum class ContourFillMode {
     Analytic,
     Differential,
     CompactFit,
+    ThinRegions,
 };
 
 struct BehaviorSettings {

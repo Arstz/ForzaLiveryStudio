@@ -86,6 +86,43 @@ Unknown fields and missing tasks produce an error.
 Logs include the loaded file path, its SHA-256 hash, and effective task lists.
 These identify the configuration snapshot used for a fit.
 
+## Thin regions and Lining
+
+**Compact Fit — Thin Regions** and the Lining tool read
+`assets/lining_shapes.json` beside the executable on each operation. The same
+schema and validation rules apply. Edit `build/Release/assets/lining_shapes.json`
+to try changes without rebuilding or restarting. A build redeploys the
+repository defaults. If the deployed file is absent, the loader checks the
+current working directory; an invalid deployed file produces an error.
+
+The thin backend first tries one Square for a straight span and the
+`whole_region` shapes for a complete region. Open Lining paths also try the
+`curves` shapes across the full centreline. If one placement cannot cover the
+region within the margin, a bounded profile search uses `curves`, `corners`,
+`straight_edges`, `corner_triangles` and `interior`. The default catalog enables
+native shapes and leaves `corner_triangles` empty. Whole-region matching uses
+affine hull anchors as well as bounding boxes, so rotation and heavy skew do
+not require a preferred shape ID.
+
+The overlap envelope follows local stroke width. Its default limit is 1.5 times
+the original thickness, with the supplied outward margin as an additional
+absolute cap. The API permits thickness ratios above 1 and at most 2. Tapered
+tips receive a small geometric tolerance. Open Lining paths use their specified
+width; closed regions estimate width from inward boundary crossings. Candidate
+selection penalizes extra ink while favoring placements that cover long spans.
+At least 98% of the selected region must remain covered. The backend can grow
+existing placements within the same envelope and repair continuity gaps. Square `101` in
+`gap_patches` enables significant gap proposals, and Square `101` in
+`exact_replacements` enables rectangle consolidation. Placements that do not
+contribute enough coverage can be removed. The other task lists are reserved
+for the general Compact Fit backend. Search budgets, the coverage target and
+geometric tolerances are API options, separate from the shape configuration.
+
+The headless test tool accepts `--thin-tests`, `--thin-fit <contour-log>` and
+`--thin-reference <project> [comparison-project]`. Thin operations use their
+own catalog. The explicit `--shape-config` argument applies to general Compact
+Fit operations.
+
 ## Compare configurations
 
 The headless `fls_compact_fit_tests` tool accepts `--shape-config` followed by an

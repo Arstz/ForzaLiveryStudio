@@ -267,6 +267,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/canvas/native_shape_renderer.h
     src/gui/fill/lining_fill.cpp
     src/gui/fill/lining_fill.h
+    src/gui/fill/thin_fit.cpp
+    src/gui/fill/thin_fit.h
     src/gui/fill/cubic_contour.cpp
     src/gui/fill/pen_fill.cpp
     src/gui/fill/pen_fill.h
@@ -392,6 +394,8 @@ if(FLS_BUILD_TESTS)
     add_test(NAME profile_compute COMMAND fls_profile_compute_tests)
     add_executable(fls_compact_fit_tests
         tools/compact_fit_test.cpp
+        src/gui/fill/thin_fit.cpp
+        src/gui/fill/lining_fill.cpp
         src/gui/fill/compact_fit.cpp
         src/gui/fill/compact_fit_reduction.cpp
         src/gui/fill/profile_fit.cpp
@@ -437,6 +441,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME compact_shape_configuration COMMAND fls_compact_fit_tests --shape-config-tests)
     add_test(NAME compact_comparison_projects COMMAND fls_compact_fit_tests --comparison-project-tests)
     add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
+    add_test(NAME thin_region_fit COMMAND fls_compact_fit_tests --thin-tests)
     add_test(NAME failed_fill_retention COMMAND fls_compact_fit_tests --failed-fill-tests)
     add_test(NAME compact_fast_quality COMMAND fls_compact_fit_tests --fast-quality-tests)
     add_test(NAME compact_search COMMAND fls_compact_fit_tests --compact-search-tests)
@@ -746,6 +751,7 @@ set(FLS_GUI_ASSET_FILES
     differential_shapes.json
     compact_fit_shapes.json
     compact_fit_shapes_combined.json
+    lining_shapes.json
     settings_tips.json
     vector/shape_geometry.json.gz
     vector/shape_names.json

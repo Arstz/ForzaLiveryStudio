@@ -4,6 +4,9 @@
 #include "layer.h"
 #include "compact_fit.h"
 #include "profile_fit.h"
+#include "thin_fit.h"
+#include "cubic_contour.h"
+#include "lining_fill.h"
 #include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
 #include "compact_fit_gpu_rank.h"
@@ -369,11 +372,17 @@ std::unique_ptr<fls::scene::Group> comparisonGroup(const gui::PenFillResult &fil
 }
 
 void saveComparison(const QString &source, const QString &destination, const gui::PenFillResult &fill,
-                     const QString &name = QStringLiteral("Compact Fit - continuity")) {
+                     const QString &name = QStringLiteral("Compact Fit - continuity"),
+                     const std::optional<QRectF> &reviewBounds = {}) {
     QFile file(source);
     require(file.open(QIODevice::ReadOnly), file.errorString());
     auto project = fls::decodeProjectDocument(file.readAll());
     auto group = comparisonGroup(fill, name);
+    if (reviewBounds.has_value()) {
+        group->transform.x = reviewBounds->width() * 1.2;
+        for (const auto &child : group->children)
+            static_cast<fls::scene::Shape &>(*child).color = {0, 0, 0, 255};
+    }
     project.root->append(std::move(group));
     QFile output(destination);
     require(output.open(QIODevice::WriteOnly | QIODevice::NewOnly), output.errorString());
@@ -1437,6 +1446,12 @@ void gpuRasterRankTests() {
         && rasterMasks == std::vector<std::uint64_t>{0x0f0f0f0f, 0xf0f0f0f0}
         && witnessMasks == std::vector<std::uint64_t>{0b001, 0b110},
         QStringLiteral("CUDA profile grid rasterization changed pixel coverage"));
+    require(gui::compact::gpu::rasterizeBitmasks(maskGeometry,
+        {0, 0, 1, 8, 4}, {{7.5, 3.5}, {0.5, 0.5}, {4.5, 0.5}},
+        &rasterMasks, &witnessMasks, &rasterError)
+        && rasterMasks == std::vector<std::uint64_t>{0x0f0f0f0f, 0xf0f0f0f0}
+        && witnessMasks == std::vector<std::uint64_t>{0b010, 0b101},
+        QStringLiteral("CUDA witness ordering changed pixel coverage"));
     const gui::catalog::Polygons envelopePolygons{
         QPolygonF{{0, 0}, {20, 0}, {20, 20}, {0, 20}},
         QPolygonF{{6, 6}, {6, 14}, {14, 14}, {14, 6}}};
@@ -1604,6 +1619,217 @@ void gpuRasterRankTests() {
 
 }
 #endif
+
+gui::PenFillRequest thinReferenceRequest(const QString &source, const gui::ShapeGeometryStore &geometry) {
+    QFile file(source);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    const auto project = fls::decodeProjectDocument(file.readAll());
+    gui::catalog::Polygons visible;
+    QJsonObject shapeCounts;
+    bool found = false;
+    std::function<void(const fls::scene::Layer &, const QTransform &, bool)> collect;
+    collect = [&](const auto &layer, const QTransform &parent, bool lining) {
+        if (!layer.visible)
+            return;
+        const auto matrix = layer.transform.matrix();
+        const QTransform transform = QTransform(matrix.m[0][0], matrix.m[1][0], matrix.m[0][1],
+            matrix.m[1][1], matrix.m[0][2], matrix.m[1][2]) * parent;
+        if (layer.name == QStringLiteral("Lining")) {
+            lining = true;
+            found = true;
+        }
+        if (layer.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<const fls::scene::Group &>(layer).children)
+                collect(*child, transform, lining);
+        } else if (lining && layer.kind() == fls::scene::LayerKind::Shape) {
+            const auto &shape = static_cast<const fls::scene::Shape &>(layer);
+            const auto key = QString::number(shape.shapeId);
+            shapeCounts.insert(key, shapeCounts.value(key).toInt() + 1);
+            require(!shape.mask && !shape.isRaster() && shape.color[3] == 255 && layer.opacity == 1,
+                QStringLiteral("Lining reference requires opaque vectors"));
+            const auto *sourceGeometry = geometry.shape(shape.shapeId);
+            require(sourceGeometry != nullptr, QStringLiteral("Lining reference shape geometry is missing"));
+            gui::PenPrimitive primitive;
+            primitive.shapeId = shape.shapeId;
+            for (const auto &triangle : sourceGeometry->triangles) {
+                QPolygonF polygon({triangle.p0, triangle.p1, triangle.p2});
+                if (gui::catalog::signedArea(polygon) < 0.0)
+                    std::reverse(polygon.begin(), polygon.end());
+                primitive.contours.push_back(polygon);
+            }
+            primitive.contours = gui::catalog::unite(primitive.contours);
+            const auto polygons = gui::catalog::mapped(primitive, transform);
+            if (shape.color[0] == 255 && shape.color[1] == 255 && shape.color[2] == 255)
+                visible = gui::catalog::subtract(visible, polygons);
+            else {
+                require(shape.color[0] == 0 && shape.color[1] == 0 && shape.color[2] == 0,
+                    QStringLiteral("Lining reference contains an unsupported color"));
+                visible = gui::catalog::unite(visible + polygons);
+            }
+        }
+    };
+    collect(*project.root, {}, false);
+    require(found && !visible.isEmpty(), QStringLiteral("Lining reference group is unavailable"));
+    QTextStream(stdout) << "Reference shapes " << QJsonDocument(shapeCounts).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+    gui::PenFillRequest request;
+    for (const auto &polygon : visible) {
+        gui::PenLoop loop;
+        loop.kind = gui::catalog::signedArea(polygon) > 0 ? gui::PenLoopKind::Outer : gui::PenLoopKind::Cutout;
+        for (const auto &point : polygon)
+            loop.points.push_back({point, gui::PenPointKind::Hard});
+        request.loops.push_back(loop);
+    }
+    return request;
+}
+
+void thinFitTests(const QVector<gui::catalog::Primitive> &catalog) {
+    gui::thin::FillOptions options;
+    options.useGpu = false;
+    const auto check = [&](const gui::catalog::FillResult &result, const QString &name) {
+        QTextStream(stdout) << name << ": " << result.fill.placements.size() << " shapes "
+            << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+        require(result.fill.error.isEmpty() && !result.fill.cancelled && !result.fill.placements.isEmpty(),
+            name + QStringLiteral(": ") + result.fill.error);
+        require(result.diagnostics.value("coverageRatio").toDouble(-1) >= options.minimumCoverage
+            && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0
+            && result.diagnostics.value("newInteriorHoleArea").toDouble(-1) == 0,
+            name + QStringLiteral(" lost coverage or exceeded the envelope"));
+        const auto quality = result.diagnostics.value("boundaryQuality").toObject();
+        const auto target = result.diagnostics.value("targetBoundary").toObject();
+        require(quality.value("holes") == target.value("holes")
+            && quality.value("components") == target.value("components"), name + QStringLiteral(" changed topology"));
+        require(std::none_of(result.fill.placements.cbegin(), result.fill.placements.cend(), [](const auto &placement) {
+            return placement.shapeId == 103 || placement.shapeId == 104;
+        }), name + QStringLiteral(" used triangle patches"));
+    };
+    const QVector<gui::PenPoint> straight{{{0, 0}, gui::PenPointKind::Hard},
+        {{70, 0}, gui::PenPointKind::Hard}};
+    const auto straightResult = gui::thin::fillLiningPath(straight, 0.4, catalog, options);
+    check(straightResult, QStringLiteral("Straight span"));
+    require(straightResult.fill.placements.size() == 1, QStringLiteral("Straight span was split"));
+    const QVector<gui::PenPoint> quadratic{{{0, 0}, gui::PenPointKind::Hard, {}, {70.0 / 3, 20}, true},
+        {{70, 0}, gui::PenPointKind::Hard, {-70.0 / 3, 20}, {}, true}};
+    for (double width : {0.4, 2.0, 8.0}) {
+        const auto result = gui::thin::fillLiningPath(quadratic, width, catalog, options);
+        check(result, QStringLiteral("Single bend %1").arg(width));
+        require(result.fill.placements.size() <= 20, QStringLiteral("Single bend exceeded its span budget"));
+    }
+    for (double width : {0.4, 2.0, 8.0}) {
+        QVector<gui::PenPoint> points{{{0, 0}, gui::PenPointKind::Hard},
+            {{30, 15}, gui::PenPointKind::Soft}, {{70, 0}, gui::PenPointKind::Hard}};
+        const auto result = gui::thin::fillLiningPath(points, width, catalog, options);
+        check(result, QStringLiteral("Curved lining %1").arg(width));
+        QPainterPathStroker stroker;
+        stroker.setWidth(width);
+        stroker.setCurveThreshold(0.0001);
+        stroker.setCapStyle(Qt::RoundCap);
+        stroker.setJoinStyle(Qt::RoundJoin);
+        const auto target = stroker.createStroke(gui::buildLiningPath(points).centerline);
+        const auto generated = outputPath(result.fill, catalog);
+        stroker.setWidth(width * options.maximumThicknessRatio + 0.015);
+        const auto maximumWidth = stroker.createStroke(gui::buildLiningPath(points).centerline);
+        require(generated.subtracted(maximumWidth).isEmpty(),
+            QStringLiteral("Lining exceeded its independently measured stroke thickness"));
+        int selectedPixels = 0;
+        int coveredPixels = 0;
+        for (int row = 0; row < 100; ++row)
+            for (int column = 0; column < 400; ++column) {
+                const auto bounds = target.boundingRect();
+                const QPointF point(bounds.left() + bounds.width() * (column + 0.5) / 400.0,
+                    bounds.top() + bounds.height() * (row + 0.5) / 100.0);
+                if (target.contains(point)) {
+                    ++selectedPixels;
+                    coveredPixels += generated.contains(point);
+                }
+            }
+        require(coveredPixels >= selectedPixels * options.minimumCoverage,
+            QStringLiteral("Lining missed too many independent stroke pixels"));
+    }
+    for (int shapeId : {2131, 2113, 136, 2112, 137}) {
+        const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [shapeId](const auto &entry) {
+            return entry.shape.shapeId == shapeId;
+        });
+        require(primitive != catalog.cend(), QStringLiteral("Missing native curved span"));
+        const auto transform = QTransform::fromScale(0.5, 0.1);
+        const auto result = gui::thin::fillPolygons(gui::catalog::mapped(primitive->shape, transform), catalog, options);
+        check(result, QStringLiteral("Native curved region %1").arg(shapeId));
+        require(result.fill.placements.size() == 1, QStringLiteral("Native curved region was split"));
+        QTransform skewed;
+        skewed.rotate(37.0);
+        skewed.shear(2.5, 0.0);
+        skewed.scale(0.5, 0.06);
+        const auto affine = gui::thin::fillPolygons(gui::catalog::mapped(primitive->shape, skewed), catalog, options);
+        check(affine, QStringLiteral("Skewed native region %1").arg(shapeId));
+        require(affine.fill.placements.size() == 1, QStringLiteral("Skewed native region was split"));
+    }
+    QVector<gui::PenPoint> corner{{{0, 0}, gui::PenPointKind::Hard},
+        {{40, 0}, gui::PenPointKind::Hard}, {{40, 40}, gui::PenPointKind::Hard}};
+    check(gui::thin::fillLiningPath(corner, 2.0, catalog, options), QStringLiteral("Hard join"));
+    gui::PenFillRequest taper;
+    taper.points = {{{0, 0}, gui::PenPointKind::Hard}, {{70, 0}, gui::PenPointKind::Hard},
+        {{55, 2}, gui::PenPointKind::Hard}, {{0, 8}, gui::PenPointKind::Hard}};
+    check(gui::thin::fillRegion(taper, catalog, options), QStringLiteral("Tapered region"));
+    QPainterPath ring;
+    ring.setFillRule(Qt::WindingFill);
+    ring.addEllipse(QRectF(0, 0, 50, 30));
+    auto hole = QPainterPath();
+    hole.addEllipse(QRectF(1, 1, 48, 28));
+    ring.addPath(hole.toReversed());
+    gui::PenFillRequest closed;
+    closed.loops = gui::cubicPathLoops(ring);
+    check(gui::thin::fillRegion(closed, catalog, options), QStringLiteral("Closed lining cutout"));
+    const gui::catalog::Polygons disconnected{
+        QPolygonF({{0, 0}, {40, 0}, {40, 2}, {0, 2}}),
+        QPolygonF({{0, 10}, {40, 10}, {40, 12}, {0, 12}})};
+    const auto separated = gui::thin::fillPolygons(disconnected, catalog, options);
+    check(separated, QStringLiteral("Disconnected regions"));
+    require(separated.diagnostics.value("boundaryQuality").toObject().value("components").toInt() == 2,
+        QStringLiteral("Disconnected input merged components"));
+    gui::catalog::Polygons reconstructed;
+    for (const auto &placement : separated.fill.placements) {
+        const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [&](const auto &p) {
+            return p.shape.shapeId == placement.shapeId;
+        });
+        require(primitive != catalog.cend(), QStringLiteral("Thin output escaped its catalog"));
+        reconstructed += gui::catalog::mapped(primitive->shape, gui::catalog::emittedTransform(placement.transform));
+    }
+    reconstructed = gui::catalog::unite(reconstructed);
+    require(gui::catalog::area(gui::catalog::subtract(disconnected, reconstructed))
+            <= gui::catalog::area(disconnected) * (1.0 - options.minimumCoverage)
+        && gui::catalog::subtract(reconstructed, gui::catalog::expanded(disconnected, options.boundaryAllowance)).isEmpty(),
+        QStringLiteral("Serialized thin placements failed independent coverage or spill checks"));
+    gui::catalog::Polygons mixedWidths;
+    QPainterPath mixedEnvelope;
+    for (int index = 0; index < 3; ++index) {
+        const double width = index + 1.0;
+        const double top = index * 10.0;
+        mixedWidths.push_back(QPolygonF(QRectF(0, top, 60, width)));
+        const double allowance = width * (options.maximumThicknessRatio - 1.0) * 0.5 + 0.001;
+        mixedEnvelope.addRect(QRectF(0, top, 60, width).adjusted(-allowance, -allowance, allowance, allowance));
+    }
+    const auto mixed = gui::thin::fillPolygons(mixedWidths, catalog, options);
+    check(mixed, QStringLiteral("Local widths 1-3"));
+    require(mixed.fill.placements.size() == 3
+        && outputPath(mixed.fill, catalog).subtracted(mixedEnvelope).isEmpty(),
+        QStringLiteral("Mixed-width lining exceeded local thickness or split straight spans"));
+    auto excessiveThickness = options;
+    excessiveThickness.maximumThicknessRatio = 2.01;
+    require(!gui::thin::fillPolygons(mixedWidths, catalog, excessiveThickness).fill.error.isEmpty(),
+        QStringLiteral("Thin fit accepted a thickness ratio above two"));
+    bool stopAfterSeed = false;
+    auto interrupt = options;
+    interrupt.workProgress = [&](int, int, int) { stopAfterSeed = true; };
+    const auto interrupted = gui::thin::fillRegion(taper, catalog, interrupt, [&] { return stopAfterSeed; });
+    require(stopAfterSeed && interrupted.fill.cancelled && interrupted.fill.placements.isEmpty(),
+        QStringLiteral("In-flight cancellation leaked shapes"));
+    auto limited = options;
+    limited.shapeBudget = 1;
+    const auto overBudget = gui::thin::fillRegion(taper, catalog, limited);
+    require(!overBudget.fill.error.isEmpty(), QStringLiteral("Thin completion ignored its shape budget"));
+    const auto cancelled = gui::thin::fillRegion(taper, catalog, options, [] { return true; });
+    require(cancelled.fill.cancelled && cancelled.fill.placements.isEmpty(), QStringLiteral("Cancelled thin fill leaked shapes"));
+    QTextStream(stdout) << "Thin fitting coverage, topology, taper, joins and cancellation passed\n";
+}
 
 void convexUnionTests(const QVector<gui::catalog::Primitive> &catalog) {
     using gui::catalog::Polygons;
@@ -2456,6 +2682,42 @@ int main(int argc, char **argv) {
         }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--quality-examples")) {
             qualityExamples();
+            return 0;
+        }
+        if (arguments.size() >= 2 && (arguments[1] == QStringLiteral("--thin-tests")
+            || arguments[1] == QStringLiteral("--thin-fit") || arguments[1] == QStringLiteral("--thin-reference"))) {
+            gui::ShapeGeometryStore geometry;
+            QString error;
+            require(geometry.loadDefault(&error), error);
+            const auto thinCatalog = gui::thin::buildCatalog(geometry, &error);
+            require(!thinCatalog.isEmpty(), error);
+            if (arguments[1] == QStringLiteral("--thin-tests")) {
+                thinFitTests(thinCatalog);
+                return 0;
+            }
+            require(arguments.size() >= 3, QStringLiteral("Expected thin contour or reference project"));
+            const auto request = arguments[1] == QStringLiteral("--thin-reference")
+                ? thinReferenceRequest(arguments[2], geometry) : readRequest(arguments[2]);
+            QElapsedTimer timer;
+            timer.start();
+            gui::catalog::Polygons polygons;
+            if (arguments[1] == QStringLiteral("--thin-reference"))
+                for (const auto &loop : request.loops) {
+                    QPolygonF polygon;
+                    for (const auto &point : loop.points)
+                        polygon.push_back(point.position);
+                    polygons.push_back(polygon);
+                }
+            auto result = polygons.isEmpty() ? gui::thin::fillRegion(request, thinCatalog)
+                : gui::thin::fillPolygons(polygons, thinCatalog);
+            result.diagnostics.insert("elapsedMilliseconds", timer.elapsed());
+            result.diagnostics.insert("count", result.fill.placements.size());
+            result.diagnostics.insert("error", result.fill.error);
+            output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+            require(result.fill.error.isEmpty(), result.fill.error);
+            if (arguments.size() == 4 && arguments[1] == QStringLiteral("--thin-reference"))
+                saveComparison(arguments[2], arguments[3], result.fill, QStringLiteral("Thin Region Fit"),
+                    outputPath(result.fill, thinCatalog).boundingRect());
             return 0;
         }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--convex-union-tests")) {

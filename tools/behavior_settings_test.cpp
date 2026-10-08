@@ -24,7 +24,8 @@ int main(int argc, char **argv) {
         settings.setValue(QStringLiteral("ui/behavior/contourFillMode"), QStringLiteral("catalog"));
         settings.sync();
         require(gui::loadBehaviorSettings().contourFillMode == gui::ContourFillMode::CompactFit);
-        for (auto mode : {gui::ContourFillMode::Analytic, gui::ContourFillMode::Differential, gui::ContourFillMode::CompactFit}) {
+        for (auto mode : {gui::ContourFillMode::Analytic, gui::ContourFillMode::Differential,
+                         gui::ContourFillMode::ThinRegions, gui::ContourFillMode::CompactFit}) {
             auto behavior = gui::loadBehaviorSettings();
             behavior.contourFillMode = mode;
             gui::saveBehaviorSettings(behavior);

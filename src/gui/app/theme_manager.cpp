@@ -173,6 +173,8 @@ BehaviorSettings loadBehaviorSettings() {
         differential ? QStringLiteral("differential") : QStringLiteral("analytic")).toString();
     if (fillMode == QStringLiteral("compact") || fillMode == QStringLiteral("catalog")) {
         result.contourFillMode = ContourFillMode::CompactFit;
+    } else if (fillMode == QStringLiteral("thin")) {
+        result.contourFillMode = ContourFillMode::ThinRegions;
     } else if (fillMode == QStringLiteral("differential")) {
         result.contourFillMode = ContourFillMode::Differential;
     }
@@ -231,7 +233,8 @@ void saveBehaviorSettings(const BehaviorSettings &settings) {
     qsettings.setValue(QStringLiteral("ui/behavior/insertShapeWithLastSelectedScale"), settings.insertShapeWithLastSelectedScale);
     qsettings.setValue(QStringLiteral("ui/behavior/differentialContourFill"),
                        settings.contourFillMode == ContourFillMode::Differential);
-    const QString fillMode = settings.contourFillMode == ContourFillMode::CompactFit
+    const QString fillMode = settings.contourFillMode == ContourFillMode::ThinRegions ? QStringLiteral("thin")
+        : settings.contourFillMode == ContourFillMode::CompactFit
         ? QStringLiteral("compact") : (settings.contourFillMode == ContourFillMode::Differential
                ? QStringLiteral("differential") : QStringLiteral("analytic"));
     qsettings.setValue(QStringLiteral("ui/behavior/contourFillMode"), fillMode);

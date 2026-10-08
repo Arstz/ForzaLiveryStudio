@@ -30,6 +30,9 @@ constexpr int kGpuSelectionShortlist = 12000;
 constexpr int kMaximumTrials = 160000;
 constexpr int kMaximumProfileWork = 640000;
 constexpr int kGridExtent = 640;
+constexpr int kThinGridExtent = 2048;
+constexpr int kThinRepairCenters = 128;
+constexpr double kThinSpillPenalty = 0.1;
 constexpr int kBodyCenters = 24;
 constexpr int kThinBodyCenters = 200;
 constexpr int kBodyGridExtent = 4096;
@@ -82,6 +85,7 @@ struct Candidate {
     double error = 0.0;
     double spill = 0.0;
     double span = 0.0;
+    double selectionCost = 1.0;
 };
 
 struct CandidateValidationStats {
@@ -100,6 +104,7 @@ struct CandidateValidationStats {
 struct Grid {
     QPointF origin;
     Bits target;
+    QVector<int> cells;
     int width = 0;
     int height = 0;
     double step = 1.0;
@@ -372,7 +377,7 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
             timer.restart();
         }
     }
-    if (!provenInsideSpillFree && (!precheckSpill || !spillPolygons.isEmpty())) {
+    if (!region.flexibleBoundary && !provenInsideSpillFree && (!precheckSpill || !spillPolygons.isEmpty())) {
         for (const auto &polygon : result.polygons) {
             for (int index = 0; index < polygon.size(); ++index) {
                 const auto next = polygon[(index + 1) % polygon.size()];
@@ -426,7 +431,7 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
     for (const auto &polygon : region.required) {
         const auto trace = makeTrace(polygon);
         QVector<double> starts = trace.corners;
-        for (double offset = 0; offset < trace.perimeter; offset += scale * 12.0) {
+        for (double offset = 0; offset < trace.perimeter; offset += scale * (options.thinRegion ? 48.0 : 12.0)) {
             starts.push_back(offset);
         }
         std::sort(starts.begin(), starts.end());
@@ -442,7 +447,11 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
                 }
             }
             double previousLength = -1.0;
-            for (double requested : {356.0, 220.0, 136.0, 84.0, 52.0, 32.0, 20.0, 12.0}) {
+            QVector<double> lengths{356.0, 220.0, 136.0, 84.0, 52.0, 32.0, 20.0, 12.0};
+            if (options.thinRegion)
+                lengths = {available / scale, available * 0.75 / scale,
+                    available * 0.5 / scale, available * 0.25 / scale};
+            for (double requested : lengths) {
                 const double length = std::min(available, requested * scale);
                 if (length < options.observationScale * 6.0 || std::abs(length - previousLength) < kMinimumLength) {
                     continue;
@@ -458,7 +467,7 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
                 for (int index = 0; index < target.size(); ++index) {
                     const auto tangent = unit(original[std::min(index + 1, static_cast<int>(target.size()) - 1)]
                         - original[std::max(0, index - 1)]);
-                    target[index] += QPointF(tangent.y(), -tangent.x()) * (kBoundaryOffset * options.observationScale);
+                    target[index] += QPointF(tangent.y(), -tangent.x()) * ((options.thinRegion ? 0.0 : kBoundaryOffset) * options.observationScale);
                 }
                 const auto anchors = catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
                     {target.front(), target[kProfileSamples / 2], target.back()});
@@ -626,8 +635,9 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
     const catalog::PointContainment envelope(outer);
     const auto profiles = sourceProfiles(primitives);
     const auto jobs = curveJobs(region, options, cancelled);
-    const int budget = static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
-        kMaximumTrials, kMaximumProfileWork));
+    const int budget = options.profileTrialBudget > 0 ? options.profileTrialBudget
+        : static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
+            kMaximumTrials, kMaximumProfileWork));
     std::vector<compute::Arc> sources;
     std::vector<compute::Arc> targets;
     for (const auto &profile : profiles) {
@@ -644,6 +654,10 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
     int validations = 0;
     int gpuScreened = 0;
     double validationMilliseconds = 0.0;
+    const double maximumArea = region.area * (options.thinRegion ? 8.0 : 1.02);
+    const double maximumError = options.thinRegion
+        ? std::max(kProfileError * options.observationScale, options.boundaryAllowance * 0.25)
+        : kProfileError * options.observationScale;
     for (int start = 0; start < jobs.size() && !stopped(cancelled); start += kSpanBatchSize) {
         const int end = std::min(start + kSpanBatchSize, static_cast<int>(jobs.size()));
         const int remainingSpans = jobs.size() - start;
@@ -666,7 +680,7 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
                 const auto transform = profile.normalization * initial;
                 const double area = shape.area * std::abs(transform.determinant());
                 ++trials;
-                if (capacities[local] == 0 || !std::isfinite(area) || area > region.area * 1.02
+                if (capacities[local] == 0 || !std::isfinite(area) || area > maximumArea
                     || area < options.observationScale * options.observationScale) {
                     continue;
                 }
@@ -687,8 +701,8 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
             const auto transform = profile.normalization * fittedTransform(fit.transform);
             const double area = shape.area * std::abs(transform.determinant());
             fits += fit.fitted;
-            if (!fit.valid || fit.error > kProfileError * options.observationScale
-                || !std::isfinite(area) || area > region.area * 1.02 || area <= 0) {
+            if (!fit.valid || fit.error > maximumError
+                || !std::isfinite(area) || area > maximumArea || area <= 0) {
                 continue;
             }
             ranked[numeric.target - start].push_back({fit, numeric.source, area});
@@ -744,7 +758,7 @@ void setRange(Bits *bits, int first, int end) {
 }
 
 Bits rasterize(const Polygons &polygons, const Grid &grid) {
-    Bits result((grid.width * grid.height + 63) / 64, 0);
+    Bits result((grid.cells.isEmpty() ? grid.width * grid.height + 63 : grid.cells.size() + 63) / 64, 0);
     struct Crossing {
         double position;
         int winding;
@@ -772,7 +786,13 @@ Bits rasterize(const Polygons &polygons, const Grid &grid) {
             if (winding != 0) {
                 const int first = std::clamp(static_cast<int>(std::ceil((start - grid.origin.x()) / grid.step - 0.5)), 0, grid.width);
                 const int end = std::clamp(static_cast<int>(std::ceil((crossing.position - grid.origin.x()) / grid.step - 0.5)), 0, grid.width);
-                setRange(&result, row * grid.width + first, row * grid.width + end);
+                if (grid.cells.isEmpty()) {
+                    setRange(&result, row * grid.width + first, row * grid.width + end);
+                } else {
+                    const auto begin = std::lower_bound(grid.cells.cbegin(), grid.cells.cend(), row * grid.width + first);
+                    const auto finish = std::lower_bound(begin, grid.cells.cend(), row * grid.width + end);
+                    setRange(&result, begin - grid.cells.cbegin(), finish - grid.cells.cbegin());
+                }
             }
             winding += crossing.winding;
             start = crossing.position;
@@ -785,12 +805,26 @@ Bits rasterize(const Polygons &polygons, const Grid &grid) {
 Grid makeGrid(const catalog::Region &region, double scale) {
     Grid result;
     result.origin = region.bounds.topLeft();
-    result.step = std::max(scale * 0.5, std::max(region.bounds.width(), region.bounds.height()) / kGridExtent);
+    result.step = std::max(scale * 0.5, std::max(region.bounds.width(), region.bounds.height()) / (region.flexibleBoundary ? kThinGridExtent : kGridExtent));
     result.width = std::max(1, static_cast<int>(std::ceil(region.bounds.width() / result.step)));
     result.height = std::max(1, static_cast<int>(std::ceil(region.bounds.height() / result.step)));
     const QRectF frame = region.bounds.adjusted(-scale * 2.0, -scale * 2.0, scale * 2.0, scale * 2.0);
-    const Polygons complement = catalog::subtract({QPolygonF(frame)}, region.required);
-    result.target = rasterize(catalog::subtract(region.required, catalog::expanded(complement, scale * 0.35)), result);
+    const Polygons complement = region.flexibleBoundary ? Polygons{}
+        : catalog::subtract({QPolygonF(frame)}, region.required);
+    result.target = rasterize(region.flexibleBoundary ? region.required
+        : catalog::subtract(region.required, catalog::expanded(complement, scale * 0.35)), result);
+
+    if (region.flexibleBoundary) {
+        for (int word = 0; word < result.target.size(); ++word) {
+            quint64 bits = result.target[word];
+            while (bits) {
+                result.cells.push_back(word * 64 + std::countr_zero(bits));
+                bits &= bits - 1;
+            }
+        }
+        result.target = Bits((result.cells.size() + 63) / 64, 0);
+        setRange(&result.target, 0, result.cells.size());
+    }
 
     return result;
 }
@@ -902,7 +936,10 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
         if (!shape) {
             continue;
         }
-        for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
+        QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
+        if (region.flexibleBoundary)
+            ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
+        for (double ratio : ratios) {
             for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360); angle += ratio == 1.0 && id == 102 ? 180 : 30) {
                 jobs.push_back({shape, angle, ratio});
             }
@@ -950,7 +987,10 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
             if (!shape) {
                 continue;
             }
-            for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
+            QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
+            if (region.flexibleBoundary)
+                ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
+            for (double ratio : ratios) {
                 for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360);
                      angle += ratio == 1.0 && id == 102 ? 180 : 30) {
                     jobs.push_back({shape, center, static_cast<double>(angle), ratio,
@@ -963,7 +1003,8 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
         return false;
     }
     const auto envelope = maskGeometry(region.spillFree);
-    const double clearance = std::max(scale * kBodyGpuClearanceFraction, 0.01);
+    const double clearance = std::max(scale * kBodyGpuClearanceFraction,
+        region.flexibleBoundary ? kGpuProofMinimumClearance : 0.01);
     QElapsedTimer timer;
     timer.start();
     int calls = 0;
@@ -1171,7 +1212,10 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
         if (!shape) {
             continue;
         }
-        for (double ratio : {1.0, 2.0, 4.0, 8.0}) {
+        QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
+        if (region.flexibleBoundary)
+            ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
+        for (double ratio : ratios) {
             for (double offset : {-kBodyTangentStep, 0.0, kBodyTangentStep, 180.0 - kBodyTangentStep, 180.0, 180.0 + kBodyTangentStep}) {
                 jobs.push_back({shape, ratio, angle + offset});
             }
@@ -1400,11 +1444,17 @@ bool indexCandidatesGpu(QVector<Candidate> *pool, const Grid &grid,
             candidate.bounds.right(), candidate.bounds.bottom()});
     }
     const compact::gpu::MaskGrid maskGrid{grid.origin.x(), grid.origin.y(),
-        grid.step, grid.width, grid.height};
+        grid.step, options.thinRegion ? 1 : grid.width, options.thinRegion ? 1 : grid.height};
     std::vector<compact::gpu::MaskPoint> maskWitnesses;
     maskWitnesses.reserve(witnesses.size());
-    for (const QPointF &point : witnesses)
-        maskWitnesses.push_back({point.x(), point.y()});
+    if (options.thinRegion) {
+        for (int cell : grid.cells)
+            maskWitnesses.push_back({grid.origin.x() + (cell % grid.width + 0.5) * grid.step,
+                grid.origin.y() + (cell / grid.width + 0.5) * grid.step});
+    } else {
+        for (const QPointF &point : witnesses)
+            maskWitnesses.push_back({point.x(), point.y()});
+    }
     std::vector<std::uint64_t> masks;
     std::vector<std::uint64_t> boundaryMasks;
     std::string error;
@@ -1416,6 +1466,13 @@ bool indexCandidatesGpu(QVector<Candidate> *pool, const Grid &grid,
     const int wordsPerCandidate = grid.target.size();
     const int boundaryWordsPerCandidate = (witnesses.size() + 63) / 64;
     for (int candidate = 0; candidate < pool->size(); ++candidate) {
+        if (options.thinRegion) {
+            (*pool)[candidate].cells.resize(wordsPerCandidate);
+            std::copy_n(boundaryMasks.begin() + static_cast<size_t>(candidate) * wordsPerCandidate,
+                wordsPerCandidate, (*pool)[candidate].cells.begin());
+            (*pool)[candidate].boundary.clear();
+            continue;
+        }
         (*pool)[candidate].cells.resize(wordsPerCandidate);
         std::copy_n(masks.begin() + static_cast<size_t>(candidate) * wordsPerCandidate,
             wordsPerCandidate, (*pool)[candidate].cells.begin());
@@ -1459,6 +1516,8 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
     QVector<Cell> cells;
     cells.reserve(initiallyMissing);
     const auto center = [&](int index) {
+        if (!grid.cells.isEmpty())
+            index = grid.cells[index];
         return grid.origin + QPointF((index % grid.width + 0.5) * grid.step,
                                       (index / grid.width + 0.5) * grid.step);
     };
@@ -1488,7 +1547,7 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
     qint64 rasterNanoseconds = 0;
     CandidateValidationStats validation;
     for (const Cell &cell : cells) {
-        if (used >= 32 || stopped(cancelled) || marginal(missing, missing) == 0)
+        if (used >= (region.flexibleBoundary ? kThinRepairCenters : 32) || stopped(cancelled) || marginal(missing, missing) == 0)
             break;
         if (!(missing[cell.index / 64] & (quint64(1) << (cell.index % 64))))
             continue;
@@ -1541,6 +1600,7 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
     const auto *shape = primitiveFor(101, primitives, catalog::ShapeTask::StraightEdges);
     if (!shape || shape->contours.isEmpty())
         return;
+    const catalog::PointContainment envelope(outer);
     const auto &contour = shape->contours.front();
     const auto sourceTangent = unit(contour[1] - contour[0]);
     const QPointF sourceNormal(-sourceTangent.y(), sourceTangent.x());
@@ -1615,14 +1675,48 @@ void addStraightCandidates(const catalog::Region &region, const Polygons &outer,
                     continue;
                 }
                 const QPointF inward(-tangent.y(), tangent.x());
+                if (region.flexibleBoundary) {
+                    const auto transformAt = [&](double depth) {
+                        return catalog::affineFromAnchors(
+                            {contour[0], contour[1], contour[0] + sourceNormal * sourceLength},
+                            {target.front() - inward * (scale * 0.02), target.back() - inward * (scale * 0.02),
+                             target.front() + inward * depth});
+                    };
+                    const auto contained = [&](double depth) {
+                        const auto transform = transformAt(depth);
+                        for (const auto &polygon : shape->contours)
+                            for (int edge = 0; edge < polygon.size(); ++edge)
+                                for (int sample = 0; sample < 8; ++sample) {
+                                    const auto point = polygon[edge] + (polygon[(edge + 1) % polygon.size()] - polygon[edge]) * (sample / 8.0);
+                                    if (!envelope.contains(transform.map(point)))
+                                        return false;
+                                }
+
+                        return true;
+                    };
+                    double lower = 0.0;
+                    double upper = scale * 16.0;
+                    for (int iteration = 0; iteration < kBodyRadiusIterations; ++iteration) {
+                        const double depth = (lower + upper) * 0.5;
+                        (contained(depth) ? lower : upper) = depth;
+                    }
+                    if (lower > scale * 0.1) {
+                        for (double factor : {kBodyRadiusPadding, 0.9, 0.75})
+                            transforms.push_back(transformAt(lower * factor));
+                        groupEnds.push_back(transforms.size());
+                    }
+                    continue;
+                }
+                const QVector<double> depths{128.0, 64.0, 32.0, 16.0, 8.0, 4.0, 2.0};
+                const double depthScale = placementScale;
                 for (double shear : {-1.0, -0.5, 0.0, 0.5, 1.0}) {
-                    for (double depth : {128.0, 64.0, 32.0, 16.0, 8.0, 4.0, 2.0}) {
+                    for (double depth : depths) {
                         transforms.push_back(catalog::affineFromAnchors(
                             {contour[0], contour[1], contour[0] + sourceNormal * sourceLength},
                             {target.front() - inward * (scale * 0.02),
                              target.back() - inward * (scale * 0.02),
                              target.front() + (inward + tangent * shear)
-                                 * (depth * placementScale)}));
+                                 * (depth * depthScale)}));
                     }
                     if (groupEnds.isEmpty() || groupEnds.back() != transforms.size())
                         groupEnds.push_back(transforms.size());
@@ -2179,26 +2273,40 @@ QVector<int> selectIndexedCandidates(QVector<Candidate> *pool, const catalog::Re
                               QJsonObject *diagnostics) {
     Bits missing = grid.target;
     Bits boundary((witnesses.size() + 63) / 64, 0);
+    int remainingCells = marginal(missing, missing);
+    const int maximumMissingCells = options.thinRegion ? static_cast<int>(remainingCells * 0.012) : 0;
+    for (auto &candidate : *pool) {
+        const double usefulArea = options.thinRegion
+            ? marginal(candidate.cells, grid.target) * grid.step * grid.step : 0.0;
+        const double spillCost = options.thinRegion
+            ? kThinSpillPenalty * std::max(0.0, candidate.placement.area - usefulArea)
+                / std::max(usefulArea, grid.step * grid.step) : 0.0;
+        candidate.selectionCost = 1.0 + spillCost
+            + candidate.error * (options.thinRegion ? 0.05 : 0.5) / options.observationScale;
+    }
     int scoreEvaluations = 0;
     setRange(&boundary, 0, witnesses.size());
     const double boundaryWeight = region.area / std::max(1, static_cast<int>(witnesses.size()))
         * boundaryWeightFactor;
-    auto selected = selectBitmasksGpu(*pool, grid, boundary, options, boundaryWeight,
-        cancelled, &missing, &boundary, diagnostics);
+    auto selected = options.thinRegion ? std::optional<QVector<int>>{}
+        : selectBitmasksGpu(*pool, grid, boundary, options, boundaryWeight,
+            cancelled, &missing, &boundary, diagnostics);
     if (!selected) {
         selected = greedyCover(pool->size(), options.shapeBudget,
             [&](int index) {
                 ++scoreEvaluations;
                 const auto &candidate = (*pool)[index];
 
+
                 return (marginal(candidate.cells, missing) * grid.step * grid.step
                     + marginal(candidate.boundary, boundary) * boundaryWeight)
-                    / (1.0 + candidate.error * 0.5 / options.observationScale);
+                    / candidate.selectionCost;
             },
             [&](int index) {
+                remainingCells -= marginal((*pool)[index].cells, missing);
                 removeCovered(&missing, (*pool)[index].cells);
                 removeCovered(&boundary, (*pool)[index].boundary);
-            }, [&] { return stopped(cancelled); });
+            }, [&] { return stopped(cancelled) || (options.thinRegion && remainingCells <= maximumMissingCells); });
         diagnostics->insert(QStringLiteral("selectionBackend"), QStringLiteral("CPU"));
         diagnostics->insert(QStringLiteral("selectionScoreEvaluations"), scoreEvaluations);
     }
@@ -2215,7 +2323,8 @@ QVector<int> selectCandidates(QVector<Candidate> *pool, const catalog::Region &r
                               const compact::FillOptions &options, double boundaryWeightFactor,
                               const std::function<bool()> &cancelled,
                               compact::gpu::RasterRanker *gpuRanker, QJsonObject *diagnostics) {
-    shortlistCandidatesGpu(pool, gpuRanker, diagnostics);
+    if (!options.thinRegion)
+        shortlistCandidatesGpu(pool, gpuRanker, diagnostics);
     const bool gpuIndexed = indexCandidatesGpu(pool, grid, witnesses, options, diagnostics);
 
     for (auto &candidate : *pool) {
@@ -2394,7 +2503,8 @@ double selectAllowance(const catalog::Region &authored, const catalog::Region &c
 
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
-                               QVector<compact::ReusableCandidate> *reusable) {
+                               QVector<compact::ReusableCandidate> *reusable,
+                               const catalog::Region *prepared = nullptr) {
     catalog::FillResult result;
     QJsonObject timings;
     QElapsedTimer stageTimer;
@@ -2418,9 +2528,14 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
                 return point.explicitHandles;
             });
         });
-        const auto authoredRegion = catalog::buildRegion(request, cancelled);
-        const auto coverageRegion = catalog::leewayAdjustedRegion(
+        const auto authoredRegion = prepared ? *prepared : catalog::buildRegion(request, cancelled);
+        auto coverageRegion = prepared ? *prepared : catalog::leewayAdjustedRegion(
             authoredRegion, options.leeway, options.boundaryAllowance);
+        if (coverageRegion.flexibleBoundary) {
+            coverageRegion.spillFree = coverageRegion.permitted;
+            coverageRegion.spillFreePath = coverageRegion.permittedPath;
+            coverageRegion.spillFreeContainment = std::make_shared<catalog::PointContainment>(coverageRegion.permitted);
+        }
         if (coverageRegion.required.isEmpty() || coverageRegion.visible.isEmpty()) {
             throw std::runtime_error("Contour leeway leaves no visible fillable area");
         }
@@ -2428,7 +2543,8 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         const auto outer = region.permitted;
         const compact::BoundaryModel boundary(coverageRegion.visible, options.observationScale);
         const auto grid = makeGrid(coverageRegion, options.observationScale);
-        const auto witnesses = boundaryWitnesses(coverageRegion, options.observationScale);
+        const auto witnesses = options.thinRegion ? QVector<QPointF>{}
+            : boundaryWitnesses(coverageRegion, options.observationScale);
         QVector<Candidate> pool;
 #ifdef FLS_HAS_CUDA
         std::unique_ptr<compact::gpu::RasterRanker> gpuRanker;
@@ -2488,7 +2604,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         result.diagnostics.insert(QStringLiteral("initialSelectionCount"), selected.size());
         result.diagnostics.insert(QStringLiteral("initialSelectionMilliseconds"),
             selectionTimer.nsecsElapsed() / 1e6);
-        if (nativeCubic && !stopped(cancelled)) {
+        if ((nativeCubic || options.thinRegion) && !stopped(cancelled)) {
             selectionTimer.restart();
             const auto initialCoverage = coverageOf(pool, selected);
             const auto initialMissing = catalog::area(catalog::subtract(
@@ -2502,7 +2618,8 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             result.diagnostics.insert(QStringLiteral("initialCoverageMilliseconds"),
                 selectionTimer.nsecsElapsed() / 1e6);
             if (!initialDeepMissing.isEmpty()
-                || initialMissing > std::max(4.0, coverageRegion.area * 0.005)) {
+                || initialMissing > (options.thinRegion ? coverageRegion.area * 0.005
+                    : std::max(4.0, coverageRegion.area * 0.005))) {
                 selectionTimer.restart();
                 addUncoveredBodyCandidates(coverageRegion, outer, primitives, boundary, grid,
                     options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
@@ -2525,7 +2642,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         result.diagnostics.insert(QStringLiteral("totalCandidates"), pool.size());
         recordTime(QStringLiteral("selection"));
         result.diagnostics.insert(QStringLiteral("greedyCount"), selected.size());
-        if (!pool.isEmpty() && !stopped(cancelled)) {
+        if (!options.thinRegion && !pool.isEmpty() && !stopped(cancelled)) {
             reduceSelection(pool, grid, boundary, coverageRegion, options, cancelled, &selected);
             result.diagnostics.insert(QStringLiteral("selectedBoundaryAllowance"),
                 selectAllowance(authoredRegion, coverageRegion, primitives, boundary, grid,
@@ -2563,7 +2680,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         }
         result.diagnostics.insert(QStringLiteral("selected"), selectedDetails);
         result.diagnostics.insert(QStringLiteral("shapeIds"), counts);
-        if (!stopped(cancelled)) {
+        if (reusable && !stopped(cancelled)) {
             reusable->reserve(pool.size());
             for (const auto &candidate : pool) {
                 reusable->push_back({candidate.placement, candidate.polygons, candidate.bounds});
@@ -2584,6 +2701,62 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
 }
 
 } // namespace
+
+QVector<PenPlacement> spanCandidates(const QPainterPath &centerline, double width,
+                                      const QVector<catalog::Primitive> &primitives,
+                                      double maximumError, bool useGpu,
+                                      const std::function<bool()> &cancelled) {
+    QVector<PenPlacement> result;
+    QVector<QPolygonF> targets;
+    QVector<QTransform> anchors;
+    const auto profiles = sourceProfiles(primitives);
+    std::vector<compute::Arc> sources;
+    std::vector<compute::Arc> arcs;
+    std::vector<compute::Job> jobs;
+    std::vector<compute::Fit> fitted;
+    const double length = centerline.length();
+
+    for (const auto &profile : profiles)
+        sources.push_back(numericArc(profile.points));
+    for (double offset : {-1.0, -0.5, 0.0, 0.5, 1.0}) {
+        QPolygonF target;
+        for (int index = 0; index < kProfileSamples; ++index) {
+            const double percent = centerline.percentAtLength(length * index / (kProfileSamples - 1));
+            const auto point = centerline.pointAtPercent(percent);
+            const double angle = centerline.angleAtPercent(percent) * std::numbers::pi / 180.0;
+            target.push_back(point + QPointF(std::sin(angle), std::cos(angle)) * (width * offset));
+        }
+        if (std::abs(cross(target.back() - target.front(), target[kProfileSamples / 2] - target.front())) < kMinimumLength)
+            continue;
+        anchors.push_back(catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
+            {target.front(), target[kProfileSamples / 2], target.back()}));
+        targets.push_back(target);
+        arcs.push_back(numericArc(target));
+    }
+    for (int target = 0; target < targets.size(); ++target)
+        for (int source = 0; source < profiles.size(); ++source)
+            jobs.push_back({numericTransform(profiles[source].anchors * anchors[target]), source, target,
+                std::max({width, length * 0.03, maximumError})});
+    ProfileFitter fitter(std::move(sources), std::move(arcs), useGpu);
+    if (!fitter.evaluate(jobs, &fitted, cancelled))
+        return {};
+    for (int index = 0; index < int(fitted.size()); ++index) {
+        const auto &fit = fitted[index];
+        const auto &profile = profiles[jobs[index].source];
+        if (fit.valid && fit.error <= maximumError)
+            result.push_back({primitives[profile.primitive].shape.shapeId,
+                catalog::emittedTransform(profile.normalization * fittedTransform(fit.transform))});
+    }
+
+    return result;
+}
+
+catalog::FillResult seedRegion(const catalog::Region &region, const QVector<catalog::Primitive> &primitives,
+                               const compact::FillOptions &options, const std::function<bool()> &cancelled,
+                               QVector<compact::ReusableCandidate> *candidates) {
+
+    return buildSeed({}, primitives, options, cancelled, candidates, &region);
+}
 
 static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,

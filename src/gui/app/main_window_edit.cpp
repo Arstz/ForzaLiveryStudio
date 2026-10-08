@@ -7,6 +7,7 @@
 #include "compact_fit_catalog.h"
 #include "compact_fit.h"
 #include "profile_fit.h"
+#include "thin_fit.h"
 #include "differential_cover.h"
 #include "image_io.h"
 #include "layer_tree_view.h"
@@ -29,6 +30,11 @@ namespace gui {
 using namespace mw_detail;
 
 namespace {
+
+bool usesWorkProgress(const QString &tool) {
+
+    return tool == QStringLiteral("compact") || tool == QStringLiteral("thin") || tool == QStringLiteral("lining");
+}
 
 int stripRasterLayers(std::vector<std::unique_ptr<fls::scene::Layer>> &nodes) {
     int removed = 0;
@@ -570,18 +576,23 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     }
     const ContourFillMode fillMode = loadBehaviorSettings().contourFillMode;
     const bool differential = fillMode == ContourFillMode::Differential;
-    const bool compactFit = fillMode == ContourFillMode::CompactFit;
-    const QString fillLabel = compactFit ? QStringLiteral("Compact fit")
+    const bool thinFit = fillMode == ContourFillMode::ThinRegions;
+    const bool compactFit = fillMode == ContourFillMode::CompactFit || thinFit;
+    const QString fillLabel = thinFit ? QStringLiteral("Thin region fit") : compactFit ? QStringLiteral("Compact fit")
         : (differential ? QStringLiteral("Differential contour fill") : QStringLiteral("Analytic contour fill"));
-    const QString fillTool = compactFit ? QStringLiteral("compact")
+    const QString fillTool = thinFit ? QStringLiteral("thin") : compactFit ? QStringLiteral("compact")
         : (differential ? QStringLiteral("differential") : QStringLiteral("analytic"));
     compact::FillOptions compactOptions;
     compactOptions.retainFailedFill = true;
+    if (thinFit)
+        compactOptions.boundaryAllowance = thin::kDefaultBoundaryAllowance;
     if (compactFit && !fillMask) {
         bool accepted = false;
         compactOptions.boundaryAllowance = QInputDialog::getDouble(this,
-            QStringLiteral("Compact Fit"),
-            QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nSmooth boundaries and sharp corners are checked separately.\nGenerated shapes are kept with a warning if checks fail.")
+            thinFit ? QStringLiteral("Thin Regions") : QStringLiteral("Compact Fit"),
+            thinFit ? QStringLiteral("Maximum outward overlap (world units):\nLocal thickness is limited to %1 times the original.\nAt least 98% of the selected region must be covered.")
+                .arg(thin::kDefaultMaximumThicknessRatio, 0, 'g', 3)
+                : QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nSmooth boundaries and sharp corners are checked separately.\nGenerated shapes are kept with a warning if checks fail.")
                 .arg(compactOptions.inwardAllowance, 0, 'g', 3)
                 .arg(compactOptions.areaErrorRatio * 100.0, 0, 'g', 3),
             compactOptions.boundaryAllowance, 0.01, 1000.0, 2, &accepted);
@@ -601,7 +612,8 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
     if (compactFit) {
         QString catalogError;
         generatedFillColor_[3] = 255;
-        const QVector<catalog::Primitive> primitives = canvas_->compactFillPrimitives(&catalogError);
+        const QVector<catalog::Primitive> primitives = thinFit
+            ? canvas_->thinFillPrimitives(&catalogError) : canvas_->compactFillPrimitives(&catalogError);
         if (primitives.isEmpty() || fillMask) {
             canvas_->setPenFillRunning(false);
             clearGeneratedFillState();
@@ -631,7 +643,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             .arg(fillLabel, interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
         const QString strategy = fillTool + (fillColor.has_value()
             ? QStringLiteral("-bucket") : QStringLiteral("-pen"));
-        startGeneratedFillTask([request = std::move(request), primitives, strategy, compactOptions](
+        startGeneratedFillTask([request = std::move(request), primitives, strategy, compactOptions, thinFit](
             const std::function<bool()> &cancelled, const GeneratedFillProgress &progress) {
             auto options = compactOptions;
             QElapsedTimer timer;
@@ -639,9 +651,15 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             options.workProgress = [progress](int count, int evaluated, int budget) {
                 progress(count, budget, evaluated);
             };
-            catalog::FillResult result = profile::fillRegion(request, primitives, options, cancelled);
+            thin::FillOptions thinOptions;
+            thinOptions.boundaryAllowance = options.boundaryAllowance;
+            thinOptions.leeway = options.leeway;
+            thinOptions.workProgress = options.workProgress;
+            catalog::FillResult result = thinFit ? thin::fillRegion(request, primitives, thinOptions, cancelled)
+                : profile::fillRegion(request, primitives, options, cancelled);
             const auto replay = writePenFillLog(request, result.fill, strategy);
-            QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("compact_fit.log")));
+            QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(
+                thinFit ? QStringLiteral("thin_fit.log") : QStringLiteral("compact_fit.log")));
             result.diagnostics.insert(QStringLiteral("error"), result.fill.error);
             result.diagnostics.insert(QStringLiteral("cancelled"), result.fill.cancelled);
             result.diagnostics.insert(QStringLiteral("elapsedMilliseconds"), timer.elapsed());
@@ -779,14 +797,12 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     }
     prepareGeneratedFill(fillColor, QStringLiteral("Lining fill"), QStringLiteral("lining"));
 
-    LiningFillRequest request;
-    request.points = points;
-    request.width = width;
-    request.primitives = canvas_->liningPrimitiveCatalog();
-    if (request.primitives.isEmpty()) {
+    QString catalogError;
+    const auto primitives = canvas_->thinFillPrimitives(&catalogError);
+    if (primitives.isEmpty()) {
         canvas_->setLiningFillRunning(false);
         clearGeneratedFillState();
-        statusBar()->showMessage(QStringLiteral("Lining fill failed: Primitive geometry is unavailable"), 4000);
+        statusBar()->showMessage(QStringLiteral("Lining fill failed: %1").arg(catalogError), 4000);
         return;
     }
 
@@ -794,10 +810,27 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     statusBar()->showMessage(QStringLiteral("Filling lining path… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
-    startGeneratedFillTask([request = std::move(request)](
+    startGeneratedFillTask([points, width, primitives](
                                const std::function<bool()> &cancelled,
-                               const GeneratedFillProgress &) {
-        return fillLiningPath(request, cancelled);
+                               const GeneratedFillProgress &progress) {
+        thin::FillOptions options;
+        options.workProgress = [progress](int count, int evaluated, int budget) {
+            progress(count, budget, evaluated);
+        };
+        QElapsedTimer timer;
+        timer.start();
+        auto result = thin::fillLiningPath(points, width, primitives, options, cancelled);
+        PenFillRequest request;
+        request.points = points;
+        const auto replay = writePenFillLog(request, result.fill, QStringLiteral("thin-lining"));
+        result.diagnostics.insert(QStringLiteral("request"), replay.value(QStringLiteral("request")));
+        result.diagnostics.insert(QStringLiteral("elapsedMilliseconds"), timer.elapsed());
+        result.diagnostics.insert(QStringLiteral("error"), result.fill.error);
+        QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("lining_fill.log")));
+        if (log.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            log.write(QJsonDocument(result.diagnostics).toJson(QJsonDocument::Indented));
+
+        return result.fill;
     });
 }
 
@@ -828,7 +861,7 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
             : QString());
     }
     if (generatedFillTool_ == QStringLiteral("differential")
-        || generatedFillTool_ == QStringLiteral("compact")) {
+        || usesWorkProgress(generatedFillTool_)) {
         generatedFillPlacementCount_ = 0;
         generatedFillWorkCompleted_ = 0;
         generatedFillWorkTotal_ = 0;
@@ -940,7 +973,7 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
     if (generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
         || (generatedFillTool_ != QStringLiteral("differential")
-            && generatedFillTool_ != QStringLiteral("compact"))
+            && !usesWorkProgress(generatedFillTool_))
         || generatedFillProgress_ == nullptr
         || !generatedFillElapsed_.isValid()) {
         return;
@@ -950,13 +983,16 @@ void MainWindow::refreshGeneratedFillElapsedTime() {
     const double elapsedSeconds =
         static_cast<double>(generatedFillElapsed_.elapsed()) / 1000.0;
     const QString duration = elapsedDuration(elapsedSeconds);
-    if (generatedFillTool_ == QStringLiteral("compact")) {
+    if (usesWorkProgress(generatedFillTool_)) {
         const double fraction = generatedFillWorkTotal_ > 0
             ? std::clamp(static_cast<double>(generatedFillWorkCompleted_) / generatedFillWorkTotal_, 0.0, 1.0) : 0.0;
         generatedFillProgress_->setRange(0, generatedFillWorkTotal_ > 0 ? kProgressResolution : 0);
         generatedFillProgress_->setValue(static_cast<int>(fraction * kProgressResolution));
-        generatedFillProgress_->setFormat(QStringLiteral("Compact fit | Work %1% | Elapsed %2 | %3 shapes")
-            .arg(fraction * 100.0, 0, 'f', 1).arg(duration).arg(generatedFillPlacementCount_));
+        generatedFillProgress_->setFormat(generatedFillWorkTotal_ > 0
+            ? QStringLiteral("%1 | Work %2% | Elapsed %3 | %4 shapes")
+                .arg(generatedFillLabel_).arg(fraction * 100.0, 0, 'f', 1).arg(duration).arg(generatedFillPlacementCount_)
+            : QStringLiteral("%1 | Elapsed %2 | %3 shapes")
+                .arg(generatedFillLabel_, duration).arg(generatedFillPlacementCount_));
         generatedFillProgress_->show();
         return;
     }
@@ -1004,15 +1040,15 @@ void MainWindow::updateGeneratedFillProgress(quint64 generation,
         || generatedFillCancel_ == nullptr
         || generatedFillKeepPartialOnCancel_
         || (generatedFillTool_ != QStringLiteral("differential")
-            && generatedFillTool_ != QStringLiteral("compact"))
+            && !usesWorkProgress(generatedFillTool_))
         || generatedFillProgress_ == nullptr
-        || !std::isfinite(targetArea) || targetArea <= 0.0
+        || !std::isfinite(targetArea) || targetArea < 0.0
         || !std::isfinite(coveredArea)) {
         return;
     }
 
     generatedFillPlacementCount_ = placementCount;
-    if (generatedFillTool_ == QStringLiteral("compact")) {
+    if (usesWorkProgress(generatedFillTool_)) {
         generatedFillWorkTotal_ = static_cast<int>(targetArea);
         generatedFillWorkCompleted_ = static_cast<int>(coveredArea);
         refreshGeneratedFillElapsedTime();
@@ -1050,7 +1086,8 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
         return;
     }
     const bool lining = generatedFillTool_ == QStringLiteral("lining");
-    if ((lining && !result.error.isEmpty()) || result.placements.isEmpty() || !state_->hasProject()) {
+    const bool thinFit = generatedFillTool_ == QStringLiteral("thin");
+    if (((lining || thinFit) && !result.error.isEmpty()) || result.placements.isEmpty() || !state_->hasProject()) {
         statusBar()->showMessage(QStringLiteral("%1 failed: %2")
                                      .arg(generatedFillLabel_)
                                      .arg(result.error.isEmpty() ? QStringLiteral("no shapes generated") : result.error),
@@ -1067,7 +1104,7 @@ void MainWindow::finishGeneratedFill(quint64 generation, PenFillResult result) {
     const bool compactFit = generatedFillTool_ == QStringLiteral("compact");
     const QString groupName = lining
         ? QStringLiteral("Lining")
-        : (compactFit ? QStringLiteral("Compact Fit") : (differential
+        : (thinFit ? QStringLiteral("Thin Region Fit") : compactFit ? QStringLiteral("Compact Fit") : (differential
                ? QStringLiteral("Differential Contour Fill")
                : QStringLiteral("Analytic Contour Fill")));
     insertGeneratedFill(groupName, groupName, placements);
@@ -1184,7 +1221,8 @@ void MainWindow::toggleContourLeewayGroup(
     const QString &groupId) {
     if (canvas_ == nullptr
         || (loadBehaviorSettings().contourFillMode != ContourFillMode::Differential
-            && loadBehaviorSettings().contourFillMode != ContourFillMode::CompactFit)) {
+            && loadBehaviorSettings().contourFillMode != ContourFillMode::CompactFit
+            && loadBehaviorSettings().contourFillMode != ContourFillMode::ThinRegions)) {
         statusBar()->showMessage(
             QStringLiteral("Contour leeway requires Differential or Compact Fit Contour Fill"),
             3000);

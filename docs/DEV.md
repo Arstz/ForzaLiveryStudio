@@ -373,7 +373,7 @@ exports grouped `C_group` folders and `C_livery` folders.
   rejection and can enable `retainFailedFill` to match editor insertion. The older
   Analytic-seeded optimizer remains available through headless tests; the editor
   uses curve-first initialization. The isolated-region implementation does not infer future
-  occluders or optimize full-image order. Lining retains its separate fitter.
+  occluders or optimize full-image order.
   Compact Fit uses bounded caches for unchanged placement unions, reduction
   measurements, and intended cutout exclusions. Cache keys retain immutable
   geometry storage; changed placements receive new entries. Integer-grid
@@ -408,15 +408,26 @@ exports grouped `C_group` folders and `C_livery` folders.
   clustered gap searches, accepted group replacements, rejected low-benefit insertions,
   and the profile backend's setup, transfer, numeric, and
   geometry-validation timings.
-  Lining builds an editable open hard/soft quadratic centreline, expands it to a
-  constant-width ribbon, and selects a ranked sequence from its dedicated
-  Primitive catalog. Selection follows the authored point structure, ranks
-  centreline agreement before width coverage, emits one primary placement per
-  authored span, and requires connected overlap before producing an ordinary
-  single-colour scene group. The completed sequence normalizes placement widths
-  to its curve coverage and derives asymmetric placement orientation
-  from the authored path direction. Each fit writes its selection and transform
-  diagnostics to `lining_fill.log` beside the executable.
+  **Compact Fit — Thin Regions** shares a backend with the Lining tool. The
+  contour mode accepts closed Pen or Bucket regions, including tapers and
+  cutouts. Lining expands its editable open hard/soft centreline to a
+  constant-width ribbon with round caps and joins. The backend starts with a
+  search for whole-span native shapes before splitting a region. The fallback
+  profile search uses long curve and body candidates. The overlap envelope
+  limits local thickness to 1.5 times the original by default, with the outward
+  margin as an additional absolute cap. Open paths use their specified width;
+  closed regions estimate local width from inward boundary crossings. Candidate
+  scores balance useful coverage and extra ink. Refinement grows placements
+  inside the envelope, repairs continuity gaps and merges neighboring
+  placements. Final verification requires at least 98% coverage and containment
+  within the overlap envelope. Additional disconnected fragments, new interior
+  holes and lost cutouts block completion. Boundary and topology measurements
+  remain in the diagnostics. Failed final checks block insertion, and cancellation
+  discards placements. The public `thin::fillPolygons` API accepts normalized
+  polygon regions for image generation callers. `assets/lining_shapes.json` is reloaded at the start of
+  each operation; its task schema is described in `COMPACT_FIT_CONFIG.md`.
+  `thin_fit.log` and `lining_fill.log` record configuration, coverage, topology,
+  boundary measurements and stage timings beside the executable.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance and traces
   pixel-square boundaries. Native cubic fitting detects persistent corners at two
   scales, shares tangents at smooth junctions, and merges spans under a sampled
