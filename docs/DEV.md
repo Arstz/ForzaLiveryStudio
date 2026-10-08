@@ -71,6 +71,12 @@ exports grouped `C_group` folders and `C_livery` folders.
   verification remains authoritative, and backend failure advances automatically.
   Its status-bar progress reports exact covered area and updates elapsed time
   independently of placement completion.
+  Raster Bucket tracing fits curve runs between hard anchors. It first attempts
+  a single cubic and then a bounded pair with one shared soft anchor. Corner
+  handles can follow the fitted curve within the raster uncertainty band;
+  shared soft tangents stay aligned. More complex runs retain extra anchors.
+  Boundary displacement, mask coverage and cutout topology checks control
+  simplification, independently of canvas zoom.
   Bucket-derived Pen contours use the same selected mode. Saved Catalog Cover
   preferences load as Compact Fit. Compact Fit uses the shared opaque silhouette
   dictionary and task selections in `assets/compact_fit_shapes.json`, reloaded

@@ -27,7 +27,9 @@ constexpr double kOutwardMaskGrowthFraction = 0.4;
 constexpr double kDetailedMaskMissFraction = 0.0075;
 constexpr double kDetailedMaskSpillFraction = 0.1;
 constexpr double kDetailedRasterTolerance = 3.0;
+constexpr double kRasterCornerFitTolerance = 2.0;
 constexpr std::array<double, 3> kHandleRepairScales{0.9, 0.75, 0.5};
+constexpr std::array<double, 3> kSmoothPairSplitFractions{0.5, 0.35, 0.65};
 
 double length(QPointF p) {
     return std::hypot(p.x(), p.y());
@@ -136,6 +138,45 @@ struct Span {
     double split = 0;
 };
 
+struct SampleBoundary {
+    const QVector<QPointF> &points;
+    QVector<QRectF> bounds;
+    static constexpr int kBlockSegments = 16;
+
+    explicit SampleBoundary(const QVector<QPointF> &data) : points(data) {
+        for (int first = 0; first + 1 < points.size(); first += kBlockSegments) {
+            const int last = std::min(first + kBlockSegments, int(points.size()) - 1);
+            double left = points[first].x(), right = left;
+            double top = points[first].y(), bottom = top;
+            for (int index = first + 1; index <= last; ++index) {
+                left = std::min(left, points[index].x());
+                right = std::max(right, points[index].x());
+                top = std::min(top, points[index].y());
+                bottom = std::max(bottom, points[index].y());
+            }
+            bounds.push_back(QRectF(QPointF(left, top), QPointF(right, bottom)));
+        }
+    }
+
+    double distanceSquared(QPointF point) const {
+        double best = std::numeric_limits<double>::max();
+        for (int block = 0; block < bounds.size(); ++block) {
+            const QRectF &box = bounds[block];
+            const int first = block * kBlockSegments;
+            const int last = std::min(first + kBlockSegments, int(points.size()) - 1);
+            const double dx = std::max({box.left() - point.x(), point.x() - box.right(), 0.0});
+            const double dy = std::max({box.top() - point.y(), point.y() - box.bottom(), 0.0});
+
+            if (dx * dx + dy * dy >= best)
+                continue;
+            for (int index = first; index < last; ++index)
+                best = std::min(best, distance2(point, points[index], points[index + 1]));
+        }
+
+        return best;
+    }
+};
+
 QPolygonF rectilinearNotch(const Reference &ref, double start, double end) {
     if (end - start > kNotchMaximumSpan)
         return {};
@@ -185,12 +226,49 @@ QVector<QPointF> samples(const Reference &ref, double a, double b) {
 }
 
 bool fitCornerControls(const QVector<QPointF> &data, const QVector<double> &parameters,
-                       FillBoundarySegment &curve, double arc) {
+                       FillBoundarySegment &curve, double arc, bool firstCorner,
+                       bool lastCorner) {
     std::array<std::array<double, 2>, 2> equations{};
     std::array<QPointF, 2> controls;
     const QPointF outgoing = curve.control - curve.start;
     const QPointF incoming = curve.control2 - curve.end;
 
+    if (firstCorner != lastCorner) {
+        const QPointF direction = unit(firstCorner ? incoming : outgoing);
+        QPointF coupling, residualFree;
+        double freeWeight = 0, constrainedWeight = 0, residualConstrained = 0;
+
+        for (int index = 1; index + 1 < data.size(); ++index) {
+            const double t = parameters[index], v = 1.0 - t;
+            const double first = 3.0 * v * v * t, second = 3.0 * v * t * t;
+            const double freeBasis = firstCorner ? first : second;
+            const QPointF constrainedBasis = direction * (firstCorner ? second : first);
+            const QPointF residual = data[index] - curve.start * (v * v * v + first)
+                - curve.end * (t * t * t + second);
+            freeWeight += freeBasis * freeBasis;
+            constrainedWeight += QPointF::dotProduct(constrainedBasis, constrainedBasis);
+            coupling += constrainedBasis * freeBasis;
+            residualFree += residual * freeBasis;
+            residualConstrained += QPointF::dotProduct(residual, constrainedBasis);
+        }
+        if (freeWeight <= 1e-12)
+            return false;
+        const double determinant = constrainedWeight
+            - QPointF::dotProduct(coupling, coupling) / freeWeight;
+        if (determinant <= 1e-12)
+            return false;
+        const double handleLength = (residualConstrained
+            - QPointF::dotProduct(coupling, residualFree) / freeWeight) / determinant;
+        const QPointF freeHandle = (residualFree - coupling * handleLength) / freeWeight;
+        if (handleLength < arc * 0.01 || handleLength > arc * 0.8
+            || length(freeHandle) > arc * 0.8
+            || QPointF::dotProduct(freeHandle, firstCorner ? outgoing : incoming) < 0)
+            return false;
+        curve.control = curve.start + (firstCorner ? freeHandle : direction * handleLength);
+        curve.control2 = curve.end + (firstCorner ? direction * handleLength : freeHandle);
+
+        return true;
+    }
     for (int index = 1; index + 1 < data.size(); ++index) {
         const double t = parameters[index], v = 1.0 - t;
         const double first = 3.0 * v * v * t, second = 3.0 * v * t * t;
@@ -221,6 +299,7 @@ bool fitCornerControls(const QVector<QPointF> &data, const QVector<double> &para
 Span fitSpan(const Reference &ref, Knot a, Knot b) {
     Span result{a, b};
     const auto data = samples(ref, a.s, b.s);
+    const SampleBoundary boundary(data);
     const auto p0 = data.front(), p3 = data.back();
     const double arc = b.s - a.s;
     const QPointF ta = a.corner ? unit(ref.point(a.s + std::min(2.0, arc / 4)) - p0) : a.tangent;
@@ -253,8 +332,8 @@ Span fitSpan(const Reference &ref, Knot a, Knot b) {
         beta = std::clamp(beta, arc * 0.01, arc * 0.8);
         curve.control = p0 + ta * alpha;
         curve.control2 = p3 - tb * beta;
-        if (ref.relaxCornerTangents && a.corner && b.corner)
-            fitCornerControls(data, u, curve, arc);
+        if (ref.relaxCornerTangents && (a.corner || b.corner))
+            fitCornerControls(data, u, curve, arc, a.corner, b.corner);
         for (int i = 1; i + 1 < data.size(); ++i) {
             const QPointF d = curve.derivative(u[i]), r = curve.point(u[i]) - data[i];
             const double denominator =
@@ -286,10 +365,7 @@ Span fitSpan(const Reference &ref, Knot a, Knot b) {
     const int steps = std::clamp(int(std::ceil(curve.controlLength() / 0.5)), 8, 1024);
     for (int i = 1; i < steps; ++i) {
         const QPointF q = curve.point(double(i) / steps);
-        double best = std::numeric_limits<double>::max();
-        for (int j = 1; j < data.size(); ++j)
-            best = std::min(best, distance2(q, data[j - 1], data[j]));
-        maximum = std::max(maximum, std::sqrt(best));
+        maximum = std::max(maximum, std::sqrt(boundary.distanceSquared(q)));
     }
     result.curve = curve;
     result.error = maximum;
@@ -299,6 +375,7 @@ Span fitSpan(const Reference &ref, Knot a, Knot b) {
 
 double lineError(const Reference &ref, const Span &span) {
     const auto data = samples(ref, span.a.s, span.b.s);
+    const SampleBoundary boundary(data);
     const QPointF start = data.front(), end = data.back();
     double error = 0;
     for (const QPointF &point : data)
@@ -306,10 +383,7 @@ double lineError(const Reference &ref, const Span &span) {
     const int steps = std::clamp(int(std::ceil(length(end - start) / 0.5)), 8, 1024);
     for (int i = 1; i < steps; ++i) {
         const QPointF point = start + (end - start) * (double(i) / steps);
-        double nearest = std::numeric_limits<double>::max();
-        for (int j = 1; j < data.size(); ++j)
-            nearest = std::min(nearest, distance2(point, data[j - 1], data[j]));
-        error = std::max(error, std::sqrt(nearest));
+        error = std::max(error, std::sqrt(boundary.distanceSquared(point)));
     }
 
     return error;
@@ -328,7 +402,7 @@ void fitRecursive(const Reference &ref, Knot a, Knot b, double tolerance, double
 }
 
 void mergeSmoothSpans(QVector<Span> &spans, const Reference &ref, double tolerance,
-                      double cornerTolerance) {
+                      double cornerTolerance, double tangentScale) {
     if (!ref.relaxCornerTangents) {
         for (int pass = 0; pass < 3; ++pass) {
             bool changed = false;
@@ -367,7 +441,9 @@ void mergeSmoothSpans(QVector<Span> &spans, const Reference &ref, double toleran
         while (last + 1 < spans.size() && !spans[last].b.corner)
             ++last;
         last = std::min(last, index + int(spans.size()) - minimum);
-        for (; last > index; --last) {
+        if (!spans[index].a.corner)
+            last = std::min(last, index + 1);
+        for (; last > index; last = last > index + 1 ? index + 1 : index) {
             const auto merged = fitSpan(ref, spans[index].a, spans[last].b);
             const double limit = merged.a.corner && merged.b.corner ? cornerTolerance : tolerance;
             if (merged.error <= limit) {
@@ -375,6 +451,27 @@ void mergeSmoothSpans(QVector<Span> &spans, const Reference &ref, double toleran
                 spans.remove(index + 1, last - index);
                 break;
             }
+            if (last <= index + 1 || !merged.a.corner || !merged.b.corner)
+                continue;
+            bool paired = false;
+            for (double fraction : kSmoothPairSplitFractions) {
+                const double position = merged.a.s + (merged.b.s - merged.a.s) * fraction;
+                const Knot middle{position, false, ref.tangent(position, tangentScale)};
+                const Span left = fitSpan(ref, merged.a, middle);
+
+                if (left.error > tolerance)
+                    continue;
+                const Span right = fitSpan(ref, middle, merged.b);
+                if (right.error > tolerance)
+                    continue;
+                spans[index] = left;
+                spans[index + 1] = right;
+                spans.remove(index + 2, last - index - 1);
+                paired = true;
+                break;
+            }
+            if (paired)
+                break;
         }
     }
 }
@@ -383,6 +480,7 @@ double energy(const Span &span, const Reference &ref) {
     // Inspired by Alvarez & Morel (2026), doi:10.1007/s10851-026-01282-0.
     // Arc-length-weighted distance energy, plus a reverse term to protect narrow details.
     const auto data = samples(ref, span.a.s, span.b.s);
+    const SampleBoundary boundary(data);
     const int count = std::clamp(int(std::ceil(span.curve.controlLength())), 12, 256);
     double e = 0;
     QVector<QPointF> curve;
@@ -390,15 +488,12 @@ double energy(const Span &span, const Reference &ref) {
         const double t = double(i) / count;
         const QPointF p = span.curve.point(t);
         curve.push_back(p);
-        double d = std::numeric_limits<double>::max();
-        for (int j = 1; j < data.size(); ++j)
-            d = std::min(d, distance2(p, data[j - 1], data[j]));
+        const double d = boundary.distanceSquared(p);
         e += std::sqrt(d) * length(span.curve.derivative(t)) / count;
     }
+    const SampleBoundary fittedBoundary(curve);
     for (const auto p : data) {
-        double d = std::numeric_limits<double>::max();
-        for (int j = 1; j < curve.size(); ++j)
-            d = std::min(d, distance2(p, curve[j - 1], curve[j]));
+        const double d = fittedBoundary.distanceSquared(p);
         e += std::sqrt(d) * (span.b.s - span.a.s) / (data.size() - 1);
     }
     return e;
@@ -795,7 +890,9 @@ static QVector<PenPoint> fitContourSpans(const QPolygonF &boundary,
         if (!std::isfinite(p.x()) || !std::isfinite(p.y()))
             return {};
     const Reference ref(boundary, options.outlierFraction,
-        options.preserveRasterNotches && options.adaptToRasterNoise && simplify);
+        options.adaptToRasterNoise
+            && (options.preserveRasterNotches || options.tolerance >= kRasterCornerFitTolerance)
+            && simplify);
     if (ref.perimeter <= 1e-9)
         return {};
     const double scale = std::min(options.cornerScale, ref.perimeter / 12);
@@ -814,11 +911,11 @@ static QVector<PenPoint> fitContourSpans(const QPolygonF &boundary,
             end.s += ref.perimeter;
         fitRecursive(ref, knots[i], end, options.tolerance, tangentScale, spans);
     }
-    const double cornerTolerance = ref.relaxCornerTangents
+    const double cornerTolerance = ref.relaxCornerTangents && options.preserveRasterNotches
         ? std::max(options.tolerance, std::min(kCutoutMergeTolerance,
             2.0 * std::abs(area(boundary)) / ref.perimeter * kCutoutMergeWidthFraction))
         : options.tolerance;
-    mergeSmoothSpans(spans, ref, options.tolerance, cornerTolerance);
+    mergeSmoothSpans(spans, ref, options.tolerance, cornerTolerance, tangentScale);
     // Jointly relax shared tangents and slide smooth endpoints along the reference.
     // Each accepted update lowers distance energy and keeps the maximum-error gate.
     for (int pass = 0; pass < std::clamp(options.refinementPasses, 0, 8); ++pass) {
@@ -862,7 +959,7 @@ static QVector<PenPoint> fitContourSpans(const QPolygonF &boundary,
             break;
     }
     if (ref.relaxCornerTangents)
-        mergeSmoothSpans(spans, ref, options.tolerance, cornerTolerance);
+        mergeSmoothSpans(spans, ref, options.tolerance, cornerTolerance, tangentScale);
     for (Span &span : spans) {
         if (!span.a.corner || !span.b.corner)
             continue;

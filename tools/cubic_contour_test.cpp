@@ -600,7 +600,7 @@ void steppedCutoutMask() {
     options.outwardFitPixels = 2;
     const auto loops = gui::fitMaskContours(mask, size, bounds, options);
     require(loops.size() == 7 && gui::buildPenContour(loops).valid(), "Stepped contour changed topology");
-    for (int index : {1, 3}) {
+    for (int index : {1, 2, 3, 6}) {
         require(loops[index].points.size() == 4, "A smooth cutout retained redundant anchors");
         const int corners = std::count_if(loops[index].points.begin(), loops[index].points.end(),
             [](const auto &point) { return point.kind == gui::PenPointKind::Hard; });
@@ -618,8 +618,38 @@ void steppedCutoutMask() {
     int nodes = 0;
     for (const auto &loop : loops)
         nodes += loop.points.size();
-    require(nodes <= 107, "Stepped corner preservation fragmented the contour");
-    std::cout << "Stepped cutout nodes=" << cutout.points.size() << '\n';
+    require(nodes <= 84, "Smooth runs retained redundant raster anchors");
+    const auto fitted = raster(gui::buildPenContour(loops).path, size);
+    int missed = 0, spill = 0, deepMisses = 0;
+    for (int y = 0; y < size.height(); ++y) {
+        const auto *row = reinterpret_cast<const QRgb *>(fitted.constScanLine(y));
+        for (int x = 0; x < size.width(); ++x) {
+            const bool selected = mask[size_t(y) * size.width() + x] != 0;
+            const bool covered = qRed(row[x]) == 0;
+            spill += covered && !selected;
+            if (!selected || covered)
+                continue;
+            ++missed;
+            bool nearBoundary = false;
+            for (int dy = -5; dy <= 5 && !nearBoundary; ++dy)
+                for (int dx = -5; dx <= 5; ++dx) {
+                    const QPoint neighbor(x + dx, y + dy);
+                    if (!bounds.contains(neighbor)
+                        || !mask[size_t(neighbor.y()) * size.width() + neighbor.x()]) {
+                        nearBoundary = true;
+                        break;
+                    }
+                }
+            deepMisses += !nearBoundary;
+        }
+    }
+    require(deepMisses == 0, "Contour simplification removed interior mask coverage");
+    require(missed <= fixture.value("area").toInt() * 0.005,
+            "Simplified contour lost too much selected mask coverage");
+    require(spill <= fixture.value("area").toInt() * 0.08,
+            "Simplified contour exceeded its outward area allowance");
+    std::cout << "Stepped cutout nodes=" << cutout.points.size()
+              << " total=" << nodes << " missed=" << missed << " spill=" << spill << '\n';
 }
 } // namespace
 
