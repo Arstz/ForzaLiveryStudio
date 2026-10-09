@@ -112,6 +112,118 @@ BucketFillResult floodGuideRegion(const QImage &source,
     return result;
 }
 
+BucketRegionsResult floodGuideRegions(
+    const QImage &source, int tolerance,
+    const std::function<bool()> &cancelled,
+    const std::function<void(int, int)> &progress) {
+    BucketRegionsResult result;
+    const QImage image = source.convertToFormat(QImage::Format_ARGB32);
+    QHash<QRgb, QVector<int>> pixelsByColor;
+    QVector<int> queue;
+    const int width = image.width();
+    const int height = image.height();
+    const int pixelCount = width * height;
+    const QPoint offsets[] = {{0, -1}, {-1, 0}, {1, 0}, {0, 1}};
+    auto stopped = [&]() { return cancelled && cancelled(); };
+
+    if (image.isNull() || tolerance < 0 || tolerance > 255) {
+        result.error = QStringLiteral("Bucket extraction requires an image and a tolerance between 0 and 255");
+        return result;
+    }
+    result.imageSize = image.size();
+    result.labels.fill(-1, pixelCount);
+    for (int y = 0; y < height; ++y) {
+        if (stopped()) {
+            result.cancelled = true;
+            return result;
+        }
+        const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < width; ++x) {
+            if (qAlpha(row[x]) != 0) {
+                pixelsByColor[row[x]].push_back(y * width + x);
+            }
+        }
+    }
+    QList<QRgb> colors = pixelsByColor.keys();
+    std::sort(colors.begin(), colors.end(), [&](QRgb left, QRgb right) {
+        const qsizetype leftCount = pixelsByColor.constFind(left)->size();
+        const qsizetype rightCount = pixelsByColor.constFind(right)->size();
+
+        return leftCount != rightCount ? leftCount > rightCount : left < right;
+    });
+    int completed = 0;
+    int reportedPercent = -1;
+    for (const QRgb seedColor : colors) {
+        const int percent = static_cast<int>(100LL * completed / std::max<qsizetype>(1, colors.size()));
+        if (progress && percent != reportedPercent) {
+            progress(completed, colors.size());
+            reportedPercent = percent;
+        }
+        for (const int seed : pixelsByColor.value(seedColor)) {
+            if (stopped()) {
+                result.cancelled = true;
+                return result;
+            }
+            if (result.labels[seed] >= 0) {
+                continue;
+            }
+            BucketRegion region;
+            region.seed = QPoint(seed % width, seed / width);
+            region.bounds = QRect(region.seed, QSize(1, 1));
+            const int label = result.regions.size();
+            quint64 red = 0;
+            quint64 green = 0;
+            quint64 blue = 0;
+            quint64 alpha = 0;
+            queue.clear();
+            queue.push_back(seed);
+            result.labels[seed] = label;
+            for (int cursor = 0; cursor < queue.size(); ++cursor) {
+                if ((cursor & 4095) == 0 && stopped()) {
+                    result.cancelled = true;
+                    return result;
+                }
+                const int pixel = queue[cursor];
+                const int x = pixel % width;
+                const int y = pixel / width;
+                const QRgb color = reinterpret_cast<const QRgb *>(image.constScanLine(y))[x];
+                red += qRed(color);
+                green += qGreen(color);
+                blue += qBlue(color);
+                alpha += qAlpha(color);
+                region.bounds = region.bounds.united(QRect(x, y, 1, 1));
+                for (const QPoint &offset : offsets) {
+                    const int nx = x + offset.x();
+                    const int ny = y + offset.y();
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                        continue;
+                    }
+                    const int neighbor = ny * width + nx;
+                    if (result.labels[neighbor] >= 0
+                        || !matchesSeed(reinterpret_cast<const QRgb *>(image.constScanLine(ny))[nx],
+                                        seedColor, tolerance)) {
+                        continue;
+                    }
+                    result.labels[neighbor] = label;
+                    queue.push_back(neighbor);
+                }
+            }
+            region.area = queue.size();
+            region.color = QColor(static_cast<int>(red / region.area),
+                                  static_cast<int>(green / region.area),
+                                  static_cast<int>(blue / region.area),
+                                  static_cast<int>(alpha / region.area));
+            result.regions.push_back(std::move(region));
+        }
+        ++completed;
+    }
+    if (progress) {
+        progress(colors.size(), colors.size());
+    }
+
+    return result;
+}
+
 QImage bucketMaskPreview(const BucketFillResult &fill, const QColor &color) {
     if (!fill.valid()) {
         return {};

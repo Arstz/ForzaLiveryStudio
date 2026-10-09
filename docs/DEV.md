@@ -28,6 +28,59 @@ exports grouped `C_group` folders and `C_livery` folders.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette can return to the previously used tool after a successful
   pick through a persistent, default-on Options toggle.
+  **ImgGen -> Image Generator -> Generate from Selected Image...** runs the
+  complete experimental pipeline for one selected raster guide. Its dialog
+  stores independent palette, background, topology, lining, allowance, search
+  budget and GPU settings. Initial regions use the same tolerance-based flood
+  membership and cubic mask fitter as Bucket. Dominant source colors seed the
+  partition first. Palette reduction maps whole regions and joins adjacent
+  regions of the same resulting color. Lining evidence classifies regions after
+  extraction.
+  The generator has its own Bucket region tolerance, defaulting to 16. Each
+  region uses its average Bucket color when palette reduction is off. Noise
+  cleanup uses the shared preprocessor to choose region colors when palette
+  reduction is on. Detected strokes and isolated small contrasting details
+  retain protection. Similar fragments below the area threshold, defaulting to
+  12 source pixels, are merged before tracing; 0 disables this merge. A separate
+  fragment color tolerance limits their maximum RGB channel difference,
+  defaulting to 128. Coverage repairs preserve the resulting target. Source
+  components retain protected cutouts. The generator's own topology planner
+  compares hidden-hole removal, rectangle, oval, convex and closing candidates
+  against source pixel ownership and later opaque coverage. Equal-color merges
+  compete by estimated contour cost. Stroke-dominated Bucket
+  regions use compatible detected core colors from the selected palette, which
+  joins color grain along the same lining. Mixed and Bottom modes combine the
+  dominant lining color into a broad foreground underpaint when upper colors
+  provide useful hidden interior. Each connected foreground component uses
+  one ordinary Compact Fit region. Mixed retains other lining components above
+  it; Top mode fits detected lining above the colors. Background isolation
+  requires a connected region occupying a
+  majority of the border and at least three corners. Exterior extension is
+  coordinated across detected lining components. The shared envelope uses the
+  larger of the existing fit allowance and the selected extension, so these
+  margins do not accumulate. Native Square/Circle recognition precedes the
+  curve-first profile fitting and union refinement used by normal Compact Fit,
+  or thin fitting. Simplified color and bottom contours remain complete Compact
+  Fit targets; upper coverage outside those contours supplies additional leeway.
+  Contour smoothing is bounded to one source pixel and compound contours receive
+  topology validation. Contour sampling precision is independent of the outward
+  allowance. The final composite first tries bounded growth of existing color
+  shapes to cover missing owned pixels. Geometry and upper coverage constrain
+  those adjustments; top lining retains its thickness checks. Rounded native
+  coverage patches enter their owning layers and can overlap hidden upper
+  coverage. Remaining repairs use merged pixel rectangles. Background is excluded from foreground
+  coverage checks, and enclosed transparent holes stay protected. Results
+  receive a composite pruning pass that compares foreground output at four
+  samples per source axis and verifies exact source-resolution output afterward.
+  Background deletion retains the same foreground details. Results
+  become named native region groups in one undoable Image Generator insertion.
+  Escape or Cancel Generation stops the operation; project edits discard
+  pending work. The source guide remains editable after generation.
+  `image_generator.log` records costs, runtime, rejected placements, per-region
+  fitting and conversion errors, shape IDs, fallback shapes, coverage adjustments,
+  repair counts and source pixel discrepancies. This initial bounded
+  planner does not yet search competing global layer orders or move selected
+  interior strokes from the underpaint into top restoration regions.
   **ImgGen → Detect Lining** extracts narrow strokes from one selected source
   image guide into a separate guide. Detection uses local width and contrast,
   including for grey interior stripes, and retains transparent empty areas.
@@ -554,6 +607,13 @@ exports grouped `C_group` folders and `C_livery` folders.
   are also in the **ImgGen** menu. Create Regions merges components below its
   persistent ImgGen area slider into the adjacent component with the closest RGB
   colour before tracing. Region filling runs without blocking the main window.
+  **Separate single-color background** is enabled by default. Extraction identifies
+  an opaque surrounding border component and retains it as a separate rectangular
+  background. A dominant border component with foreground touching an image edge
+  can receive a one-source-pixel surrounding rectangle without rescaling the source.
+  Same-color enclosed foreground regions stay independent of the removable
+  **Background** group. Transparent images retain their alpha boundary. Disable
+  background separation to generate the whole opaque image as ordinary regions.
   The cleaned label raster produces a conservative back-to-front layer plan:
   connected exact-colour regions are combined, nearby exact-colour regions can
   be joined through a bounded foreground-only bridge, enclosed exact-colour regions
@@ -566,6 +626,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   paths crossing more than one differently coloured source are rejected, while a
   directly adjacent pair cannot reconnect through the nearby-merge path after its
   adjacent operation is suppressed.
+  The Safe plan then compares bounded topology variants. Interchangeable complex
+  regions are scheduled below simple regions while preserving dependencies from
+  differently colored overlaps. Rectangle and ellipse contours may replace a lower
+  contour or combine distant same-color units through guaranteed later opaque
+  coverage. Permission checks and an exact comparison of the planned composite
+  control acceptance. Background coverage supplies no foreground leeway. Estimates
+  recognize simple one-shape targets and score other contours by boundary structure
+  rather than painted area. Logs record variant counts, accepted simplifications,
+  estimated savings, planning time, and estimated versus actual native counts.
+  This policy belongs to image generation; regular Bucket, Pen, Compact Fit, and
+  Lining operations retain their independent behavior.
   The complete plan is compared pixel-for-pixel with the existing vector-rendered
   baseline before fitting. Fill Regions retains two comparison variants: the
   visible **Safe** group rolls back operations until that comparison is exact, while
@@ -582,7 +653,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   additional contacts must lower that group's current fitting cost, and a bridge cannot
   overlap pixels claimed by another expanded group. Deterministic Kruskal levels then
   produce successively larger merged contours. During fitting, every Safe and Dangerous
-  unit sends a 32-sample cyclic closed-RDP contour at epsilon 1.9 directly to the polygon
+  unit first attempts a complete native Square or Circle match that preserves
+  coverage and the existing fitting margin. Intended cutouts remain protected.
+  Other units send a 32-sample cyclic closed-RDP contour at epsilon 1.9 to the polygon
   mesh; failures retain the existing Pen and mesh recovery path. The log records each
   variant's RDP input/output counts, straight visibility,
   attachment count, expanded-group cost, corridor width, and hierarchy level. Dangerous also tries

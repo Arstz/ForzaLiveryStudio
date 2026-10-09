@@ -1006,6 +1006,9 @@ bool ProjectCanvas::createRegionsForSelectedGuide(int smallRegionMergeArea,
     QGuiApplication::setOverrideCursor(Qt::WaitCursor);
     RegionExtractionParams params;
     params.smallRegionMergeArea = std::max(0, smallRegionMergeArea);
+    params.isolateSolidBackground = QSettings().value(
+        QStringLiteral("imggen/isolateSolidBackground"),
+        kDefaultIsolateSolidBackground).toBool();
     if (guide->preprocessColorCount > 0) {
         params.maxColorCount = guide->preprocessColorCount;
     }
@@ -1162,6 +1165,9 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
         }
         GeneratedRegionVariant &variant = result[variantIndex];
         GeneratedRegionGroup group;
+        if (fill.background) {
+            group.name = QStringLiteral("Background");
+        }
         group.shapes.reserve(fill.placements.size());
         // Scene shape colour is stored BGRA.
         const std::array<std::uint8_t, 4> color = {
@@ -1188,6 +1194,26 @@ void ProjectCanvas::hideRegionOverlay() {
     region_.hidden = true;
     region_.showFills = false;
     update();
+}
+
+bool ProjectCanvas::imageGeneratorSource(const QString &guideId, QImage *image,
+                                         QTransform *imageToWorld) const {
+    bool found = false;
+    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world,
+                          const QString &sectionGroupId) {
+        if (guide.id != guideId || !isSectionActive(sectionGroupId)) {
+            return true;
+        }
+        const QSizeF guideSize = sceneNodeSize(guide, geometry_);
+        *image = guideImage(guide).copy();
+        if (!image->isNull() && guideSize.width() > 0.0 && guideSize.height() > 0.0) {
+            *imageToWorld = pc_detail::guideImageToLocal(image->size(), guideSize) * world;
+            found = true;
+        }
+        return false;
+    }, false);
+
+    return found;
 }
 
 void ProjectCanvas::drawRegionOverlay(QPainter &painter) {

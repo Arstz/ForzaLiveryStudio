@@ -14,6 +14,9 @@ struct RegionLayerUnit {
     QVector<int> sourceRegionIndices;
     QVector<int> absorbedRegionIndices;
     double area = 0.0;
+    bool background = false;
+    bool lining = false;
+    bool bottomLining = false;
 };
 
 struct RegionLayerPlan {
@@ -41,6 +44,9 @@ struct RegionLayerPlan {
     int dangerousCycleBreakCount = 0;
     int orderingEdgeCount = 0;
     int validationMismatchPixels = 0;
+    int topologyVariantCount = 0;
+    int topologySimplificationCount = 0;
+    int topologyMergeCount = 0;
     bool fallback = false;
     bool cancelled = false;
 };
@@ -58,5 +64,8 @@ RegionLayerPlanVariants buildRegionLayerPlanVariants(
     const RegionLayerPlanProgress &progress = {},
     const std::function<bool()> &cancelled = {});
 RegionLayerPlan buildRegionLayerPlan(const RegionExtractionResult &regions);
+void refineImageLayerPlan(const QSize &imageSize, RegionLayerPlan *plan,
+                          const RegionLayerPlanProgress &progress = {},
+                          const std::function<bool()> &cancelled = {});
 
 } // namespace gui

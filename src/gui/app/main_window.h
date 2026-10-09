@@ -100,6 +100,8 @@ private:
     void createRegions();
     void detectLining();
     void fillRegions();
+    void generateImageFromSelectedGuide();
+    void cancelImageGeneration();
     bool importFM2023Folder(const QString &path, QString *error);
     void rebuildSectionBar();
     void setActiveSection(const QString &sectionGroupId);
@@ -342,6 +344,8 @@ private:
     quint64 regionFillGeneration_ = 0;
     QVector<QString> regionFillInsertionEntries_;
     QProgressBar *regionFillProgress_ = nullptr;
+    std::shared_ptr<std::atomic_bool> imageGeneratorCancel_;
+    quint64 imageGeneratorGeneration_ = 0;
 };
 
 } // namespace gui

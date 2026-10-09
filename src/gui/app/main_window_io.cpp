@@ -909,6 +909,7 @@ void MainWindow::createRegions() {
         return;
     }
     cancelRegionFill();
+    cancelImageGeneration();
     QString message;
     if (canvas_->createRegionsForSelectedGuide(regionMergeAreaThreshold_, &message)) {
         statusBar()->showMessage(message, 5000);
@@ -1023,8 +1024,7 @@ void MainWindow::fillRegions() {
         statusBar()->showMessage(QStringLiteral("Open or create a project first"), 4000);
         return;
     }
-    cancelGeneratedFill();
-    cancelRegionFill();
+    cancelActiveFills();
     RegionFillBatchRequest request;
     QString message;
     if (!canvas_->prepareRegionFillBatch(&request, &message)) {

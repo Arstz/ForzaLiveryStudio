@@ -5,10 +5,27 @@
 
 #include <cstdint>
 #include <vector>
+#include <functional>
 
 namespace gui {
 
 inline const QColor kTransparentBucketColor(255, 0, 255);
+inline constexpr int kDefaultBucketTolerance = 16;
+
+struct BucketRegion {
+    QColor color;
+    QPoint seed;
+    QRect bounds;
+    int area = 0;
+};
+
+struct BucketRegionsResult {
+    QSize imageSize;
+    QVector<int> labels;
+    QVector<BucketRegion> regions;
+    QString error;
+    bool cancelled = false;
+};
 
 struct BucketFillResult {
     QSize imageSize;
@@ -32,6 +49,11 @@ struct BucketFillResult {
 BucketFillResult floodGuideRegion(const QImage &image,
                                   const QPoint &seed,
                                   int tolerance);
+
+BucketRegionsResult floodGuideRegions(
+    const QImage &image, int tolerance = kDefaultBucketTolerance,
+    const std::function<bool()> &cancelled = {},
+    const std::function<void(int, int)> &progress = {});
 
 QImage bucketMaskPreview(const BucketFillResult &fill,
                          const QColor &color = QColor(64, 164, 255, 112));

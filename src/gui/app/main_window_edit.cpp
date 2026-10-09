@@ -935,6 +935,7 @@ void MainWindow::clearGeneratedFillState() {
 void MainWindow::cancelActiveFills() {
     cancelGeneratedFill();
     cancelRegionFill();
+    cancelImageGeneration();
 }
 
 void MainWindow::cancelGeneratedFill(bool keepPartial) {
@@ -1348,7 +1349,9 @@ void MainWindow::insertGeneratedRegionVariants(
             auto regionGroup = std::make_unique<fls::scene::Group>();
             regionGroup->id = QStringLiteral("group_%1").arg(
                 QUuid::createUuid().toString(QUuid::WithoutBraces));
-            regionGroup->name = QStringLiteral("Region %1").arg(++variantRegionCount);
+            ++variantRegionCount;
+            regionGroup->name = region.name.isEmpty()
+                ? QStringLiteral("Region %1").arg(variantRegionCount) : region.name;
             for (const GeneratedRegionShape &placement : region.shapes) {
                 auto shape = std::make_unique<fls::scene::Shape>();
                 shape->id = QStringLiteral("layer_%1").arg(

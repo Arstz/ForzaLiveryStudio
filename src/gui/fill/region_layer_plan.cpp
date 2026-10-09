@@ -1,6 +1,8 @@
 #include "region_layer_plan.h"
+#include "region_shape_cost.h"
 
 #include "region_fill.h"
+#include "cubic_contour.h"
 
 #include <algorithm>
 #include <array>
@@ -20,12 +22,11 @@ constexpr std::array<int, 5> kDangerousBridgeDetourAllowances = {0, 2, 4, 8, 16}
 constexpr std::array<int, 4> kDangerousClosingRadii = {1, 2, 4, 8};
 constexpr std::array<double, 5> kDangerousStraightBridgeWidths = {1.0, 3.0, 5.0,
                                                                   9.0, 17.0};
-constexpr int kEstimatedBoundaryShapesPerPoint = 2;
-constexpr int kEstimatedPixelsPerCoreShape = 128;
 constexpr int kMaximumStraightAttachmentContacts = 192;
 constexpr int kMaximumStraightAttachmentsPerPair = 8;
 constexpr int kMinimumStraightAttachmentSpacing = 8;
 constexpr double kOuterBoundaryStrokeWidth = 3.0;
+constexpr int kMaximumTopologyMergePeers = 8;
 
 enum class PlanOperationKind {
     None,
@@ -262,13 +263,6 @@ QPainterPath tracePixels(const QVector<int> &pixels,
 
 int pathPointCount(const QPainterPath &path) {
     return path.elementCount();
-}
-
-int estimatedShapeCount(int pixelCount, int pointCount) {
-    const int coreShapes =
-        (pixelCount + kEstimatedPixelsPerCoreShape - 1) / kEstimatedPixelsPerCoreShape;
-
-    return pointCount * kEstimatedBoundaryShapesPerPoint + coreShapes;
 }
 
 std::vector<std::uint8_t> squareBinaryFilter(
@@ -1002,12 +996,9 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
                 candidate.rightPixel = targetSourcePixel;
                 candidate.gap = bestDistance + 1;
                 candidate.hierarchicalContourBridge = true;
-                const int separatePixelCount = sources[leftSource].pixels.size()
-                    + sources[rightSource].pixels.size();
-                const int separatePointCount = pathPointCount(sources[leftSource].outerPath)
-                    + pathPointCount(sources[rightSource].outerPath);
                 candidate.separateEstimatedShapeCount =
-                    estimatedShapeCount(separatePixelCount, separatePointCount);
+                    estimateRegionShapeCount(sources[leftSource].outerPath)
+                    + estimateRegionShapeCount(sources[rightSource].outerPath);
                 const auto considerCorridor = [&](int detourAllowance,
                                                   bool entireComponent) {
                     if (planningCancelled(cancelled)) {
@@ -1036,7 +1027,7 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
                         mergedPixels, regions.imageSize, regions.raster->traceParams);
                     const int pointCount = pathPointCount(outline);
                     const int shapeCount =
-                        estimatedShapeCount(mergedPixels.size(), pointCount);
+                        estimateRegionShapeCount(outline);
                     if (outline.isEmpty()
                         || shapeCount >= candidate.separateEstimatedShapeCount
                         || (candidate.bridgeEstimatedShapeCount > 0
@@ -1437,14 +1428,13 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
                         static_cast<double>(proposal.distanceSquared))));
                     candidate.hierarchicalContourBridge = true;
                     candidate.straightAttachmentCount = 1;
-                    const int separatePixelCount = sources[leftSource].pixels.size()
-                        + sources[rightSource].pixels.size();
                     const int separatePointCount = pathPointCount(
                         sources[leftSource].outerPath)
                         + pathPointCount(sources[rightSource].outerPath);
                     candidate.separatePointCount = separatePointCount;
-                    candidate.separateEstimatedShapeCount = estimatedShapeCount(
-                        separatePixelCount, separatePointCount);
+                    candidate.separateEstimatedShapeCount =
+                        estimateRegionShapeCount(sources[leftSource].outerPath)
+                        + estimateRegionShapeCount(sources[rightSource].outerPath);
                     QVector<int> widestCorridor;
                     for (const double bridgeWidth : kDangerousStraightBridgeWidths) {
                         if (planningCancelled(cancelled)) {
@@ -1481,8 +1471,7 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
                         const QPainterPath outline = tracePixels(
                             mergedPixels, regions.imageSize, regions.raster->traceParams);
                         const int pointCount = pathPointCount(outline);
-                        const int shapeCount = estimatedShapeCount(
-                            mergedPixels.size(), pointCount);
+                        const int shapeCount = estimateRegionShapeCount(outline);
                         const bool improvesSeparate =
                             pointCount < candidate.separatePointCount
                             || (pointCount == candidate.separatePointCount
@@ -1530,8 +1519,7 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
                     const QPainterPath outline = tracePixels(
                         mergedPixels, regions.imageSize, regions.raster->traceParams);
                     const int pointCount = pathPointCount(outline);
-                    const int shapeCount = estimatedShapeCount(
-                        mergedPixels.size(), pointCount);
+                    const int shapeCount = estimateRegionShapeCount(outline);
                     const bool improvesSeparate =
                         pointCount < selected.front().separatePointCount
                         || (pointCount == selected.front().separatePointCount
@@ -1645,7 +1633,7 @@ RegionLayerPlan fallbackPlan(const RegionExtractionResult &regions,
     plan.diagnostics << QStringLiteral("fallback reason=%1").arg(reason);
     for (int i = 0; i < regions.regions.size(); ++i) {
         const ExtractedRegion &region = regions.regions[i];
-        if (region.lineart) {
+        if (region.lineart || region.background) {
             continue;
         }
         RegionLayerUnit unit;
@@ -1708,7 +1696,8 @@ RegionLayerPlan fallbackPlan(const RegionExtractionResult &regions,
     return plan;
 }
 
-QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units) {
+QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units,
+                   bool preserveContours = false) {
     QImage rendered(imageSize, QImage::Format_ARGB32);
     rendered.fill(Qt::transparent);
     QPainter painter(&rendered);
@@ -1717,7 +1706,7 @@ QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units
     painter.setCompositionMode(QPainter::CompositionMode_Source);
     for (const RegionLayerUnit &unit : units) {
         painter.setBrush(unit.color);
-        painter.drawPath(outerPath(unit.outline));
+        painter.drawPath(preserveContours ? unit.outline : outerPath(unit.outline));
     }
     painter.end();
 
@@ -1927,7 +1916,7 @@ RegionLayerPlan buildRegionLayerPlanAttempt(
             return cancelledPlan(std::move(plan));
         }
         const ExtractedRegion &region = regions.regions[i];
-        if (region.lineart) {
+        if (region.lineart || region.background) {
             continue;
         }
         SourceRegion source;
@@ -2131,7 +2120,7 @@ RegionLayerPlan buildRegionLayerPlanAttempt(
             pixels, regions.imageSize, regions.raster->traceParams);
         const int pointCount = pathPointCount(outline);
 
-        return QPair<int, int>(estimatedShapeCount(pixels.size(), pointCount),
+        return QPair<int, int>(estimateRegionShapeCount(outline),
                                pointCount);
     };
     const auto expandedCost = [&](int root) {
@@ -2968,6 +2957,284 @@ RegionLayerPlan buildRegionLayerPlanWithOptions(
 
 } // namespace
 
+namespace {
+
+void prependBackground(const RegionExtractionResult &regions, RegionLayerPlan *plan) {
+    if (plan->cancelled) {
+        return;
+    }
+    for (int i = 0; i < regions.regions.size(); ++i) {
+        const ExtractedRegion &region = regions.regions[i];
+        if (!region.background) {
+            continue;
+        }
+        RegionLayerUnit unit;
+        unit.color = region.color;
+        unit.outline = region.outline;
+        unit.sourceRegionIndices.push_back(i);
+        unit.area = region.outline.boundingRect().width()
+            * region.outline.boundingRect().height();
+        unit.background = true;
+        plan->units.prepend(std::move(unit));
+        plan->diagnostics << QStringLiteral(
+            "background source=%1 isolated=yes estimated_shapes=1").arg(i);
+    }
+}
+
+bool equalPixels(const QImage &left, const QImage &right) {
+    if (left.size() != right.size() || left.isNull() || right.isNull()) {
+        return false;
+    }
+    for (int y = 0; y < left.height(); ++y) {
+        const QRgb *a = reinterpret_cast<const QRgb *>(left.constScanLine(y));
+        const QRgb *b = reinterpret_cast<const QRgb *>(right.constScanLine(y));
+        if (!std::equal(a, a + left.width(), b)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void orderRegionsByTopology(const QSize &imageSize, RegionLayerPlan *plan,
+                           const std::function<bool()> &cancelled,
+                           bool preserveContours = false) {
+    const int count = plan->units.size();
+    QVector<QPainterPath> paths;
+    QVector<int> costs;
+    QVector<QVector<int>> outgoing(count);
+    QVector<int> indegree(count, 0);
+    paths.reserve(count);
+    costs.reserve(count);
+    for (const RegionLayerUnit &unit : plan->units) {
+        if (unit.color.alpha() != 255) {
+            return;
+        }
+        paths.push_back((preserveContours ? unit.outline : outerPath(unit.outline)));
+        costs.push_back(estimateRegionShapeCount(paths.back()));
+    }
+    int dependencies = 0;
+    for (int lower = 0; lower < count; ++lower) {
+        if (planningCancelled(cancelled)) {
+            plan->cancelled = true;
+            return;
+        }
+        for (int upper = lower + 1; upper < count; ++upper) {
+            if (sameColor(plan->units[lower].color, plan->units[upper].color)
+                || !paths[lower].boundingRect().intersects(paths[upper].boundingRect())
+                || paths[lower].intersected(paths[upper]).isEmpty()) {
+                continue;
+            }
+            outgoing[lower].push_back(upper);
+            ++indegree[upper];
+            ++dependencies;
+        }
+    }
+    QVector<int> order;
+    QVector<bool> scheduled(count, false);
+    for (int placed = 0; placed < count; ++placed) {
+        if (planningCancelled(cancelled)) {
+            plan->cancelled = true;
+            return;
+        }
+        int next = -1;
+        for (int i = 0; i < count; ++i) {
+            if (scheduled[i] || indegree[i] != 0) {
+                continue;
+            }
+            if (next < 0 || costs[i] > costs[next]) {
+                next = i;
+            }
+        }
+        if (next < 0) {
+            return;
+        }
+        order.push_back(next);
+        scheduled[next] = true;
+        for (const int upper : outgoing[next]) {
+            --indegree[upper];
+        }
+    }
+    QVector<RegionLayerUnit> ordered;
+    ordered.reserve(count);
+    int moved = 0;
+    for (int i = 0; i < count; ++i) {
+        ordered.push_back(plan->units[order[i]]);
+        moved += order[i] != i ? 1 : 0;
+    }
+    if (equalPixels(renderUnits(imageSize, plan->units, preserveContours), renderUnits(imageSize, ordered, preserveContours))) {
+        plan->units = std::move(ordered);
+        plan->diagnostics << QStringLiteral(
+            "topology_order complex_first=yes dependencies=%1 moved_units=%2 "
+            "baseline_fidelity=exact").arg(dependencies).arg(moved);
+    }
+}
+
+void optimizeRegionTopology(const RegionExtractionResult &regions,
+                            RegionLayerPlan *plan,
+                            const RegionLayerPlanProgress &progress,
+                            const std::function<bool()> &cancelled,
+                           bool preserveContours = false) {
+    if (plan->cancelled || plan->fallback || plan->units.isEmpty()) {
+        return;
+    }
+    QElapsedTimer clock;
+    clock.start();
+    if (!preserveContours) {
+        orderRegionsByTopology(regions.imageSize, plan, cancelled);
+    }
+    if (plan->cancelled) {
+        return;
+    }
+    const QImage baseline = renderUnits(regions.imageSize, plan->units, preserveContours);
+    int estimatedBefore = 0;
+    for (const RegionLayerUnit &unit : plan->units) {
+        estimatedBefore += estimateRegionShapeCount((preserveContours ? unit.outline : outerPath(unit.outline)));
+    }
+    QPainterPath laterCoverage;
+    for (int lower = plan->units.size() - 1; lower >= 0; --lower) {
+        if (planningCancelled(cancelled)) {
+            plan->cancelled = true;
+            return;
+        }
+        if (progress) {
+            progress(QStringLiteral("Comparing region topology variants"),
+                     plan->units.size() - lower, plan->units.size());
+        }
+        const RegionLayerUnit &unit = plan->units[lower];
+        QVector<int> peers;
+        for (int upper = lower + 1; upper < plan->units.size(); ++upper) {
+            const RegionLayerUnit &above = plan->units[upper];
+            if (above.background || above.color.alpha() != 255) {
+                continue;
+            }
+            if (peers.size() < kMaximumTopologyMergePeers
+                && (!preserveContours || unit.lining == above.lining)
+                && sameColor(unit.color, above.color)) {
+                peers.push_back(upper);
+            }
+        }
+        const QPainterPath original = (preserveContours ? unit.outline : outerPath(unit.outline));
+        const QPainterPath required = original.subtracted(laterCoverage);
+        const QPainterPath allowed = original.united(laterCoverage);
+        QVector<QVector<int>> mergeVariants;
+        mergeVariants.push_back({});
+        for (const int peer : peers) {
+            mergeVariants.push_back({peer});
+        }
+        if (peers.size() > 1) {
+            mergeVariants.push_back(peers);
+        }
+        QVector<RegionLayerUnit> bestUnits;
+        int bestSaving = 0;
+        int bestMergeCount = 0;
+        for (const QVector<int> &merged : mergeVariants) {
+            QRectF bounds = original.boundingRect();
+            int originalCost = estimateRegionShapeCount(original);
+            for (const int peer : merged) {
+                const QPainterPath peerPath = (preserveContours ? plan->units[peer].outline : outerPath(plan->units[peer].outline));
+                bounds = bounds.united(peerPath.boundingRect());
+                originalCost += estimateRegionShapeCount(peerPath);
+            }
+            if (originalCost <= 1) {
+                continue;
+            }
+            QPainterPath rectangle;
+            rectangle.addRect(bounds);
+            QPainterPath ellipse;
+            ellipse.addEllipse(bounds);
+            QVector<QPainterPath> candidates{rectangle, ellipse};
+            if (preserveContours) {
+                QPainterPath combined = original;
+                for (const int peer : merged) {
+                    combined = combined.united(plan->units[peer].outline);
+                }
+                const auto loops = cubicPathLoops(combined);
+                QPainterPath withoutCutouts;
+                for (const PenLoop &loop : loops) {
+                    if (loop.kind == PenLoopKind::Outer) {
+                        withoutCutouts.addPath(penPath(loop.points));
+                    }
+                }
+                if (!withoutCutouts.isEmpty()) {
+                    candidates.push_back(std::move(withoutCutouts));
+                }
+                QPolygonF points;
+                for (const QPolygonF &polygon : combined.toSubpathPolygons()) {
+                    points += polygon;
+                }
+                const QPolygonF hull = convexHull(std::move(points));
+                if (hull.size() >= 3) {
+                    QPainterPath convex;
+                    convex.addPolygon(hull);
+                    convex.closeSubpath();
+                    candidates.push_back(std::move(convex));
+                }
+            }
+            for (const QPainterPath &candidate : candidates) {
+                ++plan->topologyVariantCount;
+                if (planningCancelled(cancelled)) {
+                    plan->cancelled = true;
+                    return;
+                }
+                const int saving = originalCost - estimateRegionShapeCount(candidate);
+                if (saving <= bestSaving
+                    || !required.subtracted(candidate).isEmpty()
+                    || !candidate.subtracted(allowed).isEmpty()) {
+                    continue;
+                }
+                QVector<RegionLayerUnit> trial = plan->units;
+                trial[lower].outline = candidate;
+                trial[lower].area = bounds.width() * bounds.height();
+                for (const int peer : merged) {
+                    trial[lower].sourceRegionIndices += trial[peer].sourceRegionIndices;
+                    trial[lower].absorbedRegionIndices += trial[peer].absorbedRegionIndices;
+                }
+                for (auto it = merged.crbegin(); it != merged.crend(); ++it) {
+                    trial.removeAt(*it);
+                }
+                if (!equalPixels(baseline, renderUnits(regions.imageSize, trial, preserveContours))) {
+                    continue;
+                }
+                bestUnits = std::move(trial);
+                bestSaving = saving;
+                bestMergeCount = merged.size();
+            }
+        }
+        if (!bestUnits.isEmpty()) {
+            plan->units = std::move(bestUnits);
+            ++plan->topologySimplificationCount;
+            plan->topologyMergeCount += bestMergeCount;
+            plan->diagnostics << QStringLiteral(
+                "topology lower=%1 estimated_saving=%2 merged_units=%3 "
+                "baseline_fidelity=exact").arg(lower).arg(bestSaving).arg(bestMergeCount);
+            if (bestMergeCount > 0) {
+                laterCoverage = QPainterPath{};
+                for (int upper = lower + 1; upper < plan->units.size(); ++upper) {
+                    if (plan->units[upper].color.alpha() == 255) {
+                        laterCoverage = laterCoverage.united(
+                            (preserveContours ? plan->units[upper].outline : outerPath(plan->units[upper].outline)));
+                    }
+                }
+            }
+        }
+        if (plan->units[lower].color.alpha() == 255) {
+            laterCoverage = laterCoverage.united((preserveContours ? plan->units[lower].outline : outerPath(plan->units[lower].outline)));
+        }
+    }
+    int estimatedAfter = 0;
+    for (const RegionLayerUnit &unit : plan->units) {
+        estimatedAfter += estimateRegionShapeCount((preserveContours ? unit.outline : outerPath(unit.outline)));
+    }
+    plan->diagnostics << QStringLiteral(
+        "topology variants=%1 simplifications=%2 merges=%3 estimated_shapes=%4->%5 "
+        "runtime_ms=%6").arg(plan->topologyVariantCount)
+            .arg(plan->topologySimplificationCount).arg(plan->topologyMergeCount)
+            .arg(estimatedBefore).arg(estimatedAfter).arg(clock.elapsed());
+}
+
+} // namespace
+
 RegionLayerPlanVariants buildRegionLayerPlanVariants(
     const RegionExtractionResult &regions,
     const RegionLayerPlanProgress &progress,
@@ -2985,6 +3252,7 @@ RegionLayerPlanVariants buildRegionLayerPlanVariants(
     result.safe = buildRegionLayerPlanWithOptions(
         regions, PlannerOptions{}, false, QStringLiteral("Safe"),
         progress, cancelled);
+    optimizeRegionTopology(regions, &result.safe, progress, cancelled);
     if (result.safe.cancelled || planningCancelled(cancelled)) {
         result.dangerous.cancelled = true;
         return result;
@@ -2995,13 +3263,30 @@ RegionLayerPlanVariants buildRegionLayerPlanVariants(
     result.dangerous = buildRegionLayerPlanWithOptions(
         regions, dangerousOptions, true, QStringLiteral("Dangerous"),
         progress, cancelled);
+    prependBackground(regions, &result.safe);
+    prependBackground(regions, &result.dangerous);
 
     return result;
 }
 
 RegionLayerPlan buildRegionLayerPlan(const RegionExtractionResult &regions) {
-    return buildRegionLayerPlanWithOptions(
+    RegionLayerPlan result = buildRegionLayerPlanWithOptions(
         regions, PlannerOptions{}, false, QStringLiteral("Safe"), {}, {});
+    optimizeRegionTopology(regions, &result, {}, {});
+    prependBackground(regions, &result);
+
+    return result;
+}
+
+void refineImageLayerPlan(const QSize &imageSize, RegionLayerPlan *plan,
+                          const RegionLayerPlanProgress &progress,
+                          const std::function<bool()> &cancelled) {
+    if (plan == nullptr) {
+        return;
+    }
+    RegionExtractionResult regions;
+    regions.imageSize = imageSize;
+    optimizeRegionTopology(regions, plan, progress, cancelled, true);
 }
 
 } // namespace gui

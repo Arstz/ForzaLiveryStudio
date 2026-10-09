@@ -130,6 +130,8 @@ public:
     void clearRegionFills();
     QVector<GeneratedRegionVariant> regionFillWorldVariants();
     void hideRegionOverlay();
+    bool imageGeneratorSource(const QString &guideId, QImage *image,
+                              QTransform *imageToWorld) const;
 
     enum class AlignEdge { Left, HCenter, Right, Top, VCenter, Bottom };
     enum class DistributeAxis { Horizontal, Vertical };
@@ -178,7 +180,6 @@ private:
     static constexpr double kDefaultLiningWidth = 8.0;
     static constexpr double kMinimumLiningWidth = 0.1;
     static constexpr double kMaximumLiningWidth = 256.0;
-    static constexpr int kDefaultBucketTolerance = 16;
     static constexpr QSize kDefaultVisibilityBorderResolution{1920, 1080};
     inline static const QColor kDefaultGuidelineColor{0, 170, 255};
 

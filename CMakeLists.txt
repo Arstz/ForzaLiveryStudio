@@ -147,7 +147,7 @@ option(FLS_PRIVACY_POLICY "Deny importing locked game content in public builds" 
 option(FLS_BUILD_HELPER_TOOLS "Build console helper tools" OFF)
 option(FLS_BUILD_LIVERY_COMPARE "Build livery compare helper when helper tools are enabled" OFF)
 option(FLS_BUILD_TESTS "Build test executables" OFF)
-option(FLS_ENABLE_IMGGEN_MENU "Expose experimental ImgGen menu" OFF)
+option(FLS_ENABLE_IMGGEN_MENU "Expose experimental ImgGen menu" ON)
 option(ENFORCE_SHAPE_LIMITS "Enforce per-section livery shape limits during export" ON)
 
 if(FLS_BUILD_TESTS)
@@ -208,6 +208,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/app/main_window_internal.h
     src/gui/app/main_window_edit.cpp
     src/gui/app/main_window_io.cpp
+    src/gui/app/main_window_imggen.cpp
     src/gui/app/main_window_project.cpp
     src/gui/app/main_window_ui.cpp
     src/gui/app/perf_utils.h
@@ -283,6 +284,10 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/region_fill.h
     src/gui/fill/region_fill_batch.cpp
     src/gui/fill/region_layer_plan.cpp
+    src/gui/fill/region_shape_cost.cpp
+    src/gui/fill/image_generator.cpp
+    src/gui/fill/image_region_plan.cpp
+    src/gui/fill/image_generator.h
     src/gui/fill/region_layer_plan.h
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas_bucket.cpp
@@ -399,6 +404,13 @@ if(FLS_BUILD_TESTS)
         tools/compact_fit_test.cpp
         src/gui/fill/lining_extract.cpp
         src/gui/fill/region_extract.cpp
+        src/gui/fill/region_fill.cpp
+        src/gui/fill/region_layer_plan.cpp
+        src/gui/fill/region_shape_cost.cpp
+        src/gui/fill/image_generator.cpp
+        src/gui/fill/image_region_plan.cpp
+        src/gui/fill/bucket_fill.cpp
+        src/gui/widgets/image_preprocessor.cpp
         src/gui/fill/thin_fit.cpp
         src/gui/fill/thin_fit_spans.cpp
         src/gui/fill/lining_fill.cpp
@@ -449,6 +461,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
     add_test(NAME thin_region_fit COMMAND fls_compact_fit_tests --thin-tests)
     add_test(NAME lining_detection COMMAND fls_compact_fit_tests --lining-detection-tests)
+    add_test(NAME image_generator COMMAND fls_compact_fit_tests --image-generator-tests)
     add_test(NAME failed_fill_retention COMMAND fls_compact_fit_tests --failed-fill-tests)
     add_test(NAME compact_fast_quality COMMAND fls_compact_fit_tests --fast-quality-tests)
     add_test(NAME compact_search COMMAND fls_compact_fit_tests --compact-search-tests)
@@ -580,6 +593,7 @@ if(FLS_BUILD_TESTS)
         src/gui/fill/region_fill.cpp
         src/gui/fill/region_fill_batch.cpp
         src/gui/fill/region_layer_plan.cpp
+        src/gui/fill/region_shape_cost.cpp
         src/gui/fill/svg_vector_objects.cpp
         src/gui/widgets/shape_geometry_store.cpp
     )

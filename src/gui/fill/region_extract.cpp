@@ -15,6 +15,8 @@ namespace gui {
 namespace {
 
 constexpr int kPotraceWordBits = static_cast<int>(sizeof(potrace_word) * 8);
+constexpr int kBackgroundPadding = 1;
+constexpr double kMinimumBackgroundBorderFraction = 0.75;
 constexpr int kLineFringeBandRadius = 3;
 constexpr int kLineFringeMinimumVotes = 2;
 constexpr int kLineFringeMinimumStreak = 2;
@@ -1710,6 +1712,58 @@ void writeRegionExtractionDiagnostic(
 
 } // namespace
 
+namespace {
+
+int surroundingBackgroundLabel(const PassResult &seg, int width, int height,
+                               bool enabled, bool *surrounds) {
+    *surrounds = false;
+    if (!enabled || width < 2 || height < 2
+        || std::any_of(seg.labels.cbegin(), seg.labels.cend(),
+                       [](int label) { return label < 0; })) {
+        return -1;
+    }
+    QHash<int, int> borderCounts;
+    const auto count = [&](int x, int y) {
+        ++borderCounts[seg.labels[static_cast<size_t>(y) * width + x]];
+    };
+    for (int x = 0; x < width; ++x) {
+        count(x, 0);
+        count(x, height - 1);
+    }
+    for (int y = 1; y + 1 < height; ++y) {
+        count(0, y);
+        count(width - 1, y);
+    }
+    int selected = -1;
+    int largestCount = 0;
+    for (auto it = borderCounts.cbegin(); it != borderCounts.cend(); ++it) {
+        if (it.value() > largestCount
+            || (it.value() == largestCount && it.key() < selected)) {
+            selected = it.key();
+            largestCount = it.value();
+        }
+    }
+    const int borderSize = 2 * width + 2 * height - 4;
+    if (selected < 0
+        || largestCount < borderSize * kMinimumBackgroundBorderFraction) {
+        return -1;
+    }
+    const int corners[] = {0, width - 1, (height - 1) * width,
+                           width * height - 1};
+    int matchingCorners = 0;
+    for (const int corner : corners) {
+        matchingCorners += seg.labels[static_cast<size_t>(corner)] == selected ? 1 : 0;
+    }
+    if (matchingCorners < 3) {
+        return -1;
+    }
+    *surrounds = largestCount == borderSize;
+
+    return selected;
+}
+
+} // namespace
+
 RegionExtractionResult extractRegions(const QImage &sourceImage,
                                       const RegionExtractionParams &params) {
     RegionExtractionResult result;
@@ -1782,11 +1836,32 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         return result;
     }
     result.mergedSmallRegionCount = finalSeg.mergedSmallRegions;
+    bool backgroundSurrounds = false;
+    const int backgroundLabel = surroundingBackgroundLabel(
+        finalSeg, width, height, params.isolateSolidBackground,
+        &backgroundSurrounds);
+    const auto backgroundSeed = std::find(finalSeg.labels.cbegin(),
+                                           finalSeg.labels.cend(), backgroundLabel);
+    const size_t backgroundPixel = static_cast<size_t>(
+        backgroundSeed - finalSeg.labels.cbegin());
+    if (backgroundLabel >= 0) {
+        finalSeg.lineart[static_cast<size_t>(backgroundLabel)] = 0;
+        for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+            if (finalSeg.labels[pixel] == backgroundLabel) {
+                lineartMask[pixel] = false;
+                lineVotes[pixel] = 0;
+                longestLineStreak[pixel] = 0;
+            }
+        }
+    }
     const PassResult diagnosticSeg = finalSeg;
     const std::vector<bool> diagnosticLineartMask = lineartMask;
     const LineFringeCleanupResult fringeCleanup = cleanLineFringes(
         &finalSeg, width, height, params.minRegionArea, passCount, lineVotes,
         longestLineStreak, firstLinePass, lastLinePass, &lineartMask);
+
+    const int cleanedBackgroundLabel = backgroundLabel >= 0
+        ? finalSeg.labels[backgroundPixel] : -1;
 
     std::vector<QSet<int>> colorAdj = finalSeg.adjacency;
     QSet<int> extractedColorLabels;
@@ -1826,13 +1901,21 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
 
     for (int label = 0; label < static_cast<int>(finalSeg.accums.size()); ++label) {
         const RegionAccum &accum = finalSeg.accums[label];
-        if (accum.area < params.minRegionArea || finalSeg.lineart[label]) {
+        const bool background = label == cleanedBackgroundLabel;
+        if ((!background && accum.area < params.minRegionArea)
+            || finalSeg.lineart[label]) {
             continue;
         }
         const QRect bounds(accum.minX, accum.minY,
                            accum.maxX - accum.minX + 1,
                            accum.maxY - accum.minY + 1);
         QPainterPath outline = tracePotrace(finalSeg.labels, width, label, bounds, params);
+        if (background) {
+            outline = QPainterPath{};
+            const int padding = backgroundSurrounds ? 0 : kBackgroundPadding;
+            outline.addRect(QRectF(-padding, -padding,
+                                  width + 2 * padding, height + 2 * padding));
+        }
         if (outline.isEmpty()) {
             continue;
         }
@@ -1845,6 +1928,7 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
         region.debugColor = colorOf[label];
         region.strokeWidth = 2.0 * std::max(0.5, static_cast<double>(finalSeg.maxDistance[label]));
         region.lineart = false;
+        region.background = background;
         result.regions.push_back(std::move(region));
         extractedColorLabels.insert(label);
         ++result.colorRegionCount;
@@ -1943,8 +2027,9 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
     for (int y = 0; y < height; ++y) {
         const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
         for (int x = 0; x < width; ++x) {
-            raster->foreground[static_cast<size_t>(y) * width + x] =
-                qAlpha(row[x]) >= alpha ? 1 : 0;
+            const size_t pixel = static_cast<size_t>(y) * width + x;
+            raster->foreground[pixel] = qAlpha(row[x]) >= alpha
+                && finalSeg.labels[pixel] != cleanedBackgroundLabel ? 1 : 0;
             raster->lineart[static_cast<size_t>(y) * width + x] =
                 lineartMask[static_cast<size_t>(y) * width + x] ? 1 : 0;
         }

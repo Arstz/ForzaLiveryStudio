@@ -8,6 +8,8 @@
 
 namespace gui {
 
+inline constexpr bool kDefaultIsolateSolidBackground = true;
+
 struct RegionExtractionParams {
     int maxColorCount = 16;
     double colorMergeDistance = 30.0;
@@ -21,6 +23,7 @@ struct RegionExtractionParams {
     double minElongation = 2.0;
     int maxDimension = 0;
     int blurPasses = 1;
+    bool isolateSolidBackground = kDefaultIsolateSolidBackground;
     int traceSpeckle = 2;
     double traceAlphaMax = 1.0;
     double traceOptTolerance = 0.2;
@@ -30,6 +33,7 @@ struct ExtractedRegion {
     int id = 0;
     QColor color;
     bool lineart = false;
+    bool background = false;
     QPainterPath outline;
     QRect bounds;
     int area = 0;

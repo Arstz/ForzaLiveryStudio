@@ -23,6 +23,7 @@ struct RegionFillLayer {
     double area = 0.0;
     int drawOrder = -1;
     RegionFillVariant variant = RegionFillVariant::Safe;
+    bool background = false;
 };
 
 struct GeneratedRegionShape {
@@ -33,6 +34,7 @@ struct GeneratedRegionShape {
 
 struct GeneratedRegionGroup {
     QVector<GeneratedRegionShape> shapes;
+    QString name;
 };
 
 struct GeneratedRegionVariant {

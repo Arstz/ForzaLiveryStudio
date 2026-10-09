@@ -6,6 +6,8 @@
 #include "profile_fit.h"
 #include "thin_fit.h"
 #include "lining_extract.h"
+#include "image_generator.h"
+#include "image_preprocessor.h"
 #include "cubic_contour.h"
 #include "lining_fill.h"
 #include "profile_fit_selection.h"
@@ -3306,6 +3308,541 @@ void shapeConfigurationTests(const gui::ShapeGeometryStore &geometry) {
     QTextStream(stdout) << "Shape configuration reload, snapshots, task exclusions and validation passed\n";
 }
 
+void bucketSourceRegionCounts(const QString &source, bool inspectPlan = false) {
+    QFile file(source);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    auto project = fls::decodeProjectDocument(file.readAll());
+    const fls::scene::GuideLayer *guide = nullptr;
+    std::function<void(const fls::scene::Layer &)> collect = [&](const auto &layer) {
+        if (layer.kind() == fls::scene::LayerKind::Guide && !guide) {
+            guide = &static_cast<const fls::scene::GuideLayer &>(layer);
+        }
+        if (layer.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<const fls::scene::Group &>(layer).children) {
+                collect(*child);
+            }
+        }
+    };
+    collect(*project.root);
+    require(guide && guide->image, QStringLiteral("Source project has no embedded guide"));
+    QImage image;
+    if (!guide->image->pixels.isEmpty()) {
+        image = QImage(reinterpret_cast<const uchar *>(guide->image->pixels.constData()),
+            guide->image->width, guide->image->height, guide->image->width * 4,
+            QImage::Format_ARGB32_Premultiplied).copy();
+    } else {
+        image = QImage::fromData(guide->image->encoded);
+    }
+    require(!image.isNull(), QStringLiteral("Source guide could not be decoded"));
+    if (!guide->imageTopDown) {
+        image = image.mirrored(false, true);
+    }
+    gui::ImagePreprocessSettings settings;
+    settings.colors = gui::kDefaultImageGeneratorColors;
+    settings.smoothingPasses = 0;
+    settings.flattenStrength = 0.0;
+    settings.detailRestore = 0.0;
+    settings.saturationRestore = 0.0;
+    settings.minimumColorFraction = 0.0;
+    settings.speckleSize = 0;
+    settings.edgeCleanupPasses = 0;
+    settings.lineMode = false;
+    QElapsedTimer clock;
+    clock.start();
+    const auto prepared = gui::preprocessImage(image, settings);
+    const auto exact = gui::floodGuideRegions(prepared, 0);
+    const auto buckets = gui::floodGuideRegions(image);
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    require(geometry.loadDefault(&error), error);
+    gui::ImageGeneratorRequest request;
+    request.source = image;
+    request.liningPrimitives = gui::thin::buildCatalog(geometry, &error);
+    require(error.isEmpty() && !request.liningPrimitives.isEmpty(), error);
+    request.compactPrimitives = gui::catalog::buildCatalog(geometry, &error);
+    require(error.isEmpty() && !request.compactPrimitives.isEmpty(), error);
+    for (const auto &primitive : request.compactPrimitives) {
+        request.primitives.push_back(primitive.shape);
+    }
+    bool counted = false;
+    int generatorRegions = -1;
+    int plannedRegions = -1;
+    const auto inspected = gui::generateImage(request,
+        [&](const QString &phase, int, int total) {
+            if (phase == QStringLiteral("Tracing source regions")) {
+                generatorRegions = total;
+                counted = !inspectPlan;
+            }
+            if (inspectPlan && phase.startsWith(QStringLiteral("Fitting region"))) {
+                plannedRegions = total;
+                counted = true;
+            }
+        }, [&]() { return counted; });
+    require(inspected.cancelled && generatorRegions > 0,
+            QStringLiteral("Could not inspect the generator's pre-fit region count"));
+    require(exact.error.isEmpty() && buckets.error.isEmpty(), buckets.error);
+    const int tiny = std::count_if(buckets.regions.cbegin(), buckets.regions.cend(),
+        [](const auto &region) { return region.area < 12; });
+    QTextStream(stdout) << "Source " << source << ": " << image.width() << 'x' << image.height()
+        << ", exact-color components=" << exact.regions.size()
+        << ", raw source Bucket regions=" << buckets.regions.size()
+        << ", generator regions after cleanup=" << generatorRegions
+        << ", regions after topology planning=" << plannedRegions
+        << ", regions below 12 pixels=" << tiny
+        << ", count comparison milliseconds=" << clock.elapsed() << '\n';
+}
+
+void imageGeneratorReplay(const QString &source, const QString &destination, const QString &settingsPath) {
+    QFile input(source);
+    require(input.open(QIODevice::ReadOnly), input.errorString());
+    auto project = fls::decodeProjectDocument(input.readAll());
+    const fls::scene::GuideLayer *guide = nullptr;
+    std::function<void(const fls::scene::Layer &)> collect = [&](const auto &layer) {
+        if (layer.kind() == fls::scene::LayerKind::Guide && !guide)
+            guide = &static_cast<const fls::scene::GuideLayer &>(layer);
+        if (layer.kind() == fls::scene::LayerKind::Group)
+            for (const auto &child : static_cast<const fls::scene::Group &>(layer).children)
+                collect(*child);
+    };
+    collect(*project.root);
+    require(guide && guide->image, QStringLiteral("Source project has no embedded guide"));
+    gui::ImageGeneratorRequest request;
+    request.source = guide->image->pixels.isEmpty() ? QImage::fromData(guide->image->encoded)
+        : QImage(reinterpret_cast<const uchar *>(guide->image->pixels.constData()),
+            guide->image->width, guide->image->height, guide->image->width * 4,
+            QImage::Format_ARGB32_Premultiplied).copy();
+    if (!guide->imageTopDown)
+        request.source = request.source.mirrored(false, true);
+    if (!settingsPath.isEmpty()) {
+        QFile settingsFile(settingsPath);
+        require(settingsFile.open(QIODevice::ReadOnly), settingsFile.errorString());
+        const auto settings = QJsonDocument::fromJson(settingsFile.readAll()).object();
+        auto &options = request.options;
+        options.colors = settings.value("colors").toInt(options.colors);
+        options.bucketTolerance = settings.value("bucketTolerance").toInt(options.bucketTolerance);
+        options.fragmentArea = settings.value("fragmentArea").toInt(options.fragmentArea);
+        options.fragmentTolerance = settings.value("fragmentTolerance").toInt(options.fragmentTolerance);
+        options.boundaryAllowance = settings.value("boundaryAllowance").toDouble(options.boundaryAllowance);
+        options.outlineExtension = settings.value("outlineExtension").toDouble(options.outlineExtension);
+        options.liningMode = static_cast<gui::ImageLiningMode>(settings.value("liningMode").toInt());
+        options.reducePalette = settings.value("paletteReduction").toBool(options.reducePalette);
+        options.cleanRasterNoise = settings.value("cleanRasterNoise").toBool(options.cleanRasterNoise);
+        options.useGpu = settings.value("useGpu").toBool(options.useGpu);
+        options.evaluationBudget = settings.value("evaluationBudget").toInt(options.evaluationBudget);
+        options.liningSeconds = settings.value("liningSeconds").toInt(options.liningSeconds);
+        options.detectLining = settings.value("detectLining").toBool(options.detectLining);
+        options.optimizeTopology = settings.value("optimizeTopology").toBool(options.optimizeTopology);
+    }
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    require(geometry.loadDefault(&error), error);
+    request.compactPrimitives = gui::catalog::buildCatalog(geometry, &error);
+    require(error.isEmpty(), error);
+    request.liningPrimitives = gui::thin::buildCatalog(geometry, &error);
+    require(error.isEmpty(), error);
+    for (const auto &primitive : request.compactPrimitives)
+        request.primitives.push_back(primitive.shape);
+    const auto result = gui::generateImage(request, [&](const QString &phase, int done, int total) {
+        if (phase.startsWith(QStringLiteral("Fitting region")) || done == 0)
+            QTextStream(stdout) << phase << ' ' << done << '/' << total << '\n' << Qt::flush;
+    });
+    QFile diagnostics(destination + QStringLiteral(".json"));
+    require(diagnostics.open(QIODevice::WriteOnly | QIODevice::NewOnly), diagnostics.errorString());
+    diagnostics.write(QJsonDocument(result.diagnostics).toJson());
+    require(result.error.isEmpty() && !result.cancelled, result.error);
+    QTransform pixelToLocal;
+    pixelToLocal.translate(-request.source.width() * 0.5, request.source.height() * 0.5);
+    pixelToLocal.scale(1.0, -1.0);
+    const auto variants = gui::imageGeneratorWorldVariants(result, pixelToLocal * layerTransform(*guide));
+    auto generated = std::make_unique<fls::scene::Group>();
+    generated->id = QStringLiteral("layer_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    generated->name = QStringLiteral("Image Generator review");
+    generated->visible = false;
+    for (const auto &region : variants.front().regions) {
+        gui::PenFillResult fill;
+        for (const auto &shape : region.shapes)
+            fill.placements.push_back({shape.shapeId, shape.transform});
+        auto group = comparisonGroup(fill, region.name);
+        for (size_t i = 0; i < group->children.size(); ++i)
+            static_cast<fls::scene::Shape &>(*group->children[i]).color = region.shapes[i].color;
+        generated->append(std::move(group));
+    }
+    project.root->append(std::move(generated));
+    QFile output(destination);
+    require(output.open(QIODevice::WriteOnly | QIODevice::NewOnly), output.errorString());
+    const auto encoded = fls::encodeProjectDocument(project);
+    require(output.write(encoded) == encoded.size(), output.errorString());
+    QTextStream(stdout) << "Generated shapes=" << result.diagnostics.value("shapes").toInt()
+        << " fallback regions=" << result.diagnostics.value("rasterFallbackRegions").toInt()
+        << " repair shapes=" << result.diagnostics.value("coverageRepairShapes").toInt()
+        << " runtime_ms=" << result.diagnostics.value("runtimeMs").toInt() << '\n';
+}
+
+void pruneImageGeneratorProject(const QString &source, const QString &destination) {
+    QFile input(source);
+    require(input.open(QIODevice::ReadOnly), input.errorString());
+    auto project = fls::decodeProjectDocument(input.readAll());
+    const fls::scene::GuideLayer *guide = nullptr;
+    for (const auto &layer : project.root->children)
+        if (layer->kind() == fls::scene::LayerKind::Guide)
+            guide = &static_cast<const fls::scene::GuideLayer &>(*layer);
+    require(guide && guide->image && project.root->children.back()->kind() == fls::scene::LayerKind::Group,
+        QStringLiteral("Expected an embedded guide and a generated comparison group"));
+    auto &generated = static_cast<fls::scene::Group &>(*project.root->children.back());
+    QTransform pixelToLocal;
+    pixelToLocal.translate(-guide->image->width * 0.5, guide->image->height * 0.5);
+    pixelToLocal.scale(1.0, -1.0);
+    const QTransform imageToWorld = pixelToLocal * layerTransform(*guide);
+    bool invertible = false;
+    const QTransform worldToImage = imageToWorld.inverted(&invertible);
+    require(invertible, QStringLiteral("Source guide transform is singular"));
+    QVector<gui::RegionFillLayer> fills;
+    for (const auto &layer : generated.children) {
+        require(layer->kind() == fls::scene::LayerKind::Group, QStringLiteral("Expected selectable region groups"));
+        const auto &group = static_cast<const fls::scene::Group &>(*layer);
+        gui::RegionFillLayer fill;
+        fill.background = group.name == QStringLiteral("Background");
+        for (const auto &child : group.children) {
+            require(child->kind() == fls::scene::LayerKind::Shape, QStringLiteral("Expected native placements"));
+            const auto &shape = static_cast<const fls::scene::Shape &>(*child);
+            fill.color = QColor(shape.color[2], shape.color[1], shape.color[0], shape.color[3]);
+            fill.placements.push_back({shape.shapeId,
+                layerTransform(shape) * layerTransform(group) * layerTransform(generated) * worldToImage});
+        }
+        fills.push_back(std::move(fill));
+    }
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    require(geometry.loadDefault(&error), error);
+    QHash<int, QPainterPath> silhouettes;
+    for (const auto &fill : fills) {
+        for (const auto &placement : fill.placements) {
+            if (!silhouettes.contains(placement.shapeId)) {
+                const auto *shape = geometry.shape(placement.shapeId);
+                require(shape != nullptr, QStringLiteral("Missing native shape geometry"));
+                silhouettes.insert(placement.shapeId,
+                    gui::buildPenPrimitive(placement.shapeId, *shape).silhouette);
+            }
+        }
+    }
+    QImage rendered(QSize(guide->image->width, guide->image->height), QImage::Format_ARGB32);
+    rendered.fill(Qt::transparent);
+    QImage foreground = rendered.copy();
+    for (const auto &fill : fills) {
+        QPainter all(&rendered);
+        QPainter opaque(&foreground);
+        for (const auto &placement : fill.placements) {
+            const auto path = placement.transform.map(silhouettes.value(placement.shapeId));
+            all.fillPath(path, fill.color);
+            if (!fill.background)
+                opaque.fillPath(path, fill.color);
+        }
+    }
+    const auto baseline = fills;
+    const int removed = gui::pruneImageComposite(&fills, silhouettes, &rendered, &foreground);
+    int count = 0;
+    for (int layerIndex = 0; layerIndex < fills.size(); ++layerIndex) {
+        auto &group = static_cast<fls::scene::Group &>(*generated.children[layerIndex]);
+        std::vector<std::unique_ptr<fls::scene::Layer>> kept;
+        int selected = 0;
+        for (int index = 0; index < baseline[layerIndex].placements.size(); ++index) {
+            if (selected < fills[layerIndex].placements.size()
+                && baseline[layerIndex].placements[index].transform == fills[layerIndex].placements[selected].transform
+                && baseline[layerIndex].placements[index].shapeId == fills[layerIndex].placements[selected].shapeId) {
+                kept.push_back(std::move(group.children[index]));
+                ++selected;
+            }
+        }
+        require(selected == fills[layerIndex].placements.size(), QStringLiteral("Pruned shape identities differ"));
+        group.children = std::move(kept);
+        count += group.children.size();
+    }
+    QFile output(destination);
+    require(output.open(QIODevice::WriteOnly | QIODevice::NewOnly), output.errorString());
+    const auto encoded = fls::encodeProjectDocument(project);
+    require(output.write(encoded) == encoded.size(), output.errorString());
+    QTextStream(stdout) << "Composite pruning removed=" << removed << " shapes=" << count << '\n';
+}
+
+void imageGeneratorTests(const gui::ShapeGeometryStore &geometry) {
+    gui::ImageGeneratorRequest request;
+    QString error;
+    request.compactPrimitives = gui::catalog::buildCatalog(geometry, &error);
+    require(error.isEmpty() && !request.compactPrimitives.isEmpty(), error);
+    request.liningPrimitives = gui::thin::buildCatalog(geometry, &error);
+    require(error.isEmpty() && !request.liningPrimitives.isEmpty(), error);
+    for (const auto &primitive : request.compactPrimitives) {
+        request.primitives.push_back(primitive.shape);
+    }
+    request.options.reducePalette = false;
+    request.options.detectLining = false;
+    request.options.useGpu = false;
+    request.options.boundaryAllowance = 0.0;
+    request.options.evaluationBudget = 1000;
+    request.options.outlineExtension = 0.0;
+    auto render = [&](const gui::ImageGeneratorResult &result, bool background = true) {
+        QImage output(request.source.size(), QImage::Format_ARGB32);
+        output.fill(Qt::transparent);
+        QPainter painter(&output);
+        painter.setPen(Qt::NoPen);
+        for (const auto &fill : result.fills) {
+            if (!background && fill.background) {
+                continue;
+            }
+            painter.setBrush(fill.color);
+            for (const auto &placement : fill.placements) {
+                const auto found = std::find_if(request.primitives.cbegin(), request.primitives.cend(),
+                    [&](const auto &primitive) { return primitive.shapeId == placement.shapeId; });
+                require(found != request.primitives.cend(), QStringLiteral("Unknown generated shape"));
+                painter.drawPath(placement.transform.map(found->silhouette));
+            }
+        }
+        painter.end();
+        return output;
+    };
+    auto generate = [&]() {
+        const auto result = gui::generateImage(request);
+        require(result.error.isEmpty() && !result.cancelled && !result.fills.isEmpty(), result.error);
+        require(result.diagnostics.value(QStringLiteral("uncoveredPixels")).toInt(-1) == 0,
+                QStringLiteral("Image generation left uncovered pixels"));
+        return result;
+    };
+    QImage noisy(96, 96, QImage::Format_ARGB32);
+    noisy.fill(Qt::transparent);
+    for (int y = 8; y < 88; ++y) {
+        for (int x = 8; x < 88; ++x) {
+            noisy.setPixelColor(x, y, (x + y) % 2 ? QColor(180, 40, 60) : QColor(190, 50, 70));
+        }
+    }
+    const auto fragmented = gui::floodGuideRegions(noisy, 0);
+    const auto buckets = gui::floodGuideRegions(noisy, gui::kDefaultBucketTolerance);
+    require(fragmented.regions.size() == 6400 && buckets.regions.size() == 1,
+            QStringLiteral("Bucket tolerance did not consolidate near-color pixel fragments"));
+    const auto selected = gui::floodGuideRegion(noisy, buckets.regions.front().seed,
+                                               gui::kDefaultBucketTolerance);
+    require(selected.valid() && selected.area == buckets.regions.front().area
+            && selected.averageColor == buckets.regions.front().color,
+            QStringLiteral("Bulk region extraction differs from standalone Bucket selection"));
+    for (int pixel = 0; pixel < buckets.labels.size(); ++pixel) {
+        require((buckets.labels[pixel] >= 0) == (selected.mask[static_cast<size_t>(pixel)] != 0),
+                QStringLiteral("Bulk Bucket extraction changed source ownership"));
+    }
+    request.source = noisy;
+    const auto consolidated = generate();
+    require(consolidated.diagnostics.value(QStringLiteral("sourceRegions")).toInt() == 1
+            && consolidated.diagnostics.value(QStringLiteral("shapes")).toInt() == 1
+            && consolidated.diagnostics.value(QStringLiteral("coverageRepairShapes")).toInt() == 0,
+            QStringLiteral("Generator fitted raw color fragments or reintroduced them during coverage repair"));
+    require(gui::floodGuideRegions(noisy, gui::kDefaultBucketTolerance, []() { return true; }).cancelled,
+            QStringLiteral("Bucket partition cancellation was ignored"));
+    request.source = QImage(64, 64, QImage::Format_ARGB32);
+    request.source.fill(Qt::transparent);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+    }
+    const auto rectangle = generate();
+    require(rectangle.diagnostics.value(QStringLiteral("shapes")).toInt() == 1,
+            QStringLiteral("A simple source rectangle needs one native shape"));
+    require(render(rectangle) == request.source, QStringLiteral("Rectangle source fidelity failed"));
+    const QTransform world(2, 0, 0, -3, 17, 29);
+    const auto variants = gui::imageGeneratorWorldVariants(rectangle, world);
+    require(variants.size() == 1 && variants.front().regions.size() == 1,
+            QStringLiteral("Generated native layer grouping failed"));
+    require(variants.front().regions.front().shapes.front().transform
+            == rectangle.fills.front().placements.front().transform * world,
+            QStringLiteral("Source-to-scene placement transform failed"));
+    const auto square = std::find_if(request.primitives.cbegin(), request.primitives.cend(),
+        [](const auto &primitive) { return primitive.shapeId == 101; });
+    require(square != request.primitives.cend(), QStringLiteral("Missing native Square"));
+    const auto nativeRectangle = [&](const QRectF &bounds) {
+        const double sx = bounds.width() / square->bounds.width();
+        const double sy = bounds.height() / square->bounds.height();
+        return gui::PenPlacement{101, QTransform(sx, 0, 0, sy,
+            bounds.left() - sx * square->bounds.left(), bounds.top() - sy * square->bounds.top())};
+    };
+    gui::ImageGeneratorResult redundant;
+    gui::RegionFillLayer backdrop;
+    backdrop.color = Qt::white;
+    backdrop.background = true;
+    backdrop.placements = {nativeRectangle(QRectF(0, 0, 64, 64))};
+    gui::RegionFillLayer base;
+    base.color = Qt::red;
+    base.placements = {nativeRectangle(QRectF(8, 8, 48, 48)), nativeRectangle(QRectF(28, 28, 8, 8))};
+    gui::RegionFillLayer upper;
+    upper.color = Qt::blue;
+    upper.placements = {nativeRectangle(QRectF(24, 24, 16, 16)), nativeRectangle(QRectF(28, 28, 8, 8))};
+    gui::RegionFillLayer detail;
+    detail.color = Qt::white;
+    detail.placements = {nativeRectangle(QRectF(30, 30, 4, 4))};
+    redundant.fills = {backdrop, base, upper, detail};
+    QImage prunedRendered = render(redundant);
+    QImage prunedForeground = render(redundant, false);
+    const QImage baselineRendered = prunedRendered;
+    const QImage baselineForeground = prunedForeground;
+    QHash<int, QPainterPath> silhouettes;
+    for (const auto &primitive : request.primitives)
+        silhouettes.insert(primitive.shapeId, primitive.silhouette);
+    require(gui::pruneImageComposite(&redundant.fills, silhouettes, &prunedRendered, &prunedForeground) == 2
+            && prunedRendered == baselineRendered && prunedForeground == baselineForeground
+            && redundant.fills.front().placements.size() == 1
+            && redundant.fills.back().placements.size() == 1,
+            QStringLiteral("Composite pruning changed visible coverage or background-independent details"));
+    request.source.fill(Qt::transparent);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+        painter.fillRect(QRect(24, 8, 16, 48), Qt::blue);
+    }
+    const auto merged = generate();
+    require(render(merged) == request.source
+            && merged.diagnostics.value(QStringLiteral("shapes")).toInt() == 2,
+            QStringLiteral("A hidden same-color merge did not become two exact native shapes"));
+    request.source.fill(Qt::transparent);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+        painter.fillRect(QRect(24, 24, 16, 16), Qt::blue);
+    }
+    const auto enclosed = generate();
+    require(render(enclosed) == request.source
+            && enclosed.diagnostics.value(QStringLiteral("shapes")).toInt() == 2
+            && enclosed.diagnostics.value(QStringLiteral("rasterFallbackRegions")).toInt() == 0,
+            QStringLiteral("A restored interior must use a simple lower contour"));
+    request.source.fill(Qt::transparent);
+    {
+        QPainter painter(&request.source);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::red);
+        painter.drawEllipse(QRectF(8, 8, 48, 48));
+        painter.fillRect(QRect(24, 24, 16, 16), Qt::blue);
+    }
+    request.options.boundaryAllowance = 1.0;
+    const auto curved = generate();
+    int curvedShapes = 0;
+    for (const auto &fill : curved.fills)
+        for (const auto &placement : fill.placements)
+            curvedShapes += placement.shapeId != 101 && placement.shapeId != 103;
+    require(curvedShapes > 0
+            && curved.diagnostics.value(QStringLiteral("rasterFallbackRegions")).toInt() == 0
+            && curved.diagnostics.value(QStringLiteral("shapes")).toInt() <= 12,
+            QStringLiteral("Curved source contours regressed to raster rectangles: %1 shapes")
+                .arg(curved.diagnostics.value(QStringLiteral("shapes")).toInt()));
+    request.options.boundaryAllowance = 0.0;
+    request.source.fill(Qt::white);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+        painter.fillRect(QRect(24, 24, 16, 16), Qt::white);
+    }
+    const auto background = generate();
+    require(background.fills.front().background && background.fills.front().placements.size() == 1,
+            QStringLiteral("Background was not isolated as one native shape"));
+    require(render(background) == request.source, QStringLiteral("Background image source fidelity failed"));
+    const QImage deletedBackground = render(background, false);
+    require(qAlpha(deletedBackground.pixel(0, 0)) == 0
+            && deletedBackground.pixel(30, 30) == qRgb(255, 255, 255),
+            QStringLiteral("Deleting the background removed an interior same-color detail"));
+    request.source.fill(Qt::transparent);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+        painter.setCompositionMode(QPainter::CompositionMode_Source);
+        painter.fillRect(QRect(24, 24, 16, 16), Qt::transparent);
+    }
+    const auto cutout = generate();
+    require(render(cutout) == request.source, QStringLiteral("Intentional transparent cutout was filled"));
+    request.options.reducePalette = true;
+    const auto palette = generate();
+    require(qAlpha(render(palette).pixel(30, 30)) == 0,
+            QStringLiteral("Palette reduction lost source transparency"));
+    request.source.fill(Qt::white);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+        painter.fillRect(QRect(30, 30, 2, 2), Qt::white);
+    }
+    const auto tinyDetail = generate();
+    const QImage detailWithoutBackground = render(tinyDetail, false);
+    require(qAlpha(detailWithoutBackground.pixel(30, 30)) > 0
+            && qRed(detailWithoutBackground.pixel(30, 30)) > 230
+            && qGreen(detailWithoutBackground.pixel(30, 30)) > 230,
+            QStringLiteral("Raster cleanup erased a small high-contrast foreground detail"));
+    request.options.reducePalette = false;
+    request.options.detectLining = true;
+    request.source.fill(Qt::white);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::black);
+        painter.fillRect(QRect(11, 11, 21, 42), Qt::red);
+        painter.fillRect(QRect(32, 11, 21, 42), Qt::blue);
+    }
+    request.options.liningMode = gui::ImageLiningMode::Mixed;
+    const auto underpaint = generate();
+    const QJsonArray underpaintFits = underpaint.diagnostics.value("fits").toArray();
+    int bottomRegions = 0;
+    int bottomShapes = 0;
+    for (const auto &value : underpaintFits) {
+        const auto fit = value.toObject();
+        if (fit.value("bottomLining").toBool()) {
+            ++bottomRegions;
+            bottomShapes += fit.value("shapes").toInt();
+        }
+    }
+    require(render(underpaint) == request.source && bottomRegions == 1 && bottomShapes == 1
+            && underpaint.diagnostics.value("shapes").toInt() == 4,
+            QStringLiteral("Enclosing lining must become one broad Compact Fit region under the colors"));
+    request.source.fill(Qt::white);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 8, 48, 48), Qt::red);
+        painter.fillRect(QRect(8, 30, 48, 3), Qt::black);
+    }
+    for (const auto mode : {gui::ImageLiningMode::Mixed, gui::ImageLiningMode::Bottom, gui::ImageLiningMode::Top}) {
+        request.options.liningMode = mode;
+        const auto result = generate();
+        require(render(result) == request.source, QStringLiteral("Lining strategy changed source coverage"));
+        require(result.diagnostics.value(QStringLiteral("shapes")).toInt() <= 5,
+                QStringLiteral("Straight lining was fragmented"));
+    }
+    request.source = QImage(64, 32, QImage::Format_ARGB32);
+    request.source.fill(Qt::transparent);
+    {
+        QPainter painter(&request.source);
+        painter.fillRect(QRect(8, 14, 48, 3), Qt::black);
+    }
+    request.options.boundaryAllowance = 1.0;
+    request.options.outlineExtension = 1.0;
+    request.options.liningSeconds = 1;
+    request.options.liningMode = gui::ImageLiningMode::Mixed;
+    const auto extended = generate();
+    const QImage extendedImage = render(extended);
+    require(extended.diagnostics.value(QStringLiteral("liningDetection")).toObject()
+            .value(QStringLiteral("selectedPixels")).toInt() > 0,
+            QStringLiteral("Exterior extension test did not detect a lining region"));
+    for (int y = 0; y < extendedImage.height(); ++y) {
+        for (int x = 0; x < extendedImage.width(); ++x) {
+            require(qAlpha(extendedImage.pixel(x, y)) == 0 || QRect(7, 13, 50, 5).contains(x, y),
+                    QStringLiteral("Exterior extension accumulated with the fitting allowance"));
+        }
+    }
+    request.options.detectLining = false;
+    request.options.boundaryAllowance = 0.0;
+    request.options.outlineExtension = 0.0;
+    for (const QSize size : {QSize(1, 9), QSize(9, 1)}) {
+        request.source = QImage(size, QImage::Format_ARGB32);
+        request.source.fill(Qt::red);
+        request.options.isolateBackground = false;
+        const auto narrow = generate();
+        require(narrow.diagnostics.value(QStringLiteral("shapes")).toInt() == 1
+                && render(narrow) == request.source,
+                QStringLiteral("Single-axis source components were fragmented"));
+    }
+    const auto cancelled = gui::generateImage(request, {}, []() { return true; });
+    require(cancelled.cancelled && cancelled.fills.isEmpty(), QStringLiteral("Cancelled generator returned live placements"));
+    QTextStream(stdout) << "Image Generator tests passed: source coverage, native rectangle, cutouts, background details, lining modes, transforms and cancellation\n";
+}
+
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
     QTextStream output(stdout);
@@ -3319,6 +3856,20 @@ int main(int argc, char **argv) {
             configurationPath = arguments[configurationArgument + 1];
             arguments.removeAt(configurationArgument + 1);
             arguments.removeAt(configurationArgument);
+        }
+        if (arguments.size() == 3 && (arguments[1] == QStringLiteral("--bucket-source-regions")
+            || arguments[1] == QStringLiteral("--image-generator-plan"))) {
+            bucketSourceRegionCounts(arguments[2], arguments[1] == QStringLiteral("--image-generator-plan"));
+            return 0;
+        }
+        if ((arguments.size() == 4 || arguments.size() == 5)
+            && arguments[1] == QStringLiteral("--image-generator-replay")) {
+            imageGeneratorReplay(arguments[2], arguments[3], arguments.value(4));
+            return 0;
+        }
+        if (arguments.size() == 4 && arguments[1] == QStringLiteral("--image-generator-prune")) {
+            pruneImageGeneratorProject(arguments[2], arguments[3]);
+            return 0;
         }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--comparison-project-tests")) {
             comparisonExportTests();
@@ -3355,6 +3906,10 @@ int main(int argc, char **argv) {
         gui::ShapeGeometryStore geometry;
         QString error;
         require(geometry.loadDefault(&error), error);
+        if (arguments.size() == 2 && arguments[1] == QStringLiteral("--image-generator-tests")) {
+            imageGeneratorTests(geometry);
+            return 0;
+        }
         if (arguments.size() == 2 && arguments[1] == QStringLiteral("--shape-config-tests")) {
             shapeConfigurationTests(geometry);
             return 0;

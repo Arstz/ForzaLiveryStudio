@@ -65,13 +65,15 @@ void MainWindow::setupCanvas() {
     keyBindings_->registerInteraction(
         KeyInteraction::CancelActiveFill, this, KeyBindingRouter::Scope::Window,
         [this](KeyInteraction, KeyEventPhase phase, bool) {
-            if (phase != KeyEventPhase::Press || regionFillCancel_ == nullptr) {
+            if (phase != KeyEventPhase::Press
+                || (regionFillCancel_ == nullptr && imageGeneratorCancel_ == nullptr)) {
                 return false;
             }
             cancelRegionFill();
+            cancelImageGeneration();
             return true;
         },
-        [this]() { return regionFillCancel_ != nullptr; }, kOverrideKeyBindingPriority);
+        [this]() { return regionFillCancel_ != nullptr || imageGeneratorCancel_ != nullptr; }, kOverrideKeyBindingPriority);
     const QVector<KeyInteraction> canvasInteractions = {
         KeyInteraction::CanvasPan,
         KeyInteraction::CanvasRemovePathPoint,
@@ -489,9 +491,30 @@ void MainWindow::setupImgGenMenu() {
         addAction(action);
         connect(action, &QAction::triggered, this, slot);
     };
+    QMenu *generatorMenu = imgGenMenu->addMenu(QStringLiteral("&Image Generator"));
+    QAction *generate = generatorMenu->addAction(QStringLiteral("&Generate from Selected Image..."));
+    registerShortcutAction(generate, QStringLiteral("generate_image"), QStringLiteral("Generate Image"));
+    addAction(generate);
+    connect(generate, &QAction::triggered, this, &MainWindow::generateImageFromSelectedGuide);
+    QAction *cancel = generatorMenu->addAction(QStringLiteral("&Cancel Generation"));
+    connect(cancel, &QAction::triggered, this, &MainWindow::cancelImageGeneration);
+    connect(generatorMenu, &QMenu::aboutToShow, this, [this, generate, cancel]() {
+        generate->setEnabled(state_->hasProject() && state_->selectedGuideLayers().size() == 1);
+        cancel->setEnabled(imageGeneratorCancel_ != nullptr);
+    });
+    imgGenMenu->addSeparator();
     addEntry(QStringLiteral("&Preprocess Image..."), QStringLiteral("preprocess_image"),
              QStringLiteral("Preprocess Image"), &MainWindow::preprocessSelectedGuide);
     imgGenMenu->addSeparator();
+    auto *backgroundAction = imgGenMenu->addAction(
+        QStringLiteral("Separate single-color background"));
+    backgroundAction->setCheckable(true);
+    backgroundAction->setChecked(QSettings().value(
+        QStringLiteral("imggen/isolateSolidBackground"),
+        kDefaultIsolateSolidBackground).toBool());
+    connect(backgroundAction, &QAction::toggled, this, [](bool enabled) {
+        QSettings().setValue(QStringLiteral("imggen/isolateSolidBackground"), enabled);
+    });
     regionMergeAreaThreshold_ = std::clamp(
         QSettings().value(QStringLiteral("imggen/smallRegionMergeArea"), 12).toInt(), 0, 512);
     auto *mergeAction = new QWidgetAction(imgGenMenu);

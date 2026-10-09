@@ -1,5 +1,6 @@
 #include "region_fill.h"
 #include "region_layer_plan.h"
+#include "region_shape_cost.h"
 
 #include <QElapsedTimer>
 #include <QFile>
@@ -143,6 +144,7 @@ RegionFillBatchResult computeRegionFills(
         double area = 0.0;
         int drawOrder = -1;
         RegionFillVariant variant = RegionFillVariant::Safe;
+        bool background = false;
     };
     QElapsedTimer planningClock;
     planningClock.start();
@@ -163,7 +165,7 @@ RegionFillBatchResult computeRegionFills(
             units.push_back(FillUnit{unit.color, unit.outline,
                                      unit.sourceRegionIndices,
                                      unit.absorbedRegionIndices, unit.area,
-                                     drawOrder, variant});
+                                     drawOrder, variant, unit.background});
         }
     };
     appendPlanUnits(layerPlans.safe, RegionFillVariant::Safe);
@@ -358,8 +360,15 @@ RegionFillBatchResult computeRegionFills(
                     work.via = unit.variant == RegionFillVariant::Safe
                         ? QStringLiteral("safe-rdp-mesh")
                         : QStringLiteral("dangerous-rdp-mesh");
-                    work.fit = fillPolygonMesh(simplifiedContour, meshSources,
-                                               unitCancelled);
+                    work.fit = fitSingleRegionPrimitive(unit.outline, primitives, tolerance);
+                    if (fitSucceeded(work.fit)) {
+                        work.via = unit.background
+                            ? QStringLiteral("background-rectangle")
+                            : QStringLiteral("whole-region-native");
+                    } else {
+                        work.fit = fillPolygonMesh(simplifiedContour, meshSources,
+                                                   unitCancelled);
+                    }
                     if (i == biggestUnitIndex) {
                         work.optimizedContour = simplifiedContour;
                         work.optimizedPenPoints.reserve(simplifiedContour.size());
@@ -582,6 +591,7 @@ RegionFillBatchResult computeRegionFills(
             layer.placements = std::move(work.fit.placements);
             layer.drawOrder = unit.drawOrder;
             layer.variant = unit.variant;
+            layer.background = unit.background;
             placementCount += layer.placements.size();
             removedSoftPoints += work.contourStats.removedSoftPoints;
             ++filled;
@@ -592,6 +602,10 @@ RegionFillBatchResult computeRegionFills(
             failureReasons[reason] += 1;
         }
         QString detail;
+        detail += QStringLiteral(" [estimated shapes: %1, background: %2]")
+                      .arg(estimateRegionShapeCount(unit.outline))
+                      .arg(unit.background ? QStringLiteral("yes")
+                                           : QStringLiteral("no"));
         if (!work.penError.isEmpty()) {
             detail += QStringLiteral(" [Pen: %1]").arg(work.penError);
         }

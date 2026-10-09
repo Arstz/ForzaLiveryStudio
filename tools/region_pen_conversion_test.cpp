@@ -4,6 +4,7 @@
 #include "region_extract.h"
 #include "region_fill.h"
 #include "region_layer_plan.h"
+#include "region_shape_cost.h"
 #include "svg_vector_objects.h"
 
 #include <QtCore>
@@ -1432,6 +1433,136 @@ void residualLineHistoryMergesMissedComponent(TestContext *test) {
     }
 }
 
+void imageGeneratorBackgroundPreservesDetails(TestContext *test) {
+    QImage image(48, 48, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.fillRect(QRect(8, 8, 32, 32), QColor(30, 110, 220));
+    painter.fillRect(QRect(20, 20, 8, 8), Qt::white);
+    painter.end();
+    gui::RegionExtractionParams params;
+    params.maxColorCount = 2;
+    params.colorMergeDistance = 0.0;
+    params.minRegionArea = 1;
+    params.smallRegionMergeArea = 0;
+    params.blurPasses = 0;
+    params.traceSpeckle = 0;
+    const auto extraction = gui::extractRegions(image, params);
+    test->expect(extraction.valid(), "Background extraction must succeed");
+    const auto plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(plan.units.size() == 3 && plan.units.front().background,
+        "The background and enclosed same-color detail must retain separate units");
+    if (plan.units.size() != 3) {
+        return;
+    }
+    test->expect(plan.units.front().sourceRegionIndices.size() == 1
+        && plan.units.front().absorbedRegionIndices.isEmpty(),
+        "The removable background must not absorb foreground details");
+    QImage foreground(image.size(), QImage::Format_ARGB32);
+    foreground.fill(Qt::transparent);
+    QPainter foregroundPainter(&foreground);
+    for (const auto &unit : plan.units) {
+        if (!unit.background) {
+            foregroundPainter.fillPath(unit.outline, unit.color);
+        }
+    }
+    foregroundPainter.end();
+    test->expect(foreground.pixelColor(24, 24) == QColor(Qt::white)
+        && foreground.pixelColor(12, 12) == QColor(30, 110, 220)
+        && foreground.pixelColor(1, 1).alpha() == 0,
+        "Deleting the background must preserve opaque same-color foreground details");
+    const auto primitives = penPrimitiveCatalog(test);
+    const auto fit = gui::fitSingleRegionPrimitive(plan.units.front().outline, primitives);
+    test->expect(fit.error.isEmpty() && fit.placements.size() == 1
+        && fit.placements.front().shapeId == 101,
+        "The isolated background must use one native square");
+    QImage cropped = image;
+    QPainter croppedPainter(&cropped);
+    croppedPainter.fillRect(QRect(32, 18, 16, 12), QColor(30, 110, 220));
+    croppedPainter.end();
+    const auto croppedExtraction = gui::extractRegions(cropped, params);
+    const auto croppedBackground = std::find_if(
+        croppedExtraction.regions.cbegin(), croppedExtraction.regions.cend(),
+        [](const auto &region) { return region.background; });
+    test->expect(croppedBackground != croppedExtraction.regions.cend()
+        && croppedBackground->outline.boundingRect() == QRectF(-1, -1, 50, 50)
+        && croppedExtraction.imageSize == image.size(),
+        "A cropped foreground must gain a surrounding background without coordinate scaling");
+    params.isolateSolidBackground = false;
+    const auto whole = gui::extractRegions(image, params);
+    test->expect(std::none_of(whole.regions.cbegin(), whole.regions.cend(),
+        [](const auto &region) { return region.background; }),
+        "Whole-image generation must retain the background as ordinary source regions");
+    image.setPixelColor(0, 0, Qt::transparent);
+    const auto transparent = gui::extractRegions(image, params);
+    test->expect(transparent.raster && transparent.raster->foreground.front() == 0,
+        "Source transparency must remain outside foreground coverage");
+}
+
+void imageGeneratorTopologyUsesBroadHiddenRectangle(TestContext *test) {
+    const QSize size(44, 24);
+    std::vector<int> labels(static_cast<size_t>(size.width()) * size.height(), -1);
+    for (int y = 4; y < 20; ++y) {
+        for (int x = 2; x < 38; ++x) {
+            labels[static_cast<size_t>(y) * size.width() + x] =
+                x < 10 ? 0 : (x >= 30 ? 1 : 2);
+        }
+    }
+    QVector<gui::ExtractedRegion> regions;
+    const QColor repeat(220, 60, 40);
+    const QColor overlay(40, 90, 190);
+    for (int label = 0; label < 3; ++label) {
+        auto region = rasterRegion(labels, size, label, label == 2 ? overlay : repeat);
+        region.outline = QPainterPath{};
+        region.outline.addRect(region.bounds);
+        regions.push_back(region);
+    }
+    const auto extraction = rasterExtraction(labels, size, regions);
+    const auto plan = gui::buildRegionLayerPlan(extraction);
+    test->expect(plan.units.size() == 2 && plan.topologyMergeCount == 1,
+        "Distant same-color pieces should share a simple backdrop under a later overlay");
+    const auto primitives = penPrimitiveCatalog(test);
+    QImage composite(size, QImage::Format_ARGB32);
+    composite.fill(Qt::transparent);
+    QPainter painter(&composite);
+    for (const auto &unit : plan.units) {
+        const auto fit = gui::fitSingleRegionPrimitive(unit.outline, primitives);
+        test->expect(fit.placements.size() == 1,
+            "The simplified rectangle must fit one native shape");
+        for (const auto &placement : fit.placements) {
+            const auto primitive = std::find_if(primitives.cbegin(), primitives.cend(),
+                [&](const auto &item) { return item.shapeId == placement.shapeId; });
+            if (primitive != primitives.cend()) {
+                painter.fillPath(placement.transform.map(primitive->silhouette), unit.color);
+            }
+        }
+    }
+    painter.end();
+    int mismatches = 0;
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < size.width(); ++x) {
+            const int label = labels[static_cast<size_t>(y) * size.width() + x];
+            const QColor expected = label < 0 ? QColor(Qt::transparent)
+                : (label == 2 ? overlay : repeat);
+            mismatches += composite.pixelColor(x, y) != expected ? 1 : 0;
+        }
+    }
+    test->expect(mismatches == 0,
+        "Native simplified placements must preserve source colors and transparency");
+    const auto estimate = gui::estimateRegionShapeCount(plan.units.front().outline);
+    test->expect(estimate == 1, "A broad rectangle estimate must be independent of area");
+    QPainterPath cutout;
+    cutout.setFillRule(Qt::OddEvenFill);
+    cutout.addRect(QRectF(0, 0, 200, 200));
+    cutout.addRect(QRectF(99, 99, 2, 2));
+    test->expect(gui::fitSingleRegionPrimitive(cutout, primitives).placements.isEmpty(),
+        "Whole-region recognition must preserve small intentional transparent cutouts");
+    regions.removeLast();
+    const auto forbidden = gui::buildRegionLayerPlan(rasterExtraction(labels, size, regions));
+    test->expect(forbidden.topologyMergeCount == 0,
+        "A backdrop cannot cross a region without a guaranteed later covering patch");
+}
+
 void regionLayerPlanAbsorbsBehindEnclosedRegion(TestContext *test)
 {
     const QSize size(24, 24);
@@ -1820,11 +1951,27 @@ void regionLayerPlanSuppressesValidationMismatchMerge(TestContext *test)
     }
     test->expect(!plan.fallback && plan.validationMismatchPixels == 0,
                  "a changed merged contour should retain the baseline rendering");
-    test->expect(plan.units.size() == 2 && plan.sameColorMergeCount == 0
+    test->expect(plan.units.size() <= 2 && plan.sameColorMergeCount == 0
                      && plan.adjacentConflictRejectCount == 1
                      && plan.suppressedOperationCount == 1
                      && plan.conflictIsolatedSourceCount == 0,
                  "a validation mismatch should suppress only its adjacent merge operation");
+    QImage actual(size, QImage::Format_ARGB32);
+    actual.fill(Qt::transparent);
+    QPainter painter(&actual);
+    for (const auto &unit : plan.units) {
+        painter.fillPath(unit.outline, unit.color);
+    }
+    painter.end();
+    int mismatches = 0;
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < size.width(); ++x) {
+            const QColor expected = x >= 1 && x < 15 ? color : QColor(Qt::transparent);
+            mismatches += actual.pixelColor(x, y) != expected ? 1 : 0;
+        }
+    }
+    test->expect(mismatches == 0,
+        "Any later topology simplification must preserve the recovered baseline exactly");
     test->expect(variants.dangerous.units.size() == 1
                      && variants.dangerous.sameColorMergeCount == 1
                      && variants.dangerous.validationMismatchPixels > 0
@@ -3247,6 +3394,14 @@ int main(int argc, char **argv)
                                    tolerance, QString::fromLocal8Bit(argv[6]));
     }
     TestContext test;
+    if (argc == 2
+        && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--test-image-topology")) {
+        imageGeneratorBackgroundPreservesDetails(&test);
+        imageGeneratorTopologyUsesBroadHiddenRectangle(&test);
+        return test.failures() == 0 ? 0 : 1;
+    }
+    imageGeneratorBackgroundPreservesDetails(&test);
+    imageGeneratorTopologyUsesBroadHiddenRectangle(&test);
     svgVectorObjectConvertsDirectlyToPen(&test);
     tracedCurvesPreserveTangentsAndCutouts(&test);
     tracedInflectionRemainsSmooth(&test);
