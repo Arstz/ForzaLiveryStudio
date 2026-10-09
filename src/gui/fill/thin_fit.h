@@ -7,7 +7,8 @@ namespace gui::thin {
 inline constexpr double kDefaultBoundaryAllowance = 2.0;
 inline constexpr int kDefaultProfileTrialBudget = 320000;
 inline constexpr double kDefaultMinimumCoverage = 0.98;
-inline constexpr double kDefaultMaximumThicknessRatio = 1.5;
+inline constexpr double kDefaultMaximumThicknessRatio = 1.6;
+inline constexpr double kDefaultPreferredThicknessRatio = 1.15;
 
 struct FillOptions {
     std::function<void(int, int, int)> workProgress;
@@ -18,6 +19,7 @@ struct FillOptions {
     double boundaryAllowance = kDefaultBoundaryAllowance;
     double minimumCoverage = kDefaultMinimumCoverage;
     double maximumThicknessRatio = kDefaultMaximumThicknessRatio;
+    double preferredThicknessRatio = kDefaultPreferredThicknessRatio;
 };
 
 QVector<catalog::Primitive> buildCatalog(const ShapeGeometryStore &geometry, QString *error = nullptr);

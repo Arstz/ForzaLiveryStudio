@@ -414,15 +414,21 @@ exports grouped `C_group` folders and `C_livery` folders.
   constant-width ribbon with round caps and joins. The backend starts with a
   search for whole-span native shapes before splitting a region. The fallback
   profile search uses long curve and body candidates. The overlap envelope
-  limits local thickness to 1.5 times the original by default, with the outward
+  limits local thickness to 1.6 times the original by default, with the outward
   margin as an additional absolute cap. Open paths use their specified width;
   closed regions estimate local width from inward boundary crossings. Candidate
   scores balance useful coverage and extra ink. Refinement grows placements
-  inside the envelope, repairs continuity gaps and merges neighboring
-  placements. Final verification requires at least 98% coverage and containment
+  toward a preferred thickness of 1.15 times the original inside the envelope,
+  removes placements that add little coverage while preserving connectivity and
+  cutouts, repairs continuity gaps and merges neighboring
+  placements into rectangles or other configured native shapes. Group refinement
+  reuses evaluated candidates before fitting bounded local replacements. Width
+  growth takes priority over length adjustments at joins. Final verification requires at least 98% coverage and containment
   within the overlap envelope. Additional disconnected fragments, new interior
   holes and lost cutouts block completion. Boundary and topology measurements
-  remain in the diagnostics. Failed final checks block insertion, and cancellation
+  remain in the diagnostics. Leeway describes layers above the lining and permits
+  strokes to continue underneath them. Generated fills are inserted below their
+  leeway group. Failed final checks block insertion, and cancellation
   discards placements. The public `thin::fillPolygons` API accepts normalized
   polygon regions for image generation callers. `assets/lining_shapes.json` is reloaded at the start of
   each operation; its task schema is described in `COMPACT_FIT_CONFIG.md`.

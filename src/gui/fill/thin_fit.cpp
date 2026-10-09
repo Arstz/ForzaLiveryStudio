@@ -1,6 +1,7 @@
 #include "thin_fit.h"
 #include "compact_fit_catalog_internal.h"
 #include "compact_fit_quality.h"
+#include "compact_fit_reduction.h"
 #include "lining_fill.h"
 #include "profile_fit.h"
 
@@ -23,7 +24,15 @@ constexpr double kStrokeMaximumFlatteningScale = 4096.0;
 constexpr double kStrokeWidthFlatteningScale = 8.0;
 constexpr double kStrokeCurveThreshold = 0.0001;
 constexpr int kExpansionRounds = 3;
-constexpr double kGrowthStep = 0.1;
+constexpr double kGrowthStep = 0.075;
+constexpr double kJoinExtensionWidthFraction = 0.12;
+constexpr int kNativeReplacementRounds = 2;
+constexpr int kNativeReplacementTrials = 512;
+constexpr int kNativeMergeTrials = 32;
+constexpr int kNativeMergeAnchors = 24;
+constexpr double kMinimumNativeMergeAreaRatio = 0.001;
+constexpr double kNativeMissingPenalty = 4.0;
+constexpr int kReplacementProbes = 16;
 constexpr int kSpanProbeCount = 32;
 constexpr double kSpanProbeWidthFraction = 0.35;
 constexpr double kSpanProbeCoverage = 0.9;
@@ -40,6 +49,44 @@ constexpr double kRayEpsilon = catalog::kVerificationClearance;
 constexpr double kRaySideCosine = 0.5;
 constexpr double kRaySideSine = 0.8660254037844386;
 constexpr double kMinimumVisibleWidthFraction = 0.3;
+constexpr double kMinimumContributionAreaRatio = 0.0001;
+constexpr double kRedundantOverlapFraction = 0.03;
+constexpr double kProtectedCoreWidthFraction = 0.06;
+constexpr int kPlacementEnvelopeProbes = 32;
+
+bool probesInside(const PenPrimitive &shape, const QTransform &transform,
+                  const catalog::PointContainment &envelope) {
+    for (const auto &polygon : shape.contours) {
+        const int stride = std::max(1, int(polygon.size()) / kPlacementEnvelopeProbes);
+        const int subdivisions = std::max(1, kPlacementEnvelopeProbes / int(polygon.size()));
+        for (int index = 0; index < polygon.size(); index += stride)
+            for (int sample = 0; sample < subdivisions; ++sample) {
+                const auto point = polygon[index] + (polygon[(index + 1) % polygon.size()] - polygon[index])
+                    * (double(sample) / subdivisions);
+                if (!envelope.contains(transform.map(point)))
+                    return false;
+            }
+    }
+
+    return true;
+}
+
+struct Topology {
+    int components = 0;
+    int holes = 0;
+};
+
+Topology topologyOf(const catalog::Polygons &polygons) {
+    Topology result;
+
+    for (const auto &polygon : polygons)
+        if (catalog::signedArea(polygon) > 0.0)
+            ++result.components;
+        else
+            ++result.holes;
+
+    return result;
+}
 
 class BoundarySegments {
 public:
@@ -278,7 +325,8 @@ catalog::Region polygonRegion(const catalog::Polygons &polygons) {
 }
 
 std::optional<PenPlacement> enclosingRectangle(const catalog::Polygons &polygons,
-                                              const PenPrimitive &square, const catalog::Region &region) {
+                                              const PenPrimitive &square, const catalog::Region &region,
+                                              const catalog::PointContainment &envelope) {
     QPolygonF points;
     for (const auto &polygon : polygons)
         points += polygon;
@@ -319,6 +367,8 @@ std::optional<PenPlacement> enclosingRectangle(const catalog::Polygons &polygons
         PenPlacement result;
         result.shapeId = square.shapeId;
         result.transform = catalog::emittedTransform(proposals[index].second);
+        if (!probesInside(square, result.transform, envelope))
+            continue;
         const auto coverage = catalog::mapped(square, result.transform);
         if (catalog::subtract(polygons, coverage).isEmpty()
             && catalog::subtract(catalog::expanded(coverage, catalog::kVerificationClearance), region.permitted).isEmpty())
@@ -328,48 +378,75 @@ std::optional<PenPlacement> enclosingRectangle(const catalog::Polygons &polygons
     return {};
 }
 
-void reducePlacements(QVector<PenPlacement> *placements, const catalog::Region &region,
+int reducePlacements(QVector<PenPlacement> *placements, const catalog::Region &region,
                       const QVector<catalog::Primitive> &primitives, double maximumMissing,
                       const std::function<bool()> &cancelled) {
     QVector<catalog::Polygons> polygons;
     QVector<QRectF> bounds;
+    QVector<double> areas;
     QVector<bool> retained(placements->size(), true);
-    const auto core = catalog::interiorSupport(region.visible, meanWidth(region.visible) * 0.06);
+    QVector<int> order(placements->size());
+    const auto core = catalog::interiorSupport(region.visible, meanWidth(region.visible) * kProtectedCoreWidthFraction);
+    const int originalCount = placements->size();
     double missing = catalog::area(catalog::subtract(region.visible, coverageOf(*placements, primitives)));
 
     if (missing > maximumMissing)
-        return;
+        return 0;
     for (const auto &placement : *placements) {
         const auto geometry = coverageOf({placement}, primitives);
         polygons.push_back(geometry);
         bounds.push_back(catalog::painterPath(geometry).boundingRect());
+        areas.push_back(catalog::area(geometry));
     }
-    for (int index = placements->size() - 1; index >= 0 && !stopped(cancelled); --index) {
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int first, int second) {
+        return areas[first] < areas[second];
+    });
+    for (int index : order) {
+        if (stopped(cancelled))
+            break;
         catalog::Polygons others;
         for (int other = 0; other < polygons.size(); ++other)
             if (other != index && retained[other] && bounds[index].intersects(bounds[other]))
                 others += polygons[other];
-        const auto privateCoverage = catalog::intersect(
-            catalog::subtract(polygons[index], catalog::unite(others)), region.visible);
+        others = catalog::unite(others);
+        const auto privateCoverage = catalog::intersect(catalog::subtract(polygons[index], others), region.visible);
         const double privateArea = catalog::area(privateCoverage);
-        if (missing + privateArea <= maximumMissing && catalog::intersect(privateCoverage, core).isEmpty()) {
-            retained[index] = false;
-            missing += privateArea;
+        if (missing + privateArea > maximumMissing)
+            continue;
+        if (!catalog::intersect(privateCoverage, core).isEmpty()) {
+            const double usefulArea = catalog::area(catalog::intersect(polygons[index], region.visible));
+            const double minimumContribution = std::max(region.area * kMinimumContributionAreaRatio,
+                usefulArea * kRedundantOverlapFraction);
+            if (privateArea > minimumContribution)
+                continue;
         }
+        const auto before = topologyOf(catalog::unite(others + polygons[index]));
+        const auto after = topologyOf(others);
+        if (after.components > before.components || after.holes != before.holes)
+            continue;
+        retained[index] = false;
+        missing += privateArea;
     }
     QVector<PenPlacement> result;
     for (int index = 0; index < placements->size(); ++index)
         if (retained[index])
             result.push_back((*placements)[index]);
     *placements = std::move(result);
+
+    return originalCount - placements->size();
 }
 
 void expandPlacements(QVector<PenPlacement> *placements, const catalog::Region &region,
                       const QVector<catalog::Primitive> &primitives,
+                      const catalog::Polygons &preferredCoverage,
                       const std::function<bool()> &cancelled) {
     QVector<catalog::Polygons> polygons;
     QVector<QRectF> bounds;
-    auto missing = catalog::subtract(region.visible, coverageOf(*placements, primitives));
+    const auto core = catalog::interiorSupport(region.visible, meanWidth(region.visible) * kProtectedCoreWidthFraction);
+    const catalog::PointContainment envelope(region.permitted);
+    const double width = meanWidth(region.visible);
+    auto missing = catalog::subtract(preferredCoverage, coverageOf(*placements, primitives));
     double missingArea = catalog::area(missing);
 
     for (const auto &placement : *placements) {
@@ -389,39 +466,68 @@ void expandPlacements(QVector<PenPlacement> *placements, const catalog::Region &
             const auto vertical = placement.transform.map(shape->shape.bounds.bottomLeft())
                 - placement.transform.map(shape->shape.bounds.topLeft());
             const auto axis = QLineF({}, horizontal).length() >= QLineF({}, vertical).length() ? horizontal : vertical;
-            QTransform growth;
-            const double angle = std::atan2(axis.y(), axis.x()) * 180.0 / std::acos(-1.0);
-            growth.translate(center.x(), center.y());
-            growth.rotate(angle);
-            growth.scale(1.0, 1.0 + kGrowthStep);
-            growth.rotate(-angle);
-            growth.translate(-center.x(), -center.y());
-            auto proposed = placement;
-            proposed.transform = catalog::emittedTransform(placement.transform * growth);
-            const auto addition = catalog::mapped(shape->shape, proposed.transform);
-            if (!catalog::subtract(addition, region.permitted).isEmpty()
-                || catalog::intersect(addition, missing).isEmpty())
+            PenPlacement bestPlacement;
+            catalog::Polygons bestPolygons;
+            catalog::Polygons bestExposed;
+            const auto neighborhood = bounds[index].adjusted(-width, -width, width, width);
+            const auto localMissing = catalog::intersect(missing, {QPolygonF(neighborhood)});
+            double bestArea = missingArea;
+
+            const bool hasNeighbor = std::any_of(bounds.cbegin(), bounds.cend(), [&](const auto &other) {
+                const auto contact = other.adjusted(-width, -width, width, width);
+                return &other != &bounds[index]
+                    && (contact.contains(center - axis * 0.5) || contact.contains(center + axis * 0.5));
+            });
+            if (localMissing.isEmpty())
                 continue;
-            const auto lost = catalog::intersect(catalog::subtract(polygons[index], addition), region.visible);
-            catalog::Polygons exposed;
-            if (!lost.isEmpty()) {
-                catalog::Polygons others;
-                const auto lostBounds = catalog::painterPath(lost).boundingRect();
-                for (int other = 0; other < polygons.size(); ++other)
-                    if (other != index && lostBounds.intersects(bounds[other]))
-                        others += polygons[other];
-                exposed = catalog::subtract(lost, catalog::unite(others));
+            for (bool extendJoins : {false, true}) {
+                if (extendJoins && !hasNeighbor)
+                    continue;
+                QTransform growth;
+                const double angle = std::atan2(axis.y(), axis.x()) * 180.0 / std::acos(-1.0);
+                growth.translate(center.x(), center.y());
+                growth.rotate(angle);
+                growth.scale(1.0 + (extendJoins ? width * kJoinExtensionWidthFraction : 0.0)
+                    / std::max(kRayEpsilon, QLineF({}, axis).length()), extendJoins ? 1.0 : 1.0 + kGrowthStep);
+                growth.rotate(-angle);
+                growth.translate(-center.x(), -center.y());
+                auto proposed = placement;
+                proposed.transform = catalog::emittedTransform(placement.transform * growth);
+                if (!probesInside(shape->shape, proposed.transform, envelope))
+                    continue;
+                const auto addition = catalog::mapped(shape->shape, proposed.transform);
+                const auto gain = catalog::intersect(addition, localMissing);
+                if (gain.isEmpty() || !catalog::subtract(addition, region.permitted).isEmpty())
+                    continue;
+                const auto lost = catalog::intersect(catalog::subtract(polygons[index], addition), preferredCoverage);
+                catalog::Polygons exposed;
+                if (!lost.isEmpty()) {
+                    catalog::Polygons others;
+                    const auto lostBounds = catalog::painterPath(lost).boundingRect();
+                    for (int other = 0; other < polygons.size(); ++other)
+                        if (other != index && lostBounds.intersects(bounds[other]))
+                            others += polygons[other];
+                    exposed = catalog::subtract(lost, catalog::unite(others));
+                }
+                if (!catalog::intersect(exposed, placements->size() == 1 ? region.visible : core).isEmpty())
+                    continue;
+                const double nextArea = missingArea - catalog::area(gain) + catalog::area(exposed);
+                if (nextArea >= bestArea)
+                    continue;
+                bestPlacement = proposed;
+                bestPolygons = addition;
+                bestExposed = exposed;
+                bestArea = nextArea;
+                break;
             }
-            const auto nextMissing = catalog::unite(catalog::subtract(missing, addition) + exposed);
-            const double nextArea = catalog::area(nextMissing);
-            if (nextArea >= missingArea)
-                continue;
-            (*placements)[index] = proposed;
-            polygons[index] = addition;
-            bounds[index] = catalog::painterPath(addition).boundingRect();
-            missing = nextMissing;
-            missingArea = nextArea;
-            changed = true;
+            if (bestArea < missingArea) {
+                (*placements)[index] = bestPlacement;
+                polygons[index] = bestPolygons;
+                bounds[index] = catalog::painterPath(bestPolygons).boundingRect();
+                missing = catalog::unite(catalog::subtract(missing, bestPolygons) + bestExposed);
+                missingArea = catalog::area(missing);
+                changed = true;
+            }
         }
         if (!changed)
             break;
@@ -473,7 +579,9 @@ private:
 
 std::optional<PenPlacement> fitWholeRegion(const catalog::Region &region,
                                          const QVector<catalog::Primitive> &primitives,
-                                         double maximumMissing, const std::function<bool()> &cancelled) {
+                                         double maximumMissing, const std::function<bool()> &cancelled,
+                                         catalog::ShapeTask task = catalog::ShapeTask::WholeRegion,
+                                         int anchorLimit = std::numeric_limits<int>::max()) {
     std::optional<PenPlacement> best;
     QPolygonF targetPoints;
     for (const auto &polygon : region.required)
@@ -482,10 +590,10 @@ std::optional<PenPlacement> fitWholeRegion(const catalog::Region &region,
     const HullAnchors targetAnchors(targetHull);
     const catalog::PointContainment envelope(region.permitted);
     const auto bounds = region.bounds;
-    double bestSpill = std::numeric_limits<double>::infinity();
+    double bestCost = std::numeric_limits<double>::infinity();
 
     for (const auto &primitive : primitives) {
-        if (!catalog::usesTask(primitive, catalog::ShapeTask::WholeRegion))
+        if (!catalog::usesTask(primitive, task))
             continue;
         const std::array<QPointF, 3> source{primitive.shape.bounds.topLeft(),
             primitive.shape.bounds.topRight(), primitive.shape.bounds.bottomLeft()};
@@ -512,10 +620,18 @@ std::optional<PenPlacement> fitWholeRegion(const catalog::Region &region,
         if (sourceHull.size() >= 3 && targetHull.size() >= 3) {
             const HullAnchors sourceAnchors(sourceHull);
             const auto hullSource = sourceAnchors.at(0, 1);
-            for (int offset = 0; offset < targetHull.size(); ++offset)
+            for (int offset = 0; offset < targetHull.size();
+                    offset += std::max(1, int(targetHull.size()) / anchorLimit))
                 for (int direction : {-1, 1}) {
                     proposals.push_back(catalog::affineFromAnchors(hullSource, targetAnchors.at(offset, direction)));
                 }
+        }
+        if (sourceHull.size() == 3 && targetHull.size() == 3) {
+            for (int offset = 0; offset < 3; ++offset)
+                for (int direction : {-1, 1})
+                    proposals.push_back(catalog::affineFromAnchors({sourceHull[0], sourceHull[1], sourceHull[2]},
+                        {targetHull[offset], targetHull[(offset + direction + 3) % 3],
+                            targetHull[(offset + 2 * direction + 6) % 3]}));
         }
         for (const auto &transform : proposals) {
             if (stopped(cancelled))
@@ -533,20 +649,47 @@ std::optional<PenPlacement> fitWholeRegion(const catalog::Region &region,
             if (!contained)
                 continue;
             const auto coverage = catalog::mapped(primitive.shape, placement.transform);
+            const double missing = catalog::area(catalog::subtract(region.visible, coverage));
             if (!catalog::subtract(coverage, region.permitted).isEmpty()
-                || catalog::area(catalog::subtract(region.visible, coverage)) > maximumMissing)
+                || missing > maximumMissing)
                 continue;
             const double spill = catalog::area(catalog::subtract(coverage, region.visible));
-            if (spill < bestSpill) {
+            const double cost = missing * kNativeMissingPenalty + spill;
+            if (cost < bestCost) {
                 best = placement;
-                bestSpill = spill;
+                bestCost = cost;
             }
-            if (spill < catalog::kVerificationClearance * catalog::kVerificationClearance)
+            if (cost < catalog::kVerificationClearance * catalog::kVerificationClearance)
                 return best;
         }
     }
 
     return best;
+}
+
+QVector<PenPlacement> fitSeparateRegions(const catalog::Region &region,
+                                       const QVector<catalog::Primitive> &primitives,
+                                       double maximumMissing, const std::function<bool()> &cancelled) {
+    QVector<PenPlacement> result;
+    const auto topology = topologyOf(region.required);
+
+    if (!region.leeway.isEmpty() || topology.components < 2)
+        return result;
+    for (const auto &polygon : region.required) {
+        if (catalog::signedArea(polygon) <= 0.0)
+            continue;
+        auto local = region;
+        local.required = catalog::intersect(region.required, {polygon});
+        local.visible = local.required;
+        local.area = catalog::area(local.required);
+        local.bounds = catalog::painterPath(local.required).boundingRect();
+        const auto placement = fitWholeRegion(local, primitives, maximumMissing * local.area / region.area, cancelled);
+        if (!placement)
+            return {};
+        result.push_back(*placement);
+    }
+
+    return result;
 }
 
 std::optional<PenPlacement> fitWholeSpan(const QVector<PenPoint> &points, double width,
@@ -638,7 +781,8 @@ std::optional<PenPlacement> fitWholeSpan(const QVector<PenPoint> &points, double
 }
 
 void repairContinuity(const catalog::Polygons &gap, const PenPrimitive &square,
-                      const catalog::Region &region, QVector<PenPlacement> *placements,
+                      const catalog::Region &region, const catalog::PointContainment &envelope,
+                      QVector<PenPlacement> *placements,
                       catalog::Polygons *missing, int shapeBudget, int *added, int depth,
                       const std::function<bool()> &cancelled) {
     const auto required = catalog::intersect(gap, *missing);
@@ -647,7 +791,7 @@ void repairContinuity(const catalog::Polygons &gap, const PenPrimitive &square,
     if (required.isEmpty() || placements->size() >= shapeBudget
         || *added >= kMaximumContinuityRectangles || stopped(cancelled))
         return;
-    const auto rectangle = enclosingRectangle(required, square, region);
+    const auto rectangle = enclosingRectangle(required, square, region, envelope);
     if (rectangle) {
         placements->push_back(*rectangle);
         *missing = catalog::subtract(*missing, catalog::mapped(square, rectangle->transform));
@@ -666,7 +810,7 @@ void repairContinuity(const catalog::Polygons &gap, const PenPrimitive &square,
         second.setTop(bounds.center().y());
     }
     for (const auto &part : {first, second})
-        repairContinuity(catalog::intersect(required, {QPolygonF(part)}), square, region,
+        repairContinuity(catalog::intersect(required, {QPolygonF(part)}), square, region, envelope,
             placements, missing, shapeBudget, added, depth + 1, cancelled);
 }
 
@@ -679,6 +823,7 @@ void repairCoverage(QVector<PenPlacement> *placements, const catalog::Region &re
     auto coverage = coverageOf(*placements, primitives);
     auto missing = catalog::subtract(region.visible, coverage);
     QVector<std::pair<double, PenPlacement>> proposals;
+    const catalog::PointContainment envelope(region.permitted);
     const double minimumGain = region.area * kMinimumGapAreaRatio;
     int continuityRectangles = 0;
 
@@ -695,7 +840,7 @@ void repairCoverage(QVector<PenPlacement> *placements, const catalog::Region &re
         if (hole.isEmpty())
             continue;
         auto repairTarget = catalog::unite(missing + hole);
-        repairContinuity(hole, square->shape, region, placements, &repairTarget,
+        repairContinuity(hole, square->shape, region, envelope, placements, &repairTarget,
             shapeBudget, &continuityRectangles, 0, cancelled);
         missing = catalog::intersect(repairTarget, region.visible);
     }
@@ -708,7 +853,7 @@ void repairCoverage(QVector<PenPlacement> *placements, const catalog::Region &re
             if (catalog::signedArea(component) > 0.0 && !catalog::intersect(contact, {component}).isEmpty())
                 ++components;
         if (components >= 2)
-            repairContinuity({polygon}, square->shape, region, placements, &missing,
+            repairContinuity({polygon}, square->shape, region, envelope, placements, &missing,
                 shapeBudget, &continuityRectangles, 0, cancelled);
     }
     if (catalog::area(missing) <= maximumMissing)
@@ -718,7 +863,7 @@ void repairCoverage(QVector<PenPlacement> *placements, const catalog::Region &re
             return;
         if (catalog::signedArea(polygon) < minimumGain)
             continue;
-        const auto rectangle = enclosingRectangle({polygon}, square->shape, region);
+        const auto rectangle = enclosingRectangle({polygon}, square->shape, region, envelope);
         if (rectangle)
             proposals.push_back({catalog::area(catalog::intersect(
                 catalog::mapped(square->shape, rectangle->transform), missing)), *rectangle});
@@ -755,9 +900,12 @@ void mergePlacements(QVector<PenPlacement> *placements, const catalog::Region &r
     QVector<QRectF> bounds;
     QVector<int> owner(placements->size());
     QVector<Pair> pairs;
+    const catalog::PointContainment envelope(region.permitted);
     int trials = 0;
+    int nativeTrials = 0;
 
-    if (square == primitives.cend())
+    if (square == primitives.cend() && catalog::shapeIdsForTask(primitives,
+            catalog::ShapeTask::GroupReplacements).isEmpty())
         return;
     std::iota(owner.begin(), owner.end(), 0);
     for (const auto &placement : *placements) {
@@ -787,10 +935,22 @@ void mergePlacements(QVector<PenPlacement> *placements, const catalog::Region &r
             continue;
         ++trials;
         const auto required = catalog::unite(polygons[first] + polygons[second]);
-        const auto rectangle = enclosingRectangle(required, square->shape, region);
-        if (!rectangle)
+        auto replacement = square == primitives.cend() ? std::optional<PenPlacement>{}
+            : enclosingRectangle(required, square->shape, region, envelope);
+        if (!replacement && nativeTrials < kNativeMergeTrials
+            && catalog::area(required) >= region.area * kMinimumNativeMergeAreaRatio) {
+            ++nativeTrials;
+            auto local = region;
+            local.required = required;
+            local.visible = required;
+            local.area = catalog::area(required);
+            local.bounds = catalog::painterPath(required).boundingRect();
+            replacement = fitWholeRegion(local, primitives, 0.0, cancelled,
+                catalog::ShapeTask::GroupReplacements, kNativeMergeAnchors);
+        }
+        if (!replacement)
             continue;
-        (*placements)[first] = *rectangle;
+        (*placements)[first] = *replacement;
         polygons[first] = required;
         owner[second] = first;
     }
@@ -799,6 +959,117 @@ void mergePlacements(QVector<PenPlacement> *placements, const catalog::Region &r
         if (owner[index] == index)
             result.push_back((*placements)[index]);
     *placements = std::move(result);
+}
+
+int replaceNativeGroups(QVector<PenPlacement> *placements, const catalog::Region &region,
+                        const QVector<catalog::Primitive> &primitives,
+                        const QVector<compact::ReusableCandidate> &candidates,
+                        const std::function<bool()> &cancelled) {
+    QVector<int> order(candidates.size());
+    QVector<catalog::Polygons> pieces;
+    QVector<catalog::Polygons> exclusive;
+    QVector<QRectF> bounds;
+    QVector<QRectF> exclusiveBounds;
+    QVector<bool> retained;
+    compact::CoverageOwnership ownership;
+    int removed = 0;
+    int trials = 0;
+
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](int first, int second) {
+        return candidates[first].placement.area > candidates[second].placement.area;
+    });
+    for (int round = 0; round < kNativeReplacementRounds && !stopped(cancelled); ++round) {
+        pieces.clear();
+        bounds.clear();
+        exclusive.clear();
+        exclusiveBounds.clear();
+        retained = QVector<bool>(placements->size(), true);
+        for (const auto &placement : *placements) {
+            pieces.push_back(coverageOf({placement}, primitives));
+            bounds.push_back(catalog::painterPath(pieces.back()).boundingRect());
+        }
+        ownership.synchronize(pieces);
+        for (int index = 0; index < pieces.size(); ++index) {
+            exclusive.push_back(catalog::intersect(ownership.exclusive({index}), region.visible));
+            exclusiveBounds.push_back(catalog::painterPath(exclusive.back()).boundingRect());
+        }
+        QVector<PenPlacement> additions;
+        for (int candidateIndex : order) {
+            if (trials >= kNativeReplacementTrials || stopped(cancelled))
+                break;
+            const auto &candidate = candidates[candidateIndex];
+            const auto primitive = std::find_if(primitives.cbegin(), primitives.cend(), [&](const auto &entry) {
+                return entry.shape.shapeId == candidate.placement.shapeId
+                    && catalog::usesTask(entry, catalog::ShapeTask::GroupReplacements);
+            });
+            if (primitive == primitives.cend())
+                continue;
+            const auto inverse = candidate.placement.transform.inverted();
+            QVector<int> members;
+            for (int index = 0; index < pieces.size(); ++index) {
+                if (!retained[index] || exclusive[index].isEmpty()
+                    || !candidate.bounds.adjusted(-kRayEpsilon, -kRayEpsilon, kRayEpsilon, kRayEpsilon)
+                        .contains(exclusiveBounds[index]))
+                    continue;
+                bool contained = true;
+                for (const auto &polygon : exclusive[index]) {
+                    const int stride = std::max(1, int(polygon.size()) / kReplacementProbes);
+                    for (int vertex = 0; vertex < polygon.size(); vertex += stride)
+                        if (!primitive->shape.silhouette.contains(inverse.map(polygon[vertex]))) {
+                            contained = false;
+                            break;
+                        }
+                    if (!contained)
+                        break;
+                }
+                if (contained)
+                    members.push_back(index);
+            }
+            if (members.size() < 2)
+                continue;
+            ++trials;
+            catalog::Polygons original;
+            catalog::Polygons others;
+            auto neighborhood = candidate.bounds;
+            for (int member : members) {
+                original += pieces[member];
+                neighborhood = neighborhood.united(bounds[member]);
+            }
+            for (int index = 0; index < pieces.size(); ++index)
+                if (retained[index] && !members.contains(index) && neighborhood.intersects(bounds[index]))
+                    others += pieces[index];
+            for (const auto &placement : additions) {
+                const auto addition = coverageOf({placement}, primitives);
+                if (neighborhood.intersects(catalog::painterPath(addition).boundingRect()))
+                    others += addition;
+            }
+            others = catalog::unite(others);
+            const auto required = catalog::intersect(catalog::subtract(original, others), region.visible);
+            const auto proposed = catalog::mapped(primitive->shape,
+                catalog::emittedTransform(candidate.placement.transform));
+            if (!catalog::subtract(required, proposed).isEmpty()
+                || !catalog::subtract(proposed, region.permitted).isEmpty())
+                continue;
+            const auto before = topologyOf(catalog::unite(original + others));
+            const auto after = topologyOf(catalog::unite(proposed + others));
+            if (after.components > before.components || after.holes != before.holes)
+                continue;
+            additions.push_back(candidate.placement);
+            for (int member : members)
+                retained[member] = false;
+            removed += members.size() - 1;
+        }
+        if (additions.isEmpty())
+            break;
+        QVector<PenPlacement> result;
+        for (int index = 0; index < placements->size(); ++index)
+            if (retained[index])
+                result.push_back((*placements)[index]);
+        *placements = result + additions;
+    }
+
+    return removed;
 }
 
 } // namespace
@@ -815,8 +1086,15 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
                                      const FillOptions &options, const std::function<bool()> &cancelled,
                                      const QVector<PenPoint> &spine = {}, double liningWidth = 0.0) {
     catalog::FillResult result;
+    QVector<compact::ReusableCandidate> candidates;
     QElapsedTimer timer;
+    QElapsedTimer refinementTimer;
     QJsonObject timings;
+    QJsonObject refinements;
+    const auto recordRefinement = [&](const QString &stage) {
+        refinements.insert(stage, refinementTimer.nsecsElapsed() / 1e6);
+        refinementTimer.restart();
+    };
     timer.start();
     result.fill.shapeLimit = options.shapeBudget;
 
@@ -825,7 +1103,9 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
             || !std::isfinite(options.boundaryAllowance) || options.boundaryAllowance <= 0.0
             || !std::isfinite(options.minimumCoverage) || options.minimumCoverage <= 0.0 || options.minimumCoverage > 1.0
             || !std::isfinite(options.maximumThicknessRatio) || options.maximumThicknessRatio <= 1.0
-            || options.maximumThicknessRatio > kMaximumThicknessRatio)
+            || options.maximumThicknessRatio > kMaximumThicknessRatio
+            || !std::isfinite(options.preferredThicknessRatio) || options.preferredThicknessRatio < 1.0
+            || options.preferredThicknessRatio > kMaximumThicknessRatio)
             throw std::runtime_error("Lining requires a positive margin, work budgets and a valid coverage target");
         if (stopped(cancelled)) {
             result.fill.cancelled = true;
@@ -840,6 +1120,9 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
         const double allowance = options.boundaryAllowance;
         auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance);
         const auto envelope = thicknessEnvelope(authored.visible, allowance, options.maximumThicknessRatio, liningWidth, cancelled);
+        const double preferredThicknessRatio = std::min(options.preferredThicknessRatio, options.maximumThicknessRatio);
+        const auto preferredCoverage = catalog::subtract(thicknessEnvelope(authored.visible, allowance,
+            preferredThicknessRatio, liningWidth, cancelled), region.leeway);
         region.permitted = catalog::unite(envelope + region.leeway);
         region.permittedPath = catalog::painterPath(region.permitted);
         const double maximumMissing = region.area * (1.0 - options.minimumCoverage);
@@ -847,20 +1130,27 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
         result.diagnostics.insert(QStringLiteral("boundaryAllowance"), allowance);
         result.diagnostics.insert(QStringLiteral("minimumCoverage"), options.minimumCoverage);
         result.diagnostics.insert(QStringLiteral("maximumThicknessRatio"), options.maximumThicknessRatio);
+        result.diagnostics.insert(QStringLiteral("preferredThicknessRatio"), preferredThicknessRatio);
         result.diagnostics.insert(QStringLiteral("permittedAreaRatio"), catalog::area(envelope) / authored.area);
         timings.insert(QStringLiteral("setup"), timer.nsecsElapsed() / 1e6);
         timer.restart();
         const auto square = std::find_if(primitives.cbegin(), primitives.cend(), [](const auto &primitive) {
             return primitive.shape.shapeId == 101 && catalog::usesTask(primitive, catalog::ShapeTask::StraightEdges);
         });
+        const catalog::PointContainment envelopeContainment(region.permitted);
         const auto rectangle = square == primitives.cend() ? std::optional<PenPlacement>{}
-            : enclosingRectangle(region.required, square->shape, region);
+            : enclosingRectangle(region.required, square->shape, region, envelopeContainment);
         auto wholeSpan = rectangle;
         if (!wholeSpan)
             wholeSpan = fitWholeRegion(region, primitives, maximumMissing, cancelled);
         if (!wholeSpan && !spine.isEmpty())
             wholeSpan = fitWholeSpan(spine, liningWidth, primitives, region, maximumMissing, allowance, cancelled, options.useGpu);
-        if (wholeSpan) {
+        const auto separate = wholeSpan ? QVector<PenPlacement>{}
+            : fitSeparateRegions(region, primitives, maximumMissing, cancelled);
+        if (!separate.isEmpty() && separate.size() <= options.shapeBudget) {
+            result.fill.placements = separate;
+            result.diagnostics.insert(QStringLiteral("wholeComponents"), separate.size());
+        } else if (wholeSpan) {
             result.fill.placements = {*wholeSpan};
             result.diagnostics.insert(QStringLiteral("wholeSpan"), true);
         } else {
@@ -874,7 +1164,7 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
             seedOptions.inwardAllowance = std::max(kMinimumAllowance, width * kToleranceWidthFraction);
             seedOptions.observationScale = scale;
             seedOptions.leeway = options.leeway;
-            auto seed = profile::seedRegion(region, primitives, seedOptions, cancelled);
+            auto seed = profile::seedRegion(region, primitives, seedOptions, cancelled, &candidates);
             result.diagnostics.insert(QStringLiteral("profileSeed"), seed.diagnostics);
             if (!seed.fill.error.isEmpty())
                 throw std::runtime_error(seed.fill.error.toStdString());
@@ -884,11 +1174,23 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
         timer.restart();
         if (options.workProgress)
             options.workProgress(result.fill.placements.size(), 0, 0);
-        expandPlacements(&result.fill.placements, region, primitives, cancelled);
+        refinementTimer.start();
+        expandPlacements(&result.fill.placements, region, primitives, preferredCoverage, cancelled);
+        recordRefinement(QStringLiteral("growth"));
         repairCoverage(&result.fill.placements, region, primitives, options.shapeBudget, maximumMissing, cancelled);
-        reducePlacements(&result.fill.placements, region, primitives, maximumMissing, cancelled);
+        recordRefinement(QStringLiteral("initialGapRepair"));
+        int removed = reducePlacements(&result.fill.placements, region, primitives, maximumMissing, cancelled);
+        recordRefinement(QStringLiteral("initialReduction"));
+        const int nativeReduction = replaceNativeGroups(&result.fill.placements, region, primitives, candidates, cancelled);
+        result.diagnostics.insert(QStringLiteral("nativeGroupShapeReduction"), nativeReduction);
+        recordRefinement(QStringLiteral("nativeReplacement"));
         mergePlacements(&result.fill.placements, region, primitives, cancelled);
+        recordRefinement(QStringLiteral("merging"));
         repairCoverage(&result.fill.placements, region, primitives, options.shapeBudget, maximumMissing, cancelled);
+        recordRefinement(QStringLiteral("finalGapRepair"));
+        removed += reducePlacements(&result.fill.placements, region, primitives, maximumMissing, cancelled);
+        recordRefinement(QStringLiteral("finalReduction"));
+        result.diagnostics.insert(QStringLiteral("removedLowContributionPlacements"), removed);
         const auto coverage = coverageOf(result.fill.placements, primitives);
         const auto visibleCoverage = region.leeway.isEmpty() ? coverage : catalog::subtract(coverage, region.leeway);
         const auto missing = catalog::subtract(region.visible, visibleCoverage);
@@ -915,16 +1217,21 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
         result.fill.unfilled = catalog::painterPath(missing);
         const double coverageRatio = result.fill.targetArea > 0.0 ? result.fill.coveredArea / result.fill.targetArea : 0.0;
         if (coverageRatio < options.minimumCoverage || !outside.isEmpty() || result.fill.placements.isEmpty()
+            || result.fill.placements.size() > options.shapeBudget
             || newInteriorHoleArea > catalog::kVerificationClearance * catalog::kVerificationClearance
             || boundaryQuality.components > targetQuality.components || boundaryQuality.holes < targetQuality.holes)
             result.fill.error = QStringLiteral("Lining could not preserve coverage and continuity within the local thickness limit");
         result.diagnostics.insert(QStringLiteral("coverageRatio"), coverageRatio);
         result.diagnostics.insert(QStringLiteral("generatedAreaRatio"), catalog::area(visibleCoverage) / result.fill.targetArea);
+        result.diagnostics.insert(QStringLiteral("preferredCoverageRatio"), 1.0
+            - catalog::area(catalog::subtract(preferredCoverage, visibleCoverage)) / catalog::area(preferredCoverage));
         result.diagnostics.insert(QStringLiteral("missingInteriorArea"), catalog::area(missing));
         result.diagnostics.insert(QStringLiteral("newInteriorHoleArea"), newInteriorHoleArea);
         result.diagnostics.insert(QStringLiteral("outsideEnvelope"), catalog::area(outside));
         result.diagnostics.insert(QStringLiteral("boundaryQuality"), boundary.diagnostics(boundaryQuality));
         result.diagnostics.insert(QStringLiteral("targetBoundary"), boundary.diagnostics(targetQuality));
+        recordRefinement(QStringLiteral("verification"));
+        result.diagnostics.insert(QStringLiteral("refinementMilliseconds"), refinements);
         timings.insert(QStringLiteral("refinementAndVerification"), timer.nsecsElapsed() / 1e6);
     } catch (const std::exception &failure) {
         result.fill.error = QString::fromUtf8(failure.what());

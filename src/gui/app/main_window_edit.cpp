@@ -590,7 +590,8 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         bool accepted = false;
         compactOptions.boundaryAllowance = QInputDialog::getDouble(this,
             thinFit ? QStringLiteral("Thin Regions") : QStringLiteral("Compact Fit"),
-            thinFit ? QStringLiteral("Maximum outward overlap (world units):\nLocal thickness is limited to %1 times the original.\nAt least 98% of the selected region must be covered.")
+            thinFit ? QStringLiteral("Maximum outward overlap (world units):\nPreferred thickness: %1 times the original; limit: %2 times.\nAt least 98% of the selected region must be covered.")
+                .arg(thin::kDefaultPreferredThicknessRatio, 0, 'g', 3)
                 .arg(thin::kDefaultMaximumThicknessRatio, 0, 'g', 3)
                 : QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nSmooth boundaries and sharp corners are checked separately.\nGenerated shapes are kept with a warning if checks fail.")
                 .arg(compactOptions.inwardAllowance, 0, 'g', 3)

@@ -100,22 +100,31 @@ The thin backend first tries one Square for a straight span and the
 `curves` shapes across the full centreline. If one placement cannot cover the
 region within the margin, a bounded profile search uses `curves`, `corners`,
 `straight_edges`, `corner_triangles` and `interior`. The default catalog enables
-native shapes and leaves `corner_triangles` empty. Whole-region matching uses
+native shapes, including triangles. Triangle proposals follow contour corners
+and spans; the backend does not construct a triangle mesh. Whole-region matching uses
 affine hull anchors as well as bounding boxes, so rotation and heavy skew do
 not require a preferred shape ID.
 
-The overlap envelope follows local stroke width. Its default limit is 1.5 times
+The overlap envelope follows local stroke width. Its default limit is 1.6 times
 the original thickness, with the supplied outward margin as an additional
 absolute cap. The API permits thickness ratios above 1 and at most 2. Tapered
 tips receive a small geometric tolerance. Open Lining paths use their specified
 width; closed regions estimate width from inward boundary crossings. Candidate
 selection penalizes extra ink while favoring placements that cover long spans.
-At least 98% of the selected region must remain covered. The backend can grow
-existing placements within the same envelope and repair continuity gaps. Square `101` in
+At least 98% of the selected region must remain covered. Existing placements
+can grow toward a preferred thickness of 1.15 times the original, within the
+same envelope. This is a soft target that preserves coverage and continuity.
+Placements that add little coverage are removed before and after gap repair
+when local connectivity and cutouts remain intact. Leeway represents layers above the
+lining: generated shapes can continue underneath, and visible coverage checks
+exclude those areas. Square `101` in
 `gap_patches` enables significant gap proposals, and Square `101` in
-`exact_replacements` enables rectangle consolidation. Placements that do not
-contribute enough coverage can be removed. The other task lists are reserved
-for the general Compact Fit backend. Search budgets, the coverage target and
+`exact_replacements` enables rectangle consolidation. Shapes in
+`group_replacements` can consolidate neighboring placements through reused
+profile candidates and bounded local affine fits. Separate native regions are
+matched individually before the profile search. Width growth takes priority
+over length adjustments at joins. The remaining task lists are reserved for
+the general Compact Fit backend. Search budgets, the coverage target and
 geometric tolerances are API options, separate from the shape configuration.
 
 The headless test tool accepts `--thin-tests`, `--thin-fit <contour-log>` and
