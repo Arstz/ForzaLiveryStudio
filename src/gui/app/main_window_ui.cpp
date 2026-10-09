@@ -520,6 +520,8 @@ void MainWindow::setupImgGenMenu() {
     imgGenMenu->addSeparator();
     addEntry(QStringLiteral("Create &Regions"), QStringLiteral("create_regions"),
              QStringLiteral("Create Regions"), &MainWindow::createRegions);
+    addEntry(QStringLiteral("Detect &Lining"), QStringLiteral("detect_lining"),
+             QStringLiteral("Detect Lining"), &MainWindow::detectLining);
     addEntry(QStringLiteral("&Fill Regions"), QStringLiteral("fill_regions"),
              QStringLiteral("Fill Regions"), &MainWindow::fillRegions);
 }

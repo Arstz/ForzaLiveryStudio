@@ -20,6 +20,8 @@ struct FillOptions {
     std::function<void(const QString &)> phaseProgress;
     std::function<void(int, int, int)> workProgress;
     QVector<QPolygonF> leeway;
+    QVector<QPolygonF> protectedEmpty;
+    QVector<QPolygonF> thicknessReference;
     int shapeBudget = compact::kDefaultShapeBudget;
     int profileTrialBudget = kDefaultProfileTrialBudget;
     int qualityEvaluationBudget = 0;

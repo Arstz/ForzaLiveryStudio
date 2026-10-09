@@ -98,6 +98,7 @@ private:
     void importGuideLayerDialog();
     void preprocessSelectedGuide();
     void createRegions();
+    void detectLining();
     void fillRegions();
     bool importFM2023Folder(const QString &path, QString *error);
     void rebuildSectionBar();

@@ -268,6 +268,7 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/lining_fill.cpp
     src/gui/fill/lining_fill.h
     src/gui/fill/thin_fit.cpp
+    src/gui/fill/lining_extract.cpp
     src/gui/fill/thin_fit_spans.cpp
     src/gui/fill/thin_fit_spans.h
     src/gui/fill/thin_fit.h
@@ -396,6 +397,8 @@ if(FLS_BUILD_TESTS)
     add_test(NAME profile_compute COMMAND fls_profile_compute_tests)
     add_executable(fls_compact_fit_tests
         tools/compact_fit_test.cpp
+        src/gui/fill/lining_extract.cpp
+        src/gui/fill/region_extract.cpp
         src/gui/fill/thin_fit.cpp
         src/gui/fill/thin_fit_spans.cpp
         src/gui/fill/lining_fill.cpp
@@ -420,7 +423,7 @@ if(FLS_BUILD_TESTS)
         FLS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     target_link_libraries(fls_compact_fit_tests PRIVATE
-        fls_core fls_profile_compute clipper2 Qt6::Core Qt6::Gui
+        fls_core fls_profile_compute clipper2 Qt6::Core Qt6::Gui potrace
     )
     if(FLS_CUDA_AVAILABLE)
         target_sources(fls_compact_fit_tests PRIVATE
@@ -445,6 +448,7 @@ if(FLS_BUILD_TESTS)
     add_test(NAME compact_comparison_projects COMMAND fls_compact_fit_tests --comparison-project-tests)
     add_test(NAME profile_fit COMMAND fls_compact_fit_tests --profile-tests)
     add_test(NAME thin_region_fit COMMAND fls_compact_fit_tests --thin-tests)
+    add_test(NAME lining_detection COMMAND fls_compact_fit_tests --lining-detection-tests)
     add_test(NAME failed_fill_retention COMMAND fls_compact_fit_tests --failed-fill-tests)
     add_test(NAME compact_fast_quality COMMAND fls_compact_fit_tests --fast-quality-tests)
     add_test(NAME compact_search COMMAND fls_compact_fit_tests --compact-search-tests)

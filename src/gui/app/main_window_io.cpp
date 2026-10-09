@@ -13,6 +13,7 @@
 #include "import_asset_dialog.h"
 #include "layer.h"
 #include "livery_codec.h"
+#include "lining_extract.h"
 #include "project_codec.h"
 #include "shape_geometry_store.h"
 
@@ -917,6 +918,104 @@ void MainWindow::createRegions() {
                                      : message,
                                  5000);
     }
+}
+
+void MainWindow::detectLining() {
+    if (state_ == nullptr || !state_->hasProject())
+        return;
+    const auto guides = state_->selectedGuideLayers();
+    if (guides.size() != 1 || guides.front()->image == nullptr) {
+        statusBar()->showMessage(QStringLiteral("Select one source image guide to detect lining"), 4000);
+        return;
+    }
+    const auto *guide = guides.front();
+    const auto encodedSource = guide->image->encoded;
+    const auto guideId = guide->id;
+    QImage image;
+    if (!guide->image->pixels.isEmpty()) {
+        image = QImage(reinterpret_cast<const uchar *>(guide->image->pixels.constData()),
+            guide->image->width, guide->image->height, guide->image->width * 4,
+            QImage::Format_ARGB32_Premultiplied).copy();
+    } else {
+        image = decodeGuideImage(encodedSource, guide->image->format);
+    }
+    if (!guide->imageTopDown)
+        image = image.mirrored(false, true);
+    if (image.isNull()) {
+        statusBar()->showMessage(QStringLiteral("Could not decode the source image"), 4000);
+        return;
+    }
+    cancelActiveFills();
+    const auto token = std::make_shared<std::atomic_bool>(false);
+    QPointer<MainWindow> guard(this);
+    const quint64 generation = ++regionFillGeneration_;
+    regionFillCancel_ = token;
+    regionFillProgress_->setRange(0, 0);
+    regionFillProgress_->setFormat(QStringLiteral("Detecting lining…"));
+    regionFillProgress_->show();
+    auto *task = QRunnable::create([guard, token, generation, guideId, encodedSource, image]() {
+        auto result = extractLining(image, {}, [token]() { return token->load(std::memory_order_relaxed); },
+            [guard, generation](const QString &phase, int done, int total) {
+                if (!guard.isNull())
+                    QMetaObject::invokeMethod(guard.data(), [guard, generation, phase, done, total]() {
+                        if (!guard.isNull())
+                            guard->updateRegionFillProgress(generation, phase, done, total);
+                    }, Qt::QueuedConnection);
+            });
+        QString format;
+        const QByteArray encoded = result.cancelled || !result.regions.error.isEmpty()
+            ? QByteArray{} : encodeGuideImage(result.pixels, &format);
+        if (guard.isNull())
+            return;
+        QMetaObject::invokeMethod(guard.data(),
+            [guard, generation, guideId, encodedSource, result = std::move(result), encoded, format]() {
+                if (guard.isNull() || generation != guard->regionFillGeneration_)
+                    return;
+                guard->regionFillCancel_.reset();
+                guard->regionFillProgress_->hide();
+                if (result.cancelled)
+                    return;
+                if (!result.regions.error.isEmpty() || encoded.isEmpty()) {
+                    guard->statusBar()->showMessage(result.regions.error.isEmpty()
+                        ? QStringLiteral("Could not encode detected lining") : result.regions.error, 5000);
+                    return;
+                }
+                const auto *node = guard->state_->sceneNode(guideId);
+                if (node == nullptr || node->kind() != fls::scene::LayerKind::Guide)
+                    return;
+                const auto &source = static_cast<const fls::scene::GuideLayer &>(*node);
+                if (!source.image || source.image->encoded != encodedSource)
+                    return;
+                if (result.regions.regions.isEmpty()) {
+                    guard->statusBar()->showMessage(QStringLiteral("No lining strokes detected"), 4000);
+                    return;
+                }
+                auto detected = std::make_unique<fls::scene::GuideLayer>();
+                detected->id = guard->state_->uniqueGuideLayerId();
+                detected->name = QStringLiteral("Detected lining — %1").arg(source.name);
+                detected->transform = source.transform;
+                detected->opacity = 1.0;
+                detected->image = std::make_unique<fls::scene::RasterContainer>();
+                detected->image->encoded = encoded;
+                detected->image->format = format;
+                detected->image->width = result.pixels.width();
+                detected->image->height = result.pixels.height();
+                const QString id = detected->id;
+                guard->state_->beginProjectEdit();
+                guard->state_->insertLayerAboveSelection(std::move(detected), {guideId});
+                guard->state_->selectedGuideLayerIds_ = {id};
+                guard->state_->selectedLayerIds_.clear();
+                guard->state_->selectedEntryIds_.clear();
+                guard->state_->commitProjectEdit();
+                guard->state_->noteProjectStructureChanged();
+                QFile log(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("lining_detection.log")));
+                if (log.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    log.write(QJsonDocument(result.diagnostics).toJson(QJsonDocument::Indented));
+                guard->statusBar()->showMessage(QStringLiteral("Detected %1 lining components (%2 pixels). Select the new guide to fit or inspect strokes.")
+                    .arg(result.regions.lineartRegionCount).arg(result.diagnostics.value(QStringLiteral("selectedPixels")).toInt()), 6000);
+            }, Qt::QueuedConnection);
+    });
+    QThreadPool::globalInstance()->start(task);
 }
 
 void MainWindow::fillRegions() {

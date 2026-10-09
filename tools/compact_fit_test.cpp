@@ -5,6 +5,7 @@
 #include "compact_fit.h"
 #include "profile_fit.h"
 #include "thin_fit.h"
+#include "lining_extract.h"
 #include "cubic_contour.h"
 #include "lining_fill.h"
 #include "profile_fit_selection.h"
@@ -32,6 +33,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <optional>
 #include <stdexcept>
 
@@ -1884,6 +1886,15 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
     for (const auto &polygon : exception.toSubpathPolygons(QTransform::fromScale(1024, 1024)))
         occluded.leeway.push_back(inverseException.map(polygon));
     const gui::catalog::Polygons ribbon{QPolygonF(QRectF(0, -1, 60, 2))};
+    auto referenced = options;
+    referenced.thicknessReference = ribbon;
+    referenced.preferredThicknessRatio = referenced.maximumThicknessRatio;
+    const auto paddedRibbon = gui::thin::fillPolygons({QPolygonF(QRectF(0, -1.2, 60, 2.4))}, catalog, referenced);
+    check(paddedRibbon, QStringLiteral("Original thickness reference"));
+    require(outputPath(paddedRibbon.fill, catalog).boundingRect().height() <= 2.0 * referenced.maximumThicknessRatio + 0.001,
+        QStringLiteral("Padded target increased the original stroke thickness limit"));
+    require(!gui::thin::fillPolygons({QPolygonF(QRectF(0, -2.5, 60, 5))}, catalog, referenced).fill.error.isEmpty(),
+        QStringLiteral("Fitting accepted a target outside its original stroke thickness limit"));
     const auto hiddenSpan = gui::thin::fillPolygons(ribbon, catalog, occluded);
     check(hiddenSpan, QStringLiteral("Lining beneath exception layer"));
     require(hiddenSpan.fill.placements.size() == 1
@@ -1893,6 +1904,16 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
     require(hiddenOutput.contains(QPointF(30, 0))
         && !hiddenOutput.subtracted(exception).contains(QPointF(30, 0)),
         QStringLiteral("Exception masking did not preserve an underlying span"));
+    auto protectedOptions = options;
+    protectedOptions.preferredThicknessRatio = protectedOptions.maximumThicknessRatio;
+    protectedOptions.protectedEmpty = {QPolygonF(QRectF(-52, -2, 104, 1.75))};
+    const auto protectedStroke = gui::thin::fillLiningPath(straight, 0.4, catalog, protectedOptions);
+    check(protectedStroke, QStringLiteral("Protected empty pixels"));
+    gui::catalog::Polygons protectedCoverage;
+    for (const auto &polygon : outputPath(protectedStroke.fill, catalog).toSubpathPolygons())
+        protectedCoverage.push_back(polygon);
+    require(gui::catalog::area(gui::catalog::intersect(protectedCoverage, protectedOptions.protectedEmpty)) == 0.0,
+        QStringLiteral("Lining padding covered protected empty pixels"));
     auto excessiveThickness = options;
     excessiveThickness.maximumThicknessRatio = 2.01;
     require(!gui::thin::fillPolygons(mixedWidths, catalog, excessiveThickness).fill.error.isEmpty(),
@@ -1925,6 +1946,519 @@ struct ColoredLiningRegion {
     std::array<quint8, 4> color;
     int referenceCount = 0;
 };
+
+std::vector<ColoredLiningRegion> coloredLiningReference(const QString &source,
+                                                       const gui::ShapeGeometryStore &geometry);
+
+fls::scene::Transform2D sceneTransform(const QTransform &transform) {
+    fls::Matrix3 matrix;
+    matrix.m[0][0] = transform.m11();
+    matrix.m[1][0] = transform.m12();
+    matrix.m[0][1] = transform.m21();
+    matrix.m[1][1] = transform.m22();
+    matrix.m[0][2] = transform.dx();
+    matrix.m[1][2] = transform.dy();
+
+    return fls::decomposeTransform2D(matrix);
+}
+
+QTransform estimateSourceAlignment(const gui::LiningExtractionResult &detection,
+                                    const std::vector<ColoredLiningRegion> &reference,
+                                    const QTransform &initial, QJsonObject *diagnostics) {
+    const int width = detection.pixels.width();
+    const int height = detection.pixels.height();
+    const int infinity = (width + height) * 3;
+    std::vector<int> distance(width * height, infinity);
+    QRect sourceBounds;
+    QRectF humanBounds;
+    QPolygonF points;
+    for (const auto &region : detection.regions.regions)
+        sourceBounds = sourceBounds.united(region.bounds);
+    for (const auto &region : reference) {
+        humanBounds = humanBounds.united(gui::catalog::painterPath(region.polygons).boundingRect());
+        for (const auto &polygon : region.polygons)
+            points += polygon;
+    }
+    if (sourceBounds.isEmpty() || humanBounds.isEmpty() || points.isEmpty())
+        return initial;
+    QPolygonF sampled;
+    const int stride = std::max(1, int(points.size() / 2048));
+    for (int index = 0; index < points.size(); index += stride)
+        sampled.push_back(points[index]);
+    for (int index = 0; index < width * height; ++index)
+        if (detection.regions.raster->lineart[index])
+            distance[index] = 0;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x) {
+            auto &value = distance[y * width + x];
+            if (x > 0) value = std::min(value, distance[y * width + x - 1] + 3);
+            if (y > 0) {
+                value = std::min(value, distance[(y - 1) * width + x] + 3);
+                if (x > 0) value = std::min(value, distance[(y - 1) * width + x - 1] + 4);
+                if (x + 1 < width) value = std::min(value, distance[(y - 1) * width + x + 1] + 4);
+            }
+        }
+    for (int y = height - 1; y >= 0; --y)
+        for (int x = width - 1; x >= 0; --x) {
+            auto &value = distance[y * width + x];
+            if (x + 1 < width) value = std::min(value, distance[y * width + x + 1] + 3);
+            if (y + 1 < height) {
+                value = std::min(value, distance[(y + 1) * width + x] + 3);
+                if (x > 0) value = std::min(value, distance[(y + 1) * width + x - 1] + 4);
+                if (x + 1 < width) value = std::min(value, distance[(y + 1) * width + x + 1] + 4);
+            }
+        }
+    const auto cost = [&](const QTransform &humanToPixel) {
+        double sum = 0.0;
+        for (const auto &point : sampled) {
+            const QPointF mapped = humanToPixel.map(point);
+            const int x = qRound(mapped.x());
+            const int y = qRound(mapped.y());
+            sum += x < 0 || y < 0 || x >= width || y >= height
+                ? 12.0 : std::min(12.0, distance[y * width + x] / 3.0);
+        }
+        return sum / sampled.size();
+    };
+    const auto initialInverse = initial.inverted();
+    QTransform best = initialInverse;
+    double bestCost = cost(best);
+    const double initialCost = bestCost;
+    for (int rotation : {0, 90, 180, 270}) {
+        const bool swapped = rotation == 90 || rotation == 270;
+        for (int mirror : {-1, 1}) {
+            std::array<double, 4> parameters = {double(sourceBounds.center().x()), double(sourceBounds.center().y()),
+                sourceBounds.width() / (swapped ? humanBounds.height() : humanBounds.width()),
+                sourceBounds.height() / (swapped ? humanBounds.width() : humanBounds.height())};
+            const auto anchor = parameters;
+            const auto transform = [&](const std::array<double, 4> &values) {
+                QTransform trial;
+                trial.translate(values[0], values[1]);
+                trial.scale(values[2] * mirror, values[3]);
+                trial.rotate(rotation);
+                trial.translate(-humanBounds.center().x(), -humanBounds.center().y());
+                return trial;
+            };
+            const auto score = [&](const std::array<double, 4> &values) {
+                return cost(transform(values)) + 0.75 * (std::abs(std::log(values[2] / anchor[2]))
+                    + std::abs(std::log(values[3] / anchor[3])));
+            };
+            double currentCost = score(parameters);
+            for (double step : {64.0, 32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5}) {
+                for (int round = 0; round < 16; ++round) {
+                    bool improved = false;
+                    for (int parameter = 0; parameter < 4; ++parameter)
+                        for (int direction : {-1, 1}) {
+                            auto trial = parameters;
+                            if (parameter < 2)
+                                trial[parameter] += direction * step;
+                            else {
+                                trial[parameter] *= std::exp(direction * step / 512.0);
+                                if (trial[parameter] < anchor[parameter] * 0.65 || trial[parameter] > anchor[parameter] * 1.5)
+                                    continue;
+                            }
+                            const double trialCost = score(trial);
+                            if (trialCost + 1e-6 < currentCost) {
+                                parameters = trial;
+                                currentCost = trialCost;
+                                improved = true;
+                            }
+                        }
+                    if (!improved)
+                        break;
+                }
+            }
+            if (cost(transform(parameters)) < bestCost) {
+                best = transform(parameters);
+                bestCost = cost(best);
+            }
+        }
+    }
+    diagnostics->insert("initialAlignmentMeanDistancePixels", initialCost);
+    diagnostics->insert("estimatedAlignmentMeanDistancePixels", bestCost);
+    diagnostics->insert("alignmentDiagnosticOnly", true);
+
+    return best.inverted();
+}
+
+QTransform layerTransform(const fls::scene::Layer &layer) {
+    const auto matrix = layer.worldMatrix();
+    return QTransform(matrix.m[0][0], matrix.m[1][0], matrix.m[0][1],
+        matrix.m[1][1], matrix.m[0][2], matrix.m[1][2]);
+}
+
+void liningDetectionTests() {
+    QImage image(192, 128, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    painter.fillRect(QRect(12, 20, 140, 2), Qt::black);
+    painter.fillRect(QRect(12, 45, 140, 2), QColor(155, 155, 155));
+    painter.fillRect(QRect(40, 70, 60, 40), Qt::black);
+    painter.end();
+    gui::LiningExtractionOptions options;
+    options.maximumWidth = 3;
+    auto result = gui::extractLining(image, options);
+    require(result.regions.error.isEmpty() && !result.cancelled, result.regions.error);
+    const auto selected = [&](int x, int y) { return result.regions.raster->lineart[y * image.width() + x] != 0; };
+    for (int x = 14; x < 150; ++x) {
+        require(selected(x, 20) && selected(x, 45), QStringLiteral("Detection lost a black line or an interior grey stripe"));
+        require(qRed(result.pixels.pixel(x, 45)) > 120, QStringLiteral("Detection recolored a grey stripe as black"));
+    }
+    for (int y = 74; y < 106; ++y)
+        for (int x = 44; x < 96; ++x)
+            require(!selected(x, y), QStringLiteral("Detection classified a broad fill interior as lining"));
+    QImage transparent(80, 48, QImage::Format_ARGB32);
+    transparent.fill(Qt::transparent);
+    QPainter lines(&transparent);
+    lines.fillRect(QRect(10, 10, 60, 2), Qt::black);
+    lines.fillRect(QRect(10, 30, 60, 2), Qt::white);
+    lines.end();
+    auto alpha = gui::extractLining(transparent, options);
+    require(alpha.regions.error.isEmpty() && alpha.regions.lineartRegionCount == 2,
+        QStringLiteral("Detection lost dark or white strokes on a transparent source"));
+    for (int y = 0; y < transparent.height(); ++y)
+        for (int x = 0; x < transparent.width(); ++x)
+            require(qAlpha(transparent.pixel(x, y)) != 0 || qAlpha(alpha.pixels.pixel(x, y)) == 0,
+                QStringLiteral("Detection painted an intentional transparent pixel"));
+    require(gui::extractLining(image, options, [] { return true; }).cancelled,
+        QStringLiteral("Lining detection ignored cancellation"));
+    options.maximumWidth = -1;
+    require(!gui::extractLining(image, options).regions.error.isEmpty(), QStringLiteral("Detection accepted an invalid width"));
+    QTextStream(stdout) << "Lining detection covers black and grey stripes, preserves transparency and rejects broad interiors\n";
+}
+
+std::unique_ptr<fls::scene::GuideLayer> detectionGuide(const QImage &image, const QString &name,
+                                                     const fls::scene::Transform2D &transform) {
+    auto guide = std::make_unique<fls::scene::GuideLayer>();
+    guide->id = QStringLiteral("guide_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    guide->name = name;
+    guide->transform = transform;
+    guide->opacity = 1.0;
+    guide->image = std::make_unique<fls::scene::RasterContainer>();
+    guide->image->width = image.width();
+    guide->image->height = image.height();
+    guide->image->format = QStringLiteral("webp");
+    QBuffer buffer(&guide->image->encoded);
+    require(buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "WEBP", 100), QStringLiteral("Cannot encode detected lining"));
+
+    return guide;
+}
+
+void sourceLiningTrial(const QString &source, const QString &destination,
+                       const gui::ShapeGeometryStore &geometry,
+                       const QVector<gui::catalog::Primitive> &catalog, bool fit) {
+    QFile file(source);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    auto project = fls::decodeProjectDocument(file.readAll());
+    const fls::scene::GuideLayer *guide = nullptr;
+    std::vector<const fls::scene::Layer *> humanGroups;
+    bool referenceAvailable = false;
+    std::function<void(const fls::scene::Layer &)> collect;
+    collect = [&](const auto &layer) {
+        referenceAvailable = referenceAvailable || layer.name == QStringLiteral("Lining");
+        if (layer.name == QStringLiteral("Lining"))
+            humanGroups.push_back(&layer);
+        if (layer.kind() == fls::scene::LayerKind::Guide && !guide)
+            guide = &static_cast<const fls::scene::GuideLayer &>(layer);
+        if (layer.kind() == fls::scene::LayerKind::Group)
+            for (const auto &child : static_cast<const fls::scene::Group &>(layer).children)
+                collect(*child);
+    };
+    collect(*project.root);
+    require(guide && guide->image, QStringLiteral("Source project has no embedded guide image"));
+    QImage image = QImage::fromData(guide->image->encoded).convertToFormat(QImage::Format_ARGB32);
+    if (!guide->imageTopDown)
+        image = image.mirrored(false, true);
+    require(!image.isNull(), QStringLiteral("Cannot decode embedded guide image"));
+    QTextStream output(stdout);
+    const auto detection = gui::extractLining(image, {}, {}, [&](const QString &phase, int done, int total) {
+        if (done == 0 || done + 1 == total)
+            output << phase << ' ' << done << '/' << total << '\n' << Qt::flush;
+    });
+    require(detection.regions.error.isEmpty() && !detection.cancelled, detection.regions.error);
+    auto diagnostics = detection.diagnostics;
+    const auto world = layerTransform(*guide);
+    QTransform pixelToLocal;
+    pixelToLocal.translate(-image.width() * 0.5, -image.height() * 0.5);
+    QTransform pixelToWorld = pixelToLocal * world;
+    const auto boundsJson = [](const QRectF &bounds) {
+        return QJsonArray{bounds.x(), bounds.y(), bounds.width(), bounds.height()};
+    };
+    diagnostics.insert("sourceWorldBounds", boundsJson(pixelToWorld.mapRect(QRectF(QPointF(), image.size()))));
+    if (referenceAvailable) {
+        const auto reference = coloredLiningReference(source, geometry);
+        pixelToWorld = estimateSourceAlignment(detection, reference, pixelToWorld, &diagnostics);
+        QRectF referenceBounds;
+        for (const auto &region : reference)
+            referenceBounds = referenceBounds.united(gui::catalog::painterPath(region.polygons).boundingRect());
+        diagnostics.insert("humanWorldBounds", boundsJson(referenceBounds));
+        QImage target(image.size(), QImage::Format_ARGB32);
+        target.fill(Qt::black);
+        QPainter painter(&target);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::white);
+        painter.setTransform(pixelToWorld.inverted());
+        for (const auto &region : reference)
+            painter.drawPath(gui::catalog::painterPath(region.polygons));
+        painter.end();
+        int humanPixels = 0;
+        int overlapping = 0;
+        int nearHuman = 0;
+        int nearDetected = 0;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x) {
+                const int index = y * image.width() + x;
+                const bool human = qRed(target.pixel(x, y)) != 0;
+                const bool detected = detection.regions.raster->lineart[index];
+                humanPixels += human;
+                overlapping += human && detected;
+                if (!human && !detected)
+                    continue;
+                bool matchedHuman = false;
+                bool matchedDetected = false;
+                for (int dy = -2; dy <= 2; ++dy)
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        const int nx = x + dx;
+                        const int ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= image.width() || ny >= image.height())
+                            continue;
+                        matchedHuman = matchedHuman || qRed(target.pixel(nx, ny)) != 0;
+                        matchedDetected = matchedDetected || detection.regions.raster->lineart[ny * image.width() + nx];
+                    }
+                nearHuman += detected && matchedHuman;
+                nearDetected += human && matchedDetected;
+            }
+        diagnostics.insert("humanPixels", humanPixels);
+        diagnostics.insert("overlappingHumanPixels", overlapping);
+        diagnostics.insert("detectedWithinTwoPixelsOfHuman", nearHuman);
+        diagnostics.insert("humanWithinTwoPixelsOfDetected", nearDetected);
+    }
+    output << QJsonDocument(diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+    auto comparison = std::make_unique<fls::scene::Group>();
+    comparison->id = QStringLiteral("group_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    comparison->name = QStringLiteral("Source image lining trial");
+    comparison->transform.x = pixelToWorld.mapRect(QRectF(QPointF(), image.size())).width() * 1.2;
+    auto imageCopy = guide->clone();
+    imageCopy->id = QStringLiteral("guide_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    QTransform localToPixel;
+    localToPixel.translate(image.width() * 0.5, image.height() * 0.5);
+    const auto alignedGuideTransform = sceneTransform(localToPixel * pixelToWorld);
+    imageCopy->transform = alignedGuideTransform;
+    imageCopy->name = referenceAvailable
+        ? QStringLiteral("Source image — estimated alignment (toggle)")
+        : QStringLiteral("Source image (toggle for comparison)");
+    imageCopy->visible = false;
+    imageCopy->opacity = 1.0;
+    comparison->append(std::move(imageCopy));
+    for (const auto *human : humanGroups) {
+        auto copy = human->clone();
+        std::function<void(fls::scene::Layer &)> assignIds;
+        assignIds = [&](auto &layer) {
+            layer.id = QStringLiteral("node_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            if (layer.kind() == fls::scene::LayerKind::Group)
+                for (auto &child : static_cast<fls::scene::Group &>(layer).children)
+                    assignIds(*child);
+        };
+        assignIds(*copy);
+        copy->transform = fls::decomposeTransform2D(human->worldMatrix());
+        copy->name = QStringLiteral("Human lining reference (toggle)");
+        copy->visible = false;
+        comparison->append(std::move(copy));
+    }
+    auto mask = detectionGuide(detection.pixels, QStringLiteral("Detected lining pixels"),
+        alignedGuideTransform);
+    mask->visible = !fit;
+    comparison->append(std::move(mask));
+    QElapsedTimer timer;
+    timer.start();
+    int totalShapes = 0;
+    std::vector<std::uint8_t> transparentPixels(image.width() * image.height(), 0);
+    bool hasTransparentPixels = false;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            if (qAlpha(image.pixel(x, y)) == 0) {
+                transparentPixels[y * image.width() + x] = 1;
+                hasTransparentPixels = true;
+            }
+    gui::catalog::Polygons transparentGeometry;
+    if (hasTransparentPixels)
+        for (const auto &polygon : gui::pixelBoundaryLoops(transparentPixels, image.size(), image.rect()))
+            transparentGeometry.push_back(pixelToWorld.map(polygon));
+    transparentGeometry = gui::catalog::unite(transparentGeometry);
+    for (const auto &sourceRegion : detection.regions.regions) {
+        const auto color = sourceRegion.color;
+        const auto &path = sourceRegion.outline;
+        if (!fit)
+            continue;
+        auto options = gui::thin::qualityOptions();
+        options.shapeBudget = 100000;
+        options.minimumCoverage = 0.98;
+        const double worldPixelWidth = std::max(
+            QLineF(pixelToWorld.map(QPointF()), pixelToWorld.map(QPointF(1.0, 0.0))).length(),
+            QLineF(pixelToWorld.map(QPointF()), pixelToWorld.map(QPointF(0.0, 1.0))).length());
+        options.boundaryAllowance = detection.diagnostics.value("maximumWidthPixels").toDouble() * worldPixelWidth * 0.5;
+        options.qualityTimeBudgetMilliseconds = 30000;
+        options.qualityEvaluationBudget = 30000;
+        options.phaseProgress = [&](const QString &phase) {
+            output << "Phase " << color.name() << '/' << phase << ' ' << timer.elapsed() << " ms\n" << Qt::flush;
+        };
+        options.workProgress = [&](int count, int done, int total) {
+            if (count > 0 && done == 0 && total == 0)
+                output << "Seed " << color.name() << ' ' << count << " shapes " << timer.elapsed() << " ms\n" << Qt::flush;
+        };
+        std::vector<std::uint8_t> requiredPixels(image.width() * image.height(), 0);
+        QRect pixelBounds;
+        int sourceCount = 0;
+        int tracedCount = 0;
+        for (int y = sourceRegion.bounds.top(); y <= sourceRegion.bounds.bottom(); ++y)
+            for (int x = sourceRegion.bounds.left(); x <= sourceRegion.bounds.right(); ++x)
+                if (detection.regions.raster->labels[y * image.width() + x] == sourceRegion.id) {
+                    requiredPixels[y * image.width() + x] = 1;
+                    ++sourceCount;
+                    tracedCount += path.contains(QPointF(x + 0.5, y + 0.5));
+                    pixelBounds = pixelBounds.united(QRect(x, y, 1, 1));
+                }
+        gui::catalog::Polygons pixelGeometry;
+        for (const auto &polygon : gui::pixelBoundaryLoops(requiredPixels, image.size(), pixelBounds))
+            pixelGeometry.push_back(pixelToWorld.map(polygon));
+        pixelGeometry = gui::catalog::unite(pixelGeometry);
+        const auto flatten = QTransform::fromScale(16.0, 16.0);
+        const auto flattenedToWorld = flatten.inverted() * pixelToWorld;
+        for (const auto &polygon : path.toSubpathPolygons(flatten))
+            options.thicknessReference.push_back(flattenedToWorld.map(polygon));
+        options.thicknessReference = gui::catalog::unite(options.thicknessReference);
+        options.protectedEmpty = transparentGeometry;
+        for (auto hole : pixelGeometry)
+            if (gui::catalog::signedArea(hole) < 0.0) {
+                std::reverse(hole.begin(), hole.end());
+                options.protectedEmpty += gui::catalog::interiorSupport({hole},
+                    std::sqrt(std::abs(pixelToWorld.determinant())) * 0.15);
+            }
+        QPainterPathStroker padding;
+        padding.setWidth(0.6);
+        padding.setJoinStyle(Qt::RoundJoin);
+        const auto paddedPath = path.united(padding.createStroke(path));
+        gui::catalog::Polygons paddedPolygons;
+        for (const auto &polygon : paddedPath.toSubpathPolygons(flatten))
+            paddedPolygons.push_back(flattenedToWorld.map(polygon));
+        const auto polygons = gui::catalog::subtract(gui::catalog::unite(paddedPolygons), options.protectedEmpty);
+        const auto result = gui::thin::fillPolygons(polygons, catalog, options);
+        auto fitDiagnostics = result.diagnostics;
+        fitDiagnostics.insert("color", color.name());
+        fitDiagnostics.insert("sourceRegion", sourceRegion.id);
+        fitDiagnostics.insert("count", result.fill.placements.size());
+        fitDiagnostics.insert("tracePixelCenterCoverageRatio", sourceCount > 0 ? double(tracedCount) / sourceCount : 1.0);
+        fitDiagnostics.insert("error", result.fill.error);
+        output << QJsonDocument(fitDiagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+        auto group = comparisonGroup(result.fill, QStringLiteral("%1 — region %2").arg(color.name()).arg(sourceRegion.id + 1));
+        group->transform.x = 0.0;
+        if (!result.fill.error.isEmpty())
+            group->name += QStringLiteral(" — incomplete");
+        for (auto &child : group->children)
+            static_cast<fls::scene::Shape &>(*child).color = {quint8(color.red()), quint8(color.green()), quint8(color.blue()), 255};
+        totalShapes += result.fill.placements.size();
+        comparison->append(std::move(group));
+    }
+    output << QJsonDocument(QJsonObject{{"generatedCount", totalShapes},
+        {"fitMilliseconds", timer.elapsed()}}).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+    project.root->append(std::move(comparison));
+    QFile outputFile(destination);
+    require(outputFile.open(QIODevice::WriteOnly | QIODevice::NewOnly), outputFile.errorString());
+    const auto encoded = fls::encodeProjectDocument(project);
+    require(outputFile.write(encoded) == encoded.size(), outputFile.errorString());
+}
+
+void sourceLiningRasterCheck(const QString &source, const gui::ShapeGeometryStore &geometry) {
+    QFile file(source);
+    require(file.open(QIODevice::ReadOnly), file.errorString());
+    auto project = fls::decodeProjectDocument(file.readAll());
+    require(!project.root->children.empty() && project.root->children.back()->kind() == fls::scene::LayerKind::Group,
+        QStringLiteral("Source comparison group is missing"));
+    const auto &trial = static_cast<const fls::scene::Group &>(*project.root->children.back());
+    const fls::scene::GuideLayer *sourceGuide = nullptr;
+    const fls::scene::GuideLayer *maskGuide = nullptr;
+    for (const auto &node : trial.children)
+        if (node->kind() == fls::scene::LayerKind::Guide) {
+            const auto *guide = &static_cast<const fls::scene::GuideLayer &>(*node);
+            if (guide->name.startsWith(QStringLiteral("Source image"))) sourceGuide = guide;
+            if (guide->name == QStringLiteral("Detected lining pixels")) maskGuide = guide;
+        }
+    require(sourceGuide && sourceGuide->image && maskGuide && maskGuide->image,
+        QStringLiteral("Source and detected pixel guides are missing"));
+    QImage sourceImage = QImage::fromData(sourceGuide->image->encoded).convertToFormat(QImage::Format_ARGB32);
+    const QImage mask = QImage::fromData(maskGuide->image->encoded).convertToFormat(QImage::Format_ARGB32);
+    if (!sourceGuide->imageTopDown)
+        sourceImage = sourceImage.mirrored(false, true);
+    require(!mask.isNull() && sourceImage.size() == mask.size(), QStringLiteral("Source mask dimensions are invalid"));
+    QImage painted(mask.size(), QImage::Format_ARGB32);
+    painted.fill(Qt::transparent);
+    QTransform localToPixel;
+    localToPixel.translate(mask.width() * 0.5, mask.height() * 0.5);
+    const auto worldToPixel = layerTransform(*maskGuide).inverted() * localToPixel;
+    QPainter painter(&painted);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(Qt::white);
+    int count = 0;
+    int warnings = 0;
+    gui::catalog::Polygons nativeCoverage;
+    std::function<void(const fls::scene::Layer &)> render;
+    render = [&](const auto &layer) {
+        if (!layer.visible)
+            return;
+        if (layer.kind() == fls::scene::LayerKind::Group) {
+            warnings += layer.name.contains(QStringLiteral("incomplete"));
+            for (const auto &child : static_cast<const fls::scene::Group &>(layer).children)
+                render(*child);
+        } else if (layer.kind() == fls::scene::LayerKind::Shape) {
+            const auto &shape = static_cast<const fls::scene::Shape &>(layer);
+            const auto *native = geometry.shape(shape.shapeId);
+            require(native && !shape.mask && !shape.isRaster(), QStringLiteral("Unexpected source fit geometry"));
+            painter.setTransform(layerTransform(shape) * worldToPixel);
+            gui::catalog::Polygons triangles;
+            for (const auto &triangle : native->triangles) {
+                QPolygonF polygon{triangle.p0, triangle.p1, triangle.p2};
+                if (gui::catalog::signedArea(polygon) < 0.0)
+                    std::reverse(polygon.begin(), polygon.end());
+                triangles.push_back(std::move(polygon));
+            }
+            for (const auto &polygon : gui::catalog::unite(triangles)) {
+                painter.drawPolygon(polygon);
+                const auto transform = layerTransform(shape) * worldToPixel;
+                auto mapped = transform.map(polygon);
+                if (transform.determinant() < 0.0)
+                    std::reverse(mapped.begin(), mapped.end());
+                nativeCoverage.push_back(std::move(mapped));
+            }
+            ++count;
+        }
+    };
+    render(trial);
+    painter.end();
+    int selected = 0;
+    int covered = 0;
+    int added = 0;
+    int transparent = 0;
+    int centerCovered = 0;
+    const gui::catalog::PointContainment nativeContains(gui::catalog::unite(nativeCoverage));
+    for (int y = 0; y < mask.height(); ++y)
+        for (int x = 0; x < mask.width(); ++x) {
+            const bool required = qAlpha(mask.pixel(x, y)) >= 128;
+            const bool ink = qAlpha(painted.pixel(x, y)) >= 128;
+            selected += required;
+            covered += required && ink;
+            centerCovered += required && nativeContains.contains(QPointF(x + 0.5, y + 0.5));
+            added += !required && ink;
+            transparent += ink && qAlpha(sourceImage.pixel(x, y)) == 0;
+        }
+    const double coverage = selected > 0 ? double(covered) / selected : 1.0;
+    QTextStream(stdout) << QJsonDocument(QJsonObject{{"count", count}, {"selectedPixels", selected},
+        {"coveredPixels", covered}, {"pixelCoverageRatio", coverage}, {"additionalPixels", added},
+        {"pixelCenterCoverageRatio", selected > 0 ? double(centerCovered) / selected : 1.0},
+        {"paintedAreaRatio", selected > 0 ? double(covered + added) / selected : 0.0},
+        {"paintedTransparentSourcePixels", transparent}, {"fittingWarnings", warnings}})
+        .toJson(QJsonDocument::Compact) << '\n';
+    require(coverage >= 0.98 && warnings == 0 && transparent == 0,
+        QStringLiteral("Saved native fit failed source pixel coverage, transparency or geometric checks"));
+}
 
 std::vector<ColoredLiningRegion> coloredLiningReference(const QString &source,
                                                        const gui::ShapeGeometryStore &geometry) {
@@ -2910,6 +3444,10 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (arguments.size() >= 2 && (arguments[1] == QStringLiteral("--thin-tests")
+            || arguments[1] == QStringLiteral("--lining-detection-tests")
+            || arguments[1] == QStringLiteral("--thin-source-detect")
+            || arguments[1] == QStringLiteral("--thin-source-quality")
+            || arguments[1] == QStringLiteral("--thin-source-raster-check")
             || arguments[1] == QStringLiteral("--thin-quality-tests")
             || arguments[1] == QStringLiteral("--thin-color-reference-quality")
             || arguments[1] == QStringLiteral("--thin-fit") || arguments[1] == QStringLiteral("--thin-reference")
@@ -2920,6 +3458,22 @@ int main(int argc, char **argv) {
             require(geometry.loadDefault(&error), error);
             const auto thinCatalog = gui::thin::buildCatalog(geometry, &error);
             require(!thinCatalog.isEmpty(), error);
+            if (arguments[1] == QStringLiteral("--thin-source-raster-check")) {
+                require(arguments.size() == 3, QStringLiteral("Expected a saved source fit project"));
+                sourceLiningRasterCheck(arguments[2], geometry);
+                return 0;
+            }
+            if (arguments[1] == QStringLiteral("--lining-detection-tests")) {
+                liningDetectionTests();
+                return 0;
+            }
+            if (arguments[1] == QStringLiteral("--thin-source-detect")
+                || arguments[1] == QStringLiteral("--thin-source-quality")) {
+                require(arguments.size() == 4, QStringLiteral("Expected a source project and comparison output project"));
+                sourceLiningTrial(arguments[2], arguments[3], geometry, thinCatalog,
+                    arguments[1] == QStringLiteral("--thin-source-quality"));
+                return 0;
+            }
             if (arguments[1] == QStringLiteral("--thin-color-reference-quality")) {
                 require(arguments.size() == 3 || arguments.size() == 4, QStringLiteral("Expected a lining project and optional output project"));
                 fitColoredLiningReference(arguments[2], arguments.size() == 4

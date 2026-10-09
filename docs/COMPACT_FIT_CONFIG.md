@@ -88,6 +88,32 @@ These identify the configuration snapshot used for a fit.
 
 ## Thin regions and Lining
 
+**ImgGen → Detect Lining** detects strokes in the selected image guide and saves
+a separate guide with transparent pixels outside the detected strokes. The
+source guide keeps its image and transform. Detection runs in the background
+and supports cancellation through the existing fill controls.
+
+The detector searches for narrow contrast ridges in four directions. Its
+default width limit is 0.8% of the smaller image dimension, bounded to 3–24
+source pixels. It uses a luminance contrast of 12, requires stronger support
+within each connected stroke, removes components smaller than eight pixels,
+and assigns up to six representative stroke colors. Local contrast supports
+grey interior stripes. Transparent source pixels stay empty. The reusable
+`extractLining` API exposes width, contrast, area and color limits and returns
+both pixel masks and traced contours for image generation. Detection describes
+local image geometry; shading and narrow colored details can also qualify as
+strokes. Check the detected guide before fitting the regions.
+
+`lining_detection.log` records detection parameters, pixel and component counts,
+and runtime. Detection and fitting have separate diagnostics.
+The thin fitting API accepts protected empty geometry and an optional original
+stroke geometry for thickness measurement. A padded fitting target retains
+that original thickness reference. Image trials protect fully transparent
+source pixels and the interior of cutouts while allowing padding along the
+surrounding strokes. Curves are flattened in source coordinates before fitting.
+The human examples supply alignment and style
+references; their coverage is not a completion requirement for source detection.
+
 **Compact Fit — Thin Regions** and the Lining tool read
 `assets/lining_shapes.json` beside the executable on each operation. The same
 schema and validation rules apply. Edit `build/Release/assets/lining_shapes.json`

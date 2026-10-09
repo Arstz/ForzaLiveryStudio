@@ -28,6 +28,14 @@ exports grouped `C_group` folders and `C_livery` folders.
 - Edit layers with Select, Move, Marquee, Transform, Rotate, Pipette, Pen, and Lining
   canvas tools. Pipette can return to the previously used tool after a successful
   pick through a persistent, default-on Options toggle.
+  **ImgGen → Detect Lining** extracts narrow strokes from one selected source
+  image guide into a separate guide. Detection uses local width and contrast,
+  including for grey interior stripes, and retains transparent empty areas.
+  It runs in the background with cancellation and undoable insertion. The
+  reusable extraction API supplies pixel masks and traced colored regions for
+  image generation. A detected guide can be inspected or used as a Bucket
+  source for Thin Regions fitting. Detection settings and counts are written
+  to `lining_detection.log`.
   Pen builds a closed hard/soft cubic compound contour with editable interior cutouts.
   **Edit ? Save Pen Contour as Figure** stores the current open or closed contour
   as a layer in the project. Figures retain hard/soft anchors, handle offsets,

@@ -26,6 +26,8 @@ constexpr double kStrokeWidthFlatteningScale = 8.0;
 constexpr double kStrokeCurveThreshold = 0.0001;
 constexpr int kExpansionRounds = 3;
 constexpr double kGrowthWindowWidthPadding = 3.0;
+constexpr double kGrowthTileWidthFactor = 16.0;
+constexpr int kGrowthTileMaximumDepth = 6;
 constexpr double kGrowthStep = 0.075;
 constexpr double kJoinExtensionWidthFraction = 0.12;
 constexpr int kNativeReplacementRounds = 2;
@@ -521,12 +523,95 @@ struct GrowthWindow {
     catalog::Polygons protectedCoverage;
 };
 
+class GrowthGeometryCache {
+public:
+    GrowthGeometryCache(const catalog::Region &region, const catalog::Polygons &preferred,
+                        double width) {
+        root_.geometry = {preferred, region.permitted, region.visible};
+        root_.bounds = catalog::painterPath(preferred + region.permitted + region.visible).boundingRect();
+        minimumSide_ = std::max(width * kGrowthTileWidthFactor,
+            std::max(root_.bounds.width(), root_.bounds.height()) / (1 << kGrowthTileMaximumDepth));
+    }
+
+    GrowthWindow clipped(const QRectF &bounds) {
+        std::array<catalog::Polygons, 3> geometry;
+        GrowthWindow result;
+        collect(&root_, bounds, 0, &geometry);
+        result.bounds = bounds;
+        result.preferred = catalog::unite(geometry[0]);
+        result.permitted = catalog::unite(geometry[1]);
+        result.protectedCoverage = catalog::unite(geometry[2]);
+
+        return result;
+    }
+
+private:
+    struct Tile {
+        QRectF bounds;
+        std::array<catalog::Polygons, 3> geometry;
+        std::array<std::unique_ptr<Tile>, 4> children;
+        bool split = false;
+    };
+
+    static double coordinate(double value) {
+
+        return std::round(value * catalog::kCoordinateScale) / catalog::kCoordinateScale;
+    }
+
+    void collect(Tile *tile, const QRectF &bounds, int depth,
+                 std::array<catalog::Polygons, 3> *geometry) {
+        if (!tile->bounds.intersects(bounds))
+            return;
+        if (bounds.contains(tile->bounds)) {
+            for (int index = 0; index < 3; ++index)
+                (*geometry)[index] += tile->geometry[index];
+            return;
+        }
+        if (depth == kGrowthTileMaximumDepth
+            || (tile->bounds.width() <= minimumSide_ && tile->bounds.height() <= minimumSide_)) {
+            const catalog::Polygons frame{QPolygonF(bounds)};
+            for (int index = 0; index < 3; ++index)
+                (*geometry)[index] += catalog::intersect(tile->geometry[index], frame);
+            return;
+        }
+        if (!tile->split) {
+            const double middleX = coordinate(tile->bounds.center().x());
+            const double middleY = coordinate(tile->bounds.center().y());
+            for (int index = 0; index < 4; ++index) {
+                auto child = std::make_unique<Tile>();
+                child->bounds = QRectF(QPointF(index & 1 ? middleX : tile->bounds.left(),
+                    index & 2 ? middleY : tile->bounds.top()),
+                    QPointF(index & 1 ? tile->bounds.right() : middleX,
+                    index & 2 ? tile->bounds.bottom() : middleY));
+                const catalog::Polygons frame{QPolygonF(child->bounds)};
+                bool empty = true;
+                for (int field = 0; field < 3; ++field) {
+                    child->geometry[field] = catalog::intersect(tile->geometry[field], frame);
+                    empty = empty && child->geometry[field].isEmpty();
+                }
+                if (!empty)
+                    tile->children[index] = std::move(child);
+            }
+            tile->split = true;
+        }
+        for (auto &child : tile->children)
+            if (child)
+                collect(child.get(), bounds, depth + 1, geometry);
+    }
+
+    Tile root_;
+    double minimumSide_ = 0.0;
+};
+
 GrowthWindow growthWindow(const QRectF &bounds, double width, const catalog::Region &region,
-                          const catalog::Polygons &preferred, const catalog::Polygons &protectedCoverage) {
+                          const catalog::Polygons &preferred, const catalog::Polygons &protectedCoverage,
+                          GrowthGeometryCache *cache) {
     GrowthWindow result;
     const double padding = width * kGrowthWindowWidthPadding;
 
     result.bounds = bounds.adjusted(-padding, -padding, padding, padding);
+    if (cache)
+        return cache->clipped(result.bounds);
     const catalog::Polygons frame{QPolygonF(result.bounds)};
     result.preferred = catalog::intersect(preferred, frame);
     result.permitted = catalog::intersect(region.permitted, frame);
@@ -538,13 +623,17 @@ GrowthWindow growthWindow(const QRectF &bounds, double width, const catalog::Reg
 void expandPlacements(QVector<PenPlacement> *placements, const catalog::Region &region,
                       const QVector<catalog::Primitive> &primitives,
                       const catalog::Polygons &preferredCoverage, double preferredThicknessRatio,
+                      bool cacheGeometry,
                       const std::function<bool()> &cancelled) {
     QVector<catalog::Polygons> polygons;
     QVector<QRectF> bounds;
     QVector<GrowthWindow> windows(placements->size());
+    std::unique_ptr<GrowthGeometryCache> geometryCache;
     const catalog::PointContainment envelope(region.permitted);
     const double width = meanWidth(region.visible);
     const double growthStep = std::max(kGrowthStep, (preferredThicknessRatio - 1.0) * 0.5);
+    if (cacheGeometry)
+        geometryCache = std::make_unique<GrowthGeometryCache>(region, preferredCoverage, width);
 
     for (const auto &placement : *placements) {
         polygons.push_back(coverageOf({placement}, primitives));
@@ -571,10 +660,11 @@ void expandPlacements(QVector<PenPlacement> *placements, const catalog::Region &
             double bestGain = 0.0;
 
             if (!window.bounds.contains(neighborhood))
-                window = growthWindow(bounds[index], width, region, preferredCoverage, region.visible);
+                window = growthWindow(bounds[index], width, region, preferredCoverage, region.visible, geometryCache.get());
             for (int other = 0; other < polygons.size(); ++other)
                 if (window.bounds.intersects(bounds[other]))
-                    localCoverage += polygons[other];
+                    localCoverage += geometryCache
+                        ? catalog::intersect(polygons[other], {QPolygonF(window.bounds)}) : polygons[other];
             const auto localMissing = catalog::intersect(
                 catalog::subtract(window.preferred, catalog::unite(localCoverage)), {QPolygonF(neighborhood)});
 
@@ -1563,12 +1653,13 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
         const double allowance = options.boundaryAllowance;
         auto region = visibleRegion(authored, options.leeway);
         phase(QStringLiteral("envelope"));
-        const auto envelope = thicknessEnvelope(authored.visible, allowance, options.maximumThicknessRatio, liningWidth, cancelled);
+        const auto &thicknessReference = options.thicknessReference.isEmpty() ? authored.visible : options.thicknessReference;
+        const auto envelope = thicknessEnvelope(thicknessReference, allowance, options.maximumThicknessRatio, liningWidth, cancelled);
         const double preferredThicknessRatio = std::min(options.preferredThicknessRatio, options.maximumThicknessRatio);
         phase(QStringLiteral("preferredEnvelope"));
-        const auto preferredCoverage = catalog::subtract(thicknessEnvelope(authored.visible, allowance,
-            preferredThicknessRatio, liningWidth, cancelled), region.leeway);
-        region.permitted = catalog::unite(envelope + region.leeway);
+        const auto preferredCoverage = catalog::subtract(catalog::subtract(thicknessEnvelope(thicknessReference, allowance,
+            preferredThicknessRatio, liningWidth, cancelled), region.leeway), options.protectedEmpty);
+        region.permitted = catalog::subtract(catalog::unite(envelope + region.leeway), options.protectedEmpty);
         region.permittedPath = catalog::painterPath(region.permitted);
         QJsonObject holeStages;
         const auto recordHoles = [&](const QString &stage) {
@@ -1633,7 +1724,8 @@ static catalog::FillResult fillTarget(const PenFillRequest &request, const catal
         refinementTimer.start();
         phase(QStringLiteral("growth"));
         recordHoles(QStringLiteral("seed"));
-        expandPlacements(&result.fill.placements, region, primitives, preferredCoverage, preferredThicknessRatio, cancelled);
+        expandPlacements(&result.fill.placements, region, primitives, preferredCoverage,
+            preferredThicknessRatio, !options.protectedEmpty.isEmpty(), cancelled);
         recordHoles(QStringLiteral("growth"));
         recordRefinement(QStringLiteral("growth"));
         phase(QStringLiteral("gapRepair"));
