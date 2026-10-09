@@ -105,30 +105,67 @@ and spans; the backend does not construct a triangle mesh. Whole-region matching
 affine hull anchors as well as bounding boxes, so rotation and heavy skew do
 not require a preferred shape ID.
 
-The overlap envelope follows local stroke width. Its default limit is 1.6 times
-the original thickness, with the supplied outward margin as an additional
+The overlap envelope follows local stroke width. The GUI quality preset limits
+thickness to 2 times the original, with the supplied outward margin as an additional
 absolute cap. The API permits thickness ratios above 1 and at most 2. Tapered
 tips receive a small geometric tolerance. Open Lining paths use their specified
 width; closed regions estimate width from inward boundary crossings. Candidate
 selection penalizes extra ink while favoring placements that cover long spans.
+Medial paths and partial source profiles support matching across junctions.
+Candidate paths also connect compatible tangent directions through junctions.
+Stable noncollinear anchors support inflected curves. Growth uses cached local
+geometry, and gap repair keeps original cutout edges distinct from new holes.
+The quality search also recognizes affine native arcs in polygon contours.
+Recognized shapes must fit the original painted geometry. When they cover most
+of the region, selection retains these strokes before filling the residual.
+A native cover with at least 99.5% area coverage and 99.9% interior coverage
+skips the broad profile search. Selection checks these thresholds again before
+skipping residual body proposals and the expensive pose refinement. Growth,
+gap repair, cleanup, native replacements, merging and final checks still run.
+Curve screening uses
+a raster resolution based on stroke width, and quality profile fits allow more
+numerical iterations and trimmed ends.
+Preferred padding contributes to selection without requiring coverage of all
+padding pixels.
 At least 98% of the selected region must remain covered. Existing placements
-can grow toward a preferred thickness of 1.15 times the original, within the
+can grow toward a preferred thickness of 1.6 times the original, within the
 same envelope. This is a soft target that preserves coverage and continuity.
+Width growth keeps selected pixels that are already covered intact.
 Placements that add little coverage are removed before and after gap repair
-when local connectivity and cutouts remain intact. Leeway represents layers above the
+when protected interior coverage, connectivity and cutouts remain intact in the
+complete union. Quality selection gives additional weight to the stroke interior.
+Small gaps first try expanding a nearby placement. Leeway represents layers above the
 lining: generated shapes can continue underneath, and visible coverage checks
 exclude those areas. Square `101` in
 `gap_patches` enables significant gap proposals, and Square `101` in
 `exact_replacements` enables rectangle consolidation. Shapes in
 `group_replacements` can consolidate neighboring placements through reused
-profile candidates and bounded local affine fits. Separate native regions are
-matched individually before the profile search. Width growth takes priority
+profile candidates and bounded local affine fits. Quality refinement also adjusts
+neighboring groups through translation, rotation, scale and shear.
+Group membership follows geometric contact and the fraction of overlap.
+Nearby placements can close very small gaps with fine scale adjustments;
+rectangle repair includes the precision of the emitted float transform.
+Separate native regions are matched individually before the profile search. Width growth takes priority
 over length adjustments at joins. The remaining task lists are reserved for
 the general Compact Fit backend. Search budgets, the coverage target and
 geometric tolerances are API options, separate from the shape configuration.
+Default API options use the shorter search, with preferred thickness 1.15 and
+maximum thickness 1.6. `thin::qualityOptions()` supplies the GUI preset:
+2,000,000 profile trials, 120,000 pose evaluations and a 180-second time budget
+for pose refinement. Whole-region fits can finish before these stages. Budget
+exhaustion proceeds to final verification with the accepted placements.
 
-The headless test tool accepts `--thin-tests`, `--thin-fit <contour-log>` and
-`--thin-reference <project> [comparison-project]`. Thin operations use their
+The headless test tool accepts `--thin-tests`, `--thin-quality-tests`,
+`--thin-fit <contour-log>` and
+`--thin-reference <project> [comparison-project]`. Use
+`--thin-reference-quality <project> [comparison-project]` for the quality preset.
+`--thin-reference-quality-seed <project>` stops after candidate selection and
+reports the seed measurements without running the refinement passes.
+`--thin-color-reference-quality <project> [comparison-project]` fits opaque color
+runs separately, treats later opaque runs as leeway, and retains translucent
+source placements and their opacity in the comparison. Reference commands
+report fitting phases as well as final measurements.
+Thin operations use their
 own catalog. The explicit `--shape-config` argument applies to general Compact
 Fit operations.
 

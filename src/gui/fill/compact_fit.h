@@ -21,12 +21,14 @@ struct ReusableCandidate {
 struct FillOptions {
     QVector<PenPlacement> initialPlacements;
     QVector<QPolygonF> leeway;
+    QVector<QPolygonF> thinPreferredCoverage;
     std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     std::function<void(int, int, int)> workProgress;
     int shapeBudget = kDefaultShapeBudget;
     int evaluationBudget = kDefaultEvaluationBudget;
     int profileTrialBudget = 0;
     bool thinRegion = false;
+    bool thinRegionQuality = false;
     bool retainFailedFill = false;
     bool useGpu = true;
     // Diagnostic replay can inspect the profile seed before Compact Fit refinement.

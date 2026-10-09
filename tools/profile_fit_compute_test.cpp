@@ -81,7 +81,8 @@ int main(int argc, char **argv) {
                 targets.push_back(target);
                 transform.values[4] += 0.02;
                 transform.values[5] -= 0.03;
-                jobs.push_back({transform, shape, static_cast<int>(targets.size()) - 1, 2});
+                jobs.push_back({transform, shape, static_cast<int>(targets.size()) - 1, 2,
+                    variant % 2 ? 16 : compute::kDefaultIterations});
             }
         }
         const auto base = jobs;

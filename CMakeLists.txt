@@ -268,6 +268,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET} WIN32
     src/gui/fill/lining_fill.cpp
     src/gui/fill/lining_fill.h
     src/gui/fill/thin_fit.cpp
+    src/gui/fill/thin_fit_spans.cpp
+    src/gui/fill/thin_fit_spans.h
     src/gui/fill/thin_fit.h
     src/gui/fill/cubic_contour.cpp
     src/gui/fill/pen_fill.cpp
@@ -395,6 +397,7 @@ if(FLS_BUILD_TESTS)
     add_executable(fls_compact_fit_tests
         tools/compact_fit_test.cpp
         src/gui/fill/thin_fit.cpp
+        src/gui/fill/thin_fit_spans.cpp
         src/gui/fill/lining_fill.cpp
         src/gui/fill/compact_fit.cpp
         src/gui/fill/compact_fit_reduction.cpp

@@ -110,7 +110,8 @@ bool ProfileFitter::evaluate(const std::vector<compute::Job> &jobs, std::vector<
     timer.start();
     results->clear();
     for (const auto &job : jobs) {
-        if (job.source < 0 || job.source >= sources_.size() || job.target < 0 || job.target >= targets_.size()) {
+        if (job.source < 0 || job.source >= sources_.size() || job.target < 0 || job.target >= targets_.size()
+            || job.iterations < 1) {
             throw std::runtime_error("Profile fitting job has an invalid arc index");
         }
     }

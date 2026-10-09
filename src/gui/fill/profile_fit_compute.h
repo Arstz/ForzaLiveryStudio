@@ -8,6 +8,7 @@ namespace gui::profile::compute {
 
 inline constexpr int kSamples = 17;
 inline constexpr int kBatchSize = 4096;
+inline constexpr int kDefaultIterations = 4;
 
 struct Point {
     double x = 0.0;
@@ -26,7 +27,13 @@ struct Job {
     Transform initial;
     int source = 0;
     int target = 0;
+    int iterations = kDefaultIterations;
     double initialErrorLimit = 0.0;
+
+    Job() = default;
+    Job(Transform initial, int source, int target, double initialErrorLimit,
+        int iterations = kDefaultIterations)
+        : initial(initial), source(source), target(target), iterations(iterations), initialErrorLimit(initialErrorLimit) {}
 };
 
 struct Fit {

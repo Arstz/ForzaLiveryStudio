@@ -12,7 +12,6 @@
 
 namespace gui::profile::compute {
 
-inline constexpr int kIterations = 4;
 inline constexpr int kParameters = 6;
 inline constexpr double kMinimumLength = 1e-8;
 inline constexpr double kMinimumPivot = 1e-12;
@@ -139,7 +138,7 @@ FLS_PROFILE_NUMERIC Fit fit(const Arc &source, const Arc &target, const Job &job
         return result;
     }
     result.fitted = 1;
-    for (int iteration = 0; iteration < kIterations; ++iteration) {
+    for (int iteration = 0; iteration < job.iterations; ++iteration) {
         double matrix[kParameters][kParameters + 1]{};
         for (const auto point : source.points) {
             Point tangent{};

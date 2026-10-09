@@ -4,12 +4,14 @@
 #include "compact_fit_quality.h"
 #include "compact_fit_gpu_rank.h"
 #include "greedy_cover.h"
+#include "thin_fit_spans.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <numbers>
 #include <optional>
@@ -26,6 +28,9 @@ constexpr int kSpanBatchSize = 32;
 constexpr int kCandidatesPerSpan = 6;
 constexpr int kGpuProfileShortlistFactor = 4;
 constexpr int kMaximumCandidates = 2400;
+constexpr int kMaximumThinCurveCandidates = 12000;
+constexpr int kMaximumThinQualityCurveCandidates = 24000;
+constexpr int kThinQualityCandidatesPerSpan = 12;
 constexpr int kGpuSelectionShortlist = 12000;
 constexpr int kMaximumTrials = 160000;
 constexpr int kMaximumProfileWork = 640000;
@@ -33,6 +38,35 @@ constexpr int kGridExtent = 640;
 constexpr int kThinGridExtent = 2048;
 constexpr int kThinRepairCenters = 128;
 constexpr double kThinSpillPenalty = 0.1;
+constexpr double kThinPreferredCoverageWeight = 0.35;
+constexpr double kMedialEndpointInset = 0.00001;
+constexpr double kMedialSourceCurvatureFraction = 0.001;
+constexpr double kMedialTargetCurvatureWidthFraction = 0.05;
+constexpr double kMedialPartialStep = 0.25;
+constexpr double kStableAnchorMiddleFraction = 0.25;
+constexpr double kThinCurveCornerAngle = 0.8;
+constexpr double kThinRasterWidthFraction = 0.25;
+constexpr int kNativeArcSamples = 7;
+constexpr int kNativeArcFingerprintScale = 64;
+constexpr int kMaximumNativeArcCandidates = 4096;
+constexpr double kNativeArcMinimumBend = 0.000001;
+constexpr double kNativeArcMatchScaleFraction = 0.0001;
+constexpr double kNativeArcDuplicateScaleFraction = 0.1;
+constexpr double kNativeArcSourceClearanceFactor = 64.0;
+constexpr double kNativeArcSourceScaleFraction = 0.02;
+constexpr std::array<int, 3> kNativeArcStrides{4, 2, 1};
+constexpr int kNativeArcNeighborKeys = 81;
+constexpr double kMaximumNativeArcCoordinate = 32.0;
+constexpr double kNativeSeedMinimumCoverage = 0.5;
+constexpr double kNativeCompleteMissingAreaRatio = 0.005;
+constexpr double kThinCoreWidthFraction = 0.06;
+constexpr double kThinQualityMissingCellFraction = 0.002;
+constexpr double kThinQualityMissingCoreFraction = 0.001;
+constexpr double kThinProfileAreaWidthMultiplier = 8.0;
+constexpr int kThinQualityProfileIterations = 16;
+constexpr std::array<double, 3> kMedialEndpointTrims{0.025, 0.05, 0.1};
+constexpr std::array<double, 4> kMedialSourceFractions{1.0, 0.75, 0.5, 0.25};
+constexpr std::array<double, 3> kMedialTargetFractions{1.0, 0.75, 0.5};
 constexpr int kBodyCenters = 24;
 constexpr int kThinBodyCenters = 200;
 constexpr int kBodyGridExtent = 4096;
@@ -67,11 +101,13 @@ struct Profile {
     QTransform normalization;
     QTransform anchors;
     int primitive = 0;
+    bool medial = false;
 };
 
 struct CurveJob {
     QPolygonF target;
     QTransform anchors;
+    bool medial = false;
     double length = 0.0;
 };
 
@@ -82,6 +118,7 @@ struct Candidate {
     QRectF bounds;
     Bits cells;
     Bits boundary;
+    bool nativeArc = false;
     double error = 0.0;
     double spill = 0.0;
     double span = 0.0;
@@ -104,6 +141,8 @@ struct CandidateValidationStats {
 struct Grid {
     QPointF origin;
     Bits target;
+    Bits required;
+    Bits core;
     QVector<int> cells;
     int width = 0;
     int height = 0;
@@ -188,14 +227,14 @@ bool stopped(const std::function<bool()> &cancelled) {
     return cancelled && cancelled();
 }
 
-Trace makeTrace(const QPolygonF &points) {
+Trace makeTrace(const QPolygonF &points, double cornerAngle = kCornerAngle) {
     Trace result;
     result.points = points;
     for (int index = 0; index < points.size(); ++index) {
         const auto incoming = unit(points[index] - points[(index + points.size() - 1) % points.size()]);
         const auto outgoing = unit(points[(index + 1) % points.size()] - points[index]);
         result.lengths.push_back(result.perimeter);
-        if (std::abs(std::atan2(cross(incoming, outgoing), QPointF::dotProduct(incoming, outgoing))) > kCornerAngle) {
+        if (std::abs(std::atan2(cross(incoming, outgoing), QPointF::dotProduct(incoming, outgoing))) > cornerAngle) {
             result.corners.push_back(result.perimeter);
         }
         result.perimeter += QLineF(points[index], points[(index + 1) % points.size()]).length();
@@ -276,6 +315,144 @@ QVector<Profile> sourceProfiles(const QVector<catalog::Primitive> &primitives) {
                         {QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)});
                     result.push_back(std::move(profile));
                 }
+            }
+        }
+    }
+
+    return result;
+}
+
+int medialAnchor(const QPolygonF &points) {
+    const auto chord = points.back() - points.front();
+    int result = kProfileSamples / 2;
+    double maximum = 0.0;
+
+    for (int index = 1; index + 1 < points.size(); ++index) {
+        const double deviation = std::abs(cross(chord, points[index] - points.front()));
+        if (deviation > maximum) {
+            result = index;
+            maximum = deviation;
+        }
+    }
+    if (std::abs(cross(chord, points[kProfileSamples / 2] - points.front()))
+            >= maximum * kStableAnchorMiddleFraction)
+        result = kProfileSamples / 2;
+
+    return result;
+}
+
+QVector<Profile> medialProfiles(const QVector<catalog::Primitive> &primitives, bool partial) {
+    QVector<Profile> result;
+
+    for (int primitive = 0; primitive < primitives.size(); ++primitive) {
+        const auto &shape = primitives[primitive].shape;
+        if (!catalog::usesTask(primitives[primitive], catalog::ShapeTask::Curves))
+            continue;
+        for (bool horizontal : {true, false}) {
+            QPolygonF points;
+            const double minimum = horizontal ? shape.bounds.left() : shape.bounds.top();
+            const double extent = horizontal ? shape.bounds.width() : shape.bounds.height();
+            for (int sample = 0; sample < kProfileSamples; ++sample) {
+                QVector<double> crossings;
+                const double along = minimum + extent * std::clamp(double(sample) / (kProfileSamples - 1),
+                    kMedialEndpointInset, 1.0 - kMedialEndpointInset);
+                for (const auto &polygon : shape.contours)
+                    for (int index = 0; index < polygon.size(); ++index) {
+                        const auto first = polygon[index];
+                        const auto last = polygon[(index + 1) % polygon.size()];
+                        const double start = horizontal ? first.x() : first.y();
+                        const double end = horizontal ? last.x() : last.y();
+                        if ((start <= along && along < end) || (end <= along && along < start)) {
+                            const double across = horizontal ? first.y() : first.x();
+                            const double delta = horizontal ? last.y() - first.y() : last.x() - first.x();
+                            crossings.push_back(across + delta * (along - start) / (end - start));
+                        }
+                    }
+                std::sort(crossings.begin(), crossings.end());
+                double widest = 0.0;
+                double center = 0.0;
+                for (int index = 0; index + 1 < crossings.size(); index += 2)
+                    if (crossings[index + 1] - crossings[index] > widest) {
+                        widest = crossings[index + 1] - crossings[index];
+                        center = (crossings[index] + crossings[index + 1]) * 0.5;
+                    }
+                if (crossings.isEmpty())
+                    break;
+                points.push_back(horizontal ? QPointF(along, center) : QPointF(center, along));
+            }
+            if (points.size() != kProfileSamples)
+                continue;
+            const auto original = points;
+            QVector<std::pair<double, double>> intervals;
+            for (double fraction : kMedialSourceFractions) {
+                if (!partial && fraction != kMedialSourceFractions.front())
+                    break;
+                for (double start = 0.0; start + fraction <= 1.0 + kMedialEndpointInset; start += kMedialPartialStep)
+                    intervals.push_back({start, fraction});
+            }
+            if (partial)
+                for (double trim : kMedialEndpointTrims)
+                    intervals.push_back({trim, 1.0 - trim * 2.0});
+            for (const auto &[start, fraction] : intervals) {
+                points.clear();
+                for (int sample = 0; sample < kProfileSamples; ++sample) {
+                    const double position = (start + fraction * sample / (kProfileSamples - 1)) * (kProfileSamples - 1);
+                    const int index = std::min(int(position), kProfileSamples - 2);
+                    points.push_back(original[index] + (original[index + 1] - original[index]) * (position - index));
+                }
+                const int anchor = medialAnchor(points);
+                const double length = QLineF(points.front(), points.back()).length();
+                if (length < kMinimumLength || std::abs(cross(points.back() - points.front(),
+                        points[anchor] - points.front())) < length * length * kMedialSourceCurvatureFraction)
+                    continue;
+                for (bool reverse : {false, true}) {
+                    if (reverse)
+                        std::reverse(points.begin(), points.end());
+                    const int anchor = medialAnchor(points);
+                    Profile profile;
+                    profile.primitive = primitive;
+                    profile.medial = true;
+                    profile.normalization.scale(1.0 / length, 1.0 / length);
+                    profile.normalization.translate(-points[kProfileSamples / 2].x(), -points[kProfileSamples / 2].y());
+                    profile.points = profile.normalization.map(points);
+                    profile.anchors = catalog::affineFromAnchors({profile.points.front(), profile.points[anchor], profile.points.back()},
+                        {QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)});
+                    result.push_back(profile);
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+QVector<CurveJob> medialJobs(const catalog::Region &region, double width,
+                            const std::function<bool()> &cancelled) {
+    QVector<CurveJob> result;
+
+    for (const auto &span : thin::medialSpans(region, width, cancelled)) {
+        Trace trace;
+        trace.points = span;
+        for (int index = 0; index < span.size(); ++index) {
+            trace.lengths.push_back(trace.perimeter);
+            if (index + 1 < span.size())
+                trace.perimeter += QLineF(span[index], span[index + 1]).length();
+        }
+        trace.lengths.push_back(trace.perimeter);
+        for (double fraction : kMedialTargetFractions) {
+            const double length = trace.perimeter * fraction;
+            for (double start : {0.0, trace.perimeter - length}) {
+                auto points = sampleArc(trace, start, length * (1.0 - kMedialEndpointInset));
+                const auto chord = points.back() - points.front();
+                const int anchor = medialAnchor(points);
+                if (std::abs(cross(chord, points[anchor] - points.front()))
+                    < QLineF({}, chord).length() * width * kMedialTargetCurvatureWidthFraction)
+                    continue;
+                const auto anchors = catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
+                    {points.front(), points[anchor], points.back()});
+                result.push_back({points, anchors, true, length});
+                if (fraction == 1.0)
+                    break;
             }
         }
     }
@@ -420,6 +597,168 @@ std::optional<Candidate> candidateFor(const PenPrimitive &shape, const QTransfor
     return result;
 }
 
+struct NativeArc {
+    std::array<QPointF, kNativeArcSamples> points;
+    QTransform normalization;
+    int primitive = 0;
+};
+
+using ArcFingerprint = std::array<int, 4>;
+using NativePoseKey = std::pair<qint64, qint64>;
+using NativePoseIndex = std::map<NativePoseKey, QVector<QTransform>>;
+
+NativePoseKey nativePoseKey(const QTransform &transform, const QRectF &bounds, double distance) {
+    const auto center = transform.map(bounds.center());
+
+    return {static_cast<qint64>(std::floor(center.x() / distance)),
+        static_cast<qint64>(std::floor(center.y() / distance))};
+}
+
+bool duplicateNativePose(const QTransform &transform, const QRectF &bounds,
+                          const NativePoseIndex &poses, double distance) {
+    const std::array<QPointF, 3> probes{bounds.topLeft(), bounds.topRight(), bounds.bottomLeft()};
+    const auto key = nativePoseKey(transform, bounds, distance);
+
+    for (int row = -1; row <= 1; ++row)
+        for (int column = -1; column <= 1; ++column) {
+            const auto found = poses.find({key.first + column, key.second + row});
+            if (found != poses.end() && std::any_of(found->second.cbegin(), found->second.cend(),
+                    [&](const auto &previous) {
+                        return std::all_of(probes.cbegin(), probes.cend(), [&](const auto &point) {
+                            return QLineF(previous.map(point), transform.map(point)).length() <= distance;
+                        });
+                    }))
+                return true;
+        }
+
+    return false;
+}
+
+std::optional<NativeArc> nativeArc(const QPolygonF &polygon, int first, int direction, int stride) {
+    NativeArc result;
+
+    if (polygon.size() <= (kNativeArcSamples - 1) * stride)
+        return {};
+    for (int index = 0; index < kNativeArcSamples; ++index)
+        result.points[index] = polygon[(first + direction * index * stride + polygon.size()) % polygon.size()];
+    const auto chord = result.points.back() - result.points.front();
+    if (std::abs(cross(chord, result.points[kNativeArcSamples / 2] - result.points.front()))
+            <= QPointF::dotProduct(chord, chord) * kNativeArcMinimumBend)
+        return {};
+    result.normalization = catalog::affineFromAnchors(
+        {result.points.front(), result.points[kNativeArcSamples / 2], result.points.back()},
+        {QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)});
+
+    return result;
+}
+
+std::optional<ArcFingerprint> arcFingerprint(const NativeArc &arc) {
+    const auto first = arc.normalization.map(arc.points[1]);
+    const auto last = arc.normalization.map(arc.points[kNativeArcSamples - 2]);
+
+    for (double coordinate : {first.x(), first.y(), last.x(), last.y()})
+        if (!std::isfinite(coordinate) || std::abs(coordinate) > kMaximumNativeArcCoordinate)
+            return {};
+
+    return ArcFingerprint{qRound(first.x() * kNativeArcFingerprintScale), qRound(first.y() * kNativeArcFingerprintScale),
+        qRound(last.x() * kNativeArcFingerprintScale), qRound(last.y() * kNativeArcFingerprintScale)};
+}
+
+void addNativeArcCandidates(const catalog::Region &region, const Polygons &outer,
+                            const QVector<catalog::Primitive> &primitives,
+                            const compact::BoundaryModel &boundary, double scale,
+                            const std::function<bool()> &cancelled,
+                            QVector<Candidate> *pool, QJsonObject *diagnostics) {
+    std::map<ArcFingerprint, QVector<NativeArc>> sources;
+    std::vector<NativePoseIndex> accepted(primitives.size());
+    const catalog::PointContainment envelope(outer);
+    const catalog::PointContainment sourceEnvelope(catalog::expanded(
+        catalog::unite(region.required + region.leeway), std::max(scale * kNativeArcSourceScaleFraction,
+            catalog::kVerificationClearance * kNativeArcSourceClearanceFactor)));
+    const double matchDistance = std::max(catalog::kVerificationClearance * 16.0, scale * kNativeArcMatchScaleFraction);
+    const double duplicateDistance = scale * kNativeArcDuplicateScaleFraction;
+    int matches = 0;
+    int checked = 0;
+
+    for (int primitive = 0; primitive < primitives.size(); ++primitive) {
+        if (!catalog::usesTask(primitives[primitive], catalog::ShapeTask::Curves))
+            continue;
+        for (const auto &polygon : catalog::unite(primitives[primitive].shape.contours)) {
+            if (polygon.size() < kNativeArcSamples)
+                continue;
+            for (int first = 0; first < polygon.size(); ++first)
+                for (int direction : {-1, 1})
+                    for (int stride : kNativeArcStrides) {
+                        auto arc = nativeArc(polygon, first, direction, stride);
+                        if (arc) {
+                            arc->primitive = primitive;
+                            const auto fingerprint = arcFingerprint(*arc);
+                            if (fingerprint)
+                                sources[*fingerprint].push_back(*arc);
+                        }
+                    }
+        }
+    }
+    for (const auto &polygon : region.required) {
+        if (polygon.size() < kNativeArcSamples)
+            continue;
+        for (int window = 0; window < polygon.size() * int(kNativeArcStrides.size()) && !stopped(cancelled)
+                && matches < kMaximumNativeArcCandidates; ++window) {
+            const int first = window / int(kNativeArcStrides.size());
+            const int stride = kNativeArcStrides[window % kNativeArcStrides.size()];
+            const auto target = nativeArc(polygon, first, 1, stride);
+            if (!target)
+                continue;
+            const auto fingerprint = arcFingerprint(*target);
+            if (!fingerprint)
+                continue;
+            const auto targetAnchors = target->normalization.inverted();
+            for (int offset = 0; offset < kNativeArcNeighborKeys && matches < kMaximumNativeArcCandidates; ++offset) {
+                auto key = *fingerprint;
+                int digits = offset;
+                for (auto &coordinate : key) {
+                    coordinate += digits % 3 - 1;
+                    digits /= 3;
+                }
+                const auto found = sources.find(key);
+                if (found == sources.end())
+                    continue;
+                for (const auto &source : found->second) {
+                    const auto &shape = primitives[source.primitive].shape;
+                    const auto transform = catalog::emittedTransform(source.normalization * targetAnchors);
+                    bool aligned = true;
+                    for (int sample = 0; sample < kNativeArcSamples; ++sample)
+                        if (QLineF(transform.map(source.points[sample]), target->points[sample]).length() > matchDistance) {
+                            aligned = false;
+                            break;
+                        }
+                    if (!aligned || !std::isfinite(transform.determinant())
+                        || shape.area * std::abs(transform.determinant()) > region.area)
+                        continue;
+                    ++checked;
+                    if (!probesInside(shape, transform, sourceEnvelope) || !probesInside(shape, transform, envelope))
+                        continue;
+                    if (duplicateNativePose(transform, shape.bounds, accepted[source.primitive], duplicateDistance))
+                        continue;
+                    auto candidate = candidateFor(shape, transform, region, outer, boundary, scale);
+                    if (!candidate)
+                        continue;
+                    const double useful = catalog::area(catalog::intersect(candidate->polygons, region.visible));
+                    if (useful <= scale * scale)
+                        continue;
+                    candidate->spill = candidate->placement.area - useful;
+                    candidate->nativeArc = true;
+                    accepted[source.primitive][nativePoseKey(transform, shape.bounds, duplicateDistance)].push_back(transform);
+                    pool->push_back(std::move(*candidate));
+                    ++matches;
+                }
+            }
+        }
+    }
+    diagnostics->insert(QStringLiteral("nativeArcCandidates"), matches);
+    diagnostics->insert(QStringLiteral("nativeArcValidations"), checked);
+}
+
 double searchScale(const catalog::Region &region, double observationScale) {
     return std::max(observationScale, std::max(region.bounds.width(), region.bounds.height()) / kSearchExtent);
 }
@@ -429,7 +768,7 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
     QVector<CurveJob> result;
     const double scale = searchScale(region, options.observationScale);
     for (const auto &polygon : region.required) {
-        const auto trace = makeTrace(polygon);
+        const auto trace = makeTrace(polygon, options.thinRegionQuality ? kThinCurveCornerAngle : kCornerAngle);
         QVector<double> starts = trace.corners;
         for (double offset = 0; offset < trace.perimeter; offset += scale * (options.thinRegion ? 48.0 : 12.0)) {
             starts.push_back(offset);
@@ -471,7 +810,7 @@ QVector<CurveJob> curveJobs(const catalog::Region &region, const compact::FillOp
                 }
                 const auto anchors = catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
                     {target.front(), target[kProfileSamples / 2], target.back()});
-                result.push_back({std::move(target), anchors, length});
+                result.push_back({std::move(target), anchors, false, length});
             }
         }
     }
@@ -602,6 +941,9 @@ QVector<Candidate> validateCurveFits(const std::vector<RankedFit> &fits, int cap
         ++*validated;
         auto candidate = candidateFor(shape, *transform, region, outer, boundary, scale);
         if (candidate) {
+            if (region.flexibleBoundary)
+                candidate->spill = candidate->placement.area
+                    - catalog::area(catalog::intersect(candidate->polygons, region.visible));
             candidate->error = ranked.fit.error;
             candidate->span = job.length;
             validatedAlternatives.push_back({candidate->placement.area - candidate->spill,
@@ -633,8 +975,17 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
     catalog::Region validationRegion = region;
     validationRegion.requiredPath = catalog::painterPath(region.required);
     const catalog::PointContainment envelope(outer);
-    const auto profiles = sourceProfiles(primitives);
-    const auto jobs = curveJobs(region, options, cancelled);
+    auto profiles = sourceProfiles(primitives);
+    auto jobs = curveJobs(region, options, cancelled);
+    if (options.thinRegion) {
+        const auto sources = medialProfiles(primitives, options.thinRegionQuality);
+        const auto spans = medialJobs(region, catalog::area(region.visible) * 2.0
+            / catalog::painterPath(region.visible).length(), cancelled);
+        diagnostics->insert(QStringLiteral("medialProfiles"), sources.size());
+        diagnostics->insert(QStringLiteral("medialJobs"), spans.size());
+        profiles += sources;
+        jobs += spans;
+    }
     const int budget = options.profileTrialBudget > 0 ? options.profileTrialBudget
         : static_cast<int>(std::clamp<qint64>(static_cast<qint64>(profiles.size()) * jobs.size(),
             kMaximumTrials, kMaximumProfileWork));
@@ -655,37 +1006,48 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
     int gpuScreened = 0;
     double validationMilliseconds = 0.0;
     const double maximumArea = region.area * (options.thinRegion ? 8.0 : 1.02);
+    const double thinWidth = options.thinRegion ? catalog::area(region.visible) * 2.0
+        / catalog::painterPath(region.visible).length() : 0.0;
     const double maximumError = options.thinRegion
         ? std::max(kProfileError * options.observationScale, options.boundaryAllowance * 0.25)
         : kProfileError * options.observationScale;
     for (int start = 0; start < jobs.size() && !stopped(cancelled); start += kSpanBatchSize) {
         const int end = std::min(start + kSpanBatchSize, static_cast<int>(jobs.size()));
         const int remainingSpans = jobs.size() - start;
-        const int remainingSlots = std::max(0, kMaximumCandidates - static_cast<int>(pool->size()));
+        const int remainingSlots = std::max(0, (options.thinRegionQuality ? kMaximumThinQualityCurveCandidates
+            : options.thinRegion ? kMaximumThinCurveCandidates : kMaximumCandidates)
+            - static_cast<int>(pool->size()));
         std::vector<compute::Job> numericJobs;
         std::vector<int> capacities(end - start);
         std::vector<std::vector<RankedFit>> ranked(end - start);
         for (int index = start; index < end; ++index) {
             const auto &job = jobs[index];
+            const double jobMaximumArea = options.thinRegion
+                ? std::min(maximumArea, job.length * thinWidth * kThinProfileAreaWidthMultiplier) : maximumArea;
             const int remaining = jobs.size() - index;
-            const int limit = std::min(static_cast<int>(profiles.size()), (budget - trials) / remaining);
+            QVector<int> eligibleProfiles;
+            for (int profile = 0; profile < profiles.size(); ++profile)
+                if (profiles[profile].medial == job.medial)
+                    eligibleProfiles.push_back(profile);
+            const int limit = std::min(static_cast<int>(eligibleProfiles.size()), (budget - trials) / remaining);
             const int local = index - start;
-            capacities[local] = std::min(kCandidatesPerSpan,
+            capacities[local] = std::min(options.thinRegionQuality ? kThinQualityCandidatesPerSpan : kCandidatesPerSpan,
                 remainingSlots * (local + 1) / remainingSpans - remainingSlots * local / remainingSpans);
             for (int sample = 0; sample < limit; ++sample) {
-                const int profileIndex = static_cast<qint64>(sample) * profiles.size() / limit;
+                const int profileIndex = eligibleProfiles[static_cast<qint64>(sample) * eligibleProfiles.size() / limit];
                 const auto &profile = profiles[profileIndex];
                 const auto &shape = primitives[profile.primitive].shape;
                 const auto initial = profile.anchors * job.anchors;
                 const auto transform = profile.normalization * initial;
                 const double area = shape.area * std::abs(transform.determinant());
                 ++trials;
-                if (capacities[local] == 0 || !std::isfinite(area) || area > maximumArea
+                if (capacities[local] == 0 || !std::isfinite(area) || area > jobMaximumArea
                     || area < options.observationScale * options.observationScale) {
                     continue;
                 }
                 numericJobs.push_back({numericTransform(initial), profileIndex, index,
-                    std::max(options.observationScale * 2.0, job.length * 0.03)});
+                    std::max(options.observationScale * 2.0, job.length * 0.03),
+                    options.thinRegionQuality ? kThinQualityProfileIterations : compute::kDefaultIterations});
             }
             processed += limit > 0;
         }
@@ -700,9 +1062,11 @@ void addCurveCandidates(const catalog::Region &region, const Polygons &outer,
             const auto &shape = primitives[profile.primitive].shape;
             const auto transform = profile.normalization * fittedTransform(fit.transform);
             const double area = shape.area * std::abs(transform.determinant());
+            const double jobMaximumArea = options.thinRegion ? std::min(maximumArea,
+                jobs[numeric.target].length * thinWidth * kThinProfileAreaWidthMultiplier) : maximumArea;
             fits += fit.fitted;
             if (!fit.valid || fit.error > maximumError
-                || !std::isfinite(area) || area > maximumArea || area <= 0) {
+                || !std::isfinite(area) || area > jobMaximumArea || area <= 0) {
                 continue;
             }
             ranked[numeric.target - start].push_back({fit, numeric.source, area});
@@ -802,18 +1166,24 @@ Bits rasterize(const Polygons &polygons, const Grid &grid) {
     return result;
 }
 
-Grid makeGrid(const catalog::Region &region, double scale) {
+Grid makeGrid(const catalog::Region &region, double scale, const Polygons &preferred = {}) {
     Grid result;
-    result.origin = region.bounds.topLeft();
-    result.step = std::max(scale * 0.5, std::max(region.bounds.width(), region.bounds.height()) / (region.flexibleBoundary ? kThinGridExtent : kGridExtent));
-    result.width = std::max(1, static_cast<int>(std::ceil(region.bounds.width() / result.step)));
-    result.height = std::max(1, static_cast<int>(std::ceil(region.bounds.height() / result.step)));
+    const auto bounds = preferred.isEmpty() ? region.bounds
+        : region.bounds.united(catalog::painterPath(preferred).boundingRect());
+    result.origin = bounds.topLeft();
+    result.step = std::max(scale * 0.5, std::max(bounds.width(), bounds.height()) / (region.flexibleBoundary ? kThinGridExtent : kGridExtent));
+    result.width = std::max(1, static_cast<int>(std::ceil(bounds.width() / result.step)));
+    result.height = std::max(1, static_cast<int>(std::ceil(bounds.height() / result.step)));
     const QRectF frame = region.bounds.adjusted(-scale * 2.0, -scale * 2.0, scale * 2.0, scale * 2.0);
     const Polygons complement = region.flexibleBoundary ? Polygons{}
         : catalog::subtract({QPolygonF(frame)}, region.required);
     result.target = rasterize(region.flexibleBoundary ? region.required
         : catalog::subtract(region.required, catalog::expanded(complement, scale * 0.35)), result);
 
+    if (!preferred.isEmpty()) {
+        result.required = result.target;
+        result.target = rasterize(catalog::unite(region.required + preferred), result);
+    }
     if (region.flexibleBoundary) {
         for (int word = 0; word < result.target.size(); ++word) {
             quint64 bits = result.target[word];
@@ -822,8 +1192,21 @@ Grid makeGrid(const catalog::Region &region, double scale) {
                 bits &= bits - 1;
             }
         }
+        if (!result.required.isEmpty()) {
+            Bits required((result.cells.size() + 63) / 64, 0);
+            for (int index = 0; index < result.cells.size(); ++index) {
+                const int cell = result.cells[index];
+                if (result.required[cell / 64] & (quint64(1) << (cell % 64)))
+                    required[index / 64] |= quint64(1) << (index % 64);
+            }
+            result.required = required;
+        }
         result.target = Bits((result.cells.size() + 63) / 64, 0);
         setRange(&result.target, 0, result.cells.size());
+    }
+    if (!preferred.isEmpty()) {
+        const double width = catalog::area(region.visible) * 2.0 / catalog::painterPath(region.visible).length();
+        result.core = rasterize(catalog::interiorSupport(region.visible, width * kThinCoreWidthFraction), result);
     }
 
     return result;
@@ -1500,7 +1883,7 @@ void addUncoveredBodyCandidates(const catalog::Region &region, const Polygons &o
                                 double scale, bool useGpu,
                                 const std::function<bool()> &cancelled,
                                 QVector<Candidate> *pool, QJsonObject *diagnostics) {
-    Bits missing = grid.target;
+    Bits missing = grid.required.isEmpty() ? grid.target : grid.required;
     for (const auto &candidate : *pool)
         removeCovered(&missing, candidate.cells.size() == grid.target.size()
             ? candidate.cells : rasterize(candidate.polygons, grid));
@@ -1992,6 +2375,18 @@ Polygons coverageOf(const QVector<Candidate> &pool, const QVector<int> &selected
     return catalog::unite(result);
 }
 
+bool nativeCoverComplete(const catalog::Region &region,
+                         const Polygons &coverage, const Polygons &missing) {
+    if (coverage.isEmpty() || catalog::area(missing) > region.area * kNativeCompleteMissingAreaRatio)
+        return false;
+    const auto core = catalog::interiorSupport(region.visible,
+        catalog::area(region.visible) * 2.0 / catalog::painterPath(region.visible).length()
+            * kThinCoreWidthFraction);
+
+    return catalog::area(catalog::intersect(missing, core))
+        <= catalog::area(core) * kThinQualityMissingCoreFraction;
+}
+
 void includeBits(Bits *coverage, const Bits &candidate) {
     for (int index = 0; index < coverage->size(); ++index) {
         (*coverage)[index] |= candidate[index];
@@ -2271,13 +2666,24 @@ QVector<int> selectIndexedCandidates(QVector<Candidate> *pool, const catalog::Re
                               const compact::FillOptions &options, double boundaryWeightFactor,
                               const std::function<bool()> &cancelled,
                               QJsonObject *diagnostics) {
-    Bits missing = grid.target;
+    Bits missing = grid.required.isEmpty() ? grid.target : grid.required;
+    Bits optional = grid.target;
+    Bits core = grid.core;
+    Bits registered(missing.size(), 0);
+    QVector<int> nativeIndices;
+    QVector<int> nativeSelected;
+    QVector<bool> used(pool->size(), false);
+    for (int word = 0; word < optional.size(); ++word)
+        optional[word] &= ~missing[word];
     Bits boundary((witnesses.size() + 63) / 64, 0);
     int remainingCells = marginal(missing, missing);
-    const int maximumMissingCells = options.thinRegion ? static_cast<int>(remainingCells * 0.012) : 0;
+    const int maximumMissingCells = options.thinRegion ? static_cast<int>(remainingCells
+        * (options.thinRegionQuality ? kThinQualityMissingCellFraction : 0.012)) : 0;
+    const int maximumMissingCore = static_cast<int>(marginal(core, core) * kThinQualityMissingCoreFraction);
     for (auto &candidate : *pool) {
         const double usefulArea = options.thinRegion
-            ? marginal(candidate.cells, grid.target) * grid.step * grid.step : 0.0;
+            ? (marginal(candidate.cells, missing)
+                + marginal(candidate.cells, optional) * kThinPreferredCoverageWeight) * grid.step * grid.step : 0.0;
         const double spillCost = options.thinRegion
             ? kThinSpillPenalty * std::max(0.0, candidate.placement.area - usefulArea)
                 / std::max(usefulArea, grid.step * grid.step) : 0.0;
@@ -2288,25 +2694,59 @@ QVector<int> selectIndexedCandidates(QVector<Candidate> *pool, const catalog::Re
     setRange(&boundary, 0, witnesses.size());
     const double boundaryWeight = region.area / std::max(1, static_cast<int>(witnesses.size()))
         * boundaryWeightFactor;
+    if (options.thinRegionQuality) {
+        for (int index = 0; index < pool->size(); ++index)
+            if ((*pool)[index].nativeArc) {
+                nativeIndices.push_back(index);
+                includeBits(&registered, (*pool)[index].cells);
+            }
+        const double registeredRatio = remainingCells > 0
+            ? double(marginal(registered, missing)) / remainingCells : 0.0;
+        diagnostics->insert(QStringLiteral("nativeArcCellCoverageRatio"), registeredRatio);
+        if (registeredRatio >= kNativeSeedMinimumCoverage) {
+            const auto selected = greedyCover(nativeIndices.size(), options.shapeBudget,
+                [&](int index) { return double(marginal((*pool)[nativeIndices[index]].cells, missing)); },
+                [&](int index) {
+                    const int candidate = nativeIndices[index];
+                    remainingCells -= marginal((*pool)[candidate].cells, missing);
+                    removeCovered(&missing, (*pool)[candidate].cells);
+                    removeCovered(&optional, (*pool)[candidate].cells);
+                    removeCovered(&core, (*pool)[candidate].cells);
+                    used[candidate] = true;
+                }, [&] { return stopped(cancelled); });
+            for (int index : selected)
+                nativeSelected.push_back(nativeIndices[index]);
+        }
+        diagnostics->insert(QStringLiteral("nativeArcSelectionCount"), nativeSelected.size());
+    }
     auto selected = options.thinRegion ? std::optional<QVector<int>>{}
         : selectBitmasksGpu(*pool, grid, boundary, options, boundaryWeight,
             cancelled, &missing, &boundary, diagnostics);
     if (!selected) {
-        selected = greedyCover(pool->size(), options.shapeBudget,
+        selected = greedyCover(pool->size(), options.shapeBudget - nativeSelected.size(),
             [&](int index) {
                 ++scoreEvaluations;
                 const auto &candidate = (*pool)[index];
+                if (used[index])
+                    return 0.0;
+                const int required = marginal(candidate.cells, missing);
+                if (!grid.required.isEmpty() && required == 0)
+                    return 0.0;
 
-
-                return (marginal(candidate.cells, missing) * grid.step * grid.step
+                return ((required + marginal(candidate.cells, core)
+                    + marginal(candidate.cells, optional) * kThinPreferredCoverageWeight) * grid.step * grid.step
                     + marginal(candidate.boundary, boundary) * boundaryWeight)
                     / candidate.selectionCost;
             },
             [&](int index) {
                 remainingCells -= marginal((*pool)[index].cells, missing);
                 removeCovered(&missing, (*pool)[index].cells);
+                removeCovered(&optional, (*pool)[index].cells);
+                removeCovered(&core, (*pool)[index].cells);
                 removeCovered(&boundary, (*pool)[index].boundary);
-            }, [&] { return stopped(cancelled) || (options.thinRegion && remainingCells <= maximumMissingCells); });
+            }, [&] { return stopped(cancelled) || (options.thinRegion && remainingCells <= maximumMissingCells
+                && marginal(core, core) <= maximumMissingCore); });
+        *selected = nativeSelected + *selected;
         diagnostics->insert(QStringLiteral("selectionBackend"), QStringLiteral("CPU"));
         diagnostics->insert(QStringLiteral("selectionScoreEvaluations"), scoreEvaluations);
     }
@@ -2504,7 +2944,8 @@ double selectAllowance(const catalog::Region &authored, const catalog::Region &c
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                QVector<compact::ReusableCandidate> *reusable,
-                               const catalog::Region *prepared = nullptr) {
+                               const catalog::Region *prepared = nullptr,
+                               const std::function<void(const QString &)> &phaseProgress = {}) {
     catalog::FillResult result;
     QJsonObject timings;
     QElapsedTimer stageTimer;
@@ -2514,6 +2955,8 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
     const auto recordTime = [&](const QString &name) {
         timings.insert(name, stageTimer.nsecsElapsed() / 1e6);
         stageTimer.start();
+        if (phaseProgress)
+            phaseProgress(QStringLiteral("seed/") + name);
     };
     try {
         if (!std::isfinite(options.boundaryAllowance) || options.boundaryAllowance <= 0
@@ -2542,7 +2985,7 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         const auto region = curveRegion(authoredRegion, coverageRegion);
         const auto outer = region.permitted;
         const compact::BoundaryModel boundary(coverageRegion.visible, options.observationScale);
-        const auto grid = makeGrid(coverageRegion, options.observationScale);
+        const auto grid = makeGrid(coverageRegion, options.observationScale, options.thinPreferredCoverage);
         const auto witnesses = options.thinRegion ? QVector<QPointF>{}
             : boundaryWitnesses(coverageRegion, options.observationScale);
         QVector<Candidate> pool;
@@ -2554,7 +2997,10 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
                 gpuGeometry(coverageRegion.required),
                 gpuGeometry(coverageRegion.required), gpuGeometry(outer),
                 gpuGeometry(coverageRegion.spillFree),
-                searchScale(region, options.observationScale) * 2.0);
+                options.thinRegionQuality
+                    ? std::max(options.observationScale * 0.5, catalog::area(region.visible) * 2.0
+                        / catalog::painterPath(region.visible).length() * kThinRasterWidthFraction)
+                    : searchScale(region, options.observationScale) * 2.0);
             if (!gpuRanker || !gpuRanker->stats().error.empty()
                 || !gpuRanker->prepareAdditionCoverage({})) {
                 gpuRanker.reset();
@@ -2562,34 +3008,49 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         }
 #endif
         recordTime(QStringLiteral("setup"));
-        addCurveCandidates(region, outer, primitives, boundary, options, cancelled,
+        if (options.thinRegionQuality) {
+            addNativeArcCandidates(region, outer, primitives, boundary, options.observationScale,
+                cancelled, &pool, &result.diagnostics);
+            recordTime(QStringLiteral("nativeArcs"));
+        }
+        Polygons registeredCoverage;
+        for (const auto &candidate : pool)
+            registeredCoverage += candidate.polygons;
+        registeredCoverage = catalog::unite(registeredCoverage);
+        const auto registeredMissing = catalog::subtract(coverageRegion.visible, registeredCoverage);
+        const bool nativeComplete = options.thinRegionQuality
+            && nativeCoverComplete(coverageRegion, registeredCoverage, registeredMissing);
+        result.diagnostics.insert(QStringLiteral("nativeArcComplete"), nativeComplete);
+        if (!nativeComplete) {
+            addCurveCandidates(region, outer, primitives, boundary, options, cancelled,
 #ifdef FLS_HAS_CUDA
-            searchScale(region, options.observationScale)
-                    > options.observationScale * 1.25
-                ? gpuRanker.get() : nullptr,
+                searchScale(region, options.observationScale)
+                        > options.observationScale * 1.25
+                    ? gpuRanker.get() : nullptr,
 #else
-            nullptr,
+                nullptr,
 #endif
-            &pool, &result.diagnostics);
-        recordTime(QStringLiteral("curves"));
-        QVector<QPointF> anchors;
-        if (nativeCubic)
-            for (const PenLoop &loop : request.loops)
-                for (const PenPoint &point : loop.points)
-                    anchors.push_back(point.position);
-        addStraightCandidates(region, outer, primitives, boundary, options.observationScale,
-                              anchors, options.useGpu, cancelled, &pool,
-                              &result.diagnostics);
-        recordTime(QStringLiteral("straightEdges"));
-        const int beforeTriangles = pool.size();
-        addCornerTriangles(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
-        result.diagnostics.insert(QStringLiteral("cornerTriangleCandidates"), pool.size() - beforeTriangles);
-        addCornerCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
-        recordTime(QStringLiteral("corners"));
-        result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
-        addBodyCandidates(coverageRegion, outer, primitives, boundary,
-            options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
-        recordTime(QStringLiteral("interior"));
+                &pool, &result.diagnostics);
+            recordTime(QStringLiteral("curves"));
+            QVector<QPointF> anchors;
+            if (nativeCubic)
+                for (const PenLoop &loop : request.loops)
+                    for (const PenPoint &point : loop.points)
+                        anchors.push_back(point.position);
+            addStraightCandidates(region, outer, primitives, boundary, options.observationScale,
+                                  anchors, options.useGpu, cancelled, &pool,
+                                  &result.diagnostics);
+            recordTime(QStringLiteral("straightEdges"));
+            const int beforeTriangles = pool.size();
+            addCornerTriangles(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+            result.diagnostics.insert(QStringLiteral("cornerTriangleCandidates"), pool.size() - beforeTriangles);
+            addCornerCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+            recordTime(QStringLiteral("corners"));
+            result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
+            addBodyCandidates(coverageRegion, outer, primitives, boundary,
+                options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
+            recordTime(QStringLiteral("interior"));
+        }
         QElapsedTimer selectionTimer;
         selectionTimer.start();
         auto selected = selectCandidates(&pool, coverageRegion, grid, witnesses,
@@ -2607,8 +3068,11 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         if ((nativeCubic || options.thinRegion) && !stopped(cancelled)) {
             selectionTimer.restart();
             const auto initialCoverage = coverageOf(pool, selected);
-            const auto initialMissing = catalog::area(catalog::subtract(
-                coverageRegion.visible, initialCoverage));
+            const auto initialMissingPolygons = catalog::subtract(coverageRegion.visible, initialCoverage);
+            const auto initialMissing = catalog::area(initialMissingPolygons);
+            const bool nativeSelectionComplete = nativeComplete
+                && nativeCoverComplete(coverageRegion, initialCoverage, initialMissingPolygons);
+            result.diagnostics.insert(QStringLiteral("nativeArcComplete"), nativeSelectionComplete);
             const auto initialDeepMissing = catalog::subtract(
                 coverageRegion.required,
                 catalog::expanded(initialCoverage, options.inwardAllowance));
@@ -2617,9 +3081,9 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             result.diagnostics.insert(QStringLiteral("initialDeepMissingArea"), initialDeepMissingArea);
             result.diagnostics.insert(QStringLiteral("initialCoverageMilliseconds"),
                 selectionTimer.nsecsElapsed() / 1e6);
-            if (!initialDeepMissing.isEmpty()
+            if (!nativeSelectionComplete && (!initialDeepMissing.isEmpty()
                 || initialMissing > (options.thinRegion ? coverageRegion.area * 0.005
-                    : std::max(4.0, coverageRegion.area * 0.005))) {
+                    : std::max(4.0, coverageRegion.area * 0.005)))) {
                 selectionTimer.restart();
                 addUncoveredBodyCandidates(coverageRegion, outer, primitives, boundary, grid,
                     options.observationScale, options.useGpu, cancelled, &pool, &result.diagnostics);
@@ -2709,7 +3173,8 @@ QVector<PenPlacement> spanCandidates(const QPainterPath &centerline, double widt
     QVector<PenPlacement> result;
     QVector<QPolygonF> targets;
     QVector<QTransform> anchors;
-    const auto profiles = sourceProfiles(primitives);
+    auto profiles = sourceProfiles(primitives);
+    profiles += medialProfiles(primitives, false);
     std::vector<compute::Arc> sources;
     std::vector<compute::Arc> arcs;
     std::vector<compute::Job> jobs;
@@ -2726,10 +3191,11 @@ QVector<PenPlacement> spanCandidates(const QPainterPath &centerline, double widt
             const double angle = centerline.angleAtPercent(percent) * std::numbers::pi / 180.0;
             target.push_back(point + QPointF(std::sin(angle), std::cos(angle)) * (width * offset));
         }
-        if (std::abs(cross(target.back() - target.front(), target[kProfileSamples / 2] - target.front())) < kMinimumLength)
+        const int anchor = medialAnchor(target);
+        if (std::abs(cross(target.back() - target.front(), target[anchor] - target.front())) < kMinimumLength)
             continue;
         anchors.push_back(catalog::affineFromAnchors({QPointF(0, 0), QPointF(0, 1), QPointF(1, 0)},
-            {target.front(), target[kProfileSamples / 2], target.back()}));
+            {target.front(), target[anchor], target.back()}));
         targets.push_back(target);
         arcs.push_back(numericArc(target));
     }
@@ -2753,9 +3219,10 @@ QVector<PenPlacement> spanCandidates(const QPainterPath &centerline, double widt
 
 catalog::FillResult seedRegion(const catalog::Region &region, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
-                               QVector<compact::ReusableCandidate> *candidates) {
+                               QVector<compact::ReusableCandidate> *candidates,
+                               const std::function<void(const QString &)> &phaseProgress) {
 
-    return buildSeed({}, primitives, options, cancelled, candidates, &region);
+    return buildSeed({}, primitives, options, cancelled, candidates, &region, phaseProgress);
 }
 
 static catalog::FillResult fillAttempt(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,

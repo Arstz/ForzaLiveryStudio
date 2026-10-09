@@ -413,16 +413,39 @@ exports grouped `C_group` folders and `C_livery` folders.
   cutouts. Lining expands its editable open hard/soft centreline to a
   constant-width ribbon with round caps and joins. The backend starts with a
   search for whole-span native shapes before splitting a region. The fallback
-  profile search uses long curve and body candidates. The overlap envelope
-  limits local thickness to 1.6 times the original by default, with the outward
+  profile search uses long curve and body candidates. It traces medial paths
+  through narrow regions and matches full or partial native shape profiles to
+  them. Candidate paths can continue through junctions when their tangent
+  directions agree. Noncollinear anchors retain profiles with inflections.
+  The quality search can recover affine native arcs from intact polygon edges.
+  Recovery checks the original painted geometry, seeds coherent strokes when
+  they cover most of the target, and skips the broad search when they already
+  preserve stroke interiors and at least 99.5% of the selected area.
+  Raster screening follows stroke width. Profile area limits follow the span
+  length and estimated width. Quality fits use additional numerical iterations
+  and trimmed profiles.
+  The GUI uses the quality preset. Its overlap envelope
+  limits local thickness to 2 times the original, with the outward
   margin as an additional absolute cap. Open paths use their specified width;
   closed regions estimate local width from inward boundary crossings. Candidate
   scores balance useful coverage and extra ink. Refinement grows placements
-  toward a preferred thickness of 1.15 times the original inside the envelope,
-  removes placements that add little coverage while preserving connectivity and
+  toward a preferred thickness of 1.6 times the original inside the envelope,
+  removes placements that add little coverage while preserving stroke interiors, connectivity and
   cutouts, repairs continuity gaps and merges neighboring
   placements into rectangles or other configured native shapes. Group refinement
-  reuses evaluated candidates before fitting bounded local replacements. Width
+  reuses evaluated candidates before fitting bounded local replacements. The
+  quality preset also refits groups through translation, rotation, scale and
+  shear. Optional padding influences selection without requiring extra shapes
+  solely to paint it. Cleanup checks holes against the complete lining union,
+  including occluding leeway layers. Small gaps first try nearby placements.
+  Gap repair distinguishes new interior holes from the edges of original
+  cutouts. Growth caches preferred, permitted and protected geometry in local
+  windows; a window is rebuilt when a placement leaves its support.
+  Growth preserves selected pixels already covered by the lining. Neighbor
+  refinement follows geometric contact and overlap. Very small gap repairs use
+  fine scale steps and preserve the stroke core and enclosed spaces. Rectangle
+  repair accounts for float placement precision.
+  Width
   growth takes priority over length adjustments at joins. Final verification requires at least 98% coverage and containment
   within the overlap envelope. Additional disconnected fragments, new interior
   holes and lost cutouts block completion. Boundary and topology measurements
@@ -430,10 +453,17 @@ exports grouped `C_group` folders and `C_livery` folders.
   strokes to continue underneath them. Generated fills are inserted below their
   leeway group. Failed final checks block insertion, and cancellation
   discards placements. The public `thin::fillPolygons` API accepts normalized
-  polygon regions for image generation callers. `assets/lining_shapes.json` is reloaded at the start of
+  polygon regions for image generation callers. Default API options retain the
+  shorter search with a preferred thickness of 1.15 and a limit of 1.6;
+  `thin::qualityOptions()` selects the longer search. Profile and pose evaluation
+  budgets are configurable. The pose refinement has a separate time budget;
+  reaching it retains accepted placements and proceeds to final verification.
+  Automatic source-image region detection is not part of this API.
+  `assets/lining_shapes.json` is reloaded at the start of
   each operation; its task schema is described in `COMPACT_FIT_CONFIG.md`.
   `thin_fit.log` and `lining_fill.log` record configuration, coverage, topology,
   boundary measurements and stage timings beside the executable.
+  The API can report phase progress, including profile search stages.
 - Bucket Fill flood-selects pixels with its independent RGBA tolerance and traces
   pixel-square boundaries. Native cubic fitting detects persistent corners at two
   scales, shares tangents at smooth junctions, and merges spans under a sampled

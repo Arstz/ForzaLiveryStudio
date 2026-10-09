@@ -591,8 +591,8 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
         compactOptions.boundaryAllowance = QInputDialog::getDouble(this,
             thinFit ? QStringLiteral("Thin Regions") : QStringLiteral("Compact Fit"),
             thinFit ? QStringLiteral("Maximum outward overlap (world units):\nPreferred thickness: %1 times the original; limit: %2 times.\nAt least 98% of the selected region must be covered.")
-                .arg(thin::kDefaultPreferredThicknessRatio, 0, 'g', 3)
-                .arg(thin::kDefaultMaximumThicknessRatio, 0, 'g', 3)
+                .arg(thin::kQualityPreferredThicknessRatio, 0, 'g', 3)
+                .arg(thin::kQualityMaximumThicknessRatio, 0, 'g', 3)
                 : QStringLiteral("Outward allowance (world units, per axis):\nInward gap target: %1 world units. Total area error target: %2%.\nSmooth boundaries and sharp corners are checked separately.\nGenerated shapes are kept with a warning if checks fail.")
                 .arg(compactOptions.inwardAllowance, 0, 'g', 3)
                 .arg(compactOptions.areaErrorRatio * 100.0, 0, 'g', 3),
@@ -652,7 +652,7 @@ void MainWindow::startPenFill(const QVector<PenLoop> &loops,
             options.workProgress = [progress](int count, int evaluated, int budget) {
                 progress(count, budget, evaluated);
             };
-            thin::FillOptions thinOptions;
+            auto thinOptions = thin::qualityOptions();
             thinOptions.boundaryAllowance = options.boundaryAllowance;
             thinOptions.leeway = options.leeway;
             thinOptions.workProgress = options.workProgress;
@@ -814,7 +814,7 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     startGeneratedFillTask([points, width, primitives](
                                const std::function<bool()> &cancelled,
                                const GeneratedFillProgress &progress) {
-        thin::FillOptions options;
+        auto options = thin::qualityOptions();
         options.workProgress = [progress](int count, int evaluated, int budget) {
             progress(count, budget, evaluated);
         };
