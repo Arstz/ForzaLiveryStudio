@@ -32,9 +32,11 @@ inline constexpr int kShapeTaskCount = static_cast<int>(ShapeTask::Count);
 
 struct Primitive {
     PenPrimitive shape;
+    QPolygonF centerline;
     std::shared_ptr<const QJsonObject> configuration;
     std::array<int, kShapeTaskCount> taskOrder{};
     bool reserve = false;
+    bool stroke = false;
 };
 
 struct FillOptions {

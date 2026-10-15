@@ -133,6 +133,36 @@ Primitive catalogPrimitive(const ShapeGeometryStore &geometry, int shapeId, bool
     return result;
 }
 
+void assignCenterlines(const QJsonValue &value, QVector<Primitive> *primitives) {
+    if (value.isUndefined())
+        return;
+    if (!value.isObject())
+        throw std::runtime_error("centerlines must be an object of normalized point arrays");
+    const auto definitions = value.toObject();
+    for (auto entry = definitions.begin(); entry != definitions.end(); ++entry) {
+        bool validId = false;
+        const int shapeId = entry.key().toInt(&validId);
+        const auto primitive = std::find_if(primitives->begin(), primitives->end(), [shapeId](const auto &candidate) {
+            return candidate.shape.shapeId == shapeId;
+        });
+        if (!validId || primitive == primitives->end() || !entry.value().isArray())
+            throw std::runtime_error("centerlines contains an unavailable shape or an invalid point array");
+        const auto bounds = primitive->shape.bounds;
+        for (const auto &pointValue : entry.value().toArray()) {
+            const auto point = pointValue.toArray();
+            if (point.size() != 2 || !point[0].isDouble() || !point[1].isDouble()
+                || !std::isfinite(point[0].toDouble()) || !std::isfinite(point[1].toDouble())
+                || point[0].toDouble() < 0.0 || point[0].toDouble() > 1.0
+                || point[1].toDouble() < 0.0 || point[1].toDouble() > 1.0)
+                throw std::runtime_error("centerline coordinates must be finite normalized pairs");
+            primitive->centerline.push_back({bounds.left() + bounds.width() * point[0].toDouble(),
+                bounds.top() + bounds.height() * point[1].toDouble()});
+        }
+        if (primitive->centerline.size() < 2 || QLineF(primitive->centerline.front(), primitive->centerline.back()).length() <= kMinimumTolerance)
+            throw std::runtime_error("centerlines must contain at least two distinct endpoints");
+    }
+}
+
 QString defaultConfigurationPath() {
     const auto deployed = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("assets/compact_fit_shapes.json"));
     const auto source = QDir::current().filePath(QStringLiteral("assets/compact_fit_shapes.json"));
@@ -200,7 +230,8 @@ QVector<Primitive> buildCatalog(const ShapeGeometryStore &geometry,
             throw std::runtime_error("The configuration root must be an object");
         const auto object = document.object();
         requireKeys(object, {QStringLiteral("schema_version"), QStringLiteral("shape_ids"),
-            QStringLiteral("reserve_shape_ids"), QStringLiteral("tasks")}, QStringLiteral("configuration"));
+            QStringLiteral("reserve_shape_ids"), QStringLiteral("tasks"), QStringLiteral("centerlines"),
+            QStringLiteral("stroke_shape_ids")}, QStringLiteral("configuration"));
         if (object.value(QStringLiteral("schema_version")).toDouble(-1) != kConfigurationVersion)
             throw std::runtime_error("Unsupported Compact Fit configuration schema_version");
         if (!object.value(QStringLiteral("tasks")).isObject())
@@ -219,6 +250,14 @@ QVector<Primitive> buildCatalog(const ShapeGeometryStore &geometry,
             return first.shape.shapeId < second.shape.shapeId;
         });
         assignTasks(object.value(QStringLiteral("tasks")).toObject(), geometry, &result);
+        assignCenterlines(object.value(QStringLiteral("centerlines")), &result);
+        const auto strokeIds = object.contains(QStringLiteral("stroke_shape_ids"))
+            ? readShapeIds(object.value(QStringLiteral("stroke_shape_ids")), geometry, QStringLiteral("stroke_shape_ids")) : QVector<int>{};
+        for (int id : strokeIds)
+            if (!seen.contains(id))
+                throw std::runtime_error("stroke_shape_ids must reference enabled shapes");
+        for (auto &primitive : result)
+            primitive.stroke = strokeIds.contains(primitive.shape.shapeId);
         auto snapshot = std::make_shared<QJsonObject>();
         snapshot->insert(QStringLiteral("path"), path);
         snapshot->insert(QStringLiteral("sha256"), QString::fromLatin1(
@@ -231,6 +270,8 @@ QVector<Primitive> buildCatalog(const ShapeGeometryStore &geometry,
             effective.insert(QString::fromLatin1(kTaskNames[task]), ids);
         }
         snapshot->insert(QStringLiteral("tasks"), effective);
+        snapshot->insert(QStringLiteral("centerlineCount"), object.value(QStringLiteral("centerlines")).toObject().size());
+        snapshot->insert(QStringLiteral("strokeShapeIds"), object.value(QStringLiteral("stroke_shape_ids")).toArray());
         for (auto &primitive : result)
             primitive.configuration = snapshot;
         if (error)

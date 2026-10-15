@@ -408,10 +408,39 @@ exports grouped `C_group` folders and `C_livery` folders.
   clustered gap searches, accepted group replacements, rejected low-benefit insertions,
   and the profile backend's setup, transfer, numeric, and
   geometry-validation timings.
-  **Compact Fit — Thin Regions** shares a backend with the Lining tool. The
-  contour mode accepts closed Pen or Bucket regions, including tapers and
-  cutouts. Lining expands its editable open hard/soft centreline to a
-  constant-width ribbon with round caps and joins. The backend starts with a
+  **Lining** fits an editable open hard/soft centreline with native shapes.
+  Each anchor has two blue width handles. Dragging a handle or scrolling over
+  it changes that anchor's width; right-clicking it restores the toolbar width.
+  The toolbar width sets all anchors to a uniform value. Width edits use the
+  path's undo history. Width varies linearly in each cubic segment's parameter,
+  and the preview uses the same width profile as fitting. New anchors retain
+  their local width. Continuity and curve accuracy take priority over shape
+  count, followed by area coverage, while local thickness stays bounded.
+  Each configured native shape has an explicit normalized centerline in
+  `assets/lining_shapes.json`. Initial matching uses these centerlines exclusively.
+  Bounded pose optimization then adapts the native silhouettes to the width
+  profile. `stroke_shape_ids` gives native stroke silhouettes priority over
+  generic primitives. Each hard point ends a span. The search first attempts
+  one preferred stroke over the complete span before subdivision; neighboring
+  fits can merge within that span under the same quality constraints. Width
+  cross-sections guide selection while permitting native taper. Average body
+  width has a 40% lower bound and the outer width has a 130% limit. Interior
+  probes retain at least 65% where authored width varies. Final
+  verification requires a connected stroke within the curve allowance.
+  Sampled profile deviation is limited to 8% of
+  local width and endpoint tangent error to five degrees. The complete requested
+  ribbon's coverage is recorded independently. A final optimizer measures the
+  complete union's contour tangents and turning, then adjusts translation,
+  rotation, scale and shear within the trace and centerline limits.
+  Failed checks block insertion;
+  cancellation discards placements. The catalog is loaded from
+  `assets/lining_shapes.json` for each operation. `lining_fill.log` records anchor
+  widths, trace coverage, curve and tangent errors, shape usage, hard spans,
+  count reduction and work.
+
+  **Compact Fit — Thin Regions** shares native profile fitting and its shape
+  catalog with Lining. The contour mode accepts closed Pen or Bucket regions,
+  including tapers and cutouts. Its area-fitting backend starts with a
   search for whole-span native shapes before splitting a region. The fallback
   profile search uses long curve and body candidates. It traces medial paths
   through narrow regions and matches full or partial native shape profiles to
@@ -426,8 +455,8 @@ exports grouped `C_group` folders and `C_livery` folders.
   and trimmed profiles.
   The GUI uses the quality preset. Its overlap envelope
   limits local thickness to 2 times the original, with the outward
-  margin as an additional absolute cap. Open paths use their specified width;
-  closed regions estimate local width from inward boundary crossings. Candidate
+  margin as an additional absolute cap. Regions estimate local width from
+  inward boundary crossings. Candidate
   scores balance useful coverage and extra ink. Refinement grows placements
   toward a preferred thickness of 1.6 times the original inside the envelope,
   removes placements that add little coverage while preserving stroke interiors, connectivity and

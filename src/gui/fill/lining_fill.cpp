@@ -11,6 +11,7 @@ namespace {
 
 constexpr double kEpsilon = 1e-8;
 constexpr int kMaximumPlacements = 512;
+constexpr double kLiningCurveThreshold = 0.0001;
 constexpr std::array<int, 4> kLiningShapeIds = {2112, 2131, 136, 2133};
 
 QString pointText(const QPointF &point) {
@@ -618,6 +619,79 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
 
 } // namespace
 
+double liningPointWidth(const PenPoint &point, double defaultWidth) {
+
+    return std::isfinite(point.strokeWidth) && point.strokeWidth > 0.0 ? point.strokeWidth : defaultWidth;
+}
+
+QVector<LiningStrokeSegment> buildLiningStroke(const QVector<PenPoint> &points, double defaultWidth) {
+    QVector<LiningStrokeSegment> result;
+    const auto segments = penSegments(points, false);
+
+    for (int index = 0; index < segments.size(); ++index)
+        result.push_back({segments[index], liningPointWidth(points[index], defaultWidth),
+            liningPointWidth(points[index + 1], defaultWidth)});
+
+    return result;
+}
+
+QPainterPath buildLiningRibbon(const QVector<LiningStrokeSegment> &segments, double widthRatio) {
+    constexpr double kRibbonStepWidthFraction = 0.1;
+    constexpr int kRibbonMinimumSamples = 8;
+    constexpr int kRibbonMaximumSamples = 4096;
+    QPainterPath result;
+    result.setFillRule(Qt::WindingFill);
+
+    if (segments.isEmpty() || !std::isfinite(widthRatio) || widthRatio <= 0.0)
+        return result;
+    const double uniformWidth = segments.front().startWidth;
+    const bool uniform = std::all_of(segments.cbegin(), segments.cend(), [uniformWidth](const auto &segment) {
+        return segment.startWidth == uniformWidth && segment.endWidth == uniformWidth;
+    });
+    if (uniform) {
+        QPainterPath centerline(segments.front().centerline.start);
+        for (const auto &segment : segments)
+            segment.centerline.appendTo(centerline);
+
+        return buildLiningRibbon(centerline, uniformWidth * widthRatio);
+    }
+    for (const auto &segment : segments) {
+        QPolygonF left;
+        QPolygonF right;
+        const auto &curve = segment.centerline;
+        const double minimumWidth = std::min(segment.startWidth, segment.endWidth) * widthRatio;
+        if (!std::isfinite(minimumWidth) || minimumWidth <= 0.0)
+            return {};
+        const int samples = static_cast<int>(std::clamp(std::ceil(curve.controlLength()
+            / (minimumWidth * kRibbonStepWidthFraction)),
+            static_cast<double>(kRibbonMinimumSamples), static_cast<double>(kRibbonMaximumSamples)));
+        for (int sample = 0; sample <= samples; ++sample) {
+            const double fraction = static_cast<double>(sample) / samples;
+            const auto point = curve.point(fraction);
+            auto direction = curve.derivative(fraction);
+            if (QLineF({}, direction).length() <= kEpsilon)
+                direction = curve.end - curve.start;
+            const double length = QLineF({}, direction).length();
+            const auto normal = length > kEpsilon ? QPointF(-direction.y(), direction.x()) / length : QPointF(0.0, 1.0);
+            const double radius = (segment.startWidth * (1.0 - fraction) + segment.endWidth * fraction) * widthRatio * 0.5;
+            left.push_back(point + normal * radius);
+            right.push_back(point - normal * radius);
+        }
+        std::reverse(right.begin(), right.end());
+        auto outline = left + right;
+        if (signedArea(outline) < 0.0)
+            std::reverse(outline.begin(), outline.end());
+        result.addPolygon(outline);
+        result.closeSubpath();
+        for (const auto &cap : {std::pair{curve.start, segment.startWidth}, std::pair{curve.end, segment.endWidth}}) {
+            const double radius = cap.second * widthRatio * 0.5;
+            result.addEllipse(cap.first, radius, radius);
+        }
+    }
+
+    return result;
+}
+
 LiningPath buildLiningPath(const QVector<PenPoint> &points) {
     LiningPath result;
     if (points.size() < 2) {
@@ -638,9 +712,10 @@ QPainterPath buildLiningRibbon(const QPainterPath &centerline, double width) {
     }
     QPainterPathStroker stroker;
     stroker.setWidth(width);
+    stroker.setCurveThreshold(kLiningCurveThreshold);
     stroker.setCapStyle(Qt::RoundCap);
     stroker.setJoinStyle(Qt::RoundJoin);
-    return stroker.createStroke(centerline).simplified();
+    return stroker.createStroke(centerline);
 }
 
 QVector<PenPrimitive> buildLiningPrimitiveCatalog(const ShapeGeometryStore &geometry) {

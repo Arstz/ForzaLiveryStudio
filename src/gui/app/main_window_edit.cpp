@@ -117,6 +117,7 @@ QJsonObject writePenFillLog(const PenFillRequest &request,
             pointObject.insert(QStringLiteral("outgoing"),
                                QJsonArray{point.outgoing.x(), point.outgoing.y()});
             pointObject.insert(QStringLiteral("explicitHandles"), point.explicitHandles);
+            pointObject.insert(QStringLiteral("strokeWidth"), point.strokeWidth);
             points.push_back(pointObject);
         }
         QJsonObject loopObject;
@@ -807,8 +808,8 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
         return;
     }
 
-    canvas_->setLiningFillRunning(true, QStringLiteral("Filling lining path…"));
-    statusBar()->showMessage(QStringLiteral("Filling lining path… Press %1 to cancel")
+    canvas_->setLiningFillRunning(true, QStringLiteral("Tracing lining path…"));
+    statusBar()->showMessage(QStringLiteral("Tracing lining path… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
     startGeneratedFillTask([points, width, primitives](

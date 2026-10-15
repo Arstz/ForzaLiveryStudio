@@ -1010,10 +1010,19 @@ void ProjectCanvas::setLiningWidth(double width) {
         return;
     }
     const double adjusted = std::clamp(width, kMinimumLiningWidth, kMaximumLiningWidth);
-    if (qFuzzyCompare(liningWidth_, adjusted)) {
+    const bool uniform = std::all_of(lining_.points.cbegin(), lining_.points.cend(), [&](const auto &point) {
+        return qFuzzyCompare(liningPointWidth(point, liningWidth_), adjusted);
+    });
+    if (qFuzzyCompare(liningWidth_, adjusted) && uniform) {
         return;
     }
+    if (!lining_.points.isEmpty())
+        beginPathEdit(lining_);
     liningWidth_ = adjusted;
+    for (auto &point : lining_.points)
+        point.strokeWidth = adjusted;
+    if (!lining_.points.isEmpty())
+        commitPathEdit(lining_);
     validateLiningInteraction();
     if (liningWidthChangedCallback_ != nullptr) {
         liningWidthChangedCallback_(liningWidth_);
@@ -1026,6 +1035,15 @@ double ProjectCanvas::liningWidth() const {
 }
 
 void ProjectCanvas::adjustLiningWidth(double delta, const QPointF &screenPoint) {
+    const auto hit = liningWidthHandleAtScreen(screenPoint);
+    if (hit.valid()) {
+        beginPathEdit(lining_);
+        auto &point = lining_.points[hit.pointIndex];
+        point.strokeWidth = std::clamp(liningPointWidth(point, liningWidth_) + delta, kMinimumLiningWidth, kMaximumLiningWidth);
+        commitPathEdit(lining_);
+        refreshLiningInteractionHint(screenPoint, QGuiApplication::keyboardModifiers());
+        return;
+    }
     setLiningWidth(liningWidth_ + delta);
     refreshLiningInteractionHint(screenPoint, QGuiApplication::keyboardModifiers());
 }
@@ -1083,7 +1101,7 @@ void ProjectCanvas::requestLiningFill() {
     lining_.error.clear();
     clearCursorHint();
     lining_.fillRunning = true;
-    lining_.fillMessage = QStringLiteral("Filling lining path…");
+    lining_.fillMessage = QStringLiteral("Tracing lining path…");
     update();
     liningFillRequestedCallback_(points, liningWidth_, fillColor);
 }

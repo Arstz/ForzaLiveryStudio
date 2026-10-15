@@ -95,9 +95,41 @@ to try changes without rebuilding or restarting. A build redeploys the
 repository defaults. If the deployed file is absent, the loader checks the
 current working directory; an invalid deployed file produces an error.
 
-The thin backend first tries one Square for a straight span and the
-`whole_region` shapes for a complete region. Open Lining paths also try the
-`curves` shapes across the full centreline. If one placement cannot cover the
+Open Lining paths use a continuous stroke objective. Each anchor supplies a
+width, interpolated along its cubic segment. The toolbar sets uniform width;
+blue width handles change individual anchors. Every enabled shape has an
+explicit polyline in `centerlines`, expressed as `[x,y]` pairs normalized to
+its painted bounds. Missing definitions block loading the Lining catalog.
+`tools/generate_lining_centerlines.py` rebuilds these definitions from the
+opaque mesh's connected triangle strip. Definitions can also be edited directly.
+`stroke_shape_ids` selects preferred native stroke silhouettes from the enabled
+catalog. Generic primitives remain available for a failed stroke plan.
+
+Each hard point ends an authored span. The search first tries one preferred
+stroke over the complete span, then subdivides when a single fit cannot meet
+the curve and width constraints. Count reduction stays within these spans.
+The initial search matches only the stored centerlines. Full and
+trimmed centerline profiles propose affine placements in both directions.
+Silhouette boundaries supply no initial matching profiles. Bounded pose
+optimization then adjusts the placements against the width profile and stroke
+envelope. Neighboring spans can merge while preserving the same quality limits.
+The assembled union receives a contour optimization pass that measures tangent
+and turning errors against the requested ribbon. Translation, rotation, scale
+and shear compete while preserving trace support and centerline accuracy.
+Continuity and curve accuracy take priority over shape count, then area
+coverage. Cross-sections measure width error against the anchor profile while
+allowing natural native taper. Average sampled body width must reach 40% of
+the requested width; width error also influences candidate ranking. Interior
+width probes retain at least 65% where the authored width varies. The permitted
+outer width is 130%. Verification requires a connected emitted
+stroke that follows the centerline within its curve allowance. Sampled profile
+deviation is bounded by 8% of local width; endpoint tangent error is limited to
+five degrees. Ribbon coverage is measured separately. Open paths use the shape
+and profile trial and time budgets; the area coverage and growth settings below apply
+to closed Thin Regions.
+
+The closed-region backend first tries one Square for a straight span and the
+`whole_region` shapes for a complete region. If one placement cannot cover the
 region within the margin, a bounded profile search uses `curves`, `corners`,
 `straight_edges`, `corner_triangles` and `interior`. The default catalog enables
 native shapes, including triangles. Triangle proposals follow contour corners
@@ -108,8 +140,8 @@ not require a preferred shape ID.
 The overlap envelope follows local stroke width. The GUI quality preset limits
 thickness to 2 times the original, with the supplied outward margin as an additional
 absolute cap. The API permits thickness ratios above 1 and at most 2. Tapered
-tips receive a small geometric tolerance. Open Lining paths use their specified
-width; closed regions estimate width from inward boundary crossings. Candidate
+tips receive a small geometric tolerance. Closed regions estimate width from
+inward boundary crossings. Candidate
 selection penalizes extra ink while favoring placements that cover long spans.
 Medial paths and partial source profiles support matching across junctions.
 Candidate paths also connect compatible tangent directions through junctions.
@@ -155,7 +187,7 @@ maximum thickness 1.6. `thin::qualityOptions()` supplies the GUI preset:
 for pose refinement. Whole-region fits can finish before these stages. Budget
 exhaustion proceeds to final verification with the accepted placements.
 
-The headless test tool accepts `--thin-tests`, `--thin-quality-tests`,
+The headless test tool accepts `--lining-tests`, `--thin-tests`, `--thin-quality-tests`,
 `--thin-fit <contour-log>` and
 `--thin-reference <project> [comparison-project]`. Use
 `--thin-reference-quality <project> [comparison-project]` for the quality preset.

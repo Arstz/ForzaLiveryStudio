@@ -680,6 +680,7 @@ void MainWindow::setupToolbar() {
     liningWidthSpin_->setSingleStep(0.5);
     liningWidthSpin_->setValue(canvas_->liningWidth());
     liningWidthSpin_->setSuffix(QStringLiteral(" units"));
+    liningWidthSpin_->setToolTip(QStringLiteral("Stroke width for all anchors. Drag the blue width handles to adjust individual anchors."));
     liningWidthLabel_->setVisible(false);
     liningWidthSpin_->setVisible(false);
     toolBar_->addWidget(liningWidthLabel_);

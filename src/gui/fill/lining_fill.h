@@ -23,6 +23,15 @@ struct LiningFillRequest {
     double width = 8.0;
 };
 
+struct LiningStrokeSegment {
+    PenBoundarySegment centerline;
+    double startWidth = 0.0;
+    double endWidth = 0.0;
+};
+
+double liningPointWidth(const PenPoint &point, double defaultWidth);
+QVector<LiningStrokeSegment> buildLiningStroke(const QVector<PenPoint> &points, double defaultWidth);
+QPainterPath buildLiningRibbon(const QVector<LiningStrokeSegment> &segments, double widthRatio = 1.0);
 LiningPath buildLiningPath(const QVector<PenPoint> &points);
 QPainterPath buildLiningRibbon(const QPainterPath &centerline, double width);
 QVector<PenPrimitive> buildLiningPrimitiveCatalog(const ShapeGeometryStore &geometry);

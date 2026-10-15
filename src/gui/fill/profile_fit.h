@@ -6,10 +6,15 @@ namespace gui::catalog { struct Region; }
 
 namespace gui::profile {
 
-QVector<PenPlacement> spanCandidates(const QPainterPath &centerline, double width,
-                                      const QVector<catalog::Primitive> &primitives,
-                                      double maximumError, bool useGpu,
-                                      const std::function<bool()> &cancelled = {});
+struct TraceCandidate {
+    PenPlacement placement;
+    QPolygonF profile;
+};
+
+QVector<TraceCandidate> traceCandidates(const QPainterPath &centerline,
+                                       const QVector<catalog::Primitive> &primitives,
+                                       double width, double maximumError, bool useGpu, int *remainingTrials,
+                                       const std::function<bool()> &cancelled = {});
 
 catalog::FillResult seedRegion(const catalog::Region &region,
                                const QVector<catalog::Primitive> &primitives,

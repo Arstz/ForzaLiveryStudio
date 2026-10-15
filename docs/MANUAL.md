@@ -80,4 +80,15 @@ Bucket tool automates the process described in Pen by generating the contour on 
 
 ### Lining (experimental)
 
-This tool is aimed to help tracing the finer details, same as Pen but allows for a non-closed contour, to stop drawing press right mouse button. Adjust width with scrollwheel, it gives the filling algorithm some leeway, confirm with `Enter` it will try to match the curve with shapes, try to maximize hardpoints and minimize contour lenght. Try different width settings, usually best around 4-8.
+Lining traces an open curve with native shapes. Right-click to finish drawing,
+then press `Enter` to generate the stroke. The toolbar width sets a uniform
+stroke thickness. Drag either blue width handle at an anchor to change its
+local thickness, or scroll over the handle. Right-click a width handle to reset
+it to the toolbar width. Thickness changes smoothly between anchors. Width
+edits support Undo and Redo.
+
+Fitting prioritizes continuity and curve accuracy, then shape count, then area
+coverage. It keeps approximately the selected thickness while allowing some
+unfilled edge area and native taper. It first tries one native arc or stripe
+between consecutive hard points. Smooth points guide the curve within that
+span. The fitter splits a span when one shape cannot meet its quality limits.

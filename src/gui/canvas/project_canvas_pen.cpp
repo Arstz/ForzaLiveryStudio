@@ -537,6 +537,47 @@ void ProjectCanvas::refreshPenInteractionHint(const QPointF &screenPoint,
     update();
 }
 
+QPointF ProjectCanvas::liningWidthNormal(int pointIndex) const {
+    const auto segments = penSegments(lining_.points, false);
+    QPointF direction;
+
+    for (int index : {pointIndex - 1, pointIndex}) {
+        if (index < 0 || index >= segments.size())
+            continue;
+        const auto tangent = segments[index].derivative(index == pointIndex ? 0.0 : 1.0);
+        const double length = QLineF({}, tangent).length();
+        if (length > 0.0)
+            direction += tangent / length;
+    }
+    const double length = QLineF({}, direction).length();
+
+    return length > 0.0 ? QPointF(-direction.y(), direction.x()) / length : QPointF(0.0, 1.0);
+}
+
+QPointF ProjectCanvas::liningWidthHandlePosition(int pointIndex, int side) const {
+    const auto &point = lining_.points[pointIndex];
+    const double radius = liningPointWidth(point, liningWidth_) * 0.5
+        + camera_.worldPerPixel() * kLiningWidthHandleOffsetPixels;
+
+    return worldToScreen(point.position + liningWidthNormal(pointIndex) * (radius * side));
+}
+
+ProjectCanvas::PenPointHit ProjectCanvas::liningWidthHandleAtScreen(const QPointF &screenPoint) const {
+    PenPointHit result;
+
+    for (int index = 0; index < lining_.points.size(); ++index)
+        for (int side : {-1, 1}) {
+            const double distance = QLineF(screenPoint, liningWidthHandlePosition(index, side)).length();
+            if (distance <= kPenEditRadius && distance < result.screenDistance) {
+                result.pointIndex = index;
+                result.handle = side * 2;
+                result.screenDistance = distance;
+            }
+        }
+
+    return result;
+}
+
 PenCurveHit ProjectCanvas::liningCurveAtScreen(const QPointF &screenPoint) const {
     PenCurveHit best;
     if (!lining_.closed || lining_.points.size() < 2) {
@@ -577,7 +618,19 @@ void ProjectCanvas::refreshLiningInteractionHint(const QPointF &screenPoint,
                                                  Qt::KeyboardModifiers modifiers) {
     lining_.hoverWorld = screenToWorld(screenPoint);
     lining_.hoverPoint = -1;
+    lining_.hoverHandle = 0;
     lining_.hoverCurve = {};
+    const auto widthHit = liningWidthHandleAtScreen(screenPoint);
+    if (widthHit.valid() || (lining_.dragPoint >= 0 && lining_.dragHandle != 0)) {
+        lining_.hoverPoint = lining_.dragPoint >= 0 ? lining_.dragPoint : widthHit.pointIndex;
+        lining_.hoverHandle = lining_.dragPoint >= 0 ? lining_.dragHandle : widthHit.handle;
+        setCursorHint(screenPoint, {
+            QStringLiteral("Stroke width: %1").arg(liningPointWidth(lining_.points[lining_.hoverPoint], liningWidth_), 0, 'f', 2),
+            QStringLiteral("Drag: Adjust anchor width"), QStringLiteral("Wheel: Adjust anchor width"),
+            QStringLiteral("RMB: Reset to toolbar width")});
+        update();
+        return;
+    }
     if (!lining_.closed) {
         QStringList lines{QStringLiteral("Width: %1").arg(liningWidth_, 0, 'f', 2)};
         if (!lining_.points.isEmpty()) {

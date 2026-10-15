@@ -145,6 +145,7 @@ gui::PenFillRequest readRequest(const QString &path) {
             const auto incoming = point.value(QStringLiteral("incoming")).toArray();
             const auto outgoing = point.value(QStringLiteral("outgoing")).toArray();
             anchor.explicitHandles = point.value(QStringLiteral("explicitHandles")).toBool();
+            anchor.strokeWidth = point.value(QStringLiteral("strokeWidth")).toDouble();
             if (anchor.explicitHandles) {
                 require(incoming.size() == 2 && outgoing.size() == 2,
                         QStringLiteral("Missing cubic replay handles"));
@@ -1697,7 +1698,7 @@ gui::PenFillRequest thinReferenceRequest(const QString &source, const gui::Shape
     return request;
 }
 
-void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityPreset = false) {
+void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityPreset = false, bool liningOnly = false) {
     auto options = qualityPreset ? gui::thin::qualityOptions() : gui::thin::FillOptions{};
     options.useGpu = false;
     const auto check = [&](const gui::catalog::FillResult &result, const QString &name) {
@@ -1705,6 +1706,24 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
             << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
         require(result.fill.error.isEmpty() && !result.fill.cancelled && !result.fill.placements.isEmpty(),
             name + QStringLiteral(": ") + result.fill.error);
+        if (result.diagnostics.contains(QStringLiteral("traceCoverageRatio"))) {
+            for (const auto &placement : result.fill.placements) {
+                const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [&](const auto &entry) {
+                    return entry.shape.shapeId == placement.shapeId;
+                });
+                require(primitive != catalog.cend() && primitive->stroke,
+                    name + QStringLiteral(" selected a generic primitive instead of a native stroke"));
+            }
+            require(result.diagnostics.value("traceCoverageRatio").toDouble(-1) == 1.0
+                && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0,
+                name + QStringLiteral(" lost its trace or exceeded its corridor"));
+            require(result.diagnostics.value("maximumCurveError").toDouble()
+                    <= result.diagnostics.value("curveErrorLimit").toDouble()
+                && result.diagnostics.value("maximumTangentError").toDouble()
+                    <= result.diagnostics.value("tangentErrorLimit").toDouble(),
+                name + QStringLiteral(" exceeded its curve or tangent limits"));
+            return;
+        }
         require(result.diagnostics.value("coverageRatio").toDouble(-1) >= options.minimumCoverage
             && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0
             && result.diagnostics.value("newInteriorHoleArea").toDouble(-1) == 0,
@@ -1721,9 +1740,15 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
     check(straightResult, QStringLiteral("Straight span"));
     require(straightResult.fill.placements.size() == 1, QStringLiteral("Straight span was split"));
     const double straightThickness = outputPath(straightResult.fill, catalog).boundingRect().height();
-    require(straightThickness >= 0.4 * options.preferredThicknessRatio * 0.995
-        && straightThickness <= 0.4 * options.maximumThicknessRatio + 0.015,
-        QStringLiteral("Straight lining lost its protective overlap or exceeded its width limit"));
+    require(straightThickness >= straightResult.diagnostics.value("traceSupportWidth").toDouble()
+        && straightThickness <= 0.4 * 1.3 + 0.015,
+        QStringLiteral("Straight lining changed the selected thickness excessively"));
+    const QVector<gui::PenPoint> collinear{{{0, 0}, gui::PenPointKind::Hard},
+        {{30, 0}, gui::PenPointKind::Hard}, {{70, 0}, gui::PenPointKind::Hard}};
+    const auto collinearResult = gui::thin::fillLiningPath(collinear, 2.0, catalog, options);
+    check(collinearResult, QStringLiteral("Collinear anchors"));
+    require(collinearResult.fill.placements.size() == 2,
+        QStringLiteral("Hard-point spans were merged"));
     const QVector<gui::PenPoint> quadratic{{{0, 0}, gui::PenPointKind::Hard, {}, {70.0 / 3, 20}, true},
         {{70, 0}, gui::PenPointKind::Hard, {-70.0 / 3, 20}, {}, true}};
     for (double width : {0.4, 2.0, 8.0}) {
@@ -1737,13 +1762,11 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
         const auto result = gui::thin::fillLiningPath(points, width, catalog, options);
         check(result, QStringLiteral("Curved lining %1").arg(width));
         QPainterPathStroker stroker;
-        stroker.setWidth(width);
         stroker.setCurveThreshold(0.0001);
         stroker.setCapStyle(Qt::RoundCap);
         stroker.setJoinStyle(Qt::RoundJoin);
-        const auto target = stroker.createStroke(gui::buildLiningPath(points).centerline);
         const auto generated = outputPath(result.fill, catalog);
-        stroker.setWidth(width * options.maximumThicknessRatio + 0.015);
+        stroker.setWidth(width * result.diagnostics.value("maximumWidthRatio").toDouble() + 0.015);
         const auto maximumWidth = stroker.createStroke(gui::buildLiningPath(points).centerline);
         gui::catalog::Polygons maximumPolygons;
         gui::catalog::Polygons generatedPolygons;
@@ -1755,20 +1778,87 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
         require(gui::catalog::subtract(gui::catalog::unite(generatedPolygons),
             gui::catalog::unite(maximumPolygons)).isEmpty(),
             QStringLiteral("Lining exceeded its independently measured stroke thickness"));
-        int selectedPixels = 0;
-        int coveredPixels = 0;
-        for (int row = 0; row < 100; ++row)
-            for (int column = 0; column < 400; ++column) {
-                const auto bounds = target.boundingRect();
-                const QPointF point(bounds.left() + bounds.width() * (column + 0.5) / 400.0,
-                    bounds.top() + bounds.height() * (row + 0.5) / 100.0);
-                if (target.contains(point)) {
-                    ++selectedPixels;
-                    coveredPixels += generated.contains(point);
+        int traceSamples = 0;
+        const auto centerline = gui::buildLiningPath(points).centerline;
+        for (int sample = 0; sample <= 256; ++sample) {
+            const auto point = centerline.pointAtPercent(centerline.percentAtLength(centerline.length() * sample / 256.0));
+            QPainterPath neighborhood;
+            neighborhood.addEllipse(point, width * 0.09 + 0.005, width * 0.09 + 0.005);
+            traceSamples += generated.intersects(neighborhood) || generated.contains(point);
+        }
+        require(traceSamples == 257,
+            QStringLiteral("Lining lost continuity along the independent trace"));
+    }
+    if (liningOnly) {
+        for (int shapeId : {136, 2128, 322, 323}) {
+            const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [shapeId](const auto &entry) {
+                return entry.shape.shapeId == shapeId;
+            });
+            require(primitive != catalog.cend() && primitive->stroke,
+                QStringLiteral("Missing preferred stroke shape"));
+            QVector<gui::PenPoint> anchors;
+            const auto &line = primitive->centerline;
+            double maximumDistance = 0.0;
+            for (const auto &polygon : primitive->shape.contours)
+                for (const auto &point : polygon) {
+                    double nearest = std::numeric_limits<double>::infinity();
+                    for (int index = 1; index < line.size(); ++index) {
+                        const auto delta = line[index] - line[index - 1];
+                        const double fraction = std::clamp(QPointF::dotProduct(point - line[index - 1], delta)
+                            / std::max(QPointF::dotProduct(delta, delta), 1e-10), 0.0, 1.0);
+                        nearest = std::min(nearest, QLineF(point, line[index - 1] + delta * fraction).length());
+                    }
+                    maximumDistance = std::max(maximumDistance, nearest);
                 }
+            for (int index = 0; index < line.size(); ++index) {
+                const auto before = index > 0 ? line[index - 1] : line[index];
+                const auto after = index + 1 < line.size() ? line[index + 1] : line[index];
+                const auto tangent = (after - before) / (index == 0 || index + 1 == line.size() ? 3.0 : 6.0);
+                anchors.push_back({line[index], index == 0 || index + 1 == line.size()
+                    ? gui::PenPointKind::Hard : gui::PenPointKind::Soft, -tangent, tangent, true});
             }
-        require(coveredPixels >= selectedPixels * options.minimumCoverage,
-            QStringLiteral("Lining missed too many independent stroke pixels"));
+            auto single = options;
+            single.shapeBudget = 1;
+            const auto native = gui::thin::fillLiningPath(anchors, maximumDistance * 2.02, {*primitive}, single);
+            check(native, QStringLiteral("Single native stroke %1").arg(shapeId));
+            require(native.fill.placements.size() == 1 && native.fill.placements.front().shapeId == shapeId,
+                QStringLiteral("An intact native stroke was split or replaced"));
+        }
+        QVector<gui::PenPoint> varying{{{0, 0}, gui::PenPointKind::Hard},
+            {{40, 0}, gui::PenPointKind::Hard}, {{80, 0}, gui::PenPointKind::Hard}};
+        varying[0].strokeWidth = 2.0;
+        varying[1].strokeWidth = 6.0;
+        varying[2].strokeWidth = 2.0;
+        const auto variable = gui::thin::fillLiningPath(varying, 3.0, catalog, options);
+        check(variable, QStringLiteral("Variable anchor widths"));
+        const auto generated = outputPath(variable.fill, catalog);
+        for (int sample = 1; sample < 80; ++sample) {
+            const double width = sample <= 40 ? 2.0 + sample * 0.1 : 6.0 - (sample - 40) * 0.1;
+            require((generated.contains(QPointF(sample, 0))
+                || generated.intersects(QRectF(sample - 0.05, -width * 0.08, 0.1, width * 0.16)))
+                && generated.contains(QPointF(sample, width * 0.25))
+                && generated.contains(QPointF(sample, -width * 0.25))
+                && !generated.contains(QPointF(sample, width * 0.7)),
+                QStringLiteral("Generated stroke lost its local width profile"));
+        }
+        const auto preview = gui::buildLiningRibbon(gui::buildLiningStroke(varying, 3.0));
+        require(preview.contains(QPointF(40, 2.9)) && !preview.contains(QPointF(1, 2.9)),
+            QStringLiteral("Lining preview lost variable width"));
+        const QVector<gui::PenPoint> corner{{{0, 0}, gui::PenPointKind::Hard},
+            {{40, 0}, gui::PenPointKind::Hard}, {{40, 40}, gui::PenPointKind::Hard}};
+        const auto joined = gui::thin::fillLiningPath(corner, 2.0, catalog, options);
+        check(joined, QStringLiteral("Hard corner continuity"));
+        require(joined.fill.placements.size() == 2 && outputPath(joined.fill, catalog).contains(QPointF(40, 0)),
+            QStringLiteral("Hard corner lost its anchor or added repair shapes"));
+        auto limited = options;
+        limited.shapeBudget = 1;
+        require(!gui::thin::fillLiningPath(corner, 2.0, catalog, limited).fill.error.isEmpty(),
+            QStringLiteral("Open lining ignored its shape limit"));
+        const auto cancelled = gui::thin::fillLiningPath(straight, 2.0, catalog, options, [] { return true; });
+        require(cancelled.fill.cancelled && cancelled.fill.placements.isEmpty(),
+            QStringLiteral("Cancelled open lining leaked placements"));
+        QTextStream(stdout) << "Open lining continuity, accuracy, width, count and cancellation passed\n";
+        return;
     }
     for (int shapeId : gui::catalog::shapeIdsForTask(catalog, gui::catalog::ShapeTask::WholeRegion)) {
         const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [shapeId](const auto &entry) {
@@ -1827,7 +1917,18 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
     }
     QVector<gui::PenPoint> corner{{{0, 0}, gui::PenPointKind::Hard},
         {{40, 0}, gui::PenPointKind::Hard}, {{40, 40}, gui::PenPointKind::Hard}};
-    check(gui::thin::fillLiningPath(corner, 2.0, catalog, options), QStringLiteral("Hard join"));
+    const auto hardJoin = gui::thin::fillLiningPath(corner, 2.0, catalog, options);
+    check(hardJoin, QStringLiteral("Hard join"));
+    require(hardJoin.fill.placements.size() == 2
+        && outputPath(hardJoin.fill, catalog).contains(QPointF(40, 0)),
+        QStringLiteral("Hard join lost its shared anchor or added repair shapes"));
+    auto traceLimit = options;
+    traceLimit.shapeBudget = 1;
+    require(!gui::thin::fillLiningPath(corner, 2.0, catalog, traceLimit).fill.error.isEmpty(),
+        QStringLiteral("Open lining ignored its shape limit"));
+    const auto cancelledTrace = gui::thin::fillLiningPath(straight, 2.0, catalog, options, [] { return true; });
+    require(cancelledTrace.fill.cancelled && cancelledTrace.fill.placements.isEmpty(),
+        QStringLiteral("Cancelled open lining leaked placements"));
     gui::PenFillRequest taper;
     taper.points = {{{0, 0}, gui::PenPointKind::Hard}, {{70, 0}, gui::PenPointKind::Hard},
         {{55, 2}, gui::PenPointKind::Hard}, {{0, 8}, gui::PenPointKind::Hard}};
@@ -2910,6 +3011,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (arguments.size() >= 2 && (arguments[1] == QStringLiteral("--thin-tests")
+            || arguments[1] == QStringLiteral("--lining-tests")
             || arguments[1] == QStringLiteral("--thin-quality-tests")
             || arguments[1] == QStringLiteral("--thin-color-reference-quality")
             || arguments[1] == QStringLiteral("--thin-fit") || arguments[1] == QStringLiteral("--thin-reference")
@@ -2926,8 +3028,10 @@ int main(int argc, char **argv) {
                     ? std::optional<QString>{arguments[3]} : std::nullopt, geometry, thinCatalog);
                 return 0;
             }
-            if (arguments[1] == QStringLiteral("--thin-tests") || arguments[1] == QStringLiteral("--thin-quality-tests")) {
-                thinFitTests(thinCatalog, arguments[1] == QStringLiteral("--thin-quality-tests"));
+            if (arguments[1] == QStringLiteral("--thin-tests") || arguments[1] == QStringLiteral("--thin-quality-tests")
+                || arguments[1] == QStringLiteral("--lining-tests")) {
+                thinFitTests(thinCatalog, arguments[1] == QStringLiteral("--thin-quality-tests"),
+                    arguments[1] == QStringLiteral("--lining-tests"));
                 return 0;
             }
             require(arguments.size() >= 3, QStringLiteral("Expected thin contour or reference project"));

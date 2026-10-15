@@ -178,6 +178,7 @@ private:
     static constexpr double kDefaultLiningWidth = 8.0;
     static constexpr double kMinimumLiningWidth = 0.1;
     static constexpr double kMaximumLiningWidth = 256.0;
+    static constexpr double kLiningWidthHandleOffsetPixels = 12.0;
     static constexpr int kDefaultBucketTolerance = 16;
     static constexpr QSize kDefaultVisibilityBorderResolution{1920, 1080};
     inline static const QColor kDefaultGuidelineColor{0, 170, 255};
@@ -524,6 +525,9 @@ private:
     void requestLiningFill();
     void drawLiningOverlay(QPainter &painter);
     QPainterPath liningPreviewPath() const;
+    QPointF liningWidthNormal(int pointIndex) const;
+    QPointF liningWidthHandlePosition(int pointIndex, int side) const;
+    PenPointHit liningWidthHandleAtScreen(const QPointF &screenPoint) const;
     PenCurveHit liningCurveAtScreen(const QPointF &screenPoint) const;
     void validateLiningInteraction();
     void refreshLiningInteractionHint(const QPointF &screenPoint,

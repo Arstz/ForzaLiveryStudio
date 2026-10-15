@@ -16,6 +16,7 @@ struct ContourPoint {
     QPointF incoming;
     QPointF outgoing;
     bool explicitHandles = false;
+    double strokeWidth = 0.0;
     bool operator==(const ContourPoint &) const = default;
 };
 

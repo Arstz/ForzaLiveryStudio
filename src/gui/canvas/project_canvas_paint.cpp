@@ -257,7 +257,10 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter) {
         painter.restore();
         return;
     }
-    const QPainterPath ribbon = buildLiningRibbon(centerline, liningWidth_);
+    auto previewPoints = lining_.points;
+    if (!lining_.closed)
+        previewPoints.push_back({lining_.hoverWorld, PenPointKind::Hard, {}, {}, false, liningWidth_});
+    const QPainterPath ribbon = buildLiningRibbon(buildLiningStroke(previewPoints, liningWidth_));
     const QPainterPath screenRibbon = camera_.matrix().map(ribbon);
     const QPainterPath screenCenterline = camera_.matrix().map(centerline);
     painter.setPen(Qt::NoPen);
@@ -277,6 +280,15 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter) {
     for (int i = 0; i < lining_.points.size(); ++i) {
         const PenPoint &point = lining_.points[i];
         const QPointF screen = worldToScreen(point.position);
+        for (int side : {-1, 1}) {
+            const auto handle = liningWidthHandlePosition(i, side);
+            const bool widthHovered = lining_.hoverPoint == i && lining_.hoverHandle == side * 2;
+            painter.setPen(QPen(QColor(80, 200, 225, 180), 1.0));
+            painter.drawLine(screen, handle);
+            painter.setPen(QPen(QColor(18, 20, 24), 1.0));
+            painter.setBrush(widthHovered ? QColor(180, 250, 255) : QColor(80, 200, 225));
+            painter.drawRect(QRectF(handle - QPointF(3.5, 3.5), QSizeF(7.0, 7.0)));
+        }
         const bool hovered = lining_.closed && i == lining_.hoverPoint;
         const double radius = 4.5 + (hovered ? 1.5 : 0.0);
         painter.setPen(QPen(hovered ? QColor(120, 220, 135) : QColor(18, 20, 24),

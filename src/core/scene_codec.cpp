@@ -78,7 +78,8 @@ QJsonArray contourPointsToJson(const QVector<ContourPoint> &points) {
             {QStringLiteral("hard"), point.kind == ContourPointKind::Hard},
             {QStringLiteral("incoming"), QJsonArray{point.incoming.x(), point.incoming.y()}},
             {QStringLiteral("outgoing"), QJsonArray{point.outgoing.x(), point.outgoing.y()}},
-            {QStringLiteral("explicit_handles"), point.explicitHandles}});
+            {QStringLiteral("explicit_handles"), point.explicitHandles},
+            {QStringLiteral("stroke_width"), point.strokeWidth}});
     }
     return result;
 }
@@ -99,6 +100,7 @@ QVector<ContourPoint> contourPointsFromJson(const QJsonArray &array) {
         point.kind = object.value(QStringLiteral("hard")).toBool()
             ? ContourPointKind::Hard : ContourPointKind::Soft;
         point.explicitHandles = object.value(QStringLiteral("explicit_handles")).toBool();
+        point.strokeWidth = object.value(QStringLiteral("stroke_width")).toDouble();
         points.push_back(point);
     }
     return points;
