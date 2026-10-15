@@ -425,8 +425,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   affine fits run alongside pure centreline fits. Cap length can contract or
   extend within the same curve and guide limits. The fitter checks the
   full adaptive curve rather than rejecting matches with a coarse sample model.
-  `stroke_shape_ids` prioritizes native strokes over straight fallback primitives.
-  Each hard point ends a span. The fitter attempts one native stroke across the
+  `stroke_shape_ids` prioritizes native strokes for curves. Uniform straight
+  spans prefer line primitives. Each hard point ends an initial span.
+  The fitter attempts one native stroke across the
   complete span before subdivision. Natural taper is allowed on whole native
   strokes while sampled width differences guide selection. Average body width
   retains a 40% lower bound. Subdivision joins retain at least 40% of local width;
@@ -444,10 +445,28 @@ exports grouped `C_group` folders and `C_livery` folders.
   tangents retain five degrees.
   Exposed contours use Compact Fit's tangent and turning measurements with
   additional penalties for peak turn and kink count. Authored hard-point
-  neighborhoods within 1.25 local widths retain intentional corners and taper.
+  neighborhoods within 1.25 local widths retain intentional corners and taper
+  in the curve-interior score. A separate join score includes these neighborhoods
+  and compares their contours with the intended ribbon. Only the path's end caps
+  are excluded from this score. Protected reference corners retain authored turns.
   Pose adjustments use stroke-width distances for translation, scale, skew and
   rotation. Adjacent fits can adjust overlap and
   width together, and neighboring shape alternatives can be replaced atomically.
+  Neighboring spans at a corner can use a single native stroke. Candidate corner
+  fits are compared in the complete union, with exact connectivity and guide
+  checks. Merging, contour repair and pruning preserve joint quality alongside
+  curve smoothness.
+  Final joint cleanup compares distinct native shapes and adjusts each end's
+  length and transverse position independently. It measures turns at boundary
+  vertices in local joint neighborhoods and checks the complete contour with
+  the same sampling mode. Distance checks can extend a fitted
+  backbone toward an authored endpoint by up to half its local width; guide
+  coverage and the fitting corridor still constrain the emitted ink. A terminal
+  protrusion penalty uses the requested ribbon with padding of 12.5% of the
+  minimum stroke width near internal hard points. Cleanup retains exact
+  connectivity and accepts changes that preserve joint roughness and protrusion
+  area while reducing the combined contour cost. Straight spans with varying
+  width retain line alternatives when their local width checks pass.
   Refinement preserves the current peak turn above the smoothness threshold and
   can remove observed holes. Contour repair refines candidate subdivisions before
   comparing their complete unions. Merging and pruning preserve contour quality. Exact
@@ -457,8 +476,9 @@ exports grouped `C_group` folders and `C_livery` folders.
   Failed checks block insertion; cancellation discards placements. The catalog
   is loaded for each operation. `lining_fill.log` records anchor widths, outside
   margin, whole-span matching and rejection counts, guide coverage, curve and
-  tangent errors, selected spans, defect positions, separate envelope and guide
-  rejection counts, shape usage, contour changes and stage timings.
+  tangent errors, selected spans, joint quality, contour and joint defect
+  positions, joint cleanup, protrusion area, sampling mode, separate envelope
+  and guide rejection counts, shape usage, contour changes and stage timings.
 
   **Compact Fit — Thin Regions** shares native profile fitting and its shape
   catalog with Lining. The contour mode accepts closed Pen or Bucket regions,

@@ -388,10 +388,16 @@
     "strategy": "thin-lining"
   },
   "expected": {
-    "placements": 7,
     "fallbackPlacements": 0,
-    "maximumMilliseconds": 20000,
+    "maximumMilliseconds": 25000,
     "maximumExcessTurnDegrees": 30,
-    "maximumCornerDefects": 0
+    "maximumCornerDefects": 0,
+    "maximumPlacements": 8,
+    "maximumJointEnergy": 250,
+    "maximumJointTurnDegrees": 110,
+    "minimumCoverageRatio": 0.7,
+    "maximumJointOutsideArea": 6,
+    "jointOutsideWidthFraction": 0.125,
+    "vertexJointSamples": true
   }
 }

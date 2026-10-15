@@ -1,0 +1,194 @@
+{
+  "width": 8,
+  "request": {
+    "boundaryTolerance": 0.1,
+    "curveModel": "cubic-anchors-v1",
+    "discardNegligiblePlacements": true,
+    "loops": [
+      {
+        "kind": "outer",
+        "points": [
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -203.04507939345788,
+              83.7908268400891
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -195.6464473320449,
+              101.5875363932177
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -207.44426602456835,
+              111.9856138849333
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -187.84788921325818,
+              132.3818428109908
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -216.24263928678923,
+              153.37796082310885
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -179.84936806578463,
+              158.97692562634032
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -198.2459667049738,
+              169.7749291754296
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -178.6495898936636,
+              185.5720084416898
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -179.6494050370978,
+              215.1665366873419
+            ],
+            "strokeWidth": 8
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -147.05543136114315,
+              215.16653668734185
+            ],
+            "strokeWidth": 8
+          }
+        ]
+      }
+    ],
+    "strategy": "thin-lining"
+  },
+  "expected": {
+    "maximumPlacements": 8,
+    "maximumFallbackPlacements": 7,
+    "maximumMilliseconds": 10000,
+    "maximumJointEnergy": 40,
+    "maximumJointTurnDegrees": 45,
+    "minimumCoverageRatio": 0.85
+  }
+}

@@ -1,0 +1,265 @@
+{
+  "width": 9,
+  "request": {
+    "boundaryTolerance": 0.1,
+    "curveModel": "cubic-anchors-v1",
+    "discardNegligiblePlacements": true,
+    "loops": [
+      {
+        "kind": "outer",
+        "points": [
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              184.14625717428692,
+              41.96937843443666
+            ],
+            "strokeWidth": 8.549013427196304
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              189.67277876542872,
+              -25.73961625663089
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              189.2218227135712,
+              -115.39363882387973
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              178.60384872633182,
+              -168.67082528897672
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              162.10338650017246,
+              -190.69421654849236
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              181.74569543411425,
+              -191.93106141609212
+            ],
+            "strokeWidth": 10.484823431002482
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              202.35660534332695,
+              -177.2171147788566
+            ],
+            "strokeWidth": 10.11231696877649
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              222.39025707518874,
+              -146.27896251160962
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              224.87286265565902,
+              -176.46827289797267
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              221.4652038027266,
+              -208.8657693090815
+            ],
+            "strokeWidth": 9.72611015108799
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              250.18296434121737,
+              -167.84986295937023
+            ],
+            "strokeWidth": 13.367836661449903
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              264.3598639833389,
+              -111.15233207544784
+            ],
+            "strokeWidth": 9
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              293.7904638784506,
+              -142.45843243288363
+            ],
+            "strokeWidth": 11.756098853655104
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              262.6300744272921,
+              56.770230793830976
+            ],
+            "strokeWidth": 9
+          }
+        ]
+      }
+    ],
+    "strategy": "thin-lining"
+  },
+  "expected": {
+    "placements": 6,
+    "maximumFallbackPlacements": 2,
+    "maximumMilliseconds": 25000,
+    "maximumJointEnergy": 250,
+    "maximumJointTurnDegrees": 110,
+    "minimumCoverageRatio": 0.65,
+    "maximumJointOutsideArea": 0.5,
+    "jointOutsideWidthFraction": 0.125,
+    "vertexJointSamples": true
+  }
+}

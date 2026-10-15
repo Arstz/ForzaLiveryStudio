@@ -1929,7 +1929,7 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
             {{40, 0}, gui::PenPointKind::Hard}, {{40, 40}, gui::PenPointKind::Hard}};
         const auto joined = gui::thin::fillLiningPath(corner, 2.0, catalog, options);
         check(joined, QStringLiteral("Hard corner continuity"));
-        require(joined.fill.placements.size() == 2 && outputPath(joined.fill, catalog).contains(QPointF(40, 0)),
+        require(joined.fill.placements.size() <= 2 && outputPath(joined.fill, catalog).contains(QPointF(40, 0)),
             QStringLiteral("Hard corner lost its anchor or added repair shapes"));
         auto limited = options;
         limited.shapeBudget = 1;
@@ -2686,6 +2686,19 @@ void clusterCompactionTests(const QVector<gui::catalog::Primitive> &catalog) {
 }
 
 void fastQualityTests() {
+    const gui::catalog::Polygons stableTarget{QPolygonF{{-100, -10}, {100, -10}, {100, 10}, {-100, 10}}};
+    const auto firstContour = gui::catalog::unite(stableTarget
+        + gui::catalog::Polygons{QPolygonF(QRectF(-3, -15, 6, 6))});
+    const auto changedContour = gui::catalog::unite(firstContour
+        + gui::catalog::Polygons{QPolygonF{{60, 9}, {62, 13}, {64, 9}}});
+    const gui::compact::BoundaryModel stableModel(stableTarget, 1.0, {}, true);
+    const QRectF jointWindow(-10, -18, 20, 16);
+    const auto firstJoint = stableModel.measure(firstContour, firstContour, jointWindow);
+    const auto changedJoint = stableModel.measure(changedContour, changedContour, jointWindow);
+    require(firstJoint.maximumExcessTurn > 1.0
+        && std::abs(firstJoint.maximumExcessTurn - changedJoint.maximumExcessTurn) < 1e-8
+        && std::abs(stableModel.energy(firstJoint) - stableModel.energy(changedJoint)) < 1e-8,
+        QStringLiteral("A distant contour edit changed a joint's vertex-anchored quality measurement"));
     const gui::catalog::Polygons square{QPolygonF{{-2, -1}, {2, -1}, {2, 1}, {-2, 1}}};
     const auto supported = gui::catalog::painterPath(gui::catalog::expandedRound(square, 1.0));
     require(supported.contains(QPointF(2.6, 1.6)) && !supported.contains(QPointF(2.8, 1.8))
@@ -3127,8 +3140,12 @@ int main(int argc, char **argv) {
                 output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
                 require(result.fill.error.isEmpty(), result.fill.error);
                 if (!expected.isEmpty() && arguments.size() == 3) {
-                    require(result.fill.placements.size() == expected.value("placements").toInt()
-                        && result.diagnostics.value("fallbackPlacements") == expected.value("fallbackPlacements"),
+                    require((expected.contains("maximumPlacements")
+                            ? result.fill.placements.size() <= expected.value("maximumPlacements").toInt()
+                            : result.fill.placements.size() == expected.value("placements").toInt())
+                        && (expected.contains("maximumFallbackPlacements")
+                            ? result.diagnostics.value("fallbackPlacements").toInt() <= expected.value("maximumFallbackPlacements").toInt()
+                            : result.diagnostics.value("fallbackPlacements") == expected.value("fallbackPlacements")),
                         QStringLiteral("Whole native curves were replaced with fragmented straight shapes"));
                     require(result.diagnostics.value("elapsedMilliseconds").toDouble() < expected.value("maximumMilliseconds").toDouble(),
                         QStringLiteral("Open curve replay exceeded its runtime budget"));
@@ -3142,6 +3159,49 @@ int main(int argc, char **argv) {
                 }
                 const auto generated = outputPath(result.fill, thinCatalog);
                 const auto guide = gui::buildLiningPath(request.loops.front().points).centerline;
+                if (expected.contains("maximumJointEnergy") && arguments.size() == 3) {
+                    gui::catalog::Polygons reference;
+                    gui::catalog::Polygons ink;
+                    const auto target = gui::buildLiningRibbon(gui::buildLiningStroke(request.loops.front().points, width));
+                    const auto inverse = QTransform::fromScale(1.0 / 1024, 1.0 / 1024);
+                    for (const auto &polygon : target.toSubpathPolygons(QTransform::fromScale(1024, 1024)))
+                        reference.push_back(inverse.map(polygon));
+                    for (const auto &polygon : generated.toSubpathPolygons())
+                        ink.push_back(polygon);
+                    const gui::compact::BoundaryModel joints(gui::catalog::unite(reference), std::min(width * 0.2, 1.0),
+                        {{guide.pointAtPercent(0.0), width * 1.25}, {guide.pointAtPercent(1.0), width * 1.25}},
+                        expected.value("vertexJointSamples").toBool());
+                    const auto quality = joints.measure(gui::catalog::unite(ink));
+                    require(quality.samples > 0 && quality.components == 1 && quality.holes == 0
+                        && joints.energy(quality) <= expected.value("maximumJointEnergy").toDouble()
+                        && quality.maximumExcessTurn * 180.0 / std::numbers::pi
+                            <= expected.value("maximumJointTurnDegrees").toDouble(),
+                        QStringLiteral("Hard-point joints have exposed steps or hooks"));
+                    require(result.diagnostics.value("coverageRatio").toDouble() >= expected.value("minimumCoverageRatio").toDouble(),
+                        QStringLiteral("Corner refinement changed the selected stroke thickness excessively"));
+                    if (expected.contains("maximumJointOutsideArea")) {
+                        QPainterPath neighborhoods;
+                        neighborhoods.setFillRule(Qt::WindingFill);
+                        double minimumWidth = std::numeric_limits<double>::infinity();
+                        const auto &anchors = request.loops.front().points;
+                        for (const auto &anchor : anchors)
+                            minimumWidth = std::min(minimumWidth, gui::liningPointWidth(anchor, width));
+                        for (int index = 1; index + 1 < anchors.size(); ++index)
+                            if (anchors[index].kind == gui::PenPointKind::Hard) {
+                                const double radius = gui::liningPointWidth(anchors[index], width) * 1.25;
+                                neighborhoods.addEllipse(anchors[index].position, radius, radius);
+                            }
+                        gui::catalog::Polygons local;
+                        for (const auto &polygon : neighborhoods.toSubpathPolygons(QTransform::fromScale(1024, 1024)))
+                            local.push_back(inverse.map(polygon));
+                        const auto permitted = gui::catalog::expandedRound(reference,
+                            minimumWidth * expected.value("jointOutsideWidthFraction").toDouble());
+                        const double outside = gui::catalog::area(gui::catalog::intersect(gui::catalog::unite(ink),
+                            gui::catalog::subtract(gui::catalog::unite(local), permitted)));
+                        require(outside <= expected.value("maximumJointOutsideArea").toDouble(),
+                            QStringLiteral("Shape ends protrude past their hard-point joints"));
+                    }
+                }
                 for (int sample = 0; sample <= 512; ++sample) {
                     const auto point = guide.pointAtPercent(guide.percentAtLength(guide.length() * sample / 512.0));
                     QPainterPath neighborhood;

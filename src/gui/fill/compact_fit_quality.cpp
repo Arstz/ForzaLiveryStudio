@@ -45,8 +45,9 @@ catalog::Polygons closeSubpixelGaps(const catalog::Polygons &polygons, double ra
 } // namespace
 
 BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observationScale,
-                               const QVector<BoundaryExclusion> &exclusions)
+                               const QVector<BoundaryExclusion> &exclusions, bool vertexSamples)
     : exclusions_(exclusions), target_(target), bounds_(catalog::painterPath(target).boundingRect()),
+      vertexSamples_(vertexSamples),
       scale_(std::max(observationScale, kMinimumLength)),
       cellSize_(std::max(scale_ * kCellScale,
           std::max(bounds_.width(), bounds_.height()) / kMaximumGridExtent)) {
@@ -204,13 +205,12 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
         }
         const auto loop = makeLoop(polygon);
         const double step = std::max(scale_, loop.perimeter / kMaximumSamples);
-        const int samples = std::max(1, static_cast<int>(std::ceil(loop.perimeter / step)));
-        const double spacing = loop.perimeter / samples;
         if (loop.perimeter <= kMinimumLength) {
             continue;
         }
-        for (int sample = 0; sample < samples; ++sample) {
-            const double offset = (sample + 0.5) * spacing;
+        for (const auto &sample : loopSamples(loop, step, vertexSamples_)) {
+            const double offset = sample.offset;
+            const double spacing = sample.spacing;
             const auto point = pointAt(loop, offset);
             if (excluded(point) || (!window.isNull() && !window.contains(point))) {
                 continue;
@@ -263,6 +263,7 @@ double BoundaryModel::energy(const BoundaryMetrics &metrics) const {
 
 QJsonObject BoundaryModel::diagnostics(const BoundaryMetrics &metrics) const {
     return {{QStringLiteral("energy"), energy(metrics)},
+        {QStringLiteral("vertexSamples"), vertexSamples_},
         {QStringLiteral("protectedCorners"), corners_.size()},
         {QStringLiteral("tangentEnergy"), metrics.tangentEnergy},
         {QStringLiteral("turnEnergy"), metrics.turnEnergy},
@@ -336,6 +337,37 @@ QPointF BoundaryModel::pointAt(const Loop &loop, double offset) {
     const double parameter = length > kMinimumLength ? (offset - loop.lengths[index]) / length : 0.0;
 
     return loop.points[index] + (loop.points[next] - loop.points[index]) * parameter;
+}
+
+QVector<BoundaryModel::Sample> BoundaryModel::loopSamples(const Loop &loop, double step, bool vertices) {
+    QVector<Sample> result;
+
+    if (!vertices) {
+        const int count = std::max(1, static_cast<int>(std::ceil(loop.perimeter / step)));
+        const double spacing = loop.perimeter / count;
+        for (int index = 0; index < count; ++index)
+            result.push_back({(index + 0.5) * spacing, spacing});
+    } else {
+        for (int edge = 0; edge < loop.points.size(); ++edge) {
+            const double length = loop.lengths[edge + 1] - loop.lengths[edge];
+            const int count = std::max(1, static_cast<int>(std::ceil(length / step)));
+            const double spacing = length / count;
+            if (length <= kMinimumLength)
+                continue;
+            for (int index = 0; index < count; ++index)
+                result.push_back({loop.lengths[edge] + index * spacing, spacing});
+        }
+        if (!result.isEmpty()) {
+            double previous = result.back().spacing;
+            for (auto &sample : result) {
+                const double current = sample.spacing;
+                sample.spacing = (previous + current) * 0.5;
+                previous = current;
+            }
+        }
+    }
+
+    return result;
 }
 
 BoundaryModel::Location BoundaryModel::closest(const QPointF &point) const {

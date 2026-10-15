@@ -48,7 +48,7 @@ public:
     };
 
     explicit BoundaryModel(const catalog::Polygons &target, double observationScale,
-                            const QVector<BoundaryExclusion> &exclusions = {});
+                            const QVector<BoundaryExclusion> &exclusions = {}, bool vertexSamples = false);
     BoundaryReference reference(const QPointF &point) const;
     catalog::Polygons observationSupport(const catalog::Polygons &coverage) const;
     ObservationWindow observationWindow(const catalog::Polygons &unchanged,
@@ -86,9 +86,14 @@ private:
         double offset = 0.0;
         double squaredDistance = std::numeric_limits<double>::infinity();
     };
+    struct Sample {
+        double offset = 0.0;
+        double spacing = 0.0;
+    };
 
     static Loop makeLoop(const QPolygonF &points);
     static QPointF pointAt(const Loop &loop, double offset);
+    static QVector<Sample> loopSamples(const Loop &loop, double step, bool vertices);
     Location closest(const QPointF &point) const;
     bool nearCorner(const QPointF &point, double radius) const;
     bool excluded(const QPointF &point) const;
@@ -108,6 +113,7 @@ private:
     mutable int measurements_ = 0;
     int columns_ = 0;
     int rows_ = 0;
+    bool vertexSamples_ = false;
     double scale_ = 1.0;
     double cellSize_ = 1.0;
 };

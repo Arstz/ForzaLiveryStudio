@@ -101,6 +101,7 @@ constexpr std::array<double, 3> kTraceThicknessScales{0.9, 1.0, 1.1};
 constexpr int kTraceCandidatePosesPerShape = 1;
 constexpr int kTraceAlternatives = 48;
 constexpr int kTraceJointAlternatives = 6;
+constexpr int kTraceCornerAlternatives = 12;
 constexpr int kTraceDiagnosticDefects = 12;
 constexpr int kTraceContourTrials = 8192;
 constexpr int kTraceContourPasses = 2;
@@ -109,12 +110,22 @@ constexpr int kTraceRepairPolishTrials = 512;
 constexpr int kTraceRepairPolishMilliseconds = 750;
 constexpr double kTraceSmoothTurnLimit = 0.7853981633974483;
 constexpr double kTraceContourStep = 0.04;
+constexpr std::array<double, 5> kTraceJoinEndpointSteps{-0.6, -0.3, 0.0, 0.3, 0.6};
 constexpr std::array<double, 3> kTraceJoinOverlapSteps{0.15, 0.3, 0.6};
+constexpr int kTraceJointPolishTrials = 2048;
+constexpr int kTraceJointPolishPasses = 2;
 constexpr std::array<double, 3> kTraceJoinWidthTransfers{-0.1, 0.0, 0.1};
+constexpr std::array<double, 3> kTraceJoinSideSteps{-0.3, 0.0, 0.3};
 constexpr double kTraceBoundaryWeight = 8.0;
 constexpr double kTracePeakTurnWeight = 2.0;
 constexpr double kTraceContourPeakWeight = 16.0;
 constexpr double kTraceContourDefectWeight = 0.5;
+constexpr double kTraceJointBoundaryWeight = 1.0;
+constexpr double kTraceJointOutsideWidthFraction = 0.125;
+constexpr double kTraceJointOutsideWeight = 32.0;
+constexpr double kTraceEndpointSpineExtensionWidthFraction = 0.5;
+constexpr double kTraceJointTurnTolerance = 0.0001;
+constexpr double kTraceJointMinimumOutsideAreaWidthSquaredFraction = 0.01;
 constexpr double kTraceEndpointRadiusWidthFraction = 1.25;
 constexpr double kTraceStraightErrorWidthFraction = 0.04;
 constexpr double kTraceMinimumJoinWidthRatio = 0.4;
@@ -1513,6 +1524,26 @@ double traceTangentError(const QPointF &first, const QPointF &second) {
     return std::abs(first.x() * second.y() - first.y() * second.x()) / product;
 }
 
+QPolygonF traceDistanceProfile(const QPolygonF &profile, const QVector<LiningStrokeSegment> &segments,
+                               const QVector<QPointF> &capAnchors) {
+    auto result = profile;
+
+    if (capAnchors.contains(segments.front().centerline.start)) {
+        const auto direction = segments.front().centerline.start - profile.front();
+        const double length = QLineF({}, direction).length();
+        result.prepend(profile.front() + direction * std::min(1.0,
+            segments.front().startWidth * kTraceEndpointSpineExtensionWidthFraction / std::max(length, kRayEpsilon)));
+    }
+    if (capAnchors.contains(segments.back().centerline.end)) {
+        const auto direction = segments.back().centerline.end - profile.back();
+        const double length = QLineF({}, direction).length();
+        result.push_back(profile.back() + direction * std::min(1.0,
+            segments.back().endWidth * kTraceEndpointSpineExtensionWidthFraction / std::max(length, kRayEpsilon)));
+    }
+
+    return result;
+}
+
 struct TraceAlternative {
     QPolygonF profile;
     PenPlacement placement;
@@ -1539,6 +1570,24 @@ struct TraceProposal {
     int pivot = 0;
 };
 
+QVector<TraceAlternative> traceJointAlternatives(const QVector<TraceAlternative> &alternatives) {
+    QVector<TraceAlternative> result;
+    QVector<int> selected;
+    QSet<int> shapes;
+
+    for (int index = 0; index < alternatives.size() && result.size() < kTraceJointAlternatives; ++index)
+        if (!shapes.contains(alternatives[index].placement.shapeId)) {
+            result.push_back(alternatives[index]);
+            selected.push_back(index);
+            shapes.insert(alternatives[index].placement.shapeId);
+        }
+    for (int index = 0; index < alternatives.size() && result.size() < kTraceJointAlternatives; ++index)
+        if (!selected.contains(index))
+            result.push_back(alternatives[index]);
+
+    return result;
+}
+
 double traceProfileAllowanceWidthFraction(const FillOptions &options) {
     return kTraceCurveErrorWidthFraction + std::min(kTraceMaximumSpineOffsetWidthFraction,
         options.liningOutsideMarginWidthFraction * kTraceMarginSpineFraction);
@@ -1561,6 +1610,10 @@ double traceContourEnergy(const compact::BoundaryModel &boundary, const compact:
         + kTraceContourDefectWeight * metrics.cornerDefects);
 }
 
+double traceJointEnergy(const compact::BoundaryModel &boundary, const compact::BoundaryMetrics &metrics, double width) {
+    return boundary.energy(metrics) + width * kTraceContourPeakWeight * metrics.maximumExcessTurn * metrics.maximumExcessTurn;
+}
+
 bool traceStraight(const QVector<LiningStrokeSegment> &segments) {
     const auto path = tracePath(segments);
     const QPolygonF chord{path.pointAtPercent(0.0), path.pointAtPercent(1.0)};
@@ -1571,6 +1624,15 @@ bool traceStraight(const QVector<LiningStrokeSegment> &segments) {
             return false;
 
     return true;
+}
+
+bool traceUniformStraight(const QVector<LiningStrokeSegment> &segments) {
+    const double tolerance = traceWidth(segments) * kTraceWidthVariationTolerance;
+
+    return traceStraight(segments) && std::all_of(segments.cbegin(), segments.cend(), [&](const auto &segment) {
+        return std::abs(segment.startWidth - segments.front().startWidth) <= tolerance
+            && std::abs(segment.endWidth - segments.front().startWidth) <= tolerance;
+    });
 }
 
 struct TraceWidthProbe {
@@ -1685,6 +1747,59 @@ QVector<compact::BoundaryExclusion> traceHardPointExclusions(const QVector<Linin
     return result;
 }
 
+QVector<compact::BoundaryExclusion> traceJointSites(const QVector<LiningStrokeSegment> &stroke,
+                                                   const QVector<QPointF> &capAnchors) {
+    auto result = traceHardPointExclusions(stroke, capAnchors);
+
+    result.erase(std::remove_if(result.begin(), result.end(), [&](const auto &site) {
+        return QLineF(site.point, stroke.front().centerline.start).length() <= kRayEpsilon
+            || QLineF(site.point, stroke.back().centerline.end).length() <= kRayEpsilon;
+    }), result.end());
+
+    return result;
+}
+
+catalog::Polygons traceJointOutsideRegion(const catalog::Polygons &ribbon,
+                                          const QVector<LiningStrokeSegment> &stroke,
+                                          const QVector<QPointF> &capAnchors, const catalog::Region &region) {
+    QPainterPath neighborhoods;
+    const double width = traceWidth(stroke);
+    const auto allowed = catalog::expandedRound(ribbon, width * kTraceJointOutsideWidthFraction);
+
+    neighborhoods.setFillRule(Qt::WindingFill);
+    for (const auto &site : traceJointSites(stroke, capAnchors))
+        neighborhoods.addEllipse(site.point, site.radius, site.radius);
+
+    return catalog::subtract(normalizedStroke(neighborhoods, width), catalog::unite(allowed + region.leeway));
+}
+
+double traceJointOutsideArea(const catalog::Polygons &coverage, const catalog::Polygons &outsideRegion) {
+    return catalog::area(catalog::intersect(coverage, outsideRegion));
+}
+
+compact::BoundaryMetrics traceJointMetrics(const compact::BoundaryModel &boundary, const catalog::Polygons &coverage,
+                                            const QVector<compact::BoundaryExclusion> &sites) {
+    const auto observed = boundary.observationSupport(coverage);
+    compact::BoundaryMetrics result;
+
+    for (const auto &site : sites) {
+        const auto window = QRectF(site.point - QPointF(site.radius, site.radius), QSizeF(site.radius * 2.0, site.radius * 2.0));
+        const auto part = boundary.measure(coverage, observed, window);
+        result.cornerDefects += part.cornerDefects;
+        result.samples += part.samples;
+        result.components = std::max(result.components, part.components);
+        result.holes = std::max(result.holes, part.holes);
+        result.tangentEnergy += part.tangentEnergy;
+        result.turnEnergy += part.turnEnergy;
+        result.cornerEnergy += part.cornerEnergy;
+        result.maximumExcessTurn = std::max(result.maximumExcessTurn, part.maximumExcessTurn);
+        result.maximumDistance = std::max(result.maximumDistance, part.maximumDistance);
+        result.maximumCornerDistance = std::max(result.maximumCornerDistance, part.maximumCornerDistance);
+    }
+
+    return result;
+}
+
 QVector<TraceWidthProbe> traceJoinProbes(const QVector<LiningStrokeSegment> &segments,
                                         const QVector<QPointF> &capAnchors) {
     QVector<TraceWidthProbe> result;
@@ -1773,9 +1888,15 @@ public:
             return *cached;
         if (stopped(cancelled_) || remainingTrials_ <= 0 || timer_.elapsed() >= options_.qualityTimeBudgetMilliseconds)
             return {};
-        auto result = fitCatalog(segments, group, strokePrimitives_, precise);
+        auto result = allowFallback && traceUniformStraight(segments)
+            ? fitCatalog(segments, group, fallbackPrimitives_, precise) : std::nullopt;
+        if (!result)
+            result = fitCatalog(segments, group, strokePrimitives_, precise);
         if (!result && (allowFallback || strokePrimitives_.isEmpty()) && traceStraight(segments))
             result = fitCatalog(segments, group, fallbackPrimitives_, precise);
+        if (result && allowFallback && traceStraight(segments) && !traceUniformStraight(segments))
+            if (const auto lines = fitCatalog(segments, group, fallbackPrimitives_, precise))
+                result->alternatives += lines->alternatives;
         fits_.insert(key, result);
 
         return result;
@@ -1995,10 +2116,86 @@ catalog::Polygons traceCoverage(const QVector<TraceSpan> &spans, const QVector<c
     return coverageOf(placements, primitives);
 }
 
+std::optional<TraceSpan> selectTraceMerge(const QVector<TraceSpan> &spans, int index, int size,
+                                          const TraceSpan &replacement, bool corner,
+                                          const QVector<catalog::Primitive> &primitives, const catalog::Region &region,
+                                          const compact::BoundaryModel &boundary, const compact::BoundaryModel &joints,
+                                          double width, const std::function<bool()> &cancelled) {
+    QVector<PenPlacement> others;
+    QVector<TraceAlternative> alternatives = corner ? replacement.alternatives
+        : QVector<TraceAlternative>{{replacement.profile, replacement.placement, 0,
+            replacement.curveError, replacement.tangentError}};
+    const auto coverage = traceCoverage(spans, primitives);
+    const auto visible = catalog::subtract(coverage, region.leeway);
+    const auto before = boundary.measure(visible);
+    const auto beforeJoints = joints.measure(visible);
+    const auto beforeTopology = topologyOf(catalog::unite(coverage + region.leeway));
+    std::optional<TraceSpan> result;
+    double bestCost = traceContourEnergy(boundary, before, width)
+        + kTraceJointBoundaryWeight * joints.energy(beforeJoints) + width * kTraceMergeEnergySlack;
+
+    if (alternatives.size() > kTraceCornerAlternatives)
+        alternatives.resize(kTraceCornerAlternatives);
+    for (int piece = 0; piece < spans.size(); ++piece)
+        if ((piece < index || piece >= index + size) && spans[piece].placement.shapeId != 0)
+            others.push_back(spans[piece].placement);
+    for (const auto &alternative : alternatives) {
+        if (stopped(cancelled))
+            break;
+        auto placements = others;
+        if (alternative.placement.shapeId != 0)
+            placements.push_back(alternative.placement);
+        const auto proposed = coverageOf(placements, primitives);
+        const auto observed = catalog::subtract(proposed, region.leeway);
+        const auto after = boundary.measure(observed);
+        const auto afterJoints = joints.measure(observed);
+        const double cost = traceContourEnergy(boundary, after, width)
+            + kTraceJointBoundaryWeight * joints.energy(afterJoints);
+        if (after.components > before.components || after.holes != before.holes || cost > bestCost
+            || after.maximumExcessTurn > before.maximumExcessTurn + kTraceMergeTurnSlack
+            || (corner && afterJoints.maximumExcessTurn > beforeJoints.maximumExcessTurn + kTraceMergeTurnSlack)
+            || topologyOf(catalog::unite(proposed + region.leeway)).components > beforeTopology.components
+            || !interiorHoles(proposed, region).isEmpty()
+            || !catalog::subtract(region.visible, traceSupportedCoverage(proposed, width * kTraceCurveErrorWidthFraction)).isEmpty())
+            continue;
+        result = replacement;
+        result->profile = alternative.profile;
+        result->placement = alternative.placement;
+        result->curveError = alternative.curveError;
+        result->tangentError = alternative.tangentError;
+        bestCost = cost;
+    }
+
+    return result;
+}
+
+QJsonArray traceDefectDiagnostics(const compact::BoundaryModel &boundary, const catalog::Polygons &coverage,
+                                  const QVector<QPointF> &capAnchors) {
+    QVector<compact::BoundaryDefect> defects;
+    QJsonArray contourDefects;
+
+    boundary.measure(coverage, boundary.observationSupport(coverage), QRectF(), &defects);
+    std::stable_sort(defects.begin(), defects.end(), [](const auto &left, const auto &right) {
+        return left.excessTurn > right.excessTurn;
+    });
+    for (int index = 0; index < std::min(kTraceDiagnosticDefects, int(defects.size())); ++index) {
+        const auto &defect = defects[index];
+        double distance = std::numeric_limits<double>::infinity();
+        for (const auto &anchor : capAnchors)
+            distance = std::min(distance, QLineF(anchor, defect.point).length());
+        contourDefects.push_back(QJsonObject{{QStringLiteral("x"), defect.point.x()},
+            {QStringLiteral("y"), defect.point.y()}, {QStringLiteral("energy"), defect.energy},
+            {QStringLiteral("excessTurnDegrees"), defect.excessTurn * 180.0 / std::acos(-1.0)},
+            {QStringLiteral("anchorDistance"), distance}});
+    }
+
+    return contourDefects;
+}
+
 QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog::Primitive> &primitives,
                                 const catalog::Region &region, const catalog::Polygons &ribbon,
                                 const QVector<LiningStrokeSegment> &stroke, const QVector<QPointF> &capAnchors,
-                                const FillOptions &options, const std::function<bool()> &cancelled);
+                                const FillOptions &options, const std::function<bool()> &cancelled, bool polishJoints = false);
 
 QJsonObject repairTraceContours(QVector<TraceSpan> *spans, TraceFitter *fitter,
                                 const QVector<catalog::Primitive> &primitives, const catalog::Region &region,
@@ -2008,9 +2205,13 @@ QJsonObject repairTraceContours(QVector<TraceSpan> *spans, TraceFitter *fitter,
                                 const std::function<bool()> &cancelled) {
     QVector<QPointF> attempted;
     QJsonArray attempts;
+    const compact::BoundaryModel joints(catalog::subtract(ribbon, region.leeway),
+        std::clamp(width * kScaleWidthFraction, kMinimumScale, kMaximumScale), traceEndpointExclusions(stroke));
     auto coverage = traceCoverage(*spans, primitives);
     auto metrics = boundary.measure(catalog::subtract(coverage, region.leeway));
+    auto jointMetrics = joints.measure(catalog::subtract(coverage, region.leeway));
     const auto initialMetrics = metrics;
+    const auto initialJointMetrics = jointMetrics;
     int trials = 0;
     int accepted = 0;
 
@@ -2019,7 +2220,7 @@ QJsonObject repairTraceContours(QVector<TraceSpan> *spans, TraceFitter *fitter,
         QVector<compact::BoundaryDefect> defects;
         const auto visible = catalog::subtract(coverage, region.leeway);
         boundary.measure(visible, boundary.observationSupport(visible), QRectF(), &defects);
-        std::stable_sort(defects.begin(), defects.end(), [](const auto &left, const auto &right) {
+        std::stable_sort(defects.begin(), defects.end(), [&](const auto &left, const auto &right) {
             return left.energy > right.energy;
         });
         int pivot = -1;
@@ -2076,6 +2277,7 @@ QJsonObject repairTraceContours(QVector<TraceSpan> *spans, TraceFitter *fitter,
         refineTraceContours(&proposed, primitives, region, ribbon, stroke, capAnchors, polishing, cancelled);
         const auto nextCoverage = traceCoverage(proposed, primitives);
         const auto nextMetrics = boundary.measure(catalog::subtract(nextCoverage, region.leeway));
+        const auto nextJointMetrics = joints.measure(catalog::subtract(nextCoverage, region.leeway));
         attempts.push_back(QJsonObject{{QStringLiteral("shapeId"), original.placement.shapeId},
             {QStringLiteral("replacements"), replacements.size()},
             {QStringLiteral("components"), nextMetrics.components},
@@ -2088,18 +2290,25 @@ QJsonObject repairTraceContours(QVector<TraceSpan> *spans, TraceFitter *fitter,
         if (nextMetrics.components > metrics.components || nextMetrics.holes != metrics.holes
             || topologyOf(catalog::unite(nextCoverage + region.leeway)).components
                 > topologyOf(catalog::unite(coverage + region.leeway)).components
-            || traceContourEnergy(boundary, nextMetrics, width) >= traceContourEnergy(boundary, metrics, width)
+            || traceContourEnergy(boundary, nextMetrics, width)
+                    + kTraceJointBoundaryWeight * joints.energy(nextJointMetrics)
+                >= traceContourEnergy(boundary, metrics, width)
+                    + kTraceJointBoundaryWeight * joints.energy(jointMetrics)
             || nextMetrics.maximumExcessTurn > metrics.maximumExcessTurn + kTraceMergeTurnSlack
+            || nextJointMetrics.maximumExcessTurn > jointMetrics.maximumExcessTurn + kTraceMergeTurnSlack
             || !catalog::subtract(region.visible, traceSupportedCoverage(nextCoverage, width * kTraceCurveErrorWidthFraction)).isEmpty()
             || !catalog::subtract(nextCoverage, region.permitted).isEmpty() || !interiorHoles(nextCoverage, region).isEmpty())
             continue;
         *spans = proposed;
         coverage = nextCoverage;
         metrics = nextMetrics;
+        jointMetrics = nextJointMetrics;
         ++accepted;
     }
 
     return {{QStringLiteral("trials"), trials}, {QStringLiteral("accepted"), accepted}, {QStringLiteral("attempts"), attempts},
+        {QStringLiteral("jointsBefore"), joints.diagnostics(initialJointMetrics)},
+        {QStringLiteral("jointsAfter"), joints.diagnostics(jointMetrics)},
         {QStringLiteral("before"), boundary.diagnostics(initialMetrics)},
         {QStringLiteral("after"), boundary.diagnostics(metrics)}};
 }
@@ -2108,7 +2317,7 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
                                 const catalog::Region &region, const catalog::Polygons &ribbon,
                                 const QVector<LiningStrokeSegment> &stroke, const QVector<QPointF> &capAnchors,
                                 const FillOptions &options,
-                                const std::function<bool()> &cancelled) {
+                                const std::function<bool()> &cancelled, bool polishJoints) {
     QVector<catalog::Polygons> pieces;
     QVector<QPolygonF> targets;
     QVector<QPointF> startTangents;
@@ -2116,11 +2325,19 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
     QVector<QVector<TraceWidthProbe>> widthProbes;
     QVector<bool> nativeTaper;
     QVector<TraceWidthProbe> joinProbes;
+    const auto outsideRegion = traceJointOutsideRegion(ribbon, stroke, capAnchors, region);
+    const auto jointSites = traceJointSites(stroke, capAnchors);
+    std::array<int, 10> rejected{};
     QElapsedTimer timer;
     const double minimumWidth = traceWidth(stroke);
     const compact::BoundaryModel boundary(catalog::subtract(ribbon, region.leeway),
         std::clamp(minimumWidth * kScaleWidthFraction, kMinimumScale, kMaximumScale),
         traceHardPointExclusions(stroke, capAnchors));
+    const compact::BoundaryModel joints(catalog::subtract(ribbon, region.leeway),
+        std::clamp(minimumWidth * kScaleWidthFraction, kMinimumScale, kMaximumScale),
+        traceEndpointExclusions(stroke), polishJoints);
+    const compact::BoundaryModel uniformJoints(catalog::subtract(ribbon, region.leeway),
+        std::clamp(minimumWidth * kScaleWidthFraction, kMinimumScale, kMaximumScale), traceEndpointExclusions(stroke));
     const int budget = options.qualityEvaluationBudget > 0
         ? std::min(kTraceContourTrials, options.qualityEvaluationBudget) : kTraceContourTrials;
     int trials = 0;
@@ -2153,13 +2370,30 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
         return catalog::unite(result);
     };
     const auto coverage = assembled();
+    const auto measureJoints = [&](const catalog::Polygons &ink) {
+        const auto visible = catalog::subtract(ink, region.leeway);
+
+        return polishJoints ? traceJointMetrics(joints, visible, jointSites) : joints.measure(visible);
+    };
     auto metrics = boundary.measure(catalog::subtract(coverage, region.leeway));
+    auto jointMetrics = measureJoints(coverage);
     auto exactTopology = topologyOf(catalog::unite(coverage + region.leeway));
     const auto initialTopology = exactTopology;
     const auto initialMetrics = metrics;
+    const auto initialJointMetrics = jointMetrics;
+    const auto initialUniformMetrics = polishJoints ? uniformJoints.measure(catalog::subtract(coverage, region.leeway)) : jointMetrics;
+    const auto initialWholeMetrics = polishJoints ? joints.measure(catalog::subtract(coverage, region.leeway)) : jointMetrics;
+    auto wholeMetrics = initialWholeMetrics;
     const double traceAllowance = minimumWidth * kTraceCurveErrorWidthFraction;
     double missing = catalog::area(catalog::subtract(region.visible, traceSupportedCoverage(coverage, traceAllowance)));
-    double continuityCost = traceContourEnergy(boundary, metrics, minimumWidth);
+    double jointOutside = traceJointOutsideArea(coverage, outsideRegion);
+    const double initialJointOutside = jointOutside;
+    const auto jointCost = [&](const compact::BoundaryMetrics &quality, double outside) {
+        return polishJoints ? traceJointEnergy(joints, quality, minimumWidth)
+            + kTraceJointOutsideWeight * outside / minimumWidth : joints.energy(quality);
+    };
+    double continuityCost = traceContourEnergy(boundary, metrics, minimumWidth)
+        + kTraceJointBoundaryWeight * jointCost(jointMetrics, jointOutside);
     const auto finished = [&] {
         return stopped(cancelled) || trials >= budget || timer.elapsed() >= options.qualityTimeBudgetMilliseconds;
     };
@@ -2168,9 +2402,25 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
             {QStringLiteral("shapeReplacements"), replacements},
             {QStringLiteral("exactComponentsBefore"), initialTopology.components},
             {QStringLiteral("exactComponentsAfter"), exactTopology.components},
+            {QStringLiteral("jointOutsideBefore"), initialJointOutside},
+            {QStringLiteral("jointOutsideAfter"), jointOutside},
+            {QStringLiteral("rejected"), QJsonObject{{QStringLiteral("tangent"), rejected[0]},
+                {QStringLiteral("curve"), rejected[1]}, {QStringLiteral("widthOrEnvelope"), rejected[2]},
+                {QStringLiteral("traceOrJoin"), rejected[3]}, {QStringLiteral("topologyOrBodyTurn"), rejected[4]},
+                {QStringLiteral("jointTurn"), rejected[5]}, {QStringLiteral("jointEnergy"), rejected[6]},
+                {QStringLiteral("jointOutside"), rejected[7]}, {QStringLiteral("cost"), rejected[8]},
+                {QStringLiteral("wholeJointQuality"), rejected[9]}}},
+            {QStringLiteral("wholeJointsBefore"), joints.diagnostics(initialWholeMetrics)},
+            {QStringLiteral("wholeJointsAfter"), joints.diagnostics(wholeMetrics)},
+            {QStringLiteral("jointsBefore"), joints.diagnostics(initialJointMetrics)},
+            {QStringLiteral("jointsAfter"), joints.diagnostics(jointMetrics)},
             {QStringLiteral("before"), boundary.diagnostics(initialMetrics)},
             {QStringLiteral("after"), boundary.diagnostics(metrics)}};
     };
+    if (polishJoints && (outsideRegion.isEmpty()
+        || (jointOutside <= minimumWidth * minimumWidth * kTraceJointMinimumOutsideAreaWidthSquaredFraction
+            && initialUniformMetrics.maximumExcessTurn <= kTraceSmoothTurnLimit)))
+        return diagnostics();
     const auto consider = [&](const QVector<TraceProposal> &proposals) {
         QVector<TraceAlternative> checked;
         QVector<catalog::Polygons> additions;
@@ -2185,19 +2435,26 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
             double curveError = 0.0;
             if (profile.size() < 2)
                 return;
+            const auto distanceProfile = polishJoints ? traceDistanceProfile(profile, span.segments, capAnchors) : profile;
             const double startError = traceTangentError(profile[1] - profile.front(), startTangents[pivot]);
             const double endError = traceTangentError(profile.back() - profile[profile.size() - 2], endTangents[pivot]);
             if (startError > traceTangentLimit(span.segments.front().centerline.start, capAnchors)
-                || endError > traceTangentLimit(span.segments.back().centerline.end, capAnchors))
+                || endError > traceTangentLimit(span.segments.back().centerline.end, capAnchors)) {
+                ++rejected[0];
                 return;
+            }
             for (const auto &point : targets[pivot])
-                curveError = std::max(curveError, traceDistance(point, profile));
-            if (curveError > localWidth * traceProfileAllowanceWidthFraction(options))
+                curveError = std::max(curveError, traceDistance(point, distanceProfile));
+            if (curveError > localWidth * traceProfileAllowanceWidthFraction(options)) {
+                ++rejected[1];
                 return;
+            }
             const auto proposed = coverageOf({proposal.placement}, primitives);
             if (!catalog::subtract(proposed, region.permitted).isEmpty()
-                || !traceWidthError(proposed, widthProbes[pivot], localWidth * kTraceCurveErrorWidthFraction, nativeTaper[pivot]))
+                || !traceWidthError(proposed, widthProbes[pivot], localWidth * kTraceCurveErrorWidthFraction, nativeTaper[pivot])) {
+                ++rejected[2];
                 return;
+            }
             checked.push_back({profile, proposal.placement, 0, curveError, std::max(startError, endError)});
             additions.push_back(proposed);
             originals.push_back(pieces[pivot]);
@@ -2210,17 +2467,43 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
         const double nextMissing = catalog::area(catalog::subtract(region.visible,
             traceSupportedCoverage(nextCoverage, traceAllowance)));
         if (nextMissing > missing || !interiorHoles(nextCoverage, region).isEmpty()
-            || !traceJoinsWide(nextCoverage, joinProbes, traceAllowance, region.leeway))
+            || !traceJoinsWide(nextCoverage, joinProbes, traceAllowance, region.leeway)) {
+            ++rejected[3];
             return;
+        }
         const auto nextMetrics = boundary.measure(catalog::subtract(nextCoverage, region.leeway));
+        const auto nextJointMetrics = measureJoints(nextCoverage);
         const auto nextTopology = topologyOf(catalog::unite(nextCoverage + region.leeway));
-        const double nextCost = traceContourEnergy(boundary, nextMetrics, minimumWidth);
+        const double nextJointOutside = polishJoints ? traceJointOutsideArea(nextCoverage, outsideRegion) : jointOutside;
+        const double nextCost = traceContourEnergy(boundary, nextMetrics, minimumWidth)
+            + kTraceJointBoundaryWeight * jointCost(nextJointMetrics, nextJointOutside);
         if (nextMetrics.components > metrics.components || nextMetrics.holes > metrics.holes
             || nextTopology.components > exactTopology.components
-            || nextMetrics.maximumExcessTurn > std::max(metrics.maximumExcessTurn, kTraceSmoothTurnLimit)
-            || (nextMissing == missing && nextMetrics.components == metrics.components
-                && nextTopology.components == exactTopology.components && nextCost >= continuityCost))
+            || nextMetrics.maximumExcessTurn > std::max(metrics.maximumExcessTurn, kTraceSmoothTurnLimit)) {
+            ++rejected[4];
             return;
+        }
+        if (polishJoints) {
+            const int reason = nextJointMetrics.maximumExcessTurn
+                    > std::max(jointMetrics.maximumExcessTurn, kTraceSmoothTurnLimit) + kTraceJointTurnTolerance ? 5
+                : joints.energy(nextJointMetrics) > joints.energy(jointMetrics) ? 6 : nextJointOutside > jointOutside ? 7 : -1;
+            if (reason >= 0) {
+                ++rejected[reason];
+                return;
+            }
+        }
+        if (nextMissing == missing && nextMetrics.components == metrics.components
+            && nextTopology.components == exactTopology.components && nextCost >= continuityCost) {
+            ++rejected[8];
+            return;
+        }
+        const auto nextWholeMetrics = polishJoints
+            ? joints.measure(catalog::subtract(nextCoverage, region.leeway)) : nextJointMetrics;
+        if (polishJoints && (nextWholeMetrics.maximumExcessTurn > initialWholeMetrics.maximumExcessTurn + kTraceMergeTurnSlack
+            || joints.energy(nextWholeMetrics) > joints.energy(initialWholeMetrics))) {
+            ++rejected[9];
+            return;
+        }
         for (int index = 0; index < proposals.size(); ++index) {
             const int pivot = proposals[index].pivot;
             const auto &candidate = checked[index];
@@ -2233,12 +2516,15 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
             pieces[pivot] = additions[index];
         }
         metrics = nextMetrics;
+        jointMetrics = nextJointMetrics;
+        wholeMetrics = nextWholeMetrics;
         exactTopology = nextTopology;
         missing = nextMissing;
+        jointOutside = polishJoints ? nextJointOutside : traceJointOutsideArea(nextCoverage, outsideRegion);
         continuityCost = nextCost;
         ++accepted;
     };
-    const auto overlapProposal = [&](int pivot, bool end, double extension, double widthTransfer) {
+    const auto endpointProposal = [&](int pivot, bool end, double extension, double widthTransfer, double sideShift = 0.0) {
         const auto &span = (*spans)[pivot];
         const auto path = tracePath(span.segments);
         const auto anchor = path.pointAtPercent(end ? 0.0 : 1.0);
@@ -2249,6 +2535,7 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
         adjustment.translate(anchor.x(), anchor.y());
         adjustment.rotate(angle);
         adjustment.scale(1.0 + extension / std::max(length, kRayEpsilon), 1.0 + widthTransfer);
+        adjustment.shear(0.0, (end ? 1.0 : -1.0) * sideShift / std::max(length, kRayEpsilon));
         adjustment.rotate(-angle);
         adjustment.translate(-anchor.x(), -anchor.y());
         auto placement = span.placement;
@@ -2256,18 +2543,21 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
 
         return TraceProposal{placement, adjustment.map(span.profile), pivot};
     };
-    for (int pass = 0; pass < kTraceContourPasses; ++pass) {
-        for (int pivot = 0; pivot < spans->size(); ++pivot) {
-            const auto alternatives = (*spans)[pivot].alternatives;
-            for (const auto &alternative : alternatives) {
-                if (finished())
-                    return diagnostics();
-                consider({{alternative.placement, alternative.profile, pivot}});
+    const int passes = polishJoints ? kTraceJointPolishPasses : kTraceContourPasses;
+    for (int pass = 0; pass < passes; ++pass) {
+        if (!polishJoints) {
+            for (int pivot = 0; pivot < spans->size(); ++pivot) {
+                const auto alternatives = (*spans)[pivot].alternatives;
+                for (const auto &alternative : alternatives) {
+                    if (finished())
+                        return diagnostics();
+                    consider({{alternative.placement, alternative.profile, pivot}});
+                }
             }
         }
         for (int pivot = 0; pivot + 1 < spans->size(); ++pivot) {
-            const auto first = (*spans)[pivot].alternatives;
-            const auto second = (*spans)[pivot + 1].alternatives;
+            const auto first = polishJoints ? traceJointAlternatives((*spans)[pivot].alternatives) : (*spans)[pivot].alternatives;
+            const auto second = polishJoints ? traceJointAlternatives((*spans)[pivot + 1].alternatives) : (*spans)[pivot + 1].alternatives;
             for (int left = 0; left < std::min(kTraceJointAlternatives, int(first.size())); ++left)
                 for (int right = 0; right < std::min(kTraceJointAlternatives, int(second.size())); ++right) {
                     if (finished())
@@ -2276,59 +2566,92 @@ QJsonObject refineTraceContours(QVector<TraceSpan> *spans, const QVector<catalog
                         {second[right].placement, second[right].profile, pivot + 1}});
                 }
         }
-        for (double step : kTraceContourSteps)
-            for (int pivot = 0; pivot < spans->size(); ++pivot) {
-                auto &span = (*spans)[pivot];
-                if (span.placement.shapeId == 0)
-                    continue;
-                const auto path = tracePath(span.segments);
-                const auto center = path.pointAtPercent(0.5);
-                const auto direction = traceDirection(path, 0.5);
-                QTransform localAxes;
-                localAxes.rotate(-std::atan2(direction.y(), direction.x()) * 180.0 / std::acos(-1.0));
-                localAxes.translate(-center.x(), -center.y());
-                const auto localBounds = localAxes.map(path).boundingRect();
-                const double angle = std::atan2(direction.y(), direction.x()) * 180.0 / std::acos(-1.0);
-                const double localWidth = traceWidth(span.segments);
-                const double alongExtent = std::max(localWidth, localBounds.width());
-                const double acrossExtent = std::max(localWidth, localBounds.height());
-                const double displacement = localWidth * kTraceContourStep * step;
-                for (int parameter = 0; parameter < kPoseParameters; ++parameter)
-                    for (double sign : {-1.0, 1.0}) {
-                        if (finished())
-                            return diagnostics();
-                        QTransform adjustment;
-                        adjustment.translate(center.x(), center.y());
-                        adjustment.rotate(angle);
-                        if (parameter < 2)
-                            adjustment.translate(parameter == 0 ? sign * displacement : 0.0,
-                                parameter == 1 ? sign * displacement : 0.0);
-                        else if (parameter < 4)
-                            adjustment.scale(parameter == 2 ? 1.0 + sign * displacement / alongExtent : 1.0,
-                                parameter == 3 ? 1.0 + sign * displacement / acrossExtent : 1.0);
-                        else if (parameter == 4)
-                            adjustment.shear(sign * displacement / acrossExtent, 0.0);
-                        else
-                            adjustment.rotate(sign * std::atan2(displacement, std::max(alongExtent, acrossExtent))
-                                * 180.0 / std::acos(-1.0));
-                        adjustment.rotate(-angle);
-                        adjustment.translate(-center.x(), -center.y());
-                        auto placement = span.placement;
-                        placement.transform = catalog::emittedTransform(placement.transform * adjustment);
-                        consider({{placement, adjustment.map(span.profile), pivot}});
-                    }
-            }
+        if (!polishJoints) {
+            for (double step : kTraceContourSteps)
+                for (int pivot = 0; pivot < spans->size(); ++pivot) {
+                    auto &span = (*spans)[pivot];
+                    if (span.placement.shapeId == 0)
+                        continue;
+                    const auto path = tracePath(span.segments);
+                    const auto center = path.pointAtPercent(0.5);
+                    const auto direction = traceDirection(path, 0.5);
+                    QTransform localAxes;
+                    localAxes.rotate(-std::atan2(direction.y(), direction.x()) * 180.0 / std::acos(-1.0));
+                    localAxes.translate(-center.x(), -center.y());
+                    const auto localBounds = localAxes.map(path).boundingRect();
+                    const double angle = std::atan2(direction.y(), direction.x()) * 180.0 / std::acos(-1.0);
+                    const double localWidth = traceWidth(span.segments);
+                    const double alongExtent = std::max(localWidth, localBounds.width());
+                    const double acrossExtent = std::max(localWidth, localBounds.height());
+                    const double displacement = localWidth * kTraceContourStep * step;
+                    for (int parameter = 0; parameter < kPoseParameters; ++parameter)
+                        for (double sign : {-1.0, 1.0}) {
+                            if (finished())
+                                return diagnostics();
+                            QTransform adjustment;
+                            adjustment.translate(center.x(), center.y());
+                            adjustment.rotate(angle);
+                            if (parameter < 2)
+                                adjustment.translate(parameter == 0 ? sign * displacement : 0.0,
+                                    parameter == 1 ? sign * displacement : 0.0);
+                            else if (parameter < 4)
+                                adjustment.scale(parameter == 2 ? 1.0 + sign * displacement / alongExtent : 1.0,
+                                    parameter == 3 ? 1.0 + sign * displacement / acrossExtent : 1.0);
+                            else if (parameter == 4)
+                                adjustment.shear(sign * displacement / acrossExtent, 0.0);
+                            else
+                                adjustment.rotate(sign * std::atan2(displacement, std::max(alongExtent, acrossExtent))
+                                    * 180.0 / std::acos(-1.0));
+                            adjustment.rotate(-angle);
+                            adjustment.translate(-center.x(), -center.y());
+                            auto placement = span.placement;
+                            placement.transform = catalog::emittedTransform(placement.transform * adjustment);
+                            consider({{placement, adjustment.map(span.profile), pivot}});
+                        }
+                }
+        }
         for (int pivot = 0; pivot + 1 < spans->size(); ++pivot) {
             if ((*spans)[pivot].placement.shapeId == 0 || (*spans)[pivot + 1].placement.shapeId == 0)
                 continue;
             const double joinWidth = std::min((*spans)[pivot].segments.back().endWidth,
                 (*spans)[pivot + 1].segments.front().startWidth);
-            for (double overlap : kTraceJoinOverlapSteps)
-                for (double balance : kTraceJoinWidthTransfers) {
+            if (!polishJoints) {
+                for (double overlap : kTraceJoinOverlapSteps)
+                    for (double balance : kTraceJoinWidthTransfers) {
+                        if (finished())
+                            return diagnostics();
+                        consider({endpointProposal(pivot, true, joinWidth * overlap, balance),
+                            endpointProposal(pivot + 1, false, joinWidth * overlap, -balance)});
+                    }
+                continue;
+            }
+            for (double first : kTraceJoinEndpointSteps)
+                for (double second : kTraceJoinEndpointSteps)
+                    for (double balance : kTraceJoinWidthTransfers) {
+                        if ((first != second && balance != 0.0) || (first == 0.0 && second == 0.0 && balance == 0.0))
+                            continue;
+                        if (finished())
+                            return diagnostics();
+                        consider({endpointProposal(pivot, true, joinWidth * first, balance),
+                            endpointProposal(pivot + 1, false, joinWidth * second, -balance)});
+                    }
+            for (double first : kTraceJoinSideSteps)
+                for (double second : kTraceJoinSideSteps) {
+                    if (first == 0.0 && second == 0.0)
+                        continue;
                     if (finished())
                         return diagnostics();
-                    consider({overlapProposal(pivot, true, joinWidth * overlap, balance),
-                        overlapProposal(pivot + 1, false, joinWidth * overlap, -balance)});
+                    consider({endpointProposal(pivot, true, 0.0, 0.0, joinWidth * first),
+                        endpointProposal(pivot + 1, false, 0.0, 0.0, joinWidth * second)});
+                }
+            for (double along : kTraceJoinEndpointSteps)
+                for (double side : kTraceJoinSideSteps) {
+                    if (side == 0.0)
+                        continue;
+                    if (finished())
+                        return diagnostics();
+                    consider({endpointProposal(pivot, true, joinWidth * along, 0.0, joinWidth * side)});
+                    consider({endpointProposal(pivot + 1, false, joinWidth * along, 0.0, joinWidth * side)});
                 }
         }
     }
@@ -2383,6 +2706,9 @@ catalog::FillResult fillOpenTrace(const LiningPath &path, const QVector<PenPoint
         const compact::BoundaryModel boundary(catalog::subtract(ribbon, region.leeway),
             std::clamp(traceWidth(stroke) * kScaleWidthFraction, kMinimumScale, kMaximumScale),
             traceHardPointExclusions(stroke, capAnchors));
+        const compact::BoundaryModel joints(catalog::subtract(ribbon, region.leeway),
+            std::clamp(traceWidth(stroke) * kScaleWidthFraction, kMinimumScale, kMaximumScale),
+            traceEndpointExclusions(stroke));
         TraceFitter fitter(primitives, options, region, capAnchors, cancelled);
         for (int index = 0; index < path.segments.size(); ++index) {
             pending.push_back(stroke[index]);
@@ -2409,34 +2735,25 @@ catalog::FillResult fillOpenTrace(const LiningPath &path, const QVector<PenPoint
         for (int round = 0; round < kTraceMergeRounds && !stopped(cancelled); ++round)
             for (int size : kTraceMergeSizes)
                 for (int index = 0; index + size <= spans.size() && !stopped(cancelled);) {
-                    if (spans[index].group == spans[index + size - 1].group) {
+                    const bool corner = size == 2 && spans[index].group != spans[index + 1].group
+                        && (spans[index].placement.shapeId == kTraceSquareShapeId
+                            || spans[index].placement.shapeId == kTraceRectangleShapeId
+                            || spans[index + 1].placement.shapeId == kTraceSquareShapeId
+                            || spans[index + 1].placement.shapeId == kTraceRectangleShapeId)
+                        && traceTangentError(traceDirection(tracePath(spans[index].segments), 1.0),
+                            traceDirection(tracePath(spans[index + 1].segments), 0.0)) > kTraceTangentLimit;
+                    if (spans[index].group == spans[index + size - 1].group || corner) {
                         QVector<LiningStrokeSegment> combined;
                         for (int offset = 0; offset < size; ++offset)
                             combined += spans[index + offset].segments;
                         if (const auto replacement = fitter.fit(combined, spans[index].group, traceStraight(combined))) {
-                            QVector<PenPlacement> beforePlacements;
-                            QVector<PenPlacement> afterPlacements;
-                            for (int piece = 0; piece < spans.size(); ++piece) {
-                                if (spans[piece].placement.shapeId != 0) {
-                                    beforePlacements.push_back(spans[piece].placement);
-                                    if (piece < index || piece >= index + size)
-                                        afterPlacements.push_back(spans[piece].placement);
-                                }
-                            }
-                            if (replacement->placement.shapeId != 0)
-                                afterPlacements.push_back(replacement->placement);
-                            const auto before = boundary.measure(catalog::subtract(
-                                coverageOf(beforePlacements, primitives), region.leeway));
-                            const auto after = boundary.measure(catalog::subtract(
-                                coverageOf(afterPlacements, primitives), region.leeway));
-                            if (after.components > before.components || after.holes != before.holes
-                                || traceContourEnergy(boundary, after, traceWidth(stroke))
-                                    > traceContourEnergy(boundary, before, traceWidth(stroke)) + traceWidth(stroke) * kTraceMergeEnergySlack
-                                || after.maximumExcessTurn > before.maximumExcessTurn + kTraceMergeTurnSlack) {
+                            const auto selected = selectTraceMerge(spans, index, size, *replacement, corner,
+                                primitives, region, boundary, joints, traceWidth(stroke), cancelled);
+                            if (!selected) {
                                 ++index;
                                 continue;
                             }
-                            spans[index] = *replacement;
+                            spans[index] = *selected;
                             spans.remove(index + 1, size - 1);
                             merged += size - 1;
                             continue;
@@ -2462,8 +2779,17 @@ catalog::FillResult fillOpenTrace(const LiningPath &path, const QVector<PenPoint
                 contourRefinement.insert(key, contourRefinement.value(key).toInt() + polish.value(key).toInt());
             contourRefinement.insert(QStringLiteral("afterInitialRefinement"), contourRefinement.value(QStringLiteral("after")));
             contourRefinement.insert(QStringLiteral("after"), polish.value(QStringLiteral("after")));
+            contourRefinement.insert(QStringLiteral("jointsAfter"), polish.value(QStringLiteral("jointsAfter")));
         }
         timings.insert(QStringLiteral("contourRefinement"), stageTimer.restart());
+        if (options.phaseProgress)
+            options.phaseProgress(QStringLiteral("traceJointRefinement"));
+        auto jointOptions = options;
+        jointOptions.qualityEvaluationBudget = options.qualityEvaluationBudget > 0
+            ? std::min(kTraceJointPolishTrials, options.qualityEvaluationBudget) : kTraceJointPolishTrials;
+        const auto jointRefinement = refineTraceContours(&spans, primitives, region, ribbon, stroke, capAnchors,
+            jointOptions, cancelled, true);
+        timings.insert(QStringLiteral("jointRefinement"), stageTimer.restart());
         for (const auto &span : spans) {
             joinProbes += traceJoinProbes(span.segments, capAnchors);
             if (span.placement.shapeId != 0)
@@ -2476,9 +2802,18 @@ catalog::FillResult fillOpenTrace(const LiningPath &path, const QVector<PenPoint
         const auto originalPlacements = result.fill.placements;
         int removed = reducePlacements(&result.fill.placements, region, primitives, 0.0, cancelled);
         if (removed > 0) {
-            const auto before = boundary.measure(catalog::subtract(coverageOf(originalPlacements, primitives), region.leeway));
-            const auto after = boundary.measure(catalog::subtract(coverageOf(result.fill.placements, primitives), region.leeway));
+            const compact::BoundaryModel stableJoints(catalog::subtract(ribbon, region.leeway),
+                std::clamp(traceWidth(stroke) * kScaleWidthFraction, kMinimumScale, kMaximumScale),
+                traceEndpointExclusions(stroke), true);
+            const auto beforeCoverage = catalog::subtract(coverageOf(originalPlacements, primitives), region.leeway);
+            const auto afterCoverage = catalog::subtract(coverageOf(result.fill.placements, primitives), region.leeway);
+            const auto before = boundary.measure(beforeCoverage);
+            const auto after = boundary.measure(afterCoverage);
             if (traceContourEnergy(boundary, after, traceWidth(stroke)) > traceContourEnergy(boundary, before, traceWidth(stroke))
+                || traceJointEnergy(joints, joints.measure(afterCoverage), traceWidth(stroke))
+                    > traceJointEnergy(joints, joints.measure(beforeCoverage), traceWidth(stroke))
+                || traceJointEnergy(stableJoints, stableJoints.measure(afterCoverage), traceWidth(stroke))
+                    > traceJointEnergy(stableJoints, stableJoints.measure(beforeCoverage), traceWidth(stroke))
                 || after.maximumExcessTurn > before.maximumExcessTurn
                 || !traceJoinsWide(coverageOf(result.fill.placements, primitives), joinProbes,
                     traceWidth(stroke) * kTraceCurveErrorWidthFraction, region.leeway)) {
@@ -2509,6 +2844,17 @@ catalog::FillResult fillOpenTrace(const LiningPath &path, const QVector<PenPoint
         result.diagnostics = fitter.diagnostics();
         result.diagnostics.insert(QStringLiteral("contourRepair"), contourRepair);
         result.diagnostics.insert(QStringLiteral("contourRefinement"), contourRefinement);
+        result.diagnostics.insert(QStringLiteral("jointRefinement"), jointRefinement);
+        result.diagnostics.insert(QStringLiteral("jointQuality"), joints.diagnostics(joints.measure(
+            catalog::subtract(coverage, region.leeway))));
+        const compact::BoundaryModel stableJoints(catalog::subtract(ribbon, region.leeway),
+            std::clamp(traceWidth(stroke) * kScaleWidthFraction, kMinimumScale, kMaximumScale), traceEndpointExclusions(stroke), true);
+        result.diagnostics.insert(QStringLiteral("wholeJointQuality"), stableJoints.diagnostics(stableJoints.measure(
+            catalog::subtract(coverage, region.leeway))));
+        result.diagnostics.insert(QStringLiteral("jointOutsideArea"), traceJointOutsideArea(coverage,
+            traceJointOutsideRegion(ribbon, stroke, capAnchors, region)));
+        result.diagnostics.insert(QStringLiteral("jointOutsideReferencePaddingWidthFraction"), kTraceJointOutsideWidthFraction);
+        result.diagnostics.insert(QStringLiteral("endpointSpineExtensionWidthFraction"), kTraceEndpointSpineExtensionWidthFraction);
         result.diagnostics.insert(QStringLiteral("coverageRatio"), result.fill.targetArea > 0.0
             ? result.fill.coveredArea / result.fill.targetArea : 1.0);
         result.diagnostics.insert(QStringLiteral("traceCoverageRatio"), 1.0);
@@ -2519,24 +2865,9 @@ catalog::FillResult fillOpenTrace(const LiningPath &path, const QVector<PenPoint
         result.diagnostics.insert(QStringLiteral("mergedSpans"), merged);
         result.diagnostics.insert(QStringLiteral("removedRedundantTracePlacements"), removed);
         result.diagnostics.insert(QStringLiteral("hardSpans"), group);
-        QVector<compact::BoundaryDefect> defects;
         const auto visibleCoverage = catalog::subtract(coverage, region.leeway);
-        boundary.measure(visibleCoverage, boundary.observationSupport(visibleCoverage), QRectF(), &defects);
-        std::stable_sort(defects.begin(), defects.end(), [](const auto &left, const auto &right) {
-            return left.excessTurn > right.excessTurn;
-        });
-        QJsonArray contourDefects;
-        for (int index = 0; index < std::min(kTraceDiagnosticDefects, int(defects.size())); ++index) {
-            const auto &defect = defects[index];
-            double distance = std::numeric_limits<double>::infinity();
-            for (const auto &anchor : capAnchors)
-                distance = std::min(distance, QLineF(anchor, defect.point).length());
-            contourDefects.push_back(QJsonObject{{QStringLiteral("x"), defect.point.x()},
-                {QStringLiteral("y"), defect.point.y()}, {QStringLiteral("energy"), defect.energy},
-                {QStringLiteral("excessTurnDegrees"), defect.excessTurn * 180.0 / std::acos(-1.0)},
-                {QStringLiteral("anchorDistance"), distance}});
-        }
-        result.diagnostics.insert(QStringLiteral("contourDefects"), contourDefects);
+        result.diagnostics.insert(QStringLiteral("contourDefects"), traceDefectDiagnostics(boundary, visibleCoverage, capAnchors));
+        result.diagnostics.insert(QStringLiteral("jointDefects"), traceDefectDiagnostics(joints, visibleCoverage, capAnchors));
         QJsonArray selectedSpans;
         double fallbackLength = 0.0;
         for (const auto &span : spans) {
