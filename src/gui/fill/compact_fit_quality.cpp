@@ -218,6 +218,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
             const auto reference = referenceModel.closest(point);
             const auto &target = referenceModel.loops_[reference.loop];
             double sampleEnergy = 0.0;
+            double sampleTurn = 0.0;
             for (double radius : {scale_, scale_ * 2.0}) {
                 if (nearCorner(point, radius + scale_ * 0.5))
                     continue;
@@ -235,6 +236,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
                     result.tangentEnergy += spacing * tangentError * tangentError * 0.5;
                     result.turnEnergy += spacing * excess * excess * 0.5;
                     result.maximumExcessTurn = std::max(result.maximumExcessTurn, excess);
+                    sampleTurn = std::max(sampleTurn, excess);
                     result.cornerDefects += excess > kCornerDefectTurn;
                     sampleEnergy += spacing * (tangentError * tangentError * 0.5 + excess * excess);
                 }
@@ -242,7 +244,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
             result.maximumDistance = std::max(result.maximumDistance, std::sqrt(reference.squaredDistance));
             ++result.samples;
             if (defects && sampleEnergy > kMinimumLength)
-                defects->push_back({point, sampleEnergy});
+                defects->push_back({point, sampleEnergy, sampleTurn});
         }
     }
 

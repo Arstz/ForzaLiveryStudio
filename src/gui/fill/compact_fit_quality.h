@@ -30,6 +30,7 @@ struct BoundaryReference {
 struct BoundaryDefect {
     QPointF point;
     double energy = 0.0;
+    double excessTurn = 0.0;
 };
 
 struct BoundaryExclusion {

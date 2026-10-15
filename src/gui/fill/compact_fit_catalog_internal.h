@@ -74,6 +74,7 @@ QPainterPath painterPath(const Polygons &polygons);
 QPolygonF convexHull(QPolygonF points);
 Polygons mapped(const PenPrimitive &shape, const QTransform &transform);
 Polygons expanded(const Polygons &polygons, double radius);
+Polygons expandedRound(const Polygons &polygons, double radius);
 Polygons interiorSupport(const Polygons &polygons, double allowance);
 QTransform emittedTransform(const QTransform &transform);
 QTransform affineFromAnchors(const std::array<QPointF, 3> &source,

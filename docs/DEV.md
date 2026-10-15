@@ -420,8 +420,10 @@ exports grouped `C_group` folders and `C_livery` folders.
   `assets/lining_shapes.json`. Backbones pair the silhouette boundaries between
   stroke ends, with a mesh path fallback for branched geometry. Transparent mesh
   triangles do not participate in generation. Initial matching uses these
-  centrelines exclusively. A geometric screen shortlists affine seeds for dense
-  curve fitting, including high skew and partial profiles. The fitter checks the
+  centrelines exclusively. A geometric screen retains seeds from each shape for
+  dense curve fitting, including high skew and partial profiles. Width-aware
+  affine fits run alongside pure centreline fits. Cap length can contract or
+  extend within the same curve and guide limits. The fitter checks the
   full adaptive curve rather than rejecting matches with a coarse sample model.
   `stroke_shape_ids` prioritizes native strokes over straight fallback primitives.
   Each hard point ends a span. The fitter attempts one native stroke across the
@@ -437,21 +439,26 @@ exports grouped `C_group` folders and `C_livery` folders.
   fitting target; the allowed corridor has width `1 + 2 * margin` times local
   width. The stored native spine can deviate by 8% of width plus half the margin,
   with the added allowance capped at 25% of width. Guide coverage keeps its
-  independent 8% allowance. Hard endpoint tangents allow twenty degrees;
-  internal subdivision tangents retain five degrees.
-  Exposed contours use Compact Fit's tangent and turning measurements with an
-  additional peak-turn penalty. Authored hard-point neighborhoods retain
-  intentional corners and taper. Pose adjustments use stroke-width distances
-  for translation, scale, skew and rotation. Adjacent fits can adjust overlap and
-  width together. Contour repair refines candidate subdivisions before comparing
-  their complete unions. Merging and pruning preserve contour quality. Exact
+  independent 8% distance allowance, using an inscribed circular expansion
+  kernel. Hard endpoint tangents allow twenty degrees; internal subdivision
+  tangents retain five degrees.
+  Exposed contours use Compact Fit's tangent and turning measurements with
+  additional penalties for peak turn and kink count. Authored hard-point
+  neighborhoods within 1.25 local widths retain intentional corners and taper.
+  Pose adjustments use stroke-width distances for translation, scale, skew and
+  rotation. Adjacent fits can adjust overlap and
+  width together, and neighboring shape alternatives can be replaced atomically.
+  Refinement preserves the current peak turn above the smoothness threshold and
+  can remove observed holes. Contour repair refines candidate subdivisions before
+  comparing their complete unions. Merging and pruning preserve contour quality. Exact
   connectivity is checked alongside observed contour quality throughout
   refinement and final verification. The requested ribbon's coverage is recorded
   separately from continuity and permitted outside area.
   Failed checks block insertion; cancellation discards placements. The catalog
   is loaded for each operation. `lining_fill.log` records anchor widths, outside
   margin, whole-span matching and rejection counts, guide coverage, curve and
-  tangent errors, shape usage, contour changes and stage timings.
+  tangent errors, selected spans, defect positions, separate envelope and guide
+  rejection counts, shape usage, contour changes and stage timings.
 
   **Compact Fit — Thin Regions** shares native profile fitting and its shape
   catalog with Lining. The contour mode accepts closed Pen or Bucket regions,

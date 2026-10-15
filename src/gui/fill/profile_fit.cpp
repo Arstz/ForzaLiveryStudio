@@ -70,9 +70,10 @@ constexpr std::array<double, 4> kMedialSourceFractions{1.0, 0.75, 0.5, 0.25};
 constexpr std::array<double, 3> kMedialTargetFractions{1.0, 0.75, 0.5};
 constexpr std::array<double, 6> kTraceSourceTrims{0.0, 0.05, 0.1, 0.2, 0.3, 0.4};
 constexpr int kTraceFitIterations = 8;
-constexpr int kTraceFitSeedLimit = 32;
+constexpr int kTraceFitSeedsPerShape = 2;
 constexpr int kTraceScreenSamples = 9;
 constexpr double kTraceFitRegularization = 1e-10;
+constexpr double kTraceFitWidthWeight = 0.5;
 constexpr double kTraceMinimumSeedWidthRatio = 0.2;
 constexpr double kTraceMaximumSeedWidthRatio = 5.0;
 constexpr double kTraceFlatteningPrecision = 4.0;
@@ -3219,11 +3220,26 @@ double traceFitError(const QPolygonF &source, const QPolygonF &target, const QTr
     return error;
 }
 
-QTransform refineTraceTransform(const QPolygonF &source, const QPolygonF &target, const QTransform &initial) {
+double traceProfileLength(const QPolygonF &profile) {
+    double result = 0.0;
+
+    for (int index = 1; index < profile.size(); ++index)
+        result += QLineF(profile[index - 1], profile[index]).length();
+
+    return result;
+}
+
+QTransform refineTraceTransform(const QPolygonF &source, const QPolygonF &target, const QTransform &initial,
+                                 double area = 0.0, double width = 0.0) {
+    const double widthScale = area / std::max(traceProfileLength(target), kMinimumLength);
+    const double endpointWeight = compute::kEndpointWeight * source.size() / compute::kSamples;
+    const auto cost = [&](const QTransform &transform) {
+        return traceFitError(source, target, transform)
+            + kTraceFitWidthWeight * std::abs(std::abs(transform.determinant()) * widthScale - width);
+    };
     auto current = initial;
     auto best = initial;
-    double bestError = traceFitError(source, target, initial);
-    const double endpointWeight = compute::kEndpointWeight * source.size() / compute::kSamples;
+    double bestError = cost(initial);
 
     for (int iteration = 0; iteration < kTraceFitIterations; ++iteration) {
         double matrix[compute::kParameters][compute::kParameters + 1]{};
@@ -3248,6 +3264,14 @@ QTransform refineTraceTransform(const QPolygonF &source, const QPolygonF &target
             compute::addRow(matrix, vertical, targetPoint.y(), endpointWeight);
             compute::addRow(matrix, tangentRow, 0.0, compute::kEndpointTangentWeight);
         }
+        if (area > 0.0) {
+            const double orientation = current.determinant() < 0.0 ? -1.0 : 1.0;
+            const double scale = widthScale * orientation;
+            const double row[compute::kParameters]{current.m22() * scale, -current.m21() * scale,
+                -current.m12() * scale, current.m11() * scale, 0, 0};
+            compute::addRow(matrix, row, width + std::abs(current.determinant()) * widthScale,
+                source.size() * kTraceFitWidthWeight);
+        }
         const auto seed = numericTransform(initial);
         for (int parameter = 0; parameter < compute::kParameters; ++parameter) {
             double row[compute::kParameters]{};
@@ -3258,7 +3282,7 @@ QTransform refineTraceTransform(const QPolygonF &source, const QPolygonF &target
         if (!compute::solve(matrix, &next) || !compute::finite(next))
             break;
         current = fittedTransform(next);
-        const double error = traceFitError(source, target, current);
+        const double error = cost(current);
         if (error < bestError) {
             best = current;
             bestError = error;
@@ -3281,6 +3305,7 @@ QVector<TraceCandidate> traceCandidates(const QPainterPath &centerline,
         QTransform initial;
         int shapeId = 0;
         double cost = 0.0;
+        double area = 0.0;
     };
     QVector<Seed> seeds;
     QPolygonF target;
@@ -3355,33 +3380,40 @@ QVector<TraceCandidate> traceCandidates(const QPainterPath &centerline,
                         {source.front(), source[sourceAnchor], source.back()},
                         {target.front(), target[targetAnchor], target.back()});
                 const auto mapped = initial.map(source);
-                double mappedLength = 0.0;
-                for (int index = 1; index < mapped.size(); ++index)
-                    mappedLength += QLineF(mapped[index - 1], mapped[index]).length();
                 const double estimatedWidth = primitive.shape.area * std::abs((normalization * initial).determinant())
-                    / std::max(mappedLength, kMinimumLength);
+                    / std::max(traceProfileLength(mapped), kMinimumLength);
                 if (estimatedWidth < width * kTraceMinimumSeedWidthRatio || estimatedWidth > width * kTraceMaximumSeedWidthRatio)
                     continue;
                 const double error = traceFitError(source, target, initial, kTraceScreenSamples);
                 const double cost = error + maximumError * std::abs(std::log(estimatedWidth / width));
-                seeds.push_back({source, normalization, initial, primitive.shape.shapeId, cost});
+                seeds.push_back({source, normalization, initial, primitive.shape.shapeId, cost,
+                    primitive.shape.area * std::abs(normalization.determinant())});
             }
     }
     std::stable_sort(seeds.begin(), seeds.end(), [](const auto &left, const auto &right) { return left.cost < right.cost; });
     const int seedCount = seeds.size();
-    if (seeds.size() > kTraceFitSeedLimit)
-        seeds.resize(kTraceFitSeedLimit);
+    QHash<int, int> shapeSeeds;
+    QVector<Seed> shortlist;
+    for (const auto &seed : seeds)
+        if (shapeSeeds.value(seed.shapeId) < kTraceFitSeedsPerShape) {
+            ++shapeSeeds[seed.shapeId];
+            shortlist.push_back(seed);
+        }
+    seeds = std::move(shortlist);
     for (const auto &seed : seeds) {
         if (stopped(cancelled))
             break;
-        const auto fitted = refineTraceTransform(seed.profile, target, seed.initial);
-        const auto transform = catalog::emittedTransform(seed.normalization * fitted);
-        const auto source = seed.normalization.inverted().map(seed.profile);
-        const double error = traceFitError(source, target, transform);
-        minimumError = std::min(minimumError, error);
-        if (std::abs(transform.determinant()) < catalog::kMinimumDeterminant || error > maximumError)
-            continue;
-        result.push_back({{seed.shapeId, transform}, transform.map(source)});
+        for (bool preserveWidth : {false, true}) {
+            const auto fitted = refineTraceTransform(seed.profile, target, seed.initial,
+                preserveWidth ? seed.area : 0.0, preserveWidth ? width : 0.0);
+            const auto transform = catalog::emittedTransform(seed.normalization * fitted);
+            const auto source = seed.normalization.inverted().map(seed.profile);
+            const double error = traceFitError(source, target, transform);
+            minimumError = std::min(minimumError, error);
+            if (std::abs(transform.determinant()) < catalog::kMinimumDeterminant || error > maximumError)
+                continue;
+            result.push_back({{seed.shapeId, transform}, transform.map(source)});
+        }
     }
     if (diagnostics)
         *diagnostics = {{QStringLiteral("seeds"), seedCount}, {QStringLiteral("refined"), seeds.size()},

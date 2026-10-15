@@ -29,6 +29,7 @@ constexpr int64_t kLocalOperandMinimumExtent = 4000000;
 constexpr int64_t kLocalOperandPadding = 16;
 constexpr double kSweptSquareMinimumRadius = 1e-5;
 constexpr double kSweptSquareMaximumCoordinate = 1000000.0;
+constexpr int kRoundExpansionSides = 16;
 
 enum class GeometryOperation { Union, Difference, Intersection, Expansion, Mapping, Count };
 
@@ -903,6 +904,28 @@ Polygons expanded(const Polygons &polygons, double radius) {
                 polygon[index + 1 == polygon.size() ? 0 : index + 1], radius));
         }
     }
+
+    return unite(parts);
+}
+
+Polygons expandedRound(const Polygons &polygons, double radius) {
+    const GeometryTimer timer(GeometryOperation::Expansion);
+    Polygons parts = polygons;
+    QPolygonF kernel;
+
+    for (int index = 0; index < kRoundExpansionSides; ++index) {
+        const double angle = index * 2.0 * std::acos(-1.0) / kRoundExpansionSides;
+        kernel.push_back(QPointF(std::cos(angle), std::sin(angle)) * radius);
+    }
+    for (const auto &polygon : polygons)
+        for (int index = 0; index < polygon.size(); ++index) {
+            QPolygonF sweep;
+            for (const auto &offset : kernel) {
+                sweep.push_back(polygon[index] + offset);
+                sweep.push_back(polygon[(index + 1) % polygon.size()] + offset);
+            }
+            parts.push_back(convexHull(sweep));
+        }
 
     return unite(parts);
 }

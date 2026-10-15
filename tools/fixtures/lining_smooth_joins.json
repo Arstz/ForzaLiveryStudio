@@ -1,0 +1,397 @@
+{
+  "width": 8.5,
+  "request": {
+    "boundaryTolerance": 0.1,
+    "curveModel": "cubic-anchors-v1",
+    "discardNegligiblePlacements": true,
+    "loops": [
+      {
+        "kind": "outer",
+        "points": [
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              320.8794083889008,
+              58.94894964761673
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              308.12063003355127,
+              93.46812051514408
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              294.58106820858467,
+              121.4579185678416
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              295.99951269759623,
+              212.2271293463998
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              284.96531816648,
+              296.0095183500177
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              267.8047326551888,
+              349.40948243358514
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              232.8939949635415,
+              315.32942921512483
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              187.166648911332,
+              250.91660544379164
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              165.14540352363395,
+              190.61115619819387
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              146.0928243255765,
+              203.31009783993545
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              99.52822934891996,
+              217.9111872099371
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -2.50111640400662,
+              219.04866786722548
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -41.90235324625314,
+              206.04815811551
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -70.58807512728619,
+              236.48447233202126
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -133.02963849639076,
+              282.0706915721031
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -193.78426631133476,
+              336.4816176761194
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -178.3470683411008,
+              276.13775840025556
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -153.92904940877864,
+              233.16950157871517
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -125.3883743937663,
+              193.7876967536335
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -102.61481566204036,
+              172.5094746572719
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "soft",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -131.66328921673917,
+              152.26842452451743
+            ],
+            "strokeWidth": 8.5
+          },
+          {
+            "explicitHandles": false,
+            "incoming": [
+              0,
+              0
+            ],
+            "kind": "hard",
+            "outgoing": [
+              0,
+              0
+            ],
+            "position": [
+              -156.99751640990948,
+              122.91225997038828
+            ],
+            "strokeWidth": 8.5
+          }
+        ]
+      }
+    ],
+    "strategy": "thin-lining"
+  },
+  "expected": {
+    "placements": 7,
+    "fallbackPlacements": 0,
+    "maximumMilliseconds": 20000,
+    "maximumExcessTurnDegrees": 30,
+    "maximumCornerDefects": 0
+  }
+}

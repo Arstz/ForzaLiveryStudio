@@ -2686,6 +2686,11 @@ void clusterCompactionTests(const QVector<gui::catalog::Primitive> &catalog) {
 }
 
 void fastQualityTests() {
+    const gui::catalog::Polygons square{QPolygonF{{-2, -1}, {2, -1}, {2, 1}, {-2, 1}}};
+    const auto supported = gui::catalog::painterPath(gui::catalog::expandedRound(square, 1.0));
+    require(supported.contains(QPointF(2.6, 1.6)) && !supported.contains(QPointF(2.8, 1.8))
+        && supported.contains(QPointF(2.95, 0.0)),
+        QStringLiteral("Round support exceeded its distance allowance or lost axial clearance"));
     quint64 random = 7812387;
     for (int trial = 0; trial < 64; ++trial) {
         QVector<quint64> masks;
@@ -3127,6 +3132,13 @@ int main(int argc, char **argv) {
                         QStringLiteral("Whole native curves were replaced with fragmented straight shapes"));
                     require(result.diagnostics.value("elapsedMilliseconds").toDouble() < expected.value("maximumMilliseconds").toDouble(),
                         QStringLiteral("Open curve replay exceeded its runtime budget"));
+                    if (expected.contains("maximumExcessTurnDegrees")) {
+                        const auto contour = result.diagnostics.value("contourRefinement").toObject().value("after").toObject();
+                        require(contour.value("maximumExcessTurnDegrees").toDouble()
+                                <= expected.value("maximumExcessTurnDegrees").toDouble()
+                            && contour.value("cornerDefects").toInt() <= expected.value("maximumCornerDefects").toInt(),
+                            QStringLiteral("Open curve replay introduced exposed contour kinks"));
+                    }
                 }
                 const auto generated = outputPath(result.fill, thinCatalog);
                 const auto guide = gui::buildLiningPath(request.loops.front().points).centerline;
@@ -3135,7 +3147,8 @@ int main(int argc, char **argv) {
                     QPainterPath neighborhood;
                     neighborhood.addEllipse(point, width * 0.09, width * 0.09);
                     require(generated.intersects(neighborhood) || generated.contains(point),
-                        QStringLiteral("Whole native curve lost the independent guide trace"));
+                        QStringLiteral("Whole native curve lost the independent guide trace at %1 (%2, %3)")
+                            .arg(sample).arg(point.x()).arg(point.y()));
                 }
                 output << "Open curve replay passed: " << result.fill.placements.size() << " shapes\n";
                 return 0;
