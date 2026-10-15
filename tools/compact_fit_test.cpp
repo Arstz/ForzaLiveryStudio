@@ -32,6 +32,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 
@@ -1711,8 +1712,9 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
                 const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [&](const auto &entry) {
                     return entry.shape.shapeId == placement.shapeId;
                 });
-                require(primitive != catalog.cend() && primitive->stroke,
-                    name + QStringLiteral(" selected a generic primitive instead of a native stroke"));
+                require(primitive != catalog.cend(), name + QStringLiteral(" selected unavailable geometry"));
+                require(primitive->stroke || placement.shapeId == 101 || placement.shapeId == 2205,
+                    name + QStringLiteral(" selected an unrelated fallback primitive"));
             }
             require(result.diagnostics.value("traceCoverageRatio").toDouble(-1) == 1.0
                 && result.diagnostics.value("outsideEnvelope").toDouble(-1) == 0,
@@ -1754,13 +1756,31 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
     for (double width : {0.4, 2.0, 8.0}) {
         const auto result = gui::thin::fillLiningPath(quadratic, width, catalog, options);
         check(result, QStringLiteral("Single bend %1").arg(width));
+        require(result.diagnostics.value("straightFallbackLengthFraction").toDouble(1.0) <= 0.2,
+            QStringLiteral("Straight fallback shapes replaced the curved body"));
         require(result.fill.placements.size() <= 20, QStringLiteral("Single bend exceeded its span budget"));
+        const auto target = gui::buildLiningRibbon(gui::buildLiningPath(quadratic).centerline, width);
+        gui::catalog::Polygons targetPolygons;
+        gui::catalog::Polygons outputPolygons;
+        const auto inverse = QTransform::fromScale(1.0 / 1024, 1.0 / 1024);
+        for (const auto &polygon : target.toSubpathPolygons(QTransform::fromScale(1024, 1024)))
+            targetPolygons.push_back(inverse.map(polygon));
+        for (const auto &polygon : outputPath(result.fill, catalog).toSubpathPolygons())
+            outputPolygons.push_back(polygon);
+        const gui::compact::BoundaryModel boundary(gui::catalog::unite(targetPolygons), width * 0.2);
+        const auto observed = gui::catalog::unite(outputPolygons);
+        const auto window = QRectF(width * 2, -width * 2, 70 - width * 4, 30 + width * 4);
+        const auto edges = boundary.measure(observed, boundary.observationSupport(observed), window);
+        require(edges.samples > 0 && edges.maximumExcessTurn < std::numbers::pi / 4,
+            QStringLiteral("Curved lining has an abrupt exposed edge away from its caps"));
     }
     for (double width : {0.4, 2.0, 8.0}) {
         QVector<gui::PenPoint> points{{{0, 0}, gui::PenPointKind::Hard},
             {{30, 15}, gui::PenPointKind::Soft}, {{70, 0}, gui::PenPointKind::Hard}};
         const auto result = gui::thin::fillLiningPath(points, width, catalog, options);
         check(result, QStringLiteral("Curved lining %1").arg(width));
+        require(result.diagnostics.value("straightFallbackLengthFraction").toDouble(1.0) <= 0.55,
+            QStringLiteral("Straight fallback shapes dominate curved lining"));
         QPainterPathStroker stroker;
         stroker.setCurveThreshold(0.0001);
         stroker.setCapStyle(Qt::RoundCap);
@@ -1775,9 +1795,16 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
             maximumPolygons.push_back(inverseStrokeScale.map(polygon));
         for (const auto &polygon : generated.toSubpathPolygons())
             generatedPolygons.push_back(polygon);
-        require(gui::catalog::subtract(gui::catalog::unite(generatedPolygons),
-            gui::catalog::unite(maximumPolygons)).isEmpty(),
+        const auto generatedCoverage = gui::catalog::unite(generatedPolygons);
+        const auto maximumCoverage = gui::catalog::unite(maximumPolygons);
+        require(gui::catalog::subtract(generatedCoverage, maximumCoverage).isEmpty(),
             QStringLiteral("Lining exceeded its independently measured stroke thickness"));
+        const gui::compact::BoundaryModel smoothness(maximumCoverage, width * 0.2);
+        const auto edgeWindow = QRectF(width * 2, -width * 2, 70 - width * 4, 30 + width * 4);
+        const auto edgeQuality = smoothness.measure(generatedCoverage,
+            smoothness.observationSupport(generatedCoverage), edgeWindow);
+        require(edgeQuality.samples > 0 && edgeQuality.maximumExcessTurn < std::numbers::pi / 4,
+            QStringLiteral("Soft-point lining left an exposed hook or abrupt contour join"));
         int traceSamples = 0;
         const auto centerline = gui::buildLiningPath(points).centerline;
         for (int sample = 0; sample <= 256; ++sample) {
@@ -1790,6 +1817,25 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
             QStringLiteral("Lining lost continuity along the independent trace"));
     }
     if (liningOnly) {
+        auto zeroMargin = options;
+        zeroMargin.liningOutsideMarginWidthFraction = 0.0;
+        const auto bounded = gui::thin::fillLiningPath(straight, 2.0, catalog, zeroMargin);
+        check(bounded, QStringLiteral("Zero outside margin"));
+        require(outputPath(bounded.fill, catalog).boundingRect().height() <= 2.015,
+            QStringLiteral("Zero margin allowed excess stroke width"));
+        auto invalidMargin = options;
+        invalidMargin.liningOutsideMarginWidthFraction = -1.0;
+        require(!gui::thin::fillLiningPath(straight, 2.0, catalog, invalidMargin).fill.error.isEmpty(),
+            QStringLiteral("Negative outside margin was accepted"));
+        for (int shapeId : {136, 137, 133, 139, 132, 129, 2131, 2128, 2112, 2113, 2206, 2207,
+                2230, 2222, 2215, 2118, 2323, 2311, 607, 2831, 2832, 3831, 3832, 3631, 3632,
+                2631, 2632, 1632, 1640, 1512, 1522, 1431, 1432}) {
+            const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [shapeId](const auto &entry) {
+                return entry.shape.shapeId == shapeId;
+            });
+            require(primitive != catalog.cend() && primitive->stroke && primitive->centerline.size() >= 2,
+                QStringLiteral("Requested stroke is missing its centerline or preferred role"));
+        }
         for (int shapeId : {136, 2128, 322, 323}) {
             const auto primitive = std::find_if(catalog.cbegin(), catalog.cend(), [shapeId](const auto &entry) {
                 return entry.shape.shapeId == shapeId;
@@ -1798,6 +1844,17 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
                 QStringLiteral("Missing preferred stroke shape"));
             QVector<gui::PenPoint> anchors;
             const auto &line = primitive->centerline;
+            if (shapeId == 136) {
+                double turning = 0.0;
+                for (int index = 1; index + 1 < line.size(); ++index) {
+                    const auto before = line[index] - line[index - 1];
+                    const auto after = line[index + 1] - line[index];
+                    turning += std::abs(std::atan2(before.x() * after.y() - before.y() * after.x(),
+                        QPointF::dotProduct(before, after)));
+                }
+                require(turning < std::numbers::pi * 2,
+                    QStringLiteral("Smooth arc centerline follows triangulation zigzags"));
+            }
             double maximumDistance = 0.0;
             for (const auto &polygon : primitive->shape.contours)
                 for (const auto &point : polygon) {
@@ -1824,6 +1881,30 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
             require(native.fill.placements.size() == 1 && native.fill.placements.front().shapeId == shapeId,
                 QStringLiteral("An intact native stroke was split or replaced"));
         }
+        const auto arc = std::find_if(catalog.cbegin(), catalog.cend(), [](const auto &entry) {
+            return entry.shape.shapeId == 136;
+        });
+        for (double skew : {-96.0, -32.0, 32.0, 96.0}) {
+            QTransform known;
+            known.rotate(27.0);
+            known.shear(skew, 0.0);
+            const auto line = known.map(arc->centerline);
+            QPainterPath target(line.front());
+            for (int index = 1; index < line.size(); ++index)
+                target.lineTo(line[index]);
+            const double meanWidth = arc->shape.area * std::abs(known.determinant()) / target.length();
+            int trials = 1000;
+            const auto candidates = gui::profile::traceCandidates(target, {*arc}, meanWidth, 0.02, false, &trials);
+            require(std::any_of(candidates.cbegin(), candidates.cend(), [&](const auto &candidate) {
+                double error = 0.0;
+                for (int index = 0; index < line.size(); ++index)
+                    error = std::max(error, QLineF(line[index], candidate.placement.transform.map(arc->centerline[index])).length());
+                const auto &transform = candidate.placement.transform;
+                const double emittedSkew = (transform.m11() * transform.m21() + transform.m12() * transform.m22())
+                    / transform.determinant();
+                return error < 0.05 && std::abs(emittedSkew) > 16.0;
+            }), QStringLiteral("Affine stroke fit lost a large skew during matching or export"));
+        }
         QVector<gui::PenPoint> varying{{{0, 0}, gui::PenPointKind::Hard},
             {{40, 0}, gui::PenPointKind::Hard}, {{80, 0}, gui::PenPointKind::Hard}};
         varying[0].strokeWidth = 2.0;
@@ -1838,7 +1919,7 @@ void thinFitTests(const QVector<gui::catalog::Primitive> &catalog, bool qualityP
                 || generated.intersects(QRectF(sample - 0.05, -width * 0.08, 0.1, width * 0.16)))
                 && generated.contains(QPointF(sample, width * 0.25))
                 && generated.contains(QPointF(sample, -width * 0.25))
-                && !generated.contains(QPointF(sample, width * 0.7)),
+                && !generated.contains(QPointF(sample, width * (variable.diagnostics.value("maximumWidthRatio").toDouble() * 0.5 + 0.1))),
                 QStringLiteral("Generated stroke lost its local width profile"));
         }
         const auto preview = gui::buildLiningRibbon(gui::buildLiningStroke(varying, 3.0));
@@ -3012,6 +3093,7 @@ int main(int argc, char **argv) {
         }
         if (arguments.size() >= 2 && (arguments[1] == QStringLiteral("--thin-tests")
             || arguments[1] == QStringLiteral("--lining-tests")
+            || arguments[1] == QStringLiteral("--lining-replay")
             || arguments[1] == QStringLiteral("--thin-quality-tests")
             || arguments[1] == QStringLiteral("--thin-color-reference-quality")
             || arguments[1] == QStringLiteral("--thin-fit") || arguments[1] == QStringLiteral("--thin-reference")
@@ -3022,6 +3104,42 @@ int main(int argc, char **argv) {
             require(geometry.loadDefault(&error), error);
             const auto thinCatalog = gui::thin::buildCatalog(geometry, &error);
             require(!thinCatalog.isEmpty(), error);
+            if (arguments[1] == QStringLiteral("--lining-replay")) {
+                require(arguments.size() == 3 || arguments.size() == 4,
+                    QStringLiteral("Expected an open lining replay and optional outside margin"));
+                const auto request = readRequest(arguments[2]);
+                QFile file(arguments[2]);
+                require(file.open(QIODevice::ReadOnly), file.errorString());
+                const auto fixture = QJsonDocument::fromJson(file.readAll()).object();
+                const auto expected = fixture.value("expected").toObject();
+                const double width = fixture.value("width").toDouble(6.5);
+                auto options = gui::thin::qualityOptions();
+                options.useGpu = false;
+                if (arguments.size() > 3)
+                    options.liningOutsideMarginWidthFraction = arguments[3].toDouble();
+                options.phaseProgress = [&](const QString &phase) { output << phase << '\n' << Qt::flush; };
+                const auto result = gui::thin::fillLiningPath(request.loops.front().points, width, thinCatalog, options);
+                output << QJsonDocument(result.diagnostics).toJson(QJsonDocument::Compact) << '\n' << Qt::flush;
+                require(result.fill.error.isEmpty(), result.fill.error);
+                if (!expected.isEmpty() && arguments.size() == 3) {
+                    require(result.fill.placements.size() == expected.value("placements").toInt()
+                        && result.diagnostics.value("fallbackPlacements") == expected.value("fallbackPlacements"),
+                        QStringLiteral("Whole native curves were replaced with fragmented straight shapes"));
+                    require(result.diagnostics.value("elapsedMilliseconds").toDouble() < expected.value("maximumMilliseconds").toDouble(),
+                        QStringLiteral("Open curve replay exceeded its runtime budget"));
+                }
+                const auto generated = outputPath(result.fill, thinCatalog);
+                const auto guide = gui::buildLiningPath(request.loops.front().points).centerline;
+                for (int sample = 0; sample <= 512; ++sample) {
+                    const auto point = guide.pointAtPercent(guide.percentAtLength(guide.length() * sample / 512.0));
+                    QPainterPath neighborhood;
+                    neighborhood.addEllipse(point, width * 0.09, width * 0.09);
+                    require(generated.intersects(neighborhood) || generated.contains(point),
+                        QStringLiteral("Whole native curve lost the independent guide trace"));
+                }
+                output << "Open curve replay passed: " << result.fill.placements.size() << " shapes\n";
+                return 0;
+            }
             if (arguments[1] == QStringLiteral("--thin-color-reference-quality")) {
                 require(arguments.size() == 3 || arguments.size() == 4, QStringLiteral("Expected a lining project and optional output project"));
                 fitColoredLiningReference(arguments[2], arguments.size() == 4

@@ -1,5 +1,6 @@
 #include "profile_fit.h"
 #include "profile_fit_batch.h"
+#include "profile_fit_numeric.h"
 #include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
 #include "compact_fit_gpu_rank.h"
@@ -67,7 +68,14 @@ constexpr int kThinQualityProfileIterations = 16;
 constexpr std::array<double, 3> kMedialEndpointTrims{0.025, 0.05, 0.1};
 constexpr std::array<double, 4> kMedialSourceFractions{1.0, 0.75, 0.5, 0.25};
 constexpr std::array<double, 3> kMedialTargetFractions{1.0, 0.75, 0.5};
-constexpr std::array<double, 4> kTraceSourceTrims{0.0, 0.05, 0.1, 0.2};
+constexpr std::array<double, 6> kTraceSourceTrims{0.0, 0.05, 0.1, 0.2, 0.3, 0.4};
+constexpr int kTraceFitIterations = 8;
+constexpr int kTraceFitSeedLimit = 32;
+constexpr int kTraceScreenSamples = 9;
+constexpr double kTraceFitRegularization = 1e-10;
+constexpr double kTraceMinimumSeedWidthRatio = 0.2;
+constexpr double kTraceMaximumSeedWidthRatio = 5.0;
+constexpr double kTraceFlatteningPrecision = 4.0;
 constexpr int kBodyCenters = 24;
 constexpr int kThinBodyCenters = 200;
 constexpr int kBodyGridExtent = 4096;
@@ -325,7 +333,8 @@ QVector<Profile> sourceProfiles(const QVector<catalog::Primitive> &primitives) {
 
 int medialAnchor(const QPolygonF &points) {
     const auto chord = points.back() - points.front();
-    int result = kProfileSamples / 2;
+    const int middle = points.size() / 2;
+    int result = middle;
     double maximum = 0.0;
 
     for (int index = 1; index + 1 < points.size(); ++index) {
@@ -335,9 +344,9 @@ int medialAnchor(const QPolygonF &points) {
             maximum = deviation;
         }
     }
-    if (std::abs(cross(chord, points[kProfileSamples / 2] - points.front()))
+    if (std::abs(cross(chord, points[middle] - points.front()))
             >= maximum * kStableAnchorMiddleFraction)
-        result = kProfileSamples / 2;
+        result = middle;
 
     return result;
 }
@@ -3167,35 +3176,134 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
 
 } // namespace
 
+namespace {
+
+struct TraceReference {
+    QPointF point;
+    QPointF tangent;
+};
+
+TraceReference traceReference(const QPolygonF &line, const QPointF &point) {
+    TraceReference result;
+    double best = std::numeric_limits<double>::infinity();
+
+    for (int index = 1; index < line.size(); ++index) {
+        const auto delta = line[index] - line[index - 1];
+        const double squaredLength = QPointF::dotProduct(delta, delta);
+        const double fraction = squaredLength > kMinimumLength
+            ? std::clamp(QPointF::dotProduct(point - line[index - 1], delta) / squaredLength, 0.0, 1.0) : 0.0;
+        const auto closest = line[index - 1] + delta * fraction;
+        const auto displacement = closest - point;
+        const double squaredDistance = QPointF::dotProduct(displacement, displacement);
+        if (squaredDistance < best) {
+            best = squaredDistance;
+            result = {closest, unit(delta)};
+        }
+    }
+
+    return result;
+}
+
+double traceFitError(const QPolygonF &source, const QPolygonF &target, const QTransform &transform,
+                     int samples = 0) {
+    const auto mapped = transform.map(source);
+    const int targetStride = samples > 0 ? std::max(1, int(target.size()) / samples) : 1;
+    const int sourceStride = samples > 0 ? std::max(1, int(mapped.size()) / samples) : 1;
+    double error = 0.0;
+
+    for (int index = 0; index < target.size(); index += targetStride)
+        error = std::max(error, QLineF(target[index], traceReference(mapped, target[index]).point).length());
+    for (int index = 0; index < mapped.size(); index += sourceStride)
+        error = std::max(error, QLineF(mapped[index], traceReference(target, mapped[index]).point).length());
+
+    return error;
+}
+
+QTransform refineTraceTransform(const QPolygonF &source, const QPolygonF &target, const QTransform &initial) {
+    auto current = initial;
+    auto best = initial;
+    double bestError = traceFitError(source, target, initial);
+    const double endpointWeight = compute::kEndpointWeight * source.size() / compute::kSamples;
+
+    for (int iteration = 0; iteration < kTraceFitIterations; ++iteration) {
+        double matrix[compute::kParameters][compute::kParameters + 1]{};
+        for (const auto &point : source) {
+            const auto reference = traceReference(target, current.map(point));
+            const QPointF normal(-reference.tangent.y(), reference.tangent.x());
+            const double row[compute::kParameters]{normal.x() * point.x(), normal.y() * point.x(),
+                normal.x() * point.y(), normal.y() * point.y(), normal.x(), normal.y()};
+            compute::addRow(matrix, row, QPointF::dotProduct(normal, reference.point), 1.0);
+        }
+        for (bool end : {false, true}) {
+            const auto point = end ? source.back() : source.front();
+            const auto targetPoint = end ? target.back() : target.front();
+            const auto direction = unit(end ? point - source[source.size() - 2] : source[1] - point);
+            const auto tangent = unit(end ? targetPoint - target[target.size() - 2] : target[1] - targetPoint);
+            const QPointF normal(-tangent.y(), tangent.x());
+            const double horizontal[compute::kParameters]{point.x(), 0, point.y(), 0, 1, 0};
+            const double vertical[compute::kParameters]{0, point.x(), 0, point.y(), 0, 1};
+            const double tangentRow[compute::kParameters]{normal.x() * direction.x(), normal.y() * direction.x(),
+                normal.x() * direction.y(), normal.y() * direction.y(), 0, 0};
+            compute::addRow(matrix, horizontal, targetPoint.x(), endpointWeight);
+            compute::addRow(matrix, vertical, targetPoint.y(), endpointWeight);
+            compute::addRow(matrix, tangentRow, 0.0, compute::kEndpointTangentWeight);
+        }
+        const auto seed = numericTransform(initial);
+        for (int parameter = 0; parameter < compute::kParameters; ++parameter) {
+            double row[compute::kParameters]{};
+            row[parameter] = 1.0;
+            compute::addRow(matrix, row, seed.values[parameter], kTraceFitRegularization);
+        }
+        auto next = numericTransform(current);
+        if (!compute::solve(matrix, &next) || !compute::finite(next))
+            break;
+        current = fittedTransform(next);
+        const double error = traceFitError(source, target, current);
+        if (error < bestError) {
+            best = current;
+            bestError = error;
+        }
+    }
+
+    return best;
+}
+
+} // namespace
+
 QVector<TraceCandidate> traceCandidates(const QPainterPath &centerline,
                                        const QVector<catalog::Primitive> &primitives,
                                        double width, double maximumError, bool useGpu, int *remainingTrials,
-                                       const std::function<bool()> &cancelled) {
+                                       const std::function<bool()> &cancelled, QJsonObject *diagnostics) {
     QVector<TraceCandidate> result;
-    QVector<Profile> profiles;
-    QVector<QPolygonF> denseProfiles;
+    struct Seed {
+        QPolygonF profile;
+        QTransform normalization;
+        QTransform initial;
+        int shapeId = 0;
+        double cost = 0.0;
+    };
+    QVector<Seed> seeds;
     QPolygonF target;
-    std::vector<compute::Arc> sources;
-    std::vector<compute::Job> jobs;
-    std::vector<compute::Fit> fitted;
-    const double length = centerline.length();
+    double minimumError = std::numeric_limits<double>::infinity();
+    const double flattening = kTraceFlatteningPrecision / std::max(maximumError, kMinimumLength);
+    Q_UNUSED(useGpu);
 
     if (*remainingTrials <= 0 || stopped(cancelled))
         return result;
-    for (int sample = 0; sample < kProfileSamples; ++sample)
-        target.push_back(centerline.pointAtPercent(centerline.percentAtLength(
-            length * sample / (kProfileSamples - 1))));
-    const int targetAnchor = medialAnchor(target);
-    const auto targetChord = target.back() - target.front();
-    const double targetLength = QLineF(target.front(), target.back()).length();
-    if (targetLength < kMinimumLength)
+    const auto flattened = centerline.toSubpathPolygons(QTransform::fromScale(flattening, flattening));
+    if (flattened.isEmpty())
         return result;
-    const auto targetNormal = QPointF(-targetChord.y(), targetChord.x()) / targetLength;
-    for (int primitive = 0; primitive < primitives.size(); ++primitive) {
-        const auto &definition = primitives[primitive].centerline;
+    target = QTransform::fromScale(1.0 / flattening, 1.0 / flattening).map(flattened.front());
+    if (target.size() < 2 || QLineF(target.front(), target.back()).length() <= kMinimumLength)
+        return result;
+    const auto targetChord = target.back() - target.front();
+    const auto targetNormal = unit(QPointF(-targetChord.y(), targetChord.x()));
+    const int targetAnchor = medialAnchor(target);
+    for (const auto &primitive : primitives) {
+        const auto &definition = primitive.centerline;
+        QVector<double> distances{0.0};
         if (definition.size() < 2)
             continue;
-        QVector<double> distances{0.0};
         for (int index = 1; index < definition.size(); ++index)
             distances.push_back(distances.back() + QLineF(definition[index - 1], definition[index]).length());
         const auto pointAt = [&](double fraction) {
@@ -3210,73 +3318,75 @@ QVector<TraceCandidate> traceCandidates(const QPainterPath &centerline,
         };
         for (double trim : kTraceSourceTrims)
             for (bool reverse : {false, true}) {
-                if (profiles.size() >= *remainingTrials)
+                if (*remainingTrials <= 0 || stopped(cancelled))
                     break;
-                QPolygonF points;
-                for (int sample = 0; sample < kProfileSamples; ++sample) {
-                    const double fraction = static_cast<double>(sample) / (kProfileSamples - 1);
-                    points.push_back(pointAt(trim + (1.0 - trim * 2.0) * (reverse ? 1.0 - fraction : fraction)));
-                }
-                const double sourceLength = QLineF(points.front(), points.back()).length();
-                if (sourceLength < kMinimumLength)
+                --*remainingTrials;
+                QPolygonF dense{pointAt(trim)};
+                for (int index = 1; index + 1 < definition.size(); ++index)
+                    if (distances[index] > trim * distances.back() && distances[index] < (1.0 - trim) * distances.back())
+                        dense.push_back(definition[index]);
+                dense.push_back(pointAt(1.0 - trim));
+                if (reverse)
+                    std::reverse(dense.begin(), dense.end());
+                const double sourceLength = QLineF(dense.front(), dense.back()).length();
+                if (sourceLength <= kMinimumLength)
                     continue;
-                Profile profile;
-                profile.primitive = primitive;
-                profile.normalization.scale(1.0 / sourceLength, 1.0 / sourceLength);
-                profile.normalization.translate(-points[kProfileSamples / 2].x(), -points[kProfileSamples / 2].y());
-                profile.points = profile.normalization.map(points);
-                const auto chord = profile.points.back() - profile.points.front();
-                const auto normal = QPointF(-chord.y(), chord.x());
+                QTransform normalization;
+                normalization.scale(1.0 / sourceLength, 1.0 / sourceLength);
+                normalization.translate(-dense.front().x(), -dense.front().y());
+                const auto source = normalization.map(dense);
+                const auto chord = source.back() - source.front();
+                const QPointF normal(-chord.y(), chord.x());
+                const int sourceAnchor = medialAnchor(source);
                 double minimum = std::numeric_limits<double>::infinity();
                 double maximum = -minimum;
-                for (const auto &polygon : primitives[primitive].shape.contours)
+                for (const auto &polygon : primitive.shape.contours)
                     for (const auto &point : polygon) {
-                        const double projected = QPointF::dotProduct(profile.normalization.map(point), normal);
+                        const double projected = QPointF::dotProduct(normalization.map(point), normal);
                         minimum = std::min(minimum, projected);
                         maximum = std::max(maximum, projected);
                     }
                 auto initial = catalog::affineFromAnchors(
-                    {profile.points.front(), profile.points.back(), profile.points.front() + normal},
-                    {target.front(), target.back(), target.front() + targetNormal * (width / std::max(maximum - minimum, kMinimumLength))});
-                const int sourceAnchor = medialAnchor(profile.points);
-                if (std::abs(cross(chord, profile.points[sourceAnchor] - profile.points.front())) > kMinimumLength
+                    {source.front(), source.back(), source.front() + normal},
+                    {target.front(), target.back(), target.front() + targetNormal * width / std::max(maximum - minimum, kMinimumLength)});
+                if (std::abs(cross(chord, source[sourceAnchor] - source.front())) > kMinimumLength
                     && std::abs(cross(targetChord, target[targetAnchor] - target.front())) > kMinimumLength)
                     initial = catalog::affineFromAnchors(
-                        {profile.points.front(), profile.points[sourceAnchor], profile.points.back()},
+                        {source.front(), source[sourceAnchor], source.back()},
                         {target.front(), target[targetAnchor], target.back()});
-                const int source = profiles.size();
-                profiles.push_back(profile);
-                QPolygonF dense;
-                dense.push_back(pointAt(trim));
-                for (int index = 1; index + 1 < definition.size(); ++index) {
-                    const double fraction = distances[index] / distances.back();
-                    if (fraction > trim && fraction < 1.0 - trim)
-                        dense.push_back(definition[index]);
-                }
-                dense.push_back(pointAt(1.0 - trim));
-                if (reverse)
-                    std::reverse(dense.begin(), dense.end());
-                denseProfiles.push_back(dense);
-                sources.push_back(numericArc(profile.points));
-                jobs.push_back({numericTransform(initial), source, 0,
-                    std::max(maximumError, length * kMedialTargetCurvatureWidthFraction), kThinQualityProfileIterations});
+                const auto mapped = initial.map(source);
+                double mappedLength = 0.0;
+                for (int index = 1; index < mapped.size(); ++index)
+                    mappedLength += QLineF(mapped[index - 1], mapped[index]).length();
+                const double estimatedWidth = primitive.shape.area * std::abs((normalization * initial).determinant())
+                    / std::max(mappedLength, kMinimumLength);
+                if (estimatedWidth < width * kTraceMinimumSeedWidthRatio || estimatedWidth > width * kTraceMaximumSeedWidthRatio)
+                    continue;
+                const double error = traceFitError(source, target, initial, kTraceScreenSamples);
+                const double cost = error + maximumError * std::abs(std::log(estimatedWidth / width));
+                seeds.push_back({source, normalization, initial, primitive.shape.shapeId, cost});
             }
     }
-    *remainingTrials -= static_cast<int>(jobs.size());
-    ProfileFitter fitter(std::move(sources), {numericArc(target)}, useGpu);
-    if (!fitter.evaluate(jobs, &fitted, cancelled))
-        return result;
-    for (int index = 0; index < static_cast<int>(fitted.size()); ++index) {
-        const auto &fit = fitted[index];
-        const auto &profile = profiles[index];
-        if (!fit.valid || fit.error > maximumError || fit.tangentError > kTangentError)
+    std::stable_sort(seeds.begin(), seeds.end(), [](const auto &left, const auto &right) { return left.cost < right.cost; });
+    const int seedCount = seeds.size();
+    if (seeds.size() > kTraceFitSeedLimit)
+        seeds.resize(kTraceFitSeedLimit);
+    for (const auto &seed : seeds) {
+        if (stopped(cancelled))
+            break;
+        const auto fitted = refineTraceTransform(seed.profile, target, seed.initial);
+        const auto transform = catalog::emittedTransform(seed.normalization * fitted);
+        const auto source = seed.normalization.inverted().map(seed.profile);
+        const double error = traceFitError(source, target, transform);
+        minimumError = std::min(minimumError, error);
+        if (std::abs(transform.determinant()) < catalog::kMinimumDeterminant || error > maximumError)
             continue;
-        const auto transform = catalog::emittedTransform(profile.normalization * fittedTransform(fit.transform));
-        if (std::abs(transform.determinant()) < catalog::kMinimumDeterminant)
-            continue;
-        result.push_back({{primitives[profile.primitive].shape.shapeId, transform},
-            transform.map(denseProfiles[index])});
+        result.push_back({{seed.shapeId, transform}, transform.map(source)});
     }
+    if (diagnostics)
+        *diagnostics = {{QStringLiteral("seeds"), seedCount}, {QStringLiteral("refined"), seeds.size()},
+            {QStringLiteral("matched"), result.size()}, {QStringLiteral("minimumError"), minimumError},
+            {QStringLiteral("errorLimit"), maximumError}};
 
     return result;
 }

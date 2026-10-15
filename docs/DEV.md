@@ -417,26 +417,41 @@ exports grouped `C_group` folders and `C_livery` folders.
   their local width. Continuity and curve accuracy take priority over shape
   count, followed by area coverage, while local thickness stays bounded.
   Each configured native shape has an explicit normalized centerline in
-  `assets/lining_shapes.json`. Initial matching uses these centerlines exclusively.
-  Bounded pose optimization then adapts the native silhouettes to the width
-  profile. `stroke_shape_ids` gives native stroke silhouettes priority over
-  generic primitives. Each hard point ends a span. The search first attempts
-  one preferred stroke over the complete span before subdivision; neighboring
-  fits can merge within that span under the same quality constraints. Width
-  cross-sections guide selection while permitting native taper. Average body
-  width has a 40% lower bound and the outer width has a 130% limit. Interior
-  probes retain at least 65% where authored width varies. Final
-  verification requires a connected stroke within the curve allowance.
-  Sampled profile deviation is limited to 8% of
-  local width and endpoint tangent error to five degrees. The complete requested
-  ribbon's coverage is recorded independently. A final optimizer measures the
-  complete union's contour tangents and turning, then adjusts translation,
-  rotation, scale and shear within the trace and centerline limits.
-  Failed checks block insertion;
-  cancellation discards placements. The catalog is loaded from
-  `assets/lining_shapes.json` for each operation. `lining_fill.log` records anchor
-  widths, trace coverage, curve and tangent errors, shape usage, hard spans,
-  count reduction and work.
+  `assets/lining_shapes.json`. Backbones pair the silhouette boundaries between
+  stroke ends, with a mesh path fallback for branched geometry. Transparent mesh
+  triangles do not participate in generation. Initial matching uses these
+  centrelines exclusively. A geometric screen shortlists affine seeds for dense
+  curve fitting, including high skew and partial profiles. The fitter checks the
+  full adaptive curve rather than rejecting matches with a coarse sample model.
+  `stroke_shape_ids` prioritizes native strokes over straight fallback primitives.
+  Each hard point ends a span. The fitter attempts one native stroke across the
+  complete span before subdivision. Natural taper is allowed on whole native
+  strokes while sampled width differences guide selection. Average body width
+  retains a 40% lower bound. Subdivision joins retain at least 40% of local width;
+  variable-width subdivision interiors retain at least 65%. Whole native spans
+  are not replaced by plans containing straight fallback pieces during contour
+  repair. Generic fallback requires a section within 4% of local width of a
+  straight chord.
+  **Outside margin** adds space beyond both requested stroke edges, expressed
+  as a percentage of local width. Its default is 50% per edge. Width remains the
+  fitting target; the allowed corridor has width `1 + 2 * margin` times local
+  width. The stored native spine can deviate by 8% of width plus half the margin,
+  with the added allowance capped at 25% of width. Guide coverage keeps its
+  independent 8% allowance. Hard endpoint tangents allow twenty degrees;
+  internal subdivision tangents retain five degrees.
+  Exposed contours use Compact Fit's tangent and turning measurements with an
+  additional peak-turn penalty. Authored hard-point neighborhoods retain
+  intentional corners and taper. Pose adjustments use stroke-width distances
+  for translation, scale, skew and rotation. Adjacent fits can adjust overlap and
+  width together. Contour repair refines candidate subdivisions before comparing
+  their complete unions. Merging and pruning preserve contour quality. Exact
+  connectivity is checked alongside observed contour quality throughout
+  refinement and final verification. The requested ribbon's coverage is recorded
+  separately from continuity and permitted outside area.
+  Failed checks block insertion; cancellation discards placements. The catalog
+  is loaded for each operation. `lining_fill.log` records anchor widths, outside
+  margin, whole-span matching and rejection counts, guide coverage, curve and
+  tangent errors, shape usage, contour changes and stage timings.
 
   **Compact Fit — Thin Regions** shares native profile fitting and its shape
   catalog with Lining. The contour mode accepts closed Pen or Bucket regions,

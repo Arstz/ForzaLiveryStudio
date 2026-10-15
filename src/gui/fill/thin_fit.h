@@ -10,6 +10,7 @@ inline constexpr int kDefaultQualityTimeBudgetMilliseconds = 120000;
 inline constexpr double kDefaultMinimumCoverage = 0.98;
 inline constexpr double kDefaultMaximumThicknessRatio = 1.6;
 inline constexpr double kDefaultPreferredThicknessRatio = 1.15;
+inline constexpr double kDefaultLiningOutsideMarginWidthFraction = 0.5;
 inline constexpr int kQualityProfileTrialBudget = 2000000;
 inline constexpr int kQualityEvaluationBudget = 120000;
 inline constexpr int kQualityTimeBudgetMilliseconds = 180000;
@@ -29,6 +30,7 @@ struct FillOptions {
     double minimumCoverage = kDefaultMinimumCoverage;
     double maximumThicknessRatio = kDefaultMaximumThicknessRatio;
     double preferredThicknessRatio = kDefaultPreferredThicknessRatio;
+    double liningOutsideMarginWidthFraction = kDefaultLiningOutsideMarginWidthFraction;
 };
 
 FillOptions qualityOptions();

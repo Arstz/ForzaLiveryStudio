@@ -255,6 +255,8 @@ private:
     QLabel *details_ = nullptr;
     QLabel *liningWidthLabel_ = nullptr;
     QDoubleSpinBox *liningWidthSpin_ = nullptr;
+    QLabel *liningMarginLabel_ = nullptr;
+    QDoubleSpinBox *liningMarginSpin_ = nullptr;
     QToolBar *toolBar_ = nullptr;
     QAction *skewToolAction_ = nullptr;
     QAction *opacityToolAction_ = nullptr;

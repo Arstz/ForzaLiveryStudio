@@ -14,7 +14,7 @@ struct TraceCandidate {
 QVector<TraceCandidate> traceCandidates(const QPainterPath &centerline,
                                        const QVector<catalog::Primitive> &primitives,
                                        double width, double maximumError, bool useGpu, int *remainingTrials,
-                                       const std::function<bool()> &cancelled = {});
+                                       const std::function<bool()> &cancelled = {}, QJsonObject *diagnostics = nullptr);
 
 catalog::FillResult seedRegion(const catalog::Region &region,
                                const QVector<catalog::Primitive> &primitives,

@@ -13,6 +13,7 @@
 #include "livery_section_bar.h"
 #include "property_panel.h"
 #include "shapes_browser_widget.h"
+#include "thin_fit.h"
 
 #include <QtGui>
 
@@ -694,6 +695,18 @@ void MainWindow::setupToolbar() {
         const QSignalBlocker blocker(liningWidthSpin_);
         liningWidthSpin_->setValue(width);
     });
+    liningMarginLabel_ = new QLabel(QStringLiteral("Outside margin"), toolBar_);
+    liningMarginSpin_ = new QDoubleSpinBox(toolBar_);
+    liningMarginSpin_->setRange(0.0, 200.0);
+    liningMarginSpin_->setDecimals(0);
+    liningMarginSpin_->setSingleStep(5.0);
+    liningMarginSpin_->setValue(thin::kDefaultLiningOutsideMarginWidthFraction * 100.0);
+    liningMarginSpin_->setSuffix(QStringLiteral("%"));
+    liningMarginSpin_->setToolTip(QStringLiteral("Extra space allowed beyond each stroke edge, as a percentage of local width. Width remains the fitting target."));
+    liningMarginLabel_->setVisible(false);
+    liningMarginSpin_->setVisible(false);
+    toolBar_->addWidget(liningMarginLabel_);
+    toolBar_->addWidget(liningMarginSpin_);
     toolGroup->addAction(addTool(QStringLiteral("Bucket"), QStringLiteral("bucket"), QStringLiteral("ToolBucket.xpm")));
     selectTool->setChecked(true);
     toolBar_->addSeparator();
@@ -725,6 +738,12 @@ void MainWindow::applyToolbarStyle(bool vertical) {
     if (liningWidthSpin_ != nullptr) {
         liningWidthSpin_->setVisible(lining);
         liningWidthSpin_->setMaximumWidth(vertical ? kToolbarIconExtent * 2 : QWIDGETSIZE_MAX);
+    }
+    if (liningMarginLabel_ != nullptr)
+        liningMarginLabel_->setVisible(lining && !vertical);
+    if (liningMarginSpin_ != nullptr) {
+        liningMarginSpin_->setVisible(lining);
+        liningMarginSpin_->setMaximumWidth(vertical ? kToolbarIconExtent * 2 : QWIDGETSIZE_MAX);
     }
 }
 

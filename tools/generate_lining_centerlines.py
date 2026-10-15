@@ -14,9 +14,90 @@ def distance(first, second):
     return math.hypot(first[0] - second[0], first[1] - second[1])
 
 
+def sample_polyline(points, count):
+    lengths = [0.0]
+    for first, last in zip(points, points[1:]):
+        lengths.append(lengths[-1] + distance(first, last))
+    sampled = []
+    index = 0
+    for sample in range(count):
+        along = lengths[-1] * sample / (count - 1)
+        while index + 2 < len(points) and lengths[index + 1] < along:
+            index += 1
+        fraction = (along - lengths[index]) / max(lengths[index + 1] - lengths[index], 1e-12)
+        sampled.append(tuple(points[index][axis] * (1 - fraction) + points[index + 1][axis] * fraction
+                             for axis in (0, 1)))
+    return sampled
+
+
+def paired_boundary_centerline(vertices, triangles, backbone):
+    counts = {}
+    for triangle in triangles:
+        for first, last in zip(triangle, triangle[1:] + triangle[:1]):
+            edge = tuple(sorted((first, last)))
+            counts[edge] = counts.get(edge, 0) + 1
+    boundary = {}
+    for (first, last), count in counts.items():
+        if count == 1:
+            boundary.setdefault(first, []).append(last)
+            boundary.setdefault(last, []).append(first)
+    if any(len(neighbors) != 2 for neighbors in boundary.values()):
+        return backbone
+    loops = []
+    remaining = set(boundary)
+    while remaining:
+        start = min(remaining)
+        loop = [start]
+        previous = None
+        current = start
+        while True:
+            remaining.discard(current)
+            following = next(index for index in boundary[current] if index != previous)
+            if following == start:
+                break
+            loop.append(following)
+            previous, current = current, following
+        loops.append([vertices[index] for index in loop])
+
+    def closest(loop, point):
+        choices = []
+        for index, (first, last) in enumerate(zip(loop, loop[1:] + loop[:1])):
+            delta = tuple(last[axis] - first[axis] for axis in (0, 1))
+            fraction = max(0.0, min(1.0, sum((point[axis] - first[axis]) * delta[axis] for axis in (0, 1))
+                                       / max(sum(value * value for value in delta), 1e-12)))
+            projected = tuple(first[axis] + fraction * delta[axis] for axis in (0, 1))
+            choices.append((distance(point, projected), index + fraction, projected))
+        return min(choices)
+
+    loop = min(loops, key=lambda loop: closest(loop, backbone[0])[0] + closest(loop, backbone[-1])[0])
+    _, first_index, first = closest(loop, backbone[0])
+    _, last_index, last = closest(loop, backbone[-1])
+    if distance(first, last) < 1e-8:
+        return backbone
+    if last_index < first_index:
+        last_index += len(loop)
+    forward = [first] + [loop[index % len(loop)] for index in range(math.floor(first_index) + 1, math.ceil(last_index))] + [last]
+    backward = [first] + [loop[index % len(loop)] for index in range(math.ceil(first_index) - 1, math.floor(last_index - len(loop)), -1)] + [last]
+    left = sample_polyline(forward, SAMPLES)
+    right = sample_polyline(backward, SAMPLES)
+    paired = [tuple((a[axis] + b[axis]) / 2 for axis in (0, 1)) for a, b in zip(left, right)]
+
+    def inside(point):
+        winding = False
+        for first, last in zip(loop, loop[1:] + loop[:1]):
+            if (first[1] > point[1]) != (last[1] > point[1]):
+                crossing = first[0] + (point[1] - first[1]) * (last[0] - first[0]) / (last[1] - first[1])
+                if point[0] < crossing:
+                    winding = not winding
+        return winding
+
+    return paired if all(inside(point) for point in paired[1:-1]) else backbone
+
+
 def centerline(shape):
     vertices = [tuple(vertex[:2]) for vertex in shape["vertices"]]
-    triangles = shape["triangles"]
+    triangles = [triangle for triangle in shape["triangles"]
+                 if any(shape["vertices"][index][2] > 0 for index in triangle)]
     centers = [tuple(sum(vertices[index][axis] for index in triangle) / 3 for axis in (0, 1))
                for triangle in triangles]
     owners = {}
@@ -99,6 +180,7 @@ def centerline(shape):
         last_direction = tuple(centers[chain[-1]][axis] - centers[chain[-2]][axis] for axis in (0, 1))
         points = [cap(chain[0], portals[0], edges[0], first_direction)] + portals
         points.append(cap(chain[-1], portals[-1], edges[-1], last_direction))
+    points = paired_boundary_centerline(vertices, triangles, points)
     lengths = [0.0]
     for a, b in zip(points, points[1:]):
         lengths.append(lengths[-1] + distance(a, b))
@@ -110,8 +192,9 @@ def centerline(shape):
             index += 1
         fraction = (along - lengths[index]) / max(lengths[index + 1] - lengths[index], 1e-12)
         sampled.append(tuple(points[index][axis] * (1 - fraction) + points[index + 1][axis] * fraction for axis in (0, 1)))
-    minimum = [min(vertex[axis] for vertex in vertices) for axis in (0, 1)]
-    extent = [max(vertex[axis] for vertex in vertices) - minimum[axis] for axis in (0, 1)]
+    ink_vertices = [vertices[index] for index in {index for triangle in triangles for index in triangle}]
+    minimum = [min(vertex[axis] for vertex in ink_vertices) for axis in (0, 1)]
+    extent = [max(vertex[axis] for vertex in ink_vertices) - minimum[axis] for axis in (0, 1)]
     return [[round(max(0.0, min(1.0, (point[axis] - minimum[axis]) / extent[axis])), 8) for axis in (0, 1)]
             for point in sampled]
 

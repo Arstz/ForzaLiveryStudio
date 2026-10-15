@@ -812,10 +812,13 @@ void MainWindow::startLiningFill(const QVector<PenPoint> &points,
     statusBar()->showMessage(QStringLiteral("Tracing lining path… Press %1 to cancel")
                                  .arg(interactionShortcutText(KeyInteraction::CanvasCancelInteraction)));
 
-    startGeneratedFillTask([points, width, primitives](
+    const double outsideMargin = liningMarginSpin_ != nullptr
+        ? liningMarginSpin_->value() / 100.0 : thin::kDefaultLiningOutsideMarginWidthFraction;
+    startGeneratedFillTask([points, width, primitives, outsideMargin](
                                const std::function<bool()> &cancelled,
                                const GeneratedFillProgress &progress) {
         auto options = thin::qualityOptions();
+        options.liningOutsideMarginWidthFraction = outsideMargin;
         options.workProgress = [progress](int count, int evaluated, int budget) {
             progress(count, budget, evaluated);
         };
@@ -2203,6 +2206,10 @@ void MainWindow::setToolName(const QString &name) {
     if (liningWidthSpin_ != nullptr) {
         liningWidthSpin_->setVisible(lining);
     }
+    if (liningMarginLabel_ != nullptr)
+        liningMarginLabel_->setVisible(lining && !verticalToolbar);
+    if (liningMarginSpin_ != nullptr)
+        liningMarginSpin_->setVisible(lining);
     statusBar()->showMessage(QStringLiteral("Tool: %1").arg(name), 1500);
 }
 

@@ -32,6 +32,11 @@ struct BoundaryDefect {
     double energy = 0.0;
 };
 
+struct BoundaryExclusion {
+    QPointF point;
+    double radius = 0.0;
+};
+
 class BoundaryModel {
 public:
     struct ObservationWindow {
@@ -41,7 +46,8 @@ public:
         QRectF additionBounds;
     };
 
-    explicit BoundaryModel(const catalog::Polygons &target, double observationScale);
+    explicit BoundaryModel(const catalog::Polygons &target, double observationScale,
+                            const QVector<BoundaryExclusion> &exclusions = {});
     BoundaryReference reference(const QPointF &point) const;
     catalog::Polygons observationSupport(const catalog::Polygons &coverage) const;
     ObservationWindow observationWindow(const catalog::Polygons &unchanged,
@@ -84,10 +90,12 @@ private:
     static QPointF pointAt(const Loop &loop, double offset);
     Location closest(const QPointF &point) const;
     bool nearCorner(const QPointF &point, double radius) const;
+    bool excluded(const QPointF &point) const;
 
     QVector<Loop> loops_;
     QVector<Edge> edges_;
     QVector<QPointF> corners_;
+    QVector<BoundaryExclusion> exclusions_;
     QVector<QVector<int>> cells_;
     QVector<QVector<QPointF>> cornerCells_;
     catalog::Polygons target_;

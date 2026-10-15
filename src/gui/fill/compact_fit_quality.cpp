@@ -44,8 +44,9 @@ catalog::Polygons closeSubpixelGaps(const catalog::Polygons &polygons, double ra
 
 } // namespace
 
-BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observationScale)
-    : target_(target), bounds_(catalog::painterPath(target).boundingRect()),
+BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observationScale,
+                               const QVector<BoundaryExclusion> &exclusions)
+    : exclusions_(exclusions), target_(target), bounds_(catalog::painterPath(target).boundingRect()),
       scale_(std::max(observationScale, kMinimumLength)),
       cellSize_(std::max(scale_ * kCellScale,
           std::max(bounds_.width(), bounds_.height()) / kMaximumGridExtent)) {
@@ -61,7 +62,8 @@ BoundaryModel::BoundaryModel(const catalog::Polygons &target, double observation
             const QPointF delta = polygon[(index + 1) % polygon.size()] - polygon[index];
             const QPointF incoming = polygon[index] - polygon[(index + polygon.size() - 1) % polygon.size()];
             if (QLineF({}, incoming).length() > scale_ * 0.5 && QLineF({}, delta).length() > scale_ * 0.5
-                && std::abs(angle(normalized(incoming), normalized(delta))) > kTargetCornerTurn) {
+                && std::abs(angle(normalized(incoming), normalized(delta))) > kTargetCornerTurn
+                && !excluded(polygon[index])) {
                 corners_.push_back(polygon[index]);
                 const int column = static_cast<int>(std::floor((polygon[index].x() - bounds_.left()) / cellSize_));
                 const int row = static_cast<int>(std::floor((polygon[index].y() - bounds_.top()) / cellSize_));
@@ -210,7 +212,7 @@ BoundaryMetrics BoundaryModel::measure(const catalog::Polygons &coverage, const 
         for (int sample = 0; sample < samples; ++sample) {
             const double offset = (sample + 0.5) * spacing;
             const auto point = pointAt(loop, offset);
-            if (!window.isNull() && !window.contains(point)) {
+            if (excluded(point) || (!window.isNull() && !window.contains(point))) {
                 continue;
             }
             const auto reference = referenceModel.closest(point);
@@ -396,6 +398,14 @@ bool BoundaryModel::nearCorner(const QPointF &point, double radius) const {
     }
 
     return false;
+}
+
+bool BoundaryModel::excluded(const QPointF &point) const {
+    return std::any_of(exclusions_.cbegin(), exclusions_.cend(), [&](const auto &exclusion) {
+        const auto offset = point - exclusion.point;
+
+        return QPointF::dotProduct(offset, offset) <= exclusion.radius * exclusion.radius;
+    });
 }
 
 } // namespace gui::compact
