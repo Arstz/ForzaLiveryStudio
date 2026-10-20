@@ -125,7 +125,10 @@ per-instance scratch documents support crash recovery, including unsaved work.
 
 Game codecs decode record streams into the shared scene representation.
 `VinylTreeDecoder` owns the common group and section walk; format profiles supply
-record dialect, framing, padding, and mask interpretation. Motorsport block
+record dialect and semantic interpretation. The shared `vinyl_framing` reader and
+writer own child headers, optional attributes, boundary metadata, and physical
+record spans. Section mapping and editable geometry are separate from physical
+occupancy. Motorsport block
 compression is resolved before the shared decoder runs.
 
 Grouped export composes scene transforms while retaining nested groups and mask
@@ -180,6 +183,7 @@ remains a reference approximation of the game renderer.
 | Task | Entry points |
 | --- | --- |
 | Group import | `readCGroupPayload()`, `importCGroupFlat()`, `importCGroupNested()` |
+| Physical record framing | `readStandaloneVinylRecords()`, `readVinylRecordStream()`, `mapVinylSections()` |
 | Livery import | `readLiveryPayload()`, `buildLiverySections()`, `importCLivery()` |
 | Motorsport import | `decodeFM2023RawGroup()`, `readFM2023LiveryPayload()`, `decodeFM2023LiverySections()`, `importFM2023Asset()` |
 | Group export | `buildFlatPayload()`, `buildNestedPayload()`, `exportFlatProjectFolder()`, `exportNestedProjectFolder()` |
@@ -209,6 +213,12 @@ scene equivalence and normalize header identity/publication metadata. State and
 widget tests exercise commands, history, selection, and startup. Asset deployment
 checks cover staged replacement and release catalog completeness, with isolated
 working directories for source-fallback checks.
+
+`fls_vinyl_framing_tests` checks attribute presence bits, opaque boundary state,
+stored root bitmap extents, physical occupancy, and truncated records. Passing
+fixture directories as arguments also checks complete byte coverage and direct
+child counts for compressed group and livery payloads. Section mapping
+disagreements are reported independently of physical framing failures.
 
 Use the [fill diagnostics](FILL_ENGINES.md#diagnostics-and-replay) for contour
 requests, quality measurements, and catalog comparisons. Helper builds provide

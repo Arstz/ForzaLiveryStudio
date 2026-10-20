@@ -25,7 +25,7 @@ I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and l
 ## Features
 
 - Import/export to Forza proprietary binary format.
-- Save/load project to json files.
+- Save/load project to .3so - json-like zlib container.
 - Full transformations for shapes and groups.
 - Custom groups, reusable in multiple projects.
 - Add raster or SVG image overlays as guide layers.
@@ -97,6 +97,7 @@ The import/export for groups is fully supported, core functionality in place. So
 | Motosport 23| Import         | Import        |
 | Horizon 5   | Import/Export  | Import/Export |
 | Motosport 7 | Import/Export  | Import/Export |
+| Horizon 4   | Import/Export  | Import/Export |
 | Horizon 3   | Import/Export  | Import/Export |
 | Motosport 6 | Import/Export  | Import/Export |
 | Horizon 2   | Import/Export  | Import/Export |

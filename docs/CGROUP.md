@@ -34,8 +34,8 @@ counted group record:
 0x19 f32      root rotation
 0x1D byte     root group marker, 20 or 60
 0x1E u16      root direct child count
-0x20 u8       root child block count = ceil(child_count / 8)
-0x21 3 bytes  fixed/control area
+0x20 u16      stored root bitmap byte count
+0x22 2 bytes  fixed/control area
 0x24 bytes    root direct-child bitmap
 ```
 
@@ -55,138 +55,90 @@ Layer data begins after the root bitmap:
 layer_start = 0x24 + root_child_blocks
 ```
 
+The stored root bitmap extent is authoritative. It is distinct from the nested
+header's derived bitmap length. Children beyond a shortened stored bitmap have
+shape type. New roots store the complete bitmap; an explicitly shortened profile
+requires the omitted child-type bits to select shapes.
+
 Flat files can contain zero padding before the first shape record.
 
-An explicitly locked root replaces the counted root marker with an envelope:
+An identity-bearing root uses the shared attribute descriptor before its child
+header:
 
 ```text
-0x1D byte     lock marker, 21
-0x1E 8 bytes  root control area
+0x1D byte     root descriptor, 21
+0x1E 8 bytes  opaque identity
 0x26 bytes    markerless counted root group
 ```
 
 The markerless group begins with its `u16` child count and otherwise follows the
-markerless group layout below. Ownership metadata can cause the game to emit this
-envelope when it rewrites a group.
+markerless child-block layout below. Descriptor bit `01` supplies the identity
+field; source policy interprets the ownership state separately.
 
-## Transforms
+## Physical framing
 
-Transform payload:
+The shared `vinyl_framing` reader separates physical byte ownership from
+scene interpretation. A child block, group attributes, boundary metadata, and
+traversal state are distinct units. The complete child tree validates a candidate
+frame; scalar or bitmap bytes are interpreted within their enclosing record.
 
-```text
-marker + f32 px + f32 py + f32 scale_x + f32 rotation
-```
+### Child blocks
 
-Optional signed Y scale extension:
-
-```text
-30 + f32 scale_y
-```
-
-If the `30` extension is absent, `scale_y` is equal to `scale_x`.
-
-Known transform marker forms:
+Nested counted and markerless blocks use:
 
 ```text
-03
-00 03
-01 03
-00 01 03
-00 01 01 03
-00 01 01 01 03
-00 + repeated 01 bytes + 03
-03 03
-df 03 03
+counted:    20|60  u16 direct_children  u16 bitmap_bytes  control[2]  bitmap[]
+markerless:        u16 direct_children  u16 bitmap_bytes  control[2]  bitmap[]
 ```
 
-An `odd_byte 03` sequence at the end of a group header is parsed as:
+Nested bitmap length is `ceil(direct_children / 8)`. Bits are LSB-first;
+a set bit selects a group and a clear bit selects a shape. Every physical shape
+or nested group consumes one direct-child slot. Attributes and traversal controls
+consume none. A block closes when all its direct children have been consumed.
+The standalone root uses its separately stored bitmap extent.
+
+Markerless headers require the surrounding child relation and a structurally
+valid successor. A preceding traversal byte can shift a candidate header by one
+byte; the decoder checks the unshifted header before accepting that candidate.
+
+### Group attributes
+
+Placement contains four little-endian floats:
 
 ```text
-final bitmap byte
-03 transform marker
+f32 px  f32 py  f32 scale_x  f32 rotation
 ```
 
-Header lengths determine that ownership before transform parsing begins.
-
-## Groups
-
-Counted group record:
+A descriptor in attribute context contains:
 
 ```text
-20/60 + u16 child_count + u16 child_blocks + reserved[2] + bitmap[ceil(child_count / 8)]
+u8 flags
+u64 identity       when flags & 01
+f32 signed_scale_y when flags & 10
+child block
 ```
 
-`child_blocks` is:
+The two presence bits are independent of `20`. Identity bytes remain opaque.
+The `20`, `40`, and `80` bits retain contextual meaning; framing alone
+does not assign mask state. A separate counted block marker can follow the
+attributes. The encoder and decoder share these field definitions.
 
-```text
-ceil(child_count / 8)
-```
+Placement can precede its block or occur inline after a parent header and bitmap.
+The first-child type and successor block determine ownership. Existing dialect
+rules determine rotation sign, transform composition, and inherited masks.
+Bounded partial attribute spans retain their raw bytes; a missing scalar is not
+given an invented value or emitted as a newly authored transform.
 
-The child bitmap contains one type bit per declared direct child. Its stored block
-count must match the bitmap length derived from `child_count`.
+### Traversal state
 
-`20` opens a normal group. `60` opens a mask group.
+Standalone generation 1 terminates transform leads with `01`, generation 2
+with `02`, and generation 3 with `03`. Closing `01` controls describe
+completed nesting. Their ownership follows the counted tree and dialect.
+The bitmap extent is consumed before any following transform lead is read.
 
-Groups and shapes consume one child slot of the current group. Transform and
-control records do not consume child slots.
-
-The decoder closes a group as soon as its declared direct child count is
-satisfied.
-
-## Markerless Groups
-
-A counted group can omit the `20/60` marker:
-
-```text
-u16 child_count + u16 child_blocks + reserved[2] + bitmap[ceil(child_count / 8)]
-```
-
-This markerless form is accepted after a pending transform or when the parent
-bitmap requires a group. The following bytes must continue with a valid child
-record or an inline transform for the first child.
-
-Because the markerless form is ambiguous inside shape data, it is accepted only
-when the declared bitmap and following child record are structurally valid.
-
-## Inline First-Child Transforms
-
-Group records can carry a transform after their reserved bytes and child bitmap.
-If the next child is another group, the transform belongs to the first child
-rather than the current group. Its header can start immediately or after one
-control byte.
-
-First-child inline transform markers include:
-
-```text
-03
-00 03
-01 03
-03 03
-df 03 03
-```
-
-This rule applies to both counted and markerless groups. Marker recognition starts
-after the complete group header and child bitmap.
-
-## Embedded Livery Section Walk
-
-`C_livery` embeds a version-0 `gyvl` stream whose body is split into the fixed
-section slots by the trailing `yrvl` stats counts. Its transform dialect differs
-from standalone `C_group`: a separate group transform is usually a single lead
-byte plus the 16-byte transform payload, and the `00` family can retain a
-`00 01` prefix before that payload.
-
-A following group can start immediately, after one control byte, or after the
-framed 9-byte transform trailer `21 ?? ?? ?? ?? ?? ?? 09 00`. The trailer is
-shared by standalone and embedded streams and is consumed as one opaque unit.
-It is not a free-form scan allowance: only successor offsets 0, 1, and the exact
-9-byte frame are accepted, each requiring a structurally valid group at the
-resulting position. See [`CLIVERY.md`](CLIVERY.md) for the full embedded
-transform-dialect and section-boundary rules.
-
-The section walker retains the ancestry produced by counted records and bounded
-successor framing. It does not move sibling records into inferred containers after
-decoding.
+Embedded artwork uses its own lead and trailing-state interpretation over the
+same child-block and attribute fields. Its boundary records and logical section
+mapping are described in [CLIVERY.md](CLIVERY.md).
 
 ## Shapes
 
@@ -319,17 +271,17 @@ flag.
 Forza Motorsport (2023+) standalone groups use an uncompressed `gyvl` data
 file with the same scene model and companion-header arrangement. The root
 transform starts at `0x0c` and accepts generation markers `01`, `02`, and `03`.
-An optional signed Y-scale extension follows as `30 + f32` or `70 + f32`, with
-the high form carrying mask state.
+An optional signed Y-scale field follows when descriptor bit `10` is set.
+The remaining descriptor state is interpreted by the Motorsport profile.
 
 The root is normally a counted group:
 
 ```text
-20/60 + u16 child_count + u8 child_blocks + control[child_blocks + 2]
+20/60 + u16 child_count + u16 child_blocks + control[2] + bitmap[child_blocks]
 ```
 
 The Motorsport markerless root replaces the group marker with `00`. For both forms,
-`child_blocks = ceil(child_count / 8)` and the layer stream starts at
+the stored root bitmap extent places the layer stream at
 `0x24 + child_blocks`. Structurally valid records determine the boundary when
 additional transform or control data appears before the first child.
 
@@ -347,8 +299,8 @@ canonicalized and checked against the registry before a candidate is accepted.
 
 Separate group transforms use a generation marker followed by position,
 uniform scale, and rotation. The optional signed Y-scale extension follows the
-same layout as the root. Marker recognition also requires a structurally valid
-group after the transform so shape markers remain unambiguous.
+same independent attribute fields as the root. The successor child block
+validates attribute framing.
 
 Nested counted and markerless groups use the same child-count and bitmap model.
 Flat mask state is trailing: `01 02` on a shape marks the preceding shape, and a

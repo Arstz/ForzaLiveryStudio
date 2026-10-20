@@ -1,4 +1,5 @@
 #include "livery_codec.h"
+#include "vinyl_framing.h"
 
 #include "binary_io.h"
 #include "cgroup_codec.h"
@@ -225,9 +226,8 @@ const std::array<float, 11> kEmptySlotRotation = {
     0.0f, 0.0f, 0.0f, 0.0f, 180.0f, 90.0f, -90.0f, 90.0f, 0.0f, 0.0f, 180.0f,
 };
 
-constexpr int kLiveryBodyTruncate = 17;
 constexpr int kLiverySectionCount = 11;
-constexpr int kLiveryEmptySlotBytes = 23;
+constexpr int kLiveryEmptySlotBytes = detail::kVinylChildHeaderBytes + detail::kVinylBoundaryBytes;
 constexpr int kMaxDirectChildren = 0xffff;
 constexpr bool kFlattenLiverySections = false;
 
@@ -299,7 +299,18 @@ struct SourceShapeView {
 struct SourceLivery {
     LiveryPayload payload;
     QVector<LiverySection> sections;
+    QVector<detail::VinylSectionSpan> physicalSections;
+    bool fullyMapped = false;
 };
+
+const detail::VinylSectionSpan *sourcePhysicalSection(const SourceLivery *source, int slot) {
+    if (source == nullptr || slot < 0 || slot >= source->physicalSections.size()
+        || source->physicalSections[slot].artwork.size() <= 0) {
+        return nullptr;
+    }
+
+    return &source->physicalSections[slot];
+}
 
 struct SourceGroupFrame {
     Matrix3 world;
@@ -355,6 +366,31 @@ std::optional<SourceLivery> sourceLivery(const Project &project) {
             return std::nullopt;
         }
         source.sections = decodeLiverySections(source.payload);
+        source.physicalSections = detail::mapVinylSections(
+            detail::readVinylRecordStream(source.payload.body, false),
+            source.payload.sectionCounts, kLiverySectionCount);
+        source.fullyMapped = source.physicalSections.size() == kLiverySectionCount;
+        if (!source.fullyMapped) {
+            source.physicalSections.resize(kLiverySectionCount);
+            for (const auto &section : source.sections) {
+                if (!section.populated) {
+                    continue;
+                }
+                const auto block = detail::readVinylChildBlock(source.payload.body, section.absPos, false);
+                if (!block) {
+                    continue;
+                }
+                auto &physical = source.physicalSections[section.slot];
+                physical.artwork = block->span;
+                physical.span = block->span;
+                physical.shapeCount = block->shapeCount;
+                const int boundary = block->span.end + 1;
+                if (detail::readVinylBoundary(source.payload.body, boundary, source.payload.body.size())) {
+                    physical.boundary = detail::VinylSpan{boundary, boundary + detail::kVinylBoundaryBytes};
+                    physical.span.end = physical.boundary->end;
+                }
+            }
+        }
         return source.sections.size() == kLiverySectionCount ? std::optional<SourceLivery>(source) : std::nullopt;
     } catch (...) {
         return std::nullopt;
@@ -496,8 +532,8 @@ bool decodedGroupHasSkippedChildren(const VinylGroup &group) {
 }
 
 bool sectionMatchesSource(const QVector<const scene::Shape *> &shapes, const LiverySection *section,
-                          bool hasGroupedArtwork, int sourceCount) {
-    if (section == nullptr || decodedGroupHasSkippedChildren(section->subtree)
+                          bool hasGroupedArtwork, int sourceCount, bool physicalFrame = false) {
+    if (section == nullptr || (!physicalFrame && decodedGroupHasSkippedChildren(section->subtree))
         || hasGroupedArtwork != decodedSectionHasArtworkGroup(section)) {
         return false;
     }
@@ -505,7 +541,7 @@ bool sectionMatchesSource(const QVector<const scene::Shape *> &shapes, const Liv
         shapes.cbegin(), shapes.cend(), [](const scene::Shape *shape) {
             return shape != nullptr && shape->raster;
         });
-    if (!hasRasterArtwork && sourceCount != shapes.size()) {
+    if (!physicalFrame && !hasRasterArtwork && sourceCount != shapes.size()) {
         return false;
     }
     const QVector<SourceShapeView> sourceShapes = sourceSectionShapes(*section);
@@ -543,9 +579,6 @@ QByteArray sourceSlotBytes(const SourceLivery *source, int slot) {
         return {};
     }
     QByteArray bytes = source->payload.body.mid(section->absPos, end - section->absPos);
-    if (slot == kLiverySectionCount - 1) {
-        bytes.append(QByteArray(kLiveryBodyTruncate, '\0'));
-    }
     return bytes;
 }
 
@@ -598,58 +631,45 @@ void repairSourceShapeStates(QByteArray &bytes, const LiverySection &section) {
     }
 }
 
-QByteArray defaultRemnant(int slot) {
-    QByteArray out(9, '\0');
-    detail::appendLeFloat(out, 1.0f);
-    detail::appendLeFloat(out, kSlotRotation[slot]);
-    out.append('\0');
-    return out;
+QByteArray defaultSectionBoundary(int slot) {
+    detail::VinylBoundary boundary;
+    boundary.orientation = kSlotRotation[slot];
+
+    return detail::writeVinylBoundary(boundary);
 }
 
-QByteArray sourceRemnant(const SourceLivery *source, int slot) {
-    const QByteArray slotBytes = sourceSlotBytes(source, slot);
-    // A final populated section may contain only its terminal state byte.
-    // Read after the terminal record, never backward into its shape payload.
-    const int populatedSize = sourcePopulatedSlotSize(sourceSection(source, slot));
-    if (populatedSize > 0 && slotBytes.size() >= populatedSize + 17) {
-        const QByteArray remnant = slotBytes.mid(populatedSize - 1, 18);
-        if (static_cast<quint8>(remnant[0]) <= 1
-            && remnant.mid(1, 8) == QByteArray(8, '\0')
-            && remnant.mid(9, 4) == QByteArray("\x00\x00\x80\x3f", 4)
-            && std::isfinite(detail::readLeFloat(remnant, 13))
-            && remnant[17] == '\0') {
-            return remnant;
+QByteArray sourceSectionBoundary(const SourceLivery *source, int slot) {
+    if (const auto *section = sourcePhysicalSection(source, slot)) {
+        if (section->boundary) {
+            return source->payload.body.mid(
+                section->boundary->start, section->boundary->size());
         }
+        return defaultSectionBoundary(slot);
     }
-    return defaultRemnant(slot);
-}
-
-bool sourceHasArtworkGroup(const SourceLivery *source, int slot) {
-    return decodedSectionHasArtworkGroup(sourceSection(source, slot));
+    const QByteArray slotBytes = sourceSlotBytes(source, slot);
+    const int populatedSize = sourcePopulatedSlotSize(sourceSection(source, slot));
+    if (populatedSize > 0 && detail::readVinylBoundary(slotBytes, populatedSize, slotBytes.size())) {
+        return slotBytes.mid(populatedSize, detail::kVinylBoundaryBytes);
+    }
+    return defaultSectionBoundary(slot);
 }
 
 QByteArray defaultEmptySlot(int slot) {
-    QByteArray out(8, '\0');
-    detail::appendLeFloat(out, 1.0f);
-    detail::appendLeFloat(out, kEmptySlotRotation[slot]);
-    out.append(QByteArray(7, '\0'));
-    return out;
+    detail::VinylBoundary boundary;
+    boundary.orientation = kEmptySlotRotation[slot];
+
+    return detail::writeVinylBoundary(boundary) + detail::writeVinylChildHeader(0, {});
 }
 
 bool isEmptySlotRecord(const QByteArray &bytes) {
     if (bytes.size() < kLiveryEmptySlotBytes) {
         return false;
     }
-    const bool trailingFrame = bytes.left(8) == QByteArray(8, '\0')
-        && bytes.mid(8, 4) == QByteArray("\x00\x00\x80\x3f", 4)
-        && std::isfinite(detail::readLeFloat(bytes, 12))
-        && bytes.mid(16, 7) == QByteArray(7, '\0');
-    // Native files also use an empty six-byte group header followed by
-    // the transform, before later populated sections.
-    const bool leadingFrame = bytes.left(14) == QByteArray(14, '\0')
-        && bytes.mid(14, 4) == QByteArray("\x00\x00\x80\x3f", 4)
-        && std::isfinite(detail::readLeFloat(bytes, 18))
-        && bytes[22] == '\0';
+    const QByteArray empty = detail::writeVinylChildHeader(0, {});
+    const bool trailingFrame = detail::readVinylBoundary(bytes, 0, bytes.size())
+        && bytes.mid(detail::kVinylBoundaryBytes, detail::kVinylChildHeaderBytes) == empty;
+    const bool leadingFrame = bytes.startsWith(empty)
+        && detail::readVinylBoundary(bytes, detail::kVinylChildHeaderBytes, bytes.size());
     return trailingFrame || leadingFrame;
 }
 
@@ -838,14 +858,6 @@ void entryShapes(const LiveryEntry &entry, QVector<const scene::Shape *> &out) {
     }
 }
 
-QByteArray groupedRemnant(const SourceLivery *source, int slot) {
-    const QByteArray preserved = sourceRemnant(source, slot);
-    if (sourceHasArtworkGroup(source, slot) && preserved.size() == 18) {
-        return preserved;
-    }
-    return defaultRemnant(slot);
-}
-
 bool hasVisibleShapeLeaves(const scene::Layer &node) {
     QVector<const scene::Shape *> leaves;
     collectVisibleShapeLeaves(node, leaves);
@@ -997,23 +1009,14 @@ QByteArray childBitmap(const QVector<LiveryEntry> &items, const char *label) {
 
 QByteArray packMarkerlessGroupHeader(const QVector<LiveryEntry> &children, const char *label) {
     const QByteArray bitmap = childBitmap(children, label);
-    QByteArray out;
-    detail::appendLeU16(out, static_cast<quint16>(children.size()));
-    detail::appendLeU16(out, static_cast<quint16>(bitmap.size()));
-    out.append(QByteArray(2, '\0'));
-    out.append(bitmap);
-    return out;
+
+    return detail::writeVinylChildHeader(children.size(), bitmap);
 }
 
 QByteArray packCountedGroupHeader(const QVector<LiveryEntry> &children, bool mask, const char *label) {
     const QByteArray bitmap = childBitmap(children, label);
-    QByteArray out;
-    out.append(mask ? '\x60' : '\x20');
-    detail::appendLeU16(out, static_cast<quint16>(children.size()));
-    detail::appendLeU16(out, static_cast<quint16>(bitmap.size()));
-    out.append(QByteArray(2, '\0'));
-    out.append(bitmap);
-    return out;
+
+    return detail::writeVinylChildHeader(children.size(), bitmap, mask ? 0x60 : 0x20);
 }
 
 QByteArray siblingGroupTransformMarker(int previousGroupDepth) {
@@ -1057,8 +1060,10 @@ QByteArray packLiveryGroupTransform(const scene::Transform2D &transform, const Q
     detail::appendLeFloat(out, static_cast<float>(transform.scaleX));
     detail::appendLeFloat(out, static_cast<float>(normalizeRotation(transform.rotation)));
     if (std::abs(transform.scaleY - transform.scaleX) > 1e-5) {
-        out.append('\x30');
-        detail::appendLeFloat(out, static_cast<float>(transform.scaleY));
+        detail::VinylAttributes attributes;
+        attributes.flags = 0x30;
+        attributes.scaleY = transform.scaleY;
+        out.append(detail::writeVinylAttributes(attributes));
     }
     return out;
 }
@@ -1296,21 +1301,16 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
 }
 
 void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
-                              const SourceLivery *source, int slot, bool hasFollowingSlot,
+                              int slot,
                               const QHash<int, SourceGroupFrame> &sourceFrames,
                               const LiveryRecordFraming &framing) {
     if (sectionGroup == nullptr) {
-        body.append(sourceEmptySlot(source, slot));
         return;
     }
     const QVector<LiveryEntry> children = liverySectionChildren(*sectionGroup);
     if (children.isEmpty()) {
-        body.append(sourceEmptySlot(source, slot));
         return;
     }
-    const bool hasGroupedArtwork = std::any_of(children.cbegin(), children.cend(), [](const LiveryEntry &entry) {
-        return entry.kind == LiveryEntry::Group;
-    });
     QVector<const scene::Shape *> sectionShapes;
     for (const LiveryEntry &entry : children) {
         entryShapes(entry, sectionShapes);
@@ -1357,28 +1357,7 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
         }
         hasPreviousSibling = true;
     }
-    const bool endsInNestedGroup = !children.isEmpty()
-        && children.back().kind == LiveryEntry::Group
-        && terminalDepth(children.back()) > 1;
-    if (endsInNestedGroup && !hasFollowingSlot) {
-        body.append(terminalShapeMask ? '\x01' : '\x00');
-        return;
-    }
-    if (hasGroupedArtwork) {
-        QByteArray remnant = groupedRemnant(source, slot);
-        if (!remnant.isEmpty()) {
-            remnant[0] = terminalShapeMask ? '\x01' : '\x00';
-        }
-        body.append(remnant);
-    } else if (hasFollowingSlot) {
-        QByteArray remnant = sourceRemnant(source, slot);
-        if (!remnant.isEmpty()) {
-            remnant[0] = terminalShapeMask ? '\x01' : '\x00';
-        }
-        body.append(remnant);
-    } else {
-        body.append(terminalShapeMask ? '\x01' : '\x00');
-    }
+    body.append(terminalShapeMask ? '\x01' : '\x00');
 }
 
 } // namespace
@@ -1442,110 +1421,72 @@ static QByteArray buildLiveryGyvlImpl(const Project &project, int sectionCount,
     const SourceLivery *sourcePtr = source ? &*source : nullptr;
     const QHash<int, SourceGroupFrame> sourceFrames = sourceGroupFrames(
         nativeFrames ? &*nativeFrames : sourcePtr);
-    bool requiresStructuralArtwork = false;
-    for (int slot = 0; slot < sectionCount; ++slot) {
-        const int sourceCount = sourcePtr != nullptr
-                && slot < sourcePtr->payload.sectionCounts.size()
-            ? sourcePtr->payload.sectionCounts[slot]
-            : static_cast<int>(slotShapes[slot].size());
-        if (!slotShapes[slot].isEmpty()
-            && !sectionMatchesSource(slotShapes[slot], sourceSection(sourcePtr, slot),
-                                     hasGroupedArtwork(slotGroups[slot]), sourceCount)) {
-            requiresStructuralArtwork = true;
-            break;
-        }
-    }
-    // yrvl counts are coupled to the records emitted for each slot.
     std::array<int, kLiverySectionCount> counts{};
     int lastPopulatedSlot = -1;
+    bool unchanged = sourcePtr != nullptr && sourcePtr->fullyMapped;
     for (int slot = 0; slot < sectionCount; ++slot) {
+        const int sourceCount = sourcePtr != nullptr && slot < sourcePtr->payload.sectionCounts.size()
+            ? sourcePtr->payload.sectionCounts[slot] : 0;
+        const auto *physical = sourcePhysicalSection(sourcePtr, slot);
+        const bool physicalCountMatches = physical != nullptr && physical->shapeCount == sourceCount;
+        unchanged = unchanged && sectionMatchesSource(slotShapes[slot], sourceSection(sourcePtr, slot),
+            hasGroupedArtwork(slotGroups[slot]), sourceCount, physicalCountMatches);
         if (!slotShapes[slot].isEmpty()) {
             lastPopulatedSlot = slot;
         }
     }
     QByteArray body;
-    bool adjustedTrailingSlots = false;
-    for (int slot = 0; slot < sectionCount; ++slot) {
-        const QVector<const scene::Shape *> &shapes = slotShapes[slot];
-        const LiverySection *section = sourceSection(sourcePtr, slot);
-        const bool hasRasterArtwork = std::any_of(
-            shapes.cbegin(), shapes.cend(), [](const scene::Shape *shape) {
-                return shape != nullptr && shape->raster;
-            });
-        const int sourceCount = sourcePtr != nullptr
-                && slot < sourcePtr->payload.sectionCounts.size()
-            ? sourcePtr->payload.sectionCounts[slot]
-            : static_cast<int>(shapes.size());
-        const int exportCount = hasRasterArtwork ? sourceCount : static_cast<int>(shapes.size());
-
-        if (sourcePtr == nullptr && shapes.isEmpty()) {
-            QByteArray emptySlot = defaultEmptySlot(slot);
-            if (slot == lastPopulatedSlot + 1) {
-                emptySlot.remove(0, kLiveryBodyTruncate);
-            }
-            body.append(emptySlot);
-            counts[static_cast<size_t>(slot)] = 0;
-            continue;
+    if (unchanged) {
+        body = sourcePtr->payload.body;
+        QVector<QPair<int, char>> states;
+        for (const auto &section : sourcePtr->sections) {
+            collectMissingShapeStates(section.subtree, states);
         }
-
-        if (requiresStructuralArtwork && shapes.isEmpty() && slot + 1 < sectionCount) {
-            QByteArray emptySlot = sourceEmptySlot(sourcePtr, slot);
-            if (slot == lastPopulatedSlot + 1) {
-                if (!adjustedTrailingSlots) {
-                    emptySlot.remove(0, kLiveryBodyTruncate);
-                }
-                adjustedTrailingSlots = true;
-            }
-            body.append(emptySlot);
-            counts[static_cast<size_t>(slot)] = 0;
-            continue;
+        std::sort(states.begin(), states.end(), [](const auto &a, const auto &b) {
+            return a.first > b.first;
+        });
+        for (const auto &state : states) {
+            body.insert(state.first, state.second);
         }
-
-        if (!(requiresStructuralArtwork && shapes.isEmpty())
-            && sectionMatchesSource(shapes, section, hasGroupedArtwork(slotGroups[slot]),
-                                    sourceCount)) {
-            QByteArray preserved = sourceSlotBytes(sourcePtr, slot);
+        std::copy_n(sourcePtr->payload.sectionCounts.cbegin(),
+            std::min(sectionCount, static_cast<int>(sourcePtr->payload.sectionCounts.size())), counts.begin());
+    } else {
+        for (int slot = 0; slot < sectionCount; ++slot) {
+            const auto &shapes = slotShapes[slot];
+            const LiverySection *section = sourceSection(sourcePtr, slot);
+            const auto *physical = sourcePhysicalSection(sourcePtr, slot);
+            const int sourceCount = sourcePtr != nullptr && slot < sourcePtr->payload.sectionCounts.size()
+                ? sourcePtr->payload.sectionCounts[slot] : static_cast<int>(shapes.size());
+            const bool physicalCountMatches = physical != nullptr && physical->shapeCount == sourceCount;
             if (shapes.isEmpty()) {
-                const int expectedSize = kLiveryEmptySlotBytes
-                    + (slot == sectionCount - 1 ? kLiveryBodyTruncate : 0);
-                if (preserved.size() != expectedSize || !isEmptySlotRecord(preserved)) {
-                    const bool hasFullFinalRecord = slot == sectionCount - 1
-                        && preserved.size() >= expectedSize;
-                    preserved = sourceEmptySlot(sourcePtr, slot);
-                    // Match sourceSlotBytes' virtual tail before the final trim.
-                    // Entirely empty native files can end in only six real bytes.
-                    if (hasFullFinalRecord) {
-                        preserved.append(QByteArray(kLiveryBodyTruncate, '\0'));
-                    }
+                QByteArray empty = sourceEmptySlot(sourcePtr, slot);
+                if (slot == lastPopulatedSlot + 1) {
+                    empty = detail::writeVinylChildHeader(0, {});
                 }
-                body.append(preserved);
-                counts[static_cast<size_t>(slot)] = 0;
-            } else {
-                if (slot == lastPopulatedSlot && slot + 1 < sectionCount) {
-                    const int populatedSize = sourcePopulatedSlotSize(section);
-                    if (populatedSize > 0 && preserved.size() > populatedSize) {
-                        preserved.truncate(populatedSize);
-                        adjustedTrailingSlots = true;
-                    }
-                }
-                repairSourceShapeStates(preserved, *section);
-                body.append(preserved);
-                counts[static_cast<size_t>(slot)] = exportCount;
+                body.append(empty);
+                continue;
             }
-            continue;
+            if (physical != nullptr && sectionMatchesSource(shapes, section,
+                    hasGroupedArtwork(slotGroups[slot]), sourceCount, physicalCountMatches)) {
+                const auto &span = physical->artwork;
+                QByteArray artwork = sourcePtr->payload.body.mid(span.start, span.size());
+                repairSourceShapeStates(artwork, *section);
+                body.append(artwork);
+                body.append(shapes.back()->mask ? '\x01' : '\0');
+                counts[slot] = sourceCount;
+            } else {
+                appendStructuralSection(body, slotGroups[slot], slot, sourceFrames,
+                    {sectionCount < kLiverySectionCount, sectionCount == kFM2023SectionCount});
+                counts[slot] = static_cast<int>(shapes.size());
+            }
+            if (slot + 1 < sectionCount) {
+                body.append(sourceSectionBoundary(sourcePtr, slot));
+            }
         }
-
-        const bool hasFollowingSlot = slot + 1 < sectionCount;
-        appendStructuralSection(body, slotGroups[slot], sourcePtr, slot, hasFollowingSlot,
-                                sourceFrames, {sectionCount < kLiverySectionCount,
-                                               sectionCount == kFM2023SectionCount});
-        if (sourcePtr != nullptr && slot == sectionCount - 1 && !shapes.isEmpty()) {
-            body.append(QByteArray(kLiveryBodyTruncate, '\0'));
-        }
-        counts[static_cast<size_t>(slot)] = static_cast<int>(shapes.size());
     }
-    if (sourcePtr != nullptr && !adjustedTrailingSlots) {
-        body = body.left(std::max<qsizetype>(0, body.size() - kLiveryBodyTruncate));
+
+    if (!detail::readVinylRecordStream(body, false).complete) {
+        throw std::runtime_error("livery export could not frame its artwork records");
     }
 
     if (outSectionCounts != nullptr) {

@@ -68,39 +68,19 @@ rather than a counted root group.
 
 ## Groups and Transforms
 
-Counted and markerless groups store the direct-child count and child-bitmap block
-count as little-endian fields, followed by two reserved bytes and the bitmap:
+Counted and markerless groups use the shared child-block grammar in
+[CGROUP.md](CGROUP.md#physical-framing). Child counts determine physical tree
+boundaries. Group descriptors independently select opaque identity and signed
+Y-scale fields through bits `01` and `10`.
 
-```text
-counted:    20|60  u16 count  u16 bitmap_blocks  reserved[2]  bitmap[]
-markerless:        u16 count  u16 bitmap_blocks  reserved[2]  bitmap[]
-```
+Placement leads, inline ownership, rotation sign, and mask state remain dialect
+interpretation. A descriptor's high bits do not define a universal mask rule.
+The physical reader retains complete and bounded partial attribute spans before
+the existing semantic decoder interprets the artwork.
 
-The bitmap contains one child-type bit per declared direct child. A `60` group
-supplies inherited mask state to its descendants.
-
-Both header fields are byte-scaled copies of each other under a one-byte shift,
-so a control byte in front of a markerless header can read as a header of its own
-whose child count is a whole multiple of 256. A markerless header that is such a
-shifted image of the header one byte later is rejected in favour of the later one.
-
-Livery transform markers terminate in `01`. The transform payload contains
-position, uniform scale, and rotation, followed by an optional signed Y-scale:
-
-```text
-lead + f32 px + f32 py + f32 scale_x + f32 rotation
-30 + f32 scale_y
-70 + f32 scale_y
-```
-
-The high suffix form carries group mask state. Separate transforms are accepted
-when a structurally valid successor group follows directly, through one control
-byte, or through the framed livery trailer. Markerless section wrappers can also
-carry the first-child transform directly after their bitmap.
-
-The FH6 encoder reserves markerless framing for section roots. Artwork
-groups use counted `20` or `60` headers, including groups reconstructed from a
-markerless source frame. The first shape in a counted group uses the explicit
+The FH6 encoder uses markerless section roots. Artwork group header selection
+follows the destination profile and relative signed basis, with counted `20` or
+`60` headers for canonical group framing. The first shape in a counted group uses the explicit
 `01 02` lead.
 
 Record-level mask state is trailing. It resolves against the preceding direct
@@ -155,38 +135,46 @@ framing is derived from the current sibling structure and mask state. Mask
 ancestry and trailing shape-mask state remain expressible through the same
 structured representation.
 
-The current eleven-slot layout preserves source records for unchanged populated
-slots and structurally rebuilds edited slots. Empty slots are emitted as fixed
-scaffolds rather than raw source spans.
+The physical body is an ordered stream of child blocks, boundary frames, and
+trailing state. The shared reader frames this stream independently of the section
+counters and retains unsupported and degenerate artwork in physical occupancy.
 
-Decoded placeholder slots have no source span. Source preservation ends a slot
-at the next strictly increasing decoded offset, or at the payload body boundary
-when no later source-backed slot exists.
+A boundary frame occupies seventeen bytes:
 
-The last populated slot retains one state byte after its terminal shape. The
-first empty scaffold supplies the remaining tail fields so source bytes beyond
-that state boundary cannot enter an empty slot.
+```text
+byte[8] opaque
+f32     unit_scalar
+f32     orientation
+u8      context_flags
+```
 
-An empty slot uses a 23-byte scaffold. A populated slot followed by later artwork
-contains its section root, artwork, and an 18-byte remnant even when its terminal
-child is nested. The remnant contains state and reserved fields followed by unit
-scale, section rotation, and a trailing control field. The final populated slot
-can instead end with its one-byte terminal state.
+The opaque bytes are retained without interpreting them as a position transform.
+Boundary flags remain contextual metadata. An empty child block occupies six
+bytes. A boundary frame can precede or follow it; those independent units explain
+the twenty-three-byte empty layouts. Boundary frames are not permanently assigned
+as section footers or preambles. A populated block can end with only its trailing
+state byte, and an empty block can terminate the body directly.
 
-Source empty scaffolds are preserved only when their reserved bytes, unit scale,
-and finite rotation validate. Both observed 23-byte layouts are accepted: unit
-scale at offset 8 and rotation at offset 12, or a leading six-byte empty group
-header with unit scale at offset 14 and rotation at offset 18. Invalid scaffolds
-are rebuilt for their section, including the final slot's temporary tail padding.
-Section remnants are read
-forward from the terminal artwork record and validated before reuse; a one-byte
-terminal state must never cause the encoder to copy the preceding decal bytes
-as a remnant. Import remains tolerant so damaged artwork can be recovered by
-exporting it again.
+Section counters describe logical occupancy, not byte lengths. Physical record
+count, logical occupancy, and editable geometry are tracked separately. A complete
+physical stream whose ordered blocks match the section layout supplies exact
+artwork boundaries. The decoder retains its metadata-guided recovery walk when
+the stream cannot be mapped unambiguously. Extra blocks or missing slots remain
+a mapping disagreement; the framing reader does not select a historical snapshot
+or fabricate missing artwork.
 
-Section counters describe logical decal occupancy rather than byte length. The
-decoder reserves the remaining section footprint while walking each slot so record
-parsing stays within its boundary.
+Source preservation uses validated physical artwork spans and boundary records.
+Unchanged, fully mapped artwork retains its original body, opaque metadata, and
+logical counters. Missing noninitial shape-state leads are repaired by source
+offset. An edited slot is rebuilt from its scene hierarchy; compatible untouched
+slots retain their physical artwork. Boundary records and empty child blocks are
+assembled explicitly, without synthetic terminal padding or a final byte trim.
+Unmapped source artwork uses the recovery decoder. Validated child blocks at
+recovered offsets can still be reused; edited or incomplete blocks are rebuilt
+from the scene. The raw imported payload remains project source data.
+
+New artwork uses complete attributes and destination-specific traversal state.
+Export does not reproduce partial attribute fragments as newly authored content.
 
 ## Shape Records
 
@@ -206,8 +194,8 @@ The `yrvl` record preceding the artwork stores creator metadata, state, and the
 `gyvl` body length. The length must match the emitted artwork chunk.
 
 The FH6 section-counter record following the artwork stores eleven section counts and
-one trailing counter. The decoder uses the section counts to bound and validate
-the artwork walk. The encoder rebuilds these counts from the exported section
+one trailing counter. The decoder uses the section counts to interpret and validate
+section occupancy after physical framing. The encoder rebuilds these counts from the exported section
 contents.
 
 Older formats use seven counters, including the trailing counter. Section slots
@@ -215,7 +203,7 @@ without declared artwork remain empty in the decoded scene.
 
 If trailing mask state belongs to the final shape in a section, a standalone `01`
 marker follows the completed section walk. The decoder applies it to that terminal
-shape before advancing to the section remnant.
+shape before advancing past the completed child block.
 
 ## Descriptor Table
 
@@ -302,8 +290,9 @@ wire slot. The non-FH6 targets write seven section counters; FH6 writes eleven
 section counters and one trailing counter. FM5 stores counters and
 paint directly after its length-delimited artwork; later formats frame these
 blocks with `yrvl` tags. FH2, FH3, FM5, FM6, and FM7 use bare `01` shape markers in embedded
-artwork. Their decoder supplies virtual terminal padding for the section walker.
-Their populated sections use seventeen-byte separators. Opaque legacy logo
+artwork. Their populated sections use seventeen-byte boundary frames. The
+metadata-guided recovery walk can supply virtual terminal padding when physical
+framing is incomplete. Opaque legacy logo
 records retain structural occupancy during decoding and are omitted from export.
 Their group frames can contain an unmarked sixteen-byte transform followed by
 a control byte and markerless group header. The decoder resolves this layout

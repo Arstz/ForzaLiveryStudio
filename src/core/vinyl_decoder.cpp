@@ -2,6 +2,7 @@
 
 #include "binary_io.h"
 #include "shape_registry.h"
+#include "vinyl_framing.h"
 
 #include <QHash>
 
@@ -336,7 +337,7 @@ bool isLiveryLogoAt(const QByteArray &data, int pos, int end) {
 }
 
 int expectedChildBlocks(int count) {
-    return (count + 7) / 8;
+    return detail::vinylBitmapBytes(count);
 }
 
 bool hasMarkerlessRootHeader(const QByteArray &payload) {
@@ -345,10 +346,14 @@ bool hasMarkerlessRootHeader(const QByteArray &payload) {
         return false;
     }
     const int count = readLeU16(payload, 0x1e);
-    const int childBlocks = static_cast<quint8>(payload[0x20]);
-    const int start = 0x24 + childBlocks;
+    const auto header = detail::readVinylChildHeader(payload, 0x1e, payload.size(), true);
+    if (!header) {
+        return false;
+    }
+    const int childBlocks = header->bitmap.size();
+    const int start = 0x1e + header->size;
 
-    return count > 0 && childBlocks == expectedChildBlocks(count)
+    return count > 0 && childBlocks > 0
         && start < payload.size();
 }
 
@@ -403,9 +408,7 @@ QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos,
 }
 
 bool childBitmapBit(const QByteArray &bitmap, int index) {
-    const int byteIndex = index / 8;
-    return index >= 0 && byteIndex < bitmap.size()
-        && (static_cast<quint8>(bitmap[byteIndex]) & (1 << (index % 8)));
+    return detail::vinylChildIsGroup(bitmap, index);
 }
 
 struct TransformTrailer {
@@ -416,29 +419,15 @@ struct TransformTrailer {
 
 std::optional<TransformTrailer> transformTrailerAt(
     const QByteArray &data, int pos, int end) {
-    constexpr int baseSize = 9;
-    if (pos < 0 || pos + baseSize > end || pos + baseSize > data.size()) {
+    const auto attributes = detail::readVinylAttributes(data, pos, end);
+    if (!attributes || (attributes->flags & ~0x50) != 0x21) {
         return std::nullopt;
     }
-    const quint8 lead = static_cast<quint8>(data[pos]);
-    if ((lead & ~0x50) != 0x21) {
-        return std::nullopt;
-    }
-
     TransformTrailer trailer;
-    trailer.size = baseSize;
-    trailer.flags = lead & 0x40;
-    if (lead & 0x10) {
-        if (pos + baseSize + 4 > end || pos + baseSize + 4 > data.size()) {
-            return std::nullopt;
-        }
-        const double sy = readLeFloat(data, pos + baseSize);
-        if (!std::isfinite(sy) || std::abs(sy) < 0.0001 || std::abs(sy) > 5000.0) {
-            return std::nullopt;
-        }
-        trailer.size += 4;
-        trailer.sy = sy;
-    }
+    trailer.size = attributes->size;
+    trailer.flags = attributes->flags & 0x40;
+    trailer.sy = attributes->scaleY;
+
     return trailer;
 }
 
@@ -517,28 +506,28 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
     if (pos + 4 > end) {
         return std::nullopt;
     }
-    const int count = readLeU16(data, pos);
-    const int storedChildBlocks = readLeU16(data, pos + 2);
+    const auto header = detail::readVinylChildHeader(data, pos, end);
+    if (!header) {
+        return std::nullopt;
+    }
+    const int count = header->count;
     const int minCount = allowCountOne ? 1 : 2;
-    int childBlocks = 0;
-    if (count < minCount || !childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
+    if (count < minCount) {
         return std::nullopt;
     }
-    if (livery && isShiftedMarkerlessHeader(data, pos, end, count)) {
+    if (isShiftedMarkerlessHeader(data, pos, end, count)) {
         return std::nullopt;
     }
-    constexpr int kControlBytes = 2;
-    const int bitmapStart = pos + 4 + kControlBytes;
-    const int baseSize = 4 + kControlBytes + childBlocks;
+    const int baseSize = header->size;
     if (pos + baseSize > end) {
         return std::nullopt;
     }
     GroupInfo info;
     info.count = count;
-    info.childBlocks = childBlocks;
+    info.childBlocks = header->bitmap.size();
     info.size = baseSize;
-    info.controlBytes = data.mid(pos + 4, kControlBytes);
-    info.childTypeBitmap = data.mid(bitmapStart, childBlocks);
+    info.controlBytes = header->controls;
+    info.childTypeBitmap = header->bitmap;
     int extra = pos + baseSize;
     bool foundTransform = false;
     const bool firstChildIsShape = !childBitmapBit(info.childTypeBitmap, 0);
@@ -648,24 +637,20 @@ std::optional<GroupInfo> validCountedGroupAt(
     if (markerByte != 0x20 && markerByte != 0x60) {
         return std::nullopt;
     }
-    const int count = readLeU16(data, pos + 1);
-    const int storedChildBlocks = readLeU16(data, pos + 3);
-    int childBlocks = 0;
-    if (!childBlockFieldMatches(count, storedChildBlocks, &childBlocks)) {
+    const auto header = detail::readVinylChildHeader(data, pos + 1, end);
+    if (!header || header->count == 0) {
         return std::nullopt;
     }
-    constexpr int kControlBytes = 2;
-    const int bitmapStart = pos + 5 + kControlBytes;
-    const int baseSize = 5 + kControlBytes + childBlocks;
+    const int baseSize = 1 + header->size;
     if (pos + baseSize > end) {
         return std::nullopt;
     }
     GroupInfo info;
-    info.count = count;
-    info.childBlocks = childBlocks;
+    info.count = header->count;
+    info.childBlocks = header->bitmap.size();
     info.size = baseSize;
-    info.controlBytes = data.mid(pos + 5, kControlBytes);
-    info.childTypeBitmap = data.mid(bitmapStart, childBlocks);
+    info.controlBytes = header->controls;
+    info.childTypeBitmap = header->bitmap;
     info.flags = markerByte == 0x60 ? 0x40 : 0;
     int extra = pos + baseSize;
     bool foundTransform = false;
@@ -971,12 +956,15 @@ void applyRootHeader(const QByteArray &dec, VinylGroup &root) {
     if (transform) {
         setNodeTransform(root, *transform);
     }
-    if (dec.size() > 0x20) {
-        const int childBlocks = expectedChildBlocks(readLeU16(dec, 0x1e));
-        const int headerGroupEnd = std::min(static_cast<int>(dec.size()), 0x1d + 7 + childBlocks);
-        auto groupInfo = validCountedGroupAt(dec, 0x1d, headerGroupEnd);
-        if (groupInfo) {
-            applyGroupRecord(root, *groupInfo, QStringLiteral("root"));
+    if (dec.size() > 0x24 && (dec[0x1d] == '\x20' || dec[0x1d] == '\x60')) {
+        if (const auto header = detail::readVinylChildHeader(dec, 0x1e, dec.size(), true)) {
+            GroupInfo groupInfo;
+            groupInfo.count = header->count;
+            groupInfo.childBlocks = header->bitmap.size();
+            groupInfo.childTypeBitmap = header->bitmap;
+            groupInfo.controlBytes = header->controls;
+            groupInfo.flags = dec[0x1d] == '\x60' ? 0x40 : 0;
+            applyGroupRecord(root, groupInfo, QStringLiteral("root"));
             root.headerMarker = dec.mid(0x1d, 1);
         }
     }
@@ -1078,7 +1066,17 @@ struct WalkState {
     bool pendingMask = false;
     int decodedDecals = 0;
     const QHash<quint16, int> *logoExtraCounts = nullptr;
+    const QHash<int, int> *physicalShapes = nullptr;
 };
+
+void collectPhysicalShapes(const detail::VinylPhysicalGroup &group, QHash<int, int> &shapes) {
+    for (const auto &shape : group.shapes) {
+        shapes.insert(shape.start, shape.size());
+    }
+    for (const auto &child : group.groups) {
+        collectPhysicalShapes(child, shapes);
+    }
+}
 
 void markPreviousShapeAsMask(WalkState &state, bool throughGroups) {
     if (state.stack.isEmpty() || state.stack.back()->items.isEmpty()) {
@@ -1280,6 +1278,17 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
         return pos + shapeRecordSize;
     }
 
+    if (mayDecodeShape && !s.pendingTransform && s.physicalShapes && s.physicalShapes->contains(pos)) {
+        ++stack.back()->skippedChildren;
+        ++s.decodedDecals;
+        s.pendingTransformMarker.clear();
+        s.pendingTransformPrefix.clear();
+        s.pendingFlags = 0;
+        s.pendingMask = false;
+
+        return pos + s.physicalShapes->value(pos);
+    }
+
     // Embedded and standalone transforms use different marker dialects.
     if (liveryDialect) {
         if (auto liveryTransform = readLiveryTransform(layerData, pos, end,
@@ -1351,9 +1360,9 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
     return pos + 1;
 }
 
-constexpr int kLiveryEmptySlotSize = 23;
-constexpr int kLiveryRemnantSize = 18;
-constexpr int kLegacyLiveryRemnantSize = 17;
+constexpr int kLiveryEmptySlotSize = detail::kVinylChildHeaderBytes + detail::kVinylBoundaryBytes;
+constexpr int kLiveryRemnantSize = 1 + detail::kVinylBoundaryBytes;
+constexpr int kLegacyLiveryRemnantSize = detail::kVinylBoundaryBytes;
 constexpr int kTopLiverySlot = 2;
 
 } // namespace
@@ -1381,18 +1390,19 @@ VinylTreeDecoder::VinylTreeDecoder(VinylDecoderOptions options)
 LayerData VinylTreeDecoder::getLayerData(const QByteArray &payload) const {
     LayerData layerData;
     if (hasMarkerlessRootHeader(payload)) {
-        const int childBlocks = static_cast<quint8>(payload[0x20]);
-        const int start = 0x24 + childBlocks;
+        const auto header = detail::readVinylChildHeader(payload, 0x1e, payload.size(), true);
+        const int start = 0x1e + header->size;
         layerData = LayerData{payload.mid(start), start};
     }
     if (layerData.data.isNull()) {
         if (payload.size() > 0x24
             && (static_cast<quint8>(payload[0x1d]) == 0x20
                 || static_cast<quint8>(payload[0x1d]) == 0x60)) {
-            const int childBlocks = static_cast<quint8>(payload[0x20]);
-            const int start = 0x24 + childBlocks;
-            if (start < payload.size()) {
-                layerData = LayerData{payload.mid(start), start};
+            if (const auto header = detail::readVinylChildHeader(payload, 0x1e, payload.size(), true)) {
+                const int start = 0x1e + header->size;
+                if (start < payload.size()) {
+                    layerData = LayerData{payload.mid(start), start};
+                }
             }
         }
     }
@@ -1419,8 +1429,7 @@ VinylGroup VinylTreeDecoder::decodeGroup(const QByteArray &payload,
                                          LayerData *decodedLayerData) const {
     LayerData layerData = getLayerData(payload);
     QByteArray decoderPayload = payload;
-    if (hasMarkerlessRootHeader(decoderPayload)
-        && layerData.start == 0x24 + static_cast<quint8>(decoderPayload[0x20])) {
+    if (hasMarkerlessRootHeader(decoderPayload)) {
         decoderPayload[0x1d] = static_cast<char>(0x20);
     }
     VinylGroup root = buildTree(layerData.data, decoderPayload);
@@ -1457,8 +1466,24 @@ VinylGroup VinylTreeDecoder::buildTree(const QByteArray &layerData, const QByteA
         : (generation2 ? kGeneration2TransformMarker : kCurrentTransformMarker);
     int pos = 0;
     const int end = layerData.size();
+    const auto physical = options_.normalizeRecords == nullptr
+        ? detail::readStandaloneVinylRecords(fullPayload) : detail::VinylRecordStream{};
+    QHash<int, int> physicalShapes;
+    if (physical.complete) {
+        const int start = getLayerData(fullPayload).start;
+        QHash<int, int> absoluteShapes;
+        for (const auto &record : physical.records) {
+            if (record.group) {
+                collectPhysicalShapes(*record.group, absoluteShapes);
+            }
+        }
+        for (auto it = absoluteShapes.cbegin(); it != absoluteShapes.cend(); ++it) {
+            physicalShapes.insert(it.key() - start, it.value());
+        }
+    }
     WalkState state;
     state.stack = QVector<VinylGroupPtr>{root};
+    state.physicalShapes = physical.complete ? &physicalShapes : nullptr;
 
     auto initial = readInitialChildTransform(
         layerData, pos, end, shapeMarker, transformTerminator);
@@ -1501,8 +1526,19 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
     QByteArray decoderBody = options_.normalizeRecords != nullptr
         ? options_.normalizeRecords(body)
         : body;
+    const auto physicalStream = detail::readVinylRecordStream(decoderBody, options_.legacyLiveryRecords);
+    const auto physicalSections = detail::mapVinylSections(physicalStream, sectionCounts, slotCount);
+    const bool physicalMapping = physicalSections.size() == slotCount;
+    QHash<int, int> physicalShapes;
+    if (physicalMapping) {
+        for (const auto &record : physicalStream.records) {
+            if (record.group) {
+                collectPhysicalShapes(*record.group, physicalShapes);
+            }
+        }
+    }
     const int remnantSize = options_.legacyLiveryRecords ? kLegacyLiveryRemnantSize : kLiveryRemnantSize;
-    if (options_.appendLiveryTailPadding) {
+    if (!physicalMapping && options_.appendLiveryTailPadding) {
         int lastPopulated = -1;
         for (int slot = 0; slot < slotCount; ++slot) {
             if (slot < sectionCounts.size() && sectionCounts[slot] > 0) {
@@ -1529,12 +1565,17 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
             section.slot = slot;
             section.name = QString::fromLatin1(slotDefs[slot].name);
             section.rotationDeg = slotDefs[slot].rotationDeg;
-            section.absPos = pos;
+            const detail::VinylSectionSpan *physical = physicalMapping ? &physicalSections[slot] : nullptr;
+            if (physical != nullptr) {
+                pos = physical->artwork.start;
+            }
+            section.absPos = physical != nullptr && (slot >= sectionCounts.size() || sectionCounts[slot] <= 0)
+                ? physical->span.start : pos;
 
             const int target = slot < sectionCounts.size() ? sectionCounts[slot] : 0;
             if (target <= 0) {
                 section.populated = false;
-                pos = std::min(end, pos + kLiveryEmptySlotSize);
+                pos = physical != nullptr ? physical->span.end : std::min(end, pos + kLiveryEmptySlotSize);
                 sections.push_back(section);
                 continue;
             }
@@ -1554,14 +1595,16 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 const int laterTarget = later < sectionCounts.size() ? sectionCounts[later] : 0;
                 reservedTail += laterTarget <= 0 ? kLiveryEmptySlotSize : laterTarget * minimumRecordSize;
             }
-            const int walkLimit = std::max(pos, end - reservedTail);
+            const int walkLimit = physical != nullptr ? physical->artwork.end : std::max(pos, end - reservedTail);
 
             WalkState state;
             state.stack = QVector<VinylGroupPtr>{holder, sectionNode};
             state.logoExtraCounts = &logoExtraCounts;
+            state.physicalShapes = physicalMapping ? &physicalShapes : nullptr;
             const bool invertOddLiveryRotation = slot != kTopLiverySlot;
             int guard = 0;
-            while (state.decodedDecals < target && pos < walkLimit && guard < end + 16) {
+            while ((physical != nullptr || state.decodedDecals < target)
+                   && pos < walkLimit && guard < end + 16) {
                 ++guard;
                 closeCompleteStack(state.stack);
                 if (state.stack.size() < 2) {
@@ -1571,7 +1614,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                 const int deficit = target - state.decodedDecals;
                 const bool nextSlotPopulated =
                     slot + 1 < slotCount && slot + 1 < sectionCounts.size() && sectionCounts[slot + 1] > 0;
-                if (!options_.legacyLiveryRecords && atSectionRoot && !state.pendingTransform
+                if (physical == nullptr && !options_.legacyLiveryRecords && atSectionRoot && !state.pendingTransform
                     && nextSlotPopulated && deficit > 0 && deficit <= 8) {
                     const auto nextSection = validMarkerlessGroupAt(decoderBody, pos + remnantSize, end,
                                                                     true, true, shapeMarker);
@@ -1606,8 +1649,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
             }
 
             section.subtree = *sectionNode;
-            pos = std::min(pos, walkLimit);
-            pos = std::min(end, pos + remnantSize);
+            pos = physical != nullptr ? physical->span.end : std::min(end, std::min(pos, walkLimit) + remnantSize);
             sections.push_back(section);
         }
 

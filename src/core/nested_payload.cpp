@@ -1,4 +1,5 @@
 #include "nested_payload.h"
+#include "vinyl_framing.h"
 
 #include "binary_io.h"
 #include "layer.h"
@@ -146,13 +147,8 @@ QByteArray childBitmap(const QVector<GroupEntry> &items, const char *label,
 
 QByteArray packGroupHeader(int count, const QByteArray &bitmap, quint8 marker, const char *label) {
     checkChildCount(count, label);
-    QByteArray out;
-    out.append(static_cast<char>(marker));
-    appendLeU16(out, static_cast<quint16>(count));
-    appendLeU16(out, static_cast<quint16>(bitmap.size()));
-    out.append(QByteArray(2, '\x00'));
-    out.append(bitmap);
-    return out;
+
+    return detail::writeVinylChildHeader(count, bitmap, marker);
 }
 
 QByteArray packNativeShape(const ExportShape &shape, const QPointF &origin,
@@ -521,11 +517,8 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
 
     const QByteArray rootBitmap = childBitmap(items, "root", generation);
     QByteArray payload = prefix;
-    payload.append(generation == GroupRecordGeneration::First ? '\0' : '\x20');
-    appendLeU16(payload, static_cast<quint16>(items.size()));
-    appendLeU16(payload, static_cast<quint16>(rootBitmap.size()));
-    payload.append(QByteArray(2, '\x00'));
-    payload.append(rootBitmap);
+    payload.append(detail::writeVinylChildHeader(items.size(), rootBitmap,
+        generation == GroupRecordGeneration::First ? 0x00 : 0x20, true));
 
     bool previousWasGroup = false;
     int previousGroupDepth = 0;

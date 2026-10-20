@@ -6,6 +6,7 @@
 #include "material_hashes.h"
 #include "project_codec.h"
 #include "vinyl_decoder.h"
+#include "vinyl_framing.h"
 
 #include <QtCore>
 
@@ -366,37 +367,54 @@ bool testEmptySectionRepair() {
                 group->append(makeVector(QStringLiteral("added"), 30.0, 40.0));
             }
             const auto payload = fls::parseInflatedLiveryPayload(project.liverySource);
-            const auto sections = fls::buildLiverySections(payload.body, payload.sectionCounts);
-            const int offset = payload.gyvlOffset + 0x15 + sections[emptySlot].absPos;
+            const auto spans = fls::detail::mapVinylSections(
+                fls::detail::readVinylRecordStream(payload.body, false), payload.sectionCounts, kSectionCount);
+            if (spans.size() != kSectionCount) {
+                qCritical() << "empty-section fixture has incomplete physical framing";
+                return false;
+            }
+            const auto &span = spans[emptySlot];
+            const int bodyOffset = payload.gyvlOffset + 0x15;
+            const int offset = bodyOffset + (span.boundary ? span.boundary->start : span.artwork.start);
             const QByteArray cleanSource = project.liverySource;
             const QByteArray expected = fls::encodeCLiveryPayload(project);
             // Copied decal tail, NaN-only rotation, and nonzero reserved padding.
             for (int corruption = 0; corruption < 3; ++corruption) {
                 project.liverySource = cleanSource;
-                if (corruption == 0) {
+                if (!span.boundary) {
+                    project.liverySource[offset + corruption] = '\x7f';
+                } else if (corruption == 0) {
                     project.liverySource.replace(offset, 16,
                         QByteArray::fromHex("5f29c7c0bed94e3f32310d25a100ffff"));
                 } else if (corruption == 1) {
                     writeLeU32(project.liverySource, offset + 12, 0x7fc00000u);
                 } else {
-                    project.liverySource[offset + 16] = '\x7f';
+                    writeLeU32(project.liverySource, offset + 8, 0x40000000u);
                 }
-                if (fls::encodeCLiveryPayload(project) != expected) {
+                const QByteArray actual = fls::encodeCLiveryPayload(project);
+                if (actual != expected) {
+                    int difference = 0;
+                    while (difference < std::min(actual.size(), expected.size())
+                           && actual[difference] == expected[difference]) {
+                        ++difference;
+                    }
                     qCritical() << "empty section repair changed artwork or retained corruption"
-                                << emptySlot << editArtwork << corruption;
+                                << emptySlot << editArtwork << corruption << "offset" << difference
+                                << "expected" << expected.mid(difference, 24).toHex()
+                                << "actual" << actual.mid(difference, 24).toHex();
                     return false;
                 }
             }
             // A valid source-specific rotation must survive unchanged export.
-            if (!editArtwork) {
+            if (!editArtwork && span.boundary) {
                 project.liverySource = cleanSource;
                 writeLeU32(project.liverySource, offset + 12, 0x42340000u); // 45 degrees
                 const auto rebuilt = fls::parseInflatedLiveryPayload(
                     fls::encodeCLiveryPayload(project));
-                const auto rebuiltSections = fls::buildLiverySections(
-                    rebuilt.body, rebuilt.sectionCounts);
-                if (fls::detail::readLeFloat(rebuilt.body,
-                        rebuiltSections[emptySlot].absPos + 12) != 45.0f) {
+                const auto rebuiltSpans = fls::detail::mapVinylSections(
+                    fls::detail::readVinylRecordStream(rebuilt.body, false), rebuilt.sectionCounts, kSectionCount);
+                if (!rebuiltSpans[emptySlot].boundary || fls::detail::readLeFloat(rebuilt.body,
+                        rebuiltSpans[emptySlot].boundary->start + 12) != 45.0f) {
                     qCritical() << "valid empty-section rotation was discarded" << emptySlot;
                     return false;
                 }
@@ -409,7 +427,7 @@ bool testEmptySectionRepair() {
                     project.liverySource.replace(offset, 23, native);
                     const auto nativeResult = fls::parseInflatedLiveryPayload(
                         fls::encodeCLiveryPayload(project));
-                    if (nativeResult.body.mid(sections[emptySlot].absPos, 23) != native) {
+                    if (nativeResult.body.mid(span.span.start, 23) != native) {
                         qCritical() << "valid native empty section was discarded" << emptySlot;
                         return false;
                     }
@@ -438,6 +456,8 @@ bool testTerminalSectionRemnant() {
         section(project, lastSlot)->append(makeVector(QStringLiteral("added"), 37.0, 41.0));
         const auto payload = fls::parseInflatedLiveryPayload(fls::encodeCLiveryPayload(project));
         const auto sections = fls::buildLiverySections(payload.body, payload.sectionCounts);
+        const auto spans = fls::detail::mapVinylSections(
+            fls::detail::readVinylRecordStream(payload.body, false), payload.sectionCounts, kSectionCount);
         ArtworkStats artwork;
         collectArtwork(sections[lastSlot].subtree, artwork);
         if (artwork.vectors != 2) {
@@ -445,16 +465,47 @@ bool testTerminalSectionRemnant() {
             return false;
         }
         for (int slot = lastSlot + 1; slot < kSectionCount; ++slot) {
-            const QByteArray bytes = payload.body.mid(sections[slot].absPos, 23);
-            if (bytes.size() != 23 || bytes.left(8) != QByteArray(8, '\0')
-                || fls::detail::readLeFloat(bytes, 8) != 1.0f
-                || !std::isfinite(fls::detail::readLeFloat(bytes, 12))
-                || bytes.mid(16) != QByteArray(7, '\0')) {
+            if (spans.size() != kSectionCount) {
+                qCritical() << "terminal rebuild has incomplete physical framing";
+                return false;
+            }
+            const auto &span = spans[slot];
+            const auto block = fls::detail::readVinylChildBlock(payload.body, span.artwork.start, false);
+            const auto boundary = span.boundary ? fls::detail::readVinylBoundary(
+                payload.body, span.boundary->start, payload.body.size()) : std::nullopt;
+            if (!block || block->children.count != 0
+                || (span.boundary && (!boundary || boundary->opaque != QByteArray(8, '\0')))) {
                 qCritical() << "terminal rebuild leaked shape bytes into empty section"
-                            << lastSlot << slot << bytes.toHex();
+                            << lastSlot << slot;
                 return false;
             }
         }
+    }
+    return true;
+}
+
+bool testOpaqueBoundaryPreservation() {
+    fls::Project project = makeEncoderProject();
+    project.liverySource = fls::encodeCLiveryPayload(project);
+    const auto payload = fls::parseInflatedLiveryPayload(project.liverySource);
+    const auto spans = fls::detail::mapVinylSections(
+        fls::detail::readVinylRecordStream(payload.body, false), payload.sectionCounts, kSectionCount);
+    if (spans.size() != kSectionCount || !spans[1].boundary) {
+        qCritical() << "opaque boundary fixture could not be framed";
+        return false;
+    }
+    const int offset = payload.gyvlOffset + 0x15 + spans[1].boundary->start;
+    project.liverySource.replace(offset, 8, QByteArray::fromHex("6500000000000000"));
+    project.liverySource[offset + 16] = '\x80';
+    if (fls::encodeCLiveryPayload(project) != project.liverySource) {
+        qCritical() << "unchanged artwork lost opaque boundary state";
+        return false;
+    }
+    const QByteArray boundary = project.liverySource.mid(offset, fls::detail::kVinylBoundaryBytes);
+    section(project, 2)->append(makeVector(QStringLiteral("opaque-boundary-neighbor"), 30.0, 40.0));
+    if (!fls::parseInflatedLiveryPayload(fls::encodeCLiveryPayload(project)).body.contains(boundary)) {
+        qCritical() << "neighboring artwork edit lost opaque boundary state";
+        return false;
     }
     return true;
 }
@@ -1458,7 +1509,7 @@ int main(int argc, char *argv[]) {
         return 2;
     }
     return testLogoEncoding() && testLogoShapeLimit() && testMovedBareShapeFraming()
-            && testEmptySectionRepair() && testTerminalSectionRemnant()
+            && testEmptySectionRepair() && testTerminalSectionRemnant() && testOpaqueBoundaryPreservation()
             && testEntirelyEmptySource() && testPartialSourceRebuild()
             && testCanonicalFh6Envelope() && testLegacyFivePanelSourcePreservation()
             && testLegacyArtworkRebuild()

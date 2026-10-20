@@ -1,4 +1,5 @@
 #include "flat_payload.h"
+#include "vinyl_framing.h"
 
 #include "binary_io.h"
 #include "layer.h"
@@ -130,10 +131,7 @@ QByteArray buildFlatPayload(const Project &project) {
     prefix.replace(0x0d, 16, rootTransform);
 
     QByteArray payload = prefix;
-    payload.append('\x20');
-    appendLeU16(payload, static_cast<quint16>(count));
-    appendLeU16(payload, static_cast<quint16>(childBlocks));
-    payload.append(QByteArray(childBlocks + 2, '\x00'));
+    payload.append(detail::writeVinylChildHeader(count, QByteArray(childBlocks, '\0'), 0x20, true));
     bool prevWasMask = false;
     for (const ExportShape &layer : visibleLayers) {
         payload.append(packShape(layer, prevWasMask));
