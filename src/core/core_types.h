@@ -129,7 +129,6 @@ struct VinylGroup {
     QByteArray pendingTransformMarker;
     QByteArray effectiveTransformMarker;
     QByteArray headerControlBytes;
-    bool rootTransformExempt = false;
     int skippedChildren = 0;
     QVector<VinylItem> items;
     int totalChildren() const { return items.size() + skippedChildren; }

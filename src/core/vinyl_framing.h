@@ -79,6 +79,7 @@ QByteArray writeVinylChildHeader(int count, const QByteArray &bitmap,
                                 bool standaloneRoot = false,
                                 std::optional<int> storedBitmapBytes = std::nullopt);
 std::optional<VinylAttributes> readVinylAttributes(const QByteArray &data, int pos, int end);
+std::optional<VinylAttributes> readVinylScaleAttributes(const QByteArray &data, int pos, int end);
 QByteArray writeVinylAttributes(const VinylAttributes &attributes);
 std::optional<VinylBoundary> readVinylBoundary(const QByteArray &data, int pos, int end);
 QByteArray writeVinylBoundary(const VinylBoundary &boundary);

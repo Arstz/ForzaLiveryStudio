@@ -131,6 +131,10 @@ record spans. Section mapping and editable geometry are separate from physical
 occupancy. Motorsport block
 compression is resolved before the shared decoder runs.
 
+The shared `vinyl_encoding` helpers convert scene placement and serialize shape
+records, standalone prefixes, and current-generation group transitions. Export
+profiles select record markers, mask state, and destination framing.
+
 Grouped export composes scene transforms while retaining nested groups and mask
 semantics. Livery export derives section occupancy from visible scene content
 and selects the destination's framing, header, paint layout, and compression.

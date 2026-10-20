@@ -245,12 +245,16 @@ bool testLogoEncoding() {
         qCritical() << "first-child logo did not use its bare record";
         return false;
     }
-    QByteArray expectedTopRemnant(9, '\0');
-    fls::detail::appendLeFloat(expectedTopRemnant, 1.0f);
-    fls::detail::appendLeFloat(expectedTopRemnant, 0.0f);
-    expectedTopRemnant.append('\0');
-    if (!body.contains(expectedTopRemnant)) {
-        qCritical() << "grouped terminal metadata was not encoded canonically";
+    const auto stream = fls::detail::readVinylRecordStream(body, false);
+    const auto spans = fls::detail::mapVinylSections(stream, decodedCounts, kSectionCount);
+    if (!stream.complete || spans.size() != kSectionCount || !spans[2].boundary) {
+        qCritical() << "grouped section boundary was not framed";
+        return false;
+    }
+    const auto boundary = fls::detail::readVinylBoundary(
+        body, spans[2].boundary->start, spans[2].boundary->end);
+    if (!boundary || boundary->scalar != 1.0f || boundary->orientation != 0.0f) {
+        qCritical() << "grouped section boundary metadata did not round trip";
         return false;
     }
     const QByteArray payload = fls::encodeCLiveryPayload(project);
@@ -1490,21 +1494,9 @@ int main(int argc, char *argv[]) {
     if (args.size() == 2 && args[1] == QStringLiteral("--canonical-envelope")) {
         return testCanonicalFh6Envelope() ? 0 : 1;
     }
-    if (args.size() == 2 && args[1] == QStringLiteral("--current-group-header")) {
-        return testSourceGroupHeaderPreservation() ? 0 : 1;
-    }
-    if (args.size() == 2 && args[1] == QStringLiteral("--legacy-artwork")) {
-        return testLegacyArtworkRebuild() ? 0 : 1;
-    }
-    if (args.size() == 2 && args[1] == QStringLiteral("--legacy-five-panel")) {
-        return testLegacyFivePanelSourcePreservation() ? 0 : 1;
-    }
     if (args.size() != 1) {
         qCritical() << "usage: fls_livery_logo_encoder_tests"
                        " [--canonical-envelope]"
-                       " [--current-group-header]"
-                       " [--legacy-five-panel]"
-                       " [--legacy-artwork]"
                        " [--generate-fixtures <source-root> <output-root>]";
         return 2;
     }

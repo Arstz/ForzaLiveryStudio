@@ -1,5 +1,6 @@
 #include "nested_payload.h"
 #include "vinyl_framing.h"
+#include "vinyl_encoding.h"
 
 #include "binary_io.h"
 #include "layer.h"
@@ -8,7 +9,6 @@
 #include <QPointF>
 
 #include <algorithm>
-#include <cmath>
 #include <stdexcept>
 
 namespace fls {
@@ -17,27 +17,11 @@ namespace {
 constexpr int kMaxDirectChildren = 0xffff;
 
 using detail::appendLeFloat;
-using detail::appendLeU16;
-
-QByteArray defaultPrefix() {
-    static constexpr char bytes[] = {
-        'g', 'y', 'v', 'l',
-        '\x01', '\x00', '\x00', '\x00',
-        '\x00', '\x00', '\x00', '\x00',
-        '\x03',
-        '\x00', '\x00', '\x00', '\x00',
-        '\x00', '\x00', '\x00', '\x00',
-        '\x00', '\x00', '\x80', '\x3f',
-        '\x00', '\x00', '\x00', '\x00',
-    };
-    return QByteArray(bytes, 29);
-}
 
 struct GroupEntry {
-    enum Kind { Group, Layer, Virtual } kind = Layer;
+    enum Kind { Group, Layer } kind = Layer;
     const scene::Group *group = nullptr;
     const scene::Shape *shape = nullptr;
-    QVector<GroupEntry> children;
 
     QString id() const {
         if (group != nullptr) {
@@ -57,35 +41,6 @@ struct ExportContext {
     bool embeddedLivery = false;
 };
 
-struct ExportShape {
-    const scene::Shape *node = nullptr;
-    quint16 shapeId = 0;
-    double rotation = 0.0;
-    double x = 0.0;
-    double y = 0.0;
-    double scaleX = 1.0;
-    double scaleY = 1.0;
-    double skew = 0.0;
-    std::array<quint8, 4> color = {255, 255, 255, 255};
-    bool mask = false;
-};
-
-ExportShape exportShape(const scene::Shape &shape) {
-    const scene::Transform2D world = decomposeTransform2D(shape.worldMatrix());
-    ExportShape out;
-    out.node = &shape;
-    out.shapeId = shape.shapeId;
-    out.rotation = world.rotation;
-    out.x = world.x;
-    out.y = world.y;
-    out.scaleX = world.scaleX;
-    out.scaleY = world.scaleY;
-    out.skew = world.skew;
-    out.color = shape.color;
-    out.mask = shape.mask;
-    return out;
-}
-
 int checkChildCount(int count, const char *label) {
     if (count <= 0) {
         throw std::runtime_error(std::string(label) + " has no children");
@@ -97,28 +52,17 @@ int checkChildCount(int count, const char *label) {
     return blocks;
 }
 
-QByteArray packShapeRelative(const ExportShape &shape, double offsetX, double offsetY,
+QByteArray packShapeRelative(const detail::VinylShapePlacement &shape, double offsetX, double offsetY,
                              quint8 firstMarker, bool bare, GroupRecordGeneration generation) {
     QByteArray out;
-    const char marker = generation == GroupRecordGeneration::Current ? '\x02' : '\x01';
+    const std::optional<quint8> state = !bare && generation == GroupRecordGeneration::Current
+        ? std::optional<quint8>{firstMarker} : std::nullopt;
+    const bool currentGeneration = generation == GroupRecordGeneration::Current;
+
     out.reserve(32);
-    if (bare || generation != GroupRecordGeneration::Current) {
-        out.append(marker);
-    } else {
-        out.append(static_cast<char>(firstMarker));
-        out.append(marker);
-    }
-    appendLeU16(out, shape.shapeId);
-    appendLeFloat(out, static_cast<float>(normalizeRotation(shape.rotation)));
-    appendLeFloat(out, static_cast<float>(shape.x - offsetX));
-    appendLeFloat(out, static_cast<float>(shape.y - offsetY));
-    appendLeFloat(out, static_cast<float>(shape.scaleX));
-    appendLeFloat(out, static_cast<float>(shape.scaleY));
-    appendLeFloat(out, static_cast<float>(shape.skew));
-    out.append(static_cast<char>(shape.color[0]));
-    out.append(static_cast<char>(shape.color[1]));
-    out.append(static_cast<char>(shape.color[2]));
-    out.append(static_cast<char>(shape.color[3]));
+    detail::appendVinylShapeRecord(out, shape, offsetX, offsetY,
+                                   currentGeneration ? 0x02 : 0x01, state);
+
     return out;
 }
 
@@ -138,7 +82,7 @@ QByteArray childBitmap(const QVector<GroupEntry> &items, const char *label,
     for (int i = 0; i < items.size(); ++i) {
         const bool maskedShapeGroup = generation != GroupRecordGeneration::Current
             && items[i].shape != nullptr && items[i].shape->mask;
-        if (items[i].kind == GroupEntry::Group || items[i].kind == GroupEntry::Virtual || maskedShapeGroup) {
+        if (items[i].kind == GroupEntry::Group || maskedShapeGroup) {
             bitmap[i / 8] = static_cast<char>(static_cast<quint8>(bitmap[i / 8]) | (1 << (i % 8)));
         }
     }
@@ -151,7 +95,7 @@ QByteArray packGroupHeader(int count, const QByteArray &bitmap, quint8 marker, c
     return detail::writeVinylChildHeader(count, bitmap, marker);
 }
 
-QByteArray packNativeShape(const ExportShape &shape, const QPointF &origin,
+QByteArray packNativeShape(const detail::VinylShapePlacement &shape, const QPointF &origin,
                            quint8 lead, bool bare, GroupRecordGeneration generation) {
     if (generation != GroupRecordGeneration::Current && shape.mask) {
         QByteArray out = packGroupHeader(1, QByteArray(1, '\0'), 0x60, "mask");
@@ -161,14 +105,6 @@ QByteArray packNativeShape(const ExportShape &shape, const QPointF &origin,
     }
 
     return packShapeRelative(shape, origin.x(), origin.y(), lead, bare, generation);
-}
-
-QByteArray siblingGroupTransformMarker(int previousGroupDepth) {
-    QByteArray out;
-    out.append('\x00');
-    out.append(QByteArray(std::max(1, previousGroupDepth), '\x01'));
-    out.append('\x03');
-    return out;
 }
 
 QByteArray groupTransformMarker(GroupRecordGeneration generation, bool previousWasGroup,
@@ -183,7 +119,7 @@ QByteArray groupTransformMarker(GroupRecordGeneration generation, bool previousW
         return marker;
     }
     if (previousWasGroup) {
-        return siblingGroupTransformMarker(previousGroupDepth);
+        return detail::vinylSiblingGroupMarker(previousGroupDepth);
     }
 
     return hasPreviousSibling ? QByteArray("\x00\x03", 2) : QByteArray(1, '\x03');
@@ -192,8 +128,7 @@ QByteArray groupTransformMarker(GroupRecordGeneration generation, bool previousW
 void appendGroupShapeTransition(QByteArray &out, int previousGroupDepth,
                                 GroupRecordGeneration generation) {
     if (generation == GroupRecordGeneration::Current) {
-        out.append('\x00');
-        out.append(QByteArray(std::max(0, previousGroupDepth - 1), '\x01'));
+        detail::appendVinylGroupShapeTransition(out, previousGroupDepth);
     } else if (generation == GroupRecordGeneration::Second) {
         out.append(QByteArray(std::max(1, previousGroupDepth), '\x01'));
     }
@@ -211,7 +146,7 @@ QPointF spriteHalfExtents(const ExportContext &ctx, quint16 shapeId) {
 }
 
 QVector<QPointF> shapeCorners(const ExportContext &ctx, const scene::Shape &shape) {
-    const ExportShape s = exportShape(shape);
+    const detail::VinylShapePlacement s = detail::vinylShapePlacement(shape);
     const QPointF he = spriteHalfExtents(ctx, s.shapeId);
     FlattenedLayer fl;
     fl.rotation = s.rotation;
@@ -252,11 +187,6 @@ void entryShapes(const GroupEntry &entry, QVector<const scene::Shape *> &out) {
             collectShapeLeaves(*entry.group, out);
         }
         break;
-    case GroupEntry::Virtual:
-        for (const GroupEntry &child : entry.children) {
-            entryShapes(child, out);
-        }
-        break;
     }
 }
 
@@ -291,7 +221,7 @@ QPointF shapesOrigin(const ExportContext &ctx, const QVector<const scene::Shape 
         points.append(shapeCorners(ctx, *shape));
     }
     if (points.isEmpty()) {
-        const ExportShape first = exportShape(*leaves.front());
+        const detail::VinylShapePlacement first = detail::vinylShapePlacement(*leaves.front());
         return QPointF(first.x, first.y);
     }
     double minX = points.front().x();
@@ -354,21 +284,18 @@ QVector<GroupEntry> directChildren(const GroupEntry &entry) {
         }
         return entries;
     }
-    if (entry.kind == GroupEntry::Virtual) {
-        return entry.children;
-    }
     throw std::runtime_error("layer entries cannot have children");
 }
 
 void appendGameEntry(const scene::Layer &node, QVector<GroupEntry> &entries) {
     if (node.kind() == scene::LayerKind::Shape) {
-        entries.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(&node), {}});
+        entries.push_back({GroupEntry::Layer, nullptr, static_cast<const scene::Shape *>(&node)});
         return;
     }
     if (node.kind() != scene::LayerKind::Group) {
         return;
     }
-    const GroupEntry entry{GroupEntry::Group, static_cast<const scene::Group *>(&node), nullptr, {}};
+    const GroupEntry entry{GroupEntry::Group, static_cast<const scene::Group *>(&node), nullptr};
 
     if (containsContourFigure(node)) {
         const QVector<GroupEntry> children = directChildren(entry);
@@ -383,7 +310,7 @@ void appendGameEntry(const scene::Layer &node, QVector<GroupEntry> &entries) {
 int terminalDepth(const GroupEntry &entry) {
     const QVector<GroupEntry> children = directChildren(entry);
     if (children.isEmpty()
-        || (children.back().kind != GroupEntry::Group && children.back().kind != GroupEntry::Virtual)) {
+        || children.back().kind != GroupEntry::Group) {
         return 1;
     }
     return 1 + terminalDepth(children.back());
@@ -426,7 +353,7 @@ QByteArray packNestedGroup(const ExportContext &ctx, const GroupEntry &entry,
     int previousGroupDepth = 0;
     QString previousSiblingId;
     for (const GroupEntry &child : children) {
-        if (child.kind == GroupEntry::Group || child.kind == GroupEntry::Virtual) {
+        if (child.kind == GroupEntry::Group) {
             QByteArray marker = groupTransformMarker(ctx.generation, previousWasGroup,
                                                      previousGroupDepth, !previousSiblingId.isEmpty());
             marker = maybeFlipMaskFlag(marker, previousShapeMask);
@@ -444,7 +371,7 @@ QByteArray packNestedGroup(const ExportContext &ctx, const GroupEntry &entry,
             if (previousWasGroup) {
                 appendGroupShapeTransition(out, previousGroupDepth, ctx.generation);
             }
-            const ExportShape packed = exportShape(*child.shape);
+            const detail::VinylShapePlacement packed = detail::vinylShapePlacement(*child.shape);
             const quint8 lead = currentGeneration && (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
             out.append(packNativeShape(packed, origin, lead, previousSiblingId.isEmpty(), ctx.generation));
             previousWasGroup = false;
@@ -502,18 +429,8 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
     }
     const QPointF center = centerArtwork ? shapesOrigin(ctx, allLeaves) : QPointF();
 
-    QByteArray prefix = project.sourceDecPrefix.isEmpty() ? defaultPrefix() : project.sourceDecPrefix;
-    prefix = prefix.left(0x1d);
-    if (prefix.size() < 0x1d) {
-        throw std::runtime_error("source decompressed prefix is shorter than 0x1d bytes");
-    }
-    prefix[0x0c] = static_cast<char>(generation);
-    QByteArray rootTransform;
-    appendLeFloat(rootTransform, 0.0f);
-    appendLeFloat(rootTransform, 0.0f);
-    appendLeFloat(rootTransform, 1.0f);
-    appendLeFloat(rootTransform, 0.0f);
-    prefix.replace(0x0d, 16, rootTransform);
+    const QByteArray prefix = detail::standaloneVinylPrefix(
+        project.sourceDecPrefix, static_cast<quint8>(generation));
 
     const QByteArray rootBitmap = childBitmap(items, "root", generation);
     QByteArray payload = prefix;
@@ -540,7 +457,7 @@ QByteArray buildNestedPayload(const Project &project, const SpriteSizeFn &sprite
             if (previousWasGroup) {
                 appendGroupShapeTransition(payload, previousGroupDepth, generation);
             }
-            const ExportShape packed = exportShape(*item.shape);
+            const detail::VinylShapePlacement packed = detail::vinylShapePlacement(*item.shape);
             const quint8 lead = generation == GroupRecordGeneration::Current
                 && (previousWasGroup || previousShapeMask) ? 0x01 : 0x00;
             payload.append(packNativeShape(packed, center, lead, previousSiblingId.isEmpty(), generation));

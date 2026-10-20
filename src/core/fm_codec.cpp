@@ -8,6 +8,7 @@
 #include "scene_codec.h"
 #include "shape_registry.h"
 #include "vinyl_decoder.h"
+#include "vinyl_framing.h"
 
 #include <QDir>
 #include <QFile>
@@ -115,18 +116,17 @@ bool isFM2023BareShapeAt(const QByteArray &data, int pos) {
 }
 
 bool isFM2023GroupAt(const QByteArray &data, int pos, bool counted) {
-    const int headerSize = counted ? 4 : 3;
-    if (pos < 0 || pos + headerSize > data.size())
+    if (pos < 0 || pos >= data.size()) {
         return false;
+    }
     if (counted && static_cast<quint8>(data[pos]) != 0x20
         && static_cast<quint8>(data[pos]) != 0x60) {
         return false;
     }
-    const int countPos = pos + (counted ? 1 : 0);
-    const int count = readLeU16(data, countPos);
-    const int childBlocks = static_cast<quint8>(data[countPos + 2]);
-    return count > 0 && childBlocks == (count + 7) / 8
-        && pos + headerSize + childBlocks + 2 <= data.size();
+    const auto header = detail::readVinylChildHeader(
+        data, pos + (counted ? 1 : 0), data.size());
+
+    return header && header->count > 0;
 }
 
 int fm2023TransformSizeAt(const QByteArray &data, int pos) {
@@ -147,11 +147,8 @@ int fm2023TransformSizeAt(const QByteArray &data, int pos) {
     }
     int size = 17;
     const int syPos = pos + size;
-    if (syPos + 5 <= data.size()
-        && (static_cast<quint8>(data[syPos]) & ~0x40) == 0x30) {
-        const double sy = readLeFloat(data, syPos + 1);
-        if (std::isfinite(sy) && std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0)
-            size += 5;
+    if (const auto attributes = detail::readVinylScaleAttributes(data, syPos, data.size())) {
+        size += attributes->size;
     }
     const int next = pos + size;
     const bool groupFollows = isFM2023GroupAt(data, next, true)
@@ -222,11 +219,8 @@ void applyFM2023ShapeMasks(VinylGroup &group, const QByteArray &layerData, bool 
 
 void finalizeFM2023Group(VinylGroup &root, const QByteArray &payload,
                          const LayerData &layerData) {
-    if (payload.size() >= 0x22
-        && (static_cast<quint8>(payload[0x1d]) & ~0x40) == 0x30) {
-        const double sy = readLeFloat(payload, 0x1e);
-        if (std::isfinite(sy) && std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0)
-            root.sy = sy;
+    if (const auto attributes = detail::readVinylScaleAttributes(payload, 0x1d, payload.size())) {
+        root.sy = *attributes->scaleY;
     }
     applyFM2023ShapeMasks(root, layerData.data, true);
 }

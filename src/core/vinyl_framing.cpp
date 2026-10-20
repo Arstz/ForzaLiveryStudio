@@ -377,6 +377,15 @@ std::optional<VinylAttributes> readVinylAttributes(const QByteArray &data, int p
     return attributes;
 }
 
+std::optional<VinylAttributes> readVinylScaleAttributes(const QByteArray &data, int pos, int end) {
+    if (!contains(data, pos, 1, end)
+        || (static_cast<quint8>(data[pos]) & ~0x40) != 0x30) {
+        return {};
+    }
+
+    return readVinylAttributes(data, pos, end);
+}
+
 QByteArray writeVinylAttributes(const VinylAttributes &attributes) {
     if ((attributes.flags & ~0xf1)
         || ((attributes.flags & kIdentityPresent) ? attributes.identity.size() != 8 : !attributes.identity.isEmpty())

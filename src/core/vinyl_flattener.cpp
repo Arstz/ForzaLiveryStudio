@@ -12,7 +12,7 @@ using detail::multiply;
 constexpr double Pi = 3.14159265358979323846;
 
 void flattenInto(const VinylGroup &node, const Matrix3 &parentMat, bool parentMask,
-                 bool rootCall, QVector<FlattenedLayer> &result) {
+                 QVector<FlattenedLayer> &result) {
     const bool inheritedMask = parentMask || node.isMask;
     const double radians = node.rot * Pi / 180.0;
     const double c = std::cos(radians);
@@ -43,8 +43,7 @@ void flattenInto(const VinylGroup &node, const Matrix3 &parentMat, bool parentMa
             result.push_back(layer);
         } else {
             const auto child = std::get<VinylGroupPtr>(item.value);
-            const Matrix3 &childParent = (rootCall && child->rootTransformExempt) ? parentMat : groupMat;
-            flattenInto(*child, childParent, inheritedMask, false, result);
+            flattenInto(*child, groupMat, inheritedMask, result);
         }
     }
 }
@@ -54,7 +53,7 @@ void flattenInto(const VinylGroup &node, const Matrix3 &parentMat, bool parentMa
 QVector<FlattenedLayer> VinylFlattener::flattenGroup(const VinylGroup &root) const {
     QVector<FlattenedLayer> result;
     Matrix3 identity;
-    flattenInto(root, identity, false, true, result);
+    flattenInto(root, identity, false, result);
     return result;
 }
 

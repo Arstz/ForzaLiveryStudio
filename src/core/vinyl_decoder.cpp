@@ -40,7 +40,6 @@ struct Transform {
 
 struct GroupInfo {
     int count = 0;
-    int childBlocks = 0;
     int size = 0;
     std::optional<Transform> inlineTransform;
     bool transformForFirstChild = false;
@@ -336,10 +335,6 @@ bool isLiveryLogoAt(const QByteArray &data, int pos, int end) {
     return liveryLogoRecordSize(data, pos, end) > 0;
 }
 
-int expectedChildBlocks(int count) {
-    return detail::vinylBitmapBytes(count);
-}
-
 bool hasMarkerlessRootHeader(const QByteArray &payload) {
     if (payload.size() <= 0x24
         || static_cast<quint8>(payload[0x1d]) != 0x00) {
@@ -357,20 +352,6 @@ bool hasMarkerlessRootHeader(const QByteArray &payload) {
         && start < payload.size();
 }
 
-bool childBlockFieldMatches(int count, int storedBlocks, int *effectiveBlocks) {
-    if (count <= 0) {
-        return false;
-    }
-    const int expected = expectedChildBlocks(count);
-    if (storedBlocks != expected) {
-        return false;
-    }
-    if (effectiveBlocks != nullptr) {
-        *effectiveBlocks = expected;
-    }
-    return true;
-}
-
 constexpr int kHeaderFieldShift = 256;
 
 bool markerlessHeaderFieldsMatch(const QByteArray &data, int pos, int end) {
@@ -379,7 +360,7 @@ bool markerlessHeaderFieldsMatch(const QByteArray &data, int pos, int end) {
     }
     const int count = readLeU16(data, pos);
 
-    return count >= 2 && childBlockFieldMatches(count, readLeU16(data, pos + 2), nullptr);
+    return count >= 2 && readLeU16(data, pos + 2) == detail::vinylBitmapBytes(count);
 }
 
 // Both header fields scale by one byte position, so a header that is the shifted image of the
@@ -409,6 +390,17 @@ QVector<int> liverySeparateTransformMarkerSizes(const QByteArray &data, int pos,
 
 bool childBitmapBit(const QByteArray &bitmap, int index) {
     return detail::vinylChildIsGroup(bitmap, index);
+}
+
+int readTransformScale(const QByteArray &data, int pos, int end, Transform &transform) {
+    const auto attributes = detail::readVinylScaleAttributes(data, pos, end);
+    if (!attributes) {
+        return 0;
+    }
+    transform.sy = *attributes->scaleY;
+    transform.hasSy = true;
+
+    return attributes->size;
 }
 
 struct TransformTrailer {
@@ -443,6 +435,36 @@ bool isLiveryTransformLead(const QByteArray &data, int pos, int end, quint8 shap
     return true;
 }
 
+bool readInlineGroupTransform(
+    const QByteArray &data, int pos, int end, GroupInfo &info, bool livery,
+    quint8 shapeMarker, quint8 transformTerminator) {
+    const bool firstChildIsShape = !childBitmapBit(info.childTypeBitmap, 0);
+    for (const QByteArray &marker : transformMarkersAt(
+             data, pos, end, livery, transformTerminator)) {
+        if (firstChildIsShape
+            && (isValidShapeAt(data, pos, end, shapeMarker)
+                || (livery && isLiveryLogoAt(data, pos, end)))) {
+            continue;
+        }
+        auto transform = readTransformPayload(data, pos + marker.size(), end);
+        if (!transform) {
+            continue;
+        }
+        const int transformSize = marker.size() + 16;
+        const int scaleSize = readTransformScale(data, pos + transformSize, end, *transform);
+        info.inlineTransform = *transform;
+        info.transformForFirstChild = groupAtOrAfterControlByte(
+            data, pos + transformSize + scaleSize, end, livery,
+            shapeMarker, transformTerminator);
+        info.marker = marker;
+        info.size += transformSize + scaleSize;
+
+        return true;
+    }
+
+    return false;
+}
+
 bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end,
                                 quint8 shapeMarker = kCurrentShapeMarker) {
     if (pos >= end) {
@@ -456,11 +478,8 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end,
             continue;
         }
         int size = markerSize + 16;
-        if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-            const double sy = readLeFloat(data, pos + size + 1);
-            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                size += 5;
-            }
+        if (const auto attributes = detail::readVinylScaleAttributes(data, pos + size, end)) {
+            size += attributes->size;
         }
         const int child = pos + size;
         if (validCountedGroupAt(data, child, end, true, shapeMarker)
@@ -486,14 +505,6 @@ bool liveryTransformThenChildAt(const QByteArray &data, int pos, int end,
         }
     }
     return false;
-}
-
-bool childTokenAt(const QByteArray &data, int pos, int end, bool livery) {
-    return isValidShapeAt(data, pos, end)
-        || (livery && isLiveryLogoAt(data, pos, end))
-        || validCountedGroupAt(data, pos, end, livery)
-        || (livery && validMarkerlessGroupAt(data, pos, end, true, true))
-        || (livery && liveryTransformThenChildAt(data, pos, end));
 }
 
 std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos, int end,
@@ -524,47 +535,12 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
     }
     GroupInfo info;
     info.count = count;
-    info.childBlocks = header->bitmap.size();
     info.size = baseSize;
     info.controlBytes = header->controls;
     info.childTypeBitmap = header->bitmap;
     int extra = pos + baseSize;
-    bool foundTransform = false;
-    const bool firstChildIsShape = !childBitmapBit(info.childTypeBitmap, 0);
-    for (const QByteArray &marker : transformMarkersAt(
-             data, extra, end, livery, transformTerminator)) {
-        if (firstChildIsShape
-            && (isValidShapeAt(data, extra, end, shapeMarker)
-                || (livery && isLiveryLogoAt(data, extra, end)))) {
-            continue;
-        }
-        auto candidate = readTransformPayload(data, extra + marker.size(), end);
-        if (!candidate) {
-            continue;
-        }
-        info.inlineTransform = *candidate;
-        info.transformForFirstChild = groupAtOrAfterControlByte(
-            data, extra + marker.size() + 16, end, livery,
-            shapeMarker, transformTerminator);
-        info.marker = marker;
-        info.size += marker.size() + 16;
-        const int syPos = extra + marker.size() + 16;
-        if (syPos + 5 <= end && (static_cast<quint8>(data[syPos]) & ~0x40) == 0x30) {
-            const double sy = readLeFloat(data, syPos + 1);
-            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                Transform t = *info.inlineTransform;
-                t.sy = sy;
-                t.hasSy = true;
-                info.inlineTransform = t;
-                info.size += 5;
-                info.transformForFirstChild = groupAtOrAfterControlByte(
-                    data, syPos + 5, end, livery,
-                    shapeMarker, transformTerminator);
-            }
-        }
-        foundTransform = true;
-        break;
-    }
+    bool foundTransform = readInlineGroupTransform(
+        data, extra, end, info, livery, shapeMarker, transformTerminator);
     if (!foundTransform && livery
         && (childBitmapBit(info.childTypeBitmap, 0)
             || (shapeMarker == kLegacyShapeMarker && !isValidShapeAt(data, extra, end, shapeMarker)))) {
@@ -572,15 +548,9 @@ std::optional<GroupInfo> validMarkerlessGroupAt(const QByteArray &data, int pos,
         if (candidate) {
             int transformSize = 16;
             int child = extra + transformSize;
-            if (child + 5 <= end && (static_cast<quint8>(data[child]) & ~0x40) == 0x30) {
-                const double sy = readLeFloat(data, child + 1);
-                if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                    candidate->sy = sy;
-                    candidate->hasSy = true;
-                    transformSize += 5;
-                    child += 5;
-                }
-            }
+            const int scaleSize = readTransformScale(data, child, end, *candidate);
+            transformSize += scaleSize;
+            child += scaleSize;
             if (const auto trailer = transformTrailerAt(data, child, end)) {
                 child += trailer->size;
                 transformSize += trailer->size;
@@ -647,48 +617,13 @@ std::optional<GroupInfo> validCountedGroupAt(
     }
     GroupInfo info;
     info.count = header->count;
-    info.childBlocks = header->bitmap.size();
     info.size = baseSize;
     info.controlBytes = header->controls;
     info.childTypeBitmap = header->bitmap;
     info.flags = markerByte == 0x60 ? 0x40 : 0;
     int extra = pos + baseSize;
-    bool foundTransform = false;
-    const bool firstChildIsShape = !childBitmapBit(info.childTypeBitmap, 0);
-    for (const QByteArray &marker : transformMarkersAt(
-             data, extra, end, livery, transformTerminator)) {
-        if (firstChildIsShape
-            && (isValidShapeAt(data, extra, end, shapeMarker)
-                || (livery && isLiveryLogoAt(data, extra, end)))) {
-            continue;
-        }
-        auto candidate = readTransformPayload(data, extra + marker.size(), end);
-        if (!candidate) {
-            continue;
-        }
-        info.inlineTransform = *candidate;
-        info.transformForFirstChild = groupAtOrAfterControlByte(
-            data, extra + marker.size() + 16, end, livery,
-            shapeMarker, transformTerminator);
-        info.marker = marker;
-        info.size += marker.size() + 16;
-        const int syPos = extra + marker.size() + 16;
-        if (syPos + 5 <= end && (static_cast<quint8>(data[syPos]) & ~0x40) == 0x30) {
-            const double sy = readLeFloat(data, syPos + 1);
-            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                Transform t = *info.inlineTransform;
-                t.sy = sy;
-                t.hasSy = true;
-                info.inlineTransform = t;
-                info.size += 5;
-                info.transformForFirstChild = groupAtOrAfterControlByte(
-                    data, syPos + 5, end, livery,
-                    shapeMarker, transformTerminator);
-            }
-        }
-        foundTransform = true;
-        break;
-    }
+    bool foundTransform = readInlineGroupTransform(
+        data, extra, end, info, livery, shapeMarker, transformTerminator);
     if (!foundTransform && extra < end
         && !isValidShapeAt(data, extra, end, shapeMarker)
         && !(livery && isLiveryLogoAt(data, extra, end))
@@ -740,14 +675,7 @@ std::optional<TransformRecord> readTransformRecord(
         if (!transform) {
             continue;
         }
-        if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-            const double sy = readLeFloat(data, pos + size + 1);
-            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                transform->sy = sy;
-                transform->hasSy = true;
-                size += 5;
-            }
-        }
+        size += readTransformScale(data, pos + size, end, *transform);
         int flags = 0;
         const int trailerPos = pos + size;
         const auto trailer = transformTrailerAt(data, trailerPos, end);
@@ -774,11 +702,8 @@ bool liveryTransformEndsAtGroup(const QByteArray &data, int pos, int end, quint8
             continue;
         }
         int size = markerSize + 16;
-        if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-            const double sy = readLeFloat(data, pos + size + 1);
-            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                size += 5;
-            }
+        if (const auto attributes = detail::readVinylScaleAttributes(data, pos + size, end)) {
+            size += attributes->size;
         }
         const int next = pos + size;
         if (validCountedGroupAt(data, next, end, true, shapeMarker)
@@ -823,12 +748,7 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
             }
             int alignedSize = markerSize + 16;
             const int syPos = pos + 1 + alignedSize;
-            if (syPos + 5 <= end && (static_cast<quint8>(data[syPos]) & ~0x40) == 0x30) {
-                const double sy = readLeFloat(data, syPos + 1);
-                if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                    alignedSize += 5;
-                }
-            }
+            alignedSize += readTransformScale(data, syPos, end, *aligned);
             const int alignedNext = pos + 1 + alignedSize;
             const bool groupFollowsExactly = validCountedGroupAt(data, alignedNext, end, true, shapeMarker)
                 || validMarkerlessGroupAt(data, alignedNext, end, true, true, shapeMarker);
@@ -850,14 +770,7 @@ std::optional<TransformRecord> readLiveryTransform(const QByteArray &data, int p
             continue;
         }
         int size = markerSize + 16;
-        if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-            const double sy = readLeFloat(data, pos + size + 1);
-            if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-                transform->sy = sy;
-                transform->hasSy = true;
-                size += 5;
-            }
-        }
+        size += readTransformScale(data, pos + size, end, *transform);
         const int next = pos + size;
         const bool groupFollowsImmediately = validCountedGroupAt(data, next, end, true, shapeMarker)
             || validMarkerlessGroupAt(data, next, end, true, true, shapeMarker);
@@ -915,14 +828,11 @@ std::optional<TransformRecord> readUnmarkedLiveryTransform(const QByteArray &dat
     if (!transform) {
         return std::nullopt;
     }
-    if (pos + size + 5 <= end && (static_cast<quint8>(data[pos + size]) & ~0x40) == 0x30) {
-        const double sy = readLeFloat(data, pos + size + 1);
-        if (std::abs(sy) >= 0.0001 && std::abs(sy) <= 5000.0) {
-            transform->sy = sy;
-            transform->hasSy = true;
-            flags = static_cast<quint8>(data[pos + size]) & 0x40;
-            size += 5;
-        }
+    if (const auto attributes = detail::readVinylScaleAttributes(data, pos + size, end)) {
+        transform->sy = *attributes->scaleY;
+        transform->hasSy = true;
+        flags = attributes->flags & 0x40;
+        size += attributes->size;
     }
     if (!groupAtOrAfterControlByte(data, pos + size, end, true,
                                    kLegacyShapeMarker, kGeneration1TransformMarker)) {
@@ -960,7 +870,6 @@ void applyRootHeader(const QByteArray &dec, VinylGroup &root) {
         if (const auto header = detail::readVinylChildHeader(dec, 0x1e, dec.size(), true)) {
             GroupInfo groupInfo;
             groupInfo.count = header->count;
-            groupInfo.childBlocks = header->bitmap.size();
             groupInfo.childTypeBitmap = header->bitmap;
             groupInfo.controlBytes = header->controls;
             groupInfo.flags = dec[0x1d] == '\x60' ? 0x40 : 0;
@@ -1128,20 +1037,18 @@ void applyTerminalMaskFlag(VinylGroup &root, const QByteArray &layerData) {
     }
 }
 
-int pushMarkerlessGroup(const QByteArray &data, int pos, int end, const GroupInfo &info, WalkState &s,
-                        bool livery = false) {
+int pushGroup(int pos, const GroupInfo &info, WalkState &s,
+              const QString &source, const QByteArray &headerMarker = {}) {
     const bool inlineForFirstChild = info.inlineTransform && info.transformForFirstChild;
     auto node = std::make_shared<VinylGroup>();
     node->nodeType = QStringLiteral("group");
     node->absPos = pos;
+    node->headerMarker = headerMarker;
     node->pendingTransformMarker = s.pendingTransformMarker;
-    applyGroupRecord(*node, info, QStringLiteral("markerless_count_stack"),
+    applyGroupRecord(*node, info, source,
                      s.pendingFlags, s.pendingMask, !inlineForFirstChild);
     if (s.pendingTransform) {
-        if (!info.inlineTransform) {
-            setNodeTransform(*node, *s.pendingTransform);
-            node->effectiveTransformMarker = s.pendingTransformMarker;
-        } else if (inlineForFirstChild) {
+        if (!info.inlineTransform || inlineForFirstChild) {
             setNodeTransform(*node, *s.pendingTransform);
             node->effectiveTransformMarker = s.pendingTransformMarker;
         } else {
@@ -1175,7 +1082,7 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
                                  shapeMarker, transformTerminator)
         : std::optional<GroupInfo>{};
     if (markerlessInfo) {
-        return pushMarkerlessGroup(layerData, pos, end, *markerlessInfo, s, liveryDialect);
+        return pushGroup(pos, *markerlessInfo, s, QStringLiteral("markerless_count_stack"));
     }
 
     auto countedInfo = mayDecodeGroup
@@ -1183,35 +1090,8 @@ int walkStep(const QByteArray &layerData, int pos, int end, WalkState &s,
                               shapeMarker, transformTerminator)
         : std::optional<GroupInfo>{};
     if (countedInfo) {
-        const auto &info = *countedInfo;
-        const bool inlineForFirstChild = info.inlineTransform && info.transformForFirstChild;
-        auto node = std::make_shared<VinylGroup>();
-        node->nodeType = QStringLiteral("group");
-        node->absPos = pos;
-        node->headerMarker = layerData.mid(pos, 1);
-        node->pendingTransformMarker = s.pendingTransformMarker;
-        applyGroupRecord(*node, info, QStringLiteral("count_stack"),
-                         s.pendingFlags, s.pendingMask, !inlineForFirstChild);
-        if (s.pendingTransform) {
-            if (!info.inlineTransform) {
-                setNodeTransform(*node, *s.pendingTransform);
-                node->effectiveTransformMarker = s.pendingTransformMarker;
-            } else if (inlineForFirstChild) {
-                setNodeTransform(*node, *s.pendingTransform);
-                node->effectiveTransformMarker = s.pendingTransformMarker;
-            } else {
-                composeTransformIntoNode(*s.pendingTransform, *node);
-                node->effectiveTransformMarker = s.pendingTransformMarker + info.marker;
-            }
-        }
-        s.pendingTransform = inlineForFirstChild ? info.inlineTransform : std::optional<Transform>{};
-        s.pendingTransformMarker = inlineForFirstChild ? info.marker : QByteArray();
-        s.pendingTransformPrefix.clear();
-        s.pendingFlags = 0;
-        s.pendingMask = false;
-        addChild(*stack.back(), node);
-        stack.push_back(node);
-        return pos + info.size;
+        return pushGroup(pos, *countedInfo, s, QStringLiteral("count_stack"),
+                         layerData.mid(pos, 1));
     }
 
     if (liveryDialect && shapeMarker == kLegacyShapeMarker && s.pendingTransform
@@ -1626,8 +1506,7 @@ QVector<LiverySection> VinylTreeDecoder::buildLiverySections(const QByteArray &b
                     if (const auto info =
                             validMarkerlessGroupAt(decoderBody, pos, end, true, true, shapeMarker)) {
                         const bool sectionRootFrame = pos == section.absPos;
-                        pos = pushMarkerlessGroup(decoderBody, pos, end, *info, state,
-                                                  /*livery=*/true);
+                        pos = pushGroup(pos, *info, state, QStringLiteral("markerless_count_stack"));
                         if (sectionRootFrame) {
                             state.stack.back()->source = QStringLiteral("livery_section_root");
                         }

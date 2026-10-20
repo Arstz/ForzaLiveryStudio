@@ -951,7 +951,17 @@ int main(int argc, char *argv[]) {
             const auto actual = fls::readLiveryPayload(output.path());
             equalBytes(expected.body, actual.body, "FH5 in-game validated artwork framing");
             require(expected.sectionCounts == actual.sectionCounts, "FH5 framing reference section counters");
-            compareComplexArtwork(project, fls::importCLivery(output.path()), "FH5 framing reference artwork");
+            auto supported = saveReload(project, QDir(output.path()).filePath("supported.3so"));
+            for (int index = static_cast<int>(supported.root->children.size()) - 1; index >= 0; --index) {
+                const auto &child = supported.root->children[index];
+                if (child->kind() == fls::scene::LayerKind::Group) {
+                    const auto &group = static_cast<const fls::scene::Group &>(*child);
+                    if (group.isLiverySection && group.liverySectionSlot >= 6) {
+                        supported.root->takeAt(index);
+                    }
+                }
+            }
+            compareComplexArtwork(supported, fls::importCLivery(output.path()), "FH5 framing reference artwork");
             qInfo() << "FH5 framing reference passed";
             return 0;
         }

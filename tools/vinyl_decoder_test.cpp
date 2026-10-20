@@ -1,6 +1,8 @@
 #include "binary_io.h"
 #include "cgroup_codec.h"
 #include "vinyl_decoder.h"
+#include "vinyl_framing.h"
+#include "fm_codec.h"
 
 #include <QtCore>
 
@@ -437,6 +439,42 @@ bool testUnmarkedLegacyLiveryTransform() {
     return true;
 }
 
+bool testFM2023LargeChildBitmap() {
+    constexpr int kChildCount = 2049;
+    for (const bool counted : {false, true}) {
+        QByteArray payload = makePayload(kGeneration3Marker, kGeneration3ShapeMarker,
+                                         kGeneration3TransformTerminator, false, false).left(29);
+        payload.append(fls::detail::writeVinylChildHeader(1, QByteArray(1, '\x01'), 0x20, true));
+        payload.append('\x01');
+        fls::detail::appendLeFloat(payload, 32.0f);
+        fls::detail::appendLeFloat(payload, -16.0f);
+        fls::detail::appendLeFloat(payload, 1.0f);
+        fls::detail::appendLeFloat(payload, 0.0f);
+        payload.append(fls::detail::writeVinylChildHeader(kChildCount,
+            QByteArray(fls::detail::vinylBitmapBytes(kChildCount), '\0'),
+            counted ? std::optional<quint8>{0x20} : std::nullopt));
+        for (int index = 0; index < kChildCount; ++index) {
+            appendShape(payload, kLegacyShapeMarker, false);
+        }
+        const auto root = fls::decodeFM2023RawGroup(payload);
+        QVector<const fls::VinylShape *> shapes;
+        collectShapes(root, shapes);
+        if (root.items.size() != 1 || root.items.front().isShape()
+            || shapes.size() != kChildCount || !fls::validateTree(root).isEmpty()) {
+            qCritical() << "FM2023 large child bitmap hierarchy" << counted << shapes.size();
+            return false;
+        }
+        const auto &group = *std::get<fls::VinylGroupPtr>(root.items.front().value);
+        if (group.expectedChildren != kChildCount || std::abs(group.px - 32.0) > 1e-6
+            || std::abs(group.py + 16.0) > 1e-6) {
+            qCritical() << "FM2023 large child bitmap placement" << counted << group.px << group.py;
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool verifyUnmaskedGroup(const QString &path) {
     const fls::VinylGroup group = fls::decodeGroup(
         fls::readCGroupPayload(path), nullptr);
@@ -478,5 +516,6 @@ int main(int argc, char *argv[]) {
     return testGeneration1MarkerlessRoot()
         && testGeneration2MaskFraming() && testGeneration3TrailingMasks()
         && testShapeIdAliases() && testStandaloneTransformTrailer()
-        && testLiveryLockedTransformFrames() && testUnmarkedLegacyLiveryTransform() ? 0 : 1;
+        && testLiveryLockedTransformFrames() && testUnmarkedLegacyLiveryTransform()
+        && testFM2023LargeChildBitmap() ? 0 : 1;
 }

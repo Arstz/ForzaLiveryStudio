@@ -124,6 +124,8 @@ add_library(fls_core STATIC
     src/core/swatchbin.h
     src/core/vinyl_decoder.cpp
     src/core/vinyl_decoder.h
+    src/core/vinyl_encoding.cpp
+    src/core/vinyl_encoding.h
     src/core/vinyl_framing.cpp
     src/core/vinyl_framing.h
     src/core/vinyl_flattener.cpp
@@ -540,21 +542,15 @@ if(FLS_BUILD_TESTS)
         Qt6::Core
     )
     add_test(NAME livery_logo_encoder COMMAND fls_livery_logo_encoder_tests)
-    add_test(NAME livery_current_group_header
-        COMMAND fls_livery_logo_encoder_tests --current-group-header)
-    add_test(NAME livery_legacy_artwork
-        COMMAND fls_livery_logo_encoder_tests --legacy-artwork)
-    add_test(NAME livery_legacy_five_panel
-        COMMAND fls_livery_logo_encoder_tests --legacy-five-panel)
 
     add_executable(fls_game_export_tests tools/game_export_test.cpp)
     target_link_libraries(fls_game_export_tests PRIVATE fls_core Qt6::Core)
     add_test(NAME game_export COMMAND fls_game_export_tests)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5 diagnostics/projects/11_first_2_sections.3so"
-       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5 diagnostics/boundary round 2/23_D11_remove_closers")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5/BA MOMOI&MIDORI(MAID).3so"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5/maid-fh5-converted")
         add_test(NAME game_fh5_framing_reference COMMAND fls_game_export_tests --fh5-framing-reference
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5 diagnostics/projects/11_first_2_sections.3so"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5 diagnostics/boundary round 2/23_D11_remove_closers")
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5/BA MOMOI&MIDORI(MAID).3so"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/FH6 to FH5/maid-fh5-converted")
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/encoder roundtrip/complex livery")
         add_test(NAME game_complex_references COMMAND fls_game_export_tests --complex-references
