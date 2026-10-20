@@ -6,6 +6,8 @@
 
 namespace gui {
 
+QVector<QColor> normalizedImagePalette(const QVector<QColor> &colors);
+
 struct ImagePreprocessSettings {
     int colors = 16;
     double flattenStrength = 0.18;

@@ -1,4 +1,5 @@
 #include "lining_fill.h"
+#include "fill_geometry.h"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,11 @@
 
 namespace gui {
 namespace {
+
+using fill_geometry::affineFromTriangles;
+using fill_geometry::cross;
+using fill_geometry::signedArea;
+using fill_geometry::pathArea;
 
 constexpr double kEpsilon = 1e-8;
 constexpr int kMaximumPlacements = 512;
@@ -107,26 +113,6 @@ double candidateScore(double placementArea,
     return result;
 }
 
-double cross(const QPointF &a, const QPointF &b) {
-    return a.x() * b.y() - a.y() * b.x();
-}
-
-double signedArea(const QPolygonF &polygon) {
-    double result = 0.0;
-    for (int i = 0; i < polygon.size(); ++i) {
-        result += cross(polygon[i], polygon[(i + 1) % polygon.size()]);
-    }
-    return result * 0.5;
-}
-
-double pathArea(const QPainterPath &path) {
-    double result = 0.0;
-    for (const QPolygonF &polygon : path.toFillPolygons()) {
-        result += std::abs(signedArea(polygon));
-    }
-    return result;
-}
-
 QPointF cubicPoint(const PenBoundarySegment &segment, double t) {
     return segment.point(t);
 }
@@ -185,33 +171,6 @@ QVector<double> cumulativeLengths(const QVector<QPointF> &points) {
         result[i] = result[i - 1] + QLineF(points[i - 1], points[i]).length();
     }
     return result;
-}
-
-QTransform affineFromTriangles(const QPointF &a,
-                               const QPointF &b,
-                               const QPointF &c,
-                               const QPointF &p,
-                               const QPointF &q,
-                               const QPointF &r,
-                               bool *ok) {
-    const QPointF d1 = b - a;
-    const QPointF d2 = c - a;
-    const QPointF e1 = q - p;
-    const QPointF e2 = r - p;
-    const double determinant = cross(d1, d2);
-    if (std::abs(determinant) <= kEpsilon) {
-        *ok = false;
-        return {};
-    }
-    const double m11 = (e1.x() * d2.y() - e2.x() * d1.y()) / determinant;
-    const double m21 = (-e1.x() * d2.x() + e2.x() * d1.x()) / determinant;
-    const double m12 = (e1.y() * d2.y() - e2.y() * d1.y()) / determinant;
-    const double m22 = (-e1.y() * d2.x() + e2.y() * d1.x()) / determinant;
-    const double dx = p.x() - m11 * a.x() - m21 * a.y();
-    const double dy = p.y() - m12 * a.x() - m22 * a.y();
-    *ok = std::isfinite(m11) && std::isfinite(m12) && std::isfinite(m21)
-        && std::isfinite(m22) && std::isfinite(dx) && std::isfinite(dy);
-    return QTransform(m11, m12, m21, m22, dx, dy);
 }
 
 QVector<PrimitiveProfile> primitiveProfiles(const PenPrimitive &primitive) {
@@ -457,6 +416,39 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
         - (start > 0 ? startTangent * overlap : QPointF());
     const QPointF targetEndCenter = samples[end]
         + (end + 1 < samples.size() ? endTangent * overlap : QPointF());
+    const auto candidateForTransform = [&](const QTransform &transform,
+                                           const QPointF &profileMiddle,
+                                           bool measureWidth) {
+        Candidate result;
+        const double placementArea =
+            profile.primitive->area * std::abs(transform.determinant());
+
+        result.start = start;
+        result.end = end;
+        result.primitive = profile.primitive;
+        result.transform = transform;
+        result.curveError = QLineF(transform.map(profileMiddle), samples[middle]).length();
+        if (measureWidth) {
+            const double window = std::max(width * 0.5,
+                                           QLineF(samples[start], samples[end]).length() * 0.04);
+            result.widthError = std::abs(width
+                                         - sectionWidth(*profile.primitive,
+                                                        transform,
+                                                        samples[middle],
+                                                        middleTangent,
+                                                        window));
+        }
+        result.sideSign = sideSign;
+        result.overlapFactor = overlapFactor;
+        result.tipAtStart = QLineF(transform.map(profile.tip), samples[start]).length()
+            < QLineF(transform.map(profile.tip), samples[end]).length();
+        result.score = candidateScore(placementArea,
+                                      assignedArea,
+                                      width,
+                                      profile.primitive->shapeId);
+
+        return result;
+    };
     if (profile.primitive->shapeId == 2133) {
         const QPointF pillStart = targetStartCenter + offset;
         const QPointF pillEnd = targetEndCenter + offset;
@@ -478,23 +470,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
             && !containedBy(*profile.primitive, transform, allowed, allowedBounds, false)) {
             return std::nullopt;
         }
-        Candidate result;
-        result.start = start;
-        result.end = end;
-        result.primitive = profile.primitive;
-        result.transform = transform;
-        result.curveError = QLineF(transform.map(profile.middle), samples[middle]).length();
-        result.sideSign = sideSign;
-        result.overlapFactor = overlapFactor;
-        result.tipAtStart = QLineF(transform.map(profile.tip), samples[start]).length()
-            < QLineF(transform.map(profile.tip), samples[end]).length();
-        const double placementArea =
-            profile.primitive->area * std::abs(transform.determinant());
-        result.score = candidateScore(placementArea,
-                                      assignedArea,
-                                      width,
-                                      profile.primitive->shapeId);
-        return result;
+        return candidateForTransform(transform, profile.middle, false);
     }
     if (curveAligned) {
         const QPointF sourceAcross = profile.inner - profile.spineMiddle;
@@ -512,6 +488,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
                                                                curveStart,
                                                                curveTargetMiddle,
                                                                curveEnd,
+                                                               kEpsilon,
                                                                &curveOk);
         bool widthOk = false;
         const QTransform widthTransform = affineFromTriangles(profile.spineStart,
@@ -522,6 +499,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
                                                                curveEnd,
                                                                curveStart
                                                                    + targetAcross,
+                                                               kEpsilon,
                                                                &widthOk);
         const auto blend = [widthFactor](double curveValue, double widthValue) {
             return curveValue * (1.0 - widthFactor) + widthValue * widthFactor;
@@ -541,32 +519,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
                                 false))) {
             return std::nullopt;
         }
-        Candidate result;
-        result.start = start;
-        result.end = end;
-        result.primitive = profile.primitive;
-        result.transform = transform;
-        result.curveError = QLineF(transform.map(profile.spineMiddle),
-                                  samples[middle]).length();
-        const double window = std::max(width * 0.5,
-                                       QLineF(samples[start], samples[end]).length() * 0.04);
-        result.widthError = std::abs(width
-                                     - sectionWidth(*profile.primitive,
-                                                    transform,
-                                                    samples[middle],
-                                                    middleTangent,
-                                                    window));
-        result.sideSign = sideSign;
-        result.overlapFactor = overlapFactor;
-        result.tipAtStart = QLineF(transform.map(profile.tip), samples[start]).length()
-            < QLineF(transform.map(profile.tip), samples[end]).length();
-        const double placementArea =
-            profile.primitive->area * std::abs(transform.determinant());
-        result.score = candidateScore(placementArea,
-                                      assignedArea,
-                                      width,
-                                      profile.primitive->shapeId);
-        return result;
+        return candidateForTransform(transform, profile.spineMiddle, true);
     }
     const QPointF targetStart = targetStartCenter + offset
         + startNormal * (width * widthFactor * sideSign);
@@ -581,6 +534,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
                                                        targetStart,
                                                        targetEnd,
                                                        targetInner,
+                                                       kEpsilon,
                                                        &ok);
     if (!ok
         || (requireContained
@@ -591,30 +545,7 @@ std::optional<Candidate> fitCandidate(const PrimitiveProfile &profile,
                             false))) {
         return std::nullopt;
     }
-    Candidate result;
-    result.start = start;
-    result.end = end;
-    result.primitive = profile.primitive;
-    result.transform = transform;
-    result.curveError = QLineF(transform.map(profile.middle), samples[middle]).length();
-    const double window = std::max(width * 0.5,
-                                   QLineF(samples[start], samples[end]).length() * 0.04);
-    result.widthError = std::abs(width
-                                 - sectionWidth(*profile.primitive,
-                                                transform,
-                                                samples[middle],
-                                                middleTangent,
-                                                window));
-    result.sideSign = sideSign;
-    result.overlapFactor = overlapFactor;
-    result.tipAtStart = QLineF(transform.map(profile.tip), samples[start]).length()
-        < QLineF(transform.map(profile.tip), samples[end]).length();
-    const double placementArea = profile.primitive->area * std::abs(transform.determinant());
-    result.score = candidateScore(placementArea,
-                                  assignedArea,
-                                  width,
-                                  profile.primitive->shapeId);
-    return result;
+    return candidateForTransform(transform, profile.middle, true);
 }
 
 } // namespace

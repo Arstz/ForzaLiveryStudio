@@ -81,6 +81,35 @@ void decodeBc4Block(const uint8_t *block, uint8_t out[16]) {
     }
 }
 
+constexpr int kBcTileExtent = 4;
+constexpr int kRgbaChannels = 4;
+
+template<int Channels, typename DecodeBlock>
+void decodeBcTiles(const QByteArray &data, int width, int height, int blockBytes,
+                   std::vector<uint8_t> &pixels, DecodeBlock decodeBlock) {
+    const auto *source = reinterpret_cast<const uint8_t *>(data.constData());
+    const int blocksWide = (width + kBcTileExtent - 1) / kBcTileExtent;
+    const int blocksHigh = (height + kBcTileExtent - 1) / kBcTileExtent;
+
+    for (int blockY = 0; blockY < blocksHigh; ++blockY) {
+        for (int blockX = 0; blockX < blocksWide; ++blockX) {
+            std::array<uint8_t, kBcTileExtent * kBcTileExtent * Channels> tile;
+            const int column = blockX * kBcTileExtent;
+            const int row = blockY * kBcTileExtent;
+            const int columns = std::min<int>(kBcTileExtent, width - column);
+            const int rows = std::min<int>(kBcTileExtent, height - row);
+
+            decodeBlock(source, tile.data());
+            source += blockBytes;
+            for (int tileRow = 0; tileRow < rows; ++tileRow) {
+                const size_t destination = (static_cast<size_t>(row + tileRow) * width + column) * Channels;
+                std::copy_n(tile.data() + tileRow * kBcTileExtent * Channels,
+                            columns * Channels, pixels.begin() + destination);
+            }
+        }
+    }
+}
+
 SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QString *error) {
     const int blocksWide = (width + 3) / 4;
     const int blocksHigh = (height + 3) / 4;
@@ -95,27 +124,8 @@ SwatchMask decodeBc4Surface(const QByteArray &data, int width, int height, QStri
     mask.height = height;
     mask.coverage.assign(static_cast<size_t>(width) * height, 0);
 
-    const auto *src = reinterpret_cast<const uint8_t *>(data.constData());
-    for (int by = 0; by < blocksHigh; ++by) {
-        for (int bx = 0; bx < blocksWide; ++bx) {
-            uint8_t tile[16];
-            decodeBc4Block(src, tile);
-            src += 8;
-            for (int ty = 0; ty < 4; ++ty) {
-                const int py = by * 4 + ty;
-                if (py >= height) {
-                    continue;
-                }
-                for (int tx = 0; tx < 4; ++tx) {
-                    const int px = bx * 4 + tx;
-                    if (px >= width) {
-                        continue;
-                    }
-                    mask.coverage[static_cast<size_t>(py) * width + px] = tile[ty * 4 + tx];
-                }
-            }
-        }
-    }
+    decodeBcTiles<1>(data, width, height, 8, mask.coverage, decodeBc4Block);
+
     return mask;
 }
 
@@ -200,44 +210,27 @@ SwatchImage decodeBcSurface(const QByteArray &data, int width, int height, Encod
     image.width = width;
     image.height = height;
     image.rgba.assign(static_cast<size_t>(width) * height * 4, 0);
-    const auto *src = reinterpret_cast<const uint8_t *>(data.constData());
-    for (int by = 0; by < blocksHigh; ++by) {
-        for (int bx = 0; bx < blocksWide; ++bx) {
-            uint8_t tile[64];
+    decodeBcTiles<kRgbaChannels>(data, width, height, blockBytes, image.rgba,
+        [encoding](const uint8_t *source, uint8_t *tile) {
             if (encoding == Encoding::Bc1) {
-                decodeBc1Colors(src, false, tile);
+                decodeBc1Colors(source, false, tile);
             } else {
-                decodeBc1Colors(src + 8, true, tile);
+                decodeBc1Colors(source + 8, true, tile);
                 if (encoding == Encoding::Bc2) {
                     for (int pixel = 0; pixel < 16; ++pixel) {
-                        const int nibble = (src[pixel / 2] >> ((pixel & 1) * 4)) & 0xf;
-                        tile[pixel * 4 + 3] = static_cast<uint8_t>(nibble * 17);
+                        const int nibble = (source[pixel / 2] >> ((pixel & 1) * 4)) & 0xf;
+                        tile[pixel * kRgbaChannels + 3] = static_cast<uint8_t>(nibble * 17);
                     }
                 } else {
                     uint8_t alpha[16];
-                    decodeBc4Block(src, alpha);
+                    decodeBc4Block(source, alpha);
                     for (int pixel = 0; pixel < 16; ++pixel) {
-                        tile[pixel * 4 + 3] = alpha[pixel];
+                        tile[pixel * kRgbaChannels + 3] = alpha[pixel];
                     }
                 }
             }
-            src += blockBytes;
-            for (int ty = 0; ty < 4; ++ty) {
-                const int py = by * 4 + ty;
-                if (py >= height) {
-                    continue;
-                }
-                for (int tx = 0; tx < 4; ++tx) {
-                    const int px = bx * 4 + tx;
-                    if (px >= width) {
-                        continue;
-                    }
-                    const size_t dst = (static_cast<size_t>(py) * width + px) * 4;
-                    std::copy_n(tile + (ty * 4 + tx) * 4, 4, image.rgba.begin() + dst);
-                }
-            }
-        }
-    }
+        });
+
     return image;
 }
 
@@ -253,33 +246,20 @@ SwatchImage decodeBc5Surface(const QByteArray &data, int width, int height, QStr
     image.width = width;
     image.height = height;
     image.rgba.assign(static_cast<size_t>(width) * height * 4, 255);
-    const auto *src = reinterpret_cast<const uint8_t *>(data.constData());
-    for (int by = 0; by < blocksHigh; ++by) {
-        for (int bx = 0; bx < blocksWide; ++bx) {
+    decodeBcTiles<kRgbaChannels>(data, width, height, 16, image.rgba,
+        [](const uint8_t *source, uint8_t *tile) {
             uint8_t red[16];
             uint8_t green[16];
-            decodeBc4Block(src, red);
-            decodeBc4Block(src + 8, green);
-            src += 16;
-            for (int ty = 0; ty < 4; ++ty) {
-                const int py = by * 4 + ty;
-                if (py >= height) {
-                    continue;
-                }
-                for (int tx = 0; tx < 4; ++tx) {
-                    const int px = bx * 4 + tx;
-                    if (px >= width) {
-                        continue;
-                    }
-                    const int pixel = ty * 4 + tx;
-                    const size_t dst = (static_cast<size_t>(py) * width + px) * 4;
-                    image.rgba[dst] = red[pixel];
-                    image.rgba[dst + 1] = green[pixel];
-                    image.rgba[dst + 2] = 255;
-                }
+            decodeBc4Block(source, red);
+            decodeBc4Block(source + 8, green);
+            for (int pixel = 0; pixel < 16; ++pixel) {
+                tile[pixel * kRgbaChannels] = red[pixel];
+                tile[pixel * kRgbaChannels + 1] = green[pixel];
+                tile[pixel * kRgbaChannels + 2] = 255;
+                tile[pixel * kRgbaChannels + 3] = 255;
             }
-        }
-    }
+        });
+
     return image;
 }
 

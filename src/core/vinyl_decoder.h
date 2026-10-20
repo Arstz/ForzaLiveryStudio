@@ -60,6 +60,7 @@ QVector<LiverySection> buildLiverySections(const QByteArray &body, const QVector
 QVector<QString> validateTree(const VinylGroup &root);
 
 namespace detail {
+bool isValidVinylShapeTransformAt(const QByteArray &data, int transformPos);
 bool isValidVinylShapeBasis(double scaleX, double scaleY, double skew);
 }
 

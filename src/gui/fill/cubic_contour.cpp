@@ -688,20 +688,26 @@ CubicFitOptions rasterFitOptions(const QPolygonF &polygon,
     return result;
 }
 
+QImage rasterizedContourMask(const QPainterPath &path, const QRect &bounds) {
+    QImage raster(bounds.size(), QImage::Format_Grayscale8);
+    raster.fill(255);
+    {
+        QPainter painter(&raster);
+        painter.translate(-bounds.topLeft());
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::black);
+        painter.drawPath(path);
+    }
+
+    return raster;
+}
+
 bool matchesRasterMask(const PenContour &contour, const std::vector<std::uint8_t> &mask,
                        QSize size, QRect bounds) {
     const QRect fittedBounds = contour.path.boundingRect().toAlignedRect();
     const QRect checkBounds = bounds.united(fittedBounds).adjusted(-1, -1, 1, 1)
         .intersected(QRect(QPoint(0, 0), size));
-    QImage raster(checkBounds.size(), QImage::Format_Grayscale8);
-    raster.fill(255);
-    {
-        QPainter painter(&raster);
-        painter.translate(-checkBounds.topLeft());
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(Qt::black);
-        painter.drawPath(contour.path);
-    }
+    const QImage raster = rasterizedContourMask(contour.path, checkBounds);
     int selectedPixels = 0;
     int differingPixels = 0;
     for (int y = checkBounds.top(); y <= checkBounds.bottom(); ++y) {
@@ -741,15 +747,7 @@ RasterMaskDifference rasterMaskDifference(const PenContour &contour,
                                           QSize size, QRect bounds) {
     bounds = bounds.united(contour.path.boundingRect().toAlignedRect())
                  .intersected(QRect(QPoint(0, 0), size));
-    QImage raster(bounds.size(), QImage::Format_Grayscale8);
-    raster.fill(255);
-    {
-        QPainter painter(&raster);
-        painter.translate(-bounds.topLeft());
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(Qt::black);
-        painter.drawPath(contour.path);
-    }
+    const QImage raster = rasterizedContourMask(contour.path, bounds);
     RasterMaskDifference difference;
     for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
         const auto *row = raster.constScanLine(y - bounds.top());

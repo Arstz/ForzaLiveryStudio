@@ -242,26 +242,6 @@ struct LiveryEntry {
     const scene::Shape *shape = nullptr;
 };
 
-Matrix3 nodeMatrix(const VinylGroup &node) {
-    constexpr double pi = 3.14159265358979323846;
-    const double radians = node.rot * pi / 180.0;
-    const double c = std::cos(radians);
-    const double s = std::sin(radians);
-    return affine(c * node.sx, -s * node.sy, node.px,
-                  s * node.sx, c * node.sy, node.py);
-}
-
-Matrix3 shapeMatrixForShape(const VinylShape &shape) {
-    FlattenedLayer layer;
-    layer.rotation = shape.rotation;
-    layer.posX = shape.posX;
-    layer.posY = shape.posY;
-    layer.scaleX = shape.scaleX;
-    layer.scaleY = shape.scaleY;
-    layer.skew = shape.skew;
-    return shapeMatrix(layer);
-}
-
 struct SourceShapeView {
     quint16 shapeId = 0;
     bool raster = false;
@@ -302,7 +282,7 @@ struct SourceGroupFrame {
 
 void collectSourceGroupFrames(const VinylGroup &node, const Matrix3 &parentWorld,
                               int parentAbsPos, QHash<int, SourceGroupFrame> &frames) {
-    const Matrix3 world = detail::multiply(parentWorld, nodeMatrix(node));
+    const Matrix3 world = detail::multiply(parentWorld, vinylGroupMatrix(node));
     if (node.absPos > 0 && node.expectedChildren) {
         frames.insert(node.absPos, {
             world,
@@ -389,7 +369,7 @@ const LiverySection *sourceSection(const SourceLivery *source, int slot) {
 
 void collectSourceShapes(const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask,
                          QVector<SourceShapeView> &out) {
-    const Matrix3 groupMatrix = detail::multiply(parentMatrix, nodeMatrix(node));
+    const Matrix3 groupMatrix = detail::multiply(parentMatrix, vinylGroupMatrix(node));
     const bool inheritedMask = parentMask || node.isMask;
     for (const VinylItem &item : node.items) {
         if (item.isShape()) {
@@ -402,7 +382,7 @@ void collectSourceShapes(const VinylGroup &node, const Matrix3 &parentMatrix, bo
             view.absPos = shape.absPos;
             view.marker = shape.marker;
             view.mask = inheritedMask || (shape.isMask && !hasColorData(shape.color));
-            view.worldMatrix = detail::multiply(groupMatrix, shapeMatrixForShape(shape));
+            view.worldMatrix = detail::multiply(groupMatrix, shapeMatrix(shape));
             view.world = decomposeTransform2D(view.worldMatrix);
             out.push_back(view);
         } else {
@@ -800,22 +780,8 @@ QPointF shapeHalfExtents(const scene::Shape &shape) {
 QVector<QPointF> shapeCorners(const scene::Shape &shape, const Matrix3 &worldAdjustment) {
     const detail::VinylShapePlacement exported = detail::vinylShapePlacement(shape, worldAdjustment);
     const QPointF he = shapeHalfExtents(shape);
-    FlattenedLayer layer;
-    layer.rotation = exported.rotation;
-    layer.posX = exported.x;
-    layer.posY = exported.y;
-    layer.scaleX = exported.scaleX;
-    layer.scaleY = exported.scaleY;
-    layer.skew = exported.skew;
-    const Matrix3 matrix = shapeMatrix(layer);
 
-    QVector<QPointF> corners;
-    const double pts[4][2] = {{-he.x(), -he.y()}, {he.x(), -he.y()}, {he.x(), he.y()}, {-he.x(), he.y()}};
-    for (const auto &pt : pts) {
-        corners.push_back(QPointF(matrix.m[0][0] * pt[0] + matrix.m[0][1] * pt[1] + matrix.m[0][2],
-                                  matrix.m[1][0] * pt[0] + matrix.m[1][1] * pt[1] + matrix.m[1][2]));
-    }
-    return corners;
+    return detail::vinylShapeCorners(exported, he);
 }
 
 QPointF shapesOrigin(const QVector<const scene::Shape *> &leaves, const Matrix3 &worldAdjustment) {
@@ -833,17 +799,7 @@ QPointF shapesOrigin(const QVector<const scene::Shape *> &leaves, const Matrix3 
         return QPointF(first.x, first.y);
     }
 
-    double minX = points.front().x();
-    double maxX = minX;
-    double minY = points.front().y();
-    double maxY = minY;
-    for (const QPointF &point : points) {
-        minX = std::min(minX, point.x());
-        maxX = std::max(maxX, point.x());
-        minY = std::min(minY, point.y());
-        maxY = std::max(maxY, point.y());
-    }
-    return QPointF((minX + maxX) / 2.0, (minY + maxY) / 2.0);
+    return pointBoundsCenter(points);
 }
 
 QPointF entryOrigin(const LiveryEntry &entry, const Matrix3 &worldAdjustment) {
@@ -1118,14 +1074,8 @@ QByteArray packLiveryGroup(const LiveryEntry &entry, const Matrix3 &parentWorld,
     bool hasPreviousSibling = false;
     for (const LiveryEntry &child : children) {
         if (child.kind == LiveryEntry::Group) {
-            QByteArray marker;
-            if (previousWasGroup) {
-                marker = detail::vinylSiblingGroupMarker(previousGroupDepth);
-            } else if (hasPreviousSibling) {
-                marker = QByteArray("\x00\x03", 2);
-            } else {
-                marker = QByteArray("\x01", 1);
-            }
+            QByteArray marker = detail::vinylGroupTransformMarker(
+                previousWasGroup, previousGroupDepth, hasPreviousSibling, QByteArray("\x01", 1));
             marker = liveryGroupTransformMarker(marker, previousShapeMask,
                                                 previousWasGroup, framing.nativeMarkers);
             previousShapeMask = false;
@@ -1183,14 +1133,8 @@ void appendStructuralSection(QByteArray &body, const scene::Group *sectionGroup,
     const Matrix3 worldAdjustment = invertAffine(liverySectionCanvasTransform(slot));
     for (const LiveryEntry &child : children) {
         if (child.kind == LiveryEntry::Group) {
-            QByteArray marker;
-            if (previousWasGroup) {
-                marker = detail::vinylSiblingGroupMarker(previousGroupDepth);
-            } else if (hasPreviousSibling) {
-                marker = QByteArray("\x00\x03", 2);
-            } else {
-                marker = QByteArray();
-            }
+            QByteArray marker = detail::vinylGroupTransformMarker(
+                previousWasGroup, previousGroupDepth, hasPreviousSibling, QByteArray());
             marker = liveryGroupTransformMarker(marker, previousShapeMask,
                                                 previousWasGroup, framing.nativeMarkers);
             previousShapeMask = false;

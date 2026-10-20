@@ -1,4 +1,5 @@
 #include "import_asset_dialog.h"
+#include "browser_tile_palette.h"
 
 #include "car_registry.h"
 #include "fm_codec.h"
@@ -399,18 +400,7 @@ private:
             option.state.testFlag(QStyle::State_MouseOver);
         const bool selected =
             option.state.testFlag(QStyle::State_Selected);
-        const QColor tileBase =
-            dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
-        const QColor tileHover =
-            dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-        const QColor stroke =
-            dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-        const QColor activeStroke =
-            dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
-        const QColor previewBase =
-            dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
-        const QColor labelColor =
-            dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
+        const BrowserTilePalette colors = browserTilePalette(dark);
         const QRect tileRect =
             option.rect.adjusted(
                 kGridMargin, kGridMargin,
@@ -448,13 +438,13 @@ private:
         painter->setRenderHint(QPainter::Antialiasing, true);
         painter->fillRect(
             tileRect,
-            hovered || selected ? tileHover : tileBase);
+            hovered || selected ? colors.hover : colors.base);
         painter->setPen(QPen(
-            hovered || selected ? activeStroke : stroke, 1));
+            hovered || selected ? colors.activeStroke : colors.stroke, 1));
         painter->drawRect(tileRect.adjusted(0, 0, -1, -1));
 
         if (!thumbnail.isNull()) {
-            painter->fillRect(previewRect, previewBase);
+            painter->fillRect(previewRect, colors.previewBase);
             const QImage fitted = thumbnail.scaled(
                 previewRect.size(), Qt::KeepAspectRatio,
                 Qt::SmoothTransformation);
@@ -477,7 +467,7 @@ private:
         const QStringList lines =
             index.data(Qt::DisplayRole).toString().split(QLatin1Char('\n'));
         const QFontMetrics metrics(painter->font());
-        painter->setPen(labelColor);
+        painter->setPen(colors.label);
         if (!lines.isEmpty()) {
             const QString title =
                 metrics.elidedText(
@@ -829,6 +819,21 @@ private:
         }
     }
 
+    QListWidgetItem *addAssetItem(const QIcon &icon, const QString &text,
+                                   const QString &path, const QString &name,
+                                   const AssetInfo &asset) {
+        auto *item = new QListWidgetItem(icon, text, list_);
+        item->setData(kPathRole, path);
+        item->setData(kAssetRole, asset.valid());
+        item->setData(kMotorsportRole, asset.motorsport());
+        item->setData(kBaseTextRole, text);
+        item->setData(kNameRole, name);
+        item->setData(kKindRole, static_cast<int>(asset.kind));
+        item->setData(kDescriptionRole, asset.description);
+
+        return item;
+    }
+
     void updateItemSizeHint(QListWidgetItem *item) const {
         if (item == nullptr) {
             return;
@@ -951,15 +956,8 @@ private:
                     detailsRequests.push_back({
                         wgsAsset.payloadPath, wgsAsset.thumbnailPath, asset.kind});
 
-                    auto *item = new QListWidgetItem(folderIcon, text, list_);
-                    item->setData(kPathRole, wgsAsset.payloadPath);
-                    item->setData(kAssetRole, true);
-                    item->setData(kMotorsportRole, false);
-                    item->setData(kBaseTextRole, text);
-                    item->setData(kNameRole, name);
-                    item->setData(kKindRole, static_cast<int>(asset.kind));
+                    auto *item = addAssetItem(folderIcon, text, wgsAsset.payloadPath, name, asset);
                     item->setData(kWgsAssetIndexRole, index);
-                    item->setData(kDescriptionRole, asset.description);
                     item->setToolTip(QStringLiteral("WGS: %1").arg(wgsAsset.containerName));
                     updateItemSizeHint(item);
                 }
@@ -1008,14 +1006,7 @@ private:
                     }
                 }
 
-                auto *item = new QListWidgetItem(icon, text, list_);
-                item->setData(kPathRole, folder.absoluteFilePath());
-                item->setData(kAssetRole, asset.valid());
-                item->setData(kMotorsportRole, asset.motorsport());
-                item->setData(kBaseTextRole, text);
-                item->setData(kNameRole, name);
-                item->setData(kKindRole, static_cast<int>(asset.kind));
-                item->setData(kDescriptionRole, asset.description);
+                auto *item = addAssetItem(icon, text, folder.absoluteFilePath(), name, asset);
                 item->setToolTip(QDir::toNativeSeparators(folder.absoluteFilePath()));
                 updateItemSizeHint(item);
             }
@@ -1038,14 +1029,7 @@ private:
                 detailsRequests.push_back({
                     file.absoluteFilePath(), asset.thumbnailPath, asset.kind});
 
-                auto *item = new QListWidgetItem(folderIcon, text, list_);
-                item->setData(kPathRole, file.absoluteFilePath());
-                item->setData(kAssetRole, true);
-                item->setData(kMotorsportRole, false);
-                item->setData(kBaseTextRole, text);
-                item->setData(kNameRole, name);
-                item->setData(kKindRole, static_cast<int>(asset.kind));
-                item->setData(kDescriptionRole, asset.description);
+                auto *item = addAssetItem(folderIcon, text, file.absoluteFilePath(), name, asset);
                 item->setToolTip(QDir::toNativeSeparators(file.absoluteFilePath()));
                 updateItemSizeHint(item);
             }

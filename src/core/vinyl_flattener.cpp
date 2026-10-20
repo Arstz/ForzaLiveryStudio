@@ -2,24 +2,16 @@
 
 #include "matrix_math.h"
 
-#include <cmath>
 #include <variant>
 
 namespace fls {
 namespace {
 using detail::multiply;
 
-constexpr double Pi = 3.14159265358979323846;
-
 void flattenInto(const VinylGroup &node, const Matrix3 &parentMat, bool parentMask,
                  QVector<FlattenedLayer> &result) {
     const bool inheritedMask = parentMask || node.isMask;
-    const double radians = node.rot * Pi / 180.0;
-    const double c = std::cos(radians);
-    const double s = std::sin(radians);
-    const Matrix3 nodeMat = affine(c * node.sx, -s * node.sy, node.px,
-                                   s * node.sx, c * node.sy, node.py);
-    const Matrix3 groupMat = multiply(parentMat, nodeMat);
+    const Matrix3 groupMat = multiply(parentMat, vinylGroupMatrix(node));
     for (const VinylItem &item : node.items) {
         if (item.isShape()) {
             const VinylShape &shape = std::get<VinylShape>(item.value);

@@ -3,7 +3,7 @@
 #include "profile_fit_numeric.h"
 #include "profile_fit_selection.h"
 #include "compact_fit_quality.h"
-#include "compact_fit_gpu_rank.h"
+#include "compact_fit_gpu_geometry.h"
 #include "greedy_cover.h"
 #include "thin_fit_spans.h"
 
@@ -19,6 +19,9 @@
 
 namespace gui::profile {
 namespace {
+
+using compact::gpu::gpuAffine;
+using compact::gpu::gpuGeometry;
 
 using catalog::Polygons;
 using Bits = QVector<quint64>;
@@ -158,51 +161,6 @@ struct Grid {
     int height = 0;
     double step = 1.0;
 };
-
-compact::gpu::Geometry gpuGeometry(const Polygons &polygons) {
-    compact::gpu::Geometry result;
-    const int firstLoop = static_cast<int>(result.loops.size());
-    for (const QPolygonF &polygon : polygons) {
-        const int firstPoint = static_cast<int>(result.points.size());
-        for (const QPointF &point : polygon) {
-            result.points.push_back({static_cast<float>(point.x()),
-                static_cast<float>(point.y())});
-        }
-        result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
-    }
-    result.pieces.push_back({firstLoop,
-        static_cast<int>(result.loops.size()) - firstLoop});
-
-    return result;
-}
-
-compact::gpu::Geometry gpuGeometry(const QVector<Candidate> &candidates) {
-    compact::gpu::Geometry result;
-    for (const Candidate &candidate : candidates) {
-        const int firstLoop = static_cast<int>(result.loops.size());
-        for (const QPolygonF &polygon : candidate.polygons) {
-            const int firstPoint = static_cast<int>(result.points.size());
-            for (const QPointF &point : polygon) {
-                result.points.push_back({static_cast<float>(point.x()),
-                    static_cast<float>(point.y())});
-            }
-            result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
-        }
-        result.pieces.push_back({firstLoop,
-            static_cast<int>(result.loops.size()) - firstLoop});
-    }
-
-    return result;
-}
-
-compact::gpu::Affine gpuAffine(const QTransform &transform) {
-    return {static_cast<float>(transform.m11()),
-        static_cast<float>(transform.m12()),
-        static_cast<float>(transform.m21()),
-        static_cast<float>(transform.m22()),
-        static_cast<float>(transform.dx()),
-        static_cast<float>(transform.dy())};
-}
 
 #ifdef FLS_HAS_CUDA
 compact::gpu::MaskGeometry maskGeometry(const Polygons &polygons) {
@@ -1314,6 +1272,24 @@ double bodyRadiusCpu(const PenPrimitive &shape, const QPointF &center, double an
     return lower;
 }
 
+template<typename VisitShapeRatio>
+void forEachInteriorShapeRatio(const QVector<catalog::Primitive> &primitives,
+                               bool flexibleBoundary,
+                               const VisitShapeRatio &visitShapeRatio) {
+    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
+        const auto *shape = primitiveFor(id, primitives);
+        if (!shape) {
+            continue;
+        }
+        QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
+        if (flexibleBoundary)
+            ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
+        for (double ratio : ratios) {
+            visitShapeRatio(*shape, ratio);
+        }
+    }
+}
+
 void addBodyAt(const QPointF &center, const catalog::Region &region, const Polygons &outer,
                const QVector<catalog::Primitive> &primitives, const compact::BoundaryModel &boundary,
                double scale, QVector<Candidate> *pool,
@@ -1325,20 +1301,12 @@ void addBodyAt(const QPointF &center, const catalog::Region &region, const Polyg
     };
     QVector<BodyJob> jobs;
     ProfileWorkers workers;
-    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
-        const auto *shape = primitiveFor(id, primitives);
-        if (!shape) {
-            continue;
-        }
-        QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
-        if (region.flexibleBoundary)
-            ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
-        for (double ratio : ratios) {
-            for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360); angle += ratio == 1.0 && id == 102 ? 180 : 30) {
-                jobs.push_back({shape, angle, ratio});
+    forEachInteriorShapeRatio(primitives, region.flexibleBoundary,
+        [&](const PenPrimitive &shape, double ratio) {
+            for (int angle = 0; angle < (shape.shapeId == 101 || shape.shapeId == 102 ? 180 : 360); angle += ratio == 1.0 && shape.shapeId == 102 ? 180 : 30) {
+                jobs.push_back({&shape, angle, ratio});
             }
-        }
-    }
+        });
     const QVector<BodyJob> &plannedJobs = jobs;
     std::vector<double> radii(jobs.size());
     workers.run(jobs.size(), [&](int index) {
@@ -1376,22 +1344,14 @@ bool addBodyCandidatesGpu(const QVector<QPointF> &centers, const catalog::Region
     QVector<BodyJob> jobs;
     const double maximumRadius = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
     for (const QPointF &center : centers) {
-        for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
-            const auto *shape = primitiveFor(id, primitives);
-            if (!shape) {
-                continue;
-            }
-            QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
-            if (region.flexibleBoundary)
-                ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
-            for (double ratio : ratios) {
-                for (int angle = 0; angle < (id == 101 || id == 102 ? 180 : 360);
-                     angle += ratio == 1.0 && id == 102 ? 180 : 30) {
-                    jobs.push_back({shape, center, static_cast<double>(angle), ratio,
+        forEachInteriorShapeRatio(primitives, region.flexibleBoundary,
+            [&](const PenPrimitive &shape, double ratio) {
+                for (int angle = 0; angle < (shape.shapeId == 101 || shape.shapeId == 102 ? 180 : 360);
+                     angle += ratio == 1.0 && shape.shapeId == 102 ? 180 : 30) {
+                    jobs.push_back({&shape, center, static_cast<double>(angle), ratio,
                         0.0, maximumRadius});
                 }
-            }
-        }
+            });
     }
     if (jobs.size() < 128) {
         return false;
@@ -1601,20 +1561,12 @@ void addThinBodyAt(const QPointF &center, const catalog::Region &region, const P
     const auto reference = boundary.reference(center);
     const double angle = std::atan2(reference.tangent.y(), reference.tangent.x()) * 180.0 / std::numbers::pi;
     const double maximumRadius = std::max(region.bounds.width(), region.bounds.height()) * 2.0;
-    for (int id : catalog::shapeIdsForTask(primitives, catalog::ShapeTask::Interior)) {
-        const auto *shape = primitiveFor(id, primitives);
-        if (!shape) {
-            continue;
-        }
-        QVector<double> ratios{1.0, 2.0, 4.0, 8.0};
-        if (region.flexibleBoundary)
-            ratios += QVector<double>{16.0, 32.0, 64.0, 128.0};
-        for (double ratio : ratios) {
+    forEachInteriorShapeRatio(primitives, region.flexibleBoundary,
+        [&](const PenPrimitive &shape, double ratio) {
             for (double offset : {-kBodyTangentStep, 0.0, kBodyTangentStep, 180.0 - kBodyTangentStep, 180.0, 180.0 + kBodyTangentStep}) {
-                jobs.push_back({shape, ratio, angle + offset});
+                jobs.push_back({&shape, ratio, angle + offset});
             }
-        }
-    }
+        });
     const QVector<BodyJob> &plannedJobs = jobs;
     std::vector<std::optional<QTransform>> transforms(jobs.size());
     if (!workers.run(jobs.size(), [&](int index) {

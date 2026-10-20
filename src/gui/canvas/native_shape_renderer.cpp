@@ -4,12 +4,26 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 
 namespace gui {
 namespace {
 
-constexpr char kVertexShader[] = R"(#version 330 core
+constexpr char kVertexProjection[] = R"(    vec2 world = vec2(
+        dot(world_row0.xy, vertex) + world_row0.z,
+        dot(world_row1.xy, vertex) + world_row1.z
+    );
+    vec2 pixel = vec2(
+        dot(camera_row0.xy, world) + camera_row0.z,
+        dot(camera_row1.xy, world) + camera_row1.z
+    );
+    vec2 ndc = vec2(
+        pixel.x * 2.0 / viewport.x - 1.0,
+        1.0 - pixel.y * 2.0 / viewport.y
+    );
+    gl_Position = vec4(ndc, 0.0, 1.0);
+)";
+
+const QByteArray kVertexShader = QByteArray(R"(#version 330 core
 layout(location = 0) in vec2 vertex;
 layout(location = 1) in float vertex_alpha;
 
@@ -24,20 +38,7 @@ out vec4 frag_color;
 
 void main()
 {
-    vec2 world = vec2(
-        dot(world_row0.xy, vertex) + world_row0.z,
-        dot(world_row1.xy, vertex) + world_row1.z
-    );
-    vec2 pixel = vec2(
-        dot(camera_row0.xy, world) + camera_row0.z,
-        dot(camera_row1.xy, world) + camera_row1.z
-    );
-    vec2 ndc = vec2(
-        pixel.x * 2.0 / viewport.x - 1.0,
-        1.0 - pixel.y * 2.0 / viewport.y
-    );
-    gl_Position = vec4(ndc, 0.0, 1.0);
-    frag_color = vec4(tint.rgb, tint.a * vertex_alpha);
+)") + kVertexProjection + R"(    frag_color = vec4(tint.rgb, tint.a * vertex_alpha);
 }
 )";
 
@@ -51,7 +52,7 @@ void main()
 }
 )";
 
-constexpr char kRasterVertexShader[] = R"(#version 330 core
+const QByteArray kRasterVertexShader = QByteArray(R"(#version 330 core
 layout(location = 0) in vec2 vertex;
 layout(location = 1) in vec2 uv_in;
 
@@ -65,20 +66,7 @@ out vec2 uv;
 
 void main()
 {
-    vec2 world = vec2(
-        dot(world_row0.xy, vertex) + world_row0.z,
-        dot(world_row1.xy, vertex) + world_row1.z
-    );
-    vec2 pixel = vec2(
-        dot(camera_row0.xy, world) + camera_row0.z,
-        dot(camera_row1.xy, world) + camera_row1.z
-    );
-    vec2 ndc = vec2(
-        pixel.x * 2.0 / viewport.x - 1.0,
-        1.0 - pixel.y * 2.0 / viewport.y
-    );
-    gl_Position = vec4(ndc, 0.0, 1.0);
-    uv = uv_in;
+)") + kVertexProjection + R"(    uv = uv_in;
 }
 )";
 
@@ -135,6 +123,64 @@ QTransform rendererSceneLocalTransform(const fls::scene::Layer &node) {
     transform.shear(node.transform.skew, 0.0);
     transform.scale(node.transform.scaleX, node.transform.scaleY);
     return transform;
+}
+
+template<typename VisitShape>
+void visitProjectShapes(const fls::Project &project, VisitShape visitShape) {
+    if (!project.root) {
+        return;
+    }
+    const auto walk = [&](auto &&self, const fls::scene::Layer &node,
+                          const QTransform &parentWorld) -> void {
+        const QTransform world = rendererSceneLocalTransform(node) * parentWorld;
+
+        if (node.kind() == fls::scene::LayerKind::Group) {
+            for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
+                self(self, *child, world);
+            }
+        } else if (node.kind() == fls::scene::LayerKind::Shape) {
+            visitShape(static_cast<const fls::scene::Shape &>(node), world);
+        }
+    };
+    for (const auto &child : project.root->children) {
+        walk(walk, *child, QTransform());
+    }
+}
+
+template<typename VisitShape>
+void visitEntryShapes(const QVector<SceneRenderEntry> &entries, VisitShape visitShape) {
+    for (const SceneRenderEntry &entry : entries) {
+        if (entry.shape != nullptr) {
+            visitShape(*entry.shape, entry.worldTransform);
+        }
+    }
+}
+
+void prepareCanvasTarget(QOpenGLFunctions *functions, const QSize &size, bool clearBackground) {
+    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    functions->glDisable(GL_DEPTH_TEST);
+    if (clearBackground) {
+        functions->glClearColor(24.0f / 255.0f, 25.0f / 255.0f, 28.0f / 255.0f, 1.0f);
+        functions->glClear(GL_COLOR_BUFFER_BIT);
+    }
+}
+
+template<size_t FloatCount>
+void uploadTexturedQuad(QOpenGLVertexArrayObject &vao, QOpenGLBuffer &buffer,
+                         QOpenGLShaderProgram &program, const float (&vertices)[FloatCount]) {
+    constexpr int kVertexStride = 4 * sizeof(float);
+
+    vao.bind();
+    buffer.bind();
+    buffer.allocate(vertices, static_cast<int>(sizeof(vertices)));
+    program.bind();
+    program.enableAttributeArray(0);
+    program.setAttributeBuffer(0, GL_FLOAT, 0, 2, kVertexStride);
+    program.enableAttributeArray(1);
+    program.setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 2, kVertexStride);
+    program.release();
+    buffer.release();
+    vao.release();
 }
 
 void appendVertex(QVector<float> &vertices, const QPointF &point, double alpha) {
@@ -218,17 +264,7 @@ void NativeShapeRenderer::initialize() {
          0.5f,  0.5f, 1.0f, 0.0f,
         -0.5f,  0.5f, 0.0f, 0.0f,
     };
-    rasterVao_.bind();
-    rasterBuffer_.bind();
-    rasterBuffer_.allocate(rasterQuad, static_cast<int>(sizeof(rasterQuad)));
-    rasterProgram_.bind();
-    rasterProgram_.enableAttributeArray(0);
-    rasterProgram_.setAttributeBuffer(0, GL_FLOAT, 0, 2, 4 * sizeof(float));
-    rasterProgram_.enableAttributeArray(1);
-    rasterProgram_.setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 2, 4 * sizeof(float));
-    rasterProgram_.release();
-    rasterBuffer_.release();
-    rasterVao_.release();
+    uploadTexturedQuad(rasterVao_, rasterBuffer_, rasterProgram_, rasterQuad);
 
     const float quad[] = {
         -1.0f, -1.0f, 0.0f, 0.0f,
@@ -238,17 +274,7 @@ void NativeShapeRenderer::initialize() {
          1.0f,  1.0f, 1.0f, 1.0f,
         -1.0f,  1.0f, 0.0f, 1.0f,
     };
-    compositeVao_.bind();
-    compositeBuffer_.bind();
-    compositeBuffer_.allocate(quad, static_cast<int>(sizeof(quad)));
-    compositeProgram_.bind();
-    compositeProgram_.enableAttributeArray(0);
-    compositeProgram_.setAttributeBuffer(0, GL_FLOAT, 0, 2, 4 * sizeof(float));
-    compositeProgram_.enableAttributeArray(1);
-    compositeProgram_.setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 2, 4 * sizeof(float));
-    compositeProgram_.release();
-    compositeBuffer_.release();
-    compositeVao_.release();
+    uploadTexturedQuad(compositeVao_, compositeBuffer_, compositeProgram_, quad);
 
     initialized_ = true;
     geometryUploaded_ = false;
@@ -354,6 +380,180 @@ void NativeShapeRenderer::uploadGeometry(const ShapeGeometryStore &geometry) {
     geometryUploaded_ = true;
 }
 
+template<typename VisitShapes>
+bool NativeShapeRenderer::drawShapeBatch(
+    QOpenGLFunctions *functions, const ShapeGeometryStore &geometry,
+    const QTransform &worldToScreen, const QSize &size, VisitShapes visitShapes) {
+    functions->glEnable(GL_BLEND);
+
+    bool haveMaskMode = false;
+    bool currentMaskMode = false;
+    bool drew = false;
+    enum class ActiveProgram {
+        None,
+        Vector,
+        Raster,
+    };
+    ActiveProgram active = ActiveProgram::None;
+
+    auto activateVector = [&]() {
+        if (active == ActiveProgram::Vector) {
+            return;
+        }
+        if (active == ActiveProgram::Raster) {
+            rasterProgram_.release();
+            rasterVao_.release();
+        }
+        vao_.bind();
+        program_.bind();
+        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
+        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
+        active = ActiveProgram::Vector;
+    };
+
+    auto activateRaster = [&]() {
+        if (active == ActiveProgram::Raster) {
+            return;
+        }
+        if (active == ActiveProgram::Vector) {
+            program_.release();
+            vao_.release();
+        }
+        rasterVao_.bind();
+        rasterProgram_.bind();
+        rasterProgram_.setUniformValue(rasterViewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
+        rasterProgram_.setUniformValue(rasterCameraRow0Location_,
+                                       static_cast<float>(worldToScreen.m11()),
+                                       static_cast<float>(worldToScreen.m21()),
+                                       static_cast<float>(worldToScreen.dx()));
+        rasterProgram_.setUniformValue(rasterCameraRow1Location_,
+                                       static_cast<float>(worldToScreen.m12()),
+                                       static_cast<float>(worldToScreen.m22()),
+                                       static_cast<float>(worldToScreen.dy()));
+        active = ActiveProgram::Raster;
+    };
+
+    visitShapes([&](const fls::scene::Shape &shape, const QTransform &world) {
+        if (!shape.visible) {
+            return;
+        }
+
+        if (!haveMaskMode || currentMaskMode != shape.mask) {
+            haveMaskMode = true;
+            currentMaskMode = shape.mask;
+            if (shape.mask) {
+                functions->glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+            } else {
+                functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            }
+        }
+
+        const bool isRaster = shape.visual && shape.visual->kind() == fls::scene::VisualKind::Raster;
+        if (isRaster) {
+            const auto *raster = static_cast<const fls::scene::RasterContainer *>(shape.visual.get());
+            activateRaster();
+            drew = drawRasterLayer(functions, raster->rasterId, shape.color, shape.mask,
+                                   QSize(raster->width, raster->height), world)
+                   || drew;
+            return;
+        }
+
+        quint16 shapeId = 0;
+        if (shape.visual && shape.visual->kind() == fls::scene::VisualKind::Vector) {
+            shapeId = static_cast<const fls::scene::VectorContainer *>(shape.visual.get())->shapeId;
+        }
+        ShapeRange range = ranges_.value(shapeId);
+        if (range.vertexCount <= 0) {
+            range = fallbackRange(shapeId, geometry);
+        }
+        if (range.vertexCount <= 0) {
+            return;
+        }
+        activateVector();
+        setUniformRows(worldRow0Location_, worldRow1Location_, world);
+        if (shape.mask) {
+            program_.setUniformValue(tintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(shape.color[3]) / 255.0f);
+        } else {
+            program_.setUniformValue(tintLocation_,
+                                     static_cast<float>(shape.color[2]) / 255.0f,
+                                     static_cast<float>(shape.color[1]) / 255.0f,
+                                     static_cast<float>(shape.color[0]) / 255.0f,
+                                     static_cast<float>(shape.color[3]) / 255.0f);
+        }
+        functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
+        drew = true;
+    });
+
+    if (active == ActiveProgram::Vector) {
+        program_.release();
+        vao_.release();
+    } else if (active == ActiveProgram::Raster) {
+        rasterProgram_.release();
+        rasterVao_.release();
+    }
+    functions->glDisable(GL_BLEND);
+    return drew;
+}
+
+template<typename VisitShapes>
+void NativeShapeRenderer::drawFlashingShapes(
+    QOpenGLFunctions *functions, const ShapeGeometryStore &geometry,
+    const QTransform &worldToScreen, const QSize &size,
+    const QSet<QString> &flashingLayerIds, double flashHue,
+    double flashStrength, VisitShapes visitShapes) {
+    if (flashHue >= 0.0 && flashStrength > 0.0 && !flashingLayerIds.isEmpty()) {
+        vao_.bind();
+        program_.bind();
+        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
+        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
+        functions->glEnable(GL_BLEND);
+        functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        const QColor color = QColor::fromHsvF(std::clamp(flashHue, 0.0, 1.0), 1.0, 1.0);
+        visitShapes([&](const fls::scene::Shape &layer, const QTransform &world) {
+            if (!flashingLayerIds.contains(layer.id) || layer.raster) {
+                return;
+            }
+            ShapeRange range = ranges_.value(layer.shapeId);
+            if (range.vertexCount <= 0) {
+                range = fallbackRange(layer.shapeId, geometry);
+            }
+            if (range.vertexCount <= 0) {
+                return;
+            }
+            const float baseAlpha = std::max(static_cast<float>(layer.color[3]) / 255.0f, 0.75f);
+            setUniformRows(worldRow0Location_, worldRow1Location_, world);
+            program_.setUniformValue(tintLocation_,
+                                     static_cast<float>(color.redF()),
+                                     static_cast<float>(color.greenF()),
+                                     static_cast<float>(color.blueF()),
+                                     baseAlpha * static_cast<float>(flashStrength));
+            functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
+        });
+        functions->glDisable(GL_BLEND);
+        program_.release();
+        vao_.release();
+    }
+}
+
+bool NativeShapeRenderer::beginSceneFramebuffer(QOpenGLFunctions *functions, const QSize &size) {
+    if (!initialized_ || !geometryUploaded_ || vertices_.isEmpty() || size.isEmpty()) {
+        return false;
+    }
+
+    ensureSceneFramebuffer(size);
+    if (sceneFbo_ == nullptr || !sceneFbo_->isValid()) {
+        return false;
+    }
+
+    sceneFbo_->bind();
+    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+    functions->glDisable(GL_DEPTH_TEST);
+    functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    functions->glClear(GL_COLOR_BUFFER_BIT);
+
+    return true;
+}
+
 void NativeShapeRenderer::render(
     const fls::Project &project,
     const ShapeGeometryStore &geometry,
@@ -364,12 +564,7 @@ void NativeShapeRenderer::render(
     double flashStrength,
     bool clearBackground) {
     QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
-    functions->glDisable(GL_DEPTH_TEST);
-    if (clearBackground) {
-        functions->glClearColor(24.0f / 255.0f, 25.0f / 255.0f, 28.0f / 255.0f, 1.0f);
-        functions->glClear(GL_COLOR_BUFFER_BIT);
-    }
+    prepareCanvasTarget(functions, size, clearBackground);
 
     if (!drawSceneToFbo(functions, project, geometry, worldToScreen, size)) {
         return;
@@ -377,55 +572,10 @@ void NativeShapeRenderer::render(
 
     compositeScene(functions, size, clearBackground);
 
-    if (flashHue >= 0.0 && flashStrength > 0.0 && !flashingLayerIds.isEmpty()) {
-        vao_.bind();
-        program_.bind();
-        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
-        functions->glEnable(GL_BLEND);
-        functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        const QColor color = QColor::fromHsvF(std::clamp(flashHue, 0.0, 1.0), 1.0, 1.0);
-        if (project.root) {
-            std::function<void(const fls::scene::Layer &, const QTransform &)> flashWalk =
-                [&](const fls::scene::Layer &node, const QTransform &parentWorld) {
-                    const QTransform world = rendererSceneLocalTransform(node) * parentWorld;
-                    if (node.kind() == fls::scene::LayerKind::Group) {
-                        for (const auto &child : static_cast<const fls::scene::Group &>(node).children) {
-                            flashWalk(*child, world);
-                        }
-                        return;
-                    }
-                    if (node.kind() != fls::scene::LayerKind::Shape) {
-                        return;
-                    }
-                    const auto &layer = static_cast<const fls::scene::Shape &>(node);
-                    if (!flashingLayerIds.contains(layer.id) || layer.raster) {
-                        return;
-                    }
-                    ShapeRange range = ranges_.value(layer.shapeId);
-                    if (range.vertexCount <= 0) {
-                        range = fallbackRange(layer.shapeId, geometry);
-                    }
-                    if (range.vertexCount <= 0) {
-                        return;
-                    }
-                    const float baseAlpha = std::max(static_cast<float>(layer.color[3]) / 255.0f, 0.75f);
-                    setUniformRows(worldRow0Location_, worldRow1Location_, world);
-                    program_.setUniformValue(tintLocation_,
-                                             static_cast<float>(color.redF()),
-                                             static_cast<float>(color.greenF()),
-                                             static_cast<float>(color.blueF()),
-                                             baseAlpha * static_cast<float>(flashStrength));
-                    functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
-                };
-            for (const auto &child : project.root->children) {
-                flashWalk(*child, QTransform());
-            }
-        }
-        functions->glDisable(GL_BLEND);
-        program_.release();
-        vao_.release();
-    }
+    drawFlashingShapes(functions, geometry, worldToScreen, size, flashingLayerIds,
+                       flashHue, flashStrength, [&](auto visitShape) {
+        visitProjectShapes(project, visitShape);
+    });
 }
 
 void NativeShapeRenderer::render(
@@ -438,26 +588,11 @@ void NativeShapeRenderer::render(
     double flashStrength,
     bool clearBackground) {
     QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
-    functions->glDisable(GL_DEPTH_TEST);
-    if (clearBackground) {
-        functions->glClearColor(24.0f / 255.0f, 25.0f / 255.0f, 28.0f / 255.0f, 1.0f);
-        functions->glClear(GL_COLOR_BUFFER_BIT);
-    }
+    prepareCanvasTarget(functions, size, clearBackground);
 
-    if (!initialized_ || !geometryUploaded_ || vertices_.isEmpty() || size.isEmpty()) {
+    if (!beginSceneFramebuffer(functions, size)) {
         return;
     }
-    ensureSceneFramebuffer(size);
-    if (sceneFbo_ == nullptr || !sceneFbo_->isValid()) {
-        return;
-    }
-
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
-    functions->glDisable(GL_DEPTH_TEST);
-    functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    functions->glClear(GL_COLOR_BUFFER_BIT);
     const bool drew = drawRenderEntries(functions, entries, geometry, worldToScreen, size);
     sceneFbo_->release();
     if (!drew) {
@@ -466,39 +601,10 @@ void NativeShapeRenderer::render(
 
     compositeScene(functions, size, clearBackground);
 
-    if (flashHue >= 0.0 && flashStrength > 0.0 && !flashingLayerIds.isEmpty()) {
-        vao_.bind();
-        program_.bind();
-        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
-        functions->glEnable(GL_BLEND);
-        functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        const QColor color = QColor::fromHsvF(std::clamp(flashHue, 0.0, 1.0), 1.0, 1.0);
-        for (const SceneRenderEntry &entry : entries) {
-            const fls::scene::Shape *layer = entry.shape;
-            if (layer == nullptr || !flashingLayerIds.contains(layer->id) || layer->raster) {
-                continue;
-            }
-            ShapeRange range = ranges_.value(layer->shapeId);
-            if (range.vertexCount <= 0) {
-                range = fallbackRange(layer->shapeId, geometry);
-            }
-            if (range.vertexCount <= 0) {
-                continue;
-            }
-            const float baseAlpha = std::max(static_cast<float>(layer->color[3]) / 255.0f, 0.75f);
-            setUniformRows(worldRow0Location_, worldRow1Location_, entry.worldTransform);
-            program_.setUniformValue(tintLocation_,
-                                     static_cast<float>(color.redF()),
-                                     static_cast<float>(color.greenF()),
-                                     static_cast<float>(color.blueF()),
-                                     baseAlpha * static_cast<float>(flashStrength));
-            functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
-        }
-        functions->glDisable(GL_BLEND);
-        program_.release();
-        vao_.release();
-    }
+    drawFlashingShapes(functions, geometry, worldToScreen, size, flashingLayerIds,
+                       flashHue, flashStrength, [&](auto visitShape) {
+        visitEntryShapes(entries, visitShape);
+    });
 }
 
 bool NativeShapeRenderer::drawSceneToFbo(
@@ -507,20 +613,9 @@ bool NativeShapeRenderer::drawSceneToFbo(
     const ShapeGeometryStore &geometry,
     const QTransform &worldToScreen,
     const QSize &size) {
-    if (!initialized_ || !geometryUploaded_ || vertices_.isEmpty() || size.isEmpty()) {
+    if (!beginSceneFramebuffer(functions, size)) {
         return false;
     }
-
-    ensureSceneFramebuffer(size);
-    if (sceneFbo_ == nullptr || !sceneFbo_->isValid()) {
-        return false;
-    }
-
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
-    functions->glDisable(GL_DEPTH_TEST);
-    functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    functions->glClear(GL_COLOR_BUFFER_BIT);
 
     const bool drew = drawProjectLayers(functions, project, geometry, worldToScreen, size);
     sceneFbo_->release();
@@ -537,116 +632,9 @@ bool NativeShapeRenderer::drawRenderEntries(
         return false;
     }
 
-    functions->glEnable(GL_BLEND);
-
-    bool haveMaskMode = false;
-    bool currentMaskMode = false;
-    bool drew = false;
-    enum class ActiveProgram {
-        None,
-        Vector,
-        Raster,
-    };
-    ActiveProgram active = ActiveProgram::None;
-
-    auto activateVector = [&]() {
-        if (active == ActiveProgram::Vector) {
-            return;
-        }
-        if (active == ActiveProgram::Raster) {
-            rasterProgram_.release();
-            rasterVao_.release();
-        }
-        vao_.bind();
-        program_.bind();
-        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
-        active = ActiveProgram::Vector;
-    };
-
-    auto activateRaster = [&]() {
-        if (active == ActiveProgram::Raster) {
-            return;
-        }
-        if (active == ActiveProgram::Vector) {
-            program_.release();
-            vao_.release();
-        }
-        rasterVao_.bind();
-        rasterProgram_.bind();
-        rasterProgram_.setUniformValue(rasterViewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-        rasterProgram_.setUniformValue(rasterCameraRow0Location_,
-                                       static_cast<float>(worldToScreen.m11()),
-                                       static_cast<float>(worldToScreen.m21()),
-                                       static_cast<float>(worldToScreen.dx()));
-        rasterProgram_.setUniformValue(rasterCameraRow1Location_,
-                                       static_cast<float>(worldToScreen.m12()),
-                                       static_cast<float>(worldToScreen.m22()),
-                                       static_cast<float>(worldToScreen.dy()));
-        active = ActiveProgram::Raster;
-    };
-
-    for (const SceneRenderEntry &entry : entries) {
-        const fls::scene::Shape *shape = entry.shape;
-        if (shape == nullptr || !shape->visible) {
-            continue;
-        }
-
-        if (!haveMaskMode || currentMaskMode != shape->mask) {
-            haveMaskMode = true;
-            currentMaskMode = shape->mask;
-            if (shape->mask) {
-                functions->glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
-            } else {
-                functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            }
-        }
-
-        const bool isRaster = shape->visual && shape->visual->kind() == fls::scene::VisualKind::Raster;
-        if (isRaster) {
-            const auto *raster = static_cast<const fls::scene::RasterContainer *>(shape->visual.get());
-            activateRaster();
-            drew = drawRasterLayer(functions, raster->rasterId, shape->color, shape->mask,
-                                   QSize(raster->width, raster->height), entry.worldTransform)
-                   || drew;
-            continue;
-        }
-
-        quint16 shapeId = 0;
-        if (shape->visual && shape->visual->kind() == fls::scene::VisualKind::Vector) {
-            shapeId = static_cast<const fls::scene::VectorContainer *>(shape->visual.get())->shapeId;
-        }
-        ShapeRange range = ranges_.value(shapeId);
-        if (range.vertexCount <= 0) {
-            range = fallbackRange(shapeId, geometry);
-        }
-        if (range.vertexCount <= 0) {
-            continue;
-        }
-        activateVector();
-        setUniformRows(worldRow0Location_, worldRow1Location_, entry.worldTransform);
-        if (shape->mask) {
-            program_.setUniformValue(tintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(shape->color[3]) / 255.0f);
-        } else {
-            program_.setUniformValue(tintLocation_,
-                                     static_cast<float>(shape->color[2]) / 255.0f,
-                                     static_cast<float>(shape->color[1]) / 255.0f,
-                                     static_cast<float>(shape->color[0]) / 255.0f,
-                                     static_cast<float>(shape->color[3]) / 255.0f);
-        }
-        functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
-        drew = true;
-    }
-
-    if (active == ActiveProgram::Vector) {
-        program_.release();
-        vao_.release();
-    } else if (active == ActiveProgram::Raster) {
-        rasterProgram_.release();
-        rasterVao_.release();
-    }
-    functions->glDisable(GL_BLEND);
-    return drew;
+    return drawShapeBatch(functions, geometry, worldToScreen, size, [&](auto visitShape) {
+        visitEntryShapes(entries, visitShape);
+    });
 }
 
 bool NativeShapeRenderer::drawProjectLayers(
@@ -658,134 +646,9 @@ bool NativeShapeRenderer::drawProjectLayers(
     if (!project.root) {
         return false;
     }
-    const fls::scene::Group &root = *project.root;
-
-    functions->glEnable(GL_BLEND);
-
-    bool haveMaskMode = false;
-    bool currentMaskMode = false;
-    bool drew = false;
-    enum class ActiveProgram {
-        None,
-        Vector,
-        Raster,
-    };
-    ActiveProgram active = ActiveProgram::None;
-
-    auto activateVector = [&]() {
-        if (active == ActiveProgram::Vector) {
-            return;
-        }
-        if (active == ActiveProgram::Raster) {
-            rasterProgram_.release();
-            rasterVao_.release();
-        }
-        vao_.bind();
-        program_.bind();
-        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
-        active = ActiveProgram::Vector;
-    };
-
-    auto activateRaster = [&]() {
-        if (active == ActiveProgram::Raster) {
-            return;
-        }
-        if (active == ActiveProgram::Vector) {
-            program_.release();
-            vao_.release();
-        }
-        rasterVao_.bind();
-        rasterProgram_.bind();
-        rasterProgram_.setUniformValue(rasterViewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-        rasterProgram_.setUniformValue(rasterCameraRow0Location_,
-                                       static_cast<float>(worldToScreen.m11()),
-                                       static_cast<float>(worldToScreen.m21()),
-                                       static_cast<float>(worldToScreen.dx()));
-        rasterProgram_.setUniformValue(rasterCameraRow1Location_,
-                                       static_cast<float>(worldToScreen.m12()),
-                                       static_cast<float>(worldToScreen.m22()),
-                                       static_cast<float>(worldToScreen.dy()));
-        active = ActiveProgram::Raster;
-    };
-
-    std::function<void(const fls::scene::Layer &, const QTransform &)> walk =
-        [&](const fls::scene::Layer &node, const QTransform &parentWorld) {
-            const QTransform world = rendererSceneLocalTransform(node) * parentWorld;
-            if (node.kind() == fls::scene::LayerKind::Group) {
-                const auto &group = static_cast<const fls::scene::Group &>(node);
-                for (const auto &child : group.children) {
-                    walk(*child, world);
-                }
-                return;
-            }
-            if (node.kind() != fls::scene::LayerKind::Shape) {
-                return;
-            }
-            const auto &shape = static_cast<const fls::scene::Shape &>(node);
-            if (!shape.visible) {
-                return;
-            }
-
-            if (!haveMaskMode || currentMaskMode != shape.mask) {
-                haveMaskMode = true;
-                currentMaskMode = shape.mask;
-                if (shape.mask) {
-                    functions->glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
-                } else {
-                    functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-                }
-            }
-
-            const bool isRaster = shape.visual && shape.visual->kind() == fls::scene::VisualKind::Raster;
-            if (isRaster) {
-                const auto *raster = static_cast<const fls::scene::RasterContainer *>(shape.visual.get());
-                activateRaster();
-                drew = drawRasterLayer(functions, raster->rasterId, shape.color, shape.mask,
-                                       QSize(raster->width, raster->height), world)
-                       || drew;
-                return;
-            }
-
-            quint16 shapeId = 0;
-            if (shape.visual && shape.visual->kind() == fls::scene::VisualKind::Vector) {
-                shapeId = static_cast<const fls::scene::VectorContainer *>(shape.visual.get())->shapeId;
-            }
-            ShapeRange range = ranges_.value(shapeId);
-            if (range.vertexCount <= 0) {
-                range = fallbackRange(shapeId, geometry);
-            }
-            if (range.vertexCount <= 0) {
-                return;
-            }
-            activateVector();
-            setUniformRows(worldRow0Location_, worldRow1Location_, world);
-            if (shape.mask) {
-                program_.setUniformValue(tintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(shape.color[3]) / 255.0f);
-            } else {
-                program_.setUniformValue(tintLocation_,
-                                         static_cast<float>(shape.color[2]) / 255.0f,
-                                         static_cast<float>(shape.color[1]) / 255.0f,
-                                         static_cast<float>(shape.color[0]) / 255.0f,
-                                         static_cast<float>(shape.color[3]) / 255.0f);
-            }
-            functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
-            drew = true;
-        };
-
-    for (const auto &child : root.children) {
-        walk(*child, QTransform());
-    }
-
-    if (active == ActiveProgram::Vector) {
-        program_.release();
-        vao_.release();
-    } else if (active == ActiveProgram::Raster) {
-        rasterProgram_.release();
-        rasterVao_.release();
-    }
-    functions->glDisable(GL_BLEND);
-    return drew;
+    return drawShapeBatch(functions, geometry, worldToScreen, size, [&](auto visitShape) {
+        visitProjectShapes(project, visitShape);
+    });
 }
 
 bool NativeShapeRenderer::drawRasterLayer(QOpenGLFunctions *functions,
@@ -923,6 +786,18 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         return 0;
     }
 
+    const auto applyClip = [&](const QRect &clip) {
+        const QRect bounded = clip.intersected(QRect(QPoint(0, 0), size));
+        if (bounded.isEmpty()) {
+            return false;
+        }
+        functions->glEnable(GL_SCISSOR_TEST);
+        functions->glScissor(bounded.x(), size.height() - bounded.y() - bounded.height(),
+                             bounded.width(), bounded.height());
+
+        return true;
+    };
+
     sceneFbo_->bind();
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
@@ -934,15 +809,9 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
         functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         for (int i = 0; i < projects.size(); ++i) {
             const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
-            const QRect bounded = clip.intersected(QRect(QPoint(0, 0), size));
-            if (bounded.isEmpty()) {
+            if (!applyClip(clip)) {
                 continue;
             }
-            functions->glEnable(GL_SCISSOR_TEST);
-            functions->glScissor(bounded.x(),
-                                 size.height() - bounded.y() - bounded.height(),
-                                 bounded.width(),
-                                 bounded.height());
             functions->glClear(GL_COLOR_BUFFER_BIT);
         }
     }
@@ -950,15 +819,9 @@ GLuint NativeShapeRenderer::renderScenesToTexture(
     for (int i = 0; i < projects.size(); ++i) {
         const QRect clip = i < clipRects.size() ? clipRects[i] : QRect();
         if (!clip.isEmpty()) {
-            const QRect bounded = clip.intersected(QRect(QPoint(0, 0), size));
-            if (bounded.isEmpty()) {
+            if (!applyClip(clip)) {
                 continue;
             }
-            functions->glEnable(GL_SCISSOR_TEST);
-            functions->glScissor(bounded.x(),
-                                 size.height() - bounded.y() - bounded.height(),
-                                 bounded.width(),
-                                 bounded.height());
         } else if (preserveExisting) {
             continue;
         } else {

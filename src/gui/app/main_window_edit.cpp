@@ -406,29 +406,16 @@ void MainWindow::startGeneratedFillTask(GeneratedFillFunction fill) {
                 return token->load(std::memory_order_relaxed);
             },
             [guard, generation](int placementCount, int workCompleted, int workTotal) {
-                if (guard.isNull()) {
-                    return;
-                }
-                QMetaObject::invokeMethod(
-                    guard.data(),
-                    [guard, generation, placementCount, workCompleted, workTotal]() {
-                        if (!guard.isNull()) {
-                            guard->updateGeneratedFillProgress(
-                                generation, placementCount, workCompleted, workTotal);
-                        }
-                    },
-                    Qt::QueuedConnection);
+                queueMainWindowCallback(guard,
+                    [generation, placementCount, workCompleted, workTotal](MainWindow &window) {
+                        window.updateGeneratedFillProgress(
+                            generation, placementCount, workCompleted, workTotal);
+                    });
             });
-        if (guard.isNull()) {
-            return;
-        }
-        QMetaObject::invokeMethod(guard.data(),
-                                  [guard, generation, result = std::move(result)]() mutable {
-                                      if (!guard.isNull()) {
-                                          guard->finishGeneratedFill(generation, std::move(result));
-                                      }
-                                  },
-                                  Qt::QueuedConnection);
+        queueMainWindowCallback(guard,
+            [generation, result = std::move(result)](MainWindow &window) mutable {
+                window.finishGeneratedFill(generation, std::move(result));
+            });
     });
     task->setAutoDelete(true);
     QThreadPool::globalInstance()->start(task);
@@ -881,13 +868,7 @@ void MainWindow::refreshPropertyBoxFieldsFromCanvas() {
 }
 
 void MainWindow::deleteSelectedLayers() {
-    EditorCommand command;
-    command.type = EditorCommandType::Remove;
-    command.entries = state_->selectionEntries();
-    QString error;
-    if (!state_->executeCommand(command, &error)) {
-        statusBar()->showMessage(error, 3000);
-    }
+    executeSelectionCommand(EditorCommandType::Remove);
 }
 
 void MainWindow::copySelection() {
@@ -897,9 +878,14 @@ void MainWindow::copySelection() {
 }
 
 void MainWindow::cutSelection() {
+    executeSelectionCommand(EditorCommandType::Cut);
+}
+
+void MainWindow::executeSelectionCommand(EditorCommandType type, bool flatten) {
     EditorCommand command;
-    command.type = EditorCommandType::Cut;
+    command.type = type;
     command.entries = state_->selectionEntries();
+    command.flatten = flatten;
     QString error;
     if (!state_->executeCommand(command, &error)) {
         statusBar()->showMessage(error, 3000);
@@ -960,13 +946,7 @@ void MainWindow::pasteClipboard() {
 }
 
 void MainWindow::stampSelection() {
-    EditorCommand command;
-    command.type = EditorCommandType::Duplicate;
-    command.entries = state_->selectionEntries();
-    QString error;
-    if (!state_->executeCommand(command, &error)) {
-        statusBar()->showMessage(error, 3000);
-    }
+    executeSelectionCommand(EditorCommandType::Duplicate);
 }
 
 void MainWindow::sampleGuideColorToSelection() {
@@ -982,35 +962,11 @@ void MainWindow::insertShape(int shapeId) {
         return;
     }
 
-    const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
     auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = state_->uniqueLayerId();
     layer->name = fls::detail::shapeName(static_cast<quint16>(shapeId));
     layer->setVectorShape(static_cast<quint16>(shapeId));
-    layer->x = center.x();
-    layer->y = center.y();
-    updateLastSelectedShapeDefaults();
-    const BehaviorSettings behavior = loadBehaviorSettings();
-    if (behavior.insertShapeWithLastSelectedColor && haveLastSelectedShapeDefaults_) {
-        layer->color = lastSelectedShapeColor_;
-    }
-    if (behavior.insertShapeWithLastSelectedScale && haveLastSelectedShapeDefaults_) {
-        layer->scaleX = lastSelectedShapeScaleX_;
-        layer->scaleY = lastSelectedShapeScaleY_;
-    }
-
-    state_->beginProjectEdit();
-    const QString insertedId = layer->id;
-    const QString insertedName = layer->name;
-    state_->insertLayerAboveSelection(std::move(layer), selectedEntryIds());
-    state_->selectedLayerIds_ = {insertedId};
-    state_->selectedGuideLayerIds_.clear();
-    state_->commitProjectEdit();
-    state_->noteProjectStructureChanged();
-    if (canvas_ != nullptr) {
-        canvas_->setFocus();
-    }
-    statusBar()->showMessage(QStringLiteral("Inserted %1").arg(insertedName), 1500);
+    insertShapeLayer(std::move(layer));
 }
 
 void MainWindow::replaceSelectedShape(int shapeId) {
@@ -1043,12 +999,17 @@ void MainWindow::insertLogo(quint32 rasterId, int width, int height) {
         return;
     }
 
-    const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
     auto layer = std::make_unique<fls::scene::Shape>();
     layer->id = state_->uniqueLayerId();
     layer->name = QStringLiteral("Logo %1").arg(rasterId);
     layer->setRasterShape(rasterId, width, height);
     layer->sourceLogoId = static_cast<quint16>(0x8000u | (rasterId & 0x7fffu));
+    insertShapeLayer(std::move(layer));
+}
+
+void MainWindow::insertShapeLayer(std::unique_ptr<fls::scene::Shape> layer) {
+    const QPointF center = canvas_ == nullptr ? QPointF() : canvas_->viewCenterWorld();
+
     layer->x = center.x();
     layer->y = center.y();
     updateLastSelectedShapeDefaults();
@@ -1392,14 +1353,7 @@ void MainWindow::groupOrUngroupSelection() {
 }
 
 void MainWindow::ungroupSelectionFlat() {
-    EditorCommand command;
-    command.type = EditorCommandType::Ungroup;
-    command.entries = state_->selectionEntries();
-    command.flatten = true;
-    QString error;
-    if (!state_->executeCommand(command, &error)) {
-        statusBar()->showMessage(error, 3000);
-    }
+    executeSelectionCommand(EditorCommandType::Ungroup, true);
 }
 
 void MainWindow::collapseAllGroups() {

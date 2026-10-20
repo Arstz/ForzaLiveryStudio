@@ -688,21 +688,7 @@ void MainWindow::importCarModel() {
     if (path.isEmpty()) {
         return;
     }
-    statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
-    carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
-        if (!loaded) {
-            statusBar()->showMessage(
-                error.isEmpty() ? QStringLiteral("Failed to load car model") : error);
-            return;
-        }
-        if (carPreviewDock_ != nullptr) {
-            carPreviewDock_->show();
-            carPreviewDock_->raise();
-        }
-        updateCarUnwrapOverlay();
-        statusBar()->showMessage(
-            QStringLiteral("Loaded car model: %1").arg(QFileInfo(path).fileName()));
-    });
+    loadCarModel(path, false);
 }
 
 void MainWindow::updateCarUnwrapOverlay() {

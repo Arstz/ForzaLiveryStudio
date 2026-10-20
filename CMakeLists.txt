@@ -130,6 +130,8 @@ add_library(fls_core STATIC
     src/core/vinyl_framing.h
     src/core/vinyl_flattener.cpp
     src/core/vinyl_flattener.h
+    src/core/vinyl_scene_import.cpp
+    src/core/vinyl_scene_import.h
     src/core/wgs_save_reader.cpp
     src/core/wgs_save_reader.h
     src/core/wgs_save_writer.cpp

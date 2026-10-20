@@ -3,7 +3,7 @@
 #include "compact_fit_quality.h"
 #include "compact_fit_budget.h"
 #include "compact_fit_reduction.h"
-#include "compact_fit_gpu_rank.h"
+#include "compact_fit_gpu_geometry.h"
 #include "profile_fit_batch.h"
 
 #include <algorithm>
@@ -18,6 +18,9 @@
 
 namespace gui::compact {
 namespace {
+
+using gpu::gpuAffine;
+using gpu::gpuGeometry;
 
 constexpr int kRefinementLevels = 7;
 constexpr int kMovesPerLevel = 6;
@@ -249,51 +252,6 @@ Piece makePiece(const PenPrimitive &shape, const QTransform &transform) {
 }
 
 #ifdef FLS_HAS_CUDA
-gpu::Geometry gpuGeometry(const Polygons &polygons) {
-    gpu::Geometry result;
-    const int firstLoop = static_cast<int>(result.loops.size());
-    for (const QPolygonF &polygon : polygons) {
-        const int firstPoint = static_cast<int>(result.points.size());
-        for (const QPointF &point : polygon) {
-            result.points.push_back({static_cast<float>(point.x()),
-                static_cast<float>(point.y())});
-        }
-        result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
-    }
-    result.pieces.push_back({firstLoop,
-        static_cast<int>(result.loops.size()) - firstLoop});
-
-    return result;
-}
-
-gpu::Geometry gpuGeometry(const QVector<Piece> &pieces) {
-    gpu::Geometry result;
-    for (const Piece &piece : pieces) {
-        const int firstLoop = static_cast<int>(result.loops.size());
-        for (const QPolygonF &polygon : piece.polygons) {
-            const int firstPoint = static_cast<int>(result.points.size());
-            for (const QPointF &point : polygon) {
-                result.points.push_back({static_cast<float>(point.x()),
-                    static_cast<float>(point.y())});
-            }
-            result.loops.push_back({firstPoint, static_cast<int>(polygon.size())});
-        }
-        result.pieces.push_back({firstLoop,
-            static_cast<int>(result.loops.size()) - firstLoop});
-    }
-
-    return result;
-}
-
-gpu::Affine gpuAffine(const QTransform &transform) {
-    return {static_cast<float>(transform.m11()),
-        static_cast<float>(transform.m12()),
-        static_cast<float>(transform.m21()),
-        static_cast<float>(transform.m22()),
-        static_cast<float>(transform.dx()),
-        static_cast<float>(transform.dy())};
-}
-
 bool prepareGpuRanker(const Objective &objective) {
     if (!objective.gpuRankingEnabled || objective.gpuRankingDisabled) {
         return false;
@@ -636,14 +594,14 @@ bool reductionAllowed(const Polygons &coverage, const ReductionContext &before, 
     return false;
 }
 
-QTransform movedTransform(const Piece &piece, int parameter, double amount) {
-    const QPointF center = piece.bounds.center();
+QTransform placementMovement(const QPointF &center, int parameter,
+                             double amount, double translationScale) {
     QTransform movement;
     movement.translate(center.x(), center.y());
     if (parameter == 0) {
-        movement.translate(amount, 0.0);
+        movement.translate(amount * translationScale, 0.0);
     } else if (parameter == 1) {
-        movement.translate(0.0, amount);
+        movement.translate(0.0, amount * translationScale);
     } else if (parameter == 2) {
         movement.scale(std::exp(amount), 1.0);
     } else if (parameter == 3) {
@@ -655,7 +613,12 @@ QTransform movedTransform(const Piece &piece, int parameter, double amount) {
     }
     movement.translate(-center.x(), -center.y());
 
-    return piece.placement.transform * movement;
+    return movement;
+}
+
+QTransform movedTransform(const Piece &piece, int parameter, double amount) {
+    return piece.placement.transform
+        * placementMovement(piece.bounds.center(), parameter, amount, 1.0);
 }
 
 double boundaryDistanceSquared(const Polygons &polygons, const QPointF &point) {
@@ -2126,22 +2089,7 @@ bool repairJointNeighborhood(QVector<Piece> *pieces, const QVector<std::pair<dou
             } else {
                 const int parameter = (variant - 4) / 2;
                 const double amount = ((variant - 4) % 2 ? 1.0 : -1.0) * step;
-                QTransform movement;
-                movement.translate(anchor.x(), anchor.y());
-                if (parameter == 0) {
-                    movement.translate(amount * extent, 0.0);
-                } else if (parameter == 1) {
-                    movement.translate(0.0, amount * extent);
-                } else if (parameter == 2) {
-                    movement.scale(std::exp(amount), 1.0);
-                } else if (parameter == 3) {
-                    movement.scale(1.0, std::exp(amount));
-                } else if (parameter == 4) {
-                    movement.rotateRadians(amount);
-                } else {
-                    movement.shear(amount, 0.0);
-                }
-                movement.translate(-anchor.x(), -anchor.y());
+                const auto movement = placementMovement(anchor, parameter, amount, extent);
                 candidate = makePiece(shape, original.placement.transform * movement);
             }
             if (!catalog::subtract(candidate.polygons, objective.outer).isEmpty()) {

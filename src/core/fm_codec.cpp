@@ -3,9 +3,7 @@
 #include "binary_io.h"
 #include "cgroup_codec.h"
 #include "fls_core.h"
-#include "layer.h"
-#include "matrix_math.h"
-#include "scene_codec.h"
+#include "vinyl_scene_import.h"
 #include "shape_registry.h"
 #include "vinyl_decoder.h"
 #include "vinyl_framing.h"
@@ -16,7 +14,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <variant>
@@ -53,13 +50,6 @@ bool isRawGyvlImpl(const QByteArray &fileData) {
         && fileData[2] == 'v' && fileData[3] == 'l';
 }
 
-QByteArray readOptionalFile(const QString &path) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-    return file.readAll();
-}
-
 QByteArray inflateFM2023Blocks(const QByteArray &fileData) {
     QByteArray raw;
     int pos = 0;
@@ -78,17 +68,6 @@ QByteArray inflateFM2023Blocks(const QByteArray &fileData) {
     return raw;
 }
 
-Matrix3 shapeMatrixForShape(const VinylShape &shape) {
-    FlattenedLayer layer;
-    layer.rotation = shape.rotation;
-    layer.posX = shape.posX;
-    layer.posY = shape.posY;
-    layer.scaleX = shape.scaleX;
-    layer.scaleY = shape.scaleY;
-    layer.skew = shape.skew;
-    return shapeMatrix(layer);
-}
-
 bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos, int endPos) {
     if (idPos < 0 || endPos > data.size())
         return false;
@@ -96,15 +75,7 @@ bool isFM2023ShapePayloadAt(const QByteArray &data, int idPos, int transformPos,
     const quint16 shapeId = detail::canonicalShapeId(encodedShapeId);
     if (!detail::isKnownShapeId(shapeId) && encodedShapeId < 0x8000)
         return false;
-    const double rotation = readLeFloat(data, transformPos);
-    const double px = readLeFloat(data, transformPos + 4);
-    const double py = readLeFloat(data, transformPos + 8);
-    const double sx = readLeFloat(data, transformPos + 12);
-    const double sy = readLeFloat(data, transformPos + 16);
-    const double skew = readLeFloat(data, transformPos + 20);
-    return std::isfinite(rotation) && std::abs(rotation) <= 10000.0
-        && std::abs(px) < 50000.0 && std::abs(py) < 50000.0
-        && detail::isValidVinylShapeBasis(sx, sy, skew);
+    return detail::isValidVinylShapeTransformAt(data, transformPos);
 }
 
 bool isFM2023BareShapeAt(const QByteArray &data, int pos) {
@@ -237,7 +208,7 @@ VinylGroup decodeFM2023RawGroupImpl(const QByteArray &payload, LayerData *decode
     return VinylTreeDecoder{fm2023DecoderOptions()}.decodeGroup(payload, decodedLayerData);
 }
 
-FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile) {
+QByteArray readFM2023AssetData(const QString &folderOrFile) {
     const QFileInfo info(folderOrFile);
     QString dataPath;
     if (info.isDir()) {
@@ -251,6 +222,12 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile) {
         throw std::runtime_error(("could not open: " + dataPath).toStdString());
     QByteArray fileData = file.readAll();
     file.close();
+
+    return fileData;
+}
+
+FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile) {
+    const QByteArray fileData = readFM2023AssetData(folderOrFile);
 
     if (!isFM2023LiveryImpl(fileData))
         throw std::runtime_error("not an FM2023 livery file");
@@ -296,15 +273,6 @@ FM2023LiveryPayload readFM2023LiveryPayloadImpl(const QString &folderOrFile) {
     return payload;
 }
 
-Matrix3 groupNodeMatrix(const VinylGroup &node) {
-    constexpr double Pi = 3.14159265358979323846;
-    const double radians = node.rot * Pi / 180.0;
-    const double c = std::cos(radians);
-    const double s = std::sin(radians);
-    return affine(c * node.sx, -s * node.sy, node.px,
-                  s * node.sx, c * node.sy, node.py);
-}
-
 Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileData) {
     Q_UNUSED(fileData);
     const FM2023LiveryPayload payload = readFM2023LiveryPayloadImpl(folderOrFile);
@@ -312,135 +280,12 @@ Project importFM2023Livery(const QString &folderOrFile, const QByteArray &fileDa
     const QVector<LiverySection> sections =
         buildFM2023LiverySections(payload.gyvlBody, payload.sectionCounts);
 
-    Project project;
-    const QFileInfo info(folderOrFile);
-    if (info.isDir()) {
-        project.name = info.fileName();
-        project.sourceFolder = info.absoluteFilePath();
-    } else {
-        project.name = info.absoluteDir().dirName();
-        project.sourceFolder = info.absoluteDir().absolutePath();
-    }
+    Project project = detail::newVinylImportProject(folderOrFile, payload.raw);
     project.isLivery = true;
     project.carId = payload.carId;
     project.liverySource = payload.raw;
-    project.sourceDecPrefix = payload.raw.left(0x1d);
-    project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
-    scene::ensureProjectSceneRoot(project);
-
-    int shapeIndex = 0;
-    int groupIndex = 0;
-
-    std::function<std::unique_ptr<scene::Shape>(const VinylShape &, const Matrix3 &, bool)> importShape =
-        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Shape> {
-            ++shapeIndex;
-            const Matrix3 effective = detail::multiply(parentMatrix, shapeMatrixForShape(shape));
-            auto s = std::make_unique<scene::Shape>();
-            s->id = QStringLiteral("layer-%1").arg(shapeIndex, 4, 10, QLatin1Char('0'));
-            s->name = QStringLiteral("%1 %2")
-                .arg(shapeIndex, 4, 10, QLatin1Char('0'))
-                .arg(shape.isLogo
-                         ? QStringLiteral("Decal %1").arg(shape.rasterId)
-                         : detail::shapeName(shape.shapeId));
-            s->transform = decomposeTransform2D(effective);
-            s->hasSourceTransform = true;
-            s->sourceTransform = s->transform;
-            s->setVectorShape(shape.shapeId);
-            if (shape.isLogo)
-                s->setRasterShape(shape.rasterId);
-            s->color = shape.color;
-            s->opacity = static_cast<double>(shape.color[3]) / 255.0;
-            s->mask = parentMask || shape.isMask;
-            if (hasColorData(shape.color))
-                s->mask = false;
-            s->visible = true;
-            s->sourceShape = shapeIndex;
-            s->absOffset = shape.absPos;
-            s->marker = shape.marker;
-            s->flags = shape.flags;
-            s->sourceLogoId = shape.logoId;
-            return s;
-        };
-
-    std::function<std::unique_ptr<scene::Group>(const VinylGroup &, const Matrix3 &, bool)> importGroup =
-        [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Group> {
-            ++groupIndex;
-            const Matrix3 gMatrix = detail::multiply(parentMatrix, groupNodeMatrix(node));
-            const bool inheritedMask = parentMask || node.isMask;
-
-            auto g = std::make_unique<scene::Group>();
-            g->id = QStringLiteral("group-%1").arg(groupIndex, 4, 10, QLatin1Char('0'));
-            g->name = QStringLiteral("Group %1").arg(groupIndex);
-            g->sourceAbsPos = node.absPos;
-            g->pendingTransformMarker = node.pendingTransformMarker;
-            g->inlineTransformMarker = node.inlineTransformMarker;
-            g->effectiveTransformMarker = node.effectiveTransformMarker;
-            g->headerControlBytes = node.headerControlBytes;
-            g->flags = node.flags;
-
-            for (const VinylItem &item : node.items) {
-                if (item.isShape())
-                    g->append(importShape(std::get<VinylShape>(item.value), gMatrix, inheritedMask));
-                else
-                    g->append(importGroup(*std::get<VinylGroupPtr>(item.value), gMatrix, inheritedMask));
-            }
-            for (const auto &child : g->children)
-                g->sourceChildren.push_back(child->id);
-            return g;
-        };
-
-    for (const LiverySection &section : sections) {
-        ++groupIndex;
-        auto sectionGroup = std::make_unique<scene::Group>();
-        sectionGroup->id = QStringLiteral("group-%1").arg(groupIndex, 4, 10, QLatin1Char('0'));
-        sectionGroup->name = section.name;
-        sectionGroup->isLiverySection = true;
-        sectionGroup->liverySectionSlot = section.slot;
-        sectionGroup->sourceAbsPos = section.absPos;
-
-        if (section.populated) {
-            Matrix3 sectionMatrix = groupNodeMatrix(section.subtree);
-            bool sectionMask = section.subtree.isMask;
-            const VinylGroup *sectionRoot = &section.subtree;
-            const auto appendItems = [&](const QVector<VinylItem> &items, int begin,
-                                         const Matrix3 &matrix, bool mask) {
-                for (int i = begin; i < items.size(); ++i) {
-                    const VinylItem &item = items[i];
-                    if (item.isShape())
-                        sectionGroup->append(importShape(std::get<VinylShape>(item.value), matrix, mask));
-                    else
-                        sectionGroup->append(importGroup(*std::get<VinylGroupPtr>(item.value), matrix, mask));
-                }
-            };
-            const VinylGroupPtr leadingRoot = !sectionRoot->items.isEmpty()
-                    && !sectionRoot->items.front().isShape()
-                ? std::get<VinylGroupPtr>(sectionRoot->items.front().value)
-                : VinylGroupPtr{};
-            if (leadingRoot && leadingRoot->source == QStringLiteral("livery_section_root")) {
-                const Matrix3 leadingMatrix = detail::multiply(sectionMatrix, groupNodeMatrix(*leadingRoot));
-                const bool leadingMask = sectionMask || leadingRoot->isMask;
-                const Matrix3 leadingCanvasMatrix = detail::multiply(
-                    liverySectionCanvasTransform(section.slot), leadingMatrix);
-                appendItems(leadingRoot->items, 0, leadingCanvasMatrix, leadingMask);
-                const Matrix3 remainingMatrix = detail::multiply(
-                    liverySectionCanvasTransform(section.slot), sectionMatrix);
-                appendItems(sectionRoot->items, 1, remainingMatrix, sectionMask);
-            } else {
-                while (sectionRoot->items.size() == 1 && !sectionRoot->items.front().isShape()) {
-                    const auto topGroup = std::get<VinylGroupPtr>(sectionRoot->items.front().value);
-                    if (!topGroup) break;
-                    sectionMatrix = detail::multiply(sectionMatrix, groupNodeMatrix(*topGroup));
-                    sectionMask = sectionMask || topGroup->isMask;
-                    sectionRoot = topGroup.get();
-                }
-                sectionMatrix = detail::multiply(liverySectionCanvasTransform(section.slot), sectionMatrix);
-                appendItems(sectionRoot->items, 0, sectionMatrix, sectionMask);
-            }
-            for (const auto &child : sectionGroup->children)
-                sectionGroup->sourceChildren.push_back(child->id);
-        }
-        project.root->append(std::move(sectionGroup));
-    }
+    detail::appendLiverySectionsToScene(
+        project, sections, detail::VinylSceneDialect::Motorsport2023);
     return project;
 }
 
@@ -449,97 +294,9 @@ Project importFM2023RawGroup(const QString &folderOrFile, const QByteArray &file
     LayerData layerData;
     VinylGroup root = decodeFM2023RawGroupImpl(payload, &layerData);
 
-    Project project;
-    const QFileInfo info(folderOrFile);
-    if (info.isDir()) {
-        project.name = info.fileName();
-        project.sourceFolder = info.absoluteFilePath();
-    } else {
-        project.name = info.absoluteDir().dirName();
-        project.sourceFolder = info.absoluteDir().absolutePath();
-    }
-    project.sourceDecPrefix = payload.left(0x1d);
-    project.sourceHeader = readOptionalFile(QDir(project.sourceFolder).filePath(QStringLiteral("header")));
-    scene::ensureProjectSceneRoot(project);
-
-    int shapeIndex = 0;
-    int groupIndex = 0;
-
-    std::function<std::unique_ptr<scene::Shape>(const VinylShape &, const Matrix3 &, bool)> importShape =
-        [&](const VinylShape &shape, const Matrix3 &parentMatrix, bool parentMask) -> std::unique_ptr<scene::Shape> {
-            ++shapeIndex;
-            const Matrix3 effective = detail::multiply(parentMatrix, shapeMatrixForShape(shape));
-            auto s = std::make_unique<scene::Shape>();
-            s->id = QStringLiteral("layer-%1").arg(shapeIndex, 4, 10, QLatin1Char('0'));
-            s->name = QStringLiteral("%1 %2")
-                .arg(shapeIndex, 4, 10, QLatin1Char('0'))
-                .arg(shape.isLogo
-                         ? QStringLiteral("Decal %1").arg(shape.rasterId)
-                         : detail::shapeName(shape.shapeId));
-            s->transform = decomposeTransform2D(effective);
-            s->hasSourceTransform = true;
-            s->sourceTransform = s->transform;
-            s->setVectorShape(shape.shapeId);
-            if (shape.isLogo)
-                s->setRasterShape(shape.rasterId);
-            s->color = shape.color;
-            s->opacity = static_cast<double>(shape.color[3]) / 255.0;
-            s->mask = parentMask || shape.isMask;
-            if (hasColorData(shape.color) && !shape.isMask)
-                s->mask = false;
-            s->visible = true;
-            s->sourceShape = shapeIndex;
-            s->absOffset = shape.absPos + layerData.start;
-            s->marker = shape.marker;
-            s->flags = shape.flags;
-            s->sourceLogoId = shape.logoId;
-            return s;
-        };
-
-    std::function<std::unique_ptr<scene::Group>(const VinylGroup &, const Matrix3 &, bool, const QString &, const QString &)> importGroup =
-        [&](const VinylGroup &node, const Matrix3 &parentMatrix, bool parentMask,
-            const QString &sourceParentId, const QString &sourcePreviousSiblingId) -> std::unique_ptr<scene::Group> {
-            ++groupIndex;
-            const Matrix3 gMatrix = detail::multiply(parentMatrix, groupNodeMatrix(node));
-            const bool inheritedMask = parentMask || node.isMask;
-
-            auto g = std::make_unique<scene::Group>();
-            g->id = QStringLiteral("group-%1").arg(groupIndex, 4, 10, QLatin1Char('0'));
-            g->name = QStringLiteral("Group %1").arg(groupIndex);
-            g->sourceAbsPos = node.absPos + layerData.start;
-            g->pendingTransformMarker = node.pendingTransformMarker;
-            g->inlineTransformMarker = node.inlineTransformMarker;
-            g->effectiveTransformMarker = node.effectiveTransformMarker;
-            g->headerControlBytes = node.headerControlBytes;
-            g->flags = node.flags;
-            g->sourceParentId = sourceParentId;
-            g->sourcePreviousSiblingId = sourcePreviousSiblingId;
-
-            for (const VinylItem &item : node.items) {
-                const QString previousSiblingId = g->children.empty() ? QString() : g->children.back()->id;
-                if (item.isShape())
-                    g->append(importShape(std::get<VinylShape>(item.value), gMatrix, inheritedMask));
-                else
-                    g->append(importGroup(*std::get<VinylGroupPtr>(item.value), gMatrix, inheritedMask,
-                                           g->id, previousSiblingId));
-            }
-            for (const auto &child : g->children)
-                g->sourceChildren.push_back(child->id);
-            return g;
-        };
-
-    const Matrix3 rootMatrix = groupNodeMatrix(root);
-    const bool rootMask = root.isMask;
-    for (const VinylItem &item : root.items) {
-        const QString previousSiblingId = project.root->children.empty() ? QString() : project.root->children.back()->id;
-        if (item.isShape())
-            project.root->append(importShape(std::get<VinylShape>(item.value), rootMatrix, rootMask));
-        else
-            project.root->append(importGroup(*std::get<VinylGroupPtr>(item.value),
-                                              rootMatrix, rootMask,
-                                              QStringLiteral("__root__"),
-                                              previousSiblingId));
-    }
+    Project project = detail::newVinylImportProject(folderOrFile, payload);
+    detail::appendVinylGroupToScene(
+        project, root, layerData.start, detail::VinylSceneDialect::Motorsport2023);
     return project;
 }
 
@@ -574,19 +331,7 @@ fls::VinylGroup fls::decodeFM2023RawGroup(const QByteArray &payload) {
 }
 
 fls::Project fls::importFM2023Asset(const QString &folderOrFile) {
-    const QFileInfo info(folderOrFile);
-    QString dataPath;
-    if (info.isDir()) {
-        dataPath = QDir(folderOrFile).filePath(QStringLiteral("data"));
-    } else {
-        dataPath = folderOrFile;
-    }
-
-    QFile file(dataPath);
-    if (!file.open(QIODevice::ReadOnly))
-        throw std::runtime_error(("could not open: " + dataPath).toStdString());
-    QByteArray fileData = file.readAll();
-    file.close();
+    const QByteArray fileData = readFM2023AssetData(folderOrFile);
 
     if (isFM2023LiveryImpl(fileData)) {
         return importFM2023Livery(folderOrFile, fileData);

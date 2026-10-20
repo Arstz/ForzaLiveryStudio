@@ -1,4 +1,5 @@
 #include "compact_fit_catalog_internal.h"
+#include "fill_geometry.h"
 
 #include "layer.h"
 #include "matrix_math.h"
@@ -859,25 +860,7 @@ QPolygonF convexHull(QPolygonF points) {
     if (points.size() < 3) {
         return points;
     }
-    QPolygonF hull;
-    for (const QPointF &point : points) {
-        while (hull.size() >= 2
-               && cross(hull.back() - hull[hull.size() - 2], point - hull.back()) <= 0.0) {
-            hull.removeLast();
-        }
-        hull.push_back(point);
-    }
-    const int lowerCount = hull.size();
-    for (int index = points.size() - 2; index >= 0; --index) {
-        while (hull.size() > lowerCount
-               && cross(hull.back() - hull[hull.size() - 2], points[index] - hull.back()) <= 0.0) {
-            hull.removeLast();
-        }
-        hull.push_back(points[index]);
-    }
-    hull.removeLast();
-
-    return hull;
+    return fill_geometry::convexHullFromSortedPoints(points, 0.0);
 }
 
 Polygons mapped(const PenPrimitive &shape, const QTransform &transform) {

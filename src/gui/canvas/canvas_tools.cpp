@@ -10,6 +10,30 @@
 #include <algorithm>
 
 namespace gui {
+namespace {
+
+int wheelAdjustmentSteps(const QWheelEvent &event) {
+    const QPoint angle = event.angleDelta();
+    const QPoint pixels = event.pixelDelta();
+    const int raw = angle.y() != 0 ? angle.y()
+        : angle.x() != 0 ? angle.x()
+        : pixels.y() != 0 ? pixels.y()
+        : pixels.x();
+    if (raw == 0) {
+        return 0;
+    }
+    int steps = raw / 120;
+    if (steps == 0) {
+        steps = raw > 0 ? 1 : -1;
+    }
+    if (event.modifiers() & Qt::ShiftModifier) {
+        steps *= 5;
+    }
+
+    return steps;
+}
+
+} // namespace
 
 bool CanvasTool::handlePress(QMouseEvent *event) {
     Q_UNUSED(event);
@@ -773,22 +797,10 @@ bool LiningTool::handleMove(QMouseEvent *event) {
 }
 
 bool LiningTool::handleWheel(QWheelEvent *event) {
-    const QPoint angle = event->angleDelta();
-    const QPoint pixels = event->pixelDelta();
-    const int raw = angle.y() != 0 ? angle.y()
-        : angle.x() != 0 ? angle.x()
-        : pixels.y() != 0 ? pixels.y()
-        : pixels.x();
-    if (raw == 0 || canvas_.lining_.fillRunning || !canvas_.pathFigureEditable(canvas_.lining_)) {
+    const int steps = wheelAdjustmentSteps(*event);
+    if (steps == 0 || canvas_.lining_.fillRunning || !canvas_.pathFigureEditable(canvas_.lining_)) {
         event->accept();
         return true;
-    }
-    int steps = raw / 120;
-    if (steps == 0) {
-        steps = raw > 0 ? 1 : -1;
-    }
-    if (event->modifiers() & Qt::ShiftModifier) {
-        steps *= 5;
     }
     const auto cap = canvas_.liningCapHandleAtScreen(event->position());
     if (cap.valid()) {
@@ -886,22 +898,10 @@ bool BucketTool::handleMove(QMouseEvent *event) {
 }
 
 bool BucketTool::handleWheel(QWheelEvent *event) {
-    const QPoint angle = event->angleDelta();
-    const QPoint pixels = event->pixelDelta();
-    const int raw = angle.y() != 0 ? angle.y()
-        : angle.x() != 0 ? angle.x()
-        : pixels.y() != 0 ? pixels.y()
-        : pixels.x();
-    if (raw == 0) {
+    const int steps = wheelAdjustmentSteps(*event);
+    if (steps == 0) {
         event->accept();
         return true;
-    }
-    int steps = raw / 120;
-    if (steps == 0) {
-        steps = raw > 0 ? 1 : -1;
-    }
-    if (event->modifiers() & Qt::ShiftModifier) {
-        steps *= 5;
     }
     canvas_.adjustBucketTolerance(
         steps, event->position(), event->modifiers().testFlag(Qt::ShiftModifier));

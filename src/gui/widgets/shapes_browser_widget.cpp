@@ -1,4 +1,5 @@
 #include "shapes_browser_widget.h"
+#include "browser_tile_palette.h"
 
 #include "font_glyphs.h"
 #include "gui_assets.h"
@@ -31,22 +32,17 @@ struct TilePaintLayout {
 TilePaintLayout paintTileFrame(QPainter &painter, const QWidget &tile, bool hovered) {
     const QRect tileRect = tile.rect().adjusted(2, 2, -2, -2);
     const bool dark = isDarkTheme(currentUiTheme());
-    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
-    const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
-    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
-    const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
+    const BrowserTilePalette colors = browserTilePalette(dark);
     const QRect previewRect((tile.width() - kPreviewSize.width()) / 2, 12,
                             kPreviewSize.width(), kPreviewSize.height());
 
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(tileRect, hovered ? tileHover : tileBase);
-    painter.setPen(QPen(hovered ? hoverStroke : stroke, 1));
+    painter.fillRect(tileRect, hovered ? colors.hover : colors.base);
+    painter.setPen(QPen(hovered ? colors.activeStroke : colors.stroke, 1));
     painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
-    painter.fillRect(previewRect, previewBase);
+    painter.fillRect(previewRect, colors.previewBase);
 
-    return {previewRect, labelColor, dark};
+    return {previewRect, colors.label, dark};
 }
 
 QSettings settings() {
@@ -243,23 +239,35 @@ QString newCustomGroupId() {
     return QStringLiteral("custom_%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
 }
 
-void rasterizePreviewTriangle(
-    QImage &image,
-    const QColor &ink,
-    const QPointF &p0,
-    const QPointF &p1,
-    const QPointF &p2,
-    double alpha0,
-    double alpha1,
-    double alpha2) {
+template<typename RenderPreview>
+void drawCachedPreview(QPainter &painter, const QRect &rect,
+                        QHash<QSize, QImage> &cache, const RenderPreview &renderPreview) {
+    if (cache.contains(rect.size())) {
+        painter.drawImage(rect.topLeft(), cache.value(rect.size()));
+        return;
+    }
+    const QImage preview = renderPreview();
+    if (preview.isNull()) {
+        return;
+    }
+    cache.insert(rect.size(), preview);
+    painter.drawImage(rect.topLeft(), preview);
+}
+
+template<typename SamplePixel>
+void forEachPreviewTriangleSample(const QSize &size,
+                                  const QPointF &p0,
+                                  const QPointF &p1,
+                                  const QPointF &p2,
+                                  const SamplePixel &samplePixel) {
     const double minX = std::floor(std::min({p0.x(), p1.x(), p2.x()}));
     const double maxX = std::ceil(std::max({p0.x(), p1.x(), p2.x()}));
     const double minY = std::floor(std::min({p0.y(), p1.y(), p2.y()}));
     const double maxY = std::ceil(std::max({p0.y(), p1.y(), p2.y()}));
-    const int left = std::clamp(static_cast<int>(minX), 0, image.width() - 1);
-    const int right = std::clamp(static_cast<int>(maxX), 0, image.width() - 1);
-    const int top = std::clamp(static_cast<int>(minY), 0, image.height() - 1);
-    const int bottom = std::clamp(static_cast<int>(maxY), 0, image.height() - 1);
+    const int left = std::clamp(static_cast<int>(minX), 0, size.width() - 1);
+    const int right = std::clamp(static_cast<int>(maxX), 0, size.width() - 1);
+    const int top = std::clamp(static_cast<int>(minY), 0, size.height() - 1);
+    const int bottom = std::clamp(static_cast<int>(maxY), 0, size.height() - 1);
     const double denominator = (p1.y() - p2.y()) * (p0.x() - p2.x()) + (p2.x() - p1.x()) * (p0.y() - p2.y());
     if (std::abs(denominator) < 1e-8) {
         return;
@@ -272,17 +280,34 @@ void rasterizePreviewTriangle(
             const double w0 = ((p1.y() - p2.y()) * (sampleX - p2.x()) + (p2.x() - p1.x()) * (sampleY - p2.y())) / denominator;
             const double w1 = ((p2.y() - p0.y()) * (sampleX - p2.x()) + (p0.x() - p2.x()) * (sampleY - p2.y())) / denominator;
             const double w2 = 1.0 - w0 - w1;
-            if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4
-                || w0 > 1.0001 || w1 > 1.0001 || w2 > 1.0001) {
+            if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) {
                 continue;
             }
 
+            samplePixel(x, y, w0, w1, w2);
+        }
+    }
+}
+
+void rasterizePreviewTriangle(
+    QImage &image,
+    const QColor &ink,
+    const QPointF &p0,
+    const QPointF &p1,
+    const QPointF &p2,
+    double alpha0,
+    double alpha1,
+    double alpha2) {
+    forEachPreviewTriangleSample(image.size(), p0, p1, p2,
+        [&](int x, int y, double w0, double w1, double w2) {
+            if (w0 > 1.0001 || w1 > 1.0001 || w2 > 1.0001) {
+                return;
+            }
             const int alpha = std::clamp(static_cast<int>(std::round((w0 * alpha0 + w1 * alpha1 + w2 * alpha2) * 255.0)), 0, 255);
             if (alpha > qAlpha(image.pixel(x, y))) {
                 image.setPixel(x, y, qRgba(ink.red(), ink.green(), ink.blue(), alpha));
             }
-        }
-    }
+        });
 }
 
 class SplitterResizeCursorFilter final : public QObject {
@@ -472,20 +497,14 @@ void ShapeTile::favouriteToggled(bool checked) {
 }
 
 void ShapeTile::drawPreview(QPainter &painter, const QRect &rect) {
-    if (previewCache_.contains(rect.size())) {
-        painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
-        return;
-    }
-    if (geometry_ == nullptr) {
-        return;
-    }
-    const QColor ink = isDarkTheme(currentUiTheme()) ? QColor(245, 245, 245) : QColor(24, 26, 30);
-    const QImage preview = renderShapePreviewImage(*geometry_, shapeId_, rect.size(), ink);
-    if (preview.isNull()) {
-        return;
-    }
-    previewCache_.insert(rect.size(), preview);
-    painter.drawImage(rect.topLeft(), preview);
+    drawCachedPreview(painter, rect, previewCache_, [&]() -> QImage {
+        if (geometry_ == nullptr) {
+            return QImage();
+        }
+        const QColor ink = isDarkTheme(currentUiTheme()) ? QColor(245, 245, 245) : QColor(24, 26, 30);
+
+        return renderShapePreviewImage(*geometry_, shapeId_, rect.size(), ink);
+    });
 }
 
 QImage renderShapePreviewImage(const ShapeGeometryStore &geometry, int shapeId, const QSize &size, const QColor &ink) {
@@ -601,32 +620,11 @@ void rasterizeCustomPreviewTriangle(QImage &image,
                                     double alpha1,
                                     double alpha2,
                                     const fls::scene::Shape &layer) {
-    const double minX = std::floor(std::min({p0.x(), p1.x(), p2.x()}));
-    const double maxX = std::ceil(std::max({p0.x(), p1.x(), p2.x()}));
-    const double minY = std::floor(std::min({p0.y(), p1.y(), p2.y()}));
-    const double maxY = std::ceil(std::max({p0.y(), p1.y(), p2.y()}));
-    const int left = std::clamp(static_cast<int>(minX), 0, image.width() - 1);
-    const int right = std::clamp(static_cast<int>(maxX), 0, image.width() - 1);
-    const int top = std::clamp(static_cast<int>(minY), 0, image.height() - 1);
-    const int bottom = std::clamp(static_cast<int>(maxY), 0, image.height() - 1);
-    const double denominator = (p1.y() - p2.y()) * (p0.x() - p2.x()) + (p2.x() - p1.x()) * (p0.y() - p2.y());
-    if (std::abs(denominator) < 1e-8) {
-        return;
-    }
-
-    for (int y = top; y <= bottom; ++y) {
-        for (int x = left; x <= right; ++x) {
-            const double sampleX = x + 0.5;
-            const double sampleY = y + 0.5;
-            const double w0 = ((p1.y() - p2.y()) * (sampleX - p2.x()) + (p2.x() - p1.x()) * (sampleY - p2.y())) / denominator;
-            const double w1 = ((p2.y() - p0.y()) * (sampleX - p2.x()) + (p0.x() - p2.x()) * (sampleY - p2.y())) / denominator;
-            const double w2 = 1.0 - w0 - w1;
-            if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) {
-                continue;
-            }
-            blendCustomPreviewPixel(image, x, y, layer, w0 * alpha0 + w1 * alpha1 + w2 * alpha2);
-        }
-    }
+    forEachPreviewTriangleSample(image.size(), p0, p1, p2,
+        [&](int x, int y, double w0, double w1, double w2) {
+            blendCustomPreviewPixel(image, x, y, layer,
+                w0 * alpha0 + w1 * alpha1 + w2 * alpha2);
+        });
 }
 
 void paintCustomPreviewLayer(QImage &image,
@@ -793,19 +791,13 @@ void CustomGroupTile::updateDeleteIcon() {
 }
 
 void CustomGroupTile::drawPreview(QPainter &painter, const QRect &rect) {
-    if (previewCache_.contains(rect.size())) {
-        painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
-        return;
-    }
-    if (geometry_ == nullptr) {
-        return;
-    }
-    const QImage preview = renderCustomGroupPreviewImage(group_, *geometry_, rect.size());
-    if (preview.isNull()) {
-        return;
-    }
-    previewCache_.insert(rect.size(), preview);
-    painter.drawImage(rect.topLeft(), preview);
+    drawCachedPreview(painter, rect, previewCache_, [&]() -> QImage {
+        if (geometry_ == nullptr) {
+            return QImage();
+        }
+
+        return renderCustomGroupPreviewImage(group_, *geometry_, rect.size());
+    });
 }
 
 int CustomGroupTile::layerCount() const {
@@ -856,33 +848,31 @@ void LogoTile::paintEvent(QPaintEvent *event) {
 }
 
 void LogoTile::drawPreview(QPainter &painter, const QRect &rect) {
-    if (previewCache_.contains(rect.size())) {
-        painter.drawImage(rect.topLeft(), previewCache_.value(rect.size()));
-        return;
-    }
-    const fls::RasterDecal decal = fls::sharedRasterDecals().decal(rasterId_);
-    if (!decal.valid() || rect.isEmpty()) {
-        return;
-    }
-    QImage decalImage(reinterpret_cast<const uchar *>(decal.rgba.constData()),
-                      decal.width,
-                      decal.height,
-                      decal.width * 4,
-                      QImage::Format_RGBA8888);
-    decalImage = decalImage.copy();
+    drawCachedPreview(painter, rect, previewCache_, [&]() -> QImage {
+        const fls::RasterDecal decal = fls::sharedRasterDecals().decal(rasterId_);
+        if (!decal.valid() || rect.isEmpty()) {
+            return QImage();
+        }
+        QImage decalImage(reinterpret_cast<const uchar *>(decal.rgba.constData()),
+                          decal.width,
+                          decal.height,
+                          decal.width * 4,
+                          QImage::Format_RGBA8888);
+        decalImage = decalImage.copy();
 
-    QImage preview(rect.size(), QImage::Format_ARGB32);
-    preview.fill(Qt::transparent);
-    QPainter imagePainter(&preview);
-    imagePainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    const QSize fit = decalImage.size().scaled(QSize(std::round(rect.width() * 0.86),
-                                                     std::round(rect.height() * 0.86)),
-                                               Qt::KeepAspectRatio);
-    const QRect target((rect.width() - fit.width()) / 2, (rect.height() - fit.height()) / 2, fit.width(), fit.height());
-    imagePainter.drawImage(target, decalImage);
-    imagePainter.end();
-    previewCache_.insert(rect.size(), preview);
-    painter.drawImage(rect.topLeft(), preview);
+        QImage preview(rect.size(), QImage::Format_ARGB32);
+        preview.fill(Qt::transparent);
+        QPainter imagePainter(&preview);
+        imagePainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const QSize fit = decalImage.size().scaled(QSize(std::round(rect.width() * 0.86),
+                                                         std::round(rect.height() * 0.86)),
+                                                   Qt::KeepAspectRatio);
+        const QRect target((rect.width() - fit.width()) / 2, (rect.height() - fit.height()) / 2, fit.width(), fit.height());
+        imagePainter.drawImage(target, decalImage);
+        imagePainter.end();
+
+        return preview;
+    });
 }
 
 ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
@@ -1016,13 +1006,7 @@ void ShapesBrowserWidget::addCustomGroup(const QString &name, const ProjectClipb
     group.name = name.trimmed().isEmpty() ? QStringLiteral("Custom Group") : name.trimmed();
     group.clipboard = clipboard;
     customGroups_.push_back(group);
-    saveCustomGroups();
-    populateCategories();
-    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(kCustomCategory), Qt::MatchExactly);
-    if (!matches.isEmpty()) {
-        categoriesList_->setCurrentItem(matches.front());
-    }
-    refreshGrid();
+    refreshCustomGroups();
 }
 
 void ShapesBrowserWidget::setLiveryContext(bool isLivery) {
@@ -1077,6 +1061,16 @@ void ShapesBrowserWidget::refreshTheme() {
 
 void ShapesBrowserWidget::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
+    refreshGrid();
+}
+
+void ShapesBrowserWidget::refreshCustomGroups() {
+    saveCustomGroups();
+    populateCategories();
+    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(kCustomCategory), Qt::MatchExactly);
+    if (!matches.isEmpty()) {
+        categoriesList_->setCurrentItem(matches.front());
+    }
     refreshGrid();
 }
 
@@ -1383,13 +1377,7 @@ void ShapesBrowserWidget::deleteCustomGroup(const QString &id) {
     if (CustomGroupTile *tile = customTiles_.take(id)) {
         tile->deleteLater();
     }
-    saveCustomGroups();
-    populateCategories();
-    QList<QListWidgetItem *> matches = categoriesList_->findItems(QString::fromLatin1(kCustomCategory), Qt::MatchExactly);
-    if (!matches.isEmpty()) {
-        categoriesList_->setCurrentItem(matches.front());
-    }
-    refreshGrid();
+    refreshCustomGroups();
 }
 
 QVector<int> ShapesBrowserWidget::categoryShapeIds(const QString &category) const {

@@ -395,11 +395,7 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event) {
 void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton
         && guidelines_.draggedOrientation != GuidelineOrientation::None) {
-        if (state_ != nullptr) {
-            state_->commitProjectEdit();
-        }
-        guidelines_.draggedOrientation = GuidelineOrientation::None;
-        guidelines_.draggedIndex = -1;
+        commitGuidelineDrag();
         guidelines_.rulerPressActive = false;
         updateCursorForPoint(event->position());
         update();

@@ -1036,22 +1036,14 @@ void PropertyPanel::refreshTransformFields() {
         if (guides_.size() == 1) {
             const fls::scene::GuideLayer *guide = guides_.front();
             const auto blockers = makeSignalBlockers({x_, y_, scaleX_, scaleY_, rotation_});
-            x_->setValue(guide->x);
-            y_->setValue(guide->y);
-            scaleX_->setValue(guide->scaleX);
-            scaleY_->setValue(guide->scaleY);
-            rotation_->setValue(guide->rotation);
+            setPositionScaleRotation(guide->transform);
         } else {
             setMultipleGuides(guides_);
         }
     } else if (layers_.size() == 1 && groups_.isEmpty()) {
         const fls::scene::Shape *layer = layers_.front();
         const auto blockers = makeSignalBlockers({x_, y_, scaleX_, scaleY_, rotation_, skew_});
-        x_->setValue(layer->x);
-        y_->setValue(layer->y);
-        scaleX_->setValue(layer->scaleX);
-        scaleY_->setValue(layer->scaleY);
-        rotation_->setValue(layer->rotation);
+        setPositionScaleRotation(layer->transform);
         skew_->setValue(layer->skew);
     } else if (isBoxSelection()) {
         setBoxProxyFields(false);
@@ -1126,35 +1118,33 @@ void PropertyPanel::refreshTransformFieldsFromBox(const QPointF &center,
     }
 
     const auto blockers = makeSignalBlockers({x_, y_, scaleX_, scaleY_, rotation_, skew_});
-    const auto setProxy = [this](QDoubleSpinBox *box, double value) {
-        box->setValue(value);
-        box->setStyleSheet(QString());
-        baselines_.insert(box, value);
-    };
-    setProxy(x_, center.x());
-    setProxy(y_, center.y());
-    setProxy(scaleX_, scaleXValue);
-    setProxy(scaleY_, scaleYValue);
-    setProxy(rotation_, normalizeRotation(rotationValue));
-    setProxy(skew_, skewValue);
+    setBoxProxyValues(center, scaleXValue, scaleYValue, rotationValue, skewValue);
+}
+
+void PropertyPanel::setPositionScaleRotation(const fls::scene::Transform2D &transform) {
+    x_->setValue(transform.x);
+    y_->setValue(transform.y);
+    scaleX_->setValue(transform.scaleX);
+    scaleY_->setValue(transform.scaleY);
+    rotation_->setValue(transform.rotation);
+}
+
+void PropertyPanel::setSingleNodeFields(const fls::scene::Layer &node, double opacity) {
+    name_->setText(node.name);
+    setPositionScaleRotation(node.transform);
+    opacity_->setValue(opacity);
+    visible_->setTristate(false);
+    locked_->setTristate(false);
+    mask_->setTristate(false);
+    visible_->setChecked(node.visible);
+    clearMixedStyles();
 }
 
 void PropertyPanel::setSingleLayer(const fls::scene::Shape *layer) {
     const auto blockers = makeSignalBlockers({name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_,
                                               visible_, locked_, mask_, opacity_});
 
-    name_->setText(layer->name);
-    x_->setValue(layer->x);
-    y_->setValue(layer->y);
-    scaleX_->setValue(layer->scaleX);
-    scaleY_->setValue(layer->scaleY);
-    rotation_->setValue(layer->rotation);
-    opacity_->setValue(opacityFromAlpha(layer->color[ColorByteAlpha]));
-    visible_->setTristate(false);
-    locked_->setTristate(false);
-    mask_->setTristate(false);
-    visible_->setChecked(layer->visible);
-    clearMixedStyles();
+    setSingleNodeFields(*layer, opacityFromAlpha(layer->color[ColorByteAlpha]));
     shapeId_->setValue(layer->shapeId);
     skew_->setValue(layer->skew);
     locked_->setChecked(state_->isLayerLocked(layer->id));
@@ -1171,18 +1161,7 @@ void PropertyPanel::setSingleGuide(const fls::scene::GuideLayer *guide) {
     const auto blockers = makeSignalBlockers({name_, shapeId_, x_, y_, scaleX_, scaleY_, rotation_, skew_,
                                               visible_, locked_, mask_, opacity_});
 
-    name_->setText(guide->name);
-    x_->setValue(guide->x);
-    y_->setValue(guide->y);
-    scaleX_->setValue(guide->scaleX);
-    scaleY_->setValue(guide->scaleY);
-    rotation_->setValue(guide->rotation);
-    opacity_->setValue(guide->opacity);
-    visible_->setTristate(false);
-    locked_->setTristate(false);
-    mask_->setTristate(false);
-    visible_->setChecked(guide->visible);
-    clearMixedStyles();
+    setSingleNodeFields(*guide, guide->opacity);
     locked_->setChecked(guide->locked);
     mask_->setChecked(false);
     colorButton_->setText(QStringLiteral("N/A"));
@@ -1264,6 +1243,22 @@ QPointF PropertyPanel::selectionBoxCenter() const {
     return bounds.isValid() ? bounds.center() : QPointF(0.0, 0.0);
 }
 
+void PropertyPanel::setBoxProxyValues(const QPointF &center, double scaleXValue,
+                                       double scaleYValue, double rotationValue,
+                                       double skewValue) {
+    const auto setProxy = [this](QDoubleSpinBox *box, double value) {
+        box->setValue(value);
+        box->setStyleSheet(QString());
+        baselines_.insert(box, value);
+    };
+    setProxy(x_, center.x());
+    setProxy(y_, center.y());
+    setProxy(scaleX_, scaleXValue);
+    setProxy(scaleY_, scaleYValue);
+    setProxy(rotation_, normalizeRotation(rotationValue));
+    setProxy(skew_, skewValue);
+}
+
 void PropertyPanel::setBoxProxyFields(bool neutralTransformValues) {
     const QPointF center = selectionBoxCenter();
     const auto blockers = makeSignalBlockers({x_, y_, scaleX_, scaleY_, rotation_, skew_});
@@ -1314,17 +1309,7 @@ void PropertyPanel::setBoxProxyFields(bool neutralTransformValues) {
         }
     }
 
-    const auto setProxy = [this](QDoubleSpinBox *box, double value) {
-        box->setValue(value);
-        box->setStyleSheet(QString());
-        baselines_.insert(box, value);
-    };
-    setProxy(x_, center.x());
-    setProxy(y_, center.y());
-    setProxy(scaleX_, scaleXValue);
-    setProxy(scaleY_, scaleYValue);
-    setProxy(rotation_, normalizeRotation(rotationValue));
-    setProxy(skew_, skewValue);
+    setBoxProxyValues(center, scaleXValue, scaleYValue, rotationValue, skewValue);
 }
 
 void PropertyPanel::clearMixedStyles() {

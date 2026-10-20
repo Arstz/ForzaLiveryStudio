@@ -70,6 +70,29 @@ void MainWindow::setProject(fls::Project project) {
     updateCarUnwrapOverlay();
 }
 
+void MainWindow::loadCarModel(const QString &path, bool automatic) {
+    constexpr int kAutomaticLoadMessageDuration = 4000;
+    const int duration = automatic ? kAutomaticLoadMessageDuration : 0;
+
+    statusBar()->showMessage(QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
+    carPreview_->loadCarAsync(path, [this, path, automatic, duration](bool loaded, const QString &error) {
+        if (!loaded) {
+            const QString fallback = automatic ? QStringLiteral("Failed to auto-load car model")
+                                               : QStringLiteral("Failed to load car model");
+            statusBar()->showMessage(error.isEmpty() ? fallback : error, duration);
+            return;
+        }
+        if (carPreviewDock_ != nullptr) {
+            carPreviewDock_->show();
+            carPreviewDock_->raise();
+        }
+        updateCarUnwrapOverlay();
+        statusBar()->showMessage(
+            (automatic ? QStringLiteral("Auto-loaded car model: %1") : QStringLiteral("Loaded car model: %1"))
+                .arg(QFileInfo(path).fileName()), duration);
+    });
+}
+
 void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
     if (carPreview_ == nullptr || state_ == nullptr || !state_->hasProject_) {
         return;
@@ -127,22 +150,7 @@ void MainWindow::maybeAutoLoadCarForProject(bool replaceLoadedModel) {
             QStringLiteral("No car model matching \"%1\" found in the car models folder").arg(modelCode), 4000);
         return;
     }
-    statusBar()->showMessage(
-        QStringLiteral("Loading car model: %1").arg(QFileInfo(path).fileName()));
-    carPreview_->loadCarAsync(path, [this, path](bool loaded, const QString &error) {
-        if (!loaded) {
-            statusBar()->showMessage(
-                error.isEmpty() ? QStringLiteral("Failed to auto-load car model") : error, 4000);
-            return;
-        }
-        if (carPreviewDock_ != nullptr) {
-            carPreviewDock_->show();
-            carPreviewDock_->raise();
-        }
-        updateCarUnwrapOverlay();
-        statusBar()->showMessage(
-            QStringLiteral("Auto-loaded car model: %1").arg(QFileInfo(path).fileName()), 4000);
-    });
+    loadCarModel(path, true);
 }
 
 QString MainWindow::findCarModelPath(const QString &folder, const QString &modelName) const {

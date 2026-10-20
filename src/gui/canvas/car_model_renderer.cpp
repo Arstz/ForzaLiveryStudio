@@ -23,6 +23,37 @@ namespace {
 
 constexpr double kUnwrapPathScale = 1024.0;
 
+template<typename BufferSet>
+void uploadCarMeshGeometry(BufferSet &buffers, QOpenGLShaderProgram &program,
+                           const std::vector<float> &vertices,
+                           const std::vector<quint32> &indices, bool materialUv) {
+    constexpr int kBaseVertexComponents = 8;
+    constexpr int kMaterialUvComponents = 2;
+    const int stride = (kBaseVertexComponents + (materialUv ? kMaterialUvComponents : 0)) * sizeof(float);
+
+    buffers.vao.create();
+    buffers.vao.bind();
+    buffers.vbo.create();
+    buffers.vbo.bind();
+    buffers.vbo.allocate(vertices.data(), static_cast<int>(vertices.size() * sizeof(float)));
+    buffers.ibo.create();
+    buffers.ibo.bind();
+    buffers.ibo.allocate(indices.data(), static_cast<int>(indices.size() * sizeof(quint32)));
+    program.enableAttributeArray(0);
+    program.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
+    program.enableAttributeArray(1);
+    program.setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
+    program.enableAttributeArray(2);
+    program.setAttributeBuffer(2, GL_FLOAT, 6 * sizeof(float), 2, stride);
+    if (materialUv) {
+        program.enableAttributeArray(3);
+        program.setAttributeBuffer(3, GL_FLOAT, 8 * sizeof(float), 2, stride);
+    }
+    buffers.vao.release();
+    buffers.vbo.release();
+    buffers.ibo.release();
+}
+
 constexpr char kVertexShader[] = R"(#version 330 core
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
@@ -1826,6 +1857,63 @@ QPointF projectedMaskPoint(const fls::CarMesh &mesh,
         side.top + (side.bottom - side.top) * normalizedY);
 }
 
+struct ProjectedLiveryTriangle {
+    std::array<QPointF, 3> points;
+    std::array<quint32, 3> vertexIndices;
+};
+
+std::optional<ProjectedLiveryTriangle> projectLiveryTriangle(
+    const fls::CarMesh &mesh, size_t indexOffset, const fls::LiverySide &side,
+    int sideIndex, const LiveryProjectionData &projection, bool directUv) {
+    ProjectedLiveryTriangle triangle;
+    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
+    bool haveNormals = true;
+    double facing = 0.0;
+
+    for (int corner = 0; corner < 3; ++corner) {
+        const quint32 vertexIndex = mesh.indices[indexOffset + corner];
+        triangle.vertexIndices[corner] = vertexIndex;
+        if (vertexIndex >= mesh.positions.size()) {
+            return std::nullopt;
+        }
+        const QPointF maskPoint = projectedMaskPoint(mesh, vertexIndex, side, sideIndex, projection, directUv);
+        triangle.points[corner] = liverySectionPoint(side, sideIndex, maskPoint);
+        if (vertexIndex < mesh.normals.size()) {
+            const fls::ModelVec3 normal = mirroredCarSpace(
+                mesh.boneTransform.transformVector(mesh.normals[vertexIndex]));
+            facing += normal.x * kFacing[geometrySide].x()
+                + normal.y * kFacing[geometrySide].y()
+                + normal.z * kFacing[geometrySide].z();
+        } else {
+            haveNormals = false;
+        }
+    }
+    if (!directUv && haveNormals && facing <= 0.0) {
+        return std::nullopt;
+    }
+
+    return triangle;
+}
+
+template<typename VisitTriangle>
+void forEachProjectedLiveryTriangle(const fls::CarMesh &mesh, const fls::LiveryMaskSet &masks,
+                                    const LiveryProjectionData &projection, int sideIndex,
+                                    VisitTriangle visitTriangle) {
+    if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
+        || mesh.positions.empty() || mesh.indices.empty()) {
+        return;
+    }
+    const fls::LiverySide &side = masks.sides[sideIndex];
+    const bool directUv = hasDirectLiveryUv(mesh);
+
+    for (size_t indexOffset = 0; indexOffset + 2 < mesh.indices.size(); indexOffset += 3) {
+        const auto triangle = projectLiveryTriangle(mesh, indexOffset, side, sideIndex, projection, directUv);
+        if (triangle) {
+            visitTriangle(*triangle);
+        }
+    }
+}
+
 QPainterPath projectedLiveryGeometryPath(
     const std::vector<const fls::CarMesh *> &meshes,
     const fls::LiveryMaskSet &masks,
@@ -1833,51 +1921,17 @@ QPainterPath projectedLiveryGeometryPath(
     int sideIndex) {
     QPainterPath path;
     path.setFillRule(Qt::WindingFill);
-    const fls::LiverySide &side = masks.sides[sideIndex];
-    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
-    for (const fls::CarMesh *meshPointer : meshes) {
-        const fls::CarMesh &mesh = *meshPointer;
-        if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
-            || mesh.positions.empty() || mesh.indices.empty()) {
-            continue;
-        }
-        const bool directUv = hasDirectLiveryUv(mesh);
-        for (size_t indexOffset = 0;
-             indexOffset + 2 < mesh.indices.size();
-             indexOffset += 3) {
-            QPolygonF triangle;
-            triangle.reserve(3);
-            bool valid = true;
-            bool haveNormals = true;
-            double facing = 0.0;
-            for (int corner = 0; corner < 3; ++corner) {
-                const quint32 vertexIndex = mesh.indices[indexOffset + corner];
-                if (vertexIndex >= mesh.positions.size()) {
-                    valid = false;
-                    break;
+    for (const fls::CarMesh *mesh : meshes) {
+        forEachProjectedLiveryTriangle(*mesh, masks, projection, sideIndex,
+            [&](const ProjectedLiveryTriangle &triangle) {
+                QPolygonF polygon;
+                polygon.reserve(3);
+                for (const QPointF &point : triangle.points) {
+                    polygon.push_back(point);
                 }
-                const QPointF maskPoint = projectedMaskPoint(
-                    mesh, vertexIndex, side, sideIndex,
-                    projection, directUv);
-                triangle.push_back(liverySectionPoint(
-                    side, sideIndex, maskPoint));
-                if (vertexIndex < mesh.normals.size()) {
-                    const fls::ModelVec3 normal = mirroredCarSpace(
-                        mesh.boneTransform.transformVector(
-                            mesh.normals[vertexIndex]));
-                    facing += normal.x * kFacing[geometrySide].x()
-                        + normal.y * kFacing[geometrySide].y()
-                        + normal.z * kFacing[geometrySide].z();
-                } else {
-                    haveNormals = false;
-                }
-            }
-            if (!valid || (!directUv && haveNormals && facing <= 0.0)) {
-                continue;
-            }
-            path.addPolygon(triangle);
-            path.closeSubpath();
-        }
+                path.addPolygon(polygon);
+                path.closeSubpath();
+            });
     }
 
     return path;
@@ -1896,62 +1950,22 @@ QPainterPath projectedLiveryWireframePath(
     const LiveryProjectionData &projection,
     int sideIndex) {
     QPainterPath path;
-    const fls::LiverySide &side = masks.sides[sideIndex];
-    const int geometrySide = kMaskSlotGeometrySides[sideIndex];
-    for (const fls::CarMesh *meshPointer : meshes) {
-        const fls::CarMesh &mesh = *meshPointer;
-        if ((renderedLiverySidesForMesh(mesh) & (1 << sideIndex)) == 0
-            || mesh.positions.empty() || mesh.indices.empty()) {
-            continue;
-        }
-        const bool directUv = hasDirectLiveryUv(mesh);
+    for (const fls::CarMesh *mesh : meshes) {
         QSet<quint64> edges;
-        for (size_t indexOffset = 0;
-             indexOffset + 2 < mesh.indices.size();
-             indexOffset += 3) {
-            std::array<QPointF, 3> triangle;
-            std::array<quint32, 3> vertexIndices;
-            bool valid = true;
-            bool haveNormals = true;
-            double facing = 0.0;
-            for (int corner = 0; corner < 3; ++corner) {
-                const quint32 vertexIndex = mesh.indices[indexOffset + corner];
-                vertexIndices[corner] = vertexIndex;
-                if (vertexIndex >= mesh.positions.size()) {
-                    valid = false;
-                    break;
+        forEachProjectedLiveryTriangle(*mesh, masks, projection, sideIndex,
+            [&](const ProjectedLiveryTriangle &triangle) {
+                for (int corner = 0; corner < 3; ++corner) {
+                    const int nextCorner = (corner + 1) % 3;
+                    const quint64 edge = unwrapEdgeKey(
+                        triangle.vertexIndices[corner], triangle.vertexIndices[nextCorner]);
+                    if (edges.contains(edge)) {
+                        continue;
+                    }
+                    edges.insert(edge);
+                    path.moveTo(triangle.points[corner]);
+                    path.lineTo(triangle.points[nextCorner]);
                 }
-                const QPointF maskPoint = projectedMaskPoint(
-                    mesh, vertexIndex, side, sideIndex,
-                    projection, directUv);
-                triangle[corner] = liverySectionPoint(
-                    side, sideIndex, maskPoint);
-                if (vertexIndex < mesh.normals.size()) {
-                    const fls::ModelVec3 normal = mirroredCarSpace(
-                        mesh.boneTransform.transformVector(
-                            mesh.normals[vertexIndex]));
-                    facing += normal.x * kFacing[geometrySide].x()
-                        + normal.y * kFacing[geometrySide].y()
-                        + normal.z * kFacing[geometrySide].z();
-                } else {
-                    haveNormals = false;
-                }
-            }
-            if (!valid || (!directUv && haveNormals && facing <= 0.0)) {
-                continue;
-            }
-            for (int corner = 0; corner < 3; ++corner) {
-                const int nextCorner = (corner + 1) % 3;
-                const quint64 edge = unwrapEdgeKey(
-                    vertexIndices[corner], vertexIndices[nextCorner]);
-                if (edges.contains(edge)) {
-                    continue;
-                }
-                edges.insert(edge);
-                path.moveTo(triangle[corner]);
-                path.lineTo(triangle[nextCorner]);
-            }
-        }
+            });
     }
 
     return path;
@@ -2648,30 +2662,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
         center /= static_cast<float>(mesh.positions.size());
         buffers->center = center;
 
-        buffers->vao.create();
-        buffers->vao.bind();
-
-        buffers->vbo.create();
-        buffers->vbo.bind();
-        buffers->vbo.allocate(interleaved.data(), static_cast<int>(interleaved.size() * sizeof(float)));
-
-        buffers->ibo.create();
-        buffers->ibo.bind();
-        buffers->ibo.allocate(mesh.indices.data(), static_cast<int>(mesh.indices.size() * sizeof(quint32)));
-
-        constexpr int stride = 10 * sizeof(float);
-        program_.enableAttributeArray(0);
-        program_.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
-        program_.enableAttributeArray(1);
-        program_.setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
-        program_.enableAttributeArray(2);
-        program_.setAttributeBuffer(2, GL_FLOAT, 6 * sizeof(float), 2, stride);
-        program_.enableAttributeArray(3);
-        program_.setAttributeBuffer(3, GL_FLOAT, 8 * sizeof(float), 2, stride);
-
-        buffers->vao.release();
-        buffers->vbo.release();
-        buffers->ibo.release();
+        uploadCarMeshGeometry(*buffers, program_, interleaved, mesh.indices, true);
 
         meshes_.push_back(std::move(buffers));
     }
@@ -2749,30 +2740,7 @@ void CarModelRenderer::uploadModel(const fls::CarModel &model, int lodIndex) {
             buffers->stockPart = mesh.stockPart;
             buffers->partOptionIds = mesh.partOptionIds;
             buffers->model = carMeshModelMatrix(mesh);
-            buffers->vao.create();
-            buffers->vao.bind();
-            buffers->vbo.create();
-            buffers->vbo.bind();
-            buffers->vbo.allocate(
-                interleaved.data(),
-                static_cast<int>(interleaved.size() * sizeof(float)));
-            buffers->ibo.create();
-            buffers->ibo.bind();
-            buffers->ibo.allocate(
-                edgeIndices.data(),
-                static_cast<int>(edgeIndices.size() * sizeof(quint32)));
-
-            constexpr int stride = 8 * sizeof(float);
-            program_.enableAttributeArray(0);
-            program_.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
-            program_.enableAttributeArray(1);
-            program_.setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
-            program_.enableAttributeArray(2);
-            program_.setAttributeBuffer(2, GL_FLOAT, 6 * sizeof(float), 2, stride);
-
-            buffers->vao.release();
-            buffers->vbo.release();
-            buffers->ibo.release();
+            uploadCarMeshGeometry(*buffers, program_, interleaved, edgeIndices, false);
             wireframeMeshes_.push_back(std::move(buffers));
         }
 

@@ -720,12 +720,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
     car.mediaName = mediaName;
     car.partOptions = parts.options;
     car.locators = loadCarLocators(carbinDir);
-    float minX = std::numeric_limits<float>::max();
-    float minY = minX;
-    float minZ = minX;
-    float maxX = std::numeric_limits<float>::lowest();
-    float maxY = maxX;
-    float maxZ = maxX;
+    ModelBounds bounds;
     int loaded = 0;
     QSet<QString> stockParts;
     for (const PartInstance &part : parts.stock) {
@@ -892,15 +887,7 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
                 continue;
             }
             if (stock) {
-                for (const ModelVec3 &p : mesh.positions) {
-                    const ModelVec3 w = mesh.boneTransform.transformPoint(p);
-                    minX = std::min(minX, w.x);
-                    minY = std::min(minY, w.y);
-                    minZ = std::min(minZ, w.z);
-                    maxX = std::max(maxX, w.x);
-                    maxY = std::max(maxY, w.y);
-                    maxZ = std::max(maxZ, w.z);
-                }
+                bounds.include(mesh);
             }
             targetBase.push_back(mesh);
             partLodMeshes[0].push_back(mesh);
@@ -939,8 +926,8 @@ CarModel loadCarBin(const QString &path, QString *error, const WheelSizing &whee
         }
         return {};
     }
-    car.boundsMin = {minX, minY, minZ};
-    car.boundsMax = {maxX, maxY, maxZ};
+    car.boundsMin = bounds.minimum;
+    car.boundsMax = bounds.maximum;
     return car;
 }
 
@@ -948,12 +935,7 @@ void appendApproximateTires(
     CarModel &car, const CarModel &leftTemplate, const CarModel &rightTemplate,
     const WheelSizing &wheels) {
     struct MountBounds {
-        float minX = std::numeric_limits<float>::max();
-        float minY = minX;
-        float minZ = minX;
-        float maxX = std::numeric_limits<float>::lowest();
-        float maxY = maxX;
-        float maxZ = maxX;
+        ModelBounds extents;
         std::vector<ModelVec3> positions;
     };
 
@@ -970,12 +952,7 @@ void appendApproximateTires(
         }
         MountBounds &bounds = mounts[mesh.modelInstanceId];
         for (const ModelVec3 &position : mesh.positions) {
-            bounds.minX = std::min(bounds.minX, position.x);
-            bounds.minY = std::min(bounds.minY, position.y);
-            bounds.minZ = std::min(bounds.minZ, position.z);
-            bounds.maxX = std::max(bounds.maxX, position.x);
-            bounds.maxY = std::max(bounds.maxY, position.y);
-            bounds.maxZ = std::max(bounds.maxZ, position.z);
+            bounds.extents.include(position);
             bounds.positions.push_back(position);
         }
     }
@@ -1007,15 +984,18 @@ void appendApproximateTires(
     const TemplateBounds rightBounds = templateBounds(rightTemplate);
 
     for (const auto &[sourceInstanceId, bounds] : mounts) {
+        const ModelVec3 &minimum = bounds.extents.minimum;
+        const ModelVec3 &maximum = bounds.extents.maximum;
+
         (void)sourceInstanceId;
-        if (bounds.minX > bounds.maxX) {
+        if (minimum.x > maximum.x) {
             continue;
         }
-        const float side = bounds.minX + bounds.maxX >= 0.0f ? 1.0f : -1.0f;
-        const float centerY = (bounds.minY + bounds.maxY) * 0.5f;
-        const float centerZ = (bounds.minZ + bounds.maxZ) * 0.5f;
+        const float side = minimum.x + maximum.x >= 0.0f ? 1.0f : -1.0f;
+        const float centerY = (minimum.y + maximum.y) * 0.5f;
+        const float centerZ = (minimum.z + maximum.z) * 0.5f;
         const AxleSizing &axle = centerZ >= 0.0f ? wheels.front : wheels.rear;
-        const float mountRadius = std::max(bounds.maxY - bounds.minY, bounds.maxZ - bounds.minZ) * 0.5f;
+        const float mountRadius = std::max(maximum.y - minimum.y, maximum.z - minimum.z) * 0.5f;
         const float rimRadius = rimRadiusMetres(axle);
         const float tireWidth = tireWidthMetres(axle);
         const float tireRadius = tireRadiusMetres(axle);
@@ -1029,7 +1009,7 @@ void appendApproximateTires(
         }
         std::sort(lipSamples.begin(), lipSamples.end());
         const float rimOuterX = lipSamples.empty()
-            ? (side > 0.0f ? bounds.maxX : bounds.minX)
+            ? (side > 0.0f ? maximum.x : minimum.x)
             : side * lipSamples[static_cast<size_t>(
                   0.9f * static_cast<float>(lipSamples.size() - 1))];
         const float centerX = rimOuterX - side * tireWidth * 0.5f;

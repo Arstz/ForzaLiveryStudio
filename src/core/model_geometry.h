@@ -99,6 +99,15 @@ struct CarPartOption {
     QStringList modelPaths;
 };
 
+struct ModelBounds {
+    ModelVec3 minimum;
+    ModelVec3 maximum;
+
+    ModelBounds();
+    void include(const ModelVec3 &point);
+    void include(const CarMesh &mesh);
+};
+
 struct CarLocator {
     QString name;
     ModelVec3 position;

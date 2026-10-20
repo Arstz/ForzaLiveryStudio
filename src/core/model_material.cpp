@@ -10,42 +10,10 @@
 namespace fls {
 namespace {
 
-class Cursor {
+class Cursor : public detail::BinaryCursor {
 public:
-    explicit Cursor(const QByteArray &bytes) : bytes_(bytes) {}
-
-    quint8 u8() {
-        require(1);
-        return static_cast<quint8>(bytes_[pos_++]);
-    }
-
-    quint16 u16() {
-        require(2);
-        const quint16 value = detail::readLeU16(bytes_, pos_);
-        pos_ += 2;
-        return value;
-    }
-
-    quint32 u32() {
-        require(4);
-        const quint32 value = detail::readLeU32(bytes_, pos_);
-        pos_ += 4;
-        return value;
-    }
-
-    qint32 i32() { return static_cast<qint32>(u32()); }
-
-    float f32() {
-        require(4);
-        const float value = detail::readLeFloat(bytes_, pos_);
-        pos_ += 4;
-        return value;
-    }
-
-    void skip(int count) {
-        require(count);
-        pos_ += count;
-    }
+    explicit Cursor(const QByteArray &bytes)
+        : BinaryCursor(bytes, "material data is truncated") {}
 
     QString string7() {
         quint32 length = 0;
@@ -58,24 +26,14 @@ public:
                     throw std::runtime_error("material string is too large");
                 }
                 require(static_cast<int>(length));
-                const QString value = QString::fromUtf8(bytes_.constData() + pos_, static_cast<int>(length));
-                pos_ += static_cast<int>(length);
+                const QString value = QString::fromUtf8(bytes_.constData() + position_, static_cast<int>(length));
+                position_ += static_cast<int>(length);
                 return value;
             }
             shift += 7;
         }
         throw std::runtime_error("invalid material string length");
     }
-
-private:
-    void require(int count) const {
-        if (count < 0 || pos_ < 0 || pos_ + count > bytes_.size()) {
-            throw std::runtime_error("material data is truncated");
-        }
-    }
-
-    const QByteArray &bytes_;
-    int pos_ = 0;
 };
 
 bool atLeast(quint8 major, quint8 minor, quint8 wantedMajor, quint8 wantedMinor) {

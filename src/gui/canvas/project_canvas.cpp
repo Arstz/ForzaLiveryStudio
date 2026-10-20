@@ -534,17 +534,24 @@ bool ProjectCanvas::guideLayersOnTop() const {
     return options_.guideLayersOnTop;
 }
 
+void ProjectCanvas::commitGuidelineDrag() {
+    if (guidelines_.draggedOrientation == GuidelineOrientation::None) {
+        return;
+    }
+    if (state_ != nullptr) {
+        state_->commitProjectEdit();
+    }
+    guidelines_.draggedOrientation = GuidelineOrientation::None;
+    guidelines_.draggedIndex = -1;
+}
+
 void ProjectCanvas::setGuidelinesVisible(bool visible) {
     if (guidelines_.visible == visible) {
         return;
     }
     guidelines_.visible = visible;
-    if (!visible && guidelines_.draggedOrientation != GuidelineOrientation::None) {
-        if (state_ != nullptr) {
-            state_->commitProjectEdit();
-        }
-        guidelines_.draggedOrientation = GuidelineOrientation::None;
-        guidelines_.draggedIndex = -1;
+    if (!visible) {
+        commitGuidelineDrag();
     }
     updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
@@ -555,12 +562,8 @@ void ProjectCanvas::setGuidelinesLocked(bool locked) {
         return;
     }
     guidelines_.locked = locked;
-    if (locked && guidelines_.draggedOrientation != GuidelineOrientation::None) {
-        if (state_ != nullptr) {
-            state_->commitProjectEdit();
-        }
-        guidelines_.draggedOrientation = GuidelineOrientation::None;
-        guidelines_.draggedIndex = -1;
+    if (locked) {
+        commitGuidelineDrag();
     }
     updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
@@ -585,11 +588,7 @@ bool ProjectCanvas::deleteAllGuidelines() {
         return false;
     }
     if (guidelines_.draggedOrientation != GuidelineOrientation::None) {
-        if (state_ != nullptr) {
-            state_->commitProjectEdit();
-        }
-        guidelines_.draggedOrientation = GuidelineOrientation::None;
-        guidelines_.draggedIndex = -1;
+        commitGuidelineDrag();
     }
     if (state_ != nullptr) {
         state_->beginProjectEdit();

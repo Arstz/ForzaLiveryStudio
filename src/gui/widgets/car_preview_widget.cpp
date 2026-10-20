@@ -907,6 +907,53 @@ void assignNativeTextureOrFallback(
         texture || slot != NativeTextureSlot::Diffuse ? texture : missingColorTexture());
 }
 
+void cacheMaterialDefaults(const QString &archivePath, const QString &archiveKey,
+                            const QStringList &entries) {
+    auto &defaults = materialDefaultsCache();
+    const QHash<QString, QByteArray> missingMaterialData =
+        fls::readZipEntries(archivePath, entries);
+
+    for (const QString &entry : entries) {
+        std::shared_ptr<fls::ModelMaterial> decoded;
+        const QByteArray bytes = missingMaterialData.value(entry.toLower());
+        if (!bytes.isEmpty()) {
+            try {
+                decoded = fls::decodeMaterialBundle(bytes);
+            } catch (const std::exception &) {
+            }
+        }
+        defaults.insert(archiveKey + QLatin1Char('|') + entry.toLower(), decoded);
+    }
+}
+
+void clearOptionsPanel(QWidget *page, QVBoxLayout *layout) {
+    qDeleteAll(page->findChildren<QButtonGroup *>(QString(), Qt::FindDirectChildrenOnly));
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *widget = item->widget()) {
+            delete widget;
+        }
+        delete item;
+    }
+}
+
+void addOptionsPanelHeading(QWidget *page, QVBoxLayout *layout,
+                            const QString &text, const QString &descriptionText) {
+    auto *title = new QLabel(text, page);
+    auto *description = new QLabel(descriptionText, page);
+    QFont titleFont = title->font();
+    constexpr int kHeadingSpacing = 5;
+    constexpr double kTitleFontIncrease = 1.0;
+
+    titleFont.setBold(true);
+    titleFont.setPointSizeF(titleFont.pointSizeF() + kTitleFontIncrease);
+    title->setFont(titleFont);
+    layout->addWidget(title);
+    description->setProperty("secondary", true);
+    description->setWordWrap(true);
+    layout->addWidget(description);
+    layout->addSpacing(kHeadingSpacing);
+}
+
 void resolveExteriorMaterials(
     fls::CarModel &model, const QString &sourcePath, const QString &carRoot,
     bool includeTextures) {
@@ -935,19 +982,7 @@ void resolveExteriorMaterials(
             }
         }
     }
-    const QHash<QString, QByteArray> missingMaterialData =
-        fls::readZipEntries(archivePath, missingMaterialEntries);
-    for (const QString &entry : missingMaterialEntries) {
-        std::shared_ptr<fls::ModelMaterial> decoded;
-        const QByteArray bytes = missingMaterialData.value(entry.toLower());
-        if (!bytes.isEmpty()) {
-            try {
-                decoded = fls::decodeMaterialBundle(bytes);
-            } catch (const std::exception &) {
-            }
-        }
-        defaults.insert(materialArchiveKey + QLatin1Char('|') + entry.toLower(), decoded);
-    }
+    cacheMaterialDefaults(archivePath, materialArchiveKey, missingMaterialEntries);
     for (std::vector<fls::CarMesh> *meshes : renderMeshSets(model)) {
         for (fls::CarMesh &mesh : *meshes) {
             if (!mesh.material || !isLibraryMaterialPath(mesh.sourceModelPath)) {
@@ -1141,19 +1176,7 @@ fls::ManufacturerColorPalette loadManufacturerColors(
         }
     }
 
-    const QHash<QString, QByteArray> materialData =
-        fls::readZipEntries(archivePath, missingEntries);
-    for (const QString &entry : missingEntries) {
-        std::shared_ptr<fls::ModelMaterial> material;
-        const QByteArray bytes = materialData.value(entry.toLower());
-        if (!bytes.isEmpty()) {
-            try {
-                material = fls::decodeMaterialBundle(bytes);
-            } catch (const std::exception &) {
-            }
-        }
-        defaults.insert(archiveKey + QLatin1Char('|') + entry.toLower(), material);
-    }
+    cacheMaterialDefaults(archivePath, archiveKey, missingEntries);
     for (fls::ManufacturerColor &color : palette.colors) {
         const QString entry = materialArchiveEntry(color.materialPath);
         color.material = defaults.value(
@@ -2389,30 +2412,12 @@ void CarPreviewWidget::rebuildModelPanel() {
     if (modelOptionsLayout_ == nullptr || modelPage_ == nullptr) {
         return;
     }
-    qDeleteAll(modelPage_->findChildren<QButtonGroup *>(
-        QString(), Qt::FindDirectChildrenOnly));
-    while (QLayoutItem *item = modelOptionsLayout_->takeAt(0)) {
-        if (QWidget *widget = item->widget()) {
-            delete widget;
-        }
-        delete item;
-    }
+    clearOptionsPanel(modelPage_, modelOptionsLayout_);
     modelPage_->setProperty("lodCount", model_.lodCount());
 
-    auto *title = new QLabel(QStringLiteral("Level of detail"), modelPage_);
-    QFont titleFont = title->font();
-    titleFont.setBold(true);
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
-    title->setFont(titleFont);
-    modelOptionsLayout_->addWidget(title);
-
-    auto *description = new QLabel(
-        QStringLiteral("Select which level of detail is rendered in the preview."),
-        modelPage_);
-    description->setProperty("secondary", true);
-    description->setWordWrap(true);
-    modelOptionsLayout_->addWidget(description);
-    modelOptionsLayout_->addSpacing(5);
+    addOptionsPanelHeading(modelPage_, modelOptionsLayout_,
+        QStringLiteral("Level of detail"),
+        QStringLiteral("Select which level of detail is rendered in the preview."));
 
     if (!hasModel()) {
         auto *empty = new QLabel(
@@ -2450,29 +2455,11 @@ void CarPreviewWidget::rebuildPartsPanel() {
     if (partsOptionsLayout_ == nullptr || partsPage_ == nullptr) {
         return;
     }
-    qDeleteAll(partsPage_->findChildren<QButtonGroup *>(
-        QString(), Qt::FindDirectChildrenOnly));
-    while (QLayoutItem *item = partsOptionsLayout_->takeAt(0)) {
-        if (QWidget *widget = item->widget()) {
-            delete widget;
-        }
-        delete item;
-    }
+    clearOptionsPanel(partsPage_, partsOptionsLayout_);
 
-    auto *title = new QLabel(QStringLiteral("Body parts"), partsPage_);
-    QFont titleFont = title->font();
-    titleFont.setBold(true);
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 1.0);
-    title->setFont(titleFont);
-    partsOptionsLayout_->addWidget(title);
-
-    auto *description = new QLabel(
-        QStringLiteral("Choose the body kit and installed exterior parts."),
-        partsPage_);
-    description->setProperty("secondary", true);
-    description->setWordWrap(true);
-    partsOptionsLayout_->addWidget(description);
-    partsOptionsLayout_->addSpacing(5);
+    addOptionsPanelHeading(partsPage_, partsOptionsLayout_,
+        QStringLiteral("Body parts"),
+        QStringLiteral("Choose the body kit and installed exterior parts."));
 
     selectedPartOptions_.clear();
     const fls::CarPartOption *defaultCarBody = nullptr;

@@ -8,56 +8,19 @@
 namespace fls {
 namespace {
 
-class Cursor {
+class Cursor : public detail::BinaryCursor {
 public:
     explicit Cursor(const QByteArray &bytes)
-        : bytes_(bytes) {}
-
-    quint8 u8() {
-        require(1);
-        return static_cast<quint8>(bytes_[position_++]);
-    }
-
-    quint16 u16() {
-        require(2);
-        const quint16 value = detail::readLeU16(bytes_, position_);
-        position_ += 2;
-        return value;
-    }
-
-    quint32 u32() {
-        require(4);
-        const quint32 value = detail::readLeU32(bytes_, position_);
-        position_ += 4;
-        return value;
-    }
-
-    float f32() {
-        require(4);
-        const float value = detail::readLeFloat(bytes_, position_);
-        position_ += 4;
-        return value;
-    }
+        : BinaryCursor(bytes, "ManufacturerColors data is truncated") {}
 
     QString string8() {
         const int size = u8();
         require(size);
         const QString value = QString::fromLatin1(bytes_.constData() + position_, size);
         position_ += size;
+
         return value;
     }
-
-    int position() const { return position_; }
-
-private:
-    void require(int size) const {
-        if (size < 0 || position_ < 0 || position_ + size > bytes_.size()) {
-            throw std::runtime_error("ManufacturerColors data is truncated");
-        }
-    }
-
-    const QByteArray &bytes_;
-    int position_ = 0;
 };
 
 std::array<float, 3> readColor(Cursor &cursor) {

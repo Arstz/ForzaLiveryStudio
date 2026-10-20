@@ -464,6 +464,7 @@ private:
     QCursor rotateCursorForPoint(const QPointF &point, const SelectionBox &box) const;
     void drawVisibilityBorders(QPainter &painter);
     void drawRulersAndGuidelines(QPainter &painter);
+    void commitGuidelineDrag();
     void drawOverlay(QPainter &painter);
     GuidelineOrientation rulerAt(const QPointF &point) const;
     int guidelineAtRuler(const QPointF &point, GuidelineOrientation orientation) const;
@@ -483,6 +484,7 @@ private:
     QString guideAtScreenPoint(const QPointF &point);
     void drawGuideLayers(QPainter &painter);
     void drawRegionOverlay(QPainter &painter);
+    std::optional<QTransform> regionImageToWorldTransform() const;
     QImage guideImage(const fls::scene::GuideLayer &guide) const;
     QSharedPointer<QSvgRenderer> guideSvgRenderer(const fls::scene::GuideLayer &guide) const;
     QString sectionCanvasCacheKey() const;

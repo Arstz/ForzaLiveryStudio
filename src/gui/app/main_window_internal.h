@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <functional>
 #include <stdexcept>
+#include <utility>
 
 namespace gui::mw_detail {
 
@@ -21,6 +22,20 @@ constexpr int kTreeIconExtent = 64;
 constexpr int kToolbarIconExtent = 18;
 constexpr int kDockSplitterHandleWidth = 6;
 constexpr int kDetailsLabelMargin = 10;
+
+template<typename Callback>
+void queueMainWindowCallback(const QPointer<MainWindow> &guard, Callback callback) {
+    if (guard.isNull()) {
+        return;
+    }
+    QMetaObject::invokeMethod(guard.data(),
+        [guard, callback = std::move(callback)]() mutable {
+            if (!guard.isNull()) {
+                callback(*guard);
+            }
+        },
+        Qt::QueuedConnection);
+}
 
 inline QString shortcutActionText(const QString &id, const QString &label, const QKeySequence &shortcut) {
     if (shortcut.isEmpty()) {

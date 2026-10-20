@@ -53,6 +53,21 @@ void setShortcutConflictStyle(QKeySequenceEdit *edit, bool conflict) {
         conflict ? QString::fromLatin1(kShortcutConflictStyle) : QString());
 }
 
+void updateColorButton(QPushButton *button,
+                        const QColor &color,
+                        bool customEnabled) {
+    if (button == nullptr) {
+        return;
+    }
+    button->setEnabled(customEnabled);
+    button->setText(color.name(QColor::HexRgb).toUpper());
+    button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
+                              .arg(color.name(QColor::HexRgb),
+                                   color.lightness() < 128
+                                       ? QStringLiteral("#ffffff")
+                                       : QStringLiteral("#202225")));
+}
+
 SettingTips loadSettingTips() {
     QFile file(assetPath(QStringLiteral("settings_tips.json")));
     if (!file.open(QIODevice::ReadOnly)) {
@@ -301,64 +316,51 @@ SettingsDialog::SettingsDialog(UiTheme theme,
     addSettingRow(themePage, QStringLiteral("theme.theme"),
                   QStringLiteral("Theme"), themeCombo_, tips);
 
-    const auto makeCanvasRow = [&](UiTheme rowTheme,
-                                   QComboBox **modeOut,
-                                   QPushButton **buttonOut) {
+    const auto makeColorRow = [&](bool checkerboard, QComboBox **modeOut,
+                                  QPushButton **buttonOut, auto updateControls, auto chooseColor) {
         auto *row = new QWidget(themePage.widget);
         auto *rowLayout = new QHBoxLayout(row);
         rowLayout->setContentsMargins(0, 0, 0, 0);
         rowLayout->setSpacing(8);
         auto *mode = new QComboBox(row);
         mode->addItem(QStringLiteral("Theme default"), QStringLiteral("default"));
+        if (checkerboard) {
+            mode->addItem(QStringLiteral("Checkerboard"), QStringLiteral("checkerboard"));
+        }
         mode->addItem(QStringLiteral("Custom"), QStringLiteral("custom"));
         auto *button = new QPushButton(row);
-        QObject::connect(mode, &QComboBox::currentIndexChanged,
-                         this, [this]() { updateCanvasColorControls(); });
-        QObject::connect(button, &QPushButton::clicked,
-                         this, [this, rowTheme]() { chooseCanvasColor(rowTheme); });
+        QObject::connect(mode, &QComboBox::currentIndexChanged, this, updateControls);
+        QObject::connect(button, &QPushButton::clicked, this, chooseColor);
         rowLayout->addWidget(mode, 1);
         rowLayout->addWidget(button);
         *modeOut = mode;
         *buttonOut = button;
+
         return row;
     };
     addSettingRow(themePage, QStringLiteral("theme.dark_canvas"),
                   QStringLiteral("Dark canvas"),
-                  makeCanvasRow(UiTheme::Dark, &darkCanvasMode_, &darkCanvasColorButton_), tips);
+                  makeColorRow(false, &darkCanvasMode_, &darkCanvasColorButton_,
+                      [this]() { updateCanvasColorControls(); },
+                      [this]() { chooseCanvasColor(UiTheme::Dark); }), tips);
     addSettingRow(themePage, QStringLiteral("theme.light_canvas"),
                   QStringLiteral("Light canvas"),
-                  makeCanvasRow(UiTheme::Light, &lightCanvasMode_, &lightCanvasColorButton_), tips);
+                  makeColorRow(false, &lightCanvasMode_, &lightCanvasColorButton_,
+                      [this]() { updateCanvasColorControls(); },
+                      [this]() { chooseCanvasColor(UiTheme::Light); }), tips);
     darkCanvasMode_->setCurrentIndex(canvasSettings_.darkMode == CanvasColorMode::Custom ? 1 : 0);
     lightCanvasMode_->setCurrentIndex(canvasSettings_.lightMode == CanvasColorMode::Custom ? 1 : 0);
 
-    const auto makeBackgroundRow = [&](bool buffer,
-                                       QComboBox **modeOut,
-                                       QPushButton **buttonOut) {
-        auto *row = new QWidget(themePage.widget);
-        auto *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(8);
-        auto *mode = new QComboBox(row);
-        mode->addItem(QStringLiteral("Theme default"), QStringLiteral("default"));
-        mode->addItem(QStringLiteral("Checkerboard"), QStringLiteral("checkerboard"));
-        mode->addItem(QStringLiteral("Custom"), QStringLiteral("custom"));
-        auto *button = new QPushButton(row);
-        QObject::connect(mode, &QComboBox::currentIndexChanged,
-                         this, [this]() { updatePreviewBackgroundControls(); });
-        QObject::connect(button, &QPushButton::clicked,
-                         this, [this, buffer]() { choosePreviewBackgroundColor(buffer); });
-        rowLayout->addWidget(mode, 1);
-        rowLayout->addWidget(button);
-        *modeOut = mode;
-        *buttonOut = button;
-        return row;
-    };
     addSettingRow(themePage, QStringLiteral("theme.buffer_background"),
                   QStringLiteral("Buffer background"),
-                  makeBackgroundRow(true, &bufferBackgroundMode_, &bufferBackgroundColorButton_), tips);
+                  makeColorRow(true, &bufferBackgroundMode_, &bufferBackgroundColorButton_,
+                      [this]() { updatePreviewBackgroundControls(); },
+                      [this]() { choosePreviewBackgroundColor(true); }), tips);
     addSettingRow(themePage, QStringLiteral("theme.layer_background"),
                   QStringLiteral("Layer background"),
-                  makeBackgroundRow(false, &layersBackgroundMode_, &layersBackgroundColorButton_), tips);
+                  makeColorRow(true, &layersBackgroundMode_, &layersBackgroundColorButton_,
+                      [this]() { updatePreviewBackgroundControls(); },
+                      [this]() { choosePreviewBackgroundColor(false); }), tips);
     const auto backgroundModeIndex = [](PreviewBackgroundMode mode) {
         return mode == PreviewBackgroundMode::Checkerboard ? 1
             : mode == PreviewBackgroundMode::Custom ? 2 : 0;
@@ -701,30 +703,16 @@ void SettingsDialog::chooseGuidelineColor() {
 }
 
 void SettingsDialog::updateCanvasColorControls() {
-    const auto updateButton = [](QPushButton *button,
-                                 const QColor &color,
-                                 bool customEnabled) {
-        if (button == nullptr) {
-            return;
-        }
-        button->setEnabled(customEnabled);
-        button->setText(color.name(QColor::HexRgb).toUpper());
-        button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
-                                  .arg(color.name(QColor::HexRgb),
-                                       color.lightness() < 128
-                                           ? QStringLiteral("#ffffff")
-                                           : QStringLiteral("#202225")));
-    };
     const CanvasColorSettings settings = selectedCanvasSettings();
-    updateButton(darkCanvasColorButton_,
+    updateColorButton(darkCanvasColorButton_,
                  settings.darkMode == CanvasColorMode::Custom
                      ? settings.darkCustom : defaultCanvasColor(UiTheme::Dark),
                  settings.darkMode == CanvasColorMode::Custom);
-    updateButton(lightCanvasColorButton_,
+    updateColorButton(lightCanvasColorButton_,
                  settings.lightMode == CanvasColorMode::Custom
                      ? settings.lightCustom : defaultCanvasColor(UiTheme::Light),
                  settings.lightMode == CanvasColorMode::Custom);
-    updateButton(guidelineColorButton_,
+    updateColorButton(guidelineColorButton_,
                  behaviorSettings_.guidelineColor.isValid()
                      ? behaviorSettings_.guidelineColor : QColor(0, 170, 255),
                  true);
@@ -739,13 +727,7 @@ void SettingsDialog::updatePreviewBackgroundControls() {
         const bool custom = background.mode == PreviewBackgroundMode::Custom;
         const QColor color = custom && background.custom.isValid()
             ? background.custom : defaultPreviewBackgroundColor(selectedTheme());
-        button->setEnabled(custom);
-        button->setText(color.name(QColor::HexRgb).toUpper());
-        button->setStyleSheet(QStringLiteral("background-color: %1; color: %2;")
-                                  .arg(color.name(QColor::HexRgb),
-                                       color.lightness() < 128
-                                           ? QStringLiteral("#ffffff")
-                                           : QStringLiteral("#202225")));
+        updateColorButton(button, color, custom);
     };
     const PreviewBackgroundSettings settings = selectedPreviewBackgroundSettings();
     updateButton(bufferBackgroundColorButton_, settings.buffer);

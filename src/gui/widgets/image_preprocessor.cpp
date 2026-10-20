@@ -29,6 +29,7 @@ struct QuantizeResult {
     QVector<QColor> retainedPalette;
 };
 
+constexpr int kMaximumPaletteColors = 256;
 constexpr double kEpsilon = 1e-9;
 
 HsvColor rgbToHsv(int red, int green, int blue) {
@@ -76,30 +77,9 @@ QImage normalizeBinaryAlpha(const QImage &source) {
     return result;
 }
 
-QVector<QColor> normalizedPalette(const QVector<QColor> &colors) {
-    QVector<QColor> result;
-    result.reserve(std::min(256, static_cast<int>(colors.size())));
-    for (const QColor &input : colors) {
-        if (!input.isValid()) {
-            continue;
-        }
-        const QColor color(input.red(), input.green(), input.blue(), 255);
-        const bool duplicate = std::any_of(result.cbegin(), result.cend(), [&](const QColor &existing) {
-            return existing.rgb() == color.rgb();
-        });
-        if (!duplicate) {
-            result.push_back(color);
-            if (result.size() == 256) {
-                break;
-            }
-        }
-    }
-    return result;
-}
-
 QuantizeResult quantizeToFixedPalette(const QImage &source, const QVector<QColor> &inputPalette) {
     constexpr int histogramSize = 32 * 32 * 32;
-    const QVector<QColor> palette = normalizedPalette(inputPalette);
+    const QVector<QColor> palette = normalizedImagePalette(inputPalette);
     if (palette.isEmpty()) {
         return {};
     }
@@ -267,32 +247,42 @@ QImage blendImages(const QImage &left, const QImage &right, double amount) {
     return result;
 }
 
-QImage boxBlur(const QImage &source, int radius) {
-    if (radius <= 0 || source.isNull()) {
-        return source;
-    }
-    QImage horizontal(source.size(), QImage::Format_ARGB32);
-    for (int y = 0; y < source.height(); ++y) {
-        auto *target = reinterpret_cast<QRgb *>(horizontal.scanLine(y));
+QImage boxBlurPass(const QImage &source, const QImage &alphaSource,
+                   int radius, Qt::Orientation orientation) {
+    QImage result(source.size(), QImage::Format_ARGB32);
+    const bool horizontal = orientation == Qt::Horizontal;
+    const int lineCount = horizontal ? source.height() : source.width();
+    const int lineLength = horizontal ? source.width() : source.height();
+    const auto pixelAt = [&](int line, int position) {
+        const int clipped = std::clamp(position, 0, lineLength - 1);
+
+        return horizontal ? source.pixel(clipped, line) : source.pixel(line, clipped);
+    };
+
+    for (int line = 0; line < lineCount; ++line) {
+        auto *row = horizontal ? reinterpret_cast<QRgb *>(result.scanLine(line)) : nullptr;
         int red = 0;
         int green = 0;
         int blue = 0;
         int weight = 0;
-        for (int dx = -radius; dx <= radius; ++dx) {
-            const QRgb pixel = source.pixel(std::clamp(dx, 0, source.width() - 1), y);
+        for (int offset = -radius; offset <= radius; ++offset) {
+            const QRgb pixel = pixelAt(line, offset);
             const int alpha = qAlpha(pixel);
             red += qRed(pixel) * alpha;
             green += qGreen(pixel) * alpha;
             blue += qBlue(pixel) * alpha;
             weight += alpha;
         }
-        for (int x = 0; x < source.width(); ++x) {
-            const QRgb center = source.pixel(x, y);
-            target[x] = weight > 0
+        for (int position = 0; position < lineLength; ++position) {
+            const QRgb center = horizontal ? alphaSource.pixel(position, line)
+                                          : alphaSource.pixel(line, position);
+            auto *target = horizontal ? row
+                : reinterpret_cast<QRgb *>(result.scanLine(position));
+            target[horizontal ? position : line] = weight > 0
                 ? qRgba(red / weight, green / weight, blue / weight, qAlpha(center))
                 : center;
-            const QRgb leaving = source.pixel(std::clamp(x - radius, 0, source.width() - 1), y);
-            const QRgb entering = source.pixel(std::clamp(x + radius + 1, 0, source.width() - 1), y);
+            const QRgb leaving = pixelAt(line, position - radius);
+            const QRgb entering = pixelAt(line, position + radius + 1);
             red += qRed(entering) * qAlpha(entering) - qRed(leaving) * qAlpha(leaving);
             green += qGreen(entering) * qAlpha(entering) - qGreen(leaving) * qAlpha(leaving);
             blue += qBlue(entering) * qAlpha(entering) - qBlue(leaving) * qAlpha(leaving);
@@ -300,35 +290,16 @@ QImage boxBlur(const QImage &source, int radius) {
         }
     }
 
-    QImage result(source.size(), QImage::Format_ARGB32);
-    for (int x = 0; x < source.width(); ++x) {
-        int red = 0;
-        int green = 0;
-        int blue = 0;
-        int weight = 0;
-        for (int dy = -radius; dy <= radius; ++dy) {
-            const QRgb pixel = horizontal.pixel(x, std::clamp(dy, 0, source.height() - 1));
-            const int alpha = qAlpha(pixel);
-            red += qRed(pixel) * alpha;
-            green += qGreen(pixel) * alpha;
-            blue += qBlue(pixel) * alpha;
-            weight += alpha;
-        }
-        for (int y = 0; y < source.height(); ++y) {
-            const QRgb center = source.pixel(x, y);
-            auto *target = reinterpret_cast<QRgb *>(result.scanLine(y));
-            target[x] = weight > 0
-                ? qRgba(red / weight, green / weight, blue / weight, qAlpha(center))
-                : center;
-            const QRgb leaving = horizontal.pixel(x, std::clamp(y - radius, 0, source.height() - 1));
-            const QRgb entering = horizontal.pixel(x, std::clamp(y + radius + 1, 0, source.height() - 1));
-            red += qRed(entering) * qAlpha(entering) - qRed(leaving) * qAlpha(leaving);
-            green += qGreen(entering) * qAlpha(entering) - qGreen(leaving) * qAlpha(leaving);
-            blue += qBlue(entering) * qAlpha(entering) - qBlue(leaving) * qAlpha(leaving);
-            weight += qAlpha(entering) - qAlpha(leaving);
-        }
-    }
     return result;
+}
+
+QImage boxBlur(const QImage &source, int radius) {
+    if (radius <= 0 || source.isNull()) {
+        return source;
+    }
+    const QImage horizontal = boxBlurPass(source, source, radius, Qt::Horizontal);
+
+    return boxBlurPass(horizontal, source, radius, Qt::Vertical);
 }
 
 QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximumIterations,
@@ -368,7 +339,7 @@ QuantizeResult quantizeHsv(const QImage &source, int requestedColors, int maximu
         const int blue = qRound(static_cast<double>(entry.blue) / entry.weight);
         colors.push_back({rgbToHsv(red, green, blue), static_cast<double>(entry.weight)});
     }
-    const QVector<QColor> lockedPalette = normalizedPalette(lockedInput);
+    const QVector<QColor> lockedPalette = normalizedImagePalette(lockedInput);
     if (colors.empty()) {
         return {source, static_cast<int>(lockedPalette.size()), lockedPalette};
     }
@@ -1029,6 +1000,27 @@ void flattenEdgeBoundedRegions(QImage &indexImage, const ImagePreprocessSettings
 
 } // namespace
 
+QVector<QColor> normalizedImagePalette(const QVector<QColor> &colors) {
+    QVector<QColor> result;
+    result.reserve(std::min(kMaximumPaletteColors, static_cast<int>(colors.size())));
+    for (const QColor &input : colors) {
+        if (!input.isValid()) {
+            continue;
+        }
+        const QColor color(input.red(), input.green(), input.blue(), 255);
+        const bool duplicate = std::any_of(result.cbegin(), result.cend(), [&](const QColor &existing) {
+            return existing.rgb() == color.rgb();
+        });
+        if (!duplicate) {
+            result.push_back(color);
+            if (result.size() == kMaximumPaletteColors) {
+                break;
+            }
+        }
+    }
+    return result;
+}
+
 ImagePreprocessSettings ImagePreprocessSettings::animeDetail() {
     return {};
 }
@@ -1049,7 +1041,7 @@ ImagePreprocessResult preprocessImageDetailed(const QImage &source,
         lines = detectLines(smoothed, edges);
     }
 
-    QVector<QColor> clusteringPalette = normalizedPalette(settings.paletteColors);
+    QVector<QColor> clusteringPalette = normalizedImagePalette(settings.paletteColors);
     QColor lineColor;
     if (settings.lineMode && lines.derivedColor.isValid()) {
         lineColor = settings.lineColor.isValid()

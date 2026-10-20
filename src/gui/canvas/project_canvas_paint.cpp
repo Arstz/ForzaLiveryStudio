@@ -11,6 +11,21 @@ namespace gui {
 
 using namespace pc_detail;
 
+namespace {
+
+void drawFillMessageBubble(QPainter &painter, const QRect &canvasRect, const QString &message) {
+    const QFontMetrics metrics(painter.font());
+    const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
+    QRect bubble = textRect;
+    bubble.moveCenter(canvasRect.center());
+    painter.setPen(QPen(QColor(235, 235, 235), 1));
+    painter.setBrush(QColor(25, 27, 31, 220));
+    painter.drawRoundedRect(bubble, 6, 6);
+    painter.drawText(bubble, Qt::AlignCenter, message);
+}
+
+} // namespace
+
 QPainterPath ProjectCanvas::penPreviewPath(bool closeToStart) const {
     if (pen_.points.isEmpty()) {
         return {};
@@ -95,14 +110,7 @@ void ProjectCanvas::drawPenOverlay(QPainter &painter) {
         const QString message = pen_.fillMessage.isEmpty()
             ? QStringLiteral("Filling Pen path…")
             : pen_.fillMessage;
-        const QFontMetrics metrics(painter.font());
-        const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
-        QRect bubble = textRect;
-        bubble.moveCenter(rect().center());
-        painter.setPen(QPen(QColor(235, 235, 235), 1));
-        painter.setBrush(QColor(25, 27, 31, 220));
-        painter.drawRoundedRect(bubble, 6, 6);
-        painter.drawText(bubble, Qt::AlignCenter, message);
+        drawFillMessageBubble(painter, rect(), message);
         painter.restore();
         return;
     }
@@ -240,14 +248,7 @@ void ProjectCanvas::drawLiningOverlay(QPainter &painter) {
         const QString message = lining_.fillMessage.isEmpty()
             ? QStringLiteral("Filling lining path…")
             : lining_.fillMessage;
-        const QFontMetrics metrics(painter.font());
-        const QRect textRect = metrics.boundingRect(message).adjusted(-12, -8, 12, 8);
-        QRect bubble = textRect;
-        bubble.moveCenter(rect().center());
-        painter.setPen(QPen(QColor(235, 235, 235), 1));
-        painter.setBrush(QColor(25, 27, 31, 220));
-        painter.drawRoundedRect(bubble, 6, 6);
-        painter.drawText(bubble, Qt::AlignCenter, message);
+        drawFillMessageBubble(painter, rect(), message);
         painter.restore();
         return;
     }
@@ -1163,14 +1164,10 @@ void ProjectCanvas::clearRegionFills() {
     update();
 }
 
-QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
-    QVector<GeneratedRegionVariant> result;
-    if (region_.fills.isEmpty() || region_.guideId.isEmpty()) {
-        return result;
-    }
+std::optional<QTransform> ProjectCanvas::regionImageToWorldTransform() const {
     const QSize imageSize = region_.overlay.imageSize;
     if (imageSize.width() < 1 || imageSize.height() < 1) {
-        return result;
+        return std::nullopt;
     }
 
     QTransform guideWorld;
@@ -1186,10 +1183,20 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
         return false;
     }, /*reverse=*/false);
     if (!found || guideSize.width() <= 0.0 || guideSize.height() <= 0.0) {
+        return std::nullopt;
+    }
+    return pc_detail::guideImageToLocal(imageSize, guideSize) * guideWorld;
+}
+
+QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
+    QVector<GeneratedRegionVariant> result;
+    if (region_.fills.isEmpty() || region_.guideId.isEmpty()) {
         return result;
     }
-    const QTransform imageToWorld = pc_detail::guideImageToLocal(imageSize, guideSize)
-        * guideWorld;
+    const auto imageToWorld = regionImageToWorldTransform();
+    if (!imageToWorld) {
+        return result;
+    }
     result.push_back({QStringLiteral("Safe"), {}, true});
     result.push_back({QStringLiteral("Dangerous"), {}, false});
 
@@ -1211,7 +1218,7 @@ QVector<GeneratedRegionVariant> ProjectCanvas::regionFillWorldVariants() {
         for (const PenPlacement &placement : fill.placements) {
             GeneratedRegionShape shape;
             shape.shapeId = placement.shapeId;
-            shape.transform = placement.transform * imageToWorld;
+            shape.transform = placement.transform * *imageToWorld;
             shape.color = color;
             group.shapes.push_back(shape);
         }
@@ -1232,29 +1239,11 @@ void ProjectCanvas::drawRegionOverlay(QPainter &painter) {
     if (region_.overlay.regions.isEmpty() || region_.guideId.isEmpty() || region_.hidden) {
         return;
     }
-    const QSize imageSize = region_.overlay.imageSize;
-    if (imageSize.width() < 1 || imageSize.height() < 1) {
+    const auto imageToWorld = regionImageToWorldTransform();
+    if (!imageToWorld) {
         return;
     }
-
-    QTransform guideWorld;
-    QSizeF guideSize;
-    bool found = false;
-    forEachSceneGuide([&](const fls::scene::GuideLayer &guide, const QTransform &world, const QString &sectionGroupId) {
-        if (guide.id != region_.guideId || !isSectionActive(sectionGroupId)) {
-            return true;
-        }
-        guideWorld = world;
-        guideSize = sceneNodeSize(guide, geometry_);
-        found = true;
-        return false;
-    }, /*reverse=*/false);
-    if (!found || guideSize.width() <= 0.0 || guideSize.height() <= 0.0) {
-        return;
-    }
-
-    const QTransform imageToScreen = pc_detail::guideImageToLocal(imageSize, guideSize)
-        * guideWorld * camera_.matrix();
+    const QTransform imageToScreen = *imageToWorld * camera_.matrix();
 
     static const QColor kDebugPalette[] = {
         QColor(228, 87, 86), QColor(88, 163, 222), QColor(126, 194, 106),

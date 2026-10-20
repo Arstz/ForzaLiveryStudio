@@ -118,11 +118,8 @@ QByteArray groupTransformMarker(GroupRecordGeneration generation, bool previousW
 
         return marker;
     }
-    if (previousWasGroup) {
-        return detail::vinylSiblingGroupMarker(previousGroupDepth);
-    }
-
-    return hasPreviousSibling ? QByteArray("\x00\x03", 2) : QByteArray(1, '\x03');
+    return detail::vinylGroupTransformMarker(
+        previousWasGroup, previousGroupDepth, hasPreviousSibling, QByteArray(1, '\x03'));
 }
 
 void appendGroupShapeTransition(QByteArray &out, int previousGroupDepth,
@@ -148,21 +145,8 @@ QPointF spriteHalfExtents(const ExportContext &ctx, quint16 shapeId) {
 QVector<QPointF> shapeCorners(const ExportContext &ctx, const scene::Shape &shape) {
     const detail::VinylShapePlacement s = detail::vinylShapePlacement(shape);
     const QPointF he = spriteHalfExtents(ctx, s.shapeId);
-    FlattenedLayer fl;
-    fl.rotation = s.rotation;
-    fl.posX = s.x;
-    fl.posY = s.y;
-    fl.scaleX = s.scaleX;
-    fl.scaleY = s.scaleY;
-    fl.skew = s.skew;
-    const Matrix3 m = shapeMatrix(fl);
-    QVector<QPointF> corners;
-    const double pts[4][2] = {{-he.x(), -he.y()}, {he.x(), -he.y()}, {he.x(), he.y()}, {-he.x(), he.y()}};
-    for (const auto &p : pts) {
-        corners.push_back(QPointF(m.m[0][0] * p[0] + m.m[0][1] * p[1] + m.m[0][2],
-                                  m.m[1][0] * p[0] + m.m[1][1] * p[1] + m.m[1][2]));
-    }
-    return corners;
+
+    return detail::vinylShapeCorners(s, he);
 }
 
 void collectShapeLeaves(const scene::Layer &node, QVector<const scene::Shape *> &out) {
@@ -224,17 +208,7 @@ QPointF shapesOrigin(const ExportContext &ctx, const QVector<const scene::Shape 
         const detail::VinylShapePlacement first = detail::vinylShapePlacement(*leaves.front());
         return QPointF(first.x, first.y);
     }
-    double minX = points.front().x();
-    double maxX = minX;
-    double minY = points.front().y();
-    double maxY = minY;
-    for (const QPointF &p : points) {
-        minX = std::min(minX, p.x());
-        maxX = std::max(maxX, p.x());
-        minY = std::min(minY, p.y());
-        maxY = std::max(maxY, p.y());
-    }
-    return QPointF((minX + maxX) / 2.0, (minY + maxY) / 2.0);
+    return pointBoundsCenter(points);
 }
 
 QPointF entryOrigin(const ExportContext &ctx, const GroupEntry &entry) {

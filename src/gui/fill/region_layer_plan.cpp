@@ -1,4 +1,5 @@
 #include "region_layer_plan.h"
+#include "fill_geometry.h"
 
 #include "region_fill.h"
 
@@ -7,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <vector>
 
 namespace gui {
@@ -214,6 +216,26 @@ double enclosureSize(const QPainterPath &path) {
     return bounds.width() * bounds.height();
 }
 
+template<typename Region>
+int smallestContainingRegion(const QVector<Region> &regions, int child) {
+    int result = -1;
+    double bestSize = std::numeric_limits<double>::max();
+
+    for (int parent = 0; parent < regions.size(); ++parent) {
+        if (child == parent
+            || !strictlyContains(regions[parent].outerPath, regions[child].outerPath)) {
+            continue;
+        }
+        const double size = enclosureSize(regions[parent].outerPath);
+        if (size < bestSize) {
+            result = parent;
+            bestSize = size;
+        }
+    }
+
+    return result;
+}
+
 QRect pixelBounds(const QVector<int> &pixels, int width) {
     if (pixels.isEmpty() || width <= 0) {
         return {};
@@ -234,6 +256,25 @@ QRect pixelBounds(const QVector<int> &pixels, int width) {
     return QRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
 }
 
+std::vector<std::uint8_t> pixelMask(const QVector<int> &pixels,
+                                    int imageWidth,
+                                    const QRect &bounds) {
+    std::vector<std::uint8_t> mask(
+        static_cast<size_t>(bounds.width()) * bounds.height(), 0);
+    const int width = bounds.width();
+    const int height = bounds.height();
+
+    for (const int pixel : pixels) {
+        const int x = pixel % imageWidth - bounds.left();
+        const int y = pixel / imageWidth - bounds.top();
+        if (x >= 0 && y >= 0 && x < width && y < height) {
+            mask[static_cast<size_t>(y) * width + x] = 1;
+        }
+    }
+
+    return mask;
+}
+
 QPainterPath tracePixels(const QVector<int> &pixels,
                          const QSize &imageSize,
                          const RegionExtractionParams &params) {
@@ -245,14 +286,7 @@ QPainterPath tracePixels(const QVector<int> &pixels,
     }
     const int width = bounds.width();
     const int height = bounds.height();
-    std::vector<std::uint8_t> mask(static_cast<size_t>(width) * height, 0);
-    for (const int pixel : pixels) {
-        const int x = pixel % imageWidth - bounds.left();
-        const int y = pixel / imageWidth - bounds.top();
-        if (x >= 0 && y >= 0 && x < width && y < height) {
-            mask[static_cast<size_t>(y) * width + x] = 1;
-        }
-    }
+    const auto mask = pixelMask(pixels, imageWidth, bounds);
     QPainterPath path = traceMaskToPath(
         mask, width, height, QRect(0, 0, width, height), params);
     path.translate(bounds.left(), bounds.top());
@@ -271,6 +305,28 @@ int estimatedShapeCount(int pixelCount, int pointCount) {
     return pointCount * kEstimatedBoundaryShapesPerPoint + coreShapes;
 }
 
+struct BridgeComplexity {
+    int pointCount = 0;
+    int shapeCount = 0;
+    bool empty = true;
+};
+
+BridgeComplexity mergedBridgeComplexity(const SourceRegion &left,
+                                        const SourceRegion &right,
+                                        const QVector<int> &corridor,
+                                        const RegionExtractionResult &regions) {
+    QVector<int> pixels = left.pixels;
+    pixels += right.pixels;
+    pixels += corridor;
+    std::sort(pixels.begin(), pixels.end());
+    pixels.erase(std::unique(pixels.begin(), pixels.end()), pixels.end());
+    const QPainterPath outline = tracePixels(
+        pixels, regions.imageSize, regions.raster->traceParams);
+    const int pointCount = pathPointCount(outline);
+
+    return {pointCount, estimatedShapeCount(pixels.size(), pointCount), outline.isEmpty()};
+}
+
 std::vector<std::uint8_t> squareBinaryFilter(
     const std::vector<std::uint8_t> &source,
     int width,
@@ -281,42 +337,33 @@ std::vector<std::uint8_t> squareBinaryFilter(
     std::vector<std::uint8_t> result(source.size(), 0);
     QVector<int> prefix(std::max(width, height) + 1, 0);
     const int windowSize = radius * 2 + 1;
-    for (int y = 0; y < height; ++y) {
-        prefix[0] = 0;
-        for (int x = 0; x < width; ++x) {
-            prefix[x + 1] = prefix[x]
-                + source[static_cast<size_t>(y) * width + x];
+    const auto filterLines = [&](const std::vector<std::uint8_t> &input,
+                                 std::vector<std::uint8_t> &output,
+                                 int lineCount, int lineLength,
+                                 int lineStride, int pixelStride) {
+        for (int line = 0; line < lineCount; ++line) {
+            const size_t offset = static_cast<size_t>(line) * lineStride;
+            prefix[0] = 0;
+            for (int pixel = 0; pixel < lineLength; ++pixel) {
+                prefix[pixel + 1] = prefix[pixel]
+                    + input[offset + static_cast<size_t>(pixel) * pixelStride];
+            }
+            for (int pixel = 0; pixel < lineLength; ++pixel) {
+                const int first = pixel - radius;
+                const int last = pixel + radius;
+                const int clippedFirst = std::max(0, first);
+                const int clippedLast = std::min(lineLength - 1, last);
+                const int count = prefix[clippedLast + 1] - prefix[clippedFirst];
+                const bool enabled = requireFullWindow
+                    ? first >= 0 && last < lineLength && count == windowSize
+                    : count > 0;
+                output[offset + static_cast<size_t>(pixel) * pixelStride] = enabled ? 1 : 0;
+            }
         }
-        for (int x = 0; x < width; ++x) {
-            const int left = x - radius;
-            const int right = x + radius;
-            const int clippedLeft = std::max(0, left);
-            const int clippedRight = std::min(width - 1, right);
-            const int count = prefix[clippedRight + 1] - prefix[clippedLeft];
-            const bool enabled = requireFullWindow
-                ? left >= 0 && right < width && count == windowSize
-                : count > 0;
-            horizontal[static_cast<size_t>(y) * width + x] = enabled ? 1 : 0;
-        }
-    }
-    for (int x = 0; x < width; ++x) {
-        prefix[0] = 0;
-        for (int y = 0; y < height; ++y) {
-            prefix[y + 1] = prefix[y]
-                + horizontal[static_cast<size_t>(y) * width + x];
-        }
-        for (int y = 0; y < height; ++y) {
-            const int top = y - radius;
-            const int bottom = y + radius;
-            const int clippedTop = std::max(0, top);
-            const int clippedBottom = std::min(height - 1, bottom);
-            const int count = prefix[clippedBottom + 1] - prefix[clippedTop];
-            const bool enabled = requireFullWindow
-                ? top >= 0 && bottom < height && count == windowSize
-                : count > 0;
-            result[static_cast<size_t>(y) * width + x] = enabled ? 1 : 0;
-        }
-    }
+    };
+
+    filterLines(source, horizontal, height, width, width, 1);
+    filterLines(horizontal, result, width, height, 1, width);
 
     return result;
 }
@@ -334,14 +381,7 @@ QVector<int> morphologicallyClosedPixels(const QVector<int> &pixels,
     }
     const int width = bounds.width();
     const int height = bounds.height();
-    std::vector<std::uint8_t> mask(static_cast<size_t>(width) * height, 0);
-    for (const int pixel : pixels) {
-        const int x = pixel % imageWidth - bounds.left();
-        const int y = pixel / imageWidth - bounds.top();
-        if (x >= 0 && y >= 0 && x < width && y < height) {
-            mask[static_cast<size_t>(y) * width + x] = 1;
-        }
-    }
+    const auto mask = pixelMask(pixels, imageWidth, bounds);
     const std::vector<std::uint8_t> dilated =
         squareBinaryFilter(mask, width, height, radius, false);
     const std::vector<std::uint8_t> closed =
@@ -358,11 +398,6 @@ QVector<int> morphologicallyClosedPixels(const QVector<int> &pixels,
     return result;
 }
 
-double hullCross(const QPointF &origin, const QPointF &left, const QPointF &right) {
-    return (left.x() - origin.x()) * (right.y() - origin.y())
-        - (left.y() - origin.y()) * (right.x() - origin.x());
-}
-
 QPolygonF convexHull(QPolygonF points) {
     std::sort(points.begin(), points.end(), [](const QPointF &left, const QPointF &right) {
         return left.x() < right.x()
@@ -372,28 +407,7 @@ QPolygonF convexHull(QPolygonF points) {
     if (points.size() < 3) {
         return points;
     }
-    QPolygonF lower;
-    for (const QPointF &point : points) {
-        while (lower.size() >= 2
-               && hullCross(lower[lower.size() - 2], lower.back(), point) <= 0.0) {
-            lower.pop_back();
-        }
-        lower.push_back(point);
-    }
-    QPolygonF upper;
-    for (int i = points.size() - 1; i >= 0; --i) {
-        const QPointF &point = points[i];
-        while (upper.size() >= 2
-               && hullCross(upper[upper.size() - 2], upper.back(), point) <= 0.0) {
-            upper.pop_back();
-        }
-        upper.push_back(point);
-    }
-    lower.pop_back();
-    upper.pop_back();
-    lower += upper;
-
-    return lower;
+    return fill_geometry::convexHullFromSortedPoints(points, 0.0);
 }
 
 QVector<int> convexPixels(const QVector<int> &pixels,
@@ -761,26 +775,27 @@ QVector<int> foregroundBridge(int start,
 QVector<int> rasterizedConnectorPixels(const QPainterPath &connector,
                                        const QSize &imageSize);
 
-QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
+struct EdgeComponent {
+    QVector<int> pixels;
+    QHash<int, QHash<int, int>> sourcePixelByContactPixel;
+};
+
+struct ContourEdgeComponents {
+    QVector<EdgeComponent> components;
+    QVector<int> componentByPixel;
+};
+
+std::optional<ContourEdgeComponents> findContourEdgeComponents(
     const RegionExtractionResult &regions,
     const QVector<SourceRegion> &sources,
     const std::vector<int> &sourceDataAtPixel,
     const std::vector<std::uint8_t> &lineart,
-    const RegionLayerPlanProgress &progress,
-    const std::function<bool()> &cancelled) {
-    struct EdgeComponent {
-        QVector<int> pixels;
-        QHash<int, QHash<int, int>> sourcePixelByContactPixel;
-    };
-
+    const std::function<bool()> &cancelled,
+    bool checkTraversalCancellation) {
     const int width = regions.imageSize.width();
     const int height = regions.imageSize.height();
     const int pixelCount = width * height;
-    const std::vector<std::uint8_t> &foreground = regions.raster->foreground;
-    if (lineart.size() != static_cast<size_t>(pixelCount)
-        || foreground.size() != static_cast<size_t>(pixelCount)) {
-        return {};
-    }
+    const auto &foreground = regions.raster->foreground;
     QVector<QSet<int>> outerBoundaryPixels(sources.size());
     QPainterPathStroker boundaryStroker;
     boundaryStroker.setWidth(kOuterBoundaryStrokeWidth);
@@ -816,7 +831,8 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
         queue.push_back(start);
         componentByPixel[start] = componentIndex;
         for (int queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
-            if ((queueIndex & 4095) == 0 && planningCancelled(cancelled)) {
+            if (checkTraversalCancellation && (queueIndex & 4095) == 0
+                && planningCancelled(cancelled)) {
                 return {};
             }
             const int pixel = queue[queueIndex];
@@ -856,6 +872,68 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
             }
         }
     }
+
+    return ContourEdgeComponents{std::move(components), std::move(componentByPixel)};
+}
+
+void propagateComponentDistances(QVector<int> &queue,
+                                  const QVector<int> &componentByPixel,
+                                  int componentIndex,
+                                  int width,
+                                  int height,
+                                  QVector<int> &visitGeneration,
+                                  int generation,
+                                  QVector<int> &distances,
+                                  QVector<int> *originSourcePixels = nullptr) {
+    for (int queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
+        const int pixel = queue[queueIndex];
+        const int x = pixel % width;
+        const int y = pixel / width;
+        const int neighbors[] = {
+            x > 0 ? pixel - 1 : -1,
+            x + 1 < width ? pixel + 1 : -1,
+            y > 0 ? pixel - width : -1,
+            y + 1 < height ? pixel + width : -1,
+        };
+        for (const int neighbor : neighbors) {
+            if (neighbor < 0
+                || componentByPixel[neighbor] != componentIndex
+                || visitGeneration[neighbor] == generation) {
+                continue;
+            }
+            visitGeneration[neighbor] = generation;
+            distances[neighbor] = distances[pixel] + 1;
+            if (originSourcePixels != nullptr) {
+                (*originSourcePixels)[neighbor] = (*originSourcePixels)[pixel];
+            }
+            queue.push_back(neighbor);
+        }
+    }
+}
+
+QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
+    const RegionExtractionResult &regions,
+    const QVector<SourceRegion> &sources,
+    const std::vector<int> &sourceDataAtPixel,
+    const std::vector<std::uint8_t> &lineart,
+    const RegionLayerPlanProgress &progress,
+    const std::function<bool()> &cancelled) {
+    const int width = regions.imageSize.width();
+    const int height = regions.imageSize.height();
+    const int pixelCount = width * height;
+    const std::vector<std::uint8_t> &foreground = regions.raster->foreground;
+    if (lineart.size() != static_cast<size_t>(pixelCount)
+        || foreground.size() != static_cast<size_t>(pixelCount)) {
+        return {};
+    }
+    const auto edgeComponents = findContourEdgeComponents(regions, sources,
+        sourceDataAtPixel, lineart, cancelled, true);
+    if (!edgeComponents) {
+        return {};
+    }
+    const auto &components = edgeComponents->components;
+    const auto &componentByPixel = edgeComponents->componentByPixel;
+    QVector<int> queue;
 
     QHash<quint64, NearbyMergeCandidate> candidateByPair;
     QVector<int> visitGeneration(pixelCount, 0);
@@ -918,28 +996,8 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
                 originSourcePixels[pixel] = leftContacts.value(pixel);
                 queue.push_back(pixel);
             }
-            for (int queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
-                const int pixel = queue[queueIndex];
-                const int x = pixel % width;
-                const int y = pixel / width;
-                const int neighbors[] = {
-                    x > 0 ? pixel - 1 : -1,
-                    x + 1 < width ? pixel + 1 : -1,
-                    y > 0 ? pixel - width : -1,
-                    y + 1 < height ? pixel + width : -1,
-                };
-                for (const int neighbor : neighbors) {
-                    if (neighbor < 0
-                        || componentByPixel[neighbor] != componentIndex
-                        || visitGeneration[neighbor] == generation) {
-                        continue;
-                    }
-                    visitGeneration[neighbor] = generation;
-                    distances[neighbor] = distances[pixel] + 1;
-                    originSourcePixels[neighbor] = originSourcePixels[pixel];
-                    queue.push_back(neighbor);
-                }
-            }
+            propagateComponentDistances(queue, componentByPixel, componentIndex,
+                width, height, visitGeneration, generation, distances, &originSourcePixels);
 
             for (int rightPosition = leftPosition + 1;
                  rightPosition < contactSources.size(); ++rightPosition) {
@@ -974,27 +1032,8 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
                     widthDistances[pixel] = 0;
                     queue.push_back(pixel);
                 }
-                for (int queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
-                    const int pixel = queue[queueIndex];
-                    const int x = pixel % width;
-                    const int y = pixel / width;
-                    const int neighbors[] = {
-                        x > 0 ? pixel - 1 : -1,
-                        x + 1 < width ? pixel + 1 : -1,
-                        y > 0 ? pixel - width : -1,
-                        y + 1 < height ? pixel + width : -1,
-                    };
-                    for (const int neighbor : neighbors) {
-                        if (neighbor < 0
-                            || componentByPixel[neighbor] != componentIndex
-                            || widthVisitGeneration[neighbor] == widthGeneration) {
-                            continue;
-                        }
-                        widthVisitGeneration[neighbor] = widthGeneration;
-                        widthDistances[neighbor] = widthDistances[pixel] + 1;
-                        queue.push_back(neighbor);
-                    }
-                }
+                propagateComponentDistances(queue, componentByPixel, componentIndex,
+                    width, height, widthVisitGeneration, widthGeneration, widthDistances);
                 NearbyMergeCandidate candidate;
                 candidate.leftSource = leftSource;
                 candidate.rightSource = rightSource;
@@ -1025,19 +1064,11 @@ QVector<NearbyMergeCandidate> findHierarchicalContourMergeCandidates(
                             corridor.push_back(pixel);
                         }
                     }
-                    QVector<int> mergedPixels = sources[leftSource].pixels;
-                    mergedPixels += sources[rightSource].pixels;
-                    mergedPixels += corridor;
-                    std::sort(mergedPixels.begin(), mergedPixels.end());
-                    mergedPixels.erase(
-                        std::unique(mergedPixels.begin(), mergedPixels.end()),
-                        mergedPixels.end());
-                    const QPainterPath outline = tracePixels(
-                        mergedPixels, regions.imageSize, regions.raster->traceParams);
-                    const int pointCount = pathPointCount(outline);
-                    const int shapeCount =
-                        estimatedShapeCount(mergedPixels.size(), pointCount);
-                    if (outline.isEmpty()
+                    const auto complexity = mergedBridgeComplexity(sources[leftSource],
+                        sources[rightSource], corridor, regions);
+                    const int pointCount = complexity.pointCount;
+                    const int shapeCount = complexity.shapeCount;
+                    if (complexity.empty
                         || shapeCount >= candidate.separateEstimatedShapeCount
                         || (candidate.bridgeEstimatedShapeCount > 0
                             && shapeCount > candidate.bridgeEstimatedShapeCount)
@@ -1213,10 +1244,6 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
     const std::vector<std::uint8_t> &lineart,
     const RegionLayerPlanProgress &progress,
     const std::function<bool()> &cancelled) {
-    struct EdgeComponent {
-        QVector<int> pixels;
-        QHash<int, QHash<int, int>> sourcePixelByContactPixel;
-    };
     struct AttachmentProposal {
         int leftContactPixel = -1;
         int rightContactPixel = -1;
@@ -1232,77 +1259,14 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
         || foreground.size() != static_cast<size_t>(pixelCount)) {
         return {};
     }
-    QVector<QSet<int>> outerBoundaryPixels(sources.size());
-    QPainterPathStroker boundaryStroker;
-    boundaryStroker.setWidth(kOuterBoundaryStrokeWidth);
-    boundaryStroker.setCapStyle(Qt::RoundCap);
-    boundaryStroker.setJoinStyle(Qt::RoundJoin);
-    for (int sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex) {
-        const QVector<int> pixels = rasterizedConnectorPixels(
-            boundaryStroker.createStroke(sources[sourceIndex].outerPath),
-            regions.imageSize);
-        outerBoundaryPixels[sourceIndex].reserve(pixels.size());
-        for (const int pixel : pixels) {
-            outerBoundaryPixels[sourceIndex].insert(pixel);
-        }
+    const auto edgeComponents = findContourEdgeComponents(regions, sources,
+        sourceDataAtPixel, lineart, cancelled, false);
+    if (!edgeComponents) {
+        return {};
     }
-    QVector<int> componentByPixel(pixelCount, -1);
-    QVector<EdgeComponent> components;
-    QVector<int> queue;
-    for (int start = 0; start < pixelCount; ++start) {
-        if ((start & 4095) == 0 && planningCancelled(cancelled)) {
-            return {};
-        }
-        if (componentByPixel[start] >= 0
-            || lineart[static_cast<size_t>(start)] == 0
-            || foreground[static_cast<size_t>(start)] == 0
-            || sourceDataAtPixel[static_cast<size_t>(start)] >= 0) {
-            continue;
-        }
-        const int componentIndex = components.size();
-        components.push_back(EdgeComponent{});
-        EdgeComponent &component = components.back();
-        queue.clear();
-        queue.push_back(start);
-        componentByPixel[start] = componentIndex;
-        for (int queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
-            const int pixel = queue[queueIndex];
-            component.pixels.push_back(pixel);
-            const int x = pixel % width;
-            const int y = pixel / width;
-            const int neighbors[] = {
-                x > 0 ? pixel - 1 : -1,
-                x + 1 < width ? pixel + 1 : -1,
-                y > 0 ? pixel - width : -1,
-                y + 1 < height ? pixel + width : -1,
-            };
-            for (const int neighbor : neighbors) {
-                if (neighbor < 0) {
-                    continue;
-                }
-                const int neighborSource =
-                    sourceDataAtPixel[static_cast<size_t>(neighbor)];
-                if (neighborSource >= 0) {
-                    if (!outerBoundaryPixels[neighborSource].contains(neighbor)) {
-                        continue;
-                    }
-                    QHash<int, int> &contacts =
-                        component.sourcePixelByContactPixel[neighborSource];
-                    const int existing = contacts.value(pixel, -1);
-                    if (existing < 0 || neighbor < existing) {
-                        contacts.insert(pixel, neighbor);
-                    }
-                    continue;
-                }
-                if (lineart[static_cast<size_t>(neighbor)] != 0
-                    && foreground[static_cast<size_t>(neighbor)] != 0
-                    && componentByPixel[neighbor] < 0) {
-                    componentByPixel[neighbor] = componentIndex;
-                    queue.push_back(neighbor);
-                }
-            }
-        }
-    }
+    const auto &components = edgeComponents->components;
+    const auto &componentByPixel = edgeComponents->componentByPixel;
+
     QVector<NearbyMergeCandidate> candidates;
     int totalContactPairs = 0;
     for (const EdgeComponent &component : components) {
@@ -1471,18 +1435,10 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
                         if (bridgeWidth == kDangerousStraightBridgeWidths.back()) {
                             widestCorridor = corridor;
                         }
-                        QVector<int> mergedPixels = sources[leftSource].pixels;
-                        mergedPixels += sources[rightSource].pixels;
-                        mergedPixels += corridor;
-                        std::sort(mergedPixels.begin(), mergedPixels.end());
-                        mergedPixels.erase(
-                            std::unique(mergedPixels.begin(), mergedPixels.end()),
-                            mergedPixels.end());
-                        const QPainterPath outline = tracePixels(
-                            mergedPixels, regions.imageSize, regions.raster->traceParams);
-                        const int pointCount = pathPointCount(outline);
-                        const int shapeCount = estimatedShapeCount(
-                            mergedPixels.size(), pointCount);
+                        const auto complexity = mergedBridgeComplexity(sources[leftSource],
+                            sources[rightSource], corridor, regions);
+                        const int pointCount = complexity.pointCount;
+                        const int shapeCount = complexity.shapeCount;
                         const bool improvesSeparate =
                             pointCount < candidate.separatePointCount
                             || (pointCount == candidate.separatePointCount
@@ -1492,7 +1448,7 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
                             || pointCount < candidate.bridgePointCount
                             || (pointCount == candidate.bridgePointCount
                                 && shapeCount < candidate.bridgeEstimatedShapeCount);
-                        if (outline.isEmpty() || !improvesSeparate
+                        if (complexity.empty || !improvesSeparate
                             || !improvesSelected) {
                             continue;
                         }
@@ -1520,24 +1476,16 @@ QVector<NearbyMergeCandidate> findStraightHierarchicalContourMergeCandidates(
                     if (attachmentIndex == 0) {
                         continue;
                     }
-                    QVector<int> mergedPixels = sources[leftSource].pixels;
-                    mergedPixels += sources[rightSource].pixels;
-                    mergedPixels += cumulativeBridge;
-                    std::sort(mergedPixels.begin(), mergedPixels.end());
-                    mergedPixels.erase(
-                        std::unique(mergedPixels.begin(), mergedPixels.end()),
-                        mergedPixels.end());
-                    const QPainterPath outline = tracePixels(
-                        mergedPixels, regions.imageSize, regions.raster->traceParams);
-                    const int pointCount = pathPointCount(outline);
-                    const int shapeCount = estimatedShapeCount(
-                        mergedPixels.size(), pointCount);
+                    const auto complexity = mergedBridgeComplexity(sources[leftSource],
+                        sources[rightSource], cumulativeBridge, regions);
+                    const int pointCount = complexity.pointCount;
+                    const int shapeCount = complexity.shapeCount;
                     const bool improvesSeparate =
                         pointCount < selected.front().separatePointCount
                         || (pointCount == selected.front().separatePointCount
                             && shapeCount
                                 < selected.front().separateEstimatedShapeCount);
-                    if (outline.isEmpty() || !improvesSeparate) {
+                    if (complexity.empty || !improvesSeparate) {
                         continue;
                     }
                     NearbyMergeCandidate combined = selected.front();
@@ -1708,7 +1656,10 @@ RegionLayerPlan fallbackPlan(const RegionExtractionResult &regions,
     return plan;
 }
 
-QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units) {
+template<typename UnitColor>
+QImage renderUnitsWithColors(const QSize &imageSize,
+                            const QVector<RegionLayerUnit> &units,
+                            const UnitColor &unitColor) {
     QImage rendered(imageSize, QImage::Format_ARGB32);
     rendered.fill(Qt::transparent);
     QPainter painter(&rendered);
@@ -1716,7 +1667,7 @@ QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units
     painter.setPen(Qt::NoPen);
     painter.setCompositionMode(QPainter::CompositionMode_Source);
     for (const RegionLayerUnit &unit : units) {
-        painter.setBrush(unit.color);
+        painter.setBrush(unitColor(unit));
         painter.drawPath(outerPath(unit.outline));
     }
     painter.end();
@@ -1724,25 +1675,21 @@ QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units
     return rendered;
 }
 
+QImage renderUnits(const QSize &imageSize, const QVector<RegionLayerUnit> &units) {
+    return renderUnitsWithColors(imageSize, units,
+        [](const RegionLayerUnit &unit) { return unit.color; });
+}
+
 QImage renderOwners(const QSize &imageSize,
                     const QVector<RegionLayerUnit> &units,
                     const QVector<int> &groupByRegion) {
-    QImage rendered(imageSize, QImage::Format_ARGB32);
-    rendered.fill(Qt::transparent);
-    QPainter painter(&rendered);
-    painter.setRenderHint(QPainter::Antialiasing, false);
-    painter.setPen(Qt::NoPen);
-    painter.setCompositionMode(QPainter::CompositionMode_Source);
-    for (const RegionLayerUnit &unit : units) {
+    return renderUnitsWithColors(imageSize, units, [&](const RegionLayerUnit &unit) {
         const int source = unit.sourceRegionIndices.front();
         const int group = groupByRegion[source];
         const QRgb encodedOwner = 0xff000000u | static_cast<QRgb>(group + 1);
-        painter.setBrush(QColor::fromRgba(encodedOwner));
-        painter.drawPath(outerPath(unit.outline));
-    }
-    painter.end();
 
-    return rendered;
+        return QColor::fromRgba(encodedOwner);
+    });
 }
 
 int decodedOwner(QRgb encodedOwner) {
@@ -2387,18 +2334,7 @@ RegionLayerPlan buildRegionLayerPlanAttempt(
                             .arg(additionalAttachmentCount);
     QVector<int> parentBySource(sources.size(), -1);
     for (int child = 0; child < sources.size(); ++child) {
-        double bestSize = std::numeric_limits<double>::max();
-        for (int parent = 0; parent < sources.size(); ++parent) {
-            if (child == parent
-                || !strictlyContains(sources[parent].outerPath, sources[child].outerPath)) {
-                continue;
-            }
-            const double size = enclosureSize(sources[parent].outerPath);
-            if (size < bestSize) {
-                parentBySource[child] = parent;
-                bestSize = size;
-            }
-        }
+        parentBySource[child] = smallestContainingRegion(sources, child);
         const int parent = parentBySource[child];
         if (parent < 0
             || !sameColor(regions.regions[sources[child].resultIndex].color,
@@ -2516,18 +2452,7 @@ RegionLayerPlan buildRegionLayerPlanAttempt(
 
     QVector<int> parentByGroup(groups.size(), -1);
     for (int child = 0; child < groups.size(); ++child) {
-        double bestSize = std::numeric_limits<double>::max();
-        for (int parent = 0; parent < groups.size(); ++parent) {
-            if (child == parent
-                || !strictlyContains(groups[parent].outerPath, groups[child].outerPath)) {
-                continue;
-            }
-            const double size = enclosureSize(groups[parent].outerPath);
-            if (size < bestSize) {
-                parentByGroup[child] = parent;
-                bestSize = size;
-            }
-        }
+        parentByGroup[child] = smallestContainingRegion(groups, child);
     }
 
     QVector<QVector<int>> absorbedChildren(groups.size());

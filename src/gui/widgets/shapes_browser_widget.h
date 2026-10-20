@@ -137,6 +137,7 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
+    void refreshCustomGroups();
     void populateCategories();
     void refreshGrid();
     void layoutTiles(const QVector<QWidget *> &tiles);

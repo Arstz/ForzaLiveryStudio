@@ -57,6 +57,8 @@ private:
                            const QVector<QString> &groupIds);
 
     QDoubleSpinBox *floatBox(double low, double high);
+    void setPositionScaleRotation(const fls::scene::Transform2D &transform);
+    void setSingleNodeFields(const fls::scene::Layer &node, double opacity);
     void setSingleLayer(const fls::scene::Shape *layer);
     void setSingleGuide(const fls::scene::GuideLayer *guide);
     void setMultipleLayers(const QVector<fls::scene::Shape *> &layers);
@@ -67,6 +69,8 @@ private:
     void updateValueLabelDrag(const QPoint &globalPos);
     void endValueLabelDrag(bool commit);
     bool isBoxSelection() const;
+    void setBoxProxyValues(const QPointF &center, double scaleXValue, double scaleYValue,
+                           double rotationValue, double skewValue);
     void setBoxProxyFields(bool neutralTransformValues = true);
     QPointF selectionBoxCenter() const;
     void setSelectionColor(const std::array<quint8, 4> &color);

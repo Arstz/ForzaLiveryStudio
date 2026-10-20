@@ -66,4 +66,56 @@ bool bytesAt(const QByteArray &data, int pos, std::initializer_list<quint8> byte
     return true;
 }
 
+BinaryCursor::BinaryCursor(const QByteArray &bytes, const char *truncationMessage)
+    : bytes_(bytes), truncationMessage_(truncationMessage) {}
+
+quint8 BinaryCursor::u8() {
+    require(1);
+
+    return static_cast<quint8>(bytes_[position_++]);
+}
+
+quint16 BinaryCursor::u16() {
+    require(2);
+    const quint16 value = readLeU16(bytes_, position_);
+    position_ += 2;
+
+    return value;
+}
+
+quint32 BinaryCursor::u32() {
+    require(4);
+    const quint32 value = readLeU32(bytes_, position_);
+    position_ += 4;
+
+    return value;
+}
+
+qint32 BinaryCursor::i32() {
+    return static_cast<qint32>(u32());
+}
+
+float BinaryCursor::f32() {
+    require(4);
+    const float value = readLeFloat(bytes_, position_);
+    position_ += 4;
+
+    return value;
+}
+
+void BinaryCursor::skip(int count) {
+    require(count);
+    position_ += count;
+}
+
+int BinaryCursor::position() const {
+    return position_;
+}
+
+void BinaryCursor::require(int count) const {
+    if (count < 0 || position_ < 0 || position_ + count > bytes_.size()) {
+        throw std::runtime_error(truncationMessage_);
+    }
+}
+
 } // namespace fls::detail

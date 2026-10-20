@@ -58,20 +58,27 @@ private:
         int vertexCount = 0;
     };
 
-    void setUniformRows(int row0Location, int row1Location, const QTransform &transform);
-    ShapeRange fallbackRange(int shapeId, const ShapeGeometryStore &geometry);
+    template<typename VisitShapes>
+    bool drawShapeBatch(QOpenGLFunctions *functions, const ShapeGeometryStore &geometry,
+                         const QTransform &worldToScreen, const QSize &size, VisitShapes visitShapes);
+    template<typename VisitShapes>
+    void drawFlashingShapes(QOpenGLFunctions *functions, const ShapeGeometryStore &geometry,
+                             const QTransform &worldToScreen, const QSize &size,
+                             const QSet<QString> &flashingLayerIds, double flashHue,
+                             double flashStrength, VisitShapes visitShapes);
+    bool beginSceneFramebuffer(QOpenGLFunctions *functions, const QSize &size);
     bool drawSceneToFbo(QOpenGLFunctions *functions,
                         const fls::Project &project,
                         const ShapeGeometryStore &geometry,
                         const QTransform &worldToScreen,
                         const QSize &size);
-    bool drawProjectLayers(QOpenGLFunctions *functions,
-                           const fls::Project &project,
+    bool drawRenderEntries(QOpenGLFunctions *functions,
+                           const QVector<SceneRenderEntry> &entries,
                            const ShapeGeometryStore &geometry,
                            const QTransform &worldToScreen,
                            const QSize &size);
-    bool drawRenderEntries(QOpenGLFunctions *functions,
-                           const QVector<SceneRenderEntry> &entries,
+    bool drawProjectLayers(QOpenGLFunctions *functions,
+                           const fls::Project &project,
                            const ShapeGeometryStore &geometry,
                            const QTransform &worldToScreen,
                            const QSize &size);
@@ -85,6 +92,8 @@ private:
     GLuint ensureRasterTexture(QOpenGLFunctions *functions, quint32 rasterId);
     void ensureSceneFramebuffer(const QSize &size);
     void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
+    void setUniformRows(int row0Location, int row1Location, const QTransform &transform);
+    ShapeRange fallbackRange(int shapeId, const ShapeGeometryStore &geometry);
 
     QOpenGLShaderProgram program_;
     QOpenGLShaderProgram rasterProgram_;

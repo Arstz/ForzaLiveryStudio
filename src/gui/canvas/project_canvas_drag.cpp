@@ -104,6 +104,19 @@ void assignDecomposition(Item *item, const ScaleDecomposition &dec) {
     }
 }
 
+template<typename LayerType>
+QVector<LayerType *> selectedLeavesOutsideGroups(const QVector<LayerType *> &selected,
+                                                 const QSet<QString> &groupedIds) {
+    QVector<LayerType *> result;
+    for (LayerType *layer : selected) {
+        if (!groupedIds.contains(layer->id)) {
+            result.push_back(layer);
+        }
+    }
+
+    return result;
+}
+
 bool transformsEqual(const fls::scene::Transform2D &left,
                      const fls::scene::Transform2D &right) {
     return left.x == right.x
@@ -143,18 +156,8 @@ void ProjectCanvas::cycleFlipSelection() {
     QSet<QString> groupedGuideIds;
     collectDragGroups(groupIds, groupStartFrames, groupedLayerIds, groupedGuideIds);
 
-    QVector<fls::scene::Shape *> layers;
-    QVector<fls::scene::GuideLayer *> guides;
-    for (fls::scene::Shape *layer : selectedShapeLeaves) {
-        if (!groupedLayerIds.contains(layer->id)) {
-            layers.push_back(layer);
-        }
-    }
-    for (fls::scene::GuideLayer *guide : selectedGuideLeaves) {
-        if (!groupedGuideIds.contains(guide->id)) {
-            guides.push_back(guide);
-        }
-    }
+    auto layers = selectedLeavesOutsideGroups(selectedShapeLeaves, groupedLayerIds);
+    auto guides = selectedLeavesOutsideGroups(selectedGuideLeaves, groupedGuideIds);
     if (!groupIds.isEmpty() && layers.isEmpty() && guides.isEmpty()) {
         groupIds.clear();
         layers = selectedShapeLeaves;
@@ -421,18 +424,8 @@ bool ProjectCanvas::nudgeSelection(const QPointF &delta) {
     QSet<QString> groupedGuideIds;
     collectDragGroups(groupIds, groupStartFrames, groupedLayerIds, groupedGuideIds);
 
-    QVector<fls::scene::Shape *> layers;
-    QVector<fls::scene::GuideLayer *> guides;
-    for (fls::scene::Shape *layer : selectedLayers()) {
-        if (!groupedLayerIds.contains(layer->id)) {
-            layers.push_back(layer);
-        }
-    }
-    for (fls::scene::GuideLayer *guide : selectedGuideLayers()) {
-        if (!groupedGuideIds.contains(guide->id)) {
-            guides.push_back(guide);
-        }
-    }
+    auto layers = selectedLeavesOutsideGroups(selectedLayers(), groupedLayerIds);
+    auto guides = selectedLeavesOutsideGroups(selectedGuideLayers(), groupedGuideIds);
     if (layers.isEmpty() && guides.isEmpty() && groupStartFrames.isEmpty()) {
         return false;
     }

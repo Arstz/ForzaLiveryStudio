@@ -543,6 +543,35 @@ int mergeSmallRegions(PassResult *pass, int width, int height, int areaThreshold
     return merged;
 }
 
+template<typename AcceptPixel, typename VisitPixel>
+void labelConnectedRegion(size_t seed, int label, int width, int height,
+                           std::vector<int> &labels, std::vector<int> &stack,
+                           const AcceptPixel &acceptPixel, const VisitPixel &visitPixel) {
+    stack.clear();
+    stack.push_back(static_cast<int>(seed));
+    labels[seed] = label;
+    while (!stack.empty()) {
+        const int index = stack.back();
+        stack.pop_back();
+        const int x = index % width;
+        const int y = index / width;
+        visitPixel(x, y);
+        const int neighbors[4][2] = {{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}};
+        for (const auto &neighbor : neighbors) {
+            const int nx = neighbor[0];
+            const int ny = neighbor[1];
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                continue;
+            }
+            const size_t neighborIndex = static_cast<size_t>(ny) * width + nx;
+            if (labels[neighborIndex] < 0 && acceptPixel(neighborIndex)) {
+                labels[neighborIndex] = label;
+                stack.push_back(static_cast<int>(neighborIndex));
+            }
+        }
+    }
+}
+
 PassResult segmentPass(const QImage &image,
                        int width,
                        int height,
@@ -582,33 +611,15 @@ PassResult segmentPass(const QImage &image,
             accum.paletteIndex = paletteId;
             accum.minX = accum.maxX = x;
             accum.minY = accum.maxY = y;
-            stack.clear();
-            stack.push_back(static_cast<int>(seed));
-            pass.labels[seed] = label;
-            while (!stack.empty()) {
-                const int index = stack.back();
-                stack.pop_back();
-                const int px = index % width;
-                const int py = index / width;
-                ++accum.area;
-                accum.minX = std::min(accum.minX, px);
-                accum.minY = std::min(accum.minY, py);
-                accum.maxX = std::max(accum.maxX, px);
-                accum.maxY = std::max(accum.maxY, py);
-                const int neighbors[4][2] = {{px - 1, py}, {px + 1, py}, {px, py - 1}, {px, py + 1}};
-                for (const auto &neighbor : neighbors) {
-                    const int nx = neighbor[0];
-                    const int ny = neighbor[1];
-                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-                        continue;
-                    }
-                    const size_t nIndex = static_cast<size_t>(ny) * width + nx;
-                    if (pass.labels[nIndex] < 0 && paletteIndex[nIndex] == paletteId) {
-                        pass.labels[nIndex] = label;
-                        stack.push_back(static_cast<int>(nIndex));
-                    }
-                }
-            }
+            labelConnectedRegion(seed, label, width, height, pass.labels, stack,
+                [&](size_t index) { return paletteIndex[index] == paletteId; },
+                [&](int x, int y) {
+                    ++accum.area;
+                    accum.minX = std::min(accum.minX, x);
+                    accum.minY = std::min(accum.minY, y);
+                    accum.maxX = std::max(accum.maxX, x);
+                    accum.maxY = std::max(accum.maxY, y);
+                });
             pass.accums.push_back(accum);
         }
     }
@@ -1873,37 +1884,20 @@ RegionExtractionResult extractRegions(const QImage &sourceImage,
             LineAccum accum;
             accum.minX = accum.maxX = x;
             accum.minY = accum.maxY = y;
-            lineStack.clear();
-            lineStack.push_back(static_cast<int>(seed));
-            lineLabels[seed] = compId;
-            while (!lineStack.empty()) {
-                const int index = lineStack.back();
-                lineStack.pop_back();
-                const int px = index % width;
-                const int py = index / width;
-                ++accum.area;
-                accum.minX = std::min(accum.minX, px);
-                accum.minY = std::min(accum.minY, py);
-                accum.maxX = std::max(accum.maxX, px);
-                accum.maxY = std::max(accum.maxY, py);
-                const QRgb pixel = reinterpret_cast<const QRgb *>(image.constScanLine(py))[px];
-                accum.rSum += qRed(pixel);
-                accum.gSum += qGreen(pixel);
-                accum.bSum += qBlue(pixel);
-                const int neighbors[4][2] = {{px - 1, py}, {px + 1, py}, {px, py - 1}, {px, py + 1}};
-                for (const auto &neighbor : neighbors) {
-                    const int nx = neighbor[0];
-                    const int ny = neighbor[1];
-                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
-                        continue;
-                    }
-                    const size_t nIndex = static_cast<size_t>(ny) * width + nx;
-                    if (lineartMask[nIndex] && lineLabels[nIndex] < 0) {
-                        lineLabels[nIndex] = compId;
-                        lineStack.push_back(static_cast<int>(nIndex));
-                    }
-                }
-            }
+            labelConnectedRegion(seed, compId, width, height, lineLabels, lineStack,
+                [&](size_t index) { return lineartMask[index]; },
+                [&](int x, int y) {
+                    const QRgb pixel = reinterpret_cast<const QRgb *>(image.constScanLine(y))[x];
+
+                    ++accum.area;
+                    accum.minX = std::min(accum.minX, x);
+                    accum.minY = std::min(accum.minY, y);
+                    accum.maxX = std::max(accum.maxX, x);
+                    accum.maxY = std::max(accum.maxY, y);
+                    accum.rSum += qRed(pixel);
+                    accum.gSum += qGreen(pixel);
+                    accum.bSum += qBlue(pixel);
+                });
             lineAccums.push_back(accum);
         }
     }

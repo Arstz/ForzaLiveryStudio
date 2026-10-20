@@ -243,23 +243,10 @@ RegionFillBatchResult computeRegionFills(
     } else {
         qWarning().noquote() << "Could not write region layer log to" << layerLogPath;
     }
-    const auto unitSourcesText = [&regionOverlay](const FillUnit &unit) {
+    const auto sourcesText = [&regionOverlay](const QVector<int> &sourceIndices) {
         QStringList values;
-        values.reserve(unit.sourceIndices.size());
-        for (const int sourceIndex : unit.sourceIndices) {
-            if (sourceIndex >= 0 && sourceIndex < regionOverlay.regions.size()) {
-                values.push_back(QStringLiteral("%1/label-%2")
-                                     .arg(sourceIndex)
-                                     .arg(regionOverlay.regions[sourceIndex].id));
-            }
-        }
-
-        return values.join(QLatin1Char(','));
-    };
-    const auto absorbedSourcesText = [&regionOverlay](const FillUnit &unit) {
-        QStringList values;
-        values.reserve(unit.absorbedIndices.size());
-        for (const int sourceIndex : unit.absorbedIndices) {
+        values.reserve(sourceIndices.size());
+        for (const int sourceIndex : sourceIndices) {
             if (sourceIndex >= 0 && sourceIndex < regionOverlay.regions.size()) {
                 values.push_back(QStringLiteral("%1/label-%2")
                                      .arg(sourceIndex)
@@ -276,8 +263,8 @@ RegionFillBatchResult computeRegionFills(
                    .arg(variantName)
                    .arg(units[i].drawOrder)
                    .arg(units[i].color.name(QColor::HexRgb))
-                   .arg(unitSourcesText(units[i]))
-                   .arg(absorbedSourcesText(units[i]))
+                   .arg(sourcesText(units[i].sourceIndices))
+                   .arg(sourcesText(units[i].absorbedIndices))
                    .arg(units[i].area, 0, 'f', 0);
     }
     result.totalRegions = units.size();
@@ -455,7 +442,7 @@ RegionFillBatchResult computeRegionFills(
                           "removed-soft=%9, hard-only-retry=%10, "
                           "optimization-skipped=%11, DSSIM=%12")
                .arg(biggestUnitIndex)
-               .arg(unitSourcesText(biggestUnit))
+               .arg(sourcesText(biggestUnit.sourceIndices))
                .arg(biggestUnit.color.name())
                .arg(biggestUnit.area, 0, 'f', 0)
                .arg(biggestWork.contourStats.originalPointCount)
@@ -478,7 +465,7 @@ RegionFillBatchResult computeRegionFills(
         stream.setRealNumberPrecision(17);
         stream << "Largest Fill Region path points\n"
                << "region_index=" << biggestUnitIndex << '\n'
-               << "source_indices=" << unitSourcesText(biggestUnit) << '\n'
+               << "source_indices=" << sourcesText(biggestUnit.sourceIndices) << '\n'
                << "color=" << biggestUnit.color.name() << '\n'
                << "area=" << biggestUnit.area << '\n'
                << "original_pen_point_count="
@@ -637,7 +624,7 @@ RegionFillBatchResult computeRegionFills(
                               "area=%6 -> %7 shapes, %8 ms%9")
                    .arg(variantName)
                    .arg(unit.drawOrder)
-                   .arg(unitSourcesText(unit))
+                   .arg(sourcesText(unit.sourceIndices))
                    .arg(unit.color.name())
                    .arg(work.via)
                    .arg(unit.area, 0, 'f', 0)

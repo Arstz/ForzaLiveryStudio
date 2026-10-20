@@ -2,6 +2,7 @@
 
 #include "layer.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace fls {
@@ -67,6 +68,46 @@ Matrix3 shapeMatrix(const FlattenedLayer &layer) {
     result = detail::multiply(result, affine(1.0, layer.skew, 0.0, 0.0, 1.0, 0.0));
     result = detail::multiply(result, affine(layer.scaleX, 0.0, 0.0, 0.0, layer.scaleY, 0.0));
     return result;
+}
+
+Matrix3 shapeMatrix(const VinylShape &shape) {
+    FlattenedLayer layer;
+    layer.rotation = shape.rotation;
+    layer.posX = shape.posX;
+    layer.posY = shape.posY;
+    layer.scaleX = shape.scaleX;
+    layer.scaleY = shape.scaleY;
+    layer.skew = shape.skew;
+
+    return shapeMatrix(layer);
+}
+
+Matrix3 vinylGroupMatrix(const VinylGroup &group) {
+    const double radians = group.rot * Pi / 180.0;
+    const double cosine = std::cos(radians);
+    const double sine = std::sin(radians);
+
+    return affine(cosine * group.sx, -sine * group.sy, group.px,
+                  sine * group.sx, cosine * group.sy, group.py);
+}
+
+QPointF pointBoundsCenter(const QVector<QPointF> &points) {
+    if (points.isEmpty()) {
+        return {};
+    }
+    double minX = points.front().x();
+    double maxX = minX;
+    double minY = points.front().y();
+    double maxY = minY;
+
+    for (const QPointF &point : points) {
+        minX = std::min(minX, point.x());
+        maxX = std::max(maxX, point.x());
+        minY = std::min(minY, point.y());
+        maxY = std::max(maxY, point.y());
+    }
+
+    return QPointF((minX + maxX) / 2.0, (minY + maxY) / 2.0);
 }
 
 Matrix3 invertAffine(const Matrix3 &matrix) {

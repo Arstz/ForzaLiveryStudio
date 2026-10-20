@@ -224,27 +224,6 @@ void runPreprocessAsync(ImagePreprocessDialog *dialog,
     });
 }
 
-QVector<QColor> uniqueOpaqueColors(const QVector<QColor> &colors) {
-    QVector<QColor> result;
-    result.reserve(std::min(256, static_cast<int>(colors.size())));
-    for (const QColor &input : colors) {
-        if (!input.isValid()) {
-            continue;
-        }
-        const QColor color(input.red(), input.green(), input.blue(), 255);
-        const bool duplicate = std::any_of(result.cbegin(), result.cend(), [&](const QColor &existing) {
-            return existing.rgb() == color.rgb();
-        });
-        if (!duplicate) {
-            result.push_back(color);
-            if (result.size() == 256) {
-                break;
-            }
-        }
-    }
-    return result;
-}
-
 } // namespace
 
 ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
@@ -252,7 +231,7 @@ ImagePreprocessDialog::ImagePreprocessDialog(const QImage &source,
                                              QWidget *parent)
     : QDialog(parent)
     , source_(source.convertToFormat(QImage::Format_ARGB32_Premultiplied))
-    , projectSwatches_(uniqueOpaqueColors(projectSwatches)) {
+    , projectSwatches_(normalizedImagePalette(projectSwatches)) {
     setWindowTitle(QStringLiteral("Preprocess Image"));
     resize(1100, 680);
     setMinimumSize(820, 560);
@@ -640,7 +619,7 @@ void ImagePreprocessDialog::importProjectSwatches() {
     }
     // Project swatches define fixed mode, so preserve all of them before any
     // manually locked additions if the 256-color image limit is reached.
-    paletteColors_ = uniqueOpaqueColors(projectSwatches_ + paletteColors_);
+    paletteColors_ = normalizedImagePalette(projectSwatches_ + paletteColors_);
     fixedPalette_ = true;
     setEyedropperActive(false);
     rebuildPaletteList();

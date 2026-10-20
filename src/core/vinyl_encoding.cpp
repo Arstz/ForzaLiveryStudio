@@ -35,6 +35,29 @@ VinylShapePlacement vinylShapePlacement(
     return out;
 }
 
+QVector<QPointF> vinylShapeCorners(const VinylShapePlacement &shape, const QPointF &halfExtents) {
+    FlattenedLayer layer;
+    layer.rotation = shape.rotation;
+    layer.posX = shape.x;
+    layer.posY = shape.y;
+    layer.scaleX = shape.scaleX;
+    layer.scaleY = shape.scaleY;
+    layer.skew = shape.skew;
+    const Matrix3 matrix = shapeMatrix(layer);
+    const std::array<QPointF, 4> localCorners = {
+        QPointF(-halfExtents.x(), -halfExtents.y()), QPointF(halfExtents.x(), -halfExtents.y()),
+        QPointF(halfExtents.x(), halfExtents.y()), QPointF(-halfExtents.x(), halfExtents.y())};
+    QVector<QPointF> corners;
+
+    for (const QPointF &point : localCorners) {
+        corners.push_back(QPointF(
+            matrix.m[0][0] * point.x() + matrix.m[0][1] * point.y() + matrix.m[0][2],
+            matrix.m[1][0] * point.x() + matrix.m[1][1] * point.y() + matrix.m[1][2]));
+    }
+
+    return corners;
+}
+
 void appendVinylShapeRecord(QByteArray &out, const VinylShapePlacement &shape,
                             double offsetX, double offsetY, quint8 shapeMarker,
                             std::optional<quint8> state) {
@@ -86,6 +109,15 @@ QByteArray vinylSiblingGroupMarker(int previousGroupDepth) {
     out.append('\x03');
 
     return out;
+}
+
+QByteArray vinylGroupTransformMarker(bool previousWasGroup, int previousGroupDepth,
+                                     bool hasPreviousSibling, const QByteArray &firstMarker) {
+    if (previousWasGroup) {
+        return vinylSiblingGroupMarker(previousGroupDepth);
+    }
+
+    return hasPreviousSibling ? QByteArray("\x00\x03", 2) : firstMarker;
 }
 
 void appendVinylGroupShapeTransition(QByteArray &out, int previousGroupDepth) {

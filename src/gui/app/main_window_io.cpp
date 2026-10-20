@@ -1007,31 +1007,16 @@ void MainWindow::fillRegions() {
             RegionFillBatchResult result = computeRegionFills(
                 request,
                 [guard, generation](const QString &phase, int completed, int total) {
-                    if (guard.isNull()) {
-                        return;
-                    }
-                    QMetaObject::invokeMethod(
-                        guard.data(),
-                        [guard, generation, phase, completed, total]() {
-                            if (!guard.isNull()) {
-                                guard->updateRegionFillProgress(
-                                    generation, phase, completed, total);
-                            }
-                        },
-                        Qt::QueuedConnection);
+                    queueMainWindowCallback(guard,
+                        [generation, phase, completed, total](MainWindow &window) {
+                            window.updateRegionFillProgress(generation, phase, completed, total);
+                        });
                 },
                 [token]() { return token->load(std::memory_order_relaxed); });
-            if (guard.isNull()) {
-                return;
-            }
-            QMetaObject::invokeMethod(
-                guard.data(),
-                [guard, generation, result = std::move(result)]() mutable {
-                    if (!guard.isNull()) {
-                        guard->finishRegionFill(generation, std::move(result));
-                    }
-                },
-                Qt::QueuedConnection);
+            queueMainWindowCallback(guard,
+                [generation, result = std::move(result)](MainWindow &window) mutable {
+                    window.finishRegionFill(generation, std::move(result));
+                });
         });
     task->setAutoDelete(true);
     QThreadPool::globalInstance()->start(task);

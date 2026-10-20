@@ -2,6 +2,8 @@
 
 #include "core_types.h"
 
+#include <QPointF>
+
 #include <optional>
 
 namespace fls::scene {
@@ -24,12 +26,15 @@ struct VinylShapePlacement {
 
 VinylShapePlacement vinylShapePlacement(
     const scene::Shape &shape, const std::optional<Matrix3> &worldAdjustment = std::nullopt);
+QVector<QPointF> vinylShapeCorners(const VinylShapePlacement &shape, const QPointF &halfExtents);
 void appendVinylShapeRecord(QByteArray &out, const VinylShapePlacement &shape,
                             double offsetX, double offsetY, quint8 shapeMarker,
                             std::optional<quint8> state = std::nullopt);
 QByteArray standaloneVinylPrefix(const QByteArray &sourcePrefix,
                                  std::optional<quint8> generation = std::nullopt);
 QByteArray vinylSiblingGroupMarker(int previousGroupDepth);
+QByteArray vinylGroupTransformMarker(bool previousWasGroup, int previousGroupDepth,
+                                     bool hasPreviousSibling, const QByteArray &firstMarker);
 void appendVinylGroupShapeTransition(QByteArray &out, int previousGroupDepth);
 
 } // namespace fls::detail

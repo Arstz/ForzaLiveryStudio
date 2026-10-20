@@ -158,7 +158,9 @@ QPolygonF flattenPenContour(const PenContour &contour, int curveSamples) {
     return result;
 }
 
-void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QPolygonF &out) {
+template<typename AcceptChord>
+void rdpRecurse(const QPolygonF &points, int first, int last,
+                const AcceptChord &acceptChord, QPolygonF &out) {
     double maxDistance = 0.0;
     int index = first;
     for (int i = first + 1; i < last; ++i) {
@@ -168,12 +170,44 @@ void rdpRecurse(const QPolygonF &points, int first, int last, double epsilon, QP
             index = i;
         }
     }
-    if (maxDistance > epsilon && index > first) {
-        rdpRecurse(points, first, index, epsilon, out);
-        rdpRecurse(points, index, last, epsilon, out);
+    if (!acceptChord(maxDistance, points[first], points[last]) && index > first) {
+        rdpRecurse(points, first, index, acceptChord, out);
+        rdpRecurse(points, index, last, acceptChord, out);
     } else {
         out.push_back(points[last]);
     }
+}
+
+template<typename SimplifyChain>
+QPolygonF simplifyClosedPolygonChains(const QPolygonF &polygon,
+                                      const SimplifyChain &simplifyChain) {
+    int anchorB = 0;
+    double maxSpan = -1.0;
+    for (int i = 1; i < polygon.size(); ++i) {
+        const double span = QLineF(polygon[0], polygon[i]).length();
+        if (span > maxSpan) {
+            maxSpan = span;
+            anchorB = i;
+        }
+    }
+    QPolygonF result;
+    result.push_back(polygon[0]);
+    simplifyChain(polygon, 0, anchorB, result);
+    QPolygonF secondHalf;
+    for (int i = anchorB; i < polygon.size(); ++i) {
+        secondHalf.push_back(polygon[i]);
+    }
+    secondHalf.push_back(polygon[0]);
+    QPolygonF secondSimplified;
+    secondSimplified.push_back(secondHalf.front());
+    simplifyChain(secondHalf, 0, secondHalf.size() - 1, secondSimplified);
+    for (int i = 1; i + 1 < secondSimplified.size(); ++i) {
+        result.push_back(secondSimplified[i]);
+    }
+    if (result.size() < 3) {
+        return polygon;
+    }
+    return result;
 }
 
 struct CyclicRdpSlice {
@@ -321,28 +355,6 @@ QPolygonF approximateClosedPolygon(const QPolygonF &polygon, double epsilon) {
     return result.size() >= 3 ? result : polygon;
 }
 
-void rdpCorridorRecurse(const QPolygonF &points, int first, int last, double epsilon,
-                        const std::function<bool(const QPointF &, const QPointF &)> &chordInFreeSpace,
-                        QPolygonF &out) {
-    double maxDistance = 0.0;
-    int index = first;
-    for (int i = first + 1; i < last; ++i) {
-        const double distance = perpendicularDistance(points[i], points[first], points[last]);
-        if (distance > maxDistance) {
-            maxDistance = distance;
-            index = i;
-        }
-    }
-    const bool accept = maxDistance <= epsilon
-        || (chordInFreeSpace && chordInFreeSpace(points[first], points[last]));
-    if (!accept && index > first) {
-        rdpCorridorRecurse(points, first, index, epsilon, chordInFreeSpace, out);
-        rdpCorridorRecurse(points, index, last, epsilon, chordInFreeSpace, out);
-    } else {
-        out.push_back(points[last]);
-    }
-}
-
 QPolygonF largestFlattenedContour(const QPainterPath &outline, int curveSamples = 8) {
     const QVector<Subpath> subpaths = toSubpaths(outline);
     if (subpaths.isEmpty()) {
@@ -465,36 +477,13 @@ QPolygonF simplifyClosedPolygon(const QPolygonF &polygon, double epsilon) {
     if (epsilon <= 0.0 || polygon.size() <= 4) {
         return polygon;
     }
-    int anchorA = 0;
-    int anchorB = 0;
-    double maxSpan = -1.0;
-    for (int i = 1; i < polygon.size(); ++i) {
-        const double span = QLineF(polygon[0], polygon[i]).length();
-        if (span > maxSpan) {
-            maxSpan = span;
-            anchorB = i;
-        }
-    }
-    Q_UNUSED(anchorA);
-    QPolygonF chain = polygon;
-    QPolygonF result;
-    result.push_back(chain[0]);
-    rdpRecurse(chain, 0, anchorB, epsilon, result);
-    QPolygonF secondHalf;
-    for (int i = anchorB; i < chain.size(); ++i) {
-        secondHalf.push_back(chain[i]);
-    }
-    secondHalf.push_back(chain[0]);
-    QPolygonF secondSimplified;
-    secondSimplified.push_back(secondHalf.front());
-    rdpRecurse(secondHalf, 0, secondHalf.size() - 1, epsilon, secondSimplified);
-    for (int i = 1; i + 1 < secondSimplified.size(); ++i) {
-        result.push_back(secondSimplified[i]);
-    }
-    if (result.size() < 3) {
-        return polygon;
-    }
-    return result;
+    return simplifyClosedPolygonChains(polygon,
+        [epsilon](const QPolygonF &points, int first, int last, QPolygonF &out) {
+            rdpRecurse(points, first, last,
+                [epsilon](double distance, const QPointF &, const QPointF &) {
+                    return !(distance > epsilon);
+                }, out);
+        });
 }
 
 QPolygonF simplifyClosedPolygonCyclic(const QPolygonF &polygon, double epsilon) {
@@ -513,33 +502,14 @@ QPolygonF simplifyClosedPolygonCorridor(
     if (polygon.size() <= 4) {
         return polygon;
     }
-    int anchorB = 0;
-    double maxSpan = -1.0;
-    for (int i = 1; i < polygon.size(); ++i) {
-        const double span = QLineF(polygon[0], polygon[i]).length();
-        if (span > maxSpan) {
-            maxSpan = span;
-            anchorB = i;
-        }
-    }
-    QPolygonF result;
-    result.push_back(polygon[0]);
-    rdpCorridorRecurse(polygon, 0, anchorB, epsilon, chordInFreeSpace, result);
-    QPolygonF secondHalf;
-    for (int i = anchorB; i < polygon.size(); ++i) {
-        secondHalf.push_back(polygon[i]);
-    }
-    secondHalf.push_back(polygon[0]);
-    QPolygonF secondSimplified;
-    secondSimplified.push_back(secondHalf.front());
-    rdpCorridorRecurse(secondHalf, 0, secondHalf.size() - 1, epsilon, chordInFreeSpace, secondSimplified);
-    for (int i = 1; i + 1 < secondSimplified.size(); ++i) {
-        result.push_back(secondSimplified[i]);
-    }
-    if (result.size() < 3) {
-        return polygon;
-    }
-    return result;
+    return simplifyClosedPolygonChains(polygon,
+        [&](const QPolygonF &points, int first, int last, QPolygonF &out) {
+            rdpRecurse(points, first, last,
+                [&](double distance, const QPointF &start, const QPointF &end) {
+                    return distance <= epsilon
+                        || (chordInFreeSpace && chordInFreeSpace(start, end));
+                }, out);
+        });
 }
 
 QPolygonF regionOuterContour(const QPainterPath &outline) {

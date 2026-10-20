@@ -202,7 +202,9 @@ private:
         const QImage &differenceHeatmap,
         const QString &sourceGuideId);
     bool copySelectionToClipboard();
+    void executeSelectionCommand(EditorCommandType type, bool flatten = false);
     bool ensureProjectForInsertion();
+    void insertShapeLayer(std::unique_ptr<fls::scene::Shape> layer);
     bool loadImportedProject(const std::function<fls::Project()> &load,
                              const QString &statusMessage,
                              QString *error);
@@ -245,6 +247,7 @@ private:
     void applyToolbarStyle(bool vertical);
     void setupWindowMenu();
     void importCarModel();
+    void loadCarModel(const QString &path, bool automatic);
     void maybeAutoLoadCarForProject(bool replaceLoadedModel = false);
     QString findCarModelPath(const QString &folder, const QString &modelName) const;
 

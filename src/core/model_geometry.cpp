@@ -443,6 +443,28 @@ ModelVec3 ModelMat4::transformVector(const ModelVec3 &v) const {
             v.x * m[2] + v.y * m[6] + v.z * m[10]};
 }
 
+ModelBounds::ModelBounds() {
+    constexpr float kMinimum = std::numeric_limits<float>::max();
+    constexpr float kMaximum = std::numeric_limits<float>::lowest();
+    minimum = {kMinimum, kMinimum, kMinimum};
+    maximum = {kMaximum, kMaximum, kMaximum};
+}
+
+void ModelBounds::include(const ModelVec3 &point) {
+    minimum.x = std::min(minimum.x, point.x);
+    minimum.y = std::min(minimum.y, point.y);
+    minimum.z = std::min(minimum.z, point.z);
+    maximum.x = std::max(maximum.x, point.x);
+    maximum.y = std::max(maximum.y, point.y);
+    maximum.z = std::max(maximum.z, point.z);
+}
+
+void ModelBounds::include(const CarMesh &mesh) {
+    for (const ModelVec3 &position : mesh.positions) {
+        include(mesh.boneTransform.transformPoint(position));
+    }
+}
+
 long long CarModel::totalVertices() const {
     long long n = 0;
     for (const CarMesh &mesh : meshes) {
@@ -562,12 +584,7 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         return nullptr;
     };
 
-    float minX = std::numeric_limits<float>::max();
-    float minY = minX;
-    float minZ = minX;
-    float maxX = std::numeric_limits<float>::lowest();
-    float maxY = maxX;
-    float maxZ = maxX;
+    ModelBounds bounds;
 
     int highestLod = 0;
     for (const BundleBlobRecord *blob : meshBlobs) {
@@ -749,15 +766,7 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         out.liveryUvChannel = (out.uvChannels.size() > 3 && !out.uvChannels[3].empty()) ? 3 : -1;
 
         if ((lodMask & 0x01u) != 0) {
-            for (const ModelVec3 &p : out.positions) {
-                const ModelVec3 w = out.boneTransform.transformPoint(p);
-                minX = std::min(minX, w.x);
-                minY = std::min(minY, w.y);
-                minZ = std::min(minZ, w.z);
-                maxX = std::max(maxX, w.x);
-                maxY = std::max(maxY, w.y);
-                maxZ = std::max(maxZ, w.z);
-            }
+            bounds.include(out);
             model.meshes.push_back(out);
         }
         for (int lod = 1; lod <= highestLod; ++lod) {
@@ -777,8 +786,8 @@ CarModel decodeModel(const ModelBundle &bundle, QString *error) {
         return model;
     }
 
-    model.boundsMin = {minX, minY, minZ};
-    model.boundsMax = {maxX, maxY, maxZ};
+    model.boundsMin = bounds.minimum;
+    model.boundsMax = bounds.maximum;
     return model;
 }
 
@@ -804,25 +813,12 @@ CarModel loadModelBin(const QString &path, QString *error) {
                 model.meshes = *firstLod;
                 model.additionalLodMeshes.erase(
                     model.additionalLodMeshes.begin(), std::next(firstLod));
-                float modelMinX = std::numeric_limits<float>::max();
-                float modelMinY = modelMinX;
-                float modelMinZ = modelMinX;
-                float modelMaxX = std::numeric_limits<float>::lowest();
-                float modelMaxY = modelMaxX;
-                float modelMaxZ = modelMaxX;
+                ModelBounds bounds;
                 for (const CarMesh &mesh : model.meshes) {
-                    for (const ModelVec3 &position : mesh.positions) {
-                        const ModelVec3 world = mesh.boneTransform.transformPoint(position);
-                        modelMinX = std::min(modelMinX, world.x);
-                        modelMinY = std::min(modelMinY, world.y);
-                        modelMinZ = std::min(modelMinZ, world.z);
-                        modelMaxX = std::max(modelMaxX, world.x);
-                        modelMaxY = std::max(modelMaxY, world.y);
-                        modelMaxZ = std::max(modelMaxZ, world.z);
-                    }
+                    bounds.include(mesh);
                 }
-                model.boundsMin = {modelMinX, modelMinY, modelMinZ};
-                model.boundsMax = {modelMaxX, modelMaxY, modelMaxZ};
+                model.boundsMin = bounds.minimum;
+                model.boundsMax = bounds.maximum;
             }
         }
         model.sourcePath = path;
