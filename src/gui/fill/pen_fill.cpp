@@ -17,6 +17,9 @@ using fill_geometry::signedArea;
 using fill_geometry::pathArea;
 
 constexpr double kEpsilon = 1e-8;
+constexpr double kMinimumIntersectionEpsilon = 1e-12;
+constexpr double kIntersectionRoundoffScale = 32.0;
+constexpr double kOrientationRoundoffScale = 8.0;
 constexpr int kCurveSamples = 32;
 constexpr int kSquareShapeId = 101;
 constexpr int kCircleShapeId = 102;
@@ -231,8 +234,15 @@ double distanceToPolygons(const QPointF &point, const QVector<QPolygonF> &polygo
 }
 
 int orientation(const QPointF &a, const QPointF &b, const QPointF &c, double epsilon) {
-    const double value = cross(b - a, c - a);
-    if (std::abs(value) <= epsilon) {
+    const QPointF edge = b - a;
+    const QPointF relative = c - a;
+    const double value = cross(edge, relative);
+    const double roundoff = (std::abs(edge.x() * relative.y())
+                            + std::abs(edge.y() * relative.x()))
+        * std::numeric_limits<double>::epsilon() * kOrientationRoundoffScale;
+    const double geometric = std::hypot(edge.x(), edge.y()) * epsilon;
+
+    if (std::abs(value) <= std::max(roundoff, geometric)) {
         return 0;
     }
     return value > 0.0 ? 1 : -1;
@@ -250,54 +260,50 @@ bool lineIntersection(const QPointF &a,
                       const QPointF &b,
                       const QPointF &c,
                       const QPointF &d,
-                      double epsilon,
                       QPointF *intersection) {
+    const double magnitude = std::max({1.0, std::abs(a.x()), std::abs(a.y()),
+        std::abs(b.x()), std::abs(b.y()), std::abs(c.x()), std::abs(c.y()), std::abs(d.x()), std::abs(d.y())});
+    const double epsilon = std::max(kMinimumIntersectionEpsilon,
+        magnitude * std::numeric_limits<double>::epsilon() * kIntersectionRoundoffScale);
     const int o1 = orientation(a, b, c, epsilon);
     const int o2 = orientation(a, b, d, epsilon);
     const int o3 = orientation(c, d, a, epsilon);
     const int o4 = orientation(c, d, b, epsilon);
-    if (o1 == o2 && o1 != 0) {
-        return false;
-    }
-    if (o3 == o4 && o3 != 0) {
-        return false;
-    }
-    if (o1 == 0 && !pointOnSegment(c, a, b, epsilon)) {
-        return false;
-    }
-    if (o2 == 0 && !pointOnSegment(d, a, b, epsilon)) {
-        return false;
-    }
-    if (o3 == 0 && !pointOnSegment(a, c, d, epsilon)) {
-        return false;
-    }
-    if (o4 == 0 && !pointOnSegment(b, c, d, epsilon)) {
-        return false;
-    }
-    const QPointF r = b - a;
-    const QPointF s = d - c;
-    const double denominator = cross(r, s);
-    if (std::abs(denominator) <= epsilon) {
+    if (o1 != o2 && o1 != 0 && o2 != 0 && o3 != o4 && o3 != 0 && o4 != 0) {
+        const QPointF r = b - a;
+        const QPointF s = d - c;
+        const double denominator = cross(r, s);
         if (intersection != nullptr) {
-            *intersection = (a + b + c + d) * 0.25;
+            *intersection = a + r * (cross(c - a, s) / denominator);
         }
         return true;
     }
-    if (intersection != nullptr) {
-        *intersection = a + r * (cross(c - a, s) / denominator);
-    }
-    return true;
+    const auto endpointIntersection = [&](int value, const QPointF &point,
+                                          const QPointF &start, const QPointF &end) {
+        if (value != 0 || !pointOnSegment(point, start, end, epsilon)) {
+            return false;
+        }
+        if (intersection != nullptr) {
+            *intersection = point;
+        }
+        return true;
+    };
+
+    return endpointIntersection(o1, c, a, b) || endpointIntersection(o2, d, a, b)
+        || endpointIntersection(o3, a, c, d) || endpointIntersection(o4, b, c, d);
 }
 
 QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, double tolerance) {
     struct FlatEdge {
         QPointF a;
         QPointF b;
+        QRectF bounds;
         int segment = 0;
         int sample = 0;
         int samples = 0;
     };
     QVector<FlatEdge> edges;
+    double magnitude = 1.0;
     for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
         const PenBoundarySegment &segment = segments[segmentIndex];
         int samples = segment.curved ? kCurveSamples : 1;
@@ -309,15 +315,30 @@ QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, d
         }
         const QVector<QPointF> points = sampleSegment(segment, samples);
         for (int i = 0; i < samples; ++i) {
-            edges.push_back({points[i], points[i + 1], segmentIndex, i, samples});
+            const QPointF a = points[i];
+            const QPointF b = points[i + 1];
+            magnitude = std::max({magnitude, std::abs(a.x()), std::abs(a.y()), std::abs(b.x()), std::abs(b.y())});
+            edges.push_back({a, b, QRectF(a, b).normalized(), segmentIndex, i, samples});
         }
     }
+    const double coordinateEpsilon = std::max(kMinimumIntersectionEpsilon,
+        magnitude * std::numeric_limits<double>::epsilon() * kIntersectionRoundoffScale);
+    std::stable_sort(edges.begin(), edges.end(), [](const FlatEdge &left, const FlatEdge &right) {
+        return left.bounds.left() < right.bounds.left();
+    });
     QVector<QPointF> crossings;
     const int lastSegment = segments.size() - 1;
     for (int i = 0; i < edges.size(); ++i) {
         for (int j = i + 1; j < edges.size(); ++j) {
             const FlatEdge &a = edges[i];
             const FlatEdge &b = edges[j];
+            if (b.bounds.left() > a.bounds.right() + coordinateEpsilon) {
+                break;
+            }
+            if (b.bounds.top() > a.bounds.bottom() + coordinateEpsilon
+                || a.bounds.top() > b.bounds.bottom() + coordinateEpsilon) {
+                continue;
+            }
             if (a.segment == b.segment && std::abs(a.sample - b.sample) <= 1) {
                 continue;
             }
@@ -325,16 +346,16 @@ QVector<QPointF> contourCrossings(const QVector<PenBoundarySegment> &segments, d
                 || (a.segment == 0 && b.segment == lastSegment)
                 || (b.segment == 0 && a.segment == lastSegment);
             if (adjacent) {
-                const bool sharedEndpoint = (a.b - b.a).manhattanLength() <= tolerance
-                    || (a.a - b.b).manhattanLength() <= tolerance
-                    || (a.a - b.a).manhattanLength() <= tolerance
-                    || (a.b - b.b).manhattanLength() <= tolerance;
+                const bool sharedEndpoint = (a.b - b.a).manhattanLength() <= coordinateEpsilon
+                    || (a.a - b.b).manhattanLength() <= coordinateEpsilon
+                    || (a.a - b.a).manhattanLength() <= coordinateEpsilon
+                    || (a.b - b.b).manhattanLength() <= coordinateEpsilon;
                 if (sharedEndpoint) {
                     continue;
                 }
             }
             QPointF point;
-            if (!lineIntersection(a.a, a.b, b.a, b.b, tolerance * 0.1, &point)) {
+            if (!lineIntersection(a.a, a.b, b.a, b.b, &point)) {
                 continue;
             }
             const bool duplicate = std::any_of(crossings.begin(), crossings.end(), [&](const QPointF &existing) {
@@ -352,31 +373,54 @@ QVector<QPointF> contourPairCrossings(
     const QVector<PenBoundarySegment> &left,
     const QVector<PenBoundarySegment> &right,
     double tolerance) {
+    struct Edge {
+        QPointF a;
+        QPointF b;
+        QRectF bounds;
+        bool leftBoundary = false;
+    };
+    QVector<Edge> edges;
     QVector<QPointF> crossings;
-    for (const PenBoundarySegment &leftSegment : left) {
-        const QVector<QPointF> leftPoints = sampleSegment(leftSegment, kCurveSamples);
-        for (const PenBoundarySegment &rightSegment : right) {
-            const QVector<QPointF> rightPoints = sampleSegment(rightSegment, kCurveSamples);
-            for (int leftIndex = 0; leftIndex + 1 < leftPoints.size(); ++leftIndex) {
-                for (int rightIndex = 0; rightIndex + 1 < rightPoints.size(); ++rightIndex) {
-                    QPointF crossing;
-                    if (!lineIntersection(leftPoints[leftIndex],
-                                          leftPoints[leftIndex + 1],
-                                          rightPoints[rightIndex],
-                                          rightPoints[rightIndex + 1],
-                                          tolerance * 0.1,
-                                          &crossing)) {
-                        continue;
-                    }
-                    const bool duplicate = std::any_of(
-                        crossings.cbegin(), crossings.cend(),
-                        [&](const QPointF &existing) {
-                            return QLineF(existing, crossing).length() <= tolerance * 2.0;
-                        });
-                    if (!duplicate) {
-                        crossings.push_back(crossing);
-                    }
-                }
+    double magnitude = 1.0;
+    const auto appendBoundary = [&](const QVector<PenBoundarySegment> &segments, bool leftBoundary) {
+        for (const auto &segment : segments) {
+            const auto points = sampleSegment(segment, segment.curved ? kCurveSamples : 1);
+            for (int index = 0; index + 1 < points.size(); ++index) {
+                const QPointF a = points[index];
+                const QPointF b = points[index + 1];
+                magnitude = std::max({magnitude, std::abs(a.x()), std::abs(a.y()), std::abs(b.x()), std::abs(b.y())});
+                edges.push_back({a, b, QRectF(a, b).normalized(), leftBoundary});
+            }
+        }
+    };
+    appendBoundary(left, true);
+    appendBoundary(right, false);
+    const double coordinateEpsilon = std::max(kMinimumIntersectionEpsilon,
+        magnitude * std::numeric_limits<double>::epsilon() * kIntersectionRoundoffScale);
+    std::stable_sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) {
+        return a.bounds.left() < b.bounds.left();
+    });
+    for (int first = 0; first < edges.size(); ++first) {
+        const auto &a = edges[first];
+        for (int second = first + 1; second < edges.size(); ++second) {
+            const auto &b = edges[second];
+            if (b.bounds.left() > a.bounds.right() + coordinateEpsilon) {
+                break;
+            }
+            if (a.leftBoundary == b.leftBoundary
+                || b.bounds.top() > a.bounds.bottom() + coordinateEpsilon
+                || a.bounds.top() > b.bounds.bottom() + coordinateEpsilon) {
+                continue;
+            }
+            QPointF crossing;
+            if (!lineIntersection(a.a, a.b, b.a, b.b, &crossing)) {
+                continue;
+            }
+            const bool duplicate = std::any_of(crossings.cbegin(), crossings.cend(), [&](const QPointF &existing) {
+                return QLineF(existing, crossing).length() <= tolerance * 2.0;
+            });
+            if (!duplicate) {
+                crossings.push_back(crossing);
             }
         }
     }

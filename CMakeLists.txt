@@ -394,7 +394,21 @@ target_compile_definitions(fls_editor_ui
         FLS_ENABLE_IMGGEN_MENU=$<BOOL:${FLS_ENABLE_IMGGEN_MENU}>
 )
 
+add_executable(fls_opaque_regions
+    tools/opaque_regions/main.cpp
+    tools/opaque_regions/optimizer.cpp
+    tools/opaque_regions/self_test.cpp
+)
+target_link_libraries(fls_opaque_regions PRIVATE fls_editor_ui)
+
 if(FLS_BUILD_TESTS)
+    add_test(NAME opaque_regions COMMAND fls_opaque_regions --self-test)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME opaque_regions_cli COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/opaque_regions/cli_test.py"
+            "$<TARGET_FILE:fls_opaque_regions>")
+    endif()
     add_executable(fls_profile_compute_tests tools/profile_fit_compute_test.cpp)
     target_link_libraries(fls_profile_compute_tests PRIVATE fls_profile_compute)
     if(FLS_CUDA_AVAILABLE AND WIN32)
