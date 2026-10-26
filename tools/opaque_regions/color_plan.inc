@@ -71,17 +71,33 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
     std::map<QByteArray, Patch> correctionCache;
     std::vector<bool> committed(colors.size());
     int splitCorrections = 0, nestingRejected = 0, geometryRejected = 0, boundedRejected = 0, holeRejected = 0;
+    int exactFallbacks = 0;
     const auto diagnostics = [&]() {
         return QJsonObject{{"restoration_draw_items", splitCorrections}, {"nesting_rejections", nestingRejected},
             {"geometry_rejections", geometryRejected}, {"bounded_cost_rejections", boundedRejected},
-            {"cap_holes_detected", holeRejected},
+            {"cap_holes_detected", holeRejected}, {"exact_visible_fallbacks", exactFallbacks},
             {"ownership_source", "Fixed original color regions partitioned across final draw positions"}};
     };
+    const auto exactPatch = [&](const PathsD &territory, int color) {
+        auto path = restore(territory);
+        auto support = polygons(path, options.flattenTolerance);
+        if (std::abs(Area(Xor(support, territory, FillRule::NonZero, kBooleanPrecision))) > options.areaTolerance) {
+            path = fromPolygons(territory);
+            support = territory;
+        }
+        return Patch{{{path, QColor(colors[color]), {}}}, support, costOf(path, color)};
+    };
     const int domainHoles = pathMetrics({{fromPolygons(domain), Qt::black}}, options.flattenTolerance).holes;
+    std::vector<bool> active(colors.size());
     std::function<Patch(PathsD, int, int, double)> correction;
     correction = [&](PathsD territory, int color, int depth, double ceiling) -> Patch {
         if (std::abs(Area(territory)) <= options.areaTolerance) return {{}, {}, 0};
-        if (depth > 16) { ++nestingRejected; return {}; }
+        auto fallback = exactPatch(territory, color);
+        const auto retainExact = [&]() {
+            ++exactFallbacks;
+            return fallback.cost < ceiling ? fallback : Patch{};
+        };
+        if (depth > 16 || active[color]) { ++nestingRejected; return retainExact(); }
         QByteArray encoded;
         QDataStream stream(&encoded, QIODevice::WriteOnly);
         stream << qint32(color) << quint32(territory.size());
@@ -92,6 +108,7 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
         const auto key = QCryptographicHash::hash(encoded, QCryptographicHash::Sha256);
         if (const auto found = correctionCache.find(key); found != correctionCache.end())
             return found->second.cost < ceiling ? found->second : Patch{};
+        const double limit = std::min(ceiling, fallback.cost);
         auto support = filled(territory);
         auto path = restore(support);
         double cost = costOf(path, color);
@@ -99,7 +116,7 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
             ++holeRejected;
         }
         if (PolygonIndex(polygons(path, options.flattenTolerance)).differenceArea(territory,
-            fromPolygons(territory).boundingRect()) > options.areaTolerance) { ++geometryRejected; return {}; }
+            fromPolygons(territory).boundingRect()) > options.areaTolerance) { ++geometryRejected; return retainExact(); }
         const auto simplify = [&](const PathsD &proposal) {
             const auto candidate = filled(Union(support, proposal, FillRule::NonZero, kBooleanPrecision));
             const auto added = Difference(candidate, support, FillRule::NonZero, kBooleanPrecision);
@@ -116,7 +133,7 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
         };
         simplify(rawPolygons(rectangle(path.boundingRect()), options.flattenTolerance));
         simplify(rawPolygons(hull(path, options.flattenTolerance), options.flattenTolerance));
-        if (cost >= ceiling) { ++boundedRejected; return {}; }
+        if (cost >= limit) { ++boundedRejected; return retainExact(); }
         const auto loops = spans(path);
         if (options.maximumChordSpans > 0) for (const auto &loop : loops) for (const auto &span : loop) {
             if (!span.curved) continue;
@@ -125,7 +142,7 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
             span.appendTo(curve);
             simplify(rawPolygons(rectangle(curve.boundingRect()), options.flattenTolerance));
         }
-        if (cost >= ceiling) { ++boundedRejected; return {}; }
+        if (cost >= limit) { ++boundedRejected; return retainExact(); }
         Patch result{{{path, QColor(colors[color]), {}}}, support, cost};
         struct Child { int color; PathsD region; double enclosing; };
         std::vector<Child> children;
@@ -141,14 +158,17 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
             return std::tuple(-a.enclosing, a.color) < std::tuple(-b.enclosing, b.color);
         });
         PathsD restored;
+        active[color] = true;
         for (const auto &child : children) {
             const auto needed = Difference(child.region, restored, FillRule::NonZero, kBooleanPrecision);
-            auto patch = correction(needed, child.color, depth + 1, ceiling - result.cost);
-            if (!std::isfinite(patch.cost)) return {};
+            auto patch = correction(needed, child.color, depth + 1, limit - result.cost);
+            if (!std::isfinite(patch.cost)) { active[color] = false; return retainExact(); }
             result.items += patch.items;
             result.cost += patch.cost;
             restored = Union(restored, patch.support, FillRule::NonZero, kBooleanPrecision);
         }
+        active[color] = false;
+        if (result.cost >= fallback.cost) result = retainExact();
         correctionCache.emplace(key, result);
         return result;
     };
@@ -160,11 +180,12 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
             output.steps.append(QJsonObject{{"fill", QColor(colors[color]).name()}, {"kind", "domain-base"}, {"correction_paths", 0}});
             continue;
         }
-        Patch best;
-        QString bestKind;
+        Patch best = exactPatch(required[color], color);
+        QString bestKind = "visible-exact";
         committed[color] = true;
-        const auto consider = [&](const PathsD &proposal, const QString &kind) {
-            const auto support = filled(proposal);
+        const auto consider = [&](const PathsD &proposal, const QString &kind, bool fillHoles = true) {
+            const auto support = fillHoles ? filled(proposal)
+                : Intersect(Union(proposal, FillRule::NonZero, kBooleanPrecision), domain, FillRule::NonZero, kBooleanPrecision);
             const auto path = restore(support);
             const auto shape = polygons(path, options.flattenTolerance);
             if (PolygonIndex(shape).differenceArea(required[color], fromPolygons(required[color]).boundingRect()) > options.areaTolerance) {
@@ -203,8 +224,14 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
         }
         PathsD original;
         for (const int source : sourceIds[color]) original.insert(original.end(), sourceShapes[source].begin(), sourceShapes[source].end());
-        consider(Union(original, FillRule::NonZero, kBooleanPrecision), "source-support");
-        if (connectedCosts) consider(connectedColorBridges(required[color], domain, options), "component-bridges");
+        original = Union(original, FillRule::NonZero, kBooleanPrecision);
+        consider(original, "source-support", false);
+        consider(original, "source-hole-completion");
+        if (connectedCosts) {
+            const auto bridges = connectedColorBridges(required[color], domain, options);
+            consider(bridges, "component-bridges", false);
+            consider(bridges, "bridge-hole-completion");
+        }
         const auto path = fromPolygons(required[color]);
         consider(rawPolygons(rectangle(path.boundingRect()), options.flattenTolerance), "rectangle");
         consider(rawPolygons(hull(path, options.flattenTolerance), options.flattenTolerance), "hull");
@@ -242,12 +269,17 @@ ColorPlan planColorStack(const std::map<QRgb, PathsD> &visible, const PathsD &do
         assigned[draw] = fromPolygons(requiredPart);
         claimed[color] = Union(claimed[color], requiredPart, FillRule::NonZero, kBooleanPrecision);
     }
-    for (int color = 0; color < int(colors.size()); ++color)
-        if (std::abs(Area(Difference(required[color], claimed[color], FillRule::NonZero, kBooleanPrecision))) > options.areaTolerance) {
+    const double visibleLimit = options.visibleAreaTolerance > 0 ? options.visibleAreaTolerance : options.areaTolerance;
+    for (int color = 0; color < int(colors.size()); ++color) {
+        const double missing = std::abs(Area(Difference(required[color], claimed[color], FillRule::NonZero, kBooleanPrecision)));
+        if (missing > visibleLimit) {
             output.error = "Completion removed fixed original color ownership";
             output.diagnostics = diagnostics();
+            output.diagnostics.insert("unassigned_fill", QColor(colors[color]).name());
+            output.diagnostics.insert("unassigned_visible_area", missing);
             return output;
         }
+    }
     int opaqueBase = -1;
     for (int draw = output.items.size() - 1; draw >= 0; --draw)
         if (std::abs(Area(Xor(supports[draw], domain, FillRule::NonZero, kBooleanPrecision))) <= options.areaTolerance) {

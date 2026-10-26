@@ -86,6 +86,10 @@ Region leewayAdjustedRegion(const Region &region, const Polygons &leeway,
 QVector<Candidate> completeCover(const Region &region,
                                 const QVector<Primitive> &primitives,
                                 const std::function<bool()> &cancelled);
+QVector<Candidate> completeTriangleCover(const Region &region,
+                                        const QVector<Primitive> &primitives,
+                                        const Polygons &triangles,
+                                        const std::function<bool()> &cancelled);
 QVector<Candidate> compactCover(const PenFillRequest &request, const Region &region,
                                const QVector<Primitive> &primitives,
                                const QVector<Candidate> &proposals,

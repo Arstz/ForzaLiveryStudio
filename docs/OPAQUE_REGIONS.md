@@ -18,6 +18,165 @@ them. The reference must come from the same checkpoint as the SVG. An optional
 original raster can be supplied with `--original`. Use a separate output
 directory; artifact paths that would overwrite an input are rejected.
 
+## Filled project comparison
+
+`generate.py` evaluates region proposals after the actual Compact Fit engine
+fills them. Its contour document is an internal input. The review outputs are
+editable `.3so` projects, native-rendered PNGs, differences, and `report.json`:
+
+```powershell
+python tools/opaque_regions/generate.py palette_project --svg palette_project/native/optimized.svg --output filled_comparison
+python tools/opaque_regions/rate_distortion_test.py
+python tools/opaque_regions/budgeted_test.py
+python tools/opaque_regions/hidden_contours_test.py
+python tools/opaque_regions/compact_output_test.py build/Release/fls_opaque_regions.exe
+python tools/opaque_regions/generate_test.py
+```
+
+Use the existing Python research environment. In addition to the dependencies
+used for contour fitting, polygon seeds use Shapely's constrained Delaunay
+triangulation. Input dimensions and palette remain fixed. Use a new output
+directory outside the input project. Internal geometry and fitting diagnostics
+are retained under `internal/`.
+
+### Whole-image shape budget
+
+The default `--strategy budgeted` applies `--total-shape-budget` to the complete
+filled image. Its default is 3,000 native shapes. The native `--fill-only` mode
+exposes the same limit as `--compact-fit-total-shape-budget`. This limit is
+separate from the per-region fitting limit. An oversized result cannot become
+an accepted project, including with `--scene-validated-fills`.
+
+Geometry search allocates complexity by the change in error against the
+unchanged source raster. Proposals include straight contour chords, removal of
+thin branches, hole filling, same-fill unions and enclosing shapes. Joint
+proposals change draw order while completing contours, or fill a lower cutout
+and restore its visible colors at later positions. Same-fill items can retain
+different layer positions. Added hidden area has no penalty. There is no region
+quota.
+
+The final ordering pass freezes complete visible ownership, rebuilds all
+overlap dependencies, and topologically sorts available items by geometry
+complexity. Same-color items can retain separate positions. The ordering report
+records the fixed regions, graph edges, resulting order and contour costs.
+
+The search charges the complete replacement geometry, including restoration
+patches. It uses polygon triangulation counts as a planning estimate, with
+additional costs for connected regions and holes. These estimates are not
+reported as measured Forza counts. The final native project supplies the actual
+shape count. If it exceeds the image budget, the tool reduces the geometry
+budget and repeats fitting. Compact Fit receives empty leeway.
+The planning costs are one per triangle, 32 per connected region, and 64 per
+hole. A later refinement pass can restore contours using the remaining geometry
+allowance. Search effort is bounded separately from output complexity.
+This pass compares reference contours within the current stack, then restores
+individual boundary vertices where they reduce source-image error. Vertex
+restoration preserves connected regions and holes. Redundant collinear points
+are removed before encoding and before native Bucket conversion.
+
+The native image dimensions and fill colors remain fixed. Simplification changes
+contours instead of blurring the raster. `--source-local-growth` bounds error
+growth in each sliding source-image window during structural search and final
+validation; its default is 32 in 8-bit RGB RMSE. `--source-rmse-growth` bounds final whole-image error
+relative to the source-to-opaque baseline. The budgeted strategy defaults to 8;
+the bidirectional comparison retains its default of 1. These quality limits
+remain configurable independently of the hard native-shape cap. Conversion from the
+derived contours to Compact Fit targets, target-to-filled error, original
+baseline-to-filled error, and source-to-filled error are reported separately.
+`--render-rmse` and `--local-rmse` bound the final fitter's error against the
+derived contours. The external domain remains fixed and the actual filled
+silhouette is checked independently.
+
+Full-scene renders reconcile incremental error accounting at checkpoints.
+`stack_checkpoint.json.gz` retains the current geometry, source hashes and
+optimization measurements; `--resume-stack` continues a matching checkpoint.
+`--max-edits` bounds search work. Successful output is `after.3so` and
+`after.png`. A result within the shape budget that fails a quality check is
+labelled `budget_candidate.3so`; it does not replace an accepted output.
+
+### Bidirectional comparison
+
+`--strategy bidirectional` retains the earlier fixed-ownership comparison.
+The search compares bidirectional hidden-contour edits, same-fill grouping,
+cutout completion, and promotion of covered colors to later paint positions.
+Hidden-chain chords can remove or add painted territory within the occlusion
+envelope. A coordinated completion charges both the simpler lower contour and
+every required upper repair. Complete visible color geometry and the external
+silhouette are validated. Dependencies use fixed visible ownership and are
+rebuilt after geometry changes. Unchanged source curves remain available to the
+contour exporter. Hidden area has no ratio cap or size penalty.
+
+`--ownership-tolerance` sets a native-coordinate boundary band, default 0.25
+pixels. Color ownership can change inside that band; the complete rendered
+result must still pass the global, local, and source-error checks. Zero retains
+exact visible ownership. Geometry differences inside and outside the band are
+reported separately. The original raster is not resized or filtered.
+
+`--window-start` and `--window-stop` select input paint positions for proposal
+generation. `--search-states` bounds search work and `--shortlist` selects how
+many complete proposals reach fitting. Neither option limits output regions.
+The search uses complete-stack contour complexity to form a diverse shortlist.
+An exploratory completion can reach measurement even when its SVG proxy grows.
+Its rendering and ownership checks still apply. Final selection uses
+`--weight-shapes * actual_shapes + --weight-regions * actual_regions`, after
+rendering and source-error checks. Geometry scores alone cannot establish an
+improvement. The retained baseline is preferred on a measured-cost tie.
+The default region weight is 256 and the default shape weight is 1. There is
+no region quota; an additional draw region must earn its cost through simpler
+filled geometry elsewhere in the stack.
+
+Each fill receives the complete derived contour with empty leeway. The batch
+generator starts Compact Fit from its usual Pen seed and retries failed core
+construction with polygon seeds. `--polygon-seeds` starts directly from the
+polygon seed. The original Bezier contour remains the target and quality reference.
+Seed construction uses adaptive native-coordinate geometry; it does not
+resample the image. Failed fills remain explicit.
+
+`--compact-fit-evaluations`, `--compact-fit-shape-budget`,
+`--compact-fit-boundary`, `--compact-fit-inward`, and
+`--compact-fit-area-ratio` expose the fitter's work and quality settings.
+`--compact-fit-workers` bounds concurrent independent fits. Project groups are
+restored to their derived draw order after fitting. The batch default is 6,000
+evaluations per region; changing work effort does not change quality limits.
+Seed polygons come from the native Compact Fit target conversion. Its image
+error against the opaque input is reported separately. Native transform
+reconstruction validates triangle coverage before optimization. Failed polygon
+seeds receive one retry with subdivided long edges. Successful regions retain
+their cached results. The retry
+uses the same target contours, work settings, and quality limits.
+`--render-rmse`, `--local-rmse`, `--max-error`, and `--source-rmse-growth`
+guard the rendered result. Cumulative candidate error is checked against the
+original opaque baseline. Reports separate source-to-opaque error from fitting
+and optimization error.
+
+The native `--fill-only` mode saves a project, reloads it, and renders its actual
+placements through `NativeShapeRenderer` in a hidden OpenGL context. Each input
+region has its own ordered group; identical fills can retain separate stack
+positions. Each group also retains a hidden editable Pen contour. All emitted
+shapes have solid colors and full opacity. Scene-render
+antialiasing and fitting allowances remain separate from shape opacity.
+Native comparison renders use two samples per pixel axis for boundary
+antialiasing. Saved images retain the input dimensions. Source pixels are not
+resampled. The native CLI exposes `--compact-fit-render-samples`.
+
+Per-region verification is required by default. The optional
+`--scene-validated-fills` mode can evaluate retained placements with region
+quality warnings. Every region must supply placements within its shape budget.
+Cancellation, missing placements, and fatal errors cannot pass. The complete
+native render must pass all image and silhouette limits before selection.
+Reports retain every region warning and state the verification scope.
+
+Per-region results are cached by engine, catalog, target geometry, polygon seed,
+and fitting settings. `--compact-fit-cache` can share that cache across runs.
+Each finished region also updates a progress report. Missing placements and
+fatal fitting errors cannot win final selection. Retained quality warnings
+require explicit scene validation as described above. A valid
+baseline is retained when no complete candidate improves its measured score.
+When no complete fit passes validation, the report states that no valid filled
+output is available. Diagnostic counts do not imply a complete generated image.
+`search_plan.json.gz` stores validated complete-stack proposals before fitting.
+`--resume-search` reuses that search with the same opaque baseline.
+
 ## Shared-shade raster prototype
 
 `tools/opaque_regions/posterize.py` starts from the original raster. This optional
@@ -157,6 +316,202 @@ with per-slot RGB values and input hashes. Use a separate, non-nested output
 directory. Export correctness is checked against a render of the recolored
 candidate; original-source color error is measured separately. Exact agreement
 with that export reference does not imply exact reconstruction of the source.
+
+### Selective hidden completion and contour fitting
+
+`simplify.py` constructs new paint supports from a validated opaque SVG and the
+existing palette project. It uses the Python research environment with NumPy,
+SciPy, OpenCV, Pillow, PySide6 and Shapely. It does not install dependencies.
+
+```powershell
+python tools/opaque_regions/simplify.py tonal_color --svg tonal_color/vector/optimized.svg --output tonal_simple
+python tools/opaque_regions/simplify_test.py
+```
+
+The native audit executable must already exist. `--native-tool` selects its
+path. The input must use native coordinates, closed M/L/C/Z paths, solid opaque
+fills and the project palette. Nested output directories are rejected.
+
+Visible ownership comes from complete filled SVG geometry in reverse paint
+order. Ownership remains fixed during support construction. The initial paint
+supports retain the validated source coverage. The search tests
+hole filling, chords, rectangles, convex hulls, component hulls and closing at
+several native-pixel scales. A lower support may cover later original owners.
+It does not automatically absorb every available connected area. Every trial
+rebuilds dependencies from fixed ownership; color-level cycles reject the trial. Equal
+geometry savings favor proposals that block less neighboring simplification.
+
+After color-level completion, components receive separate draw positions. Local
+completion and exact-color grouping can place the same fill at different stack
+positions. A component trial can resolve an ordering conflict by transferring
+the conflicting original owners into separate upper paint positions. Their
+complete visible regions move together; surviving lower supports retain their
+other owners. The combined replacement must reduce encoded cost and pass a
+fresh dependency check. Same-fill overlap imposes no ordering edge. Unresolved
+cycles are logged and rejected. There is no region-count quota or hidden-area ratio limit. The
+greedy search uses the encoded line/cubic, component, path and hole cost;
+`--passes` bounds search sweeps, default two. Final complexity is measured again
+by the native exporter, including required decomposition.
+`--passes 0` fits contours while retaining the input draw positions. It also
+retains fully occluded support items, which can affect boundary antialiasing.
+`--weight-paths` defaults to 256 and `--weight-holes` to 96. Components cost one
+additional unit each; lines cost one and cubics cost three. The same weights
+are passed to both native audits. These weights express a topology preference,
+not a limit on the number of output regions.
+
+An existing full-domain background retains its first draw position. Enclosed
+regions initially remain assigned to that foundation. A completion can transfer
+their ownership into upper restoration items when necessary. The combined
+transaction charges those added items before acceptance. The foundation is
+excluded from component merging.
+
+The native `supports` strategy also tests partial-region repainting. Each
+completion retains an exact visible-geometry alternative with its original
+cutouts. Recursive repainting compares its combined cost against that
+alternative. Repeated color recursion terminates with exact geometry; an
+unhelpful hole fill leaves the valid layer available. Diagnostics report these
+fallbacks together with the final ownership and ordering checks.
+`--visible-area-tolerance` bounds both missing original-color coverage and the
+final filled-geometry difference per color. Its default zero uses
+`--area-tolerance`, which also sets the positive-intersection threshold.
+Silhouette and image-error limits remain separate checks.
+
+### Joint region and order search
+
+`--search bottom-up` constructs alternative stacks while choosing their painted
+geometry and grouping. The final visible color masks stay fixed. Visible
+ownership can be repartitioned between paint positions of the same color.
+Painted coverage and committed visible territory are tracked separately, so a
+simple lower layer can cover details that receive separate upper paint paths.
+Every added repaint and every disconnected component contributes to cost.
+
+An initial grouping pass starts from the original paint shapes. It tests
+same-color source pairs against fixed visible ownership, completes their joint
+geometry and rebuilds the complete dependency graph after each accepted merge.
+Coordinated proposals can move a blocking region above a merge and complete its
+geometry again. Acceptance charges both changed shapes. The foundation stays in
+place. Cycles reject a merge. Remaining compatible items receive a deterministic
+topological order, preferring simpler geometry when several items are ready.
+Groups can retain several stack positions of the same color.
+Numerical score changes and disconnected SVG wrappers do not count as topology
+improvements.
+
+```powershell
+python tools/opaque_regions/simplify.py tonal_color --svg tonal_color/vector/optimized.svg --output tonal_stack --search bottom-up --weight-holes 512
+python tools/opaque_regions/bottom_up_test.py
+python tools/opaque_regions/stack_export_test.py
+```
+
+The beam search compares complete color groups, connected visible components
+and source ownership fragments. Proposals include filled holes, convex hulls,
+axis-aligned and rotated envelopes, and contour completions at several scales.
+Candidates can exploit uncommitted upper coverage. Committed territory blocks
+later paints of other colors. The initial full-domain foundation can remain
+uncommitted, allowing its enclosed details to be restored above completed
+regions. Same-color paints may occupy several stack positions.
+
+Search cost includes connected paint regions, holes, polygon points, reflex
+corners, turning reversals and deviation from preferred simple turning angles.
+`--weight-angles` defaults to four. This is a geometry surrogate; final acceptance
+still requires lower actual exported encoding cost and the existing native
+Bucket, silhouette and final-render checks. Hidden area has no ratio penalty.
+There is no region-count quota or required geometric primitive. Available upper
+coverage decreases as the stack grows; a strict monotonic complexity constraint
+is not imposed on individual layers.
+
+`--beam-width` defaults to four and `--search-states` to 96. The state setting
+bounds grouping attempts and beam expansions separately. These bound search
+effort, not output region count. `--window-start` and `--window-stop` select a
+zero-based, half-open range of source draw positions; omission searches the
+complete stack. Paths outside the window retain their original curve commands
+and fill rules during candidate generation. Their coverage remains part of the
+complete-stack validation. A source path that becomes completely hidden can be
+removed; diagnostics retain its source position. `--passes` applies to the
+selective search.
+
+The working domain is the selected supports' convex hull clipped to the original
+silhouette. Visible lower-color territory in this domain can receive upper
+repaints; lower source paths remain in place. This allows local cutout removal
+without including the entire foundation in the replacement window. Candidate
+priority balances painted cost, visible area covered and the complexity of newly
+committed territory. Consecutive same-color paints are combined geometrically,
+then completed together on subsequent expansions. Bounded finishing attempts
+test complete stacks when the beam stops with unresolved visible territory.
+Candidate ranking estimates the remaining visible repaint cost. Coverage hidden
+by fixed upper layers does not contribute to this estimate. Simple interior
+cores can defer intricate portions of a connected visible region.
+
+Direct cutout proposals group enclosed areas by the visible lower color that
+they expose. They fill those cutouts in the lower paint and complete upper
+repaint shapes through available coverage. The full stack is checked again.
+Repaints can make earlier source paths redundant; removing those paths is part
+of the same transaction. Combined cost includes every new connected paint shape.
+
+Saved joint-search plans include the new visible ownership partition and source
+path references. Resuming validates their aggregate color masks against the
+original baseline before checking dependencies. Reports retain search effort,
+per-layer topology, paint area, committed visible area and complete-stack error.
+When no cheaper valid stack exists in the explored states, the original SVG is
+retained. This experimental search does not prove a globally optimal order.
+
+Contour fitting favors lines, stable corners and few cubic spans. A penalty on
+the cubic third derivative discourages unnecessary variation. Full closed
+contours and filled geometry are checked, including cutouts and neighboring
+components. A failed fit tightens only the affected ring or retains its
+polygonal boundary. Rectangular domains constrain fitted control points to the
+canvas. Unchanged components and individual closed contours retain their
+original Bezier encoding when it costs less than the fitted replacement.
+Intact cubic spans can also be recovered inside contours with edited closures.
+Nonzero source paths must pass a complete filled-geometry equivalence check
+before their contours can be reused under the output fill rule.
+This is an experimental implementation inspired by
+[depth-ordered completion](https://arxiv.org/html/2409.06648v1) and
+[perceptual contour fitting](https://www.cs.ubc.ca/labs/imager/tr/2020/ClipArtVectorization/),
+not an author-code reproduction.
+
+`--boundary-tolerance` bounds fitting displacement in native pixels, default
+one. `--fairness` controls fitting regularization, default one. Visible boundary
+motion is allowed within these limits; the cumulative masks' topology is not
+locked. No image is resized. The palette and fully opaque solid fills remain
+fixed.
+
+`--flatten-tolerance` sets the adaptive curve approximation used for geometry
+operations, default 0.05 native pixels. `--area-tolerance` sets positive-area
+intersection checks, default 0.000001 square native pixels. The same values are
+passed to both native audits. Ownership assignment retains smaller regions;
+an intersection threshold does not delete their IDs.
+Positive-area overlay checks use a native-pixel grid of 0.00000001, matching
+the native Boolean precision. Exact containment is checked before subtraction.
+
+Final-output rendering checks cumulative input-to-output RGB RMSE, every
+sliding 16-pixel window, peak error, original-source RMSE growth, alpha coverage
+and complete silhouette area. Defaults are `--render-rmse 4`, `--local-rmse 24`,
+`--max-error 255`, `--source-rmse-growth 0.25` and
+`--silhouette-tolerance 0.001`. The peak allowance permits high-contrast edge
+motion inside the geometric band; global and local error checks still apply.
+Boundary antialiasing does not change shape opacity. A failed gate or absent
+encoded-complexity reduction retains the input SVG in `optimized.svg`.
+Fitting retries at progressively tighter displacement tolerances without
+relaxing the image-error limits. When a coarser fit fails and a finer fit passes,
+up to three interval refinements test intermediate tolerances. The cheapest
+passing encoding is retained, with its own render and tolerance recorded.
+
+The native executable audits the baseline before optimization and the candidate
+afterward. Its separate conversion gate is 0.5 RMS / 16 peak, without a
+structural bypass. Reports separate original-source loss, baseline-to-candidate
+change and native export error. They include actual Bucket anchors, lines,
+cubics, paths, holes, components, ordering restrictions, silhouette difference
+and runtime. Turning-direction reversal density is a roughness diagnostic; it
+also counts genuine features and hidden boundaries. Compact Fit placement
+counts remain a separate measurement.
+
+Artifacts include before/after renders, candidate and accepted SVGs, difference
+images, ownership-order diagnostics and both native audit reports. Rejected
+candidates remain available for inspection. Compressed support plans retain
+geometry and ownership before and after component optimization. `--resume-plan`
+validates the input and ownership hashes, complete geometry and ordering before
+reusing a plan. A global-stage plan continues component optimization according
+to `--passes`; a complete plan repeats only fitting and export validation.
 
 ## Export audit and appearance validation
 
@@ -639,9 +994,10 @@ default 6000. Reports retain per-path diagnostics, runtime, and placement counts
 approximation checks. `placements` uses the stricter rule that every uncovered
 residual must be empty. Failed or partial attempts remain separately labelled.
 
-Verified fitting runs save SVG and PNG renders and their error against the
-respective input shapes. Sample directories contain `before.svg`, `after.svg`,
-and `report.json`. Benchmarking is disabled by default.
+Verified fitting runs save `.3so` projects and PNG renders and their error
+against the respective input shapes. Sample directories also retain internal
+`before.svg`, `after.svg`, and `report.json`. Benchmarking is disabled by default.
+Use `generate.py` for final project selection and native-rendered quality checks.
 
 SVG fill validity does not guarantee Pen-path compatibility. Filled self-crossings
 and disconnected outer contours can pass SVG validation while Compact Fit rejects

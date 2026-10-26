@@ -71,7 +71,8 @@ SupportScene orderSupportScene(QVector<Item> items, const std::map<QRgb, PathsD>
         {"silhouette_difference_area", silhouette},
         {"hidden_support_area", hiddenArea},
         {"ownership_basis", "Fixed original visible colors partitioned across final draw positions"}};
-    if (maximumMissing > options.areaTolerance || silhouette > options.silhouetteTolerance) {
+    const double visibleLimit = options.visibleAreaTolerance > 0 ? options.visibleAreaTolerance : options.areaTolerance;
+    if (maximumMissing > visibleLimit || silhouette > options.silhouetteTolerance) {
         output.error = "Support removed required color territory or changed the external silhouette";
         return output;
     }
@@ -126,7 +127,6 @@ SupportScene orderSupportScene(QVector<Item> items, const std::map<QRgb, PathsD>
     }
     output.geometry.insert("sum_visible_color_difference_area", colorDifference);
     output.geometry.insert("maximum_visible_color_difference_area", maximumColorDifference);
-    const double visibleLimit = options.visibleAreaTolerance > 0 ? options.visibleAreaTolerance : options.areaTolerance;
     output.geometry.insert("visible_color_area_limit", visibleLimit);
     if (maximumColorDifference > visibleLimit) output.error = "Complete visible color geometry exceeds the area tolerance";
     return output;
@@ -355,7 +355,8 @@ Result Optimizer::runSupports() {
                 const auto scene = orderSupportScene(candidate, required, lockedDomain, options_);
                 candidate = scene.items;
                 graph = scene.graph;
-                geometry = scene.geometry;
+                for (auto entry = scene.geometry.begin(); entry != scene.geometry.end(); ++entry)
+                    geometry.insert(entry.key(), entry.value());
                 fixedOwnership = scene.ownership;
                 error = scene.error;
             }

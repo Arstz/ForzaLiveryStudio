@@ -3,8 +3,15 @@
 #include "shape_geometry_store.h"
 #include "image_io.h"
 #include "compact_fit.h"
+#include "compact_fit_catalog_internal.h"
+#include "project_codec.h"
+#include "matrix_math.h"
+#include "layer.h"
+#include "native_shape_renderer.h"
 #include "region_fill.h"
 #include "region_extract.h"
+#include <QOffscreenSurface>
+#include <QOpenGLExtraFunctions>
 #include <QSvgRenderer>
 #include <QtEndian>
 #include <zlib.h>
@@ -14,6 +21,8 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <atomic>
+#include <future>
 
 namespace {
 
@@ -119,76 +128,182 @@ QJsonArray appearanceGroups(const QVector<opaque::Item> &items) {
     return result;
 }
 
+#include "compact_output.inc"
+
 QJsonObject benchmarkCompactFit(const QVector<gui::SvgVectorObject> &before,
                                const QVector<gui::SvgVectorObject> &after,
                                int limit, int evaluationBudget, QSize size, const QDir &output) {
     if (before.size() > limit || after.size() > limit)
         return {{"measured", false}, {"reason", "Complete scene exceeds compact-fit-limit"}, {"path_limit", limit}};
-    gui::ShapeGeometryStore geometry;
-    QString error;
-    if (!geometry.loadDefault(&error)) throw std::runtime_error(error.toStdString());
-    const auto catalog = gui::catalog::buildCatalog(geometry, &error);
-    if (catalog.isEmpty()) throw std::runtime_error(error.toStdString());
-    const auto fitScene = [&](const QVector<gui::SvgVectorObject> &objects, const QString &name) {
-        QElapsedTimer clock;
-        clock.start();
-        QJsonArray paths;
-        QVector<gui::SvgVectorObject> fitted;
-        int placements = 0, completed = 0, verified = 0;
-        for (int index = 0; index < objects.size(); ++index) {
-            QElapsedTimer pathClock;
-            pathClock.start();
-            gui::RegionPenLoopConversionOptions conversionOptions;
-            conversionOptions.preserveInputCurves = true;
-            const auto conversion = gui::regionOutlineToPenLoops(objects[index].path, conversionOptions);
-            gui::PenFillRequest request;
-            request.loops = conversion.loops;
-            for (const auto &primitive : catalog) request.primitives.push_back(primitive.shape);
-            gui::compact::FillOptions options;
-            options.useGpu = false;
-            options.evaluationBudget = evaluationBudget;
-            gui::catalog::FillResult result;
-            if (conversion.valid()) result = gui::compact::fillRegion(request, catalog, options);
-            else result.fill.error = conversion.error;
-            const bool complete = conversion.valid() && result.fill.error.isEmpty()
-                && !result.fill.cancelled && !result.fill.timedOut && result.fill.unfilled.isEmpty()
-                && !result.fill.placements.isEmpty();
-            completed += complete;
-            const bool accepted = conversion.valid() && result.fill.error.isEmpty()
-                && !result.fill.cancelled && !result.fill.timedOut && !result.fill.placements.isEmpty()
-                && result.diagnostics.value("approximationVerified").toBool();
-            verified += accepted;
-            placements += result.fill.placements.size();
-            paths.append(QJsonObject{{"path", index}, {"complete", complete}, {"error", result.fill.error},
-                {"verified", accepted}, {"zero_residual", result.fill.unfilled.isEmpty()},
-                {"placements", result.fill.placements.size()}, {"seconds", pathClock.elapsed() / 1000.0},
-                {"diagnostics", result.diagnostics}});
-            if (accepted || complete) {
-                for (const auto &placement : result.fill.placements) {
-                    const auto primitive = std::find_if(catalog.begin(), catalog.end(), [&](const auto &candidate) {
-                        return candidate.shape.shapeId == placement.shapeId;
-                    });
-                    if (primitive == catalog.end()) throw std::runtime_error("Compact Fit emitted an unknown primitive");
-                    fitted.push_back({placement.transform.map(primitive->shape.silhouette), objects[index].color});
-                }
-            }
-        }
-        QJsonObject report{{"complete", completed == objects.size()}, {"paths", objects.size()},
-            {"verified", verified == objects.size()}, {"verified_paths", verified},
-            {"verified_placements", verified == objects.size() ? QJsonValue(placements) : QJsonValue()},
-            {"completed_paths", completed}, {"placements", completed == objects.size() ? QJsonValue(placements) : QJsonValue()},
-            {"attempted_placements", placements}, {"seconds", clock.elapsed() / 1000.0}, {"per_path", paths}};
-        if (completed == objects.size() || verified == objects.size()) {
-            const auto data = opaque::svg(fitted, size);
-            const auto image = svgRender(data, size);
-            write(output.filePath(name + "_compact.svg"), data);
-            save(output.filePath(name + "_compact.png"), image);
-            report.insert("image_error", opaque::imageError(svgRender(opaque::svg(objects, size), size), image));
-        }
-        return report;
-    };
+    CompactOutputOptions settings;
+    settings.evaluations = evaluationBudget;
+    settings.cacheDirectory = output.filePath("compact_cache");
     return {{"measured", true}, {"leeway_used", false}, {"evaluation_budget_per_path", evaluationBudget},
-        {"before", fitScene(before, "before")}, {"after", fitScene(after, "after")}};
+        {"before", fitCompactScene(before, size, settings, output, "before")},
+        {"after", fitCompactScene(after, size, settings, output, "after")}};
+}
+
+int runFillOnly(const QCommandLineParser &parser) {
+    const auto arguments = parser.positionalArguments();
+    if (arguments.size() != 1 || !parser.isSet("reference") || !parser.isSet("output"))
+        throw std::runtime_error("Provide an internal contour document, --reference and --output");
+    const auto input = read(arguments.front());
+    QSvgRenderer source(input);
+    const auto size = source.defaultSize();
+    const auto reference = load(parser.value("reference"));
+    if (!source.isValid() || size.isEmpty() || reference.size() != size)
+        throw std::runtime_error("Contours and reference must have identical native dimensions");
+    const auto document = gui::extractSvgVectorObjects(input, size);
+    if (!document.supportsObjectSelection() || document.objects.isEmpty())
+        throw std::runtime_error("Use closed solid-color contours supported by Bucket");
+    const auto target = svgRender(input, size);
+    const auto opacity = opacityAudit(document.objects, target);
+    opaque::Options auditOptions;
+    auditOptions.flattenTolerance = number(parser, "flatten-tolerance");
+    const auto bucket = opaque::auditPenTargets(document.objects, auditOptions);
+    const auto conversion = opaque::imageError(reference, target);
+    if (opacity.value("nonopaque_fills").toInt() || !bucket.value("passed").toBool()
+        || conversion.value("rmse").toDouble() > number(parser, "conversion-rmse")
+        || conversion.value("max_channel_error").toDouble() > number(parser, "conversion-max-error"))
+        throw std::runtime_error("The opaque baseline must pass conversion, opacity and Bucket validation");
+    QDir output(parser.value("output"));
+    if (!QDir().mkpath(output.absolutePath())) throw std::runtime_error("Cannot create output directory");
+    const QStringList artifacts{"generated_compact.3so", "generated_compact.png", "generated_compact_difference.png",
+        "generated_compact_progress.json", "source_difference.png", "report.json"};
+    for (const auto &artifact : artifacts) {
+        const auto destination = QFileInfo(output.filePath(artifact)).absoluteFilePath();
+        for (const auto &inputPath : QStringList{arguments.front(), parser.value("reference"),
+                                                parser.value("original"), parser.value("compact-fit-seeds")})
+            if (!inputPath.isEmpty() && destination.compare(QFileInfo(inputPath).absoluteFilePath(), Qt::CaseInsensitive) == 0)
+                throw std::runtime_error("Output artifacts would overwrite an input");
+    }
+    for (const auto &artifact : artifacts) QFile::remove(output.filePath(artifact));
+    CompactOutputOptions settings;
+    settings.nativeRender = true;
+    settings.polygonSeed = parser.isSet("compact-fit-polygon-seed");
+    settings.allowSceneWarnings = parser.isSet("scene-validated-fills");
+    settings.cacheDirectory = parser.isSet("compact-fit-cache") ? parser.value("compact-fit-cache") : output.filePath("compact_cache");
+    settings.evaluations = integer(parser, "compact-fit-evaluations");
+    settings.shapeBudget = integer(parser, "compact-fit-shape-budget");
+    settings.totalShapeBudget = integer(parser, "compact-fit-total-shape-budget");
+    settings.workers = integer(parser, "compact-fit-workers");
+    settings.renderSamples = integer(parser, "compact-fit-render-samples");
+    settings.boundary = number(parser, "compact-fit-boundary");
+    settings.inward = number(parser, "compact-fit-inward");
+    settings.areaRatio = number(parser, "compact-fit-area-ratio");
+    settings.flattenTolerance = number(parser, "flatten-tolerance");
+    if (!settings.evaluations || !settings.shapeBudget || !settings.totalShapeBudget || !settings.workers || !settings.renderSamples
+        || settings.renderSamples > 4 || settings.boundary <= 0 || settings.inward <= 0
+        || settings.areaRatio <= 0 || settings.areaRatio >= 1)
+        throw std::runtime_error("Compact Fit requires positive work and quality tolerances");
+    if (parser.isSet("compact-fit-seeds")) {
+        const auto manifest = QJsonDocument::fromJson(read(parser.value("compact-fit-seeds"))).object();
+        const auto regions = manifest.value("regions").toArray();
+        if (manifest.value("version").toInt() != 1
+            || manifest.value("input_sha256").toString().toLatin1() != hash(input)
+            || regions.size() != document.objects.size())
+            throw std::runtime_error("Polygon seeds do not match the input contour document");
+        for (const auto &region : regions) {
+            QVector<QPolygonF> triangles;
+            for (const auto &entry : region.toArray()) {
+                const auto values = entry.toArray();
+                if (values.size() != 6) throw std::runtime_error("Invalid polygon seed triangle");
+                for (const auto &value : values)
+                    if (!value.isDouble() || !std::isfinite(value.toDouble()))
+                        throw std::runtime_error("Non-finite polygon seed coordinate");
+                triangles.push_back({QPointF(values[0].toDouble(), values[1].toDouble()),
+                    QPointF(values[2].toDouble(), values[3].toDouble()), QPointF(values[4].toDouble(), values[5].toDouble())});
+            }
+            settings.seedTriangles.push_back(triangles);
+        }
+    }
+    auto report = fitCompactScene(document.objects, size, settings, output, "generated");
+    report.insert("native_dimensions", QJsonArray{size.width(), size.height()});
+    report.insert("downsampled", false);
+    report.insert("source_to_opaque", conversion);
+    report.insert("bucket_input", bucket);
+    report.insert("opacity", opacity);
+    bool accepted = report.value("verified").toBool()
+        || (settings.allowSceneWarnings && report.value("scene_candidate").toBool());
+    QJsonArray failures;
+    if (accepted) {
+        const auto image = load(output.filePath("generated_compact.png"));
+        const auto error = opaque::imageError(target, image);
+        const auto local = opaque::appearanceError(target, image, integer(parser, "abstraction-local-window"));
+        if (error.value("rmse").toDouble() > number(parser, "render-rmse")
+            || error.value("max_channel_error").toDouble() > number(parser, "render-max-error")
+            || local.value("max_local_rmse").toDouble() > number(parser, "abstraction-local-rmse")) {
+            accepted = false;
+            failures.append("Filled output exceeds the rendering-error budget");
+        }
+        if (report.value("silhouette_difference_area").toDouble() > number(parser, "silhouette-tolerance")) {
+            accepted = false;
+            failures.append("Filled output exceeds the external-silhouette error budget");
+        }
+        report.insert("opaque_to_filled", error);
+        report.insert("source_to_filled", opaque::imageError(reference, image));
+        if (parser.isSet("original")) {
+            const auto original = load(parser.value("original"));
+            if (original.size() != size) throw std::runtime_error("Original raster dimensions must match contours");
+            report.insert("original_to_opaque", opaque::imageError(original, target));
+            report.insert("original_to_filled", opaque::imageError(original, image));
+            save(output.filePath("source_difference.png"), opaque::difference(original, image));
+        }
+    } else if (!report.value("shape_budget_passed").toBool())
+        failures.append("Complete image exceeds the total Compact Fit shape budget");
+    else failures.append("One or more regions failed Compact Fit verification");
+    report.insert("accepted", accepted);
+    report.insert("scene_verified", accepted);
+    report.insert("verification_scope", report.value("verified").toBool() ? "per-region and scene" : "scene");
+    report.insert("status", accepted ? "filled" : "fill_rejected");
+    report.insert("rejections", failures);
+    write(output.filePath("report.json"), QJsonDocument(report).toJson());
+    std::printf("%s\n", QJsonDocument(report).toJson(QJsonDocument::Compact).constData());
+    return accepted ? 0 : 3;
+}
+
+int prepareFillTargets(const QCommandLineParser &parser) {
+    const auto arguments = parser.positionalArguments();
+    if (arguments.size() != 1 || !parser.isSet("output"))
+        throw std::runtime_error("Provide internal contours and an output directory");
+    const auto input = read(arguments.front());
+    QSvgRenderer source(input);
+    const auto size = source.defaultSize();
+    const auto document = gui::extractSvgVectorObjects(input, size);
+    if (!source.isValid() || size.isEmpty() || !document.supportsObjectSelection() || document.objects.isEmpty())
+        throw std::runtime_error("Use valid closed solid-color contours");
+    QDir output(parser.value("output"));
+    if (!QDir().mkpath(output.absolutePath())) throw std::runtime_error("Cannot create target directory");
+    for (const auto &name : {"fill_targets.json", "fill_targets.png"})
+        if (QFileInfo(output.filePath(name)).absoluteFilePath().compare(QFileInfo(arguments.front()).absoluteFilePath(), Qt::CaseInsensitive) == 0)
+            throw std::runtime_error("Target artifacts would overwrite the contour input");
+    QJsonArray targets;
+    QVector<gui::SvgVectorObject> flattened;
+    for (const auto &object : document.objects) {
+        if (object.color.alpha() != 255) throw std::runtime_error("Compact Fit targets must be opaque");
+        gui::RegionPenLoopConversionOptions options;
+        options.preserveInputCurves = true;
+        const auto conversion = gui::regionOutlineToPenLoops(object.path, options);
+        if (!conversion.valid()) throw std::runtime_error(conversion.error.toStdString());
+        gui::PenFillRequest request;
+        request.loops = conversion.loops;
+        const auto region = gui::catalog::buildRegion(request, {});
+        QJsonArray rings;
+        for (const auto &polygon : region.required) {
+            QJsonArray points;
+            for (const auto &point : polygon) points.append(QJsonArray{point.x(), point.y()});
+            rings.append(points);
+        }
+        targets.append(QJsonObject{{"fill", object.color.name()}, {"rings", rings}});
+        flattened.push_back({gui::catalog::painterPath(region.required), object.color});
+    }
+    const auto rendered = svgRender(opaque::svg(flattened, size), size);
+    QJsonObject manifest{{"version", 1}, {"input_sha256", QString::fromLatin1(hash(input))},
+        {"regions", targets}, {"native_dimensions", QJsonArray{size.width(), size.height()}},
+        {"opaque_to_compact_target", opaque::imageError(svgRender(input, size), rendered)}};
+    write(output.filePath("fill_targets.json"), QJsonDocument(manifest).toJson());
+    save(output.filePath("fill_targets.png"), rendered);
+    return 0;
 }
 
 int run(const QCommandLineParser &parser) {
@@ -218,6 +333,8 @@ int run(const QCommandLineParser &parser) {
         "difference.png", "optimization_difference.png", "source_to_opaque_diff.png", "baseline_fls.svg", "optimized_fls.svg",
         "baseline_fls.png", "optimized_fls.png", "opaque_to_fls_diff.png", "report.json", "ordering.json",
         "before_compact.svg", "after_compact.svg", "before_compact.png", "after_compact.png",
+        "before_compact.3so", "after_compact.3so", "before_compact_difference.png", "after_compact_difference.png",
+        "before_compact_progress.json", "after_compact_progress.json",
         "abstracted.svg", "abstracted.png", "abstraction_difference.png", "topology_difference.png", "abstraction.json",
         "abstraction_partition.dat", "palette_only.svg", "palette_only.png", "palette_difference.png",
         "regional_candidate.svg", "regional_candidate.png", "regional_difference.png",
@@ -231,7 +348,9 @@ int run(const QCommandLineParser &parser) {
     for (int index = 0; index < integer(parser, "compact-fit-sample"); ++index) {
         const QString directory = QString("compact_sample_%1/").arg(index, 2, 10, QChar('0'));
         for (const auto &name : QStringList{"before.svg", "after.svg", "report.json", "before_compact.svg",
-                                            "after_compact.svg", "before_compact.png", "after_compact.png"})
+                                            "after_compact.svg", "before_compact.png", "after_compact.png",
+                                            "before_compact.3so", "after_compact.3so", "before_compact_difference.png",
+                                            "after_compact_difference.png", "before_compact_progress.json", "after_compact_progress.json"})
             artifacts.push_back(directory + name);
     }
     for (const auto &name : artifacts) {
@@ -250,7 +369,9 @@ int run(const QCommandLineParser &parser) {
     for (const QString name : {"baseline_fls.svg", "optimized_fls.svg", "baseline_fls.png",
                                "optimized_fls.png", "opaque_to_fls_diff.png", "ordering.json", "baseline.svg", "optimized.svg"})
         QFile::remove(file(name));
-    for (const QString name : {"before_compact.svg", "after_compact.svg", "before_compact.png", "after_compact.png"})
+    for (const QString name : {"before_compact.svg", "after_compact.svg", "before_compact.png", "after_compact.png",
+                               "before_compact.3so", "after_compact.3so", "before_compact_difference.png", "after_compact_difference.png",
+                               "before_compact_progress.json", "after_compact_progress.json"})
         QFile::remove(file(name));
     for (const QString name : {"abstracted.svg", "abstracted.png", "abstraction_difference.png", "topology_difference.png",
                                "abstraction.json", "palette_only.svg", "palette_only.png", "palette_difference.png",
@@ -772,7 +893,14 @@ int run(const QCommandLineParser &parser) {
 } // namespace
 
 int main(int argc, char **argv) {
-    qputenv("QT_QPA_PLATFORM", "minimal");
+    const bool fillOnly = std::any_of(argv + 1, argv + argc, [](const char *value) {
+        return QByteArray(value) == "--fill-only";
+    });
+#ifdef Q_OS_WIN
+    qputenv("QT_QPA_PLATFORM", fillOnly ? "windows" : "minimal");
+#else
+    qputenv("QT_QPA_PLATFORM", fillOnly ? "offscreen" : "minimal");
+#endif
     QGuiApplication application(argc, argv);
     QCoreApplication::setApplicationName("fls_opaque_regions");
     QCommandLineParser parser;
@@ -780,6 +908,12 @@ int main(int argc, char **argv) {
     parser.addHelpOption();
     parser.addPositionalArgument("baseline.svg", "Opaque SVG exported from the same checkpoint as the reference.");
     parser.addOption({"self-test", "Run deterministic geometry, ordering and export tests."});
+    parser.addOption({"fill-only", "Fill validated contours with Compact Fit and save a project and native render."});
+    parser.addOption({"prepare-fill-targets", "Save exact Compact Fit target polygons for seed construction and conversion auditing."});
+    parser.addOption({"compact-fit-cache", "Shared cache of actual per-region Compact Fit results.", "directory"});
+    parser.addOption({"compact-fit-seeds", "Validated-input polygon seed manifest for failed Pen-core construction.", "json"});
+    parser.addOption({"compact-fit-polygon-seed", "Start Compact Fit from provided polygon seeds while verifying the original contours."});
+    parser.addOption({"scene-validated-fills", "Allow retained region quality warnings only when the complete native render passes its image and silhouette budgets."});
     parser.addOption({"reference", "Same-checkpoint splat render, at native resolution.", "png"});
     parser.addOption({"original", "Optional original source raster at native resolution.", "image"});
     parser.addOption({"output", "Artifact directory.", "directory"});
@@ -836,11 +970,19 @@ int main(int argc, char **argv) {
         {"compact-fit-sample", "Benchmark this many changed artwork groups with actual Compact Fit; 0 disables sampling.", "0"},
         {"compact-fit-limit", "Benchmark complete before/after scenes up to this path count; 0 disables the benchmark.", "0"},
         {"compact-fit-evaluations", "Actual Compact Fit evaluation budget per path, with empty leeway.", "6000"},
+        {"compact-fit-shape-budget", "Compact Fit shape budget per region.", "3000"},
+        {"compact-fit-total-shape-budget", "Hard Compact Fit shape limit for the complete image.", "3000"},
+        {"compact-fit-workers", "Concurrent independent Compact Fit region workers.", "4"},
+        {"compact-fit-render-samples", "Native renderer samples per axis for boundary antialiasing, from 1 to 4.", "2"},
+        {"compact-fit-boundary", "Compact Fit outward boundary allowance in native pixels.", "2"},
+        {"compact-fit-inward", "Compact Fit inward boundary allowance in native pixels.", "0.5"},
+        {"compact-fit-area-ratio", "Compact Fit maximum relative area error.", "0.02"},
     };
     for (const auto &option : numeric) parser.addOption({option[0], option[1], "number", option[2]});
     parser.process(application);
     try {
-        return parser.isSet("self-test") ? opaque::selfTest() : run(parser);
+        return parser.isSet("self-test") ? opaque::selfTest() : parser.isSet("prepare-fill-targets")
+            ? prepareFillTargets(parser) : fillOnly ? runFillOnly(parser) : run(parser);
     } catch (const std::exception &error) {
         std::fprintf(stderr, "%s\n", error.what());
         return 2;

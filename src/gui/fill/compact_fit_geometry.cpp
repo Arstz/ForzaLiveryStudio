@@ -1031,6 +1031,27 @@ Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
     return result;
 }
 
+QVector<Candidate> completeTriangleCover(const Region &region, const QVector<Primitive> &primitives,
+                                        const Polygons &triangles, const std::function<bool()> &cancelled) {
+    QVector<Candidate> result;
+    const PenPrimitive *triangle = findShape(primitives, 103);
+    const PenPrimitive *square = findShape(primitives, 101);
+    int work = 0;
+    if (triangle == nullptr || triangle->contours.size() != 1 || triangle->contours.front().size() != 3) {
+        throw std::runtime_error("Catalog cover Triangle geometry is unavailable");
+    }
+    for (const QPolygonF &target : triangles) {
+        if (target.size() != 3) {
+            throw std::runtime_error("A triangle seed requires three vertices");
+        }
+        if (!completeTriangle(target, *triangle, square, region, cancelled, 0, &work, &result)) {
+            return {};
+        }
+    }
+
+    return result;
+}
+
 QVector<Candidate> completeCover(const Region &region, const QVector<Primitive> &primitives,
                                 const std::function<bool()> &cancelled) {
     QVector<Candidate> result;

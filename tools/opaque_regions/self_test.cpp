@@ -812,6 +812,22 @@ void colorSupportConstruction() {
     require(narrowGap.accepted && narrowGap.after.paths == 1 && narrowGap.after.holes == 0
         && narrowGap.silhouetteDifference <= options.silhouetteTolerance,
         "Sub-tolerance domain cracks were preserved as structural cutouts");
+    QVector<gui::SvgVectorObject> interleaved{{rect(0, 0, 64, 64), Qt::white}};
+    const QVector<QColor> palette{Qt::red, Qt::blue, Qt::green, Qt::white};
+    for (int row = 0; row < 6; ++row)
+        for (int column = 0; column < 6; ++column)
+            interleaved.push_back({rect(8 + column * 8, 8 + row * 8, 8, 8),
+                palette[(row * row + column * 3 + row * column) % palette.size()]});
+    const auto fallback = run(interleaved);
+    bool validatedRepaint = false;
+    for (const auto &entry : fallback.strategies) {
+        const auto trial = entry.toObject();
+        require(!trial.value("error").toString().contains("No opaque completion"),
+            "Hole completion rejected a feasible exact visible layer");
+        validatedRepaint |= trial.value("strategy").toString().startsWith("repaint-")
+            && trial.value("error").toString().isEmpty();
+    }
+    require(validatedRepaint, "No exact-ownership repaint ordering remained valid");
     options.pathWeight = 8;
     const auto cover = polygon({{16, 16}, {20, 16}, {20, 18}, {24, 18}, {24, 16}, {28, 16},
         {28, 18}, {32, 18}, {32, 16}, {36, 16}, {36, 18}, {40, 18}, {40, 16}, {44, 16},
