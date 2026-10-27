@@ -15,6 +15,7 @@ import shapely
 
 from bottom_up import StackSearch, visible_masks
 from layer_completion import Completion
+from paint_stack import DEFAULT_NATIVE_SHAPE_WEIGHT
 from simplify import (audit_native, digest, image_error, partition_stack, read_svg, render,
                       run as simplify, write_plan)
 
@@ -296,6 +297,12 @@ def main():
     parser.add_argument('--total-shape-budget', type=int, default=3000)
     parser.add_argument('--max-edits', type=int, default=2400)
     parser.add_argument('--cleanup-edits', type=int, default=160)
+    parser.add_argument('--joint-edits', type=int,
+        help='Bound joint fragment absorption, grouping and split-position completion; zero disables it')
+    parser.add_argument('--joint-shortlist', type=int, default=3,
+        help='Measure this many distinct joint proposals through GPU Compact Fit before selecting an edit')
+    parser.add_argument('--joint-shape-weight', type=float, default=DEFAULT_NATIVE_SHAPE_WEIGHT,
+        help='Weight actual saved shapes against encoded target topology; the total shape cap remains fixed')
     parser.add_argument('--curve-tolerance', type=float, default=1.)
     parser.add_argument('--outer-passes', type=int, default=2)
     parser.add_argument('--outer-tolerance', type=float, default=2.)
@@ -344,6 +351,8 @@ def main():
                 local_rmse=args.local_rmse, silhouette_tolerance=args.silhouette_tolerance,
                 cache=args.compact_fit_cache, resume_stack=args.resume_stack, max_edits=args.max_edits,
                 cleanup_edits=args.cleanup_edits, curve_tolerance=args.curve_tolerance,
+                joint_edits=args.joint_edits, joint_shortlist=args.joint_shortlist,
+                joint_shape_weight=args.joint_shape_weight,
                 outer_passes=args.outer_passes, outer_tolerance=args.outer_tolerance,
                 rebuild_ownership=args.rebuild_ownership,
                 flatten_tolerance=args.flatten_tolerance, max_error=args.max_error,

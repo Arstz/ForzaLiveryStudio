@@ -223,12 +223,13 @@ def path_counts(data):
 
 
 class RingBank:
-    def __init__(self, flatten_tolerance=.05):
+    def __init__(self, flatten_tolerance=.05, coordinate_digits=8):
         self.rings, self.spans = {}, {}
         self.flatten_tolerance = flatten_tolerance
+        self.coordinate_digits = coordinate_digits
 
     def key(self, geometry):
-        snapped = shapely.set_precision(geometry, 1e-8)
+        snapped = shapely.set_precision(geometry, 10. ** -self.coordinate_digits)
         if snapped.is_empty or snapped.geom_type != 'Polygon':
             return None
         return shapely.normalize(snapped.simplify(0)).wkb
@@ -244,7 +245,7 @@ class RingBank:
         for curve in path_curves(data):
             if len(curve) != 4:
                 continue
-            samples = np.round(flatten(curve, self.flatten_tolerance), 8)
+            samples = np.round(flatten(curve, self.flatten_tolerance), self.coordinate_digits)
             chain = tuple(map(tuple, LineString(samples).simplify(0).coords))
             if len(chain) >= 4:
                 self.spans.setdefault(chain[0], {}).setdefault(chain, curve)
@@ -255,7 +256,7 @@ class RingBank:
 
     def restore(self, coordinates):
         raw = np.asarray(coordinates)
-        rounded = np.round(raw, 8)
+        rounded = np.round(raw, self.coordinate_digits)
         originals = {}
         for point, snapped in zip(raw, rounded):
             originals.setdefault(tuple(snapped), point)

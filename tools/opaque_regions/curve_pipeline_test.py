@@ -7,10 +7,13 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import numpy as np
+import xml.etree.ElementTree as ET
 
 from shapely.geometry import box
 
 from curve_targets import recover
+from fair_curves import path_curves
 from simplify import read_svg, render
 
 
@@ -65,6 +68,46 @@ def main():
         assert selection['initial_provisional_windows'] > 0
         assert 1 in selection['accepted_paths']
         assert selection['requires_final_source_validation'] and not selection['vector_source_local_passed']
+        polygon = source.read_bytes()
+        points = [(128 + 80 * math.cos(index * 2 * math.pi / 48),
+                   128 + 80 * math.sin(index * 2 * math.pi / 48)) for index in range(48)]
+        polygon = polygon[:polygon.index(b'<path fill="#0000ff"')] + (
+            '<path fill="#0000ff" d="M' + 'L'.join(f'{x:.10f} {y:.10f}' for x, y in points)
+            + 'Z"/></svg>').encode()
+        smooth = polygon[:polygon.index(b'<path fill="#0000ff"')] + (
+            b'<path fill="#0000ff" d="M208 128C208 172.18278 172.18278 208 128 208'
+            b'C83.81722 208 48 172.18278 48 128C48 83.81722 83.81722 48 128 48'
+            b'C172.18278 48 208 83.81722 208 128Z"/></svg>')
+        selective_baseline = render(polygon, (256, 256))
+        selective_source = selective_baseline.copy()
+        selective_source[:, :128] = render(smooth, (256, 256))[:, :128]
+        partial, _, details = recover(tool, read_svg(polygon, (256, 256)), (256, 256),
+            box(0, 0, 256, 256), selective_source, selective_baseline, root / 'chain_recovery',
+            tolerance=.75, source_growth=0., local_growth=0., encoded=polygon)
+        assert details['partial_paths'] and 1 in details['accepted_paths']
+        assert b'C' in partial
+        assert np.array_equal(render(partial, (256, 256))[:, 160:], selective_baseline[:, 160:])
+        (root / 'partial.svg').write_bytes(partial)
+        invoke([root / 'partial.svg', '--prepare-fill-targets', '--output', root / 'partial_targets'])
+        preserved, _, _ = recover(tool, read_svg(smooth, (256, 256)), (256, 256),
+            box(0, 0, 256, 256), render(smooth, (256, 256)), render(smooth, (256, 256)),
+            root / 'preserved_curves', encoded=smooth)
+        assert b'C208' in preserved
+        points = [(128 + 80 * math.cos(-math.pi / 2 + index * math.pi / 24),
+                   128 + 80 * math.sin(-math.pi / 2 + index * math.pi / 24)) for index in range(25)]
+        mixed = polygon[:polygon.index(b'<path fill="#0000ff"')] + (
+            '<path fill="#0000ff" d="M' + 'L'.join(f'{x:.10f} {y:.10f}' for x, y in points)
+            + 'C83.81722 208 48 172.18278 48 128C48 83.81722 83.81722 48 128 48Z"/></svg>').encode()
+        mixed_image = render(mixed, (256, 256))
+        improved, _, _ = recover(tool, read_svg(mixed, (256, 256)), (256, 256),
+            box(0, 0, 256, 256), mixed_image, mixed_image, root / 'mixed_chains',
+            encoded=mixed, tolerance=.75, source_growth=4., local_growth=16.)
+        assert improved.count(b'C') > mixed.count(b'C')
+        old_curves = [curve for curve in path_curves(list(ET.fromstring(mixed))[1].attrib['d']) if len(curve) == 4]
+        new_curves = list(path_curves(list(ET.fromstring(improved))[1].attrib['d']))
+        assert all(any(np.array_equal(curve, original) for curve in new_curves) for original in old_curves)
+        (root / 'mixed.svg').write_bytes(improved)
+        invoke([root / 'mixed.svg', '--prepare-fill-targets', '--output', root / 'mixed_targets'])
     print('Curve pipeline passed: Bucket cubics, preserved straight corners, editor profile initialization, '
           'GPU execution, native curved shapes and opaque project rendering.')
 

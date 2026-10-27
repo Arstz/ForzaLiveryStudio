@@ -30,6 +30,7 @@ python tools/opaque_regions/rate_distortion_test.py
 python tools/opaque_regions/topology_transactions_test.py
 python tools/opaque_regions/fit_repair_test.py
 python tools/opaque_regions/outer_regions_test.py build/Release/fls_opaque_regions.exe
+python tools/opaque_regions/joint_regions_test.py build/Release/fls_opaque_regions.exe
 python tools/opaque_regions/ownership_regions_test.py
 python tools/opaque_regions/native_topology_test.py
 python tools/opaque_regions/curve_pipeline_test.py build/Release/fls_opaque_regions.exe
@@ -112,13 +113,70 @@ The candidate contour document remains available even when a pass falls back.
 
 Same-fill grouping and solid outer completion rebuild dependencies from fixed
 visible ownership. A joint proposal may shorten another region's hidden support
-to permit repainting above the completed region. Cyclic proposals are rejected
-and logged. Different positions for the same fill remain available. Grouping
-charges the combined geometry of all affected regions.
+to permit repainting above the completed region. Completion can split a blocking
+item's required ownership between retained lower paint and a new upper item.
+Upper items of the same fill share a restoration support when their ordering
+permits it. The graph is rebuilt from the fixed ownership fragments after each
+proposal. Required colored geometry must remain unchanged during structural
+transactions. Remaining cycles are rejected and logged. Grouping charges the
+combined geometry of all affected regions.
+
+Completion also tests convex hulls and enclosing rectangles for complex paint
+without cutouts. Added territory can require splitting lower paint into later
+positions. Existing hidden support may contract while required visible paint
+remains covered. These completions compete with hole filling and constrained
+shortcuts using combined geometry and actual native placement measurements.
+
+`--joint-edits` bounds accepted completion, contour and grouping transactions.
+The default uses up to sixteen transactions when geometry search is enabled;
+zero disables the stage. An explicit positive value also enables it when
+`--max-edits 0` resumes an encoded checkpoint. This is a search-effort bound;
+it does not limit the output region count. Source-validated absorption precedes
+the structural search. Small visible components and narrow branches can test
+any adjacent existing fill. An upper neighbor can close a notch over a lower
+component while retaining the lower support. Rendered source error and combined
+encoded complexity govern acceptance without a color-distance cutoff.
+
+Visible ownership also supplies simplification proposals. Small components,
+narrow branches, and contour chains can transfer to neighboring fills before
+the donor support is rebuilt inside its new envelope. This can release a broad
+hidden branch that support-only erosion would retain. Source windows near their
+error limit keep required coverage. Colored geometry outside the reassigned
+territory remains fixed; antialiasing changes outside that territory can remain
+provisional until native rendering validates the complete result.
+
+A cutout can open through coverage supplied by higher layers. The new contour
+is simplified within its complete required and allowed geometry. Holey paint
+can also split into separate closed filled pieces. Each piece contributes its
+own draw-item and geometry cost. Restoration, hidden cuts and splits compete
+with unchanged paint; none is required merely to reduce a cutout statistic.
+Per-transaction contour checkpoints and ordering rejection causes remain in
+the internal joint-search directory.
+
+`--joint-shortlist` defaults to three distinct proposal families per edit.
+These candidates run through the complete editor GPU Compact Fit pipeline and
+the native renderer before selection. The score combines actual saved placement
+count with saved target-contour complexity. `--joint-shape-weight` defaults to 4
+per native shape; each target anchor costs 1, each soft anchor costs an additional
+1, each emitted draw item costs 32, and each cutout costs 256. These counts come
+from the saved project after decomposition and hidden-group removal. A small
+placement increase can therefore pay for a substantial contour simplification.
+The hard native-shape cap and appearance checks still apply. The unchanged input and
+measured candidates remain eligible for final selection. Source-validated color
+batches that fail export-level validation replay independent edits, retaining
+valid edits without reintroducing rejected dependencies.
+
+Same-color grouping competes with completion and contour proposals during every
+joint-search iteration. Its best candidate receives a measurement slot before
+other proposal families. `--flatten-tolerance` uses the same native-pixel allowance
+for ownership polygons, retained Bezier spans, curve checks and final conversion.
+Dependency intersections use the shared 0.01 square-pixel area tolerance.
 
 The final ordering pass freezes complete visible ownership, rebuilds all
-overlap dependencies, and topologically sorts available items by geometry
-complexity. Same-color items can retain separate positions. The ordering report
+overlap dependencies, and topologically sorts available items deterministically.
+Local transactions retain unaffected positions; dependencies place split or
+merged items where their geometry requires them. Curve recovery retains the
+validated input order. Same-color items can retain separate positions. The ordering report
 records the fixed regions, graph edges, resulting order and contour costs.
 
 The search charges the complete replacement geometry, including restoration
@@ -136,9 +194,26 @@ Bezier spans. `--curve-tolerance` sets its native-pixel tolerance, default one.
 Each replacement must retain valid filled geometry inside the domain and pass
 the source-image planning budgets. Ownership operations use consistent
 polygon copies on the native clipping grid; emitted curves retain their control
-points. Straight spans retain hard corners. The curve route does not spend spare
+points. An encoded checkpoint retains unchanged paths and recoverable original
+Bezier spans. If a complete curve proposal fails, independently fitted boundary
+chains can retain successful curves alongside the original straight spans.
+Existing curved spans also survive fitting of neighboring polygon chains.
+Straight spans retain hard corners. The curve route does not spend spare
 triangle counts on additional polygon vertices. Setting the curve tolerance to
 zero retains the polygon diagnostic route.
+
+Native fitting also compares original and curved targets per draw item. A
+curved target that needs more placements or cannot construct a fill seed can
+retain its original contour. The resulting mixture is refilled and checked as
+a complete native-rendered project. Per-path placement counts guide this
+proposal; whole-project counts and appearance checks determine acceptance.
+
+Fitting repairs pass through joint grouping and contour simplification before
+curve recovery and another GPU fill. When a joint proposal changes an encoded
+checkpoint, the pipeline also refills its unchanged input. Final selection uses
+accepted native-rendered projects and actual native shape counts. The selected
+checkpoint and ordering diagnostics come from the same trial as the saved
+project, including when the unchanged input wins.
 
 Every final region uses `profile::fillRegion`, the editor's curve-first Compact
 Fit entry point, with GPU work enabled and the deployed catalog. The default
@@ -184,8 +259,9 @@ the bidirectional comparison retains its default of 1. These quality limits
 remain configurable independently of the hard native-shape cap. Conversion from the
 derived contours to Compact Fit targets, target-to-filled error, original
 baseline-to-filled error, and source-to-filled error are reported separately.
-Accepted final trials are ranked by measured native shape count, then region
-count and source error. All quality limits still apply before this ranking.
+Accepted final trials use the same weighted native-shape and target-contour
+score as the joint search. Native shape count, region count and source error
+resolve ties. All quality limits still apply before this ranking.
 `--render-rmse` and `--local-rmse` bound the final fitter's error against the
 derived contours. The external domain remains fixed and the actual filled
 silhouette is checked independently.

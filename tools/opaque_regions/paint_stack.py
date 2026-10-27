@@ -8,6 +8,10 @@ import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
 
+DEFAULT_INTERSECTION_AREA = .01
+DEFAULT_NATIVE_SHAPE_WEIGHT = 4.
+
+
 def canonical_geometry(geometry):
     parts = []
     for part in polygons(geometry.simplify(0, preserve_topology=True)):
@@ -55,7 +59,7 @@ def polygon_svg(stack, size):
             f'viewBox="0 0 {size[0]} {size[1]}">' + ''.join(paths) + '</svg>').encode()
 
 
-def order_stack(stack, area_tolerance=.01, ownership_grid=1e-6):
+def order_stack(stack, area_tolerance=DEFAULT_INTERSECTION_AREA, ownership_grid=1e-6, retain_input_order=False):
     stack = [(color, canonical_geometry(part)) for color, shape in stack for part in polygons(shape)]
     working = [shapely.set_precision(shape, ownership_grid) for _, shape in stack]
     required = [Polygon() for _ in stack]
@@ -81,7 +85,7 @@ def order_stack(stack, area_tolerance=.01, ownership_grid=1e-6):
     costs = [geometry_metrics(shape) for _, shape in stack]
     def priority(index):
         metric = costs[index]
-        return metric['cost'], metric['points'], metric['holes'], index
+        return (index if retain_input_order else metric['cost']), metric['points'], metric['holes'], index
     ready = [priority(index) for index, degree in enumerate(incoming) if not degree]
     heapq.heapify(ready)
     order = []
@@ -97,6 +101,7 @@ def order_stack(stack, area_tolerance=.01, ownership_grid=1e-6):
         raise ValueError(f'Fixed ownership produced an ordering cycle; backward edges: {backward}')
     result = [stack[index] for index in order]
     report = {'fixed_ownership': True, 'area_tolerance': area_tolerance, 'ownership_grid': ownership_grid,
+        'retained_input_order': retain_input_order,
         'original_order': list(range(len(stack))), 'order': order, 'edges': sorted(edges),
         'appearance_groups': len({color for color, _ in stack}), 'draw_items': len(stack),
         'layers': [{'source_index': index, 'fill': stack[index][0], **costs[index],
