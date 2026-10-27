@@ -19,22 +19,23 @@ from simplify import audit_native, digest, image_error, read_svg, render
 
 DEFAULT_SOURCE_GROWTH = 8.
 DEFAULT_LOCAL_GROWTH = 32.
+DEFAULT_FIT_EVALUATIONS = 60000
 
 
-def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000,
+def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFAULT_FIT_EVALUATIONS,
         workers=4, source_growth=DEFAULT_SOURCE_GROWTH, local_growth=DEFAULT_LOCAL_GROWTH,
         render_rmse=4., local_rmse=24.,
         silhouette_tolerance=1., cache=None, progress=None, resume_stack=None, max_edits=2400,
-        flatten_tolerance=.05, max_error=255., boundary=.25, inward=.05, area_ratio=.001,
-        shape_budget=3000):
+        flatten_tolerance=.05, max_error=255., boundary=2., inward=.5, area_ratio=.02,
+        shape_budget=3000, cleanup_edits=160, curve_tolerance=1.):
     started = time.monotonic()
     progress = progress or (lambda event: None)
     project, svg, output, tool = [Path(value).resolve() for value in (project, svg, output, tool)]
     implementation = {name: digest(Path(__file__).with_name(name)) for name in
-        ('budgeted.py', 'rate_distortion.py', 'adaptive_vertices.py', 'paint_stack.py', 'generate.py')}
-    if total_shape_budget < 1 or evaluations < 1 or workers < 1 or max_edits < 0 \
+        ('budgeted.py', 'rate_distortion.py', 'adaptive_vertices.py', 'paint_stack.py', 'generate.py', 'curve_targets.py', 'fit_repair.py')}
+    if total_shape_budget < 1 or evaluations < 1 or workers < 1 or max_edits < 0 or cleanup_edits < 0 \
             or any(not np.isfinite(value) or value < 0 for value in
-                   (source_growth, local_growth, render_rmse, local_rmse, silhouette_tolerance)):
+                   (source_growth, local_growth, render_rmse, local_rmse, silhouette_tolerance, curve_tolerance)):
         raise ValueError('Invalid image budget, search effort or quality allowance')
     if not all(np.isfinite(value) and value > 0 for value in
                (flatten_tolerance, boundary, inward, area_ratio)) or area_ratio >= 1 or shape_budget < 1:
@@ -76,7 +77,7 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
             raise ValueError('The saved budget plan has different input provenance')
         stack = [(row['fill'], shapely.from_wkb(bytes.fromhex(row['wkb']))) for row in saved['stack']]
         structural = saved['optimization']
-        if structural.get('triangle_bound', float('inf')) > total_shape_budget:
+        if not curve_tolerance and structural.get('triangle_bound', float('inf')) > total_shape_budget:
             optimizer = RateDistortion(stack, source, domain, progress, local_growth=local_growth,
                 reference_image=baseline, checkpoint=checkpoint, reference_stack=paints)
             stack, structural = optimizer.run(geometry_budget, max_edits=max_edits)
@@ -84,10 +85,10 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
         optimizer = RateDistortion(paints, source, domain, progress, local_growth=local_growth,
                                    reference_image=baseline, checkpoint=checkpoint)
         stack, structural = optimizer.run(geometry_budget, max_edits=max_edits)
-    if structural.get('within_geometry_budget') and 'optimizer' in locals():
+    if not curve_tolerance and structural.get('within_geometry_budget') and 'optimizer' in locals():
         stack, structural = optimizer.refine(max(geometry_budget, int(total_shape_budget * .94)), max_edits=24)
     quality_budget = max(1, int(total_shape_budget * .98))
-    if structural['triangle_bound'] < quality_budget and max_edits:
+    if not curve_tolerance and structural['triangle_bound'] < quality_budget and max_edits:
         from adaptive_vertices import refine as refine_vertices
         split = [(color, part.simplify(0, preserve_topology=True)) for color, shape in stack for part in polygons(shape)]
         refiner = RateDistortion(split, source, domain, progress, local_growth=local_growth,
@@ -97,6 +98,16 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
         structural = dict(structural, **{key: vertices[key] for key in
             ('geometry_budget', 'within_geometry_budget', 'regions', 'holes', 'points',
              'triangle_bound', 'cost', 'source_error')}, quality_refinement={'contours': contours, 'vertices': vertices})
+    if cleanup_edits and max_edits:
+        progress({'topology_cleanup': 'current-owner hole promotion and neighboring-color absorption'})
+        cleanup = RateDistortion(stack, source, domain, progress, local_growth=local_growth,
+            reference_image=baseline, reference_stack=stack, topology_transactions=True)
+        current_error = image_error(source, cleanup.image)['rmse']
+        stack, cleaned = cleanup.run(max(1, structural['triangle_bound'] * 2),
+            max_edits=min(cleanup_edits, max_edits),
+            source_rmse_limit=min(source_before['rmse'] + source_growth, current_error + .25),
+            continue_below_budget=True)
+        structural = dict(structural, topology_cleanup=cleaned)
     try:
         stack, ordering = order_stack(stack)
         ordering['accepted'] = True
@@ -113,9 +124,29 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
     (output / 'optimization.json').write_text(json.dumps(structural, indent=2))
     cache = Path(cache).resolve() if cache else internal / 'fit_cache'
     trials = []
+    pending_repair = None
     for attempt in range(3):
         contours = internal / f'contours_{attempt}.svg'
-        contours.write_bytes(polygon_svg(stack, size))
+        from curve_targets import recover
+        if pending_repair is None:
+            data, stack, curves = recover(tool, stack, size, domain, source, baseline,
+                internal / f'curves_{attempt}', tolerance=curve_tolerance,
+                source_growth=source_growth, local_growth=local_growth, progress=progress)
+        else:
+            data, details = pending_repair
+            pending_repair = None
+            stack = read_svg(data, size, flatten_tolerance)
+            _, diagnostic = order_stack(stack)
+            diagnostic['order'] = list(range(len(stack)))
+            diagnostic['accepted'] = all(first < last for first, last in diagnostic['edges'])
+            diagnostic['retained_input_order'] = True
+            diagnostic['layers'].sort(key=lambda layer: layer['source_index'])
+            curves = {'enabled': True, 'native_error_repair': details, 'ordering': diagnostic}
+        contours.write_bytes(data)
+        structural['curve_recovery'] = {key: value for key, value in curves.items() if key != 'ordering'}
+        if curves.get('ordering'):
+            ordering = curves['ordering']
+            (output / 'ordering.json').write_text(json.dumps(ordering, indent=2))
         reference = internal / f'contours_{attempt}.png'
         guide = render(contours.read_bytes(), size)
         Image.fromarray(guide).save(reference)
@@ -125,9 +156,16 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
             render_rmse, local_rmse, max_error, progress,
             silhouette_tolerance=silhouette_tolerance, flatten_tolerance=flatten_tolerance,
             workers=workers, scene_validated=True,
-            polygon_seed=True, total_shape_budget=total_shape_budget)
+            polygon_seed=False, total_shape_budget=total_shape_budget)
+        structural['encoded_contours'] = fitted.get('bucket_input', {})
+        saved = {'input_sha256': digest(svg), 'source_sha256': digest(project / 'source.png'),
+            'optimization': structural, 'encoded_svg': data.decode(),
+            'stack': [{'fill': color, 'wkb': shape.wkb.hex()} for color, shape in stack]}
+        (output / 'stack_plan.json.gz').write_bytes(gzip.compress(json.dumps(saved).encode(), mtime=0))
+        (output / 'optimization.json').write_text(json.dumps(structural, indent=2))
         trial = {'name': f'candidate_{attempt}', 'directory': str(directory.relative_to(output)),
-            'fit': fitted, 'geometry': structural, 'baseline_to_guide': image_error(baseline, guide)}
+            'fit': fitted, 'geometry': json.loads(json.dumps(structural)),
+            'baseline_to_guide': image_error(baseline, guide)}
         if (directory / 'generated_compact.png').exists():
             actual = np.asarray(Image.open(directory / 'generated_compact.png').convert('RGBA'))
             trial['baseline_to_filled'] = image_error(baseline, actual)
@@ -150,7 +188,31 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
                 fitted.setdefault('rejections', []).append('Source-relative image error budget exceeded')
         trials.append(trial)
         count = fitted.get('shape_count') or fitted.get('attempted_placements', 0)
-        if count and count > total_shape_budget and structural['triangle_bound'] <= total_shape_budget and attempt < 2:
+        diagnostic_image = directory / 'generated_compact.png'
+        if not diagnostic_image.exists():
+            diagnostic_image = directory / fitted.get('rejected_render', 'generated_unculled.png')
+        if not fitted.get('accepted') and attempt < 2 and diagnostic_image.exists():
+            from fit_repair import propose
+            pending_repair = propose(data, paints, source, baseline,
+                np.asarray(Image.open(diagnostic_image).convert('RGBA')), internal / f'repair_{attempt}',
+                local_rmse=local_rmse, local_growth=local_growth, source_growth=source_growth)
+            if pending_repair is not None:
+                progress({'native_error_repair': pending_repair[1]})
+                continue
+        if curve_tolerance and not fitted.get('accepted') and max_edits and attempt < 2:
+            progress({'native_fit_feedback': attempt, 'shapes': count,
+                      'failed_regions': fitted.get('failed_regions'), 'topology_cleanup': True})
+            optimizer = RateDistortion(stack, source, domain, progress, local_growth=local_growth,
+                reference_image=baseline, reference_stack=stack, topology_transactions=True)
+            stack, cleaned = optimizer.run(max(1, sum(geometry_metrics(shape)['triangle_bound']
+                for _, shape in stack) * 2), max_edits=min(cleanup_edits, max_edits),
+                source_rmse_limit=source_before['rmse'] + source_growth, continue_below_budget=True)
+            structural = dict(structural, native_feedback=cleaned)
+            stack, ordering = order_stack(stack)
+            curve_tolerance *= 1.5
+            continue
+        if not curve_tolerance and count and count > total_shape_budget \
+                and structural['triangle_bound'] <= total_shape_budget and attempt < 2:
             geometry_budget = max(1, int(structural['triangle_bound'] * total_shape_budget / count * .98))
             optimizer = RateDistortion(stack, source, domain, progress, local_growth=local_growth,
                 reference_image=baseline, checkpoint=checkpoint, reference_stack=paints)
@@ -174,11 +236,13 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=1000
     accepted = bool(selected and selected['fit'].get('accepted'))
     improved = accepted and (selected['fit']['region_count'] < audit['before']['paths']
         or selected['geometry']['holes'] < audit['before']['holes'])
-    report = {'method': 'Image-error allocation, same-fill grouping and joint order/geometry proposals',
+    report = {'method': 'Current-owner topology transactions, Bucket curves and editor GPU Compact Fit',
         'accepted': accepted, 'improved': improved, 'selected': selected['name'] if selected else None,
         'status': 'filled' if accepted else 'budget_candidate' if selected else 'no_budget_feasible_output',
         'native_dimensions': size, 'downsampled': False, 'leeway_used': False,
         'total_shape_budget': total_shape_budget, 'source_to_opaque': source_before,
+        'compact_fit_pipeline': 'editor curve-first Compact Fit', 'gpu_requested': True,
+        'polygon_seeds_used': False,
         'appearance_groups': ordering['appearance_groups'],
         'ordering_edges': len(ordering['edges']),
         'before_region_count': audit['before']['paths'],

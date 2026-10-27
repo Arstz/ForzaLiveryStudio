@@ -14,11 +14,16 @@ def canonical_geometry(geometry):
         rings = []
         for ring in (part.exterior, *part.interiors):
             points = np.asarray(ring.coords)[:-1]
-            incoming, outgoing = points - np.roll(points, 1, axis=0), np.roll(points, -1, axis=0) - points
-            cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
-            scale = np.linalg.norm(incoming, axis=1) + np.linalg.norm(outgoing, axis=1)
-            keep = (np.abs(cross) > 1e-8 * scale) | (np.sum(incoming * outgoing, axis=1) < 0)
-            rings.append(points[keep] if np.count_nonzero(keep) >= 3 else points)
+            while True:
+                incoming, outgoing = points - np.roll(points, 1, axis=0), np.roll(points, -1, axis=0) - points
+                cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
+                scale = np.linalg.norm(incoming, axis=1) + np.linalg.norm(outgoing, axis=1)
+                keep = (np.abs(cross) > 1e-8 * scale) | (np.sum(incoming * outgoing, axis=1) < 0)
+                count = np.count_nonzero(keep)
+                if count < 3 or count == len(points):
+                    break
+                points = points[keep]
+            rings.append(points)
         parts.append(Polygon(rings[0], rings[1:]))
     return parts[0] if len(parts) == 1 else MultiPolygon(parts) if parts else Polygon()
 
@@ -50,18 +55,19 @@ def polygon_svg(stack, size):
             f'viewBox="0 0 {size[0]} {size[1]}">' + ''.join(paths) + '</svg>').encode()
 
 
-def order_stack(stack, area_tolerance=.01):
+def order_stack(stack, area_tolerance=.01, ownership_grid=1e-6):
     stack = [(color, canonical_geometry(part)) for color, shape in stack for part in polygons(shape)]
+    working = [shapely.set_precision(shape, ownership_grid) for _, shape in stack]
     required = [Polygon() for _ in stack]
     covered = Polygon()
     for index in reversed(range(len(stack))):
-        shape = stack[index][1]
+        shape = working[index]
         required[index] = shape.difference(covered)
-        covered = shapely.union_all([covered, shape])
+        covered = shapely.union_all([covered, shape], grid_size=ownership_grid)
     tree = shapely.STRtree(required)
     edges = set()
     for index, (color, shape) in enumerate(stack):
-        added = shape.difference(required[index])
+        added = working[index].difference(required[index])
         for owner in tree.query(added, predicate='intersects'):
             owner = int(owner)
             if owner != index and color != stack[owner][0] \
@@ -90,7 +96,7 @@ def order_stack(stack, area_tolerance=.01):
         backward = [(first, last) for first, last in sorted(edges) if first > last]
         raise ValueError(f'Fixed ownership produced an ordering cycle; backward edges: {backward}')
     result = [stack[index] for index in order]
-    report = {'fixed_ownership': True, 'area_tolerance': area_tolerance,
+    report = {'fixed_ownership': True, 'area_tolerance': area_tolerance, 'ownership_grid': ownership_grid,
         'original_order': list(range(len(stack))), 'order': order, 'edges': sorted(edges),
         'appearance_groups': len({color for color, _ in stack}), 'draw_items': len(stack),
         'layers': [{'source_index': index, 'fill': stack[index][0], **costs[index],

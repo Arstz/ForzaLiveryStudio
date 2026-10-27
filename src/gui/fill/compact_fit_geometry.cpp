@@ -999,11 +999,14 @@ Region buildRegion(const PenFillRequest &request, const std::function<bool()> &c
 }
 
 Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
-                            double outwardAllowance) {
+                            double outwardAllowance, const Polygons &allowedDomain) {
     const Polygons leeway = unite(inputLeeway);
     if (leeway.isEmpty()) {
         Region result = region;
         result.permitted = expanded(region.required, outwardAllowance);
+        if (!allowedDomain.isEmpty()) {
+            result.permitted = intersect(result.permitted, allowedDomain);
+        }
         result.permittedPath = painterPath(result.permitted);
 
         return result;
@@ -1021,6 +1024,9 @@ Region leewayAdjustedRegion(const Region &region, const Polygons &inputLeeway,
     result.spillFree = unite(region.required + leeway);
     result.leeway = leeway;
     result.permitted = unite(expanded(region.required, outwardAllowance) + leeway);
+    if (!allowedDomain.isEmpty()) {
+        result.permitted = intersect(result.permitted, allowedDomain);
+    }
     result.requiredPath = painterPath(result.required);
     result.permittedPath = painterPath(result.permitted);
     result.spillFreePath = painterPath(result.spillFree);

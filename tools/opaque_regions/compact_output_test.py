@@ -38,6 +38,12 @@ def main():
         assert first['renderer'] == 'NativeShapeRenderer' and first['opaque_to_filled']['rmse'] == 0
         assert first['silhouette_difference_area'] == 0 and first['downsampled'] is False
         assert not first['leeway_used'] and not list(output.glob('*.svg'))
+        assert all(row['pipeline'] == 'editor curve-first Compact Fit' and row['gpu_requested']
+                   and not row['polygon_seed_used'] for row in first['per_path'])
+        assert all('profileSeed' in row['diagnostics'] for row in first['per_path'])
+        samples = first['placement_culling']['sample_compaction']
+        assert samples['applied'] and samples['native_sample_differences'] == 0
+        assert samples['restored_placements'] > 0
         packed = output / 'generated_compact.3so'
         saved = json.loads(gzip.decompress(packed.read_bytes()))
         groups = saved['root']['children']
@@ -79,10 +85,24 @@ def main():
             + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
         failed = invoke(['--compact-fit-shape-budget', '1'], expected=3)
         assert not failed['accepted'] and not failed['verified']
-        assert failed['shape_count'] is None and failed['failed_regions'] == 1
+        assert failed['failed_regions'] == 1
+        assert failed['shape_count'] is None or failed['shape_count'] <= 1
         assert not packed.exists() and not (output / 'generated_compact.png').exists()
+        source.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
+            '<path fill="#ffffff" d="M0 0H64V64H0Z"/>'
+            '<path fill="#0000ff" d="M16 16H48V48H16Z"/>'
+            '<path fill="#ff0000" d="M0 0H64V64H0Z"/></svg>')
+        png(reference)
+        hidden = invoke(['--compact-fit-total-shape-budget', '1'])
+        assert hidden['accepted'] and hidden['shape_count'] == hidden['region_count'] == 1
+        assert hidden['attempted_placements'] == 3 and hidden['input_region_count'] == 3
+        assert hidden['placement_culling']['applied'] and hidden['placement_culling']['removed_placements'] == 2
+        assert hidden['placement_culling']['image_error']['max_channel_error'] == 0
+        assert len(json.loads(gzip.decompress(packed.read_bytes()))['root']['children']) == 1
         limited = invoke(['--compact-fit-shape-budget', '1', '--scene-validated-fills'], expected=3)
-        assert not limited['scene_verified'] and limited['shape_count'] is None
+        assert not limited['scene_verified']
+        assert limited['shape_count'] is None or limited['shape_count'] <= 1
+        assert not packed.exists() and not (output / 'generated_compact.png').exists()
     print('Compact output tests passed: actual counts, separate color positions, opaque native '
           'project rendering, transforms, caching, corrupt-cache recovery and failed-fill rejection.')
 

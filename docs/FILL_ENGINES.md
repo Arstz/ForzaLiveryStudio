@@ -55,6 +55,12 @@ candidate geometry and the joint unique support of neighboring placements.
 A final exact-union pass removes redundancy and consolidates placements while
 preserving the emitted union on the clipping grid.
 
+Callers can supply an allowed domain to constrain outward support while keeping
+the visible contour and its fitting allowances separate. Interior repair can
+recover part of a concave gap with native primitives when a single enclosing
+placement cannot fit. An infeasible GPU seed reserves work for exact coverage
+repair before final verification.
+
 ### Quality and work limits
 
 Defaults are defined by `compact::FillOptions` in `compact_fit.h`:

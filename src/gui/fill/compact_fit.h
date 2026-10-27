@@ -22,6 +22,7 @@ struct FillOptions {
     QVector<PenPlacement> initialPlacements;
     QVector<QPolygonF> leeway;
     QVector<QPolygonF> thinPreferredCoverage;
+    QVector<QPolygonF> allowedDomain;
     std::shared_ptr<const QVector<ReusableCandidate>> replacementCandidates;
     std::function<void(int, int, int)> workProgress;
     int shapeBudget = kDefaultShapeBudget;

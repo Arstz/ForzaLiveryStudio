@@ -82,7 +82,7 @@ QTransform affineFromAnchors(const std::array<QPointF, 3> &source,
 Region buildRegion(const PenFillRequest &request,
                    const std::function<bool()> &cancelled);
 Region leewayAdjustedRegion(const Region &region, const Polygons &leeway,
-                            double outwardAllowance);
+                            double outwardAllowance, const Polygons &allowedDomain = {});
 QVector<Candidate> completeCover(const Region &region,
                                 const QVector<Primitive> &primitives,
                                 const std::function<bool()> &cancelled);

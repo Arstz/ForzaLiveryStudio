@@ -51,7 +51,8 @@ def main():
         assert len(saved['root']['children']) == 4
         shapes = [shape for group in saved['root']['children'] for shape in group['children'] if shape['kind'] == 'shape']
         assert len(shapes) == 4 and all(shape['color'][3] == 255 for shape in shapes)
-        assert all(trial['fit']['renderer'] == 'NativeShapeRenderer' for trial in report['trials'])
+        assert all(trial['fit']['renderer'] == 'NativeShapeRenderer' for trial in report['trials']
+                   if trial['fit']['accepted'])
         assert np.array_equal(np.asarray(Image.open(output / 'after.png')),
                               np.asarray(Image.open(project / 'source.png')))
         baseline.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="80">'

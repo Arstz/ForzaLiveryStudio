@@ -1,6 +1,9 @@
 #include "optimizer.h"
 
 #include "shape_geometry_store.h"
+#include "compact_fit.h"
+#include "compact_fit_catalog_internal.h"
+#include "region_fill.h"
 #include <QSvgRenderer>
 
 #include <algorithm>
@@ -1016,7 +1019,48 @@ void localColorAbsorption() {
 
 } // namespace
 
+void compactInteriorRepair() {
+    gui::ShapeGeometryStore geometry;
+    QString error;
+    require(geometry.loadDefault(&error), qPrintable(error));
+    const auto full = gui::catalog::buildCatalog(geometry, &error);
+    QVector<gui::catalog::Primitive> catalog;
+    for (const auto &primitive : full)
+        if (primitive.shape.shapeId == 101) catalog.push_back(primitive);
+    require(catalog.size() == 1, "Interior repair requires the native Square");
+    const auto outline = polygon({{0, 0}, {100, 0}, {100, 100}, {60, 100}, {60, 40}, {0, 40}});
+    const auto converted = gui::regionOutlineToPenLoops(outline);
+    require(converted.valid(), "Interior repair contour is invalid");
+    gui::PenFillRequest request;
+    request.loops = converted.loops;
+    request.primitives = {catalog.front().shape};
+    const auto bounds = catalog.front().shape.bounds;
+    const double sx = 20 / bounds.width(), sy = 20 / bounds.height();
+    gui::compact::FillOptions options;
+    options.useGpu = false;
+    options.shapeBudget = 8;
+    options.evaluationBudget = 20000;
+    options.boundaryAllowance = .02;
+    options.inwardAllowance = .02;
+    options.areaErrorRatio = .001;
+    options.allowedDomain = {QPolygonF(QRectF(0, 0, 100, 100))};
+    options.initialPlacements = {{101, QTransform(sx, 0, 0, sy,
+        70 - bounds.left() * sx, 10 - bounds.top() * sy)}};
+    options.initialPlacements.push_back({101, QTransform(1e-7, 0, 0, 1e-7, 90, 10)});
+    const auto fitted = gui::compact::fillRegion(request, catalog, options);
+    require(fitted.fill.error.isEmpty(), qPrintable(fitted.fill.error));
+    require(fitted.diagnostics.value("approximationVerified").toBool(), "Concave interior repair failed verification");
+    require(fitted.fill.placements.size() <= options.shapeBudget, "Interior repair exceeded its native shape budget");
+    require(std::all_of(fitted.fill.placements.begin(), fitted.fill.placements.end(), [](const auto &placement) {
+        return placement.transform.isInvertible();
+    }), "Interior repair retained a singular placement");
+    require(fitted.diagnostics.value("missingBeyondInward").toDouble() < .01,
+        "Concave interior repair left required support uncovered");
+}
+
 int selfTest() {
+    std::puts("compact interior repair");
+    compactInteriorRepair();
     std::puts("hole filling");
     holeFilling();
     std::puts("chords and rectangles");

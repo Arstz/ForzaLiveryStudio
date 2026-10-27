@@ -2766,7 +2766,7 @@ QVector<Candidate> tightenedAllowanceCandidates(const catalog::Region &authored,
     QVector<Candidate> result;
 
     for (double allowance : allowances) {
-        const auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance);
+        const auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance, options.allowedDomain);
         const catalog::PointContainment envelope(region.permitted);
         for (int index : selected) {
             const auto &source = pool[index];
@@ -2836,7 +2836,7 @@ double selectAllowance(const catalog::Region &authored, const catalog::Region &c
     for (double allowance : allowances) {
         if (stopped(cancelled))
             break;
-        const auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance);
+        const auto region = catalog::leewayAdjustedRegion(authored, options.leeway, allowance, options.allowedDomain);
         const catalog::PointContainment envelope(region.permitted);
         QVector<Candidate> eligible;
         QVector<int> indices;
@@ -2936,7 +2936,11 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
         });
         const auto authoredRegion = prepared ? *prepared : catalog::buildRegion(request, cancelled);
         auto coverageRegion = prepared ? *prepared : catalog::leewayAdjustedRegion(
-            authoredRegion, options.leeway, options.boundaryAllowance);
+            authoredRegion, options.leeway, options.boundaryAllowance, options.allowedDomain);
+        if (prepared && !options.allowedDomain.isEmpty()) {
+            coverageRegion.permitted = catalog::intersect(coverageRegion.permitted, options.allowedDomain);
+            coverageRegion.permittedPath = catalog::painterPath(coverageRegion.permitted);
+        }
         if (coverageRegion.flexibleBoundary) {
             coverageRegion.spillFree = coverageRegion.permitted;
             coverageRegion.spillFreePath = coverageRegion.permittedPath;

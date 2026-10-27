@@ -41,6 +41,9 @@ constexpr int kGpuGroupCandidates = 8;
 constexpr int kGpuGroupFragments = 12;
 constexpr int kGpuGroupNeighbors = 2;
 constexpr int kGpuExactTailTrials = 1536;
+constexpr int kGpuFeasibilityReserve = kGpuExactTailTrials * 4;
+constexpr int kInteriorPatchGridSteps = 4;
+constexpr int kInteriorPatchCenters = 8;
 constexpr int kContourPolishTrials = 512;
 constexpr int kContourPolishPlacements = 8;
 constexpr int kContourPolishNeighbors = 2;
@@ -2293,7 +2296,7 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
         const int count = std::min(kInteriorRepairNeighbors, static_cast<int>(neighbors.size()));
         std::partial_sort(neighbors.begin(), neighbors.begin() + count, neighbors.end());
         const double gapArea = catalog::area({gap});
-        const auto consider = [&](Piece candidate, int owner) {
+        const auto consider = [&](Piece candidate, int owner, bool partial = false) {
             if (objective.evaluations >= evaluationLimit || stopped(cancelled)) {
                 return false;
             }
@@ -2305,7 +2308,7 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
                 catalog::expanded(candidate.polygons, objective.inwardAllowance)))
                 + catalog::area(catalog::intersect(missingInterior, candidate.polygons));
             const bool complete = catalog::subtract({gap}, candidate.polygons).isEmpty();
-            if (complete && recovered > 0.0) {
+            if ((complete || partial) && recovered > kScoreEpsilon) {
                 trials.push_back({std::move(candidate), owner, recovered});
             }
 
@@ -2361,6 +2364,44 @@ void repairInteriorCoverage(QVector<Piece> *pieces, const Objective &objective,
                             const QRectF envelope(bounds.center() - halfSize, bounds.center() + halfSize);
                             consider(makePiece(*shape, boundsTransform(*shape,
                                 frame.map(QPolygonF(envelope)), orientation, false)), -1);
+                        }
+                    }
+                }
+                if (trials.isEmpty()) {
+                    const auto gapPath = catalog::painterPath({gap});
+                    QVector<std::pair<double, QPointF>> centers;
+                    for (int y = 1; y < kInteriorPatchGridSteps; ++y) {
+                        for (int x = 1; x < kInteriorPatchGridSteps; ++x) {
+                            const QPointF point(gapBounds.left() + gapBounds.width() * x / kInteriorPatchGridSteps,
+                                gapBounds.top() + gapBounds.height() * y / kInteriorPatchGridSteps);
+                            if (gapPath.contains(point)) {
+                                centers.push_back({boundaryDistanceSquared({gap}, point), point});
+                            }
+                        }
+                    }
+                    std::stable_sort(centers.begin(), centers.end(), [](const auto &first, const auto &second) {
+                        return first.first > second.first;
+                    });
+                    centers.resize(std::min(centers.size(), qsizetype(kInteriorPatchCenters)));
+                    for (const auto &[squaredRadius, point] : centers) {
+                        const double diameter = std::sqrt(squaredRadius) * 2;
+                        for (double orientation : {gapAngle, angle, 0.0}) {
+                            QTransform frame;
+                            frame.rotateRadians(orientation);
+                            const auto bounds = frame.inverted().map(gap).boundingRect();
+                            const auto local = frame.inverted().map(point);
+                            const std::array<QPointF, 3> sizes{QPointF(bounds.width(), diameter),
+                                QPointF(diameter, bounds.height()), QPointF(diameter, diameter)};
+                            for (const auto &size : sizes) {
+                                for (double fraction : {1.0, 0.5}) {
+                                    const auto half = size * (fraction * 0.5);
+                                    const QRectF envelope(local - half, local + half);
+                                    for (const auto *shape : patchShapes) {
+                                        consider(makePiece(*shape, boundsTransform(*shape,
+                                            frame.map(QPolygonF(envelope)), orientation, false)), -1, true);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -3929,7 +3970,7 @@ bool merge(QVector<Piece> *pieces, const Objective &objective,
 Objective makeObjective(const catalog::Region &region, const FillOptions &options) {
     Objective result;
     const catalog::Region leewayRegion = catalog::leewayAdjustedRegion(
-        region, options.leeway, options.boundaryAllowance);
+        region, options.leeway, options.boundaryAllowance, options.allowedDomain);
     if (leewayRegion.required.isEmpty() || leewayRegion.visible.isEmpty()) {
         throw std::runtime_error("Contour leeway leaves no visible fillable area");
     }
@@ -4146,6 +4187,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         bool fullGpuPipeline = false;
         bool gpuPipelineApplied = false;
         int gpuPipelineEvaluations = 0;
+        int gpuFeasibilityReserve = 0;
         if (pieces.size() > 1 && !recognitionCatalog.isEmpty() && !stopWork()) {
             const auto context = contextFor({}, {}, objective);
             for (const auto &replacement : replacementSeeds(objective.target, context, recognitionCatalog, stopWork, true)) {
@@ -4161,7 +4203,10 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
 #ifdef FLS_HAS_CUDA
         if (options.useGpu && !pieces.isEmpty() && !stopped(cancelled)) {
             const int gpuStart = objective.evaluations;
-            objective.evaluationLimit = options.evaluationBudget;
+            gpuFeasibilityReserve = acceptable(support(pieces), objective) ? 0
+                : std::min(kGpuFeasibilityReserve, options.evaluationBudget / 4);
+            objective.evaluationLimit = std::max(objective.evaluations,
+                options.evaluationBudget - gpuFeasibilityReserve);
             fullGpuPipeline = optimizeGpu(&pieces, objective, primitives, options.shapeBudget, stopWork);
             gpuPipelineApplied = fullGpuPipeline;
             if (!gpuPipelineApplied) {
@@ -4186,7 +4231,7 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
             && !stopped(cancelled)) {
             const int start = objective.evaluations;
             const int limit = std::min(options.evaluationBudget,
-                start + kGpuExactTailTrials);
+                start + std::max(kGpuExactTailTrials, gpuFeasibilityReserve));
             const int before = pieces.size();
             objective.evaluationLimit = limit;
             repairInteriorCoverage(&pieces, objective, primitives,
@@ -4395,6 +4440,11 @@ catalog::FillResult fillRegion(const PenFillRequest &request,
         }
         recordTime(QStringLiteral("neighborCompaction"));
         finishStage(QStringLiteral("neighborCompaction"));
+        const auto previousCount = pieces.size();
+        pieces.erase(std::remove_if(pieces.begin(), pieces.end(), [](const Piece &piece) {
+            return !piece.placement.transform.isInvertible();
+        }), pieces.end());
+        result.diagnostics.insert(QStringLiteral("discardedSingularPlacements"), previousCount - pieces.size());
         const auto coverage = support(pieces);
         const auto missingInterior = catalog::subtract(objective.inner, coverage);
         result.diagnostics.insert(QStringLiteral("missingInteriorArea"), catalog::area(missingInterior));

@@ -13,8 +13,8 @@ import shapely
 from shapely.geometry import Polygon
 
 from fair_curves import polygons
-from paint_stack import geometry_metrics
-from simplify import application, image_error
+from paint_stack import canonical_geometry, geometry_metrics, polygon_svg
+from simplify import application, image_error, render
 
 
 def painter_path(geometry):
@@ -37,6 +37,7 @@ class Item:
     version: int = 0
 
     def __post_init__(self):
+        self.geometry = canonical_geometry(self.geometry)
         self.path = painter_path(self.geometry)
         self.metrics = geometry_metrics(self.geometry)
 
@@ -110,7 +111,7 @@ def window_sums(error, window=16):
 
 class RateDistortion:
     def __init__(self, stack, source, domain, progress=None, local_growth=None, reference_image=None,
-                 checkpoint=None, reference_stack=None):
+                 checkpoint=None, reference_stack=None, topology_transactions=False):
         self.size = source.shape[1], source.shape[0]
         self.source = source
         self.domain = domain
@@ -126,6 +127,9 @@ class RateDistortion:
         self.squared_error = float(np.square(self.image[:, :, :3].astype(float) - source[:, :, :3]).sum())
         self.metrics = {key: sum(item.metrics[key] for item in self.items)
                         for key in ('regions', 'holes', 'points', 'triangle_bound', 'cost')}
+        self.topology_transactions = topology_transactions
+        self.hole_surcharge = 192 if topology_transactions else 0
+        self.metrics['cost'] += self.metrics['holes'] * self.hole_surcharge
         self.progress = progress or (lambda event: None)
         self.checkpoint = checkpoint
         self.render_drift = []
@@ -143,11 +147,15 @@ class RateDistortion:
         self.started = time.monotonic()
 
     def assess(self, changes, name, refinement=False):
+        if any(not item.geometry.is_valid for item in changes.values()):
+            return None
         old = [self.items[index] for index in changes]
         if any(index == 0 for index in changes):
             return None
         before = {key: sum(item.metrics[key] for item in old) for key in self.metrics}
         after = {key: sum(item.metrics[key] for item in changes.values()) for key in self.metrics}
+        before['cost'] += before['holes'] * self.hole_surcharge
+        after['cost'] += after['holes'] * self.hole_surcharge
         saving = before['cost'] - after['cost']
         if (saving <= 0 and not refinement) or (before['triangle_bound'] < after['triangle_bound']
                 and self.metrics['triangle_bound'] + after['triangle_bound'] - before['triangle_bound'] > self.budget):
@@ -184,8 +192,136 @@ class RateDistortion:
         item = self.items[index]
         for name, shape in proposals(item.geometry):
             self.add({index: Item(item.color, shape)}, name)
-        if item.metrics['holes'] or item.metrics['points'] > 32:
+        if self.topology_transactions:
+            if item.metrics['points'] > 8:
+                self.add_hidden_shortcuts(index)
+            if item.metrics['holes']:
+                self.add_hole_promotions(index)
+            if item.metrics['points'] > 4:
+                self.add_neighbor_absorption(index)
+        elif item.metrics['holes'] or item.metrics['points'] > 32:
             self.add_completion_restoration(index)
+
+    def add_hidden_shortcuts(self, index):
+        from hidden_contours import shortcut_chains
+        item = self.items[index]
+        _, owned = self.visibility()
+        required = owned.get(index, Polygon())
+        if required.is_empty:
+            self.add({index: Item(item.color, Polygon())}, 'remove-hidden-support')
+            return
+        upper = shapely.union_all([other.geometry for other in self.items[index + 1:]])
+        allowed = shapely.union_all([item.geometry, upper])
+        for name, seed in (('current', item.geometry), ('hull', required.convex_hull.intersection(allowed))):
+            try:
+                shape = shortcut_chains(seed, required, allowed, area_tolerance=.01)
+            except (ValueError, shapely.errors.GEOSException):
+                continue
+            self.add({index: Item(item.color, shape)}, 'shortcut-hidden-' + name)
+
+    def add_hole_promotions(self, index):
+        item = self.items[index]
+        _, owned = self.visibility()
+        for part in polygons(item.geometry):
+            for ring in part.interiors:
+                hole = Polygon(ring)
+                filled = shapely.union_all([item.geometry, hole])
+                patches = []
+                for owner in range(index):
+                    visible = owned.get(owner, Polygon()).intersection(hole)
+                    if self.items[owner].color == item.color or visible.area <= .01:
+                        continue
+                    patch = self.items[owner].geometry.intersection(hole)
+                    if not patch.is_empty:
+                        patches.append((self.items[owner].color, patch))
+                if not patches:
+                    self.add({index: Item(item.color, filled)}, 'complete-hidden-hole')
+                    continue
+                upper = shapely.union_all([other.geometry for other in self.items[index + 1:]])
+                simplified = []
+                covered = upper
+                for color, patch in reversed(patches):
+                    pieces = []
+                    for component in polygons(patch):
+                        keep = [boundary.coords for boundary in component.interiors
+                                if Polygon(boundary).difference(covered).area > .01]
+                        pieces.append(Polygon(component.exterior, keep))
+                    patch = shapely.union_all(pieces)
+                    simplified.append(Item(color, patch))
+                    covered = shapely.union_all([covered, patch])
+                simplified.reverse()
+                last_live = max(position for position, value in enumerate(self.items) if not value.geometry.is_empty)
+                additions = len(simplified)
+                while len(self.items) <= last_live + additions:
+                    self.items.append(Item(item.color, Polygon()))
+                changes = {index: Item(item.color, filled)}
+                for position in range(index + 1, last_live + 1):
+                    original = self.items[position]
+                    changes[position + additions] = Item(original.color, original.geometry)
+                for offset, patch in enumerate(simplified, index + 1):
+                    changes[offset] = patch
+                self.add(changes, 'fill-hole-and-promote-current-owners')
+
+    def add_neighbor_absorption(self, index):
+        item = self.items[index]
+        _, owned = self.visibility()
+        visible = owned.get(index, Polygon())
+        if visible.is_empty:
+            return
+        owners = sorted(position for position, shape in owned.items()
+                        if position != index and self.items[position].color != item.color and not shape.is_empty)
+        if not owners:
+            return
+        tree = shapely.STRtree([owned[position] for position in owners])
+        variants = [(name, shape) for name, shape in proposals(item.geometry)
+                    if name in ('chords-0.5', 'chords-1', 'chords-2', 'chords-4', 'open-1', 'open-2', 'open-4')]
+        for name, shape in variants:
+            missing = polygons(visible.difference(shape))
+            if not missing:
+                continue
+            additions = {}
+            retained = []
+            for patch in missing:
+                if patch.area <= .01:
+                    continue
+                if patch.area > 256:
+                    retained.append(patch)
+                    continue
+                bounds = crop_bounds(patch.bounds, self.size)
+                left, top, right, bottom = bounds
+                x, y = np.meshgrid(np.arange(left, right) + .5, np.arange(top, bottom) + .5)
+                mask = shapely.contains_xy(patch, x, y)
+                samples = self.source[top:bottom, left:right, :3][mask].astype(float)
+                if not len(samples):
+                    point = patch.representative_point()
+                    samples = self.source[min(self.size[1] - 1, max(0, int(point.y))),
+                                          min(self.size[0] - 1, max(0, int(point.x))), :3][None].astype(float)
+                original = np.array([int(item.color[n:n + 2], 16) for n in (1, 3, 5)])
+                original_error = np.square(samples - original).sum(axis=1).mean()
+                choices = []
+                for neighbor in tree.query(patch.buffer(.1), predicate='intersects'):
+                    recipient = owners[int(neighbor)]
+                    color = np.array([int(self.items[recipient].color[n:n + 2], 16) for n in (1, 3, 5)])
+                    delta = float(np.square(samples - color).sum(axis=1).mean() - original_error)
+                    impact = delta * patch.area
+                    if impact <= 3 * (8 * self.window) ** 2:
+                        merged = shapely.union_all([self.items[recipient].geometry, patch])
+                        metric = geometry_metrics(merged)
+                        extra = metric['cost'] - self.items[recipient].metrics['cost'] \
+                            + self.hole_surcharge * (metric['holes'] - self.items[recipient].metrics['holes'])
+                        choices.append((extra, impact, recipient))
+                if not choices:
+                    retained.append(patch)
+                    continue
+                recipient = min(choices)[2]
+                additions.setdefault(recipient, []).append(patch)
+            if additions:
+                shape = shapely.union_all([shape, *retained])
+                changes = {index: Item(item.color, shape)}
+                for recipient, patches in additions.items():
+                    merged = shapely.union_all([self.items[recipient].geometry, *patches])
+                    changes[recipient] = Item(self.items[recipient].color, merged)
+                self.add(changes, 'absorb-neighbor-fragments-' + name)
 
     def add_completion_restoration(self, index):
         if self.reference is None:
@@ -360,14 +496,18 @@ class RateDistortion:
 
     def reconcile(self):
         image = render_items(self.items, self.size)
+        encoded = render(polygon_svg([(item.color, item.geometry) for item in self.items
+                                     if not item.geometry.is_empty], self.size), self.size)
+        export_error = image_error(image, encoded)
         changed = np.abs(image.astype(np.int16) - self.image.astype(np.int16))
         self.render_drift.append({'edits': len(self.edits), 'maximum_channel_drift': int(changed.max()),
-                                  'changed_pixels': int(np.count_nonzero(np.any(changed, axis=2)))})
-        self.image = image
-        self.squared_error = float(np.square(image[:, :, :3].astype(float) - self.source[:, :, :3]).sum())
+                                  'changed_pixels': int(np.count_nonzero(np.any(changed, axis=2))),
+                                  'export_error': export_error})
+        self.image = encoded
+        self.squared_error = float(np.square(encoded[:, :, :3].astype(float) - self.source[:, :, :3]).sum())
         if self.checkpoint:
             self.checkpoint([(item.color, item.geometry) for item in self.items if not item.geometry.is_empty],
-                {**self.metrics, 'edits': self.edits, 'source_error': image_error(self.source, image),
+                {**self.metrics, 'edits': self.edits, 'source_error': image_error(self.source, encoded),
                  'render_drift': self.render_drift, 'seconds': time.monotonic() - self.started})
 
     def refine(self, triangle_budget, max_edits=128):
@@ -432,7 +572,7 @@ class RateDistortion:
         self.undo_bank = [changes for _, changes in ranked[-96:]]
         return self.refine(triangle_budget, max_edits)
 
-    def run(self, triangle_budget, max_edits=2000, source_rmse_limit=None):
+    def run(self, triangle_budget, max_edits=2000, source_rmse_limit=None, continue_below_budget=False):
         if triangle_budget < 1 or max_edits < 0:
             raise ValueError('Use a positive geometry budget and nonnegative search effort')
         self.budget = triangle_budget
@@ -441,7 +581,7 @@ class RateDistortion:
             if index % 32 == 0:
                 self.progress({'distortion_initialized': index, 'items': len(self.items),
                                'seconds': time.monotonic() - self.started})
-        self.add_groups(global_completions=True)
+        self.add_groups(global_completions=not self.topology_transactions)
         self.add_ordering()
         while self.queue and len(self.edits) < max_edits:
             _, serial, candidate = heapq.heappop(self.queue)
@@ -453,7 +593,7 @@ class RateDistortion:
             if self.queue and current['ratio'] > self.queue[0][0] + 1e-8:
                 heapq.heappush(self.queue, (current['ratio'], serial, current))
                 continue
-            if self.metrics['triangle_bound'] <= triangle_budget and current['delta'] > 0:
+            if not continue_below_budget and self.metrics['triangle_bound'] <= triangle_budget and current['delta'] > 0:
                 break
             new_error = self.squared_error + current['delta']
             if source_rmse_limit is not None and new_error > source_rmse_limit ** 2 * self.source.shape[0] * self.source.shape[1] * 3:
@@ -485,7 +625,7 @@ class RateDistortion:
                     self.add_local(index)
             self.add_ordering(set(changed))
             if len(self.edits) % 64 == 0:
-                self.add_groups(global_completions=len(self.edits) % 256 == 0)
+                self.add_groups(global_completions=not self.topology_transactions and len(self.edits) % 256 == 0)
         stack = [(item.color, item.geometry) for item in self.items if not item.geometry.is_empty]
         self.reconcile()
         return stack, {'geometry_budget': triangle_budget, 'within_geometry_budget': self.metrics['triangle_bound'] <= triangle_budget,

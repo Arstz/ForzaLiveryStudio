@@ -62,10 +62,11 @@ def fill(tool, svg, reference, original, output, cache, evaluations, shape_budge
     if target_data['input_sha256'] != digest(svg):
         raise ValueError('Native target polygons changed their input provenance')
     seeds = []
-    for target in target_data['regions']:
-        mesh = shapely.constrained_delaunay_triangles(native_polygon_target(target['rings']))
-        triangles = [list(np.asarray(part.exterior.coords)[:3].flatten()) for part in mesh.geoms]
-        seeds.append(triangles)
+    if polygon_seed:
+        for target in target_data['regions']:
+            mesh = shapely.constrained_delaunay_triangles(native_polygon_target(target['rings']))
+            triangles = [list(np.asarray(part.exterior.coords)[:3].flatten()) for part in mesh.geoms]
+            seeds.append(triangles)
     manifest = output / 'seed_triangles.json'
     manifest.write_text(json.dumps({'version': 1, 'input_sha256': digest(svg),
         'source': 'native Compact Fit target polygons', 'regions': seeds}))
@@ -76,11 +77,11 @@ def fill(tool, svg, reference, original, output, cache, evaluations, shape_budge
         '--compact-fit-boundary', str(boundary), '--compact-fit-inward', str(inward),
         '--compact-fit-area-ratio', str(area_ratio), '--render-rmse', str(render_rmse),
         '--render-max-error', str(max_error), '--abstraction-local-rmse', str(local_rmse),
-        '--compact-fit-seeds', str(manifest), '--silhouette-tolerance', str(silhouette_tolerance),
+        '--silhouette-tolerance', str(silhouette_tolerance),
         '--flatten-tolerance', str(flatten_tolerance)]
     arguments += ['--compact-fit-workers', str(workers)]
     if polygon_seed:
-        arguments.append('--compact-fit-polygon-seed')
+        arguments += ['--compact-fit-polygon-seed', '--compact-fit-seeds', str(manifest)]
     if scene_validated:
         arguments.append('--scene-validated-fills')
     (output / 'invocation.json').write_text(json.dumps(arguments, indent=2))
@@ -91,7 +92,7 @@ def fill(tool, svg, reference, original, output, cache, evaluations, shape_budge
     report = json.loads(report_path.read_text()) if report_path.is_file() else {
         'accepted': False, 'verified': False, 'shape_count': None,
         'error': (output / 'stderr.log').read_text(errors='replace')[-4000:]}
-    if report.get('failed_regions', 0) > 0 and not report.get('accepted'):
+    if polygon_seed and report.get('failed_regions', 0) > 0 and not report.get('accepted'):
         (output / 'coarse_seed_report.json').write_text(json.dumps(report, indent=2))
         failed = [row['path'] for row in report.get('per_path', [])
                   if not row.get('verified') and not row.get('complete') and row.get('polygon_seed_used')]
@@ -294,6 +295,8 @@ def main():
     parser.add_argument('--strategy', choices=('budgeted', 'bidirectional'), default='budgeted')
     parser.add_argument('--total-shape-budget', type=int, default=3000)
     parser.add_argument('--max-edits', type=int, default=2400)
+    parser.add_argument('--cleanup-edits', type=int, default=160)
+    parser.add_argument('--curve-tolerance', type=float, default=1.)
     parser.add_argument('--source-local-growth', type=float)
     parser.add_argument('--resume-stack', type=Path)
     parser.add_argument('--native-tool', type=Path, default=Path(__file__).resolve().parents[2] / 'build/Release/fls_opaque_regions.exe')
@@ -313,7 +316,7 @@ def main():
     parser.add_argument('--silhouette-tolerance', type=float, default=1.)
     parser.add_argument('--flatten-tolerance', type=float, default=.05)
     parser.add_argument('--ownership-tolerance', type=float, default=.25)
-    parser.add_argument('--compact-fit-evaluations', type=int, default=6000)
+    parser.add_argument('--compact-fit-evaluations', type=int, default=60000)
     parser.add_argument('--compact-fit-workers', type=int, default=4)
     parser.add_argument('--compact-fit-shape-budget', type=int, default=3000)
     parser.add_argument('--compact-fit-boundary', type=float)
@@ -335,10 +338,11 @@ def main():
                 render_rmse=args.render_rmse,
                 local_rmse=args.local_rmse, silhouette_tolerance=args.silhouette_tolerance,
                 cache=args.compact_fit_cache, resume_stack=args.resume_stack, max_edits=args.max_edits,
+                cleanup_edits=args.cleanup_edits, curve_tolerance=args.curve_tolerance,
                 flatten_tolerance=args.flatten_tolerance, max_error=args.max_error,
-                boundary=.25 if args.compact_fit_boundary is None else args.compact_fit_boundary,
-                inward=.05 if args.compact_fit_inward is None else args.compact_fit_inward,
-                area_ratio=.001 if args.compact_fit_area_ratio is None else args.compact_fit_area_ratio,
+                boundary=2. if args.compact_fit_boundary is None else args.compact_fit_boundary,
+                inward=.5 if args.compact_fit_inward is None else args.compact_fit_inward,
+                area_ratio=.02 if args.compact_fit_area_ratio is None else args.compact_fit_area_ratio,
                 shape_budget=args.compact_fit_shape_budget,
                 progress=lambda entry: print(json.dumps(entry), file=sys.stderr, flush=True))
         else:

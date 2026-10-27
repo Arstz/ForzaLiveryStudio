@@ -27,15 +27,17 @@ editable `.3so` projects, native-rendered PNGs, differences, and `report.json`:
 ```powershell
 python tools/opaque_regions/generate.py palette_project --svg palette_project/native/optimized.svg --output filled_comparison
 python tools/opaque_regions/rate_distortion_test.py
+python tools/opaque_regions/topology_transactions_test.py
+python tools/opaque_regions/fit_repair_test.py
+python tools/opaque_regions/curve_pipeline_test.py build/Release/fls_opaque_regions.exe
 python tools/opaque_regions/budgeted_test.py
 python tools/opaque_regions/hidden_contours_test.py
 python tools/opaque_regions/compact_output_test.py build/Release/fls_opaque_regions.exe
 python tools/opaque_regions/generate_test.py
 ```
 
-Use the existing Python research environment. In addition to the dependencies
-used for contour fitting, polygon seeds use Shapely's constrained Delaunay
-triangulation. Input dimensions and palette remain fixed. Use a new output
+Use the existing Python research environment. Explicit polygon-seed diagnostics
+use Shapely's constrained Delaunay triangulation. Input dimensions and palette remain fixed. Use a new output
 directory outside the input project. Internal geometry and fitting diagnostics
 are retained under `internal/`.
 
@@ -55,24 +57,58 @@ and restore its visible colors at later positions. Same-fill items can retain
 different layer positions. Added hidden area has no penalty. There is no region
 quota.
 
+The topology cleanup uses current visible owners for cutout contents. It inserts
+their paint above the completed region and below the existing upper stack.
+Small fragments can transfer to adjacent existing colors when source pixels
+support that choice. Important fragments remain in the donor while other
+fragments transfer. Complete scene checks charge both donor and recipients.
+Hidden boundary chains can shorten through the available upper coverage.
+`--cleanup-edits` bounds this search, independently of the output count.
+
 The final ordering pass freezes complete visible ownership, rebuilds all
 overlap dependencies, and topologically sorts available items by geometry
 complexity. Same-color items can retain separate positions. The ordering report
 records the fixed regions, graph edges, resulting order and contour costs.
 
 The search charges the complete replacement geometry, including restoration
-patches. It uses polygon triangulation counts as a planning estimate, with
+patches. It uses polygon triangulation counts as a preliminary planning estimate, with
 additional costs for connected regions and holes. These estimates are not
 reported as measured Forza counts. The final native project supplies the actual
-shape count. If it exceeds the image budget, the tool reduces the geometry
-budget and repeats fitting. Compact Fit receives empty leeway.
-The planning costs are one per triangle, 32 per connected region, and 64 per
-hole. A later refinement pass can restore contours using the remaining geometry
-allowance. Search effort is bounded separately from output complexity.
-This pass compares reference contours within the current stack, then restores
-individual boundary vertices where they reduce source-image error. Vertex
-restoration preserves connected regions and holes. Redundant collinear points
-are removed before encoding and before native Bucket conversion.
+shape count. Failed native trials feed another topology cleanup and curve
+recovery pass. The final shape limit applies to measured placements. Compact Fit
+receives empty leeway and an explicit common domain that bounds outward support.
+Topology cleanup charges 256 per hole and 32 per connected region, in addition
+to its polygon estimate. Search effort is bounded separately from output complexity.
+
+Before native filling, the Bucket cubic contour fitter recovers mixed line and
+Bezier spans. `--curve-tolerance` sets its native-pixel tolerance, default one.
+Each replacement must retain valid filled geometry inside the domain and pass
+the cumulative source-image budgets. Ownership operations use consistent
+polygon copies on the native clipping grid; emitted curves retain their control
+points. Straight spans retain hard corners. The curve route does not spend spare
+triangle counts on additional polygon vertices. Setting the curve tolerance to
+zero retains the polygon diagnostic route.
+
+Every final region uses `profile::fillRegion`, the editor's curve-first Compact
+Fit entry point, with GPU work enabled and the deployed catalog. The default
+evaluation budget is 60,000 per region. The tool records profile initialization,
+GPU diagnostics, actual shape usage and any fitting warnings. Explicit
+`--compact-fit-cpu` selects native CPU diagnostics. Triangle initialization
+requires the explicit polygon-seed option. Native comparison renders use four
+samples per pixel axis to measure curved boundaries.
+
+After fitting, a scene pass selects native placements by same-color coverage at
+the output renderer's sample positions. Appearance groups share coverage while
+placements retain their original stack positions. An exact native sample
+comparison restores any placements needed for the original appearance. A second
+pass removes placements completely covered by later fitted geometry. The pass
+requires pixel-identical before/after renders through the output renderer;
+otherwise it retries with geometric clearance or retains the original scene.
+Empty paint groups are removed. The total shape cap applies to the saved scene
+after this validated reduction. Reports keep generated counts, removed counts,
+final counts and retained region mappings separate. Fitting still receives
+empty leeway. Internal unculled renders and culling differences document the
+comparison.
 
 The native image dimensions and fill colors remain fixed. Simplification changes
 contours instead of blurring the raster. `--source-local-growth` bounds error
@@ -86,6 +122,13 @@ baseline-to-filled error, and source-to-filled error are reported separately.
 `--render-rmse` and `--local-rmse` bound the final fitter's error against the
 derived contours. The external domain remains fixed and the actual filled
 silhouette is checked independently.
+
+When native rendering exceeds a local error limit, the budgeted route can
+append bounded correction contours from the derived guide or original opaque
+baseline. It preserves existing Bezier paths and checks the cumulative source
+budgets before refitting. Every correction uses the same GPU Compact Fit entry
+point and counts toward the total shape cap. These repairs do not relax the
+final image-error limits.
 
 Full-scene renders reconcile incremental error accounting at checkpoints.
 `stack_checkpoint.json.gz` retains the current geometry, source hashes and
@@ -126,9 +169,9 @@ no region quota; an additional draw region must earn its cost through simpler
 filled geometry elsewhere in the stack.
 
 Each fill receives the complete derived contour with empty leeway. The batch
-generator starts Compact Fit from its usual Pen seed and retries failed core
-construction with polygon seeds. `--polygon-seeds` starts directly from the
-polygon seed. The original Bezier contour remains the target and quality reference.
+generator uses the editor's curve-first GPU pipeline. `--polygon-seeds` selects
+the explicit polygon initializer for comparison. The original Bezier contour
+remains the target and quality reference.
 Seed construction uses adaptive native-coordinate geometry; it does not
 resample the image. Failed fills remain explicit.
 
@@ -155,7 +198,7 @@ region has its own ordered group; identical fills can retain separate stack
 positions. Each group also retains a hidden editable Pen contour. All emitted
 shapes have solid colors and full opacity. Scene-render
 antialiasing and fitting allowances remain separate from shape opacity.
-Native comparison renders use two samples per pixel axis for boundary
+Native comparison renders use four samples per pixel axis for boundary
 antialiasing. Saved images retain the input dimensions. Source pixels are not
 resampled. The native CLI exposes `--compact-fit-render-samples`.
 
@@ -987,9 +1030,10 @@ shapes; surrounding occluders are excluded from the fitting workload. It is a
 measurement of fitting those shapes, separate from full-artwork appearance
 validation. Samples are limited to eight replaced and sixteen replacement items.
 
-Both modes call the actual CPU Compact Fit engine with the deployed catalog and
-empty leeway. `--compact-fit-evaluations` controls its per-path evaluation budget,
-default 6000. Reports retain per-path diagnostics, runtime, and placement counts.
+Both modes call the editor's curve-first Compact Fit entry point with GPU work
+enabled, the deployed catalog and empty leeway. `--compact-fit-evaluations`
+controls its per-path evaluation budget, default 60,000. Reports retain per-path
+diagnostics, runtime, and placement counts.
 `verified_placements` is available when every path passes the engine's bounded
 approximation checks. `placements` uses the stricter rule that every uncovered
 residual must be empty. Failed or partial attempts remain separately labelled.
