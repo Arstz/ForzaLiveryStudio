@@ -368,7 +368,7 @@ QJsonObject fitCompactScene(const QVector<gui::SvgVectorObject> &objects, QSize 
             placementsFromJson(data), objects[index].path));
         colors.insert(objects[index].color.rgb());
         paths.append(fitted);
-        write(output.filePath(name + "_compact_progress.json"), QJsonDocument(QJsonObject{
+        tryWrite(output.filePath(name + "_compact_progress.json"), QJsonDocument(QJsonObject{
             {"completed_regions", index + 1}, {"total_regions", objects.size()}, {"verified_regions", verified},
             {"attempted_placements", placements}, {"per_path", paths}}).toJson());
     }

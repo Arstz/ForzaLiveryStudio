@@ -4,9 +4,11 @@ import gzip
 import json
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
+from shapely.geometry import box
 
 from budgeted import run
 from simplify import render
@@ -48,6 +50,23 @@ def main():
         unchanged = run(project, svg, root / 'unchanged', tool, total_shape_budget=1, evaluations=1000)
         assert unchanged['accepted'] and not unchanged['improved']
         assert unchanged['after_shape_count'] == unchanged['after_region_count'] == 1
+        resumed = run(project, svg, root / 'resumed', tool, total_shape_budget=1, evaluations=1000,
+            resume_stack=root / 'unchanged/stack_plan.json.gz', max_edits=0, outer_passes=0)
+        saved = json.loads(gzip.decompress((root / 'unchanged/stack_plan.json.gz').read_bytes()))
+        assert resumed['accepted'] and resumed['after_shape_count'] == 1
+        assert (root / 'resumed/internal/contours_0.svg').read_text() == saved['encoded_svg']
+        assert resumed['trials'][0]['geometry']['curve_recovery']['resumed_encoded_contours']
+        provisional = [('#ffffff', box(0, 0, 100, 80)), ('#000000', box(20, 20, 22, 22))]
+        with patch('outer_regions.run', return_value=(provisional, {'accepted': True,
+                   'requires_final_source_validation': True})), patch('fit_repair.propose', return_value=None):
+            rejected = run(project, svg, root / 'provisional', tool, total_shape_budget=5,
+                evaluations=1000, max_edits=0, cleanup_edits=0, curve_tolerance=0.,
+                source_growth=8., local_growth=0.)
+        assert not rejected['accepted'] and not (root / 'provisional/after.3so').exists()
+        trial = rejected['trials'][0]
+        assert trial['source_to_filled']['rmse'] < 8. and trial['maximum_source_local_growth'] > 0.
+        assert not trial['quality_passed']
+        assert 'Source-relative image error budget exceeded' in trial['fit']['rejections']
     print('Budgeted generation tests passed: measured native counts, joint topology/order reduction, '
           'opaque filled projects and unchanged native-resolution appearance.')
 

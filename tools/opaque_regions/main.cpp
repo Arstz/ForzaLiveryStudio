@@ -35,9 +35,13 @@ QByteArray read(const QString &path) {
     return file.readAll();
 }
 
-void write(const QString &path, const QByteArray &data) {
+bool tryWrite(const QString &path, const QByteArray &data) {
     QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit())
+    return file.open(QIODevice::WriteOnly) && file.write(data) == data.size() && file.commit();
+}
+
+void write(const QString &path, const QByteArray &data) {
+    if (!tryWrite(path, data))
         throw std::runtime_error(("Cannot write " + path).toStdString());
 }
 
@@ -132,6 +136,7 @@ QJsonArray appearanceGroups(const QVector<opaque::Item> &items) {
 }
 
 #include "compact_output.inc"
+#include "outer_contours.inc"
 
 QJsonObject benchmarkCompactFit(const QVector<gui::SvgVectorObject> &before,
                                const QVector<gui::SvgVectorObject> &after,
@@ -998,6 +1003,7 @@ int main(int argc, char **argv) {
     parser.addOption({"fill-only", "Fill validated contours with Compact Fit and save a project and native render."});
     parser.addOption({"prepare-fill-targets", "Save exact Compact Fit target polygons for seed construction and conversion auditing."});
     parser.addOption({"recover-fill-curves", "Recover mixed line/cubic contours with the Bucket contour fitter."});
+    parser.addOption({"simplify-fill-contours", "Simplify constrained filled contours with the Bucket corridor algorithm."});
     parser.addOption({"compact-fit-cpu", "Explicitly use CPU fitting instead of the editor GPU pipeline."});
     parser.addOption({"compact-fit-cache", "Shared cache of actual per-region Compact Fit results.", "directory"});
     parser.addOption({"compact-fit-seeds", "Validated-input polygon seed manifest for failed Pen-core construction.", "json"});
@@ -1071,7 +1077,8 @@ int main(int argc, char **argv) {
     for (const auto &option : numeric) parser.addOption({option[0], option[1], "number", option[2]});
     parser.process(application);
     try {
-        return parser.isSet("self-test") ? opaque::selfTest() : parser.isSet("recover-fill-curves")
+        return parser.isSet("self-test") ? opaque::selfTest() : parser.isSet("simplify-fill-contours")
+            ? simplifyOuterContours(parser) : parser.isSet("recover-fill-curves")
             ? recoverFillCurves(parser) : parser.isSet("prepare-fill-targets")
             ? prepareFillTargets(parser) : fillOnly ? runFillOnly(parser) : run(parser);
     } catch (const std::exception &error) {

@@ -297,6 +297,10 @@ def main():
     parser.add_argument('--max-edits', type=int, default=2400)
     parser.add_argument('--cleanup-edits', type=int, default=160)
     parser.add_argument('--curve-tolerance', type=float, default=1.)
+    parser.add_argument('--outer-passes', type=int, default=2)
+    parser.add_argument('--outer-tolerance', type=float, default=2.)
+    parser.add_argument('--rebuild-ownership', action='store_true',
+        help='Experimentally reconstruct connected color ownership before outer-contour refinement')
     parser.add_argument('--source-local-growth', type=float)
     parser.add_argument('--resume-stack', type=Path)
     parser.add_argument('--native-tool', type=Path, default=Path(__file__).resolve().parents[2] / 'build/Release/fls_opaque_regions.exe')
@@ -329,7 +333,8 @@ def main():
     args = parser.parse_args()
     try:
         if args.strategy == 'budgeted':
-            from budgeted import DEFAULT_LOCAL_GROWTH, DEFAULT_SOURCE_GROWTH, run as budgeted_run
+            from budgeted import (DEFAULT_FIT_AREA_RATIO, DEFAULT_FIT_BOUNDARY, DEFAULT_FIT_INWARD,
+                                  DEFAULT_LOCAL_GROWTH, DEFAULT_SOURCE_GROWTH, run as budgeted_run)
             report = budgeted_run(args.project, args.svg, args.output, args.native_tool,
                 total_shape_budget=args.total_shape_budget, evaluations=args.compact_fit_evaluations,
                 workers=args.compact_fit_workers,
@@ -339,10 +344,12 @@ def main():
                 local_rmse=args.local_rmse, silhouette_tolerance=args.silhouette_tolerance,
                 cache=args.compact_fit_cache, resume_stack=args.resume_stack, max_edits=args.max_edits,
                 cleanup_edits=args.cleanup_edits, curve_tolerance=args.curve_tolerance,
+                outer_passes=args.outer_passes, outer_tolerance=args.outer_tolerance,
+                rebuild_ownership=args.rebuild_ownership,
                 flatten_tolerance=args.flatten_tolerance, max_error=args.max_error,
-                boundary=2. if args.compact_fit_boundary is None else args.compact_fit_boundary,
-                inward=.5 if args.compact_fit_inward is None else args.compact_fit_inward,
-                area_ratio=.02 if args.compact_fit_area_ratio is None else args.compact_fit_area_ratio,
+                boundary=DEFAULT_FIT_BOUNDARY if args.compact_fit_boundary is None else args.compact_fit_boundary,
+                inward=DEFAULT_FIT_INWARD if args.compact_fit_inward is None else args.compact_fit_inward,
+                area_ratio=DEFAULT_FIT_AREA_RATIO if args.compact_fit_area_ratio is None else args.compact_fit_area_ratio,
                 shape_budget=args.compact_fit_shape_budget,
                 progress=lambda entry: print(json.dumps(entry), file=sys.stderr, flush=True))
         else:

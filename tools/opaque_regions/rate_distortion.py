@@ -111,12 +111,13 @@ def window_sums(error, window=16):
 
 class RateDistortion:
     def __init__(self, stack, source, domain, progress=None, local_growth=None, reference_image=None,
-                 checkpoint=None, reference_stack=None, topology_transactions=False):
+                 checkpoint=None, reference_stack=None, topology_transactions=False, complete_background=True):
         self.size = source.shape[1], source.shape[0]
         self.source = source
         self.domain = domain
         self.items = [Item(color, shape) for color, shape in stack]
-        self.items[0] = Item(self.items[0].color, domain)
+        if complete_background:
+            self.items[0] = Item(self.items[0].color, domain)
         self.original_stack = stack if reference_stack is None else reference_stack
         self.reference = None
         self.reservations = {}

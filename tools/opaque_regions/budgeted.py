@@ -20,22 +20,27 @@ from simplify import audit_native, digest, image_error, read_svg, render
 DEFAULT_SOURCE_GROWTH = 8.
 DEFAULT_LOCAL_GROWTH = 32.
 DEFAULT_FIT_EVALUATIONS = 60000
+DEFAULT_FIT_BOUNDARY = .5
+DEFAULT_FIT_INWARD = .1
+DEFAULT_FIT_AREA_RATIO = .002
 
 
 def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFAULT_FIT_EVALUATIONS,
         workers=4, source_growth=DEFAULT_SOURCE_GROWTH, local_growth=DEFAULT_LOCAL_GROWTH,
         render_rmse=4., local_rmse=24.,
         silhouette_tolerance=1., cache=None, progress=None, resume_stack=None, max_edits=2400,
-        flatten_tolerance=.05, max_error=255., boundary=2., inward=.5, area_ratio=.02,
-        shape_budget=3000, cleanup_edits=160, curve_tolerance=1.):
+        flatten_tolerance=.05, max_error=255., boundary=DEFAULT_FIT_BOUNDARY,
+        inward=DEFAULT_FIT_INWARD, area_ratio=DEFAULT_FIT_AREA_RATIO,
+        shape_budget=3000, cleanup_edits=160, curve_tolerance=1., outer_passes=2, outer_tolerance=2.,
+        rebuild_ownership=False):
     started = time.monotonic()
     progress = progress or (lambda event: None)
     project, svg, output, tool = [Path(value).resolve() for value in (project, svg, output, tool)]
     implementation = {name: digest(Path(__file__).with_name(name)) for name in
-        ('budgeted.py', 'rate_distortion.py', 'adaptive_vertices.py', 'paint_stack.py', 'generate.py', 'curve_targets.py', 'fit_repair.py')}
-    if total_shape_budget < 1 or evaluations < 1 or workers < 1 or max_edits < 0 or cleanup_edits < 0 \
+        ('budgeted.py', 'rate_distortion.py', 'adaptive_vertices.py', 'paint_stack.py', 'generate.py', 'curve_targets.py', 'fit_repair.py', 'outer_regions.py', 'ownership_regions.py', 'native_topology.py')}
+    if total_shape_budget < 1 or evaluations < 1 or workers < 1 or max_edits < 0 or cleanup_edits < 0 or outer_passes < 0 \
             or any(not np.isfinite(value) or value < 0 for value in
-                   (source_growth, local_growth, render_rmse, local_rmse, silhouette_tolerance, curve_tolerance)):
+                   (source_growth, local_growth, render_rmse, local_rmse, silhouette_tolerance, curve_tolerance, outer_tolerance)):
         raise ValueError('Invalid image budget, search effort or quality allowance')
     if not all(np.isfinite(value) and value > 0 for value in
                (flatten_tolerance, boundary, inward, area_ratio)) or area_ratio >= 1 or shape_budget < 1:
@@ -62,6 +67,7 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
     if code or not audit or not audit.get('bucket_export', {}).get('passed'):
         raise ValueError('The opaque baseline failed native export validation')
     geometry_budget = max(1, int(total_shape_budget * .8))
+    resume_contours = None
     def checkpoint(stack, optimization):
         optimization = dict(optimization, geometry_budget=geometry_budget,
                             within_geometry_budget=optimization['triangle_bound'] <= geometry_budget)
@@ -77,6 +83,8 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
             raise ValueError('The saved budget plan has different input provenance')
         stack = [(row['fill'], shapely.from_wkb(bytes.fromhex(row['wkb']))) for row in saved['stack']]
         structural = saved['optimization']
+        if not max_edits and not outer_passes and saved.get('encoded_svg'):
+            resume_contours = saved['encoded_svg'].encode()
         if not curve_tolerance and structural.get('triangle_bound', float('inf')) > total_shape_budget:
             optimizer = RateDistortion(stack, source, domain, progress, local_growth=local_growth,
                 reference_image=baseline, checkpoint=checkpoint, reference_stack=paints)
@@ -108,6 +116,12 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
             source_rmse_limit=min(source_before['rmse'] + source_growth, current_error + .25),
             continue_below_budget=True)
         structural = dict(structural, topology_cleanup=cleaned)
+    if outer_passes:
+        from outer_regions import run as rebuild_outer
+        stack, outer = rebuild_outer(tool, stack, source, baseline, domain, internal / 'outer_regions',
+            passes=outer_passes, boundary_tolerance=outer_tolerance,
+            source_growth=source_growth, local_growth=local_growth, progress=progress, ownership=rebuild_ownership)
+        structural = dict(structural, outer_regions=outer)
     try:
         stack, ordering = order_stack(stack)
         ordering['accepted'] = True
@@ -124,7 +138,7 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
     (output / 'optimization.json').write_text(json.dumps(structural, indent=2))
     cache = Path(cache).resolve() if cache else internal / 'fit_cache'
     trials = []
-    pending_repair = None
+    pending_repair = (resume_contours, {'resumed_encoded_contours': True}) if resume_contours else None
     for attempt in range(3):
         contours = internal / f'contours_{attempt}.svg'
         from curve_targets import recover
@@ -141,7 +155,8 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
             diagnostic['accepted'] = all(first < last for first, last in diagnostic['edges'])
             diagnostic['retained_input_order'] = True
             diagnostic['layers'].sort(key=lambda layer: layer['source_index'])
-            curves = {'enabled': True, 'native_error_repair': details, 'ordering': diagnostic}
+            curves = {'enabled': True, 'ordering': diagnostic,
+                **(details if details.get('resumed_encoded_contours') else {'native_error_repair': details})}
         contours.write_bytes(data)
         structural['curve_recovery'] = {key: value for key, value in curves.items() if key != 'ordering'}
         if curves.get('ordering'):
@@ -223,7 +238,7 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
                 and trial['fit']['shape_count'] <= total_shape_budget
                 and trial['fit'].get('shape_budget_passed') and trial.get('source_to_filled')]
     eligible.sort(key=lambda trial: (not trial['fit'].get('accepted', False),
-        trial['source_to_filled']['rmse'], trial['fit']['region_count'], trial['fit']['shape_count']))
+        trial['fit']['shape_count'], trial['fit']['region_count'], trial['source_to_filled']['rmse']))
     selected = eligible[0] if eligible else None
     if selected:
         prefix = 'after' if selected['fit'].get('accepted') else 'budget_candidate'
@@ -233,6 +248,9 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
         actual = np.asarray(Image.open(output / f'{prefix}.png').convert('RGBA'))
         Image.fromarray(np.abs(source[:, :, :3].astype(np.int16) - actual[:, :, :3]).astype(np.uint8)).save(output / 'source_difference.png')
         Image.fromarray(np.abs(baseline[:, :, :3].astype(np.int16) - actual[:, :, :3]).astype(np.uint8)).save(output / 'difference.png')
+        from native_topology import audit as audit_topology
+        selected['fit']['native_topology'] = audit_topology(output / f'{prefix}.3so',
+            tool.parent / 'assets/vector/shape_geometry.json.gz', output / 'native_topology.json')['summary']
     accepted = bool(selected and selected['fit'].get('accepted'))
     improved = accepted and (selected['fit']['region_count'] < audit['before']['paths']
         or selected['geometry']['holes'] < audit['before']['holes'])
@@ -243,6 +261,7 @@ def run(project, svg, output, tool, *, total_shape_budget=3000, evaluations=DEFA
         'total_shape_budget': total_shape_budget, 'source_to_opaque': source_before,
         'compact_fit_pipeline': 'editor curve-first Compact Fit', 'gpu_requested': True,
         'polygon_seeds_used': False,
+        'experimental_ownership_rebuild': rebuild_ownership,
         'appearance_groups': ordering['appearance_groups'],
         'ordering_edges': len(ordering['edges']),
         'before_region_count': audit['before']['paths'],

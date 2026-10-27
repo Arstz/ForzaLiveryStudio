@@ -29,6 +29,9 @@ python tools/opaque_regions/generate.py palette_project --svg palette_project/na
 python tools/opaque_regions/rate_distortion_test.py
 python tools/opaque_regions/topology_transactions_test.py
 python tools/opaque_regions/fit_repair_test.py
+python tools/opaque_regions/outer_regions_test.py build/Release/fls_opaque_regions.exe
+python tools/opaque_regions/ownership_regions_test.py
+python tools/opaque_regions/native_topology_test.py
 python tools/opaque_regions/curve_pipeline_test.py build/Release/fls_opaque_regions.exe
 python tools/opaque_regions/budgeted_test.py
 python tools/opaque_regions/hidden_contours_test.py
@@ -65,6 +68,54 @@ fragments transfer. Complete scene checks charge both donor and recipients.
 Hidden boundary chains can shorten through the available upper coverage.
 `--cleanup-edits` bounds this search, independently of the output count.
 
+`--rebuild-ownership` enables an experimental reconstruction from connected
+visible color regions. The default keeps the existing paint supports for the
+outer-contour pass. A reconstruction can remove cutouts while increasing actual
+native placements; compare filled-project measurements before choosing it.
+Small components can transfer to a larger adjacent region of an existing color
+when the source-image budgets allow it. Very small components can test any
+adjacent existing fill; larger components retain a color-distance filter.
+The accepted color masks become fixed
+owners for expansion dependencies. One layout starts with solid outer contours;
+another retains openings during ordering and splits remaining cutouts into
+closed pieces afterward. Both try exact same-fill unions, hulls and enclosing
+rectangles. A merge can keep separate positions for the same color when their
+ordering requirements conflict. The number of regions has no explicit budget.
+
+An outer-contour pass rebuilds supports inside a visible-ownership envelope.
+It calls Bucket's native corridor simplifier and checks the complete filled
+candidate against required coverage and permitted geometry. Candidates include
+solid outer contours, hulls, enclosing rectangles and straight-chain shortcuts.
+Both contraction and expansion are available. Hidden area has no cost; anchors,
+concavities, holes and separate draw items contribute to the search cost.
+
+`--outer-passes` defaults to two; zero disables this stage. The configurable
+`--outer-tolerance` defaults to two native pixels. The pass tests smaller
+uncertainty bands within that limit while retaining the cumulative source-image
+budgets. Boundaries near exhausted local error limits retain required coverage.
+Weak visible islands can reveal underlying paint when their support is removed.
+Joint island transactions can instead assign them to adjacent upper paint.
+The donor contour is rebuilt with the receiving geometry charged in the same
+transaction. Receiving regions retain connected support and the combined
+cutout count cannot increase. Newly enclosed areas can be filled when upper
+paint covers them. High-contrast thin components retain required coverage.
+Every accepted edit receives image-error measurement at the original pixel scale.
+
+Overlap changes can alter SVG antialiasing while preserving the fixed filled
+color geometry. Such reconstructions can remain provisional inputs to native
+fitting. Reports distinguish their strict source-window result from planning
+limits. Curve planning retains the initial error at already over-budget windows;
+other windows keep the configured limit. The final native-rendered project must
+pass the original source-window, whole-image, opacity and silhouette limits.
+Provisional SVG acceptance cannot publish a project that fails those checks.
+The candidate contour document remains available even when a pass falls back.
+
+Same-fill grouping and solid outer completion rebuild dependencies from fixed
+visible ownership. A joint proposal may shorten another region's hidden support
+to permit repainting above the completed region. Cyclic proposals are rejected
+and logged. Different positions for the same fill remain available. Grouping
+charges the combined geometry of all affected regions.
+
 The final ordering pass freezes complete visible ownership, rebuilds all
 overlap dependencies, and topologically sorts available items by geometry
 complexity. Same-color items can retain separate positions. The ordering report
@@ -83,7 +134,7 @@ to its polygon estimate. Search effort is bounded separately from output complex
 Before native filling, the Bucket cubic contour fitter recovers mixed line and
 Bezier spans. `--curve-tolerance` sets its native-pixel tolerance, default one.
 Each replacement must retain valid filled geometry inside the domain and pass
-the cumulative source-image budgets. Ownership operations use consistent
+the source-image planning budgets. Ownership operations use consistent
 polygon copies on the native clipping grid; emitted curves retain their control
 points. Straight spans retain hard corners. The curve route does not spend spare
 triangle counts on additional polygon vertices. Setting the curve tolerance to
@@ -92,7 +143,9 @@ zero retains the polygon diagnostic route.
 Every final region uses `profile::fillRegion`, the editor's curve-first Compact
 Fit entry point, with GPU work enabled and the deployed catalog. The default
 evaluation budget is 60,000 per region. The tool records profile initialization,
-GPU diagnostics, actual shape usage and any fitting warnings. Explicit
+GPU diagnostics, actual shape usage and any fitting warnings. Budgeted
+fitting allowances default to 0.5 pixels outward, 0.1 pixels inward and
+an area-error ratio of 0.002; the corresponding Compact Fit options can override them.
 `--compact-fit-cpu` selects native CPU diagnostics. Triangle initialization
 requires the explicit polygon-seed option. Native comparison renders use four
 samples per pixel axis to measure curved boundaries.
@@ -110,6 +163,18 @@ final counts and retained region mappings separate. Fitting still receives
 empty leeway. Internal unculled renders and culling differences document the
 comparison.
 
+`native_topology.json` measures saved target contours and the union of actual
+native placement meshes separately. It reports support components, holes,
+holes above one square pixel, fully occluded holes, and hole area exposed to
+lower layers. Removing hidden native placements can leave holes in a saved
+fill's support while preserving the composite render. Target cutout counts
+alone do not describe this geometry. The audit uses deployed mesh geometry and
+saved world transforms:
+
+```powershell
+python tools/opaque_regions/native_topology.py filled.3so --output native_topology.json
+```
+
 The native image dimensions and fill colors remain fixed. Simplification changes
 contours instead of blurring the raster. `--source-local-growth` bounds error
 growth in each sliding source-image window during structural search and final
@@ -119,20 +184,29 @@ the bidirectional comparison retains its default of 1. These quality limits
 remain configurable independently of the hard native-shape cap. Conversion from the
 derived contours to Compact Fit targets, target-to-filled error, original
 baseline-to-filled error, and source-to-filled error are reported separately.
+Accepted final trials are ranked by measured native shape count, then region
+count and source error. All quality limits still apply before this ranking.
 `--render-rmse` and `--local-rmse` bound the final fitter's error against the
 derived contours. The external domain remains fixed and the actual filled
 silhouette is checked independently.
 
 When native rendering exceeds a local error limit, the budgeted route can
 append bounded correction contours from the derived guide or original opaque
-baseline. It preserves existing Bezier paths and checks the cumulative source
-budgets before refitting. Every correction uses the same GPU Compact Fit entry
+baseline at all detected failing areas. Fitting failures first use the derived
+guide. Remaining source-only failures and invalid guide windows restore the
+original opaque paint. Patch edges receive a
+bounded source-error refinement. The pass preserves existing Bezier paths and
+uses the same provisional-window planning rule as curve recovery. The final
+native checks retain their original limits. Every correction uses the same GPU Compact Fit entry
 point and counts toward the total shape cap. These repairs do not relax the
 final image-error limits.
 
 Full-scene renders reconcile incremental error accounting at checkpoints.
 `stack_checkpoint.json.gz` retains the current geometry, source hashes and
 optimization measurements; `--resume-stack` continues a matching checkpoint.
+Saved plans also retain the encoded contour document. With `--max-edits 0`
+and `--outer-passes 0`, resuming preserves that document and its Bezier spans
+for another native fitting measurement.
 `--max-edits` bounds search work. Successful output is `after.3so` and
 `after.png`. A result within the shape budget that fails a quality check is
 labelled `budget_candidate.3so`; it does not replace an accepted output.

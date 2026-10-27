@@ -8,6 +8,11 @@ import subprocess
 import sys
 import tempfile
 
+from shapely.geometry import box
+
+from curve_targets import recover
+from simplify import read_svg, render
+
 
 def main():
     tool = Path(sys.argv[1]).resolve()
@@ -53,6 +58,13 @@ def main():
         assert any(shape['visual']['shape_id'] == 102 for shape in shapes)
         assert all(shape['opacity'] == 1 and shape['color'][3] == 255 and not shape['mask'] for shape in shapes)
         assert report['silhouette_difference_area'] <= 1
+        baseline = render(source.read_bytes(), (256, 256))
+        stack = read_svg(source.read_bytes(), (256, 256)) + [('#000000', box(4, 4, 16, 16))]
+        _, _, selection = recover(tool, stack, (256, 256), box(0, 0, 256, 256), baseline, baseline,
+            root / 'provisional_curves', tolerance=.75, source_growth=20., local_growth=24.)
+        assert selection['initial_provisional_windows'] > 0
+        assert 1 in selection['accepted_paths']
+        assert selection['requires_final_source_validation'] and not selection['vector_source_local_passed']
     print('Curve pipeline passed: Bucket cubics, preserved straight corners, editor profile initialization, '
           'GPU execution, native curved shapes and opaque project rendering.')
 
