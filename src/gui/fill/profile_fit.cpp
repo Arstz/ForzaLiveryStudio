@@ -92,6 +92,7 @@ constexpr double kBodyRadiusPadding = 0.995;
 constexpr double kGpuProofMinimumClearance = 0.0001;
 constexpr double kGpuProofScaleFraction = 0.00001;
 constexpr int kStructuralTrials = 50000;
+constexpr int kSquareShapeId = 101;
 constexpr int kTriangleShapeId = 103;
 constexpr double kCornerAngle = 0.3;
 constexpr double kMinimumTriangleCornerCross = 0.1;
@@ -2904,6 +2905,25 @@ double selectAllowance(const catalog::Region &authored, const catalog::Region &c
     return chosen;
 }
 
+void addCompletedRegionCandidate(const catalog::Region &region, const Polygons &outer,
+                                 const QVector<catalog::Primitive> &primitives,
+                                 const compact::BoundaryModel &boundary, double scale, QVector<Candidate> *pool) {
+    const auto *square = primitiveFor(kSquareShapeId, primitives, catalog::ShapeTask::StraightEdges);
+    if (square == nullptr || square->contours.size() != 1 || region.required.size() != 1)
+        return;
+    const auto source = catalog::convexHull(square->contours.front());
+    const auto &target = region.required.front();
+
+    if (source.size() != 4 || target.size() != 4
+        || QLineF(target[0] + target[2], target[1] + target[3]).length() > catalog::kVerificationClearance)
+        return;
+    const auto transform = catalog::affineFromAnchors({source[0], source[1], source[3]},
+        {target[0], target[1], target[3]});
+    auto candidate = candidateFor(*square, transform, region, outer, boundary, scale);
+    if (candidate)
+        pool->push_back(std::move(*candidate));
+}
+
 catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catalog::Primitive> &primitives,
                                const compact::FillOptions &options, const std::function<bool()> &cancelled,
                                QVector<compact::ReusableCandidate> *reusable,
@@ -3008,6 +3028,28 @@ catalog::FillResult buildSeed(const PenFillRequest &request, const QVector<catal
             addCornerTriangles(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
             result.diagnostics.insert(QStringLiteral("cornerTriangleCandidates"), pool.size() - beforeTriangles);
             addCornerCandidates(region, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+            if (!coverageRegion.leeway.isEmpty() && !prepared && !stopped(cancelled)) {
+                QJsonObject leewayDiagnostics;
+                const auto simplified = catalog::simplifyLeewayRegion(request, authoredRegion, coverageRegion,
+                    cancelled, &leewayDiagnostics);
+                const int beforeLeeway = pool.size();
+
+                if (leewayDiagnostics.value(QStringLiteral("anchorsAfter")).toInt()
+                    < leewayDiagnostics.value(QStringLiteral("anchorsBefore")).toInt()) {
+                    const auto working = curveRegion(simplified, coverageRegion);
+                    QJsonObject candidateDiagnostics;
+                    addCompletedRegionCandidate(working, outer, primitives, boundary,
+                        options.observationScale, &pool);
+                    leewayDiagnostics.insert(QStringLiteral("wholeRegionCandidates"), pool.size() - beforeLeeway);
+                    addStraightCandidates(working, outer, primitives, boundary, options.observationScale,
+                        {}, options.useGpu, cancelled, &pool, &candidateDiagnostics);
+                    addCornerTriangles(working, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+                    addCornerCandidates(working, outer, primitives, boundary, options.observationScale, cancelled, &pool);
+                    leewayDiagnostics.insert(QStringLiteral("candidates"), candidateDiagnostics);
+                }
+                leewayDiagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size() - beforeLeeway);
+                result.diagnostics.insert(QStringLiteral("leewayContour"), leewayDiagnostics);
+            }
             recordTime(QStringLiteral("corners"));
             result.diagnostics.insert(QStringLiteral("boundaryCandidates"), pool.size());
             addBodyCandidates(coverageRegion, outer, primitives, boundary,

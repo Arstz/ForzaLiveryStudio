@@ -155,8 +155,8 @@ private:
     void updateClipboardWidget();
     void updateColorPaletteWidget();
     void updateLastSelectedShapeDefaults();
-    void toggleContourLeewayGroup(const QString &groupId);
-    void clearContourLeewayGroup();
+    void toggleContourLeewayEntry(const QString &entryId);
+    void clearContourLeewayEntry();
     void updateSelectionFromTree();
     void syncTreeSelectionFromIds();
     void revealTreeIndex(const QModelIndex &index);
@@ -336,8 +336,8 @@ private:
     std::array<quint8, 4> generatedFillColor_ = {255, 255, 255, 255};
     QString generatedFillLabel_;
     QString generatedFillTool_;
-    QString contourLeewayGroupId_;
-    QString generatedFillLeewayGroupId_;
+    QString contourLeewayEntryId_;
+    QString generatedFillLeewayEntryId_;
     QElapsedTimer generatedFillElapsed_;
     QTimer *generatedFillElapsedTimer_ = nullptr;
     QProgressBar *generatedFillProgress_ = nullptr;

@@ -18,10 +18,13 @@ measurements, cancellation state, and errors. GUI insertion turns accepted
 placements into ordinary scene groups. Saved figures preserve the authored paths
 separately from generated shapes.
 
-Leeway describes occluding geometry above a fill. It permits support underneath
-that geometry while quality checks measure the visible result. Callers supply
-leeway explicitly. Cancellation discards generated placements; failure handling
-depends on the selected engine.
+Leeway supplies geometry in which a fill may change hidden support while quality
+checks measure the visible result. The editor accepts an opaque vector shape,
+a closed saved Pen path, or their union within a group. Saved paths supply an
+explicit permitted area. World transforms, cutouts and visibility apply to the
+combined geometry. The active target contour cannot supply its own leeway.
+Callers supply leeway explicitly. Cancellation discards generated placements;
+failure handling depends on the selected engine.
 
 ## Contour conversion and Analytical Pen
 
@@ -48,6 +51,19 @@ The editor uses curve-first initialization from `compact_fit.*` and
 tangent constraints; straight, corner, and interior tasks supply complementary
 proposals. Ranked candidates form a seed, followed by bounded repair, affine
 refinement, count reduction, and final verification.
+
+With leeway, boundary search also simplifies hidden chains between hard
+anchors, including chains with soft points and curved spans. It tests direct
+connections and new corners at intersections of the retained edge directions.
+Each replacement must reduce the anchor count,
+retain valid compound contours, cover required paint and remain within
+spill-free support. Search effort and extension lengths are bounded. The
+working contours supply additional straight and corner candidates, plus a
+single affine Square candidate for a completed parallelogram. Selection and
+final verification use the original coverage requirements. Authored contours
+and exposed curves are preserved. Profile diagnostics report accepted
+shortcuts, intersections, anchor counts and generated candidates under
+`leewayContour`.
 
 Selection and refinement assess the complete placement union. Coverage repair
 uses missing interior support and observed contour defects. Reduction reuses

@@ -83,6 +83,9 @@ Region buildRegion(const PenFillRequest &request,
                    const std::function<bool()> &cancelled);
 Region leewayAdjustedRegion(const Region &region, const Polygons &leeway,
                             double outwardAllowance);
+Region simplifyLeewayRegion(const PenFillRequest &request, const Region &authored,
+                            const Region &coverage, const std::function<bool()> &cancelled,
+                            QJsonObject *diagnostics);
 QVector<Candidate> completeCover(const Region &region,
                                 const QVector<Primitive> &primitives,
                                 const std::function<bool()> &cancelled);
